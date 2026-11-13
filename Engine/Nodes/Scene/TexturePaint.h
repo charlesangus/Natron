@@ -230,6 +230,12 @@ public:
     int getBufferResolution() const WARN_UNUSED_RETURN;
 
     TextureModeEnum getTextureMode() const WARN_UNUSED_RETURN;
+    /**
+     * @brief The frame the texture is built at for a render at time: time itself when Animated,
+     * else the first frame of the project range, so that a Static texture does not depend on
+     * the frame that happened to be rendered first.
+     **/
+    double getTextureTime(double time) const WARN_UNUSED_RETURN;
 
     /**
      * @brief Starts a session painting through camera: a new layer at the top of the base layer,
@@ -335,6 +341,8 @@ public:
      **/
     struct BakeOutputState {
         std::string record;
+        // The record the bake set, for redoing it.
+        std::string bakedRecord;
         std::list<RotoLayerWPtr> frozen;
     };
 
@@ -355,6 +363,8 @@ public:
 
     // Undoes writeBakeOutput(): unfreezes state's sessions and sets the record back to state's.
     void restoreBakeOutputState(const BakeOutputState& state);
+    // Puts back what restoreBakeOutputState() removed, without baking: the record and the frozen sessions of state.
+    void reapplyBakeOutputState(const BakeOutputState& state);
 
     /**
      * @brief The bakes below queue on the node's TexturePaintBaker, in order, and return at once;
@@ -410,6 +420,16 @@ private:
     bool runSessionBake(double time, ViewIdx view, const BakeControl& control, std::string* error);
 
     std::string makeBackupDirectory() const WARN_UNUSED_RETURN;
+    // Makes the strokes' lifetime knobs count when Animated and not otherwise, in the stroke tree.
+    void syncStrokeLifetimes();
+    // The frames a bake covers: the project range when Animated, else the pinned frame alone.
+    void getBakeFrames(int* first, int* last) const;
+    // pattern with its frame token expanded to frame, then purposePath().
+    bool bakedFilePath(const std::string& pattern, const std::string& purpose, int tile, int frame, std::string* path, std::string* error) const WARN_UNUSED_RETURN;
+    // Whether pattern names a different file at each frame.
+    static bool hasFrameToken(const std::string& pattern) WARN_UNUSED_RETURN;
+    // The frame of a baked file the texture at time is built over, within the frames record names.
+    int recordFrame(double time, int firstFrame, int lastFrame) const WARN_UNUSED_RETURN;
     int sessionStrokeCount(const RotoLayerPtr& session) const WARN_UNUSED_RETURN;
     void landBake(bool ok);
 
@@ -449,10 +469,10 @@ private:
     bool getBakeInputsPattern(std::string* pattern, std::string* error) const WARN_UNUSED_RETURN;
 
     // The purposes and UDIM tiles the last Bake Inputs wrote, from the saved record of it.
-    void getBakedInputs(std::vector<std::string>* purposes, std::vector<int>* tiles) const;
+    void getBakedInputs(std::vector<std::string>* purposes, std::vector<int>* tiles, std::pair<int, int>* frames = 0) const;
 
     // The baked file of purpose at tile, empty when the last bake wrote none.
-    std::string getBakedInputPath(const std::string& purpose, int tile) const WARN_UNUSED_RETURN;
+    std::string getBakedInputPath(const std::string& purpose, int tile, double time) const WARN_UNUSED_RETURN;
 
     // Bake Output Path with [Project] expanded; false with *error set unless it is absolute.
     bool getBakeOutputPattern(std::string* pattern, std::string* error) const WARN_UNUSED_RETURN;
@@ -461,13 +481,13 @@ private:
     bool hasBakedOutput() const WARN_UNUSED_RETURN;
 
     // The Bake Output file of purpose at tile, empty when the last bake wrote none.
-    std::string getBakedOutputPath(const std::string& purpose, int tile) const WARN_UNUSED_RETURN;
+    std::string getBakedOutputPath(const std::string& purpose, int tile, double time) const WARN_UNUSED_RETURN;
 
     // The file a tile of purpose starts from: the Bake Output file, else the Bake Inputs one.
-    std::string getBasePath(const std::string& purpose, int tile) const WARN_UNUSED_RETURN;
+    std::string getBasePath(const std::string& purpose, int tile, double time) const WARN_UNUSED_RETURN;
 
     // The colour plane's base files as TexturePaintView::setBase() takes them.
-    std::string getViewBaseFiles() const WARN_UNUSED_RETURN;
+    std::string getViewBaseFiles(double time) const WARN_UNUSED_RETURN;
 
     // The directory the tiles of this node are cached in.
     std::string getTileDirectory() const WARN_UNUSED_RETURN;

@@ -44,15 +44,15 @@ NATRON_NAMESPACE_ENTER
  * @brief The undo step of a TexturePaint Bake Output, which the bake has done already. Undoing it
  * puts back the output files an earlier bake had written, from copies the command owns, unfreezes
  * the sessions it froze and sets the bake record back, so those sessions render from their
- * strokes again. Redoing it bakes again over the same sessions.
+ * strokes again. Undoing also copies the files the bake wrote aside, and redoing puts those
+ * copies back and freezes the same sessions again, so a redo never bakes.
  **/
 class TexturePaintBakeOutputUndoCommand
     : public UndoCommand {
 public:
     TexturePaintBakeOutputUndoCommand(const NodePtr& node,
-                                      double time,
-                                      ViewIdx view,
                                       const TexturePaint::BakeOutputState& state,
+                                      const std::vector<std::string>& files,
                                       const std::vector<std::pair<std::string, std::string>>& backups,
                                       const std::string& backupDirectory);
 
@@ -65,9 +65,12 @@ private:
     std::shared_ptr<TexturePaint> getPaint() const;
 
     NodeWPtr _node;
-    double _time;
-    ViewIdx _view;
     TexturePaint::BakeOutputState _state;
+    // The files the bake wrote.
+    std::vector<std::string> _files;
+    // (file the bake wrote, copy of it taken when the bake was undone) pairs.
+    std::vector<std::pair<std::string, std::string>> _stashed;
+    bool _redoable;
     // (output file, copy of it before the bake) pairs.
     std::vector<std::pair<std::string, std::string>> _backups;
     std::string _backupDirectory;

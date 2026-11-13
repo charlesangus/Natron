@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <functional>
 #include <list>
 #include <map>
@@ -526,6 +527,20 @@ public:
     int getNCurves() const;
 
     /**
+     * @brief Whether the items' lifetime knobs are left out of RotoDrawableItem::isActivated(),
+     * for a host whose strokes belong to no frame in particular. Not saved. MT-safe.
+     **/
+    void setIgnoreItemLifetimes(bool ignore)
+    {
+        _ignoreItemLifetimes.store(ignore);
+    }
+
+    bool getIgnoreItemLifetimes() const
+    {
+        return _ignoreItemLifetimes.load();
+    }
+
+    /**
      * @brief True for a node knob that mirrors the selected item's knob of the same name; its
      * animation belongs to the item, so the editors list it under the item instead.
      **/
@@ -670,6 +685,8 @@ private:
     void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 
     void removeItemRecursively(const RotoItemPtr& item, RotoItem::SelectionReasonEnum reason);
+
+    std::atomic<bool> _ignoreItemLifetimes { false };
 
 protected:
     std::unique_ptr<RotoContextPrivate> _imp;

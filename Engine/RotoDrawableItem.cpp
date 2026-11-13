@@ -60,6 +60,7 @@
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
@@ -1102,6 +1103,12 @@ RotoDrawableItem::isActivated(double time) const
 {
     if ( !isGloballyActivated() ) {
         return false;
+    }
+    {
+        const RotoCurveContextPtr context = getContext();
+        if (context && context->getIgnoreItemLifetimes()) {
+            return true;
+        }
     }
     try {
         RotoPaintItemLifeTimeTypeEnum lifetime = (RotoPaintItemLifeTimeTypeEnum)_imp->lifeTime->getValue();

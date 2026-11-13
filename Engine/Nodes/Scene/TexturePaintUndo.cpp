@@ -36,16 +36,15 @@
 NATRON_NAMESPACE_ENTER
 
 TexturePaintBakeOutputUndoCommand::TexturePaintBakeOutputUndoCommand(const NodePtr& node,
-                                                                     double time,
-                                                                     ViewIdx view,
                                                                      const TexturePaint::BakeOutputState& state,
+                                                                     const std::vector<std::string>& files,
                                                                      const std::vector<std::pair<std::string, std::string>>& backups,
                                                                      const std::string& backupDirectory)
     : UndoCommand(QCoreApplication::translate("TexturePaint", "Bake Output").toStdString())
     , _node(node)
-    , _time(time)
-    , _view(view)
     , _state(state)
+    , _files(files)
+    , _redoable(true)
     , _backups(backups)
     , _backupDirectory(backupDirectory)
     , _firstRedo(true)
@@ -73,8 +72,21 @@ TexturePaintBakeOutputUndoCommand::undo()
     if (!paint) {
         return;
     }
+    // What the bake wrote is about to be overwritten with the files it replaced.
+    _stashed.clear();
+    _redoable = true;
+    const std::string stashDirectory = _backupDirectory + "/redo";
+    std::error_code ec;
+    std::filesystem::create_directories(stashDirectory, ec);
+    for (const std::string& file : _files) {
+        const std::string copy = stashDirectory + "/" + std::to_string(_stashed.size()) + "_" + std::filesystem::path(file).filename().string();
+        if (std::filesystem::copy_file(file, copy, std::filesystem::copy_options::overwrite_existing, ec)) {
+            _stashed.push_back(std::make_pair(file, copy));
+        } else {
+            _redoable = false;
+        }
+    }
     for (const std::pair<std::string, std::string>& backup : _backups) {
-        std::error_code ec;
         std::filesystem::copy_file(backup.second, backup.first, std::filesystem::copy_options::overwrite_existing, ec);
     }
     paint->restoreBakeOutputState(_state);
@@ -86,23 +98,26 @@ TexturePaintBakeOutputUndoCommand::redo()
     // The bake was done before the command was pushed.
     if (_firstRedo) {
         _firstRedo = false;
-
         return;
     }
     std::shared_ptr<TexturePaint> paint = getPaint();
     if (!paint) {
         return;
     }
-    std::vector<std::string> files;
-    std::vector<std::pair<std::string, std::string>> backups;
-    std::string error;
-    TexturePaint::BakeOutputState state;
-    if (!paint->writeBakeOutput(_time, _view, std::string(), &files, &backups, &state, &error)) {
-        paint->setPersistentMessage(eMessageTypeError, error);
+    if (!_redoable) {
+        paint->setPersistentMessage(eMessageTypeError, QCoreApplication::translate("TexturePaint", "The files of this bake could not be kept when it was undone, so it cannot be redone: bake the output again.").toStdString());
 
         return;
     }
-    _state = state;
+    for (const std::pair<std::string, std::string>& stashed : _stashed) {
+        std::error_code ec;
+        if (!std::filesystem::copy_file(stashed.second, stashed.first, std::filesystem::copy_options::overwrite_existing, ec)) {
+            paint->setPersistentMessage(eMessageTypeError, QCoreApplication::translate("TexturePaint", "%1 cannot be put back: %2").arg(QString::fromStdString(stashed.first)).arg(QString::fromStdString(ec.message())).toStdString());
+
+            return;
+        }
+    }
+    paint->reapplyBakeOutputState(_state);
 }
 
 NATRON_NAMESPACE_EXIT

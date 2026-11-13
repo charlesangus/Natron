@@ -31,6 +31,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <list>
 #include <map>
@@ -1711,4 +1712,190 @@ TEST_F(TexturePaintTest, SessionBakeLandsAndBumpsTheGeneration)
     EXPECT_EQ(1u, effect->getBakeGeneration());
     EXPECT_NE(before, generation->getValue());
     ASSERT_TRUE(bool(renderTile(paint)));
+}
+
+namespace {
+// Makes stroke show at frames first to last of 1 to 9 only, through its Custom lifetime.
+void
+limitLifetime(const RotoStrokeItemPtr& stroke,
+              int first,
+              int last)
+{
+    KnobChoicePtr lifeTime = std::dynamic_pointer_cast<KnobChoice>(stroke->getKnobByName("lifeTime"));
+    ASSERT_TRUE(bool(lifeTime));
+    lifeTime->setValue(4);
+    KnobBoolPtr activated = stroke->getActivatedKnob();
+    for (int frame = 1; frame <= 9; ++frame) {
+        activated->setValueAtTime(frame, (frame >= first) && (frame <= last), ViewSpec::all(), 0);
+    }
+}
+
+void
+setTextureMode(const NodePtr& paint,
+               const char* id)
+{
+    getKnob<KnobChoice>(paint, kTexturePaintParamTextureMode)->setValueFromID(id, 0);
+}
+
+bool
+touchesAnything(const NodePtr& paint,
+                const RotoLayerPtr& session,
+                double time)
+{
+    TexturePaint::SessionBuffer buffer;
+    std::string error;
+
+    EXPECT_TRUE(getTexturePaint(paint)->renderSessionBuffer(session, ImageLayerDesc::getRGBAComponents(), time, ViewIdx(0), &buffer, &error)) << error;
+
+    return std::find(buffer.touched.begin(), buffer.touched.end(), 1) != buffer.touched.end();
+}
+
+void
+setProjectFrameRange(const NodePtr& node,
+                     int first,
+                     int last)
+{
+    KnobIntPtr range = std::dynamic_pointer_cast<KnobInt>(node->getApp()->getProject()->getKnobByName("frameRange"));
+
+    ASSERT_TRUE(bool(range));
+    range->setValue(first, ViewSpec::all(), 0);
+    range->setValue(last, ViewSpec::all(), 1);
+}
+
+std::string
+framePath(const QTemporaryDir& dir,
+          int tile,
+          int frame)
+{
+    return (dir.path() + QString::fromUtf8("/anim.%1.%2.exr").arg(tile).arg(frame, 4, 10, QLatin1Char('0'))).toStdString();
+}
+} // anonymous namespace
+
+TEST_F(TexturePaintTest, AnimatedStrokeShowsOnlyOnItsLifetimeFrames)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    setTextureMode(paint, "animated");
+    limitLifetime(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "short", kRedU, 0.5), 5, 7);
+
+    for (int frame = 1; frame <= 9; ++frame) {
+        EXPECT_EQ((frame >= 5) && (frame <= 7), touchesAnything(paint, session, frame)) << "frame " << frame;
+    }
+}
+
+TEST_F(TexturePaintTest, StaticModeIgnoresLifetimes)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    RotoStrokeItemPtr stroke = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "short", kRedU, 0.5);
+    setColor(stroke, 0., 1., 0.);
+    limitLifetime(stroke, 5, 7);
+
+    for (int frame : { 1, 6, 9 }) {
+        EXPECT_TRUE(touchesAnything(paint, session, frame)) << "frame " << frame;
+    }
+    RectI rendered;
+    const ImagePtr atNine = renderNodeImage(paint, 9., ViewIdx(0), 0, RectI(0, 0, kSmallTile, kSmallTile), ImageLayerDesc::getRGBAComponents(), &rendered);
+    expectColor(texelAt(renderTile(paint), 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the stroke at the project's first frame");
+    expectColor(texelAt(atNine, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the stroke at another frame");
+}
+
+TEST_F(TexturePaintTest, AnimatedBakeOutputWritesAFilePerFrame)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    setProjectFrameRange(paint, 4, 8);
+    setTextureMode(paint, "animated");
+    RotoStrokeItemPtr stroke = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "short", kRedU, 0.5);
+    setColor(stroke, 0., 1., 0.);
+    limitLifetime(stroke, 5, 7);
+
+    std::string error;
+    std::vector<std::string> files;
+    KnobOutputFilePtr pathKnob = getKnob<KnobOutputFile>(paint, kTexturePaintParamBakeOutputPath);
+    pathKnob->setValue((dir.path() + QString::fromUtf8("/anim.<UDIM>.exr")).toStdString());
+    EXPECT_FALSE(bool(getTexturePaint(paint)->bakeOutput(1., ViewIdx(0), &files, &error)));
+    EXPECT_NE(std::string::npos, error.find("frame")) << error;
+    EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
+
+    pathKnob->setValue((dir.path() + QString::fromUtf8("/anim.<UDIM>.####.exr")).toStdString());
+    UndoCommandPtr command = bakeOutput(paint, &files);
+    ASSERT_TRUE(bool(command));
+    EXPECT_EQ(10u, files.size());
+    for (int frame = 4; frame <= 8; ++frame) {
+        for (int tile : { 1001, 1002 }) {
+            const std::string path = framePath(dir, tile, frame);
+            EXPECT_NE(files.end(), std::find(files.begin(), files.end(), path)) << path;
+            EXPECT_TRUE(std::filesystem::is_regular_file(path)) << path;
+        }
+    }
+    EXPECT_EQ(files, getTexturePaint(paint)->getBakedOutputFiles());
+    for (int frame = 4; frame <= 8; ++frame) {
+        const BufferPixel texel = bakedTexelAt(framePath(dir, 1001, frame), kSmallTile, 0.5, 0.5);
+        if ((frame >= 5) && (frame <= 7)) {
+            expectColor(texel, 0.f, 1.f, 0.f, 1.f, "stroke on its lifetime frame");
+        } else {
+            EXPECT_LT(texel.rgba[1], 0.5f) << "no stroke at frame " << frame;
+        }
+    }
+
+    // The tile at a frame starts from that frame's baked file.
+    RectI rendered;
+    const ImageLayerDesc rgba = ImageLayerDesc::getRGBAComponents();
+    const ImagePtr atSix = renderNodeImage(paint, 6., ViewIdx(0), 0, RectI(0, 0, kSmallTile, kSmallTile), rgba, &rendered);
+    const ImagePtr atFour = renderNodeImage(paint, 4., ViewIdx(0), 0, RectI(0, 0, kSmallTile, kSmallTile), rgba, &rendered);
+    expectColor(texelAt(atSix, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "frame 6 of the output");
+    EXPECT_LT(texelAt(atFour, 0.5, 0.5).rgba[1], 0.5f) << "frame 4 of the output";
+}
+
+TEST_F(TexturePaintTest, RedoingABakeOutputRestoresItsFilesWithoutBaking)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeOutputPath(paint, dir);
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+
+    std::vector<std::string> files;
+    UndoCommandPtr command = bakeOutput(paint, &files);
+    ASSERT_TRUE(bool(command));
+    command->redo();
+    std::vector<float> baked;
+    bool resampled = true;
+    std::string error;
+    ASSERT_TRUE(MaterialBake::readBaseTile(red, kSmallTile, &baked, &resampled, &error)) << error;
+
+    command->undo();
+    EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
+    // Something else takes the place of the bake's file while it is undone.
+    std::error_code ec;
+    std::filesystem::remove(red, ec);
+    ASSERT_FALSE(std::filesystem::exists(red));
+
+    const int renders = effect->getSessionRenderCount();
+    command->redo();
+    EXPECT_EQ(renders, effect->getSessionRenderCount()) << "redo does not render a session";
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
+    EXPECT_EQ(files, effect->getBakedOutputFiles());
+    std::vector<float> restored;
+    ASSERT_TRUE(MaterialBake::readBaseTile(red, kSmallTile, &restored, &resampled, &error)) << error;
+    EXPECT_EQ(0u, countDifferences(baked, restored, 0.f));
+    expectColor(texelAt(renderTile(paint), 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the redone bake");
+    EXPECT_EQ(renders, effect->getSessionRenderCount()) << "the redone bake's tiles come from its files";
 }

@@ -32,10 +32,11 @@ Add device memory as a tier of M300 - Unified Tiered Cache, so GPU-rendered node
 
 - 2026-11-01 — **The device tier shares the existing GPU budget, and render buffers win (user).**
 - 2026-11-01 — **Device caching is a tier of the unified cache, not a separate GPU cache (user):** see `DECISIONS/2026-11-01-unified-tiered-cache.md`.
+- 2026-11-12 — **P1.T1 (f78e18417):** each rendering member writes its own lease and no kernel writes in place, so publishing is keeping the lease. Identity and pass-through members share the producer's slot and aren't published; strip mode holds no full output on the device and publishes nothing there; the viewer root already outlives the run. The trace found P1.T2 is two changes and P2.T3 stale (G1 closed in M260); the remaining tasks are being re-planned.
 
 ## Phase 301.1: Device tier
 
-- [ ] M301.P1.T1 — Confirm how region members hold their outputs
+- [x] M301.P1.T1 — Confirm how region members hold their outputs
   - files: `docs/cache/tiered-cache.md` (device-tier section), read-only: `Engine/GpuRegionTask.cpp`, `Engine/GpuRegionStrips.cpp`, `Engine/Gpu/GpuBufferPool.cpp`
   - approach: Trace the member-output buffers through a region run: separate leases or aliased/reused, their lifetime, and their behaviour in strip mode. Record the findings and the publish design that follows (keeping the lease vs copying), with file:line evidence.
   - verify: The design-note section answers the assumption in `## Scope` with evidence, and the remaining tasks' approach is checked against it.

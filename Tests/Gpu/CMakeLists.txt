@@ -29,6 +29,7 @@ set(GpuTests_SOURCES
     BlurCpu_Test.cpp
     BlurGpu_Test.cpp
     CurveSnapshotPrecision_Test.cpp
+    GpuAccel_Test.cpp
     GpuBuffer_Test.cpp
     GpuBufferPool_Test.cpp
     GpuDevice_Test.cpp

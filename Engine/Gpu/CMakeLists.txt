@@ -33,6 +33,7 @@ get_property(NatronGpu_KERNELS GLOBAL PROPERTY SLANG_REGISTRY_NatronGpu)
 
 add_library(NatronGpu STATIC
     GpuDevice.cpp
+    GpuAccel.cpp
     GpuBuffer.cpp
     GpuBufferPool.cpp
     GpuKernel.cpp

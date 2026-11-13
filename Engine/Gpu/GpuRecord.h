@@ -21,6 +21,7 @@
 namespace gpu {
 
 class GpuPipelineCache;
+class GpuAccelRecorder;
 
 // One command buffer on the compute queue, recorded and submitted by the thread that created it.
 // Node code goes through this class and never sees a Vulkan handle.
@@ -154,6 +155,9 @@ public:
     GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal);
 
 private:
+    // Acceleration-structure builds record Vulkan commands of their own into the context's buffer.
+    friend class GpuAccelRecorder;
+
     void parkInFlightWork();
     std::vector<VkSemaphoreSubmitInfo> externalWaitInfos() const;
     GpuStatus checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const;

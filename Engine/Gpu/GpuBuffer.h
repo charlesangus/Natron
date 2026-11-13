@@ -21,6 +21,15 @@ enum class GpuBufferKind {
 constexpr VkBufferUsageFlags kGpuBufferDefaultUsage
     = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
+// What an acceleration-structure build needs of the buffers it reads its vertices, indices and instances from.
+constexpr VkBufferUsageFlags kGpuAccelInputUsage
+    = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+
+// GpuBufferPool adds these on a device that supportsRayQuery(), so that any pooled buffer can back an acceleration
+// structure, be its build scratch or be a build input.
+constexpr VkBufferUsageFlags kGpuBufferRayQueryUsage
+    = kGpuAccelInputUsage | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
+
 // Move-only owner of a VkBuffer and its memory. It must be destroyed before the GpuDevice it came from.
 // Every factory leaves `out` empty on failure and reports through the returned status.
 class GpuBuffer {

@@ -34,7 +34,7 @@ Fork the MoonRay sources Natron builds (openmoonray and the submodules we patch:
   - verify: applying the script's blocks to a clean upstream checkout and diffing against the fork tip shows nothing outside the commits; every "did not apply" grep in the script passes on the fork.
   - size: M
 
-- [ ] M325.P1.T2 — The super-repo fork points at the forks
+- [x] M325.P1.T2 — The super-repo fork points at the forks
   - files: `charlesangus/openmoonray` branch `natron/v2026.29.1`: `.gitmodules`, gitlinks, `CMakeLists.txt`, `arras/`, `moonray/`, `moonray/hydra/CMakeLists.txt`
   - approach: PM step: fork and push. One commit drops the dropped subdirectories; another repoints the four patched submodules' URLs and gitlinks at P1.T1's tips.
   - verify: `git ls-tree HEAD` gitlinks equal the P1.T1 tips; `.gitmodules` URLs resolve; no dropped `add_subdirectory` remains.
@@ -68,3 +68,7 @@ Fork the MoonRay sources Natron builds (openmoonray and the submodules we patch:
 
 - 2026-11-12 — **Elaborated (consultant, PM engineering calls):** fork the five patched repos only (the other six are fetched unpatched from dreamworksanimation); pin by commit, since archive tarballs drop submodules and commit IDs already hash content, with SOURCE listing each repo; branch `natron/v2026.29.1`, following Cycles' `natron/deep-5.2`. The patch set is ten edits, not the four the stub named. Forking under charlesangus follows the user's 2026-11-04 instruction ("fork moonray, similar to cycles").
 - 2026-11-12 — **P1.T1 done, pushed:** `natron/v2026.29.1` on charlesangus/arras4_core 036936259 (base 17c49f1), moonray ffb02edaa (eef67ae), mcrt_dataio fe9dc6364 (7d52281), hdMoonray 5bcbe1d74 (986121d; five code commits plus the sessiondef templates). Sed output and the fork tips diff clean; the sessiondef log-level edit lives in `sessions/hd_{single,multi}.sessiondef.in`, which `configure_file` installs. The IsSupported edit is applied unconditionally (USD 26.08). The super-repo's `.gitmodules` URLs are relative, so P1.T2 must make the six unpatched submodules absolute dreamworksanimation URLs, or a fork of openmoonray would look for them under charlesangus.
+- 2026-11-13 — P1.T2: `charlesangus/openmoonray` `natron/v2026.29.1` at 35379cc, on upstream v2026.29.1 d96c6e3, in three commits:
+  - drops the six subdirectories the Natron build doesn't use;
+  - points arras4_core, moonray, mcrt_dataio and hdMoonray at the forks (gitlinks 036936259, ffb02edaa, fe9dc6364, 5bcbe1d74) and makes the other 16 submodule URLs absolute upstream URLs;
+  - drops `moonray/materialx_shaders`. Its repository isn't public upstream, so recursive init failed on it, and it only built under `BUILD_MATERIALX_SHADERS`.

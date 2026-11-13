@@ -84,3 +84,4 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 ## Decisions
 
 - 2026-11-12 — GPU-host budget lines dropped (board rule, 2026-11-02, no GPU-host timing gates); the city-viewer-agrees-with-USDRender check is collected at F4 - Heavy Scene Viewer's UAT (user, 2026-11-12).
+- 2026-11-13 — Delivered into F4 - Heavy Scene Viewer through M332 - Scene Graph Points' squash (PR #260, 6e26b1e4b). M332 was stacked on this branch and carried all four M331 commits, and a merge of F4 into this branch leaves its tree identical to F4 (7faa0a268). So there's no separate PR. The city check goes to F4's UAT and the GPU budget lines were dropped (no GPU-host timing gates). Old branch head kept as `backup/m331-pre-rebase-20261113`.

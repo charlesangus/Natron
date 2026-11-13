@@ -280,6 +280,12 @@ public:
     std::string getFailure(const std::string& uri) const;
 
     /**
+     * @brief The tile numbers of the UDIM set uri that could not be rendered, in the order tried;
+     * empty if none failed.
+     **/
+    std::vector<int> getFailedTiles(const std::string& uri) const;
+
+    /**
      * @brief How many times prepare() has rendered each tile, by tile number; 0 stands for a
      * texture that is not a UDIM tile. Tiles reused from an earlier URI or already stored count
      * nothing.
@@ -302,7 +308,8 @@ private:
                       bool fallback);
     void eraseLocked(std::map<std::string, Entry>::iterator entry);
     void setFailureLocked(const std::string& uri,
-                          const std::string& failure);
+                          const std::string& failure,
+                          const std::vector<int>& tiles = std::vector<int>());
 
     mutable std::mutex _mutex;
     std::condition_variable _rendered;
@@ -311,6 +318,7 @@ private:
     std::list<std::string> _uses;
     std::set<std::string> _rendering;
     std::map<std::string, std::string> _failures;
+    std::map<std::string, std::vector<int>> _failedTiles;
     std::map<int, std::size_t> _renderCounts;
     // The URIs of the prepare() calls under way, with how many hold each.
     std::map<std::string, int> _pinned;

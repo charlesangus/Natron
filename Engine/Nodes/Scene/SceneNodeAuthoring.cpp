@@ -1084,10 +1084,29 @@ getLiveTextureWarnings(const LiveTextureSource& source,
 
     if (!failure.empty()) {
         if (source.isUdim()) {
-            warnings.push_back(EffectInstance::tr("The UDIM tiles of the live texture %1 that could not be rendered show magenta: %2.")
-                                   .arg(QString::fromStdString(uri))
-                                   .arg(QString::fromStdString(failure))
-                                   .toStdString());
+            const std::vector<int> tiles = LiveTextureStore::instance().getFailedTiles(uri);
+            QString numbers;
+            for (int tile : tiles) {
+                numbers += (numbers.isEmpty() ? QString() : QString::fromLatin1(", ")) + QString::number(tile);
+            }
+            if (tiles.size() == 1) {
+                warnings.push_back(EffectInstance::tr("The UDIM tile %1 of the live texture %2 shows magenta: %3.")
+                                       .arg(numbers)
+                                       .arg(QString::fromStdString(uri))
+                                       .arg(QString::fromStdString(failure))
+                                       .toStdString());
+            } else if (!tiles.empty()) {
+                warnings.push_back(EffectInstance::tr("The UDIM tiles %1 of the live texture %2 show magenta: %3.")
+                                       .arg(numbers)
+                                       .arg(QString::fromStdString(uri))
+                                       .arg(QString::fromStdString(failure))
+                                       .toStdString());
+            } else {
+                warnings.push_back(EffectInstance::tr("The UDIM tiles of the live texture %1 that could not be rendered show magenta: %2.")
+                                       .arg(QString::fromStdString(uri))
+                                       .arg(QString::fromStdString(failure))
+                                       .toStdString());
+            }
         } else {
             warnings.push_back(EffectInstance::tr("The live texture %1 shows the renderer's fallback: %2.")
                                    .arg(QString::fromStdString(uri))

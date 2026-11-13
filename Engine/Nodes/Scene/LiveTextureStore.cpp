@@ -674,10 +674,12 @@ LiveTextureStore::eraseLocked(std::map<std::string, Entry>::iterator entry)
 
 void
 LiveTextureStore::setFailureLocked(const std::string& uri,
-                                   const std::string& failure)
+                                   const std::string& failure,
+                                   const std::vector<int>& tiles)
 {
     if (failure.empty()) {
         _failures.erase(uri);
+        _failedTiles.erase(uri);
 
         return;
     }
@@ -685,8 +687,14 @@ LiveTextureStore::setFailureLocked(const std::string& uri,
     // tried again, so erasing on success alone would not bound this.
     if ((_failures.size() >= kMaxFailures) && (_failures.find(uri) == _failures.end())) {
         _failures.clear();
+        _failedTiles.clear();
     }
     _failures[uri] = failure;
+    if (tiles.empty()) {
+        _failedTiles.erase(uri);
+    } else {
+        _failedTiles[uri] = tiles;
+    }
 }
 
 LiveTextureBufferConstPtr
@@ -782,6 +790,15 @@ LiveTextureStore::getFailure(const std::string& uri) const
     return (found == _failures.end()) ? std::string() : found->second;
 }
 
+std::vector<int>
+LiveTextureStore::getFailedTiles(const std::string& uri) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const std::map<std::string, std::vector<int>>::const_iterator found = _failedTiles.find(uri);
+
+    return (found == _failedTiles.end()) ? std::vector<int>() : found->second;
+}
+
 int
 LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                           double frame)
@@ -858,6 +875,7 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
     int numFailed = 0;
     // The failures of each UDIM set's tiles, which getFailure() gives for the set's URI.
     std::map<std::string, std::string> setFailures;
+    std::map<std::string, std::vector<int>> setFailedTiles;
     // The warnings of the textures that failed in this call, which are neither rendered nor
     // counted again for another source naming them.
     std::map<std::string, std::string> failedHere;
@@ -969,6 +987,7 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
             if (job.tile) {
                 std::string& tileFailures = setFailures[job.setUri];
                 tileFailures += (tileFailures.empty() ? "" : "; ") + failure;
+                setFailedTiles[job.setUri].push_back(job.tile);
                 message = "The UDIM tile " + std::to_string(job.tile) + " of the live texture " + job.setUri + " shows magenta: " + failure + ".";
                 if (unsized) {
                     UnsizedTile pending;
@@ -1012,7 +1031,7 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
     {
         std::lock_guard<std::mutex> lock(_mutex);
         for (const std::pair<const std::string, std::string>& set : setFailures) {
-            setFailureLocked(set.first, set.second);
+            setFailureLocked(set.first, set.second, setFailedTiles[set.first]);
         }
         for (const std::string& uri : uris) {
             std::map<std::string, int>::iterator pin = _pinned.find(uri);

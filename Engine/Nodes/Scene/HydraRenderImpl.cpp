@@ -278,14 +278,15 @@ typedef std::unique_ptr<UsdImagingGLEngine, EngineDeleter> EnginePtr;
 /**
  * A new engine of parameters. A Cycles one (cycles), whose session the caller has opened, is made
  * so that its CPU device renders on threads threads, and closes the session when it goes. Only an
- * engine made with wantFilter gets a SceneDrawFilter; the viewer's draw states mean nothing to
- * the others.
+ * engine made with wantFilter gets a SceneDrawFilter, whose renderInstanceId goes to *filterId if
+ * given; the viewer's draw states mean nothing to the others.
  **/
 EnginePtr
 newEngine(const UsdImagingGLEngine::Parameters& parameters,
           bool cycles,
           int threads,
-          bool wantFilter)
+          bool wantFilter,
+          std::string* filterId = nullptr)
 {
     EnginePtr engine(nullptr, EngineDeleter { cycles });
     std::unique_ptr<SceneDrawFilter::EngineScope> scope;
@@ -293,7 +294,12 @@ newEngine(const UsdImagingGLEngine::Parameters& parameters,
         SceneDrawFilter::registerForAllRenderers();
         scope.reset(new SceneDrawFilter::EngineScope);
     }
-    const std::function<void()> make = [&]() { engine.reset(new UsdImagingGLEngine(parameters)); };
+    const std::function<void()> make = [&]() {
+        engine.reset(new UsdImagingGLEngine(parameters));
+        if (scope && filterId) {
+            *filterId = scope->getInstanceId();
+        }
+    };
 
     if (!cycles) {
         make();
@@ -2481,6 +2487,10 @@ struct ProgressiveRender::Implementation {
     Status status;
     std::shared_ptr<const Frame> frame;
     int defaultMaxSamples = 0;
+    SceneDrawFilter::Rules drawRules;
+    bool renderEverything = false;
+    // Bumped by each change of what the filter is to draw by.
+    std::uint64_t drawEdits = 0;
 
     // The worker's; engineMutex guards the engine against pick().
     std::mutex engineMutex;
@@ -2500,6 +2510,10 @@ struct ProgressiveRender::Implementation {
     std::uint64_t workingEdits = 0;
     TfToken samplesKey;
     int appliedCap = 0;
+    // The engine's filter, null if its delegate's render index has none, and the drawEdits its
+    // rules are of.
+    SceneDrawFilter::WeakPtr drawFilter;
+    std::uint64_t appliedDrawEdits = 0;
     bool paused = false;
     View engineView;
     bool engineHasView = false;
@@ -2520,6 +2534,20 @@ struct ProgressiveRender::Implementation {
         , listener(listener_)
         , background(background_)
     {
+    }
+
+    // Under mutex.
+    SceneDrawFilter::Rules drawTarget() const
+    {
+        return renderEverything ? SceneDrawFilter::Rules() : drawRules;
+    }
+
+    // Under mutex.
+    void drawEdited()
+    {
+        ++drawEdits;
+        ++sceneEdits;
+        edited();
     }
 
     // Under mutex.
@@ -2549,6 +2577,7 @@ struct ProgressiveRender::Implementation {
                 qWarning("A render delegate threw while resuming to be released.");
             }
         }
+        drawFilter = SceneDrawFilter::WeakPtr();
         engine.reset();
         engineRenderer.clear();
         samplesKey = TfToken();
@@ -2562,6 +2591,8 @@ struct ProgressiveRender::Implementation {
                     bool cycles,
                     int threads,
                     const RendererSettings& primSettings,
+                    const SceneDrawFilter::Rules& rules,
+                    std::uint64_t rulesEdits,
                     int* defaultCap,
                     std::string* error)
     {
@@ -2573,9 +2604,10 @@ struct ProgressiveRender::Implementation {
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
         EnginePtr made;
+        std::string filterId;
         {
             TfErrorMark mark;
-            made = newEngine(parameters, cycles, threads, false);
+            made = newEngine(parameters, cycles, threads, true, &filterId);
             ++gEngineBuilds;
             if (made->GetCurrentRendererId() != TfToken(id)) {
                 std::string reasons;
@@ -2631,8 +2663,15 @@ struct ProgressiveRender::Implementation {
                 }
             }
         }
+        // Before the first render, which populates the render index, so seeding sends nothing.
+        const SceneDrawFilter::WeakPtr filter = filterId.empty() ? SceneDrawFilter::WeakPtr() : SceneDrawFilter::find(filterId);
+        if (SceneDrawFilter* f = get_pointer(filter)) {
+            f->seedRules(rules);
+        }
         std::lock_guard<std::mutex> l(engineMutex);
         engine = std::move(made);
+        drawFilter = filter;
+        appliedDrawEdits = rulesEdits;
         engineRenderer = id;
         engineSettings = primSettings;
         depthAov = moonRay ? MoonRayAovs::depthAov() : HdAovTokens->depth;
@@ -2866,6 +2905,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             const std::string id = renderer;
             const std::function<int()> threadsFn = threadsOf;
             const RendererSettings primSettings = settings;
+            const SceneDrawFilter::Rules rules = drawTarget();
+            const std::uint64_t rulesEdits = drawEdits;
             lock.unlock();
             const bool cycles = CyclesAovs::isCycles(id);
             int threads = 0;
@@ -2883,7 +2924,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             std::string error;
             int cap = 0;
-            const bool made = makeEngine(id, cycles, threads, primSettings, &cap, &error);
+            const bool made = makeEngine(id, cycles, threads, primSettings, rules, rulesEdits, &cap, &error);
             lock.lock();
             if (!made) {
                 fail(lock, id, error, workingEdits);
@@ -2998,6 +3039,11 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         const int cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
         const std::uint64_t passGeneration = generation;
         const std::uint64_t restartIndex = status.restarts;
+        const std::uint64_t passDrawEdits = drawEdits;
+        SceneDrawFilter::Rules passRules;
+        if (passDrawEdits != appliedDrawEdits) {
+            passRules = drawTarget();
+        }
         lock.unlock();
 
         const bool readsRestart = firstPass;
@@ -3035,10 +3081,22 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
                 params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
                 params.highlight = false;
+                SceneDrawFilter* filter = get_pointer(drawFilter);
+                if (passDrawEdits != appliedDrawEdits) {
+                    // All at once: each step of a paced reveal would restart the delegate.
+                    if (filter) {
+                        filter->replaceRules(passRules);
+                    }
+                    appliedDrawEdits = passDrawEdits;
+                }
                 if (readsRestart) {
                     before = engine->GetRenderStats();
                 }
-                if (renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure)) {
+                const bool renderedPass = renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure);
+                if (filter) {
+                    filter->endRender();
+                }
+                if (renderedPass) {
                     rendered = true;
                     converged = engine->IsConverged();
                     stats = engine->GetRenderStats();
@@ -3265,6 +3323,52 @@ ProgressiveRender::setMaxSamples(int samples)
     _imp->maxSamples = samples;
     ++_imp->sceneEdits;
     _imp->edited();
+}
+
+void
+ProgressiveRender::setDrawRules(const SceneDrawFilter::Rules& rules)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (rules == _imp->drawRules) {
+        return;
+    }
+    _imp->drawRules = rules;
+    if (!_imp->renderEverything) {
+        _imp->drawEdited();
+    }
+}
+
+void
+ProgressiveRender::applyDrawDeltas(const std::vector<SceneDrawDelta>& deltas)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+    SceneDrawFilter::Rules rules = _imp->drawRules;
+
+    for (const SceneDrawDelta& delta : deltas) {
+        SceneDrawFilter::applyToRules(delta, &rules);
+    }
+    if (rules == _imp->drawRules) {
+        return;
+    }
+    _imp->drawRules = std::move(rules);
+    if (!_imp->renderEverything) {
+        _imp->drawEdited();
+    }
+}
+
+void
+ProgressiveRender::setRenderEverything(bool on)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (on == _imp->renderEverything) {
+        return;
+    }
+    _imp->renderEverything = on;
+    if (!_imp->drawRules.empty()) {
+        _imp->drawEdited();
+    }
 }
 
 int

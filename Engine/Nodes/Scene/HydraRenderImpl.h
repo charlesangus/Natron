@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 #include <pxr/base/vt/value.h>
@@ -456,6 +457,22 @@ public:
 
     // The cap in force: the one set, or the delegate's default once its engine is made, else 0.
     int getMaxSamples() const;
+
+    /**
+     * @brief The viewer's draw rules, which the engine draws by from its next restart: what they
+     * hide leaves the frame. An engine made later starts from them. Different rules restart, the
+     * same ones change nothing.
+     **/
+    void setDrawRules(const SceneDrawFilter::Rules& rules);
+
+    // Changes the draw rules by each delta in turn, as SceneDrawFilter::applyToRules() does.
+    void applyDrawDeltas(const std::vector<SceneDrawDelta>& deltas);
+
+    /**
+     * @brief Draws everything regardless of the draw rules while on, keeping them for when it is
+     * off again. Neither way makes the engine again.
+     **/
+    void setRenderEverything(bool on);
 
     // Pauses the delegate where it is, keeping its samples; resume() continues from them.
     void stop();

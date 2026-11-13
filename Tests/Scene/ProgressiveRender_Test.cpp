@@ -39,6 +39,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -50,6 +51,7 @@
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Tests/Scene/CyclesTestUtils.h"
@@ -134,6 +136,28 @@ float
 centreDepth(const ProgressiveRender::Frame& frame)
 {
     return frame.depth[(std::size_t)(frame.height / 2) * (std::size_t)frame.width + (std::size_t)(frame.width / 2)];
+}
+
+bool
+anyUnder(const std::set<std::string>& paths,
+         const std::string& root)
+{
+    for (const std::string& path : paths) {
+        if ((path == root) || (path.compare(0, root.size() + 1, root + "/") == 0)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+SceneDrawDelta
+hiding(const std::string& path)
+{
+    SceneDrawDelta delta;
+    delta.hidden.push_back(path);
+
+    return delta;
 }
 } // anon namespace
 
@@ -319,6 +343,35 @@ protected:
         }
 
         return finished;
+    }
+
+    // The prims frame's pixels show, from the engine's primId AOV.
+    std::set<std::string> pickedPrims(const ProgressiveRender::Frame& frame)
+    {
+        std::set<std::string> paths;
+        for (int y = 0; y < frame.height; ++y) {
+            for (int x = 0; x < frame.width; ++x) {
+                const std::string path = _render->pick(frame, x, y);
+                if (!path.empty()) {
+                    paths.insert(path);
+                }
+            }
+        }
+
+        return paths;
+    }
+
+    // Waits for the render to finish from the mark-th frame on, and gives its last frame's prims.
+    bool pickedWhenDone(std::size_t mark,
+                        std::set<std::string>* paths)
+    {
+        std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+        if (!collectUntilDone(mark, &frames) || frames.empty()) {
+            return false;
+        }
+        *paths = pickedPrims(*frames.back());
+
+        return true;
     }
 
     std::mutex _stageLock;
@@ -737,4 +790,101 @@ TEST_F(ProgressiveRenderTest, ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverT
     EXPECT_EQ(7, _render->getMaxSamples());
     EXPECT_EQ(7, frames.back()->samples);
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
+}
+
+// A prim the draw rules hide leaves the frame, and what they leave stays.
+TEST_F(ProgressiveRenderTest, ThePrimsTheDrawRulesHideLeaveTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::set<std::string> shown;
+    ASSERT_TRUE(pickedWhenDone(0, &shown));
+    ASSERT_TRUE(anyUnder(shown, "/World/Near"));
+    ASSERT_TRUE(anyUnder(shown, "/World/Far"));
+
+    const std::size_t mark = publishedCount();
+    SceneDrawFilter::Rules rules;
+    rules[PXR_NS::SdfPath("/World/Near")] = SceneDrawFilter::eRuleHidden;
+    _render->setDrawRules(rules);
+    std::set<std::string> hidden;
+    ASSERT_TRUE(pickedWhenDone(mark, &hidden));
+    EXPECT_FALSE(anyUnder(hidden, "/World/Near"));
+    EXPECT_TRUE(anyUnder(hidden, "/World/Far"));
+    // Nothing else is behind the near cube at the centre.
+    EXPECT_NEAR(1.f, centreDepth(*_render->getFrame()), 1e-4f);
+}
+
+// Five draw changes in a burst restart the render once, and its frames follow the last of them.
+// The render is held in its listener while they come, so that it cannot restart between them.
+TEST_F(ProgressiveRenderTest, CoalescesDrawChangesIntoOneRestart)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    const U64 builds = HydraRender::getEngineBuildCount();
+    hold(true);
+    const std::size_t mark = publishedCount();
+    SceneDrawDelta boxFar;
+    boxFar.boxed.push_back("/World/Far");
+    _render->applyDrawDeltas(std::vector<SceneDrawDelta> { boxFar });
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "a frame with the far cube boxed"));
+    const U64 restartsRefining = _render->getRestartCount();
+
+    SceneDrawDelta clearFar;
+    clearFar.cleared.push_back("/World/Far");
+    SceneDrawDelta boxNear;
+    boxNear.boxed.push_back("/World/Near");
+    SceneDrawDelta clearNear;
+    clearNear.cleared.push_back("/World/Near");
+    const std::vector<SceneDrawDelta> burst { clearFar, boxNear, clearNear, hiding("/World/Far"), hiding("/World/Near") };
+    const std::chrono::steady_clock::time_point burstStart = std::chrono::steady_clock::now();
+    for (const SceneDrawDelta& delta : burst) {
+        _render->applyDrawDeltas(std::vector<SceneDrawDelta> { delta });
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - burstStart, std::chrono::milliseconds(20));
+    hold(false);
+    std::set<std::string> after;
+    ASSERT_TRUE(pickedWhenDone(mark, &after));
+    EXPECT_EQ(restartsRefining + 1, _render->getRestartCount());
+    EXPECT_FALSE(anyUnder(after, "/World/Near"));
+    EXPECT_FALSE(anyUnder(after, "/World/Far"));
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+}
+
+// Render Everything draws what the rules hide, and off again draws by them as before, all with
+// the one engine.
+TEST_F(ProgressiveRenderTest, RenderEverythingIgnoresTheDrawRulesUntilOff)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    std::size_t mark = publishedCount();
+    _render->applyDrawDeltas(std::vector<SceneDrawDelta> { hiding("/World/Near") });
+    std::set<std::string> ruled;
+    ASSERT_TRUE(pickedWhenDone(mark, &ruled));
+    ASSERT_FALSE(anyUnder(ruled, "/World/Near"));
+    ASSERT_FALSE(ruled.empty());
+    const U64 builds = HydraRender::getEngineBuildCount();
+
+    mark = publishedCount();
+    _render->setRenderEverything(true);
+    std::set<std::string> everything;
+    ASSERT_TRUE(pickedWhenDone(mark, &everything));
+    EXPECT_TRUE(anyUnder(everything, "/World/Near"));
+    EXPECT_TRUE(anyUnder(everything, "/World/Far"));
+
+    mark = publishedCount();
+    _render->setRenderEverything(false);
+    std::set<std::string> restored;
+    ASSERT_TRUE(pickedWhenDone(mark, &restored));
+    EXPECT_EQ(ruled, restored);
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
 }

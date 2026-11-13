@@ -3893,7 +3893,9 @@ struct SceneViewport::Implementation {
         }
         paintOverlays.swap(overlays);
     }
-    // At most one refresh renders at a time; one asked for meanwhile runs when it ends, from the state then.
+    // At most one refresh renders at a time; those asked for meanwhile coalesce into one that runs when it ends,
+    // from the state then. A running render is only aborted when the painted node changes or the viewport closes:
+    // aborting it for each newer request would starve a stroke whose render outlasts the refresh interval.
     QFutureWatcher<PaintJob>* paintJobWatcher = nullptr;
     bool paintJobRunning = false;
     bool paintJobAgain = false;
@@ -5491,7 +5493,6 @@ SceneViewport::refreshPaintOverlays()
     }
     if (_imp->paintJobRunning) {
         _imp->paintJobAgain = true;
-        _imp->abortPaintJob();
 
         return;
     }

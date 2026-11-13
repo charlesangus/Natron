@@ -38,6 +38,7 @@
 #define NATRON_DELEGATEDRAWFILTERPROBE_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/base/gf/vec3f.h>
 #include <pxr/imaging/hd/renderBuffer.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/types.h>
@@ -55,11 +56,13 @@
 
 namespace DelegateDrawFilterProbe {
 
-// What one render of the probe's scene drew: the prim paths its primId AOV names, and the mean of
-// its colour AOV's colour channels.
+// What one render of the probe's scene drew: the prim paths its primId AOV names, and the means of
+// its colour AOV's colour channels, together and for red and green alone.
 struct Frame {
     std::set<std::string> paths;
     double mean = 0.;
+    double red = 0.;
+    double green = 0.;
     std::string error;
 };
 
@@ -85,7 +88,7 @@ light()
 }
 
 /**
- * @brief Three cubes in a row and a distant light, rendered by one delegate engine that was built
+ * @brief Three cubes in a row and a pure red distant light, rendered by one delegate engine that was built
  * under a SceneDrawFilter::EngineScope, so the engine's render index has a filter this class
  * drives.
  */
@@ -110,6 +113,15 @@ public:
         }
         PXR_NS::UsdLuxDistantLight key = PXR_NS::UsdLuxDistantLight::Define(_stage, PXR_NS::SdfPath(light()));
         key.GetIntensityAttr().Set(3.f);
+        // The key's colour tells its light apart from a renderer's own default light, such as the
+        // white environment light hdMoonray turns on when its scene has no light left.
+        key.GetColorAttr().Set(PXR_NS::GfVec3f(1.f, 0.f, 0.f));
+        if (kind == eKindMoonRay) {
+            // hdMoonray reads an unnormalized distant light's intensity as the radiance of its
+            // half-degree disk, which leaves the cubes all but black; hdCycles reads it as
+            // irradiance either way.
+            key.GetNormalizeAttr().Set(true);
+        }
 
         PXR_NS::UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = PXR_NS::TfToken(kind == eKindCycles ? "HdCyclesPlugin" : "HdMoonrayRendererPlugin");
@@ -318,13 +330,15 @@ private:
         }
         const std::size_t channels = std::min<std::size_t>(3, PXR_NS::HdGetComponentCount(color.format()));
         const std::size_t componentSize = PXR_NS::HdDataSizeOfFormat(PXR_NS::HdGetComponentFormat(color.format()));
-        double sum = 0.;
+        double sums[3] = { 0., 0., 0. };
         for (std::size_t i = 0; i < pixels; ++i) {
             for (std::size_t c = 0; c < channels; ++c) {
-                sum += component(color.format(), color.pixel(i) + c * componentSize);
+                sums[c] += component(color.format(), color.pixel(i) + c * componentSize);
             }
         }
-        frame->mean = sum / (double)(pixels * std::max<std::size_t>(1, channels));
+        frame->mean = (sums[0] + sums[1] + sums[2]) / (double)(pixels * std::max<std::size_t>(1, channels));
+        frame->red = sums[0] / (double)pixels;
+        frame->green = (channels > 1) ? sums[1] / (double)pixels : 0.;
     }
 
     KindEnum _kind;

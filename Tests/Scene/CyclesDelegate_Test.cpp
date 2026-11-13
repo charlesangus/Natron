@@ -157,7 +157,10 @@ TEST(CyclesDelegate, DrawFilterHidesPrimsAndLights)
     EXPECT_EQ((std::set<std::string> { meshC() }), scenario.lightHidden.paths);
 
     EXPECT_GT(scenario.heldInvisibleAfterBox, 0u);
-    std::cout << "Cycles frame means: lit " << scenario.bHidden.mean << ", light hidden " << scenario.lightHidden.mean << std::endl;
-    EXPECT_GT(scenario.bHidden.mean, 0.);
-    EXPECT_LT(scenario.lightHidden.mean, scenario.bHidden.mean);
+    std::cout << "Cycles frame red/green means: lit " << scenario.bHidden.red << "/" << scenario.bHidden.green << ", light hidden "
+              << scenario.lightHidden.red << "/" << scenario.lightHidden.green << std::endl;
+    EXPECT_GT(scenario.bHidden.red, 0.);
+    EXPECT_LT(scenario.bHidden.green, 0.1 * scenario.bHidden.red);
+    // Not darker: a renderer may light a scene with no light of its own, but never in the key's red.
+    EXPECT_LT(scenario.lightHidden.red - scenario.lightHidden.green, 0.1 * (scenario.bHidden.red - scenario.bHidden.green));
 }

@@ -1142,6 +1142,7 @@ mixedRules(SceneDrawStates& states)
     SceneDrawFilter::applyToRules(states.setState("/World/a", eSceneDrawStateBBox), &rules);
     SceneDrawFilter::applyToRules(states.setState("/World/a/deep", eSceneDrawStateHidden), &rules);
     SceneDrawFilter::applyToRules(states.setState("/World/b", eSceneDrawStateChildren), &rules);
+    SceneDrawFilter::applyToRules(states.setState("/World/c", eSceneDrawStateHidden), &rules);
 
     return rules;
 }
@@ -1184,14 +1185,27 @@ TEST_F(SceneDrawFilterTest, ReplacingRulesGoingToNoneAndBackSendsOnlyWhatChanged
     EXPECT_EQ(changed, recorder.hides);
     EXPECT_TRUE(recorder.shows.empty());
     EXPECT_EQ(before, drawnGeometry());
+    EXPECT_EQ((PathSet { "/World/c" }), recorder.leftHydra);
+    PathSet boxed = changed;
+    boxed.erase("/World/c");
+    EXPECT_EQ(boxed, recorder.invisible);
 
+    // A fresh filter's boxed prims were never in Hydra, so they are out of it, where this filter's
+    // were shown a moment ago and are held invisible: both draw the same, and Hidden rows match.
     TfRefPtr<SceneDrawFilter> fresh = SceneDrawFilter::New(scene);
     fresh->seedRules(rules);
     for (const std::string& path : kAllGeometry) {
         const HdSceneIndexPrim a = filter->GetPrim(SdfPath(path));
         const HdSceneIndexPrim b = fresh->GetPrim(SdfPath(path));
-        EXPECT_EQ(b.primType, a.primType) << path;
-        EXPECT_EQ(visible(b), visible(a)) << path;
+        EXPECT_EQ(!b.primType.IsEmpty() && visible(b), !a.primType.IsEmpty() && visible(a)) << path;
+        if (boxed.count(path) != 0) {
+            EXPECT_FALSE(a.primType.IsEmpty()) << path;
+            EXPECT_FALSE(visible(a)) << path;
+            EXPECT_TRUE(b.primType.IsEmpty()) << path;
+        } else {
+            EXPECT_EQ(b.primType, a.primType) << path;
+            EXPECT_EQ(visible(b), visible(a)) << path;
+        }
     }
     EXPECT_EQ(fresh->getRules(), filter->getRules());
 }

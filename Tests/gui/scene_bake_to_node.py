@@ -409,13 +409,16 @@ try:
         final_origins = dict(baked_origins)
         final_origins[WORLD] = ("graph", name)
         yield from expect("baked again origins", origins, final_origins)
+        # What the node's rules decide, rather than what the live viewer showed before saving.
+        final_cells = dict(viewer_cells)
+        final_cells[WORLD] = ("children", False)
 
         section("save and reopen")
         require(app.saveProjectAs(project_path), "save the project to " + project_path)
         expand = None
         yield from reopen("reopen")
         yield from wait_for_scene("reopen")
-        yield from expect("reopened cells", cells, again_cells)
+        yield from expect("reopened cells", cells, final_cells)
         yield from expect("reopened origins", origins, final_origins)
         reopened_viewer = app.getNode("Viewer1")
         check(reopened_viewer is not None and input_name(reopened_viewer) == name,

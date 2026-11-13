@@ -27,7 +27,9 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -50,7 +52,10 @@
 #include "Engine/Nodes/Scene/USDExpandHierarchy.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Project.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/ScenePayload.h"
+#include "Engine/UndoCommand.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -109,6 +114,45 @@ makeRule(const std::string& pattern,
 
     return rule;
 }
+
+// Keeps what is recorded, the way the window's history would within one step.
+class CollectingRecorder
+    : public UndoRecorderI {
+public:
+    virtual void openStep(const std::string& /*text*/) OVERRIDE FINAL
+    {
+        if (depth++ == 0) {
+            ++serial;
+        }
+    }
+
+    virtual void closeStep() OVERRIDE FINAL
+    {
+        if (depth > 0) {
+            --depth;
+        }
+    }
+
+    virtual bool isCapturing() const OVERRIDE FINAL
+    {
+        return depth > 0;
+    }
+
+    virtual std::uint64_t getCaptureSerial() const OVERRIDE FINAL
+    {
+        return serial;
+    }
+
+    virtual void record(const UndoCommandPtr& command,
+                        const UndoTouched& /*touched*/) OVERRIDE FINAL
+    {
+        commands.push_back(command);
+    }
+
+    int depth = 0;
+    std::uint64_t serial = 0;
+    std::vector<UndoCommandPtr> commands;
+};
 } // anonymous namespace
 
 class USDExpandHierarchyTest
@@ -352,4 +396,74 @@ TEST_F(USDExpandHierarchyTest, ABadPatternSetsNoRuleAndKeepsTheScene)
     ASSERT_TRUE(SceneOps::matchDrawRules(openCity(PXR_NS::UsdStage::LoadNone), output.getDrawRules(), &policy, std::function<bool()>()));
     EXPECT_EQ(eSceneDrawStateFull, policy["/Annex"].state);
     EXPECT_EQ(reader->getScriptName(), policy["/World"].origin);
+}
+
+// Undo and redo put a rule's Draw back through a clone of a detached knob, which has no entries,
+// and then announce the change for every dimension. The rule the viewers get has to be the entry
+// the restored index names, as Python and a saved project read it.
+TEST_F(USDExpandHierarchyTest, UndoAndRedoKeepTheDrawTheIndexNames)
+{
+    NodePtr reader = createReader();
+    NodePtr expand = createExpand(reader);
+    USDExpandHierarchy* effect = effectOf(expand);
+    ASSERT_TRUE(reader && expand && effect);
+
+    KnobIntPtr count = std::dynamic_pointer_cast<KnobInt>(expand->getKnobByName(kUSDExpandHierarchyParamRuleCount));
+    KnobStringPtr pattern = std::dynamic_pointer_cast<KnobString>(expand->getKnobByName(std::string(kUSDExpandHierarchyParamPattern) + "0"));
+    KnobChoicePtr draw = std::dynamic_pointer_cast<KnobChoice>(expand->getKnobByName(std::string(kUSDExpandHierarchyParamDraw) + "0"));
+    ASSERT_TRUE(count && pattern && draw);
+    const std::vector<ChoiceOption> entries = draw->getEntries_mt_safe();
+
+    std::shared_ptr<CollectingRecorder> recorder = std::make_shared<CollectingRecorder>();
+    getApp()->setUndoRecorder(recorder);
+    recorder->openStep("Bake to Node");
+    recordKnobEdit(count);
+    recordKnobEdit(pattern);
+    recordKnobEdit(draw);
+    effect->beginChanges();
+    pattern->setValue(std::string("/Annex"));
+    draw->setValueFromID(sceneDrawStateName(eSceneDrawStateHidden), 0);
+    effect->endChanges();
+    recorder->closeStep();
+    ASSERT_EQ((std::size_t)3, recorder->commands.size());
+
+    // What a viewer is given and what Python reads, for Draw 0.
+    const auto expectDraw = [&](SceneDrawStateEnum state,
+                                const char* when) {
+        const int index = draw->getValue();
+        ASSERT_TRUE((index >= 0) && (index < (int)entries.size())) << when;
+        EXPECT_EQ(std::string(sceneDrawStateName(state)), entries[index].id) << when;
+        EXPECT_EQ(entries[index].id, draw->getActiveEntry().id) << when;
+        ASSERT_FALSE(effect->getRules().empty()) << when;
+        EXPECT_EQ(state, effect->getRules()[0].state) << when;
+    };
+    expectDraw(eSceneDrawStateHidden, "baked");
+
+    {
+        UndoReplayGuard replaying(getApp());
+        for (std::vector<UndoCommandPtr>::reverse_iterator it = recorder->commands.rbegin(); it != recorder->commands.rend(); ++it) {
+            (*it)->undo();
+        }
+    }
+    expectDraw(eSceneDrawStateFull, "undone");
+
+    int announced = 0;
+    QObject::connect(draw->getSignalSlotHandler().get(), &KnobSignalSlotHandler::valueChanged, [&announced](ViewSpec, int, int) { ++announced; });
+    {
+        UndoReplayGuard replaying(getApp());
+        for (std::vector<UndoCommandPtr>::iterator it = recorder->commands.begin(); it != recorder->commands.end(); ++it) {
+            (*it)->redo();
+        }
+    }
+    expectDraw(eSceneDrawStateHidden, "redone");
+    EXPECT_GT(announced, 0);
+
+    const SceneDrawRules rules = evaluate(expand).getDrawRules();
+    ASSERT_FALSE(rules.empty());
+    EXPECT_EQ(std::string("/Annex"), rules.back().pattern);
+    EXPECT_EQ(eSceneDrawStateHidden, rules.back().state);
+    EXPECT_EQ(expand->getScriptName(), rules.back().origin);
+
+    recorder->commands.clear();
+    getApp()->setUndoRecorder(UndoRecorderPtr());
 }

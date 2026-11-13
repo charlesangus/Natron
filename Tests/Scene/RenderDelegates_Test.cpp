@@ -29,9 +29,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <string>
 #include <thread>
@@ -141,9 +143,11 @@ referenceRequest(const void* owner,
 
 /**
  * Renders request offline and aborts it once abortAtPass of its delegate's Render() calls have
- * begun, each held passMs first by the render fault hook so that the abort lands inside a pass.
- * Expects the render to be cancelled within a second of the abort, the delegate's engine torn down
- * by then, and prints the time it took.
+ * begun. The render fault hook holds each pass up to passMs before the delegate's Render(), so
+ * that the abort, polled every 20 ms, lands inside a pass; the hold ends as soon as the abort is
+ * seen. What the measured time holds besides that is the delegate's own Render() of the pass in
+ * flight, which nothing can stop, and the way back to the caller. Expects the render to be
+ * cancelled within a second of the abort and prints the time it took.
  **/
 void
 expectAbortReturnsPromptly(const char* label,
@@ -153,23 +157,24 @@ expectAbortReturnsPromptly(const char* label,
 {
     typedef std::chrono::steady_clock Clock;
     std::atomic<int> passes(0);
-    RenderDelegates::setRenderFaultHook([&passes, passMs]() {
+    std::atomic<bool> abortSeen(false);
+    RenderDelegates::setRenderFaultHook([&passes, &abortSeen, passMs]() {
         ++passes;
-        if (passMs > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(passMs));
+        const Clock::time_point until = Clock::now() + std::chrono::milliseconds(passMs);
+        while (!abortSeen.load() && (Clock::now() < until)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
     Clock::time_point abortedAt;
-    bool abortSeen = false;
     int passesAtAbort = 0;
     request.aborted = [&]() {
-        if (!abortSeen && (passes.load() >= abortAtPass)) {
-            abortSeen = true;
+        if (!abortSeen.load() && (passes.load() >= abortAtPass)) {
             abortedAt = Clock::now();
             passesAtAbort = passes.load();
+            abortSeen = true;
         }
 
-        return abortSeen;
+        return abortSeen.load();
     };
     HydraRender::Result result;
     std::string error;
@@ -178,10 +183,10 @@ expectAbortReturnsPromptly(const char* label,
     RenderDelegates::setRenderFaultHook(nullptr);
 
     EXPECT_FALSE(rendered) << label << " finished a render that was aborted";
-    ASSERT_TRUE(abortSeen) << label << " ended before it was aborted: " << error;
+    ASSERT_TRUE(abortSeen.load()) << label << " ended before it was aborted: " << error;
     EXPECT_NE(std::string::npos, error.find("cancelled")) << error;
     const double seconds = std::chrono::duration<double>(returnedAt - abortedAt).count();
-    std::printf("[ ABORT    ] %s: render() returned %.3f s after the abort, its engine torn down\n", label, seconds);
+    std::printf("[ ABORT    ] %s: render() returned %.3f s after the abort\n", label, seconds);
     EXPECT_LT(seconds, 1.) << label;
     EXPECT_LE(passes.load(), passesAtAbort + 1) << label << " began passes after the abort";
 }
@@ -257,7 +262,8 @@ TEST(RenderDelegates, RenderingWithAnUnavailableRendererIsAnErrorAndMakesNoEngin
     EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
 }
 
-// Storm renders up to several passes on its GL thread; an abort inside one stops it before the next.
+// Storm renders up to several passes on its GL thread; an abort inside one stops it before the
+// next. Its engine runs nothing between passes, so it survives the abort.
 TEST(RenderDelegates, AbortingAStormRenderMidPassReturnsWithinASecond)
 {
     if (skipWithoutGL()) {
@@ -266,7 +272,18 @@ TEST(RenderDelegates, AbortingAStormRenderMidPassReturnsWithinASecond)
     static const int owner = 0;
     HydraRender::Request request;
     ASSERT_TRUE(referenceRequest(&owner, kRenderDelegateStormId, 64, &request));
+    // A new engine's first pass syncs the scene and has llvmpipe compile every shader, over a
+    // second on a loaded runner, and no pass can be stopped once begun. A cancelled render is
+    // usually one a later frame or edit replaces, on a warm engine, so the aborted pass is one.
+    HydraRender::Result result;
+    std::string error;
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    request.time = PXR_NS::UsdTimeCode(2.);
     expectAbortReturnsPromptly("Storm", request, 1, 400);
+    request.aborted = std::function<bool()>();
+    EXPECT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount()) << "Storm's engine did not survive the abort";
     HydraRender::release(&owner);
 }
 

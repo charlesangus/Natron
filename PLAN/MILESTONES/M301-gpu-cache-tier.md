@@ -7,10 +7,11 @@ Add device memory as a tier of M300 - Unified Tiered Cache, so GPU-rendered node
 **In:**
 - A device tier implementing M300 - Unified Tiered Cache's tier interface, inside the existing GPU pool budget (80% of the driver heap budget, capped by `gpuMemoryBudgetMB`). Render working buffers always win: cached entries are demoted or dropped first.
 - Device → host demotion by M300 - Unified Tiered Cache's cost rule: download when the recompute cost exceeds the download cost, otherwise drop.
-- GPU region members publish their outputs to the device tier, subject to M300 - Unified Tiered Cache's admission policy.
+- GPU region members publish their outputs to the device tier, subject to M300 - Unified Tiered Cache's admission policy, only within the plan's pool headroom.
 - Placement consults every tier. A device hit serves the node without executing it, and the region splits around served nodes; a host hit uploads.
-- Partial device hits render only the missing rectangles.
-- The host-import cache's reused-address hole (G1, `docs/cache-invalidation/gpu.md`), closed for imports from cache entries.
+- Partial device hits render only the missing bounding rectangle (multi-rect output is out).
+- G1 (`docs/cache-invalidation/gpu.md`) is already closed (M260); a regression test for disk round-trips.
+- Region outputs read back to RAM are admitted to the host tier.
 
 **Out:**
 - Host and disk tiers, the policy and priorities (M300 - Unified Tiered Cache).
@@ -19,7 +20,7 @@ Add device memory as a tier of M300 - Unified Tiered Cache, so GPU-rendered node
 - Kernel fusion (M87 - Point-Op Kernel Fusion, cancelled).
 
 **Edge cases:**
-- **Strip mode** (`GpuRegionStrips.cpp`, used on device OOM or for large regions): members' full outputs never exist at once, so only the region's own outputs are published, assembled from the strips.
+- **Strip mode** (`GpuRegionStrips.cpp`, used on device OOM or for large regions): members' full outputs never exist at once, so a stripped run publishes nothing to the device tier; its region outputs go to the host tier.
 - **Device loss or a driver reset:** the device tier is emptied and lookups fall through to the host.
 - **OOM during a render:** cached device entries are evicted before the region falls back to strips or the CPU (`GpuRegionTask.cpp` ~:3360-3380).
 - **The viewer hand-off root** (`ViewerInstance.cpp` ~:527-541): it is published like any member, and the hand-off reads the cached buffer.
@@ -33,6 +34,7 @@ Add device memory as a tier of M300 - Unified Tiered Cache, so GPU-rendered node
 - 2026-11-01 — **The device tier shares the existing GPU budget, and render buffers win (user).**
 - 2026-11-01 — **Device caching is a tier of the unified cache, not a separate GPU cache (user):** see `DECISIONS/2026-11-01-unified-tiered-cache.md`.
 - 2026-11-12 — **P1.T1 (f78e18417):** each rendering member writes its own lease and no kernel writes in place, so publishing is keeping the lease. Identity and pass-through members share the producer's slot and aren't published; strip mode holds no full output on the device and publishes nothing there; the viewer root already outlives the run. The trace found P1.T2 is two changes and P2.T3 stale (G1 closed in M260); the remaining tasks are being re-planned.
+- 2026-11-12 — **Re-planned after P1.T1 (consultant):** a device-only entry lives in the device tier's own table and `peek` returns it as a stub, as the disk tier does (a RAM-less Image in the host table would be the host policy's first eviction). Downloaded region outputs go to the host tier in this milestone (P1.T5): without it strip mode, the large-frame and low-VRAM path, caches nothing. P1.T2 split into the pool's eviction classes (P1.T2) and the tier itself (P1.T4); P2.T4 added for the probe; P2.T3 shrunk to a regression test since G1 closed in M260. Both are engineering calls; the extra host RAM under GPU renders is stated in Scope.
 
 ## Phase 301.1: Device tier
 
@@ -42,36 +44,54 @@ Add device memory as a tier of M300 - Unified Tiered Cache, so GPU-rendered node
   - verify: The design-note section answers the assumption in `## Scope` with evidence, and the remaining tasks' approach is checked against it.
   - size: M
 
-- [ ] M301.P1.T2 — Make pool leases device-tier entries
-  - files: `Engine/Gpu/GpuBufferPool.h`, `Engine/Gpu/GpuBufferPool.cpp`, `Engine/CacheDeviceTier.h` (new), `Engine/CacheDeviceTier.cpp` (new), `Tests/Gpu/GpuBufferPool_Test.cpp`
-  - approach: A cached lease carries a `CacheEntryHeader`. Under the pool budget, working allocations evict cached entries first. Eviction calls the tier's `demote`: download to the host tier (`evictToRam` path) when the recompute cost exceeds the download cost, else release.
-  - verify: `GpuBufferPool_Test` cases: a working allocation under pressure evicts a cached entry; an expensive entry is demoted to the host with identical pixels; a cheap one is dropped.
+- [ ] M301.P1.T2 — Give pool leases an eviction class and evict cached leases first
+  - files: `Engine/Gpu/GpuBufferPool.h`, `Engine/Gpu/GpuBufferPool.cpp`, `Tests/Gpu/GpuBufferPool_Test.cpp`
+  - approach: Each lease gets a class (required download, or cached) and a score getter next to its `onEvict`. `evict` and `acquire` (~:134-171, ~:233-273) take cached leases first, lowest score first, then required ones oldest first. A cached `onEvict` may drop the lease. No Engine headers are included; whether the score is a lease getter or a pool callback into the tier is decided here.
+  - verify: `GpuBufferPool_Test`: under pressure a cached lease goes before a required one, the lower score goes first, and a dropped cached lease frees its budget.
+  - size: M
+
+- [ ] M301.P1.T4 — Add `CacheDeviceTier` with its table, cost-rule demotion and device loss
+  - files: `Engine/CacheDeviceTier.h` (new), `Engine/CacheDeviceTier.cpp` (new), `Engine/Cache.h`, `Engine/GpuContext.cpp`, `Tests/Gpu/CacheDeviceTier_Test.cpp` (new)
+  - approach: A `CacheTier` whose `next()` is the host tier, with its own table of `CacheDeviceEntry : AbstractCacheEntryBase` (the shared `CacheEntryHeaderPtr` plus a `shared_ptr<GpuDeviceImage>`) keyed by hash under its own lock, the way the disk tier keeps its own index. `budget()` is the pool budget minus working bytes; `insert(key, GpuDeviceImage, header)` marks the lease cached. `demote` downloads into a host Image sharing the header (`residency |= host`) when `recomputeCostNs` exceeds the download time at `GpuTransferRates` (`GpuPlacement.cpp` ~:1056), else drops. On `onDeviceLost` (`Engine/Gpu/GpuDevice.h` ~:94) the tier clears every device bit and empties the table. A `downloaded` image (which `pin()` refuses) counts as not resident.
+  - verify: tier tests: an expensive entry demotes to the host with identical pixels, a cheap one drops, and device loss empties the table while the host copies survive.
   - size: L
 
-- [ ] M301.P1.T3 — Publish region outputs to the device tier
-  - files: `Engine/GpuRegionTask.cpp` (`storeOutputs`), `Engine/GpuRegionStrips.cpp`, `Tests/GpuRegionFallback_Test.cpp`
-  - approach: After a region runs, each admitted member output, interior members included, is inserted into the device tier under its `ImageKey` with its recompute cost. In strip mode only the region outputs are published.
-  - verify: A GPU test renders a three-member region and finds every admitted member in the device tier by key.
+- [ ] M301.P1.T3 — Publish whole-run region members and the viewer root to the device tier
+  - files: `Engine/GpuRegionTask.cpp` (`plan`, `releaseSlotsReadLastBy`, `storeOutputs`), `Engine/GpuRegionStrips.cpp`, `Tests/GpuRegionFallback_Test.cpp`
+  - approach: Set a `publish` flag on the slots of admitted non-identity members, only within the plan's headroom under the pool budget, most expensive per byte first. A published `download` slot keeps its handle; a stripped run clears every `publish` flag. The key is `outputCacheKey(...).forEntry(mip, layer, float)` (not the region's `GpuImageLayout::key`, which differs on scale-one-inputs and draft flags); the cost comes from `reportTimesByTask`, after `chargeEvenly` on devices without timestamps. Register the `deviceRoot` image under its key.
+  - verify: a three-member region run whole finds every admitted member in the tier by key, with cost > 0; a stripped run and a run with zero headroom publish none; the pool's peak never passes the plan's.
   - size: L
+
+- [ ] M301.P1.T5 — Admit region outputs read back to RAM to the host tier
+  - files: `Engine/GpuRegionTask.cpp` (`storeOutputs`, the download path), `Tests/GpuRegionFallback_Test.cpp`
+  - approach: Region outputs downloaded as `Image`s, from whole or stripped runs, go through M300 - Unified Tiered Cache's admission into the host tier under the same key and cost as in P1.T3.
+  - verify: a stripped run's region output is a host-tier hit on the next probe, and its pixels match the render.
+  - size: M
 
 ## Phase 301.2: Lookups and placement
 
-- [ ] M301.P2.T1 — Serve placement from every tier
-  - files: `Engine/GpuPlacement.cpp`, `Engine/RenderScheduler.cpp`, `Tests/GpuPlacement_Test.cpp`
-  - approach: `isCached` becomes a tier lookup. A device hit marks the task served: it is not executed, and its consumers read the cached buffer. A region splits so that served members drop out. A host hit with a GPU consumer uploads.
-  - verify: `GpuPlacement_Test`: with A→B→C on the GPU and A, B cached on the device, re-rendering after a C edit executes only C.
+- [ ] M301.P2.T4 — Make the non-promoting probe see device entries
+  - files: `Engine/Cache.h` (`peek`), `Engine/EffectInstance.cpp` (`probeOutputInCache`), `Engine/RenderScheduler.cpp` (`pruneBehindCacheHits`), `Tests/RenderScheduler_Test.cpp`
+  - approach: `peek` checks the device tier after memory and disk and returns a stub sharing the entry's header (as it already does for disk-only entries), accepted at the exact mip only. Pruning records which tier serves the task.
+  - verify: with an entry only on the device, the probe reports Full, the task is `servedFromCache`, and its inputs are pruned.
+  - size: M
+
+- [ ] M301.P2.T1 — Serve device hits in place, and promote host hits that feed the GPU
+  - files: `Engine/RenderScheduler.cpp`, `Engine/GpuPlacement.cpp`, `Engine/CacheDeviceTier.cpp`, `Engine/FrameRenderContext.cpp`, `Tests/GpuPlacement_Test.cpp`
+  - approach: A device-served task puts the entry's `GpuDeviceImage` in the frame store and does not run `renderRoI`; a CPU consumer downloads it into the host tier. A host hit with a GPU consumer uploads through the tier's `promote` and keeps the host copy. Placement keeps served tasks out of regions, as M300 - Unified Tiered Cache already does.
+  - verify: `GpuPlacement_Test`: A→B→C on the GPU with A and B on the device; after a C edit only C executes, and the output matches a cold render.
   - size: L
 
-- [ ] M301.P2.T2 — Render only the missing part of a partial device hit
-  - files: `Engine/GpuRegionTask.cpp`, `Engine/CacheDeviceTier.cpp`, `Tests/GpuRegionFallback_Test.cpp`
-  - approach: A device entry's bitmap gives the rendered rectangles. A larger RoI (pan, zoom out) renders only the missing rectangles, then grows the buffer with a device-side copy, mirroring `ensureBounds` on the host.
-  - verify: A GPU test renders a half RoI, then the full RoI, and the profile shows only the missing half rendered, with output identical to a cold full render.
+- [ ] M301.P2.T2 — Render the missing bounding rectangle of a partial device hit
+  - files: `Engine/RenderScheduler.cpp` (~:797-805), `Engine/GpuPlacement.cpp`, `Engine/GpuRegionTask.cpp`, `Engine/CacheDeviceTier.cpp`, `Tests/GpuRegionFallback_Test.cpp`
+  - approach: A GPU-capable task with a partial device hit stays a GPU candidate instead of being placed Cached → CPU. The member renders the bounding rectangle of the missing area into a lease sized to the union; a device-side copy brings in the cached part, and the entry is replaced with its bitmap updated, as `ensureBounds` does on the host.
+  - verify: rendering a half RoI and then the full RoI renders only the missing half, and the output is identical to a cold full render.
   - size: L
 
-- [ ] M301.P2.T3 — Key host imports by cache entry identity
-  - files: `Engine/GpuRegionTask.cpp` (`importSources` ~:1384), `docs/cache-invalidation/gpu.md`, `Tests/GpuRegionFallback_Test.cpp`
-  - approach: An upload of a host cache entry is keyed by the entry's key, not the host address, so a reused address can never serve a stale import (G1). Mark G1 closed in the doc.
-  - verify: A test frees an entry and reallocates the same address with new pixels; the import serves the new pixels.
+- [ ] M301.P2.T3 — Test that a host entry round-tripped through the disk tier is re-imported correctly
+  - files: `Tests/Gpu/CacheStressGpu_Test.cpp`
+  - approach: G1 was closed in M260 (`docs/cache-invalidation/gpu.md` ~:99-111), so this only adds a regression case next to `DiskCacheSourcesAreNotImportedByAddress`: an entry demoted to disk, promoted into a new `HostImageMemory` buffer with changed pixels under a new key, and uploaded.
+  - verify: the upload serves the new pixels.
   - size: M
 
 ## Phase 301.3: Gate
@@ -82,4 +102,4 @@ Add device memory as a tier of M300 - Unified Tiered Cache, so GPU-rendered node
   - verify: The cases pass. On Grade and HSVKeyer edits after the first render, the benchmark shows only the edited node executing.
   - size: M
 
-**Verification gate:** GPU, cache and CacheStress suites pass in debug and release, and the NVIDIA runner passes too. With the GPU on, M276 - Upstream Reuse On Edits' benchmark shows no upstream execution on a downstream edit after the first render, at 100% and at fit-to-window.
+**Verification gate:** GPU, cache, CacheStress and `CacheDeviceTier_Test` suites pass in debug and release, and the NVIDIA runner passes too; publishing causes no new OOM retries. With the GPU on, M276 - Upstream Reuse On Edits' benchmark shows no upstream execution on a downstream edit after the first render, at 100% and at fit-to-window, and with a small `gpuMemoryBudgetMB` that forces strip mode (served through host hits).

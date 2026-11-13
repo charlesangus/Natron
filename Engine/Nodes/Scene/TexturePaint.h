@@ -84,6 +84,7 @@
 NATRON_NAMESPACE_ENTER
 
 class TexturePaintBaker;
+class TexturePaintInteract;
 
 namespace SceneRaster {
 struct ExplicitCamera;
@@ -193,6 +194,9 @@ public:
      * stroke builder that paints with them into a session's layer.
      **/
     RotoPaintInteractPtr getPaintInteract() const;
+
+    // What paints this node from a 3D view, created on first use. Main thread.
+    TexturePaintInteract* getViewInteract();
 
     virtual bool isMultiPlanar() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -543,6 +547,7 @@ private:
     KnobIntWPtr _bakeGeneration;
     KnobIntWPtr _outputTile;
     RotoPaintInteractPtr _paintInteract;
+    std::unique_ptr<TexturePaintInteract> _viewInteract;
     std::atomic<int> _sessionRenders;
     std::unique_ptr<TexturePaintBaker> _baker;
     // Session bakes queued and not landed, by session; main thread.

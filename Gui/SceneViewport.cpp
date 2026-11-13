@@ -53,6 +53,7 @@
 #include <QPainter>
 #include <QPointer>
 #include <QSignalBlocker>
+#include <QTabletEvent>
 #include <QTimer>
 #include <QUndoCommand>
 #include <QWheelEvent>
@@ -74,10 +75,13 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneRaster.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
+#include "Engine/Nodes/Scene/TexturePaint.h"
+#include "Engine/Nodes/Scene/TexturePaintInteract.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -3840,6 +3844,11 @@ struct SceneViewport::Implementation {
     double framesPerSecond = 0.;
 
     std::function<NodePtr()> transformNodeProvider;
+    std::function<NodePtr()> paintNodeProvider;
+    // The node of the stroke under way, and whether a tablet pen, rather than the mouse, draws it.
+    NodeWPtr paintNode;
+    bool painting = false;
+    bool tabletPainting = false;
     // The drag of a transform handle under way: the handle, the node whose op it moves (null
     // for the widget on the selection), and the last change it made. The renderer draws the
     // change as a preview; the release writes it once.
@@ -3914,6 +3923,16 @@ struct SceneViewport::Implementation {
         }
 
         return dynamic_cast<USDEditTransform*>((*node)->getEffectInstance().get());
+    }
+
+    TexturePaint* getPaintNode(NodePtr* node) const
+    {
+        *node = paintNodeProvider ? paintNodeProvider() : NodePtr();
+        if (!*node) {
+            return nullptr;
+        }
+
+        return dynamic_cast<TexturePaint*>((*node)->getEffectInstance().get());
     }
 
     // The device pixel of a widget position.
@@ -4536,6 +4555,12 @@ SceneViewport::setTransformNodeProvider(const std::function<NodePtr()>& provider
 {
     _imp->transformNodeProvider = provider;
     update();
+}
+
+void
+SceneViewport::setPaintNodeProvider(const std::function<NodePtr()>& provider)
+{
+    _imp->paintNodeProvider = provider;
 }
 
 void
@@ -5212,9 +5237,24 @@ SceneViewport::paintGL()
     // eRenderStatusWaiting: the background render's listener asks for the next paint.
 } // paintGL
 
+namespace {
+// Pen events are stamped as the 2D viewer stamps them, so strokes painted in either view time alike.
+double
+paintTimestamp(const QInputEvent* e)
+{
+    return (double)e->timestamp() / 1000000.;
+}
+} // anon namespace
+
 void
 SceneViewport::mousePressEvent(QMouseEvent* e)
 {
+    // Another button pressed during a stroke starts nothing.
+    if (_imp->painting) {
+        e->accept();
+
+        return;
+    }
     if ((e->button() == Qt::LeftButton) && (e->modifiers() == Qt::NoModifier) && !_imp->spaceHeld && beginHandleDrag(e->position().toPoint())) {
         e->accept();
 
@@ -5232,6 +5272,13 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
         role = Implementation::eDragRoleDolly;
     } else if (matchesMouseBinding(kShortcutIDMouseViewer3DMarquee, modifiers, button)) {
         role = Implementation::eDragRoleMarquee;
+    }
+    // Painting takes a plain left press from selection and marquee, never from navigation.
+    const bool navigationRole = (role == Implementation::eDragRoleTumble) || (role == Implementation::eDragRolePan) || (role == Implementation::eDragRoleDolly);
+    if ((button == Qt::LeftButton) && (modifiers == Qt::NoModifier) && !navigationRole && beginPaint(e->position(), 1., paintTimestamp(e))) {
+        e->accept();
+
+        return;
     }
     bool clickSelects = true;
     SelectionModeEnum mode = eSelectionModeReplace;
@@ -5283,6 +5330,18 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
 
         return;
     }
+    if (_imp->painting) {
+        if (!_imp->tabletPainting) {
+            if (e->buttons() & Qt::LeftButton) {
+                continuePaint(e->position(), 1., paintTimestamp(e));
+            } else {
+                endPaint();
+            }
+        }
+        e->accept();
+
+        return;
+    }
     // A release that went to a popup or another window never reaches this widget.
     if ((_imp->button != Qt::NoButton) && !(e->buttons() & _imp->button)) {
         clearGesture();
@@ -5296,11 +5355,15 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
     if (!_imp->dragging && ((pos - _imp->pressPos).manhattanLength() < 4)) {
         return;
     }
+    const bool firstMove = !_imp->dragging;
     _imp->dragging = true;
     const QPoint delta = pos - _imp->lastPos;
     _imp->lastPos = pos;
 
     const bool navigates = (_imp->dragRole == Implementation::eDragRoleTumble) || (_imp->dragRole == Implementation::eDragRolePan) || (_imp->dragRole == Implementation::eDragRoleDolly);
+    if (navigates && firstMove) {
+        closePaintSession();
+    }
     if (navigates && navigatesLockedCamera()) {
         if (!_imp->cameraLock.active && !_imp->cameraLock.refused) {
             beginCameraLock();
@@ -5340,6 +5403,14 @@ SceneViewport::mouseReleaseEvent(QMouseEvent* e)
 {
     if (_imp->handle != SceneGizmo::kNoHandle) {
         endHandleDrag();
+        e->accept();
+
+        return;
+    }
+    if (_imp->painting) {
+        if (!_imp->tabletPainting && (e->button() == Qt::LeftButton)) {
+            endPaint();
+        }
         e->accept();
 
         return;
@@ -5386,6 +5457,81 @@ SceneViewport::clearGesture()
     _imp->menuOnRelease = false;
     if (marquee) {
         update();
+    }
+}
+
+bool
+SceneViewport::beginPaint(const QPointF& pos,
+                          double pressure,
+                          double timestamp)
+{
+    NodePtr node;
+    TexturePaint* effect = _imp->getPaintNode(&node);
+    if (!effect) {
+        return false;
+    }
+    const qreal dpr = devicePixelRatio();
+    const int w = std::max(1, int(width() * dpr));
+    const int h = std::max(1, int(height() * dpr));
+    SceneViewportRenderer::CameraPose pose;
+    if (!_imp->renderer.getViewPose(w, h, &pose)) {
+        return false;
+    }
+    SceneRaster::ExplicitCamera camera;
+    std::copy(pose.cameraToWorld, pose.cameraToWorld + 16, camera.cameraToWorld);
+    camera.viewHeight = pose.viewHeight;
+    camera.aspect = pose.aspect;
+    camera.orthographic = pose.orthographic;
+    camera.nearClip = pose.nearClip;
+    camera.farClip = pose.farClip;
+    const double u = pos.x() / std::max(1, width());
+    const double v = 1. - pos.y() / std::max(1, height());
+    if (!effect->getViewInteract()->penDown(camera, w, h, u, v, pressure, timestamp, _imp->frame)) {
+        return false;
+    }
+    _imp->paintNode = node;
+    _imp->painting = true;
+
+    return true;
+}
+
+void
+SceneViewport::continuePaint(const QPointF& pos,
+                             double pressure,
+                             double timestamp)
+{
+    const NodePtr node = _imp->paintNode.lock();
+    TexturePaint* effect = node ? dynamic_cast<TexturePaint*>(node->getEffectInstance().get()) : nullptr;
+    if (!_imp->painting || !effect) {
+        return;
+    }
+    const double u = pos.x() / std::max(1, width());
+    const double v = 1. - pos.y() / std::max(1, height());
+    (void)effect->getViewInteract()->penMotion(u, v, pressure, timestamp);
+}
+
+void
+SceneViewport::endPaint()
+{
+    const NodePtr node = _imp->paintNode.lock();
+    TexturePaint* effect = node ? dynamic_cast<TexturePaint*>(node->getEffectInstance().get()) : nullptr;
+    const bool painting = _imp->painting;
+
+    _imp->painting = false;
+    _imp->tabletPainting = false;
+    _imp->paintNode.reset();
+    if (painting && effect) {
+        (void)effect->getViewInteract()->penUp();
+    }
+}
+
+void
+SceneViewport::closePaintSession()
+{
+    endPaint();
+    NodePtr node;
+    if (TexturePaint* effect = _imp->getPaintNode(&node)) {
+        (void)effect->getViewInteract()->closeSession(_imp->frame);
     }
 }
 
@@ -5552,6 +5698,7 @@ SceneViewport::wheelEvent(QWheelEvent* e)
 
         return;
     }
+    closePaintSession();
     if (navigatesLockedCamera()) {
         // A run of wheel steps is one move, written once the wheel rests; a drag under way owns
         // the move and ends it itself.
@@ -5589,6 +5736,38 @@ SceneViewport::event(QEvent* e)
 
             return true;
         }
+        NodePtr paintNode;
+        if (matchesKeyBinding(kShortcutIDActionViewer3DBakePaint, k->modifiers(), k->key()) && _imp->getPaintNode(&paintNode)) {
+            e->accept();
+
+            return true;
+        }
+    }
+    // A pen's own events carry its pressure; ignored, they come back as mouse events without it.
+    if ((e->type() == QEvent::TabletPress) || (e->type() == QEvent::TabletMove) || (e->type() == QEvent::TabletRelease)) {
+        QTabletEvent* t = static_cast<QTabletEvent*>(e);
+        if (e->type() == QEvent::TabletPress) {
+            const Qt::KeyboardModifiers modifiers = mouseBindingModifiers(t->modifiers(), _imp->spaceHeld);
+            const bool navigationBinding = matchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, Qt::LeftButton) || matchesMouseBinding(kShortcutIDMouseViewer3DPan, modifiers, Qt::LeftButton)
+                || matchesMouseBinding(kShortcutIDMouseViewer3DDolly, modifiers, Qt::LeftButton);
+            if (!_imp->painting && (t->button() == Qt::LeftButton) && (modifiers == Qt::NoModifier) && !navigationBinding && (_imp->handle == SceneGizmo::kNoHandle)
+                && beginPaint(t->position(), t->pressure(), paintTimestamp(t))) {
+                clearGesture();
+                _imp->tabletPainting = true;
+                t->accept();
+
+                return true;
+            }
+        } else if (_imp->tabletPainting) {
+            if (e->type() == QEvent::TabletMove) {
+                continuePaint(t->position(), t->pressure(), paintTimestamp(t));
+            } else {
+                endPaint();
+            }
+            t->accept();
+
+            return true;
+        }
     }
     // QWidget::event() spends Tab on moving the focus before keyPressEvent() sees it.
     if (e->type() == QEvent::KeyPress) {
@@ -5606,6 +5785,13 @@ SceneViewport::event(QEvent* e)
 void
 SceneViewport::keyPressEvent(QKeyEvent* e)
 {
+    NodePtr paintNode;
+    if (matchesKeyBinding(kShortcutIDActionViewer3DBakePaint, e->modifiers(), e->key()) && _imp->getPaintNode(&paintNode)) {
+        closePaintSession();
+        e->accept();
+
+        return;
+    }
     if ((e->key() == Qt::Key_Space) && bindingsUseSpace()) {
         _imp->spaceHeld = true;
         e->accept();
@@ -5663,12 +5849,14 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
         return;
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DFrameSelection, e->modifiers(), e->key())) {
+        closePaintSession();
         frameSelection();
         e->accept();
 
         return;
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DFrameAll, e->modifiers(), e->key())) {
+        closePaintSession();
         frameScene();
         e->accept();
 
@@ -5676,6 +5864,7 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     }
     const int mode = viewModeForKey(e->modifiers(), e->key());
     if (mode >= 0) {
+        closePaintSession();
         setViewMode((SceneViewportRenderer::ViewModeEnum)mode);
         e->accept();
 
@@ -5701,6 +5890,7 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
         return;
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DLockView, e->modifiers(), e->key())) {
+        closePaintSession();
         if (navigatesLockedCamera()) {
             setLockView(false);
         } else {
@@ -5735,6 +5925,7 @@ SceneViewport::focusOutEvent(QFocusEvent* e)
     if (_imp->handle != SceneGizmo::kNoHandle) {
         endHandleDrag();
     }
+    endPaint();
     clearGesture();
     _imp->spaceHeld = false;
     QOpenGLWidget::focusOutEvent(e);

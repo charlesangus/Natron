@@ -345,11 +345,11 @@ public:
      * than the viewer overlay. The stroke takes the tool and brush knobs' settings, starts its
      * life at frame time and goes into layer, or into the deepest selected layer (else the base
      * layer) when layer is null. A multi-stroke item only takes strokes aimed at its own layer.
-     * pos is in the host's canonical coordinates, as the overlay's pen positions are; brush sizes
-     * apply in that space unchanged. False, with nothing begun, when the selected tool is not a
-     * brush. Main thread.
+     * pos is in the host's canonical coordinates, as the overlay's pen positions are; the brush
+     * size knob's value is multiplied by sizeScale into that space. False, with nothing begun,
+     * when the selected tool is not a brush. Main thread.
      **/
-    bool beginPaintStroke(const RotoLayerPtr& layer, const QPointF& pos, double pressure, double time, double timestamp);
+    bool beginPaintStroke(const RotoLayerPtr& layer, const QPointF& pos, double pressure, double time, double timestamp, double sizeScale = 1.);
 
     // Adds a point to the stroke beginPaintStroke() began. False when none is open.
     bool continuePaintStroke(const QPointF& pos, double pressure, double timestamp);

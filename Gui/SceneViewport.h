@@ -691,6 +691,15 @@ public:
     void setTransformNodeProvider(const std::function<NodePtr()>& provider);
 
     /**
+     * @brief Sets the function that names the TexturePaint node the view paints: one with its
+     * settings panel open, or null for none. While it names one, a left drag with no modifier
+     * paints that node through the view's camera, unless the mouse bindings give it to
+     * navigation; the other bindings keep their actions. Navigating, and the Bake Paint key,
+     * close the session being painted and queue its bake.
+     **/
+    void setPaintNodeProvider(const std::function<NodePtr()>& provider);
+
+    /**
      * @brief Where drags of the transform widget on the selection are written. Without one, or
      * while the natronSceneTransformRecordOnly property is true, they are only recorded into the
      * natronSceneTransformDelta property.
@@ -828,6 +837,19 @@ private:
 
     // Forgets the mouse gesture under way.
     void clearGesture();
+
+    /**
+     * @brief Begins a stroke on the painted node at pos (widget coordinates) with pressure. False
+     * when no node is painted or its tool is not a brush.
+     **/
+    bool beginPaint(const QPointF& pos, double pressure, double timestamp);
+
+    void continuePaint(const QPointF& pos, double pressure, double timestamp);
+
+    void endPaint();
+
+    // Closes the painted node's session, queueing its bake: the camera moved, or Bake Paint.
+    void closePaintSession();
 
     // Whether navigation moves the camera looked through, not the free camera.
     bool navigatesLockedCamera() const;

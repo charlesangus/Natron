@@ -66,6 +66,7 @@
 #include "Engine/Nodes/Scene/SceneRaster.h"
 #include "Engine/Nodes/Scene/TexturePaintBaker.h"
 #include "Engine/Nodes/Scene/TexturePaintCache.h"
+#include "Engine/Nodes/Scene/TexturePaintInteract.h"
 #include "Engine/Nodes/Scene/TexturePaintUndo.h"
 #include "Engine/Nodes/Scene/TexturePaintView.h"
 #include "Engine/Project.h"
@@ -468,6 +469,16 @@ RotoPaintInteractPtr
 TexturePaint::getPaintInteract() const
 {
     return _paintInteract;
+}
+
+TexturePaintInteract*
+TexturePaint::getViewInteract()
+{
+    if (!_viewInteract) {
+        _viewInteract.reset(new TexturePaintInteract(this));
+    }
+
+    return _viewInteract.get();
 }
 
 void
@@ -1989,8 +2000,15 @@ TexturePaint::knobChanged(KnobI* k,
         return true;
     }
     bool paintRet = false;
-    if (k && _paintInteract && _paintInteract->onKnobChanged(k, time, &paintRet)) {
-        return paintRet;
+    if (k && _paintInteract) {
+        const RotoToolEnum toolBefore = _paintInteract->selectedTool;
+        if (_paintInteract->onKnobChanged(k, time, &paintRet)) {
+            if (_viewInteract && (_paintInteract->selectedTool != toolBefore)) {
+                _viewInteract->onToolChanged(time);
+            }
+
+            return paintRet;
+        }
     }
 
     return NativeEffectBase::knobChanged(k, reason, view, time, originatedFromMainThread);

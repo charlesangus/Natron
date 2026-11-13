@@ -1643,7 +1643,8 @@ RotoPaintInteract::beginPaintStroke(const RotoLayerPtr& layer,
                                     const QPointF& pos,
                                     double pressure,
                                     double time,
-                                    double timestamp)
+                                    double timestamp,
+                                    double sizeScale)
 {
     switch (selectedTool) {
     case eRotoToolSolidBrush:
@@ -1663,6 +1664,7 @@ RotoPaintInteract::beginPaintStroke(const RotoLayerPtr& layer,
 
     StrokeConfig config = captureStrokeConfig();
     config.frame = (int)time;
+    config.size *= sizeScale;
     if (layer) {
         config.layer = layer;
         config.targetLayer = layer;

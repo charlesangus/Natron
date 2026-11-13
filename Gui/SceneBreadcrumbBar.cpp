@@ -44,6 +44,7 @@
 
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Gui/SceneBreadcrumbListPopup.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/ScenePrimListPopup.h"
 #include "Gui/SceneViewport.h"
@@ -99,6 +100,7 @@ struct SceneBreadcrumbBar::Private {
     QToolButton* elisionButton = nullptr;
     QLabel* elisionSeparator = nullptr;
     QPointer<ScenePrimListPopup> popup;
+    QPointer<SceneBreadcrumbListPopup> listPopup;
     QToolButton* moreButton = nullptr;
     QTimer retryTimer;
 
@@ -145,7 +147,7 @@ SceneBreadcrumbBar::SceneBreadcrumbBar(SceneViewport* viewport, QWidget* parent)
     _imp->layout->addStretch(1);
 
     _imp->moreButton = makeButton(QStringLiteral("breadcrumbMore"), QString());
-    _imp->moreButton->setToolTip(tr("More prims are selected"));
+    _imp->moreButton->setToolTip(tr("More prims are selected: click to list them all, drag to carry them all"));
     _imp->layout->addWidget(_imp->moreButton);
 
     _imp->retryTimer.setSingleShot(true);
@@ -159,6 +161,20 @@ SceneBreadcrumbBar::SceneBreadcrumbBar(SceneViewport* viewport, QWidget* parent)
         if (_imp->viewport) {
             _imp->viewport->select(QStringList(), SceneViewport::eSelectionModeReplace);
         }
+    });
+    QObject::connect(_imp->moreButton, &QToolButton::clicked, this, [this]() {
+        _imp->pressModifiers = Qt::NoModifier;
+        if (_imp->listPopup && _imp->listPopup->isVisible()) {
+            _imp->listPopup->close();
+
+            return;
+        }
+        if (!_imp->viewport) {
+            return;
+        }
+        SceneBreadcrumbListPopup* popup = new SceneBreadcrumbListPopup(_imp->viewport, _imp->selection, _imp->moreButton, window());
+        _imp->listPopup = popup;
+        popup->popupUnder(this);
     });
     if (viewport) {
         QObject::connect(viewport, &SceneViewport::selectionChanged, this, &SceneBreadcrumbBar::refresh);

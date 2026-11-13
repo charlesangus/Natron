@@ -52,8 +52,9 @@ class SceneViewport;
  * prim and frames it, as a double-click does, and Show In Scene Graph asks for the prim to be revealed
  * in a Scene Graph panel (showInSceneGraphRequested). Segments the stage no longer has are greyed and cannot
  * be clicked, though their menu and drag still work; a hover tells what the prim is. A drag from a
- * segment carries its path and a drag from the "+N" badge carries every selected path. When the bar
- * is too narrow the middle segments fold into a "..." button whose menu lists them.
+ * segment carries its path and a drag from the "+N" badge carries every selected path; a click on the
+ * badge toggles a SceneBreadcrumbListPopup listing them all. When the bar is too narrow the middle
+ * segments fold into a "..." button whose menu lists them.
  *
  * The widget publishes natronBreadcrumbSegments (see Segment::toVariant()), natronBreadcrumbPath,
  * natronBreadcrumbMore and natronBreadcrumbElided for GUI tests. Its buttons are named

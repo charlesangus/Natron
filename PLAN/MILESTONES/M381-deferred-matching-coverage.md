@@ -96,7 +96,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: probe plus parity on a material input that has a payload.
   - size: M
 
-- [ ] M381.P3.T3 — Reparent wrap on the evaluation context
+- [x] M381.P3.T3 — Reparent wrap on the evaluation context
   - files: `Engine/Nodes/Scene/SceneReparentNode.cpp` (`renderWrap` ~:364, `gatherWrapRetargets` ~:113), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: existence checks through `withPaths`; `gatherWrapRetargets` on the context set with reach "/".
   - verify: a relationship inside a payload is retargeted once that payload loads; probe reads 0.

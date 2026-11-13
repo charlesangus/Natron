@@ -3,11 +3,12 @@
 Graph: Constant1 into MetadataModify1 (which declares the tiles 1001 and 1002) into
 USDEmissiveMaterial1's Emissive input; USDRead1 reads a quad whose texture coordinates run 0 to 2
 in u, USDMerge1 merges it with the material, Viewer1 shows the merge. The Constant's green is 1
-only in tile 1001 and its red only in tile 1002 (expressions on udim.tile), so once the scene view
-shows the quad its left half must be green and its right half red.
+only in tile 1001 and its red is its user parameter redGain (1) only in tile 1002 (expressions on
+udim.tile), so once the scene view shows the quad its left half must be green and its right half
+red.
 
-Then the red expression is changed to 0, and nothing else is touched: the right half must stop being
-red, and the store's render count of each tile (the scene view's natronLiveTextureRenders property)
+Then redGain is set to 0, and nothing else is touched: the right half must stop being red, and the
+store's render count of each tile (the scene view's natronLiveTextureRenders property)
 must have risen by the same amount, with no render of a single, non-UDIM texture. A Constant does not
 tell tiles apart, so its edit moves every tile; that an edit one tile owns renders only that tile is
 checked at the store, in Tests/Scene/LiveTexture_Test.cpp.
@@ -70,8 +71,16 @@ try:
     material = make("USDEmissiveMaterial", 0, 200)
     reader = make("USDRead", 200, 200)
     merge = make("USDMerge", 100, 300)
-    require(constant.getParam("color").setExpression("1 if (udim.tile or 0) == 1002 else 0", False, 0),
-            "Constant1 red reads the tile")
+    red_gain = constant.createDoubleParam("redGain", "Red Gain")
+    require(red_gain is not None, "create Constant1's redGain")
+    red_gain.setValue(1.0)
+    constant.refreshUserParamsGUI()
+    # The edit goes through a value: setting an expression from Python requests no render, so the
+    # view would never be asked to show it. redGain is read on every tile so that the expression
+    # records it as a dependency.
+    require(constant.getParam("color").setExpression(
+        "thisNode.getParam('redGain').get() * (1 if (udim.tile or 0) == 1002 else 0)", False, 0),
+        "Constant1 red reads the tile")
     require(constant.getParam("color").setExpression("1 if (udim.tile or 0) == 1001 else 0", False, 1),
             "Constant1 green reads the tile")
     for name, value in (("operation1", 1), ("type1", 2)):
@@ -163,7 +172,8 @@ try:
         check(before.get("1001", 0) >= 1 and before.get("1002", 0) >= 1, "each tile was rendered (%r)" % (before,))
         check(before.get("0", 0) == 0, "no single texture was rendered for the set (%r)" % (before,))
 
-        require(constant.getParam("color").setExpression("0", False, 0), "Constant1 red is set to 0")
+        constant.getParam("redGain").set(0.0)
+        require(constant.getParam("redGain").get() == 0.0, "Constant1 redGain is set to 0")
         ok = yield ("until", lambda: scene_drawn() and red_gone(), POLL_TIMEOUT_S)
         check(ok, "editing the Constant removes the red of tile 1002 with no viewport input (%r)" % (halves(),))
         yield ("sleep", SETTLE_MS)

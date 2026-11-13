@@ -47,6 +47,7 @@ MARKER = "/NatronPickerMarker"
 STATE_UNLOADED = 1
 UNLOADED_GEO = "/World/Block0/B0/Floor/Geo"
 BLOCK0_B0 = "/World/Block0/B0"
+CITY_WORLD_CHILDREN = ["/World/Block0", "/World/Plain"]
 
 
 def write_city(directory):
@@ -273,7 +274,9 @@ try:
     def search_button():
         return hold(popup().findChild(QPushButton, "scenePrimPickerSearchUnloaded"))
 
-    def open_popup():
+    def open_popup(world_children_expected=(BALL, BOX, CAM)):
+        """Opens the picker and waits until it lists world_children_expected under /World."""
+        expected = sorted(world_children_expected)
         button = picker_button()
         require(button is not None, "the Prim Pattern field has a picker button")
         check(button.isEnabled(), "the picker button is enabled")
@@ -282,9 +285,9 @@ try:
         require(ok, "the picker opens and reads the input scene")
         ok = yield ("until", lambda: bool(popup().property("natronPickerMatchesRead")), POLL_TIMEOUT_S)
         require(ok, "the picker evaluates the knob's text (status %r)" % (popup_status(),))
-        ok = yield ("until", lambda: world_children(popup_tree()) == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
-        require(ok, "the picker lists Box, Ball and Cam under /World (got %r, status %r)"
-                % (world_children(popup_tree()), popup_status()))
+        ok = yield ("until", lambda: world_children(popup_tree()) == expected, POLL_TIMEOUT_S)
+        require(ok, "the picker lists %s under /World (got %r, status %r)"
+                % (", ".join(p.rsplit("/", 1)[1] for p in expected), world_children(popup_tree()), popup_status()))
 
     def connect_viewer(node):
         """Points the viewer's input 0 at node: connectInput refuses an input that is already connected."""
@@ -465,7 +468,7 @@ try:
         edits_before = view().property("natronSceneLoadEdits")
         ok = yield ("until", lambda: picker_button() is not None, POLL_TIMEOUT_S)
         require(ok, "the second USDEditTransform's panel shows a picker button")
-        yield from open_popup()
+        yield from open_popup(CITY_WORLD_CHILDREN)
         check(extras() == [], "nothing unloaded is listed before Search Unloaded (got %r)" % (extras(),))
         check(search_button().isEnabled(), "Search Unloaded is enabled for a valid expression")
         search_button().click()

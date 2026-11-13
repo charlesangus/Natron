@@ -1937,10 +1937,16 @@ filterPredicateLibrary()
 {
     static const UsdObjectPredicateLibrary library = []() {
         UsdObjectPredicateLibrary result = UsdGetCollectionPredicateLibrary();
+        // USD reports an inactive prim as not loaded, but it has no payload to load; only an
+        // active prim's own unloaded payload makes it unloaded.
         auto isLoaded = [](const UsdObject& object, bool loaded) {
             const UsdPrim prim = object.GetPrim();
 
-            return prim && (prim.IsLoaded() == loaded);
+            if (!prim || !prim.IsActive()) {
+                return false;
+            }
+
+            return loaded ? prim.IsLoaded() : (prim.HasAuthoredPayloads() && !prim.IsLoaded());
         };
         auto isActive = [](const UsdObject& object, bool active) {
             const UsdPrim prim = object.GetPrim();

@@ -122,7 +122,8 @@ try:
     def panel_tree():
         panels = widgets_of("SceneGraphPanel")
         try:
-            return hold(panels[0].findChild(QTreeView, "sceneGraphTree")) if panels else None
+            # The panel's wrapper is held too: the tree's wrapper dies with it.
+            return hold(hold(panels[0]).findChild(QTreeView, "sceneGraphTree")) if panels else None
         except RuntimeError:
             return None
 

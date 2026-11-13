@@ -550,7 +550,10 @@ private:
     std::unique_ptr<TexturePaintInteract> _viewInteract;
     std::atomic<int> _sessionRenders;
     std::unique_ptr<TexturePaintBaker> _baker;
-    // Session bakes queued and not landed, by session; main thread.
+    // quitBackgroundWork clears this from a destroyNode watcher thread, and a queued
+    // clear could outlive the node, so the map is guarded rather than main-thread only.
+    mutable std::mutex _pendingSessionBakesMutex;
+    // Session bakes queued and not landed, by session.
     std::map<const RotoLayer*, int> _pendingSessionBakes;
 };
 

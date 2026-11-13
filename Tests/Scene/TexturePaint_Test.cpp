@@ -1678,13 +1678,17 @@ TEST_F(TexturePaintTest, DeletingTheNodeMidBakeCancelsItCleanly)
     ASSERT_TRUE(effect->getBaker()->enqueue(bake));
     ASSERT_TRUE(pumpUntil([&]() { return started.load(); }, 10000));
 
+    // A non-blocking destroy, as the node graph's delete makes, quits the node's processing from a
+    // watcher thread and finishes the teardown back on the main thread.
     const Clock::time_point start = Clock::now();
     node->destroyNode(false, false);
     effect = nullptr;
     node.reset();
+    EXPECT_TRUE(pumpUntil([&]() { return exited.load(); }, 5000));
     EXPECT_LT(millisSince(start), 5000);
-    EXPECT_TRUE(exited.load());
-    QCoreApplication::processEvents();
+    for (int i = 0; i < 50; ++i) {
+        QCoreApplication::processEvents();
+    }
     EXPECT_EQ(0, completions.load());
 }
 

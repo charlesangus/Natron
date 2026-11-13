@@ -116,6 +116,20 @@ strokesIn(const RotoLayerPtr& session)
 
     return strokes;
 }
+
+// Multi-Stroke, on by default, puts strokes painted with the same brush into one item, so the strokes
+// a session holds are counted across its items.
+std::size_t
+subStrokesIn(const RotoLayerPtr& session)
+{
+    std::size_t count = 0;
+
+    for (const RotoStrokeItemPtr& stroke : strokesIn(session)) {
+        count += stroke->getXControlPoints().size();
+    }
+
+    return count;
+}
 } // anonymous namespace
 
 class TexturePaintInteractTest
@@ -192,7 +206,9 @@ TEST_F(TexturePaintInteractTest, StrokesThroughOnePoseShareOneSession)
     const std::list<RotoLayerPtr> sessions = _effect->getSessions();
     ASSERT_EQ(1u, sessions.size());
     EXPECT_EQ(sessions.front(), view->getCurrentSession());
-    EXPECT_EQ(3u, strokesIn(sessions.front()).size());
+    // A stroke begun before the previous one's neat render lands is painted once it does.
+    EXPECT_TRUE(pumpUntil([&]() { return subStrokesIn(sessions.front()) >= 3u; }, 30000));
+    EXPECT_EQ(3u, subStrokesIn(sessions.front()));
     SceneRaster::ExplicitCamera stored;
     ASSERT_TRUE(TexturePaint::getSessionCamera(sessions.front(), &stored));
     EXPECT_DOUBLE_EQ(5., stored.cameraToWorld[14]);

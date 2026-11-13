@@ -26,6 +26,7 @@
 #include "NodeColorSampler.h"
 
 #include <algorithm>
+#include <exception>
 #include <list>
 #include <map>
 #include <string>
@@ -168,7 +169,12 @@ renderLayer(const NodePtr& node,
                                        eStorageModeRAM,
                                        time);
     std::map<ImageLayerDesc, ImagePtr> layers;
-    if ((effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) || layers.empty()) {
+    try {
+        if ((effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) || layers.empty()) {
+            return false;
+        }
+    } catch (const std::exception&) {
+        // A top-level render that fails throws rather than returning a code.
         return false;
     }
     *image = layers.begin()->second;

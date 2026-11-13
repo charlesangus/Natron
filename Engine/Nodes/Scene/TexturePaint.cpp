@@ -1941,6 +1941,7 @@ TexturePaint::quitBackgroundWork(bool blocking)
     } else {
         _baker->requestStop(true);
     }
+    std::lock_guard<std::mutex> lock(_pendingSessionBakesMutex);
     _pendingSessionBakes.clear();
 }
 
@@ -2040,7 +2041,12 @@ TexturePaint::getBakeGeneration() const
 bool
 TexturePaint::isSessionBakePending(const RotoLayerPtr& session) const
 {
-    return session && (_pendingSessionBakes.find(session.get()) != _pendingSessionBakes.end());
+    if (!session) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(_pendingSessionBakesMutex);
+
+    return (_pendingSessionBakes.find(session.get()) != _pendingSessionBakes.end());
 }
 
 int
@@ -2239,17 +2245,24 @@ TexturePaint::enqueueSessionBake(const RotoLayerPtr& session,
         return runSessionBake(time, view, control, failure.get());
     };
     bake.completion = [this, failure, key](bool ok) {
-        std::map<const RotoLayer*, int>::iterator it = _pendingSessionBakes.find(key);
-        if ((it != _pendingSessionBakes.end()) && (--it->second <= 0)) {
-            _pendingSessionBakes.erase(it);
+        {
+            std::lock_guard<std::mutex> lock(_pendingSessionBakesMutex);
+            std::map<const RotoLayer*, int>::iterator it = _pendingSessionBakes.find(key);
+            if ((it != _pendingSessionBakes.end()) && (--it->second <= 0)) {
+                _pendingSessionBakes.erase(it);
+            }
         }
         if (!ok && !failure->empty()) {
             setPersistentMessage(eMessageTypeError, *failure);
         }
         landBake(ok);
     };
-    ++_pendingSessionBakes[key];
+    {
+        std::lock_guard<std::mutex> lock(_pendingSessionBakesMutex);
+        ++_pendingSessionBakes[key];
+    }
     if (!getBaker()->enqueue(bake)) {
+        std::lock_guard<std::mutex> lock(_pendingSessionBakesMutex);
         if (--_pendingSessionBakes[key] <= 0) {
             _pendingSessionBakes.erase(key);
         }

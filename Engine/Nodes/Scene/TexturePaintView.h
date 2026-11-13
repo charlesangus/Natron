@@ -48,6 +48,8 @@
 #define kTexturePaintViewParamFarClip "farClip"
 #define kTexturePaintViewParamPrimPattern "primPattern"
 #define kTexturePaintViewParamUvPrimvar "uvPrimvar"
+#define kTexturePaintViewParamBaseFiles "baseFiles"
+#define kTexturePaintViewParamBaseResolution "baseResolution"
 
 NATRON_NAMESPACE_ENTER
 
@@ -58,9 +60,11 @@ struct ExplicitCamera;
 /**
  * @brief The image a TexturePaint session's strokes are painted over: the meshes of the scene on
  * its input that Prim Pattern selects, unlit, as the session camera sees them. A mesh pixel holds
- * the constant diffuseColor of the mesh's bound UsdPreviewSurface with alpha 1, or a neutral grey
- * when that colour is missing or comes from a texture; pixels with no mesh, or whose mesh has no
- * usable UV there, are transparent black. Only the colour plane is produced.
+ * the texel of the base file of its UDIM tile under its st, sampled bilinearly, when Base Files
+ * names one for the tile; otherwise the constant diffuseColor of the mesh's bound
+ * UsdPreviewSurface with alpha 1, or a neutral grey when that colour is missing or comes from a
+ * texture. Pixels with no mesh, or whose mesh has no usable UV there, are transparent black. Only
+ * the colour plane is produced.
  *
  * The image spans the paint space: kPaintSpaceSize on the view's longer side, the shorter side
  * following the camera's aspect. Strokes are stored in it, and a paint buffer of Buffer Resolution
@@ -149,6 +153,13 @@ public:
     void setPrimPattern(const std::string& pattern);
     void setUvPrimvar(const std::string& primvar);
 
+    /**
+     * @brief The base files of the colour plane, one line per UDIM tile, each the tile number, a
+     * stamp that changes with the file, and the absolute path, separated by tabs; they are
+     * resampled to resolution when of another size.
+     **/
+    void setBase(const std::string& files, int resolution);
+
     double getAspect() const WARN_UNUSED_RETURN;
 
 private:
@@ -169,6 +180,8 @@ private:
     KnobDoubleWPtr _farClip;
     KnobStringWPtr _primPattern;
     KnobStringWPtr _uvPrimvar;
+    KnobStringWPtr _baseFiles;
+    KnobIntWPtr _baseResolution;
 };
 
 NATRON_NAMESPACE_EXIT

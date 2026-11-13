@@ -33,11 +33,15 @@
 #include <string>
 #include <vector>
 
+#include <QString>
+#include <QStringList>
+
 #include "Engine/AppInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Scene/MaterialBake.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -50,6 +54,52 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+// The base files Base Files names, by UDIM tile.
+std::map<int, std::string>
+parseBaseFiles(const std::string& text)
+{
+    std::map<int, std::string> files;
+
+    for (const QString& line : QString::fromStdString(text).split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QStringList fields = line.split(QLatin1Char('\t'));
+        bool ok = false;
+        const int tile = fields.isEmpty() ? 0 : fields.front().toInt(&ok);
+        if (ok && (fields.size() >= 3)) {
+            files[tile] = fields.mid(2).join(QLatin1Char('\t')).toStdString();
+        }
+    }
+
+    return files;
+}
+
+// The bilinear texel of rgba, size * size RGBA texels bottom-up, at (s, t) within the tile.
+void
+sampleTile(const std::vector<float>& rgba,
+           int size,
+           float s,
+           float t,
+           float* out)
+{
+    const float x = s * size - 0.5f;
+    const float y = t * size - 0.5f;
+    const int x0 = (int)std::floor(x);
+    const int y0 = (int)std::floor(y);
+    const float fx = x - x0;
+    const float fy = y - y0;
+    const auto at = [&](int xi, int yi, int c) -> float {
+        xi = std::min(size - 1, std::max(0, xi));
+        yi = std::min(size - 1, std::max(0, yi));
+
+        return rgba[((std::size_t)yi * (std::size_t)size + (std::size_t)xi) * 4 + (std::size_t)c];
+    };
+
+    for (int c = 0; c < 4; ++c) {
+        const float bottom = at(x0, y0, c) * (1.f - fx) + at(x0 + 1, y0, c) * fx;
+        const float top = at(x0, y0 + 1, c) * (1.f - fx) + at(x0 + 1, y0 + 1, c) * fx;
+        out[c] = bottom * (1.f - fy) + top * fy;
+    }
+}
+
 template <typename K, typename V>
 void
 setIfDifferent(const std::shared_ptr<K>& knob,
@@ -124,7 +174,16 @@ TexturePaintView::initializeKnobs()
     uvPrimvar->setDefaultValue("st");
     _uvPrimvar = uvPrimvar;
 
-    for (const KnobIPtr& knob : std::vector<KnobIPtr> { cameraToWorld, viewHeight, aspect, orthographic, nearClip, farClip, primPattern, uvPrimvar }) {
+    KnobStringPtr baseFiles = createKnob<KnobString>(tr("Base Files"));
+    baseFiles->setName(kTexturePaintViewParamBaseFiles);
+    _baseFiles = baseFiles;
+
+    KnobIntPtr baseResolution = createKnob<KnobInt>(tr("Base Resolution"));
+    baseResolution->setName(kTexturePaintViewParamBaseResolution);
+    baseResolution->setDefaultValue(1024);
+    _baseResolution = baseResolution;
+
+    for (const KnobIPtr& knob : std::vector<KnobIPtr> { cameraToWorld, viewHeight, aspect, orthographic, nearClip, farClip, primPattern, uvPrimvar, baseFiles, baseResolution }) {
         knob->setAnimationEnabled(false);
         page->addKnob(knob);
     }
@@ -194,6 +253,14 @@ void
 TexturePaintView::setUvPrimvar(const std::string& primvar)
 {
     setIfDifferent(_uvPrimvar.lock(), primvar);
+}
+
+void
+TexturePaintView::setBase(const std::string& files,
+                          int resolution)
+{
+    setIfDifferent(_baseFiles.lock(), files);
+    setIfDifferent(_baseResolution.lock(), resolution);
 }
 
 double
@@ -365,6 +432,32 @@ TexturePaintView::renderView(double time,
         out[1] = color[1];
         out[2] = color[2];
         out[3] = 1.f;
+    }
+
+    KnobStringPtr baseFiles = _baseFiles.lock();
+    const std::map<int, std::string> bases = parseBaseFiles(baseFiles ? baseFiles->getValue() : std::string());
+    if (bases.empty()) {
+        return true;
+    }
+    KnobIntPtr baseResolution = _baseResolution.lock();
+    const int size = std::max(1, baseResolution ? baseResolution->getValue() : 1024);
+    // One tile at a time, so that no more than one base is ever held in memory.
+    for (const std::pair<const int, std::string>& base : bases) {
+        if (std::find(buffers.udimTile.begin(), buffers.udimTile.end(), base.first) == buffers.udimTile.end()) {
+            continue;
+        }
+        std::vector<float> texels;
+        if (!MaterialBake::readBaseTile(base.second, size, &texels, 0, error)) {
+            return false;
+        }
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::int32_t mesh = buffers.primIndex[i];
+            if ((mesh < 0) || (buffers.udimTile[i] != base.first)) {
+                continue;
+            }
+            const PXR_NS::GfVec2f& st = buffers.st[i];
+            sampleTile(texels, size, st[0] - std::floor(st[0]), st[1] - std::floor(st[1]), rgba->data() + i * 4);
+        }
     }
 
     return true;

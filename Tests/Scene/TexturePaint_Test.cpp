@@ -28,6 +28,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cmath>
 #include <list>
 #include <map>
 #include <memory>
@@ -73,9 +74,12 @@
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
+#include "Engine/RotoUndoCommand.h"
+#include "Engine/UndoCommand.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -1246,4 +1250,279 @@ TEST_F(TexturePaintTest, DeletedBakedInputReloadsAsMissing)
     loaded->getPersistentMessage(&message, &type, false);
     EXPECT_EQ((int)eMessageTypeError, type);
     EXPECT_TRUE(message.contains(QString::fromStdString(base))) << message.toStdString();
+}
+
+namespace {
+// Sets where paint bakes its output to, in dir, and returns the file of tile 1001's diffuseColor.
+std::string
+setBakeOutputPath(const NodePtr& paint,
+                  const QTemporaryDir& dir)
+{
+    getKnob<KnobOutputFile>(paint, kTexturePaintParamBakeOutputPath)->setValue((dir.path() + QString::fromUtf8("/out.<UDIM>.exr")).toStdString());
+
+    return (dir.path() + QString::fromUtf8("/out.1001.exr")).toStdString();
+}
+
+UndoCommandPtr
+bakeOutput(const NodePtr& paint,
+           std::vector<std::string>* files)
+{
+    std::string error;
+    UndoCommandPtr command = getTexturePaint(paint)->bakeOutput(1., ViewIdx(0), files, &error);
+
+    EXPECT_TRUE(bool(command)) << error;
+
+    return command;
+}
+
+// The RGBA texels of a rendered tile, row-major and bottom-up.
+std::vector<float>
+tileTexels(const ImagePtr& tile)
+{
+    std::vector<float> texels;
+
+    if (!tile) {
+        ADD_FAILURE() << "no tile";
+
+        return texels;
+    }
+    const int nComps = (int)tile->getComponentsCount();
+    Image::ReadAccess access(tile.get());
+    for (int y = 0; y < kSmallTile; ++y) {
+        for (int x = 0; x < kSmallTile; ++x) {
+            const float* in = reinterpret_cast<const float*>(access.pixelAt(x, y));
+            for (int c = 0; c < 4; ++c) {
+                texels.push_back((in && (c < nComps)) ? in[c] : 0.f);
+            }
+        }
+    }
+
+    return texels;
+}
+
+// How many texel channels of a and b differ by more than tolerance.
+std::size_t
+countDifferences(const std::vector<float>& a,
+                 const std::vector<float>& b,
+                 float tolerance)
+{
+    if (a.size() != b.size()) {
+        ADD_FAILURE() << "sizes differ: " << a.size() << " and " << b.size();
+
+        return std::max(a.size(), b.size());
+    }
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (std::abs(a[i] - b[i]) > tolerance) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+// Writes a kSmallTile square texture at path whose left half is left and right half right.
+void
+writeSplitTexture(const std::string& path,
+                  const float left[3],
+                  const float right[3])
+{
+    OIIO::ImageSpec spec(kSmallTile, kSmallTile, 3, OIIO::TypeDesc::HALF);
+    std::vector<float> pixels;
+    for (int y = 0; y < kSmallTile; ++y) {
+        for (int x = 0; x < kSmallTile; ++x) {
+            const float* color = (x < kSmallTile / 2) ? left : right;
+            pixels.insert(pixels.end(), { color[0], color[1], color[2] });
+        }
+    }
+    OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+    ASSERT_TRUE(bool(out));
+    ASSERT_TRUE(out->open(path, spec)) << out->geterror();
+    ASSERT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data())) << out->geterror();
+    ASSERT_TRUE(out->close()) << out->geterror();
+}
+} // anonymous namespace
+
+TEST_F(TexturePaintTest, BakeOutputFilesMatchTheOutput)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeOutputPath(paint, dir);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "red", kRedU, 0.5), 0., 1., 0.);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "blue", kBlueU, 0.5), 1., 1., 0.);
+
+    const std::vector<float> painted = tileTexels(renderTile(paint));
+    std::vector<std::string> files;
+    UndoCommandPtr command = bakeOutput(paint, &files);
+    ASSERT_TRUE(bool(command));
+    const std::string blue = (dir.path() + QString::fromUtf8("/out.1002.exr")).toStdString();
+    EXPECT_NE(files.end(), std::find(files.begin(), files.end(), red));
+    EXPECT_NE(files.end(), std::find(files.begin(), files.end(), blue));
+    EXPECT_EQ(files, getTexturePaint(paint)->getBakedOutputFiles());
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
+
+    std::vector<float> baked;
+    bool resampled = true;
+    std::string error;
+    ASSERT_TRUE(MaterialBake::readBaseTile(red, kSmallTile, &baked, &resampled, &error)) << error;
+    EXPECT_FALSE(resampled);
+    EXPECT_EQ(0u, countDifferences(painted, baked, 1e-3f));
+    const std::vector<float> output = tileTexels(renderTile(paint));
+    EXPECT_EQ(0u, countDifferences(output, baked, 1e-3f));
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "red tile under its stroke");
+    expectColor(bakedTexelAt(blue, kSmallTile, 0.5, 0.5), 1.f, 1.f, 0.f, 1.f, "blue tile under its stroke");
+
+    getKnob<KnobInt>(paint, kTexturePaintParamOutputTile)->setValue(1002);
+    ASSERT_TRUE(MaterialBake::readBaseTile(blue, kSmallTile, &baked, &resampled, &error)) << error;
+    EXPECT_EQ(0u, countDifferences(tileTexels(renderTile(paint)), baked, 1e-3f));
+}
+
+TEST_F(TexturePaintTest, NewStrokesLeaveFrozenSessionsUnrendered)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr first;
+    NodePtr paint = createPaintedQuads(dir, &first);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    (void)setBakeOutputPath(paint, dir);
+    TexturePaint* effect = getTexturePaint(paint);
+    RotoStrokeItemPtr frozenStroke = addBrushStroke(paint, first, eRotoStrokeTypeSolid, "frozen", kRedU, 0.5);
+    setColor(frozenStroke, 0., 1., 0.);
+
+    int before = effect->getSessionRenderCount();
+    ASSERT_TRUE(bool(renderTile(paint)));
+    const int oneSession = effect->getSessionRenderCount() - before;
+    ASSERT_GT(oneSession, 0);
+
+    std::vector<std::string> files;
+    ASSERT_TRUE(bool(bakeOutput(paint, &files)));
+    ASSERT_TRUE(TexturePaint::isSessionFrozen(first));
+
+    RotoLayerPtr second = effect->addSession(viewCamera());
+    ASSERT_TRUE(bool(second));
+    setColor(addBrushStroke(paint, second, eRotoStrokeTypeSolid, "live", kBlueU, 0.5), 1., 1., 0.);
+    before = effect->getSessionRenderCount();
+    ImagePtr tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    // Only the live session renders: the frozen one is in the baked files.
+    EXPECT_EQ(oneSession, effect->getSessionRenderCount() - before);
+    expectColor(texelAt(tile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the frozen stroke");
+
+    // Deleting the frozen session's strokes cannot take back what is baked.
+    paint->getRotoContext()->removeItem(frozenStroke);
+    frozenStroke.reset();
+    tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the frozen stroke once deleted");
+
+    getKnob<KnobInt>(paint, kTexturePaintParamOutputTile)->setValue(1002);
+    tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.5, 0.5), 1.f, 1.f, 0.f, 1.f, "the live stroke");
+}
+
+TEST_F(TexturePaintTest, UndoingABakeBringsItsSessionsBackLive)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    (void)setBakeOutputPath(paint, dir);
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+    const std::vector<float> preBake = tileTexels(renderTile(paint));
+
+    std::vector<std::string> files;
+    UndoCommandPtr command = bakeOutput(paint, &files);
+    ASSERT_TRUE(bool(command));
+    command->redo();
+    ASSERT_TRUE(bool(renderTile(paint)));
+
+    command->undo();
+    EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
+    EXPECT_TRUE(effect->getBakedOutputFiles().empty());
+    appPTR->clearAllCaches();
+    const int before = effect->getSessionRenderCount();
+    const std::vector<float> undone = tileTexels(renderTile(paint));
+    EXPECT_GT(effect->getSessionRenderCount(), before) << "the session renders from its strokes";
+    EXPECT_EQ(0u, countDifferences(preBake, undone, 0.f));
+
+    // Live again: a new stroke in the session lands on the tile.
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "after", kRedU, 0.5), 1., 0., 1.);
+    ImagePtr tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.5, 0.5), 1.f, 0.f, 1.f, 1.f, "a stroke after the undo");
+
+    command->redo();
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
+    EXPECT_FALSE(effect->getBakedOutputFiles().empty());
+}
+
+TEST_F(TexturePaintTest, UndoingAStrokeRestoresThePreviousTile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "first", kRedU, 0.5), 0., 1., 0.);
+    const std::vector<float> previous = tileTexels(renderTile(paint));
+
+    RotoStrokeItemPtr stroke = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "second", kRedU, 0.5);
+    setColor(stroke, 1., 0., 1.);
+    RotoCurveInteractPtr interact = RotoCurveInteract::create(getTexturePaint(paint));
+    ASSERT_TRUE(bool(interact));
+    AddStrokeUndoCommand command(interact, stroke);
+    command.redo();
+    ImagePtr tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.5, 0.5), 1.f, 0.f, 1.f, 1.f, "the second stroke");
+
+    command.undo();
+    EXPECT_EQ(0u, countDifferences(previous, tileTexels(renderTile(paint)), 0.f));
+
+    command.redo();
+    tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.5, 0.5), 1.f, 0.f, 1.f, 1.f, "the second stroke redone");
+}
+
+TEST_F(TexturePaintTest, ViewShowsTheBakedBase)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const float left[3] = { 0.25f, 0.5f, 0.75f };
+    const float right[3] = { 0.75f, 0.5f, 0.25f };
+    writeSplitTexture((dir.path() + QString::fromUtf8("/tex.exr")).toStdString(), left, right);
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedScene(dir, kTexturedQuad, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    (void)setBakeInputsPath(paint, dir);
+    (void)setBakeOutputPath(paint, dir);
+    std::vector<std::string> files;
+    std::string warning;
+    ASSERT_TRUE(bake(paint, &files, &warning));
+
+    // The quad spans u in [1/6, 5/6], so u = 0.35 lies on its left half and u = 0.65 on its right.
+    TexturePaint::SessionBuffer buffer;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &buffer));
+    expectColor(pixelAt(buffer, 0.35, 0.5), left[0], left[1], left[2], 1.f, "the baked texture's left half");
+    expectColor(pixelAt(buffer, 0.65, 0.5), right[0], right[1], right[2], 1.f, "the baked texture's right half");
+
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", 0.35, 0.5), 0., 1., 0.);
+    ASSERT_TRUE(bool(bakeOutput(paint, &files)));
+    RotoLayerPtr next = getTexturePaint(paint)->addSession(viewCamera());
+    ASSERT_TRUE(bool(next));
+    ASSERT_TRUE(render(paint, next, ImageLayerDesc::getRGBAComponents(), &buffer));
+    expectColor(pixelAt(buffer, 0.35, 0.5), 0.f, 1.f, 0.f, 1.f, "the baked output under the stroke");
+    expectColor(pixelAt(buffer, 0.65, 0.5), right[0], right[1], right[2], 1.f, "the baked output away from it");
 }

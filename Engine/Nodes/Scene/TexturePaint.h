@@ -28,11 +28,13 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstdint>
 #include <list>
 #include <map>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -53,6 +55,8 @@
 #define kTexturePaintParamBakeInputs "bakeInputs"
 #define kTexturePaintParamBakedInputs "bakedInputs"
 #define kTexturePaintParamBakeOutputPath "bakeOutputPath"
+#define kTexturePaintParamBakeOutput "bakeOutput"
+#define kTexturePaintParamBakedOutput "bakedOutput"
 #define kTexturePaintParamOutputTile "outputTile"
 
 /**
@@ -90,6 +94,12 @@ struct ExplicitCamera;
  * sessions on first use and cached on disk (TexturePaintCache), keyed by a hash of the strokes,
  * the sessions and their cameras, the scene, the knobs that shape the texture and the Bake Inputs
  * files, which once baked are the base the sessions are painted over.
+ *
+ * Bake Output writes the output, every plane of every tile the meshes cover, to the Bake Output
+ * files and freezes the sessions with strokes: from then on the tiles start from those files and
+ * only the sessions not frozen are laid over them, so a frozen session is never rendered or
+ * projected again. The strokes stay the truth: undoing the bake unfreezes its sessions, puts back
+ * the output files it overwrote, and the tiles are rebuilt from the strokes.
  **/
 class TexturePaint
     : public NativeEffectBase {
@@ -287,6 +297,54 @@ public:
      **/
     std::vector<std::string> getBakedInputFiles() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Bake Output: writes the output at time and view, each output plane of each UDIM tile
+     * the matched meshes cover, to the Bake Output Path files, one half-float OpenEXR file per
+     * tile and plane named by its purpose (MaterialBake::purposePath()), and freezes the sessions
+     * that have strokes. *files receives the files written. Returns the undo step of the bake,
+     * already done, or null with *error set on failure. Main thread; waits for the bake.
+     **/
+    UndoCommandPtr bakeOutput(double time,
+                              ViewIdx view,
+                              std::vector<std::string>* files,
+                              std::string* error);
+
+    // The Bake Output files the tiles start from, as the last bake wrote them. Empty before any bake.
+    std::vector<std::string> getBakedOutputFiles() const WARN_UNUSED_RETURN;
+
+    // How many session buffers have been rendered over the node's lifetime.
+    int getSessionRenderCount() const WARN_UNUSED_RETURN
+    {
+        return _sessionRenders.load();
+    }
+
+    /**
+     * @brief What a Bake Output changes, so that its undo step can put it back: the saved record
+     * of the bake, and the sessions it froze.
+     **/
+    struct BakeOutputState {
+        std::string record;
+        std::list<RotoLayerWPtr> frozen;
+    };
+
+    /**
+     * @brief Bake Output without its undo step: writes the files, sets the record and freezes the
+     * sessions with strokes, which *state receives along with the record as it was. When
+     * backupDirectory is set, output files a previous bake wrote are first copied there, into
+     * *backups as (file, copy) pairs. False with *error set on failure, nothing changed but the
+     * files written.
+     **/
+    bool writeBakeOutput(double time,
+                         ViewIdx view,
+                         const std::string& backupDirectory,
+                         std::vector<std::string>* files,
+                         std::vector<std::pair<std::string, std::string>>* backups,
+                         BakeOutputState* state,
+                         std::string* error);
+
+    // Undoes writeBakeOutput(): unfreezes state's sessions and sets the record back to state's.
+    void restoreBakeOutputState(const BakeOutputState& state);
+
 protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -332,6 +390,24 @@ private:
     // The baked file of purpose at tile, empty when the last bake wrote none.
     std::string getBakedInputPath(const std::string& purpose, int tile) const WARN_UNUSED_RETURN;
 
+    // Bake Output Path with [Project] expanded; false with *error set unless it is absolute.
+    bool getBakeOutputPattern(std::string* pattern, std::string* error) const WARN_UNUSED_RETURN;
+
+    // Whether a Bake Output is in effect, so the tiles start from its files.
+    bool hasBakedOutput() const WARN_UNUSED_RETURN;
+
+    // The Bake Output file of purpose at tile, empty when the last bake wrote none.
+    std::string getBakedOutputPath(const std::string& purpose, int tile) const WARN_UNUSED_RETURN;
+
+    // The file a tile of purpose starts from: the Bake Output file, else the Bake Inputs one.
+    std::string getBasePath(const std::string& purpose, int tile) const WARN_UNUSED_RETURN;
+
+    // The colour plane's base files as TexturePaintView::setBase() takes them.
+    std::string getViewBaseFiles() const WARN_UNUSED_RETURN;
+
+    // The directory the tiles of this node are cached in.
+    std::string getTileDirectory() const WARN_UNUSED_RETURN;
+
     // What the tiles of view are cached under, whatever the frame; changes with anything they depend on.
     U64 getTileCacheKey(ViewIdx view) const WARN_UNUSED_RETURN;
 
@@ -367,7 +443,11 @@ private:
     // those files and their cache key changes with each bake.
     KnobStringWPtr _bakedInputs;
     KnobOutputFileWPtr _bakeOutputPath;
+    KnobButtonWPtr _bakeOutput;
+    // What the last Bake Output wrote, as _bakedInputs is for Bake Inputs.
+    KnobStringWPtr _bakedOutput;
     KnobIntWPtr _outputTile;
+    std::atomic<int> _sessionRenders;
 };
 
 NATRON_NAMESPACE_EXIT

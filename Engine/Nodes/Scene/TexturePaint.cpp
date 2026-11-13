@@ -26,6 +26,8 @@
 #include "TexturePaint.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -59,6 +61,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneRaster.h"
 #include "Engine/Nodes/Scene/TexturePaintCache.h"
+#include "Engine/Nodes/Scene/TexturePaintUndo.h"
 #include "Engine/Nodes/Scene/TexturePaintView.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
@@ -175,10 +178,68 @@ sessionKnob(const RotoLayerPtr& layer,
 {
     return layer ? std::dynamic_pointer_cast<K>(layer->getHostKnobByName(scriptName)) : std::shared_ptr<K>();
 }
+
+// The purposes and UDIM tiles a bake record ("count;purposes;tiles") names.
+void
+parseBakeRecord(const std::string& record,
+                std::vector<std::string>* purposes,
+                std::vector<int>* tiles)
+{
+    purposes->clear();
+    tiles->clear();
+    const QStringList fields = QString::fromStdString(record).split(QLatin1Char(';'));
+    if (fields.size() != 3) {
+        return;
+    }
+    for (const QString& purpose : fields[1].split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        purposes->push_back(purpose.toStdString());
+    }
+    for (const QString& tile : fields[2].split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        bool ok = false;
+        const int number = tile.toInt(&ok);
+        if (ok) {
+            tiles->push_back(number);
+        }
+    }
+}
+
+// The record of one more bake than previous, of purposes and tiles.
+std::string
+nextBakeRecord(const std::string& previous,
+               const QStringList& purposes,
+               const QStringList& tiles)
+{
+    const QStringList fields = QString::fromStdString(previous).split(QLatin1Char(';'));
+    const int count = fields.isEmpty() ? 0 : fields.front().toInt();
+
+    return QString::fromUtf8("%1;%2;%3").arg(count + 1).arg(purposes.join(QLatin1Char(','))).arg(tiles.join(QLatin1Char(','))).toStdString();
+}
+
+// Changes whenever the file at path is written, replaced or deleted.
+std::int64_t
+fileStamp(const std::string& path)
+{
+    std::error_code ec;
+    const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, ec);
+
+    if (ec) {
+        return -1;
+    }
+    const std::uintmax_t bytes = std::filesystem::file_size(path, ec);
+
+    return (std::int64_t)modified.time_since_epoch().count() ^ (std::int64_t)(ec ? 0 : bytes);
+}
+
+std::string
+planePurpose(const ImageLayerDesc& plane)
+{
+    return plane.isColorLayer() ? std::string(kTexturePaintPurposeDiffuseColor) : plane.getLayerID();
+}
 } // anon namespace
 
 TexturePaint::TexturePaint(NodePtr node)
     : NativeEffectBase(node)
+    , _sessionRenders(0)
 {
 }
 
@@ -300,6 +361,26 @@ TexturePaint::initializeKnobs()
     bakeOutputPath->setAnimationEnabled(false);
     page->addKnob(bakeOutputPath);
     _bakeOutputPath = bakeOutputPath;
+
+    KnobButtonPtr bakeOutput = createKnob<KnobButton>(tr("Bake Output"));
+    bakeOutput->setName(kTexturePaintParamBakeOutput);
+    bakeOutput->setHintToolTip(tr("Writes the painted texture, at the current frame, into the Bake Output Path files: one "
+                                  "half-float file per UDIM tile the meshes cover and painted plane, the colour plane "
+                                  "under the path and any other plane named with its layer after the path's name. The "
+                                  "sessions painted so far are frozen: the texture then starts from these files and only "
+                                  "the sessions painted since are laid over them, so the frozen ones are never rendered "
+                                  "again. Undoing the bake brings its sessions back live from their strokes.")
+                                   .toStdString());
+    page->addKnob(bakeOutput);
+    _bakeOutput = bakeOutput;
+
+    KnobStringPtr bakedOutput = createKnob<KnobString>(tr("Baked Output"));
+    bakedOutput->setName(kTexturePaintParamBakedOutput);
+    bakedOutput->setHintToolTip(tr("What the last Bake Output wrote: its count, purposes and UDIM tiles.").toStdString());
+    bakedOutput->setAnimationEnabled(false);
+    bakedOutput->setSecretByDefault(true);
+    page->addKnob(bakedOutput);
+    _bakedOutput = bakedOutput;
 
     KnobIntPtr outputTile = createKnob<KnobInt>(tr("Output Tile"));
     outputTile->setName(kTexturePaintParamOutputTile);
@@ -536,22 +617,20 @@ TexturePaint::getTileCacheKey(ViewIdx view) const
     const NodePtr input = getNode()->getInput(0);
     hasher.appendU64(input ? input->getHashValue() : 0);
 
-    // The baked inputs are edited or deleted on disk without any knob changing.
-    const KnobIPtr bakeKnobs[] = { _bakedInputs.lock(), _bakeInputsPath.lock() };
+    for (const RotoLayerPtr& session : getSessions()) {
+        hasher.appendBool(isSessionFrozen(session));
+    }
+
+    // The baked files are edited or deleted on disk without any knob changing.
+    const KnobIPtr bakeKnobs[] = { _bakedInputs.lock(), _bakeInputsPath.lock(), _bakedOutput.lock(), _bakeOutputPath.lock() };
     for (const KnobIPtr& knob : bakeKnobs) {
         hasher.appendU64(knob ? knob->getContentHash() : 0);
     }
-    for (const std::string& path : getBakedInputFiles()) {
-        hasher.appendString(path);
-        std::error_code ec;
-        const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, ec);
-        if (ec) {
-            hasher.appendI64(-1);
-            continue;
+    for (const std::vector<std::string>& files : { getBakedInputFiles(), getBakedOutputFiles() }) {
+        for (const std::string& path : files) {
+            hasher.appendString(path);
+            hasher.appendI64(fileStamp(path));
         }
-        hasher.appendI64((std::int64_t)modified.time_since_epoch().count());
-        const std::uintmax_t bytes = std::filesystem::file_size(path, ec);
-        hasher.appendU64(ec ? 0 : (U64)bytes);
     }
 
     return hasher.finalize();
@@ -584,23 +663,9 @@ void
 TexturePaint::getBakedInputs(std::vector<std::string>* purposes,
                              std::vector<int>* tiles) const
 {
-    purposes->clear();
-    tiles->clear();
     KnobStringPtr knob = _bakedInputs.lock();
-    const QStringList fields = QString::fromStdString(knob ? knob->getValue() : std::string()).split(QLatin1Char(';'));
-    if (fields.size() != 3) {
-        return;
-    }
-    for (const QString& purpose : fields[1].split(QLatin1Char(','), Qt::SkipEmptyParts)) {
-        purposes->push_back(purpose.toStdString());
-    }
-    for (const QString& tile : fields[2].split(QLatin1Char(','), Qt::SkipEmptyParts)) {
-        bool ok = false;
-        const int number = tile.toInt(&ok);
-        if (ok) {
-            tiles->push_back(number);
-        }
-    }
+
+    parseBakeRecord(knob ? knob->getValue() : std::string(), purposes, tiles);
 }
 
 std::string
@@ -622,6 +687,126 @@ TexturePaint::getBakedInputPath(const std::string& purpose,
     }
 
     return path;
+}
+
+bool
+TexturePaint::getBakeOutputPattern(std::string* pattern,
+                                   std::string* error) const
+{
+    KnobOutputFilePtr knob = _bakeOutputPath.lock();
+
+    *pattern = knob ? knob->getValue() : std::string();
+    AppInstancePtr app = getApp();
+    if (app && app->getProject()) {
+        app->getProject()->canonicalizePath(*pattern);
+    }
+    if (pattern->empty() || !std::filesystem::path(*pattern).is_absolute()) {
+        *error = tr("Bake Output Path \"%1\" is not an absolute path once expanded: save the project first, or give an "
+                    "absolute path.")
+                     .arg(QString::fromStdString(*pattern))
+                     .toStdString();
+
+        return false;
+    }
+
+    return true;
+}
+
+bool
+TexturePaint::hasBakedOutput() const
+{
+    KnobStringPtr knob = _bakedOutput.lock();
+    std::vector<std::string> purposes;
+    std::vector<int> tiles;
+
+    parseBakeRecord(knob ? knob->getValue() : std::string(), &purposes, &tiles);
+
+    return !purposes.empty() && !tiles.empty();
+}
+
+std::string
+TexturePaint::getBakedOutputPath(const std::string& purpose,
+                                 int tile) const
+{
+    KnobStringPtr knob = _bakedOutput.lock();
+    std::vector<std::string> purposes;
+    std::vector<int> tiles;
+
+    parseBakeRecord(knob ? knob->getValue() : std::string(), &purposes, &tiles);
+    if ((std::find(purposes.begin(), purposes.end(), purpose) == purposes.end()) || (std::find(tiles.begin(), tiles.end(), tile) == tiles.end())) {
+        return std::string();
+    }
+    std::string pattern;
+    std::string error;
+    std::string path;
+    if (!getBakeOutputPattern(&pattern, &error) || !MaterialBake::purposePath(pattern, purpose, tile, &path, &error)) {
+        return std::string();
+    }
+
+    return path;
+}
+
+std::vector<std::string>
+TexturePaint::getBakedOutputFiles() const
+{
+    KnobStringPtr knob = _bakedOutput.lock();
+    std::vector<std::string> purposes;
+    std::vector<int> tiles;
+    std::vector<std::string> files;
+
+    parseBakeRecord(knob ? knob->getValue() : std::string(), &purposes, &tiles);
+    for (int tile : tiles) {
+        for (const std::string& purpose : purposes) {
+            const std::string path = getBakedOutputPath(purpose, tile);
+            if (!path.empty()) {
+                files.push_back(path);
+            }
+        }
+    }
+
+    return files;
+}
+
+std::string
+TexturePaint::getBasePath(const std::string& purpose,
+                          int tile) const
+{
+    const std::string output = getBakedOutputPath(purpose, tile);
+
+    return output.empty() ? getBakedInputPath(purpose, tile) : output;
+}
+
+std::string
+TexturePaint::getViewBaseFiles() const
+{
+    std::set<int> tiles;
+    std::vector<std::string> purposes;
+    std::vector<int> recorded;
+
+    getBakedInputs(&purposes, &recorded);
+    tiles.insert(recorded.begin(), recorded.end());
+    KnobStringPtr output = _bakedOutput.lock();
+    parseBakeRecord(output ? output->getValue() : std::string(), &purposes, &recorded);
+    tiles.insert(recorded.begin(), recorded.end());
+
+    std::string lines;
+    for (int tile : tiles) {
+        const std::string path = getBasePath(kTexturePaintPurposeDiffuseColor, tile);
+        if (!path.empty()) {
+            lines += std::to_string(tile) + "\t" + std::to_string(fileStamp(path)) + "\t" + path + "\n";
+        }
+    }
+
+    return lines;
+}
+
+std::string
+TexturePaint::getTileDirectory() const
+{
+    AppInstancePtr app = getApp();
+    const std::string projectFile = (app && app->getProject()) ? (app->getProject()->getProjectPath() + app->getProject()->getProjectFilename()).toStdString() : std::string();
+
+    return TexturePaintCache::tileDirectory(appPTR->getDiskCacheLocation().toStdString(), projectFile, getNode()->getFullyQualifiedName());
 }
 
 std::vector<std::string>
@@ -722,16 +907,178 @@ TexturePaint::bakeInputs(double time,
     }
     KnobStringPtr record = _bakedInputs.lock();
     if (record) {
-        const QStringList previous = QString::fromStdString(record->getValue()).split(QLatin1Char(';'));
-        const int count = previous.isEmpty() ? 0 : previous.front().toInt();
-        record->setValue(QString::fromUtf8("%1;%2;%3").arg(count + 1).arg(purposes.join(QLatin1Char(','))).arg(tiles.join(QLatin1Char(','))).toStdString());
+        record->setValue(nextBakeRecord(record->getValue(), purposes, tiles));
     }
+    syncSessionViews();
     for (const std::string& line : warnings) {
         *warning += (warning->empty() ? std::string() : std::string("\n")) + line;
     }
 
     return true;
 } // TexturePaint::bakeInputs
+
+bool
+TexturePaint::writeBakeOutput(double time,
+                              ViewIdx view,
+                              const std::string& backupDirectory,
+                              std::vector<std::string>* files,
+                              std::vector<std::pair<std::string, std::string>>* backups,
+                              BakeOutputState* state,
+                              std::string* error)
+{
+    files->clear();
+    error->clear();
+    std::string pattern;
+    if (!getBakeOutputPattern(&pattern, error)) {
+        return false;
+    }
+    KnobStringPtr record = _bakedOutput.lock();
+    const std::string previousRecord = record ? record->getValue() : std::string();
+    KnobStringPtr uvPrimvar = _uvPrimvar.lock();
+    const std::string primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
+    const std::string expression = _primPattern.getExpression();
+    const int size = getTileResolution();
+    AppInstancePtr app = getApp();
+    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+    EffectInstancePtr input = getInput(0);
+    const std::list<ImageLayerDesc> planes = getOutputPlanes(time, view);
+
+    QStringList purposes;
+    for (const ImageLayerDesc& plane : planes) {
+        purposes.push_back(QString::fromStdString(planePurpose(plane)));
+    }
+    QStringList tileNames;
+    bool ok = false;
+    // Live textures render on threads of their own and never on the main thread, which waits here.
+    std::thread worker([&]() {
+        InputScene scene;
+        if (!openInputScene(input, time, view, fps, &scene, error)) {
+            return;
+        }
+        if (!scene.stage) {
+            *error = tr("There is no input scene to bake the painted texture of.").toStdString();
+
+            return;
+        }
+        const PXR_NS::TfToken stName(primvar.empty() ? std::string("st") : primvar);
+        std::vector<PXR_NS::SdfPath> meshes;
+        if (!TexturePaintCache::matchedMeshes(scene.stage, expression, stName, &meshes, error)) {
+            return;
+        }
+        std::set<int> tiles;
+        for (const PXR_NS::SdfPath& mesh : meshes) {
+            if (!SceneRaster::udimTiles(scene.stage, mesh, stName, scene.time, &tiles, error)) {
+                return;
+            }
+        }
+        if (tiles.empty()) {
+            *error = tr("Prim Pattern matches no mesh with the primvar %1 to bake the painted texture of.").arg(QString::fromStdString(stName.GetString())).toStdString();
+
+            return;
+        }
+        LiveTextureStore::instance().prepare(SceneOps::getLiveTextures(scene.scene), time);
+        for (int tile : tiles) {
+            std::vector<std::string> paths;
+            std::string note;
+            if (!ensureTiles(time, view, tile, planes, &paths, &note, error)) {
+                return;
+            }
+            std::size_t index = 0;
+            for (const QString& purpose : purposes) {
+                std::vector<float> rgba;
+                if (!TexturePaintCache::readTile(paths[index++], RectI(0, 0, size, size), &rgba, error)) {
+                    return;
+                }
+                std::string path;
+                if (!MaterialBake::purposePath(pattern, purpose.toStdString(), tile, &path, error)) {
+                    return;
+                }
+                std::error_code ec;
+                if (!backupDirectory.empty() && !previousRecord.empty() && std::filesystem::is_regular_file(path, ec)) {
+                    const std::string copy = backupDirectory + "/" + std::to_string(backups->size()) + "_" + std::filesystem::path(path).filename().string();
+                    std::filesystem::create_directories(backupDirectory, ec);
+                    if (!std::filesystem::copy_file(path, copy, std::filesystem::copy_options::overwrite_existing, ec)) {
+                        *error = tr("%1 cannot be kept to undo the bake: %2").arg(QString::fromStdString(path)).arg(QString::fromStdString(ec.message())).toStdString();
+
+                        return;
+                    }
+                    backups->push_back(std::make_pair(path, copy));
+                }
+                if (!TexturePaintCache::writeTile(path, size, rgba, std::string(), error)) {
+                    return;
+                }
+                files->push_back(path);
+            }
+            tileNames.push_back(QString::number(tile));
+        }
+        ok = true;
+    });
+    worker.join();
+    if (!ok) {
+        if (error->empty()) {
+            *error = tr("The painted texture could not be baked.").toStdString();
+        }
+
+        return false;
+    }
+
+    state->record = previousRecord;
+    state->frozen.clear();
+    for (const RotoLayerPtr& session : getSessions()) {
+        if (sessionHasStrokes(session) && !isSessionFrozen(session)) {
+            setSessionFrozen(session, true);
+            state->frozen.push_back(session);
+        }
+    }
+    if (record) {
+        record->setValue(nextBakeRecord(previousRecord, purposes, tileNames));
+    }
+    syncSessionViews();
+
+    return true;
+} // TexturePaint::writeBakeOutput
+
+void
+TexturePaint::restoreBakeOutputState(const BakeOutputState& state)
+{
+    for (const RotoLayerWPtr& weak : state.frozen) {
+        RotoLayerPtr session = weak.lock();
+        if (session) {
+            setSessionFrozen(session, false);
+        }
+    }
+    KnobStringPtr record = _bakedOutput.lock();
+    if (record) {
+        record->setValue(state.record);
+    }
+    {
+        // Tiles composed over the undone bake's files must not outlive it, whatever their key.
+        std::lock_guard<std::mutex> lock(_bakeMutex);
+        TexturePaintCache::removeStaleTiles(getTileDirectory(), 0);
+    }
+    syncSessionViews();
+}
+
+UndoCommandPtr
+TexturePaint::bakeOutput(double time,
+                         ViewIdx view,
+                         std::vector<std::string>* files,
+                         std::string* error)
+{
+    static std::atomic<unsigned int> bakes(0);
+    const std::string backupDirectory = getTileDirectory() + "/undo/" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" + std::to_string(++bakes);
+    std::vector<std::pair<std::string, std::string>> backups;
+    BakeOutputState state;
+
+    if (!writeBakeOutput(time, view, backupDirectory, files, &backups, &state, error)) {
+        std::error_code ec;
+        std::filesystem::remove_all(backupDirectory, ec);
+
+        return UndoCommandPtr();
+    }
+
+    return std::make_shared<TexturePaintBakeOutputUndoCommand>(getNode(), time, view, state, backups, backupDirectory);
+}
 
 bool
 TexturePaint::ensureTiles(double time,
@@ -746,8 +1093,7 @@ TexturePaint::ensureTiles(double time,
     const bool animated = getTextureMode() == eTextureModeAnimated;
     const std::string frame = animated ? QString::number(time, 'g', 12).toStdString() : std::string();
     AppInstancePtr app = getApp();
-    const std::string projectFile = (app && app->getProject()) ? (app->getProject()->getProjectPath() + app->getProject()->getProjectFilename()).toStdString() : std::string();
-    const std::string directory = TexturePaintCache::tileDirectory(appPTR->getDiskCacheLocation().toStdString(), projectFile, getNode()->getFullyQualifiedName());
+    const std::string directory = getTileDirectory();
 
     std::lock_guard<std::mutex> lock(_bakeMutex);
     const U64 key = getTileCacheKey(view);
@@ -775,15 +1121,19 @@ TexturePaint::ensureTiles(double time,
     std::vector<std::string> basePaths;
     QStringList resampled;
     for (const ImageLayerDesc& plane : planes) {
-        const std::string purpose = plane.isColorLayer() ? std::string(kTexturePaintPurposeDiffuseColor) : plane.getLayerID();
-        const std::string basePath = getBakedInputPath(purpose, tile);
+        const std::string purpose = planePurpose(plane);
+        const std::string output = getBakedOutputPath(purpose, tile);
+        const std::string basePath = output.empty() ? getBakedInputPath(purpose, tile) : output;
         basePaths.push_back(basePath);
         if (basePath.empty()) {
             continue;
         }
         std::error_code ec;
         if (!std::filesystem::is_regular_file(basePath, ec)) {
-            *error = tr("The baked input %1 is missing: bake the inputs again.").arg(QString::fromStdString(basePath)).toStdString();
+            *error = (output.empty() ? tr("The baked input %1 is missing: bake the inputs again.")
+                                     : tr("The baked output %1 is missing: undo the bake or bake the output again."))
+                         .arg(QString::fromStdString(basePath))
+                         .toStdString();
 
             return false;
         }
@@ -824,9 +1174,12 @@ TexturePaint::ensureTiles(double time,
     }
 
     const ImageLayerDesc painted = getPaintedPlane(time, view);
+    // Frozen sessions are in the Bake Output files; while those are the base they are not laid
+    // over again.
+    const bool skipFrozen = hasBakedOutput();
     std::vector<std::pair<RotoLayerPtr, NodePtr>> sessions;
     for (const RotoLayerPtr& session : getSessions()) {
-        if (!sessionHasStrokes(session)) {
+        if (!sessionHasStrokes(session) || (skipFrozen && isSessionFrozen(session))) {
             continue;
         }
         NodePtr viewNode = findSessionView(session.get());
@@ -1095,6 +1448,7 @@ TexturePaint::syncSessionView(const RotoLayerPtr& session,
     view->setPrimPattern(_primPattern.getExpression());
     KnobStringPtr uvPrimvar = _uvPrimvar.lock();
     view->setUvPrimvar(uvPrimvar ? uvPrimvar->getValue() : std::string("st"));
+    view->setBase(getViewBaseFiles(), getTileResolution());
     view->endChanges();
 
     const NodePtr scene = getNode()->getInput(0);
@@ -1199,8 +1553,32 @@ TexturePaint::knobChanged(KnobI* k,
                           bool originatedFromMainThread)
 {
     const KnobStringPtr primPattern = _primPattern.getKnob();
-    if (k && ((k == primPattern.get()) || (k == _uvPrimvar.lock().get()))) {
+    const KnobIPtr viewKnobs[] = {
+        primPattern,
+        _uvPrimvar.lock(),
+        _tileResolution.lock(),
+        _bakeInputsPath.lock(),
+        _bakeOutputPath.lock(),
+    };
+    if (k && (std::find_if(std::begin(viewKnobs), std::end(viewKnobs), [k](const KnobIPtr& knob) {
+                  return knob.get() == k;
+              })
+              != std::end(viewKnobs))) {
         syncSessionViews();
+    }
+    KnobButtonPtr bakeOutputButton = _bakeOutput.lock();
+    if (bakeOutputButton && (k == bakeOutputButton.get())) {
+        std::vector<std::string> files;
+        std::string error;
+        UndoCommandPtr command = bakeOutput(time, ViewIdx(0), &files, &error);
+        if (!command) {
+            setPersistentMessage(eMessageTypeError, error);
+        } else {
+            clearPersistentMessage(false);
+            pushUndoCommand(command);
+        }
+
+        return true;
     }
     KnobButtonPtr bake = _bakeInputs.lock();
     if (bake && (k == bake.get())) {
@@ -1305,6 +1683,7 @@ TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
                                       SessionBuffer* buffer,
                                       std::string* error)
 {
+    ++_sessionRenders;
     SceneRaster::ExplicitCamera camera;
     (void)getSessionCamera(session, &camera);
     const unsigned int level = TexturePaintView::bufferMipmapLevel(getBufferResolution());

@@ -76,3 +76,4 @@ Make builder networks render correctly in MoonRay, in both `USDRender` and the p
 
 - 2026-11-05 — **Every shader smoke-tested, representative looks referenced (cat-plan):** a reference per shader would exceed the LFS budget, and each look exercises many shaders.
 - 2026-11-05 — **Native networks, full or nearly full (user):** the renderer's own shader set, not a translation.
+- 2026-11-13 — MoonRay source changes go in the pinned fork (inbox, from M325 - MoonRay Fork): MoonRay builds from the charlesangus forks pinned by commit (`NATRON_MOONRAY_COMMIT` in `tools/ci/local/Dockerfile`) with no build-time patches. Any MoonRay change this milestone needs, the render-context override included, goes on fork branch `natron/v2026.29.1`: push the submodule fork, bump its gitlink in charlesangus/openmoonray, then bump the pin. Never add a `sed`/patch step to `build-moonray.sh`.

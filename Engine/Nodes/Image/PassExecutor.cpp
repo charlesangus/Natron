@@ -1293,7 +1293,9 @@ recordPassesGpu(EffectInstance& effect,
                 return eStatusFailed;
             }
             ctx.computeBarrier();
-            sourceValid = dividedRect;
+            // Outside the input the divided buffer holds zero, so a Stretch read must clamp into
+            // the input's pixels rather than the buffer's.
+            intersectRects(dividedRect, valid, &sourceValid);
         }
     }
     if (!filtering) {
@@ -1314,6 +1316,7 @@ recordPassesGpu(EffectInstance& effect,
     PassGpuIO io(ctx);
     io.source = source;
     io.sourceValid = sourceValid;
+    io.edgeMode = list.edgeMode;
     io.filtered = filtered;
     io.output = rect;
     io.domain = domain;

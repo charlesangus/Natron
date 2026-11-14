@@ -2025,7 +2025,7 @@ ColorEqualizer::recordGpu(const PassGpuIO& io,
     const PipelineMatrices& pm = pipelineMatrices();
 
     gpu::GpuBuffer* fill = nullptr;
-    if (BloomKernels::recordFill(io, false, &fill) != eStatusOK) {
+    if (BloomKernels::recordFill(io, EdgeMode::Black, &fill) != eStatusOK) {
         return eStatusFailed;
     }
     if (PassExec::isEmptyRect(output) || PassExec::isEmptyRect(domain)) {

@@ -399,7 +399,7 @@ struct Pass {
 
 /**
  * @brief Everything a pass list's GPU recorder reads and writes. source holds the source over
- * at least sourceValid, outside which it reads zero, divided by the divisor when the Premult
+ * at least sourceValid, outside which it reads by edgeMode, divided by the divisor when the Premult
  * stage has one. The recorder writes filtered over output, the passes running over domain: output
  * grown by the halo and clipped to rod, this effect's region of definition. Dispatches the
  * recorder makes in sequence must be separated by compute barriers; the executor orders its own.
@@ -416,6 +416,8 @@ struct PassGpuIO {
     gpu::GpuRecordContext& context;
     GpuImageView source;
     RectI sourceValid;
+    // How the source reads outside sourceValid: PassList::edgeMode.
+    EdgeMode edgeMode = EdgeMode::Black;
     GpuImageView filtered;
     RectI output;
     RectI domain;
@@ -466,12 +468,15 @@ struct PassList {
 };
 
 /**
- * @brief What a Passes op's passes() is built for: the scale the render runs at, and the pixel
- * aspect ratio of the op's source, which turns a horizontal size in canonical units into pixels.
+ * @brief What a Passes op's passes() is built for: the scale the render runs at, the pixel
+ * aspect ratio of the op's source, which turns a horizontal size in canonical units into pixels,
+ * and the edge mode the op reads its source under (StagedImageEffect::resolvedEdgeMode()), which
+ * also fixes the line ends of its separable filters.
  **/
 struct PassContext {
     RenderScale scale;
     double pixelAspectRatio = 1.;
+    EdgeMode edgeMode = EdgeMode::Stretch;
 };
 
 /**

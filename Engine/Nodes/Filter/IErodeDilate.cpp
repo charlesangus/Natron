@@ -961,7 +961,9 @@ struct IErodeDilateSpec {
                        "Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the element has the Size everywhere.\n"
                        "\n"
                        "The element is a rectangle of 2*|size|+1 pixels, as ErodeDilate's, or a disc (an ellipse when the two sizes differ). Where the X and Y sizes have opposite signs, "
-                       "X is filtered before Y, each by a line. At a whole Size where the Map is white, the rectangle gives ErodeDilate's result. The Mask and Mix limit the result as usual.",
+                       "X is filtered before Y, each by a line. At a whole Size where the Map is white, the rectangle gives ErodeDilate's result. The Mask and Mix limit the result as usual.\n"
+                       "\n"
+                       "Outside the image the element reads by the Edge Mode: Stretch repeats the edge pixels, so a constant keeps its value to the border, while Black erodes the border towards black.",
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_IERODEDILATE,
         .icon = NATRON_IMAGES_PATH "NativeNodes/IErodeDilate.png",
@@ -969,7 +971,7 @@ struct IErodeDilateSpec {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Passes,
     };
@@ -1293,8 +1295,9 @@ struct IErodeDilateGpuParams {
     uint32_t outHeight;
     uint32_t dstOffset;
     uint32_t dstStride;
+    uint32_t edgeMode;
 };
-static_assert(sizeof(IErodeDilateGpuParams) == 80);
+static_assert(sizeof(IErodeDilateGpuParams) == 84);
 static_assert(offsetof(IErodeDilateGpuParams, srcX1) == 32);
 static_assert(offsetof(IErodeDilateGpuParams, outX1) == 56);
 
@@ -1472,6 +1475,7 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     base.domWidth = (uint32_t)width;
     base.domHeight = (uint32_t)height;
     base.channels = (uint32_t)nComps;
+    base.edgeMode = gpu::gpuEdgeMode(io.edgeMode);
     const gpu::GpuBlurImage filtered = PassExec::toGpuBlurImage(io.filtered);
     base.outX1 = io.output.x1;
     base.outY1 = io.output.y1;
@@ -1725,10 +1729,13 @@ IErodeDilate::passes(const IErodeDilateParams& params,
                      const RenderScale& scale,
                      const MapRange& range,
                      const std::shared_ptr<const MapPlane>& map,
-                     const RectI& roi)
+                     const RectI& roi,
+                     EdgeMode edgeMode)
 {
     namespace K = IErodeDilateKernels;
     PassList list;
+
+    list.edgeMode = edgeMode;
     IErodeDilateAxis axisX;
     IErodeDilateAxis axisY;
     int stages[K::kStageCount];
@@ -1866,7 +1873,7 @@ IErodeDilate::opPasses(double time,
                        const RenderScale& scale) const
 {
     const IErodeDilateParams params = getParams(time, view);
-    PassList list = passes(params, scale, fullMapRange(), std::shared_ptr<const MapPlane>(), RectI());
+    PassList list = passes(params, scale, fullMapRange(), std::shared_ptr<const MapPlane>(), RectI(), resolvedEdgeMode(time, view));
 
 #ifdef NATRON_HAVE_GPU
     bool capped = false;
@@ -1985,7 +1992,7 @@ IErodeDilate::renderOp(const RenderActionArgs& args,
     }
     const MapRange range = map->tileRange(window);
 
-    return runPassesCpu(*this, plan, args, passes(params, args.mappedScale, range, map, args.roi));
+    return runPassesCpu(*this, plan, args, passes(params, args.mappedScale, range, map, args.roi, resolvedEdgeMode(args.time, args.view)));
 }
 
 bool

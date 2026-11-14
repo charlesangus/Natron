@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Filter/EdgeBlur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
@@ -335,6 +336,38 @@ TEST_F(NativeEdgeBlurTest, BlurIsConfinedToTheEdges)
     // Unchecked, the parity source's own alpha bands are the matte, not the box.
     ASSERT_TRUE(setKnobValues(external, kEdgeBlurParamExternalMatte, { 0. }));
     EXPECT_GT(differingFloats(source, external), 0u);
+}
+
+// A Matte edge two pixels from the left border blurs the source past it: a constant source keeps
+// its value there under Stretch, which Input resolves to for a Constant, and darkens under Black,
+// while the Matte's own border never reads as an edge.
+TEST_F(NativeEdgeBlurTest, EdgeModeDecidesTheBorderOfAConstant)
+{
+    const double v = 0.7;
+    NodePtr source = makeConstant(kWindow, { v, v, v, 1. });
+    NodePtr matte = makeRectOverBlack(RectI(2, 14, 30, 34));
+    ASSERT_TRUE(bool(source) && bool(matte));
+    for (const char* edgeMode : { "input", "stretch", "black" }) {
+        NodePtr node = makeEdgeBlur(source, matte);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamExternalMatte, { 1. }));
+        ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamSize, { 10. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeMode)));
+        RenderedPlane actual;
+        ASSERT_TRUE(renderRGBA(node, &actual));
+        ASSERT_EQ((std::size_t)kWindow.width() * kWindow.height() * 4, actual.pixels.size());
+        if (std::string(edgeMode) == "black") {
+            const std::size_t at = ((std::size_t)24 * kWindow.width() + 0) * 4;
+            EXPECT_LT(actual.pixels[at], v - 1e-3) << "left of the Matte edge";
+            const std::size_t far = ((std::size_t)24 * kWindow.width() + kWindow.width() - 1) * 4;
+            EXPECT_FLOAT_EQ((float)v, actual.pixels[far]) << "away from the Matte edge";
+            continue;
+        }
+        for (std::size_t i = 0; i < actual.pixels.size(); ++i) {
+            const double want = (i % 4 == 3) ? 1. : v;
+            ASSERT_NEAR(want, actual.pixels[i], 1e-5) << edgeMode << " float " << i;
+        }
+    }
 }
 
 // A larger Edge Mult widens the blurred band: it blurs at least where a smaller one does.

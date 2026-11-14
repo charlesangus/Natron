@@ -41,6 +41,7 @@
 #include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/BloomKernels.h"
 #include "Engine/Nodes/Image/ColorMath.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -348,9 +349,9 @@ imageReach(const Frame& frame,
 
 /**
  * @brief The bilinear sample at position (px, py) of plane, width x height pixels from pixel
- * (x1, y1), pixel (x, y) centred at (x + 0.5, y + 0.5); zero outside. The weights and the pixels
- * read come from the absolute position alone, so any window over the same pixels gives the same
- * sample bit for bit.
+ * (x1, y1), pixel (x, y) centred at (x + 0.5, y + 0.5), read outside by edgeMode. The weights
+ * and the pixels read come from the absolute position alone, so any window over the same pixels
+ * gives the same sample bit for bit.
  **/
 inline float
 bilinear(const float* plane,
@@ -359,7 +360,8 @@ bilinear(const float* plane,
          int width,
          int height,
          float px,
-         float py)
+         float py,
+         EdgeMode edgeMode)
 {
     const float u = px - 0.5f;
     const float v = py - 0.5f;
@@ -370,7 +372,13 @@ bilinear(const float* plane,
     const float wx = u - fx;
     const float wy = v - fy;
     const auto at = [&](int x, int y) -> float {
-        return ((x >= 0) && (y >= 0) && (x < width) && (y < height)) ? plane[(std::size_t)y * width + x] : 0.f;
+        int sx = x;
+        int sy = y;
+        if (!EdgeSample::coord(x, 0, width, edgeMode, &sx) || !EdgeSample::coord(y, 0, height, edgeMode, &sy)) {
+            return 0.f;
+        }
+
+        return plane[(std::size_t)sy * width + sx];
     };
 
     return (1.f - wy) * ((1.f - wx) * at(x0, y0) + wx * at(x0 + 1, y0)) + wy * ((1.f - wx) * at(x0, y0 + 1) + wx * at(x0 + 1, y0 + 1));
@@ -605,6 +613,7 @@ void
 appendRotatedPasses(const BloomKernels::PlanPtr& plan,
                     const Frame& rotation,
                     bool expandRoD,
+                    EdgeMode edgeMode,
                     std::vector<Pass>* passes)
 {
     const FrameScratchPtr state = std::make_shared<FrameScratch>(rotation);
@@ -626,10 +635,10 @@ appendRotatedPasses(const BloomKernels::PlanPtr& plan,
     }
     passes->push_back(extent);
 
-    passes->push_back(framePass(state, [state](const PassScratch& image, const PassScratch& frame) -> PassRowFn {
+    passes->push_back(framePass(state, [state, edgeMode](const PassScratch& image, const PassScratch& frame) -> PassRowFn {
         const Frame& f = state->frame();
 
-        return [&image, &frame, f](int line) {
+        return [&image, &frame, f, edgeMode](int line) {
             const int p = line / frame.height;
             const int row = line % frame.height;
             const float* src = image.plane(kSlotMap, p);
@@ -639,7 +648,7 @@ appendRotatedPasses(const BloomKernels::PlanPtr& plan,
                 const float x = (float)(frame.rect.x1 + i) + 0.5f;
                 const float sx = f.toImage[0] * x + f.toImage[1] * y;
                 const float sy = f.toImage[2] * x + f.toImage[3] * y;
-                dst[i] = bilinear(src, image.rect.x1, image.rect.y1, image.width, image.height, sx, sy);
+                dst[i] = bilinear(src, image.rect.x1, image.rect.y1, image.width, image.height, sx, sy, edgeMode);
             }
         };
     }));
@@ -652,11 +661,11 @@ appendRotatedPasses(const BloomKernels::PlanPtr& plan,
             return worker(frame);
         }));
     }
-    passes->push_back(Pass::point(true, [state](const PassScratch& image) -> PassRowFn {
+    passes->push_back(Pass::point(true, [state, edgeMode](const PassScratch& image) -> PassRowFn {
         const PassScratch& frame = state->prepare(image);
         const Frame& f = state->frame();
 
-        return [state, &image, &frame, f](int line) {
+        return [state, &image, &frame, f, edgeMode](int line) {
             const int p = line / image.height;
             const int r = line % image.height;
             const float* acc = frame.plane(1, p);
@@ -666,7 +675,7 @@ appendRotatedPasses(const BloomKernels::PlanPtr& plan,
                 const float x = (float)(image.rect.x1 + i) + 0.5f;
                 const float fx = f.toFrame[0] * x + f.toFrame[1] * y;
                 const float fy = f.toFrame[2] * x + f.toFrame[3] * y;
-                dst[i] = bilinear(acc, frame.rect.x1, frame.rect.y1, frame.width, frame.height, fx, fy);
+                dst[i] = bilinear(acc, frame.rect.x1, frame.rect.y1, frame.width, frame.height, fx, fy, edgeMode);
             }
         };
     }));
@@ -741,8 +750,9 @@ struct GlowFrameGpuParams {
     uint32_t maskComponent;
     float hue;
     uint32_t colourBits;
+    uint32_t edgeMode;
 };
-static_assert(sizeof(GlowFrameGpuParams) == 100);
+static_assert(sizeof(GlowFrameGpuParams) == 104);
 static_assert(offsetof(GlowFrameGpuParams, m00) == 44);
 static_assert(offsetof(GlowFrameGpuParams, maskX1) == 60);
 static_assert(offsetof(GlowFrameGpuParams, hue) == 92);
@@ -836,7 +846,7 @@ recordWeights(const GlowParams& params,
 }
 
 /// Records the bilinear resampling of src (nComps floats per pixel of srcRect) into dst over
-/// dstRect: dst pixel position p reads src at m p, zero outside srcRect.
+/// dstRect: dst pixel position p reads src at m p, outside srcRect by edgeMode.
 bool
 recordResample(gpu::GpuRecordContext& ctx,
                const gpu::GpuBuffer* src,
@@ -844,7 +854,8 @@ recordResample(gpu::GpuRecordContext& ctx,
                const gpu::GpuBuffer* dst,
                const RectI& dstRect,
                int nComps,
-               const float* m)
+               const float* m,
+               EdgeMode edgeMode)
 {
     if (PassExec::isEmptyRect(dstRect)) {
         return true;
@@ -865,6 +876,7 @@ recordResample(gpu::GpuRecordContext& ctx,
     r.m01 = m[1];
     r.m10 = m[2];
     r.m11 = m[3];
+    r.edgeMode = gpu::gpuEdgeMode(edgeMode);
 
     return dispatchGlow(ctx, gpu::GpuKernelId::glow_resample, { src, src, dst }, r, r.dstWidth, r.dstHeight);
 }
@@ -890,7 +902,7 @@ recordRotatedBloom(const BloomKernels::Plan& plan,
     if (!BloomKernels::gpuScratch(ctx, q, nComps, &frameMap) || !BloomKernels::gpuScratch(ctx, q, nComps, &frameAcc)) {
         return eStatusFailed;
     }
-    if (!recordResample(ctx, map, io.domain, frameMap, q, nComps, frame.toImage)) {
+    if (!recordResample(ctx, map, io.domain, frameMap, q, nComps, frame.toImage, io.edgeMode)) {
         return eStatusFailed;
     }
     if (!PassExec::isEmptyRect(q)) {
@@ -905,7 +917,7 @@ recordRotatedBloom(const BloomKernels::Plan& plan,
         }
     }
 
-    return recordResample(ctx, frameAcc, q, acc, io.output, nComps, frame.toFrame) ? eStatusOK : eStatusFailed;
+    return recordResample(ctx, frameAcc, q, acc, io.output, nComps, frame.toFrame, io.edgeMode) ? eStatusOK : eStatusFailed;
 }
 
 PassGpuRecorder
@@ -952,7 +964,7 @@ glowGpuRecorder(const GlowParams& params,
         p.mix = (float)params.mix;
 
         gpu::GpuBuffer* fill = nullptr;
-        if (BloomKernels::recordFill(io, false, &fill) != eStatusOK) {
+        if (BloomKernels::recordFill(io, io.edgeMode, &fill) != eStatusOK) {
             return eStatusFailed;
         }
         gpu::GpuBuffer* weight = nullptr;
@@ -1004,16 +1016,17 @@ glowGpuRecorder(const GlowParams& params,
 #endif // NATRON_HAVE_GPU
 
 /// The map of slot 0 into slot 1, its bloom into slot 2 outside the preview, and the output over
-/// it, with black outside the image.
+/// it, reading outside the image by edgeMode.
 PassList
 glowPasses(const GlowParams& params,
-           const PassContext& context)
+           const PassContext& context,
+           EdgeMode edgeMode)
 {
     const Frame frame = frameOf(params, context.pixelAspectRatio);
-    const BloomKernels::PlanPtr plan = BloomKernels::makePlan(settingsFor(params, context), false);
+    const BloomKernels::PlanPtr plan = BloomKernels::makePlan(settingsFor(params, context), edgeMode);
     PassList list;
 
-    list.edgeMode = EdgeMode::Black;
+    list.edgeMode = edgeMode;
     list.scratchSlots = 3;
     list.resultSlot = kSlotGlow;
     // The mask multiplies the map, as the PyPlug's did, rather than mixing the output.
@@ -1021,7 +1034,7 @@ glowPasses(const GlowParams& params,
     list.passes.push_back(Pass::point(false, mapWorker(params)));
     if (!params.preview) {
         if (frame.kind == FrameKind::eRotated) {
-            appendRotatedPasses(plan, frame, params.expandRoD, &list.passes);
+            appendRotatedPasses(plan, frame, params.expandRoD, edgeMode, &list.passes);
         } else {
             const int growX = params.expandRoD ? BloomKernels::haloX(*plan) : 0;
             const int growY = params.expandRoD ? BloomKernels::haloY(*plan) : 0;
@@ -1268,7 +1281,7 @@ PassList
 GlowOp::passes(const Params& params,
                const PassContext& context) const
 {
-    return glowPasses(params, context);
+    return glowPasses(params, context, context.edgeMode);
 }
 
 std::optional<GpuWeight>
@@ -1296,7 +1309,7 @@ Glow::getSourceRoI(const RectI& rect,
 
     context.scale = scale;
 
-    return passListSourceRoI(rect, glowPasses(params, context));
+    return passListSourceRoI(rect, glowPasses(params, context, EdgeMode::Black));
 }
 
 NATRON_NAMESPACE_EXIT

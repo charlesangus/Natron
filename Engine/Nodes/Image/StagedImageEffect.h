@@ -722,9 +722,7 @@ protected:
 
             return eStatusFailed;
         } else if constexpr (PIPELINE.op == OpKind::Passes) {
-            const typename OP::Params params = bake(args.time, args.view);
-
-            return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.time, args.view, args.mappedScale)));
+            return runPassesCpu(*this, plan, args, opPasses(args.time, args.view, args.mappedScale));
         } else if constexpr (PIPELINE.op == OpKind::Resample) {
             return runResampleCpu(*this, plan, args, opResample(args.time, args.view, args.mappedScale));
         } else if constexpr (PIPELINE.op == OpKind::Composite) {
@@ -776,8 +774,18 @@ private:
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         if constexpr (PIPELINE.op == OpKind::Passes) {
-            return _op.passes(bake(time, view), getPassContext(time, view, scale));
+            const PassContext context = getPassContext(time, view, scale);
+            PassList list = _op.passes(bake(time, view), context);
+            if constexpr (PIPELINE.stages.has(Stage::EdgeMode)) {
+                list.edgeMode = context.edgeMode;
+            }
+
+            return list;
         } else {
+            Q_UNUSED(time);
+            Q_UNUSED(view);
+            Q_UNUSED(scale);
+
             return PassList();
         }
     }

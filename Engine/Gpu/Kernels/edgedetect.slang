@@ -1,3 +1,5 @@
+import edgesample;
+
 // EdgeDetect's own passes, after the workers of Engine/Nodes/Filter/EdgeDetect.cpp: the source fill,
 // the finite-difference stencil, the normalisation and channel combination, and non-maxima
 // suppression. The scratch buffers cover the CPU's filter buffer, `channels` floats per pixel,
@@ -49,6 +51,8 @@ struct EdgeParams
     // The rotation-invariant kernel's weights, as the CPU rounds them.
     float ra;
     float rb;
+    // fill and stencil: how reads past the source and the buffer land, kEdgeStretch or kEdgeBlack.
+    uint edgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<EdgeParams> params;
 
@@ -233,8 +237,7 @@ void writeZero(uint dst)
 
 ///////////////////////////////////////////////////////////////////////////////
 
-// fillBuffer() with the nearest boundary: each buffer pixel is the source pixel nearest to it, or
-// zero when the source has none.
+// fillBuffer(): each buffer pixel is the source pixel the edge mode reads there, or zero.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void edgedetect_fill(uint3 tid : SV_DispatchThreadID)
@@ -243,25 +246,28 @@ void edgedetect_fill(uint3 tid : SV_DispatchThreadID)
         return;
     const uint n = params.channels;
     const uint dst = (tid.y * params.bufWidth + tid.x) * n;
-    if (params.srcX1 >= params.srcX2 || params.srcY1 >= params.srcY2)
+    int2 s;
+    if (!edgePixel(int2(params.bufX1 + int(tid.x), params.bufY1 + int(tid.y)), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), params.edgeMode, s))
     {
         for (uint c = 0; c < n && c < 4; ++c)
             outBuf[dst + c] = 0u;
         return;
     }
-    const int cx = clamp(params.bufX1 + int(tid.x), params.srcX1, params.srcX2 - 1);
-    const int cy = clamp(params.bufY1 + int(tid.y), params.srcY1, params.srcY2 - 1);
-    const uint src = params.srcOffset + uint(cy - params.srcY1) * params.srcStride + uint(cx - params.srcX1) * n;
+    const uint src = params.srcOffset + uint(s.y - params.srcY1) * params.srcStride + uint(s.x - params.srcX1) * n;
     for (uint c = 0; c < n && c < 4; ++c)
         outBuf[dst + c] = inBuf[src + c];
 }
 
 float blurredAt(int i, int j, uint c)
 {
-    return asfloat(inBuf[(uint(j) * params.bufWidth + uint(i)) * params.channels + c]);
+    int si;
+    int sj;
+    if (!edgeCoord(i, 0, int(params.bufWidth), params.edgeMode, si) || !edgeCoord(j, 0, int(params.bufHeight), params.edgeMode, sj))
+        return 0.0;
+    return asfloat(inBuf[(uint(sj) * params.bufWidth + uint(si)) * params.channels + c]);
 }
 
-// stencilWorker(): the gradient components of the pre-blurred buffer, with its edges repeated.
+// stencilWorker(): the gradient components of the pre-blurred buffer, reading past it by edgeMode.
 // Dividing by 8 or 2 is multiplying by 0.125 or 0.5, which is exact where the device's division is not.
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -273,10 +279,10 @@ void edgedetect_stencil(uint3 tid : SV_DispatchThreadID)
     const int h = int(params.bufHeight);
     const int i = int(tid.x);
     const int row = int(tid.y);
-    const int rowP = max(0, row - 1);
-    const int rowN = min(h - 1, row + 1);
-    const int iP = max(0, i - 1);
-    const int iN = min(w - 1, i + 1);
+    const int rowP = row - 1;
+    const int rowN = row + 1;
+    const int iP = i - 1;
+    const int iN = i + 1;
     const float ra = params.ra;
     const float rb = params.rb;
     const uint base = (uint(row) * params.bufWidth + uint(i)) * params.channels;

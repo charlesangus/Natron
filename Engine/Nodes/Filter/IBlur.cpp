@@ -73,7 +73,8 @@ constexpr NodeSpec kIBlurNodeSpec = {
                    "and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the blur has the Size everywhere.\n"
                    "\n"
                    "The blur is a box of the pixel's size applied three times, an approximation of the Gaussian of standard deviation size/2.4 that Blur uses "
-                   "(within about 2% at a constant size), whose cost does not depend on the size. It is black outside the image, and the Mask and Mix limit the result as usual.",
+                   "(within about 2% at a constant size), whose cost does not depend on the size. Outside the image it reads by the Edge Mode: Stretch repeats the edge pixels, Black darkens the blur towards the edges. "
+                   "The Mask and Mix limit the result as usual.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_IBLUR,
     .icon = NATRON_IMAGES_PATH "NativeNodes/IBlur.png",
@@ -81,7 +82,7 @@ constexpr NodeSpec kIBlurNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kIBlurPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Passes,
 };
@@ -243,11 +244,13 @@ boxWorker(const VariableBoxStatePtr& state,
         const int height = scratch.height;
         const PassScratch* buffers = &scratch;
 
-        return [sat, rx, ry, satPlane, width, height, buffers, from, to](int line) {
+        const EdgeMode edgeMode = state->context.edgeMode;
+
+        return [sat, rx, ry, satPlane, width, height, buffers, from, to, edgeMode](int line) {
             const int p = line / height;
             const int y = line % height;
             const std::size_t row = (std::size_t)y * width;
-            VariableBlurKernels::boxRow(sat + (std::size_t)p * satPlane, width, height, y, rx + row, ry + row, buffers->plane(from, p) + row, buffers->plane(to, p) + row);
+            VariableBlurKernels::boxRow(sat + (std::size_t)p * satPlane, width, height, y, rx + row, ry + row, buffers->plane(from, p) + row, edgeMode, buffers->plane(to, p) + row);
         };
     };
 }
@@ -289,8 +292,9 @@ struct IBlurGpuParams {
     uint32_t outHeight;
     uint32_t dstOffset;
     uint32_t dstStride;
+    uint32_t edgeMode;
 };
-static_assert(sizeof(IBlurGpuParams) == 96);
+static_assert(sizeof(IBlurGpuParams) == 100);
 static_assert(offsetof(IBlurGpuParams, srcX1) == 48);
 static_assert(offsetof(IBlurGpuParams, outX1) == 72);
 
@@ -471,6 +475,7 @@ recordIBlurGpu(const PassGpuIO& io,
     base.radiiOffset = (uint32_t)(2 * slotFloats);
     base.valueBits = (uint32_t)(62 - pixelBits);
     base.satOffset = (uint32_t)satOffset;
+    base.edgeMode = gpu::gpuEdgeMode(io.edgeMode);
     const gpu::GpuBlurImage filtered = PassExec::toGpuBlurImage(io.filtered);
     base.outX1 = io.output.x1;
     base.outY1 = io.output.y1;
@@ -649,6 +654,7 @@ IBlur::passes(const IBlurParams& params,
               const std::shared_ptr<const MapPlane>& map)
 {
     PassList list;
+    list.edgeMode = context.edgeMode;
     // The size is linear in the Map value, so the largest radius over the range is at one end.
     const BoxRadii low = radiiAt(params, context, range.min);
     const BoxRadii high = radiiAt(params, context, range.max);

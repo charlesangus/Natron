@@ -54,6 +54,7 @@
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Filter/VariableBlurKernels.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
@@ -218,6 +219,92 @@ protected:
     }
 };
 
+// Under Stretch the table extends past its last cell as if the edge pixels repeated: one box of
+// a plane is the box under Black of that plane padded with its repeated edges, beyond the reach
+// of every box, for whole and fractional radii, at the corners too.
+TEST_F(NativeIBlurTest, KernelStretchIsTheBoxOfTheRepeatedEdges)
+{
+    const int width = 19;
+    const int height = 13;
+    const int pad = 8;
+    const int paddedWidth = width + 2 * pad;
+    const int paddedHeight = height + 2 * pad;
+    const std::size_t size = (std::size_t)width * height;
+    const std::size_t paddedSize = (std::size_t)paddedWidth * paddedHeight;
+    std::vector<float> src(size);
+    std::vector<float> rx(size);
+    std::vector<float> ry(size);
+    for (std::size_t i = 0; i < size; ++i) {
+        src[i] = (float)std::sin(0.37 * (double)i) * 3.f + 0.1f;
+        rx[i] = (float)(i % 7) * 0.9f;
+        ry[i] = (float)(i % 5) * 1.3f;
+    }
+    std::vector<float> padded(paddedSize);
+    std::vector<float> paddedRx(paddedSize, 0.f);
+    std::vector<float> paddedRy(paddedSize, 0.f);
+    for (int y = 0; y < paddedHeight; ++y) {
+        const int sy = std::min(std::max(y - pad, 0), height - 1);
+        for (int x = 0; x < paddedWidth; ++x) {
+            const int sx = std::min(std::max(x - pad, 0), width - 1);
+            padded[(std::size_t)y * paddedWidth + x] = src[(std::size_t)sy * width + sx];
+            if ((x - pad == sx) && (y - pad == sy)) {
+                paddedRx[(std::size_t)y * paddedWidth + x] = rx[(std::size_t)sy * width + sx];
+                paddedRy[(std::size_t)y * paddedWidth + x] = ry[(std::size_t)sy * width + sx];
+            }
+        }
+    }
+    std::vector<float> stretched(size, 0.f);
+    std::vector<float> reference(paddedSize, 0.f);
+    VariableBlurKernels::iteratedBox(src.data(), width, height, rx.data(), ry.data(), 1, EdgeMode::Stretch, stretched.data());
+    VariableBlurKernels::iteratedBox(padded.data(), paddedWidth, paddedHeight, paddedRx.data(), paddedRy.data(), 1, EdgeMode::Black, reference.data());
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const float want = reference[(std::size_t)(y + pad) * paddedWidth + x + pad];
+            EXPECT_NEAR(want, stretched[(std::size_t)y * width + x], 1e-5) << x << "," << y;
+        }
+    }
+
+    // Black reads zero past the plane: the same constant darkens at the corner under Black only.
+    const std::vector<float> constant(size, 0.5f);
+    const std::vector<float> radii(size, 3.f);
+    std::vector<float> black(size, 0.f);
+    VariableBlurKernels::iteratedBox(constant.data(), width, height, radii.data(), radii.data(), 3, EdgeMode::Stretch, stretched.data());
+    VariableBlurKernels::iteratedBox(constant.data(), width, height, radii.data(), radii.data(), 3, EdgeMode::Black, black.data());
+    for (std::size_t i = 0; i < size; ++i) {
+        ASSERT_NEAR(0.5f, stretched[i], 1e-5) << i;
+    }
+    EXPECT_LT(black[0], 0.4f);
+}
+
+// A constant keeps its value to the border under Stretch, which Input resolves to for a Constant,
+// and darkens there under Black, keeping its value in the middle.
+TEST_F(NativeIBlurTest, EdgeModeDecidesTheBorderOfAConstant)
+{
+    const double color[4] = { 0.3, 0.6, 0.9, 1. };
+    NodePtr constant = makeConstant(kWindow, { color[0], color[1], color[2], color[3] });
+    ASSERT_TRUE(bool(constant));
+    for (const char* edgeMode : { "input", "stretch", "black" }) {
+        NodePtr iblur = makeIBlur(constant, NodePtr(), 10.);
+        ASSERT_TRUE(bool(iblur));
+        ASSERT_TRUE(setKnobValue(iblur, kEdgeModeParam, std::string(edgeMode)));
+        RenderedPlane actual;
+        ASSERT_TRUE(renderRGBA(iblur, kWindow, &actual));
+        const int w = kWindow.width();
+        const auto at = [&](int x, int y, int c) {
+            return actual.pixels[((std::size_t)y * w + x) * 4 + c];
+        };
+        if (std::string(edgeMode) == "black") {
+            EXPECT_LT(at(0, 0, 1), 0.9 * color[1]) << "the corner";
+            EXPECT_LT(at(w - 1, kWindow.height() / 2, 1), 0.95 * color[1]) << "the right edge";
+            EXPECT_NEAR(color[1], at(w / 2, kWindow.height() / 2, 1), 1e-5) << "the centre";
+            continue;
+        }
+        for (std::size_t i = 0; i < actual.pixels.size(); ++i) {
+            ASSERT_NEAR(color[i % 4], actual.pixels[i], 1e-4) << edgeMode << " float " << i;
+        }
+    }
+}
+
 // The box radius gives three boxes the variance of the Gaussian, and the threaded passes' kernel
 // blurs an impulse to that variance on each axis.
 TEST_F(NativeIBlurTest, BoxRadiusMatchesGaussianVariance)
@@ -244,7 +331,7 @@ TEST_F(NativeIBlurTest, BoxRadiusMatchesGaussianVariance)
     const std::vector<float> rx(size, (float)VariableBlurKernels::boxRadius(sigmaX));
     const std::vector<float> ry(size, (float)VariableBlurKernels::boxRadius(sigmaY));
     std::vector<float> blurred(size, 0.f);
-    VariableBlurKernels::iteratedBox(impulse.data(), width, height, rx.data(), ry.data(), 3, blurred.data());
+    VariableBlurKernels::iteratedBox(impulse.data(), width, height, rx.data(), ry.data(), 3, EdgeMode::Black, blurred.data());
     double varianceX = 0.;
     double varianceY = 0.;
     planeVariances(blurred, width, height, &varianceX, &varianceY);
@@ -271,7 +358,7 @@ TEST_F(NativeIBlurTest, KernelRadiusZeroIsExact)
         }
     }
     std::vector<float> dst(size, 0.f);
-    VariableBlurKernels::iteratedBox(src.data(), width, height, rx.data(), ry.data(), 3, dst.data());
+    VariableBlurKernels::iteratedBox(src.data(), width, height, rx.data(), ry.data(), 3, EdgeMode::Black, dst.data());
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width / 2; ++x) {
             const std::size_t i = (std::size_t)y * width + x;
@@ -312,8 +399,8 @@ TEST_F(NativeIBlurTest, KernelNonFiniteCountsAsZero)
     }
     std::vector<float> dst(size, 0.f);
     std::vector<float> expected(size, 0.f);
-    VariableBlurKernels::iteratedBox(src.data(), width, height, rx.data(), ry.data(), 3, dst.data());
-    VariableBlurKernels::iteratedBox(zeroed.data(), width, height, rx.data(), ry.data(), 3, expected.data());
+    VariableBlurKernels::iteratedBox(src.data(), width, height, rx.data(), ry.data(), 3, EdgeMode::Black, dst.data());
+    VariableBlurKernels::iteratedBox(zeroed.data(), width, height, rx.data(), ry.data(), 3, EdgeMode::Black, expected.data());
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             const std::size_t i = (std::size_t)y * width + x;

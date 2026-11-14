@@ -1,5 +1,7 @@
+import edgesample;
+
 // The bloom of Engine/Nodes/Filter/BloomKernels.cpp, after its CPU workers: a copy that fills a
-// buffer from a source with the nearest pixel repeated or black outside it, the [1 3 3 1] / 8
+// buffer from a source read outside it by the edge mode, the [1 3 3 1] / 8
 // downsampling of a pyramid level along one axis, and the Catmull-Rom upsampling of a blurred level
 // added into the output. The blur of each level between them is blur.slang's or blur_lines.slang's.
 // BloomGpuParams in BloomKernels.cpp mirrors BloomParams.
@@ -19,11 +21,6 @@ struct BloomParams
     int validY1;
     int validX2;
     int validY2;
-    // copy, with nearest: the rect a pixel is clamped to before the valid one.
-    int clampX1;
-    int clampY1;
-    int clampX2;
-    int clampY2;
     // The rect written, whose first pixel is at outOffset of outBuf.
     int outX1;
     int outY1;
@@ -37,8 +34,8 @@ struct BloomParams
     int domX2;
     int domY2;
     uint channels;
-    // Whether reads past the valid pixels repeat the nearest one; else they are zero.
-    uint nearest;
+    // How reads past the valid pixels go, edgesample's kEdgeStretch or kEdgeBlack.
+    uint edgeMode;
     // down: 0 halves x, 1 halves y.
     uint axis;
     // up_add: how many times smaller than the output the level is along each axis.
@@ -54,29 +51,20 @@ struct BloomParams
 
 static const float kDown[4] = { 0.125, 0.375, 0.375, 0.125 };
 
-bool validEmpty()
-{
-    return params.validX1 >= params.validX2 || params.validY1 >= params.validY2;
-}
-
 // The value of channel c of inBuf at (x, y), already within the valid pixels.
 float readIn(int x, int y, uint c)
 {
     return asfloat(inBuf[params.inOffset + uint(y - params.inY1) * params.inStride + uint(x - params.inX1) * params.channels + c]);
 }
 
-// Reads past the valid pixels: the nearest one, or zero. resolveIndex() in BloomKernels.cpp.
+// Reads past the valid pixels by the edge mode; false for zero. resolveIndex() in BloomKernels.cpp.
 bool resolve(inout int x, inout int y)
 {
-    if (validEmpty())
-        return false;
-    if (params.nearest != 0)
-    {
-        x = clamp(x, params.validX1, params.validX2 - 1);
-        y = clamp(y, params.validY1, params.validY2 - 1);
-        return true;
-    }
-    return x >= params.validX1 && x < params.validX2 && y >= params.validY1 && y < params.validY2;
+    int2 at;
+    const bool hit = edgePixel(int2(x, y), int4(params.validX1, params.validY1, params.validX2, params.validY2), params.edgeMode, at);
+    x = at.x;
+    y = at.y;
+    return hit;
 }
 
 int floorDiv(int a, int b)
@@ -113,8 +101,7 @@ void upTaps(uint factorU, int x, out int i0, out float w[4], out int count)
     count = 4;
 }
 
-// fillBuffer() over the output rect: with nearest, the pixel is clamped to the clamp rect, then to
-// the valid one; without, a pixel outside the valid rect is zero.
+// fillBuffer() over the output rect by the edge mode.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void bloom_copy(uint3 tid : SV_DispatchThreadID)
@@ -125,11 +112,6 @@ void bloom_copy(uint3 tid : SV_DispatchThreadID)
     const uint dst = params.outOffset + tid.y * params.outStride + tid.x * params.channels;
     int x = params.outX1 + int(tid.x);
     int y = params.outY1 + int(tid.y);
-    if (params.nearest != 0)
-    {
-        x = clamp(x, params.clampX1, params.clampX2 - 1);
-        y = clamp(y, params.clampY1, params.clampY2 - 1);
-    }
     const bool inside = resolve(x, y);
     for (uint c = 0; c < n; ++c)
         outBuf[dst + c] = asuint(inside ? readIn(x, y, c) : 0.0);

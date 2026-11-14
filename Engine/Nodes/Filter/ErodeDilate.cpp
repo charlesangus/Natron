@@ -248,6 +248,23 @@ gpuSourceImage(const PassGpuIO& io,
     return true;
 }
 
+/// The source over sourceValid alone, the pixels that exist: the morphology reads past its bounds
+/// by the edge mode, as fillBuffer() reads past sourceValid.
+gpu::GpuBlurImage
+sourceValidImage(const PassGpuIO& io)
+{
+    gpu::GpuBlurImage image = PassExec::toGpuBlurImage(io.source);
+    if (!image.buffer || PassExec::isEmptyRect(io.sourceValid)) {
+        image.bounds = gpu::GpuBlurRect();
+
+        return image;
+    }
+    image.offsetFloats += (uint64_t)(io.sourceValid.y1 - image.bounds.y1) * image.strideFloats + (uint64_t)(io.sourceValid.x1 - image.bounds.x1) * (uint64_t)io.nComps;
+    image.bounds = PassExec::toGpuBlurRect(io.sourceValid);
+
+    return image;
+}
+
 /// The window of the source as the CPU buffer holds it, for a list whose passes all have a half
 /// width of zero: recordMorphology() takes at least one pass, and the line kernel's identity
 /// filter copies the window, zero where the buffer has no pixel.
@@ -265,6 +282,7 @@ recordUnfiltered(const PassGpuIO& io)
     gpu::GpuLineBlur copy;
     copy.src = source;
     copy.srcValid = PassExec::toGpuBlurRect(io.sourceValid);
+    copy.srcEdgeMode = io.edgeMode;
     copy.dst = PassExec::toGpuBlurImage(io.filtered);
     copy.output = PassExec::toGpuBlurRect(io.output);
     copy.domain = PassExec::toGpuBlurRect(io.domain);
@@ -282,7 +300,8 @@ morphologyGpuRecorder(std::vector<gpu::GpuMorphPass> passes)
             return recordUnfiltered(io);
         }
         gpu::GpuMorphology morph;
-        morph.src = PassExec::toGpuBlurImage(io.source);
+        morph.src = sourceValidImage(io);
+        morph.edgeMode = io.edgeMode;
         morph.dst = PassExec::toGpuBlurImage(io.filtered);
         morph.output = PassExec::toGpuBlurRect(io.output);
         morph.rod = PassExec::toGpuBlurRect(io.rod);
@@ -315,10 +334,12 @@ axisHalo(int size,
 
 PassList
 erodeDilatePasses(const ErodeDilateParams& params,
-                  const RenderScale& scale)
+                  const RenderScale& scale,
+                  EdgeMode edgeMode)
 {
     const OfxPointD rs = scale.toOfxPointD();
     PassList list;
+    list.edgeMode = edgeMode;
 #ifdef NATRON_HAVE_GPU
     std::vector<gpu::GpuMorphPass> gpuPasses;
     bool gpuFits = true;
@@ -411,7 +432,7 @@ PassList
 ErodeDilateOp::passes(const Params& params,
                       const PassContext& context) const
 {
-    return erodeDilatePasses(params, context.scale);
+    return erodeDilatePasses(params, context.scale, context.edgeMode);
 }
 
 std::optional<GpuWeight>
@@ -453,7 +474,7 @@ ErodeDilate::getSourceRoI(const RectI& rect,
                           const RenderScale& scale,
                           const ErodeDilateParams& params)
 {
-    return passListSourceRoI(rect, erodeDilatePasses(params, scale));
+    return passListSourceRoI(rect, erodeDilatePasses(params, scale, EdgeMode::Black));
 }
 
 bool
@@ -469,7 +490,7 @@ ErodeDilate::getExpansion(const RenderScale& scale,
                           int* deltaX,
                           int* deltaY)
 {
-    const PassExtent extent = passListExtent(erodeDilatePasses(params, scale));
+    const PassExtent extent = passListExtent(erodeDilatePasses(params, scale, EdgeMode::Black));
 
     *deltaX = extent.growX;
     *deltaY = extent.growY;

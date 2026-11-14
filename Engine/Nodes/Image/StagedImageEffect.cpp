@@ -525,6 +525,7 @@ StagedImageEffect::getPassContext(double time,
     if (par != 0.) {
         context.pixelAspectRatio = par;
     }
+    context.edgeMode = resolvedEdgeMode(time, view);
 
     return context;
 }

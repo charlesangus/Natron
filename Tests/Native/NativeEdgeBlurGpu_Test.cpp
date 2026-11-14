@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Filter/EdgeBlur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
@@ -259,6 +260,26 @@ TEST_F(NativeEdgeBlurGpuTest, SourceMatteMatchesTheCpu)
     ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamCropToFormat, { 0. }));
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
     expectParity(std::vector<NodePtr>({ node }), node, "sobel, uncropped, mix 0.5");
+}
+
+// A Matte edge near the left border blurs the source past it, which each edge mode reads its own
+// way, as the source's own alpha bands that reach the border do.
+TEST_F(NativeEdgeBlurGpuTest, EdgeModesMatchTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr box = makeBoxOverBlack(RectI(2, 14, 30, 34));
+    NodePtr external = makeEdgeBlur(source, box);
+    NodePtr own = makeEdgeBlur(source, NodePtr());
+    ASSERT_TRUE(bool(source) && bool(box) && bool(external) && bool(own));
+    ASSERT_TRUE(setKnobValues(external, kEdgeBlurParamExternalMatte, { 1. }));
+    ASSERT_TRUE(setKnobValues(external, kEdgeBlurParamSize, { 10. }));
+    ASSERT_TRUE(setKnobValues(own, kEdgeBlurParamSize, { 10. }));
+    for (const char* edgeMode : { "stretch", "black" }) {
+        ASSERT_TRUE(setKnobValue(external, kEdgeModeParam, std::string(edgeMode)));
+        ASSERT_TRUE(setKnobValue(own, kEdgeModeParam, std::string(edgeMode)));
+        expectParity(std::vector<NodePtr>({ external }), external, std::string(edgeMode) + ", box Matte");
+        expectParity(std::vector<NodePtr>({ own }), own, std::string(edgeMode) + ", source Matte");
+    }
 }
 
 // The edges of a Matte that is a box over black, part of the GPU frame, and one that is another

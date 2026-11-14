@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -51,6 +52,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -314,6 +316,64 @@ TEST_F(NativeEdgeDetectTest, UnitStepEdgeHasUnitGradientMagnitude)
                     peak = std::max(peak, planes[0].pixels[at]);
                 }
                 EXPECT_NEAR(1., peak, op.tolerance) << op.name << ", blur size " << blurSize << ", " << combination;
+            }
+        }
+    }
+}
+
+// A constant image has no edge inside it. Where the node repeats the source's edge (Stretch, and
+// Input over a generator, which reports Stretch) its border shows none either; where it reads black
+// past the source the border is an edge.
+TEST_F(NativeEdgeDetectTest, EdgeModeDecidesTheBorderResponseOfAConstant)
+{
+    const RectI format(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    const char* const filters[] = { kEdgeDetectParamFilterSimple, kEdgeDetectParamFilterSobel, kEdgeDetectParamFilterGaussian, kEdgeDetectParamFilterBox };
+
+    for (const char* filter : filters) {
+        for (const double blurSize : { 0., 6. }) {
+            for (const char* mode : { "input", "stretch", "black" }) {
+                resetProject();
+                NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+                NodePtr edge = createNode(QString::fromUtf8(kEdgeDetectID), kNativeEdgeDetectMajor);
+                ASSERT_TRUE(bool(constant));
+                ASSERT_TRUE(isNative(edge));
+                ASSERT_TRUE(setKnobValue(constant, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+                ASSERT_TRUE(setKnobValues(constant, kConstantParamColor, { 0.5, 0.5, 0.5, 0.5 }));
+                connectNodes(constant, edge, 0, true);
+                ASSERT_TRUE(processRGBA(edge));
+                ASSERT_TRUE(setKnobValue(edge, kEdgeDetectParamFilter, std::string(filter)));
+                ASSERT_TRUE(setKnobValues(edge, kEdgeDetectParamBlurSize, { blurSize }));
+                ASSERT_TRUE(setKnobValue(edge, kEdgeModeParam, std::string(mode)));
+
+                const std::string what = std::string(filter) + ", blur size " + std::to_string(blurSize) + ", edge mode " + mode;
+                std::vector<RenderedPlane> planes;
+                std::string error;
+                ASSERT_TRUE(renderNodePlanesDirect(edge, kTime, ViewIdx(0), 0, format, rgba, &planes, &error)) << what << ": " << error;
+                ASSERT_EQ(1u, planes.size()) << what;
+                ASSERT_EQ(static_cast<std::size_t>(format.width()) * format.height() * 4, planes[0].pixels.size()) << what;
+                float border = 0.f;
+                float centre = 0.f;
+                for (int y = format.y1; y < format.y2; ++y) {
+                    for (int x = format.x1; x < format.x2; ++x) {
+                        const bool onBorder = (x == format.x1) || (y == format.y1) || (x == format.x2 - 1) || (y == format.y2 - 1);
+                        const bool inCentre = (x >= format.x1 + 16) && (x < format.x2 - 16) && (y >= format.y1 + 16) && (y < format.y2 - 16);
+                        const std::size_t at = ((std::size_t)(y - format.y1) * format.width() + (std::size_t)(x - format.x1)) * 4;
+                        const float v = std::abs(planes[0].pixels[at]);
+                        if (onBorder) {
+                            border = std::max(border, v);
+                        }
+                        if (inCentre) {
+                            centre = std::max(centre, v);
+                        }
+                    }
+                }
+                EXPECT_LE(centre, 1e-4f) << what << ": the inside of a constant has no edge";
+                if (std::string(mode) == "black") {
+                    EXPECT_GT(border, 0.05f) << what << ": the black past the source makes an edge";
+                } else {
+                    EXPECT_LE(border, 1e-4f) << what << ": the repeated edge makes none";
+                }
             }
         }
     }

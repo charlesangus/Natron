@@ -64,7 +64,7 @@ LineFilter::LineFilter()
 LineFilter
 LineFilter::deriche(float sigma,
                     unsigned int order,
-                    bool neumann)
+                    EdgeMode lineEnds)
 {
     LineFilter f;
     const double nsigma = std::max(0.f, sigma);
@@ -102,7 +102,7 @@ LineFilter::deriche(float sigma,
     }
     f._kind = eKindDeriche;
     f._order = order;
-    f._neumann = neumann;
+    f._neumann = (lineEnds == EdgeMode::Stretch);
     f._a0 = a0;
     f._a1 = a1;
     f._a2 = a2;
@@ -118,11 +118,11 @@ LineFilter::deriche(float sigma,
 LineFilter
 LineFilter::vanVliet(float sigma,
                      unsigned int order,
-                     bool neumann)
+                     EdgeMode lineEnds)
 {
     const float nsigma = std::max(0.f, sigma);
     if (nsigma < 0.5f) {
-        return deriche(nsigma, order, neumann);
+        return deriche(nsigma, order, lineEnds);
     }
     LineFilter f;
     if (order > 3) {
@@ -137,7 +137,7 @@ LineFilter::vanVliet(float sigma,
                  b2 = qsq * (m0 + 2 * m1 + 3 * q) / scale, b3 = -qsq * q / scale, B = (m0 * (m1sq + m2sq)) / scale;
     f._kind = eKindVanVliet;
     f._order = order;
-    f._neumann = neumann;
+    f._neumann = (lineEnds == EdgeMode::Stretch);
     f._filter[0] = B;
     f._filter[1] = -b1;
     f._filter[2] = -b2;
@@ -162,7 +162,7 @@ LineFilter::vanVliet(float sigma,
 LineFilter
 LineFilter::box(float boxSize,
                 int order,
-                bool neumann,
+                EdgeMode lineEnds,
                 unsigned int iterations)
 {
     LineFilter f;
@@ -176,7 +176,7 @@ LineFilter::box(float boxSize,
     }
     f._kind = eKindBox;
     f._order = order < 0 ? 0u : static_cast<unsigned int>(order);
-    f._neumann = neumann;
+    f._neumann = (lineEnds == EdgeMode::Stretch);
     f._boxSize = nboxSize;
     f._iterations = iterations;
 
@@ -219,7 +219,7 @@ LineFilter::firGaussianWeights(double sigma)
 LineFilter
 LineFilter::firGaussian(double sigma,
                         unsigned int order,
-                        bool neumann)
+                        EdgeMode lineEnds)
 {
     LineFilter f;
     if (order > 2) {
@@ -231,7 +231,7 @@ LineFilter::firGaussian(double sigma,
     }
     f._kind = eKindFIRGaussian;
     f._order = order;
-    f._neumann = neumann;
+    f._neumann = (lineEnds == EdgeMode::Stretch);
     f._radius = radius;
     f._weights = firGaussianWeights(sigma);
 
@@ -242,21 +242,21 @@ LineFilter
 LineFilter::forFilter(Filter filter,
                       float size,
                       unsigned int order,
-                      bool neumann)
+                      EdgeMode lineEnds)
 {
     switch (filter) {
     case eFilterQuasiGaussian:
-        return deriche(size, order, neumann);
+        return deriche(size, order, lineEnds);
     case eFilterGaussian:
-        return vanVliet(size, order, neumann);
+        return vanVliet(size, order, lineEnds);
     case eFilterBox:
-        return box(size, static_cast<int>(order), neumann, 1);
+        return box(size, static_cast<int>(order), lineEnds, 1);
     case eFilterTriangle:
-        return box(size, static_cast<int>(order), neumann, 2);
+        return box(size, static_cast<int>(order), lineEnds, 2);
     case eFilterQuadratic:
-        return box(size, static_cast<int>(order), neumann, 3);
+        return box(size, static_cast<int>(order), lineEnds, 3);
     case eFilterFIRGaussian:
-        return firGaussian(size, order, neumann);
+        return firGaussian(size, order, lineEnds);
     }
 
     return LineFilter();
@@ -782,7 +782,7 @@ toGpuLineFilter(const LineFilter& filter)
         return f;
     }
     f.order = filter.order();
-    f.neumann = filter.neumann();
+    f.lineEnds = filter.lineEnds();
 
     return f;
 }
@@ -794,9 +794,9 @@ deriche(float* data,
         std::ptrdiff_t stride,
         float sigma,
         unsigned int order,
-        bool neumann)
+        EdgeMode lineEnds)
 {
-    LineFilter::deriche(sigma, order, neumann).apply(data, n, stride);
+    LineFilter::deriche(sigma, order, lineEnds).apply(data, n, stride);
 }
 
 void
@@ -805,9 +805,9 @@ vanVliet(float* data,
          std::ptrdiff_t stride,
          float sigma,
          unsigned int order,
-         bool neumann)
+         EdgeMode lineEnds)
 {
-    LineFilter::vanVliet(sigma, order, neumann).apply(data, n, stride);
+    LineFilter::vanVliet(sigma, order, lineEnds).apply(data, n, stride);
 }
 
 void
@@ -816,10 +816,10 @@ boxFilter(float* data,
           std::ptrdiff_t stride,
           float boxSize,
           int order,
-          bool neumann,
+          EdgeMode lineEnds,
           unsigned int iterations)
 {
-    LineFilter::box(boxSize, order, neumann, iterations).apply(data, n, stride);
+    LineFilter::box(boxSize, order, lineEnds, iterations).apply(data, n, stride);
 }
 } // namespace BlurKernels
 

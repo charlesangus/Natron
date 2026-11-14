@@ -1,8 +1,10 @@
 // BlurKernels::LineFilter's recursive filters, one thread per line: Deriche, van Vliet and the box
 // filter iterated 0 to 3 times, at orders 0 and 1, with the CPU's recursions and rounding points, and
-// black or the end samples (Neumann) outside the line. The CPU keeps the recursion state in double;
+// outside the line black (Black line ends) or the end samples (Stretch, Neumann). The CPU keeps the recursion state in double;
 // here it is kept in two floats, as plain float state drifts by more than 1e-3 for van Vliet at large
 // sigma. GpuLineBlurParams in Engine/Gpu/GpuBlur.h mirrors LinesParams.
+
+import edgesample;
 
 StructuredBuffer<float> srcBuf;
 RWStructuredBuffer<float> dstBuf;
@@ -44,7 +46,8 @@ struct LinesParams
     int half;
     uint iterations;
     uint order;
-    uint neumann;
+    uint lineEnds;
+    uint srcEdgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<LinesParams> params;
 
@@ -245,16 +248,15 @@ void storeOut(int pos, uint li, float4 v)
     }
 }
 
-// The source pixel at (x, y), as the CPU's buffer fill reads its image: zero outside the source rect.
+// The source pixel at (x, y), as the CPU's buffer fill reads its image: outside the source rect,
+// zero or the nearest pixel by srcEdgeMode.
 float4 sourceAt(int pos, int line)
 {
-    const int x = params.vertical != 0 ? line : pos;
-    const int y = params.vertical != 0 ? pos : line;
-    if (params.srcX1 >= params.srcX2 || params.srcY1 >= params.srcY2)
+    const int2 p = params.vertical != 0 ? int2(line, pos) : int2(pos, line);
+    int2 s;
+    if (!edgePixel(p, int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), params.srcEdgeMode, s))
         return float4(0.0);
-    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2)
-        return float4(0.0);
-    const uint idx = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels;
+    const uint idx = params.srcOffset + uint(s.y - params.srcY1) * params.srcStride + uint(s.x - params.srcX1) * params.channels;
     float4 v = float4(0.0);
     [ForceUnroll]
     for (uint c = 0; c < 4; ++c)
@@ -294,7 +296,7 @@ void dericheLine(int lo, int hi, int line, uint li)
     FF4 yb = ff4(float4(0.0));
     FF4 yp = yb;
     float4 xp = float4(0.0);
-    if (params.neumann != 0)
+    if (params.lineEnds == kEdgeStretch)
     {
         xp = inputAt(lo, line, li);
         yp = ffMul(ff4(xp), coef(6));
@@ -316,7 +318,7 @@ void dericheLine(int lo, int hi, int line, uint li)
     float4 xa = float4(0.0);
     FF4 yn = ff4(float4(0.0));
     FF4 ya = yn;
-    if (params.neumann != 0)
+    if (params.lineEnds == kEdgeStretch)
     {
         xn = inputAt(hi - 1, line, li);
         xa = xn;
@@ -352,7 +354,7 @@ void vanVlietLine(int lo, int hi, int line, uint li)
     FF4 v3 = v1;
     // Read before the causal pass, which overwrites the line in place.
     float4 iplus = float4(0.0);
-    if (params.neumann != 0)
+    if (params.lineEnds == kEdgeStretch)
     {
         iplus = inputAt(hi - 1, line, li);
         v1 = ffDiv(ff4(inputAt(lo, line, li)), coef(0));
@@ -415,7 +417,7 @@ void vanVlietDerivativeLine(int lo, int hi, int line, uint li)
 
     float4 x1 = float4(0.0);
     float4 x2 = float4(0.0);
-    if (params.neumann != 0)
+    if (params.lineEnds == kEdgeStretch)
     {
         x1 = inputAt(lo, line, li);
         x2 = x1;
@@ -469,12 +471,12 @@ void vanVlietDerivativeLine(int lo, int hi, int line, uint li)
 }
 
 // boxSample() of the line as the pass reads it: positions outside the line read zero, or the end
-// sample for a Neumann filter.
+// sample under Stretch line ends.
 float4 boxSample(int rel, int lo, int n, bool first, int line, uint li)
 {
     if (rel < 0 || rel >= n)
     {
-        if (params.neumann == 0)
+        if (params.lineEnds == kEdgeBlack)
             return float4(0.0);
         rel = rel < 0 ? 0 : n - 1;
     }

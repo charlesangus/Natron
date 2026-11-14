@@ -42,6 +42,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
@@ -631,9 +632,9 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
         clampKnob->setSecret(true);
         clampKnob->setAddNewLine(false);
         clamp = clampKnob;
-        KnobBoolPtr blackOutsideKnob = createDuplicateKnob<KnobBool>(kTransformParamBlackOutside, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamBlackOutside);
-        blackOutsideKnob->setSecret(true);
-        blackOutside = blackOutsideKnob;
+        KnobChoicePtr edgeModeKnob = createDuplicateKnob<KnobChoice>(kEdgeModeParam, tNode, effect, transformPage, KnobGroupPtr(), cNode, kEdgeModeParam);
+        edgeModeKnob->setSecret(true);
+        edgeMode = edgeModeKnob;
         KnobDoublePtr motionBlurKnob = createDuplicateKnob<KnobDouble>(kTransformParamMotionBlur, tNode, effect, transformPage, KnobGroupPtr(), cNode, kCornerPinNodeParamMotionBlur);
         motionBlurKnob->setSecret(true);
         motionBlur = motionBlurKnob;
@@ -1430,7 +1431,7 @@ TrackerContextPrivate::refreshVisibilityFromTransformTypeInternal(TrackerTransfo
     skewOrder.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
     filter.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
     clamp.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
-    blackOutside.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
+    edgeMode.lock()->setSecret(transformType == eTrackerTransformNodeCornerPin || motionType == eTrackerMotionTypeNone);
 
     invertTransform.lock()->setSecret(motionType == eTrackerMotionTypeNone);
     motionBlur.lock()->setSecret(motionType == eTrackerMotionTypeNone);

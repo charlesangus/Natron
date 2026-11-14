@@ -180,7 +180,7 @@ inline constexpr NodeSpec kLensDistortionNodeSpec = {
 };
 
 inline constexpr ImagePipelineSpec kLensDistortionPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Custom,
 };
@@ -287,7 +287,7 @@ private:
         bool stmap = false;
         Resampler::FilterSpec filter;
         bool clamp = false;
-        bool blackOutside = true;
+        EdgeMode edgeMode = EdgeMode::Black;
     };
 
     // Where the lens model lives. Lens pixels are canonical coordinates with x divided by the
@@ -380,7 +380,6 @@ private:
     KnobDoubleWPtr _params[eParamCount];
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
-    KnobBoolWPtr _blackOutside;
     Resampler::FilterKnobs _filterKnobs;
     KnobBoolWPtr _cropToFormat;
     KnobBoolWPtr _useRoD;

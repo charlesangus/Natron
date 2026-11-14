@@ -66,7 +66,6 @@ const int kMinTimeCurveSegments = 32;
 const std::size_t kGpuHeaderWords = 15;
 
 const uint32_t kIWarpGpuClamp = 1;
-const uint32_t kIWarpGpuBlackOutside = 2;
 const uint32_t kIWarpGpuJacobian = 4;
 const uint32_t kIWarpGpuSample = 8;
 const uint32_t kIWarpGpuMapConnected = 16;
@@ -290,7 +289,7 @@ IWarp::warpRegion(const RectD& from,
                   const std::function<void(const Mat3&)>& visitMatrix) const
 {
     WarpSettings settings;
-    readWarpSettings(time, view, &settings);
+    warpSettings(time, view, &settings);
     const bool invert = forward ? !settings.invert : settings.invert;
     const bool timeBlur = hasTimeBlur(settings);
 
@@ -466,11 +465,11 @@ IWarp::getRegionOfDefinition(U64 hash,
     }
 
     WarpSettings settings;
-    readWarpSettings(time, view, &settings);
+    warpSettings(time, view, &settings);
     warpRegion(srcRoD, time, view, true, rod);
     if (hasTimeBlur(settings) || !isTransformIdentity(time, view)) {
         const OfxPointD s = scale.toOfxPointD();
-        Resampler::expandRoD(getRenderMetadata(time, view)->getPixelAspectRatio(-1), s.x, s.y, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch), rod);
+        Resampler::expandRoD(getRenderMetadata(time, view)->getPixelAspectRatio(-1), s.x, s.y, settings.edgeMode, rod);
     }
     if (doMasking || (mix != 1.)) {
         *rod = boundingBox(*rod, srcRoD);
@@ -478,6 +477,15 @@ IWarp::getRegionOfDefinition(U64 hash,
 
     return eStatusOK;
 } // IWarp::getRegionOfDefinition
+
+void
+IWarp::warpSettings(double time,
+                    ViewIdx view,
+                    WarpSettings* settings) const
+{
+    readWarpSettings(time, view, settings);
+    settings->edgeMode = resolvedEdgeMode(time, view);
+}
 
 void
 IWarp::getRegionsOfInterest(double time,
@@ -502,7 +510,7 @@ IWarp::getRegionsOfInterest(double time,
         RectD srcRoI = renderWindow;
         if (!(doMasking && (mix == 0.))) {
             WarpSettings settings;
-            readWarpSettings(time, view, &settings);
+            warpSettings(time, view, &settings);
             const OfxPointD s = scale.toOfxPointD();
             const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
             const double srcPar = metadata->getPixelAspectRatio(kIWarpInputSource);
@@ -579,7 +587,7 @@ IWarp::isOpIdentity(double time,
                     ViewIdx view)
 {
     WarpSettings settings;
-    readWarpSettings(time, view, &settings);
+    warpSettings(time, view, &settings);
     if (hasTimeBlur(settings)) {
         return false;
     }
@@ -597,7 +605,7 @@ IWarp::renderOp(const RenderActionArgs& args,
     const int sourceInput = plan.sourceInput;
 
     WarpSettings settings;
-    readWarpSettings(args.time, args.view, &settings);
+    warpSettings(args.time, args.view, &settings);
     if (args.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
@@ -881,7 +889,7 @@ IWarp::renderOp(const RenderActionArgs& args,
                             J[k] = (float)s.jacobian[k];
                         }
                     }
-                    Resampler::resampleRowFromCoords(plane.source, &fx, &fy, impulse ? NULL : J, 1, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
+                    Resampler::resampleRowFromCoords(plane.source, &fx, &fy, impulse ? NULL : J, 1, settings.filter, settings.clamp, settings.edgeMode,
                                                      Resampler::eWrapNone, Resampler::eWrapNone, one.data(), nComps);
                     if (!weighted) {
                         for (int c = 0; c < nComps; ++c) {
@@ -963,7 +971,7 @@ IWarp::renderOp(const RenderActionArgs& args,
                         }
                     }
                 }
-                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), impulse ? NULL : jacobian.data(), width, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
+                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), impulse ? NULL : jacobian.data(), width, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
             }
             if (mapped && hasSource) {
@@ -1038,7 +1046,7 @@ IWarp::canRenderOpOnGpu(const GpuQuery& query) const
         return false;
     }
     WarpSettings settings;
-    readWarpSettings(query.time, query.view, &settings);
+    warpSettings(query.time, query.view, &settings);
     // Motion blur averages hundreds of warps per pixel, which only the CPU does.
     if (hasTimeBlur(settings) || hasDirectionalBlur(settings)) {
         return false;
@@ -1116,7 +1124,7 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     WarpSettings settings;
-    readWarpSettings(query.time, query.view, &settings);
+    warpSettings(query.time, query.view, &settings);
     if (query.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
@@ -1147,7 +1155,7 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
 
     // The header, word for word as iwarp.slang loads it, then the curve.
     uint32_t header[kGpuHeaderWords] = {};
-    uint32_t flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kIWarpGpuClamp : 0u) | (settings.blackOutside ? kIWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u);
+    uint32_t flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kIWarpGpuClamp : 0u) | (settings.edgeMode == EdgeMode::Black ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u);
     int32_t mapComponent = -1;
     if (getInput(kIWarpInputMap)) {
         flags |= kIWarpGpuMapConnected;

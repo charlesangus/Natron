@@ -48,6 +48,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -331,6 +334,43 @@ TEST_F(NativeErodeDilateTest, ErodeSizes)
 TEST_F(NativeErodeDilateTest, DilateSizes)
 {
     runSizes(true);
+}
+
+// Erosion reads the fill beyond the source: Stretch and the generator's own Stretch keep a
+// constant to the border, Black pulls the border pixels to zero.
+TEST_F(NativeErodeDilateTest, EdgeModeDecidesTheBorderOfAnErodedConstant)
+{
+    const float kValue = 0.5f;
+    const char* modes[] = { "input", "stretch", "black" };
+    const RectI format(0, 0, kParitySourceWidth, kParitySourceHeight);
+
+    for (const char* mode : modes) {
+        resetProject();
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+        ASSERT_TRUE(bool(constant));
+        ASSERT_TRUE(setKnobValue(constant, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+        ASSERT_TRUE(setKnobValues(constant, kConstantParamColor, { kValue, kValue, kValue, kValue }));
+        NodePtr node = makeNode(constant, 3., 3.);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(mode)));
+
+        std::vector<float> pixels;
+        ASSERT_TRUE(renderRGBA(node, format, &pixels)) << mode;
+        ASSERT_EQ(static_cast<std::size_t>(format.width()) * format.height() * 4, pixels.size()) << mode;
+        const auto at = [&](int x, int y) {
+            return pixels[(static_cast<std::size_t>(y - format.y1) * format.width() + (x - format.x1)) * 4];
+        };
+
+        if (std::string(mode) == "black") {
+            EXPECT_EQ(0.f, at(0, 0)) << mode << ": the corner reads the black outside";
+            EXPECT_EQ(0.f, at(format.x2 - 1, format.y2 / 2)) << mode << ": the right edge reads the black outside";
+            EXPECT_EQ(kValue, at(format.x2 / 2, format.y2 / 2)) << mode << ": the centre is out of the window's reach";
+        } else {
+            for (std::size_t i = 0; i < pixels.size(); ++i) {
+                ASSERT_EQ(kValue, pixels[i]) << mode << ": the value holds to the border, float " << i;
+            }
+        }
+    }
 }
 
 TEST_F(NativeErodeDilateTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)

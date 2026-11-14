@@ -271,13 +271,6 @@ STMap::initializeKnobs()
     page->addKnob(clamp);
     _clamp = clamp;
 
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(true);
-    page->addKnob(blackOutside);
-    _blackOutside = blackOutside;
-
     _filterKnobs.create(this, page, filter, clamp);
 
     _map.createKnobs(this, page, kMapWarpKnobHints);
@@ -327,10 +320,7 @@ STMap::readSettings(double time,
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
     }
-    KnobBoolPtr blackOutside = _blackOutside.lock();
-    if (blackOutside) {
-        settings->blackOutside = blackOutside->getValueAtTime(time, 0, view);
-    }
+    settings->edgeMode = resolvedEdgeMode(time, view);
     KnobDoublePtr uvOffset = _uvOffset.lock();
     if (uvOffset) {
         settings->uOffset = uvOffset->getValueAtTime(time, 0, view);
@@ -454,6 +444,8 @@ STMap::getPreferredMetadataAt(double time,
             metadata.setOutputFormat(format);
         }
     }
+    // The defaults take the UV input's edge mode, which gives the format.
+    metadata.setEdgeMode(resolvedEdgeMode(time, view));
 
     return eStatusOK;
 }
@@ -759,7 +751,7 @@ STMap::renderOp(const RenderActionArgs& args,
                                                           uvPlanes[0].access ? uvPlanes[0].bounds : RectI(), uvPlanes[1].access ? uvPlanes[1].bounds : RectI(), 0., 0., &jacobian[0]);
                 }
                 Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
-                                                 settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch), settings.wrapU, settings.wrapV,
+                                                 settings.filter, settings.clamp, settings.edgeMode, settings.wrapU, settings.wrapV,
                                                  &out[0], io.nComps, &domain);
                 if (gated) {
                     std::vector<float> alphaRow(io.width);
@@ -943,7 +935,7 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.edgeMode == EdgeMode::Black ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
     params.wrapU = (uint32_t)settings.wrapU;
     params.wrapV = (uint32_t)settings.wrapV;
     if (hasDomain) {

@@ -216,10 +216,6 @@ struct SharpenGpuParams {
     uint32_t outHeight;
     uint32_t dstOffset;
     uint32_t dstStride;
-    int32_t rodX1;
-    int32_t rodY1;
-    int32_t rodX2;
-    int32_t rodY2;
     int32_t srcX1;
     int32_t srcY1;
     int32_t srcX2;
@@ -230,11 +226,12 @@ struct SharpenGpuParams {
     float amount;
     float threshold;
     float epsilon;
+    uint32_t edgeMode;
 };
-static_assert(sizeof(SharpenGpuParams) == 128);
+static_assert(sizeof(SharpenGpuParams) == 116);
 static_assert(offsetof(SharpenGpuParams, domX1) == 32);
-static_assert(offsetof(SharpenGpuParams, rodX1) == 72);
-static_assert(offsetof(SharpenGpuParams, mode) == 112);
+static_assert(offsetof(SharpenGpuParams, srcX1) == 72);
+static_assert(offsetof(SharpenGpuParams, mode) == 96);
 
 // The blur of sharpenPasses() as the GPU recorder runs it.
 struct SharpenGpuPlan {
@@ -249,7 +246,7 @@ struct SharpenGpuPlan {
     std::vector<float> weightsY;
     int radiusX = 0;
     int radiusY = 0;
-    // The other filters, with the nearest pixel repeated past the ends of their lines.
+    // The other filters, with their line ends read by the edge mode.
     gpu::GpuLineFilter filterX;
     gpu::GpuLineFilter filterY;
 };
@@ -325,12 +322,12 @@ dispatchSharpen(gpu::GpuRecordContext& ctx,
     return (bool)ctx.dispatch(kernel, { in, blurred, out }, p, { width, height, 1 });
 }
 
-/// The pass list on the GPU. The source is filled into a buffer with the CPU's nearest-pixel
-/// boundary: over the CPU's buffer, io.domain, for the recursive and box filters, whose result
+/// The pass list on the GPU. The source is filled into a buffer by io.edgeMode, as the CPU fills
+/// its own: over the CPU's buffer, io.domain, for the recursive and box filters, whose result
 /// depends on the extent of their lines. The FIR Gaussian reads a fixed reach, so its buffer is
-/// io.output grown by the radius with the region of definition's edges repeated, which gives the
-/// CPU's Neumann ends to a blur that reads black past its domain. The combine then writes
-/// io.filtered over io.output, zero outside the CPU's buffer as the CPU writes it.
+/// io.output grown by the radius, filled by the same mode, which gives the CPU's line ends to a
+/// blur that reads past its domain. The combine then writes io.filtered over io.output, zero
+/// outside the CPU's buffer as the CPU writes it.
 PassGpuRecorder
 sharpenGpuRecorder(const std::shared_ptr<const SharpenGpuPlan>& plan)
 {
@@ -345,6 +342,7 @@ sharpenGpuRecorder(const std::shared_ptr<const SharpenGpuPlan>& plan)
         base.amount = plan->amount;
         base.threshold = plan->threshold;
         base.epsilon = Sharpen::kRelativeEpsilon;
+        base.edgeMode = gpu::gpuEdgeMode(io.edgeMode);
         base.domX1 = io.domain.x1;
         base.domY1 = io.domain.y1;
         base.domX2 = io.domain.x2;
@@ -377,10 +375,6 @@ sharpenGpuRecorder(const std::shared_ptr<const SharpenGpuPlan>& plan)
         fillParams.bufY1 = fillRect.y1;
         fillParams.bufWidth = (uint32_t)fillRect.width();
         fillParams.bufHeight = (uint32_t)fillRect.height();
-        fillParams.rodX1 = io.rod.x1;
-        fillParams.rodY1 = io.rod.y1;
-        fillParams.rodX2 = io.rod.x2;
-        fillParams.rodY2 = io.rod.y2;
         const gpu::GpuBuffer* sourceBuffer = io.source.buffer;
         if (!sourceBuffer || PassExec::isEmptyRect(io.sourceValid)) {
             // The kernel still binds a source, which the empty source rect keeps unread.
@@ -415,6 +409,7 @@ sharpenGpuRecorder(const std::shared_ptr<const SharpenGpuPlan>& plan)
                 gpu::GpuSeparableBlur blur;
                 blur.src = fillImage;
                 blur.srcValid = fillImage.bounds;
+                blur.edgeMode = io.edgeMode;
                 blur.dst = blurImage;
                 blur.output = blurImage.bounds;
                 blur.domain = fillImage.bounds;
@@ -432,6 +427,7 @@ sharpenGpuRecorder(const std::shared_ptr<const SharpenGpuPlan>& plan)
                 gpu::GpuLineBlur blur;
                 blur.src = fillImage;
                 blur.srcValid = fillImage.bounds;
+                blur.srcEdgeMode = io.edgeMode;
                 blur.dst = blurImage;
                 blur.output = blurImage.bounds;
                 blur.domain = blurImage.bounds;
@@ -460,15 +456,16 @@ sharpenGpuRecorder(const std::shared_ptr<const SharpenGpuPlan>& plan)
 } // sharpenGpuRecorder
 #endif // NATRON_HAVE_GPU
 
-/// The passes of one sharpening at pixel sizes s. The blur's halo is Blur's (getSourceRoI()); the
-/// nearest-pixel boundary spreads nothing, so the region of definition is the source's.
+/// The passes of one sharpening at pixel sizes s. The blur's halo is Blur's (getSourceRoI()). The
+/// source's fill and the blur's line ends follow edgeMode; the region of definition is the
+/// source's under either mode.
 PassList
 sharpenPasses(const SharpenParams& params,
-              const PixelSizes& s)
+              const PixelSizes& s,
+              EdgeMode edgeMode)
 {
     const BlurKernels::Filter filter = params.filter;
     const bool fir = (filter == BlurKernels::eFilterFIRGaussian);
-    const bool neumann = true;
     LineFilterPtr filterX;
     LineFilterPtr filterY;
     int haloX = 0;
@@ -480,8 +477,8 @@ sharpenPasses(const SharpenParams& params,
     } else if (isGaussianFamily(filter)) {
         haloX = std::max(3, (int)std::ceil(s.x * 1.5));
         haloY = std::max(3, (int)std::ceil(s.y * 1.5));
-        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, (float)(s.x / 2.4), 0, neumann));
-        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, (float)(s.y / 2.4), 0, neumann));
+        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, (float)(s.x / 2.4), 0, edgeMode));
+        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, (float)(s.y / 2.4), 0, edgeMode));
     } else if (fir) {
         haloX = firRadius(s.x);
         haloY = firRadius(s.y);
@@ -489,18 +486,18 @@ sharpenPasses(const SharpenParams& params,
         // by pixels.
         taps[0] = (std::size_t)(2 * haloX + 1);
         taps[1] = (std::size_t)(2 * haloY + 1);
-        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(s.x / 2.4, 0, neumann));
-        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(s.y / 2.4, 0, neumann));
+        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(s.x / 2.4, 0, edgeMode));
+        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(s.y / 2.4, 0, edgeMode));
     } else {
         const int iter = boxIterations(filter);
         haloX = iter * static_cast<int>(std::floor((s.x - 1) / 2) + 1);
         haloY = iter * static_cast<int>(std::floor((s.y - 1) / 2) + 1);
-        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.x), 0, neumann));
-        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.y), 0, neumann));
+        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.x), 0, edgeMode));
+        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.y), 0, edgeMode));
     }
 
     PassList list;
-    list.edgeMode = EdgeMode::Stretch;
+    list.edgeMode = edgeMode;
     list.scratchSlots = 2;
     list.resultSlot = kSlotSource;
 
@@ -650,7 +647,7 @@ PassList
 SharpenOp::passes(const Params& params,
                   const PassContext& context) const
 {
-    return sharpenPasses(params, pixelSizes(params, context));
+    return sharpenPasses(params, pixelSizes(params, context), context.edgeMode);
 }
 
 std::optional<GpuWeight>
@@ -693,7 +690,7 @@ Sharpen::getSourceRoI(const RectI& rect,
 
     context.scale = scale;
 
-    return passListSourceRoI(rect, sharpenPasses(params, pixelSizes(params, context)));
+    return passListSourceRoI(rect, sharpenPasses(params, pixelSizes(params, context), EdgeMode::Black));
 }
 
 float

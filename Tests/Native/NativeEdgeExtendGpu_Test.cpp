@@ -51,6 +51,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/EdgeExtend.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Project.h"
@@ -381,8 +382,8 @@ channelNames(unsigned processed)
 // The CPU render of the node over its region of definition against renderGpu() fed with the
 // noisy parity source over getGpuInputRoI(), over that region and over a tile inside it, which is
 // compared with the same pixels of the full-frame CPU render. The source sits off the format's
-// origin so the buffer's edges fall inside the slices' reach and the nearest-pixel boundary is
-// exercised on both sides.
+// origin so the buffer's edges fall inside the slices' reach and each edge mode is exercised on
+// both sides.
 TEST_F(NativeEdgeExtendGpuTest, MatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -397,69 +398,72 @@ TEST_F(NativeEdgeExtendGpuTest, MatchesTheCpuRender)
 
     std::size_t nCompared = 0;
     int nRenders = 0;
-    for (const ParityCase& c : parityCases()) {
-        // A fresh node per setting, so no region of definition cached under an earlier setting is
-        // reused.
-        NodePtr node = makeEdgeExtend();
-        StagedImageEffect* effect = effectOf(node);
-        ASSERT_TRUE(effect != NULL);
-        connectNodes(source, node, 0, true);
-        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSize, { c.size }));
-        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSlices, { (double)c.slices }));
-        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSourcePremultiplied, { c.sourcePremultiplied ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamPremultiplyOutput, { c.premultiplyOutput ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamThreshold, { c.threshold }));
-        KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
-        ASSERT_TRUE(bool(channelSet));
-        channelSet->setChannels(0, channelNames(c.processed));
+    for (const char* edgeMode : { "stretch", "black" }) {
+        for (const ParityCase& c : parityCases()) {
+            // A fresh node per setting, so no region of definition cached under an earlier setting is
+            // reused.
+            NodePtr node = makeEdgeExtend();
+            StagedImageEffect* effect = effectOf(node);
+            ASSERT_TRUE(effect != NULL);
+            connectNodes(source, node, 0, true);
+            ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSize, { c.size }));
+            ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSlices, { (double)c.slices }));
+            ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSourcePremultiplied, { c.sourcePremultiplied ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamPremultiplyOutput, { c.premultiplyOutput ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamThreshold, { c.threshold }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeMode)));
+            KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
+            ASSERT_TRUE(bool(channelSet));
+            channelSet->setChannels(0, channelNames(c.processed));
 
-        const RectI rod = pixelRegionOfDefinition(node);
-        ASSERT_FALSE(rod.isNull());
-        RenderedPlane cpu;
-        ASSERT_TRUE(renderRGBA(node, rod, &cpu)) << describeCase(c, rod);
-        ASSERT_EQ(rod, cpu.window) << describeCase(c, rod);
+            const RectI rod = pixelRegionOfDefinition(node);
+            ASSERT_FALSE(rod.isNull());
+            RenderedPlane cpu;
+            ASSERT_TRUE(renderRGBA(node, rod, &cpu)) << describeCase(c, rod);
+            ASSERT_EQ(rod, cpu.window) << describeCase(c, rod);
 
-        GpuQuery query = eligibleQuery();
-        query.nComps = c.nComps;
-        query.plane = planeOf(c.nComps);
-        if (c.nComps == 4) {
-            for (int i = 0; i < 4; ++i) {
-                query.processChannels[i] = (c.processed & (1u << i)) != 0;
+            GpuQuery query = eligibleQuery();
+            query.nComps = c.nComps;
+            query.plane = planeOf(c.nComps);
+            if (c.nComps == 4) {
+                for (int i = 0; i < 4; ++i) {
+                    query.processChannels[i] = (c.processed & (1u << i)) != 0;
+                }
             }
-        }
-        ASSERT_TRUE(effect->canRenderOnGpu(query)) << describeCase(c, rod);
+            ASSERT_TRUE(effect->canRenderOnGpu(query)) << describeCase(c, rod);
 
-        std::vector<RectI> rois;
-        rois.push_back(rod);
-        if (c.tile) {
-            rois.push_back(RectI(rod.x1 + 9, rod.y1 + 7, std::min(rod.x2 - 3, rod.x1 + 9 + 29), std::min(rod.y2 - 2, rod.y1 + 7 + 21)));
-        }
-        const std::vector<int> channels = planeChannels(c.nComps);
-        for (const RectI& roi : rois) {
-            const std::string what = describeCase(c, roi);
-            const RectI inputRoI = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::identity);
-            RenderedPlane in;
-            ASSERT_TRUE(renderRGBA(source, inputRoI, &in)) << what;
-            ASSERT_EQ(inputRoI, in.window) << what;
-            GpuParityImage image;
-            image.bounds = inputRoI;
-            image.nComps = c.nComps;
-            image.pixels = pickChannels(in.pixels, inputRoI, inputRoI, channels);
-            image.layout.padFloats = 6;
-            image.layout.rowPadFloats = 8;
+            std::vector<RectI> rois;
+            rois.push_back(rod);
+            if (c.tile) {
+                rois.push_back(RectI(rod.x1 + 9, rod.y1 + 7, std::min(rod.x2 - 3, rod.x1 + 9 + 29), std::min(rod.y2 - 2, rod.y1 + 7 + 21)));
+            }
+            const std::vector<int> channels = planeChannels(c.nComps);
+            for (const RectI& roi : rois) {
+                const std::string what = std::string(edgeMode) + " " + describeCase(c, roi);
+                const RectI inputRoI = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::identity);
+                RenderedPlane in;
+                ASSERT_TRUE(renderRGBA(source, inputRoI, &in)) << what;
+                ASSERT_EQ(inputRoI, in.window) << what;
+                GpuParityImage image;
+                image.bounds = inputRoI;
+                image.nComps = c.nComps;
+                image.pixels = pickChannels(in.pixels, inputRoI, inputRoI, channels);
+                image.layout.padFloats = 6;
+                image.layout.rowPadFloats = 8;
 
-            const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, roi, outputLayout());
-            ASSERT_TRUE(run.ok) << what;
-            EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
-            ++nRenders;
+                const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, roi, outputLayout());
+                ASSERT_TRUE(run.ok) << what;
+                EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
+                ++nRenders;
 
-            const std::vector<float> want = pickChannels(cpu.pixels, rod, roi, channels);
-            ASSERT_EQ(want.size(), run.pixels.size()) << what;
-            const ImageDiff diff = compareImages(want, run.pixels, kTolerance);
-            nCompared += diff.compared;
-            const std::size_t at = diff.worstIndex / c.nComps;
-            EXPECT_EQ(0u, diff.mismatches) << what << ": " << diff.mismatches << " mismatches, worst " << diff.worstAbsolute << " at (" << (roi.x1 + (int)(at % roi.width())) << ","
-                                           << (roi.y1 + (int)(at / roi.width())) << ") channel " << (diff.worstIndex % c.nComps) << " gpu " << run.pixels[diff.worstIndex] << " cpu " << want[diff.worstIndex];
+                const std::vector<float> want = pickChannels(cpu.pixels, rod, roi, channels);
+                ASSERT_EQ(want.size(), run.pixels.size()) << what;
+                const ImageDiff diff = compareImages(want, run.pixels, kTolerance);
+                nCompared += diff.compared;
+                const std::size_t at = diff.worstIndex / c.nComps;
+                EXPECT_EQ(0u, diff.mismatches) << what << ": " << diff.mismatches << " mismatches, worst " << diff.worstAbsolute << " at (" << (roi.x1 + (int)(at % roi.width())) << ","
+                                               << (roi.y1 + (int)(at / roi.width())) << ") channel " << (diff.worstIndex % c.nComps) << " gpu " << run.pixels[diff.worstIndex] << " cpu " << want[diff.worstIndex];
+            }
         }
     }
     EXPECT_GT(nCompared, 0u);

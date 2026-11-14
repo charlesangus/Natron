@@ -417,13 +417,6 @@ LensDistortion::initializeKnobs()
     page->addKnob(clamp);
     _clamp = clamp;
 
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(true);
-    page->addKnob(blackOutside);
-    _blackOutside = blackOutside;
-
     _filterKnobs.create(this, page, filter, clamp);
 
     KnobBoolPtr cropToFormat = createKnob<KnobBool>(tr("Crop To Format"));
@@ -589,10 +582,7 @@ LensDistortion::readSettings(double time,
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
     }
-    KnobBoolPtr blackOutside = _blackOutside.lock();
-    if (blackOutside) {
-        settings->blackOutside = blackOutside->getValueAtTime(time, 0, view);
-    }
+    settings->edgeMode = resolvedEdgeMode(time, view);
 }
 
 double
@@ -876,6 +866,7 @@ LensDistortion::getPreferredMetadataAt(double time,
     } else if (getInput(kLensDistortionInputSource)) {
         metadata.setNComps(-1, metadata.getNComps(kLensDistortionInputSource));
     }
+    metadata.setEdgeMode(resolvedEdgeMode(time, view));
 
     return eStatusOK;
 }
@@ -922,7 +913,7 @@ LensDistortion::getRegionOfDefinition(U64 /*hash*/,
             // Part of the Source edge has no image, so the Source reaches past the output format.
             box.merge(outputLens);
         }
-        const double margin = (settings.blackOutside ? 1. : 0.) + 2.;
+        const double margin = (settings.edgeMode == EdgeMode::Black ? 1. : 0.) + 2.;
         *rod = RectD((box.x1 - margin) * par, box.y1 - margin, (box.x2 + margin) * par, box.y2 + margin);
 
         KnobBoolPtr cropToFormat = _cropToFormat.lock();
@@ -1125,7 +1116,7 @@ LensDistortion::renderOp(const RenderActionArgs& args,
                     }
                 }
                 Resampler::resampleRowFromCoords(source, &sx[0], &sy[0], jacobians ? &jacobian[0] : 0, io.width,
-                                                 settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch), Resampler::eWrapNone, Resampler::eWrapNone,
+                                                 settings.filter, settings.clamp, settings.edgeMode, Resampler::eWrapNone, Resampler::eWrapNone,
                                                  &out[0], io.nComps);
             }
             for (int c = 0; c < io.nComps; ++c) {
@@ -1179,7 +1170,6 @@ static_assert(offsetof(LensDistortionGpuParams, lobes) == 120 * 4, "lensdistorti
 static_assert(sizeof(LensDistortionGpuParams) == 123 * 4, "lensdistortion.slang reads 123 words");
 
 const uint32_t kLensDistortionGpuClamp = 1;
-const uint32_t kLensDistortionGpuBlackOutside = 2;
 const uint32_t kLensDistortionGpuJacobian = 4;
 const uint32_t kLensDistortionGpuSample = 8;
 const uint32_t kLensDistortionGpuSTMap = 16;
@@ -1251,7 +1241,7 @@ LensDistortion::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kLensDistortionGpuClamp : 0u) | (settings.blackOutside ? kLensDistortionGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kLensDistortionGpuJacobian : 0u);
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kLensDistortionGpuClamp : 0u) | (settings.edgeMode == EdgeMode::Black ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kLensDistortionGpuJacobian : 0u);
     if (model.valid) {
         if (!settings.stmap) {
             params.flags |= kLensDistortionGpuSample;

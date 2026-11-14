@@ -167,6 +167,7 @@ firGpuRecorder(double sx,
         gpu::GpuSeparableBlur blur;
         blur.src = source;
         blur.srcValid = PassExec::toGpuBlurRect(io.sourceValid);
+        blur.edgeMode = io.edgeMode;
         blur.dst = PassExec::toGpuBlurImage(io.filtered);
         blur.output = PassExec::toGpuBlurRect(io.output);
         blur.domain = PassExec::toGpuBlurRect(io.domain);
@@ -196,6 +197,7 @@ lineGpuRecorder(const LineFilterPtr& filterX,
         gpu::GpuLineBlur blur;
         blur.src = source;
         blur.srcValid = PassExec::toGpuBlurRect(io.sourceValid);
+        blur.srcEdgeMode = io.edgeMode;
         blur.dst = PassExec::toGpuBlurImage(io.filtered);
         blur.output = PassExec::toGpuBlurRect(io.output);
         blur.domain = PassExec::toGpuBlurRect(io.domain);
@@ -211,12 +213,14 @@ lineGpuRecorder(const LineFilterPtr& filterX,
 
 /// The pass list of a blur of pixel sizes s: getSourceRoI()'s halo, the region of definition's
 /// spread, and the filters CImgBlurPlugin::blur() runs (sigma = size / 2.4 for the Gaussians, the
-/// box width the size).
+/// box width the size), whose line ends follow edgeMode as the source's fill does.
 PassList
 blurPasses(BlurKernels::Filter filter,
-           const PixelSizes& s)
+           const PixelSizes& s,
+           EdgeMode edgeMode)
 {
     PassList list;
+    list.edgeMode = edgeMode;
     LineFilterPtr filterX;
     LineFilterPtr filterY;
     int haloX = 0;
@@ -234,8 +238,8 @@ blurPasses(BlurKernels::Filter filter,
         }
         haloX = growX = std::max(3, (int)std::ceil(s.x * 1.5));
         haloY = growY = std::max(3, (int)std::ceil(s.y * 1.5));
-        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, false));
-        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, false));
+        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, edgeMode));
+        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, edgeMode));
     } else if (fir) {
         const int padX = firRadius(s.x);
         const int padY = firRadius(s.y);
@@ -248,8 +252,8 @@ blurPasses(BlurKernels::Filter filter,
         // by pixels.
         taps[0] = (std::size_t)(2 * padX + 1);
         taps[1] = (std::size_t)(2 * padY + 1);
-        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(s.x / 2.4, 0, false));
-        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(s.y / 2.4, 0, false));
+        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(s.x / 2.4, 0, edgeMode));
+        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(s.y / 2.4, 0, edgeMode));
     } else {
         // The region of interest rounds the half width down and adds one, the region of definition
         // rounds it up, as CImgBlurPlugin does.
@@ -258,8 +262,8 @@ blurPasses(BlurKernels::Filter filter,
         haloY = iter * static_cast<int>(std::floor((s.y - 1) / 2) + 1);
         growX = iter * (int)std::ceil((s.x - 1) / 2);
         growY = iter * (int)std::ceil((s.y - 1) / 2);
-        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.x), 0, false));
-        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.y), 0, false));
+        filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.x), 0, edgeMode));
+        filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.y), 0, edgeMode));
     }
 
     Pass passX = Pass::lineX(haloX, growX, lineWorker(filterX, false));
@@ -360,7 +364,7 @@ PassList
 BlurOp::passes(const Params& params,
                const PassContext& context) const
 {
-    return blurPasses(params.filter, pixelSizes(params, context));
+    return blurPasses(params.filter, pixelSizes(params, context), context.edgeMode);
 }
 
 std::optional<GpuWeight>
@@ -410,7 +414,7 @@ Blur::getSourceRoI(const RectI& rect,
 
     context.scale = scale;
 
-    return passListSourceRoI(rect, blurPasses(params.filter, pixelSizes(params, context)));
+    return passListSourceRoI(rect, blurPasses(params.filter, pixelSizes(params, context), context.edgeMode));
 }
 
 bool

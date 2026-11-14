@@ -167,7 +167,7 @@ struct EdgeDetectOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
         .layers = LayerPolicy::color(true, true, true, false),
         .op = OpKind::Passes,
     };

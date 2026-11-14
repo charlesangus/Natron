@@ -304,13 +304,6 @@ CornerPinOp::createKnobs(KnobHolder* holder,
     page->addKnob(clampKnob);
     clamp = clampKnob;
 
-    KnobBoolPtr blackOutsideKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutsideKnob->setName(kCornerPinNodeParamBlackOutside);
-    blackOutsideKnob->setHintToolTip(EffectInstance::tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutsideKnob->setDefaultValue(true);
-    page->addKnob(blackOutsideKnob);
-    blackOutside = blackOutsideKnob;
-
     filterKnobs.create(holder, page, filterKnob, clampKnob);
 
     KnobDoublePtr motionBlurKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Motion Blur"));
@@ -386,7 +379,6 @@ CornerPinOp::bake(const KnobReader& reader) const
     params.invert = reader.value(invert);
     params.filter = filterKnobs.read(reader);
     params.clamp = reader.value(clamp);
-    params.blackOutside = reader.value(blackOutside);
 
     Resampler::BlurSettings& blur = params.blur;
     blur.motionBlur = reader.value(motionBlur);
@@ -435,7 +427,6 @@ CornerPinOp::settings(const Params& params,
 
     settings.filter = params.filter;
     settings.clamp = params.clamp;
-    settings.edgeMode = params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
     settings.invert = params.invert;
     settings.blur = params.blur;
     settings.transformIsIdentity = isIdentityPin(params.pin);

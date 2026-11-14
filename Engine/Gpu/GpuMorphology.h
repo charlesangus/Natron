@@ -27,8 +27,9 @@ struct GpuMorphParams {
     int32_t srcY2;
     uint32_t srcOffset;
     uint32_t srcStride;
+    uint32_t edgeMode;
 };
-static_assert(sizeof(GpuMorphParams) == 64);
+static_assert(sizeof(GpuMorphParams) == 68);
 
 inline constexpr uint32_t kGpuMorphMaxRadius = 1024;
 inline constexpr uint32_t kGpuMorphMaxChannels = 4;
@@ -50,8 +51,9 @@ GpuStatus recordFilterWindow(GpuRecordContext& ctx, const GpuBlurRect& output, c
 // buffer is output grown by the halo and clipped to rod; each line clamps its windows to the
 // buffer, and output pixels outside the buffer are zero.
 struct GpuMorphology {
-    // Reads zero outside its bounds, which may be empty.
+    // Reads by edgeMode outside its bounds, and zero everywhere when they are empty.
     GpuBlurImage src;
+    EdgeMode edgeMode = EdgeMode::Black;
     GpuBlurImage dst;
     // Within dst.bounds.
     GpuBlurRect output;

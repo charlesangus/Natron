@@ -57,6 +57,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
@@ -525,7 +526,7 @@ TEST_F(NativeSTMapTest, KnobsAndInputs)
         kResamplerParamBicubicB,
         kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
-        kResamplerParamFilterBlackOutside,
+        kEdgeModeParam,
         kOfxMixParamName,
         kOfxMaskInvertParamName,
     };

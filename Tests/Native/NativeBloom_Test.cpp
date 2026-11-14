@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Filter/BloomKernels.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -297,6 +298,38 @@ TEST_F(NativeBloomTest, ConstantIsPreserved)
     }
 }
 
+// The edge mode decides what the blurs read outside the image: Stretch keeps a constant to the
+// border, Black darkens the border and leaves the centre.
+TEST_F(NativeBloomTest, EdgeModeDecidesTheBorderOfAConstant)
+{
+    resetProject();
+    const double v = 0.7;
+    NodePtr source = makeConstant(v, NULL);
+    ASSERT_TRUE(bool(source));
+    for (const char* filter : { kBlurParamFilterFIRGaussian, kBlurParamFilterBox, kBlurParamFilterQuasiGaussian }) {
+        for (const char* mode : { "stretch", "black" }) {
+            NodePtr node = makeBloom(source);
+            ASSERT_TRUE(bool(node));
+            ASSERT_TRUE(setKnobValue(node, kBloomParamFilter, std::string(filter)));
+            ASSERT_TRUE(setKnobValues(node, kBloomParamSize, { 6., 6. }));
+            ASSERT_TRUE(setKnobValues(node, kBloomParamCount, { 2. }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(mode)));
+            RenderedPlane in, out;
+            ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &out));
+            const RectI rod = pixelRoD(node);
+            const float corner = at(out, rod.x1, rod.y1, 0);
+            const float centre = at(out, (rod.x1 + rod.x2) / 2, (rod.y1 + rod.y2) / 2, 0);
+            if (std::string(mode) == "stretch") {
+                EXPECT_NEAR(v, corner, 1e-5) << filter;
+                EXPECT_NEAR(v, centre, 1e-5) << filter;
+            } else {
+                EXPECT_LT(corner, v - 0.05) << filter;
+                EXPECT_NEAR(v, centre, 1e-3) << filter;
+            }
+        }
+    }
+}
+
 // A point far from the edges keeps its energy: the sum of the output is the point's value, for
 // the pyramid (its downsampling and Catmull-Rom upsampling both keep the sum) and a box.
 TEST_F(NativeBloomTest, EnergyIsConserved)
@@ -429,7 +462,7 @@ TEST_F(NativeBloomTest, ExtremeSettingsStayFinite)
     settings.ratio = 2.;
     for (BlurKernels::Filter f : { BlurKernels::eFilterFIRGaussian, BlurKernels::eFilterGaussian, BlurKernels::eFilterBox }) {
         settings.filter = f;
-        const BloomKernels::PlanPtr plan = BloomKernels::makePlan(settings, false);
+        const BloomKernels::PlanPtr plan = BloomKernels::makePlan(settings, EdgeMode::Black);
         ASSERT_TRUE(bool(plan)) << (int)f;
         EXPECT_GT(BloomKernels::haloX(*plan), 0) << (int)f;
         EXPECT_LE(BloomKernels::haloX(*plan), 1 << 24) << (int)f;

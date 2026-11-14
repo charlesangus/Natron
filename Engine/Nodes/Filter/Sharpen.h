@@ -94,8 +94,8 @@ inline constexpr InputSpec kSharpenInputs[] = {
  * relative, it judges detail alike on a dark and on a bright plate. Nothing is clamped, so
  * negative and over-range values go through.
  *
- * The blur is one of Blur's filters with the nearest pixel repeated outside the image (Neumann),
- * so the region of definition is the source's. Its passes copy the source into a second buffer,
+ * The blur is one of Blur's filters, reading outside the image by the Edge Mode; the region of
+ * definition is the source's. Its passes copy the source into a second buffer,
  * blur that one with Blur's halo, and combine both into the first.
  **/
 struct SharpenOp {
@@ -110,7 +110,7 @@ struct SharpenOp {
                        "\n"
                        "The threshold leaves out detail that is small relative to the local blurred value: detail below threshold times the blurred value is not sharpened, detail above twice that is fully sharpened, and in between it ramps linearly. The threshold is relative, so it treats a dark and a bright plate alike. It does not apply in Laplacian mode. 0 turns it off.\n"
                        "\n"
-                       "The blur repeats the edge pixels outside the image, and nothing is clamped: values below 0 and above 1 go through.",
+                       "Outside the image the blur reads by the edge mode: Stretch repeats the edge pixels, so a flat area has no detail up to the border, while Black darkens the blur there. Nothing is clamped: values below 0 and above 1 go through.",
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_SHARPEN,
         .minorVersion = 0,
@@ -119,7 +119,7 @@ struct SharpenOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::Premult, Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Passes,
     };

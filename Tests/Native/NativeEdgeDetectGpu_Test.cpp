@@ -51,6 +51,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Project.h"
@@ -322,6 +323,7 @@ struct ParityCase {
     unsigned processed;
     bool expandRoD;
     bool tile;
+    bool black = false;
 };
 
 unsigned
@@ -346,7 +348,9 @@ channelsOfPlane(int nComps)
 //   combination, for every mode with suppression on and off;
 // - blur size 5, which runs the pre-blur and the smoothing derivative blurs: every filter and mode
 //   on RGBA without suppression, and with it on RGB, whose noise leaves no ties for it to flip on;
-// - an expanded region of definition, where the buffer reads the source's nearest pixel.
+// - an expanded region of definition, where the buffer reads the source's nearest pixel;
+// - Edge Mode Black, with and without an expanded region of definition and the pre-blur, where the
+//   buffer and the stencil read zero past the source and the derivative blurs end in zero.
 // The recursive (quasi-)Gaussian derivatives are held to the IIR tolerance, and suppression is a
 // discontinuous decision on them, so they meet suppression only where the noise leaves no ties:
 // never after an erosion or dilation, whose flat plateaus are ties, nor beside a nearest-pixel
@@ -396,6 +400,14 @@ parityCases()
     for (int f : { 0, 4, 5 }) {
         cases.push_back(ParityCase { f, 3, f != 4, 2., 0., 4, 0xFu, true, true });
     }
+    for (int f = 0; f < kNFilters; ++f) {
+        const bool recursive = (f == 3) || (f == 4);
+        for (bool expandRoD : { false, true }) {
+            for (double blurSize : { 0., 5. }) {
+                cases.push_back(ParityCase { f, 3, !recursive && !expandRoD, 0., blurSize, 4, 0xFu, expandRoD, f == 0, true });
+            }
+        }
+    }
 
     return cases;
 }
@@ -406,7 +418,7 @@ describeCase(const ParityCase& c,
 {
     std::ostringstream s;
     s << kFilters[c.filter] << " " << kModes[c.mode] << (c.nms ? " nms" : "") << " erode " << c.erodeSize << " blur " << c.blurSize
-      << " components " << c.nComps << " channels 0x" << std::hex << c.processed << std::dec << (c.expandRoD ? " expandRoD" : "")
+      << " components " << c.nComps << " channels 0x" << std::hex << c.processed << std::dec << (c.expandRoD ? " expandRoD" : "") << (c.black ? " black" : "")
       << " roi (" << roi.x1 << "," << roi.y1 << ")-(" << roi.x2 << "," << roi.y2 << ")";
 
     return s.str();
@@ -462,6 +474,7 @@ TEST_F(NativeEdgeDetectGpuTest, MatchesTheCpuRender)
         ASSERT_TRUE(setKnobValues(node, kEdgeDetectParamNMS, { c.nms ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kEdgeDetectParamExpandRoD, { c.expandRoD ? 1. : 0. }));
         ASSERT_TRUE(setKnobValues(node, kEdgeDetectParamCropToFormat, { 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(c.black ? "black" : "input")));
         KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
         ASSERT_TRUE(bool(channelSet));
         channelSet->setChannels(0, channelNames(c.processed));

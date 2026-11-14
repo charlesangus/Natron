@@ -272,7 +272,6 @@ GCC_DIAG_ON(maybe-uninitialized)
 #define kTransformParamInvert "invert"
 #define kTransformParamFilter "filter"
 #define kTransformParamClamp "clamp"
-#define kTransformParamBlackOutside "black_outside"
 #define kTransformParamMotionBlur "motionBlur"
 #define kTransformParamShutter "shutter"
 #define kTransformParamShutterOffset "shutterOffset"
@@ -369,7 +368,7 @@ public:
     KnobBoolWPtr invertTransform;
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
-    KnobBoolWPtr blackOutside;
+    KnobChoiceWPtr edgeMode;
     KnobDoubleWPtr motionBlur;
     KnobDoubleWPtr shutter;
     KnobChoiceWPtr shutterOffset;

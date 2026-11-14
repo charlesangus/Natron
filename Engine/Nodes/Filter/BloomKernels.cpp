@@ -34,6 +34,8 @@
 #include <mutex>
 #include <vector>
 
+#include "Engine/Nodes/Image/EdgeSample.h"
+
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuBlur.h"
 #include "Engine/Gpu/GpuMorphology.h"
@@ -157,20 +159,15 @@ namespace {
         return t;
     }
 
-    /// Index i of a line of n samples as read past its ends: the end sample, or -1 for zero.
+    /// Index i of a line of n samples as read past its ends by edgeMode, or -1 for zero.
     inline int
     resolveIndex(int i,
                  int n,
-                 bool nearest)
+                 EdgeMode edgeMode)
     {
-        if ((i >= 0) && (i < n)) {
-            return i;
-        }
-        if (!nearest || (n <= 0)) {
-            return -1;
-        }
+        int k = i;
 
-        return (i < 0) ? 0 : (n - 1);
+        return EdgeSample::coord(i, 0, n, edgeMode, &k) ? k : -1;
     }
 
     struct Geometry {
@@ -221,7 +218,7 @@ struct Plan {
     };
 
     bool fir = false;
-    bool nearest = true;
+    EdgeMode edgeMode = EdgeMode::Stretch;
     int count = 1;
     // The axis each level after the first halves (0 for x, 1 for y).
     std::vector<int> steps;
@@ -348,7 +345,7 @@ namespace {
                 const Geometry& gd = levels->geometry(m);
                 const float* in = levels->level(scratch, input, m - 1, p);
                 float* out = levels->level(scratch, input, m, p);
-                const bool nearest = plan->nearest;
+                const EdgeMode edgeMode = plan->edgeMode;
                 const int rowEnd = itemsBegin(r + 1, gd.height, lines);
 
                 for (int row = itemsBegin(r, gd.height, lines); row < rowEnd; ++row) {
@@ -359,7 +356,7 @@ namespace {
                             const int base = 2 * (dst.x1 + j) - 1 - src.x1;
                             float v = 0.f;
                             for (int t = 0; t < 4; ++t) {
-                                const int k = resolveIndex(base + t, gs.width, nearest);
+                                const int k = resolveIndex(base + t, gs.width, edgeMode);
                                 v += kDown[t] * ((k < 0) ? 0.f : i[k]);
                             }
                             o[j] = v;
@@ -368,7 +365,7 @@ namespace {
                         const int base = 2 * (dst.y1 + row) - 1 - src.y1;
                         const float* rows[4];
                         for (int t = 0; t < 4; ++t) {
-                            const int k = resolveIndex(base + t, gs.height, nearest);
+                            const int k = resolveIndex(base + t, gs.height, edgeMode);
                             rows[t] = (k < 0) ? NULL : (in + (std::size_t)k * gs.width);
                         }
                         for (int x = 0; x < gd.width; ++x) {
@@ -469,7 +466,7 @@ namespace {
                 const RectI& v = levels->rect(blur.level);
                 const Geometry& g = levels->geometry(blur.level);
                 const float* blurred = levels->work(blur.level, p);
-                const bool nearest = plan->nearest;
+                const EdgeMode edgeMode = plan->edgeMode;
                 const bool first = (b == 0);
                 const bool last = (b + 1 == (int)plan->blurs.size());
                 const float divisor = (float)plan->count;
@@ -478,7 +475,7 @@ namespace {
                 const Taps ty = upTaps(blur.factorY, scratch.rect.y1 + r);
                 std::fill(tmp.begin(), tmp.end(), 0.f);
                 for (int j = 0; j < ty.n; ++j) {
-                    const int k = resolveIndex(ty.i0 + j - v.y1, g.height, nearest);
+                    const int k = resolveIndex(ty.i0 + j - v.y1, g.height, edgeMode);
                     if (k < 0) {
                         continue;
                     }
@@ -493,7 +490,7 @@ namespace {
                     const Taps& tx = (*columns)[x];
                     float sum = 0.f;
                     for (int i = 0; i < tx.n; ++i) {
-                        const int k = resolveIndex(tx.i0 + i - v.x1, g.width, nearest);
+                        const int k = resolveIndex(tx.i0 + i - v.x1, g.width, edgeMode);
                         if (k >= 0) {
                             sum += tx.w[i] * tmp[k];
                         }
@@ -560,13 +557,13 @@ gpuWeight(const Settings& settings)
 
 PlanPtr
 makePlan(const Settings& settings,
-         bool nearest)
+         EdgeMode edgeMode)
 {
     const Settings s = normalised(settings);
     std::shared_ptr<Plan> plan = std::make_shared<Plan>();
 
     plan->fir = (s.filter == BlurKernels::eFilterFIRGaussian);
-    plan->nearest = nearest;
+    plan->edgeMode = edgeMode;
     plan->count = s.count;
     int levelX = 0;
     int levelY = 0;
@@ -593,8 +590,8 @@ makePlan(const Settings& settings,
             blur.factorY = 1 << ky;
             const double ex = levelSigma(sigmaX, kx);
             const double ey = levelSigma(sigmaY, ky);
-            blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(ex, 0, nearest));
-            blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(ey, 0, nearest));
+            blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(ex, 0, edgeMode));
+            blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(ey, 0, edgeMode));
             blur.radiusX = BlurKernels::LineFilter::firGaussianRadius(ex);
             blur.radiusY = BlurKernels::LineFilter::firGaussianRadius(ey);
             // A pixel reads four level samples about its own and their blur, and a level sample
@@ -606,14 +603,14 @@ makePlan(const Settings& settings,
             blur.weightsY = BlurKernels::LineFilter::firGaussianWeights(ey);
 #endif
         } else if (isGaussianFamily(s.filter)) {
-            blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)(px / 2.4), 0, nearest));
-            blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)(py / 2.4), 0, nearest));
+            blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)(px / 2.4), 0, edgeMode));
+            blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)(py / 2.4), 0, edgeMode));
             haloX = blur.filterX->isIdentity() ? 0 : std::max<int64_t>(3, (int64_t)std::ceil(px * 1.5));
             haloY = blur.filterY->isIdentity() ? 0 : std::max<int64_t>(3, (int64_t)std::ceil(py * 1.5));
         } else {
             const int iter = boxIterations(s.filter);
-            blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)px, 0, nearest));
-            blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)py, 0, nearest));
+            blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)px, 0, edgeMode));
+            blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)py, 0, edgeMode));
             haloX = blur.filterX->isIdentity() ? 0 : iter * (int64_t)(std::floor((px - 1) / 2) + 1);
             haloY = blur.filterY->isIdentity() ? 0 : iter * (int64_t)(std::floor((py - 1) / 2) + 1);
         }
@@ -684,10 +681,6 @@ namespace {
         int32_t validY1;
         int32_t validX2;
         int32_t validY2;
-        int32_t clampX1;
-        int32_t clampY1;
-        int32_t clampX2;
-        int32_t clampY2;
         int32_t outX1;
         int32_t outY1;
         uint32_t outWidth;
@@ -699,7 +692,7 @@ namespace {
         int32_t domX2;
         int32_t domY2;
         uint32_t channels;
-        uint32_t nearest;
+        uint32_t edgeMode;
         uint32_t axis;
         uint32_t factorX;
         uint32_t factorY;
@@ -707,11 +700,11 @@ namespace {
         float divisor;
         uint32_t pad0;
     };
-    static_assert(sizeof(BloomGpuParams) == 120);
-    static_assert(offsetof(BloomGpuParams, clampX1) == 32);
-    static_assert(offsetof(BloomGpuParams, domX1) == 72);
-    static_assert(offsetof(BloomGpuParams, channels) == 88);
-    static_assert(offsetof(BloomGpuParams, divisor) == 112);
+    static_assert(sizeof(BloomGpuParams) == 104);
+    static_assert(offsetof(BloomGpuParams, outX1) == 32);
+    static_assert(offsetof(BloomGpuParams, domX1) == 56);
+    static_assert(offsetof(BloomGpuParams, channels) == 72);
+    static_assert(offsetof(BloomGpuParams, divisor) == 96);
 
     bool
     dispatchBloom(gpu::GpuRecordContext& ctx,
@@ -757,7 +750,6 @@ namespace {
         p.inY1 = in.y1;
         p.inStride = (uint32_t)(std::max(0, in.width()) * nComps);
         setRect(in, &p.validX1, &p.validY1, &p.validX2, &p.validY2);
-        setRect(in, &p.clampX1, &p.clampY1, &p.clampX2, &p.clampY2);
         p.outX1 = out.x1;
         p.outY1 = out.y1;
         p.outWidth = (uint32_t)std::max(0, out.width());
@@ -838,7 +830,7 @@ gpuFloatIndex(const gpu::GpuBlurImage& image,
 
 StatusEnum
 recordFill(const PassGpuIO& io,
-           bool nearest,
+           EdgeMode edgeMode,
            gpu::GpuBuffer** buffer)
 {
     gpu::GpuRecordContext& ctx = io.context;
@@ -853,8 +845,7 @@ recordFill(const PassGpuIO& io,
     BloomGpuParams p = packedParams(RectI(), io.domain, nComps);
     // The source's pixels that exist, the first at inOffset; the kernel reads none when empty.
     p.validX1 = p.validY1 = p.validX2 = p.validY2 = 0;
-    setRect(io.rod, &p.clampX1, &p.clampY1, &p.clampX2, &p.clampY2);
-    p.nearest = nearest ? 1u : 0u;
+    p.edgeMode = gpu::gpuEdgeMode(edgeMode);
     const gpu::GpuBuffer* source = *buffer;
     if (io.source.buffer && !PassExec::isEmptyRect(io.sourceValid)) {
         const gpu::GpuBlurImage image = PassExec::toGpuBlurImage(io.source);
@@ -893,7 +884,7 @@ recordGpu(const Plan& plan,
         return eStatusFailed;
     }
     setRect(domain, &up.domX1, &up.domY1, &up.domX2, &up.domY2);
-    up.nearest = plan.nearest ? 1u : 0u;
+    up.edgeMode = gpu::gpuEdgeMode(plan.edgeMode);
     up.factorX = up.factorY = 1;
     up.first = 1;
     if (PassExec::isEmptyRect(domain)) {
@@ -909,7 +900,7 @@ recordGpu(const Plan& plan,
             return eStatusFailed;
         }
         BloomGpuParams down = packedParams(rects[m - 1], rects[m], nComps);
-        down.nearest = up.nearest;
+        down.edgeMode = up.edgeMode;
         down.axis = (uint32_t)plan.steps[m - 1];
         if (!dispatchBloom(ctx, gpu::GpuKernelId::bloom_down, levels[m - 1], level, down)) {
             return eStatusFailed;
@@ -962,13 +953,14 @@ recordGpu(const Plan& plan,
         if (plan.fir) {
             const RectI& padRect = paddedRects[b];
             BloomGpuParams pad = packedParams(v, padRect, nComps);
-            pad.nearest = up.nearest;
+            pad.edgeMode = up.edgeMode;
             if (!dispatchBloom(ctx, gpu::GpuKernelId::bloom_copy, levels[blur.level], padded, pad)) {
                 return eStatusFailed;
             }
             gpu::GpuSeparableBlur sep;
             sep.src = gpuScratchImage(padded, padRect, nComps);
             sep.srcValid = sep.src.bounds;
+            sep.edgeMode = plan.edgeMode;
             sep.dst = gpuScratchImage(blurred, r, nComps);
             sep.output = sep.dst.bounds;
             sep.domain = sep.src.bounds;
@@ -985,6 +977,7 @@ recordGpu(const Plan& plan,
             gpu::GpuLineBlur line;
             line.src = gpuScratchImage(input, domain, nComps);
             line.srcValid = line.src.bounds;
+            line.srcEdgeMode = plan.edgeMode;
             line.dst = gpuScratchImage(blurred, domain, nComps);
             line.output = line.dst.bounds;
             line.domain = line.dst.bounds;

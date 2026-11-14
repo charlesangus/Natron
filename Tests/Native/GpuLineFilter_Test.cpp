@@ -62,22 +62,22 @@ lineFilters()
 {
     std::vector<NamedFilter> out;
     for (unsigned int order : { 0u, 1u }) {
-        for (bool neumann : { false, true }) {
+        for (EdgeMode lineEnds : { EdgeMode::Black, EdgeMode::Stretch }) {
             std::ostringstream suffix;
-            suffix << " order " << order << (neumann ? " neumann" : " black");
+            suffix << " order " << order << (lineEnds == EdgeMode::Stretch ? " stretch" : " black");
             for (float sigma : { 0.6f, 4.f, 25.f }) {
                 std::ostringstream name;
                 name << "deriche sigma " << sigma << suffix.str();
-                out.push_back({ name.str(), BlurKernels::LineFilter::deriche(sigma, order, neumann) });
+                out.push_back({ name.str(), BlurKernels::LineFilter::deriche(sigma, order, lineEnds) });
             }
             for (float sigma : { 1.5f, 4.f, 30.f }) {
                 std::ostringstream name;
                 name << "vanVliet sigma " << sigma << suffix.str();
-                out.push_back({ name.str(), BlurKernels::LineFilter::vanVliet(sigma, order, neumann) });
+                out.push_back({ name.str(), BlurKernels::LineFilter::vanVliet(sigma, order, lineEnds) });
             }
             for (float size : { 0.5f, 1.f, 2.5f, 5.f, 11.f }) {
                 for (unsigned int iterations : { 1u, 2u, 3u }) {
-                    const BlurKernels::LineFilter f = BlurKernels::LineFilter::box(size, (int)order, neumann, iterations);
+                    const BlurKernels::LineFilter f = BlurKernels::LineFilter::box(size, (int)order, lineEnds, iterations);
                     // A box of width 1 or less does not smooth, whatever the iterations.
                     if (f.isIdentity() || ((size <= 1.f) && (iterations > 1))) {
                         continue;
@@ -246,7 +246,7 @@ TEST(GpuLineFilter, MatchesLineFilterApply)
     for (const NamedFilter& nf : lineFilters()) {
         const gpu::GpuLineFilter device = BlurKernels::toGpuLineFilter(nf.filter);
         EXPECT_EQ(nf.filter.order(), device.order) << nf.name;
-        EXPECT_EQ(nf.filter.neumann(), device.neumann) << nf.name;
+        EXPECT_EQ(nf.filter.lineEnds(), device.lineEnds) << nf.name;
         for (const Shape& s : kShapes) {
             const std::vector<float> input = testPixels(s);
             for (int axes = 0; axes < 3; ++axes) {
@@ -281,9 +281,9 @@ TEST(GpuLineFilter, RefusesHigherOrders)
     const Shape s { 8, 8, 4 };
     const std::vector<float> input = testPixels(s);
     const BlurKernels::LineFilter filters[] = {
-        BlurKernels::LineFilter::deriche(3.f, 2, false),
-        BlurKernels::LineFilter::vanVliet(3.f, 2, false),
-        BlurKernels::LineFilter::box(3.f, 2, false, 1),
+        BlurKernels::LineFilter::deriche(3.f, 2, EdgeMode::Black),
+        BlurKernels::LineFilter::vanVliet(3.f, 2, EdgeMode::Black),
+        BlurKernels::LineFilter::box(3.f, 2, EdgeMode::Black, 1),
     };
     for (const BlurKernels::LineFilter& f : filters) {
         std::vector<float> got;

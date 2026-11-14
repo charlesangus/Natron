@@ -42,6 +42,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -373,15 +374,16 @@ TEST_F(NativeLensDistortionGpuTest, SettingsMatchTheCpu)
     ASSERT_TRUE(bool(source));
     NodePtr node = makeLensDistortion(source, modelSetups().front());
     ASSERT_TRUE(bool(node));
-    // Undistort reads outside the Source at the corners, where Black Outside shows.
+    // Undistort reads outside the Source at the corners, where the edge mode shows.
     ASSERT_TRUE(setKnobValue(node, kLensDistortionParamDirection, std::string(kLensDistortionDirectionUndistort)));
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("notch")));
     ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 1. }));
     expectParity(source, node, "clamp");
     ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 0. }));
-    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
-    expectParity(source, node, "no black outside");
-    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
+    expectParity(source, node, "edge mode stretch");
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
+    expectParity(source, node, "edge mode black");
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.35 }));
     expectParity(source, node, "mix");
     ASSERT_TRUE(setKnobValue(node, kLensDistortionParamOutputMode, outputMode(true)));

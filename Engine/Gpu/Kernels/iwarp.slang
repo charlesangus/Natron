@@ -13,7 +13,6 @@ import edgesample;
 [[vk::binding(4, 0)]] StructuredBuffer<float> mapBuf;
 
 static const uint kIWarpClamp = 1;
-static const uint kIWarpBlackOutside = 2;
 static const uint kIWarpJacobian = 4;
 static const uint kIWarpSample = 8;
 static const uint kIWarpMapConnected = 16;
@@ -222,7 +221,7 @@ float4 iwarpSample(IWarp w, int2 p)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.edgeMode = edgeModeFromFlags(w.flags, kIWarpBlackOutside);
+    src.edgeMode = edgeModeFromFlags(w.flags, kFlagEdgeBlack);
     const float4 v = sampleAt(src, sx, sy, J, jacobian, w.spec, (w.flags & kIWarpClamp) != 0, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
     if (wrap.nComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);

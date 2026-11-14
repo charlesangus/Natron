@@ -60,6 +60,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Project.h"
@@ -372,7 +373,8 @@ describeSize(bool dilate,
 
 // The CPU render of the node against renderGpu() fed with the source over getGpuInputRoI(), on the
 // parity source moved off the format's origin so the halo, the format and the input's edges all
-// fall inside the filtered extent. Min and max pick an input value, so the match is exact.
+// fall inside the filtered extent, under both edge modes: the source's border pixels stretch past
+// it or meet black. Min and max pick an input value, so the match is exact.
 TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -385,44 +387,47 @@ TEST_F(NativeErodeDilateGpuTest, MatchesTheCpuRender)
     setParitySourceOrigin(source, 3, 5);
 
     int nCompared = 0;
-    for (bool dilate : { false, true }) {
-        for (const SizeCase& size : kSizes) {
-            for (bool expandRoD : { false, true }) {
-                // A fresh node per setting, so no region of definition cached under an earlier
-                // setting is reused.
-                NodePtr node = makeNode();
-                StagedImageEffect* effect = effectOf(node);
-                ASSERT_TRUE(effect != NULL);
-                connectNodes(source, node, 0, true);
-                ASSERT_TRUE(setSize(node, dilate, size.x, size.y));
-                ASSERT_TRUE(setKnobValues(node, kErodeDilateParamExpandRoD, { expandRoD ? 1. : 0. }));
+    for (const char* edgeMode : { "stretch", "black" }) {
+        for (bool dilate : { false, true }) {
+            for (const SizeCase& size : kSizes) {
+                for (bool expandRoD : { false, true }) {
+                    // A fresh node per setting, so no region of definition cached under an earlier
+                    // setting is reused.
+                    NodePtr node = makeNode();
+                    StagedImageEffect* effect = effectOf(node);
+                    ASSERT_TRUE(effect != NULL);
+                    connectNodes(source, node, 0, true);
+                    ASSERT_TRUE(setSize(node, dilate, size.x, size.y));
+                    ASSERT_TRUE(setKnobValues(node, kErodeDilateParamExpandRoD, { expandRoD ? 1. : 0. }));
+                    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeMode)));
 
-                for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-                    const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
-                    ASSERT_FALSE(rod.isNull());
-                    GpuQuery query = eligibleQuery();
-                    query.mappedScale = RenderScale::fromMipmapLevel(mipmapLevel);
-                    ASSERT_TRUE(effect->canRenderOnGpu(query));
+                    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+                        const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
+                        ASSERT_FALSE(rod.isNull());
+                        GpuQuery query = eligibleQuery();
+                        query.mappedScale = RenderScale::fromMipmapLevel(mipmapLevel);
+                        ASSERT_TRUE(effect->canRenderOnGpu(query));
 
-                    for (const RectI& roi : testWindows(rod)) {
-                        const std::string what = describeSize(dilate, size, expandRoD, mipmapLevel) + " " + describeRoI(roi);
-                        RenderedPlane cpu;
-                        ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
-                        ASSERT_EQ(4u, cpu.channels.size()) << what;
-                        ASSERT_EQ(roi, cpu.window) << what;
+                        for (const RectI& roi : testWindows(rod)) {
+                            const std::string what = std::string(edgeMode) + " " + describeSize(dilate, size, expandRoD, mipmapLevel) + " " + describeRoI(roi);
+                            RenderedPlane cpu;
+                            ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
+                            ASSERT_EQ(4u, cpu.channels.size()) << what;
+                            ASSERT_EQ(roi, cpu.window) << what;
 
-                        GpuParityImage image;
-                        ASSERT_TRUE(sourceImage(source, *effect, mipmapLevel, roi, &image)) << what;
-                        const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, roi, outputLayout());
-                        ASSERT_TRUE(run.ok) << what;
-                        EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
+                            GpuParityImage image;
+                            ASSERT_TRUE(sourceImage(source, *effect, mipmapLevel, roi, &image)) << what;
+                            const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, roi, outputLayout());
+                            ASSERT_TRUE(run.ok) << what;
+                            EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
 
-                        ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
-                        const ImageDiff diff = compareImages(cpu.pixels, run.pixels, ParityTolerance::exact());
-                        nCompared += (int)diff.compared;
-                        const std::size_t at = diff.firstMismatchIndex / 4;
-                        EXPECT_EQ(0u, diff.mismatches) << what << ", first at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ") channel " << (diff.firstMismatchIndex % 4)
-                                                       << " gpu " << run.pixels[diff.firstMismatchIndex] << " cpu " << cpu.pixels[diff.firstMismatchIndex];
+                            ASSERT_EQ(cpu.pixels.size(), run.pixels.size()) << what;
+                            const ImageDiff diff = compareImages(cpu.pixels, run.pixels, ParityTolerance::exact());
+                            nCompared += (int)diff.compared;
+                            const std::size_t at = diff.firstMismatchIndex / 4;
+                            EXPECT_EQ(0u, diff.mismatches) << what << ", first at (" << (roi.x1 + (int)(at % roi.width())) << "," << (roi.y1 + (int)(at / roi.width())) << ") channel " << (diff.firstMismatchIndex % 4)
+                                                           << " gpu " << run.pixels[diff.firstMismatchIndex] << " cpu " << cpu.pixels[diff.firstMismatchIndex];
+                        }
                     }
                 }
             }

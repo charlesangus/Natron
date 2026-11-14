@@ -50,6 +50,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/EdgeExtend.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -152,11 +153,10 @@ protected:
         return node;
     }
 
-    // The matte: an opaque box of kColour over transparent black covering the format.
-    NodePtr makeMatte()
+    // a over b.
+    NodePtr makeOver(const NodePtr& b,
+                     const NodePtr& a)
     {
-        NodePtr b = makeConstant({ 0., 0., 0., 0. }, NULL);
-        NodePtr a = makeConstant({ kColour[0], kColour[1], kColour[2], 1. }, &kBox);
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         EXPECT_TRUE(bool(merge));
         if (!merge || !a || !b) {
@@ -167,6 +167,12 @@ protected:
         connectNodes(a, merge, 1, true);
 
         return merge;
+    }
+
+    // The matte: an opaque box of kColour over transparent black covering the format.
+    NodePtr makeMatte()
+    {
+        return makeOver(makeConstant({ 0., 0., 0., 0. }, NULL), makeConstant({ kColour[0], kColour[1], kColour[2], 1. }, &kBox));
     }
 
     NodePtr makeEdgeExtend(const NodePtr& source)
@@ -316,6 +322,47 @@ TEST_F(NativeEdgeExtendTest, StopsAtTheKernelsReach)
         EXPECT_EQ(0.f, at(out, kBox.x1 - 4, y, c)) << "channel " << c;
     }
     EXPECT_EQ(0.f, at(out, kBox.x1 - 3, y, 3));
+}
+
+// The extended colour is a weighted mean of the solid colours nearby, so the black that Black
+// reads past the border lowers every weight there alike: a solid constant keeps its colour to the
+// border under either mode. Where the solid colours reach the border unevenly, the edge pixels
+// that Stretch repeats weigh in and Black's do not: a red box on the bottom edge and a blue one
+// clear of it, with a transparent gap between them on that edge.
+TEST_F(NativeEdgeExtendTest, EdgeModeDecidesWhatTheBorderAdds)
+{
+    const RectI red(0, 0, 4, 4);
+    const RectI blue(8, 2, 12, 6);
+    float gapRed[2] = { 0.f, 0.f };
+    const char* const modes[2] = { "stretch", "black" };
+    for (int m = 0; m < 2; ++m) {
+        resetProject();
+        NodePtr constant = makeConstant({ 0.3, 0.6, 0.9, 1. }, NULL);
+        ASSERT_TRUE(bool(constant));
+        NodePtr flat = makeEdgeExtend(constant);
+        ASSERT_TRUE(bool(flat));
+        ASSERT_TRUE(setKnobValue(flat, kEdgeModeParam, std::string(modes[m])));
+        RenderedPlane in, out;
+        ASSERT_NO_FATAL_FAILURE(renderPair(constant, flat, &in, &out));
+        for (std::size_t i = 0; i < in.pixels.size(); ++i) {
+            ASSERT_NEAR(in.pixels[i], out.pixels[i], 1e-6) << modes[m] << ": the constant, float " << i;
+        }
+
+        NodePtr base = makeConstant({ 0., 0., 0., 0. }, NULL);
+        NodePtr source = makeOver(makeOver(base, makeConstant({ 1., 0., 0., 1. }, &red)), makeConstant({ 0., 0., 1., 1. }, &blue));
+        ASSERT_TRUE(bool(source));
+        NodePtr node = makeEdgeExtend(source);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSize, { 9.6 }));
+        ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSlices, { 1. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(modes[m])));
+        ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &out));
+        ASSERT_EQ(0.f, at(in, 6, 0, 3));
+        gapRed[m] = at(out, 6, 0, 0);
+        EXPECT_GT(gapRed[m], 0.f) << modes[m];
+        EXPECT_GT(at(out, 6, 0, 2), 0.f) << modes[m];
+    }
+    EXPECT_GT(gapRed[0], gapRed[1] + 1e-3f) << "the repeated edge adds red under Stretch only";
 }
 
 // The colour of the contaminated ring, kRingColour, at alpha kRingAlpha around the box, which has

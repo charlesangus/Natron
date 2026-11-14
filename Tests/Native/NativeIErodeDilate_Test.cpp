@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
@@ -804,6 +805,41 @@ TEST_F(NativeIErodeDilateTest, DisconnectedMapWarns)
     message.clear();
     node->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+}
+
+// Stretch, which Input resolves to for a Constant, repeats the edge, so an eroded constant keeps
+// its value to the border, square or disc; Black erodes the border to black and leaves the middle.
+TEST_F(NativeIErodeDilateTest, EdgeModeDecidesTheBorderOfAConstant)
+{
+    const double v = 0.6;
+    NodePtr constant = makeConstant(kWindow, { v, v, v, v });
+    ASSERT_TRUE(bool(constant));
+    for (bool disc : { false, true }) {
+        for (const char* edgeMode : { "input", "stretch", "black" }) {
+            NodePtr node = makeNode(false, constant, NodePtr(), 3., 2.5);
+            ASSERT_TRUE(bool(node));
+            if (disc) {
+                ASSERT_TRUE(setKnobValue(node, kIErodeDilateParamShape, std::string(kIErodeDilateParamShapeDisc)));
+            }
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeMode)));
+            RenderedPlane actual;
+            ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
+            const int w = kWindow.width();
+            const auto at = [&](int x, int y) {
+                return actual.pixels[((std::size_t)y * w + x) * 4];
+            };
+            const std::string what = std::string(edgeMode) + (disc ? " disc" : " square");
+            if (std::string(edgeMode) == "black") {
+                EXPECT_EQ(0.f, at(0, 0)) << what << ": the corner";
+                EXPECT_EQ(0.f, at(w - 1, kWindow.height() / 2)) << what << ": the right edge";
+                EXPECT_EQ((float)v, at(w / 2, kWindow.height() / 2)) << what << ": the centre";
+                continue;
+            }
+            for (std::size_t i = 0; i < actual.pixels.size(); ++i) {
+                ASSERT_EQ((float)v, actual.pixels[i]) << what << " float " << i;
+            }
+        }
+    }
 }
 
 // A size of 0 on both axes is an identity, and the passes are empty, so the input passes through.

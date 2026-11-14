@@ -35,6 +35,8 @@
 
 #include "Global/Macros.h"
 
+#include "Global/EdgeMode.h"
+
 #include <cstddef>
 #include <vector>
 
@@ -55,8 +57,8 @@ NATRON_NAMESPACE_ENTER
  * `stride = rowElements`. The result depends on the whole line (IIR filters, and the
  * boundary condition at both ends), so callers must filter whole lines, never tiles of them.
  *
- * `neumann` is CImg's `boundary_conditions` bool: false is Dirichlet (black outside the line),
- * true is Neumann (the end samples repeat).
+ * `lineEnds` is CImg's `boundary_conditions`, as the edge mode of the image the line is part of:
+ * Black is Dirichlet (black outside the line), Stretch is Neumann (the end samples repeat).
  **/
 namespace BlurKernels {
 /// The order of CImgBlur's `filter` choice.
@@ -86,36 +88,36 @@ public:
     LineFilter();
 
     /**
-     * @brief CImg<float>::deriche(sigma, order, axis, neumann). Orders 0, 1, 2. sigma is in
+     * @brief CImg<float>::deriche(sigma, order, axis, lineEnds == Stretch). Orders 0, 1, 2. sigma is in
      * pixels; negative values are treated as 0. Order 0 with sigma < 0.1 is the identity, and
      * an order above 2 (where CImg throws) gives the identity.
      **/
-    static LineFilter deriche(float sigma, unsigned int order, bool neumann);
+    static LineFilter deriche(float sigma, unsigned int order, EdgeMode lineEnds);
 
     /**
-     * @brief CImg<float>::vanvliet(sigma, order, axis, neumann), the Young / van Vliet
+     * @brief CImg<float>::vanvliet(sigma, order, axis, lineEnds == Stretch), the Young / van Vliet
      * recursive Gaussian with Triggs boundary conditions. Orders 0 to 3. Below sigma 0.5 it
-     * is deriche(sigma, order, neumann), as in CImg.
+     * is deriche(sigma, order, lineEnds), as in CImg.
      **/
-    static LineFilter vanVliet(float sigma, unsigned int order, bool neumann);
+    static LineFilter vanVliet(float sigma, unsigned int order, EdgeMode lineEnds);
 
     /**
-     * @brief CImg<float>::boxfilter(boxSize, order, axis, neumann, iterations): a box of
+     * @brief CImg<float>::boxfilter(boxSize, order, axis, lineEnds == Stretch, iterations): a box of
      * (possibly fractional) width boxSize applied `iterations` times (1 box, 2 triangle,
      * 3 quadratic), then a centred difference of the given order (0, 1 or 2). boxSize is in
      * pixels; negative values are treated as 0. boxSize 0, or boxSize <= 1 with order 0, is
      * the identity.
      **/
-    static LineFilter box(float boxSize, int order, bool neumann, unsigned int iterations);
+    static LineFilter box(float boxSize, int order, EdgeMode lineEnds, unsigned int iterations);
 
     /**
      * @brief A Gaussian with finite support: weights exp(-k^2 / (2 sigma^2)) for |k| <= radius,
      * radius = firGaussianRadius(sigma), computed in double and normalised to sum 1, then stored
-     * and accumulated in float. Outside the line, samples are the end sample (neumann) or zero.
+     * and accumulated in float. Outside the line, samples are the end sample (Stretch) or zero (Black).
      * sigma below 0.1 gives no smoothing. An order of 1 or 2 then takes the centred difference
      * box() takes; a higher order gives the identity.
      **/
-    static LineFilter firGaussian(double sigma, unsigned int order, bool neumann);
+    static LineFilter firGaussian(double sigma, unsigned int order, EdgeMode lineEnds);
 
     /// ceil(3 sigma), or 0 when sigma < 0.1: the number of samples firGaussian reads on each side.
     static int firGaussianRadius(double sigma);
@@ -131,7 +133,7 @@ public:
      * box with 1/2/3 iterations for Box/Triangle/Quadratic, firGaussian for FIRGaussian. `size`
      * is sigma for the Gaussians and the box width for the others, both in pixels.
      **/
-    static LineFilter forFilter(Filter filter, float size, unsigned int order, bool neumann);
+    static LineFilter forFilter(Filter filter, float size, unsigned int order, EdgeMode lineEnds);
 
     enum Kind {
         eKindIdentity,
@@ -147,7 +149,7 @@ public:
      **/
     Kind kind() const { return _kind; }
     unsigned int order() const { return _order; }
-    bool neumann() const { return _neumann; }
+    EdgeMode lineEnds() const { return _neumann ? EdgeMode::Stretch : EdgeMode::Black; }
 
     /// Deriche: a0, a1, a2, a3, b1, b2, coefp, coefn.
     void dericheCoefficients(double out[8]) const;
@@ -213,14 +215,14 @@ gpu::GpuLineFilter toGpuLineFilter(const LineFilter& filter);
 #endif
 
 /// One-shot wrappers: build the filter and apply it to a single line.
-void deriche(float* data, int n, std::ptrdiff_t stride, float sigma, unsigned int order, bool neumann);
-void vanVliet(float* data, int n, std::ptrdiff_t stride, float sigma, unsigned int order, bool neumann);
+void deriche(float* data, int n, std::ptrdiff_t stride, float sigma, unsigned int order, EdgeMode lineEnds);
+void vanVliet(float* data, int n, std::ptrdiff_t stride, float sigma, unsigned int order, EdgeMode lineEnds);
 void boxFilter(float* data,
                int n,
                std::ptrdiff_t stride,
                float boxSize,
                int order,
-               bool neumann,
+               EdgeMode lineEnds,
                unsigned int iterations);
 } // namespace BlurKernels
 

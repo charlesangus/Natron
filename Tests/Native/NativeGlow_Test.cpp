@@ -57,6 +57,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/Glow.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -412,6 +413,43 @@ TEST_F(NativeGlowTest, GlowOnlyPlusSourceIsTheOutput)
         ASSERT_NEAR(s, screen.pixels[i], 1e-6 * std::max(1.f, std::fabs(s))) << "float " << i;
     }
     EXPECT_GT(glowSum, 1.);
+}
+
+// The edge mode decides what the bloom reads outside the image, straight or turned: under
+// Stretch the glow of a constant is a constant to the border, under Black it darkens there and
+// keeps its value at the centre.
+TEST_F(NativeGlowTest, EdgeModeDecidesTheBorderOfAConstant)
+{
+    resetProject(160, 160);
+    NodePtr source = makeConstant(2., 2., 2., NULL);
+    ASSERT_TRUE(bool(source));
+    for (double rotate : { 0., 30. }) {
+        float centreOf[2] = { 0.f, 0.f };
+        int m = 0;
+        for (const char* mode : { "stretch", "black" }) {
+            NodePtr node = makeSmallGlow(source);
+            ASSERT_TRUE(bool(node));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamGlowOnly, { 1. }));
+            if (rotate != 0.) {
+                ASSERT_TRUE(setKnobValues(node, kGlowParamStretch, { 0.5 }));
+                ASSERT_TRUE(setKnobValues(node, kGlowParamRotate, { rotate }));
+            }
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(mode)));
+            RenderedPlane in, out;
+            ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &out));
+            const RectI rod = pixelRoD(node);
+            const float centre = at(out, (rod.x1 + rod.x2) / 2, (rod.y1 + rod.y2) / 2, 0);
+            const float corner = at(out, rod.x1, rod.y1, 0);
+            EXPECT_GT(centre, 0.1f) << mode << " rotate " << rotate;
+            if (m == 0) {
+                EXPECT_NEAR(centre, corner, 1e-4 * centre) << mode << " rotate " << rotate;
+            } else {
+                EXPECT_LT(corner, 0.9f * centre) << mode << " rotate " << rotate;
+            }
+            centreOf[m++] = centre;
+        }
+        EXPECT_NEAR(centreOf[0], centreOf[1], 1e-3 * centreOf[0]) << "rotate " << rotate;
+    }
 }
 
 // The preview is the source scaled by c(L) / L: a grey of value v has luminance v, and above the
@@ -1199,7 +1237,8 @@ channelNames(unsigned processed)
 
 // The CPU render of the node over its region of definition against renderGpu() fed with the
 // noisy parity source over getGpuInputRoI(), over that region and over a tile inside it. A tile of
-// a recursive filter is compared with a CPU render of the same tile, as Bloom's is.
+// a recursive filter is compared with a CPU render of the same tile, as Bloom's is. Both edge
+// modes run, as the source's edges fall inside the glow.
 TEST_F(NativeGlowTest, GpuMatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -1214,94 +1253,97 @@ TEST_F(NativeGlowTest, GpuMatchesTheCpuRender)
 
     std::size_t nCompared = 0;
     int nRenders = 0;
-    for (const ParityCase& c : parityCases()) {
-        NodePtr node = makeGlow(source);
-        StagedImageEffect* effect = effectOf(node);
-        ASSERT_TRUE(effect != NULL);
-        ASSERT_TRUE(setKnobValue(node, kGlowParamFilter, std::string(kFilters[c.filter])));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamThreshold, { 0.2 }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamSize, { c.size }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamStretch, { c.stretch }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamCount, { (double)c.count }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamPreview, { (c.options & eOptionPreview) ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamGlowOnly, { (c.options & eOptionGlowOnly) ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamScreen, { (c.options & eOptionScreen) ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamAddInput, { (c.options & eOptionAddInput) ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamExpandRoD, { (c.options & eOptionExpandRoD) ? 1. : 0. }));
-        double rotate = 0.;
-        if (c.options & eOptionRotate) {
-            rotate = 30.;
-        } else if (c.options & eOptionQuarterTurn) {
-            rotate = 90.;
-        }
-        ASSERT_TRUE(setKnobValues(node, kGlowParamRotate, { rotate }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamIsolateHue, { (c.options & eOptionHue) ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kGlowParamPickHue, { 1., 0.5, 0. }));
-        if (c.options & eOptionGrade) {
-            ASSERT_TRUE(setKnobValues(node, kGlowParamTint, { 1.5, 0.75, 0.5, 0.6 }));
-            ASSERT_TRUE(setKnobValues(node, kGlowParamBrightness, { 2. }));
-            ASSERT_TRUE(setKnobValues(node, kGlowParamSaturation, { 0.4, 1.3, 0. }));
-            ASSERT_TRUE(setKnobValues(node, kGlowParamGamma, { 1.8, 1., 0.6, 2.5 }));
-            ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
-        }
-        KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
-        ASSERT_TRUE(bool(channelSet));
-        channelSet->setChannels(0, channelNames(c.processed));
-        const ParityTolerance tolerance = (c.filter == kFirFilter) ? ParityTolerance::make(0., 1e-4) : ParityTolerance::iir();
-
-        const RectI rod = pixelRegionOfDefinition(node);
-        ASSERT_FALSE(rod.isNull());
-        RenderedPlane cpu;
-        ASSERT_TRUE(renderRGBA(node, rod, &cpu)) << describeCase(c, rod);
-        ASSERT_EQ(rod, cpu.window) << describeCase(c, rod);
-
-        GpuQuery query = eligibleQuery();
-        query.nComps = c.nComps;
-        query.plane = planeOf(c.nComps);
-        if (c.nComps == 4) {
-            for (int i = 0; i < 4; ++i) {
-                query.processChannels[i] = (c.processed & (1u << i)) != 0;
+    for (const char* mode : { "stretch", "black" }) {
+        for (const ParityCase& c : parityCases()) {
+            NodePtr node = makeGlow(source);
+            StagedImageEffect* effect = effectOf(node);
+            ASSERT_TRUE(effect != NULL);
+            ASSERT_TRUE(setKnobValue(node, kGlowParamFilter, std::string(kFilters[c.filter])));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamThreshold, { 0.2 }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(mode)));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamSize, { c.size }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamStretch, { c.stretch }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamCount, { (double)c.count }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamPreview, { (c.options & eOptionPreview) ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamGlowOnly, { (c.options & eOptionGlowOnly) ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamScreen, { (c.options & eOptionScreen) ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamAddInput, { (c.options & eOptionAddInput) ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamExpandRoD, { (c.options & eOptionExpandRoD) ? 1. : 0. }));
+            double rotate = 0.;
+            if (c.options & eOptionRotate) {
+                rotate = 30.;
+            } else if (c.options & eOptionQuarterTurn) {
+                rotate = 90.;
             }
-        }
-        ASSERT_TRUE(effect->canRenderOnGpu(query)) << describeCase(c, rod);
-
-        std::vector<RectI> rois;
-        rois.push_back(rod);
-        if (c.tile) {
-            rois.push_back(RectI(rod.x1 + 9, rod.y1 + 7, std::min(rod.x2 - 3, rod.x1 + 9 + 29), std::min(rod.y2 - 2, rod.y1 + 7 + 21)));
-        }
-        const std::vector<int> channels = planeChannels(c.nComps);
-        for (const RectI& roi : rois) {
-            const std::string what = describeCase(c, roi);
-            const RectI inputRoI = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::identity);
-            RenderedPlane in;
-            ASSERT_TRUE(renderRGBA(source, inputRoI, &in)) << what;
-            ASSERT_EQ(inputRoI, in.window) << what;
-            GpuParityImage image;
-            image.bounds = inputRoI;
-            image.nComps = c.nComps;
-            image.pixels = pickChannels(in.pixels, inputRoI, inputRoI, channels);
-            image.layout.padFloats = 6;
-            image.layout.rowPadFloats = 8;
-
-            const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, roi, outputLayout());
-            ASSERT_TRUE(run.ok) << what;
-            EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
-            ++nRenders;
-
-            const bool recursive = (c.filter == (int)BlurKernels::eFilterQuasiGaussian) || (c.filter == (int)BlurKernels::eFilterGaussian);
-            RenderedPlane cpuTile;
-            if (recursive && (roi != rod)) {
-                ASSERT_TRUE(renderRGBA(node, roi, &cpuTile)) << what;
-                ASSERT_EQ(roi, cpuTile.window) << what;
+            ASSERT_TRUE(setKnobValues(node, kGlowParamRotate, { rotate }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamIsolateHue, { (c.options & eOptionHue) ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kGlowParamPickHue, { 1., 0.5, 0. }));
+            if (c.options & eOptionGrade) {
+                ASSERT_TRUE(setKnobValues(node, kGlowParamTint, { 1.5, 0.75, 0.5, 0.6 }));
+                ASSERT_TRUE(setKnobValues(node, kGlowParamBrightness, { 2. }));
+                ASSERT_TRUE(setKnobValues(node, kGlowParamSaturation, { 0.4, 1.3, 0. }));
+                ASSERT_TRUE(setKnobValues(node, kGlowParamGamma, { 1.8, 1., 0.6, 2.5 }));
+                ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
             }
-            const std::vector<float> want = (recursive && (roi != rod)) ? pickChannels(cpuTile.pixels, roi, roi, channels) : pickChannels(cpu.pixels, rod, roi, channels);
-            ASSERT_EQ(want.size(), run.pixels.size()) << what;
-            const ImageDiff diff = compareImages(want, run.pixels, tolerance);
-            nCompared += diff.compared;
-            const std::size_t i = diff.worstIndex / c.nComps;
-            EXPECT_EQ(0u, diff.mismatches) << what << ": " << diff.mismatches << " mismatches, worst " << diff.worstAbsolute << " at (" << (roi.x1 + (int)(i % roi.width())) << ","
-                                           << (roi.y1 + (int)(i / roi.width())) << ") channel " << (diff.worstIndex % c.nComps) << " gpu " << run.pixels[diff.worstIndex] << " cpu " << want[diff.worstIndex];
+            KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
+            ASSERT_TRUE(bool(channelSet));
+            channelSet->setChannels(0, channelNames(c.processed));
+            const ParityTolerance tolerance = (c.filter == kFirFilter) ? ParityTolerance::make(0., 1e-4) : ParityTolerance::iir();
+
+            const RectI rod = pixelRegionOfDefinition(node);
+            ASSERT_FALSE(rod.isNull());
+            RenderedPlane cpu;
+            ASSERT_TRUE(renderRGBA(node, rod, &cpu)) << describeCase(c, rod);
+            ASSERT_EQ(rod, cpu.window) << describeCase(c, rod);
+
+            GpuQuery query = eligibleQuery();
+            query.nComps = c.nComps;
+            query.plane = planeOf(c.nComps);
+            if (c.nComps == 4) {
+                for (int i = 0; i < 4; ++i) {
+                    query.processChannels[i] = (c.processed & (1u << i)) != 0;
+                }
+            }
+            ASSERT_TRUE(effect->canRenderOnGpu(query)) << describeCase(c, rod);
+
+            std::vector<RectI> rois;
+            rois.push_back(rod);
+            if (c.tile) {
+                rois.push_back(RectI(rod.x1 + 9, rod.y1 + 7, std::min(rod.x2 - 3, rod.x1 + 9 + 29), std::min(rod.y2 - 2, rod.y1 + 7 + 21)));
+            }
+            const std::vector<int> channels = planeChannels(c.nComps);
+            for (const RectI& roi : rois) {
+                const std::string what = std::string(mode) + " " + describeCase(c, roi);
+                const RectI inputRoI = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::identity);
+                RenderedPlane in;
+                ASSERT_TRUE(renderRGBA(source, inputRoI, &in)) << what;
+                ASSERT_EQ(inputRoI, in.window) << what;
+                GpuParityImage image;
+                image.bounds = inputRoI;
+                image.nComps = c.nComps;
+                image.pixels = pickChannels(in.pixels, inputRoI, inputRoI, channels);
+                image.layout.padFloats = 6;
+                image.layout.rowPadFloats = 8;
+
+                const GpuRunResult run = runRenderGpu(*runtime, *effect, query, std::vector<GpuParityImage>(1, image), nullptr, roi, outputLayout());
+                ASSERT_TRUE(run.ok) << what;
+                EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
+                ++nRenders;
+
+                const bool recursive = (c.filter == (int)BlurKernels::eFilterQuasiGaussian) || (c.filter == (int)BlurKernels::eFilterGaussian);
+                RenderedPlane cpuTile;
+                if (recursive && (roi != rod)) {
+                    ASSERT_TRUE(renderRGBA(node, roi, &cpuTile)) << what;
+                    ASSERT_EQ(roi, cpuTile.window) << what;
+                }
+                const std::vector<float> want = (recursive && (roi != rod)) ? pickChannels(cpuTile.pixels, roi, roi, channels) : pickChannels(cpu.pixels, rod, roi, channels);
+                ASSERT_EQ(want.size(), run.pixels.size()) << what;
+                const ImageDiff diff = compareImages(want, run.pixels, tolerance);
+                nCompared += diff.compared;
+                const std::size_t i = diff.worstIndex / c.nComps;
+                EXPECT_EQ(0u, diff.mismatches) << what << ": " << diff.mismatches << " mismatches, worst " << diff.worstAbsolute << " at (" << (roi.x1 + (int)(i % roi.width())) << ","
+                                               << (roi.y1 + (int)(i / roi.width())) << ") channel " << (diff.worstIndex % c.nComps) << " gpu " << run.pixels[diff.worstIndex] << " cpu " << want[diff.worstIndex];
+            }
         }
     }
     EXPECT_GT(nCompared, 0u);

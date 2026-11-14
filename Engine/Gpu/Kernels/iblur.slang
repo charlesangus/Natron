@@ -1,3 +1,4 @@
+import edgesample;
 import mapremap;
 
 // IBlur's passes, after the workers of Engine/Nodes/Filter/IBlur.cpp and the box of
@@ -94,6 +95,9 @@ struct IBlurParams
     uint outHeight;
     uint dstOffset;
     uint dstStride;
+    // edgesample's kEdgeStretch or kEdgeBlack: how load reads past the source pixels and the box
+    // past the domain.
+    uint edgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<IBlurParams> params;
 
@@ -318,12 +322,13 @@ void iblur_load(uint3 tid : SV_DispatchThreadID)
     const uint dst = params.fromOffset + (tid.y * params.domWidth + tid.x) * n;
     const int x = params.domX1 + int(tid.x);
     const int y = params.domY1 + int(tid.y);
-    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2) {
+    int2 at;
+    if (!edgePixel(int2(x, y), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), params.edgeMode, at)) {
         for (uint c = 0; c < n && c < 4; ++c)
             workBuf[dst + c] = 0.0;
         return;
     }
-    const uint src = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * n;
+    const uint src = params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * n;
     for (uint c = 0; c < n && c < 4; ++c)
         workBuf[dst + c] = asfloat(srcBuf[src + c]);
 }
@@ -479,13 +484,22 @@ BoxEnd boxEnd(int x, float a, bool lower, int size)
         e.i = x + 1 + int(n);
         e.f = ff(f);
     }
-    // integral() clamps u to [0, size], and reads u = size as the last index with a weight of 1.
-    if (e.i < 0) {
+    // Under Black integral() clamps u to [0, size], and reads u = size as the last index with a
+    // weight of 1; under Stretch it extrapolates the edge cell, whose weight then leaves [0, 1].
+    if (params.edgeMode == kEdgeBlack) {
+        if (e.i < 0) {
+            e.i = 0;
+            e.f = ff(0.0);
+        } else if (e.i >= size) {
+            e.i = size - 1;
+            e.f = ff(1.0);
+        }
+    } else if (e.i < 0) {
+        e.f = ffAdd(ff(float(e.i)), e.f);
         e.i = 0;
-        e.f = ff(0.0);
     } else if (e.i >= size) {
+        e.f = ffAdd(ff(float(e.i - (size - 1))), e.f);
         e.i = size - 1;
-        e.f = ff(1.0);
     }
     return e;
 }

@@ -1,5 +1,7 @@
-// Sharpen's own passes, after the workers of Engine/Nodes/Filter/Sharpen.cpp: the source fill with
-// the nearest pixel repeated, and the combination of the source with its blur. The blur between
+import edgesample;
+
+// Sharpen's own passes, after the workers of Engine/Nodes/Filter/Sharpen.cpp: the source fill by
+// the edge mode, and the combination of the source with its blur. The blur between
 // them is blur.slang's or blur_lines.slang's. The fill and blurred buffers are tightly packed,
 // `channels` floats per pixel. SharpenGpuParams in Engine/Nodes/Filter/Sharpen.cpp mirrors
 // SharpenParams.
@@ -35,11 +37,6 @@ struct SharpenParams
     uint outHeight;
     uint dstOffset;
     uint dstStride;
-    // fill: the region of definition, to which a pixel is clamped before the source.
-    int rodX1;
-    int rodY1;
-    int rodX2;
-    int rodY2;
     // fill: the source pixels that exist, the first at srcOffset; empty when there are none.
     int srcX1;
     int srcY1;
@@ -52,15 +49,15 @@ struct SharpenParams
     float amount;
     float threshold;
     float epsilon;
+    // fill: how the source reads outside its pixels, edgesample's kEdgeStretch or kEdgeBlack.
+    uint edgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<SharpenParams> params;
 
 static const uint kModeSoften = 1;
 static const uint kModeLaplacian = 2;
 
-// fillBuffer() with the nearest-pixel boundary, of a buffer that may reach past the region of
-// definition: the pixel is clamped to that first, then to the source. Zero when the source has
-// none.
+// fillBuffer() by the edge mode. Zero when the source has no pixels.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void sharpen_fill(uint3 tid : SV_DispatchThreadID)
@@ -69,17 +66,14 @@ void sharpen_fill(uint3 tid : SV_DispatchThreadID)
         return;
     const uint n = params.channels;
     const uint dst = (tid.y * params.bufWidth + tid.x) * n;
-    if (params.srcX1 >= params.srcX2 || params.srcY1 >= params.srcY2)
+    int2 at;
+    if (!edgePixel(int2(params.bufX1 + int(tid.x), params.bufY1 + int(tid.y)), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), params.edgeMode, at))
     {
         for (uint c = 0; c < n && c < 4; ++c)
             outBuf[dst + c] = 0u;
         return;
     }
-    const int rx = clamp(params.bufX1 + int(tid.x), params.rodX1, params.rodX2 - 1);
-    const int ry = clamp(params.bufY1 + int(tid.y), params.rodY1, params.rodY2 - 1);
-    const int cx = clamp(rx, params.srcX1, params.srcX2 - 1);
-    const int cy = clamp(ry, params.srcY1, params.srcY2 - 1);
-    const uint src = params.srcOffset + uint(cy - params.srcY1) * params.srcStride + uint(cx - params.srcX1) * n;
+    const uint src = params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * n;
     for (uint c = 0; c < n && c < 4; ++c)
         outBuf[dst + c] = inBuf[src + c];
 }

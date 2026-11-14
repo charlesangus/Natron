@@ -72,7 +72,10 @@ constexpr NodeSpec kEdgeBlurNodeSpec = {
                    "and a larger Edge Mult widens the blurred band. A pixel with no edge is left exactly as it is. "
                    "The blur is IBlur's box applied three times, an approximation of the Gaussian of standard deviation size/2.4. "
                    "The matte is the alpha of the source, or with External Matte the alpha of the Matte input; "
-                   "with External Matte on and no Matte connected the image is left unchanged. The Mask and Mix limit the result as usual.",
+                   "with External Matte on and no Matte connected the image is left unchanged. The Mask and Mix limit the result as usual.\n"
+                   "\n"
+                   "Outside the image the blur reads by the Edge Mode: Stretch repeats the edge pixels, Black darkens the blur towards the edges. "
+                   "The matte's edges always repeat its edge pixels, so the border of the image is no edge.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_EDGEBLUR,
     .icon = NATRON_IMAGES_PATH "NativeNodes/Blur.png",
@@ -80,7 +83,7 @@ constexpr NodeSpec kEdgeBlurNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kEdgeBlurPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::color(true, true, true, true),
     .op = OpKind::Passes,
 };
@@ -362,8 +365,11 @@ EdgeBlur::edgePasses(const EdgeBlurParams& params,
     edges.nms = false;
     edges.expandRoD = true;
     edges.cropToFormat = true;
+    // Black would read a step at the border of an opaque matte, blurring every image edge.
+    PassContext matteContext = context;
+    matteContext.edgeMode = EdgeMode::Stretch;
 
-    return EdgeDetectOp().passes(edges, context);
+    return EdgeDetectOp().passes(edges, matteContext);
 }
 
 float
@@ -639,6 +645,7 @@ EdgeBlur::recordGpu(const PassGpuIO& io,
         edgeView = packedView(edgeBuf, edgeOutput, matte.nComps);
         PassGpuIO edgeIO(ctx);
         edgeIO.source = matte;
+        edgeIO.edgeMode = edges.edgeMode;
         PassExec::intersectRects(matteValid, matteRoD, &edgeIO.sourceValid);
         edgeIO.filtered = edgeView;
         edgeIO.output = edgeOutput;

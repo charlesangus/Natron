@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -313,7 +314,8 @@ TEST_F(NativeSharpenTest, AmountZeroIsIdentity)
 }
 
 // The detail of a constant is zero up to the float rounding of the blur's weights, at the edges
-// of the image too, where the blur repeats the nearest pixel, with every filter.
+// of the image too, where the blur repeats the nearest pixel of the Constant's Stretch edge, with
+// every filter.
 TEST_F(NativeSharpenTest, LaplacianOfConstantIsZero)
 {
     resetProject();
@@ -333,6 +335,42 @@ TEST_F(NativeSharpenTest, LaplacianOfConstantIsZero)
                 for (int x = w.x1; x < w.x2; ++x) {
                     for (int c = 0; c < 3; ++c) {
                         ASSERT_NEAR(0., at(out, x, y, c), 1e-5 * std::fabs(v)) << filter << " value " << v << " at (" << x << "," << y << ") channel " << c;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Stretch repeats a constant's edge, so its detail stays zero to the border; Black reads zero past
+// it, so the blur darkens there and the detail rises at the border but not in the middle.
+TEST_F(NativeSharpenTest, EdgeModeDecidesTheBorderOfAConstant)
+{
+    const double v = 0.5;
+    for (const char* edgeMode : { "input", "stretch", "black" }) {
+        for (const char* filter : kFilters) {
+            resetProject();
+            NodePtr source = makeConstant(v, NULL);
+            ASSERT_TRUE(bool(source));
+            NodePtr node = makeSharpen(source);
+            ASSERT_TRUE(bool(node));
+            ASSERT_TRUE(setKnobValue(node, kSharpenParamMode, std::string(kSharpenParamModeLaplacian)));
+            ASSERT_TRUE(setKnobValue(node, kSharpenParamFilter, std::string(filter)));
+            ASSERT_TRUE(setKnobValues(node, kSharpenParamSize, { 7., 7. }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeMode)));
+            RenderedPlane in, out;
+            ASSERT_NO_FATAL_FAILURE(renderPair(source, node, &in, &out));
+            const RectI& w = out.window;
+            if (std::string(edgeMode) == "black") {
+                EXPECT_GT(at(out, w.x1, w.y1, 0), 0.01f) << filter << ": the corner";
+                EXPECT_GT(at(out, w.x2 - 1, (w.y1 + w.y2) / 2, 0), 0.01f) << filter << ": the right edge";
+                EXPECT_NEAR(0., at(out, (w.x1 + w.x2) / 2, (w.y1 + w.y2) / 2, 0), 1e-3) << filter << ": the centre";
+                continue;
+            }
+            for (int y = w.y1; y < w.y2; ++y) {
+                for (int x = w.x1; x < w.x2; ++x) {
+                    for (int c = 0; c < 3; ++c) {
+                        ASSERT_NEAR(0., at(out, x, y, c), 1e-5) << edgeMode << " " << filter << " at (" << x << "," << y << ") channel " << c;
                     }
                 }
             }

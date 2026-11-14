@@ -52,6 +52,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Transform/CornerPinKnobs.h"
 #include "Engine/Project.h"
 #include "Engine/TrackMarker.h"
@@ -468,7 +469,7 @@ const TrackerCornerPinLink kCornerPinLinks[] = {
     { "invert", kCornerPinNodeParamInvert, true },
     { "filter", kCornerPinNodeParamFilter, true },
     { "clamp", kCornerPinNodeParamClamp, true },
-    { "black_outside", kCornerPinNodeParamBlackOutside, true },
+    { kEdgeModeParam, kEdgeModeParam, true },
     { "motionBlur", kCornerPinNodeParamMotionBlur, true },
     { "shutter", kCornerPinNodeParamShutter, true },
     { "shutterOffset", kCornerPinNodeParamShutterOffset, true },
@@ -491,7 +492,7 @@ const char* const kTransformLinks[] = {
     "invert",
     "filter",
     "clamp",
-    "black_outside",
+    kEdgeModeParam,
     "motionBlur",
     "shutter",
     "shutterOffset",

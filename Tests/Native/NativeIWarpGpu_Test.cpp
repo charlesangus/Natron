@@ -46,6 +46,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -310,6 +311,11 @@ TEST_F(NativeIWarpGpuTest, ConnectedMapMatchesTheCpu)
     ASSERT_TRUE(setKnobValues(node, kTransformNodeParamInvert, { 0. }));
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("impulse")));
     expectParity(std::vector<NodePtr>({ node }), node, "impulse");
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("cubic")));
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
+    expectParity(std::vector<NodePtr>({ node }), node, "edge mode black");
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
+    expectParity(std::vector<NodePtr>({ node }), node, "edge mode stretch");
 }
 
 // Where the Map is exactly 0 the GPU writes the Source pixel itself, bit for bit, with a filter
@@ -401,8 +407,10 @@ TEST_F(NativeIWarpGpuTest, CornerPinMatchesTheCpu)
 
     expectParity(std::vector<NodePtr>({ node }), node, "default");
 
-    ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamBlackOutside, { 0. }));
-    expectParity(std::vector<NodePtr>({ node }), node, "no black outside");
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
+    expectParity(std::vector<NodePtr>({ node }), node, "edge mode black");
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
+    expectParity(std::vector<NodePtr>({ node }), node, "edge mode stretch");
 }
 
 TEST_F(NativeIWarpGpuTest, ICornerPinFilterParameterKnobsReachTheCpuAndGpuRenders)

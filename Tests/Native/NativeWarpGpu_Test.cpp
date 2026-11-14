@@ -54,6 +54,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Filter/MapInput.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -562,6 +563,37 @@ TEST_F(NativeWarpGpuTest, ScaledAndOffsetDisplacementMatchesTheCpuFrame)
         ASSERT_TRUE(setKnobValues(node, kIDistortParamUVScale, { 3.1, -2.4 }));
         ASSERT_TRUE(setKnobValues(node, kIDistortParamUVOffset, { 0.37, -0.29 }));
         expectParity(source, node, toleranceFor(filter), std::string("IDistort scaled ") + filter);
+    }
+}
+
+// Scaled and offset coordinates send taps past the Source, which each edge mode reads its own way:
+// the nearest Source pixel or black. STMap wraps nothing, so the mode decides there too.
+TEST_F(NativeWarpGpuTest, EdgeModesPastTheSourceMatchTheCpuFrame)
+{
+    for (const char* edgeMode : { "stretch", "black" }) {
+        for (const char* filter : { "impulse", "cubic" }) {
+            resetProject();
+            NodePtr source = makeSource();
+            NodePtr uv = makeUV();
+            ASSERT_TRUE(source && uv);
+            NodePtr stmap = makeSTMap(source, uv, filter);
+            ASSERT_TRUE(bool(stmap));
+            ASSERT_TRUE(setKnobValues(stmap, kSTMapParamUVScale, { 2.3, 1.7 }));
+            ASSERT_TRUE(setKnobValues(stmap, kSTMapParamUVOffset, { -0.4, -0.3 }));
+            ASSERT_TRUE(setKnobValue(stmap, kEdgeModeParam, std::string(edgeMode)));
+            expectParity(source, stmap, toleranceFor(filter), std::string("STMap edge mode ") + edgeMode + " " + filter);
+
+            resetProject();
+            source = makeSource();
+            uv = makeUV();
+            ASSERT_TRUE(source && uv);
+            NodePtr idistort = makeIDistort(source, uv, filter);
+            ASSERT_TRUE(bool(idistort));
+            ASSERT_TRUE(setKnobValues(idistort, kIDistortParamUVScale, { 3.1, -2.4 }));
+            ASSERT_TRUE(setKnobValues(idistort, kIDistortParamUVOffset, { 0.37, -0.29 }));
+            ASSERT_TRUE(setKnobValue(idistort, kEdgeModeParam, std::string(edgeMode)));
+            expectParity(source, idistort, toleranceFor(filter), std::string("IDistort edge mode ") + edgeMode + " " + filter);
+        }
     }
 }
 

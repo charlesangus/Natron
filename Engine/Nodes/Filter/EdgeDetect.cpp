@@ -50,6 +50,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Project.h"
@@ -174,12 +175,15 @@ rotationInvariantB()
 }
 
 // The finite-difference stencil over the pre-blurred buffer: CImg<float>::get_gradient(0, scheme),
-// centred differences (one-sided and halved at the ends), Sobel or rotation-invariant 3x3 kernels
-// with repeated edges, all in float. A one-pixel-wide axis has a zero derivative.
+// centred differences, Sobel or rotation-invariant 3x3 kernels, all in float. A read past the
+// buffer follows edgeMode: under Stretch the edge repeats (CImg's one-sided, halved differences at
+// the ends). Only the buffer's edges that are the region of definition's reach an output pixel. A
+// one-pixel-wide axis has a zero derivative.
 std::function<PassRowFn(const PassScratch&)>
-stencilWorker(EdgeDetectFilterEnum scheme)
+stencilWorker(EdgeDetectFilterEnum scheme,
+              EdgeMode edgeMode)
 {
-    return [scheme](const PassScratch& scratch) -> PassRowFn {
+    return [scheme, edgeMode](const PassScratch& scratch) -> PassRowFn {
         const float ra = rotationInvariantA();
         const float rb = rotationInvariantB();
         const int bufferWidth = scratch.width;
@@ -191,22 +195,26 @@ stencilWorker(EdgeDetectFilterEnum scheme)
             const float* blurred = scratch.plane(kSlotBuffer, p);
             float* gxRow = scratch.plane(kSlotGx, p) + (std::size_t)row * bufferWidth;
             float* gyRow = scratch.plane(kSlotGy, p) + (std::size_t)row * bufferWidth;
-            const int rowP = std::max(0, row - 1);
-            const int rowN = std::min(bufferHeight - 1, row + 1);
+            int rowP = row;
+            int rowN = row;
+            const bool hasRowP = EdgeSample::coord(row - 1, 0, bufferHeight, edgeMode, &rowP);
+            const bool hasRowN = EdgeSample::coord(row + 1, 0, bufferHeight, edgeMode, &rowN);
             const float* lineP = blurred + (std::size_t)rowP * bufferWidth;
             const float* lineC = blurred + (std::size_t)row * bufferWidth;
             const float* lineN = blurred + (std::size_t)rowN * bufferWidth;
             for (int i = 0; i < bufferWidth; ++i) {
-                const int iP = std::max(0, i - 1);
-                const int iN = std::min(bufferWidth - 1, i + 1);
-                const float Ipp = lineP[iP];
-                const float Icp = lineP[i];
-                const float Inp = lineP[iN];
-                const float Ipc = lineC[iP];
-                const float Inc = lineC[iN];
-                const float Ipn = lineN[iP];
-                const float Icn = lineN[i];
-                const float Inn = lineN[iN];
+                int iP = i;
+                int iN = i;
+                const bool hasP = EdgeSample::coord(i - 1, 0, bufferWidth, edgeMode, &iP);
+                const bool hasN = EdgeSample::coord(i + 1, 0, bufferWidth, edgeMode, &iN);
+                const float Ipp = (hasRowP && hasP) ? lineP[iP] : 0.f;
+                const float Icp = hasRowP ? lineP[i] : 0.f;
+                const float Inp = (hasRowP && hasN) ? lineP[iN] : 0.f;
+                const float Ipc = hasP ? lineC[iP] : 0.f;
+                const float Inc = hasN ? lineC[iN] : 0.f;
+                const float Ipn = (hasRowN && hasP) ? lineN[iP] : 0.f;
+                const float Icn = hasRowN ? lineN[i] : 0.f;
+                const float Inn = (hasRowN && hasN) ? lineN[iN] : 0.f;
                 float vx;
                 float vy;
                 if (scheme == eEdgeDetectFilterSobel) {
@@ -566,8 +574,9 @@ struct EdgeDetectGpuParams {
     float normYLo;
     float ra;
     float rb;
+    uint32_t edgeMode;
 };
-static_assert(sizeof(EdgeDetectGpuParams) == 104);
+static_assert(sizeof(EdgeDetectGpuParams) == 108);
 static_assert(offsetof(EdgeDetectGpuParams, outX1) == 32);
 static_assert(offsetof(EdgeDetectGpuParams, srcX1) == 56);
 static_assert(offsetof(EdgeDetectGpuParams, normXHi) == 80);
@@ -798,6 +807,7 @@ edgeDetectGpuRecorder(const std::shared_ptr<const EdgeDetectGpuPlan>& plan)
             fill.srcX2 = io.sourceValid.x2;
             fill.srcY2 = io.sourceValid.y2;
             fill.srcStride = source.strideFloats;
+            fill.edgeMode = gpu::gpuEdgeMode(io.edgeMode);
             if (!gpuFloatIndex(source, io.sourceValid.x1, io.sourceValid.y1, nComps, &fill.srcOffset)) {
                 return eStatusFailed;
             }
@@ -821,6 +831,7 @@ edgeDetectGpuRecorder(const std::shared_ptr<const EdgeDetectGpuPlan>& plan)
             }
             EdgeDetectGpuParams stencil = base;
             stencil.mode = plan->scheme;
+            stencil.edgeMode = gpu::gpuEdgeMode(io.edgeMode);
             stencil.ra = rotationInvariantA();
             stencil.rb = rotationInvariantB();
             if (!dispatchEdgeDetect(ctx, gpu::GpuKernelId::edgedetect_stencil, magnitude, gx, gy, magnitude, stencil, base.bufWidth, base.bufHeight)) {
@@ -904,17 +915,17 @@ edgeDetectGpuRecorder(const std::shared_ptr<const EdgeDetectGpuPlan>& plan)
 /// The passes of one render at scale; params carries sizeX already divided by the pixel aspect
 /// ratio. The halo and the region of definition's spread are CImgBlurPlugin::getRoI() and
 /// getRegionOfDefinition() with first-order derivatives on both axes, which are never an
-/// identity, plus the erosion radius and the suppression's pixel in the halo only.
+/// identity, plus the erosion radius and the suppression's pixel in the halo only. The source's
+/// fill and the derivative blurs' line ends follow edgeMode.
 PassList
 edgeDetectPasses(const EdgeDetectParams& params,
-                 const RenderScale& scale)
+                 const RenderScale& scale,
+                 EdgeMode edgeMode)
 {
     const OfxPointD rs = scale.toOfxPointD();
     const double sx = rs.x * params.sizeX;
     const double sy = rs.y * params.sizeY;
     const BlurKernels::Filter filter = EdgeDetect::blurFilter(params.filter);
-    // EdgeDetect always uses CImg's Neumann (nearest) boundary condition.
-    const bool neumann = true;
 
     // The derivative order is the one added to each delta.
     int haloX;
@@ -936,7 +947,7 @@ edgeDetectPasses(const EdgeDetectParams& params,
     }
 
     PassList list;
-    list.edgeMode = EdgeMode::Stretch;
+    list.edgeMode = edgeMode;
     list.scratchSlots = 3;
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<EdgeDetectGpuPlan> gpuPlan = std::make_shared<EdgeDetectGpuPlan>();
@@ -951,12 +962,12 @@ edgeDetectPasses(const EdgeDetectParams& params,
         LineFilterPtr preBlurX = makeFilter(BlurKernels::LineFilter());
         LineFilterPtr preBlurY = preBlurX;
         if (!((sigmax < 0.1) && (sigmay < 0.1))) {
-            preBlurX = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, neumann));
-            preBlurY = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, neumann));
+            preBlurX = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, edgeMode));
+            preBlurY = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, edgeMode));
         }
         list.passes.push_back(Pass::lineX(haloX - 1, std::max(0, growX - 1), lineWorker(preBlurX)));
         list.passes.push_back(Pass::lineY(haloY - 1, std::max(0, growY - 1), lineWorker(preBlurY)));
-        Pass stencil = Pass::gather(1, 1, true, stencilWorker(params.filter));
+        Pass stencil = Pass::gather(1, 1, true, stencilWorker(params.filter, edgeMode));
         stencil.growX = stencil.growY = params.expandRoD ? 1 : 0;
         list.passes.push_back(stencil);
 #ifdef NATRON_HAVE_GPU
@@ -976,18 +987,18 @@ edgeDetectPasses(const EdgeDetectParams& params,
         if (isGaussianFamily(filter)) {
             const float sigmax = knobValueAsFloat(sx / 2.4);
             const float sigmay = knobValueAsFloat(sy / 2.4);
-            gxRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 1, neumann));
-            gxColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, neumann));
-            gyRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, neumann));
-            gyColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 1, neumann));
+            gxRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 1, edgeMode));
+            gxColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, edgeMode));
+            gyRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, edgeMode));
+            gyColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 1, edgeMode));
         } else {
             // CImg's box filter is the identity at size 0, but the derivative is still wanted there.
             const double boxX = (sx <= 0.) ? 1e-8 : sx;
             const double boxY = (sy <= 0.) ? 1e-8 : sy;
-            gxRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(boxX), 1, neumann));
-            gxColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(sy), 0, neumann));
-            gyRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(sx), 0, neumann));
-            gyColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(boxY), 1, neumann));
+            gxRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(boxX), 1, edgeMode));
+            gxColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(sy), 0, edgeMode));
+            gyRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(sx), 0, edgeMode));
+            gyColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(boxY), 1, edgeMode));
         }
         list.passes.push_back(Pass::point(true, copyWorker()));
         list.passes.push_back(atSlot(Pass::lineX(haloX, growX, lineWorker(gxRows)), kSlotGx));
@@ -1187,7 +1198,7 @@ PassList
 EdgeDetectOp::passes(const Params& params,
                      const PassContext& context) const
 {
-    return edgeDetectPasses(atContext(params, context), context.scale);
+    return edgeDetectPasses(atContext(params, context), context.scale, context.edgeMode);
 }
 
 EdgeDetect::EdgeDetect(NodePtr node)
@@ -1249,7 +1260,7 @@ EdgeDetect::getSourceRoI(const RectI& rect,
                          const RenderScale& scale,
                          const EdgeDetectParams& params)
 {
-    return passListSourceRoI(rect, edgeDetectPasses(params, scale));
+    return passListSourceRoI(rect, edgeDetectPasses(params, scale, EdgeMode::Stretch));
 }
 
 bool

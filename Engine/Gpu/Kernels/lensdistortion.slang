@@ -11,7 +11,6 @@ import edgesample;
 // the block's words.
 
 static const uint kLensDistortionClamp = 1;
-static const uint kLensDistortionBlackOutside = 2;
 static const uint kLensDistortionJacobian = 4;
 // Image output with a Source to sample and a valid model.
 static const uint kLensDistortionSample = 8;
@@ -71,7 +70,7 @@ ResampleSource lensDistortionSource(LensDistortion d)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.edgeMode = edgeModeFromFlags(d.flags, kLensDistortionBlackOutside);
+    src.edgeMode = edgeModeFromFlags(d.flags, kFlagEdgeBlack);
     return src;
 }
 

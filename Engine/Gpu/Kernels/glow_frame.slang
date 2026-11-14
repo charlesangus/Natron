@@ -4,6 +4,8 @@
 // floats per pixel, except the mask. GlowFrameGpuParams in Engine/Nodes/Filter/Glow.cpp mirrors
 // FrameParams.
 
+import edgesample;
+
 StructuredBuffer<uint> srcBuf;
 StructuredBuffer<uint> maskBuf;
 RWStructuredBuffer<uint> dstBuf;
@@ -41,6 +43,9 @@ struct FrameParams
     // The picked hue in degrees, and per channel two bits: its colour (0 red, 1 green, 2 blue) or 3.
     float hue;
     uint colourBits;
+    // glow_resample: how the source reads outside its pixels, edgesample's kEdgeStretch or
+    // kEdgeBlack.
+    uint edgeMode;
 };
 
 [[vk::push_constant]] ConstantBuffer<FrameParams> params;
@@ -112,9 +117,10 @@ void glow_weight(uint3 tid : SV_DispatchThreadID)
 
 float sourceAt(int x, int y, uint ch)
 {
-    if (x < 0 || y < 0 || x >= int(params.srcWidth) || y >= int(params.srcHeight))
+    int2 at;
+    if (!edgePixel(int2(x, y), int4(0, 0, int(params.srcWidth), int(params.srcHeight)), params.edgeMode, at))
         return 0.0;
-    return asfloat(srcBuf[uint(y) * params.srcStride + uint(x) * params.channels + ch]);
+    return asfloat(srcBuf[uint(at.y) * params.srcStride + uint(at.x) * params.channels + ch]);
 }
 
 [shader("compute")]

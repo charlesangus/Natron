@@ -74,13 +74,15 @@ MirrorOp::isIdentity(const Params& params,
 
 ResampleSettings
 MirrorOp::settings(const Params& params,
-                   const PassContext& /*context*/) const
+                   const PassContext& context) const
 {
     ResampleSettings settings;
 
     settings.filter = Resampler::eFilterImpulse;
     settings.clamp = false;
-    settings.edgeMode = EdgeMode::Black;
+    // A flip of the RoD reads nothing outside the source, so the mode only keeps a concatenated
+    // chain going under the input's own mode.
+    settings.edgeMode = context.edgeMode;
     settings.invert = false;
     settings.transformIsIdentity = !params.flip && !params.flop;
 

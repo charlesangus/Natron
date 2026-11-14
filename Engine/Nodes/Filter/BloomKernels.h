@@ -55,8 +55,8 @@ NATRON_NAMESPACE_ENTER
  * Level sample i of a level 2^k times smaller along an axis is centred at 2^k i + 2^(k-1) along
  * it, in absolute pixel coordinates, so the pyramid does not depend on the rect it is computed
  * over and a tile matches the full frame. The levels are computed over the samples whose kernel
- * reaches into the previous level; outside the samples a level holds, the reads repeat its edge
- * (nearest) or are zero.
+ * reaches into the previous level; outside the samples a level holds, the reads follow the plan's
+ * edge mode: its edge repeated for Stretch, zero for Black.
  **/
 namespace BloomKernels {
 /// The largest count and ratio the Bloom and Glow knobs accept; normalised() caps them too.
@@ -96,8 +96,8 @@ std::optional<GpuWeight> gpuWeight(const Settings& settings) WARN_UNUSED_RETURN;
 struct Plan;
 using PlanPtr = std::shared_ptr<const Plan>;
 
-/// The plan of the bloom of settings; nearest repeats the edge outside the image, else it is black.
-PlanPtr makePlan(const Settings& settings, bool nearest) WARN_UNUSED_RETURN;
+/// The plan of the bloom of settings, reading outside the image and its levels by edgeMode.
+PlanPtr makePlan(const Settings& settings, EdgeMode edgeMode) WARN_UNUSED_RETURN;
 
 /// How far, in pixels, the bloom reads beyond what it writes.
 int haloX(const Plan& plan) WARN_UNUSED_RETURN;
@@ -122,10 +122,10 @@ bool gpuFloatIndex(const gpu::GpuBlurImage& image, int x, int y, int nComps, uin
 
 /**
  * @brief Records the source of io into a tightly packed buffer over io.domain, as the CPU's
- * fillBuffer() fills slot 0: with the nearest pixel of the source repeated, else zero outside it.
+ * fillBuffer() fills slot 0: outside the source by edgeMode.
  * *buffer is the filled buffer; an empty domain gives a one-float buffer and records nothing.
  **/
-StatusEnum recordFill(const PassGpuIO& io, bool nearest, gpu::GpuBuffer** buffer) WARN_UNUSED_RETURN;
+StatusEnum recordFill(const PassGpuIO& io, EdgeMode edgeMode, gpu::GpuBuffer** buffer) WARN_UNUSED_RETURN;
 
 /**
  * @brief Records the bloom of input, a tightly packed buffer of io.nComps floats per pixel over

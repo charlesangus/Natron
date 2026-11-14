@@ -63,16 +63,17 @@ settingsFor(const BloomParams& params,
     return s;
 }
 
-/// The bloom of slot 0 into slot 1, with the nearest pixel repeated outside the image and no
-/// spread of the region of definition.
+/// The bloom of slot 0 into slot 1, reading outside the image by edgeMode, with no spread of the
+/// region of definition.
 PassList
 bloomPasses(const BloomParams& params,
-            const PassContext& context)
+            const PassContext& context,
+            EdgeMode edgeMode)
 {
-    const BloomKernels::PlanPtr plan = BloomKernels::makePlan(settingsFor(params, context), true);
+    const BloomKernels::PlanPtr plan = BloomKernels::makePlan(settingsFor(params, context), edgeMode);
     PassList list;
 
-    list.edgeMode = EdgeMode::Stretch;
+    list.edgeMode = edgeMode;
     list.scratchSlots = 2;
     list.resultSlot = kSlotBloom;
     BloomKernels::appendPasses(plan, kSlotSource, kSlotBloom, 0, 0, &list.passes);
@@ -81,7 +82,7 @@ bloomPasses(const BloomParams& params,
     // The source filled over the CPU's buffer, then bloomed straight into the output.
     list.gpu = [plan](const PassGpuIO& io) -> StatusEnum {
         gpu::GpuBuffer* fill = nullptr;
-        if (BloomKernels::recordFill(io, true, &fill) != eStatusOK) {
+        if (BloomKernels::recordFill(io, io.edgeMode, &fill) != eStatusOK) {
             return eStatusFailed;
         }
 
@@ -192,7 +193,7 @@ PassList
 BloomOp::passes(const Params& params,
                 const PassContext& context) const
 {
-    return bloomPasses(params, context);
+    return bloomPasses(params, context, context.edgeMode);
 }
 
 std::optional<GpuWeight>
@@ -230,7 +231,7 @@ Bloom::getSourceRoI(const RectI& rect,
 
     context.scale = scale;
 
-    return passListSourceRoI(rect, bloomPasses(params, context));
+    return passListSourceRoI(rect, bloomPasses(params, context, EdgeMode::Black));
 }
 
 NATRON_NAMESPACE_EXIT

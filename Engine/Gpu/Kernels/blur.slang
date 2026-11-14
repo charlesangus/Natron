@@ -1,11 +1,15 @@
+import edgesample;
+
 StructuredBuffer<float> srcBuf;
 RWStructuredBuffer<float> dstBuf;
 StructuredBuffer<float> weights;
 
 // Coordinates are image pixels. The pass writes the rect of width x height pixels at (outX, outY);
-// along the blur axis a tap outside [lineLo, lineHi) reads zero, as does a sample outside the
-// source rect [srcX1, srcX2) x [srcY1, srcY2). An output pixel whose position along the axis lies
-// outside [lineLo, lineHi) is written as zero.
+// along the blur axis a tap outside [lineLo, lineHi), and a sample outside the source rect
+// [srcX1, srcX2) x [srcY1, srcY2), reads by edgeMode: zero under Black, the line's end and the
+// nearest source pixel under Stretch, as LineFilter::firGaussian() reads a buffer the CPU filled by
+// the same mode. An output pixel whose position along the axis lies outside [lineLo, lineHi) is
+// written as zero.
 struct BlurParams
 {
     uint width;
@@ -25,6 +29,7 @@ struct BlurParams
     uint srcStride;
     int lineLo;
     int lineHi;
+    uint edgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<BlurParams> params;
 
@@ -51,15 +56,14 @@ bool insideLine(int a)
 bool sourceIndex(int a, int line, out uint idx)
 {
     idx = 0;
-    if (!insideLine(a))
+    int onLine;
+    if (!edgeCoord(a, params.lineLo, params.lineHi, params.edgeMode, onLine))
         return false;
-    const int x = params.vertical != 0 ? line : a;
-    const int y = params.vertical != 0 ? a : line;
-    if (params.srcX1 >= params.srcX2 || params.srcY1 >= params.srcY2)
+    const int2 p = params.vertical != 0 ? int2(line, onLine) : int2(onLine, line);
+    int2 s;
+    if (!edgePixel(p, int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), params.edgeMode, s))
         return false;
-    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2)
-        return false;
-    idx = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels;
+    idx = params.srcOffset + uint(s.y - params.srcY1) * params.srcStride + uint(s.x - params.srcX1) * params.channels;
     return true;
 }
 

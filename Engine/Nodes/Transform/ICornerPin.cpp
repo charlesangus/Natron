@@ -223,7 +223,6 @@ ICornerPin::readWarpSettings(double time,
 
     settings->filter = params.filter;
     settings->clamp = params.clamp;
-    settings->blackOutside = params.blackOutside;
     settings->invert = params.invert;
     settings->blur = params.blur;
     settings->blur.directionalBlur = false;

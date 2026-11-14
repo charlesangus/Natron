@@ -46,6 +46,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/CornerPin.h"
 #include "Engine/Nodes/Transform/Transform.h"
@@ -453,7 +454,7 @@ TEST_F(NativeCornerPinTest, KnobsUseTheSharedNames)
         kCornerPinNodeParamInvert,
         kCornerPinNodeParamFilter,
         kCornerPinNodeParamClamp,
-        kCornerPinNodeParamBlackOutside,
+        kEdgeModeParam,
         kCornerPinNodeParamMotionBlur,
         kCornerPinNodeParamShutter,
         kCornerPinNodeParamShutterOffset,

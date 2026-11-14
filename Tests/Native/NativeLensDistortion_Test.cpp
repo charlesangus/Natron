@@ -49,6 +49,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -379,7 +380,7 @@ TEST_F(NativeLensDistortionTest, KnobsAndInputs)
         kResamplerParamBicubicB,
         kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
-        kResamplerParamFilterBlackOutside,
+        kEdgeModeParam,
         kOfxMixParamName,
         kOfxMaskInvertParamName,
     };
@@ -586,7 +587,7 @@ TEST_F(NativeLensDistortionTest, OverscanRoundTripRestoresTheWholeFormat)
     ASSERT_TRUE(setKnobValues(distort, kLensDistortionParamCropToFormat, { 0. }));
     for (const NodePtr& node : { distort, undistort }) {
         ASSERT_TRUE(setKnobValue(node, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
-        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
     }
 
     const RectI window = paritySourceWindow(source, kTime, 0);

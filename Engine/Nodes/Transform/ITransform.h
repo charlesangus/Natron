@@ -99,7 +99,6 @@ private:
     void updateFilterVisibility(double time, ViewSpec view);
 
     TransformOp _op;
-    KnobBoolWPtr _blackOutside;
 };
 
 NATRON_NAMESPACE_EXIT

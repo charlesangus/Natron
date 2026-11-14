@@ -277,8 +277,9 @@ struct EdgeExtendGpuParams {
     uint32_t premultiplyOutput;
     float epsilon;
     float threshold;
+    uint32_t edgeMode;
 };
-static_assert(sizeof(EdgeExtendGpuParams) == 108);
+static_assert(sizeof(EdgeExtendGpuParams) == 112);
 static_assert(offsetof(EdgeExtendGpuParams, dstOffset) == 48);
 static_assert(offsetof(EdgeExtendGpuParams, srcX1) == 64);
 static_assert(offsetof(EdgeExtendGpuParams, epsilon) == 100);
@@ -372,9 +373,9 @@ dispatchEdgeExtend(gpu::GpuRecordContext& ctx,
 }
 
 /// The pass list on the GPU, over the CPU's buffer, io.domain. The running result is filled there
-/// with the CPU's nearest-pixel boundary. Each slice repeats the result's edges past the buffer by
-/// the slice's radius, which gives the CPU's Neumann line ends to a blur that reads black past its
-/// domain, blurs that back over the buffer and merges the result over it. The finish then writes
+/// by io.edgeMode, as the CPU fills its own. Each slice reads the result past the buffer by the
+/// same mode over the slice's radius, which gives the CPU's line ends to a blur that reads past
+/// its domain, blurs that back over the buffer and merges the result over it. The finish then writes
 /// io.filtered over io.output, zero outside the CPU's buffer as the CPU writes it. With fewer than
 /// the four channels processed every pass leaves the source as it is, as on the CPU.
 PassGpuRecorder
@@ -395,6 +396,7 @@ edgeExtendGpuRecorder(const std::shared_ptr<const EdgeExtendGpuPlan>& plan)
         base.premultiplyOutput = plan->premultiplyOutput ? 1u : 0u;
         base.epsilon = EdgeExtend::kAlphaEpsilon;
         base.threshold = plan->threshold;
+        base.edgeMode = gpu::gpuEdgeMode(io.edgeMode);
         if (!PassExec::isEmptyRect(domain)) {
             base.bufX1 = domain.x1;
             base.bufY1 = domain.y1;
@@ -499,28 +501,28 @@ edgeExtendGpuRecorder(const std::shared_ptr<const EdgeExtendGpuPlan>& plan)
 #endif // NATRON_HAVE_GPU
 
 /// The passes of one extension at pixel sizes s. Each slice's blur reads its radius beyond what
-/// it writes, so the halo is the sum of the slices' radii; the nearest-pixel boundary spreads
-/// nothing, so the region of definition is the source's. Without an active slice the node is an
+/// it writes, so the halo is the sum of the slices' radii. The source's fill and the blurs' line
+/// ends follow edgeMode; the region of definition is the source's under either mode. Without an active slice the node is an
 /// identity, so neither path starts or ends the running result: that would replace the colour
 /// below the threshold, which the pass-through keeps.
 PassList
 edgeExtendPasses(const EdgeExtendParams& params,
-                 const PixelSizes& s)
+                 const PixelSizes& s,
+                 EdgeMode edgeMode)
 {
     const std::vector<Slice> slices = activeSlices(params, s);
-    const bool neumann = true;
     const bool extend = !slices.empty();
     const float threshold = (float)params.threshold;
 
     PassList list;
-    list.edgeMode = EdgeMode::Stretch;
+    list.edgeMode = edgeMode;
     list.scratchSlots = 3;
     list.resultSlot = kSlotResult;
 
     list.passes.push_back(Pass::point(false, prepareWorker(extend, params.sourcePremultiplied, threshold)));
     for (const Slice& slice : slices) {
-        const LineFilterPtr filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(slice.sigmaX, 0, neumann));
-        const LineFilterPtr filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(slice.sigmaY, 0, neumann));
+        const LineFilterPtr filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(slice.sigmaX, 0, edgeMode));
+        const LineFilterPtr filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(slice.sigmaY, 0, edgeMode));
         // A FIR Gaussian sample costs its 2r + 1 taps, so the passes are split by taps rather than
         // by pixels, and it takes the columns a block of adjacent ones at a time.
         Pass passX = Pass::lineX(slice.radiusX, 0, lineWorker(filterX, false));
@@ -644,7 +646,7 @@ PassList
 EdgeExtendOp::passes(const Params& params,
                      const PassContext& context) const
 {
-    return edgeExtendPasses(params, pixelSizes(params, context));
+    return edgeExtendPasses(params, pixelSizes(params, context), context.edgeMode);
 }
 
 std::optional<GpuWeight>
@@ -674,7 +676,7 @@ EdgeExtend::getSourceRoI(const RectI& rect,
 
     context.scale = scale;
 
-    return passListSourceRoI(rect, edgeExtendPasses(params, pixelSizes(params, context)));
+    return passListSourceRoI(rect, edgeExtendPasses(params, pixelSizes(params, context), EdgeMode::Black));
 }
 
 std::vector<double>

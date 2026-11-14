@@ -162,7 +162,7 @@ namespace {
         const bool box = f.kind == GpuLineFilterKind::box;
         p.iterations = box && boxSmooths(f) ? f.iterations : 0;
         p.order = f.order;
-        p.neumann = f.neumann ? 1u : 0u;
+        p.lineEnds = gpuEdgeMode(f.lineEnds);
 
         // A box keeps its line when a later pass or the difference reads what a pass wrote.
         const bool stores = f.kind == GpuLineFilterKind::vanVliet || (box && (p.iterations > 1 || (p.iterations > 0 && p.order > 0)));
@@ -223,7 +223,7 @@ blurParams(const GpuBlurPass& pass)
     }
     return { pass.width, pass.height, pass.channels, pass.radius, pass.vertical ? 1u : 0u,
              r.outX, r.outY, r.dstOffset, r.dstStride, r.srcX1, r.srcY1, r.srcX2, r.srcY2, r.srcOffset, r.srcStride,
-             r.lineLo, r.lineHi };
+             r.lineLo, r.lineHi, gpuEdgeMode(r.edgeMode) };
 }
 
 std::array<uint32_t, 3>
@@ -311,6 +311,7 @@ recordSeparableBlur(GpuRecordContext& ctx, const GpuSeparableBlur& b)
         }
         h.lineLo = b.domain.x1;
         h.lineHi = b.domain.x2;
+        h.edgeMode = b.edgeMode;
         const GpuBlurPass pass { midWidth, midHeight, nc, uint32_t(b.weightsX.size() - 1), false, h };
         if (GpuStatus s = dispatchPass(ctx, b.src.buffer, scratch, wx, pass); !s) {
             return s;
@@ -332,6 +333,7 @@ recordSeparableBlur(GpuRecordContext& ctx, const GpuSeparableBlur& b)
     v.srcStride = midWidth * nc;
     v.lineLo = b.domain.y1;
     v.lineHi = b.domain.y2;
+    v.edgeMode = b.edgeMode;
     const GpuBlurPass pass { uint32_t(b.output.x2 - b.output.x1), uint32_t(b.output.y2 - b.output.y1), nc,
                              uint32_t(b.weightsY.size() - 1), true, v };
     return dispatchPass(ctx, scratch, b.dst.buffer, wy, pass);
@@ -385,6 +387,7 @@ recordLineBlur(GpuRecordContext& ctx, const GpuLineBlur& b)
         p.storePosStep = midHeight * nc;
         p.storeLineStep = nc;
         p.fromSource = 1;
+        p.srcEdgeMode = gpuEdgeMode(b.srcEdgeMode);
         if (!b.srcValid.empty()) {
             p.srcX1 = b.srcValid.x1;
             p.srcY1 = b.srcValid.y1;

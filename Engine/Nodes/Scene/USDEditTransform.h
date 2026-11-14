@@ -28,7 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -36,6 +39,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/SceneLoadSet.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
@@ -50,6 +54,55 @@
 NATRON_NAMESPACE_ENTER
 
 struct SceneLayerEdit;
+
+/**
+ * @brief One Centre Pivot request: runs on a worker and is cancelled by cancel(), which the
+ * worker checks between prims.
+ **/
+class CentrePivotJob {
+public:
+    enum StateEnum {
+        eStateRunning,
+        eStateDone,
+        eStateFailed
+    };
+
+    void cancel()
+    {
+        _cancelled.store(true);
+    }
+
+    bool isCancelled() const
+    {
+        return _cancelled.load();
+    }
+
+    // Blocks until the worker is done and returns how it ended.
+    StateEnum wait() const;
+
+    StateEnum getState() const;
+
+    // The centre of a Done job.
+    void getCentre(double* x,
+                   double* y,
+                   double* z) const;
+
+    // Why a Failed job failed.
+    std::string getError() const;
+
+    // Ends the job with state; for the worker.
+    void finish(StateEnum state,
+                const double* centre,
+                const std::string& error);
+
+private:
+    mutable std::mutex _lock;
+    mutable std::condition_variable _done;
+    StateEnum _state = eStateRunning;
+    double _centre[3] = { 0., 0., 0. };
+    std::string _error;
+    std::atomic<bool> _cancelled { false };
+};
 
 /**
  * @brief Transforms the prims a prim pattern (a USD path expression) selects in its input scene. Every match gets the same
@@ -117,10 +170,17 @@ public:
 
     /**
      * @brief Whether the node transforms the prim at primPath on the scene its last evaluation
-     * read: the pattern selects it and it can hold a transform. A pattern changed since that
-     * evaluation is evaluated on the same scene. False before any evaluation.
+     * in context read: the pattern selects it and it can hold a transform. A pattern changed
+     * since that evaluation is matched on the same scene and on context's load set, so no
+     * payload outside it is opened. With no evaluation in context, the latest evaluation in any
+     * context answers; false before any. Each context keeps its own result, so viewers asking in
+     * turn do not evict each other.
      **/
-    bool transformsPrim(const std::string& primPath) const;
+    bool transformsPrim(const std::string& primPath,
+                        const SceneEvaluationContext& context) const;
+
+    // How many times a stage was read to find the matches or the ops they hold.
+    U64 getStageReadCount() const;
 
     const SceneTransformKnobs& getTransformKnobs() const
     {
@@ -129,8 +189,23 @@ public:
 
     KnobDoublePtr getPivotKnob() const;
 
-    // Sets the pivot to the centre of the matched prims' bounds in their local space.
-    bool centrePivot(std::string* errorMessage);
+    /**
+     * @brief Starts, on a worker, the centre of the matched prims' bounds in their local space:
+     * the bounds of the loaded prims plus the extentsHint authored on prims under payloads that
+     * context's load set leaves unloaded, which are never opened to measure. context is the
+     * viewer's the matches were found in, or null when no viewer shows the node: nothing is then
+     * loaded and the failure message says the unloaded branches were not searched. A job still
+     * running is cancelled. The job's result is put in the pivot by applyCentrePivot(). Main
+     * thread.
+     **/
+    std::shared_ptr<CentrePivotJob> startCentrePivot(const SceneEvaluationContext* context);
+
+    /**
+     * @brief Sets the pivot from a finished job, as one undoable edit, or shows its failure. Does
+     * nothing, and returns false, for a job that was cancelled or superseded by a later request.
+     * Main thread.
+     **/
+    bool applyCentrePivot(const std::shared_ptr<CentrePivotJob>& job);
 
     // The xformOp:transform:... name the node authors where the prim has no op of that name yet.
     std::string getBaseOpName() const;

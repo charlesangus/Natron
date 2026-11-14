@@ -254,6 +254,37 @@ USDAssignMaterial::onInputChanged(int inputNo)
     refreshMaterialPathEnabled();
 }
 
+SceneEvaluationContext
+USDAssignMaterial::getSceneInputContext(int inputNb,
+                                        const SceneEvaluationContext& ctx,
+                                        double time,
+                                        ViewIdx view) const
+{
+    if (inputNb != kUSDAssignMaterialInputMaterial) {
+        return ctx;
+    }
+    AppInstancePtr app = getApp();
+
+    return SceneNodeAuthoring::getSharedMaterialContext(ctx, app ? app->getProject()->getProjectMaterialsScope(time, view) : std::string());
+}
+
+void
+USDAssignMaterial::mapSceneInputReach(int inputNb,
+                                      double time,
+                                      ViewIdx view,
+                                      const std::vector<std::string>& in,
+                                      std::vector<std::string>* out) const
+{
+    if (inputNb != kUSDAssignMaterialInputMaterial) {
+        *out = in;
+
+        return;
+    }
+    AppInstancePtr app = getApp();
+
+    SceneNodeAuthoring::mapSharedMaterialReach(&_graftMemo, app ? app->getProject()->getProjectMaterialsScope(time, view) : std::string(), in, out);
+}
+
 void
 USDAssignMaterial::refreshMaterialPathEnabled()
 {
@@ -291,7 +322,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
     ProjectionPlacement placement;
     if (materialConnected) {
         SceneMaterialGraft graft;
-        if (!SceneNodeAuthoring::graftSharedMaterial(args.getInputScene(kUSDAssignMaterialInputMaterial), scope, getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
+        if (!SceneNodeAuthoring::graftSharedMaterial(args.getInputScene(kUSDAssignMaterialInputMaterial), args.getInputContext(kUSDAssignMaterialInputMaterial), scope, getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;

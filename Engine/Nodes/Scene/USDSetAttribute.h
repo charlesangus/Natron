@@ -112,6 +112,7 @@ private:
     KnobChoiceWPtr _valueType;
     KnobBoolWPtr _primvar;
     KnobPageWPtr _page;
+    PrimPatternCache _matches;
     mutable std::mutex _lock;
     // Under _lock: renders read them while the main thread rebuilds.
     std::string _builtType;

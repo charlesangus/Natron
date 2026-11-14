@@ -319,6 +319,7 @@ set(GuiTests_SOURCES
     ColorTrackballReveal_Test.cpp
     ColorTrackballTarget_Test.cpp
     ColorWheelWidget_Test.cpp
+    ComboBox_Test.cpp
     CurveTangentJoin_Test.cpp
     CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp

@@ -171,6 +171,7 @@ private:
                      double frameOffset,
                      bool matchUpAxis,
                      bool matchUnits,
+                     const SceneLoadSetPtr& loadSet,
                      std::string* errorMessage);
 
     KnobFileWPtr _filename;

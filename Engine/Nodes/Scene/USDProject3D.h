@@ -31,6 +31,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -137,11 +138,22 @@ public:
     virtual ~USDProject3D();
 
     /**
-     * @brief Fills the camera menu with every camera of the Camera input's scene at the current
-     * frame, then Camera Path when none of them has it. Main thread only; the
-     * node calls it itself, queued, whenever an input or anything upstream changes.
+     * @brief Starts listing every camera of the Camera input's scene at the current frame for the
+     * camera menu, then Camera Path when none of them has it.
+     * The menu keeps its entries until applyCameraMenu() fills it with the job's result, which
+     * the job queues to the main thread when it ends; a later refresh supersedes it. The search
+     * runs on a worker, on the load set of the viewer showing the node (nothing loaded when none
+     * does), and the menu ends with a row counting the unloaded branches not searched, when
+     * there are some. Returns at once. Main thread only; the node calls it itself, queued,
+     * whenever an input or anything upstream changes.
      **/
-    void refreshCameraMenu();
+    std::shared_ptr<SceneMenuJob> refreshCameraMenu();
+
+    /**
+     * @brief Fills the camera menu from job, unless a later refresh superseded it or it is not
+     * done. Returns whether it did. Main thread.
+     **/
+    bool applyCameraMenu(const std::shared_ptr<SceneMenuJob>& job);
 
     /**
      * @brief The installed natronProject3D.glslfx the material's surface names, absolute; empty
@@ -165,6 +177,17 @@ private:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual SceneEvaluationContext getSceneInputContext(int inputNb,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double time,
+                                                        ViewIdx view) const OVERRIDE FINAL;
+
+    virtual void mapSceneInputReach(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const OVERRIDE FINAL;
+
     void scheduleCameraMenuRefresh();
 
     // The Image input's format as a width over height in square pixels, the project's without one.
@@ -186,6 +209,7 @@ private:
     KnobBoolWPtr _useFrameHold;
     KnobDoubleWPtr _frameHold;
     std::atomic<bool> _cameraMenuRefreshPending;
+    SceneMenuRefresh _cameraMenuRefresh;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -108,6 +108,10 @@ struct SceneReparentArgs {
     SceneLayerMemo::Key overridesKey;
     // Names the authored layers, for debugging.
     std::string layerTag;
+    // The context each input was evaluated on, index for index with inputs, whose load set its
+    // roots and links are read with and whose reach gathers where loads change those reads.
+    // Empty: SceneEvaluationContext::current() for every input.
+    std::vector<SceneEvaluationContext> inputContexts;
 };
 
 /**
@@ -248,6 +252,75 @@ bool reparentRoots(const SceneReparentArgs& args,
                    std::vector<SceneRootGraft>* grafts,
                    std::vector<SceneUnmappedLink>* unmappedLinks,
                    std::string* errorMessage);
+
+/**
+ * @brief The load set an input of a graft under destinationPath is read with, for an output
+ * evaluated on loadSet: what loadSet includes under destinationPath/<C> for the input root C,
+ * under /<passThroughRoot> for that root, and destinationPath's rule for every other root. With
+ * autoRename, the rules under destinationPath/<stem>_<n> count for the root <stem> as well, both
+ * names kept, since the names a graft gives are known only once it has read its inputs. Never
+ * includes less than the graft's output needs; null (everything) for a null set or an invalid
+ * destination.
+ **/
+SceneLoadSetPtr mapGraftLoadSet(const SceneLoadSetPtr& loadSet,
+                                const std::string& destinationPath,
+                                const std::string& passThroughRoot,
+                                bool autoRename);
+
+/**
+ * @brief Sets *out to the reach in, gathered on the paths of input inputIndex of the graft memo
+ * holds for SceneEvaluationContext::current(), as paths of the graft's output: a path under a
+ * grafted root moves under the child it was grafted as, one under passThroughRoot stays, and "/"
+ * or a path under a root the graft did not graft becomes destinationPath and /<passThroughRoot>,
+ * where such a root lands once loaded.
+ **/
+void mapGraftReach(SceneGraftMemo* memo,
+                   std::size_t inputIndex,
+                   const std::string& destinationPath,
+                   const std::string& passThroughRoot,
+                   const std::vector<std::string>& in,
+                   std::vector<std::string>* out);
+
+/**
+ * @brief The load set the input of a wrap moving wrappedPath to movedPath is read with, for an
+ * output evaluated on loadSet: what loadSet includes under movedPath, under wrappedPath instead,
+ * and the rest as it is. Null stays null.
+ **/
+SceneLoadSetPtr mapWrapLoadSet(const SceneLoadSetPtr& loadSet,
+                               const std::string& wrappedPath,
+                               const std::string& movedPath);
+
+/**
+ * @brief Sets *out to the reach in, on the paths of the input of a wrap moving wrappedPath to
+ * movedPath, as paths of its output: a path at or under wrappedPath moves under movedPath, an
+ * ancestor of wrappedPath stays and adds movedPath, the rest stays.
+ **/
+void mapWrapReach(const std::string& wrappedPath,
+                  const std::string& movedPath,
+                  const std::vector<std::string>& in,
+                  std::vector<std::string>* out);
+
+/**
+ * @brief The load set the scene a reference or payload arc at targetPath points into, at
+ * sourcePath, is read with, for an output evaluated on loadSet: what loadSet includes under
+ * targetPath, under sourcePath instead, and nothing off sourcePath's chain. UsdStage decides the
+ * payloads of the arc's ancestral opinions, those above sourcePath, by targetPath's own rule, so
+ * sourcePath's ancestors load exactly when targetPath's own payload does. Null stays null.
+ **/
+SceneLoadSetPtr mapReferenceLoadSet(const SceneLoadSetPtr& loadSet,
+                                    const std::string& targetPath,
+                                    const std::string& sourcePath);
+
+/**
+ * @brief Sets *out to the reach in, on the paths of the scene a reference at targetPath points
+ * into at sourcePath, as output paths: a path at or under sourcePath moves under targetPath, an
+ * ancestor of it becomes targetPath, and the rest, which the output does not show, is dropped.
+ * An empty sourcePath, not known, maps every path to targetPath.
+ **/
+void mapReferenceReach(const std::string& targetPath,
+                       const std::string& sourcePath,
+                       const std::vector<std::string>& in,
+                       std::vector<std::string>* out);
 
 /**
  * @brief An anonymous, read-only layer sublayering input's stack, strongest first, and carrying

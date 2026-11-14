@@ -36,7 +36,6 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
-#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SchemaKnobMapper.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -334,8 +333,17 @@ USDSetAttribute::renderScene(const SceneRenderActionArgs& args,
     const PXR_NS::SdfValueTypeName authoredType = primvar ? scalarType.GetArrayType() : scalarType;
 
     std::vector<Target> targets;
+    SceneNodeAuthoring::PatternMatches found;
     {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+        SceneQueryPool::Lease lease;
+        if (!SceneNodeAuthoring::matchPattern(&_matches, upstream, pattern, args.context, 0, SceneNodeAuthoring::PatternFilter(), &lease, &found, errorMessage)) {
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+        if (!lease.isValid()) {
+            lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);
+        }
         PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
             if (errorMessage->empty()) {
@@ -345,12 +353,7 @@ USDSetAttribute::renderScene(const SceneRenderActionArgs& args,
 
             return eStatusFailed;
         }
-        std::vector<PXR_NS::SdfPath> matches;
-        if (!SceneOps::selectPrims(stage, pattern, &matches, errorMessage)) {
-            setPersistentMessage(eMessageTypeError, *errorMessage);
-
-            return eStatusFailed;
-        }
+        const std::vector<PXR_NS::SdfPath>& matches = found.paths;
         const PXR_NS::TfToken token(attributeName);
         for (const PXR_NS::SdfPath& path : matches) {
             Target target;
@@ -378,10 +381,8 @@ USDSetAttribute::renderScene(const SceneRenderActionArgs& args,
     }
     if (targets.empty()) {
         *outputScene = upstream;
-        setPersistentMessage(eMessageTypeWarning, tr("The prim pattern \"%1\" matches no prim; the scene is passed through "
-                                                     "unchanged.")
-                                                      .arg(QString::fromStdString(pattern))
-                                                      .toStdString());
+        setPersistentMessage(eMessageTypeWarning,
+                             SceneNodeAuthoring::describeNoMatch(pattern, found, tr("the scene is passed through unchanged").toStdString()));
 
         return eStatusOK;
     }

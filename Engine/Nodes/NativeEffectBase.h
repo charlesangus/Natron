@@ -440,6 +440,14 @@ protected:
     void invalidateOutputMetadata();
 
     /**
+     * @brief Called from deriveOutputMetadata() when its answer is incomplete for now: neither it
+     * nor the answers of the nodes downstream derived from it in the same call are cached, so they
+     * are derived again when next asked. The node calls invalidateOutputMetadata() once the
+     * complete answer is available, so that the readers that were given the incomplete one ask again.
+     **/
+    void markOutputMetadataProvisional();
+
+    /**
      * @brief Sets the text getSublabel() returns and shows it in the node graph.
      **/
     void setSublabel(const std::string& sublabel);

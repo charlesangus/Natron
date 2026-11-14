@@ -334,7 +334,7 @@ TEST(SceneQueryPoolTest, BorrowedStagesComposeThePayloadAndAreReused)
     const U64 opensBefore = SceneOps::getStageOpenCount();
     PXR_NS::UsdStage* stageA = nullptr;
     {
-        SceneQueryPool::Lease lease = pool.borrow(a, &error);
+        SceneQueryPool::Lease lease = pool.borrow(a, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(lease.isValid()) << error;
         EXPECT_EQ(1, sourceValue(lease.getStage()));
         stageA = lease.getStage().operator->();
@@ -344,13 +344,13 @@ TEST(SceneQueryPoolTest, BorrowedStagesComposeThePayloadAndAreReused)
 
     {
         // The idle stage is synced to the new stack rather than a new one opened.
-        SceneQueryPool::Lease lease = pool.borrow(b, &error);
+        SceneQueryPool::Lease lease = pool.borrow(b, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(lease.isValid()) << error;
         EXPECT_EQ(stageA, lease.getStage().operator->());
         EXPECT_EQ(2, sourceValue(lease.getStage()));
 
         // A second borrower at the same time gets a stage of its own.
-        SceneQueryPool::Lease other = pool.borrow(a, &error);
+        SceneQueryPool::Lease other = pool.borrow(a, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(other.isValid()) << error;
         EXPECT_NE(lease.getStage(), other.getStage());
         EXPECT_EQ(1, sourceValue(other.getStage()));
@@ -360,7 +360,7 @@ TEST(SceneQueryPoolTest, BorrowedStagesComposeThePayloadAndAreReused)
 
     {
         // The stage last synced to a stack is the one handed out for it again.
-        SceneQueryPool::Lease lease = pool.borrow(b, &error);
+        SceneQueryPool::Lease lease = pool.borrow(b, SceneLoadSet::everything(), &error);
         EXPECT_EQ(stageA, lease.getStage().operator->());
         EXPECT_EQ(2, sourceValue(lease.getStage()));
     }
@@ -372,9 +372,9 @@ TEST(SceneQueryPoolTest, KeepsAtMostItsCapacityAndReleasesIdleStages)
     SceneQueryPool pool(2);
     std::string error;
     {
-        SceneQueryPool::Lease first = pool.borrow(makePayload(1), &error);
-        SceneQueryPool::Lease second = pool.borrow(makePayload(2), &error);
-        SceneQueryPool::Lease third = pool.borrow(makePayload(3), &error);
+        SceneQueryPool::Lease first = pool.borrow(makePayload(1), SceneLoadSet::everything(), &error);
+        SceneQueryPool::Lease second = pool.borrow(makePayload(2), SceneLoadSet::everything(), &error);
+        SceneQueryPool::Lease third = pool.borrow(makePayload(3), SceneLoadSet::everything(), &error);
         ASSERT_TRUE(first.isValid() && second.isValid() && third.isValid()) << error;
         // Released early: the lease is invalid afterwards and gives nothing back twice.
         third.release();
@@ -390,7 +390,7 @@ TEST(SceneQueryPoolTest, EmptyPayloadGivesAnEmptyStage)
 {
     SceneQueryPool pool(2);
     std::string error;
-    SceneQueryPool::Lease lease = pool.borrow(ScenePayload(), &error);
+    SceneQueryPool::Lease lease = pool.borrow(ScenePayload(), SceneLoadSet::everything(), &error);
 
     ASSERT_TRUE(lease.isValid()) << error;
     EXPECT_EQ(-1, sourceValue(lease.getStage()));
@@ -403,7 +403,7 @@ TEST(SceneQueryPoolTest, ALeaseKeepsLayerWritesOut)
 {
     SceneQueryPool pool(2);
     std::string error;
-    SceneQueryPool::Lease lease = pool.borrow(makePayload(1), &error);
+    SceneQueryPool::Lease lease = pool.borrow(makePayload(1), SceneLoadSet::everything(), &error);
 
     ASSERT_TRUE(lease.isValid()) << error;
     EXPECT_TRUE(SceneWriteBarrier::isReadingOnThisThread());
@@ -670,7 +670,7 @@ TEST_F(SceneLongChainTest, HeadEditsSyncOneStageWithoutOpeningAnother)
     viewer.sync(payload);
     SceneQueryPool pool(1);
     {
-        SceneQueryPool::Lease lease = pool.borrow(payload, &error);
+        SceneQueryPool::Lease lease = pool.borrow(payload, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(lease.isValid()) << error;
     }
     const U64 opens = SceneOps::getStageOpenCount();
@@ -683,7 +683,7 @@ TEST_F(SceneLongChainTest, HeadEditsSyncOneStageWithoutOpeningAnother)
         EXPECT_EQ(authoredBefore + kChainLength + 1, totalAuthorCount()) << "edit " << edit;
 
         EXPECT_TRUE(viewer.sync(payload));
-        SceneQueryPool::Lease lease = pool.borrow(payload, &error);
+        SceneQueryPool::Lease lease = pool.borrow(payload, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(lease.isValid()) << error;
         int value = 0;
         PXR_NS::UsdPrim prim = viewer.getStage()->GetPrimAtPath(PXR_NS::SdfPath(kSceneTestPrimPath));

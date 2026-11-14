@@ -256,7 +256,7 @@ protected:
         EXPECT_TRUE(bool(renderInput));
         if (renderInput) {
             std::string error;
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(evaluate(renderInput->getNode()), &error);
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(evaluate(renderInput->getNode()), SceneLoadSet::everything(), &error);
             const PXR_NS::UsdStageRefPtr stage = lease.getStage();
             EXPECT_TRUE(bool(stage)) << error;
             if (stage) {

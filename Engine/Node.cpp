@@ -1117,8 +1117,15 @@ Node::getKnobsContentDigest(bool* hasExpression) const
 {
     // Read before any knob: an edit made meanwhile invalidates after it lands, so it moves the
     // generation past the one stored here and the next call rebuilds.
-    const U64 generation = _imp->effect->getKnobsContentGeneration();
-    const KnobHolder* holder = _imp->effect.get();
+    // destroyNode() takes the effect away while a scene worker's job may still hash the node.
+    const EffectInstance* effect = _imp->effect.get();
+    if (!effect) {
+        *hasExpression = false;
+
+        return 0;
+    }
+    const U64 generation = effect->getKnobsContentGeneration();
+    const KnobHolder* holder = effect;
 
     QMutexLocker l(&_imp->knobsDigestMutex);
     if (!_imp->knobsDigestValid || (_imp->knobsDigestGeneration != generation)) {
@@ -1127,7 +1134,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         bool anyExpression = false;
         bool anyLive = false;
         // Hashes are recomputed on render threads too, while the main thread may add or remove knobs.
-        const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+        const KnobsVec knobs = effect->getKnobs_mt_safe();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
             const KnobIPtr& knob = *it;
             if (!knob || !knob->isRenderHashed()) {
@@ -1256,7 +1263,9 @@ Node::computeContentHash(U64 projectDigest,
 
     bool hasExpression = false;
     h.appendU64(getKnobsContentDigest(&hasExpression));
-    _imp->effect->appendNodeContentHash(h);
+    if (const EffectInstance* effect = _imp->effect.get()) {
+        effect->appendNodeContentHash(h);
+    }
 
     // Expressions resolve thisNode/thisGroup and other nodes by name, so the same expression
     // under another name can evaluate differently.
@@ -3778,6 +3787,15 @@ Node::isActivated() const
     QMutexLocker l(&_imp->activatedMutex);
 
     return _imp->activated;
+}
+
+bool
+Node::isBeingDestroyed() const
+{
+    // destroyNode() sets the flag under activatedMutex.
+    QMutexLocker l(&_imp->activatedMutex);
+
+    return _imp->isBeingDestroyed;
 }
 
 std::string

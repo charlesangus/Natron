@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <vector>
 
 #include <QString>
 
@@ -133,6 +134,37 @@ private:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual SceneEvaluationContext getSceneInputContext(int inputNb,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double time,
+                                                        ViewIdx view) const OVERRIDE FINAL;
+
+    virtual void mapSceneInputReach(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const OVERRIDE FINAL;
+
+    /**
+     * @brief Reads the knobs that place the input's prims: the graft destination and whether it
+     * renames, or with *wrapping set, the wrapped prim and where it moves. False when they are
+     * invalid, in which case the node renders nothing to map.
+     **/
+    bool getPlacement(bool* wrapping,
+                      std::string* destination,
+                      std::string* moved,
+                      bool* autoRename) const;
+
+    // getPlacement() with the knobs read at time and view.
+    bool getPlacement(double time,
+                      ViewIdx view,
+                      bool* wrapping,
+                      std::string* destination,
+                      std::string* moved,
+                      bool* autoRename) const;
+
+    std::string getPassThroughRoot() const;
+
     bool authorOverrides(const SceneLayerEdit& edit,
                          const std::string& primPath,
                          int kind,
@@ -151,7 +183,8 @@ private:
     KnobBoolWPtr _autoRename;
     KnobChoiceWPtr _mode;
     KnobStringWPtr _wrapName;
-    SceneGraftMemo _graftMemo;
+    // Mutable for mapSceneInputReach(), which reads what the last graft of a context named.
+    mutable SceneGraftMemo _graftMemo;
 };
 
 NATRON_NAMESPACE_EXIT

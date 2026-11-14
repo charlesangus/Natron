@@ -30,6 +30,7 @@
 
 #include <QStringList>
 
+#include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
@@ -37,6 +38,8 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Project.h"
+#include "Engine/SceneLoadSet.h"
 
 #include <pxr/usd/usd/primRange.h>
 
@@ -341,6 +344,105 @@ SceneReparentNode::authorOverrides(const SceneLayerEdit& edit,
     return true;
 }
 
+bool
+SceneReparentNode::getPlacement(bool* wrapping,
+                                std::string* destination,
+                                std::string* moved,
+                                bool* autoRename) const
+{
+    return getPlacement(getCurrentTime(), ViewIdx(0), wrapping, destination, moved, autoRename);
+}
+
+bool
+SceneReparentNode::getPlacement(double time,
+                                ViewIdx view,
+                                bool* wrapping,
+                                std::string* destination,
+                                std::string* moved,
+                                bool* autoRename) const
+{
+    PXR_NS::SdfPath path;
+    std::string error;
+    if (!SceneNodeAuthoring::getPrimPath(_primPath.lock(), time, view, &path, &error)) {
+        return false;
+    }
+    KnobChoicePtr mode = _mode.lock();
+    *wrapping = mode && (mode->getValueAtTime(time, 0, view) == (int)eSceneReparentModeWrap);
+    *destination = path.GetString();
+    moved->clear();
+    KnobBoolPtr autoRenameKnob = _autoRename.lock();
+    *autoRename = autoRenameKnob && autoRenameKnob->getValueAtTime(time, 0, view);
+    if (!*wrapping) {
+        return true;
+    }
+    KnobStringPtr wrapNameKnob = _wrapName.lock();
+    PXR_NS::SdfPath wrapPath;
+    if (!getWrapPath(path, wrapNameKnob ? wrapNameKnob->getValueAtTime(time, 0, view) : std::string(), &wrapPath, &error)) {
+        return false;
+    }
+    *moved = wrapPath.AppendChild(path.GetNameToken()).GetString();
+
+    return true;
+}
+
+std::string
+SceneReparentNode::getPassThroughRoot() const
+{
+    AppInstancePtr app = getApp();
+
+    return app ? app->getProject()->getProjectMaterialsScope() : std::string();
+}
+
+SceneEvaluationContext
+SceneReparentNode::getSceneInputContext(int inputNb,
+                                        const SceneEvaluationContext& ctx,
+                                        double time,
+                                        ViewIdx view) const
+{
+    bool wrapping = false;
+    std::string destination;
+    std::string moved;
+    bool autoRename = false;
+    if ((inputNb < 0) || (inputNb >= kSceneReparentInputCount) || !getPlacement(time, view, &wrapping, &destination, &moved, &autoRename)) {
+        return ctx;
+    }
+    if (wrapping) {
+        return (inputNb == 0) ? SceneEvaluationContext(ctx.id, SceneOps::mapWrapLoadSet(ctx.loadSet, destination, moved)) : ctx;
+    }
+
+    AppInstancePtr app = getApp();
+
+    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, destination, app ? app->getProject()->getProjectMaterialsScope(time, view) : std::string(), autoRename));
+}
+
+void
+SceneReparentNode::mapSceneInputReach(int inputNb,
+                                      double time,
+                                      ViewIdx view,
+                                      const std::vector<std::string>& in,
+                                      std::vector<std::string>* out) const
+{
+    bool wrapping = false;
+    std::string destination;
+    std::string moved;
+    bool autoRename = false;
+    if ((inputNb < 0) || (inputNb >= kSceneReparentInputCount) || !getPlacement(time, view, &wrapping, &destination, &moved, &autoRename)) {
+        *out = in;
+
+        return;
+    }
+    if (wrapping) {
+        if (inputNb == 0) {
+            SceneOps::mapWrapReach(destination, moved, in, out);
+        } else {
+            *out = in;
+        }
+
+        return;
+    }
+    SceneOps::mapGraftReach(&_graftMemo, inputNb, destination, getPassThroughRoot(), in, out);
+}
+
 StatusEnum
 SceneReparentNode::renderWrap(const SceneRenderActionArgs& args,
                               const std::string& wrappedPath,
@@ -359,9 +461,12 @@ SceneReparentNode::renderWrap(const SceneRenderActionArgs& args,
     const PXR_NS::SdfPath moved = wrapPath.AppendChild(wrapped.GetNameToken());
 
     const ScenePayload upstream = args.getInputScene(0);
+    const SceneEvaluationContext& inputContext = args.getInputContext(0);
     std::vector<WrapRetarget> retargets;
     {
-        SceneQueryPool::Lease lease = upstream.isEmpty() ? SceneQueryPool::Lease() : SceneQueryPool::instance().borrow(upstream, errorMessage);
+        // The existence checks load only the two paths; the retargets below read the whole stage.
+        SceneQueryPool::Lease lease = upstream.isEmpty() ? SceneQueryPool::Lease()
+                                                         : SceneQueryPool::instance().borrow(upstream, SceneLoadSet::withPaths(inputContext.loadSet, { wrappedPath, wrapPath.GetString() }), errorMessage);
         const PXR_NS::UsdStageRefPtr stage = lease.isValid() ? lease.getStage() : PXR_NS::UsdStageRefPtr();
         if (!upstream.isEmpty() && !stage) {
             if (errorMessage->empty()) {
@@ -380,6 +485,22 @@ SceneReparentNode::renderWrap(const SceneRenderActionArgs& args,
         }
         if (stage->GetPrimAtPath(wrapPath)) {
             *errorMessage = tr("Input 0 already has a prim at %1; give Wrap Name another name.").arg(QString::fromStdString(wrapPath.GetString())).toStdString();
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+    }
+    if (!upstream.isEmpty()) {
+        // A link can sit in any prim, so a payload that loads later may add one.
+        if (inputContext.reach) {
+            inputContext.reach->add({ std::string("/") });
+        }
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, inputContext.loadSet, errorMessage);
+        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+        if (!stage) {
+            if (errorMessage->empty()) {
+                *errorMessage = tr("USD could not compose the input scene.").toStdString();
+            }
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;
@@ -472,6 +593,7 @@ SceneReparentNode::renderScene(const SceneRenderActionArgs& args,
     SceneReparentArgs reparent;
     for (int i = 0; i < kSceneReparentInputCount; ++i) {
         reparent.inputs.push_back(args.getInputScene(i));
+        reparent.inputContexts.push_back(args.getInputContext(i));
     }
     reparent.destinationPath = path.GetString();
     reparent.destinationType = getPrimTypeName();

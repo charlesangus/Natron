@@ -56,9 +56,18 @@ public:
     QString text;
     std::vector<ComboBoxMenuNodePtr> children;
     ComboBoxMenuNode* parent;
+    // Set by disableItem(): the entry stays disabled whatever the box's own enabled state.
+    bool disabled;
 
     ComboBoxMenuNode()
-        : isMenu(0), isLeaf(0), text(), children(), parent(0) {}
+        : isMenu(0)
+        , isLeaf(0)
+        , text()
+        , children()
+        , parent(0)
+        , disabled(false)
+    {
+    }
 };
 
 class ComboBox
@@ -158,6 +167,10 @@ public:
 
     void enableItem(int index);
 
+    // False for an entry disableItem() disabled, which neither the menu, the wheel, the arrow keys
+    // nor setCurrentIndex() can make current, and for an index that holds no entry.
+    bool isItemEnabled(int index) const;
+
     void setItemText(int index, const QString & item);
 
     void setItemShortcut(int index, const QKeySequence & sequence);
@@ -250,6 +263,9 @@ private:
 
     ///changes the current index and returns true if the index really changed, false if it is the same.
     bool setCurrentIndex_internal(int index);
+
+    // The first enabled entry after from stepping by step (+1 or -1), wrapping round; -1 when none is.
+    int stepToEnabledIndex(int from, int step) const;
 
     ///changes the combobox text and returns an entry index if a matching one with the same name was found, -1 otherwise.
     int setCurrentText_internal(const QString & text);

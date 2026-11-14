@@ -146,7 +146,7 @@ protected:
         EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
                   node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
             << error;
-        *lease = SceneQueryPool::instance().borrow(payload, &error);
+        *lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
         EXPECT_TRUE(lease->isValid()) << error;
 
         return lease->getStage();
@@ -192,7 +192,11 @@ TEST_F(USDRenderSettingsTest, AuthorsTheStandardAttributes)
     ASSERT_TRUE(bool(node));
     USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect != nullptr);
-    effect->refreshCameraMenu();
+    {
+        const std::shared_ptr<SceneMenuJob> job = effect->refreshCameraMenu();
+        job->wait();
+        EXPECT_TRUE(effect->applyCameraMenu(job));
+    }
     KnobChoice* cameraKnob = knob<KnobChoice>(node, kUSDRenderSettingsParamCamera);
     ASSERT_TRUE(cameraKnob != nullptr);
     (void)cameraKnob->setValueFromID("/World/Cam", 0);

@@ -35,6 +35,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -99,11 +100,22 @@ public:
     virtual ~USDRenderSettings();
 
     /**
-     * @brief Fills the camera menu with every camera of the input scene at the current frame,
-     * keeping the chosen one even when the scene no longer has it. Main thread only; the node
-     * calls it itself, queued, whenever its input or anything upstream changes.
+     * @brief Starts listing every camera of the input scene at the current frame for the camera
+     * menu, which keeps the chosen one even when the scene no longer has it.
+     * The menu keeps its entries until applyCameraMenu() fills it with the job's result, which
+     * the job queues to the main thread when it ends; a later refresh supersedes it. The search
+     * runs on a worker, on the load set of the viewer showing the node (nothing loaded when none
+     * does), and the menu ends with a row counting the unloaded branches not searched, when
+     * there are some. Returns at once. Main thread only; the node calls it itself, queued,
+     * whenever an input or anything upstream changes.
      **/
-    void refreshCameraMenu();
+    std::shared_ptr<SceneMenuJob> refreshCameraMenu();
+
+    /**
+     * @brief Fills the camera menu from job, unless a later refresh superseded it or it is not
+     * done. Returns whether it did. Main thread.
+     **/
+    bool applyCameraMenu(const std::shared_ptr<SceneMenuJob>& job);
 
     // Adds to serialization, as Node::toSerialization() ends, the saved knobs this node has no knob for.
     void appendUnmatchedKnobs(Serialization::NodeSerialization* serialization) const;
@@ -155,6 +167,7 @@ private:
     KnobBoolWPtr _makeActive;
     KnobChoiceWPtr _defaultRenderer;
     std::atomic<bool> _cameraMenuRefreshPending;
+    SceneMenuRefresh _cameraMenuRefresh;
     std::unique_ptr<RenderSettingsKnobs> _settings;
 };
 

@@ -317,6 +317,21 @@ TEST_F(AiOpticalFlow, ADownscaledPositionFieldKeepsItsAlignmentAtFullSize)
     expectPositionField(field, 400, 200, 1.f, 1.f, -1.5f, 4);
 }
 
+TEST_F(AiOpticalFlow, TheSpecIterationsReachAModelThatTakesThem)
+{
+    // flow-iterations.onnx returns (1, 2) pixels per iteration, from tools/ai/make-test-models.py.
+    OpticalFlowSpec spec;
+    spec.minSize = 8;
+
+    for (int iterations : { 0, 2, 7 }) {
+        SCOPED_TRACE(iterations);
+        spec.iterations = iterations;
+        const OpticalFlowPair pair = estimateOpticalFlowPair(openFlow("flow-iterations.onnx"), makeFrame(24, 16), makeFrame(24, 16), spec);
+        expectField(pair.forward, 24, 16, 1.f * (float)iterations, 2.f * (float)iterations);
+        expectField(pair.backward, 24, 16, 1.f * (float)iterations, 2.f * (float)iterations);
+    }
+}
+
 TEST_F(AiOpticalFlow, FramesOfDifferentSizesAreRefused)
 {
     EXPECT_THROW(estimateOpticalFlow(openFlow(), makeFrame(32, 32), makeFrame(32, 16), OpticalFlowSpec()), AiError);

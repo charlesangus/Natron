@@ -253,6 +253,32 @@ def flow_position():
                   only_x, only_y])
 
 
+# flow-iterations.onnx's flow per refinement iteration it is given: dx then dy.
+FLOW_ITERATIONS_DX = 1.0
+FLOW_ITERATIONS_DY = 2.0
+
+
+def flow_iterations():
+    # The two images and an 'iterations' float [1] input, as the packaged SEA-RAFT takes; the flow is
+    # the same everywhere and proportional to the iteration count, so a test sees what reached it.
+    tail = helper.make_tensor("tail_start", TensorProto.INT64, [1], [2])
+    tail_end = helper.make_tensor("tail_end", TensorProto.INT64, [1], [4])
+    head = helper.make_tensor("flow_head", TensorProto.INT64, [2], [1, 2])
+    zero = helper.make_tensor("zero", TensorProto.FLOAT, [1], [0.0])
+    per = helper.make_tensor("per_iteration", TensorProto.FLOAT, [1, 2, 1, 1], [FLOW_ITERATIONS_DX, FLOW_ITERATIONS_DY])
+    return model("flow_iterations",
+                 [helper.make_node("Shape", ["image1"], ["dims"]),
+                  helper.make_node("Slice", ["dims", "tail_start", "tail_end"], ["size"]),
+                  helper.make_node("Concat", ["flow_head", "size"], ["flow_dims"], axis=0),
+                  helper.make_node("ConstantOfShape", ["flow_dims"], ["zeros"], value=zero),
+                  helper.make_node("Mul", ["iterations", "per_iteration"], ["offset"]),
+                  helper.make_node("Add", ["zeros", "offset"], ["flow"])],
+                 [image_value("image1", TensorProto.FLOAT), image_value("image2", TensorProto.FLOAT),
+                  helper.make_tensor_value_info("iterations", TensorProto.FLOAT, [1])],
+                 [helper.make_tensor_value_info("flow", TensorProto.FLOAT, [1, 2, "height", "width"])],
+                 [tail, tail_end, head, per])
+
+
 MODELS = {
     "identity.onnx": lambda: identity(TensorProto.FLOAT, "identity"),
     "identity-fp16.onnx": lambda: identity(TensorProto.FLOAT16, "identity_fp16"),
@@ -265,6 +291,7 @@ MODELS = {
     "flow-constant.onnx": flow_constant,
     "flow-order.onnx": flow_order,
     "flow-position.onnx": flow_position,
+    "flow-iterations.onnx": flow_iterations,
     "seg-segnext-encoder.onnx": segnext_encoder,
     "seg-segnext-decoder.onnx": segnext_decoder,
     "seg-sam-encoder.onnx": sam_encoder,

@@ -170,6 +170,15 @@ training-data licences, darktable-ai's OSAID classification, and a link to its m
 `tools/ai/update-manifest.py` regenerates the file from a release tag; run with no arguments, it
 reproduces the committed file. It refuses a model whose weight licence is not GPL-3-compatible.
 
+darktable-ai ships no optical-flow model, so the `optical-flow` task's model, SEA-RAFT M
+(`optical-flow-searaft-m`, BSD-3-Clause), is a package of Natron's own, listed in the script's
+`NATRON_MODELS` and hosted on the fork's releases. `tools/ai/export-flow-model.py` builds it from the
+published SEA-RAFT checkpoint and a SEA-RAFT checkout at the pinned commit: it exports the network
+to ONNX with the image size and the refinement iteration count as run-time inputs, packs it with
+fixed timestamps so a second run with the same torch and onnx gives the same sha256, and with
+`--verify` checks it against SEA-RAFT's PyTorch forward and on a shifted 1024x576 pair under ONNX
+Runtime on the CPU.
+
 A package can hold several models: RealPLKSR and BSRGAN each ship their 2x and 4x models in one,
 and RawNIND its Bayer and linear models. The manifest lists each model on its own, so a node picks
 by task, and the models of a package share its download and its install folder,

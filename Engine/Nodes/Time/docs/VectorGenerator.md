@@ -63,9 +63,11 @@ Neural. It runs on the CPU, so the node ends a GPU region, and each frame pair c
 other neural nodes; it defaults to the one the model was trained in (sRGB) and is shown only for Neural.
 The frames go to the model as they are, without the matching curve below.
 
-`quality` and `flowChannels` do not apply to Neural, and are greyed out: the model has no iteration
-setting this node can use, and it always reads the three colour channels. The confidence layer,
-Matte, `temporalSmoothing` and `outputs` work as for the other methods. With a Matte, the foreground and
+`quality` sets the model's refinement iterations: 2 at Fast, 4 at Medium (what the model was trained
+with) and 8 at Fine. Most of a run is the model's feature extraction, which every quality pays, so
+Fast saves less time than it does for DIS or TV-L1 and is rougher on fine motion. `flowChannels` does
+not apply to Neural and is greyed out: the model always reads the three colour channels. The
+confidence layer, Matte, `temporalSmoothing` and `outputs` work as for the other methods. With a Matte, the foreground and
 background runs show the model the frame multiplied by the matte and by its inverse, rather than
 weighting a data term.
 
@@ -106,7 +108,7 @@ matched on its first alone, which RGB frames cannot be compared with.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `method` | DIS | The estimator: DIS, TV-L1 or Neural. |
-| `quality` | Medium | The method's preset: Fast, Medium or Fine. Not used by Neural. |
+| `quality` | Medium | The method's preset: Fast, Medium or Fine. For Neural, 2, 4 or 8 refinement iterations. |
 | `flowChannels` | Luminance | What is matched: Luminance or RGB. Not used by Neural. |
 | `model` | optical-flow default | The optical-flow model; Neural only. |
 | `modelColourspace` | the model's | The colourspace the Source is converted to before the model; Neural only. |

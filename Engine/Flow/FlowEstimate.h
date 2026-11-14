@@ -73,7 +73,8 @@ struct FlowEstimateParams {
     /// The round-trip error, in pixels, at which the confidence falls to 1/e.
     float confidenceSigma = 2.f;
     /// Required by eFlowMethodNeural. The frames' values are handed to it as they are: they must
-    /// already be in the colour space the model wants. channels and quality do not apply to it.
+    /// already be in the colour space the model wants. channels does not apply to it, and quality
+    /// sets its iterations (neuralIterationsForQuality()).
     std::shared_ptr<const FlowNeuralModel> neural;
 };
 
@@ -101,6 +102,9 @@ struct FlowEstimateResult {
     /// Why eFlowEstimateModelError.
     std::string error;
 };
+
+/// The refinement iterations eFlowMethodNeural runs at each quality.
+int neuralIterationsForQuality(FlowQuality quality);
 
 /**
  * @brief Estimates the current frame's forward and backward flow, as the single entry point over the

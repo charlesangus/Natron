@@ -45,7 +45,13 @@ struct OpticalFlowSpec {
     int minSize = 128;
     // What the wrapped pixel value 1 becomes at the model's input. RAFT-class models take 0..255.
     float inputScale = 255.f;
+    // The refinement iterations fed to a model that has an `iterations` input; a model without one
+    // ignores it.
+    int iterations = 4;
 };
+
+// The name of a flow model's optional third input: a float32 [1] tensor holding the iteration count.
+#define kOpticalFlowIterationsInput "iterations"
 
 /**
  * @brief A frame of three colour planes of equal size, already in the colour space the model wants.
@@ -84,8 +90,9 @@ OpticalFlowGeometry opticalFlowGeometry(int width,
  * @brief The motion from `from` to `to`, at full size and in full-size pixels: a vector at (x, y)
  * points to where the pixel's content lies in `to`. The result's u and v are set, its confidence
  * is not. The session's model takes two NCHW float inputs, the first frame then the second, and
- * returns the flow, [1, 2, H, W] with the horizontal component first, as its first output. The
- * frames must have the same size. Throws AiAborted when abort fires and AiError for any other
+ * optionally kOpticalFlowIterationsInput, which gets spec.iterations. It returns the flow,
+ * [1, 2, H, W] with the horizontal component first, as its first output. The frames must have the
+ * same size. Throws AiAborted when abort fires and AiError for any other
  * failure, including an input or output not shaped as above.
  **/
 FlowField estimateOpticalFlow(const std::shared_ptr<InferenceSession>& session,

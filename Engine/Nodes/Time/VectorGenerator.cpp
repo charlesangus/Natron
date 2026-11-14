@@ -394,8 +394,8 @@ VectorGenerator::initializeKnobs()
                                        tr("A global variational solve: slower, with sharper motion edges and less drift on flat areas.").toStdString()));
         options.push_back(ChoiceOption(kVectorGeneratorMethodNeural, tr("Neural").toStdString(),
                                        tr("An optical-flow neural network, run on the CPU: it follows large and thin motion the other methods lose. "
-                                          "It needs the optical-flow model installed (Preferences > AI Models) and AI enabled. Quality and Flow Channels "
-                                          "do not apply to it.")
+                                          "It needs the optical-flow model installed (Preferences > AI Models) and AI enabled. Quality sets its refinement "
+                                          "iterations, and Flow Channels does not apply to it.")
                                            .toStdString()));
         methodKnob->populateChoices(options);
     }
@@ -408,7 +408,7 @@ VectorGenerator::initializeKnobs()
 
     KnobChoicePtr qualityKnob = createKnob<KnobChoice>(tr("Quality").toStdString());
     qualityKnob->setName(kVectorGeneratorParamQuality);
-    qualityKnob->setHintToolTip(tr("The speed and precision preset of the method.").toStdString());
+    qualityKnob->setHintToolTip(tr("The speed and precision preset of the method. For Neural it sets the model's refinement iterations: 2, 4 or 8.").toStdString());
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(kVectorGeneratorQualityFast, tr("Fast").toStdString(), tr("The fewest iterations.").toStdString()));
@@ -560,9 +560,6 @@ VectorGenerator::refreshMethodKnobs()
     }
     if (KnobIPtr space = getKnobByName(kModelColourspaceParam)) {
         space->setSecret(!neural);
-    }
-    if (KnobChoicePtr quality = _quality.lock()) {
-        quality->setAllDimensionsEnabled(!neural);
     }
     if (KnobChoicePtr channels = _flowChannels.lock()) {
         channels->setAllDimensionsEnabled(!neural);

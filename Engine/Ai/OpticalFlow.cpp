@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "Engine/Ai/Tensor.h"
 
@@ -158,14 +159,22 @@ runDirection(const InferenceSession& session,
              int width,
              int height,
              const OpticalFlowGeometry& geo,
+             int iterations,
              const AiAbortPredicate& abort)
 {
     if (abort && abort()) {
         throw AiAborted();
     }
     std::map<std::string, Tensor> inputs;
-    inputs[session.inputs()[0].name] = first;
-    inputs[session.inputs()[1].name] = second;
+    bool firstImage = true;
+    for (const auto& input : session.inputs()) {
+        if (input.name == kOpticalFlowIterationsInput) {
+            inputs[input.name] = Tensor(std::vector<int64_t> { 1 }, std::vector<float> { (float)std::max(0, iterations) });
+        } else {
+            inputs[input.name] = firstImage ? first : second;
+            firstImage = false;
+        }
+    }
     std::map<std::string, Tensor> outputs = session.run(inputs, abort);
     const std::map<std::string, Tensor>::const_iterator it = outputs.find(session.outputs().at(0).name);
     if (it == outputs.end()) {
@@ -206,8 +215,9 @@ runDirection(const InferenceSession& session,
 void
 checkSession(const InferenceSession& session)
 {
-    if (session.inputs().size() != 2 || session.outputs().empty()) {
-        throw AiError("A flow model takes two images and returns the flow");
+    const std::size_t iterationInputs = std::count_if(session.inputs().begin(), session.inputs().end(), [](const auto& input) { return input.name == kOpticalFlowIterationsInput; });
+    if (session.inputs().size() - iterationInputs != 2 || iterationInputs > 1 || session.outputs().empty()) {
+        throw AiError("A flow model takes two images, and optionally an iteration count, and returns the flow");
     }
 }
 
@@ -267,8 +277,8 @@ estimateOpticalFlowPair(const std::shared_ptr<InferenceSession>& session,
     const Tensor tb = packFrame(b, geo, spec);
 
     OpticalFlowPair pair;
-    pair.forward = runDirection(*session, ta, tb, a.width(), a.height(), geo, abort);
-    pair.backward = runDirection(*session, tb, ta, a.width(), a.height(), geo, abort);
+    pair.forward = runDirection(*session, ta, tb, a.width(), a.height(), geo, spec.iterations, abort);
+    pair.backward = runDirection(*session, tb, ta, a.width(), a.height(), geo, spec.iterations, abort);
 
     return pair;
 }
@@ -285,7 +295,7 @@ estimateOpticalFlow(const std::shared_ptr<InferenceSession>& session,
 
     const OpticalFlowGeometry geo = opticalFlowGeometry(from.width(), from.height(), spec);
 
-    return runDirection(*session, packFrame(from, geo, spec), packFrame(to, geo, spec), from.width(), from.height(), geo, abort);
+    return runDirection(*session, packFrame(from, geo, spec), packFrame(to, geo, spec), from.width(), from.height(), geo, spec.iterations, abort);
 }
 
 NATRON_NAMESPACE_EXIT

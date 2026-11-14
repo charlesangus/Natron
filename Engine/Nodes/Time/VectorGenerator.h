@@ -329,7 +329,7 @@ private:
 
     void refreshSmoothingEnabled();
 
-    // The model, colourspace and quality controls follow whether the method is Neural.
+    // The model, colourspace and flow-channels controls follow whether the method is Neural.
     void refreshMethodKnobs();
 
     // The session of the model at path, kept while the path and the Preferences' session options stay the same. Null with message set

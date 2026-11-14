@@ -97,10 +97,13 @@ TEST(AiModelRegistry, BuiltinManifestParses)
     const ModelRegistry registry(ModelRegistry::builtinManifest(), "/nonexistent");
 
     EXPECT_EQ(registry.sourceTag(), "release-5.6.0");
-    ASSERT_EQ(registry.models().size(), 12u);
+    ASSERT_EQ(registry.models().size(), 13u);
     for (const AiModelEntry& entry : registry.models()) {
         SCOPED_TRACE(entry.id);
-        EXPECT_EQ(entry.url, "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/" + entry.package + ".dtmodel");
+        const std::string origin = (entry.task == AiModelTask::eOpticalFlow)
+            ? "https://github.com/charlesangus/Natron/releases/download/ai-models-1/"
+            : "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/";
+        EXPECT_EQ(entry.url, origin + entry.package + ".dtmodel");
         EXPECT_EQ(entry.sha256.size(), 64u);
         EXPECT_GT(entry.size, 0u);
         EXPECT_FALSE(entry.weightsLicence.empty());
@@ -121,6 +124,7 @@ TEST(AiModelRegistry, ByTask)
     EXPECT_EQ(registry.byTask(AiModelTask::eDenoiseLinear), (std::vector<std::string> { "rawdenoise-nind-linear" }));
     EXPECT_EQ(registry.byTask(AiModelTask::eUpscale2x), (std::vector<std::string> { "upscale-realplksr-x2", "upscale-bsrgan-x2" }));
     EXPECT_EQ(registry.byTask(AiModelTask::eUpscale4x), (std::vector<std::string> { "upscale-realplksr-x4", "upscale-bsrgan-x4" }));
+    EXPECT_EQ(registry.byTask(AiModelTask::eOpticalFlow), (std::vector<std::string> { "optical-flow-searaft-m" }));
 
     const AiModelEntry* mask = registry.defaultFor(AiModelTask::eMaskObject);
     ASSERT_TRUE(mask != nullptr);
@@ -128,12 +132,16 @@ TEST(AiModelRegistry, ByTask)
     const AiModelEntry* upscale = registry.defaultFor(AiModelTask::eUpscale4x);
     ASSERT_TRUE(upscale != nullptr);
     EXPECT_EQ(upscale->id, "upscale-realplksr-x4");
+    const AiModelEntry* flow = registry.defaultFor(AiModelTask::eOpticalFlow);
+    ASSERT_TRUE(flow != nullptr);
+    EXPECT_EQ(flow->id, "optical-flow-searaft-m");
+    EXPECT_EQ(flow->weightsLicence, "BSD-3-Clause");
 }
 
 TEST(AiModelRegistry, TaskNamesRoundTrip)
 {
     for (AiModelTask task : { AiModelTask::eMaskObject, AiModelTask::eDenoise, AiModelTask::eDenoiseRawBayer,
-                              AiModelTask::eDenoiseLinear, AiModelTask::eUpscale2x, AiModelTask::eUpscale4x }) {
+                              AiModelTask::eDenoiseLinear, AiModelTask::eUpscale2x, AiModelTask::eUpscale4x, AiModelTask::eOpticalFlow }) {
         const std::optional<AiModelTask> back = aiModelTaskFromName(aiModelTaskName(task));
         ASSERT_TRUE(back.has_value());
         EXPECT_EQ(*back, task);

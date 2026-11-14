@@ -182,7 +182,9 @@ solveNeuralBothWays(const PreparedFrame& a,
     const OpticalFlowFrame weightedA = weightsA ? weightedNeuralFrame(a.neural, weightsA->front(), context) : OpticalFlowFrame();
     const OpticalFlowFrame weightedB = weightsB ? weightedNeuralFrame(b.neural, weightsB->front(), context) : OpticalFlowFrame();
     const AiAbortPredicate abort = [&context]() { return context.isAborted(); };
-    OpticalFlowPair pair = estimateOpticalFlowPair(params.neural->session, weightsA ? weightedA : a.neural, weightsB ? weightedB : b.neural, params.neural->spec, abort);
+    OpticalFlowSpec spec = params.neural->spec;
+    spec.iterations = neuralIterationsForQuality(params.quality);
+    OpticalFlowPair pair = estimateOpticalFlowPair(params.neural->session, weightsA ? weightedA : a.neural, weightsB ? weightedB : b.neural, spec, abort);
     aToB = std::move(pair.forward);
     bToA = std::move(pair.backward);
 }
@@ -266,6 +268,22 @@ canBeMatched(const FlowFrame& a,
         && flowMatchedChannelCount(a.image.nComps, params.channels) == flowMatchedChannelCount(b.image.nComps, params.channels);
 }
 } // anonymous namespace
+
+int
+neuralIterationsForQuality(FlowQuality quality)
+{
+    // SEA-RAFT M is trained at 4 iterations; Fine runs past it, where its updates still converge.
+    switch (quality) {
+    case eFlowQualityFast:
+        return 2;
+    case eFlowQualityMedium:
+        return 4;
+    case eFlowQualityFine:
+        return 8;
+    }
+
+    return 4;
+}
 
 namespace {
 FlowEstimateStatus

@@ -413,7 +413,8 @@ TEST_F(ProgressiveRenderTest, CoalescesEditsIntoOneRestart)
     ASSERT_TRUE(waitUntil([this]() { return _held; }, "a frame of the raised cap"));
     const std::shared_ptr<const ProgressiveRender::Frame> held = _render->getFrame();
     ASSERT_TRUE(held != nullptr);
-    const U64 restartsRefining = _render->getRestartCount();
+    const ProgressiveRender::Status refining = _render->getStatus();
+    const U64 restartsRefining = refining.restarts;
     EXPECT_GT(restartsRefining, restartsBefore);
     EXPECT_EQ(restartsRefining, held->restart);
 
@@ -428,19 +429,26 @@ TEST_F(ProgressiveRenderTest, CoalescesEditsIntoOneRestart)
     ASSERT_FALSE(after.empty());
     EXPECT_EQ(held, after.front());
 
-    const U64 restartsAfter = _render->getRestartCount();
-    EXPECT_EQ(restartsRefining + 1, restartsAfter);
+    const ProgressiveRender::Status end = _render->getStatus();
+    const U64 restartsAfter = end.restarts;
+    // The worker makes its engine again when Cycles is slow to show the edits' restart, a
+    // restart of its own that no edit caused.
+    const U64 remade = end.engines - refining.engines;
+    EXPECT_EQ(restartsRefining + 1 + remade, restartsAfter) << remade << " engine(s) made after the edits";
     const float moved = windowDepth(_view.frustum, kNearDistance + kLastBack);
     const float before = windowDepth(_view.frustum, kNearDistance);
     for (const std::shared_ptr<const ProgressiveRender::Frame>& frame : frames) {
         EXPECT_NEAR(before, centreDepth(*frame), 1e-4f) << "frame " << frame->serial;
     }
     EXPECT_NEAR(before, centreDepth(*held), 1e-4f) << "frame " << held->serial;
+    U64 lastRestart = restartsRefining + 1;
     for (const std::shared_ptr<const ProgressiveRender::Frame>& frame : after) {
         if (frame->serial <= held->serial) {
             continue;
         }
-        EXPECT_EQ(restartsAfter, frame->restart) << "frame " << frame->serial;
+        EXPECT_LE(lastRestart, frame->restart) << "frame " << frame->serial;
+        EXPECT_GE(restartsAfter, frame->restart) << "frame " << frame->serial;
+        lastRestart = frame->restart;
         EXPECT_NEAR(moved, centreDepth(*frame), 1e-4f) << "frame " << frame->serial << " (restart " << frame->restart << ") is stale";
     }
     EXPECT_EQ(kSamples * 2, after.back()->samples);

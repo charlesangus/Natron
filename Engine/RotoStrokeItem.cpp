@@ -48,6 +48,7 @@
 #include "Engine/Interpolation.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContextPrivate.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/Settings.h"
@@ -760,9 +761,10 @@ RotoStrokeItem::computeBoundingBox(double time) const
 RectD
 RotoStrokeItem::getBoundingBox(double time) const
 {
-    bool isActivated = getActivatedKnob()->getValueAtTime(time);
+    const RotoCurveContextPtr context = getContext();
+    const bool lifetimesIgnored = context && context->getIgnoreItemLifetimes();
 
-    if (!isActivated) {
+    if (!lifetimesIgnored && !getActivatedKnob()->getValueAtTime(time)) {
         return RectD();
     }
 

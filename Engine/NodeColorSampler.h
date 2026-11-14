@@ -54,6 +54,23 @@ ImagePtr renderNodeImage(const NodePtr& node,
                          const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
 
 /**
+ * @brief As renderNodeImage(), but telling an empty result from a failure: returns true with a
+ * null *image, and an empty renderedRect, when pixelRect misses the region of definition or the
+ * node has nothing to draw there, such as a layer it neither produces nor passes through, so that
+ * the pixels are all transparent black; false in the other cases renderNodeImage() returns NULL,
+ * an aborted render among them.
+ **/
+bool renderNodeImageIfAny(const NodePtr& node,
+                          double time,
+                          ViewIdx view,
+                          unsigned int mipmapLevel,
+                          const RectI& pixelRect,
+                          const ImageLayerDesc& layer,
+                          ImagePtr* image,
+                          RectI* renderedRect,
+                          const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr()) WARN_UNUSED_RETURN;
+
+/**
  * @brief The part of node's image at time a texture of it holds, in full-scale pixel coordinates,
  * found without rendering: window receives its output format (its display window, the project
  * format when it has none) merged with its region of definition, whole. An infinite region is not merged,

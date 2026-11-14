@@ -674,9 +674,11 @@ typedef std::list<RotoItemPtr> RotoItems;
 struct RotoLayerPrivate
 {
     RotoItems items;
+    std::list<KnobIPtr> hostKnobs;
 
     RotoLayerPrivate()
         : items()
+        , hostKnobs()
     {
     }
 };

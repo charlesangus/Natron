@@ -30,14 +30,19 @@
 #include <cmath>
 #include <limits>
 
+#include <QCoreApplication>
 #include <QLineF>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
+#include "Engine/ChoiceOption.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/OverlaySupport.h"
+#include "Engine/PluginActionShortcut.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoLayer.h"
@@ -49,23 +54,18 @@
 #include "Engine/ViewerInstance.h"
 #include "Global/GLIncludes.h"
 
+#define ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX 5
+
 NATRON_NAMESPACE_ENTER
 
-RotoPaintPrivate::RotoPaintPrivate(RotoPaint* publicInterface,
-                                   bool isPaintByDefault)
-    : publicInterface(publicInterface)
-    , isPaintByDefault(isPaintByDefault)
-    , ui(RotoPaintInteract::create(this))
-{
-}
-
-RotoPaintInteract::RotoPaintInteract(RotoPaintPrivate* p)
-    : RotoCurveInteract(p->publicInterface)
-    , p(p)
+RotoPaintInteract::RotoPaintInteract(EffectInstance* host,
+                                     bool paintByDefault)
+    : RotoCurveInteract(host)
     , strokeBeingPaint()
     , strokeBeingPaintedTimelineFrame(0)
     , lastPaintToolAction()
     , lastTabletDownTriggeredEraser(false)
+    , paintByDefault(paintByDefault)
     , strokePreviews()
     , engineStrokePreview(0)
     , deferredPenEvents()
@@ -77,15 +77,465 @@ RotoPaintInteract::RotoPaintInteract(RotoPaintPrivate* p)
 // see https://stackoverflow.com/a/20961251/2607517
 struct RotoPaintInteract::MakeSharedEnabler: public RotoPaintInteract
 {
-    MakeSharedEnabler(RotoPaintPrivate* p) : RotoPaintInteract(p) {
+    MakeSharedEnabler(EffectInstance* host,
+                      bool paintByDefault)
+        : RotoPaintInteract(host, paintByDefault)
+    {
     }
 };
 
-
 RotoPaintInteractPtr
-RotoPaintInteract::create(RotoPaintPrivate* p)
+RotoPaintInteract::create(EffectInstance* host,
+                          bool paintByDefault)
 {
-    return std::make_shared<RotoPaintInteract::MakeSharedEnabler>(p);
+    return std::make_shared<RotoPaintInteract::MakeSharedEnabler>(host, paintByDefault);
+}
+
+namespace {
+QString
+trBrush(const char* sourceText)
+{
+    return QCoreApplication::translate("RotoPaint", sourceText);
+}
+} // anonymous namespace
+
+void
+RotoPaintBrushKnobs::createSettingKnobs(EffectInstance* host,
+                                        const KnobPagePtr& page)
+{
+    KnobBoolPtr multiStroke = AppManager::createKnob<KnobBool>(host, trBrush(kRotoUIParamMultiStrokeEnabledLabel));
+    multiStroke->setName(kRotoUIParamMultiStrokeEnabled);
+    multiStroke->setInViewerContextLabel(trBrush(kRotoUIParamMultiStrokeEnabledLabel));
+    multiStroke->setHintToolTip(trBrush(kRotoUIParamMultiStrokeEnabledHint));
+    multiStroke->setEvaluateOnChange(false);
+    multiStroke->setDefaultValue(true);
+    multiStroke->setSecretByDefault(true);
+    page->addKnob(multiStroke);
+    multiStrokeEnabled = multiStroke;
+
+    KnobColorPtr colorWheel = AppManager::createKnob<KnobColor>(host, trBrush(kRotoUIParamColorWheelLabel), 3);
+    colorWheel->setName(kRotoUIParamColorWheel);
+    colorWheel->setHintToolTip(trBrush(kRotoUIParamColorWheelHint));
+    colorWheel->setEvaluateOnChange(false);
+    colorWheel->setDefaultValue(1., 0);
+    colorWheel->setDefaultValue(1., 1);
+    colorWheel->setDefaultValue(1., 2);
+    colorWheel->setSecretByDefault(true);
+    page->addKnob(colorWheel);
+    colorWheelButton = colorWheel;
+
+    KnobChoicePtr blendingModes = AppManager::createKnob<KnobChoice>(host, trBrush(kRotoUIParamBlendingOpLabel));
+    blendingModes->setName(kRotoUIParamBlendingOp);
+    blendingModes->setHintToolTip(trBrush(kRotoUIParamBlendingOpHint));
+    blendingModes->setEvaluateOnChange(false);
+    blendingModes->setSecretByDefault(true);
+    {
+        std::vector<ChoiceOption> choices;
+        Merge::getOperatorStrings(&choices);
+        blendingModes->populateChoices(choices);
+    }
+    blendingModes->setDefaultValue((int)eMergeOver);
+    page->addKnob(blendingModes);
+    compositingOperatorChoice = blendingModes;
+
+    KnobDoublePtr opacityKnob = AppManager::createKnob<KnobDouble>(host, trBrush(kRotoUIParamOpacityLabel));
+    opacityKnob->setName(kRotoUIParamOpacity);
+    opacityKnob->setInViewerContextLabel(trBrush(kRotoUIParamOpacityLabel));
+    opacityKnob->setHintToolTip(trBrush(kRotoUIParamOpacityHint));
+    opacityKnob->setEvaluateOnChange(false);
+    opacityKnob->setSecretByDefault(true);
+    opacityKnob->setDefaultValue(1.);
+    opacityKnob->setMinimum(0.);
+    opacityKnob->setMaximum(1.);
+    opacityKnob->disableSlider();
+    page->addKnob(opacityKnob);
+    opacitySpinbox = opacityKnob;
+
+    KnobButtonPtr pressureOpacity = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamPressureOpacityLabel));
+    pressureOpacity->setName(kRotoUIParamPressureOpacity);
+    pressureOpacity->setHintToolTip(trBrush(kRotoUIParamPressureOpacityHint));
+    pressureOpacity->setEvaluateOnChange(false);
+    pressureOpacity->setCheckable(true);
+    pressureOpacity->setDefaultValue(true);
+    pressureOpacity->setSecretByDefault(true);
+    pressureOpacity->setInViewerContextCanHaveShortcut(true);
+    pressureOpacity->setIconLabel(NATRON_ICONS_PATH "natron/pressure.svg");
+    page->addKnob(pressureOpacity);
+    pressureOpacityButton = pressureOpacity;
+
+    KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(host, trBrush(kRotoUIParamSizeLabel));
+    sizeKnob->setName(kRotoUIParamSize);
+    sizeKnob->setInViewerContextLabel(trBrush(kRotoUIParamSizeLabel));
+    sizeKnob->setHintToolTip(trBrush(kRotoUIParamSizeHint));
+    sizeKnob->setEvaluateOnChange(false);
+    sizeKnob->setSecretByDefault(true);
+    sizeKnob->setDefaultValue(25.);
+    sizeKnob->setMinimum(0.);
+    sizeKnob->setMaximum(1000.);
+    sizeKnob->disableSlider();
+    page->addKnob(sizeKnob);
+    sizeSpinbox = sizeKnob;
+
+    KnobButtonPtr pressureSize = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamPressureSizeLabel));
+    pressureSize->setName(kRotoUIParamPressureSize);
+    pressureSize->setHintToolTip(trBrush(kRotoUIParamPressureSizeHint));
+    pressureSize->setEvaluateOnChange(false);
+    pressureSize->setCheckable(true);
+    pressureSize->setDefaultValue(false);
+    pressureSize->setSecretByDefault(true);
+    pressureSize->setInViewerContextCanHaveShortcut(true);
+    pressureSize->setIconLabel(NATRON_ICONS_PATH "natron/pressure.svg");
+    page->addKnob(pressureSize);
+    pressureSizeButton = pressureSize;
+
+    KnobDoublePtr hardnessKnob = AppManager::createKnob<KnobDouble>(host, trBrush(kRotoUIParamHardnessLabel));
+    hardnessKnob->setName(kRotoUIParamHardness);
+    hardnessKnob->setInViewerContextLabel(trBrush(kRotoUIParamHardnessLabel));
+    hardnessKnob->setHintToolTip(trBrush(kRotoUIParamHardnessHint));
+    hardnessKnob->setEvaluateOnChange(false);
+    hardnessKnob->setSecretByDefault(true);
+    hardnessKnob->setDefaultValue(.2);
+    hardnessKnob->setMinimum(0.);
+    hardnessKnob->setMaximum(1.);
+    hardnessKnob->disableSlider();
+    page->addKnob(hardnessKnob);
+    hardnessSpinbox = hardnessKnob;
+
+    KnobButtonPtr pressureHardness = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamPressureHardnessLabel));
+    pressureHardness->setName(kRotoUIParamPressureHardness);
+    pressureHardness->setHintToolTip(trBrush(kRotoUIParamPressureHardnessHint));
+    pressureHardness->setEvaluateOnChange(false);
+    pressureHardness->setCheckable(true);
+    pressureHardness->setDefaultValue(false);
+    pressureHardness->setSecretByDefault(true);
+    pressureHardness->setInViewerContextCanHaveShortcut(true);
+    pressureHardness->setIconLabel(NATRON_ICONS_PATH "natron/pressure.svg");
+    page->addKnob(pressureHardness);
+    pressureHardnessButton = pressureHardness;
+
+    KnobButtonPtr buildUp = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamBuildUpLabel));
+    buildUp->setName(kRotoUIParamBuildUp);
+    buildUp->setInViewerContextLabel(trBrush(kRotoUIParamBuildUpLabel));
+    buildUp->setHintToolTip(trBrush(kRotoUIParamBuildUpHint));
+    buildUp->setEvaluateOnChange(false);
+    buildUp->setCheckable(true);
+    buildUp->setDefaultValue(true);
+    buildUp->setSecretByDefault(true);
+    buildUp->setInViewerContextCanHaveShortcut(true);
+    buildUp->setIconLabel(NATRON_ICONS_PATH "natron/buildup.svg");
+    page->addKnob(buildUp);
+    buildUpButton = buildUp;
+
+    KnobButtonPtr autoConnectViewer = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamAutoConnectViewerLabel));
+    autoConnectViewer->setName(kRotoUIParamAutoConnectViewer);
+    autoConnectViewer->setHintToolTip(trBrush(kRotoUIParamAutoConnectViewerHint));
+    autoConnectViewer->setEvaluateOnChange(false);
+    autoConnectViewer->setCheckable(true);
+    autoConnectViewer->setDefaultValue(false);
+    autoConnectViewer->setSecretByDefault(true);
+    autoConnectViewer->setInViewerContextCanHaveShortcut(true);
+    autoConnectViewer->setIconLabel(NATRON_ICONS_PATH "lucide/eye.svg", true);
+    autoConnectViewer->setIconLabel(NATRON_ICONS_PATH "lucide/eye-off.svg", false);
+    page->addKnob(autoConnectViewer);
+    autoConnectViewerButton = autoConnectViewer;
+
+    KnobDoublePtr effectStrength = AppManager::createKnob<KnobDouble>(host, trBrush(kRotoUIParamEffectLabel));
+    effectStrength->setName(kRotoUIParamEffect);
+    effectStrength->setInViewerContextLabel(trBrush(kRotoUIParamEffectLabel));
+    effectStrength->setHintToolTip(trBrush(kRotoUIParamEffectHint));
+    effectStrength->setEvaluateOnChange(false);
+    effectStrength->setSecretByDefault(true);
+    effectStrength->setDefaultValue(15);
+    effectStrength->setMinimum(0.);
+    effectStrength->setMaximum(100.);
+    effectStrength->disableSlider();
+    page->addKnob(effectStrength);
+    effectSpinBox = effectStrength;
+
+    KnobIntPtr timeOffsetSb = AppManager::createKnob<KnobInt>(host, trBrush(kRotoUIParamTimeOffsetLabel));
+    timeOffsetSb->setName(kRotoUIParamTimeOffset);
+    timeOffsetSb->setInViewerContextLabel(trBrush(kRotoUIParamTimeOffsetLabel));
+    timeOffsetSb->setHintToolTip(trBrush(kRotoUIParamTimeOffsetHint));
+    timeOffsetSb->setEvaluateOnChange(false);
+    timeOffsetSb->setSecretByDefault(true);
+    timeOffsetSb->setDefaultValue(0);
+    timeOffsetSb->disableSlider();
+    page->addKnob(timeOffsetSb);
+    timeOffsetSpinBox = timeOffsetSb;
+
+    KnobChoicePtr timeOffsetMode = AppManager::createKnob<KnobChoice>(host, trBrush(kRotoUIParamTimeOffsetLabel));
+    timeOffsetMode->setName(kRotoUIParamTimeOffset);
+    timeOffsetMode->setHintToolTip(trBrush(kRotoUIParamTimeOffsetHint));
+    timeOffsetMode->setEvaluateOnChange(false);
+    timeOffsetMode->setSecretByDefault(true);
+    {
+        std::vector<ChoiceOption> choices;
+        choices.push_back(ChoiceOption("Relative", "", trBrush("The time offset is a frame number in the source").toStdString()));
+        choices.push_back(ChoiceOption("Absolute", "", trBrush("The time offset is a relative amount of frames relative to the current frame").toStdString()));
+        timeOffsetMode->populateChoices(choices);
+    }
+    timeOffsetMode->setDefaultValue(0);
+    page->addKnob(timeOffsetMode);
+    timeOffsetModeChoice = timeOffsetMode;
+
+    KnobChoicePtr sourceType = AppManager::createKnob<KnobChoice>(host, trBrush(kRotoUIParamSourceTypeLabel));
+    sourceType->setName(kRotoUIParamSourceType);
+    sourceType->setHintToolTip(trBrush(kRotoUIParamSourceTypeHint));
+    sourceType->setEvaluateOnChange(false);
+    sourceType->setSecretByDefault(true);
+    {
+        std::vector<ChoiceOption> choices;
+        choices.push_back(ChoiceOption("foreground", "", ""));
+        choices.push_back(ChoiceOption("background", "", ""));
+        for (int i = 1; i < 10; ++i) {
+            QString str = QString::fromUtf8("background") + QString::number(i + 1);
+            choices.push_back(ChoiceOption(str.toStdString(), "", ""));
+        }
+        sourceType->populateChoices(choices);
+    }
+    sourceType->setDefaultValue(1);
+    page->addKnob(sourceType);
+    sourceTypeChoice = sourceType;
+} // RotoPaintBrushKnobs::createSettingKnobs
+
+void
+RotoPaintBrushKnobs::addSettingKnobsToViewerUI(EffectInstance* host,
+                                               const KnobButtonPtr& resetCloneOffset) const
+{
+    const KnobIPtr multiStroke = multiStrokeEnabled.lock();
+    const KnobIPtr colorWheel = colorWheelButton.lock();
+    const KnobIPtr blendingModes = compositingOperatorChoice.lock();
+    const KnobIPtr opacityKnob = opacitySpinbox.lock();
+    const KnobIPtr pressureOpacity = pressureOpacityButton.lock();
+    const KnobIPtr sizeKnob = sizeSpinbox.lock();
+    const KnobIPtr pressureSize = pressureSizeButton.lock();
+    const KnobIPtr hardnessKnob = hardnessSpinbox.lock();
+    const KnobIPtr pressureHardness = pressureHardnessButton.lock();
+    const KnobIPtr buildUp = buildUpButton.lock();
+    const KnobIPtr autoConnectViewer = autoConnectViewerButton.lock();
+    const KnobIPtr effectStrength = effectSpinBox.lock();
+    const KnobIPtr timeOffsetSb = timeOffsetSpinBox.lock();
+    const KnobIPtr timeOffsetMode = timeOffsetModeChoice.lock();
+    const KnobIPtr sourceType = sourceTypeChoice.lock();
+    host->addKnobToViewerUI(multiStroke);
+    multiStroke->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
+    host->addKnobToViewerUI(colorWheel);
+    colorWheel->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
+    host->addKnobToViewerUI(blendingModes);
+    blendingModes->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
+    host->addKnobToViewerUI(opacityKnob);
+    opacityKnob->setInViewerContextItemSpacing(1);
+    host->addKnobToViewerUI(pressureOpacity);
+    pressureOpacity->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
+    host->addKnobToViewerUI(sizeKnob);
+    sizeKnob->setInViewerContextItemSpacing(1);
+    host->addKnobToViewerUI(pressureSize);
+    pressureSize->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
+    host->addKnobToViewerUI(hardnessKnob);
+    hardnessKnob->setInViewerContextItemSpacing(1);
+    host->addKnobToViewerUI(pressureHardness);
+    pressureHardness->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
+    host->addKnobToViewerUI(buildUp);
+    buildUp->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
+    host->addKnobToViewerUI(autoConnectViewer);
+    autoConnectViewer->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
+    host->addKnobToViewerUI(effectStrength);
+    effectStrength->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
+    host->addKnobToViewerUI(timeOffsetSb);
+    timeOffsetSb->setInViewerContextItemSpacing(1);
+    host->addKnobToViewerUI(timeOffsetMode);
+    host->addKnobToViewerUI(sourceType);
+    if (resetCloneOffset) {
+        host->addKnobToViewerUI(resetCloneOffset);
+    }
+}
+
+void
+RotoPaintBrushKnobs::createToolKnobs(EffectInstance* host,
+                                     const KnobPagePtr& toolbar,
+                                     bool allTools)
+{
+    KnobGroupPtr paintToolButton = AppManager::createKnob<KnobGroup>(host, trBrush(kRotoUIParamPaintBrushToolButtonLabel));
+    paintToolButton->setName(kRotoUIParamPaintBrushToolButton);
+    paintToolButton->setAsToolButton(true);
+    paintToolButton->setEvaluateOnChange(false);
+    paintToolButton->setSecretByDefault(true);
+    paintToolButton->setInViewerContextCanHaveShortcut(true);
+    paintToolButton->setIsPersistent(false);
+    toolbar->addKnob(paintToolButton);
+    paintBrushToolGroup = paintToolButton;
+
+    KnobGroupPtr cloneToolButton, effectToolButton, mergeToolButton;
+    if (allTools) {
+        cloneToolButton = AppManager::createKnob<KnobGroup>(host, trBrush(kRotoUIParamCloneBrushToolButtonLabel));
+        cloneToolButton->setName(kRotoUIParamCloneBrushToolButton);
+        cloneToolButton->setAsToolButton(true);
+        cloneToolButton->setEvaluateOnChange(false);
+        cloneToolButton->setSecretByDefault(true);
+        cloneToolButton->setInViewerContextCanHaveShortcut(true);
+        cloneToolButton->setIsPersistent(false);
+        toolbar->addKnob(cloneToolButton);
+        cloneBrushToolGroup = cloneToolButton;
+        effectToolButton = AppManager::createKnob<KnobGroup>(host, trBrush(kRotoUIParamEffectBrushToolButtonLabel));
+        effectToolButton->setName(kRotoUIParamEffectBrushToolButton);
+        effectToolButton->setAsToolButton(true);
+        effectToolButton->setEvaluateOnChange(false);
+        effectToolButton->setSecretByDefault(true);
+        effectToolButton->setInViewerContextCanHaveShortcut(true);
+        effectToolButton->setIsPersistent(false);
+        toolbar->addKnob(effectToolButton);
+        effectBrushToolGroup = effectToolButton;
+        mergeToolButton = AppManager::createKnob<KnobGroup>(host, trBrush(kRotoUIParamMergeBrushToolButtonLabel));
+        mergeToolButton->setName(kRotoUIParamMergeBrushToolButton);
+        mergeToolButton->setAsToolButton(true);
+        mergeToolButton->setEvaluateOnChange(false);
+        mergeToolButton->setSecretByDefault(true);
+        mergeToolButton->setInViewerContextCanHaveShortcut(true);
+        mergeToolButton->setIsPersistent(false);
+        toolbar->addKnob(mergeToolButton);
+        mergeBrushToolGroup = mergeToolButton;
+    }
+
+    {
+        KnobButtonPtr tool = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamDrawBrushToolButtonActionLabel));
+        tool->setName(kRotoUIParamDrawBrushToolButtonAction);
+        tool->setHintToolTip(trBrush(kRotoUIParamDrawBrushToolButtonActionHint));
+        tool->setCheckable(true);
+        tool->setDefaultValue(true);
+        tool->setSecretByDefault(true);
+        tool->setEvaluateOnChange(false);
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/brush.svg");
+        tool->setIsPersistent(false);
+        paintToolButton->addKnob(tool);
+        brushAction = tool;
+    }
+    {
+        KnobButtonPtr tool = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamPencilToolButtonActionLabel));
+        tool->setName(kRotoUIParamPencilToolButtonAction);
+        tool->setHintToolTip(trBrush(kRotoUIParamPencilToolButtonAction));
+        tool->setCheckable(true);
+        tool->setDefaultValue(false);
+        tool->setSecretByDefault(true);
+        tool->setEvaluateOnChange(false);
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/pencil.svg");
+        tool->setIsPersistent(false);
+        paintToolButton->addKnob(tool);
+        pencilAction = tool;
+    }
+
+    {
+        KnobButtonPtr tool = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamEraserToolButtonActionLabel));
+        tool->setName(kRotoUIParamEraserToolButtonAction);
+        tool->setHintToolTip(trBrush(kRotoUIParamEraserToolButtonActionHint));
+        tool->setCheckable(true);
+        tool->setDefaultValue(false);
+        tool->setSecretByDefault(true);
+        tool->setEvaluateOnChange(false);
+        tool->setIconLabel(NATRON_ICONS_PATH "lucide/eraser.svg");
+        tool->setIsPersistent(false);
+        paintToolButton->addKnob(tool);
+        eraserAction = tool;
+    }
+    if (allTools) {
+        {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamCloneToolButtonActionLabel));
+            tool->setName(kRotoUIParamCloneToolButtonAction);
+            tool->setHintToolTip(trBrush(kRotoUIParamCloneToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(true);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "natron/clone-stamp.svg");
+            tool->setIsPersistent(false);
+            cloneToolButton->addKnob(tool);
+            cloneAction = tool;
+        }
+        {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamRevealToolButtonAction));
+            tool->setName(kRotoUIParamRevealToolButtonAction);
+            tool->setHintToolTip(trBrush(kRotoUIParamRevealToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/stamp.svg");
+            tool->setIsPersistent(false);
+            cloneToolButton->addKnob(tool);
+            revealAction = tool;
+        }
+
+        {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamBlurToolButtonActionLabel));
+            tool->setName(kRotoUIParamBlurToolButtonAction);
+            tool->setHintToolTip(trBrush(kRotoUIParamBlurToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(true);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/droplet.svg");
+            tool->setIsPersistent(false);
+            effectToolButton->addKnob(tool);
+            blurAction = tool;
+        }
+        {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamSmearToolButtonActionLabel));
+            tool->setName(kRotoUIParamSmearToolButtonAction);
+            tool->setHintToolTip(trBrush(kRotoUIParamSmearToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/pointer.svg");
+            tool->setIsPersistent(false);
+            effectToolButton->addKnob(tool);
+            smearAction = tool;
+        }
+        {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamDodgeToolButtonActionLabel));
+            tool->setName(kRotoUIParamDodgeToolButtonAction);
+            tool->setHintToolTip(trBrush(kRotoUIParamDodgeToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(true);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/sun.svg");
+            tool->setIsPersistent(false);
+            mergeToolButton->addKnob(tool);
+            dodgeAction = tool;
+        }
+        {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(host, trBrush(kRotoUIParamBurnToolButtonActionLabel));
+            tool->setName(kRotoUIParamBurnToolButtonAction);
+            tool->setHintToolTip(trBrush(kRotoUIParamBurnToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/flame.svg");
+            tool->setIsPersistent(false);
+            mergeToolButton->addKnob(tool);
+            burnAction = tool;
+        }
+    }
+} // RotoPaintBrushKnobs::createToolKnobs
+
+void
+RotoPaintBrushKnobs::getSettingShortcuts(std::list<PluginActionShortcut>* shortcuts)
+{
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamPressureOpacity, kRotoUIParamPressureOpacityLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamPressureSize, kRotoUIParamPressureSizeLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamPressureHardness, kRotoUIParamPressureHardnessLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamBuildUp, kRotoUIParamBuildUpLabel));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamResetCloneOffset, kRotoUIParamResetCloneOffsetLabel));
+}
+
+void
+RotoPaintBrushKnobs::getToolShortcuts(std::list<PluginActionShortcut>* shortcuts)
+{
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamPaintBrushToolButton, kRotoUIParamPaintBrushToolButtonLabel, Key_N));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamCloneBrushToolButton, kRotoUIParamCloneBrushToolButtonLabel, Key_C));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamEffectBrushToolButton, kRotoUIParamEffectBrushToolButtonLabel, Key_X));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamMergeBrushToolButton, kRotoUIParamMergeBrushToolButtonLabel, Key_D));
 }
 
 RotoContextPtr
@@ -355,7 +805,7 @@ RotoPaintInteract::checkViewersAreDirectlyConnected()
 bool
 RotoPaintInteract::StrokeConfig::paintsSameItemAs(const StrokeConfig& other) const
 {
-    return (tool == other.tool) && (color[0] == other.color[0]) && (color[1] == other.color[1]) && (color[2] == other.color[2]) && (compOp == other.compOp) && (opacity == other.opacity) && (size == other.size) && (hardness == other.hardness) && (pressureOpacity == other.pressureOpacity) && (pressureSize == other.pressureSize) && (pressureHardness == other.pressureHardness) && (buildUp == other.buildUp) && (timeOffset == other.timeOffset) && (timeOffsetMode == other.timeOffsetMode) && (sourceType == other.sourceType) && (effect == other.effect) && (cloneOffset == other.cloneOffset) && (multiStrokeBreak == other.multiStrokeBreak);
+    return (tool == other.tool) && (color[0] == other.color[0]) && (color[1] == other.color[1]) && (color[2] == other.color[2]) && (compOp == other.compOp) && (opacity == other.opacity) && (size == other.size) && (hardness == other.hardness) && (pressureOpacity == other.pressureOpacity) && (pressureSize == other.pressureSize) && (pressureHardness == other.pressureHardness) && (buildUp == other.buildUp) && (timeOffset == other.timeOffset) && (timeOffsetMode == other.timeOffsetMode) && (sourceType == other.sourceType) && (effect == other.effect) && (cloneOffset == other.cloneOffset) && (multiStrokeBreak == other.multiStrokeBreak) && (targetLayer.lock() == other.targetLayer.lock());
 }
 
 RotoPaintInteract::StrokeConfig
@@ -847,7 +1297,7 @@ RotoPaintInteract::drawPaintToolOverlay(double screenPixelRatio,
 {
     drawStrokePreviews();
 
-    if (p->isPaintByDefault && ((selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleEffectBrush) || (selectedRole == eRotoRoleCloneBrush)) && (selectedTool != eRotoToolOpenBezier)) {
+    if (paintByDefault && ((selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleEffectBrush) || (selectedRole == eRotoRoleCloneBrush)) && (selectedTool != eRotoToolOpenBezier)) {
         Point cursorPos;
         getHost()->getCurrentViewportForOverlays()->getCursorPosition(cursorPos.x, cursorPos.y);
         RectD viewportRect = getHost()->getCurrentViewportForOverlays()->getViewportRect();
@@ -889,7 +1339,7 @@ void
 RotoPaintInteract::onPenDownStarted(PenType pen)
 {
     lastTabletDownTriggeredEraser = false;
-    if (p->isPaintByDefault && ((pen == ePenTypeEraser) || (pen == ePenTypePen) || (pen == ePenTypeCursor))) {
+    if (paintByDefault && ((pen == ePenTypeEraser) || (pen == ePenTypePen) || (pen == ePenTypeCursor))) {
         if ((pen == ePenTypeEraser) && (selectedTool != eRotoToolEraserBrush)) {
             setCurrentTool(eraserAction.lock());
             lastTabletDownTriggeredEraser = true;
@@ -1187,6 +1637,88 @@ RotoPaintInteract::finishStroke()
     });
     paintedStroke->setStrokeFinished();
 } // RotoPaintInteract::finishStroke
+
+bool
+RotoPaintInteract::beginPaintStroke(const RotoLayerPtr& layer,
+                                    const QPointF& pos,
+                                    double pressure,
+                                    double time,
+                                    double timestamp,
+                                    double sizeScale)
+{
+    switch (selectedTool) {
+    case eRotoToolSolidBrush:
+    case eRotoToolEraserBrush:
+    case eRotoToolClone:
+    case eRotoToolReveal:
+    case eRotoToolBlur:
+    case eRotoToolSharpen:
+    case eRotoToolSmear:
+    case eRotoToolDodge:
+    case eRotoToolBurn:
+        break;
+    default:
+
+        return false;
+    }
+
+    StrokeConfig config = captureStrokeConfig();
+    config.frame = (int)time;
+    config.size *= sizeScale;
+    if (layer) {
+        config.layer = layer;
+        config.targetLayer = layer;
+    }
+    paintStrokeOpen = true;
+    if (mustDeferPenEvents()) {
+        DeferredPenEvent event = { DeferredPenEvent::eTypeDown, pos, pressure, timestamp, selectedTool, config };
+        deferredPenEvents.push_back(event);
+    } else {
+        beginStroke(pos, pressure, timestamp, config);
+    }
+
+    return true;
+} // RotoPaintInteract::beginPaintStroke
+
+bool
+RotoPaintInteract::continuePaintStroke(const QPointF& pos,
+                                       double pressure,
+                                       double timestamp)
+{
+    if (!paintStrokeOpen) {
+        return false;
+    }
+    if (mustDeferPenEvents()) {
+        DeferredPenEvent event = { DeferredPenEvent::eTypeMotion, pos, pressure, timestamp, selectedTool, StrokeConfig() };
+        deferredPenEvents.push_back(event);
+
+        return true;
+    }
+
+    return continueStroke(pos, pressure, timestamp);
+}
+
+RotoStrokeItemPtr
+RotoPaintInteract::finishPaintStroke()
+{
+    if (!paintStrokeOpen) {
+        return RotoStrokeItemPtr();
+    }
+    paintStrokeOpen = false;
+    if (mustDeferPenEvents()) {
+        DeferredPenEvent event = { DeferredPenEvent::eTypeUp, QPointF(), 0., 0., selectedTool, StrokeConfig() };
+        deferredPenEvents.push_back(event);
+
+        return RotoStrokeItemPtr();
+    }
+    const RotoStrokeItemPtr painted = strokeBeingPaint;
+    if (!painted) {
+        return RotoStrokeItemPtr();
+    }
+    finishStroke();
+
+    return painted;
+}
 
 void
 RotoPaintInteract::onNeatRenderLanded()

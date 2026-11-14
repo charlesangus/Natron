@@ -55,10 +55,19 @@
 
 #define ROTOPAINT_MASK_INPUT_INDEX 10
 
-#define ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX 5
-
 NATRON_NAMESPACE_ENTER
 
+struct RotoPaintPrivate {
+    bool isPaintByDefault;
+    RotoPaintInteractPtr ui;
+
+    RotoPaintPrivate(RotoPaint* publicInterface,
+                     bool isPaintByDefault)
+        : isPaintByDefault(isPaintByDefault)
+        , ui(RotoPaintInteract::create(publicInterface, isPaintByDefault))
+    {
+    }
+};
 
 std::string
 RotoPaint::getPluginDescription() const
@@ -199,399 +208,16 @@ RotoPaint::initializeKnobs()
 
     // RotoPaint
 
-    KnobBoolPtr multiStroke = AppManager::createKnob<KnobBool>( this, tr(kRotoUIParamMultiStrokeEnabledLabel) );
-    multiStroke->setName(kRotoUIParamMultiStrokeEnabled);
-    multiStroke->setInViewerContextLabel( tr(kRotoUIParamMultiStrokeEnabledLabel) );
-    multiStroke->setHintToolTip( tr(kRotoUIParamMultiStrokeEnabledHint) );
-    multiStroke->setEvaluateOnChange(false);
-    multiStroke->setDefaultValue(true);
-    multiStroke->setSecretByDefault(true);
-    generalPage->addKnob(multiStroke);
-    _imp->ui->multiStrokeEnabled = multiStroke;
-
-    KnobColorPtr colorWheel = AppManager::createKnob<KnobColor>(this, tr(kRotoUIParamColorWheelLabel), 3);
-    colorWheel->setName(kRotoUIParamColorWheel);
-    colorWheel->setHintToolTip( tr(kRotoUIParamColorWheelHint) );
-    colorWheel->setEvaluateOnChange(false);
-    colorWheel->setDefaultValue(1., 0);
-    colorWheel->setDefaultValue(1., 1);
-    colorWheel->setDefaultValue(1., 2);
-    colorWheel->setSecretByDefault(true);
-    generalPage->addKnob(colorWheel);
-    _imp->ui->colorWheelButton = colorWheel;
-
-    KnobChoicePtr blendingModes = AppManager::createKnob<KnobChoice>( this, tr(kRotoUIParamBlendingOpLabel) );
-    blendingModes->setName(kRotoUIParamBlendingOp);
-    blendingModes->setHintToolTip( tr(kRotoUIParamBlendingOpHint) );
-    blendingModes->setEvaluateOnChange(false);
-    blendingModes->setSecretByDefault(true);
-    {
-        std::vector<ChoiceOption> choices;
-        Merge::getOperatorStrings(&choices);
-        blendingModes->populateChoices(choices);
-    }
-    blendingModes->setDefaultValue( (int)eMergeOver );
-    generalPage->addKnob(blendingModes);
-    _imp->ui->compositingOperatorChoice = blendingModes;
-
-
-    KnobDoublePtr opacityKnob = AppManager::createKnob<KnobDouble>( this, tr(kRotoUIParamOpacityLabel) );
-    opacityKnob->setName(kRotoUIParamOpacity);
-    opacityKnob->setInViewerContextLabel( tr(kRotoUIParamOpacityLabel) );
-    opacityKnob->setHintToolTip( tr(kRotoUIParamOpacityHint) );
-    opacityKnob->setEvaluateOnChange(false);
-    opacityKnob->setSecretByDefault(true);
-    opacityKnob->setDefaultValue(1.);
-    opacityKnob->setMinimum(0.);
-    opacityKnob->setMaximum(1.);
-    opacityKnob->disableSlider();
-    generalPage->addKnob(opacityKnob);
-    _imp->ui->opacitySpinbox = opacityKnob;
-
-    KnobButtonPtr pressureOpacity = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamPressureOpacityLabel) );
-    pressureOpacity->setName(kRotoUIParamPressureOpacity);
-    pressureOpacity->setHintToolTip( tr(kRotoUIParamPressureOpacityHint) );
-    pressureOpacity->setEvaluateOnChange(false);
-    pressureOpacity->setCheckable(true);
-    pressureOpacity->setDefaultValue(true);
-    pressureOpacity->setSecretByDefault(true);
-    pressureOpacity->setInViewerContextCanHaveShortcut(true);
-    pressureOpacity->setIconLabel(NATRON_ICONS_PATH "natron/pressure.svg");
-    generalPage->addKnob(pressureOpacity);
-    _imp->ui->pressureOpacityButton = pressureOpacity;
-
-    KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>( this, tr(kRotoUIParamSizeLabel) );
-    sizeKnob->setName(kRotoUIParamSize);
-    sizeKnob->setInViewerContextLabel( tr(kRotoUIParamSizeLabel) );
-    sizeKnob->setHintToolTip( tr(kRotoUIParamSizeHint) );
-    sizeKnob->setEvaluateOnChange(false);
-    sizeKnob->setSecretByDefault(true);
-    sizeKnob->setDefaultValue(25.);
-    sizeKnob->setMinimum(0.);
-    sizeKnob->setMaximum(1000.);
-    sizeKnob->disableSlider();
-    generalPage->addKnob(sizeKnob);
-    _imp->ui->sizeSpinbox = sizeKnob;
-
-    KnobButtonPtr pressureSize = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamPressureSizeLabel) );
-    pressureSize->setName(kRotoUIParamPressureSize);
-    pressureSize->setHintToolTip( tr(kRotoUIParamPressureSizeHint) );
-    pressureSize->setEvaluateOnChange(false);
-    pressureSize->setCheckable(true);
-    pressureSize->setDefaultValue(false);
-    pressureSize->setSecretByDefault(true);
-    pressureSize->setInViewerContextCanHaveShortcut(true);
-    pressureSize->setIconLabel(NATRON_ICONS_PATH "natron/pressure.svg");
-    generalPage->addKnob(pressureSize);
-    _imp->ui->pressureSizeButton = pressureSize;
-
-    KnobDoublePtr hardnessKnob = AppManager::createKnob<KnobDouble>( this, tr(kRotoUIParamHardnessLabel) );
-    hardnessKnob->setName(kRotoUIParamHardness);
-    hardnessKnob->setInViewerContextLabel( tr(kRotoUIParamHardnessLabel) );
-    hardnessKnob->setHintToolTip( tr(kRotoUIParamHardnessHint) );
-    hardnessKnob->setEvaluateOnChange(false);
-    hardnessKnob->setSecretByDefault(true);
-    hardnessKnob->setDefaultValue(.2);
-    hardnessKnob->setMinimum(0.);
-    hardnessKnob->setMaximum(1.);
-    hardnessKnob->disableSlider();
-    generalPage->addKnob(hardnessKnob);
-    _imp->ui->hardnessSpinbox = hardnessKnob;
-
-    KnobButtonPtr pressureHardness = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamPressureHardnessLabel) );
-    pressureHardness->setName(kRotoUIParamPressureHardness);
-    pressureHardness->setHintToolTip( tr(kRotoUIParamPressureHardnessHint) );
-    pressureHardness->setEvaluateOnChange(false);
-    pressureHardness->setCheckable(true);
-    pressureHardness->setDefaultValue(false);
-    pressureHardness->setSecretByDefault(true);
-    pressureHardness->setInViewerContextCanHaveShortcut(true);
-    pressureHardness->setIconLabel(NATRON_ICONS_PATH "natron/pressure.svg");
-    generalPage->addKnob(pressureHardness);
-    _imp->ui->pressureHardnessButton = pressureHardness;
-
-    KnobButtonPtr buildUp = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamBuildUpLabel) );
-    buildUp->setName(kRotoUIParamBuildUp);
-    buildUp->setInViewerContextLabel( tr(kRotoUIParamBuildUpLabel) );
-    buildUp->setHintToolTip( tr(kRotoUIParamBuildUpHint) );
-    buildUp->setEvaluateOnChange(false);
-    buildUp->setCheckable(true);
-    buildUp->setDefaultValue(true);
-    buildUp->setSecretByDefault(true);
-    buildUp->setInViewerContextCanHaveShortcut(true);
-    buildUp->setIconLabel(NATRON_ICONS_PATH "natron/buildup.svg");
-    generalPage->addKnob(buildUp);
-    _imp->ui->buildUpButton = buildUp;
-
-    KnobButtonPtr autoConnectViewer = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamAutoConnectViewerLabel) );
-    autoConnectViewer->setName(kRotoUIParamAutoConnectViewer);
-    autoConnectViewer->setHintToolTip( tr(kRotoUIParamAutoConnectViewerHint) );
-    autoConnectViewer->setEvaluateOnChange(false);
-    autoConnectViewer->setCheckable(true);
-    autoConnectViewer->setDefaultValue(false);
-    autoConnectViewer->setSecretByDefault(true);
-    autoConnectViewer->setInViewerContextCanHaveShortcut(true);
-    autoConnectViewer->setIconLabel(NATRON_ICONS_PATH "lucide/eye.svg", true);
-    autoConnectViewer->setIconLabel(NATRON_ICONS_PATH "lucide/eye-off.svg", false);
-    generalPage->addKnob(autoConnectViewer);
-    _imp->ui->autoConnectViewerButton = autoConnectViewer;
-
-    KnobDoublePtr effectStrength = AppManager::createKnob<KnobDouble>( this, tr(kRotoUIParamEffectLabel) );
-    effectStrength->setName(kRotoUIParamEffect);
-    effectStrength->setInViewerContextLabel( tr(kRotoUIParamEffectLabel) );
-    effectStrength->setHintToolTip( tr(kRotoUIParamEffectHint) );
-    effectStrength->setEvaluateOnChange(false);
-    effectStrength->setSecretByDefault(true);
-    effectStrength->setDefaultValue(15);
-    effectStrength->setMinimum(0.);
-    effectStrength->setMaximum(100.);
-    effectStrength->disableSlider();
-    generalPage->addKnob(effectStrength);
-    _imp->ui->effectSpinBox = effectStrength;
-
-    KnobIntPtr timeOffsetSb = AppManager::createKnob<KnobInt>( this, tr(kRotoUIParamTimeOffsetLabel) );
-    timeOffsetSb->setName(kRotoUIParamTimeOffset);
-    timeOffsetSb->setInViewerContextLabel( tr(kRotoUIParamTimeOffsetLabel) );
-    timeOffsetSb->setHintToolTip( tr(kRotoUIParamTimeOffsetHint) );
-    timeOffsetSb->setEvaluateOnChange(false);
-    timeOffsetSb->setSecretByDefault(true);
-    timeOffsetSb->setDefaultValue(0);
-    timeOffsetSb->disableSlider();
-    generalPage->addKnob(timeOffsetSb);
-    _imp->ui->timeOffsetSpinBox = timeOffsetSb;
-
-    KnobChoicePtr timeOffsetMode = AppManager::createKnob<KnobChoice>( this, tr(kRotoUIParamTimeOffsetLabel) );
-    timeOffsetMode->setName(kRotoUIParamTimeOffset);
-    timeOffsetMode->setHintToolTip( tr(kRotoUIParamTimeOffsetHint) );
-    timeOffsetMode->setEvaluateOnChange(false);
-    timeOffsetMode->setSecretByDefault(true);
-    {
-        std::vector<ChoiceOption> choices;
-        choices.push_back(ChoiceOption("Relative", "", tr("The time offset is a frame number in the source").toStdString()));
-        choices.push_back(ChoiceOption("Absolute", "", tr("The time offset is a relative amount of frames relative to the current frame").toStdString()));
-        timeOffsetMode->populateChoices(choices);
-    }
-    timeOffsetMode->setDefaultValue(0);
-    generalPage->addKnob(timeOffsetMode);
-    _imp->ui->timeOffsetModeChoice = timeOffsetMode;
-
-    KnobChoicePtr sourceType = AppManager::createKnob<KnobChoice>( this, tr(kRotoUIParamSourceTypeLabel) );
-    sourceType->setName(kRotoUIParamSourceType);
-    sourceType->setHintToolTip( tr(kRotoUIParamSourceTypeHint) );
-    sourceType->setEvaluateOnChange(false);
-    sourceType->setSecretByDefault(true);
-    {
-        std::vector<ChoiceOption> choices;
-        choices.push_back(ChoiceOption("foreground", "", ""));
-        choices.push_back(ChoiceOption("background", "", ""));
-        for (int i = 1; i < 10; ++i) {
-            QString str = QString::fromUtf8("background") + QString::number(i + 1);
-            choices.push_back( ChoiceOption(str.toStdString(), "", ""));
-        }
-        sourceType->populateChoices(choices);
-    }
-    sourceType->setDefaultValue(1);
-    generalPage->addKnob(sourceType);
-    _imp->ui->sourceTypeChoice = sourceType;
+    _imp->ui->createSettingKnobs(this, generalPage);
 
     KnobButtonPtr resetCloneOffset = _imp->ui->createResetCloneOffsetKnob(generalPage);
 
-    addKnobToViewerUI(multiStroke);
-    multiStroke->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
-    addKnobToViewerUI(colorWheel);
-    colorWheel->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
-    addKnobToViewerUI(blendingModes);
-    blendingModes->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
-    addKnobToViewerUI(opacityKnob);
-    opacityKnob->setInViewerContextItemSpacing(1);
-    addKnobToViewerUI(pressureOpacity);
-    pressureOpacity->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
-    addKnobToViewerUI(sizeKnob);
-    sizeKnob->setInViewerContextItemSpacing(1);
-    addKnobToViewerUI(pressureSize);
-    pressureSize->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
-    addKnobToViewerUI(hardnessKnob);
-    hardnessKnob->setInViewerContextItemSpacing(1);
-    addKnobToViewerUI(pressureHardness);
-    pressureHardness->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
-    addKnobToViewerUI(buildUp);
-    buildUp->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
-    addKnobToViewerUI(autoConnectViewer);
-    autoConnectViewer->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
-    addKnobToViewerUI(effectStrength);
-    effectStrength->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
-    addKnobToViewerUI(timeOffsetSb);
-    timeOffsetSb->setInViewerContextItemSpacing(1);
-    addKnobToViewerUI(timeOffsetMode);
-    addKnobToViewerUI(sourceType);
-    addKnobToViewerUI(resetCloneOffset);
+    _imp->ui->addSettingKnobsToViewerUI(this, resetCloneOffset);
 
     KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect);
     _imp->ui->createObjectSelectKnobs(generalPage);
 
-    KnobGroupPtr paintToolButton = AppManager::createKnob<KnobGroup>( this, tr(kRotoUIParamPaintBrushToolButtonLabel) );
-    paintToolButton->setName(kRotoUIParamPaintBrushToolButton);
-    paintToolButton->setAsToolButton(true);
-    paintToolButton->setEvaluateOnChange(false);
-    paintToolButton->setSecretByDefault(true);
-    paintToolButton->setInViewerContextCanHaveShortcut(true);
-    paintToolButton->setIsPersistent(false);
-    toolbar->addKnob(paintToolButton);
-    _imp->ui->paintBrushToolGroup = paintToolButton;
-
-    KnobGroupPtr cloneToolButton, effectToolButton, mergeToolButton;
-    if (_imp->isPaintByDefault) {
-        cloneToolButton = AppManager::createKnob<KnobGroup>( this, tr(kRotoUIParamCloneBrushToolButtonLabel) );
-        cloneToolButton->setName(kRotoUIParamCloneBrushToolButton);
-        cloneToolButton->setAsToolButton(true);
-        cloneToolButton->setEvaluateOnChange(false);
-        cloneToolButton->setSecretByDefault(true);
-        cloneToolButton->setInViewerContextCanHaveShortcut(true);
-        cloneToolButton->setIsPersistent(false);
-        toolbar->addKnob(cloneToolButton);
-        _imp->ui->cloneBrushToolGroup = cloneToolButton;
-        effectToolButton = AppManager::createKnob<KnobGroup>( this, tr(kRotoUIParamEffectBrushToolButtonLabel) );
-        effectToolButton->setName(kRotoUIParamEffectBrushToolButton);
-        effectToolButton->setAsToolButton(true);
-        effectToolButton->setEvaluateOnChange(false);
-        effectToolButton->setSecretByDefault(true);
-        effectToolButton->setInViewerContextCanHaveShortcut(true);
-        effectToolButton->setIsPersistent(false);
-        toolbar->addKnob(effectToolButton);
-        _imp->ui->effectBrushToolGroup = effectToolButton;
-        mergeToolButton = AppManager::createKnob<KnobGroup>( this, tr(kRotoUIParamMergeBrushToolButtonLabel) );
-        mergeToolButton->setName(kRotoUIParamMergeBrushToolButton);
-        mergeToolButton->setAsToolButton(true);
-        mergeToolButton->setEvaluateOnChange(false);
-        mergeToolButton->setSecretByDefault(true);
-        mergeToolButton->setInViewerContextCanHaveShortcut(true);
-        mergeToolButton->setIsPersistent(false);
-        toolbar->addKnob(mergeToolButton);
-        _imp->ui->mergeBrushToolGroup = mergeToolButton;
-    }
-
-    {
-        KnobButtonPtr tool = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamDrawBrushToolButtonActionLabel) );
-        tool->setName(kRotoUIParamDrawBrushToolButtonAction);
-        tool->setHintToolTip( tr(kRotoUIParamDrawBrushToolButtonActionHint) );
-        tool->setCheckable(true);
-        tool->setDefaultValue(true);
-        tool->setSecretByDefault(true);
-        tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_ICONS_PATH "lucide/brush.svg");
-        tool->setIsPersistent(false);
-        paintToolButton->addKnob(tool);
-        _imp->ui->brushAction = tool;
-    }
-    {
-        KnobButtonPtr tool = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamPencilToolButtonActionLabel) );
-        tool->setName(kRotoUIParamPencilToolButtonAction);
-        tool->setHintToolTip( tr(kRotoUIParamPencilToolButtonAction) );
-        tool->setCheckable(true);
-        tool->setDefaultValue(false);
-        tool->setSecretByDefault(true);
-        tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_ICONS_PATH "lucide/pencil.svg");
-        tool->setIsPersistent(false);
-        paintToolButton->addKnob(tool);
-        _imp->ui->pencilAction = tool;
-    }
-
-    {
-        KnobButtonPtr tool = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamEraserToolButtonActionLabel) );
-        tool->setName(kRotoUIParamEraserToolButtonAction);
-        tool->setHintToolTip( tr(kRotoUIParamEraserToolButtonActionHint) );
-        tool->setCheckable(true);
-        tool->setDefaultValue(false);
-        tool->setSecretByDefault(true);
-        tool->setEvaluateOnChange(false);
-        tool->setIconLabel(NATRON_ICONS_PATH "lucide/eraser.svg");
-        tool->setIsPersistent(false);
-        paintToolButton->addKnob(tool);
-        _imp->ui->eraserAction = tool;
-    }
-    if (_imp->isPaintByDefault) {
-        {
-            KnobButtonPtr tool = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamCloneToolButtonActionLabel) );
-            tool->setName(kRotoUIParamCloneToolButtonAction);
-            tool->setHintToolTip( tr(kRotoUIParamCloneToolButtonActionHint) );
-            tool->setCheckable(true);
-            tool->setDefaultValue(true);
-            tool->setSecretByDefault(true);
-            tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_ICONS_PATH "natron/clone-stamp.svg");
-            tool->setIsPersistent(false);
-            cloneToolButton->addKnob(tool);
-            _imp->ui->cloneAction = tool;
-        }
-        {
-            KnobButtonPtr tool = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamRevealToolButtonAction) );
-            tool->setName(kRotoUIParamRevealToolButtonAction);
-            tool->setHintToolTip( tr(kRotoUIParamRevealToolButtonActionHint) );
-            tool->setCheckable(true);
-            tool->setDefaultValue(false);
-            tool->setSecretByDefault(true);
-            tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_ICONS_PATH "lucide/stamp.svg");
-            tool->setIsPersistent(false);
-            cloneToolButton->addKnob(tool);
-            _imp->ui->revealAction = tool;
-        }
-
-
-        {
-            KnobButtonPtr tool = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamBlurToolButtonActionLabel) );
-            tool->setName(kRotoUIParamBlurToolButtonAction);
-            tool->setHintToolTip( tr(kRotoUIParamBlurToolButtonActionHint) );
-            tool->setCheckable(true);
-            tool->setDefaultValue(true);
-            tool->setSecretByDefault(true);
-            tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_ICONS_PATH "lucide/droplet.svg");
-            tool->setIsPersistent(false);
-            effectToolButton->addKnob(tool);
-            _imp->ui->blurAction = tool;
-        }
-        {
-            KnobButtonPtr tool = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamSmearToolButtonActionLabel) );
-            tool->setName(kRotoUIParamSmearToolButtonAction);
-            tool->setHintToolTip( tr(kRotoUIParamSmearToolButtonActionHint) );
-            tool->setCheckable(true);
-            tool->setDefaultValue(false);
-            tool->setSecretByDefault(true);
-            tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_ICONS_PATH "lucide/pointer.svg");
-            tool->setIsPersistent(false);
-            effectToolButton->addKnob(tool);
-            _imp->ui->smearAction = tool;
-        }
-        {
-            KnobButtonPtr tool = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamDodgeToolButtonActionLabel) );
-            tool->setName(kRotoUIParamDodgeToolButtonAction);
-            tool->setHintToolTip( tr(kRotoUIParamDodgeToolButtonActionHint) );
-            tool->setCheckable(true);
-            tool->setDefaultValue(true);
-            tool->setSecretByDefault(true);
-            tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_ICONS_PATH "lucide/sun.svg");
-            tool->setIsPersistent(false);
-            mergeToolButton->addKnob(tool);
-            _imp->ui->dodgeAction = tool;
-        }
-        {
-            KnobButtonPtr tool = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamBurnToolButtonActionLabel) );
-            tool->setName(kRotoUIParamBurnToolButtonAction);
-            tool->setHintToolTip( tr(kRotoUIParamBurnToolButtonActionHint) );
-            tool->setCheckable(true);
-            tool->setDefaultValue(false);
-            tool->setSecretByDefault(true);
-            tool->setEvaluateOnChange(false);
-            tool->setIconLabel(NATRON_ICONS_PATH "lucide/flame.svg");
-            tool->setIsPersistent(false);
-            mergeToolButton->addKnob(tool);
-            _imp->ui->burnAction = tool;
-        }
-    } // if (_imp->isPaintByDefault) {
+    _imp->ui->createToolKnobs(this, toolbar, _imp->isPaintByDefault);
 
     _imp->ui->createRightClickMenuKnobs(generalPage);
 
@@ -614,17 +240,10 @@ RotoPaint::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
 {
     RotoCurveInteract::getViewerButtonShortcuts(shortcuts);
 
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamPressureOpacity, kRotoUIParamPressureOpacityLabel) );
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamPressureSize, kRotoUIParamPressureSizeLabel) );
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamPressureHardness, kRotoUIParamPressureHardnessLabel) );
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamBuildUp, kRotoUIParamBuildUpLabel) );
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamResetCloneOffset, kRotoUIParamResetCloneOffsetLabel) );
+    RotoPaintBrushKnobs::getSettingShortcuts(shortcuts);
 
     RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect, shortcuts);
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamPaintBrushToolButton, kRotoUIParamPaintBrushToolButtonLabel, Key_N) );
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamCloneBrushToolButton, kRotoUIParamCloneBrushToolButtonLabel, Key_C) );
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamEffectBrushToolButton, kRotoUIParamEffectBrushToolButtonLabel, Key_X) );
-    shortcuts->push_back(PluginActionShortcut(kRotoUIParamMergeBrushToolButton, kRotoUIParamMergeBrushToolButtonLabel, Key_D));
+    RotoPaintBrushKnobs::getToolShortcuts(shortcuts);
 
     RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
 }

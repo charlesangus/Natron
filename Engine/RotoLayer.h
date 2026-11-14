@@ -102,6 +102,18 @@ public:
     ///MT-safe
     std::list<RotoItemPtr> getItems_mt_safe() const;
 
+    /**
+     * @brief Adds a knob the hosting effect owns on this layer: it is saved, copied and hashed
+     * with the layer, and a change to it re-renders the host. Call from
+     * EffectInstance::onCurveLayerCreated() only, before the layer is loaded or cloned into.
+     **/
+    void addHostKnob(const KnobIPtr& knob);
+
+    // Only added by addHostKnob(), before the layer is shared, so reading them is MT-safe.
+    const std::list<KnobIPtr>& getHostKnobs() const;
+
+    KnobIPtr getHostKnobByName(const std::string& name) const;
+
 protected:
     virtual void appendLiveContentHash(ContentHasher& h) const OVERRIDE;
 

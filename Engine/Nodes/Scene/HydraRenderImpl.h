@@ -384,6 +384,10 @@ public:
         int samples = -1;
         int maxSamples = 0;
         std::uint64_t restarts = 0;
+        // The engines made for the renderer. Each one restarts the render without an edit, and one
+        // is made again when the delegate does not show it restarted within a bound, as a loaded
+        // machine may not.
+        std::uint64_t engines = 0;
         std::uint64_t frames = 0;
         // Why the delegate cannot render, empty if it can.
         std::string error;

@@ -104,9 +104,12 @@ NATRON_NAMESPACE_ENTER
 static bool
 isDefaultPaintNode(const NodePtr& node)
 {
-    RotoPaint* isRotoNode = dynamic_cast<RotoPaint*>(node->getEffectInstance().get());
+    EffectInstance* effect = node->getEffectInstance().get();
+    if (RotoPaint* isRotoNode = dynamic_cast<RotoPaint*>(effect)) {
+        return isRotoNode->isDefaultBehaviourPaintContext();
+    }
 
-    return isRotoNode && isRotoNode->isDefaultBehaviourPaintContext();
+    return effect->getCurveContextKind() == EffectInstance::eCurveContextKindPaint;
 }
 
 RotoContext::RotoContext(const NodePtr& node)
@@ -3210,7 +3213,7 @@ RotoContext::refreshRotoPaintTree()
     // fill the A inputs in render order, and a full Merge feeds the B input of the next.
     std::vector<std::vector<NodePtr>> wanted;
     if (canConcatenate) {
-        NodePtr rotopaintNodeInput = getNode()->getInput(0);
+        NodePtr rotopaintNodeInput = getNode()->getEffectInstance()->getPaintTreeSource();
         std::size_t inputNb = 0;
         for (std::list<RotoDrawableItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
             NodePtr effectNode = (*it)->getEffectNode();

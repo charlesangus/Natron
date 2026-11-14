@@ -621,6 +621,35 @@ public:
     virtual CurveContextKindEnum getCurveContextKind() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The node the bottom of a Paint host's stroke tree merges over: input 0 by default.
+     * A host painting over an image of its own overrides it. Null for no source.
+     **/
+    virtual NodePtr getPaintTreeSource() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The node the bottom of the tree holding item merges over, which an Eraser stroke
+     * restores: getPaintTreeSource() by default. A host whose strokes form several trees, each
+     * over its own image, overrides it along with isPaintTreeRoot().
+     **/
+    virtual NodePtr getPaintTreeSourceFor(const RotoDrawableItem& item) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The node a Clone or Reveal stroke reads when its Source is the host's input inputNb
+     * rather than the strokes below it: that input by default.
+     **/
+    virtual NodePtr getPaintTreeRevealSource(const RotoDrawableItem& item, int inputNb) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether the strokes under layer form a tree of their own, merged over
+     * getPaintTreeSourceFor(item) rather than over the strokes below layer. False by default: every
+     * stroke of the context is one tree.
+     **/
+    virtual bool isPaintTreeRoot(const RotoLayer& /*layer*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
      * @brief The columns and context-menu actions a curve host adds to its panel's curve list, or
      * null for none. Owned by the effect. Only read when getCurveContextKind() is not None.
      **/
@@ -641,6 +670,15 @@ public:
      * are then saved, copied and hashed with the item's own. Main thread.
      **/
     virtual void onCurveItemCreated(const RotoDrawableItemPtr& /*item*/)
+    {
+    }
+
+    /**
+     * @brief Called by any curve context when a layer other than its base layer is built, before
+     * it is cloned or loaded into: the host may add per-layer knobs with RotoLayer::addHostKnob(),
+     * which are then saved, copied and hashed with the layer. Main thread.
+     **/
+    virtual void onCurveLayerCreated(const RotoLayerPtr& /*layer*/)
     {
     }
 

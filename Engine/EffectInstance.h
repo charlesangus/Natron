@@ -1974,7 +1974,6 @@ public:
                       const ImageBitDepthEnum* textureDepth,
                       RectI* roiPixel,
                       Transform::Matrix3x3Ptr* transform = 0) WARN_UNUSED_RETURN;
-    virtual void aboutToRestoreDefaultValues() OVERRIDE FINAL;
     virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
     /**

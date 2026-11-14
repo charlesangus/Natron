@@ -471,7 +471,7 @@ Gui::removeViewerTab(ViewerTab* tab,
     NodeGroup* isGrp = 0;
     NodeCollectionPtr collection;
     if ( tab->getInternalNode() && tab->getInternalNode()->getNode() ) {
-        NodeCollectionPtr collection = tab->getInternalNode()->getNode()->getGroup();
+        collection = tab->getInternalNode()->getNode()->getGroup();
         isGrp = dynamic_cast<NodeGroup*>( collection.get() );
     }
 
@@ -490,7 +490,10 @@ Gui::removeViewerTab(ViewerTab* tab,
 
     ViewerTab* lastSelectedViewer = graph->getLastSelectedViewer();
 
-    if (lastSelectedViewer == tab) {
+    ViewerTab* recentViewer = (lastSelectedViewer == tab) ? graph->mostRecentlyFocusedViewer(tab) : 0;
+    if (recentViewer) {
+        graph->setLastSelectedViewer(recentViewer);
+    } else if (lastSelectedViewer == tab) {
         bool foundOne = false;
         NodesList nodes;
         if (collection) {
@@ -674,6 +677,64 @@ Gui::getSceneGraphPanels() const
         panels.push_front(_imp->_sceneGraphPanel);
     }
     return panels;
+}
+
+SceneGraphPanel*
+Gui::showPrimsInSceneGraph(ViewerTab* viewer, const QStringList& paths)
+{
+    if (!viewer || paths.isEmpty()) {
+        return nullptr;
+    }
+    if (getActiveViewer() != viewer) {
+        setActiveViewer(viewer);
+    }
+    const std::list<SceneGraphPanel*> panels = getSceneGraphPanels();
+    SceneGraphPanel* target = nullptr;
+    for (SceneGraphPanel* panel : panels) {
+        if (panel->followsViewer(viewer) && panel->getParentPane()) {
+            target = panel;
+            break;
+        }
+    }
+    if (!target) {
+        // A closed panel that follows the viewer is brought back rather than adding another.
+        for (SceneGraphPanel* panel : panels) {
+            if (panel->followsViewer(viewer) && !panel->getParentPane()) {
+                target = panel;
+                break;
+            }
+        }
+    }
+    TabWidget* pane = target ? target->getParentPane() : nullptr;
+    // Raised in the viewer's own pane, the panel would hide the viewer and the bar that asked.
+    TabWidget* viewerPane = viewer->getParentPane();
+    if (!pane) {
+        for (TabWidget* other : getPanes()) {
+            if (other && (other != viewerPane)) {
+                pane = other;
+                break;
+            }
+        }
+    }
+    if (!pane) {
+        pane = viewerPane;
+    }
+    if (!pane) {
+        return nullptr;
+    }
+    if (!target) {
+        target = addNewSceneGraphPanel();
+    }
+    if (!target->getParentPane()) {
+        pane->appendTab(target, target);
+        getApp()->triggerAutoSave();
+    }
+    if (pane != viewerPane) {
+        pane->setCurrentWidget(target);
+    }
+    target->revealPaths(paths);
+
+    return target;
 }
 
 void

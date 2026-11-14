@@ -66,13 +66,6 @@ const std::size_t kMaxPendingPaths = 4096;
 // Above this many children, finding a child by name goes through a map.
 const std::size_t kRowMapThreshold = 32;
 
-Usd_PrimFlagsPredicate
-childPredicate()
-{
-    // Unloaded prims are shown, so a payload can be found before it is loaded.
-    return UsdTraverseInstanceProxies(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract);
-}
-
 // Unfiltered, as a run of prims the walk rejects is as long to skip as a run it lists: the
 // predicate is applied by the caller, where the budget can be checked between prims.
 UsdPrim
@@ -139,34 +132,6 @@ readPrimData(const UsdPrim& prim)
     return data;
 }
 
-QIcon
-iconForType(const QString& type)
-{
-    static const QIcon camera(QString::fromUtf8(":/Resources/Images/NativeNodes/USDCamera.png"));
-    static const QIcon light(QString::fromUtf8(":/Resources/Images/NativeNodes/USDLight.png"));
-    static const QIcon material(QString::fromUtf8(":/Resources/Images/NativeNodes/USDMaterial.png"));
-    static const QIcon xform(QString::fromUtf8(":/Resources/Images/NativeNodes/USDXformPrim.png"));
-    static const QIcon scope(QString::fromUtf8(":/Resources/Images/NativeNodes/USDScopePrim.png"));
-
-    if (type == QLatin1String("Camera")) {
-        return camera;
-    }
-    if (type.endsWith(QLatin1String("Light"))) {
-        return light;
-    }
-    if ((type == QLatin1String("Material")) || (type == QLatin1String("Shader")) || (type == QLatin1String("NodeGraph"))) {
-        return material;
-    }
-    if (type == QLatin1String("Xform")) {
-        return xform;
-    }
-    if (type == QLatin1String("Scope")) {
-        return scope;
-    }
-
-    return QIcon();
-}
-
 QVariant
 columnHeader(int section,
              Qt::Orientation orientation,
@@ -187,20 +152,6 @@ columnHeader(int section,
     default:
         return QVariant();
     }
-}
-
-QMimeData*
-mimeDataOfPaths(const QStringList& paths)
-{
-    if (paths.isEmpty()) {
-        return nullptr;
-    }
-    QMimeData* mime = new QMimeData;
-    const QString joined = paths.join(QLatin1Char('\n'));
-    mime->setData(SceneGraphModel::primPathsMimeType(), joined.toUtf8());
-    mime->setText(joined);
-
-    return mime;
 }
 
 // Collects what the stage's edits resynced, on whichever thread edits the stage.
@@ -893,10 +844,59 @@ struct SceneGraphModel::Implementation {
     }
 };
 
+Usd_PrimFlagsPredicate
+childPredicate()
+{
+    // Unloaded prims are shown, so a payload can be found before it is loaded.
+    return UsdTraverseInstanceProxies(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract);
+}
+
+QIcon
+iconForType(const QString& type)
+{
+    static const QIcon camera(QString::fromUtf8(":/Resources/Images/NativeNodes/USDCamera.png"));
+    static const QIcon light(QString::fromUtf8(":/Resources/Images/NativeNodes/USDLight.png"));
+    static const QIcon material(QString::fromUtf8(":/Resources/Images/NativeNodes/USDMaterial.png"));
+    static const QIcon xform(QString::fromUtf8(":/Resources/Images/NativeNodes/USDXformPrim.png"));
+    static const QIcon scope(QString::fromUtf8(":/Resources/Images/NativeNodes/USDScopePrim.png"));
+
+    if (type == QLatin1String("Camera")) {
+        return camera;
+    }
+    if (type.endsWith(QLatin1String("Light"))) {
+        return light;
+    }
+    if ((type == QLatin1String("Material")) || (type == QLatin1String("Shader")) || (type == QLatin1String("NodeGraph"))) {
+        return material;
+    }
+    if (type == QLatin1String("Xform")) {
+        return xform;
+    }
+    if (type == QLatin1String("Scope")) {
+        return scope;
+    }
+
+    return QIcon();
+}
+
 QString
 SceneGraphModel::primPathsMimeType()
 {
     return QString::fromUtf8("application/x-natron-prim-paths");
+}
+
+QMimeData*
+SceneGraphModel::mimeDataOfPaths(const QStringList& paths)
+{
+    if (paths.isEmpty()) {
+        return nullptr;
+    }
+    QMimeData* mime = new QMimeData;
+    const QString joined = paths.join(QLatin1Char('\n'));
+    mime->setData(primPathsMimeType(), joined.toUtf8());
+    mime->setText(joined);
+
+    return mime;
 }
 
 SceneGraphModel::SceneGraphModel(QObject* parent)
@@ -953,6 +953,12 @@ bool
 SceneGraphModel::hasOwedReads() const
 {
     return _imp->settleOwed || !_imp->owedFetches.empty();
+}
+
+bool
+SceneGraphModel::isChanging() const
+{
+    return _imp->changing > 0;
 }
 
 void
@@ -1647,7 +1653,7 @@ SceneGraphModel::mimeData(const QModelIndexList& indexes) const
         }
     }
 
-    return mimeDataOfPaths(paths);
+    return SceneGraphModel::mimeDataOfPaths(paths);
 }
 
 Qt::DropActions
@@ -1902,7 +1908,7 @@ SceneChangedHereModel::mimeData(const QModelIndexList& indexes) const
         }
     }
 
-    return mimeDataOfPaths(paths);
+    return SceneGraphModel::mimeDataOfPaths(paths);
 }
 
 Qt::DropActions

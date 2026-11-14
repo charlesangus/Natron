@@ -29,6 +29,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <unordered_set>
 
 #include <QAction>
 #include <QCoreApplication>
@@ -37,10 +38,14 @@
 #include <QPointF>
 #include <QPointer>
 
+#include "Global/PythonUtils.h"
+
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Settings.h"
 
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -102,9 +107,93 @@ pythonStringLiteral(const QString& s)
     return "'" + escaped + "'";
 }
 
+// The adapter module bootstrap() imported, held for the life of the process.
+PyObject* g_adapter = nullptr;
+
+// Reads and empties one of the stream catchers the GUI session puts on sys.stdout and sys.stderr.
+std::string
+takeCaught(const char* catcher)
+{
+    std::string text;
+    PyObject* stream = PyObject_GetAttrString(NATRON_PYTHON_NAMESPACE::getMainModule(), catcher);
+
+    if (!stream) {
+        PyErr_Clear();
+
+        return text;
+    }
+    PyObject* value = PyObject_GetAttrString(stream, "value");
+    if (value) {
+        text = NATRON_PYTHON_NAMESPACE::PyStringToStdString(value);
+        Py_DECREF(value);
+        PyObject* empty = PyUnicode_FromString("");
+        PyObject_SetAttrString(stream, "value", empty);
+        Py_DECREF(empty);
+    } else {
+        PyErr_Clear();
+    }
+    Py_DECREF(stream);
+
+    return text;
+}
+
+// Hands what a call into the adapter printed, and its exception if it raised one, to the Script
+// Editor of app when there is one, and the exception to stderr. The GIL must be held.
+void
+reportAdapterCall(const char* function,
+                  bool failed,
+                  const GuiAppInstancePtr& app)
+{
+    if (failed) {
+        PyErr_Print();
+    }
+    const std::string err = takeCaught("catchErr");
+    const std::string output = takeCaught("catchOut");
+    if (app && !output.empty()) {
+        app->appendToScriptEditor(output);
+    }
+    if (failed || !err.empty()) {
+        const std::string message = std::string("tabtabtab_natron.") + function + "() failed:\n" + err;
+        if (app) {
+            app->appendToScriptEditor(message);
+        }
+        std::cerr << "Tab menu: " << message << std::endl;
+    }
+}
+
+// Calls the adapter's function with args, a new reference or null for none, which it releases. The
+// function is looked up per call so that a script may replace it. The GIL must be held.
+void
+callAdapter(const char* function,
+            PyObject* args,
+            const GuiAppInstancePtr& app)
+{
+    if (!g_adapter) {
+        Py_XDECREF(args);
+
+        return;
+    }
+    PyObject* callable = PyObject_GetAttrString(g_adapter, function);
+    PyObject* result = callable ? PyObject_CallObject(callable, args) : nullptr;
+    Py_XDECREF(callable);
+    Py_XDECREF(args);
+    Py_XDECREF(result);
+    reportAdapterCall(function, !result, app);
+}
+
+// The menu's filter, as the adapter's launch() takes it; see tabtabtab_natron.launch().
+struct MenuFilter {
+    // "selectedKind" or "inputKind"; null for no filter.
+    const char* kindKey = nullptr;
+    DataKindEnum kind = eDataKindImage;
+    // Whether the filter says needsPrimPathKnob, true or false.
+    bool withPrimPathKnob = false;
+    bool needsPrimPathKnob = false;
+};
+
 void
 openMenu(NodeGraph* graph,
-         const std::string& pythonContext)
+         const MenuFilter& filter)
 {
     Gui* gui = graph->getGui();
     GuiAppInstancePtr app = gui ? gui->getApp() : GuiAppInstancePtr();
@@ -112,16 +201,29 @@ openMenu(NodeGraph* graph,
         return;
     }
 
-    std::string script = "import tabtabtab_natron\n";
-    script += "tabtabtab_natron.launch(" + app->getAppIDString() + pythonContext + ")\n";
-    std::string err;
-    std::string output;
-    if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output)) {
-        app->appendToScriptEditor(err);
-        std::cerr << "Tab menu: " << err << std::endl;
-    } else if (!output.empty()) {
-        app->appendToScriptEditor(output);
+    PythonGILLocker pgl;
+    PyObject* appObject = PyObject_GetAttrString(NATRON_PYTHON_NAMESPACE::getMainModule(), app->getAppIDString().c_str());
+    if (!appObject) {
+        reportAdapterCall("launch", true, app);
+
+        return;
     }
+    PyObject* args;
+    if (filter.kindKey) {
+        PyObject* context = PyDict_New();
+        PyObject* kind = PyUnicode_FromString(TabMenuBridge::dataKindKey(filter.kind).toStdString().c_str());
+        PyDict_SetItemString(context, filter.kindKey, kind);
+        Py_DECREF(kind);
+        if (filter.withPrimPathKnob) {
+            PyDict_SetItemString(context, "needsPrimPathKnob", filter.needsPrimPathKnob ? Py_True : Py_False);
+        }
+        args = PyTuple_Pack(2, appObject, context);
+        Py_DECREF(context);
+    } else {
+        args = PyTuple_Pack(1, appObject);
+    }
+    Py_DECREF(appObject);
+    callAdapter("launch", args, app);
 }
 
 // The kind every selected node outputs, false when the selection is empty, mixed, or holds a node
@@ -195,6 +297,38 @@ private:
     UndoHistory* _history;
 };
 
+// The first node of after that is not in before, where after is a later copy of the same
+// collection's list. A collection only appends, so the new nodes follow before's last one unless
+// the action removed it.
+NodePtr
+firstAddedNode(const NodesList& before,
+               const NodesList& after)
+{
+    if (before.empty()) {
+        return after.empty() ? NodePtr() : after.front();
+    }
+    const NodePtr& last = before.back();
+    for (NodesList::const_reverse_iterator it = after.rbegin(); it != after.rend(); ++it) {
+        if (*it == last) {
+            NodesList::const_iterator next = it.base();
+
+            return (next == after.end()) ? NodePtr() : *next;
+        }
+    }
+    std::unordered_set<const Node*> existing;
+    existing.reserve(before.size());
+    for (const NodePtr& node : before) {
+        existing.insert(node.get());
+    }
+    for (const NodePtr& node : after) {
+        if (existing.find(node.get()) == existing.end()) {
+            return node;
+        }
+    }
+
+    return NodePtr();
+}
+
 // Triggers action on graph as context says; see TabMenuBridge::launch(NodeGraph*, const LaunchContext&).
 // Without a graph, or once its app or group is gone, the action is triggered as is.
 void
@@ -223,14 +357,7 @@ triggerInContext(QAction* action,
         NodesMenuArgsDecoratorScope decorator(context.decorateArgs);
         action->trigger();
     }
-    NodePtr created;
-    const NodesList after = collection->getNodes();
-    for (const NodePtr& node : after) {
-        if (std::find(before.begin(), before.end(), node) == before.end()) {
-            created = node;
-            break;
-        }
-    }
+    const NodePtr created = firstAddedNode(before, collection->getNodes());
     if (created && context.created) {
         context.created(created);
     }
@@ -312,12 +439,11 @@ launch(NodeGraph* graph)
     g_target = graph;
     g_scenePos = graph->mapToScene(graph->mapFromGlobal(QCursor::pos()));
     g_context.reset();
-    DataKindEnum kind = eDataKindImage;
-    if (selectedOutputKind(graph, &kind)) {
-        openMenu(graph, ", {'selectedKind': " + pythonStringLiteral(dataKindKey(kind)) + "}");
-    } else {
-        openMenu(graph, std::string());
+    MenuFilter filter;
+    if (selectedOutputKind(graph, &filter.kind)) {
+        filter.kindKey = "selectedKind";
     }
+    openMenu(graph, filter);
 }
 
 void
@@ -331,8 +457,11 @@ launch(NodeGraph* graph,
     g_target = graph;
     g_scenePos = graph->mapToScene(graph->mapFromGlobal(QCursor::pos()));
     g_context = std::make_shared<LaunchContext>(context);
-    std::string filter = ", {'inputKind': " + pythonStringLiteral(dataKindKey(context.inputKind));
-    filter += std::string(", 'needsPrimPathKnob': ") + (context.needsPrimPathKnob ? "True" : "False") + "}";
+    MenuFilter filter;
+    filter.kindKey = "inputKind";
+    filter.kind = context.inputKind;
+    filter.withPrimPathKnob = true;
+    filter.needsPrimPathKnob = context.needsPrimPathKnob;
     openMenu(graph, filter);
 }
 
@@ -357,7 +486,46 @@ bootstrap()
     if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, 0)) {
         std::cerr << "Tab menu: could not import tabtabtab_natron from " << dir.toStdString() << ":\n"
                   << err << std::endl;
+
+        return;
     }
+    {
+        PythonGILLocker pgl;
+        if (g_adapter) {
+            return;
+        }
+        g_adapter = PyImport_ImportModule("tabtabtab_natron");
+        if (!g_adapter) {
+            reportAdapterCall("import", true, GuiAppInstancePtr());
+
+            return;
+        }
+        callAdapter("schedule_warm_up", nullptr, GuiAppInstancePtr());
+    }
+
+    QObject::connect(appPTR->getCurrentSettings().get(), &Settings::settingChanged, appPTR, [](KnobI* knob) {
+        if (!knob) {
+            return;
+        }
+        const std::string& name = knob->getName();
+        if ((name == "tabMenuSearchModes") || (name == "tabMenuScroll")) {
+            PythonGILLocker pgl;
+            callAdapter("invalidate_preferences", nullptr, GuiAppInstancePtr());
+        }
+    });
+    QObject::connect(appPTR, &GuiApplicationManager::nodesMenuRebuilt, appPTR, []() {
+        invalidateItems();
+    });
+}
+
+void
+invalidateItems()
+{
+    if (!g_adapter) {
+        return;
+    }
+    PythonGILLocker pgl;
+    callAdapter("invalidate_items", nullptr, GuiAppInstancePtr());
 }
 } // namespace TabMenuBridge
 

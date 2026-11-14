@@ -151,17 +151,14 @@ USDRead::initializeKnobs()
     filename->setName(kUSDReadParamFile);
     filename->setHintToolTip(tr("The USD file (.usd, .usda, .usdc, .usdz) or Alembic file (.abc) to read."));
     filename->setFileExtensions({ "usd", "usda", "usdc", "usdz", "abc" });
-    filename->setShowsReloadButton(false);
-    filename->setAddNewLine(false);
     page->addKnob(filename);
     _filename = filename;
 
-    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
-    reload->setName(kUSDReadParamReload);
-    reload->setHintToolTip(tr("Reads the file again, and every file it sublayers, references or loads as a "
-                              "payload, so files changed on disk are what the node outputs. Each changed file is "
-                              "read again in place: every scene using it, the viewer's included, shows the new "
-                              "content. Renders reading scenes are stopped or waited for first."));
+    KnobButtonPtr reload = filename->createReloadButton(kUSDReadParamReload,
+                                                        tr("Reads the file again, and every file it sublayers, references or loads as a "
+                                                           "payload, so files changed on disk are what the node outputs. Each changed file is "
+                                                           "read again in place: every scene using it, the viewer's included, shows the new "
+                                                           "content. Renders reading scenes are stopped or waited for first."));
     page->addKnob(reload);
     _reload = reload;
 

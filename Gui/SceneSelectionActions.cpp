@@ -867,6 +867,42 @@ namespace {
         }
     };
 
+    // The source's callbacks only hold the search weakly, so something must own it while its
+    // scene is read on the source's thread. A child of the Gui, so it ends before the app does.
+    class MatchSearchOwner
+        : public QObject {
+    public:
+        explicit MatchSearchOwner(QObject* parent)
+            : QObject(parent)
+        {
+        }
+
+        std::shared_ptr<MatchSearch> search;
+    };
+
+    QPointer<MatchSearchOwner> g_matchSearchOwner;
+
+    void
+    ownMatchSearch(Gui* gui,
+                   const std::shared_ptr<MatchSearch>& search)
+    {
+        delete g_matchSearchOwner.data();
+        MatchSearchOwner* owner = new MatchSearchOwner(gui);
+        owner->search = search;
+        g_matchSearchOwner = owner;
+    }
+
+    // Deferred, since a search ends inside its source's callbacks, which the source must outlive.
+    void
+    releaseMatchSearch(const std::shared_ptr<MatchSearch>& search)
+    {
+        MatchSearchOwner* owner = g_matchSearchOwner.data();
+        if (owner && (owner->search == search)) {
+            g_matchSearchOwner.clear();
+            owner->deleteLater();
+        }
+    }
+
     void
     reportMatches(Gui* gui,
                   const NodePtr& node,
@@ -897,6 +933,7 @@ namespace {
             }
         }
         showHint(gui, report);
+        releaseMatchSearch(search);
         if (!unloaded.isEmpty() && search->offerLoad) {
             showLoadOffer(gui, node, report, unloaded, expression, label);
         }
@@ -921,6 +958,7 @@ namespace {
         });
         if (!failures.empty()) {
             showHint(gui, tr("Select Matches: %1 did not load: %2").arg(QString::fromStdString(failures.front().first), QString::fromStdString(failures.front().second)));
+            releaseMatchSearch(search);
 
             return;
         }
@@ -943,6 +981,7 @@ namespace {
             if (!shown) {
                 timer->deleteLater();
                 showHint(gui, tr("Select Matches: the node's input shows no scene."));
+                releaseMatchSearch(search);
 
                 return;
             }
@@ -991,6 +1030,7 @@ namespace {
             }
             if (!ok) {
                 showHint(guard, tr("Select Matches: %1").arg(error));
+                releaseMatchSearch(current);
 
                 return;
             }
@@ -1006,6 +1046,7 @@ namespace {
                 stepMatchSearch(guard, node, current, expression, label, generation);
             }
         });
+        ownMatchSearch(gui, search);
         const GuiAppInstancePtr app = gui->getApp();
         search->source->request(app ? app->getTimeLine()->currentFrame() : 0.);
         showHint(gui, tr("Select Matches: reading the scene of %1...").arg(QString::fromStdString(input->getLabel())));

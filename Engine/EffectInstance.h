@@ -1984,6 +1984,13 @@ public:
                                             RectD* rod,
                                             bool* isProjectFormat) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether this effect's region of definition at identity scale is infinite as the
+     * effect answers it, before getRegionOfDefinition_public() clips an infinite region to its
+     * inputs and the format. A disabled effect answers for its preferred input. Not cached.
+     **/
+    bool isRegionOfDefinitionInfinite(double time, ViewIdx view) WARN_UNUSED_RETURN;
+
     StatusEnum getRegionOfDefinitionFromCache(U64 hash,
                                               double time,
                                               const RenderScale & scale,

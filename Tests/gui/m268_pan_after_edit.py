@@ -32,6 +32,8 @@ RENDER_TIMEOUT_S = 180.0
 STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 900
 SETTLE_MS = 500
+# A whole-frame compute holds the old picture on screen for seconds, so a shorter hold settles on it.
+SETTLED_HOLD_S = 10.0
 PLATE_W = 3840
 PLATE_H = 2160
 PAN = (180, 100)
@@ -50,7 +52,7 @@ OVERLAP_MEAN = 2.0
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, Q_ARG
-    from PySide6.QtGui import QGuiApplication, QImage, QMouseEvent
+    from PySide6.QtGui import QGuiApplication, QImage, QKeyEvent, QMouseEvent
     from PySide6.QtWidgets import QApplication, QMainWindow
 
     import guitest as gt
@@ -139,13 +141,15 @@ try:
         return rows
 
     def settled(gl, state):
-        """True once two grabs a beat apart are identical and not a flat fill."""
+        """True once the viewer has held the same picture, not a flat fill, for SETTLED_HOLD_S."""
         img = grab(gl)
         data = bytes(img.constBits())[:img.sizeInBytes()]
-        previous = state.get("data")
-        state["data"] = data
+        now = time.time()
+        if data != state.get("data"):
+            state["data"] = data
+            state["since"] = now
         state["img"] = img
-        return previous == data and len(set(data[0:len(data):997])) > 4
+        return now - state["since"] >= SETTLED_HOLD_S and len(set(data[0:len(data):997])) > 4
 
     def wait_settled(gl, what):
         state = {}
@@ -241,7 +245,7 @@ try:
         # A fresh project has no Viewer node, so no viewer shows until one is created.
         ok = yield ("until", lambda: graph_view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the node graph is up")
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
         require(ok, "a viewer is up")
@@ -311,6 +315,11 @@ try:
             node, edit = make()
             made.append(node)
             show(node)
+            # The pans of the earlier nodes moved the view; fitting first keeps this node's view
+            # inside the plate, so its edges are not taken for tile seams.
+            QApplication.sendEvent(gl, QKeyEvent(QEvent.KeyPress, Qt.Key_F, Qt.NoModifier))
+            QApplication.sendEvent(gl, QKeyEvent(QEvent.KeyRelease, Qt.Key_F, Qt.NoModifier))
+            QApplication.processEvents()
             require(choose(zoom, "100%"), "the zoom menu offers 100%", repr(combo_items(zoom)))
             QApplication.processEvents()
             first = yield from wait_settled(gl, name + " before the edit")

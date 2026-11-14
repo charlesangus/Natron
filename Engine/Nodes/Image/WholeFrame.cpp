@@ -42,6 +42,41 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+QString
+infiniteSizeMessage(const EffectInstance& effect)
+{
+    const QString name = QString::fromStdString(effect.getScriptName_mt_safe());
+
+    return QCoreApplication::translate("WholeFrame", "%1: the input has an infinite size; an image must have a finite size.").arg(name);
+}
+
+// Takes back the infinite-size error once the input is finite again, leaving any other message.
+void
+withdrawInfiniteSizeMessage(const EffectInstance& effect,
+                            const NodePtr& node)
+{
+    QString current;
+    int type = 0;
+
+    node->getPersistentMessage(&current, &type, false);
+    if ((type == (int)eMessageTypeError) && !current.isEmpty() && (current == infiniteSizeMessage(effect))) {
+        node->clearPersistentMessage(false);
+    }
+}
+} // anonymous namespace
+
+bool
+wholeFrameSourceIsInfinite(const EffectInstance& effect,
+                           int sourceInput,
+                           double time,
+                           ViewIdx view)
+{
+    const EffectInstancePtr input = (sourceInput >= 0) ? effect.getInput(sourceInput) : EffectInstancePtr();
+
+    return input && input->isRegionOfDefinitionInfinite(time, view);
+}
+
 bool
 wholeFramePixels(const EffectInstance& effect,
                  int sourceInput,
@@ -56,25 +91,28 @@ wholeFramePixels(const EffectInstance& effect,
     if (!input) {
         return false;
     }
+    const NodePtr node = effect.getNode();
+    // getRegionOfDefinition_public() has already clipped an infinite region to the format.
+    if (wholeFrameSourceIsInfinite(effect, sourceInput, time, view)) {
+        if (node) {
+            node->setPersistentMessage(eMessageTypeError, infiniteSizeMessage(effect).toStdString());
+        }
+
+        return false;
+    }
+    if (node) {
+        withdrawInfiniteSizeMessage(effect, node);
+    }
     RectD rod;
     bool isProjectFormat = false;
     if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, &rod, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    const NodeMetadataConstPtr metadata = effect.getRenderMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.;
-    if (rod.isInfinite()) {
-        const NodePtr node = effect.getNode();
-        if (node) {
-            const QString name = QString::fromStdString(effect.getScriptName_mt_safe());
-            node->setPersistentMessage(eMessageTypeError, QCoreApplication::translate("WholeFrame", "%1: the input has an infinite size; an image must have a finite size.").arg(name).toStdString());
-        }
-
-        return false;
-    }
     if (rod.isNull()) {
         return false;
     }
+    const NodeMetadataConstPtr metadata = effect.getRenderMetadata(time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.;
     const RectI atScale = PassExec::toPixelEnclosing(rod, scale, par);
     const RectI full = PassExec::toPixelEnclosing(rod, RenderScale::identity, par);
     if (atScale.isNull() || full.isNull()) {

@@ -193,7 +193,7 @@ try:
         # A fresh project has no Viewer node, so no viewer shows until one is created.
         ok = yield ("until", lambda: graph_view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the node graph is up")
-        viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
         require(viewer is not None, "a Viewer node exists")
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
         require(ok, "a viewer is up")

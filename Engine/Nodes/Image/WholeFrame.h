@@ -58,7 +58,8 @@ NATRON_NAMESPACE_ENTER
  * frame pixel-enclosing at scale and fullScalePixels (when not null) at identity scale, both with
  * the source's pixel aspect ratio. Returns false when the input is not connected, its region
  * cannot be had, or the frame is empty. An infinite region is an error: the node gets a
- * persistent error message and the call returns false.
+ * persistent error message and the call returns false. The error is taken back by the first call
+ * that finds the region finite.
  **/
 bool wholeFramePixels(const EffectInstance& effect,
                       int sourceInput,
@@ -67,6 +68,15 @@ bool wholeFramePixels(const EffectInstance& effect,
                       const RenderScale& scale,
                       RectI* pixels,
                       RectI* fullScalePixels = nullptr) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether input sourceInput has the infinite region wholeFramePixels() fails on, for a
+ * node that must not post another message over that error.
+ **/
+bool wholeFrameSourceIsInfinite(const EffectInstance& effect,
+                                int sourceInput,
+                                double time,
+                                ViewIdx view) WARN_UNUSED_RETURN;
 
 /**
  * @brief The key of a whole-frame result: the render hashes of effect and of input sourceInput

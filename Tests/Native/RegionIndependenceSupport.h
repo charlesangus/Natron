@@ -640,9 +640,19 @@ public:
             const NodePtr infiniteSource = createRegionSource(rod, true);
             const NodePtr overInfinite = infiniteSource ? makeNode(infiniteSource) : NodePtr();
             ASSERT_TRUE(bool(overInfinite));
+            // The engine clips the region an infinite source answers to the format, and a window
+            // outside that clipped region never reaches the node, so the window sits inside it.
+            const EffectInstancePtr sourceEffect = infiniteSource->getEffectInstance();
+            RectD clipped;
+            bool isProjectFormat = false;
+            ASSERT_NE(eStatusFailed, sourceEffect->getRegionOfDefinition_public(sourceEffect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &clipped, &isProjectFormat)) << at.str();
+            const RectI clippedPixels = PassExec::toPixelEnclosing(clipped, RenderScale::fromMipmapLevel(level), 1.);
+            ASSERT_GE(clippedPixels.width(), 32) << at.str();
+            ASSERT_GE(clippedPixels.height(), 32) << at.str();
+            const RectI window(clippedPixels.x1, clippedPixels.y1, clippedPixels.x1 + 32, clippedPixels.y1 + 32);
             RenderedPlane got;
             std::string error;
-            EXPECT_FALSE(renderPlane(overInfinite, level, RectI(rod.x1, rod.y1, rod.x1 + 32, rod.y1 + 32), options.plane, true, &got, &error)) << at.str() << "the render succeeded over an infinite source";
+            EXPECT_FALSE(renderPlane(overInfinite, level, window, options.plane, true, &got, &error)) << at.str() << "the render succeeded over an infinite source";
             EXPECT_TRUE(got.pixels.empty()) << at.str() << "the failed render wrote pixels";
             QString message;
             int type = 0;

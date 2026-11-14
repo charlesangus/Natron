@@ -5047,6 +5047,26 @@ EffectInstance::hasComponentsNeededInCache(U64 hash,
     return (bool)_imp->actionsCache->getComponentsNeededResults(hash, time, view);
 }
 
+bool
+EffectInstance::isRegionOfDefinitionInfinite(double time,
+                                             ViewIdx view)
+{
+    if (!isEffectCreated()) {
+        return false;
+    }
+    if (getNode()->isNodeDisabled(time)) {
+        NodePtr preferredInput = getNode()->getPreferredInputNode();
+
+        return preferredInput && preferredInput->getEffectInstance()->isRegionOfDefinitionInfinite(time, view);
+    }
+
+    RECURSIVE_ACTION();
+    RectD rod;
+    const StatusEnum stat = getRegionOfDefinition(getRenderHash(), time, RenderScale::identity, view, &rod);
+
+    return ((stat == eStatusOK) || (stat == eStatusReplyDefault)) && rod.isInfinite();
+}
+
 StatusEnum
 EffectInstance::getRegionOfDefinition_public(U64 hash,
                                              double time,

@@ -860,7 +860,10 @@ DenoiseProfiled::isOpIdentity(double time,
 {
     const std::optional<Resolved> r = resolve(time, view);
 
-    if (r && !r->message.empty()) {
+    if (wholeFrameSourceIsInfinite(*this, getSourceInput(), time, view)) {
+        // The infinite-size error resolve() posted outranks these notes.
+        _message.withdraw(getNode());
+    } else if (r && !r->message.empty()) {
         _message.post(getNode(), eMessageTypeWarning, r->message);
     } else {
         _message.withdraw(getNode());

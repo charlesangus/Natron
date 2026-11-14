@@ -1753,11 +1753,11 @@ EffectInstance::getImage(int inputNb,
     ///Does this node supports images at a scale different than 1
     bool renderFullScaleThenDownscale = (!supportsRenderScale() && mipmapLevel != 0 && returnStorage == eStorageModeRAM);
 
-    ///Do we want to render the graph upstream at scale 1 or at the requested render scale ? (user setting)
+    /// Do we want to render the graph upstream at scale 1 or at the requested render scale ?
     bool renderScaleOneUpstreamIfRenderScaleSupportDisabled = false;
     unsigned int renderMappedMipmapLevel = mipmapLevel;
     if (renderFullScaleThenDownscale) {
-        renderScaleOneUpstreamIfRenderScaleSupportDisabled = node->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
+        renderScaleOneUpstreamIfRenderScaleSupportDisabled = pullsInputsAtScaleOne();
         if (renderScaleOneUpstreamIfRenderScaleSupportDisabled) {
             renderMappedMipmapLevel = 0;
         }

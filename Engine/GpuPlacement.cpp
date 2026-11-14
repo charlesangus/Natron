@@ -299,6 +299,9 @@ bool
 isDownscaleUnsupported(const FrameGraph::Task& task,
                        const NativeEffectBase& native)
 {
+    // An effect pulling full-scale inputs that renders at the task's level reads its input tasks, which the request
+    // pass put at level 0, through getGpuInputRoI() at its own scale; one rendering at full scale would need a device
+    // downscale of its output.
     return (task.key.mipmapLevel != 0) && (native.supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
 }
 

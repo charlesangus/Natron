@@ -628,7 +628,7 @@ private:
                               task.key.view,
                               1.,
                               frameArgs && frameArgs->draftMode,
-                              task.key.mipmapLevel == 0);
+                              (task.key.mipmapLevel == 0) && !(effect && effect->pullsInputsAtScaleOne()));
 
         return layout;
     }
@@ -2336,6 +2336,7 @@ private:
             GpuStripSlot stripSlot;
             stripSlot.bounds = slot.layout.bounds;
             stripSlot.nComps = slot.layout.nComps();
+            stripSlot.mipmapLevel = slot.layout.mipmapLevel;
             stripSlot.external = (slot.externalTask >= 0);
             stripSlot.resident = bool(slot.pinned);
             stripSlot.interior = slot.keep || slot.download;

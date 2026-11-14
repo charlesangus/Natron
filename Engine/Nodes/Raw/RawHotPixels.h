@@ -139,6 +139,11 @@ public:
 
     virtual ~RawHotPixels();
 
+    virtual bool pullsInputsAtScaleOne() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     /**
      * @brief How many fixed pixels frame marks: its kRawHotPixelsMarkPlaneFixed samples above 0,
      * so at the frame's own window and scale.

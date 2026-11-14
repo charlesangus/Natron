@@ -1126,10 +1126,7 @@ visitRequestPassItem(bool useTransforms,
     }
 
     // Mirrors the choice renderRoI makes before renderInputImagesForRoI.
-    bool useScaleOneInputs = node->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
-    if (!useScaleOneInputs && !effect->supportsMultiResolution()) {
-        useScaleOneInputs = true;
-    }
+    const bool useScaleOneInputs = effect->pullsInputsAtScaleOne();
     // Same level as treeRecurseFunctor picks for this input when rendering.
     const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
 

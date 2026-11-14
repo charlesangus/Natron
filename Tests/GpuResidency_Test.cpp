@@ -3280,6 +3280,64 @@ TEST(GpuRegionStrips, StripsCarryTheHalosBackwardsAndPartitionTheOutput)
     EXPECT_EQ(kPlanHeight, next);
 }
 
+// A RAM mosaic -> a stage at level 0 read after the region -> a demosaic at level 1 reading the level-0 rows under its
+// own, also read after the region: every strip covers the same rows of the image at both levels.
+TEST(GpuRegionStrips, StripsOfImagesAtTwoLevelsCoverTheSameRows)
+{
+    GpuStripGraph graph;
+    const RectI fullScale(0, 0, kPlanWidth, kPlanHeight);
+    const RectI half(0, 0, kPlanWidth / 2, kPlanHeight / 2);
+    for (int s = 0; s < 3; ++s) {
+        GpuStripSlot slot;
+        slot.bounds = (s == 2) ? half : fullScale;
+        slot.mipmapLevel = (s == 2) ? 1 : 0;
+        slot.nComps = (s == 2) ? 4 : 1;
+        slot.external = (s == 0);
+        slot.interior = (s != 0);
+        graph.images.push_back(slot);
+    }
+    GpuStripMember stage;
+    stage.outSlot = 1;
+    stage.inputSlots.push_back(0);
+    stage.inputRoI = [](int, const RectI& rect) {
+        return rect;
+    };
+    graph.members.push_back(stage);
+    GpuStripMember demosaic;
+    demosaic.outSlot = 2;
+    demosaic.inputSlots.push_back(1);
+    demosaic.inputRoI = [](int, const RectI& rect) {
+        return RectI(rect.x1 * 2, rect.y1 * 2, rect.x2 * 2, rect.y2 * 2);
+    };
+    graph.members.push_back(demosaic);
+    EXPECT_EQ(RectI(0, 0, kPlanWidth, kPlanHeight), gpuStripBands(graph));
+
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 64 * kPlanRowBytes / 4;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows));
+    ASSERT_GT(strips.size(), 1u);
+
+    int nextFull = 0;
+    int nextHalf = 0;
+    for (const GpuStrip& strip : strips) {
+        const RectI& stageRows = strip.interiors[1];
+        const RectI& demosaicRows = strip.interiors[2];
+        ASSERT_FALSE(stageRows.isNull());
+        ASSERT_FALSE(demosaicRows.isNull());
+        EXPECT_EQ(nextFull, stageRows.y1);
+        EXPECT_EQ(nextHalf, demosaicRows.y1);
+        EXPECT_EQ(stageRows.y1, demosaicRows.y1 * 2);
+        EXPECT_EQ(stageRows.y2, demosaicRows.y2 * 2);
+        EXPECT_TRUE(strip.rects[1].contains(RectI(0, demosaicRows.y1 * 2, kPlanWidth, demosaicRows.y2 * 2)));
+        nextFull = stageRows.y2;
+        nextHalf = demosaicRows.y2;
+    }
+    EXPECT_EQ(kPlanHeight, nextFull);
+    EXPECT_EQ(kPlanHeight / 2, nextHalf);
+}
+
 TEST(GpuRegionStrips, BudgetAloneStrips)
 {
     const GpuStripGraph graph = planChain();

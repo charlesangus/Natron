@@ -34,6 +34,7 @@
 
 #include "RawGpuTestSupport.h"
 
+#include "Engine/AppManager.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
@@ -41,6 +42,7 @@
 #include "Engine/Nodes/Raw/RawInputColor.h"
 #include "Engine/Nodes/Raw/RawPrepare.h"
 #include "Engine/Nodes/Raw/RawTemperature.h"
+#include "Engine/Settings.h"
 
 NATRON_NAMESPACE_USING
 
@@ -165,6 +167,36 @@ TEST_F(NativeRawChainGpuTest, DevelopChainIsOneResidentRegion)
         std::printf("develop chain, %s: worst difference %g\n", what.c_str(), diff.worstAbsolute);
         getApp()->getProject()->reset(false, true);
     }
+}
+
+// Below 100% with Zoomed-Out Demosaic at Fast, the mosaic stages render at full scale and the demosaic at half scale,
+// all in one region, within the chain's bound of the CPU at the same level.
+TEST_F(NativeRawChainGpuTest, DevelopChainAtHalfScaleIsOneResidentRegion)
+{
+    KnobChoicePtr preference = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("zoomedOutDemosaic");
+    ASSERT_TRUE(bool(preference));
+    const int saved = preference->getValue();
+    preference->setValue(0);
+    const Chain c = createChain(eRawHighlightsModeClip);
+    ASSERT_TRUE(c.read && c.prepare && c.temperature && c.highlights && c.demosaic && c.inputColor);
+
+    const EndToEndResult result = renderEndToEnd(c.develop(), c.inputColor, RectI(100, 75, 132, 99), kTime, GpuContextReady(), GpuFrameDone(), 1);
+    preference->setValue(saved);
+    if (result.skipped) {
+        return;
+    }
+    ASSERT_TRUE(result.ok) << result.error;
+    ASSERT_EQ(1u, result.regions.size());
+    for (const NodePtr& node : c.develop()) {
+        EXPECT_TRUE(result.ranInRegion(node)) << node->getScriptName_mt_safe() << " is not in the region";
+    }
+    EXPECT_FALSE(result.ranInRegion(c.read));
+    EXPECT_EQ(1, result.uploads);
+    EXPECT_EQ(1, result.downloads);
+    ASSERT_EQ(result.cpu.size(), result.gpu.size());
+    const ImageDiff diff = compareImages(result.cpu, result.gpu, kChainGpuTolerance);
+    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << " (cpu " << result.cpu[diff.firstMismatchIndex] << ", gpu "
+                                   << result.gpu[diff.firstMismatchIndex] << "), the worst by " << diff.worstAbsolute;
 }
 
 // With Inpaint Opposed, which has no GPU path, the raw run stays whole on the CPU: only

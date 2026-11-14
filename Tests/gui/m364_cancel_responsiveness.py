@@ -63,7 +63,7 @@ CYCLES_ID = "HdCyclesPlugin"
 CAMERA = "/World/Cam"
 HEARTBEAT_MS = 5
 # Phases whose gaps count without the Storm frames drawn in them, which are checked on their own.
-TO_PAINT_START = ("switch to Storm",)
+STORM_FRAMES_EXCLUDED = ("switch to Storm",)
 STALL_LIMIT_MS = 100.0
 FIRST_SAMPLES = 5
 SECOND_SAMPLES = 9
@@ -310,7 +310,7 @@ try:
         if beat["last"] is not None:
             gap = (now - beat["last"]) * 1000.0
             beat["raw_max"][beat["phase"]] = max(beat["raw_max"].get(beat["phase"], 0.0), gap)
-            if beat["phase"] in TO_PAINT_START and storm_paints > beat["storm_paints"]:
+            if beat["phase"] in STORM_FRAMES_EXCLUDED and storm_paints > beat["storm_paints"]:
                 drawn = sum(ms for start, ms in storm_frames() if start >= beat["last_wall_ms"])
                 gap = max(0.0, gap - drawn)
                 beat["paints_in_gap"] = max(beat["paints_in_gap"], storm_paints - beat["storm_paints"])

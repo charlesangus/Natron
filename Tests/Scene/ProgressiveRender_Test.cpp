@@ -479,7 +479,7 @@ protected:
         _render->setRenderer(other);
         EXPECT_LT(millisecondsSince(asked), kReturnMs) << "a renderer change waited for the pass";
         std::printf("[          ] the renderer change mid-pass went to %s\n",
-                    other.empty() ? "no renderer (the render goes idle; no second delegate is installed)" : other.c_str());
+                    other.empty() ? "no renderer: NOT TESTED, no second delegate is installed, so this only checked going idle" : other.c_str());
         if (other.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             const ProgressiveRender::Status status = _render->getStatus();
@@ -1059,10 +1059,10 @@ TEST_F(ProgressiveRenderTest, TheStageLockIsFreeWhileTheWorkerSyncsAndRenders)
 
     const ScenePayload heavy = heavyScene(_base, 24, 160);
     std::size_t mark = edit(heavy, 3, 0);
-    ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's pass over the heavy scene"));
     {
         const std::chrono::steady_clock::time_point entered = std::chrono::steady_clock::now();
         LockProbe probe(&_stageLock);
+        ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's pass over the heavy scene"));
         const bool framed = waitUntil([this, mark]() { return _published.size() > mark; }, "a frame of the heavy scene");
         const long long passMs = millisecondsSince(entered);
         probe.stop();

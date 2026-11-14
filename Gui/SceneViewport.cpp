@@ -5103,7 +5103,9 @@ SceneViewport::paintGL()
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
     const bool stormPaint = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
-    const qlonglong paintStartMs = QDateTime::currentMSecsSinceEpoch();
+    // Fractional epoch milliseconds, the clock and precision a script's own wall time has, so a
+    // frame starting in the same millisecond as a poll is still ordered against it.
+    const double paintStartMs = std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
     const std::chrono::steady_clock::time_point paintStart = std::chrono::steady_clock::now();
     refreshTransformHandles();
     {
@@ -5125,7 +5127,7 @@ SceneViewport::paintGL()
         const double paintMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count();
         // Several frames can begin between two polls; the list lets a poller find each of them.
         QVariantList frames = property("natronSceneStormFrames").toList();
-        frames.append(QVariant(QVariantList { QVariant::fromValue<qlonglong>(paintStartMs), paintMs }));
+        frames.append(QVariant(QVariantList { paintStartMs, paintMs }));
         while (frames.size() > 16) {
             frames.removeFirst();
         }

@@ -79,14 +79,14 @@ Acceptance sketch:
   - verify: the kernels compile under `tools/ci/local/syntax-check.py`; a parity test samples both modes against the T3 CPU helper on a small image with taps outside the source.
   - size: L
 
-- [ ] M136.P2.T5 — Show the resolved edge state in the node info readout
+- [x] M136.P2.T5 — Show the resolved edge state in the node info readout
   - files: `Engine/Node.cpp` (`makeInfoForInput`, beside the "Pixel aspect ratio" line), a gtest file for the readout
   - approach: add an "Edge Mode:" line for each input and for the output, reading Stretch or Black. No new panel or graph badge.
   - verify: gtest of `makeInfoForInput`'s string for both modes; an Xvfb screenshot of the readout goes to the user (P5.T2).
   - size: M
 
 
-- [ ] M136.P2.T6 — Stretch-aware region of interest
+- [x] M136.P2.T6 — Stretch-aware region of interest
   - files: `Engine/Nodes/Image/StagedImageEffect.cpp`, `Engine/Nodes/Image/StagePlan.cpp`, `Engine/Nodes/Image/EdgeModeKnob.h`
   - approach: `EffectInstance` clips an input's RoI to its RoD and fetches nothing when that is empty, so a Stretch read wholly outside the input would get no pixels to repeat. Under Stretch, clamp each input's RoI into that input's RoD as a band at least one pixel wide.
   - verify: gtest — a window wholly outside a Stretch input still fetches its image and repeats the edge; under Black the input isn't fetched.
@@ -272,3 +272,4 @@ Acceptance sketch:
 - 2026-11-13 — Re-planned after approval (consultant freshness check against b59ff3fdf): five premises were stale (P2.T2, P2.T4, P3.T1, P4.T3, P5.T2) and rewritten; the knob is delivered as a `Stage::EdgeMode` pipeline stage, since most affected nodes are `StagedImageEffect`s; added P1.T2 (note refresh), P2.T6 (Stretch-aware RoI), P4.T8–T17 (Q1's same-position inputs and nodes landed since the survey). "Copy" is ShuffleCopy (no native Copy; the OpenFX Copy is out of scope). KeyMix, FrameBlend's MaskMix and IDefocus's Map are in scope because every input follows the bit (Q1).
 - 2026-11-13 — P1.T2 done (1b218d710): the note is refreshed and contains no references to other applications. Survey follow-ups: P4.T15 narrowed to AdjustBBox (Median and Bilateral never read past their region, so they get no knob); P4.T17 cancelled (those nodes read only inside their region); P4.T18 added (ZDefocus Depth, VectorBlur UV and Depth, and the FrameBlend, TimeBlur and SlitScan time reads, all in scope under Q1); P4.T19 added (NeuralUpscale clamps with no knob). Raw and the edge-aware filters stay out (Q2 and their whole-frame borders).\n- 2026-11-13 — P2.T3 scoping (PM): fill-value reads (the divisor's 1.f, STMap's alpha 1.f, mask and UV 0.f) keep a constant-fill reader for now, and only image-edge reads use the mode helper; masks and UV move to the bit in P4.T8, P4.T11 and P4.T12. `PassExec::Boundary` and `InputBoundary` are replaced by `EdgeMode` (Zero → Black, Nearest → Stretch), and every Resampler `blackOutside` caller is converted mechanically now; the GPU flag is translated in one line until P2.T4.
 - 2026-11-13 — P2.T3 implemented (3dc34c091): `Engine/Nodes/Image/EdgeSample.h`. The NatronGpu library can't include `NodeMetadata.h`, so `GpuResample::blackOutside` stays a bool until P2.T4, which moves `EdgeMode` into a light header both libraries include.
+- 2026-11-13 — P2.T5 and P2.T6 implemented (9dc00592c). Stretch RoI runs as a post-hook (`adjustInputRegionsOfInterest`) after `getRegionsOfInterest`, because staged nodes adjust the base result. Open points: the GPU input RoI gets no band yet; under concatenation `transformInputRois` runs after the hook. Phase 2 gate running.

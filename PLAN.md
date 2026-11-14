@@ -173,7 +173,7 @@ future core work has solid ground to build on.
 | M327 | Heavy Scene Spike | done | M231, M232 | misty-marten | E9 | | | [M327-heavy-scene-spike.md](PLAN/MILESTONES/M327-heavy-scene-spike.md) |
 | M328 | Deferred Viewer Stage | done | M327 | | E9 | F4 | | [M328-deferred-viewer-stage.md](PLAN/MILESTONES/M328-deferred-viewer-stage.md) |
 | M329 | Viewer Draw States | done | M327, M328 | bosley-native-nodes | E9 | F4 | | [M329-viewer-draw-states.md](PLAN/MILESTONES/M329-viewer-draw-states.md) |
-| M330 | Graph Draw Policy | doing | M329 | bosley-native-nodes | E9 | F4 | | [M330-graph-draw-policy.md](PLAN/MILESTONES/M330-graph-draw-policy.md) |
+| M330 | Graph Draw Policy | done | M329 | bosley-native-nodes | E9 | F4 | | [M330-graph-draw-policy.md](PLAN/MILESTONES/M330-graph-draw-policy.md) |
 | M331 | Deferred Pattern Matching | done | M52, M327, M328 | bosley-native-nodes | E9 | F4 | | [M331-deferred-pattern-matching.md](PLAN/MILESTONES/M331-deferred-pattern-matching.md) |
 | M332 | Scene Graph Points | done | M328 | bosley-native-nodes | E9 | F4 | | [M332-scene-graph-points.md](PLAN/MILESTONES/M332-scene-graph-points.md) |
 | M333 | Prim Inspector | done | M232 | misty-marten | E9 | F4 | | [M333-prim-inspector.md](PLAN/MILESTONES/M333-prim-inspector.md) |

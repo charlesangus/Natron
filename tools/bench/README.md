@@ -365,7 +365,7 @@ loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or
 against the scene-graph budgets. Frame rate and time to first frame need a real GPU: without
 `BENCH_GPU=1`, or on a software renderer, they are measured but marked `not_valid`. Stall and
 unrequested-payload checks are valid under llvmpipe. The scenarios are the harness's `ACTIONS` table
-(`open`, `edit`, `orbit`, `load`, `twirl`, `node_switch`, and the draw state scenarios below); `BENCH_SCENARIOS` picks
+(`open`, `edit`, `orbit`, `load`, `twirl`, `node_switch`, `workflow`, and the draw state scenarios below); `BENCH_SCENARIOS` picks
 and orders them.
 
 `open` reports `first_frame_ms`, from setting the file to the first frame finished after the scene
@@ -482,3 +482,42 @@ picture against 100 ms, one line per change with the parts above, and each trace
 counters. The results go to `build/bench-gpu/heavy-scene-budget.jsonl`. The script's header
 lists its environment; `SCENE_DIR`, `LOBBY_DIR` and `ISLAND_DIR` say where the scenes are, and Docker
 is only needed while the fixtures are missing.
+
+### End-to-end budget run
+
+`workflow` chains what a user does on one scene in one process: `open`, a twirl into a payload,
+Full on one asset, Full + Load on a block, a pattern node (a USDEditTransform with a `primPattern`,
+`BENCH_PATTERN` or the branch's descendants) inserted below USDRead and viewed, a switch to that node
+with the Scene Graph panel following the selection, a prim selected in the inspector, a project save,
+and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms` and numbers under
+`workflow_steps`, and its own budgets in the record: `<step>_stall_ms` (100 ms, the setup before a
+step not counted), `full_asset_picture_ms` (100 ms, valid with `NATRON_DRAW_STATE_TIMING=1` on a real
+GPU), `full_load_block_complete` and `full_load_block_worst_frame_ms` (the reveal finishes with no
+gap over 100 ms between painted frames), `reopen_first_frame_ms` (2 s, on a scene with payloads), and
+the first-frame and unrequested-payload budgets over the whole run. The save is judged as a stall: a
+`saveProjectAs` call that blocks the main thread over 100 ms fails. A scene with nothing for a step
+(flat has no payloads to twirl or load) gets `not_applicable` there. The reopen leaves the process's
+nodes gone, so `workflow` has to be the last scenario of its run; scenarios after it are skipped.
+
+On a GPU host, from a checkout of the branch under test, one command runs it on both fixtures, Lobby
+and Island, with the loaded reveal, cancel and orbit scenarios beside it:
+
+```
+DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh acceptance /path/to/Natron.AppImage
+```
+
+`acceptance` runs one fresh process per line: `workflow` on flat, the city, Lobby and Island; on the
+loaded city, Lobby and Island `populate_full`, `load_all`, `reveal_wide`, `reveal_cancel_paced` and
+`orbit10k`; and `reveal_load_all` on the unloaded city. Island (119,220 meshes, 30.9M instances) is
+looked for by name under `ISLAND_DIR` or `SCENE_DIR` (the main checkout's `.local` by default) and
+skipped with a message and a `skipped` record when it is absent or when less than `ISLAND_MIN_RAM_GB`
+is available; its loaded run raises `BENCH_PICK_LIMIT_S` to an hour, as picking rows from the fully
+loaded scene is slow. The fixtures are made through the dev image when `build/bench-gpu` lacks them.
+The results go to `build/bench-gpu/heavy-scene-acceptance.jsonl`, with the table and the pass, fail and
+did-not-finish counts at the end. A single scene runs the same way through `ONLY_LABELS`
+(`accept-city`, `accept-island`, ...), or by hand:
+
+```
+BENCH_FIXTURE=city BENCH_SCENARIOS=workflow NATRON_DRAW_STATE_TIMING=1 BENCH_GPU=1 \
+    Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py /path/to/Natron.AppImage
+```

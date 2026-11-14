@@ -42,6 +42,8 @@
         BENCH_SWITCH_NODES  USDEditTransforms off USDRead that node_switch selects in turn, with the
                          Scene Graph panel following the selection (default 4); it then selects the
                          first again, whose stage the panel keeps
+        BENCH_PATTERN    the prim pattern workflow's pattern node matches (default the branch's
+                         descendants, or the sibling row's on flat)
         BENCH_LABEL      free text stored with each result
         BENCH_TIMEOUT_S  per-wait timeout (default 600)
         BENCH_HOLD_FILE  when set, populate_full and populate_pruned report "BEGIN populate" and wait up to
@@ -55,6 +57,9 @@
         NATRON_DRAW_STATE_TIMING  1 makes the viewer publish a timing record per presented draw state
                          change (natronSceneDrawTimings), which time_to_picture_ms is judged on and
                          draw_budget breaks down; without it time_to_picture_ms is not_valid
+
+workflow chains the whole user workflow in one process, each step timed and judged apart (see the
+workflow action); it reopens the project at its end, so it has to be the last scenario of its run.
 
 Each scenario runs one action under a 10 ms heartbeat on the main thread and prints one JSON line:
 the longest gap between heartbeats, the layers loaded by the action, and the action's own numbers,
@@ -133,7 +138,7 @@ OPEN_SCENARIOS = ("open", "populate_full", "populate_pruned", "load_all")
 DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal", "reveal_cancel", "orbit10k", "boxes_shot",
                   "sibling_state", "sibling_shot", "noedit", "draw_budget", "reveal_load_all", "reveal_wide", "reveal_cancel_paced")
 # A wide row's restore puts the whole scene back into Hydra, several times over.
-LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide")
+LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide", "workflow")
 PICTURE_SCENARIOS = ("prune_restore", "sibling_state", "draw_budget")
 DRAW_TIMING = os.environ.get("NATRON_DRAW_STATE_TIMING") == "1"
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
@@ -144,9 +149,9 @@ ROW_ENV = {"root": "BENCH_ROOT", "branch": "BENCH_BRANCH", "sibling_row": "BENCH
            "reveal_branch": "BENCH_REVEAL_BRANCH", "twirl_row": "BENCH_TWIRL_PATH", "widest_row": "BENCH_WIDE_ROW"}
 
 try:
-    from PySide6.QtCore import QEvent, QMetaObject, QModelIndex, QPersistentModelIndex, QPoint, QPointF, QRect, Q_ARG, QTimer, Qt
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QModelIndex, QPersistentModelIndex, QPoint, QPointF, QRect, Q_ARG, QTimer, Qt
     from PySide6.QtGui import QGuiApplication, QImage, QMouseEvent, QOffscreenSurface, QOpenGLContext
-    from PySide6.QtWidgets import QApplication, QComboBox, QTreeView
+    from PySide6.QtWidgets import QApplication, QComboBox, QMessageBox, QTreeView, QWidget
     import NatronEngine
 
     from heavy_scene_frame import frame_coverage
@@ -318,6 +323,8 @@ try:
             self.pictures = []
             # The stall of a part of the action whose heartbeat was restarted after it.
             self.stall_floor_ms = 0.0
+            # The workflow's steps, each {"applicable", "ms", "stall_ms", ...}, in the order they ran.
+            self.steps = {}
 
     # The scenario running, for the timings of the changes it makes.
     current = {"name": None, "m": None, "record": None}
@@ -755,9 +762,10 @@ try:
                 last = now
         return done(), len(paints), worst
 
-    def paced_reveal(m, name, row, start_state, state, done=None):
+    def paced_reveal(m, name, row, start_state, state, done=None, keep_states=False):
         """Reveals row from start_state to state at the viewer's own pace and records how the frames held up."""
-        yield from clear_draw_states()
+        if not keep_states:
+            yield from clear_draw_states()
         yield from set_draw_state(row, start_state)
         v = view()
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, -1))
@@ -1137,6 +1145,162 @@ try:
         m.values["cached_switch_composes"] = composes[-1]
         follow.setCurrentIndex(0)
 
+    project_state = {"reopened": False}
+
+    def scene_has_payloads():
+        return fixture == "city" or bool(rows.get("payload_rows"))
+
+    def add_request(m, paths, descendants):
+        """request() that keeps what earlier requests of the scenario asked for."""
+        files, layers = list(m.requested_files), set(m.requested_layers)
+        request(m, paths, descendants)
+        m.requested_files = files + m.requested_files
+        m.requested_layers = m.requested_layers | layers
+
+    def scene_painted_since(t0_ms):
+        def drawn():
+            synced_at = prop("natronSceneSyncedAtMs", 0)
+            return shown() and synced_at >= t0_ms and prop("natronSceneLastPaintMs", 0) >= synced_at
+        return drawn
+
+    def action_workflow(m):
+        """Open, twirl into a payload, Full on one asset, Full + Load on a block, add a pattern node, switch
+        to it, select a prim in the inspector, save, reopen. A step's stall is its own: the setup before it
+        (docking the panel, reading a row's index) is not the work the budget is about."""
+
+        def finish_step(name, ms, **extra):
+            stall = heartbeat.stop()
+            m.steps[name] = dict(extra, applicable=True, ms=round(ms, 1), stall_ms=round(stall, 1))
+            m.stall_floor_ms = max(m.stall_floor_ms, stall)
+            heartbeat.start()
+
+        def skip_step(name, why):
+            m.steps[name] = {"applicable": False, "reason": why}
+
+        asset = rows.get("sibling_row")
+
+        t0 = time.perf_counter()
+        yield from open_file(m)
+        finish_step("open", (time.perf_counter() - t0) * 1000.0, first_frame_ms=m.values["first_frame_ms"])
+
+        if rows.get("twirl_row"):
+            yield from action_twirl(m)
+            finish_step("twirl", m.values["twirl_ms"], path=rows["twirl_row"], rows=m.values["twirl_rows"])
+        else:
+            skip_step("twirl", "the scene has no payload row to twirl")
+
+        if asset:
+            yield from clear_draw_states()
+            yield from set_draw_state(asset, "bbox")
+            heartbeat.start()
+            timings = yield from set_draw_state(asset, "full")
+            finish_step("full_asset", timings["total_ms"], path=asset, picture_ms=timings["picture_ms"],
+                        picture_source=timings["picture_source"], apply_ms=timings["apply_ms"])
+        else:
+            skip_step("full_asset", "the scene has no row for an asset")
+
+        block = rows.get("load_block")
+        if scene_has_payloads() and block:
+            v = view()
+            edits_before = int(v.property("natronSceneLoadEdits") or 0)
+            add_request(m, [block], True)
+            yield from paced_reveal(m, "workflow_block", block, "bbox", "loadAll", commit_watch(v), keep_states=True)
+            load_results(m, v, "workflow_block", edits_before)
+            finish_step("full_load_block", m.values["workflow_block_ms"], path=block, complete=m.values["workflow_block_complete"],
+                        worst_frame_ms=m.values["workflow_block_worst_frame_ms"], prims=m.values["workflow_block_prims"])
+        else:
+            skip_step("full_load_block", "the scene has no payloads to load")
+
+        branch = rows.get("branch") or rows["root"]
+        pattern = os.environ.get("BENCH_PATTERN") or ((asset if fixture == "flat" and asset else branch) + "//*")
+        t0_ms = int(time.time() * 1000.0)
+        t0 = time.perf_counter()
+        heartbeat.start()
+        pattern_node = create("USDEditTransform", 200, 150)
+        pattern_node.getParam("primPattern").setValue(pattern)
+        pattern_node.getParam("translate").set(1.0, 0.0, 0.0)
+        require(pattern_node.connectInput(0, usd), "workflow: connect the pattern node to USDRead")
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, pattern_node), "workflow: view the pattern node")
+        ok = yield ("until", scene_painted_since(t0_ms), TIMEOUT_S)
+        check(ok, "workflow: the pattern node's scene reached the screen (%r)" % (prop("natronSceneError"),))
+        finish_step("pattern_node", (time.perf_counter() - t0) * 1000.0, pattern=pattern)
+
+        show_panel()
+        ok = yield ("until", lambda: panel().isVisible() and hold(tree().model()).rowCount(QModelIndex()) > 0, TIMEOUT_S)
+        require(ok, "workflow: the panel lists a scene")
+        follow = hold(panel().findChild(QComboBox, "sceneGraphFollow"))
+        require(follow is not None, "workflow: the panel has a Follow chooser")
+        app.selectNode(usd, True)
+        follow.setCurrentIndex(1)
+        ok = yield ("until", lambda: panel_shows(usd), TIMEOUT_S)
+        require(ok, "workflow: following the selection, the panel shows USDRead")
+        heartbeat.start()
+        t0 = time.perf_counter()
+        app.selectNode(pattern_node, True)
+        ok = yield ("until", lambda: panel_shows(pattern_node), TIMEOUT_S)
+        check(ok, "workflow: the panel shows the pattern node")
+        finish_step("node_switch", (time.perf_counter() - t0) * 1000.0)
+
+        inspected = asset or rows["root"]
+        target = find_row(inspected)
+        require(target.isValid(), "workflow: the panel lists " + inspected)
+        inspector = hold(panel().findChild(QWidget, "sceneGraphInspector"))
+        require(inspector is not None, "workflow: the panel has an inspector")
+        selection = tree().selectionModel()
+        heartbeat.start()
+        t0 = time.perf_counter()
+        selection.select(target, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        selection.setCurrentIndex(target, QItemSelectionModel.NoUpdate)
+        ok = yield ("until", lambda: str(inspector.property("natronSceneGraphInspectorPath")) == inspected
+                    and not inspector.property("natronSceneGraphInspectorBusy"), TIMEOUT_S)
+        check(ok, "workflow: the inspector shows " + inspected)
+        finish_step("inspect", (time.perf_counter() - t0) * 1000.0, path=inspected)
+
+        project_path = os.path.join(OUT, "heavy_scene_workflow_%s.ntpz" % file_stem)
+        heartbeat.start()
+        t0 = time.perf_counter()
+        saved = app.saveProjectAs(project_path)
+        finish_step("save", (time.perf_counter() - t0) * 1000.0, project=os.path.basename(project_path))
+        require(saved, "workflow: save the project to " + project_path)
+
+        # The viewer and panel changes above are project edits, so the reset asks whether to save them;
+        # the saved file is the one under test.
+        def discard_save_question():
+            box = QApplication.activeModalWidget()
+            if isinstance(box, QMessageBox) and box.button(QMessageBox.StandardButton.Discard) is not None:
+                box.button(QMessageBox.StandardButton.Discard).click()
+
+        answer = QTimer()
+        answer.timeout.connect(discard_save_question)
+        answer.start(200)
+        t0 = time.perf_counter()
+        try:
+            reset = app.resetProject()
+        finally:
+            answer.stop()
+            answer = None
+        reset_ms = (time.perf_counter() - t0) * 1000.0
+        require(reset, "workflow: reset the project")
+        # The nodes and widgets of the closed project are gone.
+        project_state["reopened"] = True
+        del held_widgets[:]
+        yield ("sleep", 400)
+        t0_ms = int(time.time() * 1000.0)
+        t0 = time.perf_counter()
+        require(app.loadProject(project_path) is not None, "workflow: reopen " + project_path)
+        load_call_ms = (time.perf_counter() - t0) * 1000.0
+        heartbeat.start()
+        ok = yield ("until", scene_painted_since(t0_ms), TIMEOUT_S)
+        check(ok, "workflow: the reopened project shows the scene (%r)" % (prop("natronSceneError"),))
+        painted = prop("natronSceneLastPaintMs")
+        first_frame_ms = round((painted if painted is not None else time.time() * 1000.0) - t0_ms, 1)
+        ok = yield ("until", lambda: view() is not None and not prop("natronSceneLoadsPending") and not prop("natronSceneComposing"), TIMEOUT_S)
+        check(ok, "workflow: the reopened project's loads are over")
+        finish_step("reopen", (time.perf_counter() - t0) * 1000.0, first_frame_ms=first_frame_ms, reset_ms=round(reset_ms, 1),
+                    load_call_ms=round(load_call_ms, 1))
+        m.values["workflow_steps"] = m.steps
+
     def action_noedit(m):
         def edits():
             stats = draw_stats()
@@ -1167,7 +1331,8 @@ try:
                "orbit10k": action_orbit10k, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
                "sibling_shot": action_sibling_shot, "noedit": action_noedit, "draw_budget": action_draw_budget,
                "reveal_load_all": action_reveal_load_all, "reveal_wide": action_reveal_wide,
-               "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch}
+               "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch,
+               "workflow": action_workflow}
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
         if not applicable:
@@ -1181,11 +1346,13 @@ try:
         return {"value": value, "limit": limit, "status": status}
 
     def skip_reason(name):
+        if project_state["reopened"]:
+            return "the workflow reopened the project, so this process's nodes are gone: run it last"
         if name == "load" and not load_paths:
             return "the scene has no payloads to load"
         if name == "twirl" and not rows.get("twirl_row"):
             return "the scene has no payload row to twirl"
-        has_payloads = fixture == "city" or bool(rows.get("payload_rows"))
+        has_payloads = scene_has_payloads()
         if name in ("load_all", "reveal_load_all") and not has_payloads:
             return "the scene has no payloads to load"
         needs_row = {"populate_pruned": "root", "prune_restore": "branch", "noedit": "branch", "reveal_cancel": "branch",
@@ -1241,6 +1408,20 @@ try:
             budgets["cancel_paced_overshoot_prims"] = verdict(m.values["cancel_paced_overshoot_prims"], batch, True,
                                                               valid=m.values["cancel_paced_was_active"] and batch is not None)
             budgets["cancel_paced_stopped"] = verdict(1 if m.values["cancel_paced_stopped"] else 0, 1, False)
+        for step_name, step in m.steps.items():
+            applicable = step["applicable"]
+            budgets[step_name + "_stall_ms"] = verdict(step.get("stall_ms"), STALL_BUDGET_MS, True, applicable=applicable)
+            if step_name == "full_asset":
+                budgets["full_asset_picture_ms"] = verdict(step.get("picture_ms"), PICTURE_BUDGET_MS, True,
+                                                           valid=gpu and step.get("picture_source") == "viewer", applicable=applicable)
+            elif step_name == "full_load_block":
+                budgets["full_load_block_complete"] = verdict(None if not applicable else (1 if step["complete"] else 0), 1, False,
+                                                              applicable=applicable)
+                budgets["full_load_block_worst_frame_ms"] = verdict(step.get("worst_frame_ms"), STALL_BUDGET_MS, True, valid=gpu,
+                                                                    applicable=applicable)
+            elif step_name == "reopen":
+                budgets["reopen_first_frame_ms"] = verdict(step.get("first_frame_ms"), FIRST_FRAME_BUDGET_MS, True, valid=gpu,
+                                                           applicable=scene_has_payloads())
         if "stage_edits" in m.values:
             budgets["stage_edits"] = verdict(m.values["stage_edits"], 0, True)
         if "sibling_resynced_paths" in m.values:

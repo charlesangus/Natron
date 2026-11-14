@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: tools/bench/heavy_scene_gpu_host.sh gate <Natron.AppImage> [results.jsonl]
 #        tools/bench/heavy_scene_gpu_host.sh budget <Natron.AppImage> [results.jsonl]
+#        tools/bench/heavy_scene_gpu_host.sh acceptance <Natron.AppImage> [results.jsonl]
 #        tools/bench/heavy_scene_gpu_host.sh fixtures
 #
 # Heavy scene runs on a host with a real GPU and a desktop session. One JSON line per scenario goes
@@ -36,6 +37,14 @@
 #             populate_full and load_all on city and Lobby, and populate_full on Island under its RAM
 #             guard. Ends with heavy_scene_budget_table.py's table of the results: time to picture and
 #             stall against 100 ms per row, the untraced critical path, and the traced stages.
+#   acceptance  The end-to-end budget run, with NATRON_DRAW_STATE_TIMING=1, one process per line: the
+#             workflow scenario (open, twirl, Full on an asset, Full + Load on a block, a pattern node, a
+#             node switch, a prim in the inspector, save, reopen) on flat, the city, Lobby and Island, each
+#             step judged against its budget; then reveal and cancel on the loaded city, Lobby and Island
+#             (populate_full, load_all, reveal_wide, reveal_cancel_paced, orbit10k), and reveal_load_all
+#             on the unloaded city. Island is skipped, with a record, when it is not found or under
+#             ISLAND_MIN_RAM_GB; its loaded run picks rows from the fully loaded scene, so
+#             BENCH_PICK_LIMIT_S is raised for it (default 3600).
 #   fixtures Only makes the fixtures; needs neither a display nor an AppImage.
 #
 # A scenario that outlasts its limit gets a timed_out record and ends its process, so the run moves
@@ -86,6 +95,7 @@ set -u
 usage() {
     echo "usage: $0 gate <Natron.AppImage> [results.jsonl]" >&2
     echo "       $0 budget <Natron.AppImage> [results.jsonl]" >&2
+    echo "       $0 acceptance <Natron.AppImage> [results.jsonl]" >&2
     echo "       $0 fixtures" >&2
     exit 2
 }
@@ -93,7 +103,7 @@ usage() {
 [ $# -ge 1 ] || usage
 MODE="$1"
 case "$MODE" in
-    gate | budget) [ $# -ge 2 ] || usage ;;
+    gate | budget | acceptance) [ $# -ge 2 ] || usage ;;
     fixtures) ;;
     *) usage ;;
 esac
@@ -324,12 +334,40 @@ budget_runs() {
     fi
 }
 
+# The workflow reopens the project, so each one runs alone in its process.
+acceptance_runs() {
+    local reason loaded="populate_full,load_all,reveal_wide,reveal_cancel_paced,orbit10k"
+    launch accept-flat flat "$FIXTURE_DIR/heavy_flat.usdc" workflow NATRON_DRAW_STATE_TIMING=1
+    launch accept-city city "$CITY" workflow NATRON_DRAW_STATE_TIMING=1
+    launch accept-city-loaded city "$CITY" "$loaded" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
+    launch accept-city-reveal city "$CITY" populate_full,reveal_load_all
+    if [ -f "$LOBBY" ]; then
+        launch accept-lobby scene "$LOBBY" workflow NATRON_DRAW_STATE_TIMING=1
+        launch accept-lobby-loaded scene "$LOBBY" "$loaded" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
+    else
+        record_skip accept-lobby "not found by name under '$LOBBY_SRC', $SCENE_SEARCH_DEPTH levels deep (set SCENE_DIR or LOBBY_DIR)"
+    fi
+    reason="$(island_unfit)"
+    if [ -z "$reason" ]; then
+        launch accept-island scene "$ISLAND" workflow NATRON_DRAW_STATE_TIMING=1
+        launch accept-island-loaded scene "$ISLAND" "$loaded" BENCH_LOAD_ALL=1 BENCH_PICK_LIMIT_S="${BENCH_PICK_LIMIT_S:-3600}" NATRON_DRAW_STATE_TIMING=1
+    else
+        record_skip accept-island "$reason"
+    fi
+}
+
 summarize() {
     if command -v python3 > /dev/null 2>&1; then
         python3 tools/bench/heavy_scene_budget_table.py "$RESULT"
     fi
     echo "results: $RESULT ($(wc -l < "$RESULT") lines: $(grep -c '"result": "pass"' "$RESULT") pass, $(grep -c '"result": "fail"' "$RESULT") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted)"' "$RESULT") did not finish, $(grep -c '"result": "skipped"' "$RESULT") skipped)"
 }
+
+if [ "$MODE" = acceptance ]; then
+    acceptance_runs
+    summarize
+    exit 0
+fi
 
 if [ "$MODE" = budget ]; then
     budget_runs

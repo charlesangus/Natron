@@ -144,6 +144,10 @@ const std::chrono::seconds kUnabortableRenderLimit(600);
 // again: until it shows one its buffers may hold the render of before, which is not read.
 const std::chrono::milliseconds kRestartUnseen(2000);
 
+// How long a delegate's clock must hold still, once it started over, for its render to count as
+// ended: Cycles stops its clock when a render ends and runs it while it syncs or samples.
+const std::chrono::milliseconds kRestartClockHeld(100);
+
 // The samples per pixel the delegate reports rendered, -1 if it reports none: Cycles' annotation
 // carries "Sample N/M", "Sample N" when uncapped.
 int
@@ -222,6 +226,7 @@ public:
         _clockAtRestart = -1.;
         _clockFallen = false;
         _samplesAtClockFall = -1;
+        _clockSinceFall = -1.;
     }
 
     // The delegate's progress just before the first pass after the restart.
@@ -247,9 +252,17 @@ public:
             _clockFallen = true;
             _samplesAtClockFall = samples;
         }
+        const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+        if (_clockFallen && (clock >= 0.) && (clock != _clockSinceFall)) {
+            _clockSinceFall = clock;
+            _clockMovedAt = now;
+        }
         const bool clockFell = _clockFallen && ((samples < 0) || (samples != _samplesAtClockFall));
+        // A small render can reach the sample count of before between two reads, so the count
+        // never moves; its clock stopping says that render ended.
+        const bool clockStopped = _clockFallen && (clock >= 0.) && (now - _clockMovedAt >= kRestartClockHeld);
         const bool blind = (samples < 0) && (clock < 0.);
-        _seen = samplesFell || clockFell || blind;
+        _seen = samplesFell || clockFell || clockStopped || blind;
 
         return _seen;
     }
@@ -281,6 +294,8 @@ private:
     double _clockAtRestart = -1.;
     bool _clockFallen = false;
     int _samplesAtClockFall = -1;
+    double _clockSinceFall = -1.;
+    std::chrono::steady_clock::time_point _clockMovedAt;
 };
 
 // The GPU memory the engines may hold together by default.

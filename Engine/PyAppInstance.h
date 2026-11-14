@@ -366,6 +366,18 @@ public:
 
     void addFormat(const QString& formatSpec);
 
+    /**
+     * @brief Waits, processing events, until every Reload of a scene file requested so far has
+     * read its files again and asked its node's viewers to render the new content, or timeoutMs milliseconds passed
+     * (no limit when negative). A Reload pressed while a viewer renders returns before the files
+     * are read: the viewer stops its render first, without holding up the interface. Returns
+     * whether no Reload is still pending. Call it from the main thread after pressing a scene
+     * node's Reload, before reading what the node outputs or waiting for its viewer's frame. A
+     * timeoutMs of 0 only asks, so a script that polls from its own event loop steps can wait
+     * with it too.
+     **/
+    bool waitForReloads(int timeoutMs = 60000);
+
     void render(Effect* writeNode, int firstFrame, int lastFrame, int frameStep = 1);
     void render(const std::list<Effect*>& effects, const std::list<int>& firstFrames, const std::list<int>& lastFrames, const std::list<int>& frameSteps);
 

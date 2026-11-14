@@ -30,7 +30,12 @@ The screenshot is taken after the heartbeat stops. Steps:
     Cycles if the view came back on Storm;
   - waits for the render to converge and checks the final frame is Cycles' at the last
     cyclesSamples (natronSceneMaxSamples, natronSceneSamples, natronSceneDrawnSamples), with no
-    renderer error.
+    renderer error;
+  - with the generated scene only: rewrites the grid every mesh references and presses the
+    USDRead's Reload, which has Cycles sync every mesh again, then rewrites the scene's light and
+    presses Reload again while it does, waiting for each with app.waitForReloads(0) polled from
+    the event loop. Neither reload, nor the render converging after them, may stall the GUI, and
+    the converged frame must differ from the one before the reloads.
 If Cycles is not available in the Renderer submenu the run is skipped (exit 0). If the first sync
 ends before the script can act on it the "during the first sync" checks fail: raise
 NATRON_TEST_MESHES for that machine.
@@ -43,6 +48,7 @@ natronSceneEngineHeld, natronSceneLastPaintMs, natronSceneStormFrames, natronSce
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
 """
+import io
 import math
 import os
 import sys
@@ -68,6 +74,10 @@ STALL_LIMIT_MS = 100.0
 FIRST_SAMPLES = 5
 SECOND_SAMPLES = 9
 FINAL_SAMPLES = 13
+RELOAD_SAMPLES = 17
+# The reloads' content: every mesh's colour, then the light's intensity.
+RELOAD_COLOR = (0.9, 0.2, 0.1)
+RELOAD_SUN = 0.5
 GRID_SIZE = 10.0
 GRID_SPACING = 11.0
 
@@ -80,8 +90,8 @@ try:
     from guitest import (check, finish, plugin_problem, report, require, run, section, shot, viewer_up,
                          widgets_of)
 
-    def write_scene(directory, meshes, quads):
-        """Writes grid.usda and scene.usda into directory; returns the scene's path."""
+    def scene_texts(meshes, quads, color=(0.6, 0.6, 0.6), sun=3.0):
+        """The text of grid.usda and of scene.usda, as (grid, scene)."""
         n = quads
         columns = int(math.ceil(math.sqrt(meshes)))
         step = GRID_SIZE / n
@@ -95,35 +105,49 @@ try:
             for i in range(n):
                 a = j * (n + 1) + i
                 indices.append("%d,%d,%d,%d" % (a, a + 1, a + n + 2, a + n + 1))
-        with open(os.path.join(directory, "grid.usda"), "w") as f:
-            f.write('#usda 1.0\n(\n    defaultPrim = "Grid"\n)\n\n')
-            f.write('def Mesh "Grid"\n{\n')
-            f.write("    int[] faceVertexCounts = [%s]\n" % counts)
-            f.write("    int[] faceVertexIndices = [%s]\n" % ",".join(indices))
-            f.write("    point3f[] points = [%s]\n" % ", ".join(points))
-            f.write("    uniform token subdivisionScheme = \"none\"\n")
-            f.write("    color3f[] primvars:displayColor = [(0.6, 0.6, 0.6)]\n}\n")
+        grid = io.StringIO()
+        f = grid
+        f.write('#usda 1.0\n(\n    defaultPrim = "Grid"\n)\n\n')
+        f.write('def Mesh "Grid"\n{\n')
+        f.write("    int[] faceVertexCounts = [%s]\n" % counts)
+        f.write("    int[] faceVertexIndices = [%s]\n" % ",".join(indices))
+        f.write("    point3f[] points = [%s]\n" % ", ".join(points))
+        f.write("    uniform token subdivisionScheme = \"none\"\n")
+        f.write("    color3f[] primvars:displayColor = [(%.2f, %.2f, %.2f)]\n}\n" % color)
         rows = (meshes + columns - 1) // columns
-        scene = os.path.join(directory, "scene.usda")
-        with open(scene, "w") as f:
-            f.write('#usda 1.0\n(\n    defaultPrim = "World"\n    metersPerUnit = 0.01\n    upAxis = "Y"\n)\n\n')
-            f.write('def Xform "World"\n{\n')
-            for k in range(meshes):
-                x = (k % columns) * GRID_SPACING
-                z = (k // columns) * GRID_SPACING
-                f.write('    def Mesh "Grid%d" (\n        references = @./grid.usda@\n    )\n    {\n' % k)
-                f.write('        double3 xformOp:translate = (%.2f, 0, %.2f)\n' % (x, z))
-                f.write('        uniform token[] xformOpOrder = ["xformOp:translate"]\n    }\n')
-            f.write('    def Camera "Cam"\n    {\n        float focalLength = 18\n')
-            f.write('        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n')
-            f.write('        double3 xformOp:translate = (%.1f, %.1f, %.1f)\n'
-                    % (columns * GRID_SPACING / 2, 70.0 + rows * 4, rows * GRID_SPACING + 90.0))
-            f.write('        float3 xformOp:rotateXYZ = (-22, 0, 0)\n')
-            f.write('        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]\n    }\n')
-            f.write('    def DistantLight "Sun"\n    {\n        float inputs:intensity = 3\n'
-                    '        float3 xformOp:rotateXYZ = (-50, 30, 0)\n'
-                    '        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]\n    }\n}\n')
-        return scene
+        scene = io.StringIO()
+        f = scene
+        f.write('#usda 1.0\n(\n    defaultPrim = "World"\n    metersPerUnit = 0.01\n    upAxis = "Y"\n)\n\n')
+        f.write('def Xform "World"\n{\n')
+        for k in range(meshes):
+            x = (k % columns) * GRID_SPACING
+            z = (k // columns) * GRID_SPACING
+            f.write('    def Mesh "Grid%d" (\n        references = @./grid.usda@\n    )\n    {\n' % k)
+            f.write('        double3 xformOp:translate = (%.2f, 0, %.2f)\n' % (x, z))
+            f.write('        uniform token[] xformOpOrder = ["xformOp:translate"]\n    }\n')
+        f.write('    def Camera "Cam"\n    {\n        float focalLength = 18\n')
+        f.write('        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n')
+        f.write('        double3 xformOp:translate = (%.1f, %.1f, %.1f)\n'
+                % (columns * GRID_SPACING / 2, 70.0 + rows * 4, rows * GRID_SPACING + 90.0))
+        f.write('        float3 xformOp:rotateXYZ = (-22, 0, 0)\n')
+        f.write('        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]\n    }\n')
+        f.write('    def DistantLight "Sun"\n    {\n        float inputs:intensity = %g\n'
+                '        float3 xformOp:rotateXYZ = (-50, 30, 0)\n'
+                '        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]\n    }\n}\n' % sun)
+        return grid.getvalue(), scene.getvalue()
+
+    def write_text(path, text):
+        """Writes text to path in one step: a reader of the file it replaces keeps reading that one."""
+        with open(path + ".next", "w") as f:
+            f.write(text)
+        os.replace(path + ".next", path)
+
+    def write_scene(directory, meshes, quads):
+        """Writes grid.usda and scene.usda into directory; returns the scene's path."""
+        grid, scene = scene_texts(meshes, quads)
+        write_text(os.path.join(directory, "grid.usda"), grid)
+        write_text(os.path.join(directory, "scene.usda"), scene)
+        return os.path.join(directory, "scene.usda")
 
     user_scene = os.environ.get("NATRON_TEST_SCENE", "")
     if user_scene:
@@ -132,7 +156,8 @@ try:
     else:
         meshes = int(os.environ.get("NATRON_TEST_MESHES", "120"))
         quads = int(os.environ.get("NATRON_TEST_QUADS", "100"))
-        scene_path = write_scene(tempfile.mkdtemp(prefix="m364-"), meshes, quads)
+        scene_dir = tempfile.mkdtemp(prefix="m364-")
+        scene_path = write_scene(scene_dir, meshes, quads)
 
     read = app.createNode("USDRead")
     require(read is not None, "create USDRead", plugin_problem("USDRead"))
@@ -484,6 +509,85 @@ try:
         check(not over_limit(), "the GUI thread never stalled over %d ms, the Storm frames aside on the switch to Storm "
               "(worst %.1f ms; over: %r)" % (STALL_LIMIT_MS, worst(), over_limit()))
         shot("m364-final-frame.png")
+
+        yield from reload_during_cycles(samples)
+
+    def grab_view():
+        """The view as drawn, with the heartbeat stopped: grabbing it takes the GUI thread longer
+        than a stall."""
+        running = timer.isActive()
+        timer.stop()
+        v = view()
+        image = v.grab().toImage() if v is not None else None
+        beat["last"] = None
+        if running:
+            timer.start()
+        return image
+
+    def differing_pixels(a, b, step=4):
+        if a is None or b is None or a.size() != b.size():
+            return 0
+        count = 0
+        for y in range(0, a.height(), step):
+            for x in range(0, a.width(), step):
+                pa, pb = a.pixelColor(x, y), b.pixelColor(x, y)
+                if abs(pa.red() - pb.red()) + abs(pa.green() - pb.green()) + abs(pa.blue() - pb.blue()) > 30:
+                    count += 1
+        return count
+
+    def reload_during_cycles(samples):
+        """Rewrites the grid every mesh references and presses the USDRead's Reload, which has
+        Cycles sync every mesh again; while it does, rewrites the scene's light and presses Reload
+        again. Neither stalls the GUI, and the converged frame shows both."""
+        section("reload during Cycles")
+        reload = read.getParam("reload")
+        if user_scene:
+            report("SKIP the reload phase rewrites the generated scene, and NATRON_TEST_SCENE names another")
+            return
+        require(reload is not None, "the USDRead has a Reload button")
+        # Written ahead, so the phases count only renaming them into place.
+        grid_text, _ = scene_texts(meshes, quads, RELOAD_COLOR)
+        _, scene_text = scene_texts(meshes, quads, RELOAD_COLOR, RELOAD_SUN)
+        grid_path = os.path.join(scene_dir, "grid.usda")
+        with open(grid_path + ".reload", "w") as f:
+            f.write(grid_text)
+        with open(scene_path + ".reload", "w") as f:
+            f.write(scene_text)
+        before = grab_view()
+        require(before is not None, "the view can be grabbed before the reload")
+        frames = num("natronSceneRefineFrames", 0)
+
+        timer.start()
+        phase("reload the meshes")
+        samples.set(RELOAD_SAMPLES)
+        os.replace(grid_path + ".reload", grid_path)
+        reload.trigger()
+        ok = yield ("until", lambda: app.waitForReloads(0), POLL_TIMEOUT_S)
+        check(ok, "the meshes' reload ends")
+        mid_pass = not bool(prop("natronSceneRefineConverged"))
+        phase("reload the light")
+        os.replace(scene_path + ".reload", scene_path)
+        reload.trigger()
+        ok = yield ("until", lambda: app.waitForReloads(0), POLL_TIMEOUT_S)
+        check(ok, "the light's reload ends")
+        report("NOTE the light was reloaded while Cycles was %s" % ("mid-pass" if mid_pass else "converged"))
+        phase("converge after the reloads")
+        ok = yield ("until", lambda: num("natronSceneRefineFrames", 0) > frames and bool(prop("natronSceneRefineConverged"))
+                    and num("natronSceneSamples") == RELOAD_SAMPLES and num("natronSceneDrawnSamples") == RELOAD_SAMPLES,
+                    REFINE_TIMEOUT_S)
+        check(ok, "the render converges after the reloads (samples %r, drawn %r)"
+              % (num("natronSceneSamples"), num("natronSceneDrawnSamples")))
+        timer.stop()
+        for name in ("reload the meshes", "reload the light", "converge after the reloads"):
+            check(worst(name) < STALL_LIMIT_MS, "%s does not stall the GUI (%.1f ms, limit %.1f ms)" % (name, worst(name), STALL_LIMIT_MS))
+        message = read.getPersistentMessage()
+        check(not message, "the USDRead reports no reload error (%r)" % (message,))
+        check(not prop("natronSceneRendererError") and not prop("natronSceneError"),
+              "no renderer error after the reloads (%r, %r)" % (prop("natronSceneRendererError"), prop("natronSceneError")))
+        after = grab_view()
+        changed = differing_pixels(before, after)
+        check(changed > 100, "the view shows the reloaded files (%d sampled pixels changed)" % changed)
+        shot("m364-after-reload.png")
 
     run(steps())
 except Exception:

@@ -47,7 +47,9 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <QCoreApplication>
 #include <QDebug>
+#include <QThread>
 
 #ifdef emit
 #define NATRON_HYDRARENDER_RESTORE_EMIT
@@ -607,6 +609,12 @@ setHeadlight(UsdImagingGLEngine* engine)
  **/
 class RenderThread {
 public:
+    struct Job {
+        std::function<void()> run;
+        // Posted from the main thread.
+        bool mainThread;
+    };
+
     static RenderThread& storm()
     {
         static RenderThread* thread = new RenderThread(true);
@@ -633,8 +641,15 @@ public:
     {
         std::call_once(_registered, [this]() {
             // Never unregistered: the thread lives as long as the process.
-            (void)SceneWriteBarrier::registerParticipant([this]() { pause(); }, [this]() { resume(); });
+            (void)SceneWriteBarrier::registerParticipant([this]() { pause(); },
+                                                         [this]() { resume(); },
+                                                         SceneWriteBarrier::eQuiesceOrderNormal,
+                                                         [this](const std::function<void()>& parked) { park(parked); },
+                                                         [this]() { unpark(); });
         });
+        // A parked thread still runs the main thread's jobs: the main thread waits for them, and
+        // a write waiting on the parking runs on the main thread.
+        const bool mainThread = QCoreApplication::instance() && (QThread::currentThread() == QCoreApplication::instance()->thread());
         {
             std::lock_guard<std::mutex> l(_mutex);
             if (!_started) {
@@ -644,7 +659,7 @@ public:
                 _started = true;
                 std::thread(&RenderThread::run, this).detach();
             }
-            _jobs.push_back(std::move(job));
+            _jobs.push_back(Job { std::move(job), mainThread });
         }
         _wake.notify_one();
 
@@ -957,17 +972,53 @@ private:
     }
 
     // Lets a barrier write that is waiting for the running job through, then carries on: called by
-    // a long render between its passes, when it is not reading the scene's layers.
+    // a long render between its passes, when it is not reading the scene's layers. Parks there too,
+    // unless the job is the main thread's, which a write waiting on the parking would wait for.
     void yieldToBarrier()
     {
         std::unique_lock<std::mutex> l(_mutex);
-        if (!_paused) {
+        const bool parks = _parkAsked && !_runningMainJob;
+        if (!_paused && !parks) {
             return;
         }
         _busy = false;
+        if (parks) {
+            const std::function<void()> parked = std::move(_parked);
+            _parked = std::function<void()>();
+            if (parked) {
+                l.unlock();
+                parked();
+                l.lock();
+            }
+        }
         _idle.notify_all();
-        _wake.wait(l, [this]() { return !_paused; });
+        _wake.wait(l, [this]() { return !_paused && (!_parkAsked || _runningMainJob); });
         _busy = true;
+    }
+
+    // The barrier's park: at once when no job runs, else at the job's end or its next yield.
+    void park(const std::function<void()>& parked)
+    {
+        bool now = false;
+        {
+            std::lock_guard<std::mutex> l(_mutex);
+            _parkAsked = true;
+            now = !_busy || _runningMainJob;
+            _parked = now ? std::function<void()>() : parked;
+        }
+        if (now) {
+            parked();
+        }
+    }
+
+    void unpark()
+    {
+        {
+            std::lock_guard<std::mutex> l(_mutex);
+            _parkAsked = false;
+            _parked = std::function<void()>();
+        }
+        _wake.notify_all();
     }
 
     // The barrier's quiesce: waits for the running job and holds the queue until resume().
@@ -987,15 +1038,32 @@ private:
         _wake.notify_one();
     }
 
+    // Under _mutex: the next job that may start, or _jobs.end().
+    std::deque<Job>::iterator nextJob()
+    {
+        if (_paused) {
+            return _jobs.end();
+        }
+        for (std::deque<Job>::iterator it = _jobs.begin(); it != _jobs.end(); ++it) {
+            if (!_parkAsked || it->mainThread) {
+                return it;
+            }
+        }
+
+        return _jobs.end();
+    }
+
     void run()
     {
         for (;;) {
             std::function<void()> job;
             {
                 std::unique_lock<std::mutex> l(_mutex);
-                _wake.wait(l, [this]() { return !_paused && !_jobs.empty(); });
-                job = std::move(_jobs.front());
-                _jobs.pop_front();
+                _wake.wait(l, [this]() { return nextJob() != _jobs.end(); });
+                const std::deque<Job>::iterator next = nextJob();
+                job = std::move(next->run);
+                _runningMainJob = next->mainThread;
+                _jobs.erase(next);
                 _busy = true;
             }
             // A job that does not wait has no one to report to; its exception must not end the
@@ -1004,9 +1072,18 @@ private:
                 job();
             } catch (...) {
             }
+            std::function<void()> parked;
             {
                 std::lock_guard<std::mutex> l(_mutex);
                 _busy = false;
+                _runningMainJob = false;
+                if (_parkAsked) {
+                    parked = std::move(_parked);
+                    _parked = std::function<void()>();
+                }
+            }
+            if (parked) {
+                parked();
             }
             _idle.notify_all();
         }
@@ -1043,12 +1120,17 @@ private:
     std::mutex _mutex;
     std::condition_variable _wake;
     std::condition_variable _idle;
-    std::deque<std::function<void()>> _jobs;
+    std::deque<Job> _jobs;
     bool _started = false;
     // A barrier write is in progress: no job starts.
     bool _paused = false;
     // A job is running.
     bool _busy = false;
+    bool _runningMainJob = false;
+    // A barrier write waits for the thread to park: only the main thread's jobs start. _parked
+    // is the report still to make, empty once made.
+    bool _parkAsked = false;
+    std::function<void()> _parked;
 
     std::unique_ptr<HydraGLContext> _context;
     bool _contextTried = false;
@@ -2687,6 +2769,9 @@ struct ProgressiveRender::Implementation {
     RendererSettings settings;
     bool stopped = false;
     bool quit = false;
+    // A barrier write waits for the worker to park; parkedReport is the report still to make.
+    bool parkAsked = false;
+    std::function<void()> parkedReport;
     // quit, read without the mutex by a texture export the pass is waiting on.
     std::atomic<bool> quitting { false };
     // Bumped by each change that makes the engine again, read without the mutex by a texture
@@ -2802,6 +2887,37 @@ struct ProgressiveRender::Implementation {
             }
         }
         lock.lock();
+    }
+
+    // Under mutex, and again on return. Parks while a barrier write asks it to, holding no
+    // engineMutex, so the write's quiesce does not wait out a delegate call. True if it parked:
+    // the caller starts its iteration again, as anything may have changed meanwhile. A write
+    // while parked reloaded layers the worker's stage composes, which its engine picks up at its
+    // next sync: that is an edit like any other.
+    bool parkPoint(std::unique_lock<std::mutex>& lock)
+    {
+        if (!parkAsked || quit) {
+            return false;
+        }
+        interruptRender(lock);
+        const U64 writes = SceneWriteBarrier::getWriteCount();
+        while (parkAsked && !quit) {
+            if (parkedReport) {
+                const std::function<void()> report = std::move(parkedReport);
+                parkedReport = std::function<void()>();
+                lock.unlock();
+                report();
+                lock.lock();
+                continue;
+            }
+            wake.wait(lock);
+        }
+        if (SceneWriteBarrier::getWriteCount() != writes) {
+            ++sceneEdits;
+            edited();
+        }
+
+        return true;
     }
 
     // Makes the engine of id, on the worker; false with *error set if the delegate cannot start.
@@ -3144,6 +3260,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     std::unique_ptr<MoonRayAovs::LogCapture> log;
 
     while (!quit) {
+        if (parkPoint(lock)) {
+            done = false;
+            continue;
+        }
         workingRenderer = renderer;
         workingEdits = sceneEdits;
         const bool idle = renderer.empty() || (renderer == kRenderDelegateStormId) || !hasView || !snapshotOf;
@@ -3248,6 +3368,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 
         if (stopped) {
             if (!paused) {
+                if (parkPoint(lock)) {
+                    continue;
+                }
                 lock.unlock();
                 {
                     std::lock_guard<std::mutex> l(engineMutex);
@@ -3267,6 +3390,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         status.stopped = false;
         status.paused = false;
         if (paused) {
+            if (parkPoint(lock)) {
+                continue;
+            }
             lock.unlock();
             {
                 std::lock_guard<std::mutex> l(engineMutex);
@@ -3306,6 +3432,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         }
         if (done) {
             wake.wait(lock);
+            continue;
+        }
+        if (parkPoint(lock)) {
+            done = false;
             continue;
         }
 
@@ -3468,6 +3598,11 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         const bool atCap = (cap > 0) && (samples >= cap);
         const bool finished = restartSeen && converged && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
         bool publish = restartSeen && (samples != 0) && (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex));
+        if (publish && parkPoint(lock)) {
+            // What the pass rendered may be of the layers before the write.
+            done = false;
+            continue;
+        }
         if (publish) {
             lock.unlock();
             read.reset(new Frame);
@@ -3517,12 +3652,28 @@ ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
 {
     Implementation* imp = _imp.get();
     // The worker's stage composes the caller's layers read from files outside any ReadScope: a
-    // reload waits for the delegate call under way and keeps the next one out until it is done.
-    // It cannot cut that call short: the call reads the very layers the reload edits, and the
-    // reload delivers its change notices to the worker's stage and the engine on its own thread.
+    // reload keeps every delegate call out until it is done. It cannot cut a call short, as the
+    // call reads the very layers the reload edits and the reload delivers its change notices to
+    // the worker's stage and the engine on its own thread. Parking the worker between calls
+    // before the write keeps readers, the GUI among them, from waiting while the call runs out.
     std::mutex* engineMutex = &_imp->engineMutex;
+    const auto park = [imp](const std::function<void()>& parked) {
+        std::lock_guard<std::mutex> l(imp->mutex);
+        imp->parkAsked = true;
+        imp->parkedReport = parked;
+        imp->wake.notify_all();
+    };
+    const auto unpark = [imp]() {
+        std::lock_guard<std::mutex> l(imp->mutex);
+        imp->parkAsked = false;
+        imp->parkedReport = std::function<void()>();
+        imp->wake.notify_all();
+    };
     _imp->participant = SceneWriteBarrier::registerParticipant([engineMutex]() { engineMutex->lock(); },
-                                                               [engineMutex]() { engineMutex->unlock(); });
+                                                               [engineMutex]() { engineMutex->unlock(); },
+                                                               SceneWriteBarrier::eQuiesceOrderNormal,
+                                                               park,
+                                                               unpark);
     _imp->cyclesHolder = CyclesThreads::instance().addHolder([imp]() {
         std::lock_guard<std::mutex> l(imp->mutex);
         imp->wake.notify_all();

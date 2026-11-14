@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -329,6 +330,16 @@ std::vector<PXR_NS::SdfLayerRefPtr> getFileLayerClosure(const PXR_NS::SdfLayerRe
  **/
 bool reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
                       std::string* errorMessage);
+
+/**
+ * @brief reloadFileLayers() for the main thread, which it does not block while the viewers'
+ * renders stop (SceneWriteBarrier::runExclusiveAsync()). done is called on the main thread once
+ * the layers are reloaded, with whether they all were and the error otherwise; before returning
+ * when nothing had to stop. Requests made while one waits are reloaded together, in one change
+ * block. Off the main thread it blocks, as reloadFileLayers() does.
+ **/
+void requestFileLayerReload(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
+                            const std::function<void(bool ok, const std::string& errorMessage)>& done);
 
 /**
  * @brief How many times reloadFileLayers() has reloaded layers in this process. A reload can

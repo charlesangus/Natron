@@ -49,7 +49,10 @@
 
 #include <gtest/gtest.h>
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QEventLoop>
+#include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 
 #include "BaseTest.h"
@@ -65,6 +68,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Tests/Scene/CyclesTestUtils.h"
 #include "Tests/TestWatchdog.h"
 
@@ -151,12 +155,12 @@ centreDepth(const ProgressiveRender::Frame& frame)
     return frame.depth[(std::size_t)(frame.height / 2) * (std::size_t)frame.width + (std::size_t)(frame.width / 2)];
 }
 
-// base with grids meshes of size by size quads inside /World/Near, which hides them: a scene a
-// delegate's first sync takes long enough on for an edit to come while it runs.
-ScenePayload
-heavyScene(const ScenePayload& base,
-           int grids,
-           int size)
+// A layer of grids meshes of size by size quads, children of parent, at most half a unit from
+// its origin.
+PXR_NS::SdfLayerRefPtr
+heavyLayer(int grids,
+           int size,
+           const std::string& parent)
 {
     PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("ProgressiveRenderTestHeavy");
     PXR_NS::VtIntArray counts((std::size_t)size * (std::size_t)size, 4);
@@ -181,7 +185,7 @@ heavyScene(const ScenePayload& base,
                 points.push_back(PXR_NS::GfVec3f((float)x / (float)size - 0.5f, (float)y / (float)size - 0.5f, z));
             }
         }
-        PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath("/World/HeavyGrid_" + std::to_string(g)));
+        PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath(parent + "/HeavyGrid_" + std::to_string(g)));
         prim->SetSpecifier(PXR_NS::SdfSpecifierDef);
         prim->SetTypeName("Mesh");
         PXR_NS::SdfAttributeSpec::New(prim, "points", PXR_NS::SdfValueTypeNames->Point3fArray)->SetDefaultValue(PXR_NS::VtValue(points));
@@ -190,7 +194,47 @@ heavyScene(const ScenePayload& base,
         PXR_NS::SdfAttributeSpec::New(prim, "subdivisionScheme", PXR_NS::SdfValueTypeNames->Token, PXR_NS::SdfVariabilityUniform)->SetDefaultValue(PXR_NS::VtValue(PXR_NS::TfToken("none")));
     }
 
-    return SceneOps::appendLayer(base, layer, 0x4ea7700ULL);
+    return layer;
+}
+
+// base with grids meshes of size by size quads inside /World/Near, which hides them: a scene a
+// delegate's first sync takes long enough on for an edit to come while it runs.
+ScenePayload
+heavyScene(const ScenePayload& base,
+           int grids,
+           int size)
+{
+    return SceneOps::appendLayer(base, heavyLayer(grids, size, "/World"), 0x4ea7700ULL);
+}
+
+// Writes to path, in place of what it held and in one step, a file of heavyLayer()'s grids under
+// /World/Near with /World/Near moved back by back units: a reader of the file it replaces keeps
+// reading that one.
+bool
+writeHeavyFile(const std::string& path,
+               int grids,
+               int size,
+               double back)
+{
+    PXR_NS::SdfLayerRefPtr layer = heavyLayer(grids, size, "/World/Near");
+    PXR_NS::SdfPrimSpecHandle prim = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Near"));
+    PXR_NS::SdfAttributeSpecHandle translate = PXR_NS::SdfAttributeSpec::New(prim, "xformOp:translate", PXR_NS::SdfValueTypeNames->Double3);
+    translate->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3d(0., 0., -back)));
+    PXR_NS::SdfAttributeSpecHandle order = PXR_NS::SdfAttributeSpec::New(prim, "xformOpOrder", PXR_NS::SdfValueTypeNames->TokenArray, PXR_NS::SdfVariabilityUniform);
+    order->SetDefaultValue(PXR_NS::VtValue(PXR_NS::VtTokenArray(1, PXR_NS::TfToken("xformOp:translate"))));
+    const std::string next = path.substr(0, path.size() - 5) + "-next.usdc";
+    if (!layer->Export(next)) {
+        ADD_FAILURE() << "cannot write " << next;
+
+        return false;
+    }
+    if (std::rename(next.c_str(), path.c_str()) != 0) {
+        ADD_FAILURE() << "cannot move " << next << " to " << path;
+
+        return false;
+    }
+
+    return true;
 }
 
 bool
@@ -1101,6 +1145,157 @@ TEST_F(ProgressiveRenderTest, TheStageLockIsFreeWhileTheWorkerSyncsAndRenders)
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
     ASSERT_TRUE(collectUntilDone(mark, &after));
     ASSERT_FALSE(after.empty());
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.back()), 1e-4f);
+}
+
+// A reload of a file layer while the worker is held up inside its engine lock, as a slow delegate
+// call holds it, keeps nobody else waiting: asked for on the main thread it returns at once, and
+// while another thread's reload waits for the worker, readers and the stage lock stay free. Both
+// end once the call does, and the frames after them show the file's new content.
+TEST_F(ProgressiveRenderTest, AFileReloadDuringAPassKeepsTheMainThreadAndReadersFree)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const double kPromptMs = 100.;
+    const double kBack = 4.;
+    const int kHoldMs = 2000;
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("heavy.usdc")).toStdString();
+    ASSERT_TRUE(writeHeavyFile(path, 24, 160, 0.));
+
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["cycles:samples"] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings));
+    PXR_NS::SdfLayerRefPtr fileScene = SceneOps::createNodeLayer("ProgressiveRenderTestFile");
+    fileScene->InsertSubLayerPath(path);
+    sync(SceneOps::appendLayer(_base, fileScene, 0xf11e5ULL));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance), centreDepth(*frames.back()), 1e-4f);
+    PXR_NS::SdfLayerRefPtr file = PXR_NS::SdfLayer::Find(path);
+    ASSERT_TRUE(bool(file)) << "the stage did not open " << path;
+    const std::vector<PXR_NS::SdfLayerRefPtr> layers = SceneOps::getFileLayerClosure(file);
+
+    // As the viewer's stage lock is: a write's last participant, since quiescing it waits for
+    // a worker taking its snapshot.
+    struct StageParticipant {
+        explicit StageParticipant(std::mutex* lock)
+            : id(SceneWriteBarrier::registerParticipant([lock]() { lock->lock(); },
+                                                        [lock]() { lock->unlock(); },
+                                                        SceneWriteBarrier::eQuiesceOrderLast))
+        {
+        }
+
+        ~StageParticipant()
+        {
+            SceneWriteBarrier::unregisterParticipant(id);
+        }
+
+        SceneWriteBarrier::ParticipantId id;
+    } stageParticipant(&_stageLock);
+
+    std::shared_ptr<SlowSync> slow = std::make_shared<SlowSync>();
+    ProgressiveRender::setPassHook([slow]() {
+        if (!slow->armed.exchange(false)) {
+            return;
+        }
+        slow->inside = true;
+        slow->entered = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(slow->sleepMs.load()));
+        slow->inside = false;
+    });
+    slow->sleepMs = kHoldMs;
+    slow->armed = true;
+    settings["cycles:samples"] = PXR_NS::VtValue(3);
+    _render->setSettings(settings);
+    ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's held-up pass"));
+    ASSERT_TRUE(writeHeavyFile(path, 24, 160, kBack));
+    const std::uint64_t reloads = SceneOps::getFileLayerReloadCount();
+    const std::size_t mark = publishedCount();
+
+    // Shared, as the completion may come after a failed assertion has left the test.
+    struct Outcome {
+        std::atomic<bool> done { false };
+        std::atomic<bool> ok { false };
+        std::mutex errorMutex;
+        std::string error;
+    };
+    const std::shared_ptr<Outcome> asked = std::make_shared<Outcome>();
+    const std::chrono::steady_clock::time_point request = std::chrono::steady_clock::now();
+    SceneOps::requestFileLayerReload(layers, [asked](bool ok, const std::string& error) {
+        {
+            std::lock_guard<std::mutex> l(asked->errorMutex);
+            asked->error = error;
+        }
+        asked->ok = ok;
+        asked->done = true;
+    });
+    const double requestMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request).count();
+    EXPECT_LT(requestMs, kPromptMs) << "requestFileLayerReload on the main thread waits for the worker's held-up pass";
+    EXPECT_TRUE(slow->inside.load()) << "the held-up pass ended before the reload it was meant to hold up";
+
+    const std::shared_ptr<Outcome> blocking = std::make_shared<Outcome>();
+    struct Joined {
+        ~Joined()
+        {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+
+        std::thread thread;
+    } other;
+    other.thread = std::thread([blocking, layers]() {
+        std::string error;
+        const bool ok = SceneOps::reloadFileLayers(layers, &error);
+        {
+            std::lock_guard<std::mutex> l(blocking->errorMutex);
+            blocking->error = error;
+        }
+        blocking->ok = ok;
+        blocking->done = true;
+    });
+
+    _watchdog.setPhase("reload");
+    double longest = 0.;
+    int taken = 0;
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    while (!(asked->done && blocking->done) && (std::chrono::steady_clock::now() < end)) {
+        const std::chrono::steady_clock::time_point probe = std::chrono::steady_clock::now();
+        {
+            SceneWriteBarrier::ReadScope read;
+            std::lock_guard<std::mutex> stage(_stageLock);
+        }
+        longest = std::max(longest, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - probe).count());
+        ++taken;
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const long long reloadMs = millisecondsSince(request);
+    if (other.thread.joinable()) {
+        other.thread.join();
+    }
+    ASSERT_TRUE(asked->done.load()) << "the main thread's reload did not end in " << kTimeout.count() << " s";
+    ASSERT_TRUE(blocking->done.load()) << "the other thread's reload did not end in " << kTimeout.count() << " s";
+    std::printf("[          ] the reloads ended %lld ms after they were asked for; a reader and the stage lock were taken %d times meanwhile, after %.2f ms at most\n",
+                reloadMs, taken, longest);
+    EXPECT_TRUE(asked->ok.load()) << asked->error;
+    EXPECT_TRUE(blocking->ok.load()) << blocking->error;
+    EXPECT_GT(reloadMs, (long long)(2 * kPromptMs)) << "the reloads did not wait for the held-up pass, which they cannot cut short";
+    EXPECT_GT(taken, 0);
+    EXPECT_LT(longest, kPromptMs) << "a reload waiting for the worker keeps readers or the stage lock waiting";
+    EXPECT_GT(SceneOps::getFileLayerReloadCount(), reloads);
+
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
+    ASSERT_TRUE(collectUntilDone(mark, &after));
+    ASSERT_FALSE(after.empty());
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.front()), 1e-4f) << "a frame of the file's old content came after the reload";
     EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.back()), 1e-4f);
 }
 

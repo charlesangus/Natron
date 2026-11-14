@@ -448,6 +448,8 @@ try:
             handle.write(contents.replace('"Marker"', '"Renamed"'))
         require(param(reference, "reload") is not None, "USDReference has a Reload button")
         param(reference, "reload").trigger()
+        ok = yield ("until", lambda: app.waitForReloads(0), POLL_TIMEOUT_S)
+        check(ok, "the reload ended")
         ok = yield ("until", lambda: "/World/Ext/Renamed" in prim_paths(flattened(reference)), POLL_TIMEOUT_S)
         paths = prim_paths(flattened(reference))
         check(ok and "/World/Ext/Marker" not in paths, "Reload picks up the rewritten file (%r)" % (paths,))

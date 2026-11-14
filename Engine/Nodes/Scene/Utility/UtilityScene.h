@@ -153,6 +153,8 @@ public:
     void setLight(const PXR_NS::SdfPath& path,
                   const std::shared_ptr<const UtilityLightDesc>& light);
     void removeLight(const PXR_NS::SdfPath& path);
+    // The camera that camera-space lights follow, as its view-to-world matrix.
+    void setViewToWorld(const PXR_NS::GfMatrix4d& viewToWorld);
     void setRenderTag(GeometryId id,
                       const PXR_NS::TfToken& tag);
     // The render tags whose geometries contribute instances to snapshots and stats, all of them when
@@ -188,6 +190,7 @@ private:
     std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityMaterialDesc>> _materials;
     std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityLightDesc>> _lights;
     std::shared_ptr<UtilityTexturePool> _textures;
+    PXR_NS::GfMatrix4d _viewToWorld = PXR_NS::GfMatrix4d(1.);
     std::uint64_t _version = 0;
     std::size_t _topologyBuilds = 0;
     std::size_t _pointUpdates = 0;

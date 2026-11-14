@@ -200,6 +200,9 @@ bool linked(uint instance, uint light, uint mask)
 // arrives.
 void sampleLights(uint index, uint instance, PreviewSurfaceSample surface, float3 position, float3 geometric, float3 toViewer)
 {
+    if (params.lighting.y == 0)
+        return;
+
     const uint pixelX = params.pixels.x + index % params.pixels.z;
     const uint pixelY = params.pixels.y + index / params.pixels.z;
     const uint pixel = (pixelY << 16) ^ pixelX;

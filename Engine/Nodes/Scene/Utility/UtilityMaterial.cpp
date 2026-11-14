@@ -340,8 +340,15 @@ private:
         if (const VtValue* v = parameter(texture, "fallback")) {
             readVec4(*v, &ref.fallback);
         }
-        if (const VtValue* v = parameter(texture, "sourceColorSpace")) {
-            const std::string space = readString(*v);
+        // UsdImaging moves sourceColorSpace onto the file parameter, which a legacy network carries
+        // as "colorSpace:file".
+        const VtValue* colorSpace = parameter(texture, "sourceColorSpace");
+
+        if (!colorSpace) {
+            colorSpace = parameter(texture, "colorSpace:file");
+        }
+        if (colorSpace) {
+            const std::string space = readString(*colorSpace);
 
             ref.colorSpace = space == "raw" ? UtilityTextureRef::eColorSpaceRaw : space == "sRGB" ? UtilityTextureRef::eColorSpaceSRGB
                                                                                                   : UtilityTextureRef::eColorSpaceAuto;

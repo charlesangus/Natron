@@ -433,6 +433,9 @@ makeShadeParams(const WavefrontFrame& frame,
     }
     params.pixelFootprint[2] = 0.f;
     params.pixelFootprint[3] = 0.f;
+    params.pixels[0] = static_cast<std::uint32_t>(frame.window.x);
+    params.pixels[1] = static_cast<std::uint32_t>(frame.window.y);
+    params.pixels[2] = static_cast<std::uint32_t>(std::max(1, frame.window.width));
 
     return params;
 }

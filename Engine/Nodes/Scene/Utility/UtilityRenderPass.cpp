@@ -302,6 +302,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     if (hasCamera) {
         frame.worldToView = renderPassState->GetWorldToViewMatrix();
         frame.projection = renderPassState->GetProjectionMatrix();
+        scene->setViewToWorld(frame.worldToView.GetInverse());
     }
 
     FrameKey key;

@@ -33,6 +33,7 @@
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdsi/implicitSurfaceSceneIndex.h>
 #include <pxr/imaging/hdsi/lightLinkingSceneIndex.h>
+#include <pxr/imaging/hdsi/nodeIdentifierResolvingSceneIndex.h>
 
 #include <embree4/rtcore.h>
 
@@ -44,6 +45,7 @@ namespace {
 const char* const kDisplayName = "Natron Utility";
 const char* const kImplicitSurfacePluginId = "HdNatronUtilityImplicitSurfaceSceneIndexPlugin";
 const char* const kLightLinkingPluginId = "HdNatronUtilityLightLinkingSceneIndexPlugin";
+const char* const kNodeIdentifierPluginId = "HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin";
 
 // Embree refuses a device on a CPU without the instruction sets it was built for. An empty string
 // means it can open one.
@@ -143,6 +145,17 @@ HdNatronUtilityImplicitSurfaceSceneIndexPlugin::_AppendSceneIndex(const HdSceneI
     return HdsiImplicitSurfaceSceneIndex::New(inputScene, args);
 }
 
+HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin::HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin()
+{
+}
+
+HdSceneIndexBaseRefPtr
+HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin::_AppendSceneIndex(const HdSceneIndexBaseRefPtr& inputScene,
+                                                                          const HdContainerDataSourceHandle& /*inputArgs*/)
+{
+    return HdSiNodeIdentifierResolvingSceneIndex::New(inputScene, TfToken("glslfx"));
+}
+
 HdNatronUtilityLightLinkingSceneIndexPlugin::HdNatronUtilityLightLinkingSceneIndexPlugin()
 {
 }
@@ -164,6 +177,7 @@ defineUtilityRendererTypes()
     HdRendererPluginRegistry::Define<HdNatronUtilityRendererPlugin>();
     HdSceneIndexPluginRegistry::Define<HdNatronUtilityImplicitSurfaceSceneIndexPlugin>();
     HdSceneIndexPluginRegistry::Define<HdNatronUtilityLightLinkingSceneIndexPlugin>();
+    HdSceneIndexPluginRegistry::Define<HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin>();
 }
 
 void
@@ -171,6 +185,11 @@ registerUtilitySceneIndexPlugins()
 {
     HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(kDisplayName,
                                                                             TfToken(kImplicitSurfacePluginId),
+                                                                            nullptr,
+                                                                            0,
+                                                                            HdSceneIndexPluginRegistry::InsertionOrderAtStart);
+    HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(kDisplayName,
+                                                                            TfToken(kNodeIdentifierPluginId),
                                                                             nullptr,
                                                                             0,
                                                                             HdSceneIndexPluginRegistry::InsertionOrderAtStart);

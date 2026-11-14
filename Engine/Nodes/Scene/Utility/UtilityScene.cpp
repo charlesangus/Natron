@@ -250,6 +250,23 @@ UtilityScene::removeLight(const SdfPath& path)
 }
 
 void
+UtilityScene::setViewToWorld(const GfMatrix4d& viewToWorld)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+
+    if (viewToWorld == _viewToWorld) {
+        return;
+    }
+    _viewToWorld = viewToWorld;
+    for (const auto& entry : _lights) {
+        if (entry.second && entry.second->cameraSpace) {
+            ++_version;
+            break;
+        }
+    }
+}
+
+void
 UtilityScene::setRenderTag(GeometryId id,
                            const TfToken& tag)
 {
@@ -317,6 +334,15 @@ UtilityScene::snapshot() const
     snapshot.version = _version;
     snapshot.materials = _materials;
     snapshot.lights = _lights;
+    for (auto& entry : snapshot.lights) {
+        if (entry.second && entry.second->cameraSpace) {
+            auto placed = std::make_shared<UtilityLightDesc>(*entry.second);
+
+            placed->transform = placed->transform * _viewToWorld;
+            placed->cameraSpace = false;
+            entry.second = placed;
+        }
+    }
     snapshot.textures = _textures;
     for (const auto& entry : _records) {
         snapshot.geometries.emplace_hint(snapshot.geometries.end(), entry.first, entry.second.geometry);

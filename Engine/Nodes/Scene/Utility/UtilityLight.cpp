@@ -32,7 +32,9 @@
 #include <fstream>
 #include <sstream>
 
+#include <pxr/base/gf/rotation.h>
 #include <pxr/base/gf/vec3d.h>
+#include <pxr/imaging/glf/simpleLight.h>
 #include <pxr/imaging/hd/sceneDelegate.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/usd/sdf/assetPath.h>
@@ -419,6 +421,7 @@ UtilityLight::supportedTypes()
         HdPrimTypeTokens->diskLight,
         HdPrimTypeTokens->cylinderLight,
         HdPrimTypeTokens->domeLight,
+        HdPrimTypeTokens->simpleLight,
     };
 
     return types;
@@ -501,6 +504,32 @@ UtilityLight::Sync(HdSceneDelegate* sceneDelegate,
                 d.iesProblem = "The IES profile " + iesPath + " of " + id.GetString() + " is ignored: " + why + ".";
             }
         }
+    }
+
+    d.cameraSpace = false;
+
+    // A task controller's light (the viewer's headlight) carries its real description as a
+    // GlfSimpleLight; its intensity is a calibration for other renderers and would blow the frame out.
+    const VtValue simple = sceneDelegate->GetLightParamValue(id, HdLightTokens->params);
+
+    if (_type == UtilityLightDesc::eTypeDistant && simple.IsHolding<GlfSimpleLight>()) {
+        const GlfSimpleLight& light = simple.UncheckedGet<GlfSimpleLight>();
+        const GfVec4f& diffuse = light.GetDiffuse();
+        const GfVec4f& position = light.GetPosition();
+        const GfVec3d toward(position[0], position[1], position[2]);
+
+        // Pi times the diffuse colour lights a Lambertian surface facing it by its albedo, as Storm's
+        // simple lighting does.
+        d.emission = GfVec3f(diffuse[0], diffuse[1], diffuse[2]) * static_cast<float>(M_PI);
+        d.angleDegrees = 0.f;
+        d.normalize = false;
+        d.shadowEnable = light.HasShadow();
+        // A distant light shines from its +Z; a light at a point shines from the camera's +Z, toward
+        // which a camera-space light at the eye sits.
+        const GfMatrix4d aim = position[3] == 0.f && toward.GetLength() > 0. ? GfMatrix4d(1.).SetRotate(GfRotation(GfVec3d(0., 0., 1.), toward)) : GfMatrix4d(1.);
+
+        d.cameraSpace = light.IsCameraSpaceLight();
+        d.transform = d.cameraSpace ? aim : aim * light.GetTransform();
     }
 
     d.domeTexture = UtilityTextureRef();

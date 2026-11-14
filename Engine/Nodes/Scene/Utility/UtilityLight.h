@@ -84,6 +84,9 @@ struct UtilityLightDesc {
 
     Type type = eTypeDistant;
     PXR_NS::GfMatrix4d transform = PXR_NS::GfMatrix4d(1.);
+    // A light that moves with the camera, as a viewer's headlight: transform is relative to the camera
+    // until a snapshot places it in the world.
+    bool cameraSpace = false;
     // intensity * 2^exposure * color, times the blackbody colour when it is enabled; normalize divides
     // it by the light's size where the scene is assembled, as that needs the transform.
     PXR_NS::GfVec3f emission = PXR_NS::GfVec3f(1.f);

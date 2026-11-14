@@ -28,6 +28,12 @@
                         "displayName": "Natron Utility light linking",
                         "loadWithRenderer": "Natron Utility",
                         "priority": 0
+                    },
+                    "HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin": {
+                        "bases": ["HdSceneIndexPlugin"],
+                        "displayName": "Natron Utility node identifier resolving",
+                        "loadWithRenderer": "Natron Utility",
+                        "priority": 0
                     }
                 }
             },

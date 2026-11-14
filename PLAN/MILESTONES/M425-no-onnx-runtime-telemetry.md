@@ -80,3 +80,4 @@ removed) is recorded in `## Decisions`. `tools/ci/local/check-no-network.sh` fai
 pre-milestone AppImage and passes on this milestone's release AppImage, with AI both enabled and
 disabled. M425.P1.T3's ROCm finding is recorded. Phase 425.2 is either done, with its checks
 green, or struck through with the reason recorded.
+- 2026-11-14 — Claimed by bosley-native-nodes (user). Landing (user): merge to main in the same window as PR #284 (the Cycles restart fix), so open Feature branches take main once, not twice.

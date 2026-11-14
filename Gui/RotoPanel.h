@@ -111,6 +111,8 @@ public Q_SLOTS:
 
     void onStrokeLifeTimeChanged();
 
+    void onItemKnobKeysChanged();
+
     void onTimeChanged(SequenceTime time, int reason);
 
     ///A new item has been created internally

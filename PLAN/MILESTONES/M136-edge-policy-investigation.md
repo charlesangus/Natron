@@ -47,7 +47,7 @@ Acceptance sketch:
   - size: M
 
 
-- [ ] M136.P1.T2 — Refresh the design note to current main and the approved answers
+- [x] M136.P1.T2 — Refresh the design note to current main and the approved answers
   - files: `Engine/Nodes/docs/edge-policy.md`
   - approach: mark it approved 2026-11-13 and refresh every line reference to current main (`getDefaultMetadataFromInputs`, `applyIdentityRule`, the OFX metadata path, `computeHashInternal`). Add rows for nodes landed since the survey: DirBlur, GodRays, LensCorrect, SplineWarp, AutoStraighten (own `black_outside` knobs), AdjustBBox, Median, Bilateral, DenoiseProfiled, ToneEqualizer, ColorEqualizer (fixed fills), Defocus, IDefocus (with a Map input), ZDefocus, VectorBlur, KeyMix, FrameBlend; and check whether ContrastTexture, LensAberration, Retouch, SlitScan and the time nodes read off-position. Move Merge, Dissolve, KeyMix, ShuffleCopy and FrameBlend into a new §1.4a "Same-position reads" listing every mask, composite-source, ChannelRoute and Map/UV read site and its current zero rule. §2.3: the knob is `edgeMode` / "Edge Mode"; Q3's rule (a forced value governs the whole output and becomes the output bit); the default changes (a Read used as Merge A repeats its edge across a larger B). §2.4: Stretch reads need the RoI clamped into the input's RoD; the mask-misses-window shortcut and Merge's transparent-A skip hold only under Black; transform concatenation stops at a node whose resolved mode differs. §3: replace the questions with the answers; Q1 reads "every input follows its own edge bit… to keep an element's edge from smearing across a merge, set its upstream Crop or Transform to Black". Remove every reference to other applications and the `.local/docs` link.
   - verify: every native node under `Engine/Nodes/{Filter,Transform,Merge,Channel,Time,Color}` that reads off-position has a row and a task in this file; no other application is named.
@@ -134,7 +134,7 @@ Acceptance sketch:
 
 - [ ] M136.P4.T3 — Erode and Dilate edge mode
   - files: `Engine/Nodes/Filter/ErodeDilate.cpp`, `Engine/Nodes/Filter/ErodeDilate.h`, `Engine/Gpu/Kernels/morphology.slang`, `Tests/Native/` (ErodeDilate test file)
-  - approach: Add the Edge Mode stage; the fill beyond the source follows the mode while the window clamp stays (CPU and GPU already agree). Fix the knob help text that names Neumann boundaries.
+  - approach: Add the Edge Mode stage; the fill beyond the source follows the mode while the window clamp stays (CPU and GPU already agree, `NativeErodeDilateGpu_Test`).
   - verify: erode and dilate of an image with a bright border pixel, both modes, CPU == GPU.
   - size: M
 
@@ -205,10 +205,10 @@ Acceptance sketch:
   - verify: as P4.T4.
   - size: M
 
-- [ ] M136.P4.T15 — Median, Bilateral and AdjustBBox
-  - files: `Engine/Nodes/Filter/Median.cpp`, `Bilateral.cpp`, `Engine/Nodes/Transform/AdjustBBox.cpp`, their GPU kernels and tests
-  - approach: replace the fixed `list.boundary` (Zero, Zero, Nearest) with the resolved mode.
-  - verify: a constant image keeps its value to the border under Stretch and darkens under Black, CPU == GPU.
+- [ ] M136.P4.T15 — AdjustBBox onto the Edge Mode knob
+  - files: `Engine/Nodes/Transform/AdjustBBox.cpp`, its GPU kernel and tests
+  - approach: AdjustBBox grows the RoD and has its own Black/Nearest choice; replace it with the stage. Median and Bilateral clip their windows to the RoD and never read past it, so they get no knob (PM, from the refreshed survey).
+  - verify: a grown box shows the input's edge repeated under Stretch and black under Black, CPU == GPU.
   - size: M
 
 - [ ] M136.P4.T16 — Defocus, IDefocus, ZDefocus and VectorBlur
@@ -217,11 +217,24 @@ Acceptance sketch:
   - verify: as P4.T15.
   - size: L
 
-- [ ] M136.P4.T17 — DenoiseProfiled, ToneEqualizer and ColorEqualizer fills
-  - files: `Engine/Nodes/Filter/DenoiseProfiled.cpp`, `Engine/Nodes/Color/ToneEqualizer.cpp`, `ColorEqualizer.cpp`
-  - approach: their fixed Zero fills follow the mode; add the stage to the two colour nodes only if P1.T2 confirms they read off-position.
-  - verify: as P4.T15 for each node that gets the stage.
+
+- [ ] M136.P4.T18 — Depth, UV and time inputs of ZDefocus, VectorBlur and the time nodes
+  - files: `Engine/Nodes/Filter/ZDefocus.cpp` (Depth input), `VectorBlur.cpp` (UV and Depth inputs), `Engine/Nodes/Time/FrameBlend.cpp`, `TimeBlur.cpp`, `SlitScan.cpp`, their GPU kernels and tests
+  - approach: every input follows its own edge bit (Q1): these same-position reads of other inputs follow each input's bit through the shared samplers, as P4.T8–T12 do for masks, composites and maps.
+  - verify: an auxiliary input smaller than the source, both modes, CPU == GPU, for each node.
+  - size: L
+
+- [ ] M136.P4.T19 — NeuralUpscale onto the Edge Mode knob
+  - files: `Engine/Nodes/Filter/NeuralUpscale.cpp` (or its location), its tests
+  - approach: its taps clamp to the source frame with no knob; add the stage so Black reads zero past the source.
+  - verify: an upscale of a small image shows repeated edges under Stretch and black under Black.
   - size: M
+
+- [ ] ~~M136.P4.T17 — DenoiseProfiled, ToneEqualizer and ColorEqualizer fills~~ (cancelled: the refreshed survey found they read only inside their own region)
+  - files: none
+  - approach: none
+  - verify: none
+  - size: S
 
 ## Phase 136.5: Matrix and acceptance
 
@@ -257,3 +270,4 @@ Acceptance sketch:
 - 2026-11-02 — Q4: filters default to Input (they follow the input's edge bit); goldens re-recorded once (user).
 - 2026-11-13 — **Design note approved (user)**, with answers: **Q1 — every input follows the edge bit** (user chose this over the recommendation): same-position reads of other inputs (Merge's A, Dissolve, Copy, every mask input, the Map inputs of IBlur, IErodeDilate, IDistort and STMap) repeat their edge too, which brings Merge, Dissolve, Copy and mask mixing into scope. **Q2 — Raw nodes stay out**: they forward the bit and keep their darktable borders. **Q3 — a forced mode overrides the input bit and passes the forced setting on**: Crop, Reformat and Transform forced to Black or Stretch govern the whole output (the band between the source region and the crop rectangle included) and set the output bit to the forced value. **Q4 — filters default to Input** (2026-11-02). Phases 2–5 to be re-checked against current main and extended for Q1 before implementation.
 - 2026-11-13 — Re-planned after approval (consultant freshness check against b59ff3fdf): five premises were stale (P2.T2, P2.T4, P3.T1, P4.T3, P5.T2) and rewritten; the knob is delivered as a `Stage::EdgeMode` pipeline stage, since most affected nodes are `StagedImageEffect`s; added P1.T2 (note refresh), P2.T6 (Stretch-aware RoI), P4.T8–T17 (Q1's same-position inputs and nodes landed since the survey). "Copy" is ShuffleCopy (no native Copy; the OpenFX Copy is out of scope). KeyMix, FrameBlend's MaskMix and IDefocus's Map are in scope because every input follows the bit (Q1).
+- 2026-11-13 — P1.T2 done (1b218d710): the note is refreshed and contains no references to other applications. Survey follow-ups: P4.T15 narrowed to AdjustBBox (Median and Bilateral never read past their region, so they get no knob); P4.T17 cancelled (those nodes read only inside their region); P4.T18 added (ZDefocus Depth, VectorBlur UV and Depth, and the FrameBlend, TimeBlur and SlitScan time reads, all in scope under Q1); P4.T19 added (NeuralUpscale clamps with no knob). Raw and the edge-aware filters stay out (Q2 and their whole-frame borders).\n

@@ -153,6 +153,9 @@ struct TimelineGuiPrivate
 {
     TimeLineGui *parent;
     ViewerInstance* viewer;
+    // The refresh timer can fire after the project has destroyed the viewer but before this widget
+    // goes (the quit path pumps events between the two), so its slots reach the viewer through this.
+    std::weak_ptr<EffectInstance> viewerAlive;
     ViewerTab* viewerTab;
     TimeLinePtr timeline; ///< ptr to the internal timeline
     Gui* gui; ///< ptr to the gui
@@ -194,6 +197,7 @@ struct TimelineGuiPrivate
                        ViewerTab* viewerTab)
         : parent(qq)
         , viewer(viewer)
+        , viewerAlive()
         , viewerTab(viewerTab)
         , timeline()
         , gui(gui)
@@ -223,6 +227,14 @@ struct TimelineGuiPrivate
         , cachedFramesFiltered(false)
         , cachedFramesFilter()
     {
+        if (viewer) {
+            viewerAlive = viewer->weak_from_this();
+        }
+    }
+
+    EffectInstancePtr lockViewer() const
+    {
+        return viewerAlive.lock();
     }
 
     bool lookupChanged() const
@@ -1496,7 +1508,8 @@ TimeLineGui::refreshCachedFrames()
     assert(qApp && qApp->thread() == QThread::currentThread());
 
     _imp->cachedFramesRefreshTimer.stop();
-    NodePtr node = _imp->viewer ? _imp->viewer->getNode() : NodePtr();
+    const EffectInstancePtr viewerAlive = _imp->lockViewer();
+    NodePtr node = viewerAlive ? _imp->viewer->getNode() : NodePtr();
     if (!node) {
         return;
     }
@@ -1524,7 +1537,8 @@ TimeLineGui::refreshCachedFrames()
 void
 TimeLineGui::refreshCachedFramesIfStale()
 {
-    NodePtr node = _imp->viewer ? _imp->viewer->getNode() : NodePtr();
+    const EffectInstancePtr viewerAlive = _imp->lockViewer();
+    NodePtr node = viewerAlive ? _imp->viewer->getNode() : NodePtr();
     if (!node) {
         return;
     }

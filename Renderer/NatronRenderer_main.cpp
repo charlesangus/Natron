@@ -99,27 +99,22 @@ extern "C" {
         return error.value();
     }
 
-    AppManager manager;
+    int rc;
+    {
+        AppManager manager;
 
-    // coverity[tainted_data]
+        // coverity[tainted_data]
 #ifdef Q_OS_WIN
-        if ( !manager.loadW(argc, argv, args) ) {
+        const bool loaded = manager.loadW(argc, argv, args);
 #else
-        if ( !manager.load(argc, argv, args) ) {
+        const bool loaded = manager.load(argc, argv, args);
 #endif
-        return 1;
-    } else {
         // Not manager.getTopLevelInstance()->hasRenderFailed(): a background-autorun
         // AppInstance is quit and destroyed inside load() itself, before this point, so
         // the result has to be read back from AppManager, which outlives it.
-        if (manager.hasRenderFailed()) {
-            return 1;
-        }
-
-        return 0;
+        rc = (!loaded || manager.hasRenderFailed()) ? 1 : 0;
     }
-
-    return 0;
+    AppManager::exitWithoutLibraryDestructors(rc);
 } //main
 #ifdef Q_OS_WIN
 } // extern "C"

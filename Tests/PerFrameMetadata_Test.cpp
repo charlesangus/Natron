@@ -1082,3 +1082,26 @@ TEST_F(PerFrameMetadataTest, EditAndRevertDuringDeriveCachesNoStaleMetadata)
     EXPECT_EQ(std::optional<int>(1), sourceEffect->getOutputMetadata(3., ViewIdx(0)).getInt("exr/tag"));
     EXPECT_GT(sourceEffect->derivationCount(), derivations);
 }
+
+TEST(NodeMetadataEdgeMode, DefaultsToStretchAndParticipatesInCopyAndEquality)
+{
+    NodeMetadata base;
+    EXPECT_EQ(EdgeMode::Stretch, base.getEdgeMode());
+
+    NodeMetadata black;
+    black.setEdgeMode(EdgeMode::Black);
+    EXPECT_EQ(EdgeMode::Black, black.getEdgeMode());
+    EXPECT_TRUE(base != black);
+
+    NodeMetadata copied(black);
+    EXPECT_EQ(EdgeMode::Black, copied.getEdgeMode());
+    EXPECT_TRUE(copied == black);
+
+    NodeMetadata assigned;
+    assigned = black;
+    EXPECT_EQ(EdgeMode::Black, assigned.getEdgeMode());
+    EXPECT_TRUE(assigned == black);
+
+    black.setEdgeMode(EdgeMode::Stretch);
+    EXPECT_TRUE(base == black);
+}

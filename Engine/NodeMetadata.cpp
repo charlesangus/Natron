@@ -70,6 +70,8 @@ struct NodeMetadataPrivate {
 
     int outputStorageNComps;
 
+    EdgeMode edgeMode;
+
     NodeMetadataPrivate()
         : outputFielding(eImageFieldingOrderNone)
         , frameRate(24.)
@@ -79,6 +81,7 @@ struct NodeMetadataPrivate {
         , isFrameVarying(false)
         , outputFormat()
         , outputStorageNComps(0)
+        , edgeMode(EdgeMode::Stretch)
     {
     }
 
@@ -97,6 +100,7 @@ struct NodeMetadataPrivate {
         isFrameVarying = other.isFrameVarying;
         outputFormat = other.outputFormat;
         outputStorageNComps = other.outputStorageNComps;
+        edgeMode = other.edgeMode;
     }
 };
 
@@ -159,6 +163,9 @@ NodeMetadata::operator==(const NodeMetadata& other) const
     if (_imp->outputFormat != other._imp->outputFormat) {
         return false;
     }
+    if (_imp->edgeMode != other._imp->edgeMode) {
+        return false;
+    }
     if (_imp->outputStorageNComps != other._imp->outputStorageNComps) {
         return false;
     }
@@ -178,6 +185,18 @@ NodeMetadata::operator==(const NodeMetadata& other) const
     }
 
     return true;
+}
+
+void
+NodeMetadata::setEdgeMode(EdgeMode mode)
+{
+    _imp->edgeMode = mode;
+}
+
+EdgeMode
+NodeMetadata::getEdgeMode() const
+{
+    return _imp->edgeMode;
 }
 
 void

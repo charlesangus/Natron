@@ -36,6 +36,14 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief What a node's output returns for pixels outside its region of definition.
+ **/
+enum class EdgeMode : unsigned char {
+    Stretch,
+    Black
+};
+
+/**
  * @brief These meta-data are represents what's flowing through a node. They change
  * everytimes refreshMetadata() is called.
  * The bitdepth and inputs components must have been validated against the plug-ins supported components/bitdepth
@@ -75,6 +83,10 @@ public:
     void setIsFrameVarying(bool varying);
 
     bool getIsFrameVarying() const;
+
+    void setEdgeMode(EdgeMode mode);
+
+    EdgeMode getEdgeMode() const;
 
     void setPixelAspectRatio(int inputNb, double par);
 

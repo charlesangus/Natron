@@ -233,6 +233,8 @@ SceneStage::setPreviewTransforms(const std::vector<std::pair<std::string, PXR_NS
         }
     }
 
+    _previewDeltas = deltas;
+    _previewTimeCode = timeCode;
     PXR_NS::SdfChangeBlock block;
     for (PreviewPrim& preview : _preview) {
         for (const std::pair<std::string, PXR_NS::GfMatrix4d>& delta : deltas) {
@@ -255,6 +257,8 @@ void
 SceneStage::clearPreviewTransforms()
 {
     _previewRequested.clear();
+    _previewDeltas.clear();
+    _previewTimeCode = 0.;
     if (_preview.empty() || !_root) {
         _preview.clear();
 
@@ -268,6 +272,45 @@ bool
 SceneStage::hasPreviewTransforms() const
 {
     return !_preview.empty();
+}
+
+SceneStageSnapshot
+SceneStage::getSnapshot() const
+{
+    SceneStageSnapshot snapshot;
+    snapshot.payload = _payload;
+    if (!_preview.empty()) {
+        snapshot.previewDeltas = _previewDeltas;
+        snapshot.previewTimeCode = _previewTimeCode;
+    }
+
+    return snapshot;
+}
+
+bool
+SceneStage::syncTo(const SceneStageSnapshot& snapshot)
+{
+    if (!_stage) {
+        return false;
+    }
+    bool edited = sync(snapshot.payload);
+    if (snapshot.previewDeltas.empty()) {
+        if (!_preview.empty()) {
+            clearPreviewTransforms();
+            edited = true;
+        }
+
+        return edited;
+    }
+    const bool same = (snapshot.previewDeltas == _previewDeltas) && (snapshot.previewTimeCode == _previewTimeCode);
+    if (!same || _preview.empty()) {
+        const bool had = !_preview.empty();
+        if (setPreviewTransforms(snapshot.previewDeltas, snapshot.previewTimeCode) || had) {
+            edited = true;
+        }
+    }
+
+    return edited;
 }
 
 NATRON_NAMESPACE_EXIT

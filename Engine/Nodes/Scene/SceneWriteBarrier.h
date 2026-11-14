@@ -72,6 +72,14 @@ public:
 
     typedef U64 ParticipantId;
 
+    // When a participant is quiesced relative to the others; resume runs in the reverse order.
+    enum QuiesceOrderEnum {
+        eQuiesceOrderNormal = 0,
+        // After every normal participant: for a quiesce that takes a lock the GUI thread waits on,
+        // so the lock is not held while a normal participant waits out a long call.
+        eQuiesceOrderLast
+    };
+
     /**
      * @brief Registers the owner of stages read outside any ReadScope. quiesce is called before a
      * write, from the writing thread, once no ReadScope is held; it returns once the owner no
@@ -79,7 +87,8 @@ public:
      * empty. MT-safe; unregistering waits for a write in progress to end.
      **/
     static ParticipantId registerParticipant(const std::function<void()>& quiesce,
-                                             const std::function<void()>& resume);
+                                             const std::function<void()>& resume,
+                                             QuiesceOrderEnum order = eQuiesceOrderNormal);
 
     static void unregisterParticipant(ParticipantId id);
 

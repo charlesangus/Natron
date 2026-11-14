@@ -62,6 +62,18 @@ ranged(RenderSettingsKnobs::CuratedSetting s,
 }
 
 RenderSettingsKnobs::CuratedSetting
+bounded(RenderSettingsKnobs::CuratedSetting s,
+        double minimum,
+        double maximum)
+{
+    s = ranged(s, minimum, maximum);
+    s.hasMaximum = true;
+    s.maximum = maximum;
+
+    return s;
+}
+
+RenderSettingsKnobs::CuratedSetting
 menu(RenderSettingsKnobs::CuratedSetting s,
      const std::vector<RenderSettingsKnobs::Choice>& choices)
 {
@@ -103,6 +115,9 @@ make()
     c.groups.push_back(groupSpec("volumes", "", false, "How rays travel through smoke, fog and other volumes, trading accuracy against noise and time."));
     c.groups.push_back(groupSpec("pathGuiding", "", false, "Learns where light comes from and steers rays towards it. This build of Cycles has no path guiding, so nothing in this group has any effect."));
     c.groups.push_back(groupSpec("lightContributions", "", false, "Switches kinds of light on and off to break down or debug an image. Leave them all on for a correct render."));
+    c.groups.push_back(groupSpec("film", "", false, "How the image is exposed and filtered, and whether the background is transparent."));
+    c.groups.push_back(groupSpec("passes", "", false, "Extra render passes: mist depth, Cryptomatte, and alpha handling."));
+    c.groups.push_back(groupSpec("world", "", false, "How the world background takes part in the render: whether it shines, which rays see it, and its light group."));
     c.groups.push_back(groupSpec("advanced", "", false, "Rarely needed controls of the sampling pattern, path lengths and camera rays. The defaults suit most renders."));
     c.groups.push_back(groupSpec("sampleSubset", "advanced", false, "Renders only part of the sample sequence, for example to split a render across runs. Only Sample Offset has any effect."));
 
@@ -141,6 +156,9 @@ make()
         s.disabledReason = "Cycles renders and denoises on the CPU here.";
         add("denoise", s);
     }
+
+    add("denoise", setting("cycles:film:denoising_pass_follow_reflections", "denoisingPassFollowReflections", "Lets the denoising guide passes follow mirror reflections, so the denoiser keeps reflected detail rather than the mirror's own surface. Turn it off if reflections come out smeared.", VtValue(true)));
+    add("denoise", setting("cycles:film:denoising_pass_use_albedo_roughness_weighting", "denoisingPassUseAlbedoRoughnessWeighting", "Weights the albedo guide pass by surface roughness, so shiny surfaces guide the denoiser less than matte ones do. It helps keep reflections sharp.", VtValue(true)));
 
     add("bounces", ranged(setting("cycles:integrator:max_bounce", "maxBounce", "The most times light may bounce in total, whatever the kind, and a ceiling for the limits below. Higher gives fuller, brighter light and a longer render; 4 to 8 suits most shots and 0 gives direct light only.", VtValue(7)), 0, 32));
     add("bounces", ranged(setting("cycles:integrator:max_diffuse_bounce", "maxDiffuseBounce", "The most bounces off matte surfaces. Higher brightens interiors and corners and takes longer; 2 to 4 suits most shots.", VtValue(7)), 0, 32));
@@ -195,6 +213,25 @@ make()
     add("lightContributions", setting("cycles:integrator:use_transmission", "useTransmission", "Whether surfaces the camera sees show light passing through them. Turn it off only to break down or debug an image, since the result is not physically correct.", VtValue(true)));
     add("lightContributions", setting("cycles:integrator:use_emission", "useEmission", "Whether glowing surfaces and the world background give off light. Turn it off only to break down or debug an image, since it removes that light everywhere.", VtValue(true)));
 
+    add("film", setting("cycles:film:exposure", "exposure", "Scales the brightness of the whole image before it is written. 1 leaves it unchanged, 2 is twice as bright.", VtValue(1.0f)));
+    add("film", menu(setting("cycles:film:filter_type", "filterType", "The shape of the filter that blends samples across neighbouring pixels. Box is sharpest and noisiest, Gaussian is softer, and Blackman-Harris is in between.", VtValue(0)), { { "box", "Box", VtValue(0) }, { "gaussian", "Gaussian", VtValue(1) }, { "blackman_harris", "Blackman-Harris", VtValue(2) } }));
+    add("film", setting("cycles:film:filter_width", "filterWidth", "The width of the pixel filter in pixels. Wider is softer and less noisy; 1.5 is a common choice.", VtValue(1.0f)));
+    add("film", setting("cycles:background:transparent", "transparent", "Hides the world background from the camera so those pixels are transparent, while it still lights the scene. USD Render Settings' Transparent Background authors the same setting and wins when it is on. Off keeps the default Cycles picks from the scene's lights: a dome light shows behind the scene, and a scene without one, lightless scenes included, renders transparent.", VtValue(false)));
+    add("film", setting("cycles:background:transparent_glass", "transparentGlass", "Makes glass show as transparent in the alpha channel where the background is visible through it. It needs Transparent.", VtValue(false)));
+    add("film", setting("cycles:background:transparent_roughness_threshold", "transparentRoughnessThreshold", "Glass rougher than this shows the background through it as opaque rather than transparent. It needs Transparent Glass; 0 treats all glass as transparent.", VtValue(0.0f)));
+    add("film", setting("cycles:film:use_approximate_shadow_catcher", "useApproximateShadowCatcher", "Estimates shadow catcher shadows from the lighting rather than tracing them exactly. It is faster and noisier than the default.", VtValue(false)));
+
+    add("passes", setting("cycles:film:mist_start", "mistStart", "The distance from the camera at which the mist pass starts to fade in, in scene units.", VtValue(0.0f)));
+    add("passes", setting("cycles:film:mist_depth", "mistDepth", "The distance over which the mist pass goes from clear to full, in scene units.", VtValue(100.0f)));
+    add("passes", setting("cycles:film:mist_falloff", "mistFalloff", "How the mist pass grows with distance. 1 is linear, higher stays clear for longer, and lower fills in sooner.", VtValue(1.0f)));
+    add("passes", bounded(setting("cycles:film:cryptomatte_passes", "cryptomattePasses", "Which Cryptomatte ID passes are rendered, as the sum of Object 1, Material 2, Asset 4 and Accurate 8, for picking out objects, materials or assets afterwards. 0 renders none.", VtValue(0)), 0, 15));
+    add("passes", setting("cycles:film:cryptomatte_depth", "cryptomatteDepth", "How many overlapping IDs a Cryptomatte pixel can hold. Each level adds one ID per pixel.", VtValue(0)));
+    add("passes", setting("cycles:film:pass_alpha_threshold", "passAlphaThreshold", "The alpha above which a pixel counts as covered in the data passes, such as depth and normals. Lower includes more soft edges.", VtValue(0.5f)));
+
+    add("world", setting("cycles:background:use_shader", "useShader", "Lets the world shader light the scene and show behind it. Off gives a black world.", VtValue(true)));
+    add("world", setting("cycles:background:visibility", "visibility", "Which kinds of ray can see the world, as the sum of Camera 1, Transmission 2, Diffuse 4, Glossy 8, Volume Scatter 16 and Shadow 96. The default of 127 shows it to all of them.", VtValue(127u)));
+    add("world", setting("cycles:background:lightgroup", "lightgroup", "The light group the world's light is rendered into, for adjusting it separately afterwards. Empty means none.", VtValue(std::string())));
+
     // The enum's values are not in the order Cycles lists them: Round is 4 and First is 3.
     add("advanced", menu(setting("cycles:integrator:sampling_pattern", "samplingPattern", "How samples are spread across each pixel, which changes the look of the noise. Tabulated Sobol is the default and a good start. Sobol-Burley computes them as it goes. Blue Noise makes the noise finer and even: Pure suits a fixed number of samples, Round uses the next power of two, and First keeps the first sample separate.", VtValue(1)), { { "sobol_burley", "Sobol-Burley", VtValue(0) }, { "tabulated_sobol", "Tabulated Sobol", VtValue(1) }, { "blue_noise_pure", "Blue Noise Pure", VtValue(2) }, { "blue_noise_round", "Blue Noise Round", VtValue(4) }, { "blue_noise_first", "Blue Noise First", VtValue(3) } }));
     add("advanced", setting("cycles:integrator:scrambling_distance", "scramblingDistance", "Makes neighbouring pixels share a sampling pattern, which can speed up the render but shows artefacts if pushed too far. 1 turns it off, and try lowering it towards 0.5. It works only with Tabulated Sobol.", VtValue(1.f)));
@@ -245,6 +282,13 @@ make()
     enabledBy("custom_pixel_jitter_sample", "use_custom_pixel_jitter_sample");
     enabledBy("sample_subset_offset", "use_sample_subset");
     enabledBy("sample_subset_length", "use_sample_subset");
+
+    // Cycles sets this from its tile count on every sync, so a value sent here is overwritten.
+    c.excludedKeys.push_back("cycles:film:use_sample_count");
+    // Only Cycles' display driver reads these, and it runs on Windows only: Natron reads every
+    // pass through the output driver, by name, as these leave it.
+    c.excludedKeys.push_back("cycles:film:display_pass");
+    c.excludedKeys.push_back("cycles:film:show_active_pixels");
 
     return c;
 } // make

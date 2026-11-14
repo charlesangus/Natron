@@ -697,6 +697,7 @@ USDRender::prepareRender(double time,
                        .toStdString());
     }
     setup->request.owner = this;
+    setup->request.aborted = [this]() { return aborted(); };
     setup->request.scene = active.scene;
     setup->request.time = active.time;
     setup->request.width = setup->pixels.width();

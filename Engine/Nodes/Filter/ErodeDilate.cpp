@@ -340,6 +340,7 @@ erodeDilatePasses(const ErodeDilateParams& params,
     const OfxPointD rs = scale.toOfxPointD();
     PassList list;
     list.edgeMode = edgeMode;
+    list.clipToRegion = true;
 #ifdef NATRON_HAVE_GPU
     std::vector<gpu::GpuMorphPass> gpuPasses;
     bool gpuFits = true;

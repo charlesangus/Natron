@@ -418,7 +418,7 @@ struct Pass {
  * @brief Everything a pass list's GPU recorder reads and writes. source holds the source over
  * at least sourceValid, outside which it reads by edgeMode, divided by the divisor when the Premult
  * stage has one. The recorder writes filtered over output, the passes running over domain: output
- * grown by the halo. rod is this effect's region of definition. Dispatches the
+ * grown by the halo and clipped as runPassesCpu() clips its scratch. rod is this effect's region of definition. Dispatches the
  * recorder makes in sequence must be separated by compute barriers; the executor orders its own.
  * inputs holds the effect's other inputs by input number, each cropped to that input's region of
  * definition, outside which it reads zero; an input that is disconnected, not read on the GPU or
@@ -478,6 +478,9 @@ struct PassList {
     int scratchSlots = 1;
     int resultSlot = 0;
     bool opMask = false;
+    // For a list whose windows shrink at this effect's region of definition rather than read past
+    // it: the scratch is then clipped to that region, and edgeMode never reaches the passes.
+    bool clipToRegion = false;
     PassGpuRecorder gpu;
     // When set, gpu records the list only for the queries it accepts, as a frame within the
     // device's scratch.
@@ -569,7 +572,8 @@ private:
  * @brief Renders args through plan with list on the CPU.
  *
  * The images are fetched and locked as runStagesCpu() does. The window, empty with a mix of 0,
- * grown by the halo, is the scratch rect: slot 0 is
+ * grown by the halo and clipped by the edge mode (clipToRegion, or Black's one-pixel border past
+ * the region and the source's region), is the scratch rect: slot 0 is
  * filled with the source there (fillBuffer()), the passes run in order, each over whole lines
  * split between threads, and the window is written from resultSlot (writeWindow()). Fails on a
  * list isRunnablePassList() refuses.

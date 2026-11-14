@@ -456,6 +456,7 @@ RawHotPixelsOp::passes(const Params& params,
     const int halo = params.layout.hasCfa() ? 2 : 1;
 
     list.edgeMode = EdgeMode::Black;
+    list.clipToRegion = true;
     list.scratchSlots = 2;
     list.resultSlot = 1;
     Pass pass = Pass::gather(halo, halo, true, hotPixelsWorker(params));

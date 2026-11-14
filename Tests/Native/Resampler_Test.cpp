@@ -1130,15 +1130,26 @@ TEST(Resampler, MinifiedBlackOutsideFadesAtTheSourceEdge)
         return 1.f;
     });
     const SourceImage src(&data.front(), bounds, 1);
+    const RectI padded(-64, -64, 192, 192);
+    std::vector<float> paddedData = makeImage(padded, [&bounds](int x, int y) {
+        return ((bounds.x1 <= x) && (x < bounds.x2) && (bounds.y1 <= y) && (y < bounds.y2)) ? 1.f : 0.f;
+    });
+    const SourceImage paddedSrc(&paddedData.front(), padded, 1);
     std::vector<float> row;
+    std::vector<float> paddedRow;
 
-    // Output pixel -1 is centred past the source, so its zeroed row takes the plain kernel, which
-    // reaches only the nearest source column. Pixel 0, 1.5 source pixels in, loses just the
-    // kernel's tail: the fade spans one output pixel, not the wide footprint.
-    renderRows(scaling(4.), eFilterLanczos3, false, true, src, 16, -1, 24, &row);
-    EXPECT_NEAR(row[0], 0.0245f, 1e-3);
-    EXPECT_NEAR(row[1], 0.9353f, 1e-3);
-    EXPECT_NEAR(row[17], 1.f, 1e-4);
+    // Past the source the footprint keeps its full width, so the fade is the source with black
+    // materialised around it, filtered by the same wide kernel.
+    renderRows(scaling(4.), eFilterLanczos3, false, true, src, 16, -8, 24, &row);
+    renderRows(scaling(4.), eFilterLanczos3, false, true, paddedSrc, 16, -8, 24, &paddedRow);
+    ASSERT_EQ(row.size(), paddedRow.size());
+    for (std::size_t i = 0; i < row.size(); ++i) {
+        EXPECT_NEAR(row[i], paddedRow[i], 1e-5f) << "x " << (int)i - 8;
+    }
+    EXPECT_NEAR(row[0], 0.f, 1e-6f);
+    EXPECT_GT(row[7], 0.f);
+    EXPECT_LT(row[8], 1.f);
+    EXPECT_NEAR(row[25], 1.f, 1e-4f);
 }
 
 TEST(Resampler, MinificationRemovesAliasing)

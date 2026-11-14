@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <list>
 #include <memory>
 #include <utility>
@@ -704,6 +705,68 @@ effectRoDPixels(EffectInstance& effect,
     return true;
 }
 
+/**
+ * The rect a pass list's scratch covers for window: the window grown by the halo, then
+ *  - with clipToRegion, clipped to the effect's region of definition rod;
+ *  - under Black, clipped to rod and the source's region sourceRoD with a one-pixel border, and
+ *    the window: past that border every pass reads zero, which a window clamped to the border
+ *    reads too, while a halo far larger than the image would not fit in memory;
+ *  - under Stretch, left whole, so that each pass reads what it would of the image extended.
+ * runPassesCpu() and recordPassesGpu() share it so that both filter the same scratch.
+ **/
+RectI
+passBufferRect(const RectI& window,
+               const PassList& list,
+               const RectI& rod,
+               const RectI& sourceRoD)
+{
+    const RectI full = passListSourceRoI(window, list);
+    RectI clip;
+    if (list.clipToRegion) {
+        clip = rod;
+    } else if (list.edgeMode == EdgeMode::Black) {
+        clip = rod;
+        if (!isEmptyRect(sourceRoD)) {
+            clip.merge(sourceRoD);
+        }
+        if (!isEmptyRect(clip)) {
+            clip.x1 = (clip.x1 > std::numeric_limits<int>::min()) ? clip.x1 - 1 : clip.x1;
+            clip.y1 = (clip.y1 > std::numeric_limits<int>::min()) ? clip.y1 - 1 : clip.y1;
+            clip.x2 = (clip.x2 < std::numeric_limits<int>::max()) ? clip.x2 + 1 : clip.x2;
+            clip.y2 = (clip.y2 < std::numeric_limits<int>::max()) ? clip.y2 + 1 : clip.y2;
+        }
+        clip.merge(window);
+    } else {
+        return full;
+    }
+    RectI out(0, 0, 0, 0);
+    intersectRects(full, clip, &out);
+
+    return out;
+}
+
+// The source input's region of definition in pixels at scale, empty when it has none.
+RectI
+sourceRoDPixels(EffectInstance& effect,
+                int sourceInput,
+                double time,
+                const RenderScale& scale,
+                ViewIdx view)
+{
+    EffectInstancePtr input = effect.getInput(sourceInput);
+    if (!input) {
+        return RectI(0, 0, 0, 0);
+    }
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD rod;
+    bool isProjectFormat = false;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+        return RectI(0, 0, 0, 0);
+    }
+
+    return toPixelEnclosing(rod, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput));
+}
+
 void
 runLinePass(const Pass& pass,
             const PassScratch& scratch,
@@ -1126,12 +1189,13 @@ runPassesCpu(EffectInstance& effect,
     }
     const bool processing = !isEmptyRect(processWindow);
 
-    // The buffer keeps the whole halo, unclipped by this effect's region of definition: a tap past
-    // the source reads it extended by the edge mode, as it would that image materialised, where a
-    // window clamped at the buffer's edge would not.
     RectI bufferRect(0, 0, 0, 0);
     if (processing) {
-        bufferRect = passListSourceRoI(processWindow, list);
+        RectI dstRoDPixel;
+        if (!effectRoDPixels(effect, args.time, args.mappedScale, args.view, &dstRoDPixel)) {
+            return eStatusFailed;
+        }
+        bufferRect = passBufferRect(processWindow, list, dstRoDPixel, sourceRoDPixels(effect, sourceInput, args.time, args.mappedScale, args.view));
     }
     const int bufferWidth = std::max(0, bufferRect.width());
     const int bufferHeight = std::max(0, bufferRect.height());
@@ -1280,22 +1344,23 @@ recordPassesGpu(EffectInstance& effect,
     const ViewIdx view = query.view;
     const RenderScale& scale = query.mappedScale;
 
-    // runPassesCpu() runs the passes over the window plus its halo, and fillBuffer() resolves the
-    // source against the input image.
+    // runPassesCpu() runs the passes over passBufferRect(), and fillBuffer() resolves the source
+    // against the input image.
     RectI rodPixel;
     if (!effectRoDPixels(effect, time, scale, view, &rodPixel)) {
         return eStatusFailed;
     }
-    const RectI domain = passListSourceRoI(rect, list);
-
     const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
     RectD srcRoD;
     bool isProjectFormat = false;
     if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
         return eStatusFailed;
     }
+    const RectI srcRoDPixel = toPixelEnclosing(srcRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput));
+    const RectI sourceRoI = passListSourceRoI(rect, list);
+    const RectI domain = passBufferRect(rect, list, rodPixel, srcRoDPixel);
     RectI valid;
-    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput)), &valid);
+    intersectRects(src.bounds, srcRoDPixel, &valid);
 
     int divisor = -1;
     if (!stageGpuDivisorComponent(plan, query, &divisor)) {
@@ -1355,8 +1420,8 @@ recordPassesGpu(EffectInstance& effect,
     io.output = rect;
     io.domain = domain;
     io.rod = rodPixel;
-    io.haloX = rect.x1 - domain.x1;
-    io.haloY = rect.y1 - domain.y1;
+    io.haloX = rect.x1 - sourceRoI.x1;
+    io.haloY = rect.y1 - sourceRoI.y1;
     io.nComps = nComps;
     io.channels = plan.processChannels;
     // The other inputs as the CPU passes read them through getImage(): over their own region of

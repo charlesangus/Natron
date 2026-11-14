@@ -925,13 +925,14 @@ TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
 
 // Under Stretch the copies read the source's edge pixels beyond it: a flat box stays flat over the
 // whole output, which is not grown by a pixel; under Black the copies fade to black at the box.
-// Input follows the Constant, which stretches.
+// Input follows the Constant, set here to stretch.
 TEST_F(NativeDirBlurTest, StretchRepeatsTheEdges)
 {
     resetProject();
     const RectI box(16, 12, 48, 36);
     NodePtr source = makeConstant(0.5, &box);
     ASSERT_TRUE(bool(source));
+    setBlackOutside(source, false);
     for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
         NodePtr node = makeDirBlur(source, mode);
         ASSERT_TRUE(bool(node));

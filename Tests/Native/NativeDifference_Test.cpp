@@ -319,8 +319,8 @@ protected:
         const int y2 = std::max(kParitySourceHeight, kAOriginY + kParitySourceHeight);
         for (int y = window.y1; y < window.y2; ++y) {
             for (int x = window.x1; x < window.x2; ++x) {
-                const bool inB = (x >= 0) && (y >= 0) && (x < kParitySourceWidth) && (y < kParitySourceHeight);
-                const float bPix[4] = { inB ? 0.5f : 0.f, inB ? 0.25f : 0.f, inB ? 0.75f : 0.f, inB ? bAlpha : 0.f };
+                // B's edge mode is Stretch, so a constant B reads its colour past its format too.
+                const float bPix[4] = { 0.5f, 0.25f, 0.75f, bAlpha };
                 float aPix[4];
                 for (int c = 0; c < 4; ++c) {
                     aPix[c] = sourceValue(c, kAOriginX, kAOriginY, x, y);

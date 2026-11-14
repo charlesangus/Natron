@@ -247,6 +247,7 @@ medianPasses(const MedianParams& params,
     const int side = 2 * radius + 1;
 
     list.edgeMode = EdgeMode::Black;
+    list.clipToRegion = true;
     list.scratchSlots = 2;
     list.resultSlot = kSlotResult;
     Pass pass = Pass::gather(radius, radius, true, medianWorker(radius, threshold));

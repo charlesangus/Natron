@@ -454,7 +454,7 @@ TEST(ResamplerCoordMap, MinifyingJacobianWidensTheKernel)
     EXPECT_NEAR(sampleOne(src, 20.5f, 20.5f, wideY, Resampler::eFilterLanczos3, false), 0.f, 1e-6);
 }
 
-TEST(ResamplerCoordMap, PixelsOutsideTheSourceUseThePlainKernel)
+TEST(ResamplerCoordMap, PixelsOutsideTheSourceFilterTheExtendedSource)
 {
     const std::vector<float> stripes = makeStripes();
     const SourceImage src(stripes.data(), RectI(0, 0, 64, 64), 1);
@@ -462,17 +462,22 @@ TEST(ResamplerCoordMap, PixelsOutsideTheSourceUseThePlainKernel)
     const float yWideOnly[4] = { 0.f, 0.f, 0.f, 4.f };
     const float xWideOnly[4] = { 4.f, 0.f, 0.f, 0.f };
 
+    // The footprint keeps its full size past the source. Stretched, the stripes are constant along
+    // y above and below the source, so widening along y there only changes the rounding; left and
+    // right of the source, beyond the footprint's reach, the edge column is constant along x.
+    // The widest footprint here, an 8-lobe sinc at 4x, spans 32 pixels.
     for (Resampler::FilterEnum f : { Resampler::eFilterLanczos3, Resampler::eFilterSinc, Resampler::eFilterGaussian }) {
-        // Only the row of the axis that is out is zeroed.
-        for (float x : { -10.5f, 80.5f }) {
-            EXPECT_EQ(sampleOne(src, x, 20.5f, yWideOnly, f, false), sampleOne(src, x, 20.5f, wide, f, false)) << "filter " << f << " x " << x;
+        for (float x : { -40.5f, 104.5f }) {
+            EXPECT_NEAR(sampleOne(src, x, 20.5f, yWideOnly, f, false), sampleOne(src, x, 20.5f, wide, f, false), 1e-5f) << "filter " << f << " x " << x;
         }
+        EXPECT_NEAR(sampleOne(src, -40.5f, 20.5f, wide, f, false), 0.f, 1e-5f) << "filter " << f;
+        EXPECT_NEAR(sampleOne(src, 104.5f, 20.5f, wide, f, false), 1.f, 1e-5f) << "filter " << f;
         for (float y : { -10.5f, 80.5f }) {
-            EXPECT_EQ(sampleOne(src, 20.5f, y, xWideOnly, f, false), sampleOne(src, 20.5f, y, wide, f, false)) << "filter " << f << " y " << y;
+            EXPECT_NEAR(sampleOne(src, 20.5f, y, xWideOnly, f, false), sampleOne(src, 20.5f, y, wide, f, false), 1e-5f) << "filter " << f << " y " << y;
         }
-        // With black outside, either axis out blacks the pixel.
-        EXPECT_EQ(sampleOne(src, -10.5f, 20.5f, wide, f, true), 0.f);
-        EXPECT_EQ(sampleOne(src, 20.5f, 80.5f, wide, f, true), 0.f);
+        // Black past the source, a footprint that does not reach it is black.
+        EXPECT_EQ(sampleOne(src, -40.5f, 20.5f, wide, f, true), 0.f) << "filter " << f;
+        EXPECT_EQ(sampleOne(src, 20.5f, 104.5f, wide, f, true), 0.f) << "filter " << f;
     }
 }
 

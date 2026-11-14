@@ -1556,6 +1556,7 @@ ColorEqualizer::opPasses(double time,
     carrier.growX = 0;
     carrier.growY = 0;
     list.edgeMode = EdgeMode::Black;
+    list.clipToRegion = true;
     list.passes.push_back(carrier);
 
 #ifdef NATRON_HAVE_GPU

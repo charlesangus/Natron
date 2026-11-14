@@ -97,7 +97,6 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , toggleGainButton(NULL)
     , gainBox(NULL)
     , gainSlider(NULL)
-    , autoContrast(NULL)
     , gammaBox(NULL)
     , toggleGammaButton(NULL)
     , gammaSlider(NULL)

@@ -56,6 +56,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -693,4 +694,81 @@ TEST_F(LazyHashTest, GroupInputRewireChangesTheHashesDownstreamOfIt)
     ASSERT_NE(-1, group->disconnectInput(0));
     EXPECT_EQ(innerUnconnected, innerBlur->getHashValue());
     EXPECT_EQ(belowUnconnected, below->getHashValue());
+}
+
+// A connect leaves the hashes it changes dirty for the next read rather than recomputing the
+// graph above it: that read, a metadata read and a render must all see the new input.
+TEST_F(LazyHashTest, AConnectIsSeenByTheNextHashMetadataAndRender)
+{
+    NodePtr first = createSizedConstant(32., 24.);
+    NodePtr second = createSizedConstant(40., 30.);
+    NodePtr blur = createBlur();
+    NodePtr downstream = createBlur();
+    ASSERT_TRUE(first && second && blur && downstream);
+    connectNodes(first, blur, 0, true);
+    connectNodes(blur, downstream, 0, true);
+
+    const RectI firstFormat = first->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
+    const RectI secondFormat = second->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
+    ASSERT_NE(firstFormat, secondFormat);
+    const U64 firstHash = downstream->getHashValue();
+    ASSERT_EQ(firstFormat, downstream->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
+
+    ASSERT_TRUE(blur->replaceInput(second, 0));
+    const U64 secondHash = downstream->getHashValue();
+    EXPECT_NE(firstHash, secondHash);
+    EXPECT_EQ(secondFormat, downstream->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
+    EXPECT_FALSE(blur->refreshHashNow()) << "the hash read after the connect was not the recomputed one";
+    EXPECT_FALSE(downstream->refreshHashNow()) << "the hash read after the connect was not the recomputed one";
+    EXPECT_EQ(secondHash, downstream->getHashValue());
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    ASSERT_TRUE(renderNodePlanesDirect(downstream, 1., ViewIdx(0), 0, RectI(0, 0, 8, 8), layers, &planes, &error, false)) << error;
+    EXPECT_EQ(secondHash, downstream->getStoredContentHash());
+
+    NodePtr fresh = createBlur();
+    ASSERT_TRUE(bool(fresh));
+    const U64 unconnected = fresh->getHashValue();
+    ASSERT_TRUE(fresh->connectInput(second, 0));
+    const U64 connected = fresh->getHashValue();
+    EXPECT_NE(unconnected, connected);
+    EXPECT_FALSE(fresh->refreshHashNow()) << "the hash read after the connect was not the recomputed one";
+    EXPECT_EQ(secondFormat, fresh->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
+
+    ASSERT_TRUE(blur->replaceInput(first, 0));
+    EXPECT_EQ(firstHash, downstream->getHashValue());
+    EXPECT_EQ(firstFormat, downstream->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat());
+}
+
+// The project's layers table counts the nodes that use each layer, so a created node can change
+// it. The table is not render state: changing it must leave every other node's hash clean, or
+// the next connect anywhere rehashes everything above it.
+TEST_F(LazyHashTest, ANodeThatChangesTheLayersTableLeavesOtherHashesClean)
+{
+    NodePtr constant = createConstant();
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(constant && blur);
+    connectNodes(constant, blur, 0, true);
+    const U64 before = blur->getHashValue();
+
+    KnobTablePtr layersKnob = std::dynamic_pointer_cast<KnobTable>(getApp()->getProject()->getKnobByName("defaultLayers"));
+    ASSERT_TRUE(bool(layersKnob));
+    std::list<std::vector<std::string>> tableBefore;
+    layersKnob->getTable(&tableBefore);
+
+    NodePtr other = createBlur();
+    ASSERT_TRUE(bool(other));
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(other->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels));
+    channels->addLayer("xy", 0);
+    std::list<std::vector<std::string>> tableAfter;
+    layersKnob->getTable(&tableAfter);
+    ASSERT_NE(tableBefore, tableAfter);
+
+    U64 hash = 0;
+    EXPECT_TRUE(blur->getHashValueIfUpToDate(&hash));
+    EXPECT_EQ(before, hash);
+    EXPECT_EQ(before, blur->getHashValue());
 }

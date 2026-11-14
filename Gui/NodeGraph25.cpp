@@ -34,6 +34,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QAction>
 #include <QApplication>
+#include <QCursor>
 #include <QHelpEvent>
 #include <QMenu>
 #include <QMouseEvent>
@@ -182,16 +183,39 @@ NodeGraph::mouseDoubleClickEvent(QMouseEvent* e)
     }
 } // NodeGraph::mouseDoubleClickEvent
 
+// Asked at key time rather than tracked through enter and leave events: a pointer grab, a popup
+// or another top-level window under the pointer can swallow the enter that a flag would wait for.
+bool
+NodeGraph::isNodeCreationShortcutTarget() const
+{
+    if (hasFocus()) {
+        return true;
+    }
+
+    const QWidget* vp = viewport();
+
+    return vp && vp->isVisible() && vp->rect().contains(vp->mapFromGlobal(QCursor::pos()));
+}
+
 bool
 NodeGraph::event(QEvent* e)
 {
     if ( !getGui() ) {
         return false;
     }
-    if (e->type() == QEvent::KeyPress) {
+    if (e->type() == QEvent::ShortcutOverride) {
+        // A create-node key rebound to one a global action also uses (F2 opens render
+        // statistics) must reach the KeyPress below instead of triggering that action.
+        QKeyEvent* ke = static_cast<QKeyEvent*>(e);
+        if (isNodeCreationShortcutTarget() && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
+            ke->accept();
+
+            return true;
+        }
+    } else if (e->type() == QEvent::KeyPress) {
         QKeyEvent* ke = dynamic_cast<QKeyEvent*>(e);
         assert(ke);
-        if (ke && _imp->_nodeCreationShortcutEnabled && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
+        if (ke && isNodeCreationShortcutTarget() && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
             popCreateNodeDialog();
             takeClickFocus();
             ke->accept();
@@ -333,6 +357,76 @@ triggerMergeShortcut(NodeGraph* graph,
 }
 } // anonymous namespace
 
+namespace {
+
+const char* const kViewerInputAKeys[] = {
+    kShortcutIDActionConnectViewerToInput1,
+    kShortcutIDActionConnectViewerToInput2,
+    kShortcutIDActionConnectViewerToInput3,
+    kShortcutIDActionConnectViewerToInput4,
+    kShortcutIDActionConnectViewerToInput5,
+    kShortcutIDActionConnectViewerToInput6,
+    kShortcutIDActionConnectViewerToInput7,
+    kShortcutIDActionConnectViewerToInput8,
+    kShortcutIDActionConnectViewerToInput9,
+    kShortcutIDActionConnectViewerToInput10
+};
+
+const char* const kViewerInputBKeys[] = {
+    kShortcutIDActionConnectViewerBToInput1,
+    kShortcutIDActionConnectViewerBToInput2,
+    kShortcutIDActionConnectViewerBToInput3,
+    kShortcutIDActionConnectViewerBToInput4,
+    kShortcutIDActionConnectViewerBToInput5,
+    kShortcutIDActionConnectViewerBToInput6,
+    kShortcutIDActionConnectViewerBToInput7,
+    kShortcutIDActionConnectViewerBToInput8,
+    kShortcutIDActionConnectViewerBToInput9,
+    kShortcutIDActionConnectViewerBToInput10
+};
+
+const char* const kViewerInputLockKeys[] = {
+    kShortcutIDActionGraphLockViewerInput1,
+    kShortcutIDActionGraphLockViewerInput2,
+    kShortcutIDActionGraphLockViewerInput3,
+    kShortcutIDActionGraphLockViewerInput4,
+    kShortcutIDActionGraphLockViewerInput5,
+    kShortcutIDActionGraphLockViewerInput6,
+    kShortcutIDActionGraphLockViewerInput7,
+    kShortcutIDActionGraphLockViewerInput8,
+    kShortcutIDActionGraphLockViewerInput9,
+    kShortcutIDActionGraphLockViewerInput10
+};
+
+const char* const kViewerInputUnlockKeys[] = {
+    kShortcutIDActionGraphUnlockViewerInput1,
+    kShortcutIDActionGraphUnlockViewerInput2,
+    kShortcutIDActionGraphUnlockViewerInput3,
+    kShortcutIDActionGraphUnlockViewerInput4,
+    kShortcutIDActionGraphUnlockViewerInput5,
+    kShortcutIDActionGraphUnlockViewerInput6,
+    kShortcutIDActionGraphUnlockViewerInput7,
+    kShortcutIDActionGraphUnlockViewerInput8,
+    kShortcutIDActionGraphUnlockViewerInput9,
+    kShortcutIDActionGraphUnlockViewerInput10
+};
+
+int
+viewerInputForKey(const char* group,
+                  const char* const (&ids)[10],
+                  Qt::KeyboardModifiers modifiers,
+                  Qt::Key key)
+{
+    for (int i = 0; i < 10; ++i) {
+        if (isKeybind(group, ids[i], modifiers, key)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+} // anonymous namespace
+
 void
 NodeGraph::keyPressEvent(QKeyEvent* e)
 {
@@ -350,6 +444,9 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
 
     Qt::KeyboardModifiers modifiers = e->modifiers();
     Qt::Key key = (Qt::Key)e->key();
+    // Shift or Alt can turn a digit into another symbol, depending on the keyboard layout.
+    const Qt::Key digitKey = (Qt::Key)Gui::handleNativeKeys(e->key(), e->nativeScanCode(), e->nativeVirtualKey());
+    int viewerInput = -1;
     bool accept = true;
 
     if (key == Qt::Key_Escape) {
@@ -517,6 +614,14 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         } else {
             accept = false;
         }
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupGlobal, kViewerInputAKeys, modifiers, digitKey)) != -1) {
+        connectCurrentViewerToSelection(viewerInput, true);
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupGlobal, kViewerInputBKeys, modifiers, digitKey)) != -1) {
+        connectCurrentViewerToSelection(viewerInput, false);
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupNodegraph, kViewerInputLockKeys, modifiers, digitKey)) != -1) {
+        lockViewerInputToSelection(viewerInput);
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupNodegraph, kViewerInputUnlockKeys, modifiers, digitKey)) != -1) {
+        unlockViewerInput(viewerInput);
     } else if (triggerMergeShortcut(this, e)) {
         // The Merge menu's Mask, Stencil or All Layers action was triggered.
     } else {
@@ -546,6 +651,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                         CreateNodeArgs args( plugin->getPluginID().toStdString(), getGroup() );
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.x(), 0);
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.y(), 1);
+                        args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
                         getGui()->getApp()->createNode(args);
 
                         intercepted = true;

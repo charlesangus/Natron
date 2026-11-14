@@ -126,7 +126,6 @@ struct ViewerTabPrivate
     Button* toggleGainButton;
     SpinBox* gainBox;
     ScaleSliderQWidget* gainSlider;
-    Button* autoContrast;
     SpinBox* gammaBox;
     Button* toggleGammaButton;
     ScaleSliderQWidget* gammaSlider;

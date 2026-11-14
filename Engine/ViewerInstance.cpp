@@ -33,6 +33,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring> // for std::memcpy
+#include <iterator> // size
 #include <limits>
 #include <list>
 #include <memory>
@@ -41,6 +42,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -48,6 +50,7 @@ CLANG_DIAG_OFF(deprecated)
 #include <QDebug>
 #include <QFutureWatcher>
 #include <QMutex>
+#include <QRegularExpression>
 #include <QThread>
 #include <QThreadPool>
 #include <QTimer>
@@ -112,21 +115,8 @@ using std::shared_ptr;
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-struct MinMaxVal {
-    MinMaxVal(double min_, double max_)
-    : min(min_)
-    , max(max_)
-    {
-    }
-    MinMaxVal()
-    : min(std::numeric_limits<double>::max())
-    , max(std::numeric_limits<double>::lowest())
-    {
-    }
-
-    double min;
-    double max;
-};
+QMutex liveViewersMutex;
+std::unordered_set<ViewerInstance*> liveViewers;
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
@@ -136,12 +126,9 @@ static void scaleToTexture8bits(const RectI& roi,
                                 const UpdateViewerParams::CachedTile& tile,
                                 U32* output);
 static void scaleToTexture32bits(const RectI& roi,
-                                 const RenderViewerArgs & args,
+                                 const RenderViewerArgs& args,
                                  const UpdateViewerParams::CachedTile& tile,
-                                 float *output);
-static MinMaxVal findAutoContrastVminVmax(const ImagePtr inputImage,
-                                                         DisplayChannelsEnum channels,
-                                                         const RectI & rect);
+                                 float* output);
 static void renderFunctor(const RectI& roi,
                           const RenderViewerArgs & args,
                           ViewerInstance* viewer,
@@ -384,12 +371,19 @@ ViewerInstance::ViewerInstance(NodePtr node)
             QObject::connect(node.get(), SIGNAL(activeInputsChanged()), this, SLOT(onInspectorActiveInputsChanged()));
         }
     }
+    QMutexLocker l(&liveViewersMutex);
+    liveViewers.insert(this);
 }
 
 ViewerInstance::~ViewerInstance()
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+
+    {
+        QMutexLocker l(&liveViewersMutex);
+        liveViewers.erase(this);
+    }
 
     // A plan reads this viewer until its thread has stopped.
     _imp->gpuPlacementPlanner->quitThread(false);
@@ -409,6 +403,31 @@ ViewerInstance::~ViewerInstance()
     if (_imp->uiContext) {
         _imp->uiContext->removeGUI();
     }
+}
+
+bool
+ViewerInstance::isAnyViewerConnected()
+{
+    // The nodes are checked, and released, outside the lock: dropping the last reference to one
+    // destroys its viewer, which takes the lock.
+    std::vector<NodePtr> nodes;
+    {
+        QMutexLocker l(&liveViewersMutex);
+        nodes.reserve(liveViewers.size());
+        for (ViewerInstance* viewer : liveViewers) {
+            NodePtr node = viewer->getNode();
+            if (node) {
+                nodes.push_back(std::move(node));
+            }
+        }
+    }
+    for (const NodePtr& node : nodes) {
+        if (node->hasInputOrQueuedInputConnected()) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 RenderEngine*
@@ -622,7 +641,6 @@ bool
 knobRequestsRender(const std::string& name)
 {
     static const char* const names[] = {
-        kViewerParamAutoContrast,
         kViewerParamDisplayChannels,
         kViewerParamDisplayChannelsB,
         kViewerParamLayer,
@@ -653,6 +671,36 @@ bool
 knobChangesDisplay(const std::string& name)
 {
     return (name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamDisplay) || (name == kViewerParamView) || (name == kViewerParamLook);
+}
+
+// The label is rich text: once edited in the panel its lines sit inside a font tag, possibly
+// ahead of a custom-data tag, so the lock lines have to go inside those too.
+QString
+withLockLines(QString label,
+              const QString& lockLines)
+{
+    const QString lockLine = QString::fromUtf8("Locked input \\d+ to [^\\n<]*");
+    const QString fontStart = QString::fromUtf8("<font[^>]*>");
+
+    label.remove(QRegularExpression(QString::fromUtf8("\\n") + lockLine));
+    label.replace(QRegularExpression(QString::fromUtf8("(^|") + fontStart + QString::fromUtf8(")") + lockLine + QString::fromUtf8("\\n?")),
+                  QString::fromUtf8("\\1"));
+    if (lockLines.isEmpty()) {
+        return label;
+    }
+
+    int insertAt = label.indexOf(QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START));
+    if (insertAt == -1) {
+        insertAt = label.lastIndexOf(QString::fromUtf8(kFontEndTag));
+    }
+    if (insertAt == -1) {
+        insertAt = label.size();
+    }
+    const QString before = label.left(insertAt);
+    const bool startsContent = before.isEmpty() || before.contains(QRegularExpression(fontStart + QString::fromUtf8("$")));
+    label.insert(insertAt, (startsContent ? QString() : QString::fromUtf8("\n")) + lockLines);
+
+    return label;
 }
 
 const char kViewerLookNoneID[] = "none";
@@ -747,11 +795,6 @@ ViewerInstance::initializeKnobs()
     gamma->setDisplayMaximum(5.);
     k.gamma = gamma;
 
-    KnobBoolPtr autoContrast = createViewerKnob<KnobBool>(this, page, tr("Auto Contrast"), kViewerParamAutoContrast,
-                                                          tr("Sets gain and offset so the darkest and brightest values of the "
-                                                             "image map to black and white. Gain and Gamma are ignored while it is on."));
-    k.autoContrast = autoContrast;
-
     KnobBoolPtr checkerboard = createViewerKnob<KnobBool>(this, page, tr("Enable Checker Board"), kViewerParamCheckerboard,
                                                           tr("Draws a checkerboard under input A instead of black."));
     k.checkerboard = checkerboard;
@@ -823,6 +866,15 @@ ViewerInstance::initializeKnobs()
         input->setMinimum(-1);
         input->setMaximum(getNInputs() - 1);
         k.inputs[i] = input;
+    }
+
+    const int nLockable = std::min<int>(getNInputs(), static_cast<int>(std::size(k.lockedInputs)));
+    for (int i = 0; i < nLockable; ++i) {
+        const std::string lockName = kViewerParamLockedInputPrefix + std::to_string(i + 1);
+        KnobStringPtr lock = createViewerKnob<KnobString>(this, page, tr("Locked Input %1").arg(i + 1), lockName.c_str(),
+                                                          tr("The script name of the node this input is locked to, empty for none."));
+        lock->setSecretByDefault(true);
+        k.lockedInputs[i] = lock;
     }
 
     KnobChoicePtr operation = createViewerKnob<KnobChoice>(this, page, tr("Operation"), kViewerParamOperation,
@@ -962,6 +1014,117 @@ ViewerInstance::initializeKnobs()
     }
 } // ViewerInstance::initializeKnobs
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+const double kLockGrey = 0x11 / 255.;
+
+bool
+isLockGrey(const Node& node)
+{
+    double r, g, b;
+    node.getUserColor(&r, &g, &b);
+
+    return node.hasUserColor() && (std::abs(r - kLockGrey) < 1e-3) && (std::abs(g - kLockGrey) < 1e-3) && (std::abs(b - kLockGrey) < 1e-3);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+std::string
+ViewerInstance::getLockedInput(int inputNb) const
+{
+    if ((inputNb < 0) || (inputNb >= getNInputs()) || (inputNb >= static_cast<int>(std::size(_imp->knobs.lockedInputs)))) {
+        return std::string();
+    }
+    KnobStringPtr knob = _imp->knobs.lockedInputs[inputNb].lock();
+
+    return knob ? knob->getValue() : std::string();
+}
+
+void
+ViewerInstance::setLockedInput(int inputNb,
+                               const std::string& nodeName)
+{
+    if ((inputNb < 0) || (inputNb >= getNInputs()) || (inputNb >= static_cast<int>(std::size(_imp->knobs.lockedInputs)))) {
+        return;
+    }
+    KnobStringPtr knob = _imp->knobs.lockedInputs[inputNb].lock();
+    if (!knob || (knob->getValue() == nodeName)) {
+        return;
+    }
+    {
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        knob->setValue(nodeName);
+    }
+    refreshLockDecoration();
+}
+
+void
+ViewerInstance::refreshLockDecoration()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    QString lockLines;
+    bool anyLock = false;
+
+    const int nLockable = std::min<int>(getNInputs(), static_cast<int>(std::size(_imp->knobs.lockedInputs)));
+    for (int i = 0; i < nLockable; ++i) {
+        const std::string name = getLockedInput(i);
+        if (name.empty()) {
+            continue;
+        }
+        if (anyLock) {
+            lockLines += QLatin1Char('\n');
+        }
+        lockLines += QString::fromUtf8("Locked input %1 to %2").arg(i + 1).arg(QString::fromUtf8(name.c_str()));
+        anyLock = true;
+    }
+
+    KnobStringPtr label = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kUserLabelKnobName));
+    if (label) {
+        const QString updated = withLockLines(QString::fromUtf8(label->getValue().c_str()), lockLines);
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        label->setValue(updated.toStdString());
+    }
+
+    if (anyLock) {
+        if (!_imp->lockColourApplied) {
+            _imp->colourBeforeLock = node->hasUserColor();
+            if (_imp->colourBeforeLock) {
+                node->getUserColor(&_imp->savedColour[0], &_imp->savedColour[1], &_imp->savedColour[2]);
+            }
+            node->setColor(kLockGrey, kLockGrey, kLockGrey);
+            _imp->lockColourApplied = true;
+        }
+    } else if (_imp->lockColourApplied) {
+        _imp->lockColourApplied = false;
+        // A colour other than the grey set on lock was chosen by the user meanwhile.
+        if (isLockGrey(*node)) {
+            if (_imp->colourBeforeLock) {
+                node->setColor(_imp->savedColour[0], _imp->savedColour[1], _imp->savedColour[2]);
+            } else {
+                node->resetColor();
+            }
+        }
+    }
+}
+
+bool
+ViewerInstance::getColourToSave(bool* hasColour,
+                                double* rgb) const
+{
+    NodePtr node = getNode();
+    if (!_imp->lockColourApplied || !node || !isLockGrey(*node)) {
+        return false;
+    }
+    *hasColour = _imp->colourBeforeLock;
+    for (int i = 0; i < 3; ++i) {
+        rgb[i] = _imp->savedColour[i];
+    }
+
+    return true;
+}
 bool
 ViewerInstance::knobChanged(KnobI* k,
                             ValueChangedReasonEnum reason,
@@ -1433,7 +1596,7 @@ viewerTakesCpuFramesOnly(OpenGLViewerI* uiContext)
 }
 
 #ifdef NATRON_HAVE_GPU
-// The GPU viewer process neither measures the frame for auto-contrast nor reads a matte from a second plane, and a
+// The GPU viewer process does not read a matte from a second plane, and a
 // root rendered for only part of the texture would drop the tiles found in the cache.
 bool
 viewerFrameCanTakeDeviceRoot(const ViewerArgs& inArgs,
@@ -1441,9 +1604,6 @@ viewerFrameCanTakeDeviceRoot(const ViewerArgs& inArgs,
                              bool cpuFramesOnly)
 {
     if (cpuFramesOnly) {
-        return false;
-    }
-    if (inArgs.autoContrast) {
         return false;
     }
     if ((inArgs.channels == eDisplayChannelsMatte) && (components.size() > 1)) {
@@ -2549,7 +2709,6 @@ ViewerInstance::planGpuPlacementOfInput(int textureIndex,
     args.forceRender = false;
     args.userRoIEnabled = ui.userRoIEnabled;
     args.mustComputeRoDAndLookupCache = false;
-    args.autoContrast = isAutoContrastEnabled();
     args.channels = getChannels(textureIndex);
     args.params = std::make_shared<UpdateViewerParams>();
     args.params->textureIndex = textureIndex;
@@ -2602,7 +2761,7 @@ ViewerInstance::planGpuPlacementOfInput(int textureIndex,
     const NodeMetadataConstPtr metadata = args.activeInputToRender->getRenderMetadata(time, view);
     args.params->pixelAspectRatio = metadata->getPixelAspectRatio(-1);
     RectI roi;
-    const bool exact = args.userRoIEnabled || args.autoContrast || args.isDoingPartialUpdates;
+    const bool exact = args.userRoIEnabled || args.isDoingPartialUpdates;
     if (!getGpuPlacementRoI(textureIndex, rod, args.params->pixelAspectRatio, mipmapLevel, exact, &roi) || roi.isNull()) {
         builder->addUnplacedGraph();
 
@@ -3193,7 +3352,6 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
     outArgs->params->textureIndex = textureIndex;
 
     // These are the user settings from the viewer UI
-    outArgs->autoContrast = isAutoContrastEnabled();
     outArgs->channels = getChannels(textureIndex);
     outArgs->params->gain = getGain();
     outArgs->params->gamma = getGamma();
@@ -3265,7 +3423,7 @@ ViewerInstance::getViewerRoIAndTexture(const RectD& rod,
     // Roi is the coordinates of the 4 corners of the texture in the bounds with the current zoom
     // factor taken into account.
 
-    // When auto-contrast is enabled or user RoI, we compute exactly the image portion displayed in the rectangle and
+    // When user RoI is enabled, we compute exactly the image portion displayed in the rectangle and
     // do not round it to Viewer tiles.
 
     outArgs->params->tiles.clear();
@@ -3458,10 +3616,10 @@ ViewerInstance::getRoDAndLookupCache(const bool useOnlyRoDCache,
                                      const RenderStatsPtr& stats,
                                      ViewerArgs* outArgs)
 {
-    // We never use the texture cache when the user RoI is enabled or while painting or when auto-contrast is on, otherwise we would have
+    // We never use the texture cache when the user RoI is enabled or while painting, otherwise we would have
     // zillions of textures in the cache, each a few pixels different.
     // A texture found in the cache would end the job here, before its overlay images get a pass.
-    const bool useTextureCache = !outArgs->userRoIEnabled && !outArgs->autoContrast && !rotoPaintNode.get() && !outArgs->isDoingPartialUpdates && outArgs->staleOverlayImageEffects.empty();
+    const bool useTextureCache = !outArgs->userRoIEnabled && !rotoPaintNode.get() && !outArgs->isDoingPartialUpdates && outArgs->staleOverlayImageEffects.empty();
 
     // If it's eSupportsMaybe and mipmapLevel!=0, don't forget to update
     // this after the first call to getRegionOfDefinition().
@@ -3770,7 +3928,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
      * 3) Single frame non-abortable render: the canAbort flag is set to false and the isSequentialRender flag is set to false.
      */
 
-    const bool useTextureCache = !inArgs.forceRender && !inArgs.userRoIEnabled && !inArgs.autoContrast && rotoPaintNode.get() == 0 && !inArgs.isDoingPartialUpdates && inArgs.staleOverlayImageEffects.empty();
+    const bool useTextureCache = !inArgs.forceRender && !inArgs.userRoIEnabled && rotoPaintNode.get() == 0 && !inArgs.isDoingPartialUpdates && inArgs.staleOverlayImageEffects.empty();
     RectI roi = inArgs.params->roi;
 
     // We might already have some tiles cached, get their bounding box to see if it is less than the actual RoI
@@ -4353,21 +4511,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
 
         if (singleThreaded) {
-            if (inArgs.autoContrast && !inArgs.isDoingPartialUpdates) {
-                double vmin, vmax;
-                MinMaxVal vMinMax = findAutoContrastVminVmax(colorImage, inArgs.channels, viewerRenderRoI);
-                vmin = vMinMax.min;
-                vmax = vMinMax.max;
-
-                ///if vmax - vmin is greater than 1 the gain will be really small and we won't see
-                ///anything in the image
-                if (vmin == vmax) {
-                    vmin = vmax - 1.;
-                }
-                updateParams->gain = 1 / (vmax - vmin);
-                updateParams->offset = -vmin / ( vmax - vmin);
-            }
-
             const RenderViewerArgs args(colorImage,
                                         alphaImage,
                                         inArgs.channels,
@@ -4389,47 +4532,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             bool runInCurrentThread = QThreadPool::globalInstance()->activeThreadCount() >= QThreadPool::globalInstance()->maxThreadCount();
             if ( !runInCurrentThread && (splitRoi.size() > 1) ) {
                 runInCurrentThread = true;
-            }
-
-
-            ///if autoContrast is enabled, find out the vmin/vmax before rendering and mapping against new values
-            if (inArgs.autoContrast && !inArgs.isDoingPartialUpdates) {
-                double vmin = std::numeric_limits<double>::infinity();
-                double vmax = -std::numeric_limits<double>::infinity();
-
-                if (runInCurrentThread) {
-                    MinMaxVal vMinMax = findAutoContrastVminVmax(colorImage, inArgs.channels, viewerRenderRoI);
-                    vmin = vMinMax.min;
-                    vmax = vMinMax.max;
-                } else {
-                    std::vector<RectI> splitRects = viewerRenderRoI.splitIntoSmallerRects( appPTR->getMaxThreadCount() );
-                    std::function<MinMaxVal (const RectI&)> findAutoContrast = [&](const RectI &rect) {
-                        return findAutoContrastVminVmax(colorImage, inArgs.channels, rect);
-                    };
-                    QFuture<MinMaxVal> future = QtConcurrent::mapped( splitRects, findAutoContrast );
-                    future.waitForFinished();
-                    QList<MinMaxVal> results = future.results();
-                    Q_FOREACH (const MinMaxVal &vMinMax, results) {
-                        if (vMinMax.min < vmin) {
-                            vmin = vMinMax.min;
-                        }
-                        if (vMinMax.max > vmax) {
-                            vmax = vMinMax.max;
-                        }
-                    }
-                } // runInCurrentThread
-
-                if (vmax == vmin) {
-                    vmin = vmax - 1.;
-                }
-
-                if (vmax <= 0) {
-                    updateParams->gain = 0;
-                    updateParams->offset = 0;
-                } else {
-                    updateParams->gain = 1 / (vmax - vmin);
-                    updateParams->offset =  -vmin / (vmax - vmin);
-                }
             }
 
             const RenderViewerArgs args(colorImage,
@@ -4559,124 +4661,6 @@ viewerProcessRectOnCpu(const ImageConstPtr& input,
     tile.ramBuffer = (unsigned char*)output;
     renderFunctor(rect, args, NULL, tile);
 }
-
-inline
-MinMaxVal
-findAutoContrastVminVmax_generic(const ImagePtr inputImage,
-                                 int nComps,
-                                 DisplayChannelsEnum channels,
-                                 const RectI & rect)
-{
-    double localVmin = std::numeric_limits<double>::infinity();
-    double localVmax = -std::numeric_limits<double>::infinity();
-    Image::ReadAccess acc = inputImage->getReadRights();
-
-    for (int y = rect.bottom(); y < rect.top(); ++y) {
-        const float* src_pixels = (const float*)acc.pixelAt(rect.left(), y);
-        ///we fill the scan-line with all the pixels of the input image
-        for (int x = rect.left(); x < rect.right(); ++x) {
-            double r = 0.;
-            double g = 0.;
-            double b = 0.;
-            double a = 0.;
-            switch (nComps) {
-            case 4:
-                r = src_pixels[0];
-                g = src_pixels[1];
-                b = src_pixels[2];
-                a = src_pixels[3];
-                break;
-            case 3:
-                r = src_pixels[0];
-                g = src_pixels[1];
-                b = src_pixels[2];
-                a = 1.;
-                break;
-            case 2:
-                r = src_pixels[0];
-                g = src_pixels[1];
-                b = 0.;
-                a = 1.;
-                break;
-            case 1:
-                a = src_pixels[0];
-                r = g = b = 0.;
-                break;
-            default:
-                r = g = b = a = 0.;
-            }
-
-            double mini, maxi;
-            switch (channels) {
-            case eDisplayChannelsRGB:
-                mini = std::min(std::min(r, g), b);
-                maxi = std::max(std::max(r, g), b);
-                break;
-            case eDisplayChannelsY:
-                mini = 0.299 * r + 0.587 * g + 0.114 * b;
-                maxi = mini;
-                break;
-            case eDisplayChannelsR:
-                mini = r;
-                maxi = mini;
-                break;
-            case eDisplayChannelsG:
-                mini = g;
-                maxi = mini;
-                break;
-            case eDisplayChannelsB:
-                mini = b;
-                maxi = mini;
-                break;
-            case eDisplayChannelsA:
-                mini = a;
-                maxi = mini;
-                break;
-            default:
-                mini = 0.;
-                maxi = 0.;
-                break;
-            }
-            if (mini < localVmin) {
-                localVmin = mini;
-            }
-            if (maxi > localVmax) {
-                localVmax = maxi;
-            }
-
-            src_pixels += nComps;
-        }
-    }
-
-    return MinMaxVal(localVmin, localVmax);
-} // findAutoContrastVminVmax_generic
-
-template <int nComps>
-MinMaxVal
-findAutoContrastVminVmax_internal(const ImagePtr inputImage,
-                                  DisplayChannelsEnum channels,
-                                  const RectI & rect)
-{
-    return findAutoContrastVminVmax_generic(inputImage, nComps, channels, rect);
-}
-
-MinMaxVal
-findAutoContrastVminVmax(const ImagePtr inputImage,
-                         DisplayChannelsEnum channels,
-                         const RectI & rect)
-{
-    int nComps = inputImage->getComponents().getNumComponents();
-
-    if (nComps == 4) {
-        return findAutoContrastVminVmax_internal<4>(inputImage, channels, rect);
-    } else if (nComps == 3) {
-        return findAutoContrastVminVmax_internal<3>(inputImage, channels, rect);
-    } else if (nComps == 1) {
-        return findAutoContrastVminVmax_internal<1>(inputImage, channels, rect);
-    } else {
-        return findAutoContrastVminVmax_generic(inputImage, nComps, channels, rect);
-    }
-} // findAutoContrastVminVmax
 
 template <typename PIX, int maxValue>
 inline float
@@ -5841,34 +5825,6 @@ ViewerInstance::onMipmapLevelChanged(unsigned int level)
 }
 
 void
-ViewerInstance::onAutoContrastChanged(bool autoContrast,
-                                      bool refresh)
-{
-    // always running in the main thread
-    assert( qApp && qApp->thread() == QThread::currentThread() );
-    KnobBoolPtr knob = _imp->knobs.autoContrast.lock();
-    if (!knob || (knob->getValue() == autoContrast)) {
-        return;
-    }
-    {
-        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
-        knob->setValue(autoContrast);
-    }
-    if (refresh && !getApp()->getProject()->isLoadingProject()) {
-        renderCurrentFrame(true);
-    }
-}
-
-bool
-ViewerInstance::isAutoContrastEnabled() const
-{
-    // MT-safe
-    KnobBoolPtr knob = _imp->knobs.autoContrast.lock();
-
-    return knob ? knob->getValue() : false;
-}
-
-void
 ViewerInstance::setDisplayTransform(const std::string& display,
                                     const std::string& view,
                                     const std::string& look)
@@ -6327,21 +6283,6 @@ ViewIdx
 ViewerInstance::getViewerCurrentView() const
 {
     return _imp->uiContext ? _imp->uiContext->getCurrentView() : ViewIdx(0);
-}
-
-void
-ViewerInstance::setActivateInputChangeRequestedFromViewer(bool fromViewer)
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    _imp->activateInputChangedFromViewer = fromViewer;
-}
-
-bool
-ViewerInstance::isInputChangeRequestedFromViewer() const
-{
-    assert( QThread::currentThread() == qApp->thread() );
-
-    return _imp->activateInputChangedFromViewer;
 }
 
 void

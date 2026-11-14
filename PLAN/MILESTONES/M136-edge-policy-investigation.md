@@ -199,19 +199,19 @@ Acceptance sketch:
   - verify: as P4.T4.
   - size: M
 
-- [ ] M136.P4.T14 — DirBlur and GodRays
+- [x] M136.P4.T14 — DirBlur and GodRays
   - files: `Engine/Nodes/Filter/DirBlur.{h,cpp}`, `GodRays.{h,cpp}`, `Engine/Gpu/Kernels/dirblur.slang`
   - approach: replace their `black_outside` knobs and GPU flag with the stage; `DirBlur::sourceRegion` keys off the mode.
   - verify: as P4.T4.
   - size: M
 
-- [ ] M136.P4.T15 — AdjustBBox onto the Edge Mode knob
+- [x] M136.P4.T15 — AdjustBBox onto the Edge Mode knob
   - files: `Engine/Nodes/Transform/AdjustBBox.cpp`, its GPU kernel and tests
   - approach: AdjustBBox grows the RoD and has its own Black/Nearest choice; replace it with the stage. Median and Bilateral clip their windows to the RoD and never read past it, so they get no knob (PM, from the refreshed survey).
   - verify: a grown box shows the input's edge repeated under Stretch and black under Black, CPU == GPU.
   - size: M
 
-- [ ] M136.P4.T16 — Defocus, IDefocus, ZDefocus and VectorBlur
+- [x] M136.P4.T16 — Defocus, IDefocus, ZDefocus and VectorBlur
   - files: their `.{h,cpp}` and GPU kernels; their Native and Gpu tests
   - approach: their fixed-black source reads follow the mode through the shared samplers.
   - verify: as P4.T15.
@@ -277,3 +277,4 @@ Acceptance sketch:
 - 2026-11-13 — P4.T1–T7 implemented (e7e9b31dd). EdgeBlur's GPU read the matte as black past its edge while the CPU used the mode; fixed. The EdgeBlur and EdgeDetect matte always repeats its edge (PM: a black border would read as an edge), and only the blurred source follows the knob. Input resolves to Stretch for most sources, so border goldens change. Gating with `--record-goldens`, replacing the Phase 3 gate.
 - 2026-11-13 — P4.T8–T10 implemented (ce6d616fc). Merge's transparent-A skip stays under both modes, since it checks A's actual pixels. Mask and route inputs get the Stretch RoI band on GPU too.
 - 2026-11-13 — P4.T11–T13 implemented (5062b6c65). The Map reads of IWarp, IDistort and STMap follow the Map's mode through the shared `MapInput`. LensCorrect, SplineWarp and AutoStraighten now default to Input instead of Black. To check under T14 to T19: SplineWarp's mask/mix reference for a concatenated plane is still hard-coded Black.
+- 2026-11-13 — P4.T14–T16 implemented (5863bc857); these nodes now default to Input. SplineWarp's concatenated reference follows the source's resolved mode, but its non-concatenated `readSourceRow` still reads black past the source. That is fixed with T18/T19.

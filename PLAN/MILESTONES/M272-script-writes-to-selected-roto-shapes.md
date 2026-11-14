@@ -51,12 +51,12 @@ Root cause (consultant, at 7b1b9a9b6):
 
 ## Phase 272.2: Undo
 
-- [ ] M272.P2.T1 — Make a forwarded edit one undo step
+- [x] M272.P2.T1 — Make a forwarded edit one undo step
   - files: `Engine/UndoRecorder.h/.cpp`, `Gui/PythonUndoRecorder.*`, `Gui/UndoHistory.*`, `Engine/PythonUndoCommands.cpp/.h`, `Engine/RotoCurveContext.cpp`, `Tests/RotoSelectionProxy_Test.cpp`
   - approach: Add `UndoRecorderI::isReplaying()`, true while the history undoes or redoes an entry. Skip forwarding while it is true. Before forwarding, record a KnobStateCommand per item knob via a new `recordRotoItemKnobEdit(node, knob)`, with the node in UndoTouched. The pushed KnobUndoCommand or Python step absorbs these records. Check every writer of a proxy knob (drags outside a pushed command).
   - verify: gtest with a test recorder (pattern from `Tests/PythonUndo_Test.cpp`): a proxy edit across 2 selected items with different curves is one entry; undo restores each item's own curve and redo reapplies.
   - size: L
-- [ ] M272.P2.T2 — Record Python writes to shape knobs for undo
+- [x] M272.P2.T2 — Record Python writes to shape knobs for undo
   - files: `Engine/PyParameter.cpp`, `Engine/PythonUndoCommands.cpp`, `Engine/PyRoto.cpp`, `Tests/PythonUndo_Test.cpp`
   - approach: Resolve a holderless item knob to its item's node (through the item wrapper or the curve context), then record it with recordRotoItemKnobEdit.
   - verify: gtest: `shape.getParam("opacity").set()` in a step undoes in one step, on a selected and an unselected shape.
@@ -64,12 +64,12 @@ Root cause (consultant, at 7b1b9a9b6):
 
 ## Phase 272.3: Python and GUI check
 
-- [ ] M272.P3.T1 — Return typed wrappers from Layer.getChildren
+- [x] M272.P3.T1 — Return typed wrappers from Layer.getChildren
   - files: `Engine/PyRoto.cpp` (:197), `Tests/PyRotoCreate_Test.cpp`
   - approach: Wrap each child as getItemByName does (Layer, BezierCurve, stroke).
   - verify: gtest: the children of a layer holding a layer, a Bezier and a stroke expose their own types' methods.
   - size: M
-- [ ] M272.P3.T2 — GUI check for multi-select across frames and script writes
+- [x] M272.P3.T2 — GUI check for multi-select across frames and script writes
   - files: `Tests/gui/m272_roto_multiselect.py`; update the comment at `Tests/gui/m261_roto_keys_editors.py:405`
   - approach: RotoPaint with strokes on frames 5 and 12, and Roto with 2 Beziers keyed differently. Select through the RotoPanel tree (pattern in `m152_track_links_copy.py:81-122`): one, then both, then deselect, then clear. Read every item's values back each time and check the panel shows the last-selected. Edit opacity in the panel, and set the node knob from Python, while both are selected: both items change; one undo restores each. A Python write to one selected shape changes only it. Take screenshots.
   - verify: passes in the remote gate with explicit `--gui`.
@@ -83,3 +83,4 @@ Root cause (consultant, at 7b1b9a9b6):
 - 2026-11-14 — A Python write to one shape's knob reaches that shape only: the panel (or node knob) edit stays the only way to change several items at once (user, in the stub).
 - 2026-11-14 — PM defaults pending the user's answer (Open questions): no Python selection API; an expression set on the node knob with shapes selected is set on each selected shape.
 - 2026-11-14 — Phase 1 implemented (b161fadda, main merged in first). Deviation: key set, key removal and animation removal are found by diffing the proxy against a per-knob snapshot on value change rather than replayed from their own signals, because `cloneCurve` itself fires animation-removed and replaying it would wipe items' animation. Known limits: a proxy linked to another knob doesn't forward; a child selected through its layer and then directly stays non-forwarded; `makeShape` leaves the new shape selected alone. Building with the roto GUI scripts; Phases 2–3 started.
+- 2026-11-14 — Phases 2–3 implemented (9712c7943). AutoStraighten no longer writes selected lines itself (forwarding reaches them, so undo can restore); SplineWarp records an untied curve's own transform knobs before writing. The Dope Sheet's selected-item branch stays (tracker knobs are still slaved). Set Center / Reset Transform still edit outside an undo step, as before. Superseded Phase 1 build cancelled; full gate running (m421_stroke_markers runs at M421's re-gate on top of this).

@@ -520,6 +520,7 @@ TEST_F(NatronUtilityProject3DTest, NatronUtilityMatchesStormOnInteriorPixels)
     const std::size_t pixels = (std::size_t)width * height;
     ASSERT_EQ(pixels * 4, storm.rgba.size());
     ASSERT_EQ(pixels * 4, utility.rgba.size());
+    ASSERT_EQ(pixels, storm.primId.size());
     ASSERT_EQ(pixels, utility.primId.size());
 
     std::size_t compared = 0;
@@ -549,6 +550,17 @@ TEST_F(NatronUtilityProject3DTest, NatronUtilityMatchesStormOnInteriorPixels)
             EXPECT_NEAR(0.4f, utility.rgba[at * 4 + 1], 1e-3) << "pixel " << x << ", " << y;
         }
     }
-    EXPECT_GT(compared, 20u);
+    std::size_t stormHits = 0;
+    std::size_t utilityHits = 0;
+    std::size_t stormCovered = 0;
+    std::size_t utilityCovered = 0;
+
+    for (std::size_t i = 0; i < pixels; ++i) {
+        stormHits += storm.primId[i] != 0.f ? 1 : 0;
+        utilityHits += utility.primId[i] != 0.f ? 1 : 0;
+        stormCovered += storm.rgba[i * 4 + 3] > 0.f ? 1 : 0;
+        utilityCovered += utility.rgba[i * 4 + 3] > 0.f ? 1 : 0;
+    }
+    EXPECT_GT(compared, 20u) << "of " << pixels << " pixels, Storm hits " << stormHits << " and covers " << stormCovered << ", Natron Utility hits " << utilityHits << " and covers " << utilityCovered;
     HydraRender::release(&owner);
 }

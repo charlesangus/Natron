@@ -178,9 +178,11 @@ public:
         _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(device)));
     }
 
+    // The first GPU frame in a process compiles the wavefront kernels, which on a loaded software
+    // Vulkan device has taken longer than 30 s.
     void render()
     {
-        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(180);
 
         renderOnce();
         while (!_engine->IsConverged() && std::chrono::steady_clock::now() < end) {

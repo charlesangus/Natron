@@ -3080,7 +3080,7 @@ contextDescription(std::string* error)
 bool
 ProgressiveRender::View::operator==(const View& other) const
 {
-    return (width == other.width) && (height == other.height) && (time == other.time) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (frustum.ComputeViewMatrix() == other.frustum.ComputeViewMatrix()) && (frustum.ComputeProjectionMatrix() == other.frustum.ComputeProjectionMatrix());
+    return (width == other.width) && (height == other.height) && (time == other.time) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (headlight == other.headlight) && (frustum.ComputeViewMatrix() == other.frustum.ComputeViewMatrix()) && (frustum.ComputeProjectionMatrix() == other.frustum.ComputeProjectionMatrix());
 }
 
 namespace {
@@ -3244,6 +3244,7 @@ struct ProgressiveRender::Implementation {
     bool delegateStopped = false;
     View engineView;
     bool engineHasView = false;
+    bool engineHeadlight = false;
     // The count the engine's Cycles session was opened under, and the one the worker last asked
     // CyclesThreads for, -1 before it asked.
     int engineThreads = 0;
@@ -3408,6 +3409,7 @@ struct ProgressiveRender::Implementation {
         appliedCap = cap;
         paused = false;
         engineHasView = false;
+        engineHeadlight = false;
         *defaultCap = cap;
 
         return true;
@@ -3773,9 +3775,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 continue;
             }
         }
-        if (settings != engineSettings) {
+        if ((settings != engineSettings) || (engineHeadlight && !view.headlight)) {
             // Some settings, such as Cycles' integrator's, restart a render only when the engine
-            // is made under them: it is made again, the frame shown kept until the new one.
+            // is made under them, and a headlight once set cannot be taken back: the engine is
+            // made again, the frame shown kept until the new one.
             lock.unlock();
             dropEngine();
             lock.lock();
@@ -3891,11 +3894,15 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     engineView = v;
                     engineHasView = true;
                 }
+                if (v.headlight && !engineHeadlight) {
+                    setHeadlight(engine.get());
+                    engineHeadlight = true;
+                }
                 UsdImagingGLRenderParams params;
                 params.frame = v.time;
                 params.drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
                 params.enableLighting = true;
-                params.enableSceneLights = true;
+                params.enableSceneLights = !v.headlight;
                 params.enableSceneMaterials = true;
                 params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
                 params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;

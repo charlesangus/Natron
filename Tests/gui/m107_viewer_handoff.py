@@ -486,12 +486,17 @@ try:
                 yield ("sleep", SETTLE_MS)
                 check(py_viewer.getAInput() == 0, "%s: viewer input A is back on the ColorCorrect (%d)" %
                       (mode, py_viewer.getAInput()))
-                check(choose(input_b, grade_b.getScriptName(), exact=False), "%s: pick the B Grade as viewer input B" % mode)
                 plain = yield from capture("%s-ab-a-only" % mode)
                 check(abs(centre_mean(plain) - centre_mean(shown)) <= 2,
-                      "%s: with B picked and no wipe the viewer still shows A (centre %.1f, before %.1f)" %
+                      "%s: with B connected and no wipe the viewer still shows A (centre %.1f, before %.1f)" %
                       (mode, centre_mean(plain), centre_mean(shown)))
-                check(choose(operator, "W-Under"), "%s: turn the A/B wipe on" % mode)
+                # Connecting can already have left the Grade as B, and picking the showing entry does nothing.
+                require(choose(input_b, " - "), "%s: viewer input B can be cleared with no wipe" % mode)
+                require(choose(input_b, grade_b.getScriptName(), exact=False),
+                        "%s: viewer input B offers the B Grade" % mode)
+                check(operator.property("natronCurrentText") == "W-Under",
+                      "%s: picking the B Grade as viewer input B turns the A/B wipe on (operator %r)" %
+                      (mode, operator.property("natronCurrentText")))
                 yield from capture("%s-ab-wipe" % mode, previous=plain)
                 choose(operator, " - ")
                 off = yield from capture("%s-ab-wipe-off" % mode)

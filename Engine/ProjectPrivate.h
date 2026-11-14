@@ -32,6 +32,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -158,6 +159,19 @@ public:
 
     mutable QMutex nodesByIdMutex;
     std::unordered_map<std::string, NodeWPtr> nodesById; //< see Project::findNodeById()
+
+    // The layers table's "Used by" counts, with each counted node's share, so a node's change is
+    // counted without walking every node. A counted group has an entry even with no layer of its
+    // own: whether it is counted decides whether the nodes inside it are.
+    struct LayerUser {
+        NodeWPtr node;
+        std::set<std::string> ids;
+        bool isGroup = false;
+    };
+    mutable QMutex layerUsersMutex;
+    mutable bool layerUsersValid = false; //< false: rebuilt by a walk on the next read
+    mutable std::unordered_map<const Node*, LayerUser> layerUsersByNode;
+    mutable std::map<std::string, int> layerUsersCount;
 
     // Project::getContentDigest() without the OCIO file stamp, and the state it was computed from.
     mutable QMutex contentDigestMutex; //< protects the contentDigest* fields

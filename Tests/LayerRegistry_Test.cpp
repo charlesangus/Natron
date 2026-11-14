@@ -49,6 +49,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -698,3 +699,92 @@ TEST_F(BaseTest, ReadPresentLayersNoColorFileStillReportsColor)
     EXPECT_TRUE(foundColor);
     EXPECT_EQ(expected, ids);
 } // TEST_F(BaseTest, ReadPresentLayersNoColorFileStillReportsColor)
+
+static int
+layerUsersInTable(const KnobTablePtr& knob, const std::string& label)
+{
+    std::vector<std::string> row;
+
+    if (!findLayersKnobRow(knob, label, &row) || (row.size() < 3)) {
+        return -1;
+    }
+
+    return std::stoi(row[2]);
+}
+
+static void
+expectTableMatchesAFullRecount(const ProjectPtr& project, const KnobTablePtr& knob)
+{
+    std::list<std::vector<std::string>> counted;
+
+    knob->getTable(&counted);
+    project->emitProjectLayersChangedSignal();
+    std::list<std::vector<std::string>> recounted;
+    knob->getTable(&recounted);
+    EXPECT_EQ(recounted, counted);
+}
+
+// "Used by" is kept by counting each node's change rather than by walking every node, so after
+// each kind of change it must equal what a walk of the whole project counts.
+TEST_F(BaseTest, LayerUsersFollowEachNodeChange)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    KnobTablePtr layersKnob = std::dynamic_pointer_cast<KnobTable>(project->getKnobByName("defaultLayers"));
+    ASSERT_TRUE(bool(layersKnob));
+    const int initial = layerUsersInTable(layersKnob, "xy");
+    ASSERT_GE(initial, 0);
+
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
+    ASSERT_TRUE(bool(blur));
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels));
+    channels->addLayer("xy", 0);
+    EXPECT_EQ(initial + 1, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    blur->deactivate();
+    EXPECT_EQ(initial, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+    blur->activate();
+    EXPECT_EQ(initial + 1, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, project);
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr group = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(group));
+    NodeCollectionPtr inside = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+    ASSERT_TRUE(bool(inside));
+    CreateNodeArgs innerArgs("Blur", inside);
+    innerArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr innerBlur = getApp()->createNode(innerArgs);
+    ASSERT_TRUE(bool(innerBlur));
+    KnobChannelSetPtr innerChannels = std::dynamic_pointer_cast<KnobChannelSet>(innerBlur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(innerChannels));
+    innerChannels->addLayer("xy", 0);
+    EXPECT_EQ(initial + 2, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    group->deactivate();
+    EXPECT_EQ(initial + 1, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+    group->activate();
+    EXPECT_EQ(initial + 2, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    innerBlur->destroyNode(true, false);
+    innerBlur.reset();
+    EXPECT_EQ(initial + 1, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    blur->destroyNode(true, false);
+    blur.reset();
+    EXPECT_EQ(initial, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    project->reset(false, true);
+} // TEST_F(BaseTest, LayerUsersFollowEachNodeChange)

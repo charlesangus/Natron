@@ -145,13 +145,21 @@ ItemBase::getParam(const QString& name) const
     if (!knob) {
         return 0;
     }
-    Param* ret = Effect::createParamWrapperForKnob(knob);
-    RotoCurveContextPtr context = drawable->getContext();
-    if (ret && context) {
-        ret->_itemNode = context->getNode();
+    return asItemParam(Effect::createParamWrapperForKnob(knob), _item);
+}
+
+Param*
+ItemBase::asItemParam(Param* param,
+                      const RotoItemPtr& item)
+{
+    RotoDrawableItem* drawable = dynamic_cast<RotoDrawableItem*>(item.get());
+    RotoCurveContextPtr context = drawable ? drawable->getContext() : RotoCurveContextPtr();
+
+    if (param && context) {
+        param->_itemNode = context->getNode();
     }
 
-    return ret;
+    return param;
 }
 
 Layer::Layer(const RotoItemPtr& item)
@@ -596,7 +604,7 @@ BezierCurve::getActivatedParam() const
     KnobBoolPtr ret = _bezier->getActivatedKnob();
 
     if (ret) {
-        return new BooleanParam(ret);
+        return static_cast<BooleanParam*>(asItemParam(new BooleanParam(ret), _bezier));
     }
 
     return 0;
@@ -608,7 +616,7 @@ BezierCurve::getOpacityParam() const
     KnobDoublePtr ret = _bezier->getOpacityKnob();
 
     if (ret) {
-        return new DoubleParam(ret);
+        return static_cast<DoubleParam*>(asItemParam(new DoubleParam(ret), _bezier));
     }
 
     return 0;
@@ -620,7 +628,7 @@ BezierCurve::getFeatherDistanceParam() const
     KnobDoublePtr ret = _bezier->getFeatherKnob();
 
     if (ret) {
-        return new DoubleParam(ret);
+        return static_cast<DoubleParam*>(asItemParam(new DoubleParam(ret), _bezier));
     }
 
     return 0;
@@ -632,7 +640,7 @@ BezierCurve::getFeatherFallOffParam() const
     KnobDoublePtr ret = _bezier->getFeatherFallOffKnob();
 
     if (ret) {
-        return new DoubleParam(ret);
+        return static_cast<DoubleParam*>(asItemParam(new DoubleParam(ret), _bezier));
     }
 
     return 0;
@@ -644,7 +652,7 @@ BezierCurve::getColorParam() const
     KnobColorPtr ret = _bezier->getColorKnob();
 
     if (ret) {
-        return new ColorParam(ret);
+        return static_cast<ColorParam*>(asItemParam(new ColorParam(ret), _bezier));
     }
 
     return 0;
@@ -656,7 +664,7 @@ BezierCurve::getCompositingOperatorParam() const
     KnobChoicePtr ret = _bezier->getOperatorKnob();
 
     if (ret) {
-        return new ChoiceParam(ret);
+        return static_cast<ChoiceParam*>(asItemParam(new ChoiceParam(ret), _bezier));
     }
 
     return 0;

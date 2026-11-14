@@ -209,6 +209,12 @@ public:
         Q_EMIT redrawGuiCurve( (int)reason, view, dimension );
     }
 
+    void s_curveEditHeldForRender(ViewSpec view,
+                                  int dimension)
+    {
+        Q_EMIT curveEditHeldForRender(view, dimension);
+    }
+
     void s_minMaxChanged(double mini,
                          double maxi,
                          int index)
@@ -352,6 +358,11 @@ Q_SIGNALS:
 
     ///Emitted whenever all keyframes of a dimension are effectively removed
     void animationRemoved(ViewSpec view, int dimension);
+
+    /// Emitted on the main thread when, while the holder renders, a key is set that no other signal
+    /// reports until the render ends: a key held in the set-value queue, or one written to the GUI
+    /// curve only.
+    void curveEditHeldForRender(ViewSpec view, int dimension);
 
     ///Emitted whenever a knob is slaved via the slaveTo function with a reason of eValueChangedReasonPluginEdited.
     void knobSlaved(int dimension, bool slaved);
@@ -1259,6 +1270,12 @@ public:
      * @returns true if any value was dequeued
      **/
     virtual bool dequeueValuesSet(bool disableEvaluation) = 0;
+
+    /**
+     * @brief Drops the setValue/setValueAtTime calls queued while the holder renders, which then
+     * never apply.
+     **/
+    virtual void discardQueuedValues() = 0;
 
     /**
      * @brief Returns the current time if attached to a timeline or the time being rendered
@@ -2705,6 +2722,12 @@ public:
      **/
     bool isValueChangeAtCurrentTime(const T& value, int dimension = 0) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The keys that writes queued while the holder renders will add to dimension's curve once
+     * the render ends, oldest first.
+     **/
+    std::list<KeyFrame> getQueuedKeyFrames(int dimension) const;
+
     virtual double getRawCurveValueAt(double time, ViewSpec view,  int dimension)  OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual double getValueAtWithExpression(double time, ViewSpec view, int dimension)  OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -2936,6 +2959,7 @@ public:
     virtual void cloneDefaultValues(KnobI* other) OVERRIDE FINAL;
     virtual bool cloneAndCheckIfChanged(KnobI* other, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool dequeueValuesSet(bool disableEvaluation) OVERRIDE FINAL;
+    virtual void discardQueuedValues() OVERRIDE FINAL;
 
     ///MT-safe
     void setMinimum(const T& mini, int dimension = 0);

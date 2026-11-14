@@ -529,3 +529,41 @@ TEST_F(PythonUndo, AShapeParameterWriteUndoesInOneStep)
     EXPECT_DOUBLE_EQ(0.5, unselected->getOpacityKnob()->getValue());
     context->clearSelection(RotoItem::eSelectionReasonOther);
 }
+
+// A write through a shape's own accessor is one undo step on the roto node, as one through
+// getParam() is.
+TEST_F(PythonUndo, AShapeAccessorWriteUndoesInOneStep)
+{
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr shape = context->makeSquare(0., 0., 10., context->getTimelineCurrentTime());
+    ASSERT_TRUE(bool(shape));
+    ASSERT_TRUE(shape->setScriptName("accessedShape"));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    const double feather = shape->getFeatherKnob()->getValue();
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+    const std::string item = "b = " + py(roto) + ".getRotoContext().getItemByName(\"accessedShape\")\n";
+
+    ASSERT_TRUE(runStep(item + "b.getOpacityParam().set(0.25)\n"));
+    EXPECT_DOUBLE_EQ(0.25, shape->getOpacityKnob()->getValue());
+    ASSERT_EQ(1u, recorder->commands.size());
+    ASSERT_EQ(1u, recorder->touchedNodes.size());
+    EXPECT_EQ(roto, recorder->touchedNodes.front());
+    undoAll();
+    EXPECT_DOUBLE_EQ(1., shape->getOpacityKnob()->getValue());
+    redoAll();
+    EXPECT_DOUBLE_EQ(0.25, shape->getOpacityKnob()->getValue());
+
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+    ASSERT_NE(7.5, feather);
+    ASSERT_TRUE(runStep(item + "b.getFeatherDistanceParam().set(7.5)\n"));
+    EXPECT_DOUBLE_EQ(7.5, shape->getFeatherKnob()->getValue());
+    ASSERT_EQ(1u, recorder->commands.size());
+    undoAll();
+    EXPECT_DOUBLE_EQ(feather, shape->getFeatherKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, shape->getOpacityKnob()->getValue());
+}

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -40,17 +41,21 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobGuiI.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
+#include "Engine/RectD.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/UndoRecorder.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
 
@@ -132,6 +137,71 @@ public:
     std::vector<std::uint64_t> serials;
 };
 
+/**
+ * @brief The engine side of a knob's GUI: one GUI curve per dimension, as a panel provides. While
+ * the node renders, curve edits go to these curves.
+ **/
+class CurveOnlyKnobGui
+    : public KnobGuiI {
+public:
+    explicit CurveOnlyKnobGui(const KnobIPtr& knob)
+    {
+        for (int i = 0; i < knob->getDimension(); ++i) {
+            CurvePtr curve = std::make_shared<Curve>(knob.get(), i);
+            CurvePtr internal = knob->getCurve(ViewIdx(0), i, true);
+            if (internal) {
+                curve->clone(*internal);
+            }
+            _curves.push_back(curve);
+        }
+    }
+
+    virtual void swapOpenGLBuffers() OVERRIDE { }
+    virtual void redraw() OVERRIDE { }
+    virtual void getViewportSize(double& width, double& height) const OVERRIDE { width = height = 0.; }
+    virtual void getPixelScale(double& xScale, double& yScale) const OVERRIDE { xScale = yScale = 1.; }
+    virtual double getScreenPixelRatio() const OVERRIDE { return 1.; }
+    virtual void getBackgroundColour(double& r, double& g, double& b) const OVERRIDE { r = g = b = 0.; }
+    virtual bool isGuiFrozenForPlayback() const OVERRIDE { return false; }
+    virtual void saveOpenGLContext() OVERRIDE { }
+    virtual void restoreOpenGLContext() OVERRIDE { }
+    virtual CurvePtr getCurve(ViewSpec /*view*/, int dimension) const OVERRIDE
+    {
+        return (dimension >= 0 && dimension < (int)_curves.size()) ? _curves[dimension] : CurvePtr();
+    }
+    virtual bool getAllDimensionsVisible() const OVERRIDE { return true; }
+    virtual RectD getViewportRect() const OVERRIDE { return RectD(); }
+    virtual void getCursorPosition(double& x, double& y) const OVERRIDE { x = y = 0.; }
+    virtual void toWidgetCoordinates(double* /*x*/, double* /*y*/) const OVERRIDE { }
+    virtual void toCanonicalCoordinates(double* /*x*/, double* /*y*/) const OVERRIDE { }
+    virtual int getWidgetFontHeight() const OVERRIDE { return 10; }
+    virtual int getStringWidthForCurrentFont(const std::string& string) const OVERRIDE { return (int)string.size(); }
+
+protected:
+    virtual void setKnobGuiPointer() OVERRIDE { }
+
+private:
+    std::vector<CurvePtr> _curves;
+};
+
+bool
+hasKey(const KnobIPtr& knob,
+       double time,
+       KeyFrame* key = NULL)
+{
+    KeyFrame found;
+    CurvePtr curve = knob->getCurve(ViewSpec(0), 0, true);
+
+    if (!curve || !curve->getKeyFrameWithTime(time, &found)) {
+        return false;
+    }
+    if (key) {
+        *key = found;
+    }
+
+    return true;
+}
+
 } // namespace
 
 class RotoSelectionProxyTest
@@ -145,6 +215,8 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
+        EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(false);
+        _guis.clear();
         if (_recorder) {
             _recorder->commands.clear();
             getApp()->setUndoRecorder(UndoRecorderPtr());
@@ -218,8 +290,19 @@ protected:
         _recorder->replaying = false;
     }
 
+    // Gives the knob a GUI, as its panel does, and makes the node's renders hold writes to its
+    // knobs as they do in a session with a window.
+    void showInPanel(const KnobIPtr& knob)
+    {
+        std::shared_ptr<CurveOnlyKnobGui> gui = std::make_shared<CurveOnlyKnobGui>(knob);
+        knob->setKnobGuiPointer(gui);
+        _guis.push_back(gui);
+        EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(true);
+    }
+
     NodePtr _node;
     std::shared_ptr<StepRecorder> _recorder;
+    std::vector<std::shared_ptr<CurveOnlyKnobGui>> _guis;
 };
 
 // Selecting, adding to, removing from and clearing the selection never write an item: each stroke
@@ -537,4 +620,366 @@ TEST_F(RotoSelectionProxyTest, AReplayedEditIsNotForwarded)
     EXPECT_DOUBLE_EQ(0.6, a->getOpacityKnob()->getValue());
     EXPECT_DOUBLE_EQ(0.6, b->getOpacityKnob()->getValue());
     context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// While the node renders, a key set on the node's knob waits in its queue; the selected items take
+// it at once, in the edit's own undo step, and the end of the render forwards nothing more.
+TEST_F(RotoSelectionProxyTest, AKeySetDuringARenderReachesTheSelectionInItsStep)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = makeSquare(context, 0.);
+    BezierPtr b = makeSquare(context, 30.);
+    BezierPtr outside = makeSquare(context, 60.);
+    ASSERT_TRUE(a && b && outside);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    a->getOpacityKnob()->setValueAtTime(1., 0.2, ViewSpec::all(), 0);
+    a->getOpacityKnob()->setValueAtTime(10., 0.8, ViewSpec::all(), 0);
+    b->getOpacityKnob()->setValueAtTime(5., 0.5, ViewSpec::all(), 0);
+    const Keys aKeys = keysOf(a->getOpacityKnob());
+    const Keys bKeys = keysOf(b->getOpacityKnob());
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("opacity");
+    ASSERT_TRUE(bool(shown));
+    showInPanel(shown);
+    Keys aEdited = aKeys;
+    aEdited.insert(aEdited.begin() + 1, std::make_pair(7., 0.9));
+    Keys bEdited = bKeys;
+    bEdited.push_back(std::make_pair(7., 0.9));
+
+    std::shared_ptr<StepRecorder> recorder = installRecorder();
+    {
+        RenderingFlagSetter rendering(_node);
+        {
+            UndoStepGuard step(getApp(), "Set opacity");
+            recordKnobEdit(shown);
+            KeyFrame key;
+            shown->setValueAtTime(7., 0.9, ViewSpec::all(), 0, eValueChangedReasonUserEdited, &key);
+        }
+        // The key is held: the node's own curve does not have it yet.
+        EXPECT_FALSE(hasKey(shown, 7.));
+        EXPECT_EQ(aEdited, keysOf(a->getOpacityKnob()));
+        EXPECT_EQ(bEdited, keysOf(b->getOpacityKnob()));
+        ASSERT_EQ(3u, recorder->commands.size());
+        for (std::size_t i = 0; i < recorder->serials.size(); ++i) {
+            EXPECT_EQ(recorder->serials.front(), recorder->serials[i]);
+        }
+    }
+    EXPECT_EQ(bEdited, keysOf(shown));
+    EXPECT_EQ(aEdited, keysOf(a->getOpacityKnob()));
+    EXPECT_EQ(bEdited, keysOf(b->getOpacityKnob()));
+    EXPECT_FALSE(outside->getOpacityKnob()->isAnimated(0));
+    EXPECT_EQ(3u, recorder->commands.size());
+
+    undoRecorded();
+    EXPECT_EQ(aKeys, keysOf(a->getOpacityKnob()));
+    EXPECT_EQ(bKeys, keysOf(b->getOpacityKnob()));
+    EXPECT_EQ(bKeys, keysOf(shown));
+    redoRecorded();
+    EXPECT_EQ(aEdited, keysOf(a->getOpacityKnob()));
+    EXPECT_EQ(bEdited, keysOf(b->getOpacityKnob()));
+    EXPECT_EQ(bEdited, keysOf(shown));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// A value set on the animated node's knob during a render keys every selected item at once.
+TEST_F(RotoSelectionProxyTest, AValueSetOnAnAnimatedKnobDuringARenderKeysTheSelection)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = makeSquare(context, 0.);
+    BezierPtr b = makeSquare(context, 30.);
+    ASSERT_TRUE(a && b);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    const double now = context->getTimelineCurrentTime();
+    a->getOpacityKnob()->setValueAtTime(now + 10., 0.2, ViewSpec::all(), 0);
+    b->getOpacityKnob()->setValueAtTime(now + 20., 0.3, ViewSpec::all(), 0);
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("opacity");
+    ASSERT_TRUE(bool(shown));
+    ASSERT_TRUE(shown->isAnimated(0));
+    showInPanel(shown);
+
+    {
+        RenderingFlagSetter rendering(_node);
+        KeyFrame key;
+        shown->setValue(0.4, ViewSpec::all(), 0, eValueChangedReasonUserEdited, &key);
+        EXPECT_FALSE(hasKey(shown, now));
+        EXPECT_TRUE(hasKey(a->getOpacityKnob(), now, &key));
+        EXPECT_DOUBLE_EQ(0.4, key.getValue());
+        EXPECT_TRUE(hasKey(b->getOpacityKnob(), now, &key));
+        EXPECT_DOUBLE_EQ(0.4, key.getValue());
+    }
+    EXPECT_EQ(2u, keysOf(a->getOpacityKnob()).size());
+    EXPECT_EQ(2u, keysOf(b->getOpacityKnob()).size());
+    EXPECT_EQ(keysOf(b->getOpacityKnob()), keysOf(shown));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// Removing a key, then all animation, from the node's knob during a render reaches the selected
+// items at once, though only the node's GUI curve has the edit until the render ends.
+TEST_F(RotoSelectionProxyTest, KeysRemovedDuringARenderLeaveTheSelectionAtOnce)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = makeSquare(context, 0.);
+    BezierPtr b = makeSquare(context, 30.);
+    ASSERT_TRUE(a && b);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    for (int i = 0; i < 2; ++i) {
+        KnobDoublePtr own = (i == 0 ? a : b)->getOpacityKnob();
+        own->setValueAtTime(1., 0.2 + 0.1 * i, ViewSpec::all(), 0);
+        own->setValueAtTime(10., 0.8 - 0.1 * i, ViewSpec::all(), 0);
+        own->setValueAtTime(20., 0.5, ViewSpec::all(), 0);
+    }
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("opacity");
+    ASSERT_TRUE(bool(shown));
+    showInPanel(shown);
+
+    {
+        RenderingFlagSetter rendering(_node);
+        KnobIPtr(shown)->deleteValueAtTime(eCurveChangeReasonInternal, 1., ViewSpec::all(), 0, true);
+        EXPECT_TRUE(hasKey(shown, 1.));
+        EXPECT_FALSE(hasKey(a->getOpacityKnob(), 1.));
+        EXPECT_FALSE(hasKey(b->getOpacityKnob(), 1.));
+        EXPECT_TRUE(hasKey(a->getOpacityKnob(), 10.));
+        EXPECT_TRUE(hasKey(b->getOpacityKnob(), 20.));
+
+        KnobIPtr(shown)->removeAnimation(ViewSpec::all(), 0);
+        EXPECT_TRUE(shown->isAnimated(0));
+        EXPECT_FALSE(a->getOpacityKnob()->isAnimated(0));
+        EXPECT_FALSE(b->getOpacityKnob()->isAnimated(0));
+    }
+    EXPECT_FALSE(shown->isAnimated(0));
+    EXPECT_FALSE(a->getOpacityKnob()->isAnimated(0));
+    EXPECT_FALSE(b->getOpacityKnob()->isAnimated(0));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// Moving a key, changing its interpolation and its tangents on the node's knob during a render
+// reach every selected item at once, from what the node's GUI curve shows.
+TEST_F(RotoSelectionProxyTest, KeyEditsDuringARenderReachTheSelectionAtOnce)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = makeSquare(context, 0.);
+    BezierPtr b = makeSquare(context, 30.);
+    ASSERT_TRUE(a && b);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    a->getOpacityKnob()->setValueAtTime(1., 0.2, ViewSpec::all(), 0);
+    a->getOpacityKnob()->setValueAtTime(10., 0.8, ViewSpec::all(), 0);
+    b->getOpacityKnob()->setValueAtTime(1., 0.5, ViewSpec::all(), 0);
+    b->getOpacityKnob()->setValueAtTime(10., 0.6, ViewSpec::all(), 0);
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("opacity");
+    ASSERT_TRUE(bool(shown));
+    showInPanel(shown);
+    KeyFrame key;
+
+    {
+        RenderingFlagSetter rendering(_node);
+        EXPECT_TRUE(KnobIPtr(shown)->moveValueAtTime(eCurveChangeReasonInternal, 10., ViewSpec::all(), 0, 2., 0.1, &key));
+        EXPECT_TRUE(hasKey(shown, 10.));
+        EXPECT_FALSE(hasKey(a->getOpacityKnob(), 10.));
+        ASSERT_TRUE(hasKey(a->getOpacityKnob(), 12., &key));
+        EXPECT_NEAR(0.9, key.getValue(), 1e-9);
+        ASSERT_TRUE(hasKey(b->getOpacityKnob(), 12., &key));
+        EXPECT_NEAR(0.7, key.getValue(), 1e-9);
+
+        EXPECT_TRUE(KnobIPtr(shown)->setInterpolationAtTime(eCurveChangeReasonInternal, ViewSpec::all(), 0, 1., eKeyframeTypeConstant, &key));
+        ASSERT_TRUE(hasKey(shown, 1., &key));
+        EXPECT_NE(eKeyframeTypeConstant, key.getInterpolation());
+        ASSERT_TRUE(hasKey(a->getOpacityKnob(), 1., &key));
+        EXPECT_EQ(eKeyframeTypeConstant, key.getInterpolation());
+        ASSERT_TRUE(hasKey(b->getOpacityKnob(), 1., &key));
+        EXPECT_EQ(eKeyframeTypeConstant, key.getInterpolation());
+
+        KeyTangents tangents;
+        tangents.left = 0.3;
+        tangents.right = 0.4;
+        EXPECT_TRUE(KnobIPtr(shown)->setTangentsAtTime(eCurveChangeReasonInternal, ViewSpec::all(), 0, 12., tangents, &key));
+        for (int i = 0; i < 2; ++i) {
+            ASSERT_TRUE(hasKey((i == 0 ? a : b)->getOpacityKnob(), 12., &key)) << i;
+            EXPECT_DOUBLE_EQ(0.3, key.getLeftDerivative()) << i;
+            EXPECT_DOUBLE_EQ(0.4, key.getRightDerivative()) << i;
+        }
+    }
+    ASSERT_TRUE(hasKey(a->getOpacityKnob(), 12., &key));
+    EXPECT_NEAR(0.9, key.getValue(), 1e-9);
+    EXPECT_DOUBLE_EQ(0.3, key.getLeftDerivative());
+    ASSERT_TRUE(hasKey(b->getOpacityKnob(), 12., &key));
+    EXPECT_NEAR(0.7, key.getValue(), 1e-9);
+    EXPECT_EQ(2u, keysOf(a->getOpacityKnob()).size());
+    EXPECT_EQ(keysOf(b->getOpacityKnob()), keysOf(shown));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// An edit held by a render reaches the items selected when it was made; selecting another item
+// before the render ends neither gives it the edit nor makes the node's knob show it.
+TEST_F(RotoSelectionProxyTest, AnEditHeldByARenderSkipsTheNextSelection)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = makeSquare(context, 0.);
+    BezierPtr b = makeSquare(context, 30.);
+    BezierPtr later = makeSquare(context, 60.);
+    BezierPtr keyed = makeSquare(context, 90.);
+    ASSERT_TRUE(a && b && later && keyed);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    keyed->getOpacityKnob()->setValueAtTime(3., 0.6, ViewSpec::all(), 0);
+    const Keys keyedKeys = keysOf(keyed->getOpacityKnob());
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("opacity");
+    ASSERT_TRUE(bool(shown));
+    showInPanel(shown);
+
+    {
+        RenderingFlagSetter rendering(_node);
+        KeyFrame key;
+        shown->setValue(0.4, ViewSpec::all(), 0, eValueChangedReasonUserEdited, &key);
+        EXPECT_DOUBLE_EQ(0.4, a->getOpacityKnob()->getValue());
+        EXPECT_DOUBLE_EQ(0.4, b->getOpacityKnob()->getValue());
+        context->clearSelection(RotoItem::eSelectionReasonOther);
+        // The node's raw value is still the one it showed before the edit, as is later's.
+        context->select(later, RotoItem::eSelectionReasonOther);
+        EXPECT_DOUBLE_EQ(1., shown->getValue());
+    }
+    EXPECT_DOUBLE_EQ(1., later->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(1., shown->getValue());
+    EXPECT_DOUBLE_EQ(0.4, a->getOpacityKnob()->getValue());
+
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    {
+        RenderingFlagSetter rendering(_node);
+        KeyFrame key;
+        shown->setValueAtTime(7., 0.9, ViewSpec::all(), 0, eValueChangedReasonUserEdited, &key);
+        EXPECT_TRUE(hasKey(a->getOpacityKnob(), 7.));
+        context->clearSelection(RotoItem::eSelectionReasonOther);
+        context->select(keyed, RotoItem::eSelectionReasonOther);
+    }
+    EXPECT_EQ(keyedKeys, keysOf(keyed->getOpacityKnob()));
+    EXPECT_EQ(keyedKeys, keysOf(shown));
+    EXPECT_TRUE(hasKey(b->getOpacityKnob(), 7.));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// Undoing and redoing an edit made on two items, after a third was selected, restores and
+// reapplies the two while the node's knob keeps showing the third, which stays as it was.
+TEST_F(RotoSelectionProxyTest, AReplayedEditKeepsShowingTheCurrentSelection)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = makeSquare(context, 0.);
+    BezierPtr b = makeSquare(context, 30.);
+    BezierPtr c = makeSquare(context, 60.);
+    ASSERT_TRUE(a && b && c);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    c->getOpacityKnob()->setValue(0.5);
+    for (int i = 0; i < 3; ++i) {
+        KnobDoublePtr own = (i == 0 ? a : (i == 1 ? b : c))->getFeatherKnob();
+        own->setValueAtTime(1., 2., ViewSpec::all(), 0);
+        own->setValueAtTime(10., 4. + i, ViewSpec::all(), 0);
+    }
+    const Keys cFeather = keysOf(c->getFeatherKnob());
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr opacity = proxy<KnobDouble>("opacity");
+    KnobDoublePtr feather = proxy<KnobDouble>("feather");
+    ASSERT_TRUE(opacity && feather);
+
+    installRecorder();
+    {
+        UndoStepGuard step(getApp(), "Edit shapes");
+        recordKnobEdit(opacity);
+        recordKnobEdit(feather);
+        opacity->setValue(0.3);
+        KeyFrame key;
+        EXPECT_TRUE(KnobIPtr(feather)->moveValueAtTime(eCurveChangeReasonInternal, 10., ViewSpec::all(), 0, 2., 0., &key));
+        EXPECT_TRUE(KnobIPtr(feather)->setInterpolationAtTime(eCurveChangeReasonInternal, ViewSpec::all(), 0, 1., eKeyframeTypeConstant, &key));
+    }
+    ASSERT_DOUBLE_EQ(0.3, a->getOpacityKnob()->getValue());
+    ASSERT_TRUE(hasKey(a->getFeatherKnob(), 12.));
+    ASSERT_TRUE(hasKey(b->getFeatherKnob(), 12.));
+    const Keys aFeather = keysOf(a->getFeatherKnob());
+    const Keys bFeather = keysOf(b->getFeatherKnob());
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(c, RotoItem::eSelectionReasonOther);
+    ASSERT_DOUBLE_EQ(0.5, opacity->getValue());
+
+    auto expectShowsC = [&](const char* step) {
+        EXPECT_DOUBLE_EQ(0.5, c->getOpacityKnob()->getValue()) << step;
+        EXPECT_EQ(cFeather, keysOf(c->getFeatherKnob())) << step;
+        EXPECT_DOUBLE_EQ(0.5, opacity->getValue()) << step;
+        EXPECT_EQ(cFeather, keysOf(feather)) << step;
+        KeyFrame key;
+        EXPECT_TRUE(hasKey(feather, 1., &key)) << step;
+        EXPECT_NE(eKeyframeTypeConstant, key.getInterpolation()) << step;
+    };
+
+    undoRecorded();
+    EXPECT_DOUBLE_EQ(1., a->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(1., b->getOpacityKnob()->getValue());
+    EXPECT_TRUE(hasKey(a->getFeatherKnob(), 10.));
+    EXPECT_TRUE(hasKey(b->getFeatherKnob(), 10.));
+    expectShowsC("undo");
+
+    redoRecorded();
+    EXPECT_DOUBLE_EQ(0.3, a->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.3, b->getOpacityKnob()->getValue());
+    EXPECT_EQ(aFeather, keysOf(a->getFeatherKnob()));
+    EXPECT_EQ(bFeather, keysOf(b->getFeatherKnob()));
+    expectShowsC("redo");
+
+    // The node's knob still forwards to what is selected after the replay.
+    opacity->setValue(0.7);
+    EXPECT_DOUBLE_EQ(0.7, c->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.3, a->getOpacityKnob()->getValue());
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// Deselecting one of three shapes leaves the node's knobs enabled and marked as showing one of
+// several; deselecting another leaves one, which the knobs then show alone.
+TEST_F(RotoSelectionProxyTest, DeselectingOneOfThreeKeepsTheKnobsEnabledAndDirty)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = makeSquare(context, 0.);
+    BezierPtr b = makeSquare(context, 30.);
+    BezierPtr c = makeSquare(context, 60.);
+    ASSERT_TRUE(a && b && c);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("opacity");
+    ASSERT_TRUE(bool(shown));
+    int dirtyReports = 0;
+    bool dirty = false;
+    QObject::connect(shown->getSignalSlotHandler().get(), &KnobSignalSlotHandler::dirty,
+                     [&dirty, &dirtyReports](bool d) { dirty = d; ++dirtyReports; });
+
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    context->select(c, RotoItem::eSelectionReasonOther);
+    EXPECT_TRUE(shown->isEnabled(0));
+    EXPECT_TRUE(dirty);
+
+    dirtyReports = 0;
+    context->deselect(c, RotoItem::eSelectionReasonOther);
+    EXPECT_TRUE(shown->isEnabled(0));
+    EXPECT_GT(dirtyReports, 0);
+    EXPECT_TRUE(dirty);
+
+    context->deselect(a, RotoItem::eSelectionReasonOther);
+    EXPECT_TRUE(shown->isEnabled(0));
+    EXPECT_FALSE(dirty);
+
+    context->deselect(b, RotoItem::eSelectionReasonOther);
+    EXPECT_FALSE(shown->isEnabled(0));
+    EXPECT_FALSE(dirty);
 }

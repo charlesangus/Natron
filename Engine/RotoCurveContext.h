@@ -667,6 +667,8 @@ public Q_SLOTS:
 
     void onProxyExpressionChanged(int dimension);
 
+    void onProxyCurveChanged();
+
     void onMirroredItemKnobChanged();
 
     void onLifeTimeKnobValueChanged(ViewSpec, int, int);
@@ -702,6 +704,19 @@ private:
     void connectProxyKnobs();
     void snapshotProxy(const KnobIPtr& proxy);
     void forwardDimensionEdit(const KnobIPtr& proxy, int dimension, ValueChangedReasonEnum reason, const std::list<KnobIPtr>& targets);
+    void forwardProxyChange(const KnobIPtr& proxy, int reason);
+    bool proxyDiffersFromBaseline(const KnobIPtr& proxy) const;
+
+    /**
+     * @brief Shows the mirrored item's knob in proxy again, then takes proxy's state as what has
+     * been forwarded.
+     **/
+    void remirrorProxy(const KnobIPtr& proxy);
+
+    /**
+     * @brief Enables, and marks dirty, the node's item knobs from every selected item.
+     **/
+    void refreshProxyKnobStates();
 
     void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 

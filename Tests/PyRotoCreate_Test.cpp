@@ -308,3 +308,42 @@ TEST_F(PyRotoCreateTest, AShapeParameterReadsAtTheNodesCurrentFrame)
                                                                                                            << script;
     ctx->clearSelection(RotoItem::eSelectionReasonOther);
 }
+
+// A shape's own accessors return parameters that read at the node's current frame, as getParam()
+// does.
+TEST_F(PyRotoCreateTest, AShapesParamAccessorsReadAtTheNodesCurrentFrame)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(node));
+    RotoContextPtr ctx = node->getRotoContext();
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr shape = ctx->makeSquare(0., 0., 10., ctx->getTimelineCurrentTime());
+    ASSERT_TRUE(bool(shape));
+    ASSERT_TRUE(shape->setScriptName("keyedShape"));
+    shape->getOpacityKnob()->setValueAtTime(1., 0.2, ViewSpec::all(), 0);
+    shape->getOpacityKnob()->setValueAtTime(20., 0.8, ViewSpec::all(), 0);
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    const double frame = 12.;
+    getApp()->getTimeLine()->seekFrame((int)frame, false, NULL, eTimelineChangeReasonOtherSeek);
+    ASSERT_DOUBLE_EQ(frame, node->getEffectInstance()->getCurrentTime());
+    const double atFrame = shape->getOpacityKnob()->getValueAtTime(frame, 0);
+    ASSERT_NE(shape->getOpacityKnob()->getValueAtTime(0., 0), atFrame);
+    char expected[64];
+    std::snprintf(expected, sizeof(expected), "want = %.17g\n", atFrame);
+
+    const std::string script = std::string("r = ") + pythonName(node) + ".getRotoContext()\n"
+        + expected
+        + "b = r.getItemByName(\"keyedShape\")\n"
+          "params = {\"opacity\": b.getOpacityParam(), \"activated\": b.getActivatedParam(),\n"
+          "          \"feather\": b.getFeatherDistanceParam(), \"featherFallOff\": b.getFeatherFallOffParam(),\n"
+          "          \"color\": b.getColorParam(), \"operator\": b.getCompositingOperatorParam()}\n"
+          "for name, p in params.items():\n"
+          "    assert p is not None, name\n"
+          "    assert p.getCurrentTime() == 12, (name, p.getCurrentTime())\n"
+          "p = b.getOpacityParam()\n"
+          "assert abs(p.get() - want) < 1e-9, (p.get(), want)\n"
+          "assert abs(p.getValue() - want) < 1e-9, (p.getValue(), want)\n";
+    std::string error, output;
+    EXPECT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error << "\n"
+                                                                                                           << script;
+}

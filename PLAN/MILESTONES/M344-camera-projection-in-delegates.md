@@ -86,3 +86,4 @@ Make M234 - Camera Projection Nodes' `USDProject3D` render in Cycles and MoonRay
   - Tests now compare against Storm's references.
   - Cycles colourspace is explicit (data, unassociated alpha), so the Cycles reference must be re-recorded.
   PM decision for MoonRay: USDProject3D authors a constant `natronProjectionNoFaces` primvar on the non-mesh geometry it projects onto, the MoonRay network reads it, and export strips it. Being implemented; a `--record-goldens` gate follows.
+- 2026-11-13 — The MoonRay marker is not feasible. USDProject3D never sees the geometry, and its frame primvars are written only in Geometry space, by USDAssignMaterial. A marker there would also miss bindings authored outside Natron. PM call: accept the limitation. In MoonRay, Project On applies to curves and points by their shading normal, while Storm and Cycles show them as Both. Documented in USDProject3D.md (ba0e23b6b). Gating with `--record-goldens` (the Cycles reference changes).

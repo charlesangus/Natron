@@ -25,7 +25,7 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 - Natron crashes with images exported: named shared-memory objects would outlive it, so startup removes stale entries from dead sessions.
 - Two Natron sessions on one host: object names carry the session, so they can't serve each other's images.
 - Static input (same hash every frame): one URI, loaded once per render session.
-- Large image: size is the input's RoD, with no cap (no hand-holding size caps). Out of shared memory gives the fallback and a warning naming the node.
+- Large image: size is the input's RoD, with no cap (no hand-holding size caps). Out of shared memory keeps the previous image; the render warns naming the node and aborts (user decision, 2026-11-07, below).
 
 **Assumptions:**
 - Cycles and `execComp` both load an OIIO that honours plug-in search paths, built from the same pinned version. T1 proves it.

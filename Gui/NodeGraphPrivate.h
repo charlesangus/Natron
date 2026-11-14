@@ -51,6 +51,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QPainter>
 #include <QPen>
 #include <QPointF>
+#include <QPointer>
 #include <QRegion>
 #include <QStyleOptionGraphicsItem>
 #include <QTimer>
@@ -306,9 +307,6 @@ public:
     IndexedNodeGuiList _nodes;
     IndexedNodeGuiList _nodesTrash;
 
-    /// Enables the create-node shortcut that opens the tab menu.
-    /// This is set to true on enterEvent and set back to false on leaveEvent
-    bool _nodeCreationShortcutEnabled;
     // The parent of all items in the graph. It stays at the scene origin: the view pans by
     // scrolling, so root, node-root and scene coordinates are all the same.
     QGraphicsItem* _root;
@@ -324,8 +322,9 @@ public:
     std::uint64_t lastNodeStackSerial = 0;
     // What the low-detail layers have to draw again, in _nodeRoot coordinates. Changes add to it
     // and the layers are updated once, when control returns to the event loop or just before the
-    // view paints, so a change to many items is one update rather than one per item.
-    QRectF lowDetailDirty;
+    // view paints, so a change to many items is one update rather than one per item. Changes far
+    // apart stay separate rects.
+    std::vector<QRectF> lowDetailDirty;
     bool lowDetailFlushPosted = false;
     QGraphicsSimpleTextItem* _cacheSizeText;
     bool cacheSizeHidden;
@@ -410,7 +409,9 @@ public:
     // the undo, Alt's snap-back and Escape all work from these rather than from one delta.
     std::map<NodeGuiPtr, QPointF> _dragPickupPositions;
     bool _hasMovedOnce;
-    ViewerTab* lastSelectedViewer;
+    // Weak because a Viewer destroyed outright has already dropped its node when its tab goes,
+    // so neither the tab removal nor the tab's destructor can tell which group's graph to clear.
+    QPointer<ViewerTab> lastSelectedViewer;
     QPixmap unlockIcon;
 
     /// True while the scene is rendered into the navigator thumbnail
@@ -425,8 +426,15 @@ public:
     QRectF navigatorContentRect;
     bool navigatorContentDirty;
     QTimer navigatorRenderTimer;
+    // nodesBounds is the union of nodesBoundsParts, each node's boundingRectWithEdges() when it
+    // was last read. A node reporting a geometry change is queued in nodesBoundsPending and its
+    // part re-read on the next query: the union only grows, unless the part it replaces reached
+    // an edge of the union, which then takes the walk over every node nodesBoundsDirty asks for.
+    // Pointers in both are compared, never followed, until found in _nodes.
     QRectF nodesBounds;
     bool nodesBoundsDirty;
+    std::unordered_map<const NodeGui*, QRectF> nodesBoundsParts;
+    std::unordered_set<NodeGui*> nodesBoundsPending;
     // While a node drag is under way the navigator keeps the thumbnail it had, and the bounds
     // only grow, so that no move pays for walking every node; the drag's end renders it once.
     bool navigatorDeferredByDrag;
@@ -467,6 +475,13 @@ public:
     std::vector<std::pair<NodeGuiWPtr, int>> refreshPending;
     std::unordered_map<NodeGui*, std::size_t> refreshPendingIndex;
 
+    // Panels waiting for the graph's next paint, then those whose build is already queued.
+    std::vector<NodeGuiWPtr> panelBuildsPending;
+    std::vector<NodeGuiWPtr> panelBuildsPosted;
+    bool panelBuildFlushPosted = false;
+    // Bumped to cancel a pending wait for a paint.
+    unsigned panelBuildGeneration = 0;
+
     // Nodes whose rendering counters or persistent message changed since refreshRenderStateTimer
     // last fired, keyed by address so that a node queued twice is refreshed once.
     std::map<NodeGui*, NodeGuiWPtr> renderStateDirty;
@@ -478,8 +493,11 @@ public:
 
     void resetAllClipboards();
 
-    // In scene coordinates. Cached until a node moves, resizes, shows, hides, or an edge changes.
+    // In scene coordinates. Kept up to date per node reported to noteNodeGeometryChanged() or
+    // noteEdgeGeometryChanged(), or moved to or from the trash, and recomputed from every node
+    // after other changes to which nodes there are.
     QRectF calcNodesBoundingRect();
+    void applyPendingNodesBounds();
 
     // The scene rectangle the navigator maps onto its widget-sized image, and the scale it uses.
     void getNavigatorMapping(QRectF* sceneRect, double* scale, QPointF* offset) const;
@@ -489,8 +507,8 @@ public:
     void growNodesBoundsForDrag(const std::set<NodeGuiPtr>& moved);
     void endNavigatorDragDeferral();
 
-    // rebuildGrid is for changes the hit-test grid is not told about item by item, such as nodes
-    // or edges coming or going; it makes the next query refile every item.
+    // rebuildGrid is for changes the hit-test grid is not told about item by item; it makes the
+    // next query refile every item and the nodes' bounds be recomputed from every node.
     void invalidateNavigator(bool rebuildGrid);
 
     // Whether item, a node or one of its edges, is where the graph keeps items of its kind.
@@ -507,7 +525,13 @@ public:
     // The grid entries of the nodes and edges whose subtree bounds may meet queryRoot, given in
     // _nodeRoot coordinates. Paint code passes refresh false: refiling can take _nodesMutex and
     // walk every node, and flushLowDetailUpdates() already refiled before the view paints.
-    void getGridItems(const QRectF& queryRoot, std::vector<GridItem>* items, bool refresh = true);
+    // Entries of the other kind are skipped before they are checked, which touches the item.
+    enum GridKindEnum {
+        eGridKindAll,
+        eGridKindNodes,
+        eGridKindEdges
+    };
+    void getGridItems(const QRectF& queryRoot, std::vector<GridItem>* items, bool refresh = true, GridKindEnum kind = eGridKindAll);
 
     // Adds rect, in _nodeRoot coordinates, to what the low-detail layers draw again.
     void addLowDetailDirty(const QRectF& rect);

@@ -1161,7 +1161,7 @@ Gui::setCurrentPanelFocus(PanelWidget* widget)
 {
     assert( QThread::currentThread() == qApp->thread() );
     _imp->currentPanelFocus = widget;
-
+    noteViewerFocused(dynamic_cast<ViewerTab*>(widget));
 }
 
 PanelWidget*

@@ -161,6 +161,7 @@ public:
     virtual bool isPagingEnabled() const OVERRIDE FINAL;
     virtual bool useScrollAreaForTabs() const OVERRIDE FINAL;
     virtual void onKnobsInitialized() OVERRIDE FINAL;
+    virtual void onKnobBuildStarted() OVERRIDE FINAL;
 
     virtual void setPyPlugUIEnabled(bool enabled);
 

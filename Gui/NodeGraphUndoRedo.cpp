@@ -132,13 +132,14 @@ MoveMultipleNodesCommand::redo()
 }
 
 AddMultipleNodesCommand::AddMultipleNodesCommand(NodeGraph* graph,
-                                                 const std::list<NodeGuiPtr> & nodes,
-                                                 QUndoCommand *parent)
+                                                 const std::list<NodeGuiPtr>& nodes,
+                                                 QUndoCommand* parent)
     : QUndoCommand(parent)
     , _nodes()
     , _graph(graph)
     , _firstRedoCalled(false)
     , _isUndone(false)
+    , _creationAutoSaves(false)
 {
     for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         _nodes.push_back(*it);
@@ -146,13 +147,14 @@ AddMultipleNodesCommand::AddMultipleNodesCommand(NodeGraph* graph,
 }
 
 AddMultipleNodesCommand::AddMultipleNodesCommand(NodeGraph* graph,
-                                                 const NodeGuiPtr & node,
+                                                 const NodeGuiPtr& node,
                                                  QUndoCommand* parent)
     : QUndoCommand(parent)
     , _nodes()
     , _graph(graph)
     , _firstRedoCalled(false)
     , _isUndone(false)
+    , _creationAutoSaves(false)
 {
     _nodes.push_back(node);
 }
@@ -166,6 +168,12 @@ void
 AddMultipleNodesCommand::setCreatedFor(const NodeGuiPtr& owner)
 {
     _createdFor = owner;
+}
+
+void
+AddMultipleNodesCommand::setCreationAutoSaves()
+{
+    _creationAutoSaves = true;
 }
 
 int
@@ -247,7 +255,7 @@ AddMultipleNodesCommand::undo()
     for (std::list<ViewerInstance* >::iterator it = viewersToRefresh.begin(); it != viewersToRefresh.end(); ++it) {
         (*it)->renderCurrentFrame(true);
     }
-    _graph->invalidateNavigatorContent();
+    _graph->invalidateNavigatorImage();
 }
 
 void
@@ -296,7 +304,9 @@ AddMultipleNodesCommand::redo()
         }
         _graph->getGui()->getApp()->recheckInvalidExpressionsReferencing(names);
     }
-    _graph->getGui()->getApp()->triggerAutoSave();
+    if (_firstRedoCalled || !_creationAutoSaves) {
+        _graph->getGui()->getApp()->triggerAutoSave();
+    }
 
     for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         std::list<ViewerInstance* > viewers;
@@ -316,8 +326,11 @@ AddMultipleNodesCommand::redo()
         }
     }
 
+    // Each node was filed by NodeGraph::noteNodeAdded(), on creation or on leaving the trash.
+    if (_firstRedoCalled) {
+        _graph->invalidateNavigatorImage();
+    }
     _firstRedoCalled = true;
-    _graph->invalidateNavigatorContent();
 }
 
 RemoveMultipleNodesCommand::RemoveMultipleNodesCommand(NodeGraph* graph,
@@ -429,7 +442,7 @@ RemoveMultipleNodesCommand::undo()
 
     _isRedone = false;
     _graph->scene()->update();
-    _graph->invalidateNavigatorContent();
+    _graph->invalidateNavigatorImage();
 } // RemoveMultipleNodesCommand::undo
 
 void
@@ -543,7 +556,7 @@ RemoveMultipleNodesCommand::redo()
     _graph->getGui()->getApp()->redrawAllViewers();
 
     _graph->scene()->update();
-    _graph->invalidateNavigatorContent();
+    _graph->invalidateNavigatorImage();
 } // redo
 
 ConnectCommand::ConnectCommand(NodeGraph* graph,

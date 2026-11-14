@@ -43,7 +43,10 @@ DEFAULT_SCROLL_MAX_ITEMS = 300
 
 class TabTabTabPlugin:
     def get_items(self):
-        """Return list of {'menuobj': ..., 'menupath': str} dicts."""
+        """Return list of {'menuobj': ..., 'menupath': str} dicts.
+
+        Returning the very same list object as last time tells the popup
+        nothing changed, and its refresh before showing is skipped."""
         raise NotImplementedError
 
     def get_weights_file(self):
@@ -53,6 +56,13 @@ class TabTabTabPlugin:
     def invoke(self, thing):
         """Trigger the selected menu item."""
         raise NotImplementedError
+
+    def invoke_opens_window(self, thing):
+        """Return False when invoking thing opens no window, dialog or
+        menu, so the popup can stay up until the choice has run and close
+        in the same event-loop pass. The default, True, closes the popup
+        first, so whatever the choice opens comes up over the host."""
+        return True
 
     def get_icon(self, menuobj):
         """Return a QIcon for menuobj, or None.
@@ -89,12 +99,12 @@ class TabTabTabPlugin:
         pass
 
     def invalidate_color_cache(self):
-        """Optional hook called on each open's second deferred tick to drop
+        """Optional hook called whenever an open refreshes the rows, that is
+        when get_items() returned a new list or the weights changed, to drop
         only colour memoisation — not the (expensive) item walk cache.
 
-        Lets host-side default-colour / preference edits, which don't change
-        menu structure and so wouldn't trip get_items()'s change detection,
-        surface on the open they were made without forcing a full re-walk.
+        A host whose colours can change without its items changing must
+        make get_items() return a new list when they do.
         Default is a no-op for plugins that don't cache colour.
         """
         pass
@@ -254,6 +264,30 @@ class NodeWeights(object):
         self.fname = fname
         self._weights = {}
         self._successful_load = False
+        # Bumped whenever the weights change, so a caller can tell whether
+        # rows sorted by them are stale.
+        self.version = 0
+        self.dirty = False
+        self._loaded_mtime = None
+
+    def _file_mtime(self):
+        try:
+            return os.stat(self.fname).st_mtime_ns
+        except (OSError, TypeError):
+            return None
+
+    def reload_if_changed(self):
+        """Load the file again only if it changed since this object last
+        read or wrote it, so another instance's writes are picked up without
+        re-reading the file on every open. Unsaved increments win over the
+        file, as they did when every close saved before the next open
+        loaded."""
+        if self.fname is None or self.dirty:
+            return
+        mtime = self._file_mtime()
+        if mtime is None or mtime == self._loaded_mtime:
+            return
+        self.load()
 
     def load(self):
         if self.fname is None:
@@ -264,9 +298,12 @@ class NodeWeights(object):
             if not os.path.isfile(self.fname):
                 print("Weight file does not exist")
                 return
+            mtime = self._file_mtime()
             f = open(self.fname)
             self._weights = json.load(f)
             f.close()
+            self._loaded_mtime = mtime
+            self.version += 1
 
         # Catch any errors, print traceback and continue
         try:
@@ -303,10 +340,12 @@ class NodeWeights(object):
             # TODO: Limit number of saved items to some sane number
             json.dump(self._weights, fp=f)
             f.close()
+            self._loaded_mtime = self._file_mtime()
 
         # Catch any errors, print traceback and continue
         try:
             _save_internal()
+            self.dirty = False
         except Exception:
             print("Error saving node weights")
             import traceback
@@ -325,6 +364,8 @@ class NodeWeights(object):
     def increment(self, key):
         self._weights.setdefault(key, 0)
         self._weights[key] += 1
+        self.version += 1
+        self.dirty = True
 
 
 class NodeModel(QtCore.QAbstractListModel):
@@ -366,8 +407,10 @@ class NodeModel(QtCore.QAbstractListModel):
         self._filtertext = filtertext
         self.update()
 
-    def refresh_items(self, mlist):
+    def refresh_items(self, mlist, filtertext=None):
         self._all = mlist
+        if filtertext is not None:
+            self._filtertext = filtertext
         self.update()
 
     def set_scroll_enabled(self, enabled):
@@ -635,10 +678,10 @@ class NodeModel(QtCore.QAbstractListModel):
         (see _resolve_color), an unchanged row is never rebuilt by
         _apply_items and so would keep serving its stale cached colour
         forever. This complements the plugin-level invalidate_color_cache()
-        — TabTabTabWidget._refresh_fresh calls both, plus a viewport
-        repaint, so a host-side default-node-colour preference edit still
-        surfaces on the open it was made, without forcing a full item
-        re-walk or a full-list colour recompute."""
+        — TabTabTabWidget._refresh_before_show calls both whenever it
+        refreshes the rows, so a host-side colour edit that comes with new
+        items surfaces on the next open, without a full-list colour
+        recompute."""
         for item in self._items:
             item.pop('color', None)
 
@@ -802,9 +845,22 @@ class TabTabTabWidget(QtWidgets.QDialog):
 
         # Node weighting
         self.weights = NodeWeights(plugin.get_weights_file())
-        self.weights.load()  # weights.save() called in close method
+        self.weights.load()
+
+        # Saving is coalesced and kept off the choice's critical path; see
+        # close().
+        self._weights_save_timer = QtCore.QTimer(self)
+        self._weights_save_timer.setSingleShot(True)
+        self._weights_save_timer.setInterval(_WEIGHTS_SAVE_DELAY_MS)
+        self._weights_save_timer.timeout.connect(self.flush_weights)
 
         items = plugin.get_items()
+        # What the model was last refreshed with: an open where neither
+        # differs leaves the model alone.
+        self._shown_items = items
+        self._shown_weights_version = self.weights.version
+        # The query the next show pre-fills, set by a choice.
+        self._pending_text = None
 
         # List of stuff, and associated model
         self.things_model = NodeModel(items, weights=self.weights, icon_fn=plugin.get_icon, color_fn=plugin.get_color,
@@ -945,98 +1001,82 @@ class TabTabTabWidget(QtWidgets.QDialog):
         create previously created node (instead of the most popular)
         """
 
-        # Show the widget and focus the input *before* doing any heavy work.
-        # Reloading weights from disk and re-walking the host application's
-        # menus can take 100-400ms; if those run synchronously here, queued
-        # KeyPress events arrive before the line-edit is ready and the user's
-        # first character or two get lost (issue #3). Deferring via
-        # singleShot(0) lets Qt drain pending input events into the now-
-        # focused line-edit before the refresh blocks the GUI thread again.
-        #
-        # The popup's previous-open items remain in NodeModel between
-        # close and re-open. Now that NodeModel emits row ops instead of
-        # modelReset, the deferred refreshes morph that retained state
-        # incrementally — no blank flash between show() and the first
-        # tick, and no jump when the second tick fires.
+        # The refresh runs before the popup appears, so its first frame is
+        # current. It is cheap because the plugin's get_items() returns the
+        # same list until its menus change, and the weights file is read
+        # only when it changed; keys typed meanwhile stay queued and reach
+        # the line-edit once it has focus.
+        self._refresh_before_show()
         self.input.selectAll()
         super(TabTabTabWidget, self).show()
         self.input.setFocus()
 
-        QtCore.QTimer.singleShot(0, self._refresh_after_show)
+    def _refresh_before_show(self):
+        """Bring the rows up to date with the plugin's items, the weights
+        file and the query the last choice left, touching the model only
+        when one of them changed, and filtering at most once.
 
-    def _refresh_after_show(self):
-        """Cheap refresh: reload weights and render whatever the plugin's
-        cache currently has, so the user has results to look at and can
-        type immediately.
-
-        Runs on the next event-loop tick after show() so the user's first
-        keystrokes land in the line-edit even though this work is slow.
-
-        Schedules _refresh_fresh on the following tick to bound staleness:
-        the cache may be one step behind reality (a deep submenu install
-        the plugin's fingerprint can't sample, or a default-node-colour
-        preference edit), and waiting until close to refresh would leave
-        the user staring at stale data for the entire open session.
+        NodeModel emits row ops rather than modelReset, so a refresh that
+        does run is visually quiet: only rows that genuinely differ get
+        touched. A retained row keeps its colour cached on its own dict, so
+        both colour caches are dropped along with a refresh, which is when a
+        host's colour edits can have landed.
         """
-        # Load the weights everytime the panel is shown, to prevent
-        # overwritting weights from other instances
-        self.weights.load()
+        self.weights.reload_if_changed()
+        query = self._take_pending_text()
+        items = self.plugin.get_items()
+        if items is not self._shown_items or self.weights.version != self._shown_weights_version:
+            self._shown_items = items
+            self._shown_weights_version = self.weights.version
+            self.plugin.invalidate_color_cache()
+            self.things_model.refresh_items(items, filtertext=query)
+            self.things_model.invalidate_color_cache()
+        elif query is not None:
+            self.things_model.set_filter(query)
 
-        # Refresh items from the plugin so additions/removals are reflected.
-        # NodeModel emits row ops, so this pass quietly morphs the retained
-        # previous-open state into current results without blanking the view.
-        self.things_model.refresh_items(self.plugin.get_items())
-
-        # Restore selection to the first item; row ops preserve selection
-        # in general, but a previously-selected row may no longer exist.
+        # Row ops keep the selection, but the selected row may be gone.
         self.move_selection(where="first")
 
-        # Schedule the expensive freshness pass after focus and the cheap
-        # render are settled. The user can already type; this catches any
-        # staleness the plugin's own cache check missed.
-        QtCore.QTimer.singleShot(0, self._refresh_fresh)
+    def _take_pending_text(self):
+        """Put the query the last choice left into the input without
+        filtering, and return it, or None when the input already holds it."""
+        text = self._pending_text
+        self._pending_text = None
+        if text is None or text == self.input.text():
+            return None
+        # textChanged would filter once here and again in the refresh.
+        self.input.blockSignals(True)
+        try:
+            self.input.setText(text)
+        finally:
+            self.input.blockSignals(False)
+        return text
 
-    def _refresh_fresh(self):
-        """Second deferred tick: drop the plugin's colour memoisation and
-        re-render, so host-side colour / preference edits that leave menu
-        structure unchanged surface on the open they were made.
-
-        Runs one tick after _refresh_after_show. Unlike the previous
-        design it does NOT force a full item re-walk: get_items() re-walks
-        on its own only when its change detection (a full-depth menu
-        fingerprint) differs, so an unchanged menu set — the common case —
-        reuses the preloaded cache instead of paying the 100-400ms
-        .script()/.shortcut() walk on every single open. That forced walk
-        was a first-invocation cost in issue #11. Colour is resolved
-        lazily for the visible window now, so clearing its cache here is
-        cheap.
-
-        No-op if the user already closed the popup before this fires —
-        the next open will repeat the same two-stage refresh.
-
-        NodeModel emits row ops rather than modelReset, so this pass is
-        visually quiet when nothing changed: only rows that genuinely
-        differ get touched.
-
-        Colour is resolved lazily per row now (see NodeModel._resolve_color),
-        cached on the row's own dict rather than recomputed by update().
-        An unchanged row is retained as the same dict by _apply_items, so
-        it would otherwise keep serving a stale cached colour forever;
-        things_model.invalidate_color_cache() drops that per-row cache
-        alongside the plugin's, and the explicit viewport repaint below
-        forces the currently-visible rows to re-resolve immediately
-        instead of waiting for some unrelated repaint to trigger it.
-        """
-        if not self.isVisible():
+    def set_weights_file(self, fname):
+        """Keep the weights in fname from now on; pending increments go to
+        the previous file first."""
+        if fname == self.weights.fname:
             return
-        self.plugin.invalidate_color_cache()
-        self.things_model.refresh_items(self.plugin.get_items())
-        self.things_model.invalidate_color_cache()
-        self.things.viewport().update()
-        self.move_selection(where="first")
+        self.flush_weights()
+        self.weights = NodeWeights(fname)
+        self.weights.load()
+        self.things_model.weights = self.weights
+        self._shown_weights_version = None
+
+    def flush_weights(self):
+        """Write increments not yet saved."""
+        timer = getattr(self, "_weights_save_timer", None)
+        if timer is not None:
+            timer.stop()
+        if self.weights.dirty:
+            self.weights.save()
 
     def close(self):
-        """Save weights and close the dialog.
+        """Schedule saving the weights and close the dialog.
+
+        The save waits for _weights_save_timer, so a choice's node is made
+        and drawn before the file is written; increments in quick succession
+        are written once. Call flush_weights() before the host quits.
 
         under_cursor() always positions this popup so the mouse pointer
         lands directly on top of self.input, and QLineEdit shows an IBeam
@@ -1057,7 +1097,8 @@ class TabTabTabWidget(QtWidgets.QDialog):
         resumes once the newly-topmost window has had a chance to receive
         its own enter event.
         """
-        self.weights.save()
+        if self.weights.dirty:
+            self._weights_save_timer.start()
         QtWidgets.QApplication.setOverrideCursor(Qt.ArrowCursor)
         QtCore.QTimer.singleShot(0, QtWidgets.QApplication.restoreOverrideCursor)
         super(TabTabTabWidget, self).close()
@@ -1078,15 +1119,27 @@ class TabTabTabWidget(QtWidgets.QDialog):
         else:
             prev_string = " %s" % thing['text']
 
-        self.input.setText(prev_string)
-
-        # Invoke item, increment weight and close
-        self.plugin.invoke(thing)
+        # The next show filters on prev_string with this weight counted;
+        # filtering now would hold up the choice.
         self.weights.increment(thing['menupath'])
-        self.close()
+        self._pending_text = prev_string
+
+        if self.plugin.invoke_opens_window(thing):
+            # Windows the choice opens (a file dialog, a menu) come up over
+            # the host rather than under the popup.
+            self.close()
+            self.plugin.invoke(thing)
+        else:
+            # Hiding after the choice has run lets the host's repaint of
+            # what the popup covered and of the choice's result happen in
+            # one paint.
+            self.plugin.invoke(thing)
+            self.close()
 
 
 _tabtabtab_instance = None
+
+_WEIGHTS_SAVE_DELAY_MS = 1000
 
 
 _NUKE_MAIN_WINDOW_CLASSNAME = "Foundry::UI::DockMainWindow"

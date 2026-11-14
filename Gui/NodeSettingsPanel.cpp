@@ -105,7 +105,7 @@ NodeSettingsPanel::~NodeSettingsPanel()
     NodeGuiPtr node = getNode();
 
     if (node) {
-        node->removeSettingsPanel();
+        node->removeSettingsPanel(this);
     }
 }
 

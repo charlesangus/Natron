@@ -228,7 +228,8 @@ NodeGraphPrivate::refreshItemGrid()
 void
 NodeGraphPrivate::getGridItems(const QRectF& queryRoot,
                                std::vector<GridItem>* items,
-                               bool refresh)
+                               bool refresh,
+                               GridKindEnum kind)
 {
     if (refresh) {
         refreshItemGrid();
@@ -237,6 +238,10 @@ NodeGraphPrivate::getGridItems(const QRectF& queryRoot,
     itemGrid.query(queryRoot, &found);
     items->reserve(items->size() + found.size());
     for (std::vector<GridItem>::const_iterator it = found.begin(); it != found.end(); ++it) {
+        const bool isNode = (it->slot == kGridNodeSlot);
+        if (((kind == eGridKindNodes) && !isNode) || ((kind == eGridKindEdges) && isNode)) {
+            continue;
+        }
         if (isGridItemValid(*it)) {
             items->push_back(*it);
         } else {
@@ -345,12 +350,13 @@ NodeGraph::repaintLowDetailItem(QGraphicsItem* item)
     if (!_imp->lowDetail || !NodeGraphLowDetailLayer::isFaded(item) || !_imp->isInGraph(item)) {
         return;
     }
-    QRectF dirty = gridRectOf(item);
+    _imp->addLowDetailDirty(gridRectOf(item));
+    // Where it was filed, a separate rect: a node created at one place and placed at another, far
+    // away, would otherwise repaint everything between the two.
     QRectF filed;
     if (_imp->itemGrid.rectOf(item, &filed)) {
-        dirty |= filed;
+        _imp->addLowDetailDirty(filed);
     }
-    _imp->addLowDetailDirty(dirty);
 }
 
 void
@@ -359,7 +365,7 @@ NodeGraphPrivate::addLowDetailDirty(const QRectF& rect)
     if (!lowDetail || rect.isEmpty()) {
         return;
     }
-    lowDetailDirty |= rect;
+    NodeGraphLowDetailLayer::addDirtyRect(&lowDetailDirty, rect);
     if (!lowDetailFlushPosted) {
         lowDetailFlushPosted = true;
         // A posted call rather than a zero timer: it runs before a repaint the change itself
@@ -373,7 +379,7 @@ NodeGraphPrivate::addLowDetailDirty(const QRectF& rect)
 void
 NodeGraphPrivate::invalidateLowDetailLayers(bool repaint)
 {
-    lowDetailDirty = QRectF();
+    lowDetailDirty.clear();
     lowDetailEdgeLayer->invalidateCache();
     lowDetailNodeLayer->invalidateCache();
     if (repaint && lowDetail) {
@@ -386,26 +392,30 @@ void
 NodeGraphPrivate::flushLowDetailUpdates(const QRegion* painting)
 {
     if (!lowDetail) {
-        lowDetailDirty = QRectF();
+        lowDetailDirty.clear();
 
         return;
     }
     refreshItemGrid();
-    if (lowDetailDirty.isEmpty()) {
+    if (lowDetailDirty.empty()) {
         return;
     }
-    const QRectF dirty = lowDetailDirty;
-    lowDetailDirty = QRectF();
-    lowDetailEdgeLayer->invalidateCache(dirty);
-    lowDetailNodeLayer->invalidateCache(dirty);
-    if (painting) {
-        const QRect dirtyViewport = _publicInterface->mapFromScene(_nodeRoot->mapRectToScene(dirty)).boundingRect().adjusted(-1, -1, 1, 1);
-        if (QRegion(dirtyViewport & _publicInterface->viewport()->rect()).subtracted(*painting).isEmpty()) {
-            return;
+    std::vector<QRectF> dirtyRects;
+    dirtyRects.swap(lowDetailDirty);
+    const QRect viewportRect = _publicInterface->viewport()->rect();
+    for (std::vector<QRectF>::const_iterator it = dirtyRects.begin(); it != dirtyRects.end(); ++it) {
+        const QRectF& dirty = *it;
+        lowDetailEdgeLayer->invalidateCache(dirty);
+        lowDetailNodeLayer->invalidateCache(dirty);
+        if (painting) {
+            const QRect dirtyViewport = _publicInterface->mapFromScene(_nodeRoot->mapRectToScene(dirty)).boundingRect().adjusted(-1, -1, 1, 1);
+            if (QRegion(dirtyViewport & viewportRect).subtracted(*painting).isEmpty()) {
+                continue;
+            }
         }
+        lowDetailEdgeLayer->update(dirty);
+        lowDetailNodeLayer->update(dirty);
     }
-    lowDetailEdgeLayer->update(dirty);
-    lowDetailNodeLayer->update(dirty);
 }
 
 void
@@ -419,6 +429,7 @@ NodeGraph::noteNodeGeometryChanged(NodeGui* node)
         _imp->_gpuRegions->noteNodeChanged(node);
     }
     repaintLowDetailItem(node);
+    _imp->nodesBoundsPending.insert(node);
     if (_imp->itemGridDirty) {
         return;
     }
@@ -445,6 +456,8 @@ NodeGraph::noteEdgeGeometryChanged(NodeGui* owner,
         }
     }
     repaintLowDetailItem(edge);
+    // An input without a source counts in its owner's bounds.
+    _imp->nodesBoundsPending.insert(owner);
     if (_imp->itemGridDirty) {
         return;
     }
@@ -453,6 +466,49 @@ NodeGraph::noteEdgeGeometryChanged(NodeGui* owner,
     gridItem.owner = owner;
     gridItem.slot = slot;
     _imp->itemGridStale[gridItem.item] = gridItem;
+}
+
+void
+NodeGraph::noteNodeAdded(NodeGui* node)
+{
+    if (!node) {
+        return;
+    }
+    noteNodeGeometryChanged(node);
+    const std::vector<Edge*>& inputs = node->getInputsArrows();
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        noteEdgeGeometryChanged(node, (int)i, inputs[i]);
+    }
+    noteEdgeGeometryChanged(node, -1, node->getOutputArrow());
+    invalidateNavigatorImage();
+}
+
+void
+NodeGraph::noteNodeRemoved(NodeGui* node)
+{
+    if (!node) {
+        return;
+    }
+    std::vector<QGraphicsItem*> items;
+    items.push_back(node);
+    const std::vector<Edge*>& inputs = node->getInputsArrows();
+    items.insert(items.end(), inputs.begin(), inputs.end());
+    items.push_back(node->getOutputArrow());
+    for (std::vector<QGraphicsItem*>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        if (!*it) {
+            continue;
+        }
+        QRectF filed;
+        if (_imp->itemGrid.rectOf(*it, &filed)) {
+            _imp->addLowDetailDirty(filed);
+        }
+        // Dropped now rather than left to the next refresh: a node being destroyed takes its
+        // edges with it, and the grid would then hold their addresses.
+        _imp->itemGrid.remove(*it);
+        _imp->itemGridStale.erase(*it);
+    }
+    _imp->nodesBoundsPending.insert(node);
+    invalidateNavigatorImage();
 }
 
 void

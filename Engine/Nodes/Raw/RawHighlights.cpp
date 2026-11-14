@@ -771,6 +771,9 @@ RawHighlights::RawHighlights(NodePtr node)
     , _segmentsMaskFrame(kRawHighlightsFrameSegments, 1)
     , _laplacianFrame(kRawHighlightsFrameLaplacian, 1)
 {
+    for (WholeFrameCache* cache : { &_chromaFrame, &_inpaintFrame, &_segmentsFrame, &_segmentsMaskFrame, &_laplacianFrame }) {
+        cache->setOnAbandonedResult(wholeFrameRerenderViewers(this));
+    }
     setSupportsRenderScaleMaybe(eSupportsNo);
 }
 
@@ -1301,7 +1304,6 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     for (int c = 0; c < 3; ++c) {
         opposedClips[c] = kClipMagicOpposed * s.clip * s.coeffs[c];
     }
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
     const std::function<bool()> waitCancelled = wholeFrameWaitCancelled(*this, cancel);
     const ImagePtr sourceImage = source.image;
     const Settings settings = s;
@@ -1315,10 +1317,11 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     };
     // Segmentation Based starts from Inpaint Opposed, whose chrominance it shares, as darktable's
     // chrominance cache leaves the mode out.
-    const auto opposedChromaJob = [sourceImage, settings, hasCfa, nComps, opposedClips, nThreads, lockedOnJob]() -> WholeFrameCache::Job {
-        return [sourceImage, settings, hasCfa, nComps, opposedClips, nThreads, lockedOnJob](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+    const auto opposedChromaJob = [sourceImage, settings, hasCfa, nComps, opposedClips, lockedOnJob]() -> WholeFrameCache::Job {
+        return [sourceImage, settings, hasCfa, nComps, opposedClips, lockedOnJob](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
             RenderCancellation jobCancel(jobCancelled);
-            const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, nThreads);
+            const int jobThreads = wholeFrameJobThreads();
+            const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
             const RawNodeSupport::LockedSource own = lockedOnJob(sourceImage);
             std::optional<ImageView> whole;
             RawNodeSupport::TopDownBuffer wholeBuffer;
@@ -1356,9 +1359,10 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         std::copy(found->begin(), found->end(), chroma.begin());
     } else if (mode == eRawHighlightsModeInpaint) {
         frameMosaic = _inpaintFrame.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
-            return [sourceImage, settings, nThreads, lockedOnJob](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+            return [sourceImage, settings, lockedOnJob](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
                 RenderCancellation jobCancel(jobCancelled);
-                const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, nThreads);
+                const int jobThreads = wholeFrameJobThreads();
+                const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
                 const RawNodeSupport::LockedSource own = lockedOnJob(sourceImage);
                 std::optional<ImageView> whole;
                 RawNodeSupport::TopDownBuffer wholeBuffer;
@@ -1395,13 +1399,14 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         const auto segmentsJob = [&](RawKernels::SegmentsMaskEnum view) -> WholeFrameCache::Job {
             WholeFrameCache* chromaFrame = &_chromaFrame;
             const std::string chromaKey = key;
-            return [sourceImage, settings, opposedClips, nThreads, lockedOnJob, opposedChromaJob, chromaFrame, chromaKey, view, frameSize](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+            return [sourceImage, settings, opposedClips, lockedOnJob, opposedChromaJob, chromaFrame, chromaKey, view, frameSize](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
                 const WholeFrameCache::Result wholeChroma = chromaFrame->get(chromaKey, jobCancelled, opposedChromaJob);
+                const int jobThreads = wholeFrameJobThreads();
                 if (!wholeChroma) {
                     return WholeFrameCache::Result();
                 }
                 RenderCancellation jobCancel(jobCancelled);
-                const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, nThreads);
+                const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
                 const RawNodeSupport::LockedSource own = lockedOnJob(sourceImage);
                 std::optional<ImageView> whole;
                 RawNodeSupport::TopDownBuffer wholeBuffer;
@@ -1484,9 +1489,10 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         const int width = s.sourceRoD.width();
         const int height = s.sourceRoD.height();
         const std::shared_ptr<const std::vector<float>> reconstructed = _laplacianFrame.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
-            return [sourceImage, settings, params, filters, width, height, nThreads, lockedOnJob](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+            return [sourceImage, settings, params, filters, width, height, lockedOnJob](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
                 RenderCancellation jobCancel(jobCancelled);
-                const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, nThreads);
+                const int jobThreads = wholeFrameJobThreads();
+                const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
                 const RawNodeSupport::LockedSource own = lockedOnJob(sourceImage);
                 std::optional<ImageView> whole;
                 RawNodeSupport::TopDownBuffer wholeBuffer;

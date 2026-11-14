@@ -97,6 +97,7 @@ ContrastTexture::ContrastTexture(NodePtr node)
     : StagedImageEffect(node)
     , _map(kContrastTextureFrameMap)
 {
+    _map.setOnAbandonedResult(wholeFrameRerenderViewers(this));
 }
 
 void
@@ -388,10 +389,11 @@ ContrastTexture::renderOp(const RenderActionArgs& args,
                     return WholeFrameCache::Job();
                 }
 
-                return [image, width, height, nComps, ctPlan, nThreads](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                return [image, width, height, nComps, ctPlan](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
                     RenderCancellation jobCancel(jobCancelled);
-                    const EdgeAware::ParallelFor jobParallel = [&jobCancel, nThreads](int count, const std::function<void(int)>& body) {
-                        parallelForCancellable(count, nThreads, jobCancel, body);
+                    const int jobThreads = wholeFrameJobThreads();
+                    const EdgeAware::ParallelFor jobParallel = [&jobCancel, jobThreads](int count, const std::function<void(int)>& body) {
+                        parallelForCancellable(count, jobThreads, jobCancel, body);
                     };
                     auto map = std::make_shared<std::vector<float>>((std::size_t)width * height);
                     CT::computeMap(image->data(), width, height, nComps, ctPlan, map->data(), jobParallel);

@@ -30,8 +30,11 @@
 #include <cstdio>
 
 #include <QCoreApplication>
+#include <QMetaObject>
 #include <QString>
+#include <QThreadPool>
 
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -39,6 +42,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 #include "Engine/RectD.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -188,12 +192,48 @@ wholeFrameWaitCancelled(const EffectInstance& effect,
     };
 }
 
+int
+wholeFrameJobThreads()
+{
+    if (!appPTR) {
+        return 1;
+    }
+    int nThreadsToRender = 0;
+    int nThreadsPerEffect = 0;
+    appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
+    if (nThreadsToRender == -1) {
+        return 1;
+    }
+    const int poolMax = std::max(1, QThreadPool::globalInstance()->maxThreadCount());
+    const int cores = std::min(poolMax, std::max(1, appPTR->getHardwareIdealThreadCount()));
+
+    return (nThreadsPerEffect > 0) ? std::min(nThreadsPerEffect, poolMax) : cores;
+}
+
+std::function<void()>
+wholeFrameRerenderViewers(EffectInstance* effect)
+{
+    return [effect]() {
+        QMetaObject::invokeMethod(effect, [effect]() {
+            const NodePtr node = effect->getNode();
+            if (!node) {
+                return;
+            }
+            std::list<ViewerInstance*> viewers;
+            node->hasViewersConnected(&viewers);
+            for (ViewerInstance* viewer : viewers) {
+                viewer->renderCurrentFrame(true);
+            } }, Qt::QueuedConnection);
+    };
+}
+
 struct WholeFrameCache::Flight {
     // Set under the cache's lock; read by the job without it.
     std::atomic<bool> cancelled { false };
     std::atomic<int> waiters { 0 };
     std::atomic<std::int64_t> orphanedAt { 0 };
     // Guarded by the cache's lock.
+    bool abandoned = false;
     bool done = false;
     Result result;
     std::exception_ptr error;
@@ -225,7 +265,16 @@ WholeFrameCache::WholeFrameCache(const char* what,
     , _running()
     , _generation(0)
     , _closing(false)
+    , _onAbandonedResult()
 {
+}
+
+void
+WholeFrameCache::setOnAbandonedResult(std::function<void()> onAbandonedResult)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    _onAbandonedResult = std::move(onAbandonedResult);
 }
 
 WholeFrameCache::~WholeFrameCache()
@@ -421,6 +470,7 @@ WholeFrameCache::get(const std::string& key,
             stop = isCancelled();
             lock.lock();
             if (stop) {
+                flight->abandoned = true;
                 break;
             }
         }
@@ -453,6 +503,7 @@ WholeFrameCache::finish(const std::string& key,
                         const std::exception_ptr& error,
                         std::uint64_t generation)
 {
+    std::function<void()> onAbandonedResult;
     {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -460,6 +511,10 @@ WholeFrameCache::finish(const std::string& key,
             _results.emplace_front(key, result);
             while (_results.size() > _capacity) {
                 _results.pop_back();
+            }
+            // Callers join under this lock, so no waiting caller is missed.
+            if (flight->abandoned && (flight->waiters == 0) && !_closing) {
+                onAbandonedResult = _onAbandonedResult;
             }
         }
         flight->result = result;
@@ -471,6 +526,9 @@ WholeFrameCache::finish(const std::string& key,
         }
     }
     _finished.notify_all();
+    if (onAbandonedResult) {
+        onAbandonedResult();
+    }
 }
 
 WholeFrameCache::Result

@@ -113,6 +113,21 @@ std::function<bool()> wholeFrameWaitCancelled(const EffectInstance& effect,
                                               RenderCancellation& cancel) WARN_UNUSED_RETURN;
 
 /**
+ * @brief The threads a WholeFrameCache job splits its work over: the per-effect count of the
+ * settings, not the share of the render that started the job. That render runs as one of many
+ * tiles and gets a share of one thread when they fill the pool, while every tile then waits on the
+ * job.
+ **/
+int wholeFrameJobThreads() WARN_UNUSED_RETURN;
+
+/**
+ * @brief A WholeFrameCache::setOnAbandonedResult() callback that asks the viewers effect feeds to
+ * render their current frame again, from the main thread. The queued call is dropped if effect is
+ * gone by then.
+ **/
+std::function<void()> wholeFrameRerenderViewers(EffectInstance* effect) WARN_UNUSED_RETURN;
+
+/**
  * @brief The last few whole-frame results a node keeps between the windows of its frames, and the
  * jobs computing them. A job runs on a thread of the cache, not on the render that asked for it,
  * so a render can stop waiting without stopping the job: concurrent and later callers asking for
@@ -203,6 +218,15 @@ public:
      **/
     void clear();
 
+    /**
+     * @brief Called on the job's thread when a job returns a result that is kept, that a caller
+     * stopped waiting for because it was cancelled, and that no caller waits on any more: the
+     * render showing the frame gave up on it, so nothing displays it until something asks again.
+     * At most once per job; a request it makes for the same key finds the result kept and starts no
+     * job, so it does not call back again.
+     **/
+    void setOnAbandonedResult(std::function<void()> onAbandonedResult);
+
 private:
     struct Flight;
     struct Running;
@@ -232,6 +256,7 @@ private:
     std::list<std::shared_ptr<Running>> _running;
     std::uint64_t _generation;
     bool _closing;
+    std::function<void()> _onAbandonedResult;
 };
 
 NATRON_NAMESPACE_EXIT

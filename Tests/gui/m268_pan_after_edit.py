@@ -303,8 +303,19 @@ try:
             return node, lambda: node.getParam("fineDetails").set(1.5)
 
         def denoise_wavelets():
+            # Profiled Denoise warns over the top of the viewer about an input that is not a raw
+            # camera's and about a camera it has no profile for, which the seam checks would read
+            # as the frame. A camera make on the plate and the generic profile leave nothing to warn of.
+            camera = create("MetadataModify", False)
+            made.append(camera)
+            set_choice(camera.getParam("operation1"), "set")
+            camera.getParam("key1").set("raw/make")
+            set_choice(camera.getParam("type1"), "string")
+            camera.getParam("stringValue1").set("Canon")
             node = create("DenoiseProfiled", False)
+            require(node.connectInput(0, camera), "DenoiseProfiled reads the plate with a camera make")
             gt.close_all_panels()
+            set_choice(node.getParam("profile"), "generic")
             set_choice(node.getParam("mode"), "wavelets")
             return node, lambda: node.getParam("strength").set(2.0)
 

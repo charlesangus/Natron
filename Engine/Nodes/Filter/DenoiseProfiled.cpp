@@ -212,6 +212,8 @@ DenoiseProfiled::DenoiseProfiled(NodePtr node)
     , _varianceFrame(kDenoiseProfiledFrameVariance)
     , _message()
 {
+    _waveletFrame.setOnAbandonedResult(wholeFrameRerenderViewers(this));
+    _varianceFrame.setOnAbandonedResult(wholeFrameRerenderViewers(this));
 }
 
 DenoiseProfiled::~DenoiseProfiled()
@@ -1103,9 +1105,10 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
                     + '|' + std::to_string(bufferRect.x1) + ',' + std::to_string(bufferRect.y1) + ',' + std::to_string(bw) + ',' + std::to_string(bh);
                 const int fullSize = (r.fullSize > 0) ? r.fullSize : std::max(bw, bh);
                 frame = _waveletFrame.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
-                    return [rgb, bw, bh, planeSize, fullSize, s, renderScale, nThreads](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                    return [rgb, bw, bh, planeSize, fullSize, s, renderScale](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
                         RenderCancellation jobCancel(jobCancelled);
-                        const ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, nThreads);
+                        const int jobThreads = wholeFrameJobThreads();
+                        const ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
                         auto computed = std::make_shared<std::vector<float>>(planeSize * 3);
                         denoiseWavelets(rgb->data(), bw, bh, fullSize, s, renderScale, computed->data(), jobParallel);
                         if (jobCancel.check()) {

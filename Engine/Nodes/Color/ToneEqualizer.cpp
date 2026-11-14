@@ -162,6 +162,7 @@ ToneEqualizer::ToneEqualizer(NodePtr node)
     , _interact()
     , _message()
 {
+    _maskFrames.setOnAbandonedResult(wholeFrameRerenderViewers(this));
 }
 
 ToneEqualizer::~ToneEqualizer()
@@ -847,9 +848,10 @@ ToneEqualizer::colourMask(double time,
             return WholeFrameCache::Job();
         }
 
-        return [filled, planes, w, h, settings, radius, nThreads](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+        return [filled, planes, w, h, settings, radius](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
             RenderCancellation jobCancel(jobCancelled);
-            const EdgeAware::ParallelFor parallel = RawNodeSupport::makeParallelFor(&jobCancel, nThreads);
+            const int jobThreads = wholeFrameJobThreads();
+            const EdgeAware::ParallelFor parallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
             std::shared_ptr<std::vector<float>> computed = maskFromFilled(filled->data(), planes, w, h, settings, radius, parallel);
             if (jobCancel.check()) {
                 return WholeFrameCache::Result();
@@ -1242,9 +1244,10 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
                     const int radius = maskRadius(s.blending, fullWidth, fullHeight, renderScale);
                     const ToneEqualizerKernels::Settings settings = s;
 
-                    return [filled, framePlanes, fw, fh, settings, radius, nThreads](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                    return [filled, framePlanes, fw, fh, settings, radius](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
                         RenderCancellation jobCancel(jobCancelled);
-                        const EdgeAware::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, nThreads);
+                        const int jobThreads = wholeFrameJobThreads();
+                        const EdgeAware::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
                         std::shared_ptr<std::vector<float>> computed = maskFromFilled(filled->data(), framePlanes, fw, fh, settings, radius, jobParallel);
                         if (jobCancel.check()) {
                             return WholeFrameCache::Result();

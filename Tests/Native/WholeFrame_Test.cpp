@@ -588,6 +588,130 @@ TEST_F(WholeFrameTest, LastWaiterLeavingCancelsTheJob)
     }
 }
 
+// A render that gave up on a job displays nothing once the job returns, so the cache asks once for
+// a new render, which finds the result kept.
+TEST_F(WholeFrameTest, AbandonedResultAsksForOneRender)
+{
+    HeldJob held;
+    std::atomic<int> asked(0);
+    WholeFrameCache cache("wholeFrameTest", WholeFrameCache::kDefaultCapacity, std::chrono::seconds(60));
+    cache.setOnAbandonedResult([&]() { ++asked; });
+
+    std::atomic<bool> aborted(false);
+    std::thread caller([&]() {
+        EXPECT_FALSE(bool(cache.get("frame", [&]() { return aborted.load(); }, held.prepare(1.f))));
+    });
+    ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
+    aborted = true;
+    caller.join();
+    EXPECT_EQ(0, asked.load());
+
+    held.release();
+    ASSERT_LT(timeUntil([&]() { return asked.load() > 0; }), std::chrono::seconds(5));
+    const WholeFrameCache::Result rerendered = cache.get("frame", never, held.prepare(2.f));
+    ASSERT_TRUE(bool(rerendered));
+    EXPECT_EQ(1.f, (*rerendered)[0]);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    EXPECT_EQ(1, asked.load());
+    EXPECT_EQ(1, held.prepares());
+    EXPECT_EQ(1, held.runs());
+}
+
+TEST_F(WholeFrameTest, ResultSomeoneWaitsForAsksForNoRender)
+{
+    {
+        // Waited on to the end.
+        HeldJob held;
+        std::atomic<int> asked(0);
+        WholeFrameCache cache("wholeFrameTest");
+        cache.setOnAbandonedResult([&]() { ++asked; });
+        WholeFrameCache::Result result;
+        std::thread caller([&]() {
+            result = cache.get("frame", never, held.prepare(1.f));
+        });
+        ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
+        held.release();
+        caller.join();
+        EXPECT_TRUE(bool(result));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        EXPECT_EQ(0, asked.load());
+    }
+    {
+        // Given up on, then taken by the render replacing the one that gave up.
+        HeldJob held;
+        std::atomic<int> asked(0);
+        WholeFrameCache cache("wholeFrameTest", WholeFrameCache::kDefaultCapacity, std::chrono::seconds(60));
+        cache.setOnAbandonedResult([&]() { ++asked; });
+        std::atomic<bool> aborted(false);
+        std::thread replaced([&]() {
+            EXPECT_FALSE(bool(cache.get("frame", [&]() { return aborted.load(); }, held.prepare(1.f))));
+        });
+        ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
+        aborted = true;
+        replaced.join();
+        WholeFrameCache::Result result;
+        std::thread replacing([&]() {
+            result = cache.get("frame", never, held.prepare(2.f));
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        held.release();
+        replacing.join();
+        EXPECT_TRUE(bool(result));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        EXPECT_EQ(0, asked.load());
+    }
+}
+
+TEST_F(WholeFrameTest, AbandonedResultNotKeptAsksForNoRender)
+{
+    {
+        // An edit asked for another key: the job is cancelled and returns nothing.
+        HeldJob held;
+        std::atomic<int> asked(0);
+        WholeFrameCache cache("wholeFrameTest", WholeFrameCache::kDefaultCapacity, std::chrono::seconds(60));
+        cache.setOnAbandonedResult([&]() { ++asked; });
+        std::atomic<bool> aborted(false);
+        std::thread old([&]() {
+            EXPECT_FALSE(bool(cache.get("old", [&]() { return aborted.load(); }, held.prepare(1.f))));
+        });
+        ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
+        aborted = true;
+        old.join();
+        EXPECT_TRUE(bool(cache.get("new", never, jobOf([]() { return resultOf(2.f); }))));
+        ASSERT_LT(timeUntil([&]() { return held.cancelled(); }), std::chrono::seconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        EXPECT_EQ(0, asked.load());
+    }
+    {
+        // The cache was cleared while the job ran, so its result is not kept. The job stands in for
+        // one that ignores its cancellation and still returns a result.
+        std::atomic<bool> started(false);
+        std::atomic<bool> go(false);
+        std::atomic<bool> returning(false);
+        std::atomic<int> asked(0);
+        WholeFrameCache cache("wholeFrameTest", WholeFrameCache::kDefaultCapacity, std::chrono::seconds(60));
+        cache.setOnAbandonedResult([&]() { ++asked; });
+        std::atomic<bool> aborted(false);
+        std::thread caller([&]() {
+            EXPECT_FALSE(bool(cache.get("frame", [&]() { return aborted.load(); }, jobOf([&]() {
+                started = true;
+                timeUntil([&]() { return go.load(); });
+                returning = true;
+
+                return resultOf(1.f); }))));
+        });
+        ASSERT_LT(timeUntil([&]() { return started.load(); }), std::chrono::seconds(5));
+        aborted = true;
+        caller.join();
+        cache.clear();
+        go = true;
+        ASSERT_LT(timeUntil([&]() { return returning.load(); }), std::chrono::seconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        EXPECT_EQ(0, asked.load());
+        EXPECT_FALSE(bool(cache.kept("frame")));
+    }
+}
+
 TEST_F(WholeFrameTest, DestroyingTheCacheStopsItsJobs)
 {
     HeldJob held;

@@ -318,10 +318,14 @@ try:
         yield from expect_rows("viewed again", {"/World": ("loadAll", False), "/Annex": ("bbox", False)})
         expand.destroy()
         expand = None
-        viewed = viewer.getInput(0)
-        check(viewed is not None and viewed.getScriptName() == usd.getScriptName(),
-              "deleting the node reconnects the Viewer to the USDRead (got %r)" % (viewed.getScriptName() if viewed is not None else None,))
-        viewed = None
+
+        def viewed_name():
+            viewed = viewer.getInput(0)
+            return viewed.getScriptName() if viewed is not None else None
+
+        # The Viewer is reconnected to the deleted node's input after destroy() returns.
+        ok = yield ("until", lambda: viewed_name() == usd.getScriptName(), POLL_TIMEOUT_S)
+        check(ok, "deleting the node reconnects the Viewer to the USDRead (got %r)" % (viewed_name(),))
         yield from expect_rows("deleted", dict((p, ("bbox", False)) for p in TOP_LEVEL))
         check(all(load_state(p) == STATE_LOADED for p in WORLD_BUILDINGS),
               "the /World buildings stay loaded after deleting the node (%r)" % [load_state(p) for p in WORLD_BUILDINGS])

@@ -282,7 +282,7 @@ try:
         check(ok, "%s: the panel reads %r (got %r)" % (label, expected, read()))
         return ok
 
-    def drawn():
+    def frame_drawn():
         """The boxes and markers the viewport drew in its last frame."""
         v = view()
         if v is None:
@@ -353,7 +353,7 @@ try:
         yield ("sleep", SETTLE_MS)
         viewer_cells = cells()
         viewer_origins = origins()
-        viewer_drawn = drawn()
+        viewer_drawn = frame_drawn()
         check(viewer_cells[A] == ("bbox", False) and viewer_cells[B] == ("hidden", False),
               "the viewer's states show (%r)" % (viewer_cells,))
         check(viewer_drawn != (0, 0), "the viewer draws the set states (got %r)" % (viewer_drawn,))
@@ -375,7 +375,7 @@ try:
             baked_origins[path] = ("graph", name)
         yield from expect("baked origins", origins, baked_origins)
         yield from expect("baked cells", cells, viewer_cells)
-        yield from expect("baked drawing", drawn, viewer_drawn)
+        yield from expect("baked drawing", frame_drawn, viewer_drawn)
         ok = yield ("until", lambda: bake_button() is not None and not bake_button().isEnabled(), POLL_TIMEOUT_S)
         check(ok, "Bake to Node is disabled again, the viewer setting nothing")
         yield ("sleep", SETTLE_MS)
@@ -388,7 +388,7 @@ try:
         check(input_name(viewer) == USD_NAME, "after Undo the Viewer views the USDRead (got %r)" % (input_name(viewer),))
         yield from expect("undone origins", origins, viewer_origins)
         yield from expect("undone cells", cells, viewer_cells)
-        yield from expect("undone drawing", drawn, viewer_drawn)
+        yield from expect("undone drawing", frame_drawn, viewer_drawn)
         yield ("sleep", SETTLE_MS)
         shot("scene-bake-undone.png")
 
@@ -401,7 +401,7 @@ try:
         check(input_name(viewer) == name, "after Redo the Viewer views %s (got %r)" % (name, input_name(viewer)))
         yield from expect("redone origins", origins, baked_origins)
         yield from expect("redone cells", cells, viewer_cells)
-        yield from expect("redone drawing", drawn, viewer_drawn)
+        yield from expect("redone drawing", frame_drawn, viewer_drawn)
 
         section("bake into the viewed node")
         set_state(WORLD, "children")
@@ -411,7 +411,7 @@ try:
         check(ok, "Bake to Node is enabled again")
         yield ("sleep", SETTLE_MS)
         again_cells = cells()
-        again_drawn = drawn()
+        again_drawn = frame_drawn()
         bake("bake again")
         ok = yield ("until", lambda: origin(WORLD) == ("graph", name), POLL_TIMEOUT_S)
         check(ok, "%s is set by %s (got %r)" % (WORLD, name, origin(WORLD)))
@@ -419,7 +419,7 @@ try:
         check(rules_of(expand)[-1] == (WORLD, "children") and len(rules_of(expand)) == 4,
               "%s gains one rule (got %r)" % (name, rules_of(expand)))
         yield from expect("baked again", cells, again_cells)
-        yield from expect("baked again drawing", drawn, again_drawn)
+        yield from expect("baked again drawing", frame_drawn, again_drawn)
         final_origins = dict(baked_origins)
         final_origins[WORLD] = ("graph", name)
         yield from expect("baked again origins", origins, final_origins)

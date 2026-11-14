@@ -2152,8 +2152,9 @@ TEST_F(USDRenderMoonRayProjectionTest, AnAnimatedProjectorFollowsTheFrame)
     EXPECT_GT(differing, kProjectionCardInterior.area() / 4);
 }
 
-// An orthographic projector's aperture, in tenths of a unit, sets the frame whatever its distance:
-// 200 x 100 spans the render camera's 20 x 10 units of the card's plane from 10 units and from 40.
+// An orthographic projector's aperture sets the frame whatever its distance. The knob is in
+// millimetres and the stage in metres, so 20000 x 10000 spans the render camera's 20 x 10 units of
+// the card's plane from 10 units and from 40.
 TEST_F(USDRenderMoonRayProjectionTest, AnOrthographicProjectorIgnoresItsDistance)
 {
     if (!moonRayOrSkip()) {
@@ -2164,7 +2165,7 @@ TEST_F(USDRenderMoonRayProjectionTest, AnOrthographicProjectorIgnoresItsDistance
     KnobChoice* projection = knob<KnobChoice>(graph.projectorCamera, kUSDCameraParamProjection);
     ASSERT_TRUE(projection);
     ASSERT_TRUE(selectRenderer(projection, "orthographic"));
-    ASSERT_TRUE(setLens(graph.projectorCamera, 200., 100.));
+    ASSERT_TRUE(setLens(graph.projectorCamera, 20000., 10000.));
 
     RenderedPlane rgba;
     for (double z : { kProjectionCameraZ, 4. * kProjectionCameraZ }) {
@@ -2333,8 +2334,10 @@ TEST_F(USDRenderMoonRayProjectionTest, GeometrySpaceFollowsATransformAfterTheCar
     connectNodes(graph.card, edit, 0, true);
     connectNodes(edit, merge, 0, true);
 
+    // An appended transform applies inside the card's own scale, so the card moves shift units of
+    // the plane when the edit translates it by shift over the card's width.
     const double shift = 2.;
-    ASSERT_TRUE(setTriple(edit, kSceneParamTranslate, shift, 0., 0.));
+    ASSERT_TRUE(setTriple(edit, kSceneParamTranslate, shift / kProjectionCardWidth, 0., 0.));
     RenderedPlane rgba;
     ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
     EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));

@@ -315,6 +315,19 @@ for extension in ("usda", "usdc", "abc"):
 if not Usd.Stage.CreateInMemory():
     fail("OpenUSD could not create an in-memory stage")
 
+# Cycles and MoonRay read live textures through this OIIO plug-in, which Natron puts first on the
+# search path execComp inherits.
+import ctypes
+oiio_plugins = os.path.join(BUNDLE, "lib", "oiio")
+first = os.environ.get("OPENIMAGEIO_PLUGIN_PATH", "").split(":")[0]
+if os.path.realpath(first) != oiio_plugins:
+    fail("OPENIMAGEIO_PLUGIN_PATH starts with %r, not the bundle's lib/oiio" % first)
+try:
+    if not hasattr(ctypes.CDLL(os.path.join(oiio_plugins, "natronlive.imageio.so")), "natronlive_imageio_version"):
+        fail("lib/oiio/natronlive.imageio.so is not an OIIO plug-in for .natron files")
+except OSError as error:
+    fail("lib/oiio/natronlive.imageio.so did not load: %s" % error)
+
 # USD only dlopen()s the Cycles render delegate when a render asks for it, so load it here: that
 # resolves its whole library closure from the bundle, with LD_LIBRARY_PATH unset.
 cycles_plugin = Plug.Registry().GetPluginWithName("hdCycles")

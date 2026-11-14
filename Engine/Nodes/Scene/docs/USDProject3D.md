@@ -35,16 +35,54 @@ Controls:
 
 - Projection Space: World fixes the projection where the camera is, so geometry
   moving after it slides through the image. Geometry fixes it to the geometry as
-  the node it is connected to places it: transforms after that node
-  carry the image along. With Use Frame Hold on, the geometry is also taken at
-  Frame Hold, so the image sticks to the geometry's own animation too. The primitive
-  nodes (USDCard, USDCube, USDSphere, USDCylinder) and USDAssignMaterial's Material
-  input place a projection; bound any other way, a Geometry projection takes the
-  camera in the geometry's own coordinates. USDAssignMaterial places it where the
-  matched geometry is at that node. The material holds one placement, so matches
-  at different places follow the first, with a node warning.
-- Project On: Both, Front (faces facing the camera) or Back. A baked export ignores
-  it, with a warning.
+  the node it is connected to places it: transforms after that node carry the image
+  along.
+
+  Each prim bound to the material has its own placement, so one projection can lie
+  on prims at different places, each showing the image where the camera sees it.
+  The primitive nodes (USDCard, USDCube, USDSphere, USDCylinder) place what they
+  create, and USDAssignMaterial places the geometry it matches, whether the
+  projection comes from its Material input or its Material Path, where that geometry
+  is at that node.
+
+  With Use Frame Hold on, the geometry is also taken at Frame Hold, so the image
+  sticks to the geometry's own animation too, and through USDAssignMaterial to
+  points that move by themselves: time-sampled meshes, including Alembic caches,
+  skinned UsdSkel meshes, curves and points. Each such prim gets a primvar per hold
+  frame, natronReferencePointsHold followed by the frame, of its world-space points
+  at Frame Hold as they are at that node; the image, Project On and Clip Near Far are
+  all judged on that surface. A skinned mesh's points are its skinned result at
+  Frame Hold. A rest-position primvar on the prim is ignored: the image lines up with
+  the camera at the hold, not with a modelled pose. Frame Hold outside a cache's
+  range reads USD's nearest sample. Prims whose points do not move and are not
+  skinned get no reference-points primvar, only their placement.
+
+  Projections at one Frame Hold share a prim's placement. If a prim changes between
+  two assigns of different projections at one Frame Hold, as in USDAssignMaterial,
+  USDEditTransform, USDAssignMaterial, it can only keep one placement: the later
+  assign's wins, so the two projections cannot both be correct, and that assign
+  warns, naming a few of the prims and how many there are. A prim bound to the
+  earlier projection for another purpose then shows it misplaced. Assigning one
+  projection twice, or projections that agree on the prim's placement, gives no
+  warning. To keep both, assign them before the transform or hold them at different
+  frames.
+
+  Limits: a prim whose topology changes over the project's frame range, or that USD
+  cannot skin, stays rigid with a warning naming it, and slides. Bound any other way
+  than by those nodes, such as in a file or by a script, a Geometry projection takes
+  the camera in the geometry's own coordinates, and with no node to place it,
+  deforming geometry slides through the image. Native instances project from
+  their own placements, as USDAssignMaterial binds them on their instance roots. A
+  gprim offset from its instance root projects shifted, and a sticky or held projection
+  on a deforming instanced mesh stays rigid, each with a warning. The instances of a
+  point instancer share their prototype's placement, with a warning: each shows the
+  image as it falls on the prototype. A baked export cannot bake instanced projections,
+  as overs cannot reach below an instance and instances share the prototype's UVs: it
+  keeps the Storm shader and warns.
+- Project On: Both, Front (faces facing the camera) or Back. Curves and points have no
+  faces, so they show as Both in Storm and Cycles. MoonRay's shading cannot tell them
+  from meshes, so there they follow Project On by their shading normal. A baked export
+  ignores it, with a warning.
 - Crop: beyond the camera's frame the surface shows Outside, and inside it, where the
   image has no data, black. Off, the image's data beyond its format shows there, and
   its edge pixels extend beyond that. A baked export cannot crop, so it shows the
@@ -60,4 +98,6 @@ Controls:
   every frame. The image still plays.
 
 There is no occlusion: the image falls on every face in the frustum, hidden ones
-included. Without an Image input the projection is black, with a warning.
+included. Without an Image input the projection is black, with a warning. If the
+node on the Image input was deleted, the projection is magenta, with a warning, until
+something is connected to the input or the deletion is undone.

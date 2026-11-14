@@ -579,6 +579,8 @@ struct USDRender::RenderSetup {
     RectI pixels;
     // What renders but not as asked, shown once the render succeeds.
     std::string warning;
+    // The URIs of the live textures the render reads, at its time.
+    std::vector<std::string> liveTextureUris;
 };
 
 namespace {
@@ -635,7 +637,11 @@ USDRender::prepareRender(double time,
     const QString primPath = active.prim ? QString::fromStdString(active.prim.GetPath().GetString()) : QString();
 
     // Hydra reads live textures from the store and never renders them: render the frame's first.
-    LiveTextureStore::instance().prepare(SceneOps::getLiveTextures(active.scene), time);
+    const LiveTextureSourceList liveTextures = SceneOps::getLiveTextures(active.scene);
+    LiveTextureStore::instance().prepare(liveTextures, time, [this]() { return aborted(); });
+    for (const LiveTextureSource& source : liveTextures) {
+        setup->liveTextureUris.push_back(source.getUri(time));
+    }
     auto addWarning = [setup](const std::string& warning) {
         setup->warning = setup->warning.empty() ? warning : setup->warning + "\n" + warning;
     };
@@ -691,6 +697,7 @@ USDRender::prepareRender(double time,
                        .toStdString());
     }
     setup->request.owner = this;
+    setup->request.aborted = [this]() { return aborted(); };
     setup->request.scene = active.scene;
     setup->request.time = active.time;
     setup->request.width = setup->pixels.width();
@@ -725,11 +732,29 @@ USDRender::render(const RenderActionArgs& args)
     }
     HydraRender::Request& request = setup.request;
     const RectI& pixels = setup.pixels;
-    request.aborted = [this]() { return aborted(); };
+    const std::vector<std::string> liveTextureUris = setup.liveTextureUris;
+    // A texture that cannot reach the renderer for want of room in shared memory stops the render
+    // as soon as the delegate asks for it, rather than at its end.
+    const auto noRoom = [liveTextureUris]() {
+        for (const std::string& uri : liveTextureUris) {
+            const std::string message = LiveTextureStore::instance().getNoRoom(uri);
+            if (!message.empty()) {
+                return message;
+            }
+        }
+
+        return std::string();
+    };
+    request.aborted = [this, noRoom]() { return aborted() || !noRoom().empty(); };
     request.threads = appPTR->getNCPUsAvailableForEffect();
 
     HydraRender::Result result;
-    if (!HydraRender::render(request, &result, &error)) {
+    const bool rendered = HydraRender::render(request, &result, &error);
+    const std::string noRoomMessage = noRoom();
+    if (!noRoomMessage.empty()) {
+        return fail(noRoomMessage);
+    }
+    if (!rendered) {
         // A cancelled render is no error of the node's.
         if (aborted()) {
             return eStatusFailed;

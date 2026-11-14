@@ -1261,7 +1261,7 @@ GuiApplicationManager::clearLastRenderedTextures()
 }
 
 void
-GuiApplicationManager::releaseSceneViewEngines()
+GuiApplicationManager::releaseSceneViewEngines(bool keptOnly)
 {
     const AppInstanceVec& instances = getAppInstances();
 
@@ -1274,8 +1274,13 @@ GuiApplicationManager::releaseSceneViewEngines()
         const std::list<ViewerTab*> viewers = gui->getViewersList_mt_safe();
         for (ViewerTab* viewer : viewers) {
             SceneViewport* view = viewer->getSceneViewport();
-            // Other delegates hold host memory, not the GPU's.
-            if (view && RenderDelegates::isStorm(view->getRenderer().getActiveRendererId())) {
+            if (!view) {
+                continue;
+            }
+            // Other delegates hold host memory, not the GPU's, but the Storm engine kept behind
+            // one does.
+            const bool storm = RenderDelegates::isStorm(view->getRenderer().getActiveRendererId());
+            if ((!storm || !keptOnly) && (storm || view->getRenderer().hasEngine())) {
                 view->releaseEngine();
             }
         }

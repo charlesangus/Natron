@@ -258,6 +258,19 @@ set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shader
 configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
 install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
 
+# Serves live textures to OIIO in the Cycles delegate and in MoonRay's execComp, found at run time from
+# <bin>/../lib/oiio (SceneCaches::registerLiveTextures). A separate library as execComp loads it too.
+# Not named "natron": OIIO's EXR writer drops metadata prefixed with a format's name, natron:outputHash
+# included.
+add_library(NatronLiveTextureOiio MODULE Nodes/Scene/LiveTextureOiio/natronimageio.cpp)
+set_target_properties(NatronLiveTextureOiio PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME natronlive.imageio
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/oiio)
+target_link_libraries(NatronLiveTextureOiio PRIVATE OpenImageIO::OpenImageIO)
+add_dependencies(NatronEngine NatronLiveTextureOiio)
+install(TARGETS NatronLiveTextureOiio LIBRARY DESTINATION lib/oiio)
+
 # darktable's noise profiles, read at run time by DenoiseProfiled from the same directory.
 set(NatronEngine_NOISE_PROFILES_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Filter/data/noiseprofiles.json)
 configure_file(${NatronEngine_NOISE_PROFILES_JSON} ${CMAKE_BINARY_DIR}/Resources/darktable/noiseprofiles.json COPYONLY)

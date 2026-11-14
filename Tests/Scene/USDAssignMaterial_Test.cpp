@@ -75,6 +75,21 @@ const char* const kAsset = "#usda 1.0\n"
                            "    def Material \"M\"\n    {\n    }\n"
                            "    def Material \"N\"\n    {\n    }\n}\n";
 
+// Native instances of /Proto, one of them with a direct binding of its own, and a plain mesh.
+const char* const kInstanced = "#usda 1.0\n"
+                               "def Xform \"World\"\n{\n"
+                               "    def Xform \"inst1\" (\n        instanceable = true\n        prepend references = </Proto>\n    )\n    {\n    }\n"
+                               "    def Xform \"inst2\" (\n        instanceable = true\n        prepend references = </Proto>\n    )\n    {\n    }\n"
+                               "    def Xform \"bound\" (\n        instanceable = true\n        prepend apiSchemas = [\"MaterialBindingAPI\"]\n"
+                               "        prepend references = </Proto>\n    )\n    {\n        rel material:binding = </materials/N>\n    }\n"
+                               "    def Xform \"plain\"\n    {\n        def Mesh \"m\"\n        {\n        }\n    }\n}\n"
+                               "def Xform \"Proto\"\n{\n"
+                               "    def Mesh \"a\"\n    {\n    }\n"
+                               "    def Mesh \"b\"\n    {\n    }\n}\n"
+                               "def Scope \"materials\"\n{\n"
+                               "    def Material \"M\"\n    {\n    }\n"
+                               "    def Material \"N\"\n    {\n    }\n}\n";
+
 void
 setString(const NodePtr& node,
           const char* name,
@@ -161,14 +176,14 @@ protected:
         knob->setValue(path);
     }
 
-    // A USDRead of kAsset.
-    NodePtr asset()
+    // A USDRead of kAsset, or of text when given.
+    NodePtr asset(const char* text = kAsset)
     {
         EXPECT_TRUE(_dir.isValid());
         const QString path = _dir.filePath(QString::fromUtf8("asset.usda"));
         QFile file(path);
         EXPECT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        file.write(kAsset);
+        file.write(text);
         file.close();
 
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
@@ -541,4 +556,206 @@ TEST_F(USDAssignMaterialTest, AnEmptySceneStillValidatesThePatternAndWarnsOfNoMa
     const QString message = getMessage(unmatched, &type);
     EXPECT_EQ((int)eMessageTypeWarning, type);
     EXPECT_TRUE(message.contains(QString::fromUtf8("matches no prim"))) << message.toStdString();
+}
+
+namespace {
+std::vector<PXR_NS::SdfPath>
+directBindingTargets(const PXR_NS::UsdStageRefPtr& stage,
+                     const char* path)
+{
+    std::vector<PXR_NS::SdfPath> targets;
+    const PXR_NS::UsdRelationship rel = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath(path))).GetDirectBindingRel();
+
+    if (rel) {
+        rel.GetTargets(&targets);
+    }
+
+    return targets;
+}
+} // anonymous namespace
+
+TEST_F(USDAssignMaterialTest, AMatchUnderANativeInstanceBindsTheInstanceRootDirectly)
+{
+    NodePtr reader = asset(kInstanced);
+    ASSERT_TRUE(bool(reader));
+    NodePtr node = assign(reader, "/World/inst1/a", "/materials/M");
+    ASSERT_TRUE(bool(node));
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    const std::vector<PXR_NS::SdfPath> targets = directBindingTargets(stage, "/World/inst1");
+    ASSERT_EQ(1u, targets.size());
+    EXPECT_EQ("/materials/M", targets[0].GetString());
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/inst1/a")).IsInstanceProxy());
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/inst1/a"));
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/inst1/b"));
+    EXPECT_EQ("", boundMaterial(stage, "/World/inst2/a"));
+    EXPECT_TRUE(SceneNodeAuthoring::getCollectionBindingNames(stage->GetPrimAtPath(PXR_NS::SdfPath("/World"))).empty());
+    // The match is below the instance root, so the whole instance takes the material.
+    ASSERT_TRUE(node->hasPersistentMessage());
+    int type = 0;
+    const QString message = getMessage(node, &type);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/inst1"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("/World/inst1/a"))) << message.toStdString();
+}
+
+namespace {
+// /World/A instances /Outer, which holds the mesh N and B, itself an instance of /Inner holding the
+// mesh M.
+const char* const kNested = "#usda 1.0\n"
+                            "def Xform \"World\"\n{\n"
+                            "    def Xform \"A\" (\n        instanceable = true\n        prepend references = </Outer>\n    )\n    {\n    }\n}\n"
+                            "def Xform \"Outer\"\n{\n"
+                            "    def Xform \"B\" (\n        instanceable = true\n        prepend references = </Inner>\n    )\n    {\n    }\n"
+                            "    def Mesh \"N\"\n    {\n    }\n}\n"
+                            "def Xform \"Inner\"\n{\n"
+                            "    def Mesh \"M\"\n    {\n    }\n}\n"
+                            "def Scope \"materials\"\n{\n"
+                            "    def Material \"M\"\n    {\n    }\n}\n";
+
+// count instances /World/i<n> of /Proto, which holds the meshes a and b.
+std::string
+manyInstances(int count)
+{
+    std::string text = "#usda 1.0\ndef Xform \"World\"\n{\n";
+
+    for (int i = 0; i < count; ++i) {
+        text += "    def Xform \"i" + std::to_string(i) + "\" (\n        instanceable = true\n        prepend references = </Proto>\n    )\n    {\n    }\n";
+    }
+    text += "}\n"
+            "def Xform \"Proto\"\n{\n"
+            "    def Mesh \"a\"\n    {\n    }\n"
+            "    def Mesh \"b\"\n    {\n    }\n}\n"
+            "def Scope \"materials\"\n{\n"
+            "    def Material \"M\"\n    {\n    }\n}\n";
+
+    return text;
+}
+} // anonymous namespace
+
+// A nested instance is an instance proxy, which takes no opinion, so the outermost instance is bound.
+TEST_F(USDAssignMaterialTest, AMatchInsideANestedInstanceBindsTheOutermostInstanceRoot)
+{
+    NodePtr reader = asset(kNested);
+    ASSERT_TRUE(bool(reader));
+    NodePtr node = assign(reader, "/World/A/B/M", "/materials/M");
+    ASSERT_TRUE(bool(node));
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    ASSERT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A/B")).IsInstanceProxy());
+    const std::vector<PXR_NS::SdfPath> targets = directBindingTargets(stage, "/World/A");
+    ASSERT_EQ(1u, targets.size());
+    EXPECT_EQ("/materials/M", targets[0].GetString());
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/A/B/M"));
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/A/N"));
+    ASSERT_TRUE(node->hasPersistentMessage());
+    int type = 0;
+    const QString message = getMessage(node, &type);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/A"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("/World/A/B"))) << message.toStdString();
+}
+
+TEST_F(USDAssignMaterialTest, MatchesCoveringANestedInstanceBindItWithoutAWarning)
+{
+    NodePtr reader = asset(kNested);
+    ASSERT_TRUE(bool(reader));
+    NodePtr node = assign(reader, "/World/A/B /World/A/N", "/materials/M");
+    ASSERT_TRUE(bool(node));
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(1u, directBindingTargets(stage, "/World/A").size());
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/A/B/M"));
+    int type = 0;
+    EXPECT_FALSE(node->hasPersistentMessage()) << getMessage(node, &type).toStdString();
+}
+
+TEST_F(USDAssignMaterialTest, AnInstanceWarningNamesOnlyAFewInstanceRoots)
+{
+    const std::string text = manyInstances(5);
+    NodePtr reader = asset(text.c_str());
+    ASSERT_TRUE(bool(reader));
+    NodePtr node = assign(reader, "/World/*/a", "/materials/M");
+    ASSERT_TRUE(bool(node));
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    for (int i = 0; i < 5; ++i) {
+        const std::string root = "/World/i" + std::to_string(i);
+        EXPECT_EQ(1u, directBindingTargets(stage, root.c_str()).size()) << root;
+        EXPECT_EQ("/materials/M", boundMaterial(stage, root + "/b"));
+    }
+    int type = 0;
+    const QString message = getMessage(node, &type);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("and 2 more"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("/World/i0/a"))) << message.toStdString();
+    EXPECT_EQ(3, message.count(QString::fromUtf8("/World/i"))) << message.toStdString();
+}
+
+TEST_F(USDAssignMaterialTest, MatchedInstanceRootsAreBoundOnceEachWithoutAWarning)
+{
+    NodePtr reader = asset(kInstanced);
+    ASSERT_TRUE(bool(reader));
+    NodePtr node = assign(reader, "/World/inst*  /World/inst1/a /World/inst1/b", "/materials/M");
+    ASSERT_TRUE(bool(node));
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(1u, directBindingTargets(stage, "/World/inst1").size());
+    EXPECT_EQ(1u, directBindingTargets(stage, "/World/inst2").size());
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/inst1/b"));
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/inst2/a"));
+    EXPECT_FALSE(node->hasPersistentMessage());
+}
+
+TEST_F(USDAssignMaterialTest, AnAncestorMatchBindsTheInstancesBelowIt)
+{
+    NodePtr reader = asset(kInstanced);
+    ASSERT_TRUE(bool(reader));
+    NodePtr node = assign(reader, "/World/plain /World/inst2", "/materials/M");
+    ASSERT_TRUE(bool(node));
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/plain/m"));
+    EXPECT_TRUE(directBindingTargets(stage, "/World/plain").empty());
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/inst2/a"));
+    EXPECT_FALSE(node->hasPersistentMessage());
+}
+
+TEST_F(USDAssignMaterialTest, ANonInstancedMatchKeepsItsCollectionBindingOnly)
+{
+    NodePtr reader = asset(kInstanced);
+    ASSERT_TRUE(bool(reader));
+    NodePtr node = assign(reader, "/World/plain/m", "/materials/M");
+    ASSERT_TRUE(bool(node));
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ("/materials/M", boundMaterial(stage, "/World/plain/m"));
+    EXPECT_EQ(1u, SceneNodeAuthoring::getCollectionBindingNames(stage->GetPrimAtPath(PXR_NS::SdfPath("/World"))).size());
+    EXPECT_TRUE(directBindingTargets(stage, "/World/inst1").empty());
+    EXPECT_FALSE(node->hasPersistentMessage());
+}
+
+TEST_F(USDAssignMaterialTest, AnInstanceRootBoundUpstreamKeepsItsBindingAndWarns)
+{
+    NodePtr reader = asset(kInstanced);
+    ASSERT_TRUE(bool(reader));
+    NodePtr node = assign(reader, "/World/bound", "/materials/M");
+    ASSERT_TRUE(bool(node));
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ("/materials/N", boundMaterial(stage, "/World/bound/a"));
+    ASSERT_TRUE(node->hasPersistentMessage());
+    int type = 0;
+    const QString message = getMessage(node, &type);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/bound"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("already have a direct material binding"))) << message.toStdString();
 }

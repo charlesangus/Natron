@@ -42,6 +42,53 @@ NATRON_NAMESPACE_ENTER
 class ContentHasher;
 
 /**
+ * @brief What a USDProject3D projection in Geometry space asks of the prims bound to it:
+ * see SceneNodeAuthoring::readGeometryProjection().
+ **/
+struct SceneGeometryProjection {
+    // The constant matrix primvar its shader reads each prim's placement from. Empty when the
+    // material is not such a projection.
+    std::string framePrimvar;
+    // The vertex primvar its shader projects from, for prims whose points move. Empty unless it
+    // holds its camera.
+    std::string referencePrimvar;
+    // Whether it holds its camera, and at which project frame.
+    bool held = false;
+    double holdFrame = 0.;
+};
+
+/**
+ * @brief A prim's points as a held projection takes them: see SceneNodeAuthoring::readReferencePoints().
+ **/
+struct SceneReferencePoints {
+    enum StatusEnum {
+        // Its points neither move nor are skinned: the frame primvar places it.
+        eStatusStill,
+        // points holds its world-space points at the hold.
+        eStatusRead,
+        // Its points cannot apply over the frame range, so it stays rigid.
+        eStatusTopologyChanges,
+        eStatusCannotSkin
+    };
+
+    StatusEnum status = eStatusStill;
+    PXR_NS::VtVec3fArray points;
+};
+
+/**
+ * @brief What SceneNodeAuthoring::readReferencePoints() shares across the prims of one stage. The
+ * time codes are the hold's and the project frame range's.
+ **/
+struct SceneReferenceContext {
+    double holdTime = 0.;
+    double firstTime = 0.;
+    double lastTime = 0.;
+    PXR_NS::UsdSkelCache skinning;
+    // Populating walks the whole skeleton root, so it must not repeat for each prim under one.
+    PXR_NS::SdfPathSet populatedRoots;
+};
+
+/**
  * @brief What a geometry node's Material input adds to its scene: see
  * SceneNodeAuthoring::graftMaterialInput().
  **/
@@ -52,13 +99,8 @@ struct SceneMaterialGraft {
     // Where the input's first material landed, which the geometry binds itself to. Empty when the
     // input holds no material.
     std::string materialPath;
-    // When that material is a USDProject3D projection in Geometry space: the grafted path of its
-    // shader, which the geometry gives its own placement (authorProjectionGeometryFrame()). Empty
-    // otherwise.
-    std::string geometryProjectionShader;
-    // Whether that projection holds its camera, and at which project frame.
-    bool projectionHeld = false;
-    double projectionHoldFrame = 0.;
+    // That material's placement, for the geometry to author on itself (authorProjectionFrame()).
+    SceneGeometryProjection projection;
     // A hash of what the geometry's layer reads of payload: its metadata, materialPath and the
     // projection's fields. A
     // geometry node keys its layer on it (SceneLayerMemo::Key::eUpstreamReadFacts).
@@ -102,11 +144,41 @@ std::string getAnchoredFilePath(const KnobFilePtr& knob);
  * renders: the node, its content hash and whether it varies over time, without rendering it, over
  * the project's frame range. False when nothing is connected. A node keys its layer on these (appendLiveTextureSource) and
  * authors them through recordLiveTexture().
+ *
+ * An empty input whose source was deleted (recordDeletedTextureSource) has a source too, with a null
+ * node and content hash 0, which no rendered image's URI has: it fails to render as any texture whose
+ * node is gone does, so every renderer shows it as missing and the consumer warns, naming the node.
  **/
 bool getLiveTextureSource(const EffectInstance& consumer,
                           int inputNb,
                           const std::string& layer,
                           LiveTextureSource* source);
+
+/**
+ * @brief Why source, from getLiveTextureSource(), shows kLiveTextureMissingColour at time, or empty
+ * when nothing says it does. A deleted source is known from the source alone, so its consumer warns
+ * however its texture was last rendered, even when no render has failed since the store was emptied.
+ **/
+std::string getLiveTextureFailure(const LiveTextureSource& source,
+                                  double time);
+
+/**
+ * @brief The knob of a node with live textures that remembers which inputs lost their source to a
+ * deletion: only a deletion leaves them magenta, while an input never connected or disconnected on
+ * purpose keeps the material's own colour, and the empty input looks the same in all of them. It
+ * persists so a reopened project shows the same, and it is hashed so the node's layer follows it.
+ **/
+void createDeletedTextureSourcesKnob(KnobHolder* holder,
+                                     const KnobPagePtr& page);
+
+// For a node's EffectInstance::onInputSourceDeleted().
+void recordDeletedTextureSource(const EffectInstance& consumer,
+                                int inputNb,
+                                const std::string& sourceName);
+
+// For a node's EffectInstance::onInputChanged(): connecting the input replaces what it lost.
+void forgetDeletedTextureSourceIfConnected(const EffectInstance& consumer,
+                                           int inputNb);
 
 // What a layer authoring source reads of it.
 void appendLiveTextureSource(const LiveTextureSource& source,
@@ -236,25 +308,54 @@ bool graftMaterialInput(const ScenePayload& material,
 bool isProjectionShader(const PXR_NS::UsdShadeShader& shader);
 
 /**
- * @brief For a geometry node whose Material input is a projection in Geometry space
- * (graft.geometryProjectionShader set): authors the shader's geometryFrame input on stage, the
- * geometry's local to world transform as the node places it, frameAt(frame) at a project frame:
- * once at the projection's hold frame when it holds its camera, else as a default or, when
- * animated, at every frame of getSampleFrames(). Does nothing for any other material.
+ * @brief Reads material as a USDProject3D projection in Geometry space. Returns false, leaving
+ * *projection empty, for any other material.
  **/
-bool authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
-                                   const SceneLayerEdit& edit,
-                                   const SceneMaterialGraft& graft,
-                                   bool animated,
-                                   const std::function<PXR_NS::GfMatrix4d(double)>& frameAt);
+bool readGeometryProjection(const PXR_NS::UsdPrim& material,
+                            SceneGeometryProjection* projection);
+
+/**
+ * @brief Authors projection's frame primvar on prim, its local to world transform as the node
+ * places it, frameAt(frame) at a project frame: once at the projection's hold frame when it holds
+ * its camera, else as a default or, when animated, at every frame of getSampleFrames(), with
+ * the columns Cycles reads (SceneProjectionCameras::frameColumnPrimvar()) and the parts MoonRay
+ * reads (SceneProjectionCameras::moonRayFramePrimvar()) beside it. Does nothing when projection
+ * is empty.
+ **/
+bool authorProjectionFrame(const PXR_NS::UsdPrim& prim,
+                           const SceneLayerEdit& edit,
+                           const SceneGeometryProjection& projection,
+                           bool animated,
+                           const std::function<PXR_NS::GfMatrix4d(double)>& frameAt);
+
+/**
+ * @brief Reads prim's points as a projection held at context.holdTime takes them: its world-space
+ * points there, skinned when it is bound to a skeleton. xforms is a cache at the hold. A prim whose
+ * points neither move nor are skinned, or that is no UsdGeomPointBased, reads as still.
+ **/
+SceneReferencePoints readReferencePoints(const PXR_NS::UsdPrim& prim,
+                                         SceneReferenceContext* context,
+                                         PXR_NS::UsdGeomXformCache* xforms);
+
+/**
+ * @brief Authors points on prim as projection's reference primvar.
+ **/
+bool authorReferencePoints(const PXR_NS::UsdPrim& prim,
+                           const SceneGeometryProjection& projection,
+                           const PXR_NS::VtVec3fArray& points);
 
 /**
  * @brief Binds prim to the material at materialPath (material:binding, with
- * UsdShadeMaterialBindingAPI applied). Does nothing when materialPath is empty.
+ * UsdShadeMaterialBindingAPI applied). Does nothing when materialPath is empty. A purpose of
+ * full or preview binds material:binding:<purpose>; an empty or allPurpose one binds
+ * material:binding. A non-empty strength (UsdShadeTokens->strongerThanDescendants or
+ * weakerThanDescendants) is authored as the binding's bindMaterialAs.
  **/
 bool authorMaterialBinding(const PXR_NS::UsdPrim& prim,
                            const std::string& materialPath,
-                           std::string* errorMessage);
+                           std::string* errorMessage,
+                           const PXR_NS::TfToken& purpose = PXR_NS::TfToken(),
+                           const PXR_NS::TfToken& strength = PXR_NS::TfToken());
 
 /**
  * @brief For a node assigning one shared material: grafts every root prim of material under the
@@ -276,6 +377,8 @@ bool graftSharedMaterial(const ScenePayload& material,
 struct SceneCollectionBinding {
     // The prims the collection includes, its expansion rule expandPrims taking their descendants.
     std::vector<PXR_NS::SdfPath> includes;
+    // Prims under the includes the collection leaves out, with their descendants.
+    std::vector<PXR_NS::SdfPath> excludes;
     std::string materialPath;
     // Names both the collection (collection:<name>) and the binding; a single identifier.
     std::string bindingName;
@@ -296,7 +399,8 @@ std::vector<PXR_NS::TfToken> getCollectionBindingNames(const PXR_NS::UsdPrim& pr
 
 /**
  * @brief Binds binding.materialPath to the prims binding.includes names, on root: applies
- * UsdCollectionAPI collection:<name> including them (expandPrims) and UsdShadeMaterialBindingAPI,
+ * UsdCollectionAPI collection:<name> including them (expandPrims) and excluding binding.excludes,
+ * and UsdShadeMaterialBindingAPI,
  * authors material:binding:collection[:<purpose>]:<name> = [collection, material] with
  * bindMaterialAs = binding.strength, and writes root's propertyOrder with that binding first, then
  * binding.existingBindings, so it is the strongest collection binding on root. Returns false with

@@ -2364,6 +2364,15 @@ public:
     virtual void onInputChanged(int inputNo);
 
     /**
+     * @brief Called when deleting the node named sourceName left input inputNo empty. Disconnecting
+     * the input, and deleting a node whose input takes its place, do not call it.
+     **/
+    virtual void onInputSourceDeleted(int /*inputNo*/,
+                                      const std::string& /*sourceName*/)
+    {
+    }
+
+    /**
      * @brief If the plug-in calls timelineGoTo and we're during a render/instance changed action,
      * then all the knobs will retrieve the current time as being the one in the last render args thread-storage.
      * This function is here to update the last render args thread storage.

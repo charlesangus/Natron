@@ -26,6 +26,8 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <pxr/base/tf/diagnosticMgr.h>
+#include <pxr/usd/usdGeom/basisCurves.h>
+#include <pxr/usd/usdSkel/animation.h>
 
 #include "Global/Macros.h"
 
@@ -76,6 +78,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -513,6 +516,10 @@ const double kProjectorZ = 5.;
 const double kPlateBox = 25.;
 const double kCardWidth = 16.;
 const double kCardHeight = 8.;
+// The rigid and reference point paths round the plate's coordinates differently, and the texture level
+// chosen from those coordinates' derivatives turns that into up to 0.071 along the checker's edges. A
+// slide of an eighth of a render pixel already reaches 0.16.
+const float kReferencePathTolerance = 0.08f;
 const double kProjectedEdgeReach = 2.5;
 
 // The z = 0 point render pixel (x, y)'s centre sees, rows counted from the bottom.
@@ -1220,11 +1227,12 @@ protected:
         checkCropAgainstReference(planes[0], goldenCrop, goldenCase, [cardShift](int x, int y) { return isNearProjectedEdge(x, y, cardShift); });
     }
 
-    // The colour plane of render at frame 1, failing on a render error or a shader Storm could not
+    // The colour plane of render at frame, failing on a render error or a shader Storm could not
     // build.
     static void renderColour(const NodePtr& render,
                              const char* what,
-                             std::vector<float>* rgba)
+                             std::vector<float>* rgba,
+                             double frame = 1.)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
@@ -1232,7 +1240,7 @@ protected:
         std::string shaderProblems;
         {
             USDDiagnostics diagnostics;
-            rendered = renderOffMainThread(render, 1., &planes, &error);
+            rendered = renderOffMainThread(render, frame, &planes, &error);
             shaderProblems = diagnostics.shaderProblems();
         }
         EXPECT_TRUE(shaderProblems.empty()) << what << ": " << shaderProblems;
@@ -1240,6 +1248,266 @@ protected:
         ASSERT_EQ(3u, planes.size()) << what;
         ASSERT_EQ((std::size_t)kWidth * kHeight * 4, planes[0].pixels.size()) << what;
         *rgba = planes[0].pixels;
+    }
+
+    // The projection graph with two cards apart, each moving its own way by frame 11, and a held
+    // Geometry projection connected directly to both: the reference the shared material must match.
+    // *cards holds what the merge's first input needs to carry once the projection leaves their
+    // Material inputs; *rgba is the reference at frame 11, which shows the checker on both cards.
+    NodePtr createTwoPlacementGraph(NodePtr* projector,
+                                    NodePtr* cardA,
+                                    NodePtr* cardB,
+                                    NodePtr* cards,
+                                    std::vector<float>* rgba)
+    {
+        double first = 0., last = 0.;
+        getApp()->getFrameRange(&first, &last);
+        EXPECT_LE(first, 1.);
+        EXPECT_GE(last, 11.);
+        NodePtr plate;
+        NodePtr render = createProjectionGraph(&plate, projector, cardA);
+        if (!render) {
+            return render;
+        }
+        *cardB = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+        *cards = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        KnobChoice* space = knob<KnobChoice>(*projector, kUSDProject3DParamProjectionSpace);
+        KnobBool* useHold = knob<KnobBool>(*projector, kUSDProject3DParamUseFrameHold);
+        KnobDouble* hold = knob<KnobDouble>(*projector, kUSDProject3DParamFrameHold);
+        KnobDouble* translateA = knob<KnobDouble>(*cardA, kSceneParamTranslate);
+        KnobDouble* translateB = *cardB ? knob<KnobDouble>(*cardB, kSceneParamTranslate) : NULL;
+        if (!*cards || !space || !useHold || !hold || !translateA || !translateB
+            || !setTriple(*cardA, kSceneParamScale, 4., 4., 1.)
+            || !setString(*cardB, kSceneParamPrimPath, "/Card2")
+            || !setTriple(*cardB, kSceneParamScale, 4., 4., 1.)) {
+            ADD_FAILURE() << "could not set up the second card";
+
+            return NodePtr();
+        }
+        space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+        useHold->setValue(true);
+        hold->setValue(1.);
+        translateA->setValueAtTime(1., -2.5, ViewSpec::all(), 0);
+        translateA->setValueAtTime(11., -3.5, ViewSpec::all(), 0);
+        translateB->setValueAtTime(1., 2.5, ViewSpec::all(), 0);
+        translateB->setValueAtTime(11., 4.5, ViewSpec::all(), 0);
+        NodePtr merge = render->getInput(0)->getInput(0);
+        connectNodes(*projector, *cardB, 0, true);
+        connectNodes(*cardB, merge, 2, true);
+        renderColour(render, "the direct connection", rgba, 11.);
+        if (HasFatalFailure()) {
+            return NodePtr();
+        }
+
+        for (const std::pair<int, int>& halves : { std::make_pair(0, kWidth / 2), std::make_pair(kWidth / 2, kWidth) }) {
+            const RegionColours region = regionColours(*rgba, halves.first, 0, halves.second, kHeight);
+            EXPECT_GT(region.red, 100) << "the direct connection, pixels " << halves.first << " to " << halves.second;
+            EXPECT_GT(region.blue, 100) << "the direct connection, pixels " << halves.first << " to " << halves.second;
+        }
+
+        (*cardA)->disconnectInput(0);
+        (*cardB)->disconnectInput(0);
+        merge->disconnectInput(0);
+        merge->disconnectInput(2);
+        connectNodes(*cardA, *cards, 0, true);
+        connectNodes(*cardB, *cards, 1, true);
+
+        return render;
+    } // createTwoPlacementGraph
+
+    // Renders frame 11 and compares it to the direct connection's, pixel for pixel.
+    static void expectMatchesReference(const NodePtr& render,
+                                       const std::vector<float>& reference,
+                                       const char* what,
+                                       float tolerance = 0.01f)
+    {
+        std::vector<float> rgba;
+        renderColour(render, what, &rgba, 11.);
+        ASSERT_EQ(reference.size(), rgba.size()) << what;
+        std::size_t different = 0;
+        float worst = 0.f;
+        for (std::size_t i = 0; i < rgba.size(); i += 4) {
+            bool same = true;
+            for (std::size_t c = 0; c < 4; ++c) {
+                const float difference = std::fabs(rgba[i + c] - reference[i + c]);
+                worst = std::max(worst, difference);
+                same = same && (difference < tolerance);
+            }
+            different += same ? 0 : 1;
+        }
+        EXPECT_EQ((std::size_t)0, different) << what << ": worst difference " << worst;
+    }
+
+    static PXR_NS::VtVec3fArray quadPoints(double x,
+                                           double halfWidth,
+                                           double halfHeight)
+    {
+        PXR_NS::VtVec3fArray points(4);
+        points[0] = PXR_NS::GfVec3f((float)(x - halfWidth), (float)-halfHeight, 0.f);
+        points[1] = PXR_NS::GfVec3f((float)(x + halfWidth), (float)-halfHeight, 0.f);
+        points[2] = PXR_NS::GfVec3f((float)(x + halfWidth), (float)halfHeight, 0.f);
+        points[3] = PXR_NS::GfVec3f((float)(x - halfWidth), (float)halfHeight, 0.f);
+
+        return points;
+    }
+
+    static PXR_NS::UsdGeomMesh defineQuad(const PXR_NS::UsdStageRefPtr& stage,
+                                          const char* path)
+    {
+        PXR_NS::UsdGeomMesh mesh = PXR_NS::UsdGeomMesh::Define(stage, PXR_NS::SdfPath(path));
+        PXR_NS::VtIntArray counts(1, 4);
+        PXR_NS::VtIntArray indices(4);
+        for (int i = 0; i < 4; ++i) {
+            indices[i] = i;
+        }
+        mesh.CreateFaceVertexCountsAttr().Set(counts);
+        mesh.CreateFaceVertexIndicesAttr().Set(indices);
+        mesh.CreateDoubleSidedAttr().Set(true);
+        mesh.CreateSubdivisionSchemeAttr().Set(PXR_NS::UsdGeomTokens->none);
+
+        return mesh;
+    }
+
+    // A file at path with a quad at /Moving whose points go from fromX at frame 1 to toX at frame 11.
+    static void writeMovingQuad(const std::string& path,
+                                double fromX,
+                                double toX,
+                                double halfWidth,
+                                double halfHeight)
+    {
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(path);
+        ASSERT_TRUE(bool(stage));
+        const PXR_NS::UsdGeomMesh mesh = defineQuad(stage, "/Moving");
+        mesh.CreatePointsAttr().Set(quadPoints(fromX, halfWidth, halfHeight), PXR_NS::UsdTimeCode(1.));
+        mesh.CreatePointsAttr().Set(quadPoints(toX, halfWidth, halfHeight), PXR_NS::UsdTimeCode(11.));
+        ASSERT_TRUE(stage->GetRootLayer()->Save());
+    }
+
+    // The same quad moved by a joint: its points stay at x, its skeleton's only joint goes from 0 to shift.
+    static void writeSkinnedQuad(const std::string& path,
+                                 double x,
+                                 double shift,
+                                 double halfWidth,
+                                 double halfHeight)
+    {
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(path);
+        ASSERT_TRUE(bool(stage));
+        PXR_NS::UsdSkelRoot::Define(stage, PXR_NS::SdfPath("/Rig"));
+        const PXR_NS::UsdSkelSkeleton skeleton = PXR_NS::UsdSkelSkeleton::Define(stage, PXR_NS::SdfPath("/Rig/Skeleton"));
+        const PXR_NS::VtTokenArray joints(1, PXR_NS::TfToken("Joint"));
+        const PXR_NS::VtMatrix4dArray identity(1, PXR_NS::GfMatrix4d(1.));
+        skeleton.CreateJointsAttr().Set(joints);
+        skeleton.CreateBindTransformsAttr().Set(identity);
+        skeleton.CreateRestTransformsAttr().Set(identity);
+        const PXR_NS::UsdSkelAnimation animation = PXR_NS::UsdSkelAnimation::Define(stage, PXR_NS::SdfPath("/Rig/Skeleton/Animation"));
+        animation.CreateJointsAttr().Set(joints);
+        animation.CreateRotationsAttr().Set(PXR_NS::VtQuatfArray(1, PXR_NS::GfQuatf(1.f)));
+        animation.CreateScalesAttr().Set(PXR_NS::VtVec3hArray(1, PXR_NS::GfVec3h(1.f, 1.f, 1.f)));
+        animation.CreateTranslationsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f)), PXR_NS::UsdTimeCode(1.));
+        animation.CreateTranslationsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f((float)shift, 0.f, 0.f)), PXR_NS::UsdTimeCode(11.));
+        PXR_NS::UsdSkelBindingAPI::Apply(skeleton.GetPrim()).CreateAnimationSourceRel().SetTargets({ animation.GetPath() });
+        const PXR_NS::UsdGeomMesh mesh = defineQuad(stage, "/Rig/Moving");
+        mesh.CreatePointsAttr().Set(quadPoints(x, halfWidth, halfHeight));
+        const PXR_NS::UsdSkelBindingAPI binding = PXR_NS::UsdSkelBindingAPI::Apply(mesh.GetPrim());
+        binding.CreateSkeletonRel().SetTargets({ skeleton.GetPath() });
+        binding.CreateJointIndicesPrimvar(true, 1).Set(PXR_NS::VtIntArray(1, 0));
+        binding.CreateJointWeightsPrimvar(true, 1).Set(PXR_NS::VtFloatArray(1, 1.f));
+        ASSERT_TRUE(stage->GetRootLayer()->Save());
+    }
+
+    // createProjectionGraph's result with the projection held at frame 1, and what file holds in place
+    // of the card, unbound.
+    NodePtr createHeldGraphReading(const QString& file,
+                                   NodePtr* projector)
+    {
+        NodePtr plate, card;
+        NodePtr render = createProjectionGraph(&plate, projector, &card);
+        if (!render) {
+            return render;
+        }
+        KnobChoice* space = knob<KnobChoice>(*projector, kUSDProject3DParamProjectionSpace);
+        KnobBool* useHold = knob<KnobBool>(*projector, kUSDProject3DParamUseFrameHold);
+        KnobDouble* hold = knob<KnobDouble>(*projector, kUSDProject3DParamFrameHold);
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        KnobFile* fileKnob = reader ? knob<KnobFile>(reader, kUSDReadParamFile) : NULL;
+        if (!space || !useHold || !hold || !fileKnob) {
+            ADD_FAILURE() << "could not set up the held graph";
+
+            return NodePtr();
+        }
+        space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+        useHold->setValue(true);
+        hold->setValue(1.);
+        fileKnob->setValue(file.toStdString());
+        card->disconnectInput(0);
+        NodePtr merge = render->getInput(0)->getInput(0);
+        merge->disconnectInput(0);
+        connectNodes(reader, merge, 0, true);
+
+        return render;
+    }
+
+    // Between the merge and what its first input reads, a USDAssignMaterial binding the projection to pattern.
+    NodePtr assignProjection(const NodePtr& render,
+                             const NodePtr& projector,
+                             const char* pattern)
+    {
+        NodePtr merge = render->getInput(0)->getInput(0);
+        NodePtr scene = merge ? merge->getInput(0) : NodePtr();
+        NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+        if (!scene || !assign || !setString(assign, kUSDAssignMaterialParamPrimPattern, pattern)) {
+            ADD_FAILURE() << "could not set up the assign";
+
+            return NodePtr();
+        }
+        merge->disconnectInput(0);
+        connectNodes(scene, assign, kUSDAssignMaterialInputScene, true);
+        connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
+        connectNodes(assign, merge, 0, true);
+
+        return assign;
+    }
+
+    // In createTwoPlacementGraph's scene, what file holds in place of the second card.
+    NodePtr readInPlaceOfSecondCard(const NodePtr& cards,
+                                    const QString& file)
+    {
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        KnobFile* fileKnob = reader ? knob<KnobFile>(reader, kUSDReadParamFile) : NULL;
+        if (!fileKnob) {
+            ADD_FAILURE() << "could not set up the reader";
+
+            return NodePtr();
+        }
+        fileKnob->setValue(file.toStdString());
+        cards->disconnectInput(1);
+        connectNodes(reader, cards, 1, true);
+
+        return reader;
+    }
+
+    // Whether the coloured pixels of first are the same colours shift pixels to the right in second:
+    // what a surface that took shift pixels of motion with the image on it renders. A slide would show
+    // otherwise, as the shift is not a whole number of the checker's periods.
+    static void expectColoursMovedBy(const std::vector<float>& first,
+                                     const std::vector<float>& second,
+                                     int shift,
+                                     const char* what)
+    {
+        int compared = 0;
+        int different = 0;
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x + shift < kWidth; ++x) {
+                const ProjectedColourEnum colour = classifyColour(&first[((std::size_t)y * kWidth + x) * 4]);
+                if ((colour != eProjectedRed) && (colour != eProjectedBlue)) {
+                    continue;
+                }
+                ++compared;
+                different += (classifyColour(&second[((std::size_t)y * kWidth + x + shift) * 4]) == colour) ? 0 : 1;
+            }
+        }
+        EXPECT_GT(compared, 30) << what;
+        EXPECT_LE(different, compared / 20) << what << ": " << different << " of " << compared;
     }
 
     /**
@@ -1765,6 +2033,49 @@ TEST_F(USDRenderStormTest, ALiveTextureFollowsADisabledNodeToItsInput)
     EXPECT_NEAR(0., passed[2], 0.03);
 }
 
+TEST_F(USDRenderStormTest, DeletingALiveTexturesSourceShowsMagentaUntilUndone)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false, true);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr material = render->getInput(0)->getInput(0)->getInput(0)->getInput(0);
+    ASSERT_TRUE(material != nullptr);
+    ASSERT_EQ(std::string(PLUGINID_NATRON_USDEMISSIVEMATERIAL), material->getPluginID());
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(color != nullptr);
+    color->setValue(0., ViewSpec::all(), 0);
+    color->setValue(1., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    const std::string name = constant->getFullyQualifiedName();
+
+    // What the delete commands' redo and undo do, with the same arguments.
+    const NodesList outputs(1, material);
+    constant->deactivate(outputs, false, false, true, false);
+    constant->notifyOutputsOfDeletion();
+    double missing[4];
+    centreOf(renderColour(render, 1.), missing);
+    for (int k = 0; k < 3; ++k) {
+        EXPECT_NEAR(kLiveTextureMissingColour[k], missing[k], 0.03) << "deleted " << missing[0] << ", " << missing[1] << ", " << missing[2];
+    }
+    QString message;
+    int type = 0;
+    ASSERT_TRUE(material->hasPersistentMessage());
+    material->getPersistentMessage(&message, &type, false);
+    EXPECT_NE(-1, message.indexOf(QString::fromStdString(name))) << message.toStdString();
+
+    constant->activate(outputs, false, false);
+    double restored[4];
+    centreOf(renderColour(render, 1.), restored);
+    EXPECT_NEAR(0., restored[0], 0.03) << "restored " << restored[0] << ", " << restored[1] << ", " << restored[2];
+    EXPECT_NEAR(1., restored[1], 0.03);
+    EXPECT_NEAR(0., restored[2], 0.03);
+    EXPECT_FALSE(material->hasPersistentMessage());
+}
+
 // The plan's animated Ramp is an animated Constant here: the Ramp is an OpenFX plug-in the test
 // binary may not load, and an animated colour exercises the same per-frame URIs.
 TEST_F(USDRenderStormTest, AnAnimatedLiveTextureFollowsTheFrame)
@@ -1944,6 +2255,351 @@ TEST_F(USDRenderStormTest, StormProject3DGeometryHeldThroughAssignMaterial)
 
     renderProjection(render, projector, 11., shift, RectI(36, 6, 200, 94), kGoldenCaseProject3DGeometryHeld);
     EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
+// A mirror after the assign reverses the card's winding on screen but not the frame it was placed
+// with, so the face that looked at the projector there still does: Front shows it, Back hides it.
+TEST_F(USDRenderStormTest, StormProject3DProjectOnFrontSurvivesAMirrorAfterTheAssign)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    KnobChoice* space = knob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace);
+    KnobBool* useHold = knob<KnobBool>(projector, kUSDProject3DParamUseFrameHold);
+    KnobDouble* hold = knob<KnobDouble>(projector, kUSDProject3DParamFrameHold);
+    KnobChoice* projectOn = knob<KnobChoice>(projector, kUSDProject3DParamProjectOn);
+    ASSERT_TRUE(space && useHold && hold && projectOn);
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    useHold->setValue(true);
+    hold->setValue(1.);
+    NodePtr assign = assignProjectionToCard(render, projector, card);
+    ASSERT_TRUE(assign != nullptr);
+    NodePtr merge = render->getInput(0)->getInput(0);
+    NodePtr mirror = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    ASSERT_TRUE(merge && mirror);
+    ASSERT_TRUE(setString(mirror, kUSDEditTransformParamPrimPattern, "/Card"));
+    ASSERT_TRUE(setTriple(mirror, kSceneParamScale, -1., 1., 1.));
+    merge->disconnectInput(0);
+    connectNodes(assign, mirror, 0, true);
+    connectNodes(mirror, merge, 0, true);
+
+    std::vector<float> rgba;
+    projectOn->setValue((int)USDProject3D::eProjectOnFront);
+    ASSERT_NO_FATAL_FAILURE(renderColour(render, "Front on the mirrored card", &rgba));
+    RegionColours region = regionColours(rgba, 0, 0, kWidth, kHeight);
+    EXPECT_GT(region.red, 100);
+    EXPECT_GT(region.blue, 100);
+    projectOn->setValue((int)USDProject3D::eProjectOnBack);
+    ASSERT_NO_FATAL_FAILURE(renderColour(render, "Back on the mirrored card", &rgba));
+    region = regionColours(rgba, 0, 0, kWidth, kHeight);
+    EXPECT_EQ(0, region.red);
+    EXPECT_EQ(0, region.blue);
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
+// One material on two cards apart looks as the two grafted copies of a direct connection do.
+TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsThroughOneAssign)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr projector, cardA, cardB, cards;
+    std::vector<float> reference;
+    NodePtr render = createTwoPlacementGraph(&projector, &cardA, &cardB, &cards, &reference);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Card2"));
+    connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
+    connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
+    expectMatchesReference(render, reference, "one assign");
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
+TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsThroughTwoAssigns)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr projector, cardA, cardB, cards;
+    std::vector<float> reference;
+    NodePtr render = createTwoPlacementGraph(&projector, &cardA, &cardB, &cards, &reference);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr assignA = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    NodePtr assignB = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(assignA && setString(assignA, kUSDAssignMaterialParamPrimPattern, "/Card"));
+    ASSERT_TRUE(assignB && setString(assignB, kUSDAssignMaterialParamPrimPattern, "/Card2"));
+    connectNodes(cards, assignA, kUSDAssignMaterialInputScene, true);
+    connectNodes(projector, assignA, kUSDAssignMaterialInputMaterial, true);
+    connectNodes(assignA, assignB, kUSDAssignMaterialInputScene, true);
+    connectNodes(projector, assignB, kUSDAssignMaterialInputMaterial, true);
+    connectNodes(assignB, render->getInput(0)->getInput(0), 0, true);
+    expectMatchesReference(render, reference, "two assigns");
+}
+
+TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsByMaterialPath)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr projector, cardA, cardB, cards;
+    std::vector<float> reference;
+    NodePtr render = createTwoPlacementGraph(&projector, &cardA, &cardB, &cards, &reference);
+    ASSERT_TRUE(render != nullptr);
+    ASSERT_TRUE(setString(projector, kSceneParamPrimPath, "/Looks/Projection"));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Card2"));
+    ASSERT_TRUE(setString(assign, kUSDAssignMaterialParamMaterialPath, "/Looks/Projection"));
+    connectNodes(projector, cards, 2, true);
+    connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
+    expectMatchesReference(render, reference, "Material Path");
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
+// The file names the material and carries the primvar itself, so nothing but the surface is under
+// test. Without the primvar, as with any binding no node places, the image stays where the camera is.
+TEST_F(USDRenderStormTest, StormProject3DReferencePointsAuthoredByHandStick)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const double shift = 2.;
+    const auto writeBound = [&](const char* name, bool withPrimvar) {
+        const QString file = tmp.path() + QLatin1Char('/') + QString::fromUtf8(name);
+        writeMovingQuad(file.toStdString(), 0., shift, kCardWidth / 2., kCardHeight / 2.);
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(file.toStdString());
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"));
+        PXR_NS::UsdShadeMaterialBindingAPI::Apply(prim);
+        prim.CreateRelationship(PXR_NS::UsdShadeTokens->materialBinding, false).SetTargets({ PXR_NS::SdfPath("/Looks/Projection") });
+        if (withPrimvar) {
+            PXR_NS::UsdGeomPrimvarsAPI(prim).CreatePrimvar(PXR_NS::TfToken("natronReferencePointsHold1"), PXR_NS::SdfValueTypeNames->Point3fArray, PXR_NS::UsdGeomTokens->vertex).Set(quadPoints(0., kCardWidth / 2., kCardHeight / 2.));
+        }
+        EXPECT_TRUE(stage->GetRootLayer()->Save());
+
+        return file;
+    };
+    const QString bare = writeBound("bare.usda", false);
+    const QString sticky = writeBound("sticky.usda", true);
+    NodePtr projector;
+    NodePtr render = createHeldGraphReading(sticky, &projector);
+    ASSERT_TRUE(render != nullptr);
+    ASSERT_TRUE(setString(projector, kSceneParamPrimPath, "/Looks/Projection"));
+    connectNodes(projector, render->getInput(0)->getInput(0), 2, true);
+
+    renderProjection(render, projector, 1., 0., RectI(), "reference points at the hold");
+    renderProjection(render, projector, 11., shift, RectI(), "reference points after the points moved");
+
+    NodePtr reader = render->getInput(0)->getInput(0)->getInput(0);
+    ASSERT_TRUE(reader && knob<KnobFile>(reader, kUSDReadParamFile));
+    knob<KnobFile>(reader, kUSDReadParamFile)->setValue(bare.toStdString());
+    std::vector<float> atHold, later;
+    ASSERT_NO_FATAL_FAILURE(renderColour(render, "no reference points at the hold", &atHold, 1.));
+    ASSERT_NO_FATAL_FAILURE(renderColour(render, "no reference points after the points moved", &later, 11.));
+    ASSERT_EQ(atHold.size(), later.size());
+    // The projector's frame, which the quad covers at both frames.
+    int different = 0;
+    for (int y = 30; y < 70; ++y) {
+        for (int x = 55; x < 145; ++x) {
+            const std::size_t i = ((std::size_t)y * kWidth + x) * 4;
+            different += (classifyColour(&atHold[i]) == classifyColour(&later[i])) ? 0 : 1;
+        }
+    }
+    EXPECT_EQ(0, different);
+}
+
+// The quad turns half a revolution about Y by frame 11. Judged on the surface as it is then, Front would
+// hide it and Back show it.
+TEST_F(USDRenderStormTest, StormProject3DProjectOnKeepsTheFacesOfTheHoldAsTheMeshTurns)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString file = tmp.path() + QString::fromUtf8("/turning.usda");
+    {
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(file.toStdString());
+        ASSERT_TRUE(bool(stage));
+        const PXR_NS::UsdGeomMesh mesh = defineQuad(stage, "/Moving");
+        const PXR_NS::VtVec3fArray front = quadPoints(0., kCardWidth / 2., kCardHeight / 2.);
+        PXR_NS::VtVec3fArray turned = front;
+        for (PXR_NS::GfVec3f& point : turned) {
+            point[0] = -point[0];
+        }
+        mesh.CreatePointsAttr().Set(front, PXR_NS::UsdTimeCode(1.));
+        mesh.CreatePointsAttr().Set(turned, PXR_NS::UsdTimeCode(11.));
+        PXR_NS::UsdGeomPrimvarsAPI(mesh.GetPrim()).CreatePrimvar(PXR_NS::TfToken("natronReferencePointsHold1"), PXR_NS::SdfValueTypeNames->Point3fArray, PXR_NS::UsdGeomTokens->vertex).Set(front);
+        PXR_NS::UsdShadeMaterialBindingAPI::Apply(mesh.GetPrim());
+        mesh.GetPrim().CreateRelationship(PXR_NS::UsdShadeTokens->materialBinding, false).SetTargets({ PXR_NS::SdfPath("/Looks/Projection") });
+        ASSERT_TRUE(stage->GetRootLayer()->Save());
+    }
+    NodePtr projector;
+    NodePtr render = createHeldGraphReading(file, &projector);
+    ASSERT_TRUE(render != nullptr);
+    ASSERT_TRUE(setString(projector, kSceneParamPrimPath, "/Looks/Projection"));
+    connectNodes(projector, render->getInput(0)->getInput(0), 2, true);
+    KnobChoice* projectOn = knob<KnobChoice>(projector, kUSDProject3DParamProjectOn);
+    ASSERT_TRUE(projectOn != nullptr);
+
+    for (const double frame : { 1., 11. }) {
+        std::vector<float> rgba;
+        projectOn->setValue((int)USDProject3D::eProjectOnFront);
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, "Front", &rgba, frame));
+        RegionColours region = regionColours(rgba, 0, 0, kWidth, kHeight);
+        EXPECT_GT(region.red, 100) << "Front at frame " << frame;
+        EXPECT_GT(region.blue, 100) << "Front at frame " << frame;
+        projectOn->setValue((int)USDProject3D::eProjectOnBack);
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, "Back", &rgba, frame));
+        region = regionColours(rgba, 0, 0, kWidth, kHeight);
+        EXPECT_EQ(0, region.red) << "Back at frame " << frame;
+        EXPECT_EQ(0, region.blue) << "Back at frame " << frame;
+    }
+}
+
+// The moving quad stands where the second card does and moves as far, so a stuck image renders the
+// same pixels, beside a prim that takes the rigid path in the same material.
+TEST_F(USDRenderStormTest, StormProject3DDeformingMeshBesideARigidPrimThroughTheMaterialInput)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString file = tmp.path() + QString::fromUtf8("/moving.usda");
+    writeMovingQuad(file.toStdString(), 2.5, 4.5, 2., 2.);
+    NodePtr projector, cardA, cardB, cards;
+    std::vector<float> reference;
+    NodePtr render = createTwoPlacementGraph(&projector, &cardA, &cardB, &cards, &reference);
+    ASSERT_TRUE(render != nullptr);
+    ASSERT_TRUE(readInPlaceOfSecondCard(cards, file) != nullptr);
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Moving"));
+    connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
+    connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
+    expectMatchesReference(render, reference, "a deforming mesh through the Material input", kReferencePathTolerance);
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
+TEST_F(USDRenderStormTest, StormProject3DDeformingMeshByMaterialPath)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString file = tmp.path() + QString::fromUtf8("/moving.usda");
+    writeMovingQuad(file.toStdString(), 2.5, 4.5, 2., 2.);
+    NodePtr projector, cardA, cardB, cards;
+    std::vector<float> reference;
+    NodePtr render = createTwoPlacementGraph(&projector, &cardA, &cardB, &cards, &reference);
+    ASSERT_TRUE(render != nullptr);
+    ASSERT_TRUE(readInPlaceOfSecondCard(cards, file) != nullptr);
+    ASSERT_TRUE(setString(projector, kSceneParamPrimPath, "/Looks/Projection"));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Moving"));
+    ASSERT_TRUE(setString(assign, kUSDAssignMaterialParamMaterialPath, "/Looks/Projection"));
+    connectNodes(projector, cards, 2, true);
+    connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
+    expectMatchesReference(render, reference, "a deforming mesh by Material Path", kReferencePathTolerance);
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
+TEST_F(USDRenderStormTest, StormProject3DSkinnedMeshSticks)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString file = tmp.path() + QString::fromUtf8("/skinned.usda");
+    writeSkinnedQuad(file.toStdString(), 2.5, 2., 2., 2.);
+    NodePtr projector, cardA, cardB, cards;
+    std::vector<float> reference;
+    NodePtr render = createTwoPlacementGraph(&projector, &cardA, &cardB, &cards, &reference);
+    ASSERT_TRUE(render != nullptr);
+    ASSERT_TRUE(readInPlaceOfSecondCard(cards, file) != nullptr);
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Rig/Moving"));
+    connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
+    connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
+    expectMatchesReference(render, reference, "a skinned mesh", kReferencePathTolerance);
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
+// Moving two units is 20 render pixels at the prims' depth. Project On has no faces to judge on them.
+TEST_F(USDRenderStormTest, StormProject3DDeformingCurvesAndPointsStick)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const float shift = 2.f;
+    const auto sampleGrid = [&](float offset) {
+        PXR_NS::VtVec3fArray points;
+        for (int y = -2; y <= 2; ++y) {
+            for (int x = -10; x <= 10; ++x) {
+                points.push_back(PXR_NS::GfVec3f(x * 0.5f + offset, (float)y, 0.f));
+            }
+        }
+
+        return points;
+    };
+    const QString curvesFile = tmp.path() + QString::fromUtf8("/curves.usda");
+    const QString pointsFile = tmp.path() + QString::fromUtf8("/points.usda");
+    {
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(curvesFile.toStdString());
+        ASSERT_TRUE(bool(stage));
+        PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(stage, PXR_NS::SdfPath("/Moving"));
+        curves.CreateTypeAttr().Set(PXR_NS::UsdGeomTokens->linear);
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(5, 21));
+        curves.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(1, 0.4f));
+        curves.SetWidthsInterpolation(PXR_NS::UsdGeomTokens->constant);
+        curves.CreatePointsAttr().Set(sampleGrid(0.f), PXR_NS::UsdTimeCode(1.));
+        curves.CreatePointsAttr().Set(sampleGrid(shift), PXR_NS::UsdTimeCode(11.));
+        ASSERT_TRUE(stage->GetRootLayer()->Save());
+    }
+    {
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(pointsFile.toStdString());
+        ASSERT_TRUE(bool(stage));
+        PXR_NS::UsdGeomPoints points = PXR_NS::UsdGeomPoints::Define(stage, PXR_NS::SdfPath("/Moving"));
+        points.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(1, 0.4f));
+        points.SetWidthsInterpolation(PXR_NS::UsdGeomTokens->constant);
+        points.CreatePointsAttr().Set(sampleGrid(0.f), PXR_NS::UsdTimeCode(1.));
+        points.CreatePointsAttr().Set(sampleGrid(shift), PXR_NS::UsdTimeCode(11.));
+        ASSERT_TRUE(stage->GetRootLayer()->Save());
+    }
+    NodePtr projector;
+    NodePtr render = createHeldGraphReading(curvesFile, &projector);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr reader = render->getInput(0)->getInput(0)->getInput(0);
+    NodePtr assign = assignProjection(render, projector, "/Moving");
+    ASSERT_TRUE(reader && assign);
+    KnobChoice* projectOn = knob<KnobChoice>(projector, kUSDProject3DParamProjectOn);
+    ASSERT_TRUE(projectOn != nullptr);
+
+    for (const QString& file : { curvesFile, pointsFile }) {
+        const std::string name = file.toStdString();
+        knob<KnobFile>(reader, kUSDReadParamFile)->setValue(name);
+        projectOn->setValue((int)USDProject3D::eProjectOnBoth);
+        std::vector<float> atHold, later, front;
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, name.c_str(), &atHold, 1.));
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, name.c_str(), &later, 11.));
+        expectColoursMovedBy(atHold, later, 20, name.c_str());
+        EXPECT_FALSE(assign->hasPersistentMessage()) << name;
+        projectOn->setValue((int)USDProject3D::eProjectOnFront);
+        ASSERT_NO_FATAL_FAILURE(renderColour(render, name.c_str(), &front, 11.));
+        expectColoursMovedBy(atHold, front, 20, name.c_str());
+    }
 }
 
 // The plate's data reaches 50 pixels beyond its format on every side; its format still fills the

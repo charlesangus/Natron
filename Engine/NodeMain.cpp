@@ -688,13 +688,19 @@ Node::restoreKnobsLinks(const NodesList & allNodes,
 void
 Node::doDestroyNodeInternalEnd(bool autoReconnect)
 {
+    // An inactive node was deleted by a command already, or never was: an undo stack dropping its
+    // command, or a create undone, must not count as a second deletion.
+    const bool wasActive = isActivated();
+
     ///Remove the node from the project
     deactivate(NodesList(),
                true,
                autoReconnect,
                true,
                false);
-
+    if (wasActive) {
+        notifyOutputsOfDeletion();
+    }
 
     {
         NodeGuiIPtr guiPtr = _imp->guiPointer.lock();

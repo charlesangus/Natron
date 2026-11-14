@@ -38,7 +38,11 @@
                         0.0, 1.0, 0.0, 0.0,
                         0.0, 0.0, 1.0, 0.0,
                         0.0, 0.0, 0.0, 1.0],
-            "documentation": "In Geometry space, the object's local to world transform where the projection was set up (row vectors, as GfMatrix4d)."
+            "documentation": "In Geometry space, the object's local to world transform where the projection was set up (row vectors, as GfMatrix4d). Each prim carries its own in a constant matrix primvar, which a UsdPrimvarReader_matrix connects here; without one it is the identity."
+        },
+        "referencePoints": {
+            "default": [1e30, 1e30, 1e30],
+            "documentation": "Held in Geometry space, this point's world position at the hold, from a vertex primvar a UsdPrimvarReader_float3 connects here. The surface then projects from it rather than through geometryFrame. A prim without one gets the default, which no real point is near."
         },
         "projectorOrigin": {
             "default": [0.0, 0.0, 0.0, 1.0],
@@ -83,8 +87,62 @@ displacementShader(int index, vec4 Peye, vec3 Neye, vec4 patchCoord)
 
 -- glsl NatronProject3D.Surface
 
-FORWARD_DECL(bool IsFlipped());
-FORWARD_DECL(MAT4 ApplyInstanceTransformInverse(MAT4 m));
+// IsFlipped() as Storm defines it for meshes. Storm leaves it undefined on curves and points, and a
+// call in a surface they share would not link there.
+bool
+natronProject3DIsFlipped()
+{
+#if defined(HD_HAS_isFlipped)
+    bool flip = (HdGet_isFlipped() != 0);
+#elif defined(HD_HAS_transform)
+    bool flip = (determinant(HdGet_transform()) < 0.0);
+#else
+    bool flip = false;
+#endif
+
+#if defined(HD_HAS_INSTANCE_hydra_instanceScales)
+    for (int i = 0; i < HD_INSTANCER_NUM_LEVELS; ++i) {
+        vec3 scale = HdGetInstance_hydra_instanceScales(i, vec3(1));
+        flip = flip != ((sign(scale.x) * sign(scale.y) * sign(scale.z)) < 0);
+    }
+#elif defined(HD_HAS_INSTANCE_scale)
+    for (int i = 0; i < HD_INSTANCER_NUM_LEVELS; ++i) {
+        vec3 scale = HdGetInstance_scale(i, vec3(1));
+        flip = flip != ((sign(scale.x) * sign(scale.y) * sign(scale.z)) < 0);
+    }
+#endif
+
+#if defined(HD_HAS_INSTANCE_hydra_instanceTransforms)
+    for (int i = 0; i < HD_INSTANCER_NUM_LEVELS; ++i) {
+        flip = flip != (determinant(HdGetInstance_hydra_instanceTransforms(i, MAT4(1))) < 0.0);
+    }
+#elif defined(HD_HAS_INSTANCE_instanceTransform)
+    for (int i = 0; i < HD_INSTANCER_NUM_LEVELS; ++i) {
+        flip = flip != (determinant(HdGetInstance_instanceTransform(i, MAT4(1))) < 0.0);
+    }
+#endif
+
+    return flip;
+}
+
+// Whether a face's front side runs against its winding where Preference lies. Ng there turns with
+// the handedness of the map from the current world to it: in Geometry space that is the frame's
+// handedness against the current transform's, which leaves of IsFlipped() only the part the
+// transform does not account for, such as a left-handed orientation.
+bool
+natronProject3DReferenceFlipped()
+{
+    if (HdGet_projectionSpace() != 1) {
+        return natronProject3DIsFlipped();
+    }
+
+    bool flip = (determinant(mat4(HdGet_geometryFrame())) < 0.0);
+#if defined(HD_HAS_isFlipped) && defined(HD_HAS_transform)
+    flip = flip != ((HdGet_isFlipped() != 0) != (determinant(HdGet_transform()) < 0.0));
+#endif
+
+    return flip;
+}
 
 vec4
 natronProject3DOutside()
@@ -99,21 +157,23 @@ natronProject3DOutside()
 vec4
 surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
 {
-    // Derivatives before any branch. The geometric normal faces the viewer;
-    // the face's own side follows the winding.
-    vec3 Ng = normalize(cross(dFdx(Peye.xyz), dFdy(Peye.xyz)));
-    vec3 outward = (gl_FrontFacing != IsFlipped()) ? Ng : -Ng;
-
-    vec4 Pworld = vec4(mat4(GetWorldToViewInverseMatrix()) * vec4(Peye.xyz, 1.0));
-
-    // The space the camera values are in: the world, or the world as it was around the object
-    // where the projection was set up, however the object has moved since.
-    mat4 worldToReference = mat4(1.0);
-    if (HdGet_projectionSpace() == 1) {
-        worldToReference = mat4(HdGet_geometryFrame())
-            * mat4(ApplyInstanceTransformInverse(HdGet_transformInverse()));
+    // The fallback of 1e30 marks a prim without reference points. Those points are already in world
+    // space, so that path needs no instance transform, which Storm defines on meshes only.
+    vec3 referencePoint = HdGet_referencePoints();
+    vec4 Preference;
+    if (HdGet_projectionSpace() != 1) {
+        Preference = vec4(mat4(GetWorldToViewInverseMatrix()) * vec4(Peye.xyz, 1.0));
+    } else if (referencePoint.x < 1e29) {
+        Preference = vec4(referencePoint, 1.0);
+    } else {
+        Preference = vec4(mat4(HdGet_geometryFrame()) * vec4(vec3(HdGet_points()), 1.0));
     }
-    vec4 Preference = worldToReference * Pworld;
+
+    // Derivatives before any fragment returns or discards. The normal has the side the viewer sees
+    // now; the face's own side follows the winding. Storm's patch coordinate has a u only across a
+    // mesh's faces.
+    vec3 Ng = cross(dFdx(Preference.xyz), dFdy(Preference.xyz));
+    bool hasFaces = fwidth(patchCoord.x) > 0.0;
 
     vec4 c = vec4(mat4(HdGet_worldToProjector()) * Preference);
     // 0..1 across the format; the texture covers the format and the data window beyond it.
@@ -128,11 +188,10 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
     vec4 plate = HdGet_plate(uv);
 
     int projectOn = HdGet_projectOn();
-    if (projectOn != 0) {
-        vec4 origin = vec4(mat4(GetWorldToViewMatrix()) * inverse(worldToReference)
-                           * HdGet_projectorOrigin());
-        vec3 toProjector = origin.xyz - Peye.xyz * origin.w;
-        bool facing = dot(outward, toProjector) > 0.0;
+    if ((projectOn != 0) && hasFaces) {
+        vec4 origin = HdGet_projectorOrigin();
+        vec3 outward = (gl_FrontFacing != natronProject3DReferenceFlipped()) ? Ng : -Ng;
+        bool facing = dot(outward, origin.xyz - Preference.xyz * origin.w) > 0.0;
         if (facing != (projectOn == 1)) {
             return natronProject3DOutside();
         }

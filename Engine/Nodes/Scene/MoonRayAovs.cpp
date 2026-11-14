@@ -25,6 +25,8 @@
 
 #include "MoonRayAovs.h"
 
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -619,7 +621,9 @@ warningText(const UsdStageRefPtr& stage,
             }
             const std::string texture = failedTexture(notice.text);
             if (!texture.empty()) {
-                appendName(&names[eKindTexture], texture);
+                // A live texture's file name means nothing to the artist who wired the node.
+                const std::string source = LiveTextureStore::instance().getSourceOfFile(texture);
+                appendName(&names[eKindTexture], source.empty() ? texture : "the image of " + source);
                 continue;
             }
             SdfPath path;

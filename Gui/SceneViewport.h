@@ -75,7 +75,8 @@ struct SceneTransformDrag;
  * an edit upstream reaches the engine as the stage's change notices, which it applies to the
  * changed prims alone. The engine is made
  * once per GL context, at the first render() in it, and must be released with releaseGL() in
- * that context: when the context goes away or the renderer does, never because the scene changed.
+ * that context: when the context goes away, when GPU memory is freed, and before this renderer is
+ * destroyed; never because the scene or the chosen delegate changed.
  *
  * The stage and the engine are guarded by one lock, the viewer lock: syncScene() holds it while
  * it edits the stage, and render(), pick(), frameScene() and getStageCameraPaths() while they read.
@@ -529,11 +530,17 @@ public:
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
+    // Destroys the Storm engine alone, leaving what draws another delegate's frames. Needs the
+    // context of render() current.
+    void releaseStormEngine();
+
     /**
      * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
      * empty id. kRenderDelegateSceneDefaultId renders with the renderer the stage's active render
      * settings prim names (natron:renderer), Storm's without one, following it as the stage
-     * changes. A change destroys the engine, so it needs the context of render() current.
+     * changes. The Storm engine is kept while another delegate renders, hearing the stage's edits, so
+     * that switching back to Storm costs a frame, not a population of the whole stage; only
+     * releaseGL() or releaseStormEngine() frees it.
      **/
     void setRendererId(const std::string& id);
 
@@ -759,9 +766,10 @@ public:
     /**
      * @brief Destroys the renderer's engine and the GPU memory it holds, in this widget's context,
      * and repaints, which makes another. The stage stays: it holds no GPU memory, and making it
-     * again would mean syncing the whole scene again. A scene showing live textures is requested
-     * again, as the store they live in is emptied alongside, and the repaint waits for that sync.
-     * Main thread; waits for a sync under way.
+     * again would mean syncing the whole scene again. While another delegate renders, only the
+     * Storm engine kept behind it goes, and that render goes on. A scene showing live textures is
+     * requested again, as the store they live in is emptied alongside, and the repaint waits for
+     * that sync. Main thread; waits for a sync under way.
      **/
     void releaseEngine();
 

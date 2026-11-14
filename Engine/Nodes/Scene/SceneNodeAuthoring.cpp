@@ -28,6 +28,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <map>
+#include <sstream>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/AppInstance.h"
@@ -41,6 +46,8 @@
 #include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NonTrappingMath.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
@@ -544,14 +551,7 @@ namespace {
                         continue;
                     }
                     graft->materialPath = prim.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
-                    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(prim).ComputeSurfaceSource();
-                    const PXR_NS::UsdShadeInput space = isProjectionShader(surface) ? surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace)) : PXR_NS::UsdShadeInput();
-                    int spaceValue = (int)USDProject3D::eProjectionSpaceWorld;
-                    if (space && space.Get(&spaceValue) && (spaceValue == (int)USDProject3D::eProjectionSpaceGeometry)) {
-                        graft->geometryProjectionShader = surface.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
-                        const PXR_NS::UsdAttribute hold = surface.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold));
-                        graft->projectionHeld = hold && hold.Get(&graft->projectionHoldFrame);
-                    }
+                    readGeometryProjection(prim, &graft->projection);
                     break;
                 }
                 if (!graft->materialPath.empty()) {
@@ -563,9 +563,9 @@ namespace {
         ContentHasher facts;
         appendUpstreamMetadata(graft->payload, &facts);
         facts.appendString(graft->materialPath);
-        facts.appendString(graft->geometryProjectionShader);
-        facts.appendBool(graft->projectionHeld);
-        facts.appendDouble(graft->projectionHoldFrame);
+        facts.appendString(graft->projection.framePrimvar);
+        facts.appendBool(graft->projection.held);
+        facts.appendDouble(graft->projection.holdFrame);
         graft->factsDigest = facts.finalize();
 
         return true;
@@ -653,7 +653,8 @@ authorCollectionBinding(const PXR_NS::UsdPrim& root,
     const PXR_NS::UsdShadeMaterialBindingAPI bindingAPI = PXR_NS::UsdShadeMaterialBindingAPI::Apply(root);
     bool authored = collection && bindingAPI
         && collection.CreateExpansionRuleAttr(PXR_NS::VtValue(PXR_NS::UsdTokens->expandPrims))
-        && collection.CreateIncludesRel().SetTargets(binding.includes);
+        && collection.CreateIncludesRel().SetTargets(binding.includes)
+        && (binding.excludes.empty() || collection.CreateExcludesRel().SetTargets(binding.excludes));
     PXR_NS::TfToken relName;
     if (authored) {
         relName = bindingAPI.GetCollectionBindingRel(name, binding.purpose).GetName();
@@ -697,36 +698,311 @@ isProjectionShader(const PXR_NS::UsdShadeShader& shader)
 }
 
 bool
-authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
-                              const SceneLayerEdit& edit,
-                              const SceneMaterialGraft& graft,
-                              bool animated,
-                              const std::function<PXR_NS::GfMatrix4d(double)>& frameAt)
+readGeometryProjection(const PXR_NS::UsdPrim& material,
+                       SceneGeometryProjection* projection)
 {
-    if (graft.geometryProjectionShader.empty()) {
-        return true;
+    *projection = SceneGeometryProjection();
+    if (!material || !material.IsA<PXR_NS::UsdShadeMaterial>()) {
+        return false;
     }
-    const PXR_NS::UsdPrim shader = stage->OverridePrim(PXR_NS::SdfPath(graft.geometryProjectionShader));
-    const PXR_NS::TfToken name(PXR_NS::UsdShadeTokens->inputs.GetString() + kUSDProject3DInputGeometryFrame);
-    const PXR_NS::UsdAttribute attribute = shader ? shader.CreateAttribute(name, PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdAttribute();
-    if (graft.projectionHeld) {
-        return attribute && attribute.Set(frameAt(graft.projectionHoldFrame));
+    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(material).ComputeSurfaceSource();
+    if (!isProjectionShader(surface)) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput space = surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace));
+    int spaceValue = (int)USDProject3D::eProjectionSpaceWorld;
+    if (!space || !space.Get(&spaceValue) || (spaceValue != (int)USDProject3D::eProjectionSpaceGeometry)) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput frame = surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
+    PXR_NS::UsdShadeConnectableAPI reader;
+    PXR_NS::TfToken readerOutput;
+    PXR_NS::UsdShadeAttributeType readerOutputType;
+    if (!frame || !frame.GetConnectedSource(&reader, &readerOutput, &readerOutputType)) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput varname = reader.GetInput(PXR_NS::TfToken("varname"));
+    std::string framePrimvar;
+    if (!varname || !varname.Get(&framePrimvar) || framePrimvar.empty()) {
+        return false;
+    }
+    projection->framePrimvar = framePrimvar;
+    const PXR_NS::UsdAttribute hold = surface.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold));
+    projection->held = hold && hold.Get(&projection->holdFrame);
+    const PXR_NS::UsdShadeInput reference = surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputReferencePoints));
+    PXR_NS::UsdShadeConnectableAPI referenceReader;
+    if (reference && reference.GetConnectedSource(&referenceReader, &readerOutput, &readerOutputType)) {
+        const PXR_NS::UsdShadeInput referenceName = referenceReader.GetInput(PXR_NS::TfToken("varname"));
+        if (referenceName) {
+            referenceName.Get(&projection->referencePrimvar);
+        }
     }
 
-    return authorValue(attribute, edit, animated, frameAt);
+    return true;
+}
+
+bool
+authorProjectionFrame(const PXR_NS::UsdPrim& prim,
+                      const SceneLayerEdit& edit,
+                      const SceneGeometryProjection& projection,
+                      bool animated,
+                      const std::function<PXR_NS::GfMatrix4d(double)>& frameAt)
+{
+    if (projection.framePrimvar.empty()) {
+        return true;
+    }
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+    std::vector<PXR_NS::UsdAttribute> attributes(1, primvars.CreatePrimvar(PXR_NS::TfToken(projection.framePrimvar), PXR_NS::SdfValueTypeNames->Matrix4d, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    for (int column = 0; column < 3; ++column) {
+        const PXR_NS::TfToken name(SceneProjectionCameras::frameColumnPrimvar(projection.framePrimvar, column));
+        attributes.push_back(primvars.CreatePrimvar(name, PXR_NS::SdfValueTypeNames->Float4Array, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    }
+    for (int part = 0; part < 4; ++part) {
+        const PXR_NS::TfToken name(SceneProjectionCameras::moonRayFramePrimvar(projection.framePrimvar, part));
+        attributes.push_back(primvars.CreatePrimvar(name, PXR_NS::SdfValueTypeNames->Float3, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    }
+    const auto setFrame = [&attributes](const PXR_NS::GfMatrix4d& frame, PXR_NS::UsdTimeCode time) {
+        bool ok = attributes[0] && attributes[0].Set(frame, time);
+        for (int column = 0; ok && (column < 3); ++column) {
+            ok = attributes[column + 1] && attributes[column + 1].Set(SceneProjectionCameras::frameColumn(frame, column), time);
+        }
+        for (int part = 0; ok && (part < 4); ++part) {
+            ok = attributes[part + 4] && attributes[part + 4].Set(SceneProjectionCameras::moonRayFramePart(frame, part), time);
+        }
+
+        return ok;
+    };
+    if (projection.held) {
+        return setFrame(frameAt(projection.holdFrame), PXR_NS::UsdTimeCode::Default());
+    }
+    if (!animated) {
+        return setFrame(frameAt(edit.firstFrame), PXR_NS::UsdTimeCode::Default());
+    }
+    for (double frame : getSampleFrames(edit)) {
+        if (!setFrame(frameAt(frame), frameToTimeCode(edit, frame))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+namespace {
+    // The samples inside the range miss a value held into it from a sample outside, so its ends
+    // are read too.
+    std::vector<double>
+    getTimesOverRange(const PXR_NS::UsdAttribute& attribute,
+                      const SceneReferenceContext& context)
+    {
+        std::vector<double> times;
+        attribute.GetTimeSamplesInInterval(PXR_NS::GfInterval(context.firstTime, context.lastTime), &times);
+        times.push_back(context.firstTime);
+        times.push_back(context.lastTime);
+
+        return times;
+    }
+
+    // By value: a cache can re-sample unchanged arrays, and USD then reports them as time-varying.
+    template <typename ArrayType>
+    bool
+    holdsItsValueOverRange(const PXR_NS::UsdAttribute& attribute,
+                           const SceneReferenceContext& context)
+    {
+        if (!attribute || !attribute.HasValue()) {
+            return true;
+        }
+        ArrayType reference;
+        attribute.Get(&reference, context.holdTime);
+        for (const double time : getTimesOverRange(attribute, context)) {
+            ArrayType value;
+            if (!attribute.Get(&value, time) || (value != reference)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool
+    topologyHoldsOverRange(const PXR_NS::UsdPrim& prim,
+                           const PXR_NS::UsdAttribute& pointsAttribute,
+                           std::size_t pointCount,
+                           const SceneReferenceContext& context)
+    {
+        if (prim.IsA<PXR_NS::UsdGeomMesh>()) {
+            const PXR_NS::UsdGeomMesh mesh(prim);
+            if (!holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexCountsAttr(), context)
+                || !holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexIndicesAttr(), context)) {
+                return false;
+            }
+        } else if (prim.IsA<PXR_NS::UsdGeomCurves>()) {
+            if (!holdsItsValueOverRange<PXR_NS::VtIntArray>(PXR_NS::UsdGeomCurves(prim).GetCurveVertexCountsAttr(), context)) {
+                return false;
+            }
+        } else if (prim.IsA<PXR_NS::UsdGeomPoints>() && !holdsItsValueOverRange<PXR_NS::VtInt64Array>(PXR_NS::UsdGeomPoints(prim).GetIdsAttr(), context)) {
+            return false;
+        }
+        // Unchanged indices can still come with more or fewer unused points, and Storm drops a
+        // vertex primvar whose size differs from the points'.
+        const std::vector<double> times = getTimesOverRange(pointsAttribute, context);
+        PXR_NS::VtVec3fArray value;
+        for (const double time : times) {
+            if (!pointsAttribute.Get(&value, time) || (value.size() != pointCount)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool
+    isBoundToSkin(const PXR_NS::UsdPrim& prim)
+    {
+        const PXR_NS::UsdSkelBindingAPI binding(prim);
+        if (!binding.GetInheritedSkeleton()) {
+            return false;
+        }
+        // A skeleton inherited from far up reaches props with no weights too, which it does not move.
+        const PXR_NS::UsdGeomPrimvar indices = PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken("skel:jointIndices"));
+        const PXR_NS::UsdAttribute shapes = binding.GetBlendShapesAttr();
+
+        return (indices && indices.HasValue()) || (shapes && shapes.HasValue());
+    }
+
+    bool
+    applyBlendShapes(const PXR_NS::UsdSkelSkinningQuery& skinning,
+                     const PXR_NS::UsdSkelSkeletonQuery& skeleton,
+                     double time,
+                     PXR_NS::VtVec3fArray* points)
+    {
+        const PXR_NS::UsdSkelAnimQuery& animation = skeleton.GetAnimQuery();
+        PXR_NS::VtFloatArray animationWeights;
+        if (!animation || !animation.ComputeBlendShapeWeights(&animationWeights, PXR_NS::UsdTimeCode(time))) {
+            return true;
+        }
+        PXR_NS::VtFloatArray weights;
+        const PXR_NS::UsdSkelAnimMapperRefPtr& mapper = skinning.GetBlendShapeMapper();
+        if (!mapper || !mapper->Remap(animationWeights, &weights)) {
+            return false;
+        }
+        const PXR_NS::UsdSkelBlendShapeQuery shapes { PXR_NS::UsdSkelBindingAPI(skinning.GetPrim()) };
+        PXR_NS::VtFloatArray subShapeWeights;
+        PXR_NS::VtUIntArray shapeIndices;
+        PXR_NS::VtUIntArray subShapeIndices;
+        if (!shapes.ComputeSubShapeWeights(weights, &subShapeWeights, &shapeIndices, &subShapeIndices)) {
+            return false;
+        }
+
+        return shapes.ComputeDeformedPoints(subShapeWeights, shapeIndices, subShapeIndices,
+                                            shapes.ComputeBlendShapePointIndices(), shapes.ComputeSubShapePointOffsets(), *points);
+    }
+
+    // Joint-skinned points come out in the skeleton's space: the prim's own transform plays no part, as
+    // in Storm. *space gets the prim whose local to world carries them on.
+    bool
+    computeSkinnedPoints(const PXR_NS::UsdPrim& prim,
+                         SceneReferenceContext* context,
+                         PXR_NS::VtVec3fArray* points,
+                         PXR_NS::UsdPrim* space)
+    {
+        const PXR_NS::UsdSkelRoot root = PXR_NS::UsdSkelRoot::Find(prim);
+        if (!root) {
+            return false;
+        }
+        if (context->populatedRoots.insert(root.GetPath()).second && !context->skinning.Populate(root, PXR_NS::UsdTraverseInstanceProxies())) {
+            return false;
+        }
+        const PXR_NS::UsdSkelSkinningQuery skinning = context->skinning.GetSkinningQuery(prim);
+        const PXR_NS::UsdSkelSkeleton bound = PXR_NS::UsdSkelBindingAPI(prim).GetInheritedSkeleton();
+        const PXR_NS::UsdSkelSkeletonQuery skeleton = context->skinning.GetSkelQuery(bound);
+        if (!skinning || !skeleton) {
+            return false;
+        }
+        if (skinning.HasBlendShapes() && !applyBlendShapes(skinning, skeleton, context->holdTime, points)) {
+            return false;
+        }
+        if (!skinning.HasJointInfluences()) {
+            *space = prim;
+
+            return true;
+        }
+        PXR_NS::VtMatrix4dArray joints;
+        if (!skeleton.ComputeSkinningTransforms(&joints, PXR_NS::UsdTimeCode(context->holdTime))
+            || !skinning.ComputeSkinnedPoints(joints, points, PXR_NS::UsdTimeCode(context->holdTime))) {
+            return false;
+        }
+        *space = bound.GetPrim();
+
+        return true;
+    }
+} // anonymous namespace
+
+SceneReferencePoints
+readReferencePoints(const PXR_NS::UsdPrim& prim,
+                    SceneReferenceContext* context,
+                    PXR_NS::UsdGeomXformCache* xforms)
+{
+    SceneReferencePoints result;
+    if (!prim.IsA<PXR_NS::UsdGeomPointBased>()) {
+        return result;
+    }
+    const PXR_NS::UsdAttribute pointsAttribute = PXR_NS::UsdGeomPointBased(prim).GetPointsAttr();
+    const bool skinned = isBoundToSkin(prim);
+    if (!skinned && !pointsAttribute.ValueMightBeTimeVarying()) {
+        return result;
+    }
+    PXR_NS::VtVec3fArray points;
+    if (!pointsAttribute.Get(&points, context->holdTime) || points.empty()) {
+        return result;
+    }
+    if (!topologyHoldsOverRange(prim, pointsAttribute, points.size(), *context)) {
+        result.status = SceneReferencePoints::eStatusTopologyChanges;
+
+        return result;
+    }
+    PXR_NS::UsdPrim space = prim;
+    if (skinned && !computeSkinnedPoints(prim, context, &points, &space)) {
+        result.status = SceneReferencePoints::eStatusCannotSkin;
+
+        return result;
+    }
+    const PXR_NS::GfMatrix4d toWorld = xforms->GetLocalToWorldTransform(space);
+    for (PXR_NS::GfVec3f& point : points) {
+        point = PXR_NS::GfVec3f(toWorld.Transform(PXR_NS::GfVec3d(point)));
+    }
+    result.status = SceneReferencePoints::eStatusRead;
+    result.points = points;
+
+    return result;
+}
+
+bool
+authorReferencePoints(const PXR_NS::UsdPrim& prim,
+                      const SceneGeometryProjection& projection,
+                      const PXR_NS::VtVec3fArray& points)
+{
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+    const PXR_NS::UsdGeomPrimvar primvar = primvars.CreatePrimvar(PXR_NS::TfToken(projection.referencePrimvar), PXR_NS::SdfValueTypeNames->Point3fArray, PXR_NS::UsdGeomTokens->vertex);
+    const PXR_NS::UsdGeomPrimvar present = primvars.CreatePrimvar(PXR_NS::TfToken(SceneProjectionCameras::cyclesReferencePresentPrimvar(projection.referencePrimvar)), PXR_NS::SdfValueTypeNames->Float, PXR_NS::UsdGeomTokens->constant);
+
+    return primvar && primvar.Set(points) && present && present.Set(1.f);
 }
 
 bool
 authorMaterialBinding(const PXR_NS::UsdPrim& prim,
                       const std::string& materialPath,
-                      std::string* errorMessage)
+                      std::string* errorMessage,
+                      const PXR_NS::TfToken& purpose,
+                      const PXR_NS::TfToken& strength)
 {
     if (materialPath.empty()) {
         return true;
     }
     const PXR_NS::UsdShadeMaterialBindingAPI binding = prim ? PXR_NS::UsdShadeMaterialBindingAPI::Apply(prim) : PXR_NS::UsdShadeMaterialBindingAPI();
-    const PXR_NS::UsdRelationship rel = binding ? prim.CreateRelationship(PXR_NS::UsdShadeTokens->materialBinding, false) : PXR_NS::UsdRelationship();
-    if (!rel || !rel.SetTargets({ PXR_NS::SdfPath(materialPath) })) {
+    const bool allPurpose = purpose.IsEmpty() || (purpose == PXR_NS::UsdShadeTokens->allPurpose);
+    const PXR_NS::TfToken relName = allPurpose ? PXR_NS::UsdShadeTokens->materialBinding : PXR_NS::TfToken(PXR_NS::UsdShadeTokens->materialBinding.GetString() + ":" + purpose.GetString());
+    const PXR_NS::UsdRelationship rel = binding ? prim.CreateRelationship(relName, false) : PXR_NS::UsdRelationship();
+    if (!rel || !rel.SetTargets({ PXR_NS::SdfPath(materialPath) }) || (!strength.IsEmpty() && !PXR_NS::UsdShadeMaterialBindingAPI::SetMaterialBindingStrength(rel, strength))) {
         *errorMessage = EffectInstance::tr("USD could not bind %1 to the material at %2.").arg(QString::fromStdString(prim ? prim.GetPath().GetString() : std::string())).arg(QString::fromStdString(materialPath)).toStdString();
 
         return false;
@@ -863,6 +1139,81 @@ getTransformMatrixAt(const SceneTransformKnobs& knobs,
                                   (SceneRotateOrderEnum)rotateOrder->getValue());
 }
 
+namespace {
+    // The knob's value: one "<input>\t<source name>\n" per input that lost its source.
+    std::map<int, std::string>
+    parseDeletedTextureSources(const std::string& value)
+    {
+        std::map<int, std::string> sources;
+        std::istringstream lines(value);
+
+        for (std::string line; std::getline(lines, line);) {
+            const std::size_t tab = line.find('\t');
+            if ((tab != std::string::npos) && (tab + 1 < line.size())) {
+                sources[std::atoi(line.c_str())] = line.substr(tab + 1);
+            }
+        }
+
+        return sources;
+    }
+
+    void
+    setDeletedTextureSources(const KnobStringPtr& knob,
+                             const std::map<int, std::string>& sources)
+    {
+        std::string value;
+
+        for (const std::pair<const int, std::string>& source : sources) {
+            value += std::to_string(source.first) + "\t" + source.second + "\n";
+        }
+        if (value != knob->getValue()) {
+            knob->setValue(value);
+        }
+    }
+} // anonymous namespace
+
+void
+createDeletedTextureSourcesKnob(KnobHolder* holder,
+                                const KnobPagePtr& page)
+{
+    KnobStringPtr knob = AppManager::createKnob<KnobString>(holder, EffectInstance::tr("Deleted Texture Sources"));
+
+    knob->setName(kSceneParamDeletedTextureSources);
+    knob->setHintToolTip(EffectInstance::tr("The image inputs whose node was deleted, which show the missing-texture colour until something is connected to them."));
+    knob->setAnimationEnabled(false);
+    knob->setSecretByDefault(true);
+    page->addKnob(knob);
+}
+
+void
+recordDeletedTextureSource(const EffectInstance& consumer,
+                           int inputNb,
+                           const std::string& sourceName)
+{
+    const KnobStringPtr knob = consumer.getKnobByNameAndType<KnobString>(kSceneParamDeletedTextureSources);
+
+    if (knob) {
+        std::map<int, std::string> sources = parseDeletedTextureSources(knob->getValue());
+        sources[inputNb] = sourceName;
+        setDeletedTextureSources(knob, sources);
+    }
+}
+
+void
+forgetDeletedTextureSourceIfConnected(const EffectInstance& consumer,
+                                      int inputNb)
+{
+    const KnobStringPtr knob = consumer.getKnobByNameAndType<KnobString>(kSceneParamDeletedTextureSources);
+    const NodePtr node = consumer.getNode();
+
+    // The real input: a group's Input node counts as connected even with nothing outside the group.
+    if (knob && node && node->getRealInput(inputNb)) {
+        std::map<int, std::string> sources = parseDeletedTextureSources(knob->getValue());
+        sources.erase(inputNb);
+        setDeletedTextureSources(knob, sources);
+    }
+}
+
 bool
 getLiveTextureSource(const EffectInstance& consumer,
                      int inputNb,
@@ -870,7 +1221,27 @@ getLiveTextureSource(const EffectInstance& consumer,
                      LiveTextureSource* source)
 {
     const EffectInstancePtr connected = consumer.getInput(inputNb);
-    NodePtr node = connected ? connected->getNode() : NodePtr();
+    if (!connected) {
+        const KnobStringPtr knob = consumer.getKnobByNameAndType<KnobString>(kSceneParamDeletedTextureSources);
+        const std::map<int, std::string> deleted = knob ? parseDeletedTextureSources(knob->getValue()) : std::map<int, std::string>();
+        const std::map<int, std::string>::const_iterator found = deleted.find(inputNb);
+        if (found == deleted.end()) {
+            return false;
+        }
+        source->node.reset();
+        source->consumer = consumer.getNode();
+        source->nodeName = found->second;
+        source->layer = layer;
+        source->contentHash = 0;
+        source->varying = false;
+        const AppInstancePtr app = consumer.getApp();
+        if (app && app->getProject()) {
+            app->getProject()->getFrameRange(&source->firstFrame, &source->lastFrame);
+        }
+
+        return true;
+    }
+    NodePtr node = connected->getNode();
     const double time = consumer.getCurrentTime();
     // A disabled node renders as its preferred input, so the texture shows what the render would.
     while (node && node->isNodeDisabled(time)) {
@@ -892,6 +1263,19 @@ getLiveTextureSource(const EffectInstance& consumer,
     }
 
     return true;
+}
+
+std::string
+getLiveTextureFailure(const LiveTextureSource& source,
+                      double time)
+{
+    const NodePtr node = source.node.lock();
+
+    if (!source.nodeName.empty() && (!node || !node->isActivated())) {
+        return "the node " + source.nodeName + " that feeds it no longer exists";
+    }
+
+    return LiveTextureStore::instance().getFailure(source.getUri(time));
 }
 
 void

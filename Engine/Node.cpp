@@ -5518,6 +5518,25 @@ Node::clearLastRenderedImage()
 /*After this call this node still knows the link to the old inputs/outputs
    but no other node knows this node.*/
 void
+Node::notifyOutputsOfDeletion()
+{
+    const AppInstancePtr app = getApp();
+
+    // Closing a project deletes every node, and nothing will read what the outputs would record.
+    if (!app || !app->getProject() || app->getProject()->isProjectClosing()) {
+        return;
+    }
+    const std::string name = getFullyQualifiedName();
+    for (DeactivatedState::const_iterator it = _imp->deactivatedState.begin(); it != _imp->deactivatedState.end(); ++it) {
+        const NodePtr output = it->first.lock();
+        const EffectInstancePtr effect = output ? output->getEffectInstance() : EffectInstancePtr();
+        if (effect && !output->getRealInput(it->second)) {
+            effect->onInputSourceDeleted(it->second, name);
+        }
+    }
+}
+
+void
 Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                  bool disconnectAll,
                  bool reconnect,

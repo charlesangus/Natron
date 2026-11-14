@@ -43,6 +43,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Project.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/UndoRecorder.h"
@@ -188,6 +191,33 @@ protected:
     std::shared_ptr<CollectingRecorder> recorder;
 };
 } // anon namespace
+
+TEST_F(PythonUndo, DestroyMarksTheLostLiveTextureAndUndoClearsIt)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+    ASSERT_TRUE(constant && material);
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    const KnobStringPtr deleted = std::dynamic_pointer_cast<KnobString>(material->getKnobByName(kSceneParamDeletedTextureSources));
+    ASSERT_TRUE(deleted != nullptr);
+    const std::string name = constant->getFullyQualifiedName();
+
+    ASSERT_TRUE(runStep(py(constant) + ".destroy()\n"));
+    EXPECT_FALSE(material->getInput(kUSDMaterialInputDiffuseColor));
+    EXPECT_NE(std::string::npos, deleted->getValue().find(name)) << deleted->getValue();
+
+    undoAll();
+    EXPECT_EQ(constant, material->getInput(kUSDMaterialInputDiffuseColor));
+    EXPECT_TRUE(deleted->getValue().empty()) << deleted->getValue();
+
+    redoAll();
+    EXPECT_NE(std::string::npos, deleted->getValue().find(name)) << deleted->getValue();
+
+    undoAll();
+    EXPECT_TRUE(deleted->getValue().empty()) << deleted->getValue();
+}
 
 TEST_F(PythonUndo, DestroyKeepsTheNodeAndUndoReconnectsIt)
 {

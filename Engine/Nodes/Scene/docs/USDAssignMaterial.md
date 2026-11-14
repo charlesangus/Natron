@@ -32,10 +32,22 @@ USDScopePrim or other re-parenting node moves them, as the graft re-points one
 relationship per root. Each binding is written as the strongest on its root, so
 where two assigns name the same prims the later node in the graph wins.
 
-A USDProject3D in Geometry space connected to the Material input takes its
-placement from the matched geometry at this node. The material holds one placement:
-matches at different places follow the first in stage order, with a node warning, and of several
-assigns sharing one projection node the later one sets it.
+A USDProject3D in Geometry space, from the Material input or at Material Path, takes
+each matched gprim's placement at this node, so matches at different places and
+several assigns sharing one projection node each show it from where they are. This
+binding does not carry from an ancestor onto the prims of a native instance in Storm,
+so matches inside native instances, and ancestors of them, are bound directly on their
+instance roots, and the instances are never de-instanced. Each instance projects from
+its own placement, written as a frame primvar on its root. An instance root that already
+has a direct binding from upstream keeps it, with a warning: an ancestor match leaves it
+out of the node's collection. A match below the instance root makes the whole instance
+take the material, with a warning when the matches leave some of its gprims out. A gprim offset from its
+instance root projects shifted by that offset, with a warning. A sticky or held
+projection on a deforming instanced mesh stays rigid, with a warning. The instances of a
+point instancer are not supported: they share their prototype's placement, so each shows
+the image as it falls on the prototype, with a warning. USDWrite cannot bake an
+instanced projection, as overs cannot reach below an instance and instances share the
+prototype's UVs: the export keeps the Storm shader and warns.
 
 Knobs:
 

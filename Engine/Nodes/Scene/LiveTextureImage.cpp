@@ -40,6 +40,7 @@
 #define emit
 #endif
 
+#include "Engine/Nodes/Scene/LiveTextureResolver.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 
 NATRON_NAMESPACE_ENTER
@@ -63,6 +64,7 @@ LiveTextureImage::_OpenForReading(const std::string& filename,
     _bytes.reset();
     _pixels = nullptr;
     _width = _height = 0;
+    _missing = false;
     if ((subimage != 0) || (mip != 0)) {
         return false;
     }
@@ -82,6 +84,7 @@ LiveTextureImage::_OpenForReading(const std::string& filename,
     }
     _bytes = bytes;
     _pixels = pixels;
+    _missing = LiveTextureResolver::isMissingTexture(bytes.get());
 
     return true;
 }
@@ -194,9 +197,16 @@ LiveTextureImage::GetMetadata(const PXR_NS::TfToken& /*key*/,
 
 bool
 LiveTextureImage::GetSamplerMetadata(PXR_NS::HioAddressDimension /*dim*/,
-                                     PXR_NS::HioAddressMode* /*param*/) const
+                                     PXR_NS::HioAddressMode* param) const
 {
-    return false;
+    // Storm samples a texture with no wrap opinion against a black border, and a single texel is
+    // all border: filtered, the missing colour would fade to black across the surface.
+    if (!_missing || !param) {
+        return false;
+    }
+    *param = PXR_NS::HioAddressModeClampToEdge;
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

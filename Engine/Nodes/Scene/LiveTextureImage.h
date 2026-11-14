@@ -95,6 +95,7 @@ private:
     const float* _pixels = nullptr;
     int _width = 0;
     int _height = 0;
+    bool _missing = false;
 };
 
 NATRON_NAMESPACE_EXIT

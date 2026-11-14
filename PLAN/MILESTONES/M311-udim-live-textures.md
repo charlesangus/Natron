@@ -76,7 +76,7 @@ Extend M233 - Live Node Textures with a `<UDIM>` token: `natron://` texture URIs
 
 Moved out of this milestone (user, 2026-11-13): this phase becomes its own follow-up milestone, outside F11 - Texture Painting, depending on F9 - Delegate Projection. Kept here as the brief for it.
 
-- [ ] ~~M311.P4.T1 — UDIM live textures in Cycles and MoonRay~~ (moved to a follow-up milestone)
+- [ ] ~~M311.P4.T1 — UDIM live textures in Cycles and MoonRay~~ (moved to M426 - UDIM Textures In Delegates)
   - files: `Engine/Nodes/Scene/LiveTextureSceneIndex.cpp`, `Engine/Nodes/Scene/LiveTextureSharedMemory.cpp`, `Tests/Scene/LiveTexture_Test.cpp`, Cycles and MoonRay goldens
   - approach: the shared-memory path contains `<UDIM>`, one file per tile. hdCycles never fills `ImageTextureNode::tiles`, so the filter sets a `tiles` int array; `ImageManager::add_image` substitutes `%04d`. MoonRay globs `prefix*`, so the prefix must be unique to the set.
   - verify: both goldens show two tiles; a missing tile is magenta with a warning.

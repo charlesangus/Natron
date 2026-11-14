@@ -160,7 +160,7 @@ future core work has solid ground to build on.
 | M45 | Native Tab Menu | done | M55 | amber-falcon | E10 | | | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
 | M25 | GL Init FP Guard | done |  | bosley-native-nodes | E2 | | | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M29 | ~~Independent Repository~~ | cancelled |  |  | E2 | | | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
-| M68 | Headless GL EGL | todo |  |  | E2 | | | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
+| M68 | Headless GL EGL | todo | M20, M63, M108 |  | E2 | | | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M19 | USD/Hydra Foundation | done | M17, M161, M107 |  | E9 | | | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
 | M20 | 3D Node Vocabulary | done | M19 | bosley-native-nodes | E9 | | | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
 | M226 | Scene Hierarchy From Topology | done | M19, M20 |  | E9 | | | [M226-scene-hierarchy-from-topology.md](PLAN/MILESTONES/M226-scene-hierarchy-from-topology.md) |
@@ -207,8 +207,8 @@ future core work has solid ground to build on.
 | M254 | Progressive Viewer Render | done | M248, M251 | misty-marten | E9 | F3 | | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
 | M255 | Delegate Output Spikes | blocked | M251, M252 | bosley-native-nodes | E9 | | | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | | | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
-| M257 | Cycles Deep Output | todo | M255 |  | E8 | | | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
-| M258 | MoonRay Deep Output | todo | M255 |  | E8 | | | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
+| M257 | Cycles Deep Output | todo | M255, M286 |  | E8 | F24 | | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
+| M258 | MoonRay Deep Output | todo | M255, M286 |  | E8 | F24 | | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
 | M259 | GPU Placement Under Render Contexts | done | M180, M181, M182 | bosley-native-nodes | E15 | | | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
 | M52 | USD Layer-Stack Completion | done | M226 | bosley-native-nodes | E9 | | | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
 | M53 | Projected Texture Painting | doing | M52, M233, M311 | bosley-native-nodes | E9 | F11 | | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
@@ -265,9 +265,9 @@ future core work has solid ground to build on.
 | M397 | Label Resize Keeps Node Top-Centre | todo | - |  | E10 | | | [M397-label-resize-keeps-node-top-centre.md](PLAN/MILESTONES/M397-label-resize-keeps-node-top-centre.md) |
 | M398 | Cycles Offline Render After Scene Edits | done | - | bosley-native-nodes | E9 | |  | [M398-cycles-offline-render-after-scene-edits.md](PLAN/MILESTONES/M398-cycles-offline-render-after-scene-edits.md) |
 | M399 | Node Creation Keys And Speed | done | M118 | bosley-native-nodes | E10 | | | [M399-node-creation-keys-and-speed.md](PLAN/MILESTONES/M399-node-creation-keys-and-speed.md) |
-| M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
-| M51 | Deep Filtering OpenDCX | todo |  |  | E8 | | | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
-| M32 | Deep Sample Node | todo |  |  | E8 | | | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
+| M21 | Deep Tier-2 Nodes | todo | M18, M60 |  | E8 | F23 | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
+| M51 | Deep Filtering OpenDCX | todo | M18, M60 |  | E8 | F23 | | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
+| M32 | Deep Sample Node | todo | M18, M60 |  | E8 | F23 | | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
 | M93 | Serialization Boundary | done | - | slate-ferret | E7 | | | [M93-serialization-boundary.md](PLAN/MILESTONES/M93-serialization-boundary.md) |
 | M100 | Content Node Hashing | done | M93 | bosley-native-nodes | E7 | | | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |
 | M16 | Project Format Redesign | done | M93 | bosley-native-nodes | E7 | | | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
@@ -397,7 +397,7 @@ future core work has solid ground to build on.
 | M260 | Cache Invalidation Follow-ups | done | M242 | bosley-native-nodes | E14 | | | [M260-cache-invalidation-follow-ups.md](PLAN/MILESTONES/M260-cache-invalidation-follow-ups.md) |
 | M261 | Roto Keyframes In Dope Sheet And Curve Editor | done | M163 | bosley-native-nodes | E6 | | | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |
 | M268 | Edge-Aware Region Independence | done | M209, M210, M211, M212, M213, M215 | bosley-native-nodes | E17 | |  | [M268-edge-aware-region-independence.md](PLAN/MILESTONES/M268-edge-aware-region-independence.md) |
-| M269 | Remote GUI Checks | done |  | bosley-native-nodes |  | | | [M269-remote-gui-checks.md](PLAN/MILESTONES/M269-remote-gui-checks.md) |
+| M269 | Remote GUI Checks | done |  | bosley-native-nodes | E2 | | | [M269-remote-gui-checks.md](PLAN/MILESTONES/M269-remote-gui-checks.md) |
 | M262 | Expression Benchmark For Large Graphs | todo | - |  | E14 | F12 | | [M262-expression-benchmark-large-graphs.md](PLAN/MILESTONES/M262-expression-benchmark-large-graphs.md) |
 | M263 | Expression Interpreter Overhead | todo | M262, M266 |  | E14 | F12 | | [M263-expression-interpreter-overhead.md](PLAN/MILESTONES/M263-expression-interpreter-overhead.md) |
 | M264 | Expression Result Cache | todo | M263 |  | E14 | F12 | | [M264-expression-result-cache.md](PLAN/MILESTONES/M264-expression-result-cache.md) |
@@ -424,7 +424,7 @@ future core work has solid ground to build on.
 | M282 | Utility Reflection And Refraction | todo | M281, M283 |  | E19 | F7 | | [M282-utility-reflection-and-refraction.md](PLAN/MILESTONES/M282-utility-reflection-and-refraction.md) |
 | M284 | Utility Renderer Subdivision | doing | M280 | bosley-native-nodes | E19 | F7 | | [M284-utility-renderer-subdivision.md](PLAN/MILESTONES/M284-utility-renderer-subdivision.md) |
 | M285 | Utility Renderer AOVs | todo | M256, M282, M283 |  | E19 | | | [M285-utility-renderer-aovs.md](PLAN/MILESTONES/M285-utility-renderer-aovs.md) |
-| M286 | Utility Renderer Deep Output | todo | M285 |  | E19 | | | [M286-utility-renderer-deep-output.md](PLAN/MILESTONES/M286-utility-renderer-deep-output.md) |
+| M286 | Utility Renderer Deep Output | todo | M285 |  | E19 | F24 | | [M286-utility-renderer-deep-output.md](PLAN/MILESTONES/M286-utility-renderer-deep-output.md) |
 | M288 | Utility Renderer Projection Modes | todo | M281, M283 |  | E19 | F7 | | [M288-utility-renderer-projection-modes.md](PLAN/MILESTONES/M288-utility-renderer-projection-modes.md) |
 | M290 | Native Cryptomatte Keyer | todo | M285 |  | E19 | | | [M290-native-cryptomatte-keyer.md](PLAN/MILESTONES/M290-native-cryptomatte-keyer.md) |
 | M289 | Utility Adaptive Subdivision | todo | M284 |  | E19 | | | [M289-utility-adaptive-subdivision.md](PLAN/MILESTONES/M289-utility-adaptive-subdivision.md) |
@@ -495,6 +495,7 @@ future core work has solid ground to build on.
 | M375 | No CPU Vulkan Auto-Select | done | - | bosley-native-nodes | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |
 | M400 | Pointer Direction Badges | todo | - |  | E10 |  | | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |
 | M425 | No ONNX Runtime Telemetry | todo | - |  | E16 |  | | [M425-no-onnx-runtime-telemetry.md](PLAN/MILESTONES/M425-no-onnx-runtime-telemetry.md) |
+| M426 | UDIM Textures In Delegates | todo | M311, M343 |  | E9 |  | | [M426-udim-textures-in-delegates.md](PLAN/MILESTONES/M426-udim-textures-in-delegates.md) |
 
 # Epics
 
@@ -549,13 +550,14 @@ future core work has solid ground to build on.
 | F20 | 2D Fluids | open |  |  | feature/f20-2d-fluids | Grid smoke and fire simulated in image space from image sources and motion vectors, with a shading node. |
 | F21 | Geometry Operators | open |  |  | feature/f21-geometry-operators | Houdini SOP operator batches: modeling, advanced modeling, attribute, deformer and time ops, PolyExtrude/Boolean/Fuse, and a Bezier curve primitive. |
 | F22 | Native VDB | open |  |  | feature/f22-native-vdb | An OpenVDB volume primitive in native geometry, bridged to USD, with conversion, SDF ops and a volume wrangle. |
+| F23 | Deep Nodes | open |  |  | feature/f23-deep-nodes | Native deep filtering, transform, inspection and tier-2 nodes on the existing deep transport: OpenDCX DeepBlur and DeepTransform, DeepSample and a chosen DeepC-style set. |
+| F24 | Deep Rendering | open |  |  | feature/f24-deep-rendering | Render true deep images in process from Nucleon Utility, Cycles and MoonRay through one host-side deep render buffer, with DeepCompact. |
 
 # Open questions
 
 - **M221 - Neural Optical Flow (2026-11-14):** the exported SEA-RAFT M model (74.4 MB) needs a home. The manifest points at a GitHub release `ai-models-1` on charlesangus/Natron; may I create that release and upload the package? Also, its training data includes FlyingChairs (research-only) and KITTI 2015 (CC BY-NC-SA 3.0); FlyingThings3D, Sintel and HD1K are unconfirmed, and the entry is marked `osaid: Open Source AI`. Is shipping it as a downloadable, licence-shown-before-download model acceptable?
 
 - **M272 - Script Writes To Selected Roto Shapes (2026-11-14):** (1) Should Python get `Roto.selectItems()` / `getSelectedItems()`? PM default: no, out of scope. (2) With several shapes selected, should an expression set on the node knob be copied to each selected shape (PM default, as cloning does today) or stay on the node knob only? Work proceeds on the defaults.
-- **For /cat-plan (user decision 2026-11-13):** add a new milestone "UDIM Textures In Delegates" (E9, no Feature, Deps M311 and F9 - Delegate Projection landed / M343) carrying M311 - UDIM Live Textures' Phase 311.4 brief (P4.T1, UDIM live textures in Cycles and MoonRay), split out so F11 - Texture Painting does not wait on F9.
 - **M221 - Neural Optical Flow (PM, 2026-11-12; weights supplied by the user 2026-11-14):** confirm the training-data licence strings for the manifest (TartanAir CC BY 4.0 confirmed; KITTI, FlyingThings3D/Chairs, Sintel, HD1K, Spring being re-checked under P1.T1). The exported archive will need uploading to a fork release by you.
 - **Nucleon 1.0 must-land list (user, 2026-11-10: "I'll decide later"):** which Features and milestones must be on `main` before 1.0. M396 - Release 1.0 Cut is held, not eligible for pickup, until the user names them; they are then added to its `Deps`.
 - **Site repo setup for E21 - Nucleon 1.0 Release (user action, after the `opennucleon` org exists):** in `opennucleon/opennucleon.github.io`, enable Pages from the `gh-pages` branch, add a deploy key with write access, and store its private half as the OpenNucleon secret `SITE_DEPLOY_KEY`. M392 - Docs Publishing needs this. Once M388 - Docs Site Scaffold merges, add its `Docs` job to `main`'s required checks.
@@ -577,6 +579,8 @@ future core work has solid ground to build on.
 - **M46 - Labelmaker Annotations:** on hold, not eligible for pickup (user, 2026-10-27, during its grilling). Resume only with the user's go-ahead, then finish the interview (`/cat-grill M46`).
 - **M187 - Variable Sharpen And Glow:** on hold, not eligible for pickup (user, 2026-10-27, inbox). Resume only with the user's say-so.
 - **M188 - Variable Median And DirBlur:** on hold, not eligible for pickup (user, 2026-10-27, inbox). Resume only with the user's say-so.
+- **M68 - Headless GL EGL:** deferred, not eligible for pickup without the user's go-ahead (user, 2026-10-05). Its `Deps` were filled 2026-11-14, so this line is now what holds it.
+- **M21 - Deep Tier-2 Nodes (cat-plan, 2026-11-14):** which DeepC-style nodes make the cut (DeepCGrade-alike, position and normal mattes, DeepSlice, DeepHoldout variants)? The stub cannot be elaborated until the node list is chosen.
 - **M174 - Wayland Support:** blocked until the user approves starting it (user, 2026-10-24). Stub; elaborate on approval.
 
 

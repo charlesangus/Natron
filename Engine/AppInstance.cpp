@@ -78,6 +78,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -1548,6 +1549,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
     //}
     assert(node);
     try {
+        NodeCreationStageLog::Scope stage("engineCreateNode");
         node->load(args);
     } catch (const std::exception & e) {
         if (argsGroup) {

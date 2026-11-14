@@ -114,6 +114,9 @@ public:
 
     void setActiveViewer(ViewerTab* viewer);
     ViewerTab* getActiveViewer() const;
+
+    // Every viewer tab that was made active or given the click focus, most recent first.
+    std::list<ViewerTab*> getViewersByRecentFocus() const;
     NodeCollectionPtr getLastSelectedNodeCollection() const;
 
     /**
@@ -700,6 +703,8 @@ public Q_SLOTS:
 private:
 
     void setCurrentPanelFocus(PanelWidget* widget);
+
+    void noteViewerFocused(ViewerTab* viewer);
 
     AppInstancePtr openProjectInternal(const std::string & absoluteFileName, bool attemptToLoadAutosave) WARN_UNUSED_RETURN;
 

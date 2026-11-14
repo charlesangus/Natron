@@ -33,13 +33,13 @@ motion blur cheap.
 
 ## Phase 284.1: Refinement
 
-- [ ] M284.P1.T1 — OpenSubdiv refiner and stencil cache
+- [x] M284.P1.T1 — OpenSubdiv refiner and stencil cache
   - files: `Engine/Nodes/Scene/Utility/UtilitySubdiv.{h,cpp}`, `Engine/Nodes/Scene/Utility/CMakeLists.txt`, `Tests/Scene/NatronUtilitySubdiv_Test.cpp`
   - approach: build a `Far::TopologyRefiner` from `HdMeshTopology` + `PxOsdSubdivTags` (cite pxOsd's conversion helpers in the pinned USD and reuse them if exposed), refine uniformly, build vertex, varying and face-varying stencil tables and the refined face list; cache by (topology hash, level, tags) with an LRU budget.
   - verify: gtest — a cube refined at level 1 has 24 quads (48 triangles) whose points match OpenSubdiv's reference; a crease of sharpness 10 keeps its edge on the limit; a hole face produces no triangles.
   - size: L
 
-- [ ] M284.P1.T2 — Refined meshes in sync and tracing
+- [x] M284.P1.T2 — Refined meshes in sync and tracing
   - files: `Engine/Nodes/Scene/Utility/UtilityMesh.cpp`, `Engine/Nodes/Scene/Utility/UtilityScene.cpp`, `Engine/Nodes/Scene/Utility/UtilityRenderDelegate.cpp`, `Tests/Scene/NatronUtilitySubdiv_Test.cpp`
   - approach: subdiv meshes produce refined triangles, refined primvars and limit normals through the stencils; point edits and per-bucket motion samples re-apply stencils only. Register `Subdivision Level` and `Max Subdivided Triangles`; read the `natron:subdivLevel` primvar.
   - verify: gtest — a Catmull-Clark sphere cage renders silhouette error below 0.5 px at level 3 against an analytic sphere; editing a cage point re-runs stencils without a new refiner (counter); the primvar override beats the setting; the budget lowers the level and warns.
@@ -57,3 +57,4 @@ motion blur cheap.
 
 - 2026-11-01 — **Level from a setting plus a per-prim primvar (user);** screen-space adaptive dicing is a follow-up, M289 - Utility Adaptive Subdivision.
 - 2026-11-14 — Claimed by bosley-native-nodes (user request).
+- 2026-11-14 — P1.T1 and P1.T2 implemented, plus T3's face-varying channels (925008b36). T3's render golden waits on M281's texturing. PM calls: subdivision level precedence is the primvar, then the viewer's refineLevel (when above 0), then the setting. Refinement must be cancellable (renders cancel fast); a follow-up fix is in progress. Older tests are pinned to the cage, since the default level is now 2.

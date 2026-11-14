@@ -263,11 +263,16 @@ public:
         const bool samplesFell = (samples >= 0) && (_samplesAtRestart >= 0) && (samples < _samplesAtRestart);
         const bool blind = (samples < 0) && (clock < 0.);
         if (_idleAtRestart) {
-            // An idle session's progress holds still, so any change shows the session took a
-            // reset. The pass may have missed it, for the session holds its scene while it wakes
-            // from idle: the change is trusted from the next pass on, which then takes it.
+            // An idle session's clock is not still: its cache eviction wakes it a while after it
+            // finished and stops its clock again later, with no reset and its status unchanged.
+            // Only a reset makes its clock fall, its samples fall or its status leave done; a
+            // reset that began and finished unseen, its clock past the old one, stays unseen and
+            // falls back on making the engine again. The pass may have missed the reset, for the
+            // session holds its scene while it wakes from idle: the change is trusted from the
+            // next pass on, which then takes it.
             const bool movedBefore = _moved;
-            _moved = _moved || samplesFell || !idleNow || ((clock >= 0.) && (_clockAtRestart >= 0.) && (clock != _clockAtRestart));
+            const bool clockFell = (clock >= 0.) && (_clockAtRestart >= 0.) && (clock < _clockAtRestart);
+            _moved = _moved || samplesFell || !idleNow || clockFell;
             _seen = movedBefore || blind;
 
             return _seen;

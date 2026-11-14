@@ -238,13 +238,13 @@ Acceptance sketch:
 
 ## Phase 136.5: Matrix and acceptance
 
-- [ ] M136.P5.T1 — Per-node CPU/GPU parity matrix over both bit values
+- [x] M136.P5.T1 — Per-node CPU/GPU parity matrix over both bit values
   - files: `Tests/Native/EdgePolicy_Test.cpp` (new; `Tests/Native` is globbed)
   - approach: One parameterised gtest over every node with an Edge Mode knob plus Merge, KeyMix, Dissolve, ShuffleCopy, the mask path and the Map/UV inputs: a small image with distinct border values, rendered with a taps-outside-source setting under input Stretch and input Black and the three knob choices, CPU against GPU within ulps and against a hand-computed expectation.
   - verify: the matrix passes; a node added to the survey without a matrix row fails the build's test list review (the test enumerates the registered node ids it covers).
   - size: M
 
-- [ ] M136.P5.T2 — Xvfb GUI check of the Edge knobs
+- [x] M136.P5.T2 — Xvfb GUI check of the Edge knobs
   - files: a new script beside `Tests/gui/guitest.py`, run with `tools/ci/remote/build.sh --from-run <id> --gui`
   - approach: Under Xvfb, build Read-like Constant → Crop (larger than the source) and Transform, and a Merge with A smaller than B; switch the Edge Mode knob through Input / Black / Stretch, read the info readout line, and capture a screenshot for each.
   - verify: the script exits zero, screenshots show stretched edges and black edges as expected, and the screenshots are sent to the user for sign-off.
@@ -279,3 +279,4 @@ Acceptance sketch:
 - 2026-11-13 — P4.T11–T13 implemented (5062b6c65). The Map reads of IWarp, IDistort and STMap follow the Map's mode through the shared `MapInput`. LensCorrect, SplineWarp and AutoStraighten now default to Input instead of Black. To check under T14 to T19: SplineWarp's mask/mix reference for a concatenated plane is still hard-coded Black.
 - 2026-11-13 — P4.T14–T16 implemented (5863bc857); these nodes now default to Input. SplineWarp's concatenated reference follows the source's resolved mode, but its non-concatenated `readSourceRow` still reads black past the source. That is fixed with T18/T19.
 - 2026-11-13 — P4.T18, P4.T19 and the SplineWarp read are implemented (828db9396). Phase 4 is done. PM calls: Depth and UV are layers of the Source, so they follow its mode. NeuralUpscale's model tiles stay inside the source, and only its alpha filter follows the mode. A `StagePlan::blendSourceFollowsEdgeMode` opt-in serves SplineWarp's GPU reference. The Stretch edge is the source image's own data window.
+- 2026-11-13 — Phase 5 written (78a22c0f8, main merged in). It adds `EdgePolicy_Test`, which fails when a plugin has the knob but no matrix row, and `m136_edge_mode.py`. Merge has no knob, so the GUI script switches the Crop feeding A. Full gate running with `--record-goldens` and the GUI script; the screenshots go to the user for sign-off.

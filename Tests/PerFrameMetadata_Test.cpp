@@ -59,6 +59,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -1104,4 +1105,94 @@ TEST(NodeMetadataEdgeMode, DefaultsToStretchAndParticipatesInCopyAndEquality)
 
     black.setEdgeMode(EdgeMode::Stretch);
     EXPECT_TRUE(base == black);
+}
+
+namespace {
+
+EdgeMode
+edgeModeOf(const NodePtr& node)
+{
+    NodeMetadataConstPtr metadata = node->getEffectInstance()->getMetadata(1., ViewIdx(0));
+    EXPECT_TRUE(bool(metadata)) << node->getScriptName();
+
+    return metadata ? metadata->getEdgeMode() : EdgeMode::Stretch;
+}
+
+} // namespace
+
+TEST_F(PerFrameMetadataTest, EdgeModeForwardsThroughPassThroughNodes)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(constant && grade && merge);
+    connectNodes(constant, grade, 0, true);
+    connectNodes(grade, merge, 0, true);
+
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(constant));
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(grade));
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(merge));
+
+    NodePtr black = createSource(4);
+    ASSERT_TRUE(bool(black));
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(black));
+
+    NodePtr blackGrade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    NodePtr blackMerge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(blackGrade && blackMerge);
+    connectNodes(black, blackGrade, 0, true);
+    connectNodes(blackGrade, blackMerge, 0, true);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(blackGrade));
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(blackMerge));
+}
+
+TEST_F(PerFrameMetadataTest, EdgeModeOfMergeFollowsB)
+{
+    NodePtr black = createSource(4);
+    NodePtr stretch = createSource(4);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(black && stretch && merge);
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    connectNodes(black, merge, 0, true);
+    connectNodes(stretch, merge, 1, true);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(merge));
+
+    NodePtr swapped = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(bool(swapped));
+    connectNodes(stretch, swapped, 0, true);
+    connectNodes(black, swapped, 1, true);
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(swapped));
+}
+
+TEST_F(PerFrameMetadataTest, EdgeModeOfSwitchFollowsThePickedInput)
+{
+    NodePtr stretch = createSource(4);
+    NodePtr black = createSource(4);
+    NodePtr switchNode = createNode(QString::fromUtf8(PLUGINID_NATRON_SWITCH));
+    ASSERT_TRUE(stretch && black && switchNode);
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    connectNodes(stretch, switchNode, 0, true);
+    connectNodes(black, switchNode, 1, true);
+    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kSwitchParamWhich));
+    ASSERT_TRUE(bool(which));
+
+    which->setValue(0, ViewSpec::all(), 0);
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(switchNode));
+    which->setValue(1, ViewSpec::all(), 0);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(switchNode));
+}
+
+TEST_F(PerFrameMetadataTest, OpenFXEffectResetsEdgeModeToStretch)
+{
+    NodePtr black = createSource(4);
+    ASSERT_TRUE(bool(black));
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    NodePtr rgbPoint = createNode(QString::fromUtf8(kNatronTestRGBPointPluginID), kNatronTestRGBPointMajor);
+    if (!rgbPoint) {
+        return;
+    }
+    connectNodes(black, rgbPoint, 0, true);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(black));
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(rgbPoint));
 }

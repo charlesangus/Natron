@@ -7361,6 +7361,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
     double projectPAR = projectFormat.getPixelAspectRatio();
 
     RectI firstOptionalInputFormat, firstNonOptionalInputFormat;
+    EdgeMode firstOptionalInputEdgeMode = EdgeMode::Stretch, firstNonOptionalInputEdgeMode = EdgeMode::Stretch;
 
     // Format: Take format from the first non optional input if any. Otherwise from the first optional input.
     // Otherwise fallback on project format
@@ -7390,11 +7391,13 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
             if (isOptional) {
                 if (!firstOptionalInputFormatSet && inputMetadata) {
                     firstOptionalInputFormat = inputMetadata->getOutputFormat();
+                    firstOptionalInputEdgeMode = inputMetadata->getEdgeMode();
                     firstOptionalInputFormatSet = true;
                 }
             } else {
                 if (!firstNonOptionalInputFormatSet && inputMetadata) {
                     firstNonOptionalInputFormat = inputMetadata->getOutputFormat();
+                    firstNonOptionalInputEdgeMode = inputMetadata->getEdgeMode();
                     firstNonOptionalInputFormatSet = true;
                 }
             }
@@ -7442,6 +7445,18 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
 
     metadata.setOutputFormat(outputFormat);
 
+    // The same input gives the format and the edge mode. A plug-in's clip preferences cannot
+    // express an edge mode, so an OpenFX effect starts from Stretch whatever its inputs say.
+    EdgeMode edgeMode = EdgeMode::Stretch;
+    if (!isOpenFX()) {
+        if (firstNonOptionalInputFormatSet) {
+            edgeMode = firstNonOptionalInputEdgeMode;
+        } else if (firstOptionalInputFormatSet) {
+            edgeMode = firstOptionalInputEdgeMode;
+        }
+    }
+    metadata.setEdgeMode(edgeMode);
+
     return eStatusOK;
 } // EffectInstance::getDefaultMetadataFromInputs
 
@@ -7476,6 +7491,9 @@ copyOutputMetadata(const NodeMetadata& from,
     }
     if (!defaults || (to->getIsContinuous() == defaults->getIsContinuous())) {
         to->setIsContinuous(from.getIsContinuous());
+    }
+    if (!defaults || (to->getEdgeMode() == defaults->getEdgeMode())) {
+        to->setEdgeMode(from.getEdgeMode());
     }
     to->setIsFrameVarying(to->getIsFrameVarying() || from.getIsFrameVarying());
 }

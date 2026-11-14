@@ -772,6 +772,8 @@ StagedImageEffect::getPreferredMetadataAt(double time,
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setPixelAspectRatio(-1, projectFormat.getPixelAspectRatio());
     metadata.setOutputFormat(projectFormat);
+    // A constant black image reads no input, so like any source it carries no edge of an input's.
+    metadata.setEdgeMode(EdgeMode::Stretch);
 
     return eStatusOK;
 }

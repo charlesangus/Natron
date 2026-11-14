@@ -35,6 +35,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ViewIdx.h"
@@ -66,6 +67,7 @@ public:
         , _nodeMetadataDerivations(0)
         , _identityEvaluations(0)
         , _deriveHook()
+        , _forcedEdgeMode(-1)
     {
     }
 
@@ -122,6 +124,13 @@ public:
                               const ImageMetadata& extra)
     {
         _viewExtra[view.value()] = extra;
+    }
+
+    // Makes the source report that edge mode, as a node that sets one does. Read without a lock
+    // and invisible to the node hash, so it must be set before the first metadata query.
+    void setForcedEdgeMode(EdgeMode mode)
+    {
+        _forcedEdgeMode = static_cast<int>(mode);
     }
 
     int derivationCount() const
@@ -216,6 +225,9 @@ private:
     void applyNodeMetadata(double time,
                            NodeMetadata& metadata)
     {
+        if (_forcedEdgeMode >= 0) {
+            metadata.setEdgeMode(static_cast<EdgeMode>(_forcedEdgeMode));
+        }
         KnobIntPtr nComps = _nComps.lock();
         KnobIntPtr bitDepth = _bitDepth.lock();
         KnobDoublePtr par = _par.lock();
@@ -295,6 +307,7 @@ private:
     std::atomic<int> _nodeMetadataDerivations;
     std::atomic<int> _identityEvaluations;
     std::function<void()> _deriveHook;
+    int _forcedEdgeMode;
 };
 
 // A one-input filter that counts its identity evaluations, so a test can tell a cached

@@ -228,6 +228,7 @@ public:
         _seen = seen;
         _samplesAtRestart = -1;
         _clockAtRestart = -1.;
+        _capAtRestart = 0;
         _idleAtRestart = false;
         _moved = false;
         _clockFallen = false;
@@ -241,6 +242,7 @@ public:
     {
         _samplesAtRestart = samplesOf(stats, cap);
         _clockAtRestart = clockOf(stats);
+        _capAtRestart = cap;
         _idleAtRestart = idle(stats);
     }
 
@@ -251,6 +253,12 @@ public:
     {
         if (_seen) {
             return true;
+        }
+        if ((_capAtRestart > 0) && (samples > _capAtRestart)) {
+            // More samples than the cap the restart set are the render of before: Cycles applies a
+            // sample count without a reset, waking an idle session only to stop it again, which
+            // moves its clock and status though its buffers still hold the old render.
+            return false;
         }
         const bool samplesFell = (samples >= 0) && (_samplesAtRestart >= 0) && (samples < _samplesAtRestart);
         const bool blind = (samples < 0) && (clock < 0.);
@@ -313,6 +321,7 @@ private:
     bool _seen = true;
     int _samplesAtRestart = -1;
     double _clockAtRestart = -1.;
+    int _capAtRestart = 0;
     bool _idleAtRestart = false;
     bool _moved = false;
     bool _clockFallen = false;

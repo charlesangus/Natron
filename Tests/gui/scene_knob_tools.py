@@ -25,8 +25,8 @@ Checks:
     selects the matches inside them.
   - behind a USDExpandHierarchy whose Full + Load rule on //Trigger loads each Trigger's own payload once a load
     shows the Trigger: Select Matches started right after a load leaves the Trigger's payload to that follow-up
-    batch waits for it and selects the Geo inside it; Load and select, whose load the rule follows with another
-    batch, selects the matches of both and leaves nothing to offer.
+    batch waits for it and selects the Geo inside it; Load and select, which loads with descendants and so
+    brings in the Trigger's payload too, selects the Geo of both and leaves nothing to offer.
 
 Shot: scene-knob-tools-matches.png (after Select Matches).
 
@@ -423,7 +423,7 @@ try:
         require(ok, "the Scene Graph panel lists the trigger scene")
         check(int(find_path(panel_tree(), C1).data(Qt.UserRole + 3)) == STATE_UNLOADED,
               "the viewer lists C1 with its payload unloaded")
-        c1_geos = sorted([C1 + "/Building/Floor/Geo", C1 + "/Building/Trigger/Inner/Geo"])
+        c1_geos = sorted([C1 + "/Floor/Geo", C1 + "/Trigger/Geo"])
         pattern.setValue("/World/Block1//Geo")
         # C1's own payload only: its Trigger's payload is left to the rule's batch after this one.
         QMetaObject.invokeMethod(view(), "requestLoad", Q_ARG("QStringList", [C1]), Q_ARG(bool, False))
@@ -432,14 +432,14 @@ try:
         check(ok, "Select Matches started during a load waits for the rule's follow-up batch and selects the Geo "
                   "inside the Trigger's payload (got %r)" % (viewer_selection(),))
 
-        c0_geos = sorted([C0 + "/Building/Floor/Geo", C0 + "/Building/Trigger/Inner/Geo"])
+        c0_geos = sorted([C0 + "/Floor/Geo", C0 + "/Trigger/Geo"])
         pattern.setValue("/World/Block0//Geo")
         trigger(menu, "knobPrimSelectMatches")
         ok = yield ("until", lambda: offer_widget("knobPrimSelectMatchesLoad", QPushButton) is not None, POLL_TIMEOUT_S)
         require(ok, "Select Matches offers to load C0")
         offer_widget("knobPrimSelectMatchesLoad", QPushButton).click()
         ok = yield ("until", lambda: viewer_selection() == c0_geos, POLL_TIMEOUT_S)
-        check(ok, "Load and select, followed by the rule's batch, selects the matches of both (got %r)"
+        check(ok, "Load and select loads C0 with its Trigger's payload and selects the Geo of both (got %r)"
               % (viewer_selection(),))
         yield ("sleep", SETTLE_MS)
         check(offer_widget("knobPrimSelectMatchesLoad", QPushButton) is None,

@@ -33,6 +33,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -107,7 +108,8 @@ public:
     /**
      * @brief Loads what a viewer's load rules load, as one batch: one setLoadsChanged() call
      * follows it, or none if the rules load nothing. A subtree a rule leaves out of its load
-     * starts unloaded.
+     * starts unloaded. A rule below another's path is loaded once the payloads above it are, as
+     * the prim it names may only exist inside them.
      **/
     void requestLoadRules(const SceneLoadRules& rules);
 
@@ -122,6 +124,8 @@ private:
         QStringList paths;
         bool load = true;
         bool withDescendants = false;
+        // The subtrees a descendant load leaves unloaded.
+        std::vector<std::string> excluded;
     };
 
     void run();

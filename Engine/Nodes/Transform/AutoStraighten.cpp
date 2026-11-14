@@ -205,14 +205,12 @@ makeLineOrientationKnob(AutoStraighten* host)
 }
 
 /**
- * @brief An item's own orientation. While items are selected their knobs are slaved to the node's
- * knob, whose single value would stand for every selected line, so the master is bypassed: the
- * node keeps the items' own values current (AutoStraighten::knobChanged).
+ * @brief An item's own orientation at the current time.
  **/
 int
 ownOrientation(const KnobChoicePtr& knob)
 {
-    return knob->getValueAtTime(knob->getCurrentTime(), 0, ViewSpec::current(), true, true /*byPassMaster*/);
+    return knob->getValueAtTime(knob->getCurrentTime(), 0);
 }
 
 /**
@@ -606,7 +604,6 @@ AutoStraighten::AutoStraighten(NodePtr node)
     // Built here, as RotoPaint does: Node::load() creates the curve context before initializeKnobs()
     // and its endChanges() already calls knobChanged().
     , _ui(AutoStraightenInteract::create(this))
-    , _settingLineOrientation(false)
 {
     op().node = this;
 }
@@ -776,7 +773,7 @@ AutoStraighten::initializeKnobs()
     page->addKnob(structure);
     _structure = structure;
 
-    // The selected guide line's orientation, slaved to it by the curve context.
+    // The last-selected guide line's orientation; an edit sets every selected line's.
     {
         KnobChoicePtr lineOrientation = makeLineOrientationKnob(this);
         lineOrientation->setDefaultAllDimensionsEnabled(false);
@@ -948,7 +945,7 @@ AutoStraighten::knobChanged(KnobI* k,
         // which the fit reads.
         RotoCurveContextPtr context = getNode()->getCurveContext();
         KnobChoicePtr master = _lineOrientation.lock();
-        if (context && master && !_settingLineOrientation) {
+        if (context && master) {
             const int value = master->getValue();
             const std::list<RotoDrawableItemPtr> selected = context->getSelectedCurves();
             for (std::list<RotoDrawableItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
@@ -1264,14 +1261,6 @@ AutoStraighten::setLineOrientation(const RotoDrawableItemPtr& item,
         return;
     }
     k->setValue((int)orientation, ViewSpec::all(), 0, true);
-    // A selected item shows through the node's knob: show the new value there without writing it
-    // back to the other selected items.
-    KnobChoicePtr master = _lineOrientation.lock();
-    if (master && k->isSlave(0)) {
-        _settingLineOrientation = true;
-        master->setValue((int)orientation, ViewSpec::all(), 0, true);
-        _settingLineOrientation = false;
-    }
     RotoCurveContextPtr context = getNode()->getCurveContext();
     if (context) {
         context->emitItemPanelColumnsChanged(item);

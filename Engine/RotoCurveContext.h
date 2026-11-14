@@ -183,8 +183,9 @@ public:
     virtual void onItemCreated(const RotoDrawableItemPtr& item, bool connectNodes);
 
     /**
-     * @brief Registers a node knob that edits the per-item host knob of the same name: on
-     * selection it is slaved to the selected item's knob like the Shape page knobs.
+     * @brief Registers a node knob that edits the per-item host knob of the same name: like the
+     * Shape page knobs it shows the last-selected item's knob, and its edits reach every selected
+     * item's knob.
      **/
     void addHostItemKnob(const KnobIPtr& knob);
 
@@ -351,8 +352,8 @@ public:
 
 protected:
     /**
-     * @brief False when the Transform page must not edit item's own transform knobs, so selecting
-     * the item leaves them untied. See refreshTransformKnobTies().
+     * @brief False when the Transform page must not edit item's own transform knobs: the node's
+     * transform knobs then neither show nor edit them. See refreshTransformKnobTies().
      **/
     virtual bool tiesTransformKnobs(const RotoDrawableItem& /*item*/) const
     {
@@ -360,8 +361,9 @@ protected:
     }
 
     /**
-     * @brief Ties or unties a selected item's transform knobs after tiesTransformKnobs() changed
-     * for it. An item inside a selected layer ends up untied, so edits reach only the layer.
+     * @brief Shows a selected item's transform in the node's knobs again once tiesTransformKnobs()
+     * returns a different answer for it. Edits on the node's transform knobs skip an untied item and an item inside a
+     * selected layer, so they reach only the layer.
      **/
     void refreshTransformKnobTies(const RotoDrawableItemPtr& item);
 
@@ -643,9 +645,17 @@ public Q_SLOTS:
 
     void onRippleEditChanged(bool enabled);
 
-    void onSelectedKnobCurveChanged();
+    void onProxyKnobValueChanged(ViewSpec view, int dimension, int reason);
 
-    void onSelectedKnobValueChanged(ViewSpec view, int dimension, int reason);
+    void onProxyKeyFrameMoved(ViewSpec view, int dimension, double oldTime, double newTime);
+
+    void onProxyKeyFrameInterpolationChanged(double time, ViewSpec view, int dimension);
+
+    void onProxyDerivativeMoved(double time, ViewSpec view, int dimension);
+
+    void onProxyExpressionChanged(int dimension);
+
+    void onMirroredItemKnobChanged();
 
     void onLifeTimeKnobValueChanged(ViewSpec, int, int);
 
@@ -656,10 +666,30 @@ private:
     // curves and re-renders.
     void updateTrackLinks(bool redraw);
 
-    void selectInternal(const RotoItemPtr& b, bool slaveKnobs = true);
+    /**
+     * @brief With forwardEdits false, as for the children of a selected layer, edits on the node's
+     * item knobs do not reach the item.
+     **/
+    void selectInternal(const RotoItemPtr& b, bool forwardEdits = true);
     void deselectInternal(RotoItemPtr b);
-    void tieItemKnob(const KnobIPtr& itemKnob, const KnobIPtr& contextKnob, bool slave);
-    void untieItemKnob(const KnobIPtr& itemKnob, bool copyState);
+
+    /**
+     * @brief Makes the node's item knobs show item's own knobs, and follow them while it stays the
+     * item they show. A null item stops the following.
+     **/
+    void mirrorItem(const RotoDrawableItemPtr& item);
+    bool mirrorsKnob(const RotoDrawableItem& item, const KnobI* proxy) const;
+    bool forwardsKnob(const RotoDrawableItem& item, const KnobI* proxy, const std::list<RotoItemPtr>& selected) const;
+
+    /**
+     * @brief The own knobs, of the selected items, that an edit on the node's item knob proxy is
+     * replayed on.
+     **/
+    std::list<KnobIPtr> forwardTargets(const KnobIPtr& proxy) const;
+    KnobIPtr proxyKnobNamed(const std::string& name) const;
+    void connectProxyKnobs();
+    void snapshotProxy(const KnobIPtr& proxy);
+    void forwardDimensionEdit(const KnobIPtr& proxy, int dimension, ValueChangedReasonEnum reason, const std::list<KnobIPtr>& targets);
 
     void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 

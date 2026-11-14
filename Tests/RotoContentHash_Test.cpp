@@ -197,9 +197,6 @@ TEST_F(RotoContentHashTest, KnobEditsChangeTheHash)
     ASSERT_TRUE(bool(context));
     BezierPtr square = makeKeyedSquare(context, 1., 6., 4.);
     ASSERT_TRUE(bool(square));
-    // A selected item's knobs are slaved to the node's, so edits are made on its own knobs only
-    // once it is deselected.
-    context->clearSelection(RotoItem::eSelectionReasonOther);
 
     const U64 initial = context->getContentHash();
     const double opacity = square->getOpacityKnob()->getValue();

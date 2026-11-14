@@ -545,13 +545,6 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
         type = eRotoStrokeTypeSolid;
     }
 
-    if ( (reason == eValueChangedReasonSlaveRefresh) && (knob != _imp->center) && (knob != _imp->cloneCenter) ) {
-        RotoContextPtr paintContext = getPaintContext();
-        if (paintContext) {
-            paintContext->s_breakMultiStroke();
-        }
-    }
-
     if (knob == compKnob) {
         KnobIPtr mergeOperatorKnob = _imp->mergeNode->getKnobByName(kNativeMergeParamOperation);
         KnobChoice* mergeOp = dynamic_cast<KnobChoice*>( mergeOperatorKnob.get() );
@@ -944,20 +937,7 @@ static void
 serializeRotoKnob(const KnobIPtr& knob,
                   Serialization::KnobSerialization* serialization)
 {
-    std::pair<int, KnobIPtr> master = knob->getMaster(0);
-
-    if (master.second) {
-        // The values are those of the knob this one is slaved to, but the expressions remain
-        // this knob's own.
-        master.second->toSerialization(serialization);
-        const int dimensionCount = std::min(knob->getDimension(), (int)serialization->dimensions.size());
-        for (int i = 0; i < dimensionCount; ++i) {
-            serialization->dimensions[i].expression = knob->getExpression(i);
-            serialization->dimensions[i].expressionHasReturnVariable = knob->isExpressionUsingRetVariable(i);
-        }
-    } else {
-        knob->toSerialization(serialization);
-    }
+    knob->toSerialization(serialization);
 }
 
 void
@@ -1583,20 +1563,9 @@ RotoDrawableItem::resetTransformCenter()
 
     centerKnob->beginChanges();
 
-    std::pair<int, KnobIPtr> hasMaster = centerKnob->getMaster(0);
-    if (hasMaster.second) {
-        for (int i = 0; i < centerKnob->getDimension(); ++i) {
-            dynamic_cast<KnobI*>( centerKnob.get() )->unSlave(i, false);
-        }
-    }
     dynamic_cast<KnobI*>( centerKnob.get() )->removeAnimation(ViewSpec::all(), 0);
     dynamic_cast<KnobI*>( centerKnob.get() )->removeAnimation(ViewSpec::all(), 1);
     centerKnob->setValues(centerX, centerY, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-    if (hasMaster.second) {
-        for (int i = 0; i < centerKnob->getDimension(); ++i) {
-            dynamic_cast<KnobI*>( centerKnob.get() )->slaveTo(i, hasMaster.second, i);
-        }
-    }
     centerKnob->endChanges();
 }
 

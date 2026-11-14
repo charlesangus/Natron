@@ -440,8 +440,6 @@ private:
     RotoCurveInteractPtr _ui;
     KnobChoiceWPtr _structure;
     KnobChoiceWPtr _lineOrientation;
-    // Set while setLineOrientation() shows an item's value through the node's knob.
-    bool _settingLineOrientation;
     KnobChoiceWPtr _fitParameters;
     KnobButtonWPtr _fitVertical;
     KnobButtonWPtr _fitHorizontal;

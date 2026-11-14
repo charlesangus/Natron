@@ -889,7 +889,7 @@ SplineWarp::writeTransformKnobs()
     SplineWarpTransform transform;
     transform.readKnobs(transformValueKnobs(context->getTransformKnobs()));
     for (std::list<RotoItemPtr>::const_iterator it = targets.sources.begin(); it != targets.sources.end(); ++it) {
-        // A tied source curve already took the edit through its slaved knobs.
+        // The curve context already replayed the edit on a tied source curve's own knobs.
         if (std::find(targets.tied.begin(), targets.tied.end(), *it) == targets.tied.end()) {
             context->setOwnTransform(*it, transform);
         }

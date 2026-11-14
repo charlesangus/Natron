@@ -80,7 +80,9 @@ Controls:
   as overs cannot reach below an instance and instances share the prototype's UVs: it
   keeps the Storm shader and warns.
 - Project On: Both, Front (faces facing the camera) or Back. Curves and points have no
-  faces, so they show as Both. A baked export ignores it, with a warning.
+  faces, so they show as Both in Storm and Cycles. MoonRay's shading cannot tell them
+  from meshes, so there they follow Project On by their shading normal. A baked export
+  ignores it, with a warning.
 - Crop: beyond the camera's frame the surface shows Outside, and inside it, where the
   image has no data, black. Off, the image's data beyond its format shows there, and
   its edge pixels extend beyond that. A baked export cannot crop, so it shows the

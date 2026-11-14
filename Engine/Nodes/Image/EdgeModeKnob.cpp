@@ -36,7 +36,8 @@ NATRON_NAMESPACE_ENTER
 
 KnobChoicePtr
 createEdgeModeKnob(KnobHolder* holder,
-                   const KnobPagePtr& page)
+                   const KnobPagePtr& page,
+                   bool defaultsToBlack)
 {
     KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr(kEdgeModeParamLabel));
 
@@ -50,7 +51,7 @@ createEdgeModeKnob(KnobHolder* holder,
     options.push_back(ChoiceOption("black", "Black", EffectInstance::tr("Black and transparent outside the image.").toStdString()));
     options.push_back(ChoiceOption("stretch", "Stretch", EffectInstance::tr("The nearest edge pixel repeated outside the image.").toStdString()));
     knob->populateChoices(options);
-    knob->setDefaultValue((int)EdgeModeChoice::Input);
+    knob->setDefaultValue((int)(defaultsToBlack ? EdgeModeChoice::Black : EdgeModeChoice::Input));
     // The output's edge mode is metadata, which holds one value for the whole clip.
     knob->setAnimationEnabled(false);
     knob->setIsMetadataSlave(true);

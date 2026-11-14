@@ -85,9 +85,9 @@ edgeModeChoiceFromIndex(int index)
 
 /**
  * @brief Creates the Edge Mode choice knob (script name edgeMode, choices Input, Black and
- * Stretch, default Input) on holder and adds it to page when there is one.
+ * Stretch, default Input unless defaultsToBlack) on holder and adds it to page when there is one.
  **/
-KnobChoicePtr createEdgeModeKnob(KnobHolder* holder, const KnobPagePtr& page);
+KnobChoicePtr createEdgeModeKnob(KnobHolder* holder, const KnobPagePtr& page, bool defaultsToBlack = false);
 
 /**
  * @brief The choice knob holds at time and view, Input when the node has no such knob.

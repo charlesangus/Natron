@@ -521,15 +521,15 @@ TEST_F(NativeCropTest, UserReformatEditTogglesTheOverlay)
 
     KnobChoice* edgeMode = dynamic_cast<KnobChoice*>(node->getKnobByName(kEdgeModeParam).get());
     ASSERT_TRUE(edgeMode != NULL);
-    EXPECT_EQ((int)EdgeModeChoice::Input, edgeMode->getValue());
+    EXPECT_EQ((int)EdgeModeChoice::Black, edgeMode->getValue());
 
     ASSERT_TRUE(setBoolAsUser(node, kCropParamReformat, true));
     EXPECT_FALSE(enable->getValue());
-    EXPECT_EQ((int)EdgeModeChoice::Input, edgeMode->getValue());
+    EXPECT_EQ((int)EdgeModeChoice::Black, edgeMode->getValue());
 
     ASSERT_TRUE(setBoolAsUser(node, kCropParamReformat, false));
     EXPECT_TRUE(enable->getValue());
-    EXPECT_EQ((int)EdgeModeChoice::Input, edgeMode->getValue());
+    EXPECT_EQ((int)EdgeModeChoice::Black, edgeMode->getValue());
 }
 
 TEST_F(NativeCropTest, RecenterCentresTheRectangleOnTheSource)

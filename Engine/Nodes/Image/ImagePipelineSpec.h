@@ -160,7 +160,8 @@ enum class RawStageRequirement : unsigned char {
 /**
  * @brief How the host runs an image node: the stages around its op, its layer policy, the kind
  * of its op and, for a node reading raw data, the raw stage it needs. divisorLabel labels the
- * channel selector of a Divisor stage, "(Un)premult by" when null.
+ * channel selector of a Divisor stage, "(Un)premult by" when null. edgeModeDefaultsToBlack
+ * makes the EdgeMode stage's knob default to Black instead of Input.
  **/
 struct ImagePipelineSpec {
     StageSet stages = {};
@@ -168,6 +169,7 @@ struct ImagePipelineSpec {
     OpKind op = OpKind::Point;
     RawStageRequirement rawStage = RawStageRequirement::Any;
     const char* divisorLabel = nullptr;
+    bool edgeModeDefaultsToBlack = false;
 };
 
 constexpr bool

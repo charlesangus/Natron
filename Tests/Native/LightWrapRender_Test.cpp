@@ -48,7 +48,6 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Generator/Constant.h"
-#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Project.h"
@@ -211,13 +210,6 @@ protected:
             return false;
         }
         setDoubles(fg, kConstantParamColor, { 0.5, 0.5, 0.5, 1. });
-        // The foreground is the cropped box alone: past the crop it must read black, or its alpha
-        // fills the frame and there is no edge to wrap.
-        KnobBoolPtr fgBlackOutside = knob<KnobBool>(fg, kBlackOutsideParam);
-        EXPECT_TRUE(bool(fgBlackOutside));
-        if (fgBlackOutside) {
-            fgBlackOutside->setValue(true);
-        }
         setDoubles(bg, kConstantParamColor, { 0.9, 0.5, 0.1, 1. });
         setDoubles(crop, kNativeGeneratorParamBottomLeft, { (double)kBoxX, (double)kBoxY });
         setDoubles(crop, kNativeGeneratorParamSize, { (double)kBoxW, (double)kBoxH });

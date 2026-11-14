@@ -236,7 +236,7 @@ moves with it. This settles the milestone's first assumption.
 
 A pipeline stage, `Stage::EdgeMode` (most affected nodes are `StagedImageEffect`s), creates a
 choice knob with script name `edgeMode` and label "Edge Mode", with options Input (default),
-Black and Stretch. It resolves the choice against the primary input's bit and hands the mode
+Black and Stretch. Crop alone defaults to Black. It resolves the choice against the primary input's bit and hands the mode
 to the pass list, the resampler and the warps. Nodes that are not on the staged pipeline use
 the same helper directly. It replaces the `black_outside` knobs built from
 `kResamplerParamFilterBlackOutside*` (Transform, Reformat, IDistort, STMap, LensDistortion,
@@ -267,7 +267,8 @@ Default behaviour changes this causes (no backward compatibility):
 - A Read used as Merge's A now repeats its edge across a larger B, where it read zero
   past its RoD before (Q1). So does a mask, a Map, a UV or a Depth input. To keep an element's
   edge from smearing across a merge, set its upstream Crop or Transform to Black.
-- Crop larger than its source follows the source's bit under Input, where it was always black.
+- Crop defaults to Black, so a crop hard-cuts to black and a larger crop is black past its source; pick
+  Input or Stretch to repeat the edge. Under Input a larger crop follows the source's bit.
 
 ### 2.4 Bit-driven sampling
 
@@ -330,7 +331,8 @@ do the same.
 
 ### 2.5 Crop
 
-Crop's RoD is the crop rectangle. Its output bit is the resolved mode (2.3).
+Crop's RoD is the crop rectangle. Its output bit is the resolved mode (2.3). Its Edge Mode
+defaults to Black, unlike every other node, whose default is Input.
 
 - **Crop larger than its source**: under Input, the pixels between the source RoD and the crop
   rectangle come from the shared sampler under the *input's* bit. A Stretch source repeats its

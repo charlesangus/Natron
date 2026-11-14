@@ -82,6 +82,7 @@ struct CropOp {
         .stages = { Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Resample,
+        .edgeModeDefaultsToBlack = true,
     };
 
     static constexpr bool kClipsSourceToRoI = true;

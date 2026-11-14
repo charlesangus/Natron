@@ -458,7 +458,7 @@ void
 StagedImageEffect::addStageKnobs(const KnobPagePtr& page)
 {
     if (imagePipelineSpec().stages.has(Stage::EdgeMode)) {
-        _stageKnobs.edgeMode = createEdgeModeKnob(this, page);
+        _stageKnobs.edgeMode = createEdgeModeKnob(this, page, imagePipelineSpec().edgeModeDefaultsToBlack);
     }
     if (imagePipelineSpec().stages.has(Stage::MaskMix)) {
         addMaskMixKnobs(page);

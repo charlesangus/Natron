@@ -74,6 +74,8 @@
 #include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Filter/VectorBlur.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Generator/Rectangle.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -958,4 +960,101 @@ TEST_F(EdgePolicyTest, EveryNodeWithTheEdgeModeKnobHasAMatrixRow)
     for (const std::string& id : covered) {
         EXPECT_EQ(1u, withKnob.count(id)) << id << " has a matrix row for its Edge Mode knob but no registered plugin of that id has the knob";
     }
+}
+
+// Black Outside decides a source's edge mode, Stretch while it is off; a shape generator has no
+// such knob, as past its shape it repeats its outside colour.
+TEST_F(EdgePolicyTest, BlackOutsideSetsTheEdgeModeOfASource)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr parity = source(0, 0);
+    ASSERT_TRUE(constant && parity);
+    for (const NodePtr& n : { constant, parity }) {
+        ASSERT_TRUE(bool(n->getKnobByName(kBlackOutsideParam))) << n->getPluginID();
+        EXPECT_EQ(EdgeMode::Stretch, outputEdgeMode(n)) << n->getPluginID();
+        setBlackOutside(n, true);
+        EXPECT_EQ(EdgeMode::Black, outputEdgeMode(n)) << n->getPluginID();
+        setBlackOutside(n, false);
+        EXPECT_EQ(EdgeMode::Stretch, outputEdgeMode(n)) << n->getPluginID();
+    }
+
+    NodePtr rectangle = node(PLUGINID_NATRON_RECTANGLE, PLUGIN_MAJOR_NATRON_RECTANGLE);
+    ASSERT_TRUE(bool(rectangle));
+    EXPECT_FALSE(bool(rectangle->getKnobByName(kBlackOutsideParam)));
+}
+
+// A Merge's A from a Constant at Size covers only the Constant's region with Black Outside on,
+// and the whole frame with it off, where A repeats its edge.
+TEST_F(EdgePolicyTest, AMergedConstantWithBlackOutsideStaysInsideItsRegion)
+{
+    for (bool blackOutside : { true, false }) {
+        resetProject();
+        const std::string what = blackOutside ? "Black Outside on" : "Black Outside off";
+        NodePtr background = node(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+        NodePtr box = node(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+        NodePtr merge = node(PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        ASSERT_TRUE(background && box && merge);
+        ASSERT_TRUE(setKnobValue(background, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+        ASSERT_TRUE(setKnobValues(background, kConstantParamColor, { 0., 0., 0., 0. }));
+        ASSERT_TRUE(setKnobValue(box, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentSize)));
+        ASSERT_TRUE(setKnobValues(box, kNativeGeneratorParamBottomLeft, { (double)kBox.x1, (double)kBox.y1 }));
+        ASSERT_TRUE(setKnobValues(box, kNativeGeneratorParamSize, { (double)kBox.width(), (double)kBox.height() }));
+        ASSERT_TRUE(setKnobValues(box, kConstantParamColor, { 1., 1., 1., 1. }));
+        setBlackOutside(box, blackOutside);
+        ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
+        connect(background, merge, 0);
+        connect(box, merge, 1);
+
+        std::vector<float> frame;
+        std::string error;
+        ASSERT_TRUE(renderCpu(merge, &frame, &error)) << what << ": " << error;
+        int wrong = 0;
+        for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+            for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+                const bool inside = (x >= kBox.x1) && (x < kBox.x2) && (y >= kBox.y1) && (y < kBox.y2);
+                const float want = (inside || !blackOutside) ? 1.f : 0.f;
+                for (int c = 0; c < 4; ++c) {
+                    if (frame[floatIndex(kWindow, x, y, c)] != want) {
+                        if (wrong == 0) {
+                            ADD_FAILURE() << what << ": first wrong pixel at " << x << "," << y << " c=" << c << ", want " << want << " got " << frame[floatIndex(kWindow, x, y, c)];
+                        }
+                        ++wrong;
+                    }
+                }
+            }
+        }
+        EXPECT_EQ(0, wrong) << what;
+    }
+}
+
+// A Rectangle's region keeps a pixel of its outside colour around the shape, so a Merge's A
+// reading past it under Stretch repeats that colour instead of the shape.
+TEST_F(EdgePolicyTest, ARectangleRepeatsItsOutsideColourPastItsRegion)
+{
+    NodePtr background = node(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr rectangle = node(PLUGINID_NATRON_RECTANGLE, PLUGIN_MAJOR_NATRON_RECTANGLE);
+    NodePtr merge = node(PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+    ASSERT_TRUE(background && rectangle && merge);
+    ASSERT_TRUE(setKnobValue(background, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+    ASSERT_TRUE(setKnobValues(background, kConstantParamColor, { 0., 0., 0., 0. }));
+    ASSERT_TRUE(setKnobValue(rectangle, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentSize)));
+    ASSERT_TRUE(setKnobValues(rectangle, kNativeGeneratorParamBottomLeft, { (double)kBox.x1, (double)kBox.y1 }));
+    ASSERT_TRUE(setKnobValues(rectangle, kNativeGeneratorParamSize, { (double)kBox.width(), (double)kBox.height() }));
+    ASSERT_TRUE(setKnobValues(rectangle, kRectangleParamSoftness, { 0. }));
+    ASSERT_TRUE(setKnobValues(rectangle, kRectangleParamColor0, { 0., 0., 0., 0. }));
+    ASSERT_TRUE(setKnobValues(rectangle, kRectangleParamColor1, { 1., 1., 1., 1. }));
+    ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
+    connect(background, merge, 0);
+    connect(rectangle, merge, 1);
+
+    EXPECT_EQ(EdgeMode::Stretch, outputEdgeMode(rectangle));
+    EXPECT_EQ(RectI(kBox.x1 - 1, kBox.y1 - 1, kBox.x2 + 1, kBox.y2 + 1), pixelRegionOfDefinition(rectangle));
+
+    std::vector<float> frame;
+    std::string error;
+    ASSERT_TRUE(renderCpu(merge, &frame, &error)) << error;
+    EXPECT_EQ(1.f, frame[floatIndex(kWindow, (kBox.x1 + kBox.x2) / 2, (kBox.y1 + kBox.y2) / 2, 3)]);
+    EXPECT_EQ(0.f, frame[floatIndex(kWindow, 0, 0, 3)]);
+    EXPECT_EQ(0.f, frame[floatIndex(kWindow, kWindow.x2 - 1, (kBox.y1 + kBox.y2) / 2, 3)]);
+    EXPECT_EQ(0.f, frame[floatIndex(kWindow, (kBox.x1 + kBox.x2) / 2, kWindow.y2 - 1, 3)]);
 }

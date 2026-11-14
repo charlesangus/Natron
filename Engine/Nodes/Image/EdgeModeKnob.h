@@ -29,11 +29,15 @@
 #include "Global/Macros.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/RectD.h"
+#include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 #include "Global/EdgeMode.h"
 
 #define kEdgeModeParam "edgeMode"
 #define kEdgeModeParamLabel "Edge Mode"
+#define kBlackOutsideParam "blackOutside"
+#define kBlackOutsideParamLabel "Black Outside"
 
 NATRON_NAMESPACE_ENTER
 
@@ -89,6 +93,42 @@ KnobChoicePtr createEdgeModeKnob(KnobHolder* holder, const KnobPagePtr& page);
  * @brief The choice knob holds at time and view, Input when the node has no such knob.
  **/
 EdgeModeChoice readEdgeModeChoice(const KnobChoiceWPtr& knob, double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Grows the region rod of a source whose image is a shape over an outside colour, in
+ * canonical coordinates, by one pixel at scale on every side. The outermost row and column then
+ * hold only the outside colour, so a Stretch read past the region repeats that colour rather
+ * than the shape. An empty rod stays empty.
+ **/
+inline void
+addOutsideColourBorder(double par,
+                       const RenderScale& scale,
+                       RectD* rod)
+{
+    if (!rod || !((rod->x2 > rod->x1) && (rod->y2 > rod->y1))) {
+        return;
+    }
+    const double pixel = 1. / scale.toOfxPointD().x;
+    const double dx = ((par > 0.) ? par : 1.) * pixel;
+
+    rod->x1 -= dx;
+    rod->x2 += dx;
+    rod->y1 -= pixel;
+    rod->y2 += pixel;
+}
+
+/**
+ * @brief Creates a source's Black Outside toggle (script name blackOutside, default off) on
+ * holder and adds it to page when there is one. On, the source's output carries Black; off,
+ * Stretch.
+ **/
+KnobBoolPtr createBlackOutsideKnob(KnobHolder* holder, const KnobPagePtr& page);
+
+/**
+ * @brief The edge mode a source with the Black Outside knob carries at time and view: Black
+ * when the knob is on, Stretch when it is off or the node has no such knob.
+ **/
+EdgeMode readBlackOutside(const KnobBoolWPtr& knob, double time, ViewIdx view) WARN_UNUSED_RETURN;
 
 NATRON_NAMESPACE_EXIT
 

@@ -71,4 +71,35 @@ readEdgeModeChoice(const KnobChoiceWPtr& knob,
     return edgeModeChoiceFromIndex(reader.valueOr(knob, (int)EdgeModeChoice::Input));
 }
 
+KnobBoolPtr
+createBlackOutsideKnob(KnobHolder* holder,
+                       const KnobPagePtr& page)
+{
+    KnobBoolPtr knob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr(kBlackOutsideParamLabel));
+
+    knob->setName(kBlackOutsideParam);
+    knob->setHintToolTip(EffectInstance::tr("Reading past the image gives black and transparent instead of repeating its edge pixels. "
+                                            "Nodes downstream that read outside the image, such as a Merge's A input, a mask, a blur "
+                                            "or a transform, see black there.")
+                             .toStdString());
+    knob->setDefaultValue(false);
+    knob->setAnimationEnabled(false);
+    knob->setIsMetadataSlave(true);
+    if (page) {
+        page->addKnob(knob);
+    }
+
+    return knob;
+}
+
+EdgeMode
+readBlackOutside(const KnobBoolWPtr& knob,
+                 double time,
+                 ViewIdx view)
+{
+    const KnobReader reader(time, view);
+
+    return reader.valueOr(knob, false) ? EdgeMode::Black : EdgeMode::Stretch;
+}
+
 NATRON_NAMESPACE_EXIT

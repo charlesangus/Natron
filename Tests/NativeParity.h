@@ -158,6 +158,7 @@ private:
     KnobIntWPtr _origin;
     KnobBoolWPtr _noise;
     KnobIntWPtr _nonFinite;
+    KnobBoolWPtr _blackOutside;
 };
 
 ImageLayerDesc paritySourceExtraLayer();
@@ -238,7 +239,7 @@ ParityPair makeParityPair(const AppInstancePtr& app,
 
 /**
  * @brief Creates another parity source and connects it to the input labelled `inputLabel` on the
- * node. Returns it, or null after an ADD_FAILURE() when the node lacks the input or the
+ * node, with Black Outside on. Returns it, or null after an ADD_FAILURE() when the node lacks the input or the
  * connection is refused.
  **/
 NodePtr connectParityInput(ParityPair& pair, const std::string& inputLabel);
@@ -261,6 +262,8 @@ void setParitySourceExtraLayer(const NodePtr& source, bool extraLayer);
 void setParitySourceOrigin(const NodePtr& source, int x, int y);
 void setParitySourceNoise(const NodePtr& source, bool noise);
 void setParitySourceNonFinite(const NodePtr& source, const RectI& rect);
+// Turns the Black Outside knob of a parity source, a generator or a Read on or off.
+void setBlackOutside(const NodePtr& source, bool blackOutside);
 
 /**
  * @brief The source's region of definition in pixel coordinates at `mipmapLevel`.

@@ -265,6 +265,7 @@ private:
     OcioSpaceKnobs _inputSpace;
 
     KnobStringWPtr _availableViews;
+    KnobBoolWPtr _blackOutside;
 
     mutable std::mutex _listingMutex;
     mutable std::shared_ptr<const FrameListing> _listing;

@@ -210,6 +210,13 @@ moves with it. This settles the milestone's first assumption.
 ### 2.2 Who sets it
 
 - **Sources** (Read, generators, USD render, RawToImage, DeepToImage) report Stretch.
+  The native Read and every native generator whose image fills its region (Constant, Ramp,
+  CheckerBoard and Noise) carry a `blackOutside` toggle ("Black Outside",
+  off) next to their region knobs. On, the output reports Black, so a Merge's A, a mask or a
+  filter reads black past the source. Shape sources have no toggle. Rectangle, Radial and
+  ColorWheel keep a border of their outside colour one pixel wide (at render scale) around
+  the shape box. Roto and RotoPaint shapes keep a zero border around the shape plus feather.
+  Under Stretch they repeat that colour, not the shape's edge.
 - **Forwarding** happens in `EffectInstance::getDefaultMetadataFromInputs`
   (`Engine/EffectInstance.cpp:7276-7446`). That is where the format is chosen:
   the first non-optional connected input, else the first optional one (`:7365`).

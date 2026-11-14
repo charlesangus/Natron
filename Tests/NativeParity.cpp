@@ -52,6 +52,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -405,6 +406,8 @@ ParitySourceTestEffect::initializeKnobs()
     }
     page->addKnob(nonFinite);
     _nonFinite = nonFinite;
+
+    _blackOutside = createBlackOutsideKnob(this, page);
 }
 
 int
@@ -479,10 +482,11 @@ ParitySourceTestEffect::getRegionOfDefinition(U64 /*hash*/,
 }
 
 StatusEnum
-ParitySourceTestEffect::getPreferredMetadataAt(double /*time*/,
-                                               ViewIdx /*view*/,
+ParitySourceTestEffect::getPreferredMetadataAt(double time,
+                                               ViewIdx view,
                                                NodeMetadata& metadata)
 {
+    metadata.setEdgeMode(readBlackOutside(_blackOutside, time, view));
     metadata.setNComps(-1, colorNComps());
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setIsFrameVarying(true);
@@ -685,6 +689,8 @@ connectParityInput(ParityPair& pair,
     if (!source || !connectToNode(pair, source, inputLabel)) {
         return NodePtr();
     }
+    // The recorded references read a mask, an A or any other added input as black past its region.
+    setBlackOutside(source, true);
 
     return source;
 }
@@ -808,6 +814,13 @@ setParitySourceNonFinite(const NodePtr& source,
                          const RectI& rect)
 {
     setKnobValues(source, kParitySourceParamNonFinite, { (double)rect.x1, (double)rect.y1, (double)rect.x2, (double)rect.y2 });
+}
+
+void
+setBlackOutside(const NodePtr& source,
+                bool blackOutside)
+{
+    setKnobValues(source, kBlackOutsideParam, std::vector<double>(1, blackOutside ? 1. : 0.));
 }
 
 void

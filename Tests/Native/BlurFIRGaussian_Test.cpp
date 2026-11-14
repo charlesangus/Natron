@@ -502,6 +502,7 @@ protected:
         EXPECT_TRUE(setKnobValues(white, kNativeGeneratorParamBottomLeft, { (double)box.x1, (double)box.y1 }));
         EXPECT_TRUE(setKnobValues(white, kNativeGeneratorParamSize, { (double)box.width(), (double)box.height() }));
         EXPECT_TRUE(setKnobValues(white, kConstantParamColor, { 1., 1., 1., 1. }));
+        setBlackOutside(white, true);
         EXPECT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
         connectNodes(black, merge, 0, true);
         connectNodes(white, merge, 1, true);
@@ -671,7 +672,9 @@ TEST_F(BlurFIRGaussianTest, EdgeModeDecidesTheBorderOfAConstant)
             if (black) {
                 EXPECT_LT(at(0, 0, 0), 0.4f * kValue) << what << ": the corner reads the black outside";
                 EXPECT_LT(at(format.x2 - 1, format.y2 / 2, 0), 0.75f * kValue) << what << ": an edge reads the black outside";
-                EXPECT_NEAR(kValue, at(format.x2 / 2, format.y2 / 2, 0), 1e-3f) << what << ": the centre is out of the blur's reach";
+                // The recursive Gaussian has no cut-off: its tail still reaches the centre, by a few parts in a thousand.
+                const float centreTolerance = (std::string(filterId) == kBlurParamFilterGaussian) ? 5e-3f : 1e-3f;
+                EXPECT_NEAR(kValue, at(format.x2 / 2, format.y2 / 2, 0), centreTolerance) << what << ": the centre is out of the blur's reach";
             } else {
                 double worst = 0.;
                 for (std::size_t i = 0; i < plane.pixels.size(); ++i) {

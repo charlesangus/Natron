@@ -120,43 +120,43 @@ Acceptance sketch:
 
 ## Phase 136.4: Filters
 
-- [ ] M136.P4.T1 — Blur edge mode
+- [x] M136.P4.T1 — Blur edge mode
   - files: `Engine/Nodes/Filter/Blur.cpp`, `Engine/Nodes/Filter/Blur.h`, `Engine/Nodes/Filter/BlurKernels.h`, `Engine/Nodes/Filter/BlurKernels.cpp`, `Tests/Native/BlurFIRGaussian_Test.cpp`, `Tests/Gpu/BlurGpu_Test.cpp`
   - approach: Add the Edge knob (T1 of Phase 136.3). Replace the hard-wired Dirichlet zero with the shared sampler; the CPU `neumann` flag in `BlurKernels.h` becomes the mode. The RoD logic (`cropToFormat`, growth) is unchanged. Update the golden for the default; per the ulp rule, re-record rounding-only diffs.
   - verify: blur of a constant image with Stretch keeps its value to the border; Black darkens it; CPU matches GPU for both.
   - size: M
 
-- [ ] M136.P4.T2 — EdgeDetect edge mode
+- [x] M136.P4.T2 — EdgeDetect edge mode
   - files: `Engine/Nodes/Filter/EdgeDetect.cpp`, `Engine/Nodes/Filter/EdgeDetect.h`, `Tests/Native/` (EdgeDetect test file)
   - approach: Replace the fixed Neumann read (`EdgeDetect.cpp:519-542`) with the shared sampler and add the Edge knob. Default Input follows the source, so a Black source now produces an edge at its border, as it should.
   - verify: edge detect of a constant image shows no border response under Stretch and a border response under Black.
   - size: M
 
-- [ ] M136.P4.T3 — Erode and Dilate edge mode
+- [x] M136.P4.T3 — Erode and Dilate edge mode
   - files: `Engine/Nodes/Filter/ErodeDilate.cpp`, `Engine/Nodes/Filter/ErodeDilate.h`, `Engine/Gpu/Kernels/morphology.slang`, `Tests/Native/` (ErodeDilate test file)
   - approach: Add the Edge Mode stage; the fill beyond the source follows the mode while the window clamp stays (CPU and GPU already agree, `NativeErodeDilateGpu_Test`).
   - verify: erode and dilate of an image with a bright border pixel, both modes, CPU == GPU.
   - size: M
 
-- [ ] M136.P4.T4 — Warp nodes edge mode
+- [x] M136.P4.T4 — Warp nodes edge mode
   - files: `Engine/Nodes/Transform/CornerPin.cpp`, `CornerPin.h`, `CornerPinKnobs.h`, `ITransform.cpp`, `ICornerPin.cpp`, `IWarp.cpp`, `IWarp.h`, `IDistort.cpp`, `IDistort.h`, `STMap.cpp`, `STMap.h`, `LensDistortion.cpp`, `LensDistortion.h`, `Mirror.cpp`, `WarpGpu.h`; their `Tests/Native/` tests
   - approach: Replace each `black_outside`/`blackOutside` boolean with the Phase 136.3 Edge knob; ITransform and ICornerPin follow Transform's and CornerPin's knob. `WarpSettings::blackOutside` and the `kWarpGpuBlackOutside`/`kIWarpGpuBlackOutside`/`kLensDistortionGpuBlackOutside` flags become the shared mode. STMap's Wrap U/V stay (the mode applies only under Wrap None). IDistort's and STMap's UV inputs are P4.T12. Mirror drops its hard-wired flag and forwards the bit. `expandRoD` and LensDistortion's margin key off the resolved mode. See `Engine/Nodes/docs/edge-policy.md` §1.2.
   - verify: each node, a setting with taps outside the source under Stretch and Black inputs, CPU == GPU.
   - size: M
 
-- [ ] M136.P4.T5 — Sharpen and EdgeExtend edge mode
+- [x] M136.P4.T5 — Sharpen and EdgeExtend edge mode
   - files: `Engine/Nodes/Filter/Sharpen.cpp`, `Sharpen.h`, `EdgeExtend.cpp`, `EdgeExtend.h`, `Engine/Gpu/Kernels/sharpen.slang`, `edgeextend.slang`; their `Tests/Native/` tests
   - approach: Add the Edge knob; replace the fixed Nearest boundary and Neumann line ends (`Sharpen.cpp:252, 503`, `EdgeExtend.cpp:511, 516`) and the kernels' own clamped fills with the shared samplers.
   - verify: a constant image shows no border response under Stretch and one under Black, CPU == GPU.
   - size: M
 
-- [ ] M136.P4.T6 — Glow and Bloom edge mode
+- [x] M136.P4.T6 — Glow and Bloom edge mode
   - files: `Engine/Nodes/Filter/Glow.cpp`, `Glow.h`, `Bloom.cpp`, `Bloom.h`, `BloomKernels.cpp`, `BloomKernels.h`, `Engine/Gpu/Kernels/glow.slang`, `glow_frame.slang`, `bloom.slang`; their `Tests/Native/` tests
   - approach: Add the Edge knob; Glow's fixed Zero (`Glow.cpp:1016`) and Bloom's fixed Nearest (`Bloom.cpp:75`, `BloomKernels.cpp:224`) follow the resolved mode through the shared samplers.
   - verify: a constant image keeps its value to the border under Stretch and darkens under Black, CPU == GPU.
   - size: M
 
-- [ ] M136.P4.T7 — IBlur, IErodeDilate and EdgeBlur edge mode
+- [x] M136.P4.T7 — IBlur, IErodeDilate and EdgeBlur edge mode
   - files: `Engine/Nodes/Filter/IBlur.cpp`, `IBlur.h`, `IErodeDilate.cpp`, `IErodeDilate.h`, `EdgeBlur.cpp`, `EdgeBlur.h`, `VariableBlurKernels.cpp`, `VariableBlurKernels.h`, `Engine/Gpu/Kernels/iblur.slang`, `ierodedilate.slang`; their `Tests/Native/` tests
   - approach: Add the Edge knob for the source input; the fixed Zero source fill and the summed-area table's zero outside follow the resolved mode. Map inputs are P4.T11. EdgeBlur's matte keeps EdgeDetect's rule.
   - verify: a constant image keeps its value to the border under Stretch and darkens under Black, CPU == GPU.
@@ -274,3 +274,4 @@ Acceptance sketch:
 - 2026-11-13 — P2.T3 implemented (3dc34c091): `Engine/Nodes/Image/EdgeSample.h`. The NatronGpu library can't include `NodeMetadata.h`, so `GpuResample::blackOutside` stays a bool until P2.T4, which moves `EdgeMode` into a light header both libraries include.
 - 2026-11-13 — P2.T5 and P2.T6 implemented (9dc00592c). Stretch RoI runs as a post-hook (`adjustInputRegionsOfInterest`) after `getRegionsOfInterest`, because staged nodes adjust the base result. Open points: the GPU input RoI gets no band yet; under concatenation `transformInputRois` runs after the hook. Phase 2 gate running.
 - 2026-11-13 — Phase 3 implemented (42f35f04a). Transform's default changes from Black to Input (stretches over Stretch sources). The Stretch band is now computed after concatenation, and GPU input reads get it too. The Transform and Crop soft goldens may need re-recording. The Phase 3 gate replaces the Phase 2 one.
+- 2026-11-13 — P4.T1–T7 implemented (e7e9b31dd). EdgeBlur's GPU read the matte as black past its edge while the CPU used the mode; fixed. The EdgeBlur and EdgeDetect matte always repeats its edge (PM: a black border would read as an edge), and only the blurred source follows the knob. Input resolves to Stretch for most sources, so border goldens change. Gating with `--record-goldens`, replacing the Phase 3 gate.

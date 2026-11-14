@@ -93,6 +93,7 @@ public:
     std::unique_ptr<ProcessInputChannel> _backgroundIPC; //< object used to communicate with the main app
     //if this app is background, see the ProcessInputChannel def
     bool _loaded; //< true when the first instance is completely loaded.
+    bool terminationRequested = false; //< requestTermination() has run, main thread only
     QString _binaryPath; //< the path to the application's binary
 
     // Sticky: once a headless render has failed, this stays true for the

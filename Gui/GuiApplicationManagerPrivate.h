@@ -90,6 +90,11 @@ struct GuiApplicationManagerPrivate
     ///Used temporarily to store startup args while we load fonts
     CLArgs startupArgs;
     bool glContextRefused = false;
+    // A termination signal asked to quit; set once, main thread only.
+    bool terminationRequested = false;
+    // continueTermination() is closing projects, whose close can pump events that would re-enter it.
+    bool terminationRunning = false;
+    bool terminationRetryScheduled = false;
     std::shared_ptr<QFutureWatcher<void> > fontconfigUpdateWatcher;
     QTimer updateSplashscreenTimer;
     QTimer themeReloadTimer;

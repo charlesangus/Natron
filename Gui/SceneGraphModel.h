@@ -212,6 +212,11 @@ public:
         eDrawStateRole,
         // Whether that state comes from an ancestor or the default rather than from the row, a bool.
         eDrawStateInheritedRole,
+        // Where that state comes from, a SceneDrawOriginEnum.
+        eDrawStateOriginRole,
+        // The script name of the node whose draw rule set the row's state, for a state the graph
+        // sets on the row itself; empty otherwise, and when the rule names no node.
+        eDrawStateOriginNodeRole,
     };
 
     enum PayloadStateEnum {
@@ -233,6 +238,9 @@ public:
 
     // "BBox", "Children", "Full", "Load All" or "Hidden".
     static QString drawStateLabel(int state);
+
+    // The draw state column's tooltip for a SceneDrawOriginEnum, naming node for a graph-set row.
+    static QString drawOriginTip(int origin, const QString& node);
 
     // The mime type of dragged prim paths: UTF-8, one path per line.
     static QString primPathsMimeType();

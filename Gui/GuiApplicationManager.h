@@ -249,6 +249,13 @@ public:
     ///Closes the application, asking the user to save each opened project that has unsaved changes
     virtual void exitApp(bool warnUserForSave) OVERRIDE FINAL;
 
+    /**
+     * @brief Records the request, then closes every project without asking to save once no modal dialog, popup or
+     * nested event loop is on the stack, and no save is running on the main thread. Open dialogs and popups are
+     * dismissed, and the close is retried until every project has accepted it.
+     **/
+    virtual void requestTermination() OVERRIDE FINAL;
+
     bool isNodeClipBoardEmpty() const;
 
     NodeClipBoard& getNodeClipBoard();
@@ -299,6 +306,8 @@ Q_SIGNALS:
 #endif
     
 private:
+    void continueTermination();
+    void scheduleTerminationRetry();
 
     virtual void initBuiltinPythonModules() OVERRIDE FINAL;
 

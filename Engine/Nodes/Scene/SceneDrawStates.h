@@ -29,22 +29,16 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "Engine/ScenePayload.h"
 #include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
-
-enum SceneDrawStateEnum {
-    eSceneDrawStateBBox,
-    eSceneDrawStateChildren,
-    eSceneDrawStateFull,
-    eSceneDrawStateLoadAll,
-    eSceneDrawStateHidden
-};
 
 enum SceneDrawOriginEnum {
     eSceneDrawOriginViewer,
@@ -142,6 +136,42 @@ public:
     SceneDrawDelta setPolicyState(const std::string& path, SceneDrawStateEnum state);
     SceneDrawDelta clearPolicyState(const std::string& path);
 
+    struct PathLess {
+        bool operator()(const std::string& a, const std::string& b) const;
+    };
+
+    struct Policy {
+        SceneDrawStateEnum state;
+        // The node whose rule set it, by script name.
+        std::string origin;
+
+        bool operator==(const Policy& other) const
+        {
+            return (state == other.state) && (origin == other.origin);
+        }
+
+        bool operator!=(const Policy& other) const
+        {
+            return !(*this == other);
+        }
+    };
+
+    // The graph policy by literal path, as SceneOps::matchDrawRules() resolves a payload's draw rules.
+    typedef std::map<std::string, Policy, PathLess> PolicyStates;
+
+    /**
+     * @brief Puts policy in place of the whole graph policy, as one edit: only the subtrees of the
+     * paths whose policy changed are looked at, and none for the same policy.
+     **/
+    SceneDrawDelta replacePolicyStates(const PolicyStates& policy);
+    const PolicyStates& getPolicyStates() const
+    {
+        return _policy;
+    }
+
+    // The graph policy set on this very row, effective or only remembered.
+    bool getPolicyState(const std::string& path, Policy* policy) const;
+
     /** @brief The state set on this very row by the viewer, effective or only remembered. */
     bool getSetState(const std::string& path, SceneDrawStateEnum* state) const;
     SceneDrawResolved resolve(const std::string& path) const;
@@ -154,10 +184,6 @@ public:
      **/
     std::vector<SceneDrawLoadRequest> wantedLoadsUnder(const std::string& root) const;
 
-    struct PathLess {
-        bool operator()(const std::string& a, const std::string& b) const;
-    };
-
     struct Stored {
         SceneDrawStateEnum state;
         // False on an ancestor switched to Children for a row below: nobody asked to load that row.
@@ -168,6 +194,13 @@ public:
     std::vector<std::pair<std::string, Stored>> getSetStates() const;
     /** @brief Puts states in place of every state set by the viewer, as one edit. */
     SceneDrawDelta replaceSetStates(const std::vector<std::pair<std::string, Stored>>& states);
+    /**
+     * @brief Puts states in place of the viewer's at their paths, as one edit that looks only below
+     * them: the states set at other paths stay.
+     **/
+    SceneDrawDelta mergeSetStates(const std::vector<std::pair<std::string, Stored>>& states);
+    // Clears the viewer's states at paths, as one edit that looks only below them.
+    SceneDrawDelta clearSetStates(const std::vector<std::string>& paths);
 
     enum RuleEnum {
         eRuleNone,
@@ -204,10 +237,22 @@ private:
     std::string rootOf(const SceneDrawRowEdit& edit) const;
     void applyRowEdit(const SceneDrawRowEdit& edit);
     SceneDrawDelta applyEdit(const std::string& root, const std::vector<std::string>& retryLoads, const Effects& before, std::size_t visited) const;
+    // Makes change, which edits only the subtrees of roots, and returns the delta over them.
+    SceneDrawDelta editUnder(std::vector<std::string> roots, const std::vector<std::string>& retryLoads, const std::function<void()>& change);
 
     std::map<std::string, Stored, PathLess> _states;
-    std::map<std::string, SceneDrawStateEnum, PathLess> _policy;
+    PolicyStates _policy;
 };
+
+/**
+ * @brief Adds one prim a draw rule decides to *policy, over what earlier rules put there: a later
+ * rule wins on the same path, and a later Full or Full + Load switches to Children the ancestors
+ * that would block it, as setting it in the viewer does.
+ **/
+void sceneAddDrawRuleMatch(const std::string& path,
+                           SceneDrawStateEnum state,
+                           const std::string& origin,
+                           SceneDrawStates::PolicyStates* policy);
 
 // A stage's payload load rule on a path, as UsdStageLoadRules has them.
 enum SceneLoadRuleEnum {

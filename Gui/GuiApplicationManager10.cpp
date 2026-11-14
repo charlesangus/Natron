@@ -37,8 +37,10 @@
 ///gui
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QAbstractButton>
 #include <QApplication>
 #include <QDebug>
+#include <QDialog>
 #include <QFileInfo>
 #include <QFileOpenEvent>
 #include <QGuiApplication>
@@ -46,6 +48,8 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QPixmapCache>
 #include <QScreen>
 #include <QSettings>
+#include <QThread>
+#include <QTimer>
 #include <QWidget>
 #include <QtGlobal> // for Q_OS_*
 CLANG_DIAG_ON(deprecated)
@@ -512,6 +516,10 @@ GuiApplicationManager::exitApp(bool warnUserForSave)
             triedInstances.insert(app);
             app->getGui()->abortProject(true, warnUserForSave, true);
         }
+        if (_imp->terminationRequested) {
+            // A termination signal dismissed this quit's save question; its own pass closes the rest without asking.
+            return;
+        }
 
         //refreshg ui instances
         instances = getAppInstances();
@@ -522,6 +530,104 @@ GuiApplicationManager::exitApp(bool warnUserForSave)
                 guiApps.push_back(ga);
             }
         }
+    }
+}
+
+void
+GuiApplicationManager::requestTermination()
+{
+    if (_imp->terminationRequested) {
+        return;
+    }
+    _imp->terminationRequested = true;
+    continueTermination();
+}
+
+void
+GuiApplicationManager::scheduleTerminationRetry()
+{
+    if (_imp->terminationRetryScheduled) {
+        return;
+    }
+    _imp->terminationRetryScheduled = true;
+    // Not zero: while a nested loop that is no dialog runs its course, the retry would spin the main thread.
+    QTimer::singleShot(20, this, [this]() {
+        _imp->terminationRetryScheduled = false;
+        continueTermination();
+    });
+}
+
+void
+GuiApplicationManager::continueTermination()
+{
+    if (!_imp->terminationRequested || isTearingDown()) {
+        return;
+    }
+    if (_imp->terminationRunning) {
+        scheduleTerminationRetry();
+
+        return;
+    }
+
+    // Closing a project under a modal dialog or a nested event loop would delete the Gui while the code that opened
+    // them is still on the stack. Dismiss them and come back once the stack has unwound to the main event loop.
+    bool mustWait = QThread::currentThread()->loopLevel() > 1;
+    if (QWidget* popup = QApplication::activePopupWidget()) {
+        popup->close();
+        mustWait = true;
+    }
+    if (QWidget* modal = QApplication::activeModalWidget()) {
+        QMessageBox* box = qobject_cast<QMessageBox*>(modal);
+        QAbstractButton* cancel = nullptr;
+        if (box) {
+            for (QAbstractButton* button : box->buttons()) {
+                if (box->buttonRole(button) == QMessageBox::RejectRole) {
+                    cancel = button;
+                    break;
+                }
+            }
+        }
+        if (cancel) {
+            // The save question's Cancel: the quit it belongs to gives up, and the pass after it closes unasked.
+            cancel->click();
+        } else if (QDialog* dialog = qobject_cast<QDialog*>(modal)) {
+            dialog->reject();
+        } else {
+            modal->close();
+        }
+        mustWait = true;
+    }
+    if (mustWait) {
+        scheduleTerminationRetry();
+
+        return;
+    }
+
+    _imp->terminationRunning = true;
+    bool waitingForSave = false;
+    const AppInstanceVec instances = getAppInstances();
+    for (const AppInstancePtr& instance : instances) {
+        GuiAppInstancePtr app = std::dynamic_pointer_cast<GuiAppInstance>(instance);
+        // An instance whose quit already started, from File > Quit or an earlier pass, closes on its own.
+        if (!app || app->isClosing() || app->isQuitRequested() || !app->getGui()) {
+            continue;
+        }
+        // A project that refuses is not closed: the request stays, and is retried when its save ends.
+        if (!app->getGui()->abortProject(true, false, true)) {
+            waitingForSave = true;
+            ProjectPtr project = app->getProject();
+            if (project && project->isSavingOnMainThread()) {
+                QObject::connect(project.get(), &Project::mainThreadSavesEnded, this, [this]() { continueTermination(); }, Qt::ConnectionType(Qt::QueuedConnection | Qt::SingleShotConnection));
+            } else {
+                scheduleTerminationRetry();
+            }
+        }
+    }
+    _imp->terminationRunning = false;
+
+    // The last closed project ends the event loop; this is for a request that arrives before any project exists.
+    if (!waitingForSave && qApp && (getNumInstances() == 0)) {
+        qApp->quit();
     }
 }
 

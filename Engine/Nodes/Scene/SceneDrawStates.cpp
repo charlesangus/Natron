@@ -34,7 +34,7 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 using StateMap = std::map<std::string, SceneDrawStates::Stored, SceneDrawStates::PathLess>;
-using PolicyMap = std::map<std::string, SceneDrawStateEnum, SceneDrawStates::PathLess>;
+using PolicyMap = SceneDrawStates::PolicyStates;
 
 enum FrameKindEnum {
     eFrameDrawn,
@@ -135,7 +135,7 @@ lookUp(const StateMap& states,
     }
     const PolicyMap::const_iterator policed = policy.find(path);
     if (policed != policy.end()) {
-        *state = policed->second;
+        *state = policed->second.state;
 
         return true;
     }
@@ -299,7 +299,7 @@ SceneDrawStates::effectsUnder(const std::string& root,
         }
         const bool takeSet = hasSet && (!hasPolicy || !less(policed->first, set->first));
         const std::string path = takeSet ? set->first : policed->first;
-        const SceneDrawStateEnum state = takeSet ? set->second.state : policed->second;
+        const SceneDrawStateEnum state = takeSet ? set->second.state : policed->second.state;
         const bool direct = takeSet && set->second.direct;
         ++*visited;
 
@@ -496,6 +496,25 @@ SceneDrawStates::editRows(const std::vector<SceneDrawRowEdit>& edits)
     for (const SceneDrawRowEdit& edit : edits) {
         roots.push_back(rootOf(edit));
     }
+    std::vector<std::string> retryLoads;
+    for (const SceneDrawRowEdit& edit : edits) {
+        if (edit.kind == SceneDrawRowEdit::eKindSet) {
+            retryLoads.push_back(edit.path);
+        }
+    }
+
+    return editUnder(roots, retryLoads, [this, &edits]() {
+        for (const SceneDrawRowEdit& edit : edits) {
+            applyRowEdit(edit);
+        }
+    });
+}
+
+SceneDrawDelta
+SceneDrawStates::editUnder(std::vector<std::string> roots,
+                           const std::vector<std::string>& retryLoads,
+                           const std::function<void()>& change)
+{
     const PathLess less;
     std::sort(roots.begin(), roots.end(), less);
     std::vector<std::string> covering;
@@ -510,13 +529,7 @@ SceneDrawStates::editRows(const std::vector<SceneDrawRowEdit>& edits)
     for (const std::string& root : covering) {
         before.push_back(effectsUnder(root, &visited));
     }
-    std::vector<std::string> retryLoads;
-    for (const SceneDrawRowEdit& edit : edits) {
-        applyRowEdit(edit);
-        if (edit.kind == SceneDrawRowEdit::eKindSet) {
-            retryLoads.push_back(edit.path);
-        }
-    }
+    change();
     SceneDrawDelta delta;
     for (std::size_t i = 0; i < covering.size(); ++i) {
         SceneDrawDelta part = applyEdit(covering[i], retryLoads, before[i], 0);
@@ -569,7 +582,7 @@ SceneDrawStates::setPolicyState(const std::string& path,
 {
     std::size_t visited = 0;
     const Effects before = effectsUnder(path, &visited);
-    _policy[path] = state;
+    _policy[path] = Policy { state, std::string() };
 
     return applyEdit(path, std::vector<std::string>(), before, visited);
 }
@@ -582,6 +595,75 @@ SceneDrawStates::clearPolicyState(const std::string& path)
     _policy.erase(path);
 
     return applyEdit(path, std::vector<std::string>(), before, visited);
+}
+
+SceneDrawDelta
+SceneDrawStates::replacePolicyStates(const PolicyStates& policy)
+{
+    // Both maps are in path order: one walk finds every path whose policy changed.
+    std::vector<std::string> changed;
+    const PathLess less;
+    PolicyStates::const_iterator was = _policy.begin();
+    PolicyStates::const_iterator now = policy.begin();
+    while ((was != _policy.end()) || (now != policy.end())) {
+        if ((now == policy.end()) || ((was != _policy.end()) && less(was->first, now->first))) {
+            changed.push_back(was->first);
+            ++was;
+        } else if ((was == _policy.end()) || less(now->first, was->first)) {
+            changed.push_back(now->first);
+            ++now;
+        } else {
+            // The origin alone changing still changes what the row shows of where its state comes from.
+            if (was->second != now->second) {
+                changed.push_back(now->first);
+            }
+            ++was;
+            ++now;
+        }
+    }
+    if (changed.empty()) {
+        _policy = policy;
+
+        return SceneDrawDelta();
+    }
+
+    return editUnder(changed, std::vector<std::string>(), [this, &policy]() { _policy = policy; });
+}
+
+bool
+SceneDrawStates::getPolicyState(const std::string& path,
+                                Policy* policy) const
+{
+    const PolicyStates::const_iterator it = _policy.find(path);
+    if (it == _policy.end()) {
+        return false;
+    }
+    *policy = it->second;
+
+    return true;
+}
+
+void
+sceneAddDrawRuleMatch(const std::string& path,
+                      SceneDrawStateEnum state,
+                      const std::string& origin,
+                      SceneDrawStates::PolicyStates* policy)
+{
+    if ((state == eSceneDrawStateFull) || (state == eSceneDrawStateLoadAll)) {
+        // Whether the row above is a Children row, whose unset children are boxes.
+        bool expanded = false;
+        for (const std::string& ancestor : ancestorsOf(path)) {
+            const SceneDrawStates::PolicyStates::iterator found = policy->find(ancestor);
+            const bool isSet = (found != policy->end());
+            if (isSet ? stops(found->second.state) : expanded) {
+                (*policy)[ancestor] = SceneDrawStates::Policy { eSceneDrawStateChildren, origin };
+                expanded = true;
+            } else if (isSet) {
+                expanded = (found->second.state == eSceneDrawStateChildren);
+            }
+        }
+    }
+    (*policy)[path] = SceneDrawStates::Policy { state, origin };
 }
 
 bool
@@ -615,7 +697,7 @@ SceneDrawStates::resolve(const std::string& path) const
         const PolicyMap::const_iterator policed = _policy.find(level);
         const bool found = (set != _states.end()) || (policed != _policy.end());
         if (found) {
-            resolved.state = (set != _states.end()) ? set->second.state : policed->second;
+            resolved.state = (set != _states.end()) ? set->second.state : policed->second.state;
             resolved.origin = (set != _states.end()) ? eSceneDrawOriginViewer : eSceneDrawOriginGraphPolicy;
         } else if (frame.kind == eFrameExpanded) {
             resolved.state = eSceneDrawStateBBox;
@@ -671,6 +753,32 @@ SceneDrawStates::replaceSetStates(const std::vector<std::pair<std::string, Store
     _states = StateMap(states.begin(), states.end());
 
     return applyEdit("/", std::vector<std::string>(), before, visited);
+}
+
+SceneDrawDelta
+SceneDrawStates::mergeSetStates(const std::vector<std::pair<std::string, Stored>>& states)
+{
+    std::vector<std::string> roots;
+    roots.reserve(states.size());
+    for (const std::pair<std::string, Stored>& state : states) {
+        roots.push_back(state.first);
+    }
+
+    return editUnder(roots, std::vector<std::string>(), [this, &states]() {
+        for (const std::pair<std::string, Stored>& state : states) {
+            _states[state.first] = state.second;
+        }
+    });
+}
+
+SceneDrawDelta
+SceneDrawStates::clearSetStates(const std::vector<std::string>& paths)
+{
+    return editUnder(paths, std::vector<std::string>(), [this, &paths]() {
+        for (const std::string& path : paths) {
+            _states.erase(path);
+        }
+    });
 }
 
 const char*

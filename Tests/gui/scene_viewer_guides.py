@@ -73,6 +73,7 @@ try:
         return node
 
     usd = make("USDRead", 0, 0)
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     # Both sit in front of the box, inside the framed bounds of the box and the ball.
     cam = make("USDCamera", 150, 0)

@@ -222,6 +222,12 @@ public:
         return getSceneLayerAuthorCount();
     }
 
+    // The draw rules the node's output carries from its next evaluation on.
+    void setDrawRules(const SceneDrawRules& rules)
+    {
+        _drawRules = rules;
+    }
+
 private:
     static constexpr InputSpec kInputs[] = {
         InputSpec { .label = "Source", .kind = eDataKindScene, .optional = false },
@@ -284,11 +290,17 @@ private:
             reads.factsDigest = (U64)(std::int64_t)sourceValue;
             return emitSceneLayer(upstream, reads, [value, sourceValue](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorFactOp(edit, value, sourceValue, error); }, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
         }
-        return emitSceneLayer(upstream, [value](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorOp(edit, value, error); }, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
+        if (!emitSceneLayer(upstream, [value](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorOp(edit, value, error); }, outputScene, errorMessage)) {
+            return eStatusFailed;
+        }
+        *outputScene = outputScene->withDrawRules(_drawRules);
+
+        return eStatusOK;
     }
 
     KnobIntWPtr _value;
     KnobIntWPtr _upstreamRead;
+    SceneDrawRules _drawRules;
 };
 
 /**

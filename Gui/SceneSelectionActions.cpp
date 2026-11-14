@@ -53,17 +53,21 @@
 #include <QWidget>
 #include <QtCore/QCoreApplication>
 
+#include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/USDExpandHierarchy.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Plugin.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/DockablePanel.h"
@@ -493,6 +497,191 @@ isWildcardToken(const QString& token)
 
 // The search Select Matches started last; an older one that ends later is dropped.
 int g_matchSearchGeneration = 0;
+
+typedef std::vector<std::pair<std::string, SceneDrawStates::Stored>> SetDrawStates;
+
+// Clears the draw states a bake turned into rules. Undo puts them back over whatever the viewer
+// set since, and leaves the states set elsewhere since as they are.
+class BakeDrawStatesCommand
+    : public QUndoCommand {
+public:
+    BakeDrawStatesCommand(SceneViewport* viewport,
+                          const SetDrawStates& baked,
+                          const QString& text)
+        : QUndoCommand(text)
+        , _viewport(viewport)
+        , _baked(baked)
+    {
+        _paths.reserve(baked.size());
+        for (const SetDrawStates::value_type& state : baked) {
+            _paths.push_back(state.first);
+        }
+    }
+
+    void undo() override
+    {
+        if (_viewport) {
+            SceneViewport* viewport = _viewport;
+            const SetDrawStates baked = _baked;
+            _viewport->editWithGraphPolicy([viewport, baked]() { viewport->mergeSetDrawStates(baked); });
+        }
+    }
+
+    void redo() override
+    {
+        if (_viewport) {
+            // The rules stand in for the states, so the states go with the rules' policy: no frame
+            // shows neither.
+            SceneViewport* viewport = _viewport;
+            const std::vector<std::string> paths = _paths;
+            _viewport->editWithGraphPolicy([viewport, paths]() { viewport->clearSetDrawStates(paths); });
+        }
+    }
+
+private:
+    QPointer<SceneViewport> _viewport;
+    SetDrawStates _baked;
+    std::vector<std::string> _paths;
+};
+
+class StepScope {
+public:
+    StepScope(UndoHistory* history,
+              const QString& text)
+        : _history(history)
+    {
+        _history->openStep(text, true);
+    }
+
+    ~StepScope()
+    {
+        _history->closeStep();
+    }
+
+    StepScope(const StepScope&) = delete;
+    StepScope& operator=(const StepScope&) = delete;
+
+private:
+    UndoHistory* _history;
+};
+
+// A disabled node's rules reach no viewer, so baking into one would change what is drawn.
+bool
+isExpandHierarchy(const NodePtr& node)
+{
+    return node && node->isActivated() && !node->isNodeDisabled() && dynamic_cast<USDExpandHierarchy*>(node->getEffectInstance().get());
+}
+
+NodePtr
+expandHierarchyBelow(const NodePtr& viewed)
+{
+    for (const NodeWPtr& outputW : viewed->getOutputs()) {
+        NodePtr output = outputW.lock();
+        if (isExpandHierarchy(output) && (output->getInput(0) == viewed)) {
+            return output;
+        }
+    }
+
+    return NodePtr();
+}
+
+// Creates a USDExpandHierarchy reading viewed that takes viewed's place in every input viewed fed
+// and that can read it, the viewer's included, as an undoable edit.
+NodePtr
+createExpandHierarchyAfter(const NodePtr& viewed,
+                           NodeGraph* graph)
+{
+    AppInstancePtr app = viewed->getApp();
+    if (!app) {
+        return NodePtr();
+    }
+    CreateNodeArgs args(PLUGINID_NATRON_USDEXPANDHIERARCHY, viewed->getGroup());
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
+    // Its command goes in only once it reads viewed: a node that cannot is removed unseen.
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+    NodePtr created = app->createNode(args);
+    if (!created) {
+        return NodePtr();
+    }
+
+    std::vector<ReconnectInputsCommand::InputChange> outputs;
+    for (const NodeWPtr& outputW : viewed->getOutputs()) {
+        NodePtr output = outputW.lock();
+        if (!output || (output == created) || !output->getParentMultiInstanceName().empty()) {
+            continue;
+        }
+        const EffectInstancePtr effect = output->getEffectInstance();
+        const int inputs = output->getNInputs();
+        for (int i = 0; i < inputs; ++i) {
+            if ((output->getInput(i) == viewed) && !effect->isInputMask(i) && !output->isInputDataKindUnacceptable(created, i)) {
+                outputs.push_back(ReconnectInputsCommand::InputChange { output, i, viewed, created });
+            }
+        }
+    }
+
+    const NodePtr previousInput = created->getInput(0);
+    const NodeGuiPtr createdGui = std::dynamic_pointer_cast<NodeGui>(created->getNodeGui());
+    if (!createdGui || !created->replaceInput(viewed, 0)) {
+        created->destroyNode(false, false);
+
+        return NodePtr();
+    }
+    AddMultipleNodesCommand* added = new AddMultipleNodesCommand(graph, createdGui);
+    added->setCreationAutoSaves();
+    graph->pushUndoCommand(added, NodesGuiList(1, createdGui));
+    std::vector<ReconnectInputsCommand::InputChange> changes;
+    changes.push_back(ReconnectInputsCommand::InputChange { created, 0, previousInput, viewed });
+    UndoScope scope;
+    scope.touchNode(created);
+    scope.touchNode(viewed);
+    NodePtr below;
+    for (const ReconnectInputsCommand::InputChange& change : outputs) {
+        NodePtr output = change.node.lock();
+        if (output && output->replaceInput(created, change.inputNb)) {
+            changes.push_back(change);
+            scope.touchNode(output);
+            if (!below) {
+                below = output;
+            }
+        }
+    }
+    placeBelow(viewed, created, below);
+    // The connections are made, so the command's first redo does nothing.
+    graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
+
+    return created;
+} // createExpandHierarchyAfter
+
+// Connects viewer's active input A to node, as an undoable edit, unless it reads node already.
+void
+viewNode(ViewerTab* viewer,
+         const NodePtr& node)
+{
+    ViewerInstance* instance = viewer->getInternalNode();
+    NodePtr viewerNode = instance ? instance->getNode() : NodePtr();
+    NodeCollectionPtr group = viewerNode ? viewerNode->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
+    if (!graph) {
+        return;
+    }
+    int a = -1, b = -1;
+    instance->getActiveInputs(a, b);
+    if (a < 0) {
+        return;
+    }
+    const NodePtr before = viewerNode->getInput(a);
+    if ((before == node) || !viewerNode->replaceInput(node, a)) {
+        return;
+    }
+    UndoScope scope;
+    scope.touchNode(viewerNode);
+    scope.touchNode(node);
+    std::vector<ReconnectInputsCommand::InputChange> changes;
+    changes.push_back(ReconnectInputsCommand::InputChange { viewerNode, a, before, node });
+    // The connection is made, so the command's first redo does nothing.
+    graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
+}
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
@@ -1233,6 +1422,93 @@ cancelArmedPick()
         g_armedPick->end();
     }
 }
+
+QString
+bakeBlocker(ViewerTab* viewer)
+{
+    SceneViewport* viewport = viewer ? viewer->getSceneViewport() : nullptr;
+    const NodePtr viewed = viewer ? viewer->getSceneViewedNode() : NodePtr();
+    NodeCollectionPtr group = viewed ? viewed->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
+
+    if (!viewport || !viewed || !graph) {
+        return tr("Bake to Node: the viewer shows no scene.");
+    }
+    if (!viewport->hasSetDrawStates()) {
+        return tr("Bake to Node: this viewer sets no draw state.");
+    }
+
+    return QString();
+}
+
+bool
+bakeToNode(Gui* gui,
+           ViewerTab* viewer)
+{
+    UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
+    QString blocker = bakeBlocker(viewer);
+
+    if (blocker.isEmpty() && !history) {
+        blocker = tr("Bake to Node: the viewer shows no scene.");
+    }
+    if (!blocker.isEmpty()) {
+        showHint(gui, blocker);
+
+        return false;
+    }
+    SceneViewport* viewport = viewer->getSceneViewport();
+    const NodePtr viewed = viewer->getSceneViewedNode();
+    NodeGraph* graph = dynamic_cast<NodeGraph*>(viewed->getGroup()->getNodeGraph());
+    const SetDrawStates states = viewport->getSetDrawStates();
+
+    if (states.empty()) {
+        showHint(gui, tr("Bake to Node: this viewer sets no draw state."));
+
+        return false;
+    }
+    std::vector<std::pair<std::string, SceneDrawStateEnum>> stateOf;
+    stateOf.reserve(states.size());
+    for (const SetDrawStates::value_type& state : states) {
+        stateOf.push_back(std::make_pair(state.first, state.second.state));
+    }
+    const std::vector<USDExpandHierarchy::Rule> rules = USDExpandHierarchy::getRulesForStates(stateOf);
+
+    NodePtr target = isExpandHierarchy(viewed) ? viewed : expandHierarchyBelow(viewed);
+    USDExpandHierarchy* expand = target ? dynamic_cast<USDExpandHierarchy*>(target->getEffectInstance().get()) : nullptr;
+    const int room = expand ? expand->getFreeRuleCount() : (int)kUSDExpandHierarchyMaxRules;
+    if ((int)rules.size() > room) {
+        if (target) {
+            showHint(gui, tr("Bake to Node: %1 has room for %2 more rules, and the draw states of this viewer take %3.").arg(QString::fromStdString(target->getLabel())).arg(room).arg(rules.size()));
+        } else {
+            showHint(gui, tr("Bake to Node: a USDExpandHierarchy holds at most %1 rules, and the draw states of this viewer take %2.").arg(room).arg(rules.size()));
+        }
+
+        return false;
+    }
+
+    StepScope step(history, tr("Bake to Node"));
+    if (!target) {
+        target = createExpandHierarchyAfter(viewed, graph);
+        if (!target) {
+            showHint(gui, tr("Bake to Node: the USDExpandHierarchy could not be created."));
+
+            return false;
+        }
+    }
+    if (!expand) {
+        expand = dynamic_cast<USDExpandHierarchy*>(target->getEffectInstance().get());
+    }
+    if (!expand) {
+        showHint(gui, tr("Bake to Node: the USDExpandHierarchy could not be created."));
+
+        return false;
+    }
+    viewNode(viewer, target);
+    expand->appendRules(rules);
+    history->push(new BakeDrawStatesCommand(viewport, states, tr("Clear Draw States")), UndoScope());
+
+    return true;
+} // bakeToNode
 
 void
 showHint(Gui* gui,

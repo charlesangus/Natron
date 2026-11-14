@@ -65,8 +65,9 @@ std::string attributeName(const std::string& rendererId,
 
 /**
  * @brief The delegate key the attribute holds: the name itself, or the name without its
- * namespace when the delegate declares (or curates) the key that way. Empty when the attribute is
- * in none of the renderer's namespaces.
+ * namespace when the delegate declares (or curates) the key that way, or when it is a Hydra key
+ * the delegate reads undeclared ("storm:domeLightCameraVisibility" holds
+ * "domeLightCameraVisibility"). Empty when the attribute is in none of the renderer's namespaces.
  **/
 std::string keyFromAttribute(const std::string& rendererId,
                              const std::string& attributeName);

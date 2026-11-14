@@ -172,6 +172,9 @@ const int kMaxRenderPasses = 8;
 // A stage change usually reaches the screen sooner than this, and a status flashing over the old
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
+// The longest a sync's first frame waits for the graph policy its prims take: past it, the view
+// draws them as they are rather than seem stuck.
+const int kPolicyHoldMs = 500;
 
 // A paced reveal aims for 30 frames a second, the rate a viewer still tumbles smoothly at.
 const double kRevealTargetMs = 33.;
@@ -668,6 +671,41 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<U64> backgroundCancels { 0 };
 
     // Takes stageMutex to edit, waiting for it.
+    /**
+     * @brief Takes what the payload of a sync was evaluated for. False if its patterns did not
+     * match on what the stage loads now, so it is evaluated again for that and is not synced.
+     **/
+    bool takeSyncLoadSet(const ScenePayload& payload)
+    {
+        SceneLoadSetPtr evaluatedFor;
+        SceneLoadReachPtr reach;
+        SceneLoadSetPtr committedLoadSet;
+        SceneViewportRenderer::LoadSetCommitted committed;
+        {
+            std::lock_guard<std::mutex> loadSetLock(loadSetMutex);
+            evaluatedFor.swap(syncLoadSet);
+            reach.swap(syncReach);
+            committedLoadSet = this->committedLoadSet;
+            committed = loadSetCommitted;
+        }
+        if (reach && !payload.isEmpty() && SceneOps::loadChangeReaches(evaluatedFor.get(), committedLoadSet.get(), reach->getPrefixes())) {
+            if (committed) {
+                committed(committedLoadSet, true);
+            }
+
+            return false;
+        }
+        {
+            // Matches made for evaluatedFor hold for the committed set, which the next load
+            // change is measured from.
+            std::lock_guard<std::mutex> loadSetLock(loadSetMutex);
+            shownLoadSet = committedLoadSet;
+            shownReach = payload.isEmpty() ? std::make_shared<SceneLoadReach>() : reach;
+        }
+
+        return true;
+    }
+
     std::unique_lock<std::shared_mutex> lockExclusive()
     {
         struct Waiting {
@@ -805,6 +843,7 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<double> timeCodesPerSecond;
     std::atomic<double> frame;
     std::atomic<double> framesPerSecond;
+    std::atomic<bool> stageHeld { false };
 
     // Main thread only.
     DrawModeEnum drawMode = eDrawModeShaded;
@@ -2868,7 +2907,23 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
     bool restart = false;
+    bool unchanged = false;
     {
+        // Playback and draw rule edits sync the stack the stage has: these leave the stage as it
+        // is, so the paints that read it go on meanwhile.
+        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        unchanged = _imp->sceneStage && _imp->sceneStage->isValid() && _imp->loadRulesMade && (_imp->shown == !payload.isEmpty())
+            && !((serial != 0) && (serial > _imp->previewClearAfter.load())) && _imp->sceneStage->isSyncedTo(payload);
+    }
+    if (unchanged) {
+        if (!_imp->takeSyncLoadSet(payload)) {
+            return true;
+        }
+        if (framesPerSecond > 0.) {
+            _imp->frame = frame;
+            _imp->framesPerSecond = framesPerSecond;
+        }
+    } else {
         const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
         if (!_imp->sceneStage) {
             // The viewer shows what was asked for: nothing loads until a load is requested.
@@ -2891,31 +2946,8 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         if (!_imp->loadRulesMade) {
             _imp->publishLoadRules();
         }
-        SceneLoadSetPtr evaluatedFor;
-        SceneLoadReachPtr reach;
-        SceneLoadSetPtr committedLoadSet;
-        SceneViewportRenderer::LoadSetCommitted committed;
-        {
-            std::lock_guard<std::mutex> loadSetLock(_imp->loadSetMutex);
-            evaluatedFor.swap(_imp->syncLoadSet);
-            reach.swap(_imp->syncReach);
-            committedLoadSet = _imp->committedLoadSet;
-            committed = _imp->loadSetCommitted;
-        }
-        if (reach && !payload.isEmpty() && SceneOps::loadChangeReaches(evaluatedFor.get(), committedLoadSet.get(), reach->getPrefixes())) {
-            // Its patterns did not match on what the stage loads now: evaluated again for that.
-            if (committed) {
-                committed(committedLoadSet, true);
-            }
-
+        if (!_imp->takeSyncLoadSet(payload)) {
             return true;
-        }
-        {
-            // Matches made for evaluatedFor hold for the committed set, which the next load
-            // change is measured from.
-            std::lock_guard<std::mutex> loadSetLock(_imp->loadSetMutex);
-            _imp->shownLoadSet = committedLoadSet;
-            _imp->shownReach = payload.isEmpty() ? std::make_shared<SceneLoadReach>() : reach;
         }
         if ((serial != 0) && (serial > _imp->previewClearAfter.load())) {
             // In the same step as the sync, so no frame shows the scene without the drag.
@@ -3073,7 +3105,7 @@ bool
 SceneViewportRenderer::needsBackgroundFrame() const
 {
     // Another delegate than Storm renders on the refinement's own thread.
-    if (!_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty() || (getActiveRendererId() != kRenderDelegateStormId)) {
+    if (_imp->stageHeld || !_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty() || (getActiveRendererId() != kRenderDelegateStormId)) {
         return false;
     }
 
@@ -3147,6 +3179,18 @@ void
 SceneViewportRenderer::noteDrawRevealPresented()
 {
     _imp->drawRevealStepDue = true;
+}
+
+void
+SceneViewportRenderer::setStageHeld(bool held)
+{
+    _imp->stageHeld = held;
+}
+
+bool
+SceneViewportRenderer::isStageHeld() const
+{
+    return _imp->stageHeld;
 }
 
 int
@@ -4585,10 +4629,14 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     const GfFrustum frustum = _imp->computeFrustum(width, height);
     _imp->sceneLit = _imp->usesSceneLights();
     UsdImagingGLRenderParams params = _imp->renderParams();
-    const bool kept = _imp->takeBackgroundImage(fbo, width, height, frustum, params);
+    const bool held = _imp->stageHeld;
+    const bool kept = !held && _imp->takeBackgroundImage(fbo, width, height, frustum, params);
     Implementation::bindFrameTarget(fbo, width, height);
-    bool converged = kept;
-    if (!kept) {
+    bool converged = kept || held;
+    if (held) {
+        // The engine is not handed the stage either: it would take its prims in at full.
+        Implementation::clearFrameTarget(_imp->backgroundShown);
+    } else if (!kept) {
         Implementation::clearFrameTarget(_imp->backgroundShown);
         _imp->setCamera(frustum, width, height, _imp->sceneLit);
         SceneDrawTiming* timing = _imp->drawTiming.get();
@@ -4631,8 +4679,10 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         // A kept image was graded by the frame that left it.
         _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
     }
-    _imp->noteDrawFilterRendered(!kept);
-    _imp->noteStageAbsorbed(params);
+    if (!held) {
+        _imp->noteDrawFilterRendered(!kept);
+        _imp->noteStageAbsorbed(params);
+    }
 
     _imp->drawnGuides.clear();
     _imp->feedBoxes();
@@ -4650,7 +4700,9 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         if (_imp->showGrid) {
             _imp->drawGrid(frustum);
         }
-        _imp->drawBoxes(frustum, width, height);
+        if (!held) {
+            _imp->drawBoxes(frustum, width, height);
+        }
         if (_imp->showGuides) {
             _imp->drawGuides(frustum, width, height);
         }
@@ -4694,28 +4746,32 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
 
         return eRenderStatusDone;
     }
-    // The prim's settings for the renderer first, so that its engine is made under them; the
-    // view's own sample cap applies over its samples.
-    progressive.setSettings(_imp->sceneSettingsFor(_imp->rendererId));
-    if (_imp->refineRenderer != _imp->rendererId) {
-        progressive.setRenderer(_imp->rendererId);
-        _imp->refineRenderer = _imp->rendererId;
-    }
     const GfFrustum frustum = _imp->computeFrustum(width, height);
-    HydraRender::ProgressiveRender::View view;
-    view.frustum = frustum;
-    view.width = width;
-    view.height = height;
-    view.time = UsdTimeCode(_imp->timeCode());
-    progressive.setMaxSamples(_imp->maxSamples);
-    progressive.setView(view);
+    const bool held = _imp->stageHeld;
+    HydraRender::ProgressiveRender::Status status;
+    if (!held) {
+        // The prim's settings for the renderer first, so that its engine is made under them; the
+        // view's own sample cap applies over its samples.
+        progressive.setSettings(_imp->sceneSettingsFor(_imp->rendererId));
+        if (_imp->refineRenderer != _imp->rendererId) {
+            progressive.setRenderer(_imp->rendererId);
+            _imp->refineRenderer = _imp->rendererId;
+        }
+        HydraRender::ProgressiveRender::View view;
+        view.frustum = frustum;
+        view.width = width;
+        view.height = height;
+        view.time = UsdTimeCode(_imp->timeCode());
+        progressive.setMaxSamples(_imp->maxSamples);
+        progressive.setView(view);
 
-    const HydraRender::ProgressiveRender::Status status = progressive.getStatus();
-    _imp->setRefineErrorCopy(status.error);
-    if (!status.error.empty()) {
-        return eRenderStatusDone;
+        status = progressive.getStatus();
+        _imp->setRefineErrorCopy(status.error);
+        if (!status.error.empty()) {
+            return eRenderStatusDone;
+        }
     }
-    const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = progressive.getFrame();
+    const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = held ? std::shared_ptr<const HydraRender::ProgressiveRender::Frame>() : progressive.getFrame();
     if (frame && (frame->width > 0) && (frame->height > 0)) {
         const GLsizei frameWidth = frame->width;
         const GLsizei frameHeight = frame->height;
@@ -4793,11 +4849,16 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         if (_imp->showGrid) {
             _imp->drawGrid(frustum);
         }
-        _imp->drawBoxes(frustum, width, height);
+        if (!held) {
+            _imp->drawBoxes(frustum, width, height);
+        }
         if (_imp->showGuides) {
             _imp->drawGuides(frustum, width, height);
         }
         _imp->drawTransformHandles(frustum, width, height);
+    }
+    if (held) {
+        return eRenderStatusDone;
     }
 
     const bool finished = status.converged && frame && frame->converged && (frame->restart == status.restarts);
@@ -5795,6 +5856,122 @@ struct SceneViewport::Implementation {
     SceneLoadSetPtr requestedLoadSet;
     SceneLoadReachPtr requestedReach;
 
+    // The draw rules of the scene the worker last matched, and how many times they changed; the
+    // load thread matches them again after each load, so a pattern finds what the load brought.
+    std::mutex drawRulesMutex;
+    SceneDrawRules syncedDrawRules;
+    U64 drawRulesGeneration = 0;
+    // Under drawRulesMutex: what the rules of matchedRowsGeneration last matched, on the stage at
+    // matchedRowsEditCount with matchedRowsLoadSet loaded. A match after loads walks only what
+    // they changed.
+    bool matchedRowsValid = false;
+    SceneOps::SceneDrawRuleMatches matchedRows;
+    U64 matchedRowsGeneration = 0;
+    U64 matchedRowsEditCount = 0;
+    SceneLoadSetPtr matchedRowsLoadSet;
+    // The worker's matches, numbered, so that a sync knows which match its first frame waits on.
+    std::atomic<U64> matchesIssued { 0 };
+    // Main thread: the policy last put in the draw states, and the generation it was matched for.
+    SceneDrawStates::PolicyStates appliedPolicy;
+    U64 appliedDrawRulesGeneration = 0;
+    // Main thread: the last of the worker's matches handed over, and the one frames leave the stage
+    // out for, 0 for none. Only the first sync of a newly viewed node holds the stage, as it has no
+    // policy before to draw with; policyHoldTimer bounds the hold.
+    U64 appliedMatch = 0;
+    U64 heldMatch = 0;
+    QTimer* policyHoldTimer = nullptr;
+    // Main thread: the node the last setScene() showed, and the first request made for a node newly
+    // viewed while no sync of it has come back, 0 for none.
+    NodeWPtr sceneNode;
+    U64 newNodeSerial = 0;
+    // Main thread: draw state edits that wait for the policy of a graph edit made with them, so that
+    // one frame shows both, and the first sync serial and rules generation whose match runs them.
+    std::vector<std::function<void()>> policyEdits;
+    U64 policyEditsSerial = 0;
+    U64 policyEditsGeneration = 0;
+    QTimer* policyEditsTimer = nullptr;
+
+    // Main thread: whether frames leave the stage out until the graph policy is in the draw states.
+    bool policyHeld() const
+    {
+        return (heldMatch != 0) && ((appliedMatch < heldMatch) || (drawStates && (drawStates->getOutstandingCount() > 0)));
+    }
+
+    /**
+     * @brief Any thread but the main one: matches rules on the stage shown and hands the policy to
+     * view, with matchId, 0 for none, and the serial of the sync matched for, 0 for a match after
+     * loads. False, handing nothing, once cancelled turns true. After loads, a match of the
+     * generation last matched on the same stack walks only the subtrees whose loads changed since.
+     **/
+    bool matchDrawRules(SceneViewport* view,
+                        const SceneDrawRules& rules,
+                        U64 generation,
+                        U64 matchId,
+                        U64 serial,
+                        const std::function<bool()>& cancelled,
+                        bool afterLoads)
+    {
+        SceneOps::SceneDrawRuleMatches matches;
+        bool cached = false;
+        U64 cachedEditCount = 0;
+        SceneLoadSetPtr cachedLoadSet;
+        if (afterLoads) {
+            std::lock_guard<std::mutex> lock(drawRulesMutex);
+            if (matchedRowsValid && (matchedRowsGeneration == generation)) {
+                matches = matchedRows;
+                cachedEditCount = matchedRowsEditCount;
+                cachedLoadSet = matchedRowsLoadSet;
+                cached = true;
+            }
+        }
+        bool matched = true;
+        U64 editCount = 0;
+        SceneLoadSetPtr loadSet;
+        renderer.readStage([&](const SceneStage* stage) {
+            const UsdStageRefPtr usdStage = stage ? stage->getStage() : UsdStageRefPtr();
+            if (stage) {
+                editCount = stage->getEditCount();
+                loadSet = stage->getLoadSet();
+            }
+            if (cached && stage && (editCount == cachedEditCount)) {
+                matched = SceneOps::rematchDrawRulesUnder(usdStage, rules, SceneLoadSet::getChangedPaths(cachedLoadSet.get(), loadSet.get()), &matches, cancelled);
+            } else {
+                matched = SceneOps::matchDrawRules(usdStage, rules, &matches, cancelled);
+            }
+        });
+        if (!matched) {
+            return false;
+        }
+        SceneDrawStates::PolicyStates policy;
+        SceneOps::getDrawRulePolicy(rules, matches, &policy);
+        {
+            std::lock_guard<std::mutex> lock(drawRulesMutex);
+            if (!matchedRowsValid || (generation > matchedRowsGeneration) || ((generation == matchedRowsGeneration) && (editCount >= matchedRowsEditCount))) {
+                matchedRowsValid = true;
+                matchedRows.swap(matches);
+                matchedRowsGeneration = generation;
+                matchedRowsEditCount = editCount;
+                matchedRowsLoadSet = loadSet;
+            }
+        }
+        // Dropped by Qt if the widget is gone by then.
+        QMetaObject::invokeMethod(view, [view, generation, matchId, serial, policy]() { view->onDrawRulesMatched(generation, matchId, serial, policy); }, Qt::QueuedConnection);
+
+        return true;
+    }
+
+    // Worker: publishes rules for the load thread, as a new generation when they changed.
+    U64 publishDrawRules(const SceneDrawRules& rules)
+    {
+        std::lock_guard<std::mutex> lock(drawRulesMutex);
+        if (rules != syncedDrawRules) {
+            syncedDrawRules = rules;
+            ++drawRulesGeneration;
+        }
+
+        return drawRulesGeneration;
+    }
+
     // Main thread: the last request made, the last one synced, and the error the last request
     // shows once synced. A request whose payload shows live textures leaves the renderer at the
     // frame it had until the worker has rendered them, so Hydra never asks for one not stored.
@@ -6139,6 +6316,15 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->composingTimer->setInterval(kComposingStatusDelayMs);
     QObject::connect(_imp->composingTimer, &QTimer::timeout, this, [this]() { update(); });
 
+    _imp->policyHoldTimer = new QTimer(this);
+    _imp->policyHoldTimer->setSingleShot(true);
+    _imp->policyHoldTimer->setInterval(kPolicyHoldMs);
+    QObject::connect(_imp->policyHoldTimer, &QTimer::timeout, this, [this]() { releasePolicyHold(); });
+    _imp->policyEditsTimer = new QTimer(this);
+    _imp->policyEditsTimer->setSingleShot(true);
+    _imp->policyEditsTimer->setInterval(kPolicyHoldMs);
+    QObject::connect(_imp->policyEditsTimer, &QTimer::timeout, this, [this]() { runPolicyEdits(); });
+
     Implementation* imp = _imp.get();
     _imp->loadThread = std::thread([this, imp]() {
         for (;;) {
@@ -6153,6 +6339,27 @@ SceneViewport::SceneViewport(QWidget* parent)
             if (imp->loadQuit) {
                 return;
             }
+            {
+                SceneDrawRules rules;
+                U64 generation = 0;
+                {
+                    std::lock_guard<std::mutex> lock(imp->drawRulesMutex);
+                    rules = imp->syncedDrawRules;
+                    generation = imp->drawRulesGeneration;
+                }
+                if (SceneOps::drawRulesNeedStage(rules)) {
+                    const std::function<bool()> cancelled = [imp, generation]() {
+                        if (imp->loadQuit) {
+                            return true;
+                        }
+                        // Newer rules are matched by the worker, on the whole stage.
+                        std::lock_guard<std::mutex> lock(imp->drawRulesMutex);
+
+                        return imp->drawRulesGeneration != generation;
+                    };
+                    imp->matchDrawRules(this, rules, generation, 0, 0, cancelled, true);
+                }
+            }
             // Payloads without extent hints leave nothing to frame until one of them loads.
             const U64 loadEditCount = imp->renderer.getStageLoadEditCount();
             const SceneViewportRenderer::FrameBounds bounds = imp->renderer.isFramed() ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
@@ -6161,6 +6368,15 @@ SceneViewport::SceneViewport(QWidget* parent)
         }
     });
     _imp->worker = std::thread([this, imp]() {
+        // What the draw rules were last matched for, completely, and the scene the stage last took.
+        bool rulesMatched = false;
+        SceneDrawRules matchedRules;
+        ScenePayload matchedFor;
+        const std::function<bool()> newerRequest = [imp]() {
+            std::lock_guard<std::mutex> lock(imp->queueMutex);
+
+            return imp->quit || imp->hasPending;
+        };
         for (;;) {
             ScenePayload payload;
             U64 serial = 0;
@@ -6211,8 +6427,38 @@ SceneViewport::SceneViewport(QWidget* parent)
                 const QString qerror = QString::fromStdString(error);
                 // The first framing lands with the sync, so the first frame drawn is framed.
                 const SceneViewportRenderer::FrameBounds bounds = (!ok || imp->renderer.isFramed()) ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
+                // A sync the stage skipped, as evaluated for loads it no longer has, leaves the
+                // stage on the scene before: the scene evaluated again comes as a new request.
+                const bool taken = ok && (imp->renderer.getStageSyncSerial() >= serial);
+                const SceneDrawRules& rules = payload.getDrawRules();
+                bool matches = false;
+                bool needsStage = false;
+                U64 generation = 0;
+                U64 matchId = 0;
+                U64 awaitedMatch = 0;
+                if (taken) {
+                    const bool stackChanged = !payload.isSameStack(matchedFor);
+                    needsStage = SceneOps::drawRulesNeedStage(rules);
+                    matchedFor = payload;
+                    if (!rulesMatched || (rules != matchedRules) || (stackChanged && needsStage)) {
+                        matches = true;
+                        generation = imp->publishDrawRules(rules);
+                        matchId = ++imp->matchesIssued;
+                        // A frame of the stage before still shows the policy matched on it.
+                        awaitedMatch = stackChanged ? matchId : 0;
+                    }
+                }
+                if (matches && !needsStage) {
+                    // Plain paths match at once: the policy lands before the sync does.
+                    rulesMatched = imp->matchDrawRules(this, rules, generation, matchId, serial, newerRequest, false);
+                    matchedRules = rules;
+                }
                 // Dropped by Qt if the widget is gone by then.
-                QMetaObject::invokeMethod(this, [this, serial, ok, qerror, bounds]() { onSynced(serial, ok, qerror, bounds); }, Qt::QueuedConnection);
+                QMetaObject::invokeMethod(this, [this, serial, ok, qerror, bounds, awaitedMatch]() { onSynced(serial, ok, qerror, bounds, awaitedMatch); }, Qt::QueuedConnection);
+                if (matches && needsStage) {
+                    rulesMatched = imp->matchDrawRules(this, rules, generation, matchId, serial, newerRequest, false);
+                    matchedRules = rules;
+                }
             }
             if (framingId != 0) {
                 const SceneViewportRenderer::FrameBounds bounds = imp->renderer.computeFrameBounds(framingSelection, imp->renderer.getTimeCode());
@@ -6261,7 +6507,8 @@ SceneViewport::~SceneViewport()
 
 void
 SceneViewport::requestSync(const ScenePayload& payload,
-                           const QString& error)
+                           const QString& error,
+                           bool keepsFrame)
 {
     _imp->requestedError = error;
     _imp->requestedPayload = payload;
@@ -6283,8 +6530,10 @@ SceneViewport::requestSync(const ScenePayload& payload,
     }
     _imp->requestedLoadSet.reset();
     _imp->requestedReach.reset();
-    // A frame of the stage this sync replaces is not worth the rest of its passes.
-    _imp->renderer.stopBackgroundFrame();
+    if (!keepsFrame) {
+        // A frame of the stage this sync replaces is not worth the rest of its passes.
+        _imp->renderer.stopBackgroundFrame();
+    }
     _imp->queueChanged.notify_one();
     publishState();
     if (!_imp->renderer.hasScene()) {
@@ -6297,9 +6546,19 @@ void
 SceneViewport::onSynced(U64 serial,
                         bool ok,
                         const QString& error,
-                        const SceneViewportRenderer::FrameBounds& bounds)
+                        const SceneViewportRenderer::FrameBounds& bounds,
+                        U64 awaitedMatch)
 {
     _imp->syncedSerial = std::max(_imp->syncedSerial, serial);
+    const bool firstOfNode = (_imp->newNodeSerial != 0) && (serial >= _imp->newNodeSerial);
+    if (firstOfNode) {
+        _imp->newNodeSerial = 0;
+    }
+    // Any other sync draws with the policy the view has until the new one lands: playback and
+    // scrubbing never stop drawing. An overtaken one is drawn at once too.
+    if (firstOfNode && (serial == _imp->requestedSerial) && (awaitedMatch != 0) && ((awaitedMatch > _imp->appliedMatch) || (_imp->drawStates && (_imp->drawStates->getOutstandingCount() > 0)))) {
+        holdStageUntilMatch(awaitedMatch);
+    }
     wakeLoadsAskedBeforeStage();
     // The synced stage may name another renderer for Scene Default.
     followSceneRenderer();
@@ -6369,7 +6628,7 @@ SceneViewport::followSceneRenderer()
 bool
 SceneViewport::isSceneSynced() const
 {
-    if ((_imp->syncedSerial != _imp->requestedSerial) || (_imp->framingDone != _imp->framingRequested)) {
+    if ((_imp->syncedSerial != _imp->requestedSerial) || (_imp->framingDone != _imp->framingRequested) || _imp->policyHeld() || !_imp->policyEdits.empty()) {
         return false;
     }
     // A view nobody sees takes nothing in until it is shown.
@@ -6387,7 +6646,7 @@ SceneViewport::isStageSynced() const
 void
 SceneViewport::startBackgroundFrame()
 {
-    if (!_imp->usesRenderThread || _imp->renderThreadBusy() || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn()) {
+    if (!_imp->usesRenderThread || _imp->renderThreadBusy() || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn() || _imp->policyHeld()) {
         return;
     }
     const qreal dpr = devicePixelRatio();
@@ -6654,6 +6913,83 @@ SceneViewport::publishDrawStats()
 }
 
 void
+SceneViewport::onDrawRulesMatched(U64 generation,
+                                  U64 matchId,
+                                  U64 serial,
+                                  const SceneDrawStates::PolicyStates& policy)
+{
+    _imp->appliedMatch = std::max(_imp->appliedMatch, matchId);
+    if ((generation > _imp->appliedDrawRulesGeneration) || ((generation == _imp->appliedDrawRulesGeneration) && (policy != _imp->appliedPolicy))) {
+        _imp->appliedDrawRulesGeneration = generation;
+        // The rows dropped from the policy are walked as well as the ones it now holds.
+        const std::size_t rows = std::max(_imp->appliedPolicy.size(), policy.size());
+        _imp->appliedPolicy = policy;
+        editDrawStates([policy](SceneDrawStates* states) { return states->replacePolicyStates(policy); }, rows);
+    }
+    if (!_imp->policyEdits.empty() && (((serial != 0) && (serial >= _imp->policyEditsSerial)) || (generation >= _imp->policyEditsGeneration))) {
+        runPolicyEdits();
+    }
+    releasePolicyHoldIfDone();
+}
+
+void
+SceneViewport::holdStageUntilMatch(U64 matchId)
+{
+    _imp->heldMatch = std::max(_imp->heldMatch, matchId);
+    _imp->renderer.setStageHeld(true);
+    if (!_imp->policyHoldTimer->isActive()) {
+        // Bounded from when the hold begins, so that a slow match never leaves the stage out long.
+        _imp->policyHoldTimer->start();
+    }
+}
+
+void
+SceneViewport::editWithGraphPolicy(const std::function<void()>& edit)
+{
+    _imp->policyEdits.push_back(edit);
+    // A request made from now on is evaluated with the graph edit, as are rules published after it.
+    _imp->policyEditsSerial = _imp->requestedSerial + 1;
+    {
+        std::lock_guard<std::mutex> lock(_imp->drawRulesMutex);
+        _imp->policyEditsGeneration = _imp->drawRulesGeneration + 1;
+    }
+    if (!_imp->policyEditsTimer->isActive()) {
+        // Bounded from the first edit waiting, so that a graph edit leading to no match still shows.
+        _imp->policyEditsTimer->start();
+    }
+}
+
+void
+SceneViewport::runPolicyEdits()
+{
+    _imp->policyEditsTimer->stop();
+    std::vector<std::function<void()>> edits;
+    edits.swap(_imp->policyEdits);
+    for (const std::function<void()>& edit : edits) {
+        edit();
+    }
+}
+
+void
+SceneViewport::releasePolicyHoldIfDone()
+{
+    if ((_imp->heldMatch != 0) && !_imp->policyHeld()) {
+        releasePolicyHold();
+    }
+}
+
+void
+SceneViewport::releasePolicyHold()
+{
+    _imp->policyHoldTimer->stop();
+    _imp->heldMatch = 0;
+    _imp->renderer.setStageHeld(false);
+    startBackgroundFrame();
+    publishState();
+    update();
+}
+
+void
 SceneViewport::deliverDrawChange(const SceneDrawChange& change)
 {
     if (_imp->renderer.postDrawChange(change, _imp->drawRevealBatch) && _imp->usesRenderThread) {
@@ -6669,6 +7005,7 @@ SceneViewport::deliverDrawChange(const SceneDrawChange& change)
     }
     publishState();
     update();
+    releasePolicyHoldIfDone();
     if (!change.cancelledLoads.empty()) {
         Q_EMIT stageLoadsChanged();
     }
@@ -6977,6 +7314,43 @@ SceneViewport::saveSceneView(Serialization::SceneViewSerialization* serializatio
     sceneViewToSerialization(states ? *states : SceneDrawStateQueue::SetStates(), rules, serialization);
 }
 
+std::vector<std::pair<std::string, SceneDrawStates::Stored>>
+SceneViewport::getSetDrawStates() const
+{
+    std::shared_ptr<const SceneDrawStateQueue::SetStates> states;
+    if (_imp->drawStates) {
+        states = _imp->drawStates->getSetStates();
+    }
+
+    return states ? *states : SceneDrawStateQueue::SetStates();
+}
+
+void
+SceneViewport::replaceSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states)
+{
+    editDrawStates([states](SceneDrawStates* drawStates) { return drawStates->replaceSetStates(states); }, states.size());
+}
+
+void
+SceneViewport::mergeSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states)
+{
+    editDrawStates([states](SceneDrawStates* drawStates) { return drawStates->mergeSetStates(states); }, states.size());
+}
+
+void
+SceneViewport::clearSetDrawStates(const std::vector<std::string>& paths)
+{
+    editDrawStates([paths](SceneDrawStates* drawStates) { return drawStates->clearSetStates(paths); }, paths.size());
+}
+
+bool
+SceneViewport::hasSetDrawStates() const
+{
+    const std::shared_ptr<const SceneDrawStateQueue::SetStates> states = _imp->drawStates ? _imp->drawStates->getSetStates() : std::shared_ptr<const SceneDrawStateQueue::SetStates>();
+
+    return states && !states->empty();
+}
+
 void
 SceneViewport::restoreSceneView(const Serialization::SceneViewSerialization& serialization)
 {
@@ -7011,7 +7385,17 @@ SceneViewport::setScene(const ScenePayload& payload,
 {
     _imp->frame = frame;
     _imp->framesPerSecond = framesPerSecond;
-    requestSync(payload, QString());
+    // The same stack as asked for last most likely leaves the stage as it is, so a frame rendering it
+    // goes on. It still goes through the worker, which syncs what the stage really holds and
+    // passes on what the scene was evaluated for.
+    const bool keepsFrame = !payload.isEmpty() && _imp->requestedError.isEmpty() && !_imp->requestedLiveTextures && payload.isSameStack(_imp->requestedPayload);
+    const NodePtr viewed = _imp->viewedNodeProvider ? _imp->viewedNodeProvider() : NodePtr();
+    const bool newNode = viewed != _imp->sceneNode.lock();
+    _imp->sceneNode = viewed;
+    requestSync(payload, QString(), keepsFrame);
+    if (newNode && !payload.isEmpty()) {
+        _imp->newNodeSerial = _imp->requestedSerial;
+    }
 }
 
 void
@@ -8255,7 +8639,7 @@ SceneViewport::paintGL()
 
         return;
     }
-    _imp->presentedScene = _imp->renderer.hasScene();
+    _imp->presentedScene = _imp->renderer.hasScene() && !_imp->renderer.isStageHeld();
     if (_imp->renderer.isDrawRevealing()) {
         _imp->renderer.noteDrawRevealPresented();
         const int yieldMs = _imp->renderer.getRevealYieldMs();

@@ -608,8 +608,16 @@ public:
     const ProjectBeingLoadedInfo& getProjectBeingLoadedInfo() const;
     void setProjectBeingLoadedInfo(const ProjectBeingLoadedInfo& info);
 
+    /**
+     * @brief True once quit() or quitNow() has been called on this instance. Main thread only.
+     **/
+    bool isQuitRequested() const;
+
 public Q_SLOTS:
 
+    /**
+     * @brief Stops the renders and closes this instance once they end. Ignored after the first call.
+     **/
     void quit();
 
     void quitNow();

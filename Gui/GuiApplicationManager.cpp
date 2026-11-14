@@ -141,6 +141,8 @@ GuiApplicationManager::GuiApplicationManager()
 
 GuiApplicationManager::~GuiApplicationManager()
 {
+    // A termination request delivered by an event loop pumped from here on must not reach a half-destroyed manager.
+    markTeardownStarted("destroying the GUI application manager");
     for (AppShortcuts::iterator it = _imp->_actionShortcuts.begin(); it != _imp->_actionShortcuts.end(); ++it) {
         for (GroupShortcuts::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
             delete it2->second;

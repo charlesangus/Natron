@@ -5,7 +5,8 @@ into Viewer1, and a second USDRead, Other, of a copy at scene_draw_column_other.
 shows. Rows: /World holding /World/A (holding /World/A/Deep/Leaf, a Cube), /World/B and /World/C,
 each an Xform holding a Cube. No row has a payload, so twirling one loads nothing.
 The column is found by its header, "Draw State". The script checks:
-  - with nothing set every row reads Full, inherited: italic and dimmed;
+  - with nothing set in the viewer, /World reads Full set by the USDRead's Initial Draw, and every
+    row below it reads Full, inherited: italic and dimmed;
   - each of the five states, picked in the cell's editor on /World/B, reads back in the cell as
     set, reaches the viewer, and a BBox row is boxed there; Load All, picked after Full, draws
     the same and posts nothing;
@@ -93,9 +94,12 @@ try:
 
     PATH_ROLE = Qt.UserRole + 1
     # SceneGraphModel's roles after ePrimPathRole: changed here, payload state, unknown bounds,
-    # then the draw state and whether it is inherited.
+    # then the draw state, whether it is inherited and where it comes from.
     DRAW_STATE_ROLE = Qt.UserRole + 5
     INHERITED_ROLE = Qt.UserRole + 6
+    ORIGIN_ROLE = Qt.UserRole + 7
+    # SceneDrawOriginEnum's graph-set value.
+    ORIGIN_GRAPH = 1
 
     scene_path = os.path.join(OUT, "scene_draw_column.usda")
     with open(scene_path, "w") as f:
@@ -106,10 +110,12 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     usd.setPosition(0, 0)
     usd.getParam("filename").setValue(scene_path)
     other = app.createNode("USDRead")
     require(other is not None, "create the second USDRead")
+    other.getParam("initialDraw").setValue(3)
     other.setPosition(300, 0)
     other.getParam("filename").setValue(other_path)
     viewer = app.getNode("Viewer1")
@@ -352,7 +358,10 @@ try:
             reveal(path)
 
         section("defaults")
-        for path in ROWS:
+        label, inherited, italic = shown(WORLD)
+        check(label == "Full" and not inherited and not italic, "/World reads Full, set by the USDRead's Initial Draw (%r)" % (shown(WORLD),))
+        check(int(cell(WORLD).data(ORIGIN_ROLE)) == ORIGIN_GRAPH, "/World's state comes from the graph (%r)" % (cell(WORLD).data(ORIGIN_ROLE),))
+        for path in ROWS[1:]:
             label, inherited, italic = shown(path)
             check(label == "Full" and inherited and italic, "%s reads Full, inherited and in italics (%r)" % (path, shown(path)))
         save("scene-column-default")
@@ -438,7 +447,9 @@ try:
         before = posted()
         check(pick_in_editor(WORLD, "Reset to Graph"), "Reset to Graph on /World")
         yield from reached(before)
-        for path in ROWS:
+        check(shown(WORLD)[0] == "Full" and int(cell(WORLD).data(ORIGIN_ROLE)) == ORIGIN_GRAPH,
+              "/World is back to the USDRead's Full (%r)" % (shown(WORLD),))
+        for path in ROWS[1:]:
             check(shown(path)[0] == "Full" and shown(path)[1], "%s is back to the graph (%r)" % (path, shown(path)))
         before = posted()
         check(pick_in_editor(C, "Hidden"), "Hidden on /World/C")

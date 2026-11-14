@@ -35,13 +35,13 @@ milestone provides the time sampling they are measured from.
 
 ## Phase 283.1: Pixel sampling
 
-- [ ] M283.P1.T1 — Stratified samples and pixel filter
+- [x] M283.P1.T1 — Stratified samples and pixel filter
   - files: `Engine/Nodes/Scene/Utility/Kernels/RayGen.slang`, `Engine/Nodes/Scene/Utility/Kernels/Film.slang`, `Engine/Nodes/Scene/Utility/UtilityRenderDelegate.cpp`, `Tests/Scene/NatronUtilitySampling_Test.cpp`
   - approach: RayGen draws stratified jittered positions from a per-pixel hashed seed; Film splats each sample's AOVs with the chosen filter weight into accumulation buffers (weighted sum plus weight), resolved on `Resolve()`. Register the four settings.
   - verify: gtest — a half-plane edge renders the analytic coverage within 1/(N²) per pixel; a 1-pixel feature is reconstructed by each filter to the analytic filter response; CPU and GPU agree within tolerance.
   - size: L
 
-- [ ] M283.P1.T2 — Progressive passes and convergence
+- [x] M283.P1.T2 — Progressive passes and convergence
   - files: `Engine/Nodes/Scene/Utility/UtilityRenderPass.{h,cpp}`, `Engine/Nodes/Scene/Utility/UtilityRenderBuffer.cpp`, `Tests/Scene/NatronUtilitySampling_Test.cpp`
   - approach: render in passes of one sample per pixel, publish after each pass, reset accumulation on scene/camera change, report `IsConverged` at the target count. USDRender's path waits for convergence; the viewer (M254) shows intermediate passes.
   - verify: gtest — after k passes the buffer equals the mean of k independent single-sample renders; an edit mid-way resets the count; USDRender returns only the converged frame.
@@ -75,3 +75,4 @@ milestone provides the time sampling they are measured from.
 - 2026-11-01 — **Shutter from the camera, overridable (user).**
 - 2026-11-01 — **Time-bucketed tracing on both backends:** Vulkan's KHR acceleration structures have no motion blur, so both backends rebuild per time bucket for identical results (Nuke's ScanlineRender also renders per time sample).
 - 2026-11-14 — Claimed by bosley-native-nodes (user request).
+- 2026-11-14 — Phase 1 implemented (03c49bfda). Only colour is filtered; depth and ids take the heaviest sample. The settings key is `pixelSamples`, so it can't be read as the viewer's cap. The viewer shows each completed sample pass. PM calls: no hard cap on Pixel Samples (no-hand-holding rule), only a soft slider maximum. Exact-match tests (Storm match, cancel, purpose) pin `pixelSamples=1`; goldens are re-recorded.

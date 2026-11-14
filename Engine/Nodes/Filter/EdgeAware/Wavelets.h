@@ -45,7 +45,8 @@ NATRON_NAMESPACE_ENTER
  *
  * Borders follow darktable and differ between the two: the hat transform mirrors without
  * repeating the edge sample (its tap spacing capped at the image size minus 1), and the B-spline
- * clamps to the edge sample.
+ * clamps to the edge sample. Both borders are the buffer's edges and the number of scales is
+ * capped by its size, so pass the whole frame (EdgeAwareCommon.h).
  **/
 namespace EdgeAware {
 /// The standard deviation of the gaussian the B-spline approximates.

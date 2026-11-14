@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
@@ -1816,29 +1817,12 @@ Retouch::readParams(double time,
 }
 
 bool
-Retouch::sourceRoD(double time,
-                   ViewIdx view,
-                   RectD* rod) const
+Retouch::framePixels(double time,
+                     ViewIdx view,
+                     const RenderScale& scale,
+                     RectI* pixels) const
 {
-    const int sourceInput = getSourceInput();
-    EffectInstancePtr input = getInput(sourceInput);
-
-    if (!input) {
-        return false;
-    }
-    bool isProjectFormat = false;
-    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, rod, &isProjectFormat) == eStatusFailed) {
-        return false;
-    }
-    if (rod->isInfinite()) {
-        const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-        if (!metadata) {
-            return false;
-        }
-        *rod = rod->intersect(PassExec::toCanonical(metadata->getOutputFormat(), RenderScale::identity, metadata->getPixelAspectRatio(sourceInput)));
-    }
-
-    return !rod->isNull();
+    return wholeFramePixels(*this, getSourceInput(), time, view, scale, pixels) && !pixels->isNull();
 }
 
 std::vector<std::vector<RC::BrushPoint>>
@@ -2079,14 +2063,7 @@ Retouch::processPlan(double time,
                      RC::Params* params,
                      std::vector<RC::Shape>* shapes) const
 {
-    RectD rod;
-    if (!sourceRoD(time, view, &rod)) {
-        return false;
-    }
-    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(getSourceInput()) : 1.;
-    *full = PassExec::toPixelEnclosing(rod, scale, par);
-    if (full->isNull()) {
+    if (!framePixels(time, view, scale, full)) {
         return false;
     }
     *params = readParams(time, view, (float)scale.toOfxPointD().x);
@@ -2314,14 +2291,7 @@ Retouch::gpuPlan(double time,
                  RC::Params* params,
                  int* scales) const
 {
-    RectD rod;
-    if (!sourceRoD(time, view, &rod)) {
-        return false;
-    }
-    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(getSourceInput()) : 1.;
-    *full = PassExec::toPixelEnclosing(rod, scale, par);
-    if (full->isNull()) {
+    if (!framePixels(time, view, scale, full)) {
         return false;
     }
     *params = readParams(time, view, (float)scale.toOfxPointD().x);

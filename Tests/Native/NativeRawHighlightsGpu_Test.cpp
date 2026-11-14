@@ -25,12 +25,16 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "NativeParity.h"
 #include "RawGpuTestSupport.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
@@ -72,7 +76,8 @@ class NativeRawHighlightsGpuTest
     : public RawGpuTest {
 protected:
     // A prepared source: a mosaic of pattern, or three-channel linear data when pattern is empty.
-    NodePtr createPatch(const std::string& pattern)
+    NodePtr createPatch(const std::string& pattern,
+                        const RectI& rod = kRoD)
     {
         NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
 
@@ -90,7 +95,7 @@ protected:
         RawTestSource::ValueFn value = [cfa, mosaic](int x, int y, int c) {
             return clippedPatch(x, y, mosaic ? (int)cfa.colourAt(x, y) : c);
         };
-        dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(kRoD, mosaic ? 1 : 3, value, metadata);
+        dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(rod, mosaic ? 1 : 3, value, metadata);
 
         return source;
     }
@@ -145,6 +150,63 @@ TEST_F(NativeRawHighlightsGpuTest, LChMatchesTheCpu)
         ASSERT_FALSE(HasFatalFailure());
         for (const RectI& window : kWindows) {
             expectGpuMatchesCpu(*runtime, highlights, source, window, kLChGpuTolerance, std::string("lch, ") + pattern);
+        }
+    }
+}
+
+// Over a frame at an offset origin and of odd size, every GPU window equals the GPU frame bit for
+// bit, and the GPU frame matches the CPU frame within the mode's tolerance.
+TEST_F(NativeRawHighlightsGpuTest, RegionIndependentGpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const RectI frame(kRoD.x1 - 5, kRoD.y1 - 3, kRoD.x2 + 2, kRoD.y2 + 4);
+    const struct {
+        RawHighlightsModeEnum mode;
+        ParityTolerance tolerance;
+        const char* name;
+    } modes[] = {
+        { eRawHighlightsModeClip, kClipGpuTolerance, "clip" },
+        { eRawHighlightsModeLCh, kLChGpuTolerance, "lch" },
+    };
+    for (const auto& mode : modes) {
+        for (const std::string& pattern : { std::string("RGGB"), std::string("GBRG"), std::string(kXTrans) }) {
+            const std::string what = std::string(mode.name) + ", " + pattern;
+            NodePtr source = createPatch(pattern, frame);
+            NodePtr highlights = createAfter(PLUGINID_NATRON_RAWHIGHLIGHTS, source);
+            ASSERT_TRUE(source && highlights);
+            setMode(highlights, mode.mode);
+            ASSERT_FALSE(HasFatalFailure());
+
+            RenderedPlane cpuWhole;
+            std::vector<float> gpuWhole;
+            ASSERT_TRUE(renderBothWays(*runtime, highlights, source, frame, what, nullptr, &cpuWhole, &gpuWhole)) << what;
+            const ImageDiff diff = compareImages(cpuWhole.pixels, gpuWhole, mode.tolerance);
+            EXPECT_EQ(0u, diff.mismatches) << what << ": the GPU frame against the CPU frame, first at float " << diff.firstMismatchIndex << ", worst "
+                                           << diff.worstAbsolute;
+            const std::size_t nComps = cpuWhole.channels.size();
+
+            for (const RectI& window : RegionIndependenceTest::rawRegionTestWindows(frame)) {
+                RenderedPlane cpu;
+                std::vector<float> gpu;
+                ASSERT_TRUE(renderBothWays(*runtime, highlights, source, window, what, nullptr, &cpu, &gpu)) << what;
+                std::size_t mismatches = 0;
+                for (int y = window.y1; y < window.y2; ++y) {
+                    for (int x = window.x1; x < window.x2; ++x) {
+                        for (std::size_t c = 0; c < nComps; ++c) {
+                            const float a = gpuWhole[((std::size_t)(y - frame.y1) * frame.width() + (std::size_t)(x - frame.x1)) * nComps + c];
+                            const float b = gpu[((std::size_t)(y - window.y1) * window.width() + (std::size_t)(x - window.x1)) * nComps + c];
+                            if (!RegionIndependenceTest::sameBits(a, b) && (mismatches++ == 0)) {
+                                ADD_FAILURE() << what << ": window (" << window.x1 << "," << window.y1 << ")-(" << window.x2 << "," << window.y2 << ") at " << x
+                                              << "," << y << " channel " << c << ": " << b << " where the GPU frame has " << a;
+                            }
+                        }
+                    }
+                }
+                EXPECT_EQ(0u, mismatches) << what;
+            }
         }
     }
 }

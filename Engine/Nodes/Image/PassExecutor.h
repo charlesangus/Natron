@@ -115,6 +115,21 @@ void readSourceRow(const Image* image,
                    float* row);
 
 /**
+ * @brief readSourceRow(), read outside the image by mode (EdgeSample::coord()). With no image, or
+ * an empty one, the row is zero.
+ **/
+void readSourceRow(const Image* image,
+                   const Image::ReadAccess* access,
+                   const RectI& bounds,
+                   int srcNComps,
+                   int x0,
+                   int y,
+                   int width,
+                   int nComps,
+                   EdgeMode mode,
+                   float* row);
+
+/**
  * @brief One value per pixel of `channel` of row y, `fill` wherever the image has no pixel: for
  * a read whose missing pixels stand for a value (an opaque alpha, an unset mask) rather than for
  * the image's edge.
@@ -198,6 +213,8 @@ struct MaskInput {
     int nComps;
     RectI bounds;
     std::shared_ptr<Image::ReadAccess> access;
+    // What the mask reads past bounds.
+    EdgeMode edgeMode;
 
     MaskInput();
 
@@ -408,9 +425,9 @@ struct Pass {
  * empty there, and the source's own entry, are views without a buffer.
  *
  * For a list with opMask, maskApplied is whether the mask is connected and enabled; mask is then
- * its view, maskComponent the component of it that holds the mask's channel, and the mask reads 0
- * outside mask.bounds, everywhere when mask has no buffer or maskComponent is -1. Without an
- * applied mask, the mask reads 1 everywhere.
+ * its view, maskComponent the component of it that holds the mask's channel, and the mask reads
+ * past mask.bounds by maskEdgeMode, 0 everywhere when mask has no buffer or maskComponent is -1.
+ * Without an applied mask, the mask reads 1 everywhere.
  **/
 struct PassGpuIO {
     gpu::GpuRecordContext& context;
@@ -434,6 +451,7 @@ struct PassGpuIO {
     bool maskApplied = false;
     GpuImageView mask;
     int maskComponent = -1;
+    EdgeMode maskEdgeMode = EdgeMode::Black;
 
     explicit PassGpuIO(gpu::GpuRecordContext& ctx)
         : context(ctx)

@@ -1053,6 +1053,7 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
     maskSource.invert = plan.maskInvert;
     maskSource.image = mask;
     maskSource.channel = plan.maskChannel;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     for (PlaneJob& job : jobs) {
         job.lock();

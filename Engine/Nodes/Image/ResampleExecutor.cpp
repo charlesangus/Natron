@@ -524,6 +524,7 @@ runResampleCpu(EffectInstance& effect,
     // the band threads only read through these.
     PassExec::MaskInput maskSource;
     maskSource.image = mask;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     std::vector<RectI> bandRects;
@@ -619,7 +620,7 @@ runResampleCpu(EffectInstance& effect,
                 }
             }
             if (doMask) {
-                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
+                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, maskSource.edgeMode, &maskRow[0]);
             }
 
             for (int i = 0; i < width; ++i, dstPix += nComps) {

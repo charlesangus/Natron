@@ -160,7 +160,7 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     }
     const CompositeInputs inputs = opInputsForPlane(query.time, query.view, query.plane);
     StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), query);
-    resolveStageSources(nodeSpec(), inputs, &plan);
+    resolveStageSources(*this, nodeSpec(), inputs, &plan);
     plan.plane = query.plane;
     resolveStageSourcesLayers(*self, &plan);
 
@@ -227,7 +227,7 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
     if ((inputNb == getMaskInput()) && (kind == OpKind::Passes)) {
         const PassList list = opPasses(time, view, scale);
         if (list.opMask) {
-            return passListSourceRoI(outputRect, list);
+            return stretchGpuInputRoI(*this, inputEdgeMode(inputNb, time, view), inputNb, time, view, passListSourceRoI(outputRect, list), scale);
         }
     }
     RectI roi;
@@ -296,7 +296,8 @@ StagedImageEffect::resolveSourcesPlan(double time,
     plan.view = view;
     plan.sourceInput = inputs.blend();
     plan.plane = plane;
-    resolveStageSources(nodeSpec(), inputs, &plan);
+    plan.edgeMode = resolveInputEdgeMode(*this, imagePipelineSpec().stages, _stageKnobs, plan.sourceInput, plan.sourceInput, time, view);
+    resolveStageSources(*this, nodeSpec(), inputs, &plan);
 
     return plan;
 }
@@ -927,7 +928,7 @@ StagedImageEffect::render(const RenderActionArgs& args)
     const ImageLayerDesc plane = args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first;
     const CompositeInputs inputs = opInputsForPlane(args.time, args.view, plane);
     StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
-    resolveStageSources(nodeSpec(), inputs, &plan);
+    resolveStageSources(*this, nodeSpec(), inputs, &plan);
     plan.plane = plane;
     std::optional<std::string> error = checksRawStage ? rawStageError(args.time, args.view) : std::nullopt;
     if (!error) {

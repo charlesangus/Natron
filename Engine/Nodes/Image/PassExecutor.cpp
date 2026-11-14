@@ -195,6 +195,43 @@ readSourceRow(const Image* image,
 }
 
 void
+readSourceRow(const Image* image,
+              const Image::ReadAccess* access,
+              const RectI& bounds,
+              int srcNComps,
+              int x0,
+              int y,
+              int width,
+              int nComps,
+              EdgeMode mode,
+              float* row)
+{
+    int sy = y;
+    if (!image || (bounds.x1 >= bounds.x2) || !EdgeSample::coord(y, bounds.y1, bounds.y2, mode, &sy)) {
+        std::fill(row, row + (std::size_t)std::max(0, width) * nComps, 0.f);
+
+        return;
+    }
+    readSourceRow(image, access, bounds, srcNComps, x0, sy, width, nComps, row);
+    if (mode != EdgeMode::Stretch) {
+        return;
+    }
+    const std::size_t n = (std::size_t)nComps;
+    const auto repeat = [&](int edgeX, int from, int to) {
+        if (from >= to) {
+            return;
+        }
+        float* first = row + (std::size_t)(from - x0) * n;
+        readSourceRow(image, access, bounds, srcNComps, edgeX, sy, 1, nComps, first);
+        for (int x = from + 1; x < to; ++x) {
+            std::copy(first, first + n, row + (std::size_t)(x - x0) * n);
+        }
+    };
+    repeat(bounds.x1, x0, std::min(x0 + width, bounds.x1));
+    repeat(bounds.x2 - 1, std::max(x0, bounds.x2), x0 + width);
+}
+
+void
 readChannelRow(const Image* image,
                const Image::ReadAccess* access,
                const RectI& bounds,
@@ -313,6 +350,7 @@ MaskInput::MaskInput()
     , image()
     , channel(-1)
     , nComps(0)
+    , edgeMode(EdgeMode::Black)
 {
 }
 
@@ -555,7 +593,7 @@ writeWindow(const PlaneJob& job,
                 readChannelRow(job.divisor.get(), job.divisorAccess.get(), job.divisorBounds, job.divisorNComps, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
             }
             if (doMask) {
-                readChannelRow(mask.image.get(), mask.access.get(), mask.bounds, mask.nComps, mask.channel, roi.x1, y, width, 0.f, &maskRow[0]);
+                readChannelRow(mask.image.get(), mask.access.get(), mask.bounds, mask.nComps, mask.channel, roi.x1, y, width, mask.edgeMode, &maskRow[0]);
             }
             const std::size_t bufferRow = rowInBuffer ? (std::size_t)(y - bufferRect.y1) * bufferWidth : 0;
             for (int i = 0; i < width; ++i, dstPix += nComps) {
@@ -1074,11 +1112,13 @@ runPassesCpu(EffectInstance& effect,
     maskSource.invert = plan.maskInvert;
     maskSource.image = mask;
     maskSource.channel = plan.maskChannel;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     MaskInput opMaskSource;
     opMaskSource.applied = opMaskPlan.applyMask;
     opMaskSource.image = opMask;
     opMaskSource.channel = opMaskPlan.maskChannel;
+    opMaskSource.edgeMode = opMaskPlan.maskEdgeMode;
     opMaskSource.lock();
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         jobs[j].lock();
@@ -1104,14 +1144,14 @@ runPassesCpu(EffectInstance& effect,
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     RenderCancellation cancel(&effect);
 
-    // The op's mask over the buffer, the same for every plane job: 0 outside the mask's image,
-    // everywhere when its channel resolves to none.
+    // The op's mask over the buffer, the same for every plane job, read past its image by its own
+    // edge mode; 0 everywhere when its channel resolves to none.
     std::vector<float> opMaskPlane;
     if (opMaskSource.applied && planeSize) {
         opMaskPlane.resize(planeSize);
         forEachLineChunk(bufferHeight, (std::size_t)bufferWidth, nThreads, cancel, [&](int first, int end) {
             for (int r = first; r < end; ++r) {
-                readChannelRow(opMaskSource.image.get(), opMaskSource.access.get(), opMaskSource.bounds, opMaskSource.nComps, opMaskSource.channel, bufferRect.x1, bufferRect.y1 + r, bufferWidth, 0.f, &opMaskPlane[(std::size_t)r * bufferWidth]);
+                readChannelRow(opMaskSource.image.get(), opMaskSource.access.get(), opMaskSource.bounds, opMaskSource.nComps, opMaskSource.channel, bufferRect.x1, bufferRect.y1 + r, bufferWidth, opMaskSource.edgeMode, &opMaskPlane[(std::size_t)r * bufferWidth]);
             }
         });
         if (cancel.check()) {
@@ -1366,6 +1406,7 @@ recordPassesGpu(EffectInstance& effect,
         StagePlan maskPlan = plan;
         resolveStageOpMask(effect, &maskPlan);
         io.maskApplied = maskPlan.applyMask;
+        io.maskEdgeMode = maskPlan.maskEdgeMode;
         const int maskInput = maskPlan.maskInput;
         // A mask that is not handed over reads zero everywhere.
         const bool hasMask = (maskInput >= 0) && (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer;

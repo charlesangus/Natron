@@ -2,11 +2,15 @@
 
 #include "GpuKernelRegistry.h"
 
+#include "Global/EdgeMode.h"
+
 #include <array>
 #include <cstdint>
 #include <span>
 
 namespace gpu {
+
+using NATRON_NAMESPACE::EdgeMode;
 
 class GpuBuffer;
 class GpuRecordContext;
@@ -48,6 +52,10 @@ static_assert(sizeof(GpuWrapParams) <= GpuKernel::kMaxPushConstantBytes);
 inline constexpr uint32_t kGpuWrapFlagMask = 1;
 inline constexpr uint32_t kGpuWrapFlagMaskInvert = 2;
 inline constexpr uint32_t kGpuWrapFlagClampAlpha = 4;
+// The source, and the mask or a step's input, read past their bounds by their nearest pixel; without
+// the flag they read zero there.
+inline constexpr uint32_t kGpuWrapFlagSrcStretch = 8;
+inline constexpr uint32_t kGpuWrapFlagMaskStretch = 16;
 
 // Bindings of every kernel built on pixelwrap.slang: source, destination, mask, then the op's
 // parameter block (the filtered result for wrap_finish).
@@ -63,17 +71,19 @@ struct GpuWrapRect {
     bool empty() const { return x1 >= x2 || y1 >= y2; }
 };
 
-// Interleaved float pixels of `bounds` in a buffer, the first at offsetFloats, rows strideFloats apart.
+// Interleaved float pixels of `bounds` in a buffer, the first at offsetFloats, rows strideFloats
+// apart, read past `bounds` by edgeMode (Kernels/edgesample.slang).
 struct GpuWrapView {
     const GpuBuffer* buffer = nullptr;
     uint64_t offsetFloats = 0;
     GpuWrapRect bounds;
     uint32_t strideFloats = 0;
     uint32_t nComps = 0;
+    EdgeMode edgeMode = EdgeMode::Black;
 };
 
-// What the CPU point-op wrapping does around a point op, over `output`. The source reads zero
-// outside its bounds, which may be empty; it has the destination's nComps.
+// What the CPU point-op wrapping does around a point op, over `output`. The source reads past its
+// bounds by its edge mode, and zero everywhere when they are empty; it has the destination's nComps.
 struct GpuWrap {
     GpuWrapView src;
     // Must contain output.
@@ -83,7 +93,7 @@ struct GpuWrap {
     uint32_t nComps = 0;
     // Processed channels in the bit space of pixelKernelChannelBit: a one-channel pixel is alpha, bit 3.
     uint32_t channelMask = 0xF;
-    // The mask reads zero outside its bounds, which may be empty.
+    // The mask reads past its bounds by its edge mode, and zero everywhere when they are empty.
     bool applyMask = false;
     GpuWrapView mask;
     uint32_t maskChannel = 0;
@@ -101,8 +111,8 @@ struct GpuWrap {
 // An alpha a Composite step reads, in the output's channels by channel bit: component `channel` of
 // `view` for every channel; with kGpuWrapAlphaChannelPerChannel, `view` read per channel as a
 // step's input is read; with kGpuWrapAlphaChannelPerWrittenChannel, component i of `view` the alpha
-// of the i-th channel the step's channelMask writes, the others reading zero. It reads zero outside
-// the view's bounds, which may be empty.
+// of the i-th channel the step's channelMask writes, the others reading zero. It reads past
+// the view's bounds by the view's edge mode, and zero everywhere when they are empty.
 inline constexpr int32_t kGpuWrapAlphaChannelPerChannel = -1;
 inline constexpr int32_t kGpuWrapAlphaChannelPerWrittenChannel = -2;
 struct GpuWrapAlpha {
@@ -111,7 +121,8 @@ struct GpuWrapAlpha {
 };
 
 // One step of a Composite op's fold over `output`: `result`, the result so far, combined with
-// `input` into `dst`. Both read zero outside their bounds, which may be empty. `result` has nComps
+// `input` into `dst`. Both read past their bounds by their edge modes, and zero everywhere when the
+// bounds are empty. `result` has nComps
 // channels; `input` has 1 to 4 and is read in the output's channels by channel bit. The step's
 // GpuWrapParams describe `result` as the source and `input` in the mask fields, maskComps being its
 // channel count, with no mask flag.
@@ -143,10 +154,11 @@ inline constexpr uint32_t kGpuWrapStepBindings = kGpuWrapBindings + 1;
 inline constexpr uint32_t kGpuWrapAlphaStepBindings = kGpuWrapStepBindings + 4;
 
 // The alpha geometry block of compositealpha.slang, in words: per alpha view, the result's then the
-// input's, its offset, row stride, x1, y1, x2, y2, channel count (0 reads zero) and channel
+// input's, its offset, row stride, x1, y1, x2, y2, channel count (0 reads zero), channel
 // (kGpuWrapAlphaPerChannel to read it per channel, kGpuWrapAlphaPerWrittenChannel per written
-// channel), then the destination alpha's offset and row stride from the output's origin.
-inline constexpr uint32_t kGpuWrapAlphaViewWords = 8;
+// channel) and edge mode (gpuEdgeMode()), then the destination alpha's offset and row stride from
+// the output's origin.
+inline constexpr uint32_t kGpuWrapAlphaViewWords = 9;
 inline constexpr uint32_t kGpuWrapAlphaGeometryWords = 2 * kGpuWrapAlphaViewWords + 2;
 inline constexpr uint32_t kGpuWrapAlphaPerChannel = 0xFFFFFFFFu;
 inline constexpr uint32_t kGpuWrapAlphaPerWrittenChannel = 0xFFFFFFFEu;
@@ -183,8 +195,8 @@ GpuStatus recordWrapStep(GpuRecordContext& ctx, GpuKernelId kernel, const GpuWra
 // `base` and `kernel` folds each of `inputs` into it in order, one dispatch per input, alternating
 // between two scratch buffers of the output's size; wrap_finish then blends the result with
 // wrap.src, the blend input, by mask x mix and passes unprocessed channels through from it. With no
-// input the result is `base`. `base` has wrap.nComps channels and every view reads zero outside its
-// bounds. No input is divided, so wrap.divisorChannel must be -1.
+// input the result is `base`. `base` has wrap.nComps channels and every view reads past its bounds
+// by its edge mode. No input is divided, so wrap.divisorChannel must be -1.
 //
 // With `alphas`, the base's alpha then one per input, the fold carries the result's alpha: `kernel`
 // is built with runCompositeAlphaStep, the result's alpha starts as the base's, and each step reads

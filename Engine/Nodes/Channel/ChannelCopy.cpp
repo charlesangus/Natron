@@ -35,10 +35,13 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/RectI.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBlur.h"
 #include "Engine/Gpu/GpuRecord.h"
 #endif
 
@@ -127,33 +130,51 @@ selectCopyRow(ImageBitDepthEnum srcDepth,
     }
 }
 
+// Each source of route reads past its image by its input's own edge mode.
+void
+setRouteEdgeModes(const EffectInstance& effect,
+                  double time,
+                  ViewIdx view,
+                  ChannelRoute* route)
+{
+    for (ChannelRouteSource& source : route->sources) {
+        source.edgeMode = stageInputEdgeMode(effect, source.inputNb, time, view);
+    }
+}
+
 struct RoutePair {
     int dst;
     int src;
 };
 
+// Reads src, of bounds, past them by mode.
 template <typename SRCPIX, typename DSTPIX>
 void
 routeRow(const Image::ReadAccess* src,
+         const RectI& bounds,
+         EdgeMode mode,
          Image::WriteAccess* dst,
          int y,
          int x1,
          int x2,
          const std::vector<RoutePair>& pairs)
 {
+    int sy = y;
+    const bool rowHit = EdgeSample::coord(y, bounds.y1, bounds.y2, mode, &sy);
     for (int x = x1; x < x2; ++x) {
         DSTPIX* out = (DSTPIX*)dst->pixelAt(x, y);
         if (!out) {
             continue;
         }
-        const SRCPIX* in = (const SRCPIX*)src->pixelAt(x, y);
+        int sx = x;
+        const SRCPIX* in = (rowHit && EdgeSample::coord(x, bounds.x1, bounds.x2, mode, &sx)) ? (const SRCPIX*)src->pixelAt(sx, sy) : NULL;
         for (const RoutePair& p : pairs) {
             out[p.dst] = in ? Image::convertPixelDepth<SRCPIX, DSTPIX>(in[p.src]) : DSTPIX(0);
         }
     }
 }
 
-typedef void (*RouteRowFunc)(const Image::ReadAccess*, Image::WriteAccess*, int, int, int, const std::vector<RoutePair>&);
+typedef void (*RouteRowFunc)(const Image::ReadAccess*, const RectI&, EdgeMode, Image::WriteAccess*, int, int, int, const std::vector<RoutePair>&);
 
 template <typename DSTPIX>
 RouteRowFunc
@@ -283,15 +304,17 @@ struct ChannelRouteGpuParams {
     uint32_t srcOffset;
     uint32_t srcStride;
     uint32_t srcComps;
-    uint32_t validX1;
-    uint32_t validY1;
-    uint32_t validX2;
-    uint32_t validY2;
+    int32_t srcX1;
+    int32_t srcY1;
+    int32_t srcX2;
+    int32_t srcY2;
     uint32_t select[4];
     uint32_t constants[4];
+    uint32_t edgeMode;
 };
-static_assert(sizeof(ChannelRouteGpuParams) == 80, "must match ChannelRouteParams in channelroute.slang");
+static_assert(sizeof(ChannelRouteGpuParams) == 84, "must match ChannelRouteParams in channelroute.slang");
 static_assert(offsetof(ChannelRouteGpuParams, select) == 48, "must match ChannelRouteParams in channelroute.slang");
+static_assert(offsetof(ChannelRouteGpuParams, edgeMode) == 80, "must match ChannelRouteParams in channelroute.slang");
 
 const uint32_t kRouteSkip = 0xFFFFFFFFu;
 const uint32_t kRouteConstant = 0xFFFFFFFEu;
@@ -316,11 +339,18 @@ routeViewIndex(const GpuImageView& view,
     return true;
 }
 
-uint32_t
-clampedThreads(int64_t v,
-               uint32_t n)
+// v, a position relative to the dispatch's origin, as the kernel's signed coordinate; false when
+// it does not fit.
+bool
+threadCoord(int64_t v,
+            int32_t* out)
 {
-    return (uint32_t)std::clamp<int64_t>(v, 0, (int64_t)n);
+    if ((v < INT32_MIN) || (v > INT32_MAX)) {
+        return false;
+    }
+    *out = (int32_t)v;
+
+    return true;
 }
 #endif // NATRON_HAVE_GPU
 } // namespace
@@ -439,6 +469,7 @@ ChannelCopy::applyChannelRoute(const ChannelRoute& route,
 
     struct Group {
         const Image* image;
+        RectI bounds;
         RouteRowFunc rowFunc;
         std::vector<RoutePair> pairs;
     };
@@ -451,6 +482,7 @@ ChannelCopy::applyChannelRoute(const ChannelRoute& route,
         groups[s].image = image;
         groups[s].rowFunc = NULL;
         if (image) {
+            groups[s].bounds = image->getBounds();
             groups[s].rowFunc = selectRouteRow(image->getBitDepth(), dst->getBitDepth());
             if (!groups[s].rowFunc) {
                 return eStatusFailed;
@@ -503,7 +535,7 @@ ChannelCopy::applyChannelRoute(const ChannelRoute& route,
         }
         for (std::size_t s = 0; s < groups.size(); ++s) {
             if (accesses[s]) {
-                groups[s].rowFunc(accesses[s], &dstAccess, y, roi.x1, roi.x2, groups[s].pairs);
+                groups[s].rowFunc(accesses[s], groups[s].bounds, route.sources[s].edgeMode, &dstAccess, y, roi.x1, roi.x2, groups[s].pairs);
             }
         }
         if (!constants.empty()) {
@@ -584,6 +616,7 @@ ChannelRouteEffect::render(const RenderActionArgs& args)
         if (!channelRoute(args.time, args.view, it->first, &route) || !route.isValid(getNInputs())) {
             return eStatusFailed;
         }
+        setRouteEdgeModes(*this, args.time, args.view, &route);
         routes.push_back(route);
     }
 
@@ -599,7 +632,32 @@ ChannelRouteEffect::resolveGpuRoute(double time,
     // Describing a route only reads knobs and the inputs' layers.
     ChannelRouteEffect* self = const_cast<ChannelRouteEffect*>(this);
 
-    return self->channelRoute(time, view, plane, route) && route->isValid(getNInputs());
+    if (!self->channelRoute(time, view, plane, route) || !route->isValid(getNInputs())) {
+        return false;
+    }
+    setRouteEdgeModes(*this, time, view, route);
+
+    return true;
+}
+
+RectI
+ChannelRouteEffect::getGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const
+{
+    return stretchGpuInputRoI(*this, stageInputEdgeMode(*this, inputNb, time, view), inputNb, time, view, outputRect, scale);
+}
+
+void
+ChannelRouteEffect::adjustInputRegionsOfInterest(double time,
+                                                 const RenderScale& scale,
+                                                 ViewIdx view,
+                                                 const InputMatrixMap* transforms,
+                                                 RoIMap* ret)
+{
+    clampStretchRegionsOfInterest(*this, time, scale, view, transforms, [&](int inputNb) { return stageInputEdgeMode(*this, inputNb, time, view); }, ret);
 }
 
 bool
@@ -754,17 +812,10 @@ ChannelRouteEffect::renderGpu(const GpuRenderArgs& args)
         ChannelRouteGpuParams& p = sourcePasses[s];
         p.srcComps = (uint32_t)src.nComps;
         p.srcStride = (uint32_t)src.rowStrideFloats;
-        p.validX1 = clampedThreads((int64_t)src.bounds.x1 - rect.x1, p.width);
-        p.validX2 = clampedThreads((int64_t)src.bounds.x2 - rect.x1, p.width);
-        p.validY1 = clampedThreads((int64_t)src.bounds.y1 - rect.y1, p.height);
-        p.validY2 = clampedThreads((int64_t)src.bounds.y2 - rect.y1, p.height);
-        if ((p.validX1 < p.validX2) && (p.validY1 < p.validY2)) {
-            if (!routeViewIndex(src, rect.x1 + (int)p.validX1, rect.y1 + (int)p.validY1, &p.srcOffset)) {
-                return eStatusFailed;
-            }
-        } else {
-            p.validX1 = p.validX2 = p.validY1 = p.validY2 = 0;
+        if (!threadCoord((int64_t)src.bounds.x1 - rect.x1, &p.srcX1) || !threadCoord((int64_t)src.bounds.x2 - rect.x1, &p.srcX2) || !threadCoord((int64_t)src.bounds.y1 - rect.y1, &p.srcY1) || !threadCoord((int64_t)src.bounds.y2 - rect.y1, &p.srcY2) || !routeViewIndex(src, src.bounds.x1, src.bounds.y1, &p.srcOffset)) {
+            return eStatusFailed;
         }
+        p.edgeMode = gpu::gpuEdgeMode(route.sources[s].edgeMode);
         if (!first) {
             ctx.computeBarrier();
         }

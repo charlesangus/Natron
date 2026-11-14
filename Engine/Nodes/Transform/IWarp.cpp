@@ -745,6 +745,7 @@ IWarp::renderOp(const RenderActionArgs& args,
     // read through these.
     PassExec::MaskInput maskSource;
     maskSource.image = mask;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     for (std::size_t p = 0; p < planes.size(); ++p) {
         Plane& plane = *planes[p];
@@ -995,7 +996,7 @@ IWarp::renderOp(const RenderActionArgs& args,
             }
             PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);
             if (doMask) {
-                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
+                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, maskSource.edgeMode, &maskRow[0]);
             }
 
             for (int i = 0; i < width; ++i, dstPix += nComps) {

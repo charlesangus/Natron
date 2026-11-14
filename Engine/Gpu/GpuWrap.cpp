@@ -207,6 +207,9 @@ wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView* filtered)
         out.srcY1 = wrap.src.bounds.y1;
         out.srcX2 = wrap.src.bounds.x2;
         out.srcY2 = wrap.src.bounds.y2;
+        if (wrap.src.edgeMode == EdgeMode::Stretch) {
+            out.flags |= kGpuWrapFlagSrcStretch;
+        }
     }
 
     if (wrap.applyMask) {
@@ -229,6 +232,9 @@ wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView* filtered)
             out.maskY1 = wrap.mask.bounds.y1;
             out.maskX2 = wrap.mask.bounds.x2;
             out.maskY2 = wrap.mask.bounds.y2;
+            if (wrap.mask.edgeMode == EdgeMode::Stretch) {
+                out.flags |= kGpuWrapFlagMaskStretch;
+            }
         }
     }
     return {};
@@ -259,6 +265,9 @@ wrapStepParams(const GpuWrapStep& step, GpuWrapParams& out)
     out.maskX2 = step.input.bounds.x2;
     out.maskY2 = step.input.bounds.y2;
     out.maskComps = step.input.nComps;
+    if (step.input.edgeMode == EdgeMode::Stretch) {
+        out.flags |= kGpuWrapFlagMaskStretch;
+    }
     return {};
 }
 
@@ -289,6 +298,7 @@ namespace {
         out[at + 7] = alpha.channel >= 0                             ? static_cast<uint32_t>(alpha.channel)
             : alpha.channel == kGpuWrapAlphaChannelPerWrittenChannel ? kGpuWrapAlphaPerWrittenChannel
                                                                      : kGpuWrapAlphaPerChannel;
+        out[at + 8] = (alpha.view.edgeMode == EdgeMode::Black) ? 1u : 0u;
         return {};
     }
 

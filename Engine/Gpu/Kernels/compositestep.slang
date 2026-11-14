@@ -31,9 +31,10 @@ float4 stepReadInput(int2 p)
 {
     float4 v = float4(0.0, 0.0, 0.0, 0.0);
     const uint comps = wrap.maskComps;
-    if (comps == 0 || !wrapInside(p, wrap.maskX1, wrap.maskY1, wrap.maskX2, wrap.maskY2))
+    int2 at;
+    if (comps == 0 || !wrapMaskPixel(p, at))
         return v;
-    const uint base = wrap.maskOffset + uint(p.y - wrap.maskY1) * wrap.maskStride + uint(p.x - wrap.maskX1) * comps;
+    const uint base = wrap.maskOffset + uint(at.y - wrap.maskY1) * wrap.maskStride + uint(at.x - wrap.maskX1) * comps;
     const uint n = wrap.nComps;
     for (uint c = 0; c < n && c < 4; ++c)
     {

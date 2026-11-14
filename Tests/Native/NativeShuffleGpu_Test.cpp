@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <list>
 #include <memory>
 #include <string>
@@ -49,7 +50,10 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -541,4 +545,52 @@ TEST_F(NativeShuffleGpuTest, RunsInARegionEndToEnd)
         const ImageDiff diff = compareImages(result.cpu, result.gpu, kShuffleGpuTolerance);
         EXPECT_EQ(0u, diff.mismatches) << "ShuffleCopy: first at float " << diff.firstMismatchIndex;
     }
+}
+
+// Input 1 cropped to a box inside input 2 reads its edge pixels past the box under Stretch and zero
+// under Black, on the device as on the CPU, while alpha comes from input 2.
+TEST_F(NativeShuffleGpuTest, ShuffleCopyRoutesFollowEachInputsEdgeMode)
+{
+    std::vector<float> frames[2];
+    const char* modes[2] = { "stretch", "black" };
+    for (int m = 0; m < 2; ++m) {
+        getApp()->getProject()->reset(false, true);
+        getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "nativeShuffleGpu64x48", 1.));
+        NodePtr input2 = makeSource("rgba", false, 0, 0);
+        NodePtr source1 = makeSource("rgba", false, 0, 0);
+        NodePtr input1 = createNode(QString::fromUtf8(PLUGINID_NATRON_CROP), PLUGIN_MAJOR_NATRON_CROP);
+        ASSERT_TRUE(input2 && source1 && input1) << modes[m];
+        connectNodes(source1, input1, 0, true);
+        ASSERT_TRUE(setKnobValue(input1, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize)) << modes[m];
+        ASSERT_TRUE(setKnobValues(input1, kNativeGeneratorParamBottomLeft, { 20., 14. })) << modes[m];
+        ASSERT_TRUE(setKnobValues(input1, kNativeGeneratorParamSize, { 16., 12. })) << modes[m];
+        ASSERT_TRUE(setKnobValues(input1, kCropParamReformat, { 0. })) << modes[m];
+        ASSERT_TRUE(setKnobValue(input1, kEdgeModeParam, std::string(modes[m]))) << modes[m];
+        NodePtr shuffle = makeShuffleCopy(input2, input1);
+        ASSERT_TRUE(bool(shuffle)) << modes[m];
+        ASSERT_TRUE(setLayers(shuffle, kNatronColorViewRGBA, kNatronColorViewRGBA, kNatronColorViewRGBA, "")) << modes[m];
+        ASSERT_TRUE(setKnobValue(shuffle, kShuffleCopyParamBBox, "2")) << modes[m];
+        KnobShuffleMapPtr mapping = mappingOf(shuffle);
+        ASSERT_TRUE(bool(mapping)) << modes[m];
+        mapping->setSource(1, 3, ShuffleSource::makeInput(2, 3));
+
+        const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>(1, shuffle), shuffle, window, kTime);
+        if (result.skipped) {
+            return;
+        }
+        ASSERT_TRUE(result.ok) << modes[m] << ": " << result.error;
+        EXPECT_EQ(1u, result.gpuTasksPerNode.count(shuffle->getScriptName_mt_safe())) << modes[m] << ": the region fell back to the CPU";
+        ASSERT_EQ(result.cpu.size(), result.gpu.size()) << modes[m];
+        ASSERT_FALSE(result.cpu.empty()) << modes[m];
+        const ImageDiff diff = compareImages(result.cpu, result.gpu, kShuffleGpuTolerance);
+        EXPECT_EQ(0u, diff.mismatches) << modes[m] << ": first at float " << diff.firstMismatchIndex;
+        frames[m] = result.cpu;
+    }
+    ASSERT_EQ(frames[0].size(), frames[1].size());
+    std::size_t nDiffer = 0;
+    for (std::size_t i = 0; i < frames[0].size(); ++i) {
+        nDiffer += (frames[0][i] != frames[1][i]) ? 1 : 0;
+    }
+    EXPECT_GT(nDiffer, 0u) << "Stretch and Black rendered the same frame, so input 1's edge mode is not exercised";
 }

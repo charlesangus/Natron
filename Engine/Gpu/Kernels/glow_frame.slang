@@ -43,8 +43,8 @@ struct FrameParams
     // The picked hue in degrees, and per channel two bits: its colour (0 red, 1 green, 2 blue) or 3.
     float hue;
     uint colourBits;
-    // glow_resample: how the source reads outside its pixels, edgesample's kEdgeStretch or
-    // kEdgeBlack.
+    // How the source reads outside its pixels for glow_resample, and the mask outside its view for
+    // glow_weight: edgesample's kEdgeStretch or kEdgeBlack.
     uint edgeMode;
 };
 
@@ -97,8 +97,9 @@ void glow_weight(uint3 tid : SV_DispatchThreadID)
     {
         const int x = params.dstX1 + int(tid.x);
         const int y = params.dstY1 + int(tid.y);
-        const bool inside = x >= params.maskX1 && y >= params.maskY1 && x < params.maskX1 + int(params.maskWidth) && y < params.maskY1 + int(params.maskHeight);
-        w = inside ? asfloat(maskBuf[params.maskOffset + uint(y - params.maskY1) * params.maskStride + uint(x - params.maskX1) * params.maskComps + params.maskComponent]) : 0.0;
+        const int4 bounds = int4(params.maskX1, params.maskY1, params.maskX1 + int(params.maskWidth), params.maskY1 + int(params.maskHeight));
+        int2 m;
+        w = edgePixel(int2(x, y), bounds, params.edgeMode, m) ? asfloat(maskBuf[params.maskOffset + uint(m.y - params.maskY1) * params.maskStride + uint(m.x - params.maskX1) * params.maskComps + params.maskComponent]) : 0.0;
     }
     if ((params.flags & kHue) != 0)
     {

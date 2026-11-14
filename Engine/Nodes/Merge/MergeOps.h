@@ -29,8 +29,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * The Merge operators on premultiplied pixels, A over B. The CPU twin of
- * Engine/Gpu/Kernels/mergeops.slang, whose header lists the formulas and every deviation from
- * Nuke's. Operator values are the Slang module's indices and the option order of the node's
+ * Engine/Gpu/Kernels/mergeops.slang, whose header lists the formulas and where they are made
+ * HDR-safe. Operator values are the Slang module's indices and the option order of the node's
  * operation choice.
  */
 namespace MergeOps {

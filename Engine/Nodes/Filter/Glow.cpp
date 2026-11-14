@@ -836,6 +836,7 @@ recordWeights(const GlowParams& params,
             w.maskStride = (uint32_t)mask.rowStrideFloats;
             w.maskComps = (uint32_t)mask.nComps;
             w.maskComponent = (uint32_t)io.maskComponent;
+            w.edgeMode = gpu::gpuEdgeMode(io.maskEdgeMode);
             maskBuffer = mask.buffer;
         } else {
             w.flags |= kGlowFrameMaskZero;

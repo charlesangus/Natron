@@ -68,13 +68,15 @@ struct StageKnobs {
  * layer of layerInput, which is inputNb itself unless its InputLayer pairs it with another input: the plane
  * being rendered as that input resolves it when layerKnob is empty, else the layer the
  * KnobLayerSelect named layerKnob selects among the layers layerInput carries. alpha is its alpha
- * source, read from inputNb.
+ * source, read from inputNb. edgeMode is how inputNb, its pixels and its alpha, reads past its
+ * image: the input's own edge mode.
  **/
 struct StageSource {
     int inputNb = -1;
     int layerInput = -1;
     std::string_view layerKnob = {};
     CompositeAlpha alpha = {};
+    EdgeMode edgeMode = EdgeMode::Stretch;
 };
 
 /**
@@ -135,6 +137,8 @@ struct StagePlan {
     int maskInput = -1;
     ImageLayerDesc maskLayer;
     int maskChannel = -1;
+    // The mask input's own edge mode: what the mask reads past its image.
+    EdgeMode maskEdgeMode = EdgeMode::Stretch;
     ImageLayerDesc divisorLayer;
     int divisorChannel = -1;
     std::vector<StageSource> composite;
@@ -180,7 +184,13 @@ int stageMaskInput(const EffectInstance& effect) WARN_UNUSED_RETURN;
 bool isStageMaskApplied(const EffectInstance& effect) WARN_UNUSED_RETURN;
 
 /**
- * @brief plan's mask fields (applyMask, maskInput, maskLayer, maskChannel) at plan's time and view
+ * @brief The edge mode input inputNb of effect carries at time and view, Stretch when it is not
+ * connected: how a read of that input past its image samples it.
+ **/
+EdgeMode stageInputEdgeMode(const EffectInstance& effect, int inputNb, double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+/**
+ * @brief plan's mask fields (applyMask, maskInput, maskLayer, maskChannel, maskEdgeMode) at plan's time and view
  * for an op that applies its mask itself (PassList::opMask), as the MaskMix stage resolves them,
  * whether or not the pipeline has that stage.
  **/
@@ -188,8 +198,9 @@ void resolveStageOpMask(EffectInstance& effect, StagePlan* plan);
 
 /**
  * @brief Whether the region of definition of the effect connected to maskInput misses roi at
- * time, scale and view, so that a non-inverted mask leaves the source unchanged over roi.
- * False when the region cannot be computed.
+ * time, scale and view and that effect reads Black past it, so that a non-inverted mask leaves the
+ * source unchanged over roi. False when the region cannot be computed, and under Stretch, where
+ * the mask's nearest edge reaches roi.
  **/
 bool stageMaskMissesWindow(const EffectInstance& effect,
                            int maskInput,
@@ -268,10 +279,12 @@ StagePlan resolveStagePlan(EffectInstance& effect,
 
 /**
  * @brief Fills plan's composite list from a Composite op's inputs, base first: the input and knob
- * each one's InputLayer resolves to. A pairing that never ends in a plane or a selection reads the
- * input's own plane. With a null spec, every input reads its own plane.
+ * each one's InputLayer resolves to, and its edge mode in effect at plan's time and view. A pairing
+ * that never ends in a plane or a selection reads the input's own plane. With a null spec, every
+ * input reads its own plane.
  **/
-void resolveStageSources(const NodeSpec* spec,
+void resolveStageSources(const EffectInstance& effect,
+                         const NodeSpec* spec,
                          const CompositeInputs& inputs,
                          StagePlan* plan);
 

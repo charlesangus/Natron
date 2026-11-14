@@ -40,68 +40,82 @@ Acceptance sketch:
 
 ## Phase 136.1: Survey and design note
 
-- [ ] M136.P1.T1 — Survey every native node that samples outside its source and write the design note
+- [x] M136.P1.T1 — Survey every native node that samples outside its source and write the design note
   - files: new `Engine/Nodes/docs/edge-policy.md`; read-only survey of `Engine/Nodes/**`, `Engine/Gpu/Kernels/*.slang`
   - approach: Table every native node or kernel that reads outside its own position (start from Crop, Reformat, Transform, Blur, EdgeDetect, ErodeDilate, the Resampler family, and any warp, lens-distortion, Sharpen, Glow or Defocus node present now), with its CPU path, GPU kernel, current outside-source behaviour and the knob that controls it. Then state the model from `## Scope`/`## Decisions`: the `NodeMetadata` bit, source default, forwarding, tri-state knob, bit-driven sampling, OpenFX opacity. Note where the CPU (`PassExecutor` Boundary {Zero, Nearest}, `Resampler` clampCoord) and GPU (`resample.slang`, `blur_lines.slang`, `morphology.slang`) paths already differ and what each becomes. A surveyed node not covered by Phase 136.3 or 136.4 gets a new trailing task in Phase 136.4.
   - verify: the note exists, every surveyed node has a row, and the user approves it (the pm reports the note path and waits).
   - size: M
 
+
+- [ ] M136.P1.T2 — Refresh the design note to current main and the approved answers
+  - files: `Engine/Nodes/docs/edge-policy.md`
+  - approach: mark it approved 2026-11-13 and refresh every line reference to current main (`getDefaultMetadataFromInputs`, `applyIdentityRule`, the OFX metadata path, `computeHashInternal`). Add rows for nodes landed since the survey: DirBlur, GodRays, LensCorrect, SplineWarp, AutoStraighten (own `black_outside` knobs), AdjustBBox, Median, Bilateral, DenoiseProfiled, ToneEqualizer, ColorEqualizer (fixed fills), Defocus, IDefocus (with a Map input), ZDefocus, VectorBlur, KeyMix, FrameBlend; and check whether ContrastTexture, LensAberration, Retouch, SlitScan and the time nodes read off-position. Move Merge, Dissolve, KeyMix, ShuffleCopy and FrameBlend into a new §1.4a "Same-position reads" listing every mask, composite-source, ChannelRoute and Map/UV read site and its current zero rule. §2.3: the knob is `edgeMode` / "Edge Mode"; Q3's rule (a forced value governs the whole output and becomes the output bit); the default changes (a Read used as Merge A repeats its edge across a larger B). §2.4: Stretch reads need the RoI clamped into the input's RoD; the mask-misses-window shortcut and Merge's transparent-A skip hold only under Black; transform concatenation stops at a node whose resolved mode differs. §3: replace the questions with the answers; Q1 reads "every input follows its own edge bit… to keep an element's edge from smearing across a merge, set its upstream Crop or Transform to Black". Remove every reference to other applications and the `.local/docs` link.
+  - verify: every native node under `Engine/Nodes/{Filter,Transform,Merge,Channel,Time,Color}` that reads off-position has a row and a task in this file; no other application is named.
+  - size: M
+
 ## Phase 136.2: The bit and the shared samplers
 
 - [ ] M136.P2.T1 — Add the edge-mode field to `NodeMetadata`
-  - files: `Engine/NodeMetadata.h`, `Engine/NodeMetadata.cpp`, `Tests/NodeMetadata_Test.cpp` (or the existing NodeMetadata test file)
+  - files: `Engine/NodeMetadata.h`, `Engine/NodeMetadata.cpp`, `Tests/PerFrameMetadata_Test.cpp`
   - approach: Add `enum class EdgeMode : unsigned char { Stretch, Black }` and an output-level field `edgeMode`, default `Stretch`, to `NodeMetadataPrivate`. Include it in the copy constructor, `operator=` and the equality comparison. Per-input edge modes are not stored; consumers read the input's output metadata. Follow whatever per-(time, view) shape M167 - Per-Frame Node Metadata left the struct in.
   - verify: a gtest that a default metadata is Stretch, copies keep the field, and two metadata differing only in `edgeMode` compare unequal.
   - size: M
 
 - [ ] M136.P2.T2 — Propagate the bit through native nodes and make OpenFX opaque
-  - files: `Engine/Nodes/NativeEffectBase.cpp`, `Engine/Nodes/NativeEffectBase.h`, `Engine/Nodes/NodeSpec.h`, `Engine/EffectInstance.cpp`
-  - approach: In the native metadata derivation, a node with no override forwards the primary input's (B, else first) `edgeMode`; Switch and other identity nodes report the picked input's, per M167's identity rule. Sources (Read, generators) report Stretch. A node that sets the mode declares it in its spec or overrides a single hook the T2 default calls. OpenFX effects report Stretch regardless of inputs.
-  - verify: gtest graph: Constant(Stretch) → Grade → Merge(B primary); an upstream node forced to Black reaches the output through pass-through nodes, Switch follows its picked input, and an OpenFX node resets to Stretch.
+  - files: `Engine/EffectInstance.cpp` (`getDefaultMetadataFromInputs`, `applyIdentityRule`), `Engine/OfxEffectInstance.cpp` (metadata path), `Engine/Nodes/Image/StagedImageEffect.{h,cpp}` (`getPreferredMetadataAt`), `Tests/PerFrameMetadata_Test.cpp`
+  - approach: a node with no override forwards the primary input's (B, else first) `edgeMode`; Switch and other identity nodes report the picked input's, per M167's identity rule. Sources (Read, generators) report Stretch. A node that sets the mode does so in `getPreferredMetadataAt`. OpenFX effects report Stretch regardless of inputs.
+  - verify: gtest graph: Constant (Stretch) → Grade → Merge (B primary); an upstream node forced to Black reaches the output through pass-through nodes, Switch follows its picked input, and an OpenFX node resets to Stretch.
   - size: M
 
 - [ ] M136.P2.T3 — One shared CPU out-of-bounds sampler
   - files: `Engine/Nodes/Image/PassExecutor.h`, `Engine/Nodes/Image/PassExecutor.cpp`, `Engine/Nodes/Image/Resampler.cpp`, `Engine/Nodes/Image/Resampler.h`, `Engine/Nodes/NodeSpec.h`
   - approach: Replace `InputBoundary {Zero, Nearest}` and `Resampler`'s `blackOutside` flag with the one `EdgeMode` type. The resample clamp-to-source and black-outside paths (`clampCoord`, `outsideBounds`) and the pass executor's boundary read share one helper that returns the nearest pixel for Stretch and zero for Black. No behaviour change at default settings beyond what Phase 136.3 and 136.4 specify; a node that has not moved yet passes its old behaviour as an explicit mode.
-  - verify: gtest on the helper: reads at x=-3, x=width+3, corners and an empty-rect source for both modes; the existing `Resampler_Test` and `StagedResample_Test` pass unchanged.
+  - verify: gtest on the helper: reads at x=-3, x=width+3, corners and an empty-rect source for both modes; `PassExec::readChannelRow` (`PassExecutor.cpp`) takes the mode instead of a fill value; `Tests/Native/NodeSpec_Test.cpp` moves off `InputBoundary`; the existing `Resampler_Test` and `StagedResample_Test` pass unchanged.
   - size: M
 
 - [ ] M136.P2.T4 — One shared GPU out-of-bounds sampler
-  - files: `Engine/Gpu/Kernels/resample.slang`, `Engine/Gpu/Kernels/blur_lines.slang`, `Engine/Gpu/Kernels/morphology.slang`, a new `Engine/Gpu/Kernels/edgesample.slang`, `Engine/Gpu/GpuResample.cpp`, `Engine/Gpu/GpuResample.h`
-  - approach: Add `edgesample.slang` with one function returning the clamped or zero tap for an edge-mode parameter, and include it from the three kernels. Replace `kFlagBlackOutside` packing with the shared mode. Keep each kernel's arithmetic otherwise unchanged. Fixes `morphology.slang` zero-outside against the CPU Neumann path by taking the mode as a parameter.
-  - verify: the slang kernels compile under `tools/ci/local/syntax-check.py`; `Tests/Gpu/BlurGpu_Test.cpp`-style parity test samples both modes against the CPU helper from T3 on a small image with taps outside the source.
+  - files: new `Engine/Gpu/Kernels/edgesample.slang`, `Engine/Gpu/Kernels/resamplecore.slang`, `Engine/Gpu/Kernels/pixelwrap.slang`, `Engine/Gpu/GpuResample.{h,cpp}`, `Engine/Nodes/Transform/WarpGpu.h`
+  - approach: `edgesample.slang` holds one function returning the clamped or zero tap for an edge-mode parameter. One mode constant replaces every `k*BlackOutside` flag in these shared paths; per-kernel buffer fills move with their node tasks in Phase 136.4. Each kernel's arithmetic is otherwise unchanged. (CPU and GPU morphology already agree; nothing to fix there.)
+  - verify: the kernels compile under `tools/ci/local/syntax-check.py`; a parity test samples both modes against the T3 CPU helper on a small image with taps outside the source.
   - size: L
 
-- [ ] M136.P2.T5 — Show the resolved edge state in the node metadata readout
-  - files: the Gui or Python readout that lists a node's PAR and bit depth (locate with `git grep -n 'pixel aspect' Gui/ Engine/`), `Engine/NodeMetadata.h`
-  - approach: Find where the existing per-node metadata is shown to the user; the survey found no `NodeMetadata` use under `Gui/`, so locate it first and say where in the commit. Add one line, "Edge: Stretch" or "Edge: Black". Add no new panel or graph badge.
-  - verify: a unit or Python test of the readout string for both modes; Xvfb screenshot of the readout shared with the user.
+- [ ] M136.P2.T5 — Show the resolved edge state in the node info readout
+  - files: `Engine/Node.cpp` (`makeInfoForInput`, beside the "Pixel aspect ratio" line), a gtest file for the readout
+  - approach: add an "Edge Mode:" line for each input and for the output, reading Stretch or Black. No new panel or graph badge.
+  - verify: gtest of `makeInfoForInput`'s string for both modes; an Xvfb screenshot of the readout goes to the user (P5.T2).
+  - size: M
+
+
+- [ ] M136.P2.T6 — Stretch-aware region of interest
+  - files: `Engine/Nodes/Image/StagedImageEffect.cpp`, `Engine/Nodes/Image/StagePlan.cpp`, `Engine/Nodes/Image/EdgeModeKnob.h`
+  - approach: `EffectInstance` clips an input's RoI to its RoD and fetches nothing when that is empty, so a Stretch read wholly outside the input would get no pixels to repeat. Under Stretch, clamp each input's RoI into that input's RoD as a band at least one pixel wide.
+  - verify: gtest — a window wholly outside a Stretch input still fetches its image and repeats the edge; under Black the input isn't fetched.
   - size: M
 
 ## Phase 136.3: The tri-state knob on Crop, Reformat and Transform
 
-- [ ] M136.P3.T1 — Shared tri-state Edge knob helper
-  - files: `Engine/Nodes/Image/ExtentKnobs.h`, `Engine/Nodes/Image/ExtentKnobs.cpp`, `Engine/Nodes/Image/Resampler.h`
-  - approach: Add a helper that creates the Input / Black / Stretch choice knob (name `edge_mode`, default Input) and a reader that resolves it against the input's `edgeMode` into an `EdgeMode`. Replace the shared `kResamplerParamFilterBlackOutside*` constants with it. The node sets its output `edgeMode` from the resolved value.
-  - verify: gtest of the resolver for all three choices against both input modes.
+- [ ] M136.P3.T1 — The Edge Mode pipeline stage
+  - files: new `Engine/Nodes/Image/EdgeModeKnob.{h,cpp}`, `Engine/Nodes/Image/ImagePipelineSpec.h` (`Stage::EdgeMode`), `Engine/Nodes/Image/StagedImageEffect.cpp`, `Engine/Nodes/Image/StagePlan.{h,cpp}` (`plan.edgeMode`), `Engine/Nodes/Image/Resampler.h`
+  - approach: most affected nodes are built on `ImageNode<Op>`/`StagedImageEffect`, so the knob is a pipeline stage: it adds an Input / Black / Stretch choice (script name `edgeMode`, label "Edge Mode", default Input), resolves it against the input's `edgeMode`, sets the output bit (a forced value overrides the input's and is passed on, per Q3) and hands the mode to PassList, Resample and IWarp. It replaces the `kResamplerParamFilterBlackOutside*` constants. Nodes not on the staged pipeline use the same helper directly.
+  - verify: gtest of the resolver for all three choices against both input modes, including the output bit.
   - size: M
 
 - [ ] M136.P3.T2 — Move Transform onto the Edge knob
   - files: `Engine/Nodes/Transform/Transform.cpp`, `Engine/Nodes/Transform/Transform.h`, `Engine/Nodes/Image/ResampleExecutor.cpp`, `Engine/Nodes/Image/ResampleExecutor.h`, `Tests/Native/NativeTransformGpu_Test.cpp`
-  - approach: Replace the boolean `black_outside` knob (default true) with the helper from T1 and drop `ResampleSettings::blackOutside` in favour of the mode. Update every test that set the old knob; no import of old projects.
-  - verify: Transform translated by half the image: Stretch input gives stretched edges, Black input gives black, on CPU and GPU.
+  - approach: Replace the boolean `black_outside` knob (default true; shared with ITransform) with the Edge Mode stage and drop `ResampleSettings::blackOutside` in favour of the mode. Concatenation resamples the whole chain under one mode, so it uses the resolved mode and stops at a node whose resolved mode differs. Update every test that set the old knob (`NativeTransform_Test`, `NativeTransformGpu_Test`); no import of old projects.
+  - verify: Transform translated by half the image: Stretch input gives stretched edges, Black input gives black; forced Stretch on a Black input stretches and the output bit is Stretch; a concatenated chain with differing modes stops concatenating; CPU and GPU.
   - size: M
 
 - [ ] M136.P3.T3 — Move Reformat onto the Edge knob
   - files: `Engine/Nodes/Transform/Reformat.cpp`, `Engine/Nodes/Transform/Reformat.h`, `Tests/Native/NativeReformat_Test.cpp`
-  - approach: Same replacement as Transform; Reformat's output `edgeMode` is its resolved mode. Update the tests that set the old knob.
+  - approach: Same replacement as Transform; Reformat's output `edgeMode` is its resolved mode, and a forced mode also governs the band between the source and the format (Q3). Update the tests that set the old knob; add `NativeReformatGpu_Test` cases.
   - verify: Reformat to a larger format with each of the three choices and both input modes, CPU and GPU.
   - size: M
 
 - [ ] M136.P3.T4 — Make Crop respect its source and move it onto the Edge knob
   - files: `Engine/Nodes/Transform/Crop.cpp`, `Engine/Nodes/Transform/Crop.h`, `Tests/Native/NativeCrop_Test.cpp`
-  - approach: Replace the `Black Outside` boolean and its 1-pixel RoD growth (`Crop.cpp:182-220, 447`) with the helper. With the crop rectangle larger than the source, pixels beyond the source come from the shared sampler under the resolved mode. Outside the crop rectangle but inside the source, Black blacks them and Stretch repeats the crop rectangle's edge. Revisit the M112.P3.T2 behaviour: with Input selected, Crop larger than a stretch-edge source shows stretched edges.
-  - verify: `NativeCrop_Test` cases: Crop larger than source for Stretch and Black inputs; Crop smaller than source for each knob choice; the `intersect` and `softness` cases still pass.
+  - approach: Replace the `Black Outside` boolean, its 1-pixel RoD growth and Reformat's coupling that toggles it with the Edge Mode stage. Under Input, the band between the source and the crop rectangle follows the input's bit. A forced Black or Stretch governs the whole output, that band included, and becomes the output bit (Q3). Outside the crop rectangle but inside the source, Black blacks and Stretch repeats the crop rectangle's edge.
+  - verify: `NativeCrop_Test` and `NativeCropGpu_Test` cases: Crop larger than source for Stretch and Black inputs under Input; forced Stretch over a Black source and forced Black over a Stretch source; Crop smaller than source for each knob choice; the `intersect` and `softness` cases still pass.
   - size: M
 
 ## Phase 136.4: Filters
@@ -120,13 +134,13 @@ Acceptance sketch:
 
 - [ ] M136.P4.T3 — Erode and Dilate edge mode
   - files: `Engine/Nodes/Filter/ErodeDilate.cpp`, `Engine/Nodes/Filter/ErodeDilate.h`, `Engine/Gpu/Kernels/morphology.slang`, `Tests/Native/` (ErodeDilate test file)
-  - approach: Add the Edge knob and use the shared CPU and GPU samplers. The GPU kernel currently reads zero outside while the CPU path clamps; both follow the mode now.
+  - approach: Add the Edge Mode stage; the fill beyond the source follows the mode while the window clamp stays (CPU and GPU already agree). Fix the knob help text that names Neumann boundaries.
   - verify: erode and dilate of an image with a bright border pixel, both modes, CPU == GPU.
   - size: M
 
 - [ ] M136.P4.T4 — Warp nodes edge mode
   - files: `Engine/Nodes/Transform/CornerPin.cpp`, `CornerPin.h`, `CornerPinKnobs.h`, `ITransform.cpp`, `ICornerPin.cpp`, `IWarp.cpp`, `IWarp.h`, `IDistort.cpp`, `IDistort.h`, `STMap.cpp`, `STMap.h`, `LensDistortion.cpp`, `LensDistortion.h`, `Mirror.cpp`, `WarpGpu.h`; their `Tests/Native/` tests
-  - approach: Replace each `black_outside`/`blackOutside` boolean with the Phase 136.3 Edge knob; ITransform and ICornerPin follow Transform's and CornerPin's knob. `WarpSettings::blackOutside` and the `kWarpGpuBlackOutside`/`kIWarpGpuBlackOutside`/`kLensDistortionGpuBlackOutside` flags become the shared mode. STMap's Wrap U/V stay (the mode applies only under Wrap None). Mirror drops its hard-wired flag and forwards the bit. `expandRoD` and LensDistortion's margin key off the resolved mode. See `Engine/Nodes/docs/edge-policy.md` §1.2.
+  - approach: Replace each `black_outside`/`blackOutside` boolean with the Phase 136.3 Edge knob; ITransform and ICornerPin follow Transform's and CornerPin's knob. `WarpSettings::blackOutside` and the `kWarpGpuBlackOutside`/`kIWarpGpuBlackOutside`/`kLensDistortionGpuBlackOutside` flags become the shared mode. STMap's Wrap U/V stay (the mode applies only under Wrap None). IDistort's and STMap's UV inputs are P4.T12. Mirror drops its hard-wired flag and forwards the bit. `expandRoD` and LensDistortion's margin key off the resolved mode. See `Engine/Nodes/docs/edge-policy.md` §1.2.
   - verify: each node, a setting with taps outside the source under Stretch and Black inputs, CPU == GPU.
   - size: M
 
@@ -144,25 +158,86 @@ Acceptance sketch:
 
 - [ ] M136.P4.T7 — IBlur, IErodeDilate and EdgeBlur edge mode
   - files: `Engine/Nodes/Filter/IBlur.cpp`, `IBlur.h`, `IErodeDilate.cpp`, `IErodeDilate.h`, `EdgeBlur.cpp`, `EdgeBlur.h`, `VariableBlurKernels.cpp`, `VariableBlurKernels.h`, `Engine/Gpu/Kernels/iblur.slang`, `ierodedilate.slang`; their `Tests/Native/` tests
-  - approach: Add the Edge knob for the source input; the fixed Zero source fill and the summed-area table's zero outside follow the resolved mode. Map inputs follow the answer to the design note's Q1. EdgeBlur's matte keeps EdgeDetect's rule.
+  - approach: Add the Edge knob for the source input; the fixed Zero source fill and the summed-area table's zero outside follow the resolved mode. Map inputs are P4.T11. EdgeBlur's matte keeps EdgeDetect's rule.
   - verify: a constant image keeps its value to the border under Stretch and darkens under Black, CPU == GPU.
+  - size: M
+
+
+- [ ] M136.P4.T8 — Mask inputs and the MaskMix stage
+  - files: `Engine/Nodes/Image/PassExecutor.cpp`, `Engine/Nodes/Image/StagePlan.cpp`, `Engine/Nodes/Image/ResampleExecutor.cpp`, `Engine/Gpu/Kernels/pixelwrap.slang`, `Engine/Gpu/Kernels/compositestep.slang`, `Engine/Nodes/Image/StagedImageEffect.cpp` (the mask-misses-window shortcut)
+  - approach: every input follows its own edge bit (Q1): masks read through the shared samplers by the mask input's bit; the mask-misses-window identity shortcut applies only under Black.
+  - verify: Blur and Merge with a small mask under Stretch and Black, CPU == GPU.
+  - size: M
+
+- [ ] M136.P4.T9 — Composite sources: Merge, KeyMix, Dissolve
+  - files: `Engine/Nodes/Image/StagePlan.cpp` (the composite fold), `Engine/Nodes/Merge/Merge.{h,cpp}`, `KeyMix.{h,cpp}`, `Dissolve.{h,cpp}`, `Engine/Gpu/Kernels/merge.slang`, `dissolve.slang`, `compositestep.slang`, `pixelwrap.slang`; their Native and Gpu tests
+  - approach: each source and its alpha read by its own bit; Merge's transparent-A skip runs only under Black. Remove references to other applications from Merge's tooltips.
+  - verify: A smaller than B, both modes, for each node, CPU == GPU.
+  - size: L
+
+- [ ] M136.P4.T10 — ShuffleCopy channel routes
+  - files: `Engine/Nodes/Channel/ChannelCopy.{h,cpp}`, `Engine/Nodes/Channel/Shuffle.cpp`, `Engine/Gpu/Kernels/channelroute.slang`, `Tests/Native/NativeShuffleGpu_Test.cpp`
+  - approach: each routed input reads by its own bit.
+  - verify: input 1 smaller than input 2, both modes, CPU == GPU.
+  - size: M
+
+- [ ] M136.P4.T11 — Map inputs of IBlur, IErodeDilate, IDefocus and EdgeBlur
+  - files: `Engine/Nodes/Image/MapInput.{h,cpp}` (`MapPlane::outside`, `tileRange`), `Engine/Gpu/Kernels/mapremap.slang`, `IBlur.cpp`, `IErodeDilate.cpp`, `IDefocus.cpp`, `EdgeBlur.cpp`
+  - approach: Map planes follow the map input's bit; Stretch clamps.
+  - verify: a Map smaller than the source, both modes, CPU == GPU.
+  - size: M
+
+- [ ] M136.P4.T12 — IDistort and STMap UV inputs
+  - files: `Engine/Nodes/Transform/IDistort.cpp`, `STMap.cpp`, `Engine/Gpu/Kernels/coordmap.slang`, `stmap.slang`
+  - approach: as T11 for UV reads.
+  - verify: a UV input smaller than the source, both modes, CPU == GPU.
+  - size: M
+
+- [ ] M136.P4.T13 — LensCorrect, SplineWarp and AutoStraighten onto the Edge Mode knob
+  - files: their `.{h,cpp}`, `Engine/Gpu/Kernels/lenscorrect.slang`, `splinewarp.slang`
+  - approach: replace each `black_outside` knob (default on today) with the stage; LensCorrect's edge fade, its outside shortcut and its source-region bound key off the resolved mode.
+  - verify: as P4.T4.
+  - size: M
+
+- [ ] M136.P4.T14 — DirBlur and GodRays
+  - files: `Engine/Nodes/Filter/DirBlur.{h,cpp}`, `GodRays.{h,cpp}`, `Engine/Gpu/Kernels/dirblur.slang`
+  - approach: replace their `black_outside` knobs and GPU flag with the stage; `DirBlur::sourceRegion` keys off the mode.
+  - verify: as P4.T4.
+  - size: M
+
+- [ ] M136.P4.T15 — Median, Bilateral and AdjustBBox
+  - files: `Engine/Nodes/Filter/Median.cpp`, `Bilateral.cpp`, `Engine/Nodes/Transform/AdjustBBox.cpp`, their GPU kernels and tests
+  - approach: replace the fixed `list.boundary` (Zero, Zero, Nearest) with the resolved mode.
+  - verify: a constant image keeps its value to the border under Stretch and darkens under Black, CPU == GPU.
+  - size: M
+
+- [ ] M136.P4.T16 — Defocus, IDefocus, ZDefocus and VectorBlur
+  - files: their `.{h,cpp}` and GPU kernels; their Native and Gpu tests
+  - approach: their fixed-black source reads follow the mode through the shared samplers.
+  - verify: as P4.T15.
+  - size: L
+
+- [ ] M136.P4.T17 — DenoiseProfiled, ToneEqualizer and ColorEqualizer fills
+  - files: `Engine/Nodes/Filter/DenoiseProfiled.cpp`, `Engine/Nodes/Color/ToneEqualizer.cpp`, `ColorEqualizer.cpp`
+  - approach: their fixed Zero fills follow the mode; add the stage to the two colour nodes only if P1.T2 confirms they read off-position.
+  - verify: as P4.T15 for each node that gets the stage.
   - size: M
 
 ## Phase 136.5: Matrix and acceptance
 
 - [ ] M136.P5.T1 — Per-node CPU/GPU parity matrix over both bit values
-  - files: `Tests/Native/EdgePolicy_Test.cpp` (new), `Tests/CMakeLists.txt` or the test list the other Native tests use
-  - approach: One parameterised gtest over the nodes from the survey (Crop, Reformat, Transform, Blur, EdgeDetect, Erode, Dilate, plus any added to Phase 136.4): a small image with distinct border values, rendered with a taps-outside-source setting under input Stretch and input Black, CPU against GPU within ulps and against a hand-computed expectation. Register the test in the CMake list used by sibling tests.
+  - files: `Tests/Native/EdgePolicy_Test.cpp` (new; `Tests/Native` is globbed)
+  - approach: One parameterised gtest over every node with an Edge Mode knob plus Merge, KeyMix, Dissolve, ShuffleCopy, the mask path and the Map/UV inputs: a small image with distinct border values, rendered with a taps-outside-source setting under input Stretch and input Black and the three knob choices, CPU against GPU within ulps and against a hand-computed expectation.
   - verify: the matrix passes; a node added to the survey without a matrix row fails the build's test list review (the test enumerates the registered node ids it covers).
   - size: M
 
 - [ ] M136.P5.T2 — Xvfb GUI check of the Edge knobs
-  - files: `Tests/gui/` (new script beside the existing GUI scripts), `build/deeprepro/run-gui.sh` (read only)
-  - approach: Under Xvfb, build Read-like Constant → Crop (larger than the source) and Transform, switch the Edge knob through Input / Black / Stretch, read the metadata readout line, and capture screenshots for each.
+  - files: a new script beside `Tests/gui/guitest.py`, run with `tools/ci/remote/build.sh --from-run <id> --gui`
+  - approach: Under Xvfb, build Read-like Constant → Crop (larger than the source) and Transform, and a Merge with A smaller than B; switch the Edge Mode knob through Input / Black / Stretch, read the info readout line, and capture a screenshot for each.
   - verify: the script exits zero, screenshots show stretched edges and black edges as expected, and the screenshots are sent to the user for sign-off.
   - size: M
 
-**Verification gate:** `EdgePolicy_Test` passes in the release and debug builds; the existing Crop, Reformat, Transform, Blur, EdgeDetect, Erode/Dilate and Resampler tests pass; the Xvfb GUI check passes and the user has approved the design note and the screenshots; Crop larger than its source gives stretched edges for a Stretch input and black for a Black input, CPU and GPU.
+**Verification gate:** `EdgePolicy_Test` passes in the release and debug PR CI legs; the matrix covers every node with an Edge Mode knob plus Merge, KeyMix, Dissolve, ShuffleCopy, the mask path and the Map and UV inputs, under both bit values and the three knob choices, CPU against GPU; the existing tests of each touched node plus `Resampler_Test` and the `Staged*` tests pass; the remote `--gui` check passes and the user approves the screenshots; Crop larger than its source stretches for a Stretch input under Input, is black for a Black input, and follows a forced setting over either, CPU and GPU.
 
 ## Decisions
 
@@ -181,3 +256,4 @@ Acceptance sketch:
 - 2026-10-25 — Elaborated after a code survey: the warp, lens-distortion, Sharpen, Glow and Defocus nodes were not found in this tree at planning time, so the survey task re-lists the nodes that sample outside their source when the milestone is claimed, and each gets a task then.
 - 2026-11-02 — Q4: filters default to Input (they follow the input's edge bit); goldens re-recorded once (user).
 - 2026-11-13 — **Design note approved (user)**, with answers: **Q1 — every input follows the edge bit** (user chose this over the recommendation): same-position reads of other inputs (Merge's A, Dissolve, Copy, every mask input, the Map inputs of IBlur, IErodeDilate, IDistort and STMap) repeat their edge too, which brings Merge, Dissolve, Copy and mask mixing into scope. **Q2 — Raw nodes stay out**: they forward the bit and keep their darktable borders. **Q3 — a forced mode overrides the input bit and passes the forced setting on**: Crop, Reformat and Transform forced to Black or Stretch govern the whole output (the band between the source region and the crop rectangle included) and set the output bit to the forced value. **Q4 — filters default to Input** (2026-11-02). Phases 2–5 to be re-checked against current main and extended for Q1 before implementation.
+- 2026-11-13 — Re-planned after approval (consultant freshness check against b59ff3fdf): five premises were stale (P2.T2, P2.T4, P3.T1, P4.T3, P5.T2) and rewritten; the knob is delivered as a `Stage::EdgeMode` pipeline stage, since most affected nodes are `StagedImageEffect`s; added P1.T2 (note refresh), P2.T6 (Stretch-aware RoI), P4.T8–T17 (Q1's same-position inputs and nodes landed since the survey). "Copy" is ShuffleCopy (no native Copy; the OpenFX Copy is out of scope). KeyMix, FrameBlend's MaskMix and IDefocus's Map are in scope because every input follows the bit (Q1).

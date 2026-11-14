@@ -475,24 +475,15 @@ insertAfterViewed(const NodePtr& viewed,
     }
 }
 
-// Whether token is an operator of a path expression, or holds one.
+// Whether text holds an operator, a predicate or an expression reference: whitespace then no
+// longer splits it into the entries of one union, and an entry can't be dropped without changing
+// what the rest means.
 bool
-isExpressionToken(const QString& token)
+hasExpressionSyntax(const QString& text)
 {
-    return (token == QLatin1String("-")) || (token == QLatin1String("+")) || (token == QLatin1String("&")) || (token == QLatin1String("~"))
-        || token.contains(QLatin1Char('(')) || token.contains(QLatin1Char(')')) || token.contains(QLatin1Char('~')) || token.contains(QLatin1Char('&')) || token.contains(QLatin1Char('%'));
-}
+    static const QRegularExpression syntax(QStringLiteral("[-+&~()%{}]"));
 
-bool
-isOperatorToken(const QString& token)
-{
-    return (token == QLatin1String("-")) || (token == QLatin1String("+")) || (token == QLatin1String("&")) || (token == QLatin1String("~"));
-}
-
-bool
-isWildcardToken(const QString& token)
-{
-    return token.contains(QLatin1Char('*')) || token.contains(QLatin1Char('?')) || token.contains(QLatin1Char('[')) || token.contains(QLatin1String("//"));
+    return text.contains(syntax);
 }
 
 // The search Select Matches started last; an older one that ends later is dropped.
@@ -793,13 +784,6 @@ editPrimPathsText(KnobString::PrimPathHintEnum hint,
     if ((hint != KnobString::ePrimPathHintPattern) || (edit == ePrimEditReplace)) {
         return primPathsText(hint, paths);
     }
-    const QStringList tokens = QString::fromStdString(current).split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    bool isExpression = false;
-    bool hasWildcard = false;
-    for (const QString& token : tokens) {
-        isExpression = isExpression || isExpressionToken(token);
-        hasWildcard = hasWildcard || isWildcardToken(token);
-    }
     QStringList wanted;
     for (const QString& path : paths) {
         const QString trimmed = path.trimmed();
@@ -807,53 +791,72 @@ editPrimPathsText(KnobString::PrimPathHintEnum hint,
             wanted << trimmed;
         }
     }
+    const QString text = QString::fromStdString(current).trimmed();
+    if (text.isEmpty()) {
+        return (edit == ePrimEditAdd) ? wanted.join(QLatin1Char(' ')).toStdString() : current;
+    }
+
+    PrimSelector::Reach reach;
+    std::string error;
+    if (PrimSelector::getReach(current, &reach, &error) && reach.literalOnly) {
+        QStringList entries;
+        for (const std::string& literal : reach.literals) {
+            const QString entry = QString::fromStdString(literal);
+            if (!entries.contains(entry)) {
+                entries << entry;
+            }
+        }
+        QStringList result = entries;
+        for (const QString& path : wanted) {
+            if (edit == ePrimEditAdd) {
+                if (!result.contains(path)) {
+                    result << path;
+                }
+            } else {
+                result.removeAll(path);
+            }
+        }
+
+        return (result == entries) ? current : result.join(QLatin1Char(' ')).toStdString();
+    }
+
+    // Patterns and predicates without operators are a union of whitespace-separated entries, of
+    // which a literal one can be dropped; anything else is only ever extended or subtracted from.
+    const bool list = !hasExpressionSyntax(text);
+    QStringList kept = list ? text.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts) : QStringList();
     if (edit == ePrimEditAdd) {
         QStringList missing;
         for (const QString& path : wanted) {
-            if (!tokens.contains(path)) {
+            if (!kept.contains(path)) {
                 missing << path;
             }
         }
         if (missing.isEmpty()) {
-            return tokens.join(QLatin1Char(' ')).toStdString();
+            return current;
         }
-        const QString base = (isExpression && (tokens.size() > 1)) ? QStringLiteral("(%1)").arg(tokens.join(QLatin1Char(' '))) : tokens.join(QLatin1Char(' '));
+        const QString base = list ? text : QStringLiteral("(%1)").arg(text);
 
-        return (base.isEmpty() ? missing.join(QLatin1Char(' ')) : base + QLatin1Char(' ') + missing.join(QLatin1Char(' '))).toStdString();
+        return (base + QLatin1Char(' ') + missing.join(QLatin1Char(' '))).toStdString();
     }
 
-    QStringList kept = tokens;
     QStringList subtract;
     for (const QString& path : wanted) {
-        bool removed = false;
-        for (int i = kept.size() - 1; i >= 0; --i) {
-            if (kept[i] != path) {
-                continue;
-            }
-            // Dropping an entry beside an operator would leave the rest meaning something else.
-            const bool beforeOperator = (i > 0) && isOperatorToken(kept[i - 1]);
-            const bool afterOperator = (i + 1 < kept.size()) && isOperatorToken(kept[i + 1]);
-            if (!isExpression || (!beforeOperator && !afterOperator)) {
-                kept.removeAt(i);
-                removed = true;
-            }
-        }
-        if (!removed && (isExpression || hasWildcard)) {
+        if (!list || (kept.removeAll(path) == 0)) {
             subtract << path;
         }
     }
-    QString text = kept.join(QLatin1Char(' '));
+    if (list && kept.isEmpty()) {
+        return std::string();
+    }
+    QString result = list ? kept.join(QLatin1Char(' ')) : text;
     if (!subtract.isEmpty()) {
-        if (text.isEmpty()) {
-            return std::string();
+        if (!list || (kept.size() > 1)) {
+            result = QStringLiteral("(%1)").arg(result);
         }
-        if (kept.size() > 1) {
-            text = QStringLiteral("(%1)").arg(text);
-        }
-        text += QStringLiteral(" - ") + subtract.join(QStringLiteral(" - "));
+        result += QStringLiteral(" - ") + subtract.join(QStringLiteral(" - "));
     }
 
-    return text.toStdString();
+    return (result == text) ? current : result.toStdString();
 }
 
 QStringList
@@ -1133,15 +1136,13 @@ namespace {
             report += (unloaded.size() == 1) ? tr(" 1 unloaded branch not searched.")
                                              : tr(" %1 unloaded branches not searched.").arg(unloaded.size());
         }
-        if (!matches.isEmpty()) {
-            SceneViewport* viewport = search->viewport ? search->viewport.data() : nullptr;
-            if (!viewport) {
-                ViewerTab* viewer = selectionViewer(gui);
-                viewport = (viewer && viewer->isShowingScene()) ? viewer->getSceneViewport() : nullptr;
-            }
-            if (viewport) {
-                viewport->setSelection(matches);
-            }
+        SceneViewport* viewport = search->viewport ? search->viewport.data() : nullptr;
+        if (!viewport) {
+            ViewerTab* viewer = selectionViewer(gui);
+            viewport = (viewer && viewer->isShowingScene()) ? viewer->getSceneViewport() : nullptr;
+        }
+        if (viewport) {
+            viewport->setSelection(matches);
         }
         showHint(gui, report);
         releaseMatchSearch(search);

@@ -12,6 +12,9 @@ Checks:
     and HEARTBEAT_BLOCKED_BUDGET_MS with blocking;
   - Apply To Node writes the expression, as typed, to the USDPrune's Prim Pattern, and one Undo
     restores the pattern before it;
+  - Apply To Node clicked right after an edit, before the field's debounce, writes the edited text;
+  - /World/Flat/* stops at the 1000-match cap with a More row and selects those matches, and More
+    lists and selects the next 1000;
   - an expression that does not parse lists nothing, shows the parse error beside the field and
     disables Apply To Node;
   - {loaded:false} finds the unloaded payload and {active:false} the inactive prim;
@@ -47,6 +50,9 @@ LAZY = "/World/Lazy"
 MARKER = "/World/Ground"
 COMPONENT_EXPRESSION = "//{kind:component}"
 INVALID_EXPRESSION = "//{kind:component"
+FLAT_EXPRESSION = "/World/Flat/*"
+# The Scene Graph panel lists this many matches before its More row.
+FILTER_CAP = 1000
 
 
 def write_scene(directory):
@@ -329,6 +335,32 @@ try:
               "Apply To Node writes the expression to the USDPrune's pattern (got %r)" % (pattern.getValue(),))
         undo()
         check(str(pattern.getValue()) == MARKER, "one Undo restores the pattern before it (got %r)" % (pattern.getValue(),))
+
+        # Clicked at once, before the field's edit is debounced into a new filter.
+        set_filter("//{active:false}")
+        require(apply_button().isEnabled(), "Apply To Node is still enabled from the last expression")
+        apply_button().click()
+        QApplication.processEvents()
+        check(str(pattern.getValue()) == "//{active:false}",
+              "Apply To Node right after an edit writes the text in the field (got %r)" % (pattern.getValue(),))
+        undo()
+        check(str(pattern.getValue()) == MARKER, "one Undo restores the pattern again (got %r)" % (pattern.getValue(),))
+
+        def result_rows():
+            return hold(results().model()).rowCount()
+
+        set_filter(FLAT_EXPRESSION)
+        ok = yield ("until", lambda: filter_done() and result_rows() == FILTER_CAP + 1, LOAD_TIMEOUT_S)
+        require(ok, "%s stops at the result cap with a More row (got %d rows)" % (FLAT_EXPRESSION, result_rows()))
+        ok = yield ("until", lambda: len(viewer_selection()) == FILTER_CAP, POLL_TIMEOUT_S)
+        check(ok, "the capped matches are selected (got %d)" % (len(viewer_selection()),))
+        model = hold(results().model())
+        results().clicked.emit(model.index(model.rowCount() - 1, 0))
+        QApplication.processEvents()
+        ok = yield ("until", lambda: filter_done() and result_rows() == 2 * FILTER_CAP + 1, LOAD_TIMEOUT_S)
+        require(ok, "More lists the next matches (got %d rows)" % (result_rows(),))
+        ok = yield ("until", lambda: len(viewer_selection()) == 2 * FILTER_CAP, POLL_TIMEOUT_S)
+        check(ok, "the matches More lists are selected too (got %d)" % (len(viewer_selection()),))
 
         set_filter(INVALID_EXPRESSION)
         ok = yield ("until", lambda: filter_done() and bool(prop("FilterError")), POLL_TIMEOUT_S)

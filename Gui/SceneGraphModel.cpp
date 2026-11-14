@@ -2110,25 +2110,6 @@ SceneGraphPrimWalk::getUnloadedBranchPaths() const
     return _imp->unloadedPaths;
 }
 
-int
-SceneGraphPrimWalk::countUnloaded(const SceneStage* stage,
-                                  const QStringList& paths)
-{
-    if (!stage) {
-        return 0;
-    }
-    const UsdStageRefPtr& usdStage = stage->getStage();
-    int count = 0;
-    for (const QString& path : paths) {
-        const UsdPrim prim = usdStage->GetPrimAtPath(SdfPath(path.toStdString()));
-        if (prim && prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
-            ++count;
-        }
-    }
-
-    return count;
-}
-
 void
 SceneGraphPrimWalk::step(const SceneStage* stage,
                          int budgetMs,

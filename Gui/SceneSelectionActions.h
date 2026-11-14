@@ -84,10 +84,12 @@ enum PrimEditEnum {
 /**
  * @brief The text a prim knob with hint holds after edit applies paths to current. Replace is
  * primPathsText(). For a pattern knob, Add appends the paths that are not entries yet, and Remove
- * takes out the entries that are exactly one of the paths. A pattern that is an expression rather
- * than a list of paths has its entries removed only where that leaves the rest meaning the same;
- * a path it can't remove that way is taken away with a difference, as in "(/a /b) - /c". Adding to
- * an expression parenthesizes it first. A path knob only ever replaces.
+ * takes out the entries that are exactly one of the paths; current is parsed as a path expression
+ * (PrimSelector::getReach()) to tell a union of plain paths from anything else. Entries are only
+ * removed from a union of whitespace-separated entries without operators; a path that can't be
+ * removed that way is taken away with a difference, as in "(/a - /b) - /c". Adding to an
+ * expression with operators parenthesizes it first. Text that would not change is returned as
+ * current. A path knob only ever replaces.
  **/
 std::string editPrimPathsText(KnobString::PrimPathHintEnum hint,
                               PrimEditEnum edit,

@@ -10,7 +10,9 @@ Checks:
   - Remove takes the selected prims out of the pattern;
   - Replace swaps the pattern for the selected prims;
   - each of the three is one undo step, restoring the pattern before it;
-  - Remove of a prim a wildcard entry covers appends a difference, "/World/* - /World/Cam";
+  - Remove of a prim a wildcard entry covers appends a difference, "/World/* - /World/Cam", and so does Remove
+    from a compact difference such as "/World/Box-/World/Cam" or a predicate-only pattern;
+  - Select Matches on a pattern that matches nothing clears the selection;
   - Select Matches with the pattern "/World/*" selects Box, Ball and Cam in the 3D view;
   - a USDXformPrim's Prim Path menu offers only Replace, Pick in Viewer and Select Matches, and Replace writes the
     first selected prim.
@@ -320,6 +322,17 @@ try:
         undo_once()
         check(value() == "/World/*", "one Undo undoes the difference (got %r)" % (value(),))
 
+        pattern.setValue(BOX + "-" + CAM)
+        yield from select([BOX])
+        trigger(menu, "knobPrimRemove")
+        check(value() == "(%s-%s) - %s" % (BOX, CAM, BOX),
+              "Remove from a compact difference subtracts the prim (got %r)" % (value(),))
+        pattern.setValue("/World/{kind:component}")
+        trigger(menu, "knobPrimRemove")
+        check(value() == "(/World/{kind:component}) - " + BOX,
+              "Remove from a predicate pattern subtracts the prim (got %r)" % (value(),))
+        pattern.setValue("/World/*")
+
         yield from select([BOX])
         # Select Matches searches through a viewer whose scene reaches the node, so the viewer moves onto
         # the USDPrune; the search reads the node's input, which the prune's own matches do not hide from.
@@ -332,6 +345,11 @@ try:
         check(ok, "Select Matches on /World/* selects Box, Ball and Cam (got %r)" % (viewer_selection(),))
         yield ("sleep", SETTLE_MS)
         shot("scene-knob-tools-matches.png")
+        pattern.setValue("/World/NoSuchPrim")
+        trigger(menu, "knobPrimSelectMatches")
+        ok = yield ("until", lambda: viewer_selection() == [], POLL_TIMEOUT_S)
+        check(ok, "Select Matches that matches nothing clears the selection (got %r)" % (viewer_selection(),))
+        pattern.setValue("/World/*")
 
         # A payload scene with nothing loaded.
         city = write_city(os.path.join(OUT, "scene_knob_tools_city"))

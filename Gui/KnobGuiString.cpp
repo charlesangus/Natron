@@ -647,7 +647,7 @@ KnobGuiString::acceptsPrimPaths() const
 {
     KnobStringPtr knob = _knob.lock();
 
-    return knob && (knob->getPrimPathHint() != KnobString::ePrimPathHintNone) && knob->isEnabled(0) && !knob->isSlave(0);
+    return knob && (knob->getPrimPathHint() != KnobString::ePrimPathHintNone) && knob->isEnabled(0) && !knob->isSlave(0) && knob->getExpression(0).empty();
 }
 
 void
@@ -666,7 +666,9 @@ KnobGuiString::writePrimText(const std::string& newText)
 {
     KnobStringPtr knob = _knob.lock();
 
-    if (!knob) {
+    // An armed pick or an open popup can outlive the state that allowed it, so the knob may have
+    // become expression-driven, slaved or disabled since.
+    if (!knob || !acceptsPrimPaths()) {
         return;
     }
     const std::string oldText = knob->getValue(0);

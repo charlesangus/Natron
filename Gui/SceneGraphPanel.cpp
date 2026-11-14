@@ -1556,6 +1556,7 @@ struct SceneGraphPanel::Implementation {
 
         if (!source) {
             filterWalk.stop();
+            filterCapped = false;
 
             return true;
         }
@@ -2491,6 +2492,11 @@ SceneGraphPanel::onFilterEdited()
 void
 SceneGraphPanel::onApplyToNode()
 {
+    // The field may have been edited since the debounced filter last read it.
+    if (_imp->filterDebounce.isActive() || (_imp->filter->text().trimmed() != _imp->filterPattern)) {
+        _imp->filterDebounce.stop();
+        onFilterEdited();
+    }
     if (!_imp->filterWalk.hasExpression() || !_imp->filterError.isEmpty()) {
         return;
     }
@@ -2511,7 +2517,8 @@ SceneGraphPanel::onFilterStep()
         }
         _imp->showFilterResults();
     }
-    if (over) {
+    // A walk stopped at the result cap goes on when More is clicked, and selects what it finds then.
+    if (over && !_imp->filterCapped) {
         _imp->filterSelects = false;
     }
     _imp->updateFilterMessage();

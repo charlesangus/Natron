@@ -13,7 +13,9 @@ Checks:
   - arming a USDXformPrim's Prim Path while the pattern is armed replaces the armed knob, and Enter
     then writes the first selected prim to the path only;
   - deleting the armed node ends the mode, with the property cleared;
-  - closing the armed node's settings panel ends the mode.
+  - closing the armed node's settings panel ends the mode;
+  - a knob driven by an expression offers only Select Matches in its menu, and a pick armed before
+    the expression was set writes nothing on Enter.
 
 Shot: scene-armed-pick.png (while armed with two prims selected).
 
@@ -289,6 +291,31 @@ try:
         ok = yield ("until", lambda: armed(view()) == "" and armed(panel_widget()) == "", POLL_TIMEOUT_S)
         check(ok, "closing the settings panel ends the mode")
         check(value() == CAM, "the pattern is unchanged at the end (got %r)" % (value(),))
+
+        driven = app.createNode("USDXformPrim", -1, None, props)
+        require(driven is not None, "create a second USDXformPrim", plugin_problem("USDXformPrim"))
+        driven.setPosition(150, 200)
+        require(driven.connectInput(0, prune), "connect the second USDXformPrim to the USDPrune")
+        ok = yield ("until", lambda: menu_with("knobPrimPick") is not None, POLL_TIMEOUT_S)
+        require(ok, "the second USDXformPrim's panel shows a selection menu")
+        driven_menu = menu_with("knobPrimPick")
+        driven_path = driven.getParam("primPath")
+        trigger(driven_menu, "knobPrimPick")
+        check(armed(view()) == driven.getScriptName() + ".primPath", "the second Prim Path knob is armed")
+        yield from select([BOX])
+        require(driven_path.setExpression('"%s"' % (BALL,), False), "set an expression on the second Prim Path")
+        QApplication.processEvents()
+        QTest.keyClick(view(), Qt.Key_Return)
+        QApplication.processEvents()
+        check(str(driven_path.getValue()) == BALL,
+              "Enter on a pick armed before the knob took an expression writes nothing (got %r)" % (driven_path.getValue(),))
+        check(str(driven_path.getExpression(0)[0]) != "", "the expression is still set after Enter")
+        QTest.keyClick(view(), Qt.Key_Escape)
+        QApplication.processEvents()
+        driven_menu.aboutToShow.emit()
+        enabled = dict((a.objectName(), a.isEnabled()) for a in driven_menu.actions() if a.objectName())
+        check(enabled == {"knobPrimReplace": False, "knobPrimPick": False, "knobPrimSelectMatches": True},
+              "an expression-driven knob's menu enables only Select Matches (got %r)" % (enabled,))
 
     run(steps())
 except Exception:

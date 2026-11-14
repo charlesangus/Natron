@@ -55,7 +55,7 @@ Acceptance sketch:
 
 ## Phase 136.2: The bit and the shared samplers
 
-- [ ] M136.P2.T1 — Add the edge-mode field to `NodeMetadata`
+- [x] M136.P2.T1 — Add the edge-mode field to `NodeMetadata`
   - files: `Engine/NodeMetadata.h`, `Engine/NodeMetadata.cpp`, `Tests/PerFrameMetadata_Test.cpp`
   - approach: Add `enum class EdgeMode : unsigned char { Stretch, Black }` and an output-level field `edgeMode`, default `Stretch`, to `NodeMetadataPrivate`. Include it in the copy constructor, `operator=` and the equality comparison. Per-input edge modes are not stored; consumers read the input's output metadata. Follow whatever per-(time, view) shape M167 - Per-Frame Node Metadata left the struct in.
   - verify: a gtest that a default metadata is Stretch, copies keep the field, and two metadata differing only in `edgeMode` compare unequal.

@@ -37,25 +37,25 @@ Foundation is replaced: a scene with no lights renders emission only.
 
 ## Phase 281.1: Materials and textures
 
-- [ ] M281.P1.T1 — Material network sync to compact records
+- [x] M281.P1.T1 — Material network sync to compact records
   - files: `Engine/Nodes/Scene/Utility/UtilityMaterial.{h,cpp}`, `Engine/Nodes/Scene/Utility/UtilityRenderDelegate.cpp`, `Engine/Nodes/Scene/Utility/Kernels/UtilityTypes.slang`, `Tests/Scene/NatronUtilityMaterial_Test.cpp`
   - approach: add the `material` Sprim; walk `HdMaterialNetwork2` from the surface terminal, accept only the UsdPreviewSurface subset nodes listed in Scope and fold them into a fixed-layout record (constants plus texture slot indices). Anything else marks the material unsupported. Mesh rprims resolve their material binding id each sync.
   - verify: gtest on authored materials — constants land in the record; a texture-driven diffuse gets a slot; a MaterialX network is flagged unsupported.
   - size: L
 
-- [ ] M281.P1.T2 — Texture pool through HioImage
+- [x] M281.P1.T2 — Texture pool through HioImage
   - files: `Engine/Nodes/Scene/Utility/UtilityTextures.{h,cpp}`, `Engine/Nodes/Scene/Utility/Kernels/Texture.slang`, `Tests/Scene/NatronUtilityMaterial_Test.cpp`
   - approach: load each asset once via `HioImage` (UDIM expansion as Storm does), build mips, keep CPU copies for the C++ path and `GpuTexture`s for the GPU path; filtered lookup with wrap/scale/bias in shared Slang. Live `natron://` assets reload when their `?v=` hash changes.
   - verify: gtest — a 4×4 known texture samples to expected values at texel centres on both backends; a `natron://` texture served by the live-texture store loads; a missing file returns the fallback and records a warning.
   - size: L
 
-- [ ] M281.P1.T3 — PreviewSurface shading and the magenta fallback
+- [x] M281.P1.T3 — PreviewSurface shading and the magenta fallback
   - files: `Engine/Nodes/Scene/Utility/Kernels/ShadeSurface.slang`, `Engine/Nodes/Scene/Utility/Kernels/PreviewSurface.slang`, `Engine/Nodes/Scene/Utility/UtilityRenderPass.cpp`, `Tests/Scene/NatronUtility_Test.cpp`
   - approach: replace ShadeFlat with ShadeSurface: evaluate the material record (diffuse + GGX specular, metallic/specular workflows, opacityThreshold cutout, normal map) and emission; no lights yet means emission only. Unsupported materials shade magenta (1,0,1) and the pass collects their paths into one node warning.
   - verify: gtest — an emissive quad renders its emission; a non-emissive quad in a lightless scene renders black; a MaterialX-bound quad renders magenta and the warning names it; CPU and GPU agree within tolerance.
   - size: M
 
-- [ ] M281.P1.T4 — Native USDProject3D evaluation
+- [x] M281.P1.T4 — Native USDProject3D evaluation
   - files: `Engine/Nodes/Scene/Utility/UtilityMaterial.cpp`, `Engine/Nodes/Scene/Utility/Kernels/Project3D.slang`, `Tests/Scene/NatronUtilityProject3D_Test.cpp`
   - approach: read M234's USDProject3D implementation for its shader id and inputs; recognise it in material sync and fold its parameters into a projection record; `Project3D.slang` projects the hit's world position through the camera matrix and applies clip, back-face cull and outside mode, sampling the live texture.
   - verify: gtest — a plate projected onto a card from the render camera reproduces the plate within tolerance; Natron Utility's frame matches Storm's for M234's test scene on interior pixels.
@@ -90,3 +90,4 @@ Foundation is replaced: a scene with no lights renders emission only.
 - 2026-11-01 — **Shaping, IES, light and shadow linking are in (user).**
 - 2026-11-01 — **No default light (user):** a lightless scene is emission only.
 - 2026-11-14 — Claimed by bosley-native-nodes (user request).
+- 2026-11-14 — Phase 1 implemented (eedb6717d). Textures are float4 storage buffers rather than GpuTextures, so CPU and GPU share one Slang path; mips come from the pixel's ray-cone footprint. Gaps: textures over the device limit are not downsampled; Project3D facing comes from winding (negative-scale transforms may differ from Storm); renaming a material's st primvar doesn't re-sync bound meshes. The NatronUtility goldens need re-recording (a displayColor-only scene is black when lightless), and `natron_utility_viewer.py` waits on Phase 2. Building; Phase 2 started.

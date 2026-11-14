@@ -242,10 +242,33 @@ protected:
         EXPECT_LE(diff.relMax, 5e-2) << name;
     }
 
+    // The signed difference of got's and want's mean in channel c, relative to want's mean level.
+    static double channelBias(const RenderedPlane& want,
+                              const RenderedPlane& got,
+                              int c,
+                              double level)
+    {
+        double sum = 0.;
+        const RectI& w = want.window;
+        for (int y = w.y1; y < w.y2; ++y) {
+            for (int x = w.x1; x < w.x2; ++x) {
+                sum += (double)rawTestPlaneValue(got, x, y, c) - rawTestPlaneValue(want, x, y, c);
+            }
+        }
+
+        return sum / ((double)w.width() * w.height()) / level;
+    }
+
     // Fast's level 1 against Full's: the superpixel is a preview, close on average and as
     // colourful, its edges softer and its fine detail aliased where the method's are not.
+    // Aliasing is zero-mean, so each channel's mean must still agree closely: a wrong colour
+    // lookup or a misplaced footprint shows there and in the chroma, not only in the mean
+    // error. X-Trans samples its single red or blue photosite at a different phase in each
+    // 2x2 footprint and has footprints with no red or blue at all, so its mean error is
+    // about twice Bayer's.
     void compareFastWithFull(const RawReference::CropSite& site,
                              RenderSchedulerModeEnum mode,
+                             double maxRelMean,
                              const char* name)
     {
         RenderedPlane fast;
@@ -266,13 +289,21 @@ protected:
         const PlaneDiff diff = compare(full, fast, name);
         const double fullChroma = meanChroma(full);
         const double fastChroma = meanChroma(fast);
-        std::printf("%s: Fast against Full at level 1: mean error %.4f%%, max error %.3f%% of the mean level %g; chroma %g, Full %g\n",
-                    name, 100. * diff.relMean, 100. * diff.relMax, diff.level, fastChroma, fullChroma);
+        ASSERT_GT(diff.level, 0.) << name;
+        double bias[3];
+        for (int c = 0; c < 3; ++c) {
+            bias[c] = channelBias(full, fast, c, diff.level);
+        }
+        std::printf("%s: Fast against Full at level 1: mean error %.4f%%, max error %.3f%% of the mean level %g; chroma %g, Full %g; channel bias %.3f%% %.3f%% %.3f%%\n",
+                    name, 100. * diff.relMean, 100. * diff.relMax, diff.level, fastChroma, fullChroma, 100. * bias[0], 100. * bias[1], 100. * bias[2]);
 
         ASSERT_GT(fullChroma, 1e-3 * diff.level) << name << ": the crop has no colour to tell a grey demosaic by";
         EXPECT_GE(fastChroma, 0.75 * fullChroma) << name;
         EXPECT_LE(fastChroma, 1.25 * fullChroma) << name;
-        EXPECT_LE(diff.relMean, 5e-2) << name;
+        EXPECT_LE(diff.relMean, maxRelMean) << name;
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_LE(std::fabs(bias[c]), 3e-2) << name << ": channel " << c;
+        }
     }
 };
 
@@ -319,20 +350,20 @@ TEST_F(RawReducedZoomTest, Cr2FullLevelOneMatchesDownscaledLevelZeroTaskGraph)
 
 TEST_F(RawReducedZoomTest, Cr2FastMatchesFullAtLevelOneLegacy)
 {
-    compareFastWithFull(RawReference::cr2Site(), eRenderSchedulerModeLegacy, "CR2 Legacy");
+    compareFastWithFull(RawReference::cr2Site(), eRenderSchedulerModeLegacy, 5e-2, "CR2 Legacy");
 }
 
 TEST_F(RawReducedZoomTest, Cr2FastMatchesFullAtLevelOneTaskGraph)
 {
-    compareFastWithFull(RawReference::cr2Site(), eRenderSchedulerModeTaskGraph, "CR2 Task graph");
+    compareFastWithFull(RawReference::cr2Site(), eRenderSchedulerModeTaskGraph, 5e-2, "CR2 Task graph");
 }
 
 TEST_F(RawReducedZoomTest, RafFastMatchesFullAtLevelOneLegacy)
 {
-    compareFastWithFull(RawReference::rafSite(), eRenderSchedulerModeLegacy, "RAF Legacy");
+    compareFastWithFull(RawReference::rafSite(), eRenderSchedulerModeLegacy, 1e-1, "RAF Legacy");
 }
 
 TEST_F(RawReducedZoomTest, RafFastMatchesFullAtLevelOneTaskGraph)
 {
-    compareFastWithFull(RawReference::rafSite(), eRenderSchedulerModeTaskGraph, "RAF Task graph");
+    compareFastWithFull(RawReference::rafSite(), eRenderSchedulerModeTaskGraph, 1e-1, "RAF Task graph");
 }

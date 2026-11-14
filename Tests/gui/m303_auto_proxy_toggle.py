@@ -51,6 +51,9 @@ try:
         QApplication.processEvents()
 
     def steps():
+        # A project started from a script has no Viewer node.
+        viewer = app.getNode("Viewer1") or app.createNode("Viewer")
+        require(viewer is not None, "a Viewer exists")
         ok = yield ("until", lambda: viewer_tab() is not None, 60.0)
         require(ok, "a viewer is on screen")
         tab = viewer_tab()

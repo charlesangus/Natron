@@ -1003,13 +1003,19 @@ AnimatedParam::setExpression(const QString& expr,
     if (!thisKnob) {
         return false;
     }
+    const std::string previous = thisKnob->getExpression(dimension);
+    bool ok = true;
     try {
         thisKnob->setExpression(dimension, expr.toStdString(), hasRetVariable, true);
     } catch (...) {
-        return false;
+        ok = false;
+    }
+    // A rejected expression has already cleared the previous one, so the knob changed anyway.
+    if (ok || (thisKnob->getExpression(dimension) != previous)) {
+        thisKnob->evaluateValueChange(dimension, thisKnob->getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
     }
 
-    return true;
+    return ok;
 }
 
 QString

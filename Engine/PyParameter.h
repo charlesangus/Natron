@@ -292,6 +292,8 @@ public:
 
     /**
      * @brief Set an expression on the Param. This is a Python script, see documentation for more infos.
+     * An empty expr clears it. Either way the change is evaluated: the node re-renders and its
+     * param-changed callback runs with userEdited False, as for setValue, once per begin/endChanges batch.
      **/
     bool setExpression(const QString& expr, bool hasRetVariable, int dimension = 0);
     QString getExpression(int dimension, bool* hasRetVariable) const;

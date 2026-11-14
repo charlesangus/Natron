@@ -166,6 +166,7 @@ set(Tests_SOURCES
     PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
+    PySetExpressionEvaluates_Test.cpp
     PythonUndo_Test.cpp
     RFV_Test.cpp
     RFVExpression_Test.cpp

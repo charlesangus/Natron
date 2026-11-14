@@ -1410,6 +1410,7 @@ showOnProxy(const KnobIPtr& proxy,
             KnobI* own)
 {
     proxy->discardQueuedValues();
+    proxy->discardGuiCurveChanges();
     proxy->cloneAndUpdateGui(own);
 }
 

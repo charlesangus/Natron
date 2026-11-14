@@ -868,6 +868,30 @@ TEST_F(RotoSelectionProxyTest, AnEditHeldByARenderSkipsTheNextSelection)
     EXPECT_EQ(keyedKeys, keysOf(keyed->getOpacityKnob()));
     EXPECT_EQ(keyedKeys, keysOf(shown));
     EXPECT_TRUE(hasKey(b->getOpacityKnob(), 7.));
+
+    // A curve edit goes to the node's GUI curve, which the end of the render would otherwise copy
+    // over the curve of the item selected since.
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(a, RotoItem::eSelectionReasonOther);
+    ASSERT_TRUE(hasKey(shown, 7.));
+    {
+        RenderingFlagSetter rendering(_node);
+        KeyFrame key;
+        EXPECT_TRUE(KnobIPtr(shown)->moveValueAtTime(eCurveChangeReasonInternal, 7., ViewSpec::all(), 0, 2., 0., &key));
+        EXPECT_TRUE(hasKey(a->getOpacityKnob(), 9.));
+        context->clearSelection(RotoItem::eSelectionReasonOther);
+        context->select(keyed, RotoItem::eSelectionReasonOther);
+    }
+    EXPECT_EQ(keyedKeys, keysOf(keyed->getOpacityKnob()));
+    EXPECT_EQ(keyedKeys, keysOf(shown));
+    CurvePtr shownGui = KnobIPtr(shown)->getGuiCurve(ViewSpec(0), 0, true);
+    ASSERT_TRUE(bool(shownGui));
+    const KeyFrameSet guiKeys = shownGui->getKeyFrames_mt_safe();
+    ASSERT_EQ(keyedKeys.size(), guiKeys.size());
+    EXPECT_DOUBLE_EQ(keyedKeys.front().first, guiKeys.begin()->getTime());
+    EXPECT_DOUBLE_EQ(keyedKeys.front().second, guiKeys.begin()->getValue());
+    EXPECT_TRUE(hasKey(a->getOpacityKnob(), 9.));
+    EXPECT_FALSE(hasKey(a->getOpacityKnob(), 7.));
     context->clearSelection(RotoItem::eSelectionReasonOther);
 }
 

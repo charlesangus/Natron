@@ -1278,6 +1278,12 @@ public:
     virtual void discardQueuedValues() = 0;
 
     /**
+     * @brief Drops the curve edits made on the GUI curves while the holder renders, which then never
+     * reach the internal curves, and shows the internal curves on the GUI curves again.
+     **/
+    virtual void discardGuiCurveChanges() = 0;
+
+    /**
      * @brief Returns the current time if attached to a timeline or the time being rendered
      **/
     virtual double getCurrentTime() const = 0;
@@ -2256,6 +2262,8 @@ public:
      * @brief Whether the GUI curve holds edits not yet copied to the internal curve, which happens while a render is running.
      **/
     bool hasGuiCurveChanged(ViewSpec view, int dimension) const;
+
+    virtual void discardGuiCurveChanges() OVERRIDE FINAL;
 
 private:
     static void appendDriverKeyTimes(const KnobDriver& driver, std::list<SequenceTime>* times);

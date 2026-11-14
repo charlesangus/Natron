@@ -180,7 +180,7 @@ future core work has solid ground to build on.
 | M334 | Knob Prim Tools | doing | M52, M232, M331 | bosley-native-nodes | E9 | F4 | | [M334-knob-prim-tools.md](PLAN/MILESTONES/M334-knob-prim-tools.md) |
 | M335 | Viewer Render Draw States | doing | M254, M329 | bosley-native-nodes | E9 | F4 | | [M335-viewer-render-draw-states.md](PLAN/MILESTONES/M335-viewer-render-draw-states.md) |
 | M336 | Heavy Scene Acceptance | todo | M329, M330, M331, M332 |  | E9 | F4 | | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |
-| M401 | 3D Viewer Breadcrumbs | doing | M231, M232, M328, M332 | bosley-native-nodes | E9 | F4 | | [M401-3d-viewer-breadcrumbs.md](PLAN/MILESTONES/M401-3d-viewer-breadcrumbs.md) |
+| M401 | 3D Viewer Breadcrumbs | done | M231, M232, M328, M332 | bosley-native-nodes | E9 | F4 | | [M401-3d-viewer-breadcrumbs.md](PLAN/MILESTONES/M401-3d-viewer-breadcrumbs.md) |
 | M423 | USDPrune Isolate Mode | todo | M381 |  | E9 | F4 | | [M423-usdprune-isolate-mode.md](PLAN/MILESTONES/M423-usdprune-isolate-mode.md) |
 | M337 | Geometry Spreadsheet | todo | M54, M358, M361, M333 |  | E9 | F15 | | [M337-geometry-spreadsheet.md](PLAN/MILESTONES/M337-geometry-spreadsheet.md) |
 | M233 | Live Node Textures | done | M19, M20 | bosley-native-nodes | E9 | | | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
@@ -263,7 +263,7 @@ future core work has solid ground to build on.
 | M396 | Release 1.0 Cut | todo | M391, M392, M393, M394, M395 |  | E21 | | | [M396-release-1-0-cut.md](PLAN/MILESTONES/M396-release-1-0-cut.md) |
 | M397 | Label Resize Keeps Node Top-Centre | todo | - |  | E10 | | | [M397-label-resize-keeps-node-top-centre.md](PLAN/MILESTONES/M397-label-resize-keeps-node-top-centre.md) |
 | M398 | Cycles Offline Render After Scene Edits | doing | - | bosley-native-nodes | E9 | |  | [M398-cycles-offline-render-after-scene-edits.md](PLAN/MILESTONES/M398-cycles-offline-render-after-scene-edits.md) |
-| M399 | Node Creation Keys And Speed | doing | M118 | bosley-native-nodes | E10 | | | [M399-node-creation-keys-and-speed.md](PLAN/MILESTONES/M399-node-creation-keys-and-speed.md) |
+| M399 | Node Creation Keys And Speed | done | M118 | bosley-native-nodes | E10 | | | [M399-node-creation-keys-and-speed.md](PLAN/MILESTONES/M399-node-creation-keys-and-speed.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | | | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | E8 | | | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
@@ -411,13 +411,13 @@ future core work has solid ground to build on.
 | M275 | Viewer Widget Editing | done | - | bosley-native-nodes | E10 | | | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
 | M276 | Upstream Reuse On Edits | done | M260 | misty-marten | E6 | F6 | | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
 | M300 | Unified Tiered Cache | done | M276 | bosley-native-nodes | E6 | F6 | | [M300-unified-tiered-cache.md](PLAN/MILESTONES/M300-unified-tiered-cache.md) |
-| M301 | GPU Cache Tier | doing | M300 | bosley-native-nodes | E6 | F6 | | [M301-gpu-cache-tier.md](PLAN/MILESTONES/M301-gpu-cache-tier.md) |
+| M301 | GPU Cache Tier | done | M300 | bosley-native-nodes | E6 | F6 | | [M301-gpu-cache-tier.md](PLAN/MILESTONES/M301-gpu-cache-tier.md) |
 | M302 | Viewer Render State Cues | done | - | bosley-native-nodes | E6 | F6 | | [M302-viewer-render-state-cues.md](PLAN/MILESTONES/M302-viewer-render-state-cues.md) |
 | M303 | Interactive Edit Latency | todo | M301 |  | E6 | F6 | | [M303-interactive-edit-latency.md](PLAN/MILESTONES/M303-interactive-edit-latency.md) |
 | M277 | Graph Creation And Insert | done | M192, M193 | bosley-native-nodes | E10 | | | [M277-graph-creation-and-insert.md](PLAN/MILESTONES/M277-graph-creation-and-insert.md) |
 | M278 | Translucent Selection Highlight | todo | M234 |  | E9 | | | [M278-translucent-selection-highlight.md](PLAN/MILESTONES/M278-translucent-selection-highlight.md) |
 | M279 | Utility Renderer Foundation | done | M248 | bosley-native-nodes | E19 | F7 | | [M279-utility-renderer-foundation.md](PLAN/MILESTONES/M279-utility-renderer-foundation.md) |
-| M280 | Utility Renderer GPU Path | doing | M279, M253 | bosley-native-nodes | E19 | F7 | | [M280-utility-renderer-gpu-path.md](PLAN/MILESTONES/M280-utility-renderer-gpu-path.md) |
+| M280 | Utility Renderer GPU Path | done | M279, M253 | bosley-native-nodes | E19 | F7 | | [M280-utility-renderer-gpu-path.md](PLAN/MILESTONES/M280-utility-renderer-gpu-path.md) |
 | M281 | Utility Materials And Lights | todo | M280, M233, M234 |  | E19 | F7 | | [M281-utility-materials-and-lights.md](PLAN/MILESTONES/M281-utility-materials-and-lights.md) |
 | M283 | Utility Sampling And Motion Blur | todo | M280, M253 |  | E19 | F7 | | [M283-utility-sampling-and-motion-blur.md](PLAN/MILESTONES/M283-utility-sampling-and-motion-blur.md) |
 | M282 | Utility Reflection And Refraction | todo | M281, M283 |  | E19 | F7 | | [M282-utility-reflection-and-refraction.md](PLAN/MILESTONES/M282-utility-reflection-and-refraction.md) |
@@ -444,7 +444,7 @@ future core work has solid ground to build on.
 | M308 | Knob Label Cleanup | todo | - |  | E10 | | | [M308-knob-label-cleanup.md](PLAN/MILESTONES/M308-knob-label-cleanup.md) |
 | M309 | Roto Feather Falloff Banding | done | M224 | | E6 | | | [M309-roto-feather-falloff-banding.md](PLAN/MILESTONES/M309-roto-feather-falloff-banding.md) |
 | M310 | Device-Switch Shader Test Fix | done | - | bosley-native-nodes | E14 | | | [M310-device-switch-shader-test-fix.md](PLAN/MILESTONES/M310-device-switch-shader-test-fix.md) |
-| M311 | UDIM Live Textures | doing | M233 | bosley-native-nodes | E9 | F11 | | [M311-udim-live-textures.md](PLAN/MILESTONES/M311-udim-live-textures.md) |
+| M311 | UDIM Live Textures | done | M233 | bosley-native-nodes | E9 | F11 | | [M311-udim-live-textures.md](PLAN/MILESTONES/M311-udim-live-textures.md) |
 | M312 | USDLayerMaterial Node | todo | M53 |  | E9 | F11 | | [M312-usdlayermaterial-node.md](PLAN/MILESTONES/M312-usdlayermaterial-node.md) |
 | M313 | USDBakeTextures Node | todo | M53, M234 |  | E9 | F11 | | [M313-usdbaketextures-node.md](PLAN/MILESTONES/M313-usdbaketextures-node.md) |
 | M314 | Paint-Through Inputs | todo | M53, M234 |  | E9 | F11 | | [M314-paint-through-inputs.md](PLAN/MILESTONES/M314-paint-through-inputs.md) |

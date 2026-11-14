@@ -401,3 +401,4 @@ global-mode exit, and creation and tab-menu feel on this host.
 - 2026-11-13 — Round-4 UAT approved (user). PR #264's CI failed only on `GraphScalingConnectTest` timing out at 300 s in both legs; its in-job retry passed at 223 s. Failed jobs re-run; it merges when CI is green.
 - 2026-11-13 — Number keys with focus outside the node graph only show or activate the viewer input, as M338 - Viewer Input Keys And Locks decided; this branch's piping and Viewer creation there are dropped in the main merge (c070f91ad) (user, after M338 landed with F10).
 - 2026-11-13 — Remote gate green on the F10 merge (c070f91ad): ctest, `m399_viewer_number_keys.py`, `m399_tab_after_global_mode.py` and `m338_viewer_input_keys.py`. Main (M325) merged again; it merges when PR #264's CI is green on that head.
+- 2026-11-13 — PR #264 merged into main (125e085eb). Done.

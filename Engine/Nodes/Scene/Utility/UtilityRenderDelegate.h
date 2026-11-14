@@ -84,7 +84,6 @@
 #define kUtilityFilterBlackmanHarris "blackmanHarris"
 #define kUtilityDefaultPixelSamples 3
 #define kUtilityDefaultFilterWidth 1.5f
-#define kUtilityMaxPixelSamples 64
 
 // The shutter. The camera's shutter:open and shutter:close are used unless Override Shutter, a bool,
 // is on; then Shutter, a float, is its length in frames, placed by Shutter Offset, a TfToken, one of

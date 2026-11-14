@@ -125,6 +125,11 @@ public:
     {
         return WavefrontAovs();
     }
+
+    // Each time a sample pass was drawn in full, before the next one starts: readers may be shown it.
+    virtual void passDrawn()
+    {
+    }
 };
 
 /**
@@ -180,7 +185,8 @@ int wavefrontBucketCount(const WavefrontMotion& motion,
                          const UtilityScene::Snapshot& snapshot,
                          int samplesPerPixel);
 
-// The frame-relative time bucket of buckets traces at: the middle of its share of the shutter.
+// The frame-relative time bucket of buckets traces at: the middle of its share of the shutter, or
+// the frame for a single bucket.
 double wavefrontBucketTime(const WavefrontMotion& motion,
                            int bucket,
                            int buckets);

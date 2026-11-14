@@ -269,11 +269,12 @@ wavefrontBucketTime(const WavefrontMotion& motion,
                     int bucket,
                     int buckets)
 {
-    if (!motion.isOpen()) {
+    // One bucket draws the unblurred frame, which an offset shutter's middle would move.
+    if (!motion.isOpen() || buckets <= 1) {
         return 0.;
     }
 
-    return motion.open + (motion.close - motion.open) * (bucket + 0.5) / std::max(1, buckets);
+    return motion.open + (motion.close - motion.open) * (bucket + 0.5) / buckets;
 }
 
 std::vector<int>
@@ -408,6 +409,7 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
             if (!executor.render(scene, pass, film, stop, threads)) {
                 return false;
             }
+            film.passDrawn();
             ++done;
             if (progress) {
                 progress(done);

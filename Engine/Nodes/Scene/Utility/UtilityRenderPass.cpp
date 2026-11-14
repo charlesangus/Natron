@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstddef>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -152,6 +153,15 @@ public:
         return (_color.size() == 1) ? _color.front() : nullptr;
     }
 
+    virtual void passDrawn() OVERRIDE
+    {
+        for (const std::vector<UtilityRenderBuffer*>* buffers : { &_color, &_depth, &_primId, &_instanceId }) {
+            for (UtilityRenderBuffer* buffer : *buffers) {
+                buffer->publishPass();
+            }
+        }
+    }
+
     virtual WavefrontAovs aovs() const OVERRIDE
     {
         WavefrontAovs aovs;
@@ -246,12 +256,37 @@ floatSetting(const VtValue& value,
     return fallback;
 }
 
+// Read wide so that a side too large for a pixel's int sample count is refused rather than wrapped.
+int
+pixelSamplesSetting(const VtValue& value)
+{
+    double side = kUtilityDefaultPixelSamples;
+
+    if (value.IsHolding<int>()) {
+        side = value.UncheckedGet<int>();
+    } else if (value.IsHolding<long>()) {
+        side = static_cast<double>(value.UncheckedGet<long>());
+    } else if (value.IsHolding<double>()) {
+        side = value.UncheckedGet<double>();
+    } else if (value.IsHolding<float>()) {
+        side = value.UncheckedGet<float>();
+    }
+
+    const int largest = static_cast<int>(std::sqrt(static_cast<double>(std::numeric_limits<int>::max())));
+
+    if (!std::isfinite(side) || side >= largest + 1.) {
+        throw std::runtime_error("The Utility renderer's pixel samples must be at most " + std::to_string(largest) + ", not " + std::to_string(side));
+    }
+
+    return std::max(1, static_cast<int>(side));
+}
+
 WavefrontSampling
 samplingSettings(const HdRenderDelegate& delegate)
 {
     WavefrontSampling sampling;
 
-    sampling.samplesPerSide = std::clamp(intSetting(delegate.GetRenderSetting(TfToken(kUtilitySettingPixelSamples)), kUtilityDefaultPixelSamples), 1, kUtilityMaxPixelSamples);
+    sampling.samplesPerSide = pixelSamplesSetting(delegate.GetRenderSetting(TfToken(kUtilitySettingPixelSamples)));
 
     const float width = floatSetting(delegate.GetRenderSetting(TfToken(kUtilitySettingFilterWidth)), kUtilityDefaultFilterWidth);
 

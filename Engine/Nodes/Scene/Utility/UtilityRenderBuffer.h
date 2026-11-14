@@ -139,7 +139,8 @@ private:
 /**
  * @brief An AOV image built from samples, in host memory or, for the colour of a frame rendered on
  * the GPU, in device memory until Map() asks for it. Its pixels are resolved as samples land, so a
- * frame part way through its samples is a picture.
+ * frame part way through its samples is a picture. Readers see a copy made between passes, never the
+ * pixels a running frame writes, so a read can overlap the next pass without blocking it.
  **/
 class UtilityRenderBuffer : public PXR_NS::HdRenderBuffer {
 public:
@@ -163,13 +164,14 @@ public:
     virtual unsigned int GetDepth() const OVERRIDE;
     virtual PXR_NS::HdFormat GetFormat() const OVERRIDE;
     virtual bool IsMultiSampled() const OVERRIDE;
+    // The pixels as of the last publishPass() or clear(); every Map() until the last Unmap() gets the same ones.
     virtual void* Map() OVERRIDE;
     virtual void Unmap() OVERRIDE;
     virtual bool IsMapped() const OVERRIDE;
     virtual void Resolve() OVERRIDE;
     virtual bool IsConverged() const OVERRIDE;
 
-    // A UtilityDeviceResource while the device holds the pixels, else empty.
+    // A UtilityDeviceResource while the device holds the last published pixels, else empty.
     virtual PXR_NS::VtValue GetResource(bool multiSampled) const OVERRIDE;
 
     /**
@@ -178,6 +180,12 @@ public:
      **/
     void clear(const PXR_NS::VtValue& value);
     void setConverged(bool converged);
+
+    /**
+     * @brief Hands readers the pixels as they are: for the thread drawing the frame, once a pass is
+     * complete and before the next one starts writing.
+     **/
+    void publishPass();
 
     /**
      * @brief Writes one pixel; one outside the buffer is ignored. Components the buffer's format does
@@ -256,6 +264,12 @@ public:
 private:
     // Fills the host pixels with the device film's, under _deviceMutex.
     void downloadLocked();
+    // Under _deviceMutex: the host pixels become what readers get.
+    void publishHostLocked();
+    // Under _deviceMutex: drops the readers' host copy, keeping its storage for the next one.
+    void retireFrontLocked();
+    // Under _deviceMutex: makes the readers' host copy from the published device pixels if it has none.
+    void frontToHostLocked();
 
     virtual void _Deallocate() OVERRIDE;
 
@@ -282,6 +296,14 @@ private:
 #endif
     // Set while the film holds the frame and the host pixels are stale.
     bool _onDevice = false;
+    // What readers get, under _deviceMutex: a copy no frame writes to. _front is null while only
+    // _frontFilm holds it. _mapped is what the Map() calls not yet unmapped share.
+    std::shared_ptr<std::vector<std::uint8_t>> _front;
+    std::shared_ptr<std::vector<std::uint8_t>> _spare;
+    std::shared_ptr<std::vector<std::uint8_t>> _mapped;
+#ifdef NATRON_HAVE_GPU
+    std::shared_ptr<UtilityDeviceFilm> _frontFilm;
+#endif
 };
 
 NATRON_NAMESPACE_EXIT

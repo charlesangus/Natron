@@ -55,8 +55,6 @@ make()
     samples.hasRange = true;
     samples.minimum = 1;
     samples.displayMaximum = 8;
-    samples.hasMaximum = true;
-    samples.maximum = kUtilityMaxPixelSamples;
     c.settings.push_back(samples);
 
     RenderSettingsKnobs::CuratedSetting filter;

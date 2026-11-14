@@ -55,7 +55,6 @@ float unitFloat(uint bits)
     return float(bits >> 8u) * (1.0 / 16777216.0);
 }
 
-// The filter's weight at t across its support, 0 and 1 being its edges.
 float filterWeight(float t)
 {
     const float x = 2.0 * t - 1.0;

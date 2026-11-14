@@ -28,6 +28,7 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <memory>
 #include <vector>
 
 #include <pxr/base/gf/matrix4d.h>
@@ -67,8 +68,7 @@ protected:
 private:
     bool pullPoints(PXR_NS::HdSceneDelegate* sceneDelegate,
                     PXR_NS::HdDirtyBits dirtyBits);
-    void syncPointMotion(PXR_NS::HdSceneDelegate* sceneDelegate,
-                         UtilityScene* scene);
+    std::shared_ptr<UtilityScene::PointMotion> samplePointMotion(PXR_NS::HdSceneDelegate* sceneDelegate);
     bool filterTriangles();
     void syncColors(PXR_NS::HdSceneDelegate* sceneDelegate,
                     UtilityScene* scene);
@@ -80,6 +80,8 @@ private:
     PXR_NS::HdMeshTopology _topology;
     PXR_NS::VtVec3fArray _points;
     bool _pointsComputed = false;
+    // Whether the points and topology are the shutter's middle rather than the frame's.
+    bool _midShutter = false;
     // Everything the triangulation gave, then what is left for the scene and where each came from.
     PXR_NS::VtVec3iArray _allTriangles;
     PXR_NS::VtIntArray _allParams;

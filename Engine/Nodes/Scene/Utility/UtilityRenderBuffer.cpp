@@ -259,7 +259,9 @@ public:
         return !_runtimeHold;
     }
 
-    gpu::GpuStatus allocate(VkDeviceSize bytes)
+    // A film only read from, a pass's copy, needs no accumulation.
+    gpu::GpuStatus allocate(VkDeviceSize bytes,
+                            bool accumulates = true)
     {
         const std::lock_guard<std::mutex> l(_mutex);
 
@@ -267,7 +269,7 @@ public:
             return s;
         }
 
-        return pool.acquire(2 * bytes, _accumulation);
+        return accumulates ? pool.acquire(2 * bytes, _accumulation) : gpu::GpuStatus();
     }
 
     // Lets go of the pixels and of the runtime, which a holder of the film no longer keeps from recovering.
@@ -445,6 +447,44 @@ downloadFilm(const std::shared_ptr<UtilityDeviceFilm>& film,
     }
 
     return status;
+}
+
+// A copy of the film's pixels in a film of its own, made once the frame's writes so far are done.
+gpu::GpuStatus
+copyFilm(const std::shared_ptr<UtilityDeviceFilm>& film,
+         std::shared_ptr<UtilityDeviceFilm>* out)
+{
+    UtilityDeviceFilm::Lease lease;
+
+    if (!film->lease(&lease)) {
+        return failure("The Utility renderer's film was released with its GPU");
+    }
+
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(film->width) * film->height * kFilmPixelBytes;
+    std::shared_ptr<UtilityDeviceFilm> copy = std::make_shared<UtilityDeviceFilm>(film->registry, film->pool, lease.kernels, lease.runtimeHold, film->width, film->height);
+    UtilityDeviceFilm::Lease copyLease;
+    std::unique_ptr<gpu::GpuRecordContext> context;
+
+    if (gpu::GpuStatus s = copy->allocate(bytes, false); !s) {
+        return s;
+    }
+    if (!copy->lease(&copyLease)) {
+        return failure("The Utility renderer's film was released with its GPU");
+    }
+    if (gpu::GpuStatus s = gpu::GpuRecordContext::create(film->registry, context, &film->pool); !s) {
+        return s;
+    }
+    context->computeBarrier();
+    if (gpu::GpuStatus s = context->copyBuffer(lease.pixels.buffer(), 0, copyLease.pixels.buffer(), 0, bytes); !s) {
+        return s;
+    }
+    if (gpu::GpuStatus s = context->submitAndWait(); !s) {
+        return s;
+    }
+    registerFilm(copy);
+    *out = std::move(copy);
+
+    return gpu::GpuStatus();
 }
 } // anon namespace
 
@@ -629,6 +669,10 @@ UtilityRenderBuffer::Allocate(const GfVec3i& dimensions,
     _multiSampled = multiSampled;
     _pixels.assign(static_cast<std::size_t>(_width) * _height * HdDataSizeOfFormat(format), 0);
 
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    publishHostLocked();
+
     return true;
 }
 
@@ -665,22 +709,25 @@ UtilityRenderBuffer::IsMultiSampled() const
 void*
 UtilityRenderBuffer::Map()
 {
-    {
-        const std::lock_guard<std::mutex> l(_deviceMutex);
+    const std::lock_guard<std::mutex> l(_deviceMutex);
 
-        if (_onDevice) {
-            downloadLocked();
-        }
+    if (!_mapped) {
+        frontToHostLocked();
+        _mapped = _front;
     }
     ++_mappers;
 
-    return _pixels.empty() ? nullptr : _pixels.data();
+    return (!_mapped || _mapped->empty()) ? nullptr : _mapped->data();
 }
 
 void
 UtilityRenderBuffer::Unmap()
 {
-    --_mappers;
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    if ((_mappers.load() > 0) && (--_mappers == 0)) {
+        _mapped.reset();
+    }
 }
 
 bool
@@ -706,8 +753,8 @@ UtilityRenderBuffer::GetResource(bool /*multiSampled*/) const
 #ifdef NATRON_HAVE_GPU
     const std::lock_guard<std::mutex> l(_deviceMutex);
 
-    if (_onDevice && _film) {
-        return VtValue(UtilityDeviceResource(_film));
+    if (_frontFilm && !_frontFilm->released()) {
+        return VtValue(UtilityDeviceResource(_frontFilm));
     }
 #endif
 
@@ -744,6 +791,7 @@ UtilityRenderBuffer::clear(const VtValue& value)
         if (_onDevice) {
             downloadLocked();
         }
+        publishHostLocked();
 
         return;
     }
@@ -753,6 +801,7 @@ UtilityRenderBuffer::clear(const VtValue& value)
         if (_onDevice) {
             downloadLocked();
         }
+        publishHostLocked();
 
         return;
     }
@@ -771,6 +820,132 @@ UtilityRenderBuffer::clear(const VtValue& value)
         std::memcpy(_pixels.data() + offset, pixel.data(), pixelSize);
     }
     _clearPixel = std::move(pixel);
+    publishHostLocked();
+}
+
+void
+UtilityRenderBuffer::publishPass()
+{
+#ifdef NATRON_HAVE_GPU
+    std::shared_ptr<UtilityDeviceFilm> live;
+    {
+        const std::lock_guard<std::mutex> l(_deviceMutex);
+
+        if (_onDevice && _film && !_film->released()) {
+            live = _film;
+        }
+    }
+    if (live) {
+        std::shared_ptr<UtilityDeviceFilm> copy;
+        const gpu::GpuStatus status = copyFilm(live, &copy);
+        const std::lock_guard<std::mutex> l(_deviceMutex);
+
+        if (status) {
+            retireFrontLocked();
+            _frontFilm = std::move(copy);
+
+            return;
+        }
+        // Readers still get the pass, through the host, rather than the pass before.
+        std::shared_ptr<std::vector<std::uint8_t>> host = std::move(_spare);
+
+        if (!host) {
+            host = std::make_shared<std::vector<std::uint8_t>>();
+        }
+        host->resize(_pixels.size());
+
+        const gpu::GpuStatus downloaded = downloadFilm(live, host->data(), host->size());
+
+        if (!downloaded) {
+            TF_WARN("The Utility renderer could not hand its frame over from the GPU: %s; %s", status.message.c_str(), downloaded.message.c_str());
+            _spare = std::move(host);
+
+            return;
+        }
+        ++gDeviceDownloads;
+        retireFrontLocked();
+        _front = std::move(host);
+        _frontFilm.reset();
+
+        return;
+    }
+#endif
+    std::shared_ptr<std::vector<std::uint8_t>> next;
+    {
+        const std::lock_guard<std::mutex> l(_deviceMutex);
+
+        next = std::move(_spare);
+    }
+    if (!next) {
+        next = std::make_shared<std::vector<std::uint8_t>>();
+    }
+    // Only this thread writes the pixels while the frame runs, so they are copied outside the lock.
+    next->assign(_pixels.begin(), _pixels.end());
+
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    retireFrontLocked();
+    _front = std::move(next);
+#ifdef NATRON_HAVE_GPU
+    _frontFilm.reset();
+#endif
+}
+
+void
+UtilityRenderBuffer::publishHostLocked()
+{
+    std::shared_ptr<std::vector<std::uint8_t>> next = std::move(_spare);
+
+    if (!next) {
+        next = std::make_shared<std::vector<std::uint8_t>>();
+    }
+    next->assign(_pixels.begin(), _pixels.end());
+    retireFrontLocked();
+    _front = std::move(next);
+#ifdef NATRON_HAVE_GPU
+    _frontFilm.reset();
+#endif
+}
+
+void
+UtilityRenderBuffer::retireFrontLocked()
+{
+    // A copy a reader still maps is the reader's until it unmaps.
+    if (_front && (_front.use_count() == 1)) {
+        _spare = std::move(_front);
+    }
+    _front.reset();
+}
+
+void
+UtilityRenderBuffer::frontToHostLocked()
+{
+    if (_front) {
+        return;
+    }
+    std::shared_ptr<std::vector<std::uint8_t>> host = std::move(_spare);
+
+    if (!host) {
+        host = std::make_shared<std::vector<std::uint8_t>>();
+    }
+#ifdef NATRON_HAVE_GPU
+    if (_frontFilm && !_frontFilm->released()) {
+        host->resize(_pixels.size());
+
+        const gpu::GpuStatus status = downloadFilm(_frontFilm, host->data(), host->size());
+
+        if (status) {
+            ++gDeviceDownloads;
+            _front = std::move(host);
+
+            return;
+        }
+        // The host keeps the frame's clear value: the frame is lost with the device, not partly shown.
+        TF_WARN("The Utility renderer could not read its frame back from the GPU: %s", status.message.c_str());
+    }
+#endif
+    host->assign(_pixels.begin(), _pixels.end());
+    _front = std::move(host);
 }
 
 void
@@ -919,8 +1094,12 @@ UtilityRenderBuffer::_Deallocate()
     _deviceRestart = true;
 #ifdef NATRON_HAVE_GPU
     _film.reset();
+    _frontFilm.reset();
 #endif
     _onDevice = false;
+    _front.reset();
+    _spare.reset();
+    _mapped.reset();
 }
 
 void
@@ -958,6 +1137,7 @@ void
 UtilityRenderBuffer::releaseDevice()
 {
     std::shared_ptr<UtilityDeviceFilm> film;
+    std::shared_ptr<UtilityDeviceFilm> front;
     {
         const std::lock_guard<std::mutex> l(_deviceMutex);
 
@@ -969,11 +1149,19 @@ UtilityRenderBuffer::releaseDevice()
         }
         _onDevice = false;
         film = std::move(_film);
+        if (_frontFilm) {
+            _frontFilm->releaseIfLost();
+            frontToHostLocked();
+            front = std::move(_frontFilm);
+        }
     }
     // Every holder lets go too: a strip still to copy its window renders again on the CPU, and a viewer
     // showing the frame keeps the pixels it already has. Recorded copies hold a lease of their own.
     if (film) {
         film->release();
+    }
+    if (front) {
+        front->release();
     }
     _converged.store(false);
 }
@@ -1075,10 +1263,8 @@ UtilityRenderBuffer::recordDeviceBatch(gpu::GpuRecordContext& context,
     {
         const std::lock_guard<std::mutex> l(_deviceMutex);
 
-        // A Map() part way through the frame's samples reads the film back; what lands after it is newer.
         if (_film && !_film->released()) {
             film = _film;
-            _onDevice = true;
         }
         if (_clearPixel.size() == kFilmPixelBytes) {
             std::memcpy(params.clearValue, _clearPixel.data(), kFilmPixelBytes);

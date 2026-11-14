@@ -231,6 +231,11 @@ public:
         return _colorOnDevice ? _color.get() : nullptr;
     }
 
+    virtual void passDrawn() OVERRIDE
+    {
+        _color->publishPass();
+    }
+
     std::vector<GfVec4f> colors() const
     {
         const GfVec4f* pixels = static_cast<const GfVec4f*>(_color->Map());
@@ -554,6 +559,8 @@ TEST(NatronUtilityMotionScene, BucketsFollowTheShutterAndTheSamples)
     EXPECT_EQ(4, wavefrontBucketCount(shutter(-0.5, 0.5, 8), moving.snapshot(), 4)) << "no more buckets than samples";
     EXPECT_DOUBLE_EQ(-0.375, wavefrontBucketTime(shutter(-0.5, 0.5, 4), 0, 4));
     EXPECT_DOUBLE_EQ(0.375, wavefrontBucketTime(shutter(-0.5, 0.5, 4), 3, 4));
+    EXPECT_DOUBLE_EQ(0., wavefrontBucketTime(shutter(0., 1., 1), 0, 1)) << "one bucket of a shutter opening at the frame";
+    EXPECT_DOUBLE_EQ(0., wavefrontBucketTime(shutter(-1., 0., 1), 0, 1)) << "one bucket of a shutter closing at the frame";
 
     for (int samples : { 1, 4, 9, 64, 256 }) {
         for (int buckets : { 1, 3, 8 }) {
@@ -617,6 +624,14 @@ TEST_P(NatronUtilityMotion, OneSegmentDrawsTheUnblurredFrame)
     {
         SCOPED_TRACE("one segment");
         expectSameColors(unblurred, draw(scene, makeFrame(4), shutter(-0.5, 0.5, 1)));
+    }
+    {
+        SCOPED_TRACE("one segment of a shutter opening at the frame");
+        expectSameColors(unblurred, draw(scene, makeFrame(4), shutter(0., 0.5, 1)));
+    }
+    {
+        SCOPED_TRACE("one segment of a shutter closing at the frame");
+        expectSameColors(unblurred, draw(scene, makeFrame(4), shutter(-0.5, 0., 1)));
     }
     {
         SCOPED_TRACE("a closed shutter");
@@ -692,38 +707,83 @@ TEST_P(NatronUtilityMotion, BenchADeformingMillionTriangleMesh)
 
 INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityMotion, ::testing::Values(Backend::Cpu, Backend::GpuTiles, Backend::GpuFilm));
 
-TEST(NatronUtilityMotionDelegate, ATranslatingStripeIsAtItsMidShutterPosition)
+// Two segments of a shutter from the frame to the next trace at a quarter and three quarters of a
+// frame, where a stripe moving 4 units a frame covers the pixels one and three units on; half of
+// each pixel's samples fall in each segment.
+void
+expectSegmentPositions(const MotionRender& render)
+{
+    EXPECT_NEAR(0.f, render.alphaAt(kRestPixel), 1e-5f);
+    EXPECT_NEAR(0.5f, render.alphaAt(kRestPixel + 1), 1e-5f);
+    EXPECT_NEAR(0.f, render.alphaAt(kMovedPixel), 1e-5f);
+    EXPECT_NEAR(0.5f, render.alphaAt(kMovedPixel + 1), 1e-5f);
+}
+
+TEST(NatronUtilityMotionDelegate, ATranslatingStripeIsWhereEachSegmentTraces)
 {
     MotionRender render(stage(std::string("    point3f[] points = ") + kStripePoints + "\n"
                                                                                        "    double3 xformOp:translate.timeSamples = { 1: (0, 0, 0), 2: (4, 0, 0) }\n"
                                                                                        "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"),
-                        GfVec2d(0., 1.), 1, 1);
+                        GfVec2d(0., 1.), 2, 2);
 
     render.render(1.);
-    EXPECT_FLOAT_EQ(0.f, render.alphaAt(kRestPixel)) << "the frame's position is not mid-shutter";
-    EXPECT_FLOAT_EQ(1.f, render.alphaAt(kMovedPixel));
+    expectSegmentPositions(render);
 }
 
 TEST(NatronUtilityMotionDelegate, AVelocitiesOnlyMeshMovesByItsVelocity)
 {
-    // 96 units a second over the half frame from the frame to mid-shutter, at 24 frames a second: 2 units.
+    // 96 units a second at 24 frames a second: 4 units a frame.
     MotionRender render(stage(std::string("    point3f[] points.timeSamples = { 1: ") + kStripePoints + " }\n"
                                                                                                         "    vector3f[] velocities.timeSamples = { 1: [(96, 0, 0), (96, 0, 0), (96, 0, 0), (96, 0, 0)] }\n"),
-                        GfVec2d(0., 1.), 1, 1);
+                        GfVec2d(0., 1.), 2, 2);
 
     render.render(1.);
-    EXPECT_FLOAT_EQ(0.f, render.alphaAt(kRestPixel));
-    EXPECT_FLOAT_EQ(1.f, render.alphaAt(kMovedPixel));
+    expectSegmentPositions(render);
 }
 
-TEST(NatronUtilityMotionDelegate, ATopologyChangingMeshIsStillAndNamed)
+TEST(NatronUtilityMotionDelegate, OneSegmentOfAShutterOpeningAtTheFrameRendersTheFrame)
 {
-    MotionRender render(stage(std::string("    point3f[] points.timeSamples = { 1: ") + kStripePoints + ", 2: [(4, -50, 0), (5, -50, 0), (5, 50, 0), (4, 50, 0), (9, 9, 0)] }\n"),
-                        GfVec2d(0., 1.), 1, 1);
+    MotionRender render(stage(std::string("    point3f[] points = ") + kStripePoints + "\n"
+                                                                                       "    double3 xformOp:translate.timeSamples = { 1: (0, 0, 0), 2: (4, 0, 0) }\n"
+                                                                                       "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"),
+                        GfVec2d(0., 1.), 2, 1);
 
     render.render(1.);
-    EXPECT_FLOAT_EQ(1.f, render.alphaAt(kRestPixel)) << "a mesh whose topology changes renders at the frame";
+    EXPECT_FLOAT_EQ(1.f, render.alphaAt(kRestPixel)) << "the stripe is not at the frame's position";
     EXPECT_FLOAT_EQ(0.f, render.alphaAt(kMovedPixel));
+    EXPECT_EQ(1u, VtDictionaryGet<VtDoubleArray>(render.stats(), kUtilityStatBucketSeconds, VtDefault = VtDoubleArray()).size());
+}
+
+// The stripe gains a point it does not use at mid-shutter, where it is 2 units on.
+TEST(NatronUtilityMotionDelegate, AMeshWhosePointCountChangesIsStillAtMidShutterAndNamed)
+{
+    MotionRender render(stage(std::string("    point3f[] points.timeSamples = { 1: ") + kStripePoints + ", 1.5: [(2, -50, 0), (3, -50, 0), (3, 50, 0), (2, 50, 0), (9, 9, 0)] }\n"),
+                        GfVec2d(0., 1.), 2, 2);
+
+    render.render(1.);
+    EXPECT_FLOAT_EQ(0.f, render.alphaAt(kRestPixel)) << "a mesh whose topology changes is still at mid-shutter, not the frame";
+    EXPECT_FLOAT_EQ(1.f, render.alphaAt(kMovedPixel));
+
+    const std::string warning = VtDictionaryGet<std::string>(render.stats(), kUtilityStatMotionWarning, VtDefault = std::string());
+
+    EXPECT_NE(std::string::npos, warning.find("/Stripe")) << warning;
+}
+
+// The points stay; at mid-shutter the face is drawn through the four of them 2 units on.
+TEST(NatronUtilityMotionDelegate, AMeshWhoseIndicesChangeIsStillAtMidShutterAndNamed)
+{
+    MotionRender render("#usda 1.0\n(\n    timeCodesPerSecond = 24\n)\n"
+                        "def Mesh \"Stripe\" {\n"
+                        "    int[] faceVertexCounts = [4]\n"
+                        "    int[] faceVertexIndices.timeSamples = { 1: [0, 1, 2, 3], 1.5: [4, 5, 6, 7] }\n"
+                        "    point3f[] points = [(0, -50, 0), (1, -50, 0), (1, 50, 0), (0, 50, 0), (2, -50, 0), (3, -50, 0), (3, 50, 0), (2, 50, 0)]\n"
+                        "    color3f[] primvars:displayColor = [(1, 1, 1)] (interpolation = \"constant\")\n"
+                        "}\n",
+                        GfVec2d(0., 1.), 2, 2);
+
+    render.render(1.);
+    EXPECT_FLOAT_EQ(0.f, render.alphaAt(kRestPixel)) << "a mesh whose indices change is still at mid-shutter, not the frame";
+    EXPECT_FLOAT_EQ(1.f, render.alphaAt(kMovedPixel));
 
     const std::string warning = VtDictionaryGet<std::string>(render.stats(), kUtilityStatMotionWarning, VtDefault = std::string());
 

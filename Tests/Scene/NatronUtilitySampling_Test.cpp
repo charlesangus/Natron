@@ -62,6 +62,7 @@
 #include <cstdio>
 #include <memory>
 #include <ostream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -236,6 +237,12 @@ public:
         return _colorOnDevice ? _color.get() : nullptr;
     }
 
+    virtual void passDrawn() OVERRIDE
+    {
+        _color->publishPass();
+        _primId->publishPass();
+    }
+
     std::vector<GfVec4f> colors() const
     {
         const GfVec4f* pixels = static_cast<const GfVec4f*>(_color->Map());
@@ -349,6 +356,7 @@ protected:
 
                 return false;
             }
+            film.passDrawn();
         }
 
         return true;
@@ -751,6 +759,23 @@ TEST(NatronUtilitySamplingDelegate, DefaultsToThreeByThreeBlackmanHarrisSamples)
     EXPECT_NEAR(stripeResponse(eKernelPixelFilterBlackmanHarris, kUtilityDefaultFilterWidth, pixelCentre(7), -0.35, 0.8), mean, 0.05);
     EXPECT_GT(mean, 0.05);
     EXPECT_LT(mean, 0.95);
+}
+
+TEST(NatronUtilitySamplingDelegate, PixelSamplesHaveNoCap)
+{
+    DelegateRender render(stripeStage(-0.35, 0.8));
+
+    render.setting(kUtilitySettingPixelSamples, VtValue(int(65)));
+    render.renderOnce();
+    EXPECT_EQ(4225u, render.stat(kUtilityStatSamplesWanted));
+}
+
+TEST(NatronUtilitySamplingDelegate, PixelSamplesPastAPixelsSampleCountAreRefused)
+{
+    DelegateRender render(stripeStage(-0.35, 0.8));
+
+    render.setting(kUtilitySettingPixelSamples, VtValue(int(46341)));
+    EXPECT_THROW(render.renderOnce(), std::runtime_error) << "46341 squared does not fit a pixel's sample count";
 }
 
 TEST(NatronUtilitySamplingDelegate, AnEditPartWayRestartsTheSamples)

@@ -56,3 +56,4 @@ motion blur cheap.
 ## Decisions
 
 - 2026-11-01 — **Level from a setting plus a per-prim primvar (user);** screen-space adaptive dicing is a follow-up, M289 - Utility Adaptive Subdivision.
+- 2026-11-14 — Claimed by bosley-native-nodes (user request).

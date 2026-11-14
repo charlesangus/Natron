@@ -89,3 +89,4 @@ Foundation is replaced: a scene with no lights renders emission only.
 - 2026-11-01 — **Unknown materials render magenta with a warning (user).**
 - 2026-11-01 — **Shaping, IES, light and shadow linking are in (user).**
 - 2026-11-01 — **No default light (user):** a lightless scene is emission only.
+- 2026-11-14 — Claimed by bosley-native-nodes (user request).

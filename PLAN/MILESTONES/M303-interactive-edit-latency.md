@@ -84,3 +84,4 @@ Make a downstream edit feel immediate: a point-op edit (Grade at the end of a ~2
   - size: M
 
 **Verification gate:** cache, GPU and viewer suites pass. On the user's host with a release AppImage, a Grade edit at the end of the Canon raw chain at fit-to-window reaches the viewer in ≤33 ms median with the GPU on, with no upstream execution and no draft. A Transform drag drafts without re-running upstream. The user accepts it at UAT.
+- 2026-11-14 — Claimed by bosley-native-nodes (user request).

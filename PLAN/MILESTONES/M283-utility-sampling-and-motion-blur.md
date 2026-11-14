@@ -74,3 +74,4 @@ milestone provides the time sampling they are measured from.
 - 2026-11-01 — **True motion blur and antialiasing (user):** shutter sampling, multi-segment transforms and deformation, configurable pixel filter.
 - 2026-11-01 — **Shutter from the camera, overridable (user).**
 - 2026-11-01 — **Time-bucketed tracing on both backends:** Vulkan's KHR acceleration structures have no motion blur, so both backends rebuild per time bucket for identical results (Nuke's ScanlineRender also renders per time sample).
+- 2026-11-14 — Claimed by bosley-native-nodes (user request).

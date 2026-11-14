@@ -2358,6 +2358,11 @@ public:
     void clearStreamWarning(StreamWarningEnum warning);
     void getStreamWarnings(std::map<StreamWarningEnum, QString>* warnings) const;
 
+    /**
+     * @brief The info page's readout for one input, or for the output when inputNumber is -1.
+     **/
+    std::string makeInfoForInput(int inputNumber) const;
+
 private:
 
     bool setStreamWarningInternal(StreamWarningEnum warning, const QString& message);
@@ -2708,7 +2713,6 @@ private:
     void declareTrackerPythonField();
 
     std::string makeCacheInfo() const;
-    std::string makeInfoForInput(int inputNumber) const;
 
     void setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes);
 

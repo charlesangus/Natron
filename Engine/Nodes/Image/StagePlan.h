@@ -194,6 +194,29 @@ bool stageMaskMissesWindow(const EffectInstance& effect,
                            ViewIdx view) WARN_UNUSED_RETURN;
 
 /**
+ * @brief roi, or when it misses rod, the band of rod nearest to it: on each axis where roi
+ * overlaps rod their overlap, elsewhere the pixelWidth-wide column or pixelHeight-high row at the
+ * nearest edge of rod. That band holds the nearest pixel of rod to every point of roi. roi itself
+ * when either rectangle is empty.
+ **/
+RectD stretchRegionOfInterest(const RectD& roi,
+                              const RectD& rod,
+                              double pixelWidth,
+                              double pixelHeight) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Replaces, in rois, the region of each input of effect whose edge mode is Stretch at
+ * time and view by stretchRegionOfInterest() of it against the input's region of definition at
+ * scale, with one full-scale pixel of that input for the band. Black inputs, and regions of effects that
+ * are not inputs of effect, are left alone, so a Black input missed by the window is not fetched.
+ **/
+void clampStretchRegionsOfInterest(const EffectInstance& effect,
+                                   double time,
+                                   const RenderScale& scale,
+                                   ViewIdx view,
+                                   RoIMap* rois);
+
+/**
  * @brief Resolves the stages of effect for a render at time and view: mix and mask inversion
  * from knobs, the mask input and its channel, and the "(Un)premult by" divisor of sourceInput.
  * Stages left out of stages resolve to their neutral values.

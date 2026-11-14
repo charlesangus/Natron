@@ -299,6 +299,15 @@ protected:
                                       RoIMap* ret) OVERRIDE;
 
     /**
+     * @brief Moves the regions of interest of Stretch inputs that miss their input into it, as
+     * clampStretchRegionsOfInterest() does, so a read past the edge has the edge to repeat.
+     **/
+    virtual void adjustInputRegionsOfInterest(double time,
+                                              const RenderScale& scale,
+                                              ViewIdx view,
+                                              RoIMap* ret) OVERRIDE;
+
+    /**
      * @brief Where route() chooses an input, whatever the op kind, only that input at the time
      * it chooses, and no input where it answers Black; the default where it answers None.
      **/

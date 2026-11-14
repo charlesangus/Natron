@@ -5132,6 +5132,7 @@ EffectInstance::getRegionsOfInterest_public(double time,
     assert(renderWindow.x2 >= renderWindow.x1 && renderWindow.y2 >= renderWindow.y1);
 
     getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+    adjustInputRegionsOfInterest(time, scale, view, ret);
 }
 
 FramesNeededMap

@@ -1946,6 +1946,18 @@ protected:
                                       RoIMap* ret);
 
     /**
+     * @brief Called by getRegionsOfInterest_public() on what getRegionsOfInterest() returned, so
+     * a node can adjust every input's region whatever its subclasses' getRegionsOfInterest() do.
+     * Does nothing by default.
+     **/
+    virtual void adjustInputRegionsOfInterest(double /*time*/,
+                                              const RenderScale& /*scale*/,
+                                              ViewIdx /*view*/,
+                                              RoIMap* /*ret*/)
+    {
+    }
+
+    /**
      * @brief Can be derived to indicate for each input node what is the frame range(s) (which can be discontinuous)
      * that this effects need in order to render the frame at the given time.
      **/

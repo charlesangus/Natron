@@ -3830,6 +3830,10 @@ Node::makeInfoForInput(int inputNumber) const
         double par = inputMetadata->getPixelAspectRatio(-1);
         ss << "<b>" << tr("Pixel aspect ratio:").toStdString() << "</b> <font color=#c8c8c8>" << par << "</font><br />";
     }
+    {
+        const QString edgeMode = (inputMetadata->getEdgeMode() == EdgeMode::Black) ? tr("Black") : tr("Stretch");
+        ss << "<b>" << tr("Edge Mode:").toStdString() << "</b> <font color=#c8c8c8>" << edgeMode.toStdString() << "</font><br />";
+    }
     { // fps
         double fps = inputMetadata->getOutputFrameRate();
         ss << "<b>" << tr("Frame rate:").toStdString() << "</b> <font color=#c8c8c8>" << tr("%1fps").arg(fps).toStdString() << "</font><br />";

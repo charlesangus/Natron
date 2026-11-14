@@ -45,6 +45,7 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -671,6 +672,87 @@ stageMaskMissesWindow(const EffectInstance& effect,
     const RectI maskPixels = maskRoD.toPixelEnclosing(scale.toMipmapLevel(), mask->getRenderMetadata(time, view)->getPixelAspectRatio(-1));
 
     return !roi.intersects(maskPixels);
+}
+
+namespace {
+
+void
+stretchInterval(double roi1,
+                double roi2,
+                double rod1,
+                double rod2,
+                double pixel,
+                double* out1,
+                double* out2)
+{
+    if ((roi1 < rod2) && (roi2 > rod1)) {
+        *out1 = std::max(roi1, rod1);
+        *out2 = std::min(roi2, rod2);
+    } else if (roi2 <= rod1) {
+        *out1 = rod1;
+        *out2 = std::min(rod1 + pixel, rod2);
+    } else {
+        *out1 = std::max(rod2 - pixel, rod1);
+        *out2 = rod2;
+    }
+}
+
+} // namespace
+
+RectD
+stretchRegionOfInterest(const RectD& roi,
+                        const RectD& rod,
+                        double pixelWidth,
+                        double pixelHeight)
+{
+    if (roi.isNull() || rod.isNull()) {
+        return roi;
+    }
+    // Overlapping on both axes, the host's clip to rod already keeps every nearest pixel.
+    if ((roi.x1 < rod.x2) && (roi.x2 > rod.x1) && (roi.y1 < rod.y2) && (roi.y2 > rod.y1)) {
+        return roi;
+    }
+    RectD band;
+    stretchInterval(roi.x1, roi.x2, rod.x1, rod.x2, pixelWidth, &band.x1, &band.x2);
+    stretchInterval(roi.y1, roi.y2, rod.y1, rod.y2, pixelHeight, &band.y1, &band.y2);
+
+    return band;
+}
+
+void
+clampStretchRegionsOfInterest(const EffectInstance& effect,
+                              double time,
+                              const RenderScale& scale,
+                              ViewIdx view,
+                              RoIMap* rois)
+{
+    const int nInputs = effect.getNInputs();
+
+    for (RoIMap::iterator it = rois->begin(); it != rois->end(); ++it) {
+        const EffectInstancePtr& input = it->first;
+        if (!input) {
+            continue;
+        }
+        bool isInput = false;
+        for (int i = 0; (i < nInputs) && !isInput; ++i) {
+            isInput = (effect.getInput(i) == input);
+        }
+        if (!isInput) {
+            continue;
+        }
+        const NodeMetadataConstPtr metadata = input->getRenderMetadata(time, view);
+        if (!metadata || (metadata->getEdgeMode() != EdgeMode::Stretch)) {
+            continue;
+        }
+        const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+        RectD rod;
+        bool isProjectFormat = false;
+        if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+            continue;
+        }
+        // A full-scale pixel encloses at least one pixel at every mipmap level.
+        it->second = stretchRegionOfInterest(it->second, rod, metadata->getPixelAspectRatio(-1), 1.);
+    }
 }
 
 StagePlan

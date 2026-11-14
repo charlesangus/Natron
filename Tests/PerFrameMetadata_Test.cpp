@@ -1196,3 +1196,31 @@ TEST_F(PerFrameMetadataTest, OpenFXEffectResetsEdgeModeToStretch)
     EXPECT_EQ(EdgeMode::Black, edgeModeOf(black));
     EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(rgbPoint));
 }
+
+TEST_F(PerFrameMetadataTest, InfoReadoutShowsEachInputAndTheOutputEdgeMode)
+{
+    const std::string blackLine = "Edge Mode:</b> <font color=#c8c8c8>Black</font>";
+    const std::string stretchLine = "Edge Mode:</b> <font color=#c8c8c8>Stretch</font>";
+
+    NodePtr black = createSource(4);
+    NodePtr stretch = createSource(4);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(black && stretch && merge);
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    connectNodes(black, merge, 0, true);
+    connectNodes(stretch, merge, 1, true);
+
+    const std::string bInfo = merge->makeInfoForInput(0);
+    EXPECT_NE(std::string::npos, bInfo.find(blackLine)) << bInfo;
+    EXPECT_EQ(std::string::npos, bInfo.find(stretchLine)) << bInfo;
+
+    const std::string aInfo = merge->makeInfoForInput(1);
+    EXPECT_NE(std::string::npos, aInfo.find(stretchLine)) << aInfo;
+    EXPECT_EQ(std::string::npos, aInfo.find(blackLine)) << aInfo;
+
+    const std::string outputInfo = merge->makeInfoForInput(-1);
+    EXPECT_NE(std::string::npos, outputInfo.find(blackLine)) << outputInfo;
+
+    const std::string stretchOutputInfo = stretch->makeInfoForInput(-1);
+    EXPECT_NE(std::string::npos, stretchOutputInfo.find(stretchLine)) << stretchOutputInfo;
+}

@@ -647,6 +647,15 @@ StagedImageEffect::getRegionsOfInterest(double time,
     }
 } // StagedImageEffect::getRegionsOfInterest
 
+void
+StagedImageEffect::adjustInputRegionsOfInterest(double time,
+                                                const RenderScale& scale,
+                                                ViewIdx view,
+                                                RoIMap* ret)
+{
+    clampStretchRegionsOfInterest(*this, time, scale, view, ret);
+}
+
 ResampleRegionStages
 StagedImageEffect::getResampleRegionStages(double time,
                                            ViewIdx view) const

@@ -538,6 +538,8 @@ private Q_SLOTS:
 
     void onRefinementPausedButtonClicked(bool paused);
 
+    void onRenderEverythingButtonClicked(bool on);
+
     // Shows the scene view's renderer row only for a progressive renderer.
     void refreshSceneRenderRow();
 

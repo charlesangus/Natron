@@ -118,6 +118,7 @@ const char* const kViewerKnobNames[] = {
     kViewerParamEnableDownscale,
     kViewerParamDownscaleLevel,
     kViewerParamMaxSamples,
+    kViewerParamRenderEverything,
     kViewerParamRefinementPaused,
 };
 
@@ -885,6 +886,17 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                                                                                     NATRON_NAMESPACE::WhiteSpaceNormal));
     _imp->sceneRenderRowLayout->addWidget(_imp->refinementPausedButton);
 
+    _imp->renderEverythingButton = new Button(tr("Render Everything"), _imp->sceneRenderRow);
+    _imp->renderEverythingButton->setObjectName(QString::fromUtf8(kViewerParamRenderEverything));
+    _imp->renderEverythingButton->setFocusPolicy(Qt::NoFocus);
+    _imp->renderEverythingButton->setCheckable(true);
+    _imp->renderEverythingButton->setChecked(false);
+    _imp->renderEverythingButton->setDown(false);
+    _imp->renderEverythingButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Renders the whole scene, ignoring the draw states, and loads every payload. "
+                                                                                       "Turning it off brings the draw states back and unloads nothing."),
+                                                                                    NATRON_NAMESPACE::WhiteSpaceNormal));
+    _imp->sceneRenderRowLayout->addWidget(_imp->renderEverythingButton);
+
     _imp->refineSamplesLabel = new Label(QString(), _imp->sceneRenderRow);
     _imp->refineSamplesLabel->setObjectName(QString::fromUtf8("refineSamples"));
     _imp->refineSamplesLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel of the frame shown, against the cap."),
@@ -894,6 +906,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->sceneRenderRow->hide();
     QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
     QObject::connect(_imp->refinementPausedButton, SIGNAL(clicked(bool)), this, SLOT(onRefinementPausedButtonClicked(bool)));
+    QObject::connect(_imp->renderEverythingButton, SIGNAL(clicked(bool)), this, SLOT(onRenderEverythingButtonClicked(bool)));
     /*=============================================*/
 
     /*OpenGL viewer*/
@@ -1750,7 +1763,7 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
     } else if ((name == kViewerParamInPoint) || (name == kViewerParamOutPoint)) {
         refreshFrameRangeFromKnobs();
         abortViewersAndRefresh();
-    } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused)) {
+    } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused) || (name == kViewerParamRenderEverything)) {
         refreshSceneRenderFromKnobs();
     }
 }
@@ -1854,9 +1867,12 @@ ViewerTab::refreshSceneRenderFromKnobs()
 {
     const int maxSamples = _imp->viewerValue<int>(kViewerParamMaxSamples, 0);
     const bool paused = _imp->viewerValue<bool>(kViewerParamRefinementPaused, false);
+    const bool everything = _imp->viewerValue<bool>(kViewerParamRenderEverything, false);
 
     {
-        QSignalBlocker b0(_imp->maxSamplesBox), b1(_imp->refinementPausedButton);
+        QSignalBlocker b0(_imp->maxSamplesBox), b1(_imp->refinementPausedButton), b2(_imp->renderEverythingButton);
+        _imp->renderEverythingButton->setChecked(everything);
+        _imp->renderEverythingButton->setDown(everything);
         if (_imp->maxSamplesBox->value() != maxSamples) {
             _imp->maxSamplesBox->setValue(maxSamples);
         }
@@ -1866,6 +1882,7 @@ ViewerTab::refreshSceneRenderFromKnobs()
     if (_imp->sceneViewport) {
         _imp->sceneViewport->setMaxSamples(maxSamples);
         _imp->sceneViewport->setRefinementPaused(paused);
+        _imp->sceneViewport->setRenderEverything(everything);
     }
 }
 
@@ -1881,6 +1898,15 @@ ViewerTab::onRefinementPausedButtonClicked(bool paused)
 {
     editViewerKnobs(tr("Refinement Paused"), [this, paused]() {
         _imp->setViewerValue<bool>(kViewerParamRefinementPaused, paused);
+    });
+    refreshSceneRenderFromKnobs();
+}
+
+void
+ViewerTab::onRenderEverythingButtonClicked(bool on)
+{
+    editViewerKnobs(tr("Render Everything"), [this, on]() {
+        _imp->setViewerValue<bool>(kViewerParamRenderEverything, on);
     });
     refreshSceneRenderFromKnobs();
 }

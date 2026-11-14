@@ -84,6 +84,7 @@
 #define kViewerParamEnableDownscale "enableDownscale"
 #define kViewerParamDownscaleLevel "downscaleLevel"
 #define kViewerParamMaxSamples "maxSamples"
+#define kViewerParamRenderEverything "renderEverything"
 #define kViewerParamRefinementPaused "refinementPaused"
 
 NATRON_NAMESPACE_ENTER

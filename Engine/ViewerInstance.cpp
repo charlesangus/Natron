@@ -1003,6 +1003,11 @@ ViewerInstance::initializeKnobs()
     maxSamples->setDisplayMaximum(4096);
     k.maxSamples = maxSamples;
 
+    KnobBoolPtr renderEverything = createViewerKnob<KnobBool>(this, page, tr("Render Everything"), kViewerParamRenderEverything,
+                                                              tr("Renders the whole scene, ignoring the draw states, and loads every payload. "
+                                                                 "Turning it off brings the draw states back and unloads nothing."));
+    k.renderEverything = renderEverything;
+
     KnobBoolPtr refinementPaused = createViewerKnob<KnobBool>(this, page, tr("Refinement Paused"), kViewerParamRefinementPaused,
                                                               tr("Holds a progressive renderer's refinement of the 3D view at its "
                                                                  "current samples; off continues from them. Edits wait until it is off."));

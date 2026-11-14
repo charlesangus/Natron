@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -110,10 +111,31 @@ public:
     // Must run before the render index it is to reach is constructed.
     static void registerForAllRenderers();
 
-    // The renderInstanceId of the last filter appended on this thread, and forgets it.
-    static std::string takeAppendedInstanceId();
+    // An engine built on this thread while one of these lives gets a filter; any other engine,
+    // whichever thread builds it meanwhile, gets none. A Cycles engine built through
+    // CyclesAovs::withThreadBudget() still counts: task_arena::execute() runs the build on the
+    // calling thread, the arena keeping a slot for it.
+    class EngineScope {
+    public:
+        EngineScope();
+        ~EngineScope();
+        EngineScope(const EngineScope&) = delete;
+        EngineScope& operator=(const EngineScope&) = delete;
+
+        // The renderInstanceId of the filter the engine built under this scope got, or empty.
+        std::string getInstanceId() const;
+
+        void setInstanceId(const std::string& renderInstanceId);
+
+    private:
+        EngineScope* _previous;
+        std::string _instanceId;
+    };
 
     static WeakPtr find(const std::string& renderInstanceId);
+
+    // The renderInstanceIds of every live filter.
+    static std::vector<std::string> getInstanceIds();
 
     static PXR_NS::TfRefPtr<SceneDrawFilter> New(const PXR_NS::HdSceneIndexBaseRefPtr& input);
 
@@ -144,6 +166,13 @@ public:
      * instead of reaching Hydra all at once, until a delta with revealBatch 0 comes.
      */
     void applyDelta(const SceneDrawDelta& delta, std::size_t revealBatch = 0);
+
+    /**
+     * @brief Moves the filter from its rules to these, sending only what the difference changes: a
+     * prim whose state ends where it began sends nothing, and the same rules send nothing at all. No
+     * rules show everything.
+     */
+    void replaceRules(const Rules& rules);
 
     /** @brief As applyDelta() on each in turn, with the notices of all of them sent at once. */
     void applyDeltas(const std::vector<const SceneDrawDelta*>& deltas, std::size_t revealBatch = 0);
@@ -177,6 +206,13 @@ public:
 
     /** @brief Whether a Hidden row, or a reveal from one, keeps lights from Hydra. */
     bool hidesLights() const;
+
+    /**
+     * @brief Whether the input scene has a light that `counts` accepts (every one, if empty) and
+     * none of them is drawn: a scene whose lights the rules all keep from Hydra, as opposed to one
+     * that has none. Only the thread that changes the filter may call it.
+     */
+    bool hidesEveryLight(const LightPredicate& counts = LightPredicate()) const;
 
     const Rules& getRules() const { return _rules; }
     unsigned long long getInputAddedCount() const { return _inputAdded; }

@@ -138,6 +138,7 @@
 #define emit
 #endif
 
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Gui/ActionShortcuts.h"
 #include "Gui/GLContextLoss.h"
 #include "Gui/GuiApplicationManager.h"
@@ -145,7 +146,6 @@
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
 #include "Gui/SceneDrawBoxes.h"
-#include "Gui/SceneDrawFilter.h"
 #include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneDrawTiming.h"
 #include "Gui/SceneGizmo.h"
@@ -820,6 +820,8 @@ struct SceneViewportRenderer::Implementation {
     std::vector<bool> boxHighlighted;
     bool recordDrawnBoxes = false;
     std::vector<DrawnBox> drawnBoxes;
+    // Whether the box worker was last given no rules for Render Everything, not drawRules.
+    bool boxesBlanked = false;
     // Bumped with each change of drawRules, so the guides follow them.
     U64 drawRulesVersion = 0;
     GLuint boxProgram = 0;
@@ -1004,6 +1006,7 @@ struct SceneViewportRenderer::Implementation {
     mutable std::mutex refineListenerMutex;
     std::function<void()> refineListener;
     std::atomic<int> maxSamples { 0 };
+    std::atomic<bool> renderEverything { false };
     // The delegate the refinement was last given; needs stageMutex held exclusively. A release
     // from the main thread, which holds no lock, asks the next render to forget it.
     std::string refineRenderer;
@@ -1165,6 +1168,11 @@ struct SceneViewportRenderer::Implementation {
         // refining.
         progressive->setRenderer(std::string());
         refineRenderer.clear();
+        // The worker is sent draw changes only while a delegate other than Storm renders, so it
+        // takes the rules Storm drew by when one starts.
+        if (renderer != kRenderDelegateStormId) {
+            progressive->setDrawRules(drawRules);
+        }
     }
 
     std::shared_ptr<const StageSummary> getStageSummary() const
@@ -1599,13 +1607,15 @@ struct SceneViewportRenderer::Implementation {
         // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(rendererId);
+        std::string filterInstanceId;
         try {
             SceneDrawFilter::registerForAllRenderers();
-            (void)SceneDrawFilter::takeAppendedInstanceId();
             CyclesAovs::registerSceneIndices();
             {
                 TfErrorMark mark;
+                const SceneDrawFilter::EngineScope scope;
                 engine.reset(new UsdImagingGLEngine(parameters));
+                filterInstanceId = scope.getInstanceId();
                 ++engineCount;
                 ++engineConstructionCount;
                 if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
@@ -1638,7 +1648,7 @@ struct SceneViewportRenderer::Implementation {
 
             return false;
         }
-        drawFilter = SceneDrawFilter::find(SceneDrawFilter::takeAppendedInstanceId());
+        drawFilter = SceneDrawFilter::find(filterInstanceId);
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
             filter->seedRules(drawRules);
         }
@@ -1819,8 +1829,19 @@ struct SceneViewportRenderer::Implementation {
         if (!queued.empty()) {
             ++drawRulesVersion;
         }
-        if (!queued.empty() && boxes) {
-            boxes->setRules(drawRules);
+        // A delegate rendering everything draws every row, so no box stands in for one.
+        const bool boxesBlank = renderEverything && (rendererId != kRenderDelegateStormId);
+        if (boxes && (!queued.empty() || (boxesBlank != boxesBlanked))) {
+            boxes->setRules(boxesBlank ? SceneDrawFilter::Rules() : drawRules);
+            boxesBlanked = boxesBlank;
+        }
+        if (!queued.empty() && progressive && (rendererId != kRenderDelegateStormId)) {
+            std::vector<SceneDrawDelta> forwarded;
+            forwarded.reserve(queued.size());
+            for (const QueuedDrawDelta& entry : queued) {
+                forwarded.push_back(entry.delta);
+            }
+            progressive->applyDrawDeltas(forwarded);
         }
         if (!queued.empty()) {
             if (filter) {
@@ -3134,11 +3155,13 @@ SceneViewportRenderer::applyPendingDrawDeltas()
     SceneWriteBarrier::ReadScope read;
     {
         std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
-        // Without an engine the queue waits for the frame that makes one.
         if (_imp->engine) {
             StormGLStateGuard guard;
             StormGLSection section;
             section.collectWith(_imp->engine->GetHgi());
+            _imp->serviceDrawFilter(false);
+        } else if (_imp->rendererId != kRenderDelegateStormId) {
+            // No Storm engine to notify: the rules, the boxes and the worker still follow.
             _imp->serviceDrawFilter(false);
         }
     }
@@ -4737,6 +4760,13 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     if (_imp->getRendererErrorCopy().empty()) {
         _imp->setRendererErrorCopy(RenderDelegates::unavailableMessage(_imp->rendererId));
     }
+    if (_imp->engine) {
+        StormGLSection section;
+        section.collectWith(_imp->engine->GetHgi());
+        _imp->serviceDrawFilter(false);
+    } else {
+        _imp->serviceDrawFilter(false);
+    }
     const UsdStageRefPtr stage = _imp->currentStage();
     if (!_imp->getRendererErrorCopy().empty() || !stage) {
         progressive.setRenderer(std::string());
@@ -5167,6 +5197,18 @@ int
 SceneViewportRenderer::getMaxSamples() const
 {
     return _imp->progressive->getMaxSamples();
+}
+
+void
+SceneViewportRenderer::setRenderEverything(bool on)
+{
+    if (_imp->renderEverything.exchange(on) == on) {
+        return;
+    }
+    if (on) {
+        requestStageLoad(std::vector<std::string>(1, "/"), true);
+    }
+    _imp->progressive->setRenderEverything(on);
 }
 
 void
@@ -7691,6 +7733,21 @@ SceneViewport::setMaxSamples(int samples)
 {
     _imp->renderer.setMaxSamples(samples);
     publishRefineState();
+    update();
+}
+
+void
+SceneViewport::setRenderEverything(bool on)
+{
+    _imp->renderer.setRenderEverything(on);
+    if (on) {
+        // Taking the mutex keeps the wake-up from falling between the thread's check and its wait.
+        {
+            std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+        }
+        _imp->loadWake.notify_one();
+        publishState();
+    }
     update();
 }
 

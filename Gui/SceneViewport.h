@@ -832,6 +832,12 @@ public:
     // The cap in force: the one set, or the delegate's default once known, else 0.
     int getMaxSamples() const;
 
+    /**
+     * @brief Renders the whole scene past its draw states; turning it on also asks the stage to
+     * load every payload. Off restores the draw states and unloads nothing.
+     **/
+    void setRenderEverything(bool on);
+
     // Pausing keeps a progressive render's samples; unpausing continues from them.
     void setRefinementPaused(bool paused);
 
@@ -946,6 +952,8 @@ public:
     // The progressive render's cap on samples per pixel, <= 0 for the delegate's default. The
     // viewer's Max Samples and Refinement Paused knobs drive these.
     void setMaxSamples(int samples);
+
+    void setRenderEverything(bool on);
 
     void setRefinementPaused(bool paused);
 

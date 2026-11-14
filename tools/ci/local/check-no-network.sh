@@ -5,15 +5,23 @@
 #
 # Usage:
 #   tools/ci/local/check-no-network.sh [--seconds N] [--xvfb] [--setting KEY=VALUE]...
-#                                      [--keep] -- <command> [args...]
+#                                      [--expect-ort] [--expect-exe NAME] [--keep] -- <command> [args...]
 #
-#   --seconds N        run the command for N seconds (default 30), then SIGTERM it; a command
-#                      that exits sooner is fine.
+#   --seconds N        run the command for N seconds (default 30, at least 1), then SIGTERM it;
+#                      a command that exits sooner is fine.
 #   --xvfb             start a private Xvfb and run the command on it with the natron-dev
 #                      container's software-GL recipe (as in build/deeprepro/run-gui.sh).
 #   --setting K=V      add K=V to [General] in the fresh Natron.conf, for example
 #                      --setting aiEnabled=true. checkForUpdates=false is always written, since a
 #                      first run otherwise stops on a modal question.
+#   --expect-ort       exit 2 unless check-no-network-load-ort.py reported a loaded ONNX Runtime
+#                      (the AI Detected Providers line starts with "ONNX Runtime"), so an AI
+#                      run cannot pass without the library ever loading. The report is printed
+#                      whenever the script wrote one.
+#   --expect-exe NAME  exit 2 unless a process named NAME (the executable's short name, for
+#                      example Natron or NatronRenderer) loaded the shim. Without it, any
+#                      program other than a shell, env or timeout will do: a launcher script
+#                      loads the shim in its shell without ever starting Natron.
 #   --keep             keep the work directory (fresh HOME, shim, log) and print its path.
 #
 # The command runs with a fresh HOME and XDG directories, and LD_PRELOAD set to a shim built
@@ -38,9 +46,11 @@
 # (docker exec -u root) after `chmod 1777 /tmp/.X11-unix`.
 #
 # Examples, from the natron-dev container as root with LD_LIBRARY_PATH unset:
-#   tools/ci/local/check-no-network.sh --seconds 60 --setting aiEnabled=true -- \
+#   tools/ci/local/check-no-network.sh --seconds 60 --setting aiEnabled=true --expect-ort \
+#       --expect-exe NatronRenderer -- \
 #       squashfs-root/bin/NatronRenderer -t tools/ci/local/check-no-network-load-ort.py
-#   tools/ci/local/check-no-network.sh --seconds 60 --xvfb --setting aiEnabled=true -- \
+#   tools/ci/local/check-no-network.sh --seconds 60 --xvfb --setting aiEnabled=true --expect-ort \
+#       --expect-exe Natron -- \
 #       squashfs-root/AppRun tools/ci/local/check-no-network-load-ort.py
 #
 # Exit status: 0 nothing tried to leave the machine; 1 something did (the calls are printed);
@@ -54,6 +64,8 @@ SHIM_SOURCE="${HERE}/check-no-network-shim.c"
 RUN_SECONDS=30
 USE_XVFB=0
 KEEP=0
+EXPECT_ORT=0
+EXPECT_EXE=""
 SETTINGS=()
 
 die() {
@@ -78,6 +90,15 @@ while [ $# -gt 0 ]; do
             SETTINGS+=("$2")
             shift 2
             ;;
+        --expect-ort)
+            EXPECT_ORT=1
+            shift
+            ;;
+        --expect-exe)
+            [ $# -ge 2 ] || die "--expect-exe needs a name"
+            EXPECT_EXE="$2"
+            shift 2
+            ;;
         --keep)
             KEEP=1
             shift
@@ -99,6 +120,7 @@ done
 case "${RUN_SECONDS}" in
     ''|*[!0-9]*) die "--seconds takes a whole number, not '${RUN_SECONDS}'" ;;
 esac
+[ "${RUN_SECONDS}" -ge 1 ] || die "--seconds must be at least 1: timeout treats 0 as no limit"
 [ -f "${SHIM_SOURCE}" ] || die "missing ${SHIM_SOURCE}"
 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/natron-no-network.XXXXXX")
@@ -188,10 +210,21 @@ timeout --signal=TERM --kill-after=15 "${RUN_SECONDS}" env "${UNSET_ENV[@]}" "${
     >"${OUTPUT}" 2>&1 || status=$?
 
 touch "${LOG}"
-if ! grep -q ' loaded$' "${LOG}"; then
+# A launcher script (AppRun) loads the shim in its own shell, which proves nothing about the program.
+if [ -n "${EXPECT_EXE}" ]; then
+    LOADED_PATTERN=" exe=${EXPECT_EXE} loaded\$"
+else
+    LOADED_PATTERN=" exe=(?!(sh|bash|dash|env|timeout|busybox) )[^ ]+ loaded\$"
+fi
+if ! grep -qP -- "${LOADED_PATTERN}" "${LOG}"; then
     echo "--- command output ---" >&2
     tail -n 40 "${OUTPUT}" >&2
-    die "the shim never loaded (exit status ${status}): the command cleared LD_PRELOAD or is static, so nothing was checked"
+    die "the shim never loaded in ${EXPECT_EXE:-a program other than a shell} (exit status ${status}): the command cleared LD_PRELOAD or is static, so nothing was checked"
+fi
+
+ORT_REPORT="${TEST_HOME}/load-ort.txt"
+if [ -f "${ORT_REPORT}" ]; then
+    echo "check-no-network: load-ort report: $(cat "${ORT_REPORT}")" >&2
 fi
 
 if grep -q ' block ' "${LOG}"; then
@@ -200,8 +233,17 @@ if grep -q ' block ' "${LOG}"; then
     exit 1
 fi
 
-# 124: still running when the time was up, which is the normal case for an interactive program.
-if [ "${status}" != 0 ] && [ "${status}" != 124 ]; then
+if [ "${EXPECT_ORT}" = 1 ]; then
+    if ! grep -q 'providers=ONNX Runtime' "${ORT_REPORT}" 2>/dev/null; then
+        echo "--- command output ---" >&2
+        tail -n 40 "${OUTPUT}" >&2
+        die "ONNX Runtime was never loaded (no load-ort.txt, or its providers line does not start with \"ONNX Runtime\"), so the check proves nothing about it"
+    fi
+fi
+
+# 124: still running when the time was up, which is the normal case for an interactive program;
+# 137: it ignored SIGTERM and was killed.
+if [ "${status}" != 0 ] && [ "${status}" != 124 ] && [ "${status}" != 137 ]; then
     echo "--- command output ---" >&2
     tail -n 40 "${OUTPUT}" >&2
     die "the command exited with status ${status} before its time was up, so the check proves little"

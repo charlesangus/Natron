@@ -86,6 +86,8 @@ isLocalName(const char* name)
     }
     /* Qt and X11 resolve the machine's own name, which /etc/hosts answers without DNS. */
     if ((gethostname(self, sizeof(self)) == 0) && !strcasecmp(name, self)) {
+        logLine("allow own-name lookup %s (glibc may still query DNS for it, which this shim cannot see)", name);
+
         return 1;
     }
 

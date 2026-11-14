@@ -103,6 +103,14 @@ public:
         return _api != nullptr;
     }
 
+    /**
+     * @brief True when opting out was requested and ONNX Runtime answered the call with an error.
+     **/
+    bool telemetryOptOutFailed() const
+    {
+        return _telemetryOptOutFailed;
+    }
+
     const std::string& unavailableReason() const
     {
         return _reason;
@@ -160,6 +168,7 @@ private:
     const OrtApi* _api = nullptr;
     OrtEnv* _env = nullptr;
     int _apiVersion = 0;
+    bool _telemetryOptOutFailed = false;
     std::string _reason;
     std::string _version;
     std::string _libraryPath;

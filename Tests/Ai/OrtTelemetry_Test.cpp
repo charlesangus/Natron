@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -50,14 +51,15 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// Set to leave ONNX Runtime telemetry fully on (opt-out variable and API call both skipped), which must make this test fail.
+// Set to leave ONNX Runtime telemetry fully on (opt-out variable, set by main(), and API call both
+// skipped), which must make this test fail: run `NATRON_TEST_ORT_KEEP_TELEMETRY=1 ctest -R AiOrtTelemetry`.
 const char* const kKeepTelemetryVariable = "NATRON_TEST_ORT_KEEP_TELEMETRY";
 
-// The only switch that stops ONNX Runtime's telemetry thread from starting.
+// The only switch that stops ONNX Runtime's telemetry thread from starting; main() sets it.
 const char* const kOptOutVariable = "ORT_DISABLE_TELEMETRY";
 
 // ONNX Runtime never starts its telemetry client when one of these is set, which would make this
-// test pass vacuously on CI runners.
+// test pass vacuously. SuiteProperties.cmake strips them for ctest runs.
 const char* const kTelemetrySuppressingVariables[] = {
     "CI",
     "TF_BUILD",
@@ -144,9 +146,14 @@ outboundAddress(const struct sockaddr* addr)
 bool
 isTelemetryHost(const std::string& host)
 {
-    const std::string suffix = "data.microsoft.com";
+    const std::string suffix = ".data.microsoft.com";
+    std::string lower(host);
 
-    return (host.size() >= suffix.size()) && (host.compare(host.size() - suffix.size(), suffix.size(), suffix) == 0);
+    for (char& c : lower) {
+        c = (char)std::tolower((unsigned char)c);
+    }
+
+    return (lower.size() >= suffix.size()) && (lower.compare(lower.size() - suffix.size(), suffix.size(), suffix) == 0);
 }
 
 std::string
@@ -197,19 +204,33 @@ connect(int fd,
     return next ? next(fd, addr, len) : -1;
 }
 
+// Restores the recording and opt-out state however the test body ends.
+struct TestStateReset {
+    ~TestStateReset()
+    {
+        {
+            NetworkLog& log = networkLog();
+            std::lock_guard<std::mutex> lock(log.mutex);
+            log.recording = false;
+        }
+        OrtLoader::setTelemetryOptOutForTesting(true);
+    }
+};
+
 TEST(AiOrtTelemetry, NoTelemetryLookupOrOutboundConnect)
 {
     const bool keepTelemetry = std::getenv(kKeepTelemetryVariable) != nullptr;
-    OrtLoader::setTelemetryOptOutForTesting(!keepTelemetry);
+    for (const char* name : kTelemetrySuppressingVariables) {
+        ASSERT_EQ(nullptr, std::getenv(name)) << name << " is set, so ONNX Runtime would never start its telemetry client; run this suite through ctest, which clears it";
+    }
     if (keepTelemetry) {
-        unsetenv(kOptOutVariable);
+        ASSERT_EQ(nullptr, std::getenv(kOptOutVariable)) << kOptOutVariable << " is set, so the telemetry client would not start";
     } else {
-        // The test executable's main() set it through the helper the product's mains call.
         ASSERT_NE(nullptr, std::getenv(kOptOutVariable)) << "main() did not call disableThirdPartyTelemetry()";
     }
-    for (const char* name : kTelemetrySuppressingVariables) {
-        unsetenv(name);
-    }
+
+    TestStateReset reset;
+    OrtLoader::setTelemetryOptOutForTesting(!keepTelemetry);
     {
         NetworkLog& log = networkLog();
         std::lock_guard<std::mutex> lock(log.mutex);
@@ -221,6 +242,9 @@ TEST(AiOrtTelemetry, NoTelemetryLookupOrOutboundConnect)
     {
         std::shared_ptr<const OrtLoader> ort = OrtLoader::load({ OrtLoader::Candidate { AiTest::ortDir(), true } });
         ASSERT_TRUE(ort->available()) << ort->unavailableReason();
+        if (!keepTelemetry) {
+            EXPECT_FALSE(ort->telemetryOptOutFailed()) << "ONNX Runtime refused DisableTelemetryEvents";
+        }
         {
             std::shared_ptr<InferenceSession> session = InferenceSession::open(AiTest::modelPath("identity.onnx"), AiTest::cpuOptions(1), ort);
             const Tensor in = Tensor::image(1, 3, 4, 4);
@@ -229,7 +253,6 @@ TEST(AiOrtTelemetry, NoTelemetryLookupOrOutboundConnect)
         std::this_thread::sleep_for(kUploadWait);
         InferenceSession::clearCache();
     }
-    OrtLoader::setTelemetryOptOutForTesting(true);
 
     std::vector<std::string> telemetryLookups;
     std::vector<std::string> lookups;
@@ -247,6 +270,9 @@ TEST(AiOrtTelemetry, NoTelemetryLookupOrOutboundConnect)
         }
     }
 
+    if (keepTelemetry) {
+        EXPECT_FALSE(telemetryLookups.empty()) << "telemetry was left on but no collector lookup was seen, so this test cannot detect it";
+    }
     EXPECT_TRUE(telemetryLookups.empty()) << "ONNX Runtime resolved its telemetry collector: " << joined(telemetryLookups)
                                           << (keepTelemetry ? std::string(" (") + kKeepTelemetryVariable + " is set)" : std::string());
     EXPECT_TRUE(connects.empty()) << "outbound connections: " << joined(connects) << "; lookups: " << joined(lookups);

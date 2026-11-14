@@ -44,16 +44,12 @@ unavailable, and `unavailableReason()` names every path it tried and why each on
 never throws. A failed load is retried when the Preferences path changes. A successful load lasts
 for the life of the process, so switching to another library takes a restart.
 
-Microsoft's release builds upload usage events to `mobile.events.data.microsoft.com`. ONNX Runtime
-starts that uploader when its telemetry object is constructed, so the `DisableTelemetryEvents` call
-the loader makes on every environment it creates only sets a flag and is not enough. The one full
-opt-out is the `ORT_DISABLE_TELEMETRY` environment variable, which ONNX Runtime reads at start-up.
-Every Natron executable's `main()` therefore calls `disableThirdPartyTelemetry()`
-(`Global/ThirdPartyTelemetry.h`) before any thread exists; it sets the variable to 1 unless the user's
-environment already sets it. The API call stays as a second layer, and a failed call is logged as a
-warning while the library is still used. `Tests/Ai/OrtTelemetry_Test.cpp` checks that ONNX Runtime
-makes no lookup or outbound connection. Running it with `NATRON_TEST_ORT_KEEP_TELEMETRY=1` unsets the
-variable and skips the API call, and must fail.
+Microsoft's release builds upload usage events to `mobile.events.data.microsoft.com`. The only full
+opt-out is the `ORT_DISABLE_TELEMETRY` environment variable, read when ONNX Runtime starts, so every
+Natron executable's `main()` calls `disableThirdPartyTelemetry()` (`Global/ThirdPartyTelemetry.h`)
+before any thread exists. It keeps a value the user already set. The loader also calls
+`DisableTelemetryEvents` on every environment as a second layer, and logs a warning if that fails.
+`Tests/Ai/OrtTelemetry_Test.cpp` checks that ONNX Runtime makes no lookup or outbound connection.
 
 The loader lists the execution providers (EPs) the library offers. This is ORT's own list plus any
 EP whose `OrtSessionOptionsAppendExecutionProvider_*` symbol the library exports but the list leaves

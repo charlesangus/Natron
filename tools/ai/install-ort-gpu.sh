@@ -394,6 +394,14 @@ install_rocm() {
     local built="${BUILD_DIR}/onnxruntime/build/Linux/Release"
     [ -e "${built}/libonnxruntime.so.1" ] || [ -e "${built}/libonnxruntime.so.${version}" ] \
         || die "the build produced no libonnxruntime.so"
+    # The flag detection above fails open if a release moves the option, so check the result: the
+    # 1DS client names its OneCollector endpoint in the library it is compiled into.
+    local lib
+    for lib in "${built}"/libonnxruntime*.so*; do
+        if [ -f "${lib}" ] && grep -aq 'OneCollector' "${lib}"; then
+            die "${lib} contains Microsoft's telemetry client (OneCollector); this release needs a different flag than --no_telemetry to leave it out"
+        fi
+    done
 
     make_staging_dir "${version}-migraphx"
     mkdir -p "${STAGED}/lib"

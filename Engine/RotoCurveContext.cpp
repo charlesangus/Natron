@@ -290,6 +290,8 @@ RotoCurveContext::addLayer()
 void
 RotoCurveContext::addLayer(const RotoLayerPtr& layer)
 {
+    // getBaseLayer() reads the list from render and bake threads.
+    QMutexLocker l(&_imp->rotoContextMutex);
     std::list<RotoLayerPtr>::iterator it = std::find(_imp->layers.begin(), _imp->layers.end(), layer);
 
     if (it == _imp->layers.end()) {

@@ -443,8 +443,11 @@ public:
             // What the bake wrote, while the bake is undone.
             std::string stash;
             bool hasBackup = false;
-            // The file the bake wrote, which every swap moves by rename: a target that no longer
-            // matches it was written by something else since.
+            // Whether the bake's file reached target; a target it never reached is not the bake's
+            // to put back.
+            bool wrote = false;
+            // The file the bake wrote, recorded right after it reached target and moved by rename
+            // in every swap: a target that no longer matches it was written by something else since.
             FileIdentity written;
         };
         std::vector<Entry> entries;
@@ -459,8 +462,6 @@ public:
         // The node that bakes, by TexturePaintFileQueue::newId(), which names it; 0 for none.
         std::uint64_t owner = 0;
         bool undone = false;
-        // Whether every entry's written identity is recorded.
-        bool sealed = false;
         // Whether the backups and stashes are deleted, after which nothing can be swapped.
         bool discarded = false;
     };
@@ -478,10 +479,10 @@ public:
                                  bool* heldBySameOwner = 0) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Puts every target of *files back as it was before the bake, and deletes the backups.
-     * Once *files is sealed, a target that is no longer the file the bake wrote is left as it is,
-     * and its backup, what it held before the bake, is moved beside it as <name>.pre-bake rather
-     * than deleted. A backup that cannot be moved stays where it is, with its directory. *kept
+     * @brief Puts every target the bake of *files wrote back as it was before the bake, and
+     * deletes the backups; a target the bake never wrote is left as it is. A written target that
+     * is no longer the file the bake wrote is left as it is too, and its backup, what it held
+     * before the bake, is moved beside it as <name>.pre-bake rather than deleted. A backup that cannot be moved stays where it is, with its directory. *kept
      * receives where each such backup is. With evict, drops the targets' cached headers. Leaves
      * the claims of *files to the caller.
      **/
@@ -502,7 +503,11 @@ public:
     // Drops the TexturePaintFileQueue claims of files, once an undo step owns them.
     static void settleBakeOutputFiles(const BakeOutputFiles& files);
 
-    // Records the identity of each file the bake wrote, once it has written them all.
+    // Marks target, backed up in *files, as written by the bake and records its identity, right after the bake's file reached it.
+    static void markBakeTargetWritten(BakeOutputFiles* files,
+                                      const std::string& target);
+
+    // Records again the identity of each file the bake wrote, after a swap put them back.
     static void sealBakeOutputFiles(BakeOutputFiles* files);
 
     /**

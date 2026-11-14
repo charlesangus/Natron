@@ -1633,10 +1633,6 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
             stepsDone += 1.;
         }
     }
-    const std::shared_ptr<BakeOutputFiles> files = run.undoFiles;
-    if (!TexturePaintFileQueue::wait(TexturePaintFileQueue::submit([files](bool /*shuttingDown*/) { sealBakeOutputFiles(files.get()); }), control.cancelled)) {
-        return false;
-    }
     rollBack.armed = false;
 
     return true;
@@ -1845,7 +1841,9 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
             if (backUpBakeTarget(files.get(), path, &write->error, &write->heldBySameOwner)) {
                 std::filesystem::rename(temp, path, moved);
                 write->ok = !moved;
-                if (moved) {
+                if (write->ok) {
+                    markBakeTargetWritten(files.get(), path);
+                } else {
                     write->error = tr("%1 cannot be written: %2").arg(QString::fromStdString(path)).arg(QString::fromStdString(moved.message())).toStdString();
                 }
             }
@@ -2202,13 +2200,29 @@ TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
 }
 
 void
+TexturePaint::markBakeTargetWritten(BakeOutputFiles* files,
+                                    const std::string& target)
+{
+    const std::string key = TexturePaintFileQueue::claimKey(target);
+    for (BakeOutputFiles::Entry& entry : files->entries) {
+        if (entry.key == key) {
+            entry.wrote = true;
+            entry.written = BakeOutputFiles::FileIdentity::of(entry.target);
+
+            return;
+        }
+    }
+}
+
+void
 TexturePaint::sealBakeOutputFiles(BakeOutputFiles* files)
 {
     for (BakeOutputFiles::Entry& entry : files->entries) {
-        entry.written = BakeOutputFiles::FileIdentity::of(entry.target);
+        if (entry.wrote) {
+            entry.written = BakeOutputFiles::FileIdentity::of(entry.target);
+        }
     }
     files->undone = false;
-    files->sealed = true;
 }
 
 void
@@ -2221,7 +2235,11 @@ TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files,
     std::set<std::string> holding;
     for (std::vector<BakeOutputFiles::Entry>::reverse_iterator it = files->entries.rbegin(); it != files->entries.rend(); ++it) {
         std::error_code ec;
-        if (files->sealed && (BakeOutputFiles::FileIdentity::of(it->target) != it->written)) {
+        if (!it->wrote) {
+            // Its backup, if any, is a link to what the target still holds, deleted with its directory.
+            continue;
+        }
+        if (BakeOutputFiles::FileIdentity::of(it->target) != it->written) {
             // Written by someone else since; with no undo step to bring it back, what the target
             // held before the bake is the user's to recover.
             if (it->hasBackup) {

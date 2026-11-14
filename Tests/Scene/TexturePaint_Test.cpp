@@ -2698,8 +2698,8 @@ TEST_F(TexturePaintTest, ADroppedBakeRollsBackOnTheFileQueueAndKeepsWhatARewritt
     ASSERT_TRUE(TexturePaint::backUpBakeTarget(files.get(), rewritten, &error)) << error;
     for (const std::string& target : { kept, rewritten }) {
         writeByRename(target, "the bake's");
+        TexturePaint::markBakeTargetWritten(files.get(), target);
     }
-    TexturePaint::sealBakeOutputFiles(files.get());
     const TexturePaint::BakeOutputFiles::FileIdentity baked = TexturePaint::BakeOutputFiles::FileIdentity::of(rewritten);
 
     // Same size and inode: only the modification time tells the user's file from the bake's.
@@ -2738,6 +2738,54 @@ TEST_F(TexturePaintTest, ADroppedBakeRollsBackOnTheFileQueueAndKeepsWhatARewritt
     std::list<LogEntry> log;
     appPTR->getErrorLog_mt_safe(&log);
     EXPECT_TRUE(std::any_of(log.begin(), log.end(), [&](const LogEntry& entry) { return entry.message.contains(QString::fromStdString(rewritten + ".pre-bake")); }));
+}
+
+TEST_F(TexturePaintTest, AFailedBakePutsBackOnlyWhatItWroteAndKeepsWhatWasEditedMidBake)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string first = dir.path().toStdString() + "/first.1001.exr";
+    const std::string second = dir.path().toStdString() + "/second.1001.exr";
+    const std::string third = dir.path().toStdString() + "/third.1001.exr";
+    std::ofstream(first.c_str()) << "first before";
+    std::ofstream(second.c_str()) << "second before";
+    std::ofstream(third.c_str()) << "third before";
+
+    std::shared_ptr<TexturePaint::BakeOutputFiles> files = std::make_shared<TexturePaint::BakeOutputFiles>();
+    std::string error;
+    ASSERT_TRUE(TexturePaint::backUpBakeTarget(files.get(), first, &error)) << error;
+    writeByRename(first, "first baked");
+    TexturePaint::markBakeTargetWritten(files.get(), first);
+
+    // Same size and inode: only the modification time tells the user's edit from the bake's file.
+    waitForTheClock();
+    {
+        std::ofstream out(first.c_str(), std::ios::in | std::ios::out | std::ios::binary);
+        out << "first edits";
+    }
+
+    ASSERT_TRUE(TexturePaint::backUpBakeTarget(files.get(), second, &error)) << error;
+    writeByRename(second, "second baked");
+    TexturePaint::markBakeTargetWritten(files.get(), second);
+
+    // Backed up, then the bake failed before its file reached the target.
+    ASSERT_TRUE(TexturePaint::backUpBakeTarget(files.get(), third, &error)) << error;
+    writeByRename(third, "third edits");
+    const TexturePaint::BakeOutputFiles::FileIdentity thirdBefore = TexturePaint::BakeOutputFiles::FileIdentity::of(third);
+
+    std::shared_ptr<std::atomic<std::uint64_t>> epoch = std::make_shared<std::atomic<std::uint64_t>>(0);
+    (void)TexturePaint::enqueueBakeOutputRollback(files, epoch);
+    ASSERT_TRUE(pumpUntil([&]() { return (epoch->load() == 2) && TexturePaintFileQueue::isIdleForTesting(); }, 10000));
+    files.reset();
+
+    EXPECT_EQ("first edits", readText(first)) << "an edit made mid-bake is left as it is";
+    EXPECT_EQ("first before", readText(first + ".pre-bake")) << "what it held before the bake is kept beside it";
+    EXPECT_EQ("second before", readText(second));
+    EXPECT_FALSE(std::filesystem::exists(second + ".pre-bake"));
+    EXPECT_EQ("third edits", readText(third)) << "a target the bake never wrote is not put back";
+    EXPECT_TRUE(TexturePaint::BakeOutputFiles::FileIdentity::of(third) == thirdBefore);
+    EXPECT_FALSE(std::filesystem::exists(third + ".pre-bake"));
+    EXPECT_FALSE(std::filesystem::exists(dir.path().toStdString() + "/.texturepaint-undo"));
 }
 
 namespace {
@@ -2783,7 +2831,7 @@ bakeOverOnTheQueue(const std::shared_ptr<TexturePaint::BakeOutputFiles>& files,
             *ok = TexturePaint::backUpBakeTarget(files.get(), target, failure.get());
             if (*ok) {
                 writeByRename(target, content);
-                TexturePaint::sealBakeOutputFiles(files.get());
+                TexturePaint::markBakeTargetWritten(files.get(), target);
             }
         }))) {
         return false;

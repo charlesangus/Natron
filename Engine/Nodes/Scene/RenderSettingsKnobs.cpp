@@ -1320,10 +1320,16 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
                 i->setMinimum(clampToInt(range->minimum));
                 i->setDisplayMinimum(clampToInt(range->minimum));
                 i->setDisplayMaximum(clampToInt(range->displayMaximum));
+                if (range->hasMaximum) {
+                    i->setMaximum(clampToInt(range->maximum));
+                }
             } else if (KnobDouble* d = dynamic_cast<KnobDouble*>(k.get())) {
                 d->setMinimum(range->minimum);
                 d->setDisplayMinimum(range->minimum);
                 d->setDisplayMaximum(range->displayMaximum);
+                if (range->hasMaximum) {
+                    d->setMaximum(range->maximum);
+                }
             }
         }
         if (range && range->sameRowAsNext) {

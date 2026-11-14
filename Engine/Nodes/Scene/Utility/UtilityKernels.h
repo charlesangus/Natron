@@ -59,6 +59,37 @@ struct KernelShadeParams {
     std::uint32_t count;
     std::uint32_t padding;
     float pixelFootprint[4];
+    // First light of the pass, lights in the pass, words per link mask, lights in the scene.
+    std::uint32_t lighting[4];
+    // Frame x and y of the first hit's pixel, the width of the rows the hits cover, the sample seed.
+    std::uint32_t pixels[4];
+};
+
+// Mirrors ShadeLightsParams in Kernels/ShadeLights.slang.
+struct KernelShadeLightsParams {
+    std::uint32_t count;
+    std::uint32_t lightBatch;
+    std::uint32_t padding[2];
+};
+
+// LightRecord::kind.y bits in Kernels/UtilityTypes.slang.
+const std::uint32_t kKernelLightCastsShadows = 1u;
+const std::uint32_t kKernelLightIes = 2u;
+const std::uint32_t kKernelLightShaped = 4u;
+const std::uint32_t kKernelLightDomeImportance = 8u;
+const std::uint32_t kKernelLightPoint = 16u;
+
+// Mirrors LightRecord in Kernels/UtilityTypes.slang.
+struct KernelLightRecord {
+    float position[4];
+    float axisX[4];
+    float axisY[4];
+    float axisZ[4];
+    float radiance[4];
+    float shaping[4];
+    float focusTint[4];
+    std::uint32_t kind[4];
+    std::uint32_t data[4];
 };
 
 // Mirrors GeometryRecord in Kernels/UtilityTypes.slang.
@@ -145,6 +176,17 @@ struct KernelShadeBuffers {
     std::size_t instanceTransformRowCount = 0;
     const float* sts = nullptr; // two per value
     std::size_t stCount = 0;
+    const KernelLightRecord* lights = nullptr;
+    std::size_t lightCount = 0;
+    const float* lightData = nullptr;
+    std::size_t lightDataCount = 0;
+    const std::uint32_t* linkMasks = nullptr; // two masks of lighting[2] words per instance
+    std::size_t linkMaskCount = 0;
+    // lighting[1] shadow rays per hit, light-major: rays in the eight-array layout, a contribution of
+    // four floats and the light index of each.
+    float* shadowRays = nullptr;
+    float* shadowContributions = nullptr;
+    std::uint32_t* shadowLights = nullptr;
 };
 
 /**
@@ -159,6 +201,15 @@ void runRayGenKernel(const KernelRayGenParams& params,
  **/
 void runShadeSurfaceKernel(const KernelShadeParams& params,
                            const KernelShadeBuffers& buffers);
+
+/**
+ * @brief Runs the C++ build of ShadeLights.slang: adds to colorOut the contributions of the
+ * params.lightBatch shadow rays per hit that blocked marks 0. MT-safe.
+ **/
+void runShadeLightsKernel(const KernelShadeLightsParams& params,
+                          float* colorOut,
+                          const float* shadowContributions,
+                          const std::uint32_t* blocked);
 
 NATRON_NAMESPACE_EXIT
 

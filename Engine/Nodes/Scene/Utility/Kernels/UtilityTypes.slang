@@ -147,3 +147,42 @@ public float4 transformRow(float4 v, float4 r0, float4 r1, float4 r2, float4 r3)
 {
     return v.x * r0 + v.y * r1 + v.z * r2 + v.w * r3;
 }
+
+// UtilityLightDesc::Type
+public static const uint kLightDistant = 0;
+public static const uint kLightSphere = 1;
+public static const uint kLightRect = 2;
+public static const uint kLightDisk = 3;
+public static const uint kLightCylinder = 4;
+public static const uint kLightDome = 5;
+
+// LightRecord::kind.y bits.
+public static const uint kLightCastsShadows = 1;
+public static const uint kLightIes = 2;
+public static const uint kLightShaped = 4;
+public static const uint kLightDomeImportance = 8;
+public static const uint kLightPoint = 16;
+
+// KernelLightRecord mirrors this: one light in world space, its axes unit length.
+//   position: the light's origin; w the sphere's or cylinder's radius.
+//   axisX: w half the rect's width, the disk's radius along X or half the cylinder's length.
+//   axisY: w half the rect's height or the disk's radius along Y.
+//   axisZ: w the cosine of the distant light's half angle, 1 for a delta direction.
+//   radiance: emitted radiance, or intensity for a point; w the emitting area.
+//   shaping: cone angle in radians, cone softness, focus, IES angle scale.
+//   focusTint: w the factor on the IES table.
+//   kind: type, flags, the dome's texture binding or kNoTexture, the IES table's offset in the light data.
+//   data: the dome CDF's offset in the light data, its width and height, the IES table's theta count
+//   in the low 16 bits and phi count in the high 16.
+public struct LightRecord
+{
+    public float4 position;
+    public float4 axisX;
+    public float4 axisY;
+    public float4 axisZ;
+    public float4 radiance;
+    public float4 shaping;
+    public float4 focusTint;
+    public uint4 kind;
+    public uint4 data;
+};

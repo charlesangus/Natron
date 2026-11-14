@@ -2,10 +2,13 @@ import UtilityTypes;
 import Texture;
 import PreviewSurface;
 import Project3D;
+import Lights;
 
 // KernelShadeParams in UtilityKernels.h mirrors this. projection holds the row-vector projection terms
 // that decide clip z and w from view z: clip z = A * z + B, clip w = C * z + D. pixelFootprint holds a
-// pixel's world width on the near plane and on the far plane.
+// pixel's world width on the near plane and on the far plane. lighting: the first light this pass
+// samples, how many it samples, the 32-bit words per link mask, and the scene's light count. pixels: the
+// frame position of the first hit's pixel, the width of the rows the hits cover, and the sample seed.
 struct ShadeParams
 {
     float4 projection;
@@ -14,6 +17,8 @@ struct ShadeParams
     uint count;
     uint padding;
     float4 pixelFootprint;
+    uint4 lighting;
+    uint4 pixels;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<float> rays;
@@ -35,6 +40,15 @@ struct ShadeParams
 [[vk::binding(16, 0)]] StructuredBuffer<float4> points;
 [[vk::binding(17, 0)]] StructuredBuffer<float4> instanceTransforms;
 [[vk::binding(18, 0)]] StructuredBuffer<float2> sts;
+[[vk::binding(19, 0)]] StructuredBuffer<LightRecord> lights;
+[[vk::binding(20, 0)]] StructuredBuffer<float> lightData;
+// Per instance, the light-link mask then the shadow-link mask, lighting.z words each; bit l is light l.
+[[vk::binding(21, 0)]] StructuredBuffer<uint> linkMasks;
+// One shadow ray per hit per light of the pass, light-major: eight arrays of lightBatch * count values.
+[[vk::binding(22, 0)]] RWStructuredBuffer<float> shadowRays;
+// What each shadow ray's light adds to its pixel when the ray is not blocked, premultiplied.
+[[vk::binding(23, 0)]] RWStructuredBuffer<float4> shadowContributions;
+[[vk::binding(24, 0)]] RWStructuredBuffer<uint> shadowLights;
 [[vk::push_constant]] ConstantBuffer<ShadeParams> params;
 
 static const float4 kUnsupportedColor = float4(1.0, 0.0, 1.0, 1.0);
@@ -147,6 +161,80 @@ float stFootprint(float width, float3 dp1, float3 dp2, float2 dst1, float2 dst2,
     return log2(width) + 0.5 * log2(stArea / worldArea) - log2(max(cosine, 1e-3));
 }
 
+void writeShadowRay(uint slot, uint light, float3 origin, float3 direction, float tMax, float3 contribution)
+{
+    const uint n = params.lighting.y * params.count;
+
+    shadowRays[kRayOriginX * n + slot] = origin.x;
+    shadowRays[kRayOriginY * n + slot] = origin.y;
+    shadowRays[kRayOriginZ * n + slot] = origin.z;
+    shadowRays[kRayDirectionX * n + slot] = direction.x;
+    shadowRays[kRayDirectionY * n + slot] = direction.y;
+    shadowRays[kRayDirectionZ * n + slot] = direction.z;
+    shadowRays[kRayTMin * n + slot] = 0.0;
+    shadowRays[kRayTMax * n + slot] = tMax;
+    shadowContributions[slot] = float4(contribution, 0.0);
+    shadowLights[slot] = light;
+}
+
+// A shadow ray the tracers skip, so the contribution is added unblocked.
+void writeUnshadowed(uint slot, uint light, float3 contribution)
+{
+    writeShadowRay(slot, light, float3(0.0), float3(0.0, 0.0, 1.0), -1.0, contribution);
+}
+
+void writeNoShadows(uint index)
+{
+    for (uint j = 0; j < params.lighting.y; ++j)
+        writeUnshadowed(j * params.count + index, params.lighting.x + j, float3(0.0));
+}
+
+bool linked(uint instance, uint light, uint mask)
+{
+    const uint words = params.lighting.z;
+
+    return ((linkMasks[(2 * instance + mask) * words + light / 32] >> (light % 32)) & 1) != 0;
+}
+
+// One sample of each of the pass's lights, each queued with the shadow ray that decides whether it
+// arrives.
+void sampleLights(uint index, uint instance, PreviewSurfaceSample surface, float3 position, float3 geometric, float3 toViewer)
+{
+    const uint pixelX = params.pixels.x + index % params.pixels.z;
+    const uint pixelY = params.pixels.y + index / params.pixels.z;
+    const uint pixel = (pixelY << 16) ^ pixelX;
+    const float3 scaled = abs(position);
+    const float offset = 1e-4 * max(1.0, max(scaled.x, max(scaled.y, scaled.z)));
+
+    for (uint j = 0; j < params.lighting.y; ++j) {
+        const uint l = params.lighting.x + j;
+        const uint slot = j * params.count + index;
+
+        if (l >= params.lighting.w || !linked(instance, l, 0)) {
+            writeUnshadowed(slot, l, float3(0.0));
+            continue;
+        }
+
+        const LightRecord light = lights[l];
+        const LightSample s = sampleLight(light, lightData, textureBindings, images, texels, position, surface.normal, lightRandom(pixel, l, params.pixels.w));
+        const float3 contribution = s.weight * evaluatePreviewSurface(surface, toViewer, s.direction) * surface.opacity;
+
+        if (!any(contribution > float3(0.0)) || any(isnan(contribution)) || any(isinf(contribution))) {
+            writeUnshadowed(slot, l, float3(0.0));
+            continue;
+        }
+        if ((light.kind.y & kLightCastsShadows) == 0) {
+            writeUnshadowed(slot, l, contribution);
+            continue;
+        }
+
+        const float3 origin = position + (dot(geometric, s.direction) >= 0.0 ? offset : -offset) * geometric;
+        const float tMax = s.distance >= kLightAtInfinity ? kLightAtInfinity : s.distance * (1.0 - 1e-4);
+
+        writeShadowRay(slot, l, origin, s.direction, tMax, contribution);
+    }
+}
+
 // Where nothing shows the pixel takes the film's clear values, as a miss leaves them.
 void writeNothing(uint index)
 {
@@ -156,8 +244,9 @@ void writeNothing(uint index)
     instanceIdOut[index] = -1;
 }
 
-// Emission and reflected light, premultiplied by coverage. Light reaches only lit scenes, so a scene
-// without lights shows emission alone.
+// Emission, premultiplied by coverage, and the shadow rays of the pass's lights, whose unblocked
+// contributions ShadeLights adds. Only the pass that samples the first light writes the AOVs, so the
+// later passes leave the lighting already added alone.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
@@ -168,9 +257,12 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
         return;
 
     const uint geometryIndex = hitIds[kHitGeometry * count + id.x];
+    const bool writesAovs = params.lighting.x == 0;
 
-    if (geometryIndex == kNoHit)
+    if (geometryIndex == kNoHit) {
+        writeNoShadows(id.x);
         return;
+    }
 
     const GeometryRecord geometry = geometries[geometryIndex];
     const MaterialRecord material = materials[geometry.materialIndex];
@@ -205,8 +297,10 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
         const float4 w2 = instanceTransforms[row + 6];
         const float4 w3 = instanceTransforms[row + 7];
 
+        writeNoShadows(id.x);
         if (!evaluateProject3D(projections[material.kind.y], textureBindings, images, texels, worldPosition, outward, direction, width, o0, o1, o2, o3, w0, w1, w2, w3, shaded)) {
-            writeNothing(id.x);
+            if (writesAovs)
+                writeNothing(id.x);
             return;
         }
     } else if (material.kind.x == kMaterialPreviewSurface) {
@@ -232,7 +326,9 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
 
         if (threshold > 0.0) {
             if (opacity < threshold) {
-                writeNothing(id.x);
+                writeNoShadows(id.x);
+                if (writesAovs)
+                    writeNothing(id.x);
                 return;
             }
             opacity = 1.0;
@@ -261,8 +357,13 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
 
         const float3 radiance = surface.emissiveColor;
         shaded = float4(radiance * opacity, opacity);
+        sampleLights(id.x, instance, surface, worldPosition, geometric, -direction);
+    } else {
+        writeNoShadows(id.x);
     }
 
+    if (!writesAovs)
+        return;
     colorOut[id.x] = shaded;
     depthOut[id.x] = windowDepth(alongRay);
     primIdOut[id.x] = geometry.primId;

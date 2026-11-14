@@ -75,7 +75,8 @@ public:
     virtual void intersect(const RayBatch& rays,
                            const HitBatch& hits) const OVERRIDE;
     virtual void occluded(const RayBatch& rays,
-                          std::uint8_t* blocked) const OVERRIDE;
+                          std::uint8_t* blocked,
+                          const OcclusionFilter* filter = nullptr) const OVERRIDE;
     virtual Stats stats() const OVERRIDE;
     virtual Outcome status() const OVERRIDE;
 
@@ -96,6 +97,20 @@ public:
                                   const gpu::GpuBuffer& rays,
                                   std::uint32_t count,
                                   const gpu::GpuBuffer& blocked) const;
+
+    /**
+     * @brief As recordOccluded(), with the device form of an OcclusionFilter: rayLights holds a light
+     * index per ray and casterMasks maskStride words per instance from maskOffset, of which an instance
+     * blocks a ray only where the ray's light's bit is set.
+     **/
+    gpu::GpuStatus recordOccludedFiltered(gpu::GpuRecordContext& ctx,
+                                          const gpu::GpuBuffer& rays,
+                                          std::uint32_t count,
+                                          const gpu::GpuBuffer& blocked,
+                                          const gpu::GpuBuffer& rayLights,
+                                          const gpu::GpuBuffer& casterMasks,
+                                          std::uint32_t maskStride,
+                                          std::uint32_t maskOffset) const;
 
 private:
     struct Implementation;

@@ -68,6 +68,19 @@ protected:
                                                              const PXR_NS::HdContainerDataSourceHandle& inputArgs) OVERRIDE;
 };
 
+/**
+ * @brief Resolves the lights' light-link and shadow-link collections into category tokens on the lights
+ * and the prims they match, which the delegate reads through GetCategories and the light's params.
+ **/
+class HdNatronUtilityLightLinkingSceneIndexPlugin : public PXR_NS::HdSceneIndexPlugin {
+public:
+    HdNatronUtilityLightLinkingSceneIndexPlugin();
+
+protected:
+    virtual PXR_NS::HdSceneIndexBaseRefPtr _AppendSceneIndex(const PXR_NS::HdSceneIndexBaseRefPtr& inputScene,
+                                                             const PXR_NS::HdContainerDataSourceHandle& inputArgs) OVERRIDE;
+};
+
 NATRON_NAMESPACE_ENTER
 
 /**

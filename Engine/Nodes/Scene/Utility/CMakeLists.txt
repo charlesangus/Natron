@@ -8,7 +8,8 @@ include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
 slang_add_kernel(utility_raygen ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/RayGen.slang ENTRY utilityRayGen CPP)
 slang_add_kernel(utility_shade_surface ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/ShadeSurface.slang ENTRY utilityShadeSurface CPP)
-target_link_libraries(NatronEngine PRIVATE utility_raygen utility_shade_surface)
+slang_add_kernel(utility_shade_lights ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/ShadeLights.slang ENTRY utilityShadeLights CPP)
+target_link_libraries(NatronEngine PRIVATE utility_raygen utility_shade_surface utility_shade_lights)
 
 # Ray queries have no CPU target, so these kernels are SPIR-V only. Slang would add the capability on its own,
 # with a warning that the profile was upgraded.

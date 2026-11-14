@@ -22,6 +22,12 @@
                         "displayName": "Natron Utility implicit surfaces",
                         "loadWithRenderer": "Natron Utility",
                         "priority": 0
+                    },
+                    "HdNatronUtilityLightLinkingSceneIndexPlugin": {
+                        "bases": ["HdSceneIndexPlugin"],
+                        "displayName": "Natron Utility light linking",
+                        "loadWithRenderer": "Natron Utility",
+                        "priority": 0
                     }
                 }
             },

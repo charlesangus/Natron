@@ -1,7 +1,9 @@
 import UtilityTypes;
 
 // KernelIntersectParams in GpuTracer.cpp mirrors this. Rays first to end of a batch whose arrays hold
-// stride values each are traced.
+// stride values each are traced. With a maskStride, an instance blocks an occlusion ray only where
+// the bit of the ray's light is set in the maskStride words of casterMasks from
+// maskOffset + instance * maskStride.
 struct IntersectParams
 {
     // The top-level structure's device address as low and high words; zero for a scene with nothing in it.
@@ -9,15 +11,21 @@ struct IntersectParams
     uint stride;
     uint first;
     uint end;
+    uint maskStride;
+    uint maskOffset;
 };
 
 // Both entry points share one layout, because the reflection the build reads describes every global of the
-// module: the occlusion entry leaves bindings 1 and 2 alone and writes 1 or 0 to the first array of binding 3.
+// module: the occlusion entry leaves bindings 1 and 2 alone and writes 1 or 0 to the first array of binding 3,
+// and only it reads bindings 4 and 5.
 [[vk::binding(0, 0)]] StructuredBuffer<float> rays;
 // The dense geometry index of each of the snapshot's instances.
 [[vk::binding(1, 0)]] StructuredBuffer<uint> instanceGeometry;
 [[vk::binding(2, 0)]] RWStructuredBuffer<float> hitValues;
 [[vk::binding(3, 0)]] RWStructuredBuffer<uint> hitIds;
+// The light of each occlusion ray, and the shadow-link masks of the casters.
+[[vk::binding(4, 0)]] StructuredBuffer<uint> rayLights;
+[[vk::binding(5, 0)]] StructuredBuffer<uint> casterMasks;
 [[vk::push_constant]] ConstantBuffer<IntersectParams> params;
 
 // A descriptor would need a binding kind GpuKernel's storage-buffer convention lacks. The address goes
@@ -105,11 +113,30 @@ void utilityOccluded(uint3 id : SV_DispatchThreadID)
     uint blocked = 0;
     RayDesc desc;
 
-    if (readRay(ray, desc)) {
+    const bool valid = readRay(ray, desc);
+
+    if (valid && params.maskStride == 0) {
         RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
 
         query.TraceRayInline(sceneAt(params.scene), RAY_FLAG_NONE, 0xff, desc);
         while (query.Proceed()) {
+        }
+        if (query.CommittedStatus() != COMMITTED_NOTHING)
+            blocked = 1;
+    } else if (valid) {
+        // Non-opaque, so each candidate comes back here to be kept or passed through.
+        RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
+        const uint light = rayLights[ray];
+
+        query.TraceRayInline(sceneAt(params.scene), RAY_FLAG_NONE, 0xff, desc);
+        while (query.Proceed()) {
+            const uint caster = query.CandidateInstanceID();
+            const uint word = casterMasks[params.maskOffset + caster * params.maskStride + light / 32];
+
+            if (((word >> (light % 32)) & 1) != 0) {
+                query.CommitNonOpaqueTriangleHit();
+                query.Abort();
+            }
         }
         if (query.CommittedStatus() != COMMITTED_NOTHING)
             blocked = 1;

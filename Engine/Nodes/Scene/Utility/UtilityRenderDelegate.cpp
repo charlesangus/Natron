@@ -25,6 +25,7 @@
 
 #include "UtilityRenderDelegate.h"
 
+#include <algorithm>
 #include <atomic>
 
 #include <pxr/base/gf/vec4f.h>
@@ -37,6 +38,7 @@
 #include <pxr/imaging/hd/tokens.h>
 
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMesh.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
@@ -368,7 +370,13 @@ UtilityRenderDelegate::GetSupportedRprimTypes() const
 const TfTokenVector&
 UtilityRenderDelegate::GetSupportedSprimTypes() const
 {
-    static const TfTokenVector types = { HdPrimTypeTokens->camera, HdPrimTypeTokens->extComputation, HdPrimTypeTokens->material };
+    static const TfTokenVector types = [] {
+        TfTokenVector all = { HdPrimTypeTokens->camera, HdPrimTypeTokens->extComputation, HdPrimTypeTokens->material };
+
+        all.insert(all.end(), UtilityLight::supportedTypes().begin(), UtilityLight::supportedTypes().end());
+
+        return all;
+    }();
 
     return types;
 }
@@ -437,6 +445,11 @@ UtilityRenderDelegate::CreateSprim(const TfToken& typeId,
     }
     if (typeId == HdPrimTypeTokens->material) {
         return new UtilityMaterial(sprimId);
+    }
+    const TfTokenVector& lights = UtilityLight::supportedTypes();
+
+    if (std::find(lights.begin(), lights.end(), typeId) != lights.end()) {
+        return new UtilityLight(sprimId, typeId);
     }
     TF_CODING_ERROR("Unknown Sprim type %s", typeId.GetText());
 

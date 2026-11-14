@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <utility>
 #include <vector>
 
 #include <pxr/base/gf/matrix4d.h>
@@ -40,6 +41,7 @@
 
 #include "Global/Macros.h"
 
+#include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
 #include "Engine/Nodes/Scene/Utility/UtilityTextures.h"
@@ -160,6 +162,12 @@ public:
     KernelShadeBuffers buffers() const;
     // Changes whenever the texels do, so a device copy of them can be kept otherwise.
     std::uint64_t texelVersion() const;
+    std::uint32_t lightCount() const;
+    // The 32-bit words of each light-link and shadow-link mask.
+    std::uint32_t linkWords() const;
+    // What lets an occlusion query skip the casters a shadow ray's light is not shadow-linked to;
+    // without casterMasks when every light is shadowed by everything.
+    OcclusionFilter occlusionFilter(const std::uint32_t* rayLights) const;
 
 private:
     struct SourceVersion {
@@ -192,6 +200,15 @@ private:
     std::vector<PXR_NS::GfVec4f> _instanceTransforms;
     std::vector<PXR_NS::GfVec2f> _sts;
     std::vector<SourceVersion> _sources;
+    std::vector<KernelLightRecord> _lights;
+    // The dome importance tables and IES tables the light records point into.
+    std::vector<float> _lightData;
+    // Each light's light-link and shadow-link category; empty for all of the scene.
+    std::vector<std::pair<PXR_NS::TfToken, PXR_NS::TfToken>> _lightLinks;
+    std::uint32_t _linkWords = 0;
+    // Whether any light's shadows fall from only some of the scene, which needs filtered occlusion.
+    bool _shadowLinked = false;
+    std::vector<std::uint32_t> _linkMasks;
     // Material paths in the order of _materials from index 1.
     std::map<PXR_NS::SdfPath, std::uint32_t> _materialIndices;
 

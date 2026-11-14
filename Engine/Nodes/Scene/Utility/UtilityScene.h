@@ -51,6 +51,7 @@
 NATRON_NAMESPACE_ENTER
 
 struct UtilityMaterialDesc;
+struct UtilityLightDesc;
 class UtilityTexturePool;
 
 /**
@@ -85,6 +86,8 @@ public:
         PXR_NS::VtVec2fArray st;
         ColorBinding stBinding = eColorBindingConstant;
         bool hasSt = false;
+        // The light- and shadow-link categories the prim belongs to, and those of its instancer.
+        PXR_NS::TfTokenVector categories;
         // Each counts the changes to that part, so a render can tell a refit from a rebuild.
         std::uint64_t topologyVersion = 0;
         std::uint64_t pointsVersion = 0;
@@ -113,6 +116,7 @@ public:
         std::map<GeometryId, Geometry> geometries;
         std::vector<Instance> instances;
         std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityMaterialDesc>> materials;
+        std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityLightDesc>> lights;
         std::shared_ptr<UtilityTexturePool> textures;
     };
 
@@ -144,6 +148,11 @@ public:
     void setMaterial(const PXR_NS::SdfPath& path,
                      const std::shared_ptr<const UtilityMaterialDesc>& material);
     void removeMaterial(const PXR_NS::SdfPath& path);
+    void setCategories(GeometryId id,
+                       const PXR_NS::TfTokenVector& categories);
+    void setLight(const PXR_NS::SdfPath& path,
+                  const std::shared_ptr<const UtilityLightDesc>& light);
+    void removeLight(const PXR_NS::SdfPath& path);
     void setRenderTag(GeometryId id,
                       const PXR_NS::TfToken& tag);
     // The render tags whose geometries contribute instances to snapshots and stats, all of them when
@@ -158,8 +167,8 @@ public:
     const std::shared_ptr<UtilityTexturePool>& textures() const;
     /**
      * @brief What the scene draws other than as authored, one line per problem: the unsupported
-     * materials bound to visible geometry, textured geometry without texture coordinates, and
-     * textures that could not be read.
+     * materials bound to visible geometry, textured geometry without texture coordinates, textures
+     * that could not be read, and IES profiles that could not be parsed.
      **/
     std::vector<std::string> warnings() const;
 
@@ -177,6 +186,7 @@ private:
     std::map<GeometryId, Record> _records;
     PXR_NS::TfTokenVector _renderTags;
     std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityMaterialDesc>> _materials;
+    std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityLightDesc>> _lights;
     std::shared_ptr<UtilityTexturePool> _textures;
     std::uint64_t _version = 0;
     std::size_t _topologyBuilds = 0;

@@ -256,7 +256,8 @@ UtilityMesh::GetInitialDirtyBitsMask() const
         | HdChangeTracker::DirtyPrimvar
         | HdChangeTracker::DirtyInstancer
         | HdChangeTracker::DirtyInstanceIndex
-        | HdChangeTracker::DirtyMaterialId;
+        | HdChangeTracker::DirtyMaterialId
+        | HdChangeTracker::DirtyCategories;
 }
 
 HdDirtyBits
@@ -348,6 +349,20 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
         || HdChangeTracker::IsInstancerDirty(bits, id) || HdChangeTracker::IsInstanceIndexDirty(bits, id)) {
         _UpdateInstancer(sceneDelegate, dirtyBits);
         syncInstances(sceneDelegate, scene);
+    }
+    if ((bits & HdChangeTracker::DirtyCategories) || HdChangeTracker::IsInstancerDirty(bits, id)) {
+        // The light-linking scene index puts a prim's collections on it and an instance's on its
+        // instancer, so an instanced mesh answers to both.
+        const VtArray<TfToken> own = sceneDelegate->GetCategories(id);
+        TfTokenVector categories(own.begin(), own.end());
+        const SdfPath& instancerId = GetInstancerId();
+
+        if (!instancerId.IsEmpty()) {
+            const VtArray<TfToken> inherited = sceneDelegate->GetCategories(instancerId);
+
+            categories.insert(categories.end(), inherited.begin(), inherited.end());
+        }
+        scene->setCategories(_geometry, categories);
     }
     *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
 }

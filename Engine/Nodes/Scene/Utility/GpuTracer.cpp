@@ -64,11 +64,21 @@ struct KernelIntersectParams {
     std::uint32_t stride;
     std::uint32_t first;
     std::uint32_t end;
+    std::uint32_t maskStride;
+    std::uint32_t maskOffset;
 };
 
 static_assert(sizeof(KernelIntersectParams) == utility_intersect_push_bytes);
 static_assert(sizeof(KernelIntersectParams) == utility_occluded_push_bytes);
-static_assert(utility_intersect_storage_buffers == 4 && utility_occluded_storage_buffers == 4);
+static_assert(utility_intersect_storage_buffers == 6 && utility_occluded_storage_buffers == 6);
+
+// The device form of an OcclusionFilter.
+struct DeviceFilter {
+    const gpu::GpuBuffer* rayLights = nullptr;
+    const gpu::GpuBuffer* casterMasks = nullptr;
+    std::uint32_t maskStride = 0;
+    std::uint32_t maskOffset = 0;
+};
 
 const std::size_t kRayArrays = kUtilityRayArrays;
 const std::size_t kHitArrays = kUtilityHitArrays;
@@ -264,12 +274,14 @@ struct GpuTracer::Implementation {
                                const gpu::GpuBuffer& rays,
                                std::uint32_t count,
                                const gpu::GpuBuffer& values,
-                               const gpu::GpuBuffer& ids) const;
+                               const gpu::GpuBuffer& ids,
+                               const DeviceFilter& filter = DeviceFilter()) const;
 
     void trace(Entry entry,
                const RayBatch& rays,
                const HitBatch* hits,
-               std::uint8_t* blocked) const;
+               std::uint8_t* blocked,
+               const OcclusionFilter* filter = nullptr) const;
 
     gpu::GpuKernelRegistry& registry;
     gpu::GpuBufferPool& pool;
@@ -298,7 +310,8 @@ GpuTracer::Implementation::recordTrace(gpu::GpuRecordContext& ctx,
                                        const gpu::GpuBuffer& rays,
                                        std::uint32_t count,
                                        const gpu::GpuBuffer& values,
-                                       const gpu::GpuBuffer& ids) const
+                                       const gpu::GpuBuffer& ids,
+                                       const DeviceFilter& filter) const
 {
     if (!usable) {
         return { VK_ERROR_FEATURE_NOT_PRESENT, outcome.message };
@@ -313,11 +326,15 @@ GpuTracer::Implementation::recordTrace(gpu::GpuRecordContext& ctx,
 
     // Without a scene the kernel reads nothing past the rays, so they stand in for the instance table.
     const gpu::GpuBuffer& instanceGeometry = address ? state->instanceGeometry : rays;
-    const std::array<gpu::GpuBinding, 4> bindings = {
+    const bool filtered = filter.maskStride != 0 && filter.rayLights && filter.casterMasks;
+    // Unfiltered, the kernel never reads the light tables, so the rays stand in for them.
+    const std::array<gpu::GpuBinding, 6> bindings = {
         gpu::GpuBinding::storage(0, rays),
         gpu::GpuBinding::storage(1, instanceGeometry),
         gpu::GpuBinding::storage(2, values),
         gpu::GpuBinding::storage(3, ids),
+        gpu::GpuBinding::storage(4, filtered ? *filter.rayLights : rays),
+        gpu::GpuBinding::storage(5, filtered ? *filter.casterMasks : rays),
     };
     const std::shared_ptr<gpu::GpuKernel>& kernel = entry == Entry::Intersect ? intersectKernel : occludedKernel;
 
@@ -329,6 +346,8 @@ GpuTracer::Implementation::recordTrace(gpu::GpuRecordContext& ctx,
             count,
             static_cast<std::uint32_t>(first),
             static_cast<std::uint32_t>(end),
+            filtered ? filter.maskStride : 0u,
+            filtered ? filter.maskOffset : 0u,
         };
         const std::array<std::uint32_t, 3> threads = { static_cast<std::uint32_t>(end - first), 1, 1 };
 
@@ -344,7 +363,8 @@ void
 GpuTracer::Implementation::trace(Entry entry,
                                  const RayBatch& rays,
                                  const HitBatch* hits,
-                                 std::uint8_t* blocked) const
+                                 std::uint8_t* blocked,
+                                 const OcclusionFilter* filter) const
 {
     const SceneStatePtr state = scene;
 
@@ -406,6 +426,30 @@ GpuTracer::Implementation::trace(Entry entry,
     const float* const sources[kRayArrays] = { rays.originX, rays.originY, rays.originZ,
                                                rays.directionX, rays.directionY, rays.directionZ,
                                                rays.tMin, rays.tMax };
+    const bool filtered = !hits && filter && filter->casterMasks && filter->stride != 0;
+    gpu::GpuBuffer lightBuffer, maskBuffer;
+    DeviceFilter deviceFilter;
+
+    if (filtered) {
+        const std::size_t maskWords = static_cast<std::size_t>(filter->stride) * filter->casterCount;
+        const VkDeviceSize lightBytes = chunk * sizeof(std::uint32_t);
+        const VkDeviceSize maskBytes = std::max<std::size_t>(1, maskWords) * sizeof(std::uint32_t);
+
+        if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(device, lightBytes, gpu::kGpuBufferDefaultUsage, lightBuffer); !s) {
+            record(failure("GpuTracer could not stage the lights of " + std::to_string(chunk) + " shadow rays", s));
+            missFrom(0);
+
+            return;
+        }
+        if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(device, maskBytes, gpu::kGpuBufferDefaultUsage, maskBuffer); !s) {
+            record(failure("GpuTracer could not stage " + std::to_string(maskWords) + " words of shadow-link masks", s));
+            missFrom(0);
+
+            return;
+        }
+        std::memcpy(maskBuffer.mapped(), filter->casterMasks, maskWords * sizeof(std::uint32_t));
+        deviceFilter = DeviceFilter { &lightBuffer, &maskBuffer, filter->stride, 0u };
+    }
 
     for (std::size_t start = 0; start < rays.count; start += chunk) {
         const std::size_t n = std::min(chunk, rays.count - start);
@@ -413,6 +457,9 @@ GpuTracer::Implementation::trace(Entry entry,
 
         for (std::size_t array = 0; array < kRayArrays; ++array) {
             std::memcpy(staged + array * n, sources[array] + start, n * sizeof(float));
+        }
+        if (filtered) {
+            std::memcpy(lightBuffer.mapped(), filter->rayLights + start, n * sizeof(std::uint32_t));
         }
         if (start > 0) {
             if (gpu::GpuStatus s = createContext(ctx); !s) {
@@ -423,7 +470,7 @@ GpuTracer::Implementation::trace(Entry entry,
             }
         }
 
-        gpu::GpuStatus s = recordTrace(*ctx, entry, state, rayBuffer, static_cast<std::uint32_t>(n), valueBuffer, idBuffer);
+        gpu::GpuStatus s = recordTrace(*ctx, entry, state, rayBuffer, static_cast<std::uint32_t>(n), valueBuffer, idBuffer, deviceFilter);
 
         if (s) {
             s = ctx->submitAndWait();
@@ -793,9 +840,10 @@ GpuTracer::intersect(const RayBatch& rays,
 
 void
 GpuTracer::occluded(const RayBatch& rays,
-                    std::uint8_t* blocked) const
+                    std::uint8_t* blocked,
+                    const OcclusionFilter* filter) const
 {
-    _imp->trace(Entry::Occluded, rays, nullptr, blocked);
+    _imp->trace(Entry::Occluded, rays, nullptr, blocked, filter);
 }
 
 Tracer::Stats
@@ -829,6 +877,19 @@ GpuTracer::recordOccluded(gpu::GpuRecordContext& ctx,
                           const gpu::GpuBuffer& blocked) const
 {
     return _imp->recordTrace(ctx, Entry::Occluded, _imp->scene, rays, count, blocked, blocked);
+}
+
+gpu::GpuStatus
+GpuTracer::recordOccludedFiltered(gpu::GpuRecordContext& ctx,
+                                  const gpu::GpuBuffer& rays,
+                                  std::uint32_t count,
+                                  const gpu::GpuBuffer& blocked,
+                                  const gpu::GpuBuffer& rayLights,
+                                  const gpu::GpuBuffer& casterMasks,
+                                  std::uint32_t maskStride,
+                                  std::uint32_t maskOffset) const
+{
+    return _imp->recordTrace(ctx, Entry::Occluded, _imp->scene, rays, count, blocked, blocked, DeviceFilter { &rayLights, &casterMasks, maskStride, maskOffset });
 }
 
 NATRON_NAMESPACE_EXIT

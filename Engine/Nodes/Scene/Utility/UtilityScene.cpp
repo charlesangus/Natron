@@ -31,6 +31,7 @@
 #include <pxr/base/tf/diagnostic.h>
 #include <pxr/base/tf/stringUtils.h>
 
+#include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityTextures.h"
 
@@ -216,6 +217,39 @@ UtilityScene::removeMaterial(const SdfPath& path)
 }
 
 void
+UtilityScene::setCategories(GeometryId id,
+                            const TfTokenVector& categories)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (TF_VERIFY(it != _records.end()) && it->second.geometry.categories != categories) {
+        it->second.geometry.categories = categories;
+        ++_version;
+    }
+}
+
+void
+UtilityScene::setLight(const SdfPath& path,
+                       const std::shared_ptr<const UtilityLightDesc>& light)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+
+    _lights[path] = light;
+    ++_version;
+}
+
+void
+UtilityScene::removeLight(const SdfPath& path)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+
+    if (_lights.erase(path)) {
+        ++_version;
+    }
+}
+
+void
 UtilityScene::setRenderTag(GeometryId id,
                            const TfToken& tag)
 {
@@ -282,6 +316,7 @@ UtilityScene::snapshot() const
 
     snapshot.version = _version;
     snapshot.materials = _materials;
+    snapshot.lights = _lights;
     snapshot.textures = _textures;
     for (const auto& entry : _records) {
         snapshot.geometries.emplace_hint(snapshot.geometries.end(), entry.first, entry.second.geometry);
@@ -312,9 +347,16 @@ UtilityScene::warnings() const
 {
     std::set<std::string> unsupported;
     std::set<std::string> withoutSt;
+    std::vector<std::string> iesProblems;
 
     {
         std::lock_guard<std::mutex> l(_mutex);
+
+        for (const auto& light : _lights) {
+            if (light.second && !light.second->iesProblem.empty()) {
+                iesProblems.push_back(light.second->iesProblem);
+            }
+        }
 
         for (const auto& entry : _records) {
             const Geometry& geometry = entry.second.geometry;
@@ -348,6 +390,7 @@ UtilityScene::warnings() const
     for (const std::string& failure : _textures->failures()) {
         lines.push_back(failure);
     }
+    lines.insert(lines.end(), iesProblems.begin(), iesProblems.end());
 
     return lines;
 }

@@ -45,8 +45,35 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const std::size_t kPacketSize = 16;
 
-// Without this, rays can slip through the edge two triangles share.
-const RTCSceneFlags kSceneFlags = static_cast<RTCSceneFlags>(RTC_SCENE_FLAG_DYNAMIC | RTC_SCENE_FLAG_ROBUST);
+// Without ROBUST, rays can slip through the edge two triangles share. FILTER_FUNCTION_IN_ARGUMENTS lets
+// a shadow query skip the casters its light is not shadow-linked to.
+const RTCSceneFlags kSceneFlags = static_cast<RTCSceneFlags>(RTC_SCENE_FLAG_DYNAMIC | RTC_SCENE_FLAG_ROBUST | RTC_SCENE_FLAG_FILTER_FUNCTION_IN_ARGUMENTS);
+
+// The context of a filtered occlusion query; Embree hands the filter the first member.
+struct OcclusionContext {
+    RTCRayQueryContext context;
+    std::size_t start;
+    const OcclusionFilter* filter;
+};
+
+void
+filterOccluders(const RTCFilterFunctionNArguments* args)
+{
+    const OcclusionContext* context = reinterpret_cast<const OcclusionContext*>(args->context);
+
+    for (unsigned int i = 0; i < args->N; ++i) {
+        if (args->valid[i] == 0) {
+            continue;
+        }
+
+        const std::size_t ray = context->start + RTCRayN_id(args->ray, args->N, i);
+        const unsigned int instance = RTCHitN_instID(args->hit, args->N, i, 0);
+
+        if (instance != RTC_INVALID_GEOMETRY_ID && !context->filter->blocks(ray, instance)) {
+            args->valid[i] = 0;
+        }
+    }
+}
 
 void
 reportEmbreeError(void* /*userData*/,
@@ -559,7 +586,8 @@ EmbreeTracer::intersect(const RayBatch& rays,
 
 void
 EmbreeTracer::occluded(const RayBatch& rays,
-                       std::uint8_t* blocked) const
+                       std::uint8_t* blocked,
+                       const OcclusionFilter* filter) const
 {
     const Implementation& imp = *_imp;
     const ScopedFlushDenormals flush;
@@ -571,7 +599,21 @@ EmbreeTracer::occluded(const RayBatch& rays,
 
         fillRays(rays, start, count, valid, packet);
         if (imp.instanceScene) {
-            rtcOccluded16(valid, imp.instanceScene, &packet, nullptr);
+            if (filter && filter->casterMasks) {
+                OcclusionContext context;
+                RTCOccludedArguments arguments;
+
+                rtcInitRayQueryContext(&context.context);
+                context.start = start;
+                context.filter = filter;
+                rtcInitOccludedArguments(&arguments);
+                arguments.flags = static_cast<RTCRayQueryFlags>(arguments.flags | RTC_RAY_QUERY_FLAG_INVOKE_ARGUMENT_FILTER);
+                arguments.context = &context.context;
+                arguments.filter = filterOccluders;
+                rtcOccluded16(valid, imp.instanceScene, &packet, &arguments);
+            } else {
+                rtcOccluded16(valid, imp.instanceScene, &packet, nullptr);
+            }
         }
         // Embree marks an occluded ray by setting its tfar to negative infinity.
         for (std::size_t i = 0; i < count; ++i) {

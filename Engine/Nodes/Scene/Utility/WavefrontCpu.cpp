@@ -36,6 +36,8 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 const int kTileSize = 64;
+// Lights sampled per shading pass, which bounds a tile's shadow buffers to 16 rays per pixel.
+const std::uint32_t kLightBatch = 16;
 
 std::vector<WavefrontRect>
 splitIntoTiles(const WavefrontRect& window)
@@ -106,7 +108,56 @@ renderTile(const WavefrontFrame& frame,
     buffers.depthOut = depth.data();
     buffers.primIdOut = primId.data();
     buffers.instanceIdOut = instanceId.data();
-    runShadeSurfaceKernel(makeShadeParams(frame, static_cast<std::uint32_t>(count)), buffers);
+
+    KernelShadeParams params = makeShadeParams(frame, static_cast<std::uint32_t>(count));
+    const std::uint32_t lightCount = tables.lightCount();
+    const std::uint32_t batch = std::min(lightCount, kLightBatch);
+    const std::size_t shadowCount = count * batch;
+    std::vector<float> shadowRays(shadowCount * 8);
+    std::vector<float> contributions(shadowCount * 4);
+    std::vector<std::uint32_t> shadowLights(shadowCount);
+    std::vector<std::uint8_t> blocked(shadowCount);
+    std::vector<std::uint32_t> blockedWords(shadowCount);
+    const OcclusionFilter filter = tables.occlusionFilter(shadowLights.data());
+
+    buffers.shadowRays = shadowRays.data();
+    buffers.shadowContributions = contributions.data();
+    buffers.shadowLights = shadowLights.data();
+    params.lighting[1] = batch;
+    params.lighting[2] = tables.linkWords();
+    params.lighting[3] = lightCount;
+    params.pixels[0] = static_cast<std::uint32_t>(rect.x);
+    params.pixels[1] = static_cast<std::uint32_t>(rect.y);
+    params.pixels[2] = static_cast<std::uint32_t>(rect.width);
+
+    std::uint32_t first = 0;
+
+    do {
+        params.lighting[0] = first;
+        runShadeSurfaceKernel(params, buffers);
+        if (batch == 0) {
+            break;
+        }
+
+        Tracer::RayBatch shadows;
+
+        shadows.originX = shadowRays.data();
+        shadows.originY = shadowRays.data() + shadowCount;
+        shadows.originZ = shadowRays.data() + 2 * shadowCount;
+        shadows.directionX = shadowRays.data() + 3 * shadowCount;
+        shadows.directionY = shadowRays.data() + 4 * shadowCount;
+        shadows.directionZ = shadowRays.data() + 5 * shadowCount;
+        shadows.tMin = shadowRays.data() + 6 * shadowCount;
+        shadows.tMax = shadowRays.data() + 7 * shadowCount;
+        shadows.count = shadowCount;
+        tracer.occluded(shadows, blocked.data(), filter.casterMasks ? &filter : nullptr);
+        std::copy(blocked.begin(), blocked.end(), blockedWords.begin());
+
+        const KernelShadeLightsParams lightsParams { static_cast<std::uint32_t>(count), batch, { 0u, 0u } };
+
+        runShadeLightsKernel(lightsParams, color.data(), contributions.data(), blockedWords.data());
+        first += batch;
+    } while (first < lightCount);
 
     WavefrontTile tile;
 

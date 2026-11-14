@@ -32,6 +32,7 @@
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3i.h>
 
+#include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -42,6 +43,10 @@ namespace {
 const double kNdcNear = -1.;
 const double kNdcFar = 1.;
 const float kFallbackGrey = 0.18f;
+// The dome's importance table is a box-filtered copy of the texture no larger than this, which keeps
+// its build and its binary searches cheap without losing the bright spots a sun or window makes.
+const int kDomeCdfMaxWidth = 512;
+const int kDomeCdfMaxHeight = 256;
 
 bool
 isFinite(const GfVec3d& v)
@@ -152,6 +157,198 @@ makeBinding(const UtilityTextureRef& ref,
 
     return binding;
 }
+// The unit direction of v, and its length.
+float
+splitAxis(const GfVec3d& v,
+          float* axis)
+{
+    const double length = v.GetLength();
+    const GfVec3d unit = length > 0. ? v / length : GfVec3d(0.);
+
+    axis[0] = static_cast<float>(unit[0]);
+    axis[1] = static_cast<float>(unit[1]);
+    axis[2] = static_cast<float>(unit[2]);
+
+    return static_cast<float>(length);
+}
+
+/**
+ * @brief Appends to data the dome's importance table for image: a conditional CDF per row, then the
+ * CDF over rows, each texel weighted by its luminance and by the solid angle its row covers. Returns
+ * false, appending nothing, when the image has no light in it.
+ **/
+bool
+appendDomeCdf(const UtilityTextureImage& image,
+              std::vector<float>* data,
+              std::uint32_t* width,
+              std::uint32_t* height)
+{
+    if (image.width <= 0 || image.height <= 0 || image.texels.size() < static_cast<std::size_t>(image.width) * image.height) {
+        return false;
+    }
+
+    const int step = std::max({ 1, (image.width + kDomeCdfMaxWidth - 1) / kDomeCdfMaxWidth, (image.height + kDomeCdfMaxHeight - 1) / kDomeCdfMaxHeight });
+    const int w = std::max(1, image.width / step);
+    const int h = std::max(1, image.height / step);
+    std::vector<double> rows(h, 0.);
+    std::vector<float> table(static_cast<std::size_t>(w) * h + h);
+
+    for (int y = 0; y < h; ++y) {
+        const double cosLat = std::cos(((y + 0.5) / h - 0.5) * M_PI);
+        double sum = 0.;
+        float* conditional = table.data() + static_cast<std::size_t>(y) * w;
+
+        for (int x = 0; x < w; ++x) {
+            double luminance = 0.;
+
+            for (int dy = 0; dy < step; ++dy) {
+                for (int dx = 0; dx < step; ++dx) {
+                    const GfVec4f& t = image.texels[static_cast<std::size_t>(y * step + dy) * image.width + x * step + dx];
+
+                    luminance += 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2];
+                }
+            }
+            sum += std::max(0., luminance) * cosLat;
+            conditional[x] = static_cast<float>(sum);
+        }
+        for (int x = 0; x < w; ++x) {
+            conditional[x] = sum > 0. ? static_cast<float>(conditional[x] / sum) : static_cast<float>(x + 1) / w;
+        }
+        conditional[w - 1] = 1.f;
+        rows[y] = sum;
+    }
+
+    double total = 0.;
+
+    for (double r : rows) {
+        total += r;
+    }
+    if (!(total > 0.) || !std::isfinite(total)) {
+        return false;
+    }
+
+    double running = 0.;
+    float* marginal = table.data() + static_cast<std::size_t>(w) * h;
+
+    for (int y = 0; y < h; ++y) {
+        running += rows[y];
+        marginal[y] = static_cast<float>(running / total);
+    }
+    marginal[h - 1] = 1.f;
+    data->insert(data->end(), table.begin(), table.end());
+    *width = static_cast<std::uint32_t>(w);
+    *height = static_cast<std::uint32_t>(h);
+
+    return true;
+}
+
+/**
+ * @brief The light in world space as the kernel reads it, its emission divided by its size when it
+ * normalizes. Appends its IES table to data.
+ **/
+KernelLightRecord
+makeLightRecord(const UtilityLightDesc& desc,
+                std::vector<float>* data)
+{
+    KernelLightRecord record {};
+    const GfMatrix4d& m = desc.transform;
+    const GfVec3d origin = m.Transform(GfVec3d(0.));
+    const float sx = splitAxis(m.TransformDir(GfVec3d(1., 0., 0.)), record.axisX);
+    const float sy = splitAxis(m.TransformDir(GfVec3d(0., 1., 0.)), record.axisY);
+    const float sz = splitAxis(m.TransformDir(GfVec3d(0., 0., 1.)), record.axisZ);
+    float area = 0.;
+    float sizeFactor = 1.;
+    std::uint32_t flags = desc.shadowEnable ? kKernelLightCastsShadows : 0u;
+
+    record.position[0] = static_cast<float>(origin[0]);
+    record.position[1] = static_cast<float>(origin[1]);
+    record.position[2] = static_cast<float>(origin[2]);
+
+    switch (desc.type) {
+    case UtilityLightDesc::eTypeDistant: {
+        const double halfAngle = std::max(0., std::min(180., static_cast<double>(desc.angleDegrees))) * M_PI / 360.;
+        const double sin2 = std::sin(halfAngle) * std::sin(halfAngle);
+
+        record.axisZ[3] = halfAngle > 0. ? static_cast<float>(std::cos(halfAngle)) : 1.f;
+        if (halfAngle > 0.) {
+            sizeFactor = static_cast<float>(halfAngle <= M_PI / 2. ? M_PI * sin2 : (2. - sin2) * M_PI);
+        }
+        break;
+    }
+    case UtilityLightDesc::eTypeSphere: {
+        const float radius = std::max(0.f, desc.radius) * std::max({ sx, sy, sz });
+
+        record.position[3] = radius;
+        area = static_cast<float>(4. * M_PI) * radius * radius;
+        sizeFactor = area;
+        if (desc.treatAsPoint || radius <= 0.f) {
+            flags |= kKernelLightPoint;
+        }
+        break;
+    }
+    case UtilityLightDesc::eTypeRect:
+        record.axisX[3] = 0.5f * std::max(0.f, desc.width) * sx;
+        record.axisY[3] = 0.5f * std::max(0.f, desc.height) * sy;
+        area = 4.f * record.axisX[3] * record.axisY[3];
+        sizeFactor = area;
+        break;
+    case UtilityLightDesc::eTypeDisk:
+        record.axisX[3] = std::max(0.f, desc.radius) * sx;
+        record.axisY[3] = std::max(0.f, desc.radius) * sy;
+        area = static_cast<float>(M_PI) * record.axisX[3] * record.axisY[3];
+        sizeFactor = area;
+        break;
+    case UtilityLightDesc::eTypeCylinder:
+        record.axisX[3] = 0.5f * std::max(0.f, desc.length) * sx;
+        record.position[3] = std::max(0.f, desc.radius) * std::max(sy, sz);
+        area = static_cast<float>(2. * M_PI) * record.position[3] * 2.f * record.axisX[3];
+        sizeFactor = area;
+        break;
+    case UtilityLightDesc::eTypeDome:
+        break;
+    }
+
+    GfVec3f radiance = desc.emission;
+
+    if (desc.normalize && desc.type != UtilityLightDesc::eTypeDome && sizeFactor > 0.f) {
+        radiance /= sizeFactor;
+    }
+    if ((flags & kKernelLightPoint) != 0) {
+        // A point stands for a small sphere of the same power, whose intensity is its radiance times
+        // the disc it shows; without a radius the emission is taken as the intensity.
+        const float radius = record.position[3];
+
+        if (radius > 0.f) {
+            radiance *= static_cast<float>(M_PI) * radius * radius;
+        }
+    }
+    store(radiance, area, record.radiance);
+
+    const bool shapes = desc.type != UtilityLightDesc::eTypeDistant && desc.type != UtilityLightDesc::eTypeDome;
+
+    if (shapes && (desc.coneAngleDegrees < 180.f || desc.focus > 0.f)) {
+        flags |= kKernelLightShaped;
+    }
+    record.shaping[0] = static_cast<float>(std::max(0., std::min(180., static_cast<double>(desc.coneAngleDegrees))) * M_PI / 180.);
+    record.shaping[1] = desc.coneSoftness;
+    record.shaping[2] = desc.focus;
+    record.shaping[3] = desc.iesAngleScale;
+    store(desc.focusTint, 1.f, record.focusTint);
+    if (shapes && desc.ies && desc.ies->thetaCount >= 2 && desc.ies->phiCount >= 1 && desc.ies->thetaCount <= 0xffff && desc.ies->phiCount <= 0xffff) {
+        flags |= kKernelLightIes;
+        record.kind[3] = static_cast<std::uint32_t>(data->size());
+        record.data[3] = static_cast<std::uint32_t>(desc.ies->thetaCount) | (static_cast<std::uint32_t>(desc.ies->phiCount) << 16);
+        data->insert(data->end(), desc.ies->candela.begin(), desc.ies->candela.end());
+        if (desc.iesNormalize && desc.ies->mean > 0.f) {
+            record.focusTint[3] = 1.f / desc.ies->mean;
+        }
+    }
+    record.kind[0] = static_cast<std::uint32_t>(desc.type);
+    record.kind[1] = flags;
+    record.kind[2] = static_cast<std::uint32_t>(-1);
+
+    return record;
+}
 } // anon namespace
 
 bool
@@ -210,7 +407,7 @@ makeShadeParams(const WavefrontFrame& frame,
 {
     const GfMatrix4d& projection = frame.projection;
     const GfMatrix4d inverse = projection.GetInverse();
-    KernelShadeParams params;
+    KernelShadeParams params {};
 
     params.projection[0] = static_cast<float>(projection[2][2]);
     params.projection[1] = static_cast<float>(projection[3][2]);
@@ -253,32 +450,37 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
     _projections.clear();
     _materialIndices.clear();
 
+    const auto addBinding = [&](const UtilityTextureRef& ref) {
+        UtilityTextureAssetConstPtr asset;
+
+        if (!ref.asset.empty() && snapshot.textures) {
+            keys.insert(UtilityTexturePool::Key(ref.asset, static_cast<int>(ref.colorSpace)));
+            asset = snapshot.textures->acquire(ref.asset, ref.colorSpace);
+        }
+        int image = -1;
+
+        if (asset) {
+            const auto found = firstImages.find(asset.get());
+
+            if (found == firstImages.end()) {
+                image = imageCount;
+                firstImages[asset.get()] = image;
+                imageCount += static_cast<int>(asset->tiles.size());
+                assets.push_back(asset);
+            } else {
+                image = found->second;
+            }
+        }
+        _textureBindings.push_back(makeBinding(ref, image, asset && asset->udim));
+
+        return asset;
+    };
     const auto addMaterial = [&](const UtilityMaterialDesc& desc) {
         KernelMaterialRecord record {};
         const int firstBinding = static_cast<int>(_textureBindings.size());
 
         for (const UtilityTextureRef& ref : desc.textureRefs) {
-            UtilityTextureAssetConstPtr asset;
-
-            if (!ref.asset.empty() && snapshot.textures) {
-                keys.insert(UtilityTexturePool::Key(ref.asset, static_cast<int>(ref.colorSpace)));
-                asset = snapshot.textures->acquire(ref.asset, ref.colorSpace);
-            }
-            int image = -1;
-
-            if (asset) {
-                const auto found = firstImages.find(asset.get());
-
-                if (found == firstImages.end()) {
-                    image = imageCount;
-                    firstImages[asset.get()] = image;
-                    imageCount += static_cast<int>(asset->tiles.size());
-                    assets.push_back(asset);
-                } else {
-                    image = found->second;
-                }
-            }
-            _textureBindings.push_back(makeBinding(ref, image, asset && asset->udim));
+            addBinding(ref);
         }
 
         store(desc.diffuseColor, 0.f, record.diffuseColor);
@@ -323,6 +525,36 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
             addMaterial(*entry.second);
         }
     }
+
+    _lights.clear();
+    _lightData.clear();
+    _lightLinks.clear();
+    _shadowLinked = false;
+    for (const auto& entry : snapshot.lights) {
+        if (!entry.second) {
+            continue;
+        }
+
+        const UtilityLightDesc& desc = *entry.second;
+        KernelLightRecord record = makeLightRecord(desc, &_lightData);
+
+        if (desc.type == UtilityLightDesc::eTypeDome && !desc.domeTexture.asset.empty()) {
+            record.kind[2] = static_cast<std::uint32_t>(_textureBindings.size());
+
+            const UtilityTextureAssetConstPtr asset = addBinding(desc.domeTexture);
+
+            if (asset && !asset->udim && !asset->tiles.empty() && asset->tiles[0]) {
+                record.data[0] = static_cast<std::uint32_t>(_lightData.size());
+                if (appendDomeCdf(*asset->tiles[0], &_lightData, &record.data[1], &record.data[2])) {
+                    record.kind[1] |= kKernelLightDomeImportance;
+                }
+            }
+        }
+        _lights.push_back(record);
+        _lightLinks.push_back(std::make_pair(desc.lightLink, desc.shadowLink));
+        _shadowLinked = _shadowLinked || !desc.shadowLink.IsEmpty();
+    }
+
     if (snapshot.textures) {
         snapshot.textures->retainOnly(keys);
     }
@@ -432,10 +664,32 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
     _instanceIds.reserve(snapshot.instances.size());
     _instanceTransforms.clear();
     _instanceTransforms.reserve(snapshot.instances.size() * 8);
-    for (const UtilityScene::Instance& instance : snapshot.instances) {
+    _linkWords = static_cast<std::uint32_t>((_lights.size() + 31) / 32);
+    _linkMasks.assign(snapshot.instances.size() * 2 * _linkWords, 0u);
+    for (std::size_t i = 0; i < snapshot.instances.size(); ++i) {
+        const UtilityScene::Instance& instance = snapshot.instances[i];
+        const auto geometry = snapshot.geometries.find(instance.geometry);
+        static const TfTokenVector noCategories;
+        const TfTokenVector& categories = geometry == snapshot.geometries.end() ? noCategories : geometry->second.categories;
+        const auto inCategory = [&](const TfToken& category) {
+            return category.IsEmpty() || std::find(categories.begin(), categories.end(), category) != categories.end();
+        };
+        std::uint32_t* lightMask = _linkMasks.data() + i * 2 * _linkWords;
+        std::uint32_t* shadowMask = lightMask + _linkWords;
+
         _instanceIds.push_back(instance.instanceIndex);
         appendRows(instance.transform, &_instanceTransforms);
         appendRows(instance.transform.GetInverse(), &_instanceTransforms);
+        for (std::size_t l = 0; l < _lightLinks.size(); ++l) {
+            const std::uint32_t bit = 1u << (l % 32);
+
+            if (inCategory(_lightLinks[l].first)) {
+                lightMask[l / 32] |= bit;
+            }
+            if (inCategory(_lightLinks[l].second)) {
+                shadowMask[l / 32] |= bit;
+            }
+        }
     }
 
     _sources.swap(sources);
@@ -474,6 +728,12 @@ WavefrontShadeTables::buffers() const
     buffers.instanceTransformRowCount = _instanceTransforms.size();
     buffers.sts = reinterpret_cast<const float*>(_sts.data());
     buffers.stCount = _sts.size();
+    buffers.lights = _lights.data();
+    buffers.lightCount = _lights.size();
+    buffers.lightData = _lightData.data();
+    buffers.lightDataCount = _lightData.size();
+    buffers.linkMasks = _linkMasks.data();
+    buffers.linkMaskCount = _linkMasks.size();
 
     return buffers;
 }
@@ -482,6 +742,31 @@ std::uint64_t
 WavefrontShadeTables::texelVersion() const
 {
     return _texelVersion;
+}
+
+std::uint32_t
+WavefrontShadeTables::lightCount() const
+{
+    return static_cast<std::uint32_t>(_lights.size());
+}
+
+std::uint32_t
+WavefrontShadeTables::linkWords() const
+{
+    return _linkWords;
+}
+
+OcclusionFilter
+WavefrontShadeTables::occlusionFilter(const std::uint32_t* rayLights) const
+{
+    OcclusionFilter filter;
+
+    filter.rayLights = rayLights;
+    filter.casterMasks = _shadowLinked && _linkWords ? _linkMasks.data() + _linkWords : nullptr;
+    filter.stride = 2 * _linkWords;
+    filter.casterCount = _instanceIds.size();
+
+    return filter;
 }
 
 NATRON_NAMESPACE_EXIT

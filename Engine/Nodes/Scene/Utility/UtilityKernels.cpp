@@ -63,10 +63,23 @@ struct ShadeSurfaceGlobals {
     KernelBuffer points;
     KernelBuffer instanceTransforms;
     KernelBuffer sts;
+    KernelBuffer lights;
+    KernelBuffer lightData;
+    KernelBuffer linkMasks;
+    KernelBuffer shadowRays;
+    KernelBuffer shadowContributions;
+    KernelBuffer shadowLights;
     const NATRON_NAMESPACE::KernelShadeParams* params;
 };
 
-// numthreads in both kernels.
+struct ShadeLightsGlobals {
+    KernelBuffer colorOut;
+    KernelBuffer shadowContributions;
+    KernelBuffer blocked;
+    const NATRON_NAMESPACE::KernelShadeLightsParams* params;
+};
+
+// numthreads in every kernel.
 const std::uint32_t kGroupSize = 64;
 
 KernelVarying
@@ -78,6 +91,7 @@ varyingFor(std::size_t count)
 
 extern "C" void utilityRayGen(KernelVarying*, void* entryPointParams, void* globalParams);
 extern "C" void utilityShadeSurface(KernelVarying*, void* entryPointParams, void* globalParams);
+extern "C" void utilityShadeLights(KernelVarying*, void* entryPointParams, void* globalParams);
 
 NATRON_NAMESPACE_ENTER
 
@@ -106,6 +120,7 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
         return;
     }
     KernelVarying varying = varyingFor(count);
+    const std::size_t shadowCount = count * params.lighting[1];
     ShadeSurfaceGlobals globals {
         { buffers.rays, count * 8 },
         { buffers.hitSurface, count * 3 },
@@ -126,10 +141,40 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
         { buffers.points, buffers.pointCount },
         { buffers.instanceTransforms, buffers.instanceTransformRowCount },
         { buffers.sts, buffers.stCount },
+        { buffers.lights, buffers.lightCount },
+        { buffers.lightData, buffers.lightDataCount },
+        { buffers.linkMasks, buffers.linkMaskCount },
+        { buffers.shadowRays, shadowCount * 8 },
+        { buffers.shadowContributions, shadowCount },
+        { buffers.shadowLights, shadowCount },
         &params,
     };
 
     utilityShadeSurface(&varying, nullptr, &globals);
+}
+
+void
+runShadeLightsKernel(const KernelShadeLightsParams& params,
+                     float* colorOut,
+                     const float* shadowContributions,
+                     const std::uint32_t* blocked)
+{
+    const std::size_t count = params.count;
+
+    if (count == 0 || params.lightBatch == 0) {
+        return;
+    }
+
+    KernelVarying varying = varyingFor(count);
+    const std::size_t shadowCount = count * params.lightBatch;
+    ShadeLightsGlobals globals {
+        { colorOut, count },
+        { shadowContributions, shadowCount },
+        { blocked, shadowCount },
+        &params,
+    };
+
+    utilityShadeLights(&varying, nullptr, &globals);
 }
 
 NATRON_NAMESPACE_EXIT

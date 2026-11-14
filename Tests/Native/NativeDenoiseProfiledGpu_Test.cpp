@@ -25,9 +25,11 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <bitset>
-#include <cstring>
+#include <cmath>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -37,6 +39,7 @@
 
 #include "NativeParity.h"
 #include "RawGpuTestSupport.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -155,6 +158,7 @@ protected:
         return c;
     }
 
+public:
     // darktable's reference job settings for the manual non-local means: patch 2, search 4,
     // scattering 0.5, central pixel weight 0.3.
     static void configure(const NodePtr& denoise,
@@ -236,58 +240,105 @@ TEST_F(NativeDenoiseProfiledGpuTest, EveryModeMatchesTheCpuOnTheBayerAndXTransFi
     }
 }
 
-// A window rendered on the GPU in tiles is the window rendered whole, bit for bit: a non-local
-// means pixel does not depend on the tile's extent, and the wavelets run over the whole frame for
-// every tile.
-TEST_F(NativeDenoiseProfiledGpuTest, TiledGpuRenderEqualsTheWholeGpuRender)
+// The bounds of expectGpuMatchesCpuWithin() over two frames interleaved with nComps channels: the
+// failure, or an empty string.
+static std::string
+withinNodeBounds(const std::vector<float>& cpu,
+                 const std::vector<float>& gpu,
+                 int nComps,
+                 double mean,
+                 double max,
+                 int outlierBudget)
+{
+    if ((nComps <= 0) || (cpu.size() != gpu.size())) {
+        return "the frames differ in size";
+    }
+    const std::size_t colours = (std::size_t)std::min(3, nComps);
+    const std::size_t nPixels = cpu.size() / (std::size_t)nComps;
+    double sum = 0.;
+    double level = 0.;
+    std::size_t otherMismatches = 0;
+    std::vector<double> pixelErrors(nPixels, 0.);
+    for (std::size_t p = 0; p < nPixels; ++p) {
+        for (std::size_t c = 0; c < (std::size_t)nComps; ++c) {
+            const float a = cpu[p * nComps + c];
+            const float b = gpu[p * nComps + c];
+            const bool same = (a == b) || (std::isnan(a) && std::isnan(b));
+            if (c >= colours) {
+                otherMismatches += same ? 0 : 1;
+                continue;
+            }
+            const double error = same ? 0. : std::fabs((double)a - (double)b);
+            if (!std::isfinite(error)) {
+                return "a colour channel is not finite on one side only";
+            }
+            sum += error;
+            level += std::isfinite(a) ? std::fabs((double)a) : 0.;
+            pixelErrors[p] = std::max(pixelErrors[p], error);
+        }
+    }
+    const double count = (double)(colours * nPixels);
+    if ((count <= 0.) || (level <= 0.)) {
+        return "the CPU frame is empty or black";
+    }
+    level /= count;
+    const double meanError = sum / count;
+    const int outliers = (int)std::count_if(pixelErrors.begin(), pixelErrors.end(), [&](double e) { return e > max * level; });
+    std::ostringstream failure;
+    if (otherMismatches != 0) {
+        failure << otherMismatches << " alpha floats differ; ";
+    }
+    if (meanError > mean * level) {
+        failure << "mean error " << meanError / level << " of the level over " << mean << "; ";
+    }
+    if (outliers > outlierBudget) {
+        failure << outliers << " pixels over " << max << " of the level, the budget is " << outlierBudget << "; ";
+    }
+
+    return failure.str();
+}
+
+class DenoiseProfiledGpuRegionTest
+    : public RegionIndependenceTest {
+protected:
+    NodePtr makeDenoise(const NodePtr& source,
+                        ModeEnum mode,
+                        ColorModeEnum colorMode)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_DENOISEPROFILED, source);
+
+        if (node) {
+            NativeDenoiseProfiledGpuTest::configure(node, mode, colorMode);
+        }
+
+        return node;
+    }
+};
+
+// GPU windows equal the GPU frame bit for bit, and the GPU frame is within the node's bounds of
+// the CPU frame: a non-local means pixel does not depend on the window, and the wavelets run over
+// the whole frame for every window.
+TEST_F(DenoiseProfiledGpuRegionTest, RegionIndependentGpu)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
         return;
     }
-    const Chain c = createChain(bayerFixture());
-    ASSERT_TRUE(c.read && c.crop && c.denoise);
-    StagedImageEffect* effect = stagedOf(c.denoise);
-    ASSERT_TRUE(effect != NULL);
-    const RectI frame = cropRect();
-    const RectI full(frame.x1 + 100, frame.y1 + 80, frame.x1 + 196, frame.y1 + 160);
-    const int splitX = full.x1 + 37;
-    const int splitY = full.y1 + 29;
-    const RectI tiles[] = {
-        RectI(full.x1, full.y1, splitX, splitY),
-        RectI(splitX, full.y1, full.x2, splitY),
-        RectI(full.x1, splitY, splitX, full.y2),
-        RectI(splitX, splitY, full.x2, full.y2),
-    };
     for (const ModeEnum mode : { eModeNlm, eModeWavelets }) {
-        const std::string what = (mode == eModeNlm) ? "non-local means" : "wavelets";
-        configure(c.denoise, mode, eColorModeY0U0V0);
-        ASSERT_FALSE(HasFatalFailure());
-        RenderedPlane input;
-        ASSERT_TRUE(renderCpu(c.crop, effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), full, RenderScale::identity), &input));
-        const GpuQuery query = rgbaQueryFor(c.denoise);
-        const int nComps = query.nComps;
-        ASSERT_EQ((std::size_t)nComps, input.channels.size()) << what;
-        const std::vector<GpuParityImage> inputs(1, imageOf(input));
-        ASSERT_TRUE(effect->canRenderOnGpu(query)) << what;
-        const GpuRunResult whole = runRenderGpu(*runtime, *effect, query, inputs, nullptr, full);
-        ASSERT_TRUE(whole.ok) << what;
-        ASSERT_EQ((std::size_t)full.area() * nComps, whole.pixels.size()) << what;
-
-        std::vector<float> assembled(whole.pixels.size(), -1.f);
-        for (const RectI& tile : tiles) {
-            const GpuRunResult part = runRenderGpu(*runtime, *effect, query, inputs, nullptr, tile);
-            ASSERT_TRUE(part.ok) << what;
-            EXPECT_EQ(0u, part.writtenOutside) << what;
-            for (int y = tile.y1; y < tile.y2; ++y) {
-                const std::size_t from = (std::size_t)(y - tile.y1) * tile.width() * nComps;
-                const std::size_t to = ((std::size_t)(y - full.y1) * full.width() + (std::size_t)(tile.x1 - full.x1)) * nComps;
-                std::memcpy(&assembled[to], &part.pixels[from], (std::size_t)tile.width() * nComps * sizeof(float));
-            }
+        const bool wavelets = (mode == eModeWavelets);
+        RegionIndependenceOptions options;
+        options.gpu = runtime.get();
+        options.gpuCompare = [wavelets](const std::vector<float>& cpu, const std::vector<float>& gpu, int nComps) {
+            return withinNodeBounds(cpu, gpu, nComps, wavelets ? kWaveletsMean : kNlmMean, wavelets ? kWaveletsMax : kNlmMax,
+                                    wavelets ? kWaveletsOutliers : kNlmOutliers);
+        };
+        for (const ColorModeEnum colorMode : { eColorModeRgb, eColorModeY0U0V0 }) {
+            SCOPED_TRACE(std::string(wavelets ? "wavelets" : "non-local means") + (colorMode == eColorModeRgb ? ", RGB" : ", Y0U0V0"));
+            expectRegionIndependent([this, mode, colorMode](const NodePtr& source) {
+                return makeDenoise(source, mode, colorMode);
+            },
+                                    options);
         }
-        const ImageDiff diff = compareImages(whole.pixels, assembled, ParityTolerance::exact());
-        EXPECT_EQ(0u, diff.mismatches) << what << ": first at float " << diff.firstMismatchIndex << " (whole " << whole.pixels[diff.firstMismatchIndex] << ", tiled "
-                                       << assembled[diff.firstMismatchIndex] << ")";
     }
 }
 

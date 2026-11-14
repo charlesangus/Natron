@@ -117,6 +117,35 @@ UtilityScene::setPoints(GeometryId id,
 }
 
 void
+UtilityScene::setNormals(GeometryId id,
+                         const VtVec3fArray& normals)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (!TF_VERIFY(it != _records.end())) {
+        return;
+    }
+    if (it->second.geometry.normals.empty() && normals.empty()) {
+        return;
+    }
+    it->second.geometry.normals = normals;
+    ++_version;
+}
+
+void
+UtilityScene::setWarning(GeometryId id,
+                         const std::string& warning)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (TF_VERIFY(it != _records.end())) {
+        it->second.warning = warning;
+    }
+}
+
+void
 UtilityScene::setColors(GeometryId id,
                         ColorBinding binding,
                         const VtVec4fArray& colors)
@@ -202,6 +231,9 @@ UtilityScene::stats() const
             stats.instanceCount += entry.second.transforms.size();
         }
         stats.triangleCount += entry.second.geometry.triangles.size();
+        if (!entry.second.warning.empty()) {
+            stats.warnings.push_back(entry.second.warning);
+        }
     }
     stats.topologyBuilds = _topologyBuilds;
     stats.pointUpdates = _pointUpdates;

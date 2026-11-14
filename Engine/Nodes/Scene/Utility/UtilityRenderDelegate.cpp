@@ -559,7 +559,9 @@ UtilityRenderDelegate::InvokeCommand(const TfToken& command,
 HdRenderSettingDescriptorList
 UtilityRenderDelegate::GetRenderSettingDescriptors() const
 {
-    return { HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) } };
+    return { HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) },
+             HdRenderSettingDescriptor { "Subdivision Level", TfToken(kUtilitySettingSubdivLevel), VtValue(UtilitySubdivRefinement::kDefaultLevel) },
+             HdRenderSettingDescriptor { "Max Subdivided Triangles", TfToken(kUtilitySettingMaxSubdivTriangles), VtValue(static_cast<int>(UtilitySubdivRefinement::kDefaultMaxTriangles)) } };
 }
 
 VtDictionary
@@ -580,6 +582,9 @@ UtilityRenderDelegate::GetRenderStats() const
     std::string warning;
 
     _renderParam->frameReport(&device, &warning);
+    for (const std::string& line : stats.warnings) {
+        warning += (warning.empty() ? "" : "\n") + line;
+    }
     dictionary[kUtilityStatDevice] = VtValue(device);
     dictionary[kUtilityStatWarning] = VtValue(warning);
 

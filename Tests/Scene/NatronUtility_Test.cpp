@@ -73,6 +73,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -145,6 +146,7 @@ public:
         _engine.reset(new UsdImagingGLEngine(parameters));
         EXPECT_EQ(TfToken(kRenderDelegateUtilityId), _engine->GetCurrentRendererId());
         _engine->SetEnablePresentation(false);
+        _engine->SetRendererSetting(TfToken(kUtilitySettingSubdivLevel), VtValue(0));
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
     }
 

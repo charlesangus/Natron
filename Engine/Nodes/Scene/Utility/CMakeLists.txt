@@ -2,6 +2,9 @@
 # This file carries what only they need.
 target_link_libraries(NatronEngine PRIVATE embree)
 
+# Subdivision meshes refine through OpenSubdiv's Far directly, from the install the pinned USD links.
+target_link_libraries(NatronEngine PRIVATE pxOsd OpenSubdiv::osdCPU)
+
 # The kernels run on the CPU whether or not the Vulkan backend is built, so Slang is needed regardless
 # of NATRON_GPU.
 include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)

@@ -34,6 +34,7 @@
 #include <string>
 
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/vt/value.h>
 #include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/renderPass.h>
 
@@ -81,6 +82,8 @@ private:
 
     virtual void _Execute(const PXR_NS::HdRenderPassStateSharedPtr& renderPassState,
                           const PXR_NS::TfTokenVector& renderTags) OVERRIDE;
+    // Hydra syncs tasks before rprims, so a subdivision setting changed here re-syncs every mesh this frame.
+    virtual void _Sync() OVERRIDE;
 
     UtilityRenderParam* _renderParam;
     std::atomic<bool> _converged { false };
@@ -92,6 +95,9 @@ private:
     std::mutex _landingMutex;
     bool _frameFinished = false;
     std::string _frameFailure;
+    bool _subdivSettingsSeen = false;
+    PXR_NS::VtValue _subdivLevel;
+    PXR_NS::VtValue _subdivBudget;
 };
 
 NATRON_NAMESPACE_EXIT

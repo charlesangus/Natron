@@ -38,12 +38,14 @@
 #include "Global/Macros.h"
 
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 
 NATRON_NAMESPACE_ENTER
 
 /**
  * @brief A mesh prim's contribution to the UtilityScene: triangulated with holes and orientation
- * applied, unrefined, with triangles that cannot be hit removed.
+ * applied, with triangles that cannot be hit removed. A mesh whose scheme is not none is first refined
+ * to its subdivision level, its points carried to the limit surface.
  **/
 class UtilityMesh : public PXR_NS::HdMesh {
 public:
@@ -68,6 +70,11 @@ private:
     bool pullPoints(PXR_NS::HdSceneDelegate* sceneDelegate,
                     PXR_NS::HdDirtyBits dirtyBits);
     bool filterTriangles();
+    int subdivLevel(PXR_NS::HdSceneDelegate* sceneDelegate) const;
+    bool syncSubdivTopology(PXR_NS::HdSceneDelegate* sceneDelegate,
+                            UtilityScene* scene,
+                            bool topologyChanged);
+    const PXR_NS::VtVec3fArray& scenePoints() const;
     void syncColors(PXR_NS::HdSceneDelegate* sceneDelegate,
                     UtilityScene* scene);
     void syncInstances(PXR_NS::HdSceneDelegate* sceneDelegate,
@@ -82,6 +89,12 @@ private:
     PXR_NS::VtIntArray _allParams;
     PXR_NS::VtVec3iArray _triangles;
     std::vector<int> _kept;
+    // The refinement in use, null for the cage, and what it made of _points.
+    UtilitySubdivRefinementPtr _subdiv;
+    int _subdivLevel = -1;
+    PXR_NS::TfTokenVector _faceVaryingNames;
+    PXR_NS::VtVec3fArray _refinedPoints;
+    PXR_NS::VtVec3fArray _normals;
 };
 
 NATRON_NAMESPACE_EXIT

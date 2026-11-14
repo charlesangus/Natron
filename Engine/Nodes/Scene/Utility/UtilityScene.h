@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <pxr/base/gf/matrix4d.h>
@@ -68,6 +69,8 @@ public:
         int primId = -1;
         PXR_NS::VtVec3fArray points;
         PXR_NS::VtVec3iArray triangles;
+        // One unit normal per point, or none for faceted shading.
+        PXR_NS::VtVec3fArray normals;
         // Straight RGBA: displayColor with displayOpacity in alpha.
         PXR_NS::VtVec4fArray colors;
         ColorBinding colorBinding = eColorBindingConstant;
@@ -91,6 +94,8 @@ public:
         std::size_t pointUpdates = 0;
         std::size_t colorUpdates = 0;
         std::size_t version = 0;
+        // What the geometries' syncs could not do as asked, one line each.
+        std::vector<std::string> warnings;
     };
 
     struct Snapshot {
@@ -112,6 +117,11 @@ public:
                      const PXR_NS::VtVec3iArray& triangles);
     void setPoints(GeometryId id,
                    const PXR_NS::VtVec3fArray& points);
+    void setNormals(GeometryId id,
+                    const PXR_NS::VtVec3fArray& normals);
+    // Replaces the geometry's warning; empty clears it.
+    void setWarning(GeometryId id,
+                    const std::string& warning);
     void setColors(GeometryId id,
                    ColorBinding binding,
                    const PXR_NS::VtVec4fArray& colors);
@@ -134,6 +144,7 @@ private:
         Geometry geometry;
         std::vector<PXR_NS::GfMatrix4d> transforms;
         PXR_NS::TfToken renderTag;
+        std::string warning;
     };
 
     bool isIncluded(const Record& record) const;

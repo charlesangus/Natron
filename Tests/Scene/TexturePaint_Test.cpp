@@ -3800,7 +3800,7 @@ TEST_F(TexturePaintTest, ABakeOutputOfFilesAnotherNodeIsBakingFailsNamingIt)
     {
         RollbackGate gate;
         ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
-        ASSERT_TRUE(gate.waitUntilHeld(60000)) << "the first node's tile is about to be written";
+        ASSERT_TRUE(pumpUntil([&]() { return gate.waitUntilHeld(0); }, 60000)) << "the first node's tile is about to be written";
         ASSERT_TRUE(otherEffect->enqueueBakeOutput(1., ViewIdx(0)));
         ASSERT_TRUE(pumpUntil([]() { return TexturePaintFileQueue::getQueuedCountForTesting() >= 1; }, 60000));
         gate.release();
@@ -3842,7 +3842,7 @@ TEST_F(TexturePaintTest, UndoingABakeWhoseFilesAnotherNodeIsBakingIsRefusedNamin
     {
         RollbackGate gate;
         ASSERT_TRUE(otherEffect->enqueueBakeOutput(1., ViewIdx(0)));
-        ASSERT_TRUE(gate.waitUntilHeld(60000)) << "the other node's tile is about to be written";
+        ASSERT_TRUE(pumpUntil([&]() { return gate.waitUntilHeld(0); }, 60000)) << "the other node's tile is about to be written";
         command->undo();
         // The undo's file step queues behind the held one, while the other node holds the file.
         ASSERT_TRUE(pumpUntil([]() { return TexturePaintFileQueue::getQueuedCountForTesting() >= 1; }, 60000));

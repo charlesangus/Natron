@@ -138,8 +138,8 @@ PXR_NS::GfVec3f moonRayFramePart(const PXR_NS::GfMatrix4d& frame,
 
 /**
  * @brief Cycles reads a missing attribute as zero, which a reference point at the world origin
- * also reads as, so a prim carrying reference points also carries this constant float primvar,
- * set to one, for the Cycles network to tell the two apart.
+ * also reads as, so a prim carrying reference points also carries this constant float array primvar,
+ * one element set to one, for the Cycles network to tell the two apart.
  **/
 std::string cyclesReferencePresentPrimvar(const std::string& referencePrimvar);
 

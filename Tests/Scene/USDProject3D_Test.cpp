@@ -1527,11 +1527,11 @@ TEST_F(USDProject3DTest, AssignedHeldToAMovingMeshItAuthorsThePointsAtTheHold)
     // Cycles reads a missing reference point as the origin, so a separate primvar says it is there.
     const PXR_NS::TfToken presentName(SceneProjectionCameras::cyclesReferencePresentPrimvar(projection.referencePrimvar));
     const PXR_NS::UsdGeomPrimvar present = PXR_NS::UsdGeomPrimvarsAPI(moving).GetPrimvar(presentName);
-    float presentValue = 0.f;
+    PXR_NS::VtFloatArray presentValue;
     ASSERT_TRUE(hasValue(present));
     EXPECT_EQ(PXR_NS::UsdGeomTokens->constant, present.GetInterpolation());
     EXPECT_TRUE(present.Get(&presentValue));
-    EXPECT_EQ(1.f, presentValue);
+    EXPECT_EQ(PXR_NS::VtFloatArray(1, 1.f), presentValue);
     EXPECT_FALSE(hasValue(PXR_NS::UsdGeomPrimvarsAPI(still).GetPrimvar(presentName)));
 
     getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(6.);

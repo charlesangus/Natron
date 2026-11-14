@@ -983,9 +983,11 @@ authorReferencePoints(const PXR_NS::UsdPrim& prim,
 {
     const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
     const PXR_NS::UsdGeomPrimvar primvar = primvars.CreatePrimvar(PXR_NS::TfToken(projection.referencePrimvar), PXR_NS::SdfValueTypeNames->Point3fArray, PXR_NS::UsdGeomTokens->vertex);
-    const PXR_NS::UsdGeomPrimvar present = primvars.CreatePrimvar(PXR_NS::TfToken(SceneProjectionCameras::cyclesReferencePresentPrimvar(projection.referencePrimvar)), PXR_NS::SdfValueTypeNames->Float, PXR_NS::UsdGeomTokens->constant);
+    // A one-element array, not a float: Cycles copies a primvar by its array size, so a scalar
+    // reaches its shaders as zero.
+    const PXR_NS::UsdGeomPrimvar present = primvars.CreatePrimvar(PXR_NS::TfToken(SceneProjectionCameras::cyclesReferencePresentPrimvar(projection.referencePrimvar)), PXR_NS::SdfValueTypeNames->FloatArray, PXR_NS::UsdGeomTokens->constant);
 
-    return primvar && primvar.Set(points) && present && present.Set(1.f);
+    return primvar && primvar.Set(points) && present && present.Set(PXR_NS::VtFloatArray(1, 1.f));
 }
 
 bool

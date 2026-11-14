@@ -222,6 +222,7 @@ public:
         _clockAtRestart = -1.;
         _clockFallen = false;
         _samplesAtClockFall = -1;
+        _clockSinceFall = -1.;
     }
 
     // The delegate's progress just before the first pass after the restart.
@@ -240,14 +241,23 @@ public:
             return true;
         }
         const bool samplesFell = (samples >= 0) && (_samplesAtRestart >= 0) && (samples < _samplesAtRestart);
+        bool clockStopped = false;
         if (!_clockFallen && (clock >= 0.) && (_clockAtRestart >= 0.) && (clock < _clockAtRestart)) {
             // Cycles starts its clock over when its session resets, before it renders a sample of
             // the new render: until its sample count moves after that, the count it reports and
             // the pixels it holds are still the render's of before.
             _clockFallen = true;
             _samplesAtClockFall = samples;
+        } else if (_clockFallen) {
+            // Cycles stops its clock only once a render is done, so a clock that stopped after it
+            // fell is the new render's, finished: a render quick enough to reach the count of
+            // before between two reads would otherwise never show a change.
+            clockStopped = (clock >= 0.) && (clock == _clockSinceFall);
         }
-        const bool clockFell = _clockFallen && ((samples < 0) || (samples != _samplesAtClockFall));
+        if (_clockFallen) {
+            _clockSinceFall = clock;
+        }
+        const bool clockFell = _clockFallen && ((samples < 0) || (samples != _samplesAtClockFall) || clockStopped);
         const bool blind = (samples < 0) && (clock < 0.);
         _seen = samplesFell || clockFell || blind;
 
@@ -281,6 +291,7 @@ private:
     double _clockAtRestart = -1.;
     bool _clockFallen = false;
     int _samplesAtClockFall = -1;
+    double _clockSinceFall = -1.;
 };
 
 // The GPU memory the engines may hold together by default.

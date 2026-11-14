@@ -1181,6 +1181,9 @@ TEST_F(ProgressiveRenderTest, AFileReloadDuringAPassKeepsTheMainThreadAndReaders
     PXR_NS::SdfLayerRefPtr file = PXR_NS::SdfLayer::Find(path);
     ASSERT_TRUE(bool(file)) << "the stage did not open " << path;
     const std::vector<PXR_NS::SdfLayerRefPtr> layers = SceneOps::getFileLayerClosure(file);
+    // Before the hold, which writing this much could use up on a busy machine: the stage keeps
+    // the file it opened until the reload.
+    ASSERT_TRUE(writeHeavyFile(path, 24, 160, kBack));
 
     // As the viewer's stage lock is: a write's last participant, since quiescing it waits for
     // a worker taking its snapshot.
@@ -1215,7 +1218,6 @@ TEST_F(ProgressiveRenderTest, AFileReloadDuringAPassKeepsTheMainThreadAndReaders
     settings["cycles:samples"] = PXR_NS::VtValue(3);
     _render->setSettings(settings);
     ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's held-up pass"));
-    ASSERT_TRUE(writeHeavyFile(path, 24, 160, kBack));
     const std::uint64_t reloads = SceneOps::getFileLayerReloadCount();
     const std::size_t mark = publishedCount();
 

@@ -575,7 +575,8 @@ protected:
     bool prepareFrame(const NodePtr& root,
                       FrameRun* run,
                       std::string* error,
-                      const RectI& renderWindow = RectI(0, 0, kWidth, kHeight))
+                      const RectI& renderWindow = RectI(0, 0, kWidth, kHeight),
+                      unsigned int mipmapLevel = 0)
     {
         run->abortInfo = AbortableRenderInfo::create(true, 0);
         run->stats = std::make_shared<RenderStats>(false);
@@ -595,7 +596,7 @@ protected:
                                            run->stats);
         std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
         const RectD window(renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2);
-        if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0 /*mipmapLevel*/, window, root, *request) == eStatusFailed) {
+        if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), mipmapLevel, window, root, *request) == eStatusFailed) {
             *error = "request pass failed";
 
             return false;
@@ -615,7 +616,7 @@ protected:
                                                   false /*draftMode*/,
                                                   run->stats);
         run->context->setRequest(request);
-        run->graph = RenderScheduler::buildGraph(run->context, root, kTime, ViewIdx(0), 0 /*mipmapLevel*/);
+        run->graph = RenderScheduler::buildGraph(run->context, root, kTime, ViewIdx(0), mipmapLevel);
         if (run->graph.tasks.empty()) {
             *error = "empty graph";
 
@@ -668,14 +669,15 @@ protected:
         return run->future->wait() == EffectInstance::eRenderRoIRetCodeOk;
     }
 
-    // Compares the root of run with root rendered directly on the CPU over the project format.
+    // Compares the root of run with root rendered directly on the CPU over window, in pixels at mipmapLevel.
     void expectMatchesCpu(const NodePtr& root,
                           const FrameRun& run,
-                          const RectI& window = RectI(0, 0, kWidth, kHeight))
+                          const RectI& window = RectI(0, 0, kWidth, kHeight),
+                          unsigned int mipmapLevel = 0)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
-        ASSERT_TRUE(renderNodePlanesDirect(root, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+        ASSERT_TRUE(renderNodePlanesDirect(root, kTime, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
         ASSERT_EQ(1u, planes.size());
         const std::map<ImageLayerDesc, ImagePtr> rootPlanes = run.future->getRootPlanes();
         ASSERT_FALSE(rootPlanes.empty());
@@ -1106,6 +1108,68 @@ TEST_F(GpuResidencyTest, ChainUploadsOnceAndDownloadsOnce)
     EXPECT_EQ(0, run.context->getStore().downloadCount());
     expectReleased(run);
     expectMatchesCpu(sink, run);
+}
+
+// The middle Grade renders at full scale whatever the level, so a frame at 100% leaves the entry a half-scale request
+// looks for one level finer in the device tier. After an edit of the last Grade, a half-scale frame reads it from there
+// downscaled on the device: nothing upstream renders, nothing is uploaded, and the half-scale entry joins the tier.
+TEST_F(GpuResidencyTest, FinerDeviceEntryServesAHalfScaleRequestWithoutAHostRoundTrip)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    ASSERT_TRUE(bool(source));
+    std::vector<NodePtr> grades;
+    NodePtr previous = source;
+    for (int i = 0; i < 3; ++i) {
+        NodePtr grade = makeGrade(1.1 + 0.1 * i, 0.05);
+        ASSERT_TRUE(bool(grade));
+        KnobBoolPtr forceCaching = std::dynamic_pointer_cast<KnobBool>(grade->getKnobByName("forceCaching"));
+        ASSERT_TRUE(bool(forceCaching));
+        forceCaching->setValue(true);
+        connectNodes(previous, grade, 0, true);
+        grades.push_back(grade);
+        previous = grade;
+    }
+    grades[1]->getEffectInstance()->setSupportsRenderScaleMaybe(EffectInstance::eSupportsNo);
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(bool(tier));
+
+    std::string error;
+    {
+        FrameRun full;
+        ASSERT_TRUE(prepareFrame(grades.back(), &full, &error)) << error;
+        placeOnGpu(&full, grades);
+        ASSERT_EQ(1u, full.graph.regions.size());
+        const ImageKey fullKey = outputKey(full.graph, grades[1]);
+        ASSERT_TRUE(render(&full));
+        ASSERT_TRUE(bool(tier->find(fullKey))) << "the full-scale frame left the middle Grade out of the device tier";
+    }
+    ASSERT_TRUE(setKnobValues(grades.back(), "multiply", { 0.7, 0.8, 0.9, 1. }));
+
+    const RectI halfWindow(0, 0, kWidth / 2, kHeight / 2);
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(grades.back(), &run, &error, RectI(0, 0, kWidth, kHeight), 1)) << error;
+    RenderScheduler::pruneBehindCacheHits(run.graph, run.context);
+    const int middle = taskOf(run.graph, grades[1]);
+    ASSERT_GE(middle, 0);
+    ASSERT_EQ(0u, run.graph.tasks[middle].cacheMipmapLevel) << "the middle Grade does not render at full scale";
+    EXPECT_TRUE(run.graph.tasks[middle].servedFromCache);
+    EXPECT_EQ(EffectInstance::OutputCacheTier::Device, run.graph.tasks[middle].servedTier);
+    const ImageKey halfKey = outputKey(run.graph, grades[1]);
+    EXPECT_FALSE(bool(tier->find(halfKey))) << "a half-scale entry already exists, which proves nothing";
+    placeOnGpu(&run, grades);
+    ASSERT_TRUE(render(&run));
+
+    EXPECT_EQ(0, renderRoICallsOf(run, grades[0]));
+    EXPECT_EQ(0, renderRoICallsOf(run, grades[1]));
+    EXPECT_EQ(0, run.stats->getUploadCount()) << "the middle Grade went through the host";
+    EXPECT_EQ(1, gpuRunsOf(run, grades.back()));
+    EXPECT_TRUE(bool(tier->find(halfKey))) << "the downscaled entry is not in the device tier";
+    expectReleased(run);
+    appPTR->clearAllCaches();
+    expectMatchesCpu(grades.back(), run, halfWindow, 1);
 }
 
 // Grade -> Switch -> default Grade -> Blur -> CPU Invert: the Switch and the default Grade are identities, which join

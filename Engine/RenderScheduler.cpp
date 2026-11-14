@@ -73,6 +73,13 @@
 #include "Engine/TLSHolder.h"
 #include "Global/FloatingPointExceptions.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/CacheEntry.h"
+#include "Engine/Gpu/GpuDownscale.h"
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 FrameFuture::FrameFuture()
@@ -1377,10 +1384,106 @@ consumerDevices(const FrameGraph& graph,
     }
 }
 
+#ifdef NATRON_HAVE_GPU
+/**
+ * @brief For a task the device tier holds layer of only at a finer level: that entry box-downscaled on the device to
+ * the task's level, over its renderedRoI, and cached in the tier under exact, the key the task's level is looked up by.
+ * Null when no finer entry holds all of what the downscale reads, or the downscale cannot be made.
+ **/
+CacheDeviceEntryPtr
+downscaleFinerDeviceEntry(CacheDeviceTier& tier,
+                          const ImageKey& base,
+                          const ImageKey& exact,
+                          const FrameGraph::Task& task,
+                          const ImageLayerDesc& layer,
+                          const RenderStatsPtr& stats)
+{
+    gpu::GpuRuntime* runtime = tier.runtime();
+    const unsigned int level = task.key.mipmapLevel;
+    if (!runtime || (level == 0) || task.renderedRoI.isNull()) {
+        return CacheDeviceEntryPtr();
+    }
+    const std::uint64_t generation = CacheDeviceTier::purgeGeneration();
+    for (unsigned int finer = level; finer-- > 0;) {
+        const CacheDeviceEntryPtr source = tier.findServing(base.forEntry(finer, layer, eImageBitDepthFloat));
+        if (!source) {
+            continue;
+        }
+        const GpuDeviceImagePtr& image = source->image();
+        const GpuImageLayout& from = image->layout();
+        if ((image->runtime() != runtime) || (from.mipmapLevel != finer) || (from.layer.getChannels() != layer.getChannels())) {
+            continue;
+        }
+        const unsigned int levels = level - finer;
+        const RectI read = task.renderedRoI.upscalePowerOfTwo(levels).intersect(from.rod.toPixelEnclosing(finer, from.par));
+        if (read.isNull() || !from.bounds.contains(read)) {
+            continue;
+        }
+        std::list<RectI> unrendered;
+        source->header()->bitmap.minimalNonMarkedRects(read, unrendered);
+        if (!unrendered.empty()) {
+            continue;
+        }
+
+        GpuImageLayout layout = from;
+        layout.bounds = task.renderedRoI;
+        layout.mipmapLevel = level;
+        gpu::GpuBufferHandle handle;
+        if (!runtime->acquire(layout.deviceBytes(), handle)) {
+            return CacheDeviceEntryPtr();
+        }
+        std::unique_ptr<gpu::GpuRecordContext> recorder;
+        if (!runtime->newRecordContext(recorder) || !recorder) {
+            return CacheDeviceEntryPtr();
+        }
+        gpu::GpuBuffer* sourceBuffer = image->pin();
+        if (!sourceBuffer) {
+            continue;
+        }
+        gpu::GpuDownscaleView src;
+        src.buffer = sourceBuffer;
+        src.bounds = { from.bounds.x1, from.bounds.y1, from.bounds.x2, from.bounds.y2 };
+        src.strideFloats = (std::uint32_t)(from.bounds.width() * from.nComps());
+        src.nComps = (std::uint32_t)from.nComps();
+        gpu::GpuDownscaleView dst;
+        dst.buffer = &handle.buffer();
+        dst.bounds = { layout.bounds.x1, layout.bounds.y1, layout.bounds.x2, layout.bounds.y2 };
+        dst.strideFloats = (std::uint32_t)(layout.bounds.width() * layout.nComps());
+        dst.nComps = (std::uint32_t)layout.nComps();
+        gpu::GpuStatus status = gpu::recordMipDownscale(*recorder, src, dst, dst.bounds, levels);
+        if (status) {
+            status = recorder->submitAndWait();
+        }
+        image->unpin();
+        if (!status) {
+            runtime->note(status);
+
+            return CacheDeviceEntryPtr();
+        }
+
+        const GpuDeviceImagePtr downscaled = GpuDeviceImage::create(*runtime, handle, layout, stats);
+        if (!downscaled) {
+            return CacheDeviceEntryPtr();
+        }
+        const CacheEntryHeaderPtr header = std::make_shared<CacheEntryHeader>();
+        header->key = std::make_shared<const ImageKey>(exact);
+        header->bounds = layout.bounds;
+        header->bitmap.initialize(layout.bounds);
+        header->bitmap.setTo1();
+        header->recomputeCostNs.store(source->header()->recomputeCostNs.load());
+
+        return tier.insert(exact, downscaled, header, std::function<void()>(), generation);
+    }
+
+    return CacheDeviceEntryPtr();
+} // downscaleFinerDeviceEntry
+#endif // NATRON_HAVE_GPU
+
 /**
  * @brief Gives the task the device tier's entries of its layers without rendering it: as device layers when a region
- * reads them, which it then does in place, and otherwise moved to the host tier as planes. False, with both maps left
- * empty, when an entry left the tier or the device was lost since the plan, so that the task renders instead.
+ * reads them, which it then does in place, and otherwise moved to the host tier as planes. A layer the tier holds only
+ * at a finer level is downscaled on the device first. False, with both maps left empty, when an entry left the tier or
+ * the device was lost since the plan, so that the task renders instead.
  **/
 bool
 serveFromDeviceTier(const FrameRenderContext& context,
@@ -1404,7 +1507,11 @@ serveFromDeviceTier(const FrameRenderContext& context,
 
     std::map<ImageLayerDesc, CacheDeviceEntryPtr> entries;
     for (const ImageLayerDesc& layer : task.components) {
-        const CacheDeviceEntryPtr entry = tier->findServing(base.forEntry(task.key.mipmapLevel, layer, eImageBitDepthFloat));
+        const ImageKey exact = base.forEntry(task.key.mipmapLevel, layer, eImageBitDepthFloat);
+        CacheDeviceEntryPtr entry = tier->findServing(exact);
+        if (!entry) {
+            entry = downscaleFinerDeviceEntry(*tier, base, exact, task, layer, context.getStats());
+        }
         if (!entry) {
             return false;
         }

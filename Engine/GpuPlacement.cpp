@@ -295,17 +295,23 @@ judgeByWeight(const FrameGraph& graph,
     return accepted ? 1. : -1.;
 }
 
+// A region downscales a full-scale render on the device only where the request pass put the task's inputs at level 0,
+// which it does for an effect pulling them at scale one; any other one would read inputs at the task's own level.
 bool
 isDownscaleUnsupported(const FrameGraph::Task& task,
                        const NativeEffectBase& native)
 {
-    // An effect pulling full-scale inputs that renders at the task's level reads its input tasks, which the request
-    // pass put at level 0, through getGpuInputRoI() at its own scale; one rendering at full scale would need a device
-    // downscale of its output.
-    return (task.key.mipmapLevel != 0) && (native.supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
+    return gpuRendersFullScale(task, native) && !native.pullsInputsAtScaleOne();
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+gpuRendersFullScale(const FrameGraph::Task& task,
+                    const EffectInstance& effect)
+{
+    return (task.key.mipmapLevel != 0) && (effect.supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
+}
 
 double
 taskPixelCount(const FrameGraph::Task& task)
@@ -717,7 +723,7 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
 
     query->time = task.key.time;
     query->view = task.key.view;
-    query->mappedScale = RenderScale::fromMipmapLevel(task.key.mipmapLevel);
+    query->mappedScale = RenderScale::fromMipmapLevel(gpuRendersFullScale(task, *native) ? 0 : task.key.mipmapLevel);
     query->plane = plane;
     query->nComps = plane.getNumComponents();
     query->bitDepth = task.bitdepth;

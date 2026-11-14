@@ -199,6 +199,38 @@ TEST_F(NativeRawChainGpuTest, DevelopChainAtHalfScaleIsOneResidentRegion)
                                    << result.gpu[diff.firstMismatchIndex] << "), the worst by " << diff.worstAbsolute;
 }
 
+// Below 100% with Zoomed-Out Demosaic at Full, the demosaic renders at full scale and the region box-downscales it on the
+// device, so the chain still runs as one region uploading the mosaic and downloading the image once, within the chain's
+// bound of the CPU's full-scale demosaic downscaled.
+TEST_F(NativeRawChainGpuTest, FullDemosaicAtHalfScaleIsOneResidentRegion)
+{
+    KnobChoicePtr preference = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("zoomedOutDemosaic");
+    ASSERT_TRUE(bool(preference));
+    const int saved = preference->getValue();
+    preference->setValue(1);
+    const Chain c = createChain(eRawHighlightsModeClip);
+    ASSERT_TRUE(c.read && c.prepare && c.temperature && c.highlights && c.demosaic && c.inputColor);
+    EXPECT_NE(EffectInstance::eSupportsYes, c.demosaic->getEffectInstance()->supportsRenderScaleMaybe());
+
+    const EndToEndResult result = renderEndToEnd(c.develop(), c.inputColor, RectI(100, 75, 132, 99), kTime, GpuContextReady(), GpuFrameDone(), 1);
+    preference->setValue(saved);
+    if (result.skipped) {
+        return;
+    }
+    ASSERT_TRUE(result.ok) << result.error;
+    ASSERT_EQ(1u, result.regions.size());
+    for (const NodePtr& node : c.develop()) {
+        EXPECT_TRUE(result.ranInRegion(node)) << node->getScriptName_mt_safe() << " is not in the region";
+    }
+    EXPECT_FALSE(result.ranInRegion(c.read));
+    EXPECT_EQ(1, result.uploads);
+    EXPECT_EQ(1, result.downloads);
+    ASSERT_EQ(result.cpu.size(), result.gpu.size());
+    const ImageDiff diff = compareImages(result.cpu, result.gpu, kChainGpuTolerance);
+    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << " (cpu " << result.cpu[diff.firstMismatchIndex] << ", gpu "
+                                   << result.gpu[diff.firstMismatchIndex] << "), the worst by " << diff.worstAbsolute;
+}
+
 // With Inpaint Opposed, which has no GPU path, the raw run stays whole on the CPU: only
 // RawInputColor, which reads the image, goes to the device.
 TEST_F(NativeRawChainGpuTest, AChainWithACpuOpKeepsItsRawRunOnTheCpu)

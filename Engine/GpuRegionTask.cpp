@@ -69,6 +69,7 @@
 #include "Engine/TLSHolder.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuDownscale.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
 
@@ -252,6 +253,20 @@ viewOf(gpu::GpuBuffer* buffer,
     return view;
 }
 
+gpu::GpuDownscaleView
+downscaleViewOf(const GpuImageView& view)
+{
+    gpu::GpuDownscaleView out;
+
+    out.buffer = view.buffer;
+    out.offsetFloats = view.byteOffset / sizeof(float);
+    out.bounds = { view.bounds.x1, view.bounds.y1, view.bounds.x2, view.bounds.y2 };
+    out.strideFloats = (std::uint32_t)view.rowStrideFloats;
+    out.nComps = (std::uint32_t)view.nComps;
+
+    return out;
+}
+
 /**
  * @brief One image the region holds on the device: an external input, or what a member writes. An identity member
  * shares the slot of its input.
@@ -354,6 +369,11 @@ struct Member {
 
     // What the member renders when its output slot is grown from the device tier; null for the task's renderedRoI.
     RectI renderRect;
+
+    // For a task gpuRendersFullScale(): the level-0 slot the effect renders fullRect of, which is then box-downscaled
+    // into outSlot at the task's level. Only that downscale reads it.
+    int fullSlot = -1;
+    RectI fullRect;
 };
 
 /**
@@ -604,7 +624,8 @@ private:
 
     GpuImageLayout layoutOf(const FrameGraph::Task& task,
                             const ImageLayerDesc& layer,
-                            const RectI& bounds) const
+                            const RectI& bounds,
+                            unsigned int mipmapLevel) const
     {
         GpuImageLayout layout;
         const EffectInstancePtr effect = task.key.node->getEffectInstance();
@@ -614,7 +635,7 @@ private:
         layout.layer = layer;
         layout.rod = request ? request->globalData.rod : RectD();
         layout.bounds = bounds;
-        layout.mipmapLevel = task.key.mipmapLevel;
+        layout.mipmapLevel = mipmapLevel;
         const ParallelRenderArgsPtr frameArgs = _context->getArgs(nodeKey);
         const NodeMetadataConstPtr metadata = effect ? effect->getRenderMetadata(frameArgs, task.key.time, task.key.view) : NodeMetadataConstPtr();
         layout.par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
@@ -628,7 +649,7 @@ private:
                               task.key.view,
                               1.,
                               frameArgs && frameArgs->draftMode,
-                              (task.key.mipmapLevel == 0) && !(effect && effect->pullsInputsAtScaleOne()));
+                              (mipmapLevel == 0) && !(effect && effect->pullsInputsAtScaleOne()));
 
         return layout;
     }
@@ -745,6 +766,10 @@ private:
     // would be read in may be one its task never renders.
     const RectI& renderRectOf(const Member& member) const
     {
+        if (member.fullSlot >= 0) {
+            return member.fullRect;
+        }
+
         return member.renderRect.isNull() ? _graph.tasks[member.task].renderedRoI : member.renderRect;
     }
 
@@ -810,6 +835,47 @@ private:
         return false;
 #endif
     } // growFromDeviceTier
+
+    /**
+     * @brief Gives member, of a task gpuRendersFullScale(), the level-0 slot it renders into: the pixels of the level-0
+     * image that the box downscale to out, its output slot's layout, reads.
+     **/
+    bool planFullScale(Member* member,
+                       const GpuImageLayout& out)
+    {
+        const FrameGraph::Task& task = _graph.tasks[member->task];
+        RectI full = task.renderedRoI.upscalePowerOfTwo(task.key.mipmapLevel);
+        if (!out.rod.isNull()) {
+            full = full.intersect(out.rod.toPixelEnclosing(0, out.par));
+        }
+        if (full.isNull()) {
+            return fail(member->task, "the task renders an empty window at full scale");
+        }
+        Slot fullSlot;
+        fullSlot.layout = layoutOf(task, member->plane, full, 0);
+        _slots.push_back(fullSlot);
+        member->fullSlot = (int)_slots.size() - 1;
+        member->fullRect = full;
+
+        return true;
+    }
+
+    // Records the box downscale of the member's level-0 render into rect of its output slot, after a barrier.
+    bool recordFullScaleDownscale(const Member& member,
+                                  gpu::GpuRecordContext& recorder,
+                                  const RectI& rect)
+    {
+        const Slot& full = _slots[member.fullSlot];
+        const Slot& out = _slots[member.outSlot];
+        recorder.computeBarrier();
+        const gpu::GpuStatus status = gpu::recordMipDownscale(recorder, downscaleViewOf(full.view), downscaleViewOf(out.view), { rect.x1, rect.y1, rect.x2, rect.y2 },
+                                                              out.layout.mipmapLevel - full.layout.mipmapLevel);
+        if (!status) {
+            return failGpu(member.task, "cannot downscale the full-scale render", status);
+        }
+
+        return true;
+    }
 
     // The copies bringing the cached part of a grown slot into its buffer, row by row unless both share their width.
     static std::vector<VkBufferCopy> cachedPartCopies(const Slot& slot)
@@ -1058,9 +1124,7 @@ private:
             if (!makeGpuTaskPlanes(task, *_context, &planes, &refusal)) {
                 return fail(taskIndex, refusal.empty() ? std::string("the node cannot render these settings on the GPU") : refusal);
             }
-            if ((task.key.mipmapLevel != 0) && (effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes)) {
-                return fail(taskIndex, "the node renders at full scale");
-            }
+            const bool fullScale = gpuRendersFullScale(task, *effect);
             if (task.renderedRoI.isNull()) {
                 return fail(taskIndex, "the task renders an empty window");
             }
@@ -1089,8 +1153,16 @@ private:
                 member.query = plane.query;
                 member.contextArgs = contextArgs;
                 Slot out;
-                out.layout = layoutOf(task, plane.plane, task.renderedRoI);
-                if (!growFromDeviceTier(&member, &out) && task.servedFromCache) {
+                out.layout = layoutOf(task, plane.plane, task.renderedRoI, task.key.mipmapLevel);
+                if (fullScale) {
+                    // Only the part of a partial hit at the task's level is cached, and no downscale renders less.
+                    if (task.servedFromCache) {
+                        return fail(taskIndex, "the plan let go of inputs of a node rendering at full scale");
+                    }
+                    if (!planFullScale(&member, out.layout)) {
+                        return false;
+                    }
+                } else if (!growFromDeviceTier(&member, &out) && task.servedFromCache) {
                     return fail(taskIndex, (_deviceGrowth != DeviceGrowth::None) ? "the device tier no longer holds the part of the output whose inputs the plan let go" : "a strip records an output grown from the device tier whole only, and the plan let go of inputs the rest of it reads");
                 }
                 if (!planInputs(edges, &member)) {
@@ -1100,7 +1172,16 @@ private:
 
                     return false;
                 }
+                for (int slot : member.inputSlots) {
+                    if (fullScale && (slot >= 0) && (_slots[slot].layout.mipmapLevel != 0)) {
+                        return fail(taskIndex, "the node renders at full scale from an input not at full scale");
+                    }
+                }
                 out.producer = (int)_members.size();
+                if (fullScale) {
+                    _slots[member.fullSlot].producer = out.producer;
+                    _slots[member.fullSlot].lastRead = out.producer;
+                }
                 _slots.push_back(out);
                 member.outSlot = (int)_slots.size() - 1;
                 addMember((int)i, member);
@@ -1193,7 +1274,7 @@ private:
             _report->renderedRects.assign(_region.members.size(), RectI());
             for (const Member& member : _members) {
                 if (!member.identity) {
-                    _report->renderedRects[_position[member.task]].merge(renderRectOf(member));
+                    _report->renderedRects[_position[member.task]].merge((member.fullSlot >= 0) ? _graph.tasks[member.task].renderedRoI : renderRectOf(member));
                 }
             }
         }
@@ -2119,6 +2200,13 @@ private:
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
                 out.view = viewOf(&out.handle.buffer(), out.layout);
+                Slot& target = (member.fullSlot >= 0) ? _slots[member.fullSlot] : out;
+                if (member.fullSlot >= 0) {
+                    if (!acquireBuffer(target.layout.deviceBytes(), member.task, &target.handle)) {
+                        return EffectInstance::eRenderRoIRetCodeFailed;
+                    }
+                    target.view = viewOf(&target.handle.buffer(), target.layout);
+                }
 
                 if (out.cachedPart) {
                     // The union of the entry's bounds and the RoI has corners neither covers, which the download to the
@@ -2149,7 +2237,7 @@ private:
 
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
-                args.output = out.view;
+                args.output = target.view;
                 StatusEnum status = eStatusFailed;
                 try {
                     const ContextFrameArgsScope contextScope(member.contextArgs ? member.effect->shared_from_this() : EffectInstancePtr(), member.contextArgs);
@@ -2165,6 +2253,9 @@ private:
                 if (status != eStatusOK) {
                     failRecording(member.task, recorder);
 
+                    return EffectInstance::eRenderRoIRetCodeFailed;
+                }
+                if ((member.fullSlot >= 0) && !recordFullScaleDownscale(member, recorder, out.layout.bounds)) {
                     return EffectInstance::eRenderRoIRetCodeFailed;
                 }
                 if (segment.timed) {
@@ -2348,7 +2439,7 @@ private:
                 continue;
             }
             GpuStripMember stripMember;
-            stripMember.outSlot = member.outSlot;
+            stripMember.outSlot = (member.fullSlot >= 0) ? member.fullSlot : member.outSlot;
             stripMember.inputSlots = member.inputSlots;
             NativeEffectBase* effect = member.effect;
             const RenderScale scale = member.query.mappedScale;
@@ -2363,6 +2454,16 @@ private:
                 return effect->getGpuInputRoI(inputOfSlot[k], time, view, rect, scale);
             };
             graph.members.push_back(stripMember);
+            if (member.fullSlot >= 0) {
+                GpuStripMember downscale;
+                downscale.outSlot = member.outSlot;
+                downscale.inputSlots.push_back(member.fullSlot);
+                const unsigned int levels = _slots[member.outSlot].layout.mipmapLevel;
+                downscale.inputRoI = [levels](int, const RectI& rect) {
+                    return rect.upscalePowerOfTwo(levels);
+                };
+                graph.members.push_back(downscale);
+            }
         }
 
         return graph;
@@ -2938,16 +3039,30 @@ private:
             if (member.identity || strip.rects[member.outSlot].isNull()) {
                 continue;
             }
-            const RectI& rect = strip.rects[member.outSlot];
+            const RectI& outRect = strip.rects[member.outSlot];
+            const int targetSlot = (member.fullSlot >= 0) ? member.fullSlot : member.outSlot;
+            const RectI& rect = strip.rects[targetSlot];
+            if (rect.isNull()) {
+                fail(member.task, "a strip of its full-scale render is empty");
+
+                return EffectInstance::eRenderRoIRetCodeFailed;
+            }
             if (!segment->empty()) {
                 recorder.computeBarrier();
             }
             const Clock::time_point recordBegin = Clock::now();
             Slot& out = _slots[member.outSlot];
-            if (!acquireBuffer(rowBytes(out) * (std::size_t)rect.height(), member.task, &out.handle)) {
+            if (!acquireBuffer(rowBytes(out) * (std::size_t)outRect.height(), member.task, &out.handle)) {
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
-            out.view = stripView(&out.handle.buffer(), out, rect);
+            out.view = stripView(&out.handle.buffer(), out, outRect);
+            Slot& target = _slots[targetSlot];
+            if (member.fullSlot >= 0) {
+                if (!acquireBuffer(rowBytes(target) * (std::size_t)rect.height(), member.task, &target.handle)) {
+                    return EffectInstance::eRenderRoIRetCodeFailed;
+                }
+                target.view = stripView(&target.handle.buffer(), target, rect);
+            }
 
             GpuRenderArgs args(recorder);
             args.query = member.query;
@@ -2957,7 +3072,7 @@ private:
 
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
-            args.output = out.view;
+            args.output = target.view;
             StatusEnum status = eStatusFailed;
             try {
                 const ContextFrameArgsScope contextScope(member.contextArgs ? member.effect->shared_from_this() : EffectInstancePtr(), member.contextArgs);
@@ -2973,6 +3088,9 @@ private:
             if (status != eStatusOK) {
                 failRecording(member.task, recorder);
 
+                return EffectInstance::eRenderRoIRetCodeFailed;
+            }
+            if ((member.fullSlot >= 0) && !recordFullScaleDownscale(member, recorder, outRect)) {
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
             if (stampPool) {

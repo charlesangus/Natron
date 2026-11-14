@@ -932,11 +932,10 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
                 if (pinsOutput && (image->getStorageMode() == eStorageModeGLTex)) {
                     continue;
                 }
-                if ((candidate._mipmapLevel == level) || (image->getStorageMode() == eStorageModeRAM)) {
-                    entry = image;
+                // A finer device entry serves too: the scheduler downscales it on the device.
+                entry = image;
 
-                    return true;
-                }
+                return true;
             }
 
             return false;

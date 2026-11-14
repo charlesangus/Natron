@@ -47,6 +47,7 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     filename = usd.getParam("filename")
     require(filename is not None, "USDRead has a filename parameter")
     filename.setValue(scene_path)

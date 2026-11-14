@@ -84,6 +84,12 @@ public:
     bool sync(const ScenePayload& payload);
 
     /**
+     * @brief Whether sync(payload) would edit nothing: the stage composes payload's layers and
+     * metadata already. Takes no lock of the stage's and edits nothing.
+     **/
+    bool isSyncedTo(const ScenePayload& payload) const;
+
+    /**
      * @brief How many of payload's layers, from the weakest up, are the ones already applied, by
      * identity. A sync to a payload sharing a longer base touches less.
      **/

@@ -33,6 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/ScenePayload.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
@@ -45,6 +46,15 @@
 #define kUSDReadParamMatchUpAxis "matchUpAxis"
 #define kUSDReadParamMatchUnits "matchUnits"
 #define kUSDReadParamUseFileMetrics "useFileMetrics"
+#define kUSDReadParamInitialDraw "initialDraw"
+#define kUSDReadParamLevels "levels"
+#define kUSDReadParamToKind "toKind"
+
+#define kUSDReadInitialDrawBBox "bbox"
+#define kUSDReadInitialDrawLevels "levels"
+#define kUSDReadInitialDrawToKind "toKind"
+#define kUSDReadInitialDrawFull "full"
+#define kUSDReadInitialDrawFullLoad "fullLoad"
 
 NATRON_NAMESPACE_ENTER
 
@@ -63,6 +73,10 @@ struct SceneLayerEdit;
  * Match Project Up Axis and Match Project Units convert the file to the project's metrics with
  * corrective ops over its topmost xformable prims (SceneOps::authorMetricsCorrection); the layer
  * then carries the project's value for each aspect it converts.
+ *
+ * Initial Draw sets the draw rules its output carries for the file's top-level prims, the ones
+ * the file defines at its root. They tell viewers how to draw those prims; the layer and the
+ * stack hash are the same whatever they say.
  **/
 class USDRead
     : public NativeEffectBase {
@@ -131,6 +145,12 @@ private:
     // Use File's Metrics For Project is enabled while the File knob names a single file.
     void refreshUseFileMetricsEnabled();
 
+    // Levels and To Kind show only for the Initial Draw that reads them.
+    void refreshInitialDrawKnobs();
+
+    // The rules Initial Draw sets on the top-level prims of the file at path.
+    SceneDrawRules getInitialDrawRules(const std::string& path) const;
+
     // Sets the project's up axis and meters per unit to the file's, as one undo step.
     void useFileMetricsForProject();
 
@@ -160,6 +180,9 @@ private:
     KnobBoolWPtr _matchUpAxis;
     KnobBoolWPtr _matchUnits;
     KnobButtonWPtr _useFileMetrics;
+    KnobChoiceWPtr _initialDraw;
+    KnobIntWPtr _levels;
+    KnobChoiceWPtr _toKind;
 
     std::unique_ptr<Implementation> _imp;
 };

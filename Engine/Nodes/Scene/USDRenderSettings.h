@@ -49,6 +49,7 @@
 #define kUSDRenderSettingsParamDataWindow "dataWindow"
 #define kUSDRenderSettingsParamDisableMotionBlur "disableMotionBlur"
 #define kUSDRenderSettingsParamDisableDepthOfField "disableDepthOfField"
+#define kUSDRenderSettingsParamTransparentBackground "transparentBackground"
 #define kUSDRenderSettingsParamMakeActive "makeActive"
 #define kUSDRenderSettingsParamDefaultRenderer "defaultRenderer"
 
@@ -79,7 +80,7 @@ public:
         .label = "USDRenderSettings",
         .description = "Author a RenderSettings prim on the input scene: the camera, resolution, pixel aspect ratio, "
                        "how the camera's aperture is conformed to the resolution, the data window, motion blur and "
-                       "depth of field switches, the renderer that renders it by default, and each installed "
+                       "depth of field switches, whether the background is transparent, the renderer that renders it by default, and each installed "
                        "renderer's own settings on a page of its own. Make Active makes it the scene's render settings, "
                        "which USDRender renders with unless it is told otherwise.",
         .grouping = PLUGIN_GROUP_3D_USD,
@@ -162,6 +163,7 @@ private:
     KnobDoubleWPtr _dataWindow;
     KnobBoolWPtr _disableMotionBlur;
     KnobBoolWPtr _disableDepthOfField;
+    KnobBoolWPtr _transparentBackground;
     KnobBoolWPtr _makeActive;
     KnobChoiceWPtr _defaultRenderer;
     std::atomic<bool> _cameraMenuRefreshPending;

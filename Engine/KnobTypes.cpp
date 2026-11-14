@@ -789,8 +789,10 @@ KnobChoice::onInternalValueChanged(int dimension,
                                    double time,
                                    ViewSpec /*view*/)
 {
+    // -1 means every dimension, and a choice has only the first: read as -1 the index would be
+    // the out-of-range default 0, caching the first entry over the real one.
     // by-pass any master/slave link here
-    int index = getValueAtTime(time, dimension, ViewSpec::current(), true, true);
+    int index = getValueAtTime(time, (dimension < 0) ? 0 : dimension, ViewSpec::current(), true, true);
     {
         QMutexLocker k(&_entriesMutex);
 

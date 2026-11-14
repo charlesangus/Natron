@@ -50,6 +50,7 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
@@ -820,7 +821,8 @@ namespace {
                     const std::string& expression,
                     std::vector<PXR_NS::SdfPath>* paths,
                     std::string* errorMessage,
-                    const std::function<bool()>& cancelled)
+                    const std::function<bool()>& cancelled,
+                    const PXR_NS::Usd_PrimFlagsPredicate& predicate = PXR_NS::UsdPrimDefaultPredicate)
     {
         paths->clear();
         PXR_NS::SdfPathExpression parsed;
@@ -832,7 +834,7 @@ namespace {
         }
         const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
         PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
-        PXR_NS::UsdPrimRange range = stage->Traverse();
+        PXR_NS::UsdPrimRange range = stage->Traverse(predicate);
         std::size_t visited = 0;
         for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
             if (cancelled && ((++visited % kSelectCancelPollPrims) == 0) && cancelled()) {
@@ -871,6 +873,476 @@ selectPrims(const PXR_NS::UsdStageRefPtr& stage,
             const std::function<bool()>& cancelled)
 {
     return selectPrimsImpl(stage, expression, paths, errorMessage, cancelled);
+}
+
+namespace {
+    // Unlike a node's selection, a viewer's rules match an unloaded payload's own prim: it is
+    // what the viewer draws a box for.
+    const PXR_NS::Usd_PrimFlagsPredicate&
+    drawRulePredicate()
+    {
+        static const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
+
+        return predicate;
+    }
+
+    bool
+    isUnloadedPayload(const PXR_NS::UsdPrim& prim)
+    {
+        return prim.HasAuthoredPayloads() && !prim.IsLoaded();
+    }
+
+    // Whether path is root or below it.
+    bool
+    isAtOrBelowPath(const std::string& path,
+                    const std::string& root)
+    {
+        if (root == "/") {
+            return true;
+        }
+
+        return (path.size() >= root.size()) && (path.compare(0, root.size(), root) == 0) && ((path.size() == root.size()) || (path[root.size()] == '/'));
+    }
+
+    // Whether path is at or below one of roots, which are sorted with PathLess and none below another.
+    bool
+    isUnderAny(const std::string& path,
+               const std::vector<std::string>& roots)
+    {
+        // Each root's subtree follows it in that order, so only the last root not after path can hold it.
+        std::vector<std::string>::const_iterator it = std::upper_bound(roots.begin(), roots.end(), path, SceneDrawStates::PathLess());
+
+        return (it != roots.begin()) && isAtOrBelowPath(path, *(it - 1));
+    }
+
+    // Whether one of roots, sorted as for isUnderAny(), is strictly below path.
+    bool
+    hasRootBelow(const std::string& path,
+                 const std::vector<std::string>& roots)
+    {
+        std::vector<std::string>::const_iterator it = std::upper_bound(roots.begin(), roots.end(), path, SceneDrawStates::PathLess());
+
+        return (it != roots.end()) && isAtOrBelowPath(*it, path);
+    }
+
+    struct DrawRuleWalk {
+        const SceneDrawRule& rule;
+        PXR_NS::TfToken kind;
+        const std::function<bool()>& cancelled;
+        // The layers of the stage's own layer stack that are the rule's and that are not; both
+        // empty when the rule keeps to no layers.
+        std::vector<PXR_NS::SdfLayerHandle> ownLayers;
+        std::vector<PXR_NS::SdfLayerHandle> otherLayers;
+        std::set<const PXR_NS::SdfLayer*> otherLayerSet;
+        std::vector<std::pair<std::string, SceneDrawStateEnum>>* rows = nullptr;
+        std::size_t visited = 0;
+        bool stopped = false;
+
+        DrawRuleWalk(const SceneDrawRule& rule,
+                     const PXR_NS::UsdStageRefPtr& stage,
+                     const std::function<bool()>& cancelled)
+            : rule(rule)
+            , kind(rule.toKind)
+            , cancelled(cancelled)
+        {
+            if (rule.layers.empty() || !stage) {
+                return;
+            }
+            const std::set<std::string> own(rule.layers.begin(), rule.layers.end());
+            for (const PXR_NS::SdfLayerHandle& layer : stage->GetLayerStack(true)) {
+                if (!layer) {
+                    continue;
+                }
+                if (own.find(layer->GetIdentifier()) == own.end()) {
+                    otherLayers.push_back(layer);
+                    otherLayerSet.insert(PXR_NS::get_pointer(layer));
+                } else {
+                    ownLayers.push_back(layer);
+                }
+            }
+            if (otherLayers.empty()) {
+                ownLayers.clear();
+            }
+        }
+
+        bool walks() const
+        {
+            return (rule.levels > 0) || !rule.toKind.empty();
+        }
+
+        bool poll()
+        {
+            if (!stopped && cancelled && ((++visited % kSelectCancelPollPrims) == 0) && cancelled()) {
+                stopped = true;
+            }
+
+            return !stopped;
+        }
+
+        // Whether only the other layers of the stage's own stack author prim: a node other than the
+        // rule's added it, so its draw is not the rule's to set. A spec through a reference or a
+        // payload is in none of them, and keeps the prim.
+        bool addedElsewhere(const PXR_NS::UsdPrim& prim) const
+        {
+            if (otherLayers.empty()) {
+                return false;
+            }
+            const PXR_NS::SdfPath& path = prim.GetPath();
+            for (const PXR_NS::SdfLayerHandle& layer : ownLayers) {
+                if (layer->HasSpec(path)) {
+                    return false;
+                }
+            }
+            bool other = false;
+            for (const PXR_NS::SdfLayerHandle& layer : otherLayers) {
+                if (layer->HasSpec(path)) {
+                    other = true;
+                    break;
+                }
+            }
+            if (!other) {
+                return false;
+            }
+            // Composing the prim's stack is costly, so only a prim another layer authors gets it,
+            // to find whether a reference or a payload authors it too.
+            for (const PXR_NS::SdfPrimSpecHandle& spec : prim.GetPrimStack()) {
+                if (spec && (otherLayerSet.find(PXR_NS::get_pointer(spec->GetLayer())) == otherLayerSet.end())) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        void add(const PXR_NS::UsdPrim& prim,
+                 SceneDrawStateEnum state)
+        {
+            rows->emplace_back(prim.GetPath().GetString(), state);
+        }
+
+        void levels(const PXR_NS::UsdPrim& prim,
+                    int depth)
+        {
+            if (!poll()) {
+                return;
+            }
+            if ((depth >= rule.levels) || isUnloadedPayload(prim)) {
+                add(prim, rule.state);
+
+                return;
+            }
+            add(prim, eSceneDrawStateChildren);
+            for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(drawRulePredicate())) {
+                if (!addedElsewhere(child)) {
+                    levels(child, depth + 1);
+                }
+            }
+        }
+
+        // Whether prim or a prim below it took the rule's state.
+        bool toKind(const PXR_NS::UsdPrim& prim)
+        {
+            if (!poll()) {
+                return false;
+            }
+            PXR_NS::TfToken primKind;
+            if ((PXR_NS::UsdModelAPI(prim).GetKind(&primKind) && PXR_NS::KindRegistry::IsA(primKind, kind)) || isUnloadedPayload(prim)) {
+                add(prim, rule.state);
+
+                return true;
+            }
+            bool reached = false;
+            for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(drawRulePredicate())) {
+                if (!addedElsewhere(child)) {
+                    reached = toKind(child) || reached;
+                }
+            }
+            if (reached) {
+                // After the prims below: Children blocks nothing, so it switches none of them.
+                add(prim, eSceneDrawStateChildren);
+            }
+
+            return reached;
+        }
+
+        // Fills match's rows. False once cancelled.
+        bool match(const PXR_NS::UsdStageRefPtr& stage,
+                   SceneDrawRuleMatch* match)
+        {
+            match->rows.clear();
+            if (!walks()) {
+                match->rows.emplace_back(match->path, rule.state);
+
+                return true;
+            }
+            if (!stage) {
+                return true;
+            }
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(match->path));
+            if (!prim || !prim.IsActive() || !prim.IsDefined() || prim.IsAbstract()) {
+                return true;
+            }
+            rows = &match->rows;
+            if (rule.toKind.empty()) {
+                levels(prim, 0);
+            } else {
+                toKind(prim);
+            }
+            rows = nullptr;
+
+            return !stopped;
+        }
+    };
+
+    void
+    getLiteralPaths(const PrimSelector::Reach& reach,
+                    std::vector<std::string>* paths)
+    {
+        for (const std::string& literal : reach.literals) {
+            if (PXR_NS::SdfPath::IsValidPathString(literal) && PXR_NS::SdfPath(literal).IsAbsoluteRootOrPrimPath()) {
+                paths->push_back(literal);
+            }
+        }
+    }
+
+    /**
+     * @brief selectPrimsImpl() over the subtrees at roots only, sorted as for isUnderAny(). The
+     * ancestors of each root go through the search first, as a whole traversal would take them,
+     * since a pattern can match below a prim only because of what is above it.
+     **/
+    bool
+    selectPrimsUnder(const PXR_NS::UsdStageRefPtr& stage,
+                     const std::string& expression,
+                     const std::vector<std::string>& roots,
+                     std::vector<std::string>* paths,
+                     const std::function<bool()>& cancelled)
+    {
+        PXR_NS::SdfPathExpression parsed;
+        std::string error;
+        if (!stage || !parsePrimExpression(expression, &parsed, &error) || parsed.IsEmpty()) {
+            return true;
+        }
+        const PXR_NS::Usd_PrimFlagsPredicate& predicate = drawRulePredicate();
+        const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
+        std::size_t visited = 0;
+        for (const std::string& root : roots) {
+            const PXR_NS::SdfPath rootPath(root);
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(rootPath);
+            if (!prim || !predicate(prim)) {
+                continue;
+            }
+            PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+            bool pruned = false;
+            for (const PXR_NS::SdfPath& ancestor : rootPath.GetPrefixes()) {
+                if (ancestor == rootPath) {
+                    break;
+                }
+                // A whole traversal never reaches below a prim the predicate leaves out.
+                const PXR_NS::UsdPrim above = stage->GetPrimAtPath(ancestor);
+                if (!above || !predicate(above)) {
+                    pruned = true;
+                    break;
+                }
+                const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(ancestor);
+                if (!result.GetValue() && result.IsConstant()) {
+                    pruned = true;
+                    break;
+                }
+            }
+            if (pruned) {
+                continue;
+            }
+            PXR_NS::UsdPrimRange range(prim, predicate);
+            for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+                if (cancelled && ((++visited % kSelectCancelPollPrims) == 0) && cancelled()) {
+                    return false;
+                }
+                const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(it->GetPath());
+                if (result.GetValue()) {
+                    paths->push_back(it->GetPath().GetString());
+                } else if (result.IsConstant()) {
+                    it.PruneChildren();
+                }
+            }
+        }
+
+        return true;
+    }
+
+    void
+    sortMatches(std::vector<SceneDrawRuleMatch>* matches)
+    {
+        const SceneDrawStates::PathLess less;
+        std::sort(matches->begin(), matches->end(), [&less](const SceneDrawRuleMatch& a, const SceneDrawRuleMatch& b) { return less(a.path, b.path); });
+    }
+} // anonymous namespace
+
+bool
+drawRulesNeedStage(const SceneDrawRules& rules)
+{
+    for (const SceneDrawRule& rule : rules) {
+        if ((rule.levels > 0) || !rule.toKind.empty()) {
+            return true;
+        }
+        PrimSelector::Reach reach;
+        std::string error;
+        if (PrimSelector::getReach(rule.pattern, &reach, &error) && !reach.literalOnly) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+               const SceneDrawRules& rules,
+               SceneDrawRuleMatches* matches,
+               const std::function<bool()>& cancelled)
+{
+    matches->assign(rules.size(), std::vector<SceneDrawRuleMatch>());
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        const SceneDrawRule& rule = rules[i];
+        PrimSelector::Reach reach;
+        std::string error;
+        if (PrimSelector::isBlank(rule.pattern) || !PrimSelector::getReach(rule.pattern, &reach, &error)) {
+            // The node that set the rule reports its own bad pattern.
+            continue;
+        }
+        std::vector<std::string> paths;
+        if (reach.literalOnly) {
+            getLiteralPaths(reach, &paths);
+        } else if (stage) {
+            std::vector<PXR_NS::SdfPath> selected;
+            if (!selectPrimsImpl(stage, rule.pattern, &selected, &error, cancelled, drawRulePredicate())) {
+                if (cancelled && cancelled()) {
+                    matches->clear();
+
+                    return false;
+                }
+                continue;
+            }
+            paths.reserve(selected.size());
+            for (const PXR_NS::SdfPath& path : selected) {
+                paths.push_back(path.GetString());
+            }
+        }
+        DrawRuleWalk walk(rule, stage, cancelled);
+        std::vector<SceneDrawRuleMatch>& ruleMatches = (*matches)[i];
+        ruleMatches.resize(paths.size());
+        for (std::size_t j = 0; j < paths.size(); ++j) {
+            ruleMatches[j].path = paths[j];
+            if (!walk.match(stage, &ruleMatches[j])) {
+                matches->clear();
+
+                return false;
+            }
+        }
+        sortMatches(&ruleMatches);
+    }
+
+    return true;
+} // matchDrawRules
+
+bool
+rematchDrawRulesUnder(const PXR_NS::UsdStageRefPtr& stage,
+                      const SceneDrawRules& rules,
+                      const std::vector<std::string>& roots,
+                      SceneDrawRuleMatches* matches,
+                      const std::function<bool()>& cancelled)
+{
+    if (matches->size() != rules.size()) {
+        return matchDrawRules(stage, rules, matches, cancelled);
+    }
+    std::vector<std::string> covering;
+    {
+        // A changed load below a payload changes what the outermost payload above it composes.
+        std::vector<std::string> sorted = getLoadReach(stage, roots);
+        std::sort(sorted.begin(), sorted.end(), SceneDrawStates::PathLess());
+        for (const std::string& root : sorted) {
+            if (covering.empty() || !isAtOrBelowPath(root, covering.back())) {
+                covering.push_back(root);
+            }
+        }
+    }
+    if (covering.empty()) {
+        return true;
+    }
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        const SceneDrawRule& rule = rules[i];
+        PrimSelector::Reach reach;
+        std::string error;
+        if (PrimSelector::isBlank(rule.pattern) || !PrimSelector::getReach(rule.pattern, &reach, &error)) {
+            continue;
+        }
+        DrawRuleWalk walk(rule, stage, cancelled);
+        if (reach.literalOnly && !walk.walks()) {
+            // Plain paths, as they are, whatever the stage holds.
+            continue;
+        }
+        std::vector<SceneDrawRuleMatch>& ruleMatches = (*matches)[i];
+        std::vector<SceneDrawRuleMatch> next;
+        std::vector<std::string> redo;
+        next.reserve(ruleMatches.size());
+        for (SceneDrawRuleMatch& match : ruleMatches) {
+            const bool under = isUnderAny(match.path, covering);
+            if (under && !reach.literalOnly) {
+                // Selected again below, with what the subtree holds now.
+                continue;
+            }
+            if (under || (walk.walks() && hasRootBelow(match.path, covering))) {
+                redo.push_back(match.path);
+            } else {
+                next.push_back(std::move(match));
+            }
+        }
+        if (!reach.literalOnly && !selectPrimsUnder(stage, rule.pattern, covering, &redo, cancelled)) {
+            return false;
+        }
+        for (const std::string& path : redo) {
+            next.emplace_back();
+            next.back().path = path;
+            if (!walk.match(stage, &next.back())) {
+                return false;
+            }
+        }
+        sortMatches(&next);
+        ruleMatches.swap(next);
+    }
+
+    return true;
+} // rematchDrawRulesUnder
+
+void
+getDrawRulePolicy(const SceneDrawRules& rules,
+                  const SceneDrawRuleMatches& matches,
+                  SceneDrawStates::PolicyStates* policy)
+{
+    policy->clear();
+    for (std::size_t i = 0; (i < rules.size()) && (i < matches.size()); ++i) {
+        for (const SceneDrawRuleMatch& match : matches[i]) {
+            for (const std::pair<std::string, SceneDrawStateEnum>& row : match.rows) {
+                sceneAddDrawRuleMatch(row.first, row.second, rules[i].origin, policy);
+            }
+        }
+    }
+}
+
+bool
+matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+               const SceneDrawRules& rules,
+               SceneDrawStates::PolicyStates* policy,
+               const std::function<bool()>& cancelled)
+{
+    SceneDrawRuleMatches matches;
+    if (!matchDrawRules(stage, rules, &matches, cancelled)) {
+        policy->clear();
+
+        return false;
+    }
+    getDrawRulePolicy(rules, matches, policy);
+
+    return true;
 }
 
 PXR_NS::UsdStageLoadRules

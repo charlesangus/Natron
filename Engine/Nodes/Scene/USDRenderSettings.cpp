@@ -30,12 +30,15 @@
 
 #include <QMetaObject>
 
+#include <pxr/imaging/hd/tokens.h>
+
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
@@ -147,6 +150,18 @@ USDRenderSettings::initializeKnobs()
     disableDepthOfField->setAnimationEnabled(false);
     page->addKnob(disableDepthOfField);
     _disableDepthOfField = disableDepthOfField;
+
+    KnobBoolPtr transparentBackground = createKnob<KnobBool>(tr("Transparent Background"));
+    transparentBackground->setName(kUSDRenderSettingsParamTransparentBackground);
+    transparentBackground->setHintToolTip(tr("Hides the dome light and the world background from the camera, so the "
+                                             "background renders with zero alpha; the dome still lights the scene. "
+                                             "Authored as cycles:background:transparent for Cycles and "
+                                             "storm:domeLightCameraVisibility for Storm. Off authors neither, and each "
+                                             "renderer keeps its own default."));
+    transparentBackground->setDefaultValue(false);
+    transparentBackground->setAnimationEnabled(false);
+    page->addKnob(transparentBackground);
+    _transparentBackground = transparentBackground;
 
     KnobChoicePtr defaultRenderer = createKnob<KnobChoice>(tr("Default Renderer"));
     defaultRenderer->setName(kUSDRenderSettingsParamDefaultRenderer);
@@ -381,9 +396,10 @@ USDRenderSettings::authorLayer(const SceneLayerEdit& edit,
     KnobDoublePtr dataWindow = _dataWindow.lock();
     KnobBoolPtr disableMotionBlur = _disableMotionBlur.lock();
     KnobBoolPtr disableDepthOfField = _disableDepthOfField.lock();
+    KnobBoolPtr transparentBackground = _transparentBackground.lock();
     KnobChoicePtr renderer = _defaultRenderer.lock();
     KnobBoolPtr makeActive = _makeActive.lock();
-    if (!camera || !size || !par || !conformPolicy || !dataWindow || !disableMotionBlur || !disableDepthOfField || !renderer || !makeActive) {
+    if (!camera || !size || !par || !conformPolicy || !dataWindow || !disableMotionBlur || !disableDepthOfField || !transparentBackground || !renderer || !makeActive) {
         *errorMessage = tr("The node's knobs are gone.").toStdString();
 
         return false;
@@ -424,6 +440,26 @@ USDRenderSettings::authorLayer(const SceneLayerEdit& edit,
     }
     if (_settings && !_settings->author(settings.GetPrim(), errorMessage)) {
         return false;
+    }
+    // After the renderer pages, so that the switch wins over a Cycles page that authors the same attribute.
+    if (transparentBackground->getValue()) {
+        const struct {
+            const char* rendererId;
+            std::string key;
+            bool value;
+        } hidden[] = {
+            { kRenderDelegateCyclesId, "cycles:background:transparent", true },
+            { kRenderDelegateStormId, PXR_NS::HdRenderSettingsTokens->domeLightCameraVisibility.GetString(), false },
+        };
+        for (const auto& h : hidden) {
+            const std::string name = RenderSettingsPrim::attributeName(h.rendererId, h.key);
+            const PXR_NS::UsdAttribute attribute = settings.GetPrim().CreateAttribute(PXR_NS::TfToken(name), PXR_NS::SdfValueTypeNames->Bool, true);
+            if (!attribute || !attribute.Set(h.value)) {
+                *errorMessage = tr("USD could not author %1 on %2.").arg(QString::fromStdString(name), QString::fromStdString(primPath)).toStdString();
+
+                return false;
+            }
+        }
     }
     if (makeActive->getValue()) {
         stage->GetRootLayer()->SetField(PXR_NS::SdfPath::AbsoluteRootPath(), PXR_NS::UsdRenderTokens->renderSettingsPrimPath, primPath);

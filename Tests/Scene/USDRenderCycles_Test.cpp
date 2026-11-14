@@ -67,7 +67,9 @@
 #include "Engine/Nodes/Scene/CyclesSettings.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
@@ -85,6 +87,8 @@ const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles.usda";
 // Cycles 5.2's delegate does not make.
 const char* const kUnsupportedFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-unsupported.usda";
 const char* const kMdlOnlyFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-mdl-only.usda";
+// The cubes of kFixture under a blue dome light without a texture.
+const char* const kDomeFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-dome.usda";
 const float kCardDistance = 10.f;
 const char* const kCamera = "/World/Cam";
 const int kSize = 64;
@@ -672,6 +676,127 @@ TEST_F(USDRenderCyclesTest, LaterEngineFollowsASmallerThreadBudget)
     EXPECT_LE(cpu / wall, budget + 0.75) << cpu << " s of CPU over " << wall << " s on " << cores << " cores";
 }
 
+// The pixels of a and b, kSize x kSize rgba, that differ by more than kChannelTolerance in a channel.
+static std::size_t
+differingPixels(const std::vector<float>& a,
+                const std::vector<float>& b)
+{
+    std::size_t differing = 0;
+    const std::size_t pixels = std::min(a.size(), b.size()) / 4;
+    for (std::size_t p = 0; p < pixels; ++p) {
+        bool differs = false;
+        for (int k = 0; k < 4; ++k) {
+            differs = differs || !(std::fabs(a[p * 4 + k] - b[p * 4 + k]) <= kChannelTolerance);
+        }
+        differing += differs ? 1 : 0;
+    }
+
+    return differing;
+}
+
+// An engine that rendered the stage renders it again after an edit as a new engine does: Cycles
+// marks its buffers converged when the edit's reset cuts its render short, before it has rendered
+// a sample of the edited stage.
+TEST_F(USDRenderCyclesTest, EditedStageRendersAsWithAFreshEngine)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    HydraRender::releaseAllCpuEngines();
+    NodePtr reader;
+    NodePtr node = createGraph(&reader);
+    ASSERT_TRUE(bool(node));
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    ASSERT_TRUE(bool(transform));
+    connectNodes(reader, transform, 0, true);
+    KnobString* pattern = knob<KnobString>(transform, kUSDEditTransformParamPrimPattern);
+    KnobDouble* translate = knob<KnobDouble>(transform, kSceneParamTranslate);
+    ASSERT_TRUE(pattern && translate);
+    pattern->setValue(std::string("/World/Near"));
+
+    static const int reused = 0;
+    static const int fresh = 1;
+    HydraRender::Request request;
+    ASSERT_TRUE(cyclesRequest(transform, &reused, &request));
+    HydraRender::Result before;
+    std::string error;
+    const std::chrono::steady_clock::time_point firstStart = std::chrono::steady_clock::now();
+    ASSERT_TRUE(HydraRender::render(request, &before, &error)) << error;
+    const double firstWall = std::chrono::duration<double>(std::chrono::steady_clock::now() - firstStart).count();
+
+    // The near cube's front face, two units wide and nine from the camera, moves from the centre
+    // to centre on x = -1: (16, 32) was off it and is now on it, (40, 32) the other way round.
+    translate->setValue(-1., ViewSpec::all(), 0);
+    ASSERT_TRUE(cyclesRequest(transform, &reused, &request));
+    HydraRender::Result edited;
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    const std::chrono::steady_clock::time_point editedStart = std::chrono::steady_clock::now();
+    ASSERT_TRUE(HydraRender::render(request, &edited, &error)) << error;
+    const double editedWall = std::chrono::duration<double>(std::chrono::steady_clock::now() - editedStart).count();
+    // A restart that went unseen would have waited two seconds and made the engine again.
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    EXPECT_LT(editedWall, firstWall + 1.) << "the edited render took " << editedWall << " s, the first " << firstWall << " s";
+    request.owner = &fresh;
+    HydraRender::Result reference;
+    ASSERT_TRUE(HydraRender::render(request, &reference, &error)) << error;
+
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    ASSERT_EQ(pixels * 4, before.rgba.size());
+    ASSERT_EQ(pixels * 4, edited.rgba.size());
+    ASSERT_EQ(pixels * 4, reference.rgba.size());
+    const std::size_t movedOn = pixelIndex(16, kNearY);
+    const std::size_t movedOff = pixelIndex(40, kNearY);
+    EXPECT_EQ(0.f, before.rgba[movedOn * 4 + 3]);
+    EXPECT_NEAR(1.f, before.rgba[movedOff * 4 + 3], 1e-3f);
+
+    EXPECT_GT(edited.rgba[movedOn * 4] + edited.rgba[movedOn * 4 + 1] + edited.rgba[movedOn * 4 + 2], 0.05f);
+    EXPECT_NEAR(1.f, edited.rgba[movedOn * 4 + 3], 1e-3f);
+    EXPECT_EQ(0.f, edited.rgba[movedOff * 4 + 3]);
+    const std::size_t differing = differingPixels(edited.rgba, reference.rgba);
+    EXPECT_LE((double)differing, kDifferingFraction * (double)pixels) << differing << " of " << pixels << " pixels differ from a fresh engine's render";
+}
+
+// A stage with nothing authored in time, rendered again at another time and then as it was, shows
+// the delegate nothing new: the engine renders on, with no wait for a restart that never comes.
+TEST_F(USDRenderCyclesTest, UnchangedStageRendersAgainWithoutARestartWait)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    HydraRender::releaseAllCpuEngines();
+    NodePtr reader;
+    NodePtr node = createGraph(&reader);
+    ASSERT_TRUE(bool(node));
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(cyclesRequest(reader, &owner, &request));
+    HydraRender::Result first;
+    std::string error;
+    ASSERT_TRUE(HydraRender::render(request, &first, &error)) << error;
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    ASSERT_EQ(pixels * 4, first.rgba.size());
+
+    request.time = PXR_NS::UsdTimeCode(2.);
+    HydraRender::Result later;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(HydraRender::render(request, &later, &error)) << error;
+    const double laterWall = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    EXPECT_LT(laterWall, 1.) << "the render at another time took " << laterWall << " s";
+    ASSERT_EQ(pixels * 4, later.rgba.size());
+    EXPECT_EQ(0u, differingPixels(first.rgba, later.rgba));
+
+    HydraRender::Result again;
+    start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(HydraRender::render(request, &again, &error)) << error;
+    const double againWall = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    EXPECT_LT(againWall, 1.) << "the unchanged render took " << againWall << " s";
+    ASSERT_EQ(pixels * 4, again.rgba.size());
+    EXPECT_EQ(0u, differingPixels(later.rgba, again.rgba));
+}
+
 // Records rgba as the golden case when NATRON_GOLDEN_RECORD_DIR is set, otherwise compares it to the
 // recorded one within the tolerances above.
 static void
@@ -877,7 +1002,7 @@ cyclesReported(const NodePtr& node,
     return value;
 }
 
-// Moves an enabled int, float, bool or menu knob off its default.
+// Moves an enabled int, float, bool, menu or string knob off its default.
 bool
 nudgeCyclesKnob(KnobI* k)
 {
@@ -889,6 +1014,8 @@ nudgeCyclesKnob(KnobI* k)
         i->setValue(i->getDefaultValue(0) + 1);
     } else if (KnobDouble* d = dynamic_cast<KnobDouble*>(k)) {
         d->setValue(d->getDefaultValue(0) + 0.5);
+    } else if (KnobString* s = dynamic_cast<KnobString*>(k)) {
+        s->setValue(s->getDefaultValue(0) + "nudged");
     } else {
         return false;
     }
@@ -964,6 +1091,24 @@ cyclesScriptNames()
         { "cycles:integrator:volume_max_steps", "cyclesVolumeMaxSteps" },
         { "cycles:integrator:volume_ray_marching", "cyclesVolumeRayMarching" },
         { "cycles:integrator:volume_step_rate", "cyclesVolumeStepRate" },
+        { "cycles:background:lightgroup", "cyclesLightgroup" },
+        { "cycles:background:transparent", "cyclesTransparent" },
+        { "cycles:background:transparent_glass", "cyclesTransparentGlass" },
+        { "cycles:background:transparent_roughness_threshold", "cyclesTransparentRoughnessThreshold" },
+        { "cycles:background:use_shader", "cyclesUseShader" },
+        { "cycles:background:visibility", "cyclesVisibility" },
+        { "cycles:film:cryptomatte_depth", "cyclesCryptomatteDepth" },
+        { "cycles:film:cryptomatte_passes", "cyclesCryptomattePasses" },
+        { "cycles:film:denoising_pass_follow_reflections", "cyclesDenoisingPassFollowReflections" },
+        { "cycles:film:denoising_pass_use_albedo_roughness_weighting", "cyclesDenoisingPassUseAlbedoRoughnessWeighting" },
+        { "cycles:film:exposure", "cyclesExposure" },
+        { "cycles:film:filter_type", "cyclesFilterType" },
+        { "cycles:film:filter_width", "cyclesFilterWidth" },
+        { "cycles:film:mist_depth", "cyclesMistDepth" },
+        { "cycles:film:mist_falloff", "cyclesMistFalloff" },
+        { "cycles:film:mist_start", "cyclesMistStart" },
+        { "cycles:film:pass_alpha_threshold", "cyclesPassAlphaThreshold" },
+        { "cycles:film:use_approximate_shadow_catcher", "cyclesUseApproximateShadowCatcher" },
         { "cycles:sample_offset", "cyclesSampleOffset" },
         { "cycles:samples", "cyclesSamples" },
         { "cycles:time_limit", "cyclesTimeLimit" },
@@ -984,7 +1129,7 @@ cyclesLayout()
 {
     static const std::vector<CyclesGroupLayout> layout = {
         { "cyclesSampling", "cycles", true, { "cyclesSamples", "cyclesUseAdaptiveSampling", "cyclesAdaptiveThreshold", "cyclesAdaptiveMinSamples", "cyclesTimeLimit", "cyclesSeed" } },
-        { "cyclesDenoise", "cycles", true, { "cyclesUseDenoise", "cyclesDenoiserType", "cyclesDenoiserQuality", "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample", "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu" } },
+        { "cyclesDenoise", "cycles", true, { "cyclesUseDenoise", "cyclesDenoiserType", "cyclesDenoiserQuality", "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample", "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu", "cyclesDenoisingPassFollowReflections", "cyclesDenoisingPassUseAlbedoRoughnessWeighting" } },
         { "cyclesLightPaths", "cycles", true, { "cyclesBounces", "cyclesClamping", "cyclesCaustics", "cyclesFastGi" } },
         { "cyclesBounces", "cyclesLightPaths", false, { "cyclesMaxBounce", "cyclesMaxDiffuseBounce", "cyclesMaxGlossyBounce", "cyclesMaxTransmissionBounce", "cyclesMaxVolumeBounce", "cyclesTransparentMaxBounce" } },
         { "cyclesClamping", "cyclesLightPaths", false, { "cyclesSampleClampDirect", "cyclesSampleClampIndirect" } },
@@ -994,6 +1139,9 @@ cyclesLayout()
         { "cyclesVolumes", "cycles", false, { "cyclesVolumeRayMarching", "cyclesVolumeMaxSteps", "cyclesVolumeStepRate" } },
         { "cyclesPathGuiding", "cycles", false, { "cyclesUseGuiding", "cyclesDeterministicGuiding", "cyclesUseSurfaceGuiding", "cyclesSurfaceGuidingProbability", "cyclesUseVolumeGuiding", "cyclesVolumeGuidingProbability", "cyclesGuidingTrainingSamples", "cyclesUseGuidingDirectLight", "cyclesUseGuidingMisWeights", "cyclesGuidingDistributionType", "cyclesGuidingDirectionalSamplingType", "cyclesGuidingRoughnessThreshold" } },
         { "cyclesLightContributions", "cycles", false, { "cyclesUseDirectLight", "cyclesUseIndirectLight", "cyclesUseDiffuse", "cyclesUseGlossy", "cyclesUseTransmission", "cyclesUseEmission" } },
+        { "cyclesFilm", "cycles", false, { "cyclesExposure", "cyclesFilterType", "cyclesFilterWidth", "cyclesTransparent", "cyclesTransparentGlass", "cyclesTransparentRoughnessThreshold", "cyclesUseApproximateShadowCatcher" } },
+        { "cyclesPasses", "cycles", false, { "cyclesMistStart", "cyclesMistDepth", "cyclesMistFalloff", "cyclesCryptomattePasses", "cyclesCryptomatteDepth", "cyclesPassAlphaThreshold" } },
+        { "cyclesWorld", "cycles", false, { "cyclesUseShader", "cyclesVisibility", "cyclesLightgroup" } },
         { "cyclesAdvanced", "cycles", false, { "cyclesSamplingPattern", "cyclesScramblingDistance", "cyclesAaSamples", "cyclesMinBounce", "cyclesTransparentMinBounce", "cyclesMotionBlur", "cyclesUsePixelJitter", "cyclesUseCustomPixelJitterSample", "cyclesCustomPixelJitterSample", "cyclesSampleSubset" } },
         { "cyclesSampleSubset", "cyclesAdvanced", false, { "cyclesSampleOffset", "cyclesUseSampleSubset", "cyclesSampleSubsetOffset", "cyclesSampleSubsetLength" } },
     };
@@ -1100,6 +1248,7 @@ TEST_F(USDRenderCyclesTest, MenusStartOnTheDeclaredDefault)
         { "cycles:integrator:sampling_pattern", { 0, 1, 2, 4, 3 } },
         { "cycles:integrator:guiding_distribution_type", { 0, 1, 2 } },
         { "cycles:integrator:guiding_directional_sampling_type", { 0, 1, 2 } },
+        { "cycles:film:filter_type", { 0, 1, 2 } },
     };
 
     for (const RenderSettingsKnobs::CuratedSetting& c : CyclesSettings::curated().settings) {
@@ -1188,8 +1337,8 @@ TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
         "cycles:integrator:use_sample_subset",
         "cycles:integrator:sample_subset_offset",
         "cycles:integrator:sample_subset_length",
-        // A text knob, which the nudge does not move. The empty sample with both jitter switches
-        // nudged on is the case Cycles must survive.
+        // A text knob holding numbers, which the nudge would fill with words. The empty sample with
+        // both jitter switches nudged on is the case Cycles must survive.
         "cycles:integrator:custom_pixel_jitter_sample",
         // Its default is FLT_MAX, which adding 0.5 does not change, so it would never be sent.
         "cycles:integrator:ao_distance",
@@ -1247,14 +1396,88 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
     const std::vector<std::pair<std::string, std::string>> audit = settings->audit(kRenderDelegateCyclesId);
     EXPECT_FALSE(audit.empty());
     std::set<std::string> names;
+    std::set<std::string> setByNatron;
     std::map<std::string, std::string> reached;
     for (const std::pair<std::string, std::string>& reach : audit) {
         std::printf("[  AUDIT   ] Cycles %s -> %s\n", reach.first.c_str(), reach.second.empty() ? "UNREACHABLE" : reach.second.c_str());
         EXPECT_FALSE(reach.second.empty()) << reach.first;
-        if (reach.second != "(set by Natron)") {
-            EXPECT_TRUE(names.insert(reach.second).second) << reach.second << " reaches two settings";
+        if (reach.second == "(set by Natron)") {
+            setByNatron.insert(reach.first);
+            continue;
         }
+        EXPECT_TRUE(names.insert(reach.second).second) << reach.second << " reaches two settings";
         reached[reach.first] = reach.second;
     }
+    EXPECT_EQ(std::set<std::string>({ "cycles:film:display_pass", "cycles:film:show_active_pixels", "cycles:film:use_sample_count" }), setByNatron);
     EXPECT_EQ(cyclesScriptNames(), reached);
+}
+
+// Film and background settings reach the delegate like the integrator ones, and it reports them back
+// from the socket they name.
+TEST_F(USDRenderCyclesTest, FilmAndBackgroundSettingsReachTheDelegate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    const std::vector<std::string> keys = {
+        "cycles:film:exposure",
+        "cycles:film:filter_width",
+        "cycles:background:transparent_roughness_threshold",
+    };
+    for (const std::string& key : keys) {
+        KnobIPtr k = settings->knob(kRenderDelegateCyclesId, key);
+        ASSERT_TRUE(bool(k)) << key;
+        ASSERT_TRUE(nudgeCyclesKnob(k.get())) << key;
+    }
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes, true));
+    RenderSettingsKnobs::Values sent = settings->values(kRenderDelegateCyclesId);
+    for (const std::string& key : keys) {
+        ASSERT_EQ(1u, sent.count(key)) << key << " is not sent";
+        EXPECT_EQ(sent[key], cyclesReported(node, key)) << key << " sent " << RenderSettingsKnobs::valueText(sent[key]);
+    }
+}
+
+// Under a dome light Cycles renders the dome behind the scene; Transparent Background makes those
+// pixels transparent while the dome still lights the cubes as before.
+TEST_F(USDRenderCyclesTest, TransparentBackgroundHidesTheDomeOnly)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kDomeFixture);
+    ASSERT_TRUE(bool(node));
+    USDRenderSettings* settingsNode = RenderSettingsTestUtils::settingsOf(node);
+    ASSERT_TRUE(settingsNode != nullptr);
+    KnobBool* transparent = dynamic_cast<KnobBool*>(settingsNode->getKnobByName(kUSDRenderSettingsParamTransparentBackground).get());
+    ASSERT_TRUE(transparent != nullptr);
+    EXPECT_FALSE(transparent->getValue());
+
+    std::vector<RenderedPlane> opaque;
+    ASSERT_TRUE(renderAll(node, &opaque, true));
+    const std::size_t corner = pixelIndex(0, 0);
+    EXPECT_NEAR(1.f, opaque[0].pixels[corner * 4 + 3], 1e-3f);
+    EXPECT_GT(opaque[0].pixels[corner * 4 + 2], 0.05f) << "the dome is not behind the scene";
+
+    transparent->setValue(true);
+    std::vector<RenderedPlane> hidden;
+    ASSERT_TRUE(renderAll(node, &hidden, true));
+    EXPECT_EQ(PXR_NS::VtValue(true), cyclesReported(node, "cycles:background:transparent"));
+    EXPECT_EQ(0.f, hidden[0].pixels[corner * 4 + 3]);
+    EXPECT_EQ(0.f, hidden[0].pixels[pixelIndex(kSize - 1, kSize - 1) * 4 + 3]);
+
+    // The near cube's front face, two units wide, covers the middle eight pixels each way.
+    for (int y = kNearY - 4; y < kNearY + 4; ++y) {
+        for (int x = kNearX - 4; x < kNearX + 4; ++x) {
+            const std::size_t p = pixelIndex(x, y);
+            EXPECT_NEAR(1.f, hidden[0].pixels[p * 4 + 3], 1e-3f) << x << ", " << y;
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_NEAR(opaque[0].pixels[p * 4 + c], hidden[0].pixels[p * 4 + c], kChannelTolerance) << x << ", " << y << " channel " << c;
+            }
+        }
+    }
 }

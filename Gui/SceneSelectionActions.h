@@ -102,6 +102,22 @@ QString createBlocker(Gui* gui, const NodePtr& viewed);
 void createFromSelection(Gui* gui, const NodePtr& viewed, const QStringList& paths);
 
 /**
+ * @brief Why viewer's draw states can't be baked into a node now, or empty when they can.
+ **/
+QString bakeBlocker(ViewerTab* viewer);
+
+/**
+ * @brief Writes every draw state viewer's scene view sets into a USDExpandHierarchy, one rule
+ * naming each path literally, and clears them from the view, as one undo step. The node is the
+ * viewed node when that is a USDExpandHierarchy, else one directly below it, else a new one that
+ * takes the viewed node's place in every input the viewed node fed; the viewer then views it.
+ * Descendants' rules come before their ancestors', so that, as in the view, a box or hidden prim
+ * keeps the states below it without drawing them. When it can't, shows why in the status bar
+ * and returns false.
+ **/
+bool bakeToNode(Gui* gui, ViewerTab* viewer);
+
+/**
  * @brief Shows text in gui's status bar for a few seconds.
  **/
 void showHint(Gui* gui, const QString& text);

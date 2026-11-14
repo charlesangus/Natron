@@ -196,7 +196,7 @@ Before M53.P5.T4, merge the current tips of M233 - Live Node Textures, M52 - USD
   - verify: the script passes remotely; screenshots shared for sign-off.
   - size: M
 
-- [ ] M53.P6.T5 — Rename the node to USDTexturePaint
+- [x] M53.P6.T5 — Rename the node to USDTexturePaint
   - files: `Engine/Nodes/Scene/TexturePaint*` → `USDTexturePaint*` (and the View/Baker/Cache/Undo/Interact files as fits), plug-in registration, node doc, `Tests/Scene/TexturePaint*_Test.cpp`, `Tests/gui/m53_texture_paint*.py`, CMake lists
   - approach: rename the class, files, plug-in ID and label, node doc, gtests, GUI scripts, shortcuts and property names carrying the node name (e.g. `natronTexturePaintBaked`), and default bake paths, to `USDTexturePaint`. No backward compatibility (user). Design: `PLAN/DECISIONS/2026-11-14-native-geometry-texture-painting.md`.
   - verify: `rg -i 'texturepaint' Engine Tests Gui` finds only `USDTexturePaint` forms; the M53 gtests and both GUI scripts pass in the remote gate.
@@ -254,3 +254,4 @@ Before M53.P5.T4, merge the current tips of M233 - Live Node Textures, M52 - USD
 - 2026-11-14 — Release gate green on 6a04a2bf3 (ctest both legs, both GUI scripts). PR CI: debug ctest green apart from GraphScalingConnectTest timing out once in the legacy leg (slow-runner flake seen elsewhere; its rerun passed). F11 (with main's M398) merged in cleanly (9307816e6). Re-gating, and review round 2 (final) running.
 - 2026-11-14 — Review round 2 (final, Codex): 2 majors, fixed (f24e9d2e6). Bake rollback records each target's identity right after its rename and, on failure or undo, restores only targets the bake wrote, keeping targets edited mid-bake (their prior content goes to `.pre-bake`); the end-of-bake reseal that absorbed mid-bake edits is gone. `RotoCurveContext::addLayer` takes the layer-list lock (every writer now does). Final gate running; merge into F11 on green.
 - 2026-11-14 — **Node renamed to USDTexturePaint (user, inbox):** texture painting splits SOP/LOP-style into `USDTexturePaint` (scene side, this node) and a later `GeoTexturePaint` (M427 - Native Geometry Texture Painting); added as P6.T5 before the final gate.
+- 2026-11-14 — P6.T5 done: plug-in ID and label `USDTexturePaint` (view node `USDTexturePaintView`), property prefix `usdTexturePaint`, GUI scripts `m53_usd_texture_paint*.py`. The OCIO `texture_paint` role and hyphenated fixture names stay. Final gate running.

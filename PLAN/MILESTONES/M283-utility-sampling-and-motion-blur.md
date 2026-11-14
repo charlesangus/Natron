@@ -49,19 +49,19 @@ milestone provides the time sampling they are measured from.
 
 ## Phase 283.2: Motion blur
 
-- [ ] M283.P2.T1 — Shutter in the request and settings
+- [x] M283.P2.T1 — Shutter in the request and settings
   - files: `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, `Engine/Nodes/Scene/USDRender.cpp`, `Engine/Nodes/Scene/Utility/UtilityRenderDelegate.cpp`, `Tests/Scene/USDRender_Test.cpp`
   - approach: add the shutter interval to `HydraRender::Request` (from the camera, overridden by the delegate settings), pass it to the engine so Hydra serves interval samples, hash it into the render key. Register Shutter, Shutter Offset, Shutter Segments and the three toggles.
   - verify: gtest — changing the camera's shutter or the override changes the node hash and the interval the delegate receives (logged by a test hook).
   - size: M
 
-- [ ] M283.P2.T2 — Motion samples in scene sync
+- [x] M283.P2.T2 — Motion samples in scene sync
   - files: `Engine/Nodes/Scene/Utility/UtilityMesh.cpp`, `Engine/Nodes/Scene/Utility/UtilityInstancer.cpp`, `Engine/Nodes/Scene/Utility/UtilityScene.{h,cpp}`, `Tests/Scene/NatronUtilityMotion_Test.cpp`
   - approach: store per-mesh transform samples and point samples (or velocities/accelerations) over the interval; `UtilityScene::evaluateAt(t)` produces the transforms and, for deforming meshes, point arrays at a bucket time. Topology changes within the interval mark the mesh static and record a warning.
   - verify: gtest — a translating cube evaluates to the interpolated position at mid-shutter; a velocities-only mesh moves by v·t; a topology-changing mesh is static and named in the warning.
   - size: L
 
-- [ ] M283.P2.T3 — Time-bucketed tracing on both backends
+- [x] M283.P2.T3 — Time-bucketed tracing on both backends
   - files: `Engine/Nodes/Scene/Utility/UtilityRenderPass.cpp`, `Engine/Nodes/Scene/Utility/EmbreeTracer.cpp`, `Engine/Nodes/Scene/Utility/GpuTracer.cpp`, `Engine/Nodes/Scene/Utility/Kernels/RayGen.slang`, `Tests/Scene/NatronUtilityMotion_Test.cpp`
   - approach: assign each camera sample to a time bucket (stratified across the shutter); per bucket, refit deforming geometry and rebuild instances at the bucket time, then trace that bucket's ray batch. Camera blur moves the ray origins/frustum per bucket. Record per-bucket timings.
   - verify: gtest — a cube moving one pixel-width per frame yields a box-filtered smear of the analytic width on both backends; segments = 1 equals the unblurred render; a bench on a 1M-triangle deforming mesh at 8 buckets is recorded in the report.
@@ -76,3 +76,4 @@ milestone provides the time sampling they are measured from.
 - 2026-11-01 — **Time-bucketed tracing on both backends:** Vulkan's KHR acceleration structures have no motion blur, so both backends rebuild per time bucket for identical results (Nuke's ScanlineRender also renders per time sample).
 - 2026-11-14 — Claimed by bosley-native-nodes (user request).
 - 2026-11-14 — Phase 1 implemented (03c49bfda). Only colour is filtered; depth and ids take the heaviest sample. The settings key is `pixelSamples`, so it can't be read as the viewer's cap. The viewer shows each completed sample pass. PM calls: no hard cap on Pixel Samples (no-hand-holding rule), only a soft slider maximum. Exact-match tests (Storm match, cancel, purpose) pin `pixelSamples=1`; goldens are re-recorded.
+- 2026-11-14 — Phase 2 implemented (a4159f88b), F7 merged in. The shutter interval is in the engine settings (hashed; re-syncs prims), while camera motion goes per render so an animated camera doesn't rebuild the engine; the camera gets 9 samples across the shutter. Meshes and instancers sample over the shutter (linear points, decomposed transforms with shortest-arc rotation, shear ignored); a topology change inside the shutter keeps the mesh still and warns. A velocity scene index is registered for Utility. PM calls: Override Shutter and a Shutter Offset menu (Centred/Start/End/Custom + custom value) are accepted; Shutter Segments defaults to 8, clamped to the pixel's sample count; the viewer sets no shutter, so only node renders blur. Unverified: the velocity index's frame rate on non-24 fps stages. The 1M-triangle 8-bucket bench (`NATRON_UTILITY_MOTION_BENCH`) runs on the GPU host. Gating.

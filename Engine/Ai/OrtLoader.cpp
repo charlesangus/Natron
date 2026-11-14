@@ -26,6 +26,7 @@
 #include "OrtLoader.h"
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <mutex>
 #include <system_error>
@@ -34,6 +35,7 @@
 
 #include <onnxruntime_c_api.h>
 
+#include "Engine/Ai/InferenceSession.h"
 #include "Engine/AppManager.h"
 #include "Engine/Settings.h"
 #include "Engine/StandardPaths.h"
@@ -99,6 +101,8 @@ statusMessage(const OrtApi* api,
     return message;
 }
 
+std::atomic<bool> telemetryOptOut { true };
+
 std::string
 executableDir()
 {
@@ -106,6 +110,24 @@ executableDir()
     const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
 
     return ec ? std::string() : exe.parent_path().string();
+}
+
+// Microsoft's release builds carry a telemetry client that uploads from a background thread once an
+// environment exists. Failing to switch it off leaves the library usable, so it is only reported.
+void
+disableTelemetry(const OrtApi* api,
+                 OrtEnv* env)
+{
+    OrtStatus* status = api->DisableTelemetryEvents(env);
+
+    if (!status) {
+        return;
+    }
+    const std::string message = statusMessage(api, status);
+    static std::atomic<bool> warned { false };
+    if (!warned.exchange(true)) {
+        InferenceSession::logWarning("ONNX Runtime telemetry could not be switched off: " + message);
+    }
 }
 
 } // namespace
@@ -218,6 +240,9 @@ OrtLoader::loadLibrary(const std::string& file,
 
         return false;
     }
+    if (telemetryOptOut.load()) {
+        disableTelemetry(api, env);
+    }
 
     std::vector<std::string> providers;
     char** names = nullptr;
@@ -266,6 +291,12 @@ bool
 OrtLoader::hasProvider(const std::string& ortName) const
 {
     return std::find(_providers.begin(), _providers.end(), ortName) != _providers.end();
+}
+
+void
+OrtLoader::setTelemetryOptOutForTesting(bool optOut)
+{
+    telemetryOptOut.store(optOut);
 }
 
 const char*

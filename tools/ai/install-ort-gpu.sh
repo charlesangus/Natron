@@ -379,9 +379,16 @@ install_rocm() {
     local head
     head=$(git -C "${BUILD_DIR}/onnxruntime" rev-parse HEAD)
     [ "${head}" = "${commit}" ] || die "v${version} is commit ${head}, not the pinned ${commit}"
+    # Newer releases compile Microsoft's 1DS telemetry client in unless told not to; older
+    # ones leave it out by default and reject the flag.
+    local telemetry_args=()
+    if grep -q -- '"--no_telemetry"' "${BUILD_DIR}/onnxruntime/tools/ci_build/build_args.py" 2>/dev/null; then
+        telemetry_args=(--no_telemetry)
+    fi
     (
         cd "${BUILD_DIR}/onnxruntime"
         ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
+            "${telemetry_args[@]}" \
             --use_migraphx --migraphx_home "${rocm_home}"
     )
     local built="${BUILD_DIR}/onnxruntime/build/Linux/Release"

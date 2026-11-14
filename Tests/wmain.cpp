@@ -13,6 +13,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Global/ThirdPartyTelemetry.h"
 
 #include "Ai/AiModelTestEffect.h"
 #include "CacheStressTestEffect.h"
@@ -250,6 +251,7 @@ GTEST_API_ int wmain(int argc, wchar_t **argv)
 GTEST_API_ int main(int argc, char **argv)
 #endif
 {
+    disableThirdPartyTelemetry();
     printf("Running main() from wmain.cpp\n");
     ::testing::InitGoogleTest(&argc, argv);
     // ctest lists the suites before every run. Every test is registered statically, so the list

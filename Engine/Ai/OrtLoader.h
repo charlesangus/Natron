@@ -87,6 +87,12 @@ public:
      **/
     static const char* disabledReason();
 
+    /**
+     * @brief Every environment a loader creates has ONNX Runtime telemetry switched off. Tests
+     * pass false to leave it on for the loads that follow, to show what the opt-out prevents.
+     **/
+    static void setTelemetryOptOutForTesting(bool optOut);
+
     ~OrtLoader();
 
     OrtLoader(const OrtLoader&) = delete;

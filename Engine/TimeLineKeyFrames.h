@@ -26,6 +26,8 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <vector>
+
 #include "Global/Macros.h"
 
 #include "Global/GlobalDefines.h"
@@ -113,6 +115,18 @@ public:
      * rate: however many calls arrive, the main thread reads the knobs once.
      **/
     virtual void invalidateNodeKeyframeIndicators() { }
+
+    /**
+     * @brief Replaces the markers that @p owner contributes to the timeline. Each owner holds one
+     * set, so an owner republishing its whole set can never leave a stale marker behind.
+     **/
+    virtual void setPanelKeyframeIndicators(const void* /*owner*/,
+                                            const std::vector<SequenceTime>& /*keys*/) { }
+
+    /**
+     * @brief Removes every marker that @p owner contributed.
+     **/
+    virtual void clearPanelKeyframeIndicators(const void* /*owner*/) { }
 
     /**
      * @brief Get all keyframes, there may be duplicates.

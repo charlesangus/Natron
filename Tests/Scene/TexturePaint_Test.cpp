@@ -3309,7 +3309,18 @@ drainBaker(TexturePaint* effect)
         *done = true;
     };
 
-    return effect->getBaker()->enqueue(marker) && pumpUntil([&]() { return done->load(); }, 60000);
+    // A baker asked to quit refuses bakes until its thread has stopped, so the marker is offered
+    // again until it is taken.
+    bool queued = false;
+
+    return pumpUntil([&]() {
+        if (!queued) {
+            queued = effect->getBaker()->enqueue(marker);
+        }
+
+        return queued && done->load();
+    },
+                     60000);
 }
 
 /**
@@ -3626,15 +3637,21 @@ TEST_F(TexturePaintTest, TwoQueuedBakeOutputsOfANodeToTheSameFilesLandInOrder)
     effect->setUndoCommandSinkForTesting([&commands](const UndoCommandPtr& command) {
         commands.push_back(command);
     });
-    std::atomic<bool> release(false);
-    holdBaker(effect, &release);
-    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
-    RotoLayerPtr later = effect->addSession(viewCamera());
-    ASSERT_TRUE(bool(later));
-    setColor(addBrushStroke(paint, later, eRotoStrokeTypeSolid, "later", kRedU, 0.5), 0., 0., 1.);
-    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
-    release = true;
-    ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
+    RotoLayerPtr later;
+    {
+        // A bake renders the strokes there are when it runs: held at its first file write, the
+        // first bake has rendered before the later session is painted and the second bake queued.
+        StepGate gate;
+        ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+        ASSERT_TRUE(pumpUntil([&]() { return gate.waitUntilArrived(1, 0); }, 60000)) << "the first bake writes its files";
+        later = effect->addSession(viewCamera());
+        ASSERT_TRUE(bool(later));
+        setColor(addBrushStroke(paint, later, eRotoStrokeTypeSolid, "later", kRedU, 0.5), 0., 0., 1.);
+        ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+        EXPECT_TRUE(effect->isBaking()) << "the second bake is queued behind the first";
+        gate.open();
+        ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
+    }
     effect->setUndoCommandSinkForTesting(std::function<void(const UndoCommandPtr&)>());
 
     EXPECT_FALSE(paint->hasPersistentMessage()) << persistentMessageOf(paint);

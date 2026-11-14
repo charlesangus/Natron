@@ -94,25 +94,25 @@ Acceptance sketch:
 
 ## Phase 136.3: The tri-state knob on Crop, Reformat and Transform
 
-- [ ] M136.P3.T1 — The Edge Mode pipeline stage
+- [x] M136.P3.T1 — The Edge Mode pipeline stage
   - files: new `Engine/Nodes/Image/EdgeModeKnob.{h,cpp}`, `Engine/Nodes/Image/ImagePipelineSpec.h` (`Stage::EdgeMode`), `Engine/Nodes/Image/StagedImageEffect.cpp`, `Engine/Nodes/Image/StagePlan.{h,cpp}` (`plan.edgeMode`), `Engine/Nodes/Image/Resampler.h`
   - approach: most affected nodes are built on `ImageNode<Op>`/`StagedImageEffect`, so the knob is a pipeline stage: it adds an Input / Black / Stretch choice (script name `edgeMode`, label "Edge Mode", default Input), resolves it against the input's `edgeMode`, sets the output bit (a forced value overrides the input's and is passed on, per Q3) and hands the mode to PassList, Resample and IWarp. It replaces the `kResamplerParamFilterBlackOutside*` constants. Nodes not on the staged pipeline use the same helper directly.
   - verify: gtest of the resolver for all three choices against both input modes, including the output bit.
   - size: M
 
-- [ ] M136.P3.T2 — Move Transform onto the Edge knob
+- [x] M136.P3.T2 — Move Transform onto the Edge knob
   - files: `Engine/Nodes/Transform/Transform.cpp`, `Engine/Nodes/Transform/Transform.h`, `Engine/Nodes/Image/ResampleExecutor.cpp`, `Engine/Nodes/Image/ResampleExecutor.h`, `Tests/Native/NativeTransformGpu_Test.cpp`
   - approach: Replace the boolean `black_outside` knob (default true; shared with ITransform) with the Edge Mode stage and drop `ResampleSettings::blackOutside` in favour of the mode. Concatenation resamples the whole chain under one mode, so it uses the resolved mode and stops at a node whose resolved mode differs. Update every test that set the old knob (`NativeTransform_Test`, `NativeTransformGpu_Test`); no import of old projects.
   - verify: Transform translated by half the image: Stretch input gives stretched edges, Black input gives black; forced Stretch on a Black input stretches and the output bit is Stretch; a concatenated chain with differing modes stops concatenating; CPU and GPU.
   - size: M
 
-- [ ] M136.P3.T3 — Move Reformat onto the Edge knob
+- [x] M136.P3.T3 — Move Reformat onto the Edge knob
   - files: `Engine/Nodes/Transform/Reformat.cpp`, `Engine/Nodes/Transform/Reformat.h`, `Tests/Native/NativeReformat_Test.cpp`
   - approach: Same replacement as Transform; Reformat's output `edgeMode` is its resolved mode, and a forced mode also governs the band between the source and the format (Q3). Update the tests that set the old knob; add `NativeReformatGpu_Test` cases.
   - verify: Reformat to a larger format with each of the three choices and both input modes, CPU and GPU.
   - size: M
 
-- [ ] M136.P3.T4 — Make Crop respect its source and move it onto the Edge knob
+- [x] M136.P3.T4 — Make Crop respect its source and move it onto the Edge knob
   - files: `Engine/Nodes/Transform/Crop.cpp`, `Engine/Nodes/Transform/Crop.h`, `Tests/Native/NativeCrop_Test.cpp`
   - approach: Replace the `Black Outside` boolean, its 1-pixel RoD growth and Reformat's coupling that toggles it with the Edge Mode stage. Under Input, the band between the source and the crop rectangle follows the input's bit. A forced Black or Stretch governs the whole output, that band included, and becomes the output bit (Q3). Outside the crop rectangle but inside the source, Black blacks and Stretch repeats the crop rectangle's edge.
   - verify: `NativeCrop_Test` and `NativeCropGpu_Test` cases: Crop larger than source for Stretch and Black inputs under Input; forced Stretch over a Black source and forced Black over a Stretch source; Crop smaller than source for each knob choice; the `intersect` and `softness` cases still pass.
@@ -273,3 +273,4 @@ Acceptance sketch:
 - 2026-11-13 — P1.T2 done (1b218d710): the note is refreshed and contains no references to other applications. Survey follow-ups: P4.T15 narrowed to AdjustBBox (Median and Bilateral never read past their region, so they get no knob); P4.T17 cancelled (those nodes read only inside their region); P4.T18 added (ZDefocus Depth, VectorBlur UV and Depth, and the FrameBlend, TimeBlur and SlitScan time reads, all in scope under Q1); P4.T19 added (NeuralUpscale clamps with no knob). Raw and the edge-aware filters stay out (Q2 and their whole-frame borders).\n- 2026-11-13 — P2.T3 scoping (PM): fill-value reads (the divisor's 1.f, STMap's alpha 1.f, mask and UV 0.f) keep a constant-fill reader for now, and only image-edge reads use the mode helper; masks and UV move to the bit in P4.T8, P4.T11 and P4.T12. `PassExec::Boundary` and `InputBoundary` are replaced by `EdgeMode` (Zero → Black, Nearest → Stretch), and every Resampler `blackOutside` caller is converted mechanically now; the GPU flag is translated in one line until P2.T4.
 - 2026-11-13 — P2.T3 implemented (3dc34c091): `Engine/Nodes/Image/EdgeSample.h`. The NatronGpu library can't include `NodeMetadata.h`, so `GpuResample::blackOutside` stays a bool until P2.T4, which moves `EdgeMode` into a light header both libraries include.
 - 2026-11-13 — P2.T5 and P2.T6 implemented (9dc00592c). Stretch RoI runs as a post-hook (`adjustInputRegionsOfInterest`) after `getRegionsOfInterest`, because staged nodes adjust the base result. Open points: the GPU input RoI gets no band yet; under concatenation `transformInputRois` runs after the hook. Phase 2 gate running.
+- 2026-11-13 — Phase 3 implemented (9dc00592c). Transform's default changes from Black to Input (stretches over Stretch sources). The Stretch band is now computed after concatenation, and GPU input reads get it too. The Transform and Crop soft goldens may need re-recording. The Phase 3 gate replaces the Phase 2 one.

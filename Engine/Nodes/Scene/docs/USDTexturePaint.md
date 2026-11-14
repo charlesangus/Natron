@@ -1,4 +1,4 @@
-# TexturePaint
+# USDTexturePaint
 
 Paints on the meshes of its scene input in the Viewer's 3D view, with the
 brushes of RotoPaint, into one UDIM texture set. Prim Pattern names the meshes
@@ -31,15 +31,15 @@ Controls:
   texture set per frame.
 - Bake Inputs Path: the files the input scene's look is baked into, one per tile,
   with a `<UDIM>` token for the tile number. They are the base strokes are
-  painted over. The default is `[Project]/textures/texturePaint_inputs.<UDIM>.exr`.
+  painted over. The default is `[Project]/textures/usdTexturePaint_inputs.<UDIM>.exr`.
 - Bake Output Path: the files the painted texture is baked into, one per tile,
   with a `<UDIM>` token. A bake renders and freezes the sessions there are when
   it starts, not those there were when it was queued; strokes painted after it
   starts go into a new session, which stays live for the next bake. If a session
   it rendered is changed before it finishes, it fails and puts its files back.
-  The default is `[Project]/textures/texturePaint_output.<UDIM>.exr`. A bake
+  The default is `[Project]/textures/usdTexturePaint_output.<UDIM>.exr`. A bake
   that does not finish puts back the files it replaced. A Bake Output fails, naming the other
-  node, while another TexturePaint node's Bake Output of the same files has not
+  node, while another USDTexturePaint node's Bake Output of the same files has not
   finished. An undo or redo of a Bake Output waits for the node's queued Bake
   Outputs, and is refused, changing nothing, once a later one has landed or
   while another node is baking the same files.

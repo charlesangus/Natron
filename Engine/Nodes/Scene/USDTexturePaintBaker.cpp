@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "TexturePaintBaker.h"
+#include "USDTexturePaintBaker.h"
 
 #include <condition_variable>
 #include <filesystem>
@@ -49,7 +49,7 @@ enum RegistryPhaseEnum {
 
 struct BakerRegistry {
     std::mutex mutex;
-    std::set<TexturePaintBaker*> bakers;
+    std::set<USDTexturePaintBaker*> bakers;
     RegistryPhaseEnum phase = eRegistryPhaseRunning;
 };
 
@@ -63,7 +63,7 @@ bakerRegistry()
 }
 } // anon namespace
 
-class TexturePaintBaker::Task
+class USDTexturePaintBaker::Task
     : public GenericThreadStartArgs {
 public:
     explicit Task(const Bake& b)
@@ -77,7 +77,7 @@ public:
 };
 
 void
-TexturePaintBaker::Context::keepAlive(const std::shared_ptr<void>& object)
+USDTexturePaintBaker::Context::keepAlive(const std::shared_ptr<void>& object)
 {
     if (_task && object) {
         _task->keepAlive.push_back(object);
@@ -85,13 +85,13 @@ TexturePaintBaker::Context::keepAlive(const std::shared_ptr<void>& object)
 }
 
 void
-TexturePaintBaker::Context::progress(double fraction,
-                                     const QString& label)
+USDTexturePaintBaker::Context::progress(double fraction,
+                                        const QString& label)
 {
     _baker->reportProgress(fraction, label);
 }
 
-TexturePaintBaker::TexturePaintBaker()
+USDTexturePaintBaker::USDTexturePaintBaker()
     : GenericSchedulerThread()
     , _cancel(false)
     , _pending(0)
@@ -104,18 +104,18 @@ TexturePaintBaker::TexturePaintBaker()
     , _lastProgress()
     , _lastFraction(0.)
 {
-    setThreadName("TexturePaintBaker");
+    setThreadName("USDTexturePaintBaker");
     // The thread object lives on the main thread, so this slot does too.
-    connect(this, &TexturePaintBaker::workDone, this, &TexturePaintBaker::onWorkDone, Qt::QueuedConnection);
+    connect(this, &USDTexturePaintBaker::workDone, this, &USDTexturePaintBaker::onWorkDone, Qt::QueuedConnection);
     // Queued behind the workDone() of the thread's last bake, so that the results of the bakes
     // before a stop are taken, or dropped, before any bake deferred by it starts.
-    connect(this, &QThread::finished, this, &TexturePaintBaker::onThreadFinished, Qt::QueuedConnection);
+    connect(this, &QThread::finished, this, &USDTexturePaintBaker::onThreadFinished, Qt::QueuedConnection);
     BakerRegistry& registry = bakerRegistry();
     std::lock_guard<std::mutex> lock(registry.mutex);
     registry.bakers.insert(this);
 }
 
-TexturePaintBaker::~TexturePaintBaker()
+USDTexturePaintBaker::~USDTexturePaintBaker()
 {
     stop();
     BakerRegistry& registry = bakerRegistry();
@@ -124,7 +124,7 @@ TexturePaintBaker::~TexturePaintBaker()
 }
 
 bool
-TexturePaintBaker::enqueue(const Bake& bake)
+USDTexturePaintBaker::enqueue(const Bake& bake)
 {
     if (_stopped.load()) {
         return false;
@@ -150,7 +150,7 @@ TexturePaintBaker::enqueue(const Bake& bake)
 }
 
 void
-TexturePaintBaker::requestStop(bool allowRestart)
+USDTexturePaintBaker::requestStop(bool allowRestart)
 {
     std::deque<std::shared_ptr<Task>> dropped;
     bool quitting = false;
@@ -176,7 +176,7 @@ TexturePaintBaker::requestStop(bool allowRestart)
 }
 
 void
-TexturePaintBaker::stop(bool allowRestart)
+USDTexturePaintBaker::stop(bool allowRestart)
 {
     requestStop(allowRestart);
     waitForThreadToQuit_enforce_blocking();
@@ -191,7 +191,7 @@ TexturePaintBaker::stop(bool allowRestart)
 }
 
 void
-TexturePaintBaker::onThreadFinished()
+USDTexturePaintBaker::onThreadFinished()
 {
     if (!_quitting.load()) {
         return;
@@ -216,12 +216,12 @@ TexturePaintBaker::onThreadFinished()
 }
 
 void
-TexturePaintBaker::retire(std::unique_ptr<TexturePaintBaker> baker)
+USDTexturePaintBaker::retire(std::unique_ptr<USDTexturePaintBaker> baker)
 {
     if (!baker) {
         return;
     }
-    TexturePaintBaker* retired = baker.release();
+    USDTexturePaintBaker* retired = baker.release();
     retired->requestStop(false);
     RegistryPhaseEnum phase;
     {
@@ -248,7 +248,7 @@ TexturePaintBaker::retire(std::unique_ptr<TexturePaintBaker> baker)
 }
 
 void
-TexturePaintBaker::shutdownAll()
+USDTexturePaintBaker::shutdownAll()
 {
     BakerRegistry& registry = bakerRegistry();
     {
@@ -261,10 +261,10 @@ TexturePaintBaker::shutdownAll()
     // Dropping a completion can release a node, whose deletion retires its baker or makes one: the
     // registry is read again after each stop.
     for (;;) {
-        TexturePaintBaker* next = nullptr;
+        USDTexturePaintBaker* next = nullptr;
         {
             std::lock_guard<std::mutex> lock(registry.mutex);
-            for (TexturePaintBaker* baker : registry.bakers) {
+            for (USDTexturePaintBaker* baker : registry.bakers) {
                 if (!baker->_shutDown) {
                     next = baker;
                     break;
@@ -280,10 +280,10 @@ TexturePaintBaker::shutdownAll()
         next->stop(false);
     }
     for (;;) {
-        TexturePaintBaker* retired = nullptr;
+        USDTexturePaintBaker* retired = nullptr;
         {
             std::lock_guard<std::mutex> lock(registry.mutex);
-            for (TexturePaintBaker* baker : registry.bakers) {
+            for (USDTexturePaintBaker* baker : registry.bakers) {
                 if (baker->_retired) {
                     retired = baker;
                     break;
@@ -295,23 +295,23 @@ TexturePaintBaker::shutdownAll()
         }
         delete retired;
     }
-    TexturePaintFileQueue::shutdown();
+    USDTexturePaintFileQueue::shutdown();
     std::lock_guard<std::mutex> lock(registry.mutex);
     registry.phase = eRegistryPhaseShutDown;
 }
 
 void
-TexturePaintBaker::restartForTesting()
+USDTexturePaintBaker::restartForTesting()
 {
-    TexturePaintFileQueue::restartForTesting();
+    USDTexturePaintFileQueue::restartForTesting();
     BakerRegistry& registry = bakerRegistry();
     std::lock_guard<std::mutex> lock(registry.mutex);
     registry.phase = eRegistryPhaseRunning;
 }
 
 void
-TexturePaintBaker::getLastProgress(double* fraction,
-                                   QString* label) const
+USDTexturePaintBaker::getLastProgress(double* fraction,
+                                      QString* label) const
 {
     std::lock_guard<std::mutex> lock(_mutex);
 
@@ -320,20 +320,20 @@ TexturePaintBaker::getLastProgress(double* fraction,
 }
 
 void
-TexturePaintBaker::onAbortRequested(bool /*keepOldestRender*/)
+USDTexturePaintBaker::onAbortRequested(bool /*keepOldestRender*/)
 {
     _cancel = true;
 }
 
 void
-TexturePaintBaker::onQuitRequested(bool /*allowRestarts*/)
+USDTexturePaintBaker::onQuitRequested(bool /*allowRestarts*/)
 {
     _cancel = true;
 }
 
 void
-TexturePaintBaker::reportProgress(double fraction,
-                                  const QString& label)
+USDTexturePaintBaker::reportProgress(double fraction,
+                                     const QString& label)
 {
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
     {
@@ -349,7 +349,7 @@ TexturePaintBaker::reportProgress(double fraction,
 }
 
 GenericSchedulerThread::ThreadStateEnum
-TexturePaintBaker::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
+USDTexturePaintBaker::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
 {
     const std::shared_ptr<Task> task = std::dynamic_pointer_cast<Task>(inArgs);
 
@@ -381,7 +381,7 @@ TexturePaintBaker::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
 }
 
 void
-TexturePaintBaker::onWorkDone()
+USDTexturePaintBaker::onWorkDone()
 {
     for (;;) {
         Finished done;
@@ -411,8 +411,8 @@ TexturePaintBaker::onWorkDone()
     }
 }
 
-struct TexturePaintFileStep {
-    TexturePaintFileQueue::Work work;
+struct USDTexturePaintFileStep {
+    USDTexturePaintFileQueue::Work work;
     bool done = false;
 };
 
@@ -426,7 +426,7 @@ struct FileQueueState {
     std::mutex mutex;
     // Signalled when a step is queued or has run, when a bake settles and when the thread exits.
     std::condition_variable changed;
-    std::deque<TexturePaintFileTicket> queued;
+    std::deque<USDTexturePaintFileTicket> queued;
     bool busy = false;
     std::thread thread;
     bool threadRunning = false;
@@ -451,7 +451,7 @@ fileQueueState()
 }
 
 void
-runWork(const TexturePaintFileQueue::Work& work,
+runWork(const USDTexturePaintFileQueue::Work& work,
         bool shuttingDown)
 {
     if (!work) {
@@ -480,7 +480,7 @@ fileQueueLoop()
             }
             s.changed.wait(lock);
         }
-        const TexturePaintFileTicket step = s.queued.front();
+        const USDTexturePaintFileTicket step = s.queued.front();
         s.queued.pop_front();
         s.busy = true;
         const bool shuttingDown = s.stopping;
@@ -491,7 +491,7 @@ fileQueueLoop()
         }
         runWork(step->work, shuttingDown);
         // What the work holds is released here, before its waiters return.
-        step->work = TexturePaintFileQueue::Work();
+        step->work = USDTexturePaintFileQueue::Work();
         lock.lock();
         s.busy = false;
         step->done = true;
@@ -500,10 +500,10 @@ fileQueueLoop()
 }
 } // anon namespace
 
-TexturePaintFileTicket
-TexturePaintFileQueue::makeStep(const Work& work)
+USDTexturePaintFileTicket
+USDTexturePaintFileQueue::makeStep(const Work& work)
 {
-    TexturePaintFileTicket step = std::make_shared<TexturePaintFileStep>();
+    USDTexturePaintFileTicket step = std::make_shared<USDTexturePaintFileStep>();
 
     step->work = work;
 
@@ -511,7 +511,7 @@ TexturePaintFileQueue::makeStep(const Work& work)
 }
 
 void
-TexturePaintFileQueue::submit(const TexturePaintFileTicket& step)
+USDTexturePaintFileQueue::submit(const USDTexturePaintFileTicket& step)
 {
     if (!step) {
         return;
@@ -541,10 +541,10 @@ TexturePaintFileQueue::submit(const TexturePaintFileTicket& step)
     s.changed.notify_all();
 }
 
-TexturePaintFileTicket
-TexturePaintFileQueue::submit(const Work& work)
+USDTexturePaintFileTicket
+USDTexturePaintFileQueue::submit(const Work& work)
 {
-    const TexturePaintFileTicket step = makeStep(work);
+    const USDTexturePaintFileTicket step = makeStep(work);
 
     submit(step);
 
@@ -552,8 +552,8 @@ TexturePaintFileQueue::submit(const Work& work)
 }
 
 bool
-TexturePaintFileQueue::wait(const TexturePaintFileTicket& step,
-                            const std::function<bool()>& cancelled)
+USDTexturePaintFileQueue::wait(const USDTexturePaintFileTicket& step,
+                               const std::function<bool()>& cancelled)
 {
     if (!step) {
         return true;
@@ -573,7 +573,7 @@ TexturePaintFileQueue::wait(const TexturePaintFileTicket& step,
 }
 
 std::uint64_t
-TexturePaintFileQueue::newId()
+USDTexturePaintFileQueue::newId()
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -582,7 +582,7 @@ TexturePaintFileQueue::newId()
 }
 
 std::string
-TexturePaintFileQueue::claimKey(const std::string& path)
+USDTexturePaintFileQueue::claimKey(const std::string& path)
 {
     const std::filesystem::path given(path);
     const std::filesystem::path parent = given.has_parent_path() ? given.parent_path() : std::filesystem::path(".");
@@ -600,11 +600,11 @@ TexturePaintFileQueue::claimKey(const std::string& path)
     return (resolved / given.filename()).lexically_normal().string();
 }
 
-TexturePaintFileQueue::ClaimResultEnum
-TexturePaintFileQueue::claim(std::uint64_t bake,
-                             std::uint64_t owner,
-                             const std::string& key,
-                             std::uint64_t* holder)
+USDTexturePaintFileQueue::ClaimResultEnum
+USDTexturePaintFileQueue::claim(std::uint64_t bake,
+                                std::uint64_t owner,
+                                const std::string& key,
+                                std::uint64_t* holder)
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -625,9 +625,9 @@ TexturePaintFileQueue::claim(std::uint64_t bake,
 }
 
 bool
-TexturePaintFileQueue::isHeldByAnotherBake(std::uint64_t bake,
-                                           const std::string& key,
-                                           std::uint64_t* holder)
+USDTexturePaintFileQueue::isHeldByAnotherBake(std::uint64_t bake,
+                                              const std::string& key,
+                                              std::uint64_t* holder)
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -644,8 +644,8 @@ TexturePaintFileQueue::isHeldByAnotherBake(std::uint64_t bake,
 }
 
 void
-TexturePaintFileQueue::setOwnerName(std::uint64_t owner,
-                                    const std::string& name)
+USDTexturePaintFileQueue::setOwnerName(std::uint64_t owner,
+                                       const std::string& name)
 {
     if (owner == 0) {
         return;
@@ -673,7 +673,7 @@ ownerHoldsClaims(const FileQueueState& s,
 } // anon namespace
 
 void
-TexturePaintFileQueue::forgetOwner(std::uint64_t owner)
+USDTexturePaintFileQueue::forgetOwner(std::uint64_t owner)
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -687,7 +687,7 @@ TexturePaintFileQueue::forgetOwner(std::uint64_t owner)
 }
 
 std::string
-TexturePaintFileQueue::getOwnerName(std::uint64_t owner)
+USDTexturePaintFileQueue::getOwnerName(std::uint64_t owner)
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -697,7 +697,7 @@ TexturePaintFileQueue::getOwnerName(std::uint64_t owner)
 }
 
 void
-TexturePaintFileQueue::settle(std::uint64_t bake)
+USDTexturePaintFileQueue::settle(std::uint64_t bake)
 {
     if (bake == 0) {
         return;
@@ -729,7 +729,7 @@ TexturePaintFileQueue::settle(std::uint64_t bake)
 }
 
 void
-TexturePaintFileQueue::waitForSettlement(std::chrono::milliseconds timeout)
+USDTexturePaintFileQueue::waitForSettlement(std::chrono::milliseconds timeout)
 {
     FileQueueState& s = fileQueueState();
     std::unique_lock<std::mutex> lock(s.mutex);
@@ -738,7 +738,7 @@ TexturePaintFileQueue::waitForSettlement(std::chrono::milliseconds timeout)
 }
 
 void
-TexturePaintFileQueue::shutdown()
+USDTexturePaintFileQueue::shutdown()
 {
     FileQueueState& s = fileQueueState();
     std::thread thread;
@@ -757,7 +757,7 @@ TexturePaintFileQueue::shutdown()
 }
 
 void
-TexturePaintFileQueue::setBeforeWorkHookForTesting(const std::function<void()>& hook)
+USDTexturePaintFileQueue::setBeforeWorkHookForTesting(const std::function<void()>& hook)
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -766,7 +766,7 @@ TexturePaintFileQueue::setBeforeWorkHookForTesting(const std::function<void()>& 
 }
 
 bool
-TexturePaintFileQueue::isIdleForTesting()
+USDTexturePaintFileQueue::isIdleForTesting()
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -775,7 +775,7 @@ TexturePaintFileQueue::isIdleForTesting()
 }
 
 std::size_t
-TexturePaintFileQueue::getQueuedCountForTesting()
+USDTexturePaintFileQueue::getQueuedCountForTesting()
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -784,7 +784,7 @@ TexturePaintFileQueue::getQueuedCountForTesting()
 }
 
 bool
-TexturePaintFileQueue::isThreadRunningForTesting()
+USDTexturePaintFileQueue::isThreadRunningForTesting()
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -793,7 +793,7 @@ TexturePaintFileQueue::isThreadRunningForTesting()
 }
 
 void
-TexturePaintFileQueue::restartForTesting()
+USDTexturePaintFileQueue::restartForTesting()
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);

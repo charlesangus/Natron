@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "TexturePaint.h"
+#include "USDTexturePaint.h"
 
 #include <algorithm>
 #include <atomic>
@@ -77,11 +77,11 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneRaster.h"
-#include "Engine/Nodes/Scene/TexturePaintBaker.h"
-#include "Engine/Nodes/Scene/TexturePaintCache.h"
-#include "Engine/Nodes/Scene/TexturePaintInteract.h"
-#include "Engine/Nodes/Scene/TexturePaintUndo.h"
-#include "Engine/Nodes/Scene/TexturePaintView.h"
+#include "Engine/Nodes/Scene/USDTexturePaintBaker.h"
+#include "Engine/Nodes/Scene/USDTexturePaintCache.h"
+#include "Engine/Nodes/Scene/USDTexturePaintInteract.h"
+#include "Engine/Nodes/Scene/USDTexturePaintUndo.h"
+#include "Engine/Nodes/Scene/USDTexturePaintView.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
@@ -98,7 +98,7 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const int kResolutionCount = 4;
 
-static_assert((1024 << (kResolutionCount - 1)) == TexturePaintView::kPaintSpaceSize,
+static_assert((1024 << (kResolutionCount - 1)) == USDTexturePaintView::kPaintSpaceSize,
               "Every Buffer Resolution must be the paint space at a mipmap level.");
 
 // Whole-name matches only, so that renaming Paint1 leaves Paint10's paths alone; a name may be
@@ -377,25 +377,25 @@ expandFrame(const std::string& pattern,
 std::string
 planePurpose(const ImageLayerDesc& plane)
 {
-    return plane.isColorLayer() ? std::string(kTexturePaintPurposeDiffuseColor) : plane.getLayerID();
+    return plane.isColorLayer() ? std::string(kUSDTexturePaintPurposeDiffuseColor) : plane.getLayerID();
 }
 } // anon namespace
 
-TexturePaint::TexturePaint(NodePtr node)
+USDTexturePaint::USDTexturePaint(NodePtr node)
     : NativeEffectBase(node)
     , _tileEpoch(std::make_shared<std::atomic<std::uint64_t>>(0))
     , _sessionRenders(0)
-    , _bakeOwnerId(TexturePaintFileQueue::newId())
+    , _bakeOwnerId(USDTexturePaintFileQueue::newId())
     , _pendingBakeOutputs(std::make_shared<std::atomic<int>>(0))
 {
 }
 
-TexturePaint::~TexturePaint()
+USDTexturePaint::~USDTexturePaint()
 {
-    TexturePaintBaker::retire(std::move(_baker));
-    TexturePaintFileQueue::forgetOwner(_bakeOwnerId);
+    USDTexturePaintBaker::retire(std::move(_baker));
+    USDTexturePaintFileQueue::forgetOwner(_bakeOwnerId);
 
-    std::shared_ptr<TexturePaintCache::TileDirectoryClaim> claim;
+    std::shared_ptr<USDTexturePaintCache::TileDirectoryClaim> claim;
     {
         std::lock_guard<std::mutex> lock(_tileDirectoryMutex);
         claim.swap(_tileClaim);
@@ -410,21 +410,21 @@ TexturePaint::~TexturePaint()
     if (closing && claim->isShared()) {
         return;
     }
-    TexturePaintCache::removeTileDirectory(std::move(claim));
+    USDTexturePaintCache::removeTileDirectory(std::move(claim));
 }
 
 const NodeSpec*
-TexturePaint::nodeSpec() const
+USDTexturePaint::nodeSpec() const
 {
     return staticNodeSpec<kNodeSpec>();
 }
 
 void
-TexturePaint::initializeKnobs()
+USDTexturePaint::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    _primPattern.create(this, page, kTexturePaintParamPrimPattern, tr("Prim Pattern"),
+    _primPattern.create(this, page, kUSDTexturePaintParamPrimPattern, tr("Prim Pattern"),
                         tr("The meshes to paint on; other prims the pattern matches are ignored. All of them share one "
                            "UDIM texture set, so their UV layouts should not overlap."));
     {
@@ -435,7 +435,7 @@ TexturePaint::initializeKnobs()
     }
 
     KnobStringPtr uvPrimvar = createKnob<KnobString>(tr("UV Primvar"));
-    uvPrimvar->setName(kTexturePaintParamUvPrimvar);
+    uvPrimvar->setName(kUSDTexturePaintParamUvPrimvar);
     uvPrimvar->setHintToolTip(tr("The texture coordinate primvar of the meshes, which lays out the UDIM tiles: tile 1001 "
                                  "covers 0 to 1 in u and v, the next tile in u is 1002, and each row of ten up in v adds "
                                  "10.")
@@ -446,7 +446,7 @@ TexturePaint::initializeKnobs()
     _uvPrimvar = uvPrimvar;
 
     KnobChoicePtr tileResolution = createKnob<KnobChoice>(tr("Tile Resolution"));
-    tileResolution->setName(kTexturePaintParamTileResolution);
+    tileResolution->setName(kUSDTexturePaintParamTileResolution);
     tileResolution->setHintToolTip(tr("The width and height of each UDIM tile of the texture set.").toStdString());
     tileResolution->populateChoices(resolutionOptions());
     tileResolution->setDefaultValue(kDefaultTileResolutionIndex);
@@ -457,7 +457,7 @@ TexturePaint::initializeKnobs()
     // 2K keeps a 1920x1080 view at or above one buffer pixel per screen pixel, so brush detail is
     // kept, while bounding the buffer's memory and the cost of projecting it into the tiles.
     KnobChoicePtr bufferResolution = createKnob<KnobChoice>(tr("Buffer Resolution"));
-    bufferResolution->setName(kTexturePaintParamBufferResolution);
+    bufferResolution->setName(kUSDTexturePaintParamBufferResolution);
     bufferResolution->setHintToolTip(tr("The longer side of the paint buffer strokes are drawn into before they are "
                                         "projected into the tiles, whatever the size of the Viewer. The shorter side "
                                         "follows the view's aspect. A larger buffer keeps finer strokes when zoomed in "
@@ -470,7 +470,7 @@ TexturePaint::initializeKnobs()
     _bufferResolution = bufferResolution;
 
     KnobChoicePtr textureMode = createKnob<KnobChoice>(tr("Texture Mode"));
-    textureMode->setName(kTexturePaintParamTextureMode);
+    textureMode->setName(kUSDTexturePaintParamTextureMode);
     textureMode->setHintToolTip(tr("Whether the texture is one image for every frame or changes over time.").toStdString());
     {
         std::vector<ChoiceOption> options;
@@ -490,7 +490,7 @@ TexturePaint::initializeKnobs()
     _textureMode = textureMode;
 
     KnobOutputFilePtr bakeInputsPath = createKnob<KnobOutputFile>(tr("Bake Inputs Path"));
-    bakeInputsPath->setName(kTexturePaintParamBakeInputsPath);
+    bakeInputsPath->setName(kUSDTexturePaintParamBakeInputsPath);
     bakeInputsPath->setHintToolTip(tr("The files the look of the input scene is baked into, one per UDIM tile: the "
                                       "<UDIM> token stands for the tile number, and #### for the frame number when "
                                       "Texture Mode is Animated, which bakes every frame of the project range. They are "
@@ -501,7 +501,7 @@ TexturePaint::initializeKnobs()
     _bakeInputsPath = bakeInputsPath;
 
     KnobButtonPtr bakeInputs = createKnob<KnobButton>(tr("Bake Inputs"));
-    bakeInputs->setName(kTexturePaintParamBakeInputs);
+    bakeInputs->setName(kUSDTexturePaintParamBakeInputs);
     bakeInputs->setHintToolTip(tr("Bakes the look of the materials bound to the matched meshes, at the current frame, "
                                   "into the Bake Inputs Path files: one per UDIM tile the meshes cover and material "
                                   "input, diffuseColor always and each other UsdPreviewSurface input a material sets, "
@@ -513,7 +513,7 @@ TexturePaint::initializeKnobs()
     _bakeInputs = bakeInputs;
 
     KnobStringPtr bakedInputs = createKnob<KnobString>(tr("Baked Inputs"));
-    bakedInputs->setName(kTexturePaintParamBakedInputs);
+    bakedInputs->setName(kUSDTexturePaintParamBakedInputs);
     bakedInputs->setHintToolTip(tr("What the last Bake Inputs wrote: its count, purposes and UDIM tiles.").toStdString());
     bakedInputs->setAnimationEnabled(false);
     bakedInputs->setSecretByDefault(true);
@@ -521,7 +521,7 @@ TexturePaint::initializeKnobs()
     _bakedInputs = bakedInputs;
 
     KnobOutputFilePtr bakeOutputPath = createKnob<KnobOutputFile>(tr("Bake Output Path"));
-    bakeOutputPath->setName(kTexturePaintParamBakeOutputPath);
+    bakeOutputPath->setName(kUSDTexturePaintParamBakeOutputPath);
     bakeOutputPath->setHintToolTip(tr("The files the painted texture is baked into, one per UDIM tile: the <UDIM> "
                                       "token stands for the tile number, and #### for the frame number when Texture Mode is "
                                       "Animated, which writes every frame of the project range. Baking freezes the "
@@ -532,7 +532,7 @@ TexturePaint::initializeKnobs()
     _bakeOutputPath = bakeOutputPath;
 
     KnobButtonPtr bakeOutput = createKnob<KnobButton>(tr("Bake Output"));
-    bakeOutput->setName(kTexturePaintParamBakeOutput);
+    bakeOutput->setName(kUSDTexturePaintParamBakeOutput);
     bakeOutput->setHintToolTip(tr("Writes the painted texture, at the current frame, into the Bake Output Path files: one "
                                   "half-float file per UDIM tile the meshes cover and painted plane, the colour plane "
                                   "under the path and any other plane named with its layer after the path's name. The "
@@ -544,7 +544,7 @@ TexturePaint::initializeKnobs()
     _bakeOutput = bakeOutput;
 
     KnobStringPtr bakedOutput = createKnob<KnobString>(tr("Baked Output"));
-    bakedOutput->setName(kTexturePaintParamBakedOutput);
+    bakedOutput->setName(kUSDTexturePaintParamBakedOutput);
     bakedOutput->setHintToolTip(tr("What the last Bake Output wrote: its count, purposes and UDIM tiles.").toStdString());
     bakedOutput->setAnimationEnabled(false);
     bakedOutput->setSecretByDefault(true);
@@ -552,7 +552,7 @@ TexturePaint::initializeKnobs()
     _bakedOutput = bakedOutput;
 
     KnobIntPtr bakeGeneration = createKnob<KnobInt>(tr("Bake Generation"));
-    bakeGeneration->setName(kTexturePaintParamBakeGeneration);
+    bakeGeneration->setName(kUSDTexturePaintParamBakeGeneration);
     bakeGeneration->setHintToolTip(tr("How many bakes have landed. Each one changes it, so that the output refreshes.").toStdString());
     bakeGeneration->setAnimationEnabled(false);
     bakeGeneration->setSecretByDefault(true);
@@ -561,7 +561,7 @@ TexturePaint::initializeKnobs()
     _bakeGeneration = bakeGeneration;
 
     KnobIntPtr outputTile = createKnob<KnobInt>(tr("Output Tile"));
-    outputTile->setName(kTexturePaintParamOutputTile);
+    outputTile->setName(kUSDTexturePaintParamOutputTile);
     outputTile->setHintToolTip(tr("The UDIM tile the node outputs as its image.").toStdString());
     outputTile->setDefaultValue(1001);
     outputTile->setMinimum(1001);
@@ -590,27 +590,27 @@ TexturePaint::initializeKnobs()
     paint->setCurrentTool(brush);
     paint->onRoleChangedInternal(paint->paintBrushToolGroup.lock());
     paint->onToolChangedInternal(brush);
-} // TexturePaint::initializeKnobs
+} // USDTexturePaint::initializeKnobs
 
 RotoPaintInteractPtr
-TexturePaint::getPaintInteract() const
+USDTexturePaint::getPaintInteract() const
 {
     return _paintInteract;
 }
 
-TexturePaintInteract*
-TexturePaint::getViewInteract()
+USDTexturePaintInteract*
+USDTexturePaint::getViewInteract()
 {
     if (!_viewInteract) {
-        _viewInteract.reset(new TexturePaintInteract(this));
+        _viewInteract.reset(new USDTexturePaintInteract(this));
     }
 
     return _viewInteract.get();
 }
 
 void
-TexturePaint::refreshExtraStateAfterTimeChanged(bool isPlayback,
-                                                double time)
+USDTexturePaint::refreshExtraStateAfterTimeChanged(bool isPlayback,
+                                                   double time)
 {
     NativeEffectBase::refreshExtraStateAfterTimeChanged(isPlayback, time);
     if (_paintInteract) {
@@ -619,54 +619,54 @@ TexturePaint::refreshExtraStateAfterTimeChanged(bool isPlayback,
 }
 
 void
-TexturePaint::onCurveLayerCreated(const RotoLayerPtr& layer)
+USDTexturePaint::onCurveLayerCreated(const RotoLayerPtr& layer)
 {
     if (!layer) {
         return;
     }
     const SceneRaster::ExplicitCamera defaults;
 
-    KnobDoublePtr cameraToWorld = makeSessionKnob<KnobDouble>(layer, kTexturePaintSessionParamCameraToWorld, tr("Camera To World"), 16,
+    KnobDoublePtr cameraToWorld = makeSessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamCameraToWorld, tr("Camera To World"), 16,
                                                               tr("The session camera's transform, row-major with the "
                                                                  "translation in the last row."));
     for (int i = 0; i < 16; ++i) {
         cameraToWorld->setDefaultValue(defaults.cameraToWorld[i], i);
     }
 
-    KnobDoublePtr viewHeight = makeSessionKnob<KnobDouble>(layer, kTexturePaintSessionParamViewHeight, tr("View Height"), 1,
+    KnobDoublePtr viewHeight = makeSessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamViewHeight, tr("View Height"), 1,
                                                            tr("The height of the view at unit distance for a "
                                                               "perspective camera, or in world units for an "
                                                               "orthographic one."));
     viewHeight->setDefaultValue(defaults.viewHeight);
 
-    KnobDoublePtr aspect = makeSessionKnob<KnobDouble>(layer, kTexturePaintSessionParamAspect, tr("Aspect"), 1,
+    KnobDoublePtr aspect = makeSessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamAspect, tr("Aspect"), 1,
                                                        tr("The view's width over its height."));
     aspect->setDefaultValue(defaults.aspect);
 
-    KnobBoolPtr orthographic = makeSessionKnob<KnobBool>(layer, kTexturePaintSessionParamOrthographic, tr("Orthographic"), 1,
+    KnobBoolPtr orthographic = makeSessionKnob<KnobBool>(layer, kUSDTexturePaintSessionParamOrthographic, tr("Orthographic"), 1,
                                                          tr("Whether the session camera is orthographic."));
     orthographic->setDefaultValue(defaults.orthographic);
 
-    KnobDoublePtr nearClip = makeSessionKnob<KnobDouble>(layer, kTexturePaintSessionParamNearClip, tr("Near Clip"), 1,
+    KnobDoublePtr nearClip = makeSessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamNearClip, tr("Near Clip"), 1,
                                                          tr("The session camera's near clipping distance."));
     nearClip->setDefaultValue(defaults.nearClip);
 
-    KnobDoublePtr farClip = makeSessionKnob<KnobDouble>(layer, kTexturePaintSessionParamFarClip, tr("Far Clip"), 1,
+    KnobDoublePtr farClip = makeSessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamFarClip, tr("Far Clip"), 1,
                                                         tr("The session camera's far clipping distance."));
     farClip->setDefaultValue(defaults.farClip);
 
-    KnobBoolPtr frozen = makeSessionKnob<KnobBool>(layer, kTexturePaintSessionParamFrozen, tr("Frozen"), 1,
+    KnobBoolPtr frozen = makeSessionKnob<KnobBool>(layer, kUSDTexturePaintSessionParamFrozen, tr("Frozen"), 1,
                                                    tr("Whether the session's strokes are baked into the Bake Output "
                                                       "files and so no longer projected."));
     frozen->setDefaultValue(false);
-} // TexturePaint::onCurveLayerCreated
+} // USDTexturePaint::onCurveLayerCreated
 
 void
-TexturePaint::onEffectCreated(bool /*mayCreateFileDialog*/,
-                              const CreateNodeArgs& args)
+USDTexturePaint::onEffectCreated(bool /*mayCreateFileDialog*/,
+                                 const CreateNodeArgs& args)
 {
     if (!args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization)) {
-        // Named after the node, so that two TexturePaint nodes never bake over each other's files.
+        // Named after the node, so that two USDTexturePaint nodes never bake over each other's files.
         const std::string name = getNode()->getScriptName_mt_safe();
         KnobOutputFilePtr inputs = _bakeInputsPath.lock();
         KnobOutputFilePtr output = _bakeOutputPath.lock();
@@ -738,15 +738,15 @@ TexturePaint::onEffectCreated(bool /*mayCreateFileDialog*/,
 }
 
 Route
-TexturePaint::route(double /*time*/,
-                    ViewIdx /*view*/)
+USDTexturePaint::route(double /*time*/,
+                       ViewIdx /*view*/)
 {
     return getInput(0) ? Route::none() : Route::black();
 }
 
 ImageLayerDesc
-TexturePaint::getPaintedPlane(double time,
-                              ViewIdx view) const
+USDTexturePaint::getPaintedPlane(double time,
+                                 ViewIdx view) const
 {
     std::vector<ResolvedLayer> resolved;
 
@@ -758,7 +758,7 @@ TexturePaint::getPaintedPlane(double time,
 }
 
 bool
-TexturePaint::sessionHasStrokes(const RotoLayerPtr& session) const
+USDTexturePaint::sessionHasStrokes(const RotoLayerPtr& session) const
 {
     RotoCurveContextPtr context = getNode()->getCurveContext();
 
@@ -775,8 +775,8 @@ TexturePaint::sessionHasStrokes(const RotoLayerPtr& session) const
 }
 
 std::list<ImageLayerDesc>
-TexturePaint::getOutputPlanes(double time,
-                              ViewIdx view) const
+USDTexturePaint::getOutputPlanes(double time,
+                                 ViewIdx view) const
 {
     std::list<ImageLayerDesc> planes;
 
@@ -795,12 +795,12 @@ TexturePaint::getOutputPlanes(double time,
 }
 
 void
-TexturePaint::getComponentsNeededAndProduced(double time,
-                                             ViewIdx view,
-                                             EffectInstance::ComponentsNeededMap* comps,
-                                             double* passThroughTime,
-                                             int* passThroughView,
-                                             int* passThroughInputNb)
+USDTexturePaint::getComponentsNeededAndProduced(double time,
+                                                ViewIdx view,
+                                                EffectInstance::ComponentsNeededMap* comps,
+                                                double* passThroughTime,
+                                                int* passThroughView,
+                                                int* passThroughInputNb)
 {
     EffectInstance::getComponentsNeededAndProduced(time, view, comps, passThroughTime, passThroughView, passThroughInputNb);
     // Nothing is fetched from the scene input as an image.
@@ -809,9 +809,9 @@ TexturePaint::getComponentsNeededAndProduced(double time,
 }
 
 StatusEnum
-TexturePaint::getPreferredMetadataAt(double /*time*/,
-                                     ViewIdx /*view*/,
-                                     NodeMetadata& metadata)
+USDTexturePaint::getPreferredMetadataAt(double /*time*/,
+                                        ViewIdx /*view*/,
+                                        NodeMetadata& metadata)
 {
     const int size = getTileResolution();
 
@@ -826,17 +826,17 @@ TexturePaint::getPreferredMetadataAt(double /*time*/,
 }
 
 ImageMetadata
-TexturePaint::deriveOutputMetadata(double time,
-                                   ViewIdx view)
+USDTexturePaint::deriveOutputMetadata(double time,
+                                      ViewIdx view)
 {
     ImageMetadata metadata;
     const std::list<ImageLayerDesc> planes = getOutputPlanes(time, view);
 
     for (const ImageLayerDesc& plane : planes) {
         if (plane.isColorLayer()) {
-            metadata.setString(kTexturePaintMetadataPurposePrefix "rgba", kTexturePaintPurposeDiffuseColor);
+            metadata.setString(kUSDTexturePaintMetadataPurposePrefix "rgba", kUSDTexturePaintPurposeDiffuseColor);
         } else {
-            metadata.setString(kTexturePaintMetadataPurposePrefix + plane.getLayerID(), plane.getLayerID());
+            metadata.setString(kUSDTexturePaintMetadataPurposePrefix + plane.getLayerID(), plane.getLayerID());
         }
     }
 
@@ -844,11 +844,11 @@ TexturePaint::deriveOutputMetadata(double time,
 }
 
 StatusEnum
-TexturePaint::getRegionOfDefinition(U64 /*hash*/,
-                                    double /*time*/,
-                                    const RenderScale& /*scale*/,
-                                    ViewIdx /*view*/,
-                                    RectD* rod)
+USDTexturePaint::getRegionOfDefinition(U64 /*hash*/,
+                                       double /*time*/,
+                                       const RenderScale& /*scale*/,
+                                       ViewIdx /*view*/,
+                                       RectD* rod)
 {
     const int size = getTileResolution();
 
@@ -861,7 +861,7 @@ TexturePaint::getRegionOfDefinition(U64 /*hash*/,
 }
 
 U64
-TexturePaint::getBakedFilesDigest() const
+USDTexturePaint::getBakedFilesDigest() const
 {
     const KnobIPtr bakeKnobs[] = { _bakedInputs.lock(), _bakeInputsPath.lock(), _bakedOutput.lock(), _bakeOutputPath.lock() };
     ContentHasher signature;
@@ -896,8 +896,8 @@ TexturePaint::getBakedFilesDigest() const
 }
 
 std::vector<RotoLayerPtr>
-TexturePaint::getLaidSessions(const std::vector<RotoLayerPtr>* only,
-                              bool* narrowed) const
+USDTexturePaint::getLaidSessions(const std::vector<RotoLayerPtr>* only,
+                                 bool* narrowed) const
 {
     // Frozen sessions are in the Bake Output files; while those are the base they are not laid
     // over again.
@@ -928,14 +928,14 @@ TexturePaint::getLaidSessions(const std::vector<RotoLayerPtr>* only,
 }
 
 U64
-TexturePaint::getTileCacheKey(double time,
-                              ViewIdx view,
-                              const std::vector<RotoLayerPtr>* only,
-                              bool* narrowed) const
+USDTexturePaint::getTileCacheKey(double time,
+                                 ViewIdx view,
+                                 const std::vector<RotoLayerPtr>* only,
+                                 bool* narrowed) const
 {
     ContentHasher hasher;
 
-    hasher.appendString(PLUGINID_NATRON_TEXTUREPAINT);
+    hasher.appendString(PLUGINID_NATRON_USDTEXTUREPAINT);
     hasher.appendI64(view.value());
     if (getTextureMode() != eTextureModeAnimated) {
         hasher.appendDouble(getTextureTime(time));
@@ -987,8 +987,8 @@ TexturePaint::getTileCacheKey(double time,
 }
 
 bool
-TexturePaint::getBakeInputsPattern(std::string* pattern,
-                                   std::string* error) const
+USDTexturePaint::getBakeInputsPattern(std::string* pattern,
+                                      std::string* error) const
 {
     KnobOutputFilePtr knob = _bakeInputsPath.lock();
 
@@ -1019,9 +1019,9 @@ TexturePaint::getBakeInputsPattern(std::string* pattern,
 }
 
 void
-TexturePaint::getBakedInputs(std::vector<std::string>* purposes,
-                             std::vector<int>* tiles,
-                             std::pair<int, int>* frames) const
+USDTexturePaint::getBakedInputs(std::vector<std::string>* purposes,
+                                std::vector<int>* tiles,
+                                std::pair<int, int>* frames) const
 {
     KnobStringPtr knob = _bakedInputs.lock();
 
@@ -1029,9 +1029,9 @@ TexturePaint::getBakedInputs(std::vector<std::string>* purposes,
 }
 
 std::string
-TexturePaint::getBakedInputPath(const std::string& purpose,
-                                int tile,
-                                double time) const
+USDTexturePaint::getBakedInputPath(const std::string& purpose,
+                                   int tile,
+                                   double time) const
 {
     std::vector<std::string> purposes;
     std::vector<int> tiles;
@@ -1052,8 +1052,8 @@ TexturePaint::getBakedInputPath(const std::string& purpose,
 }
 
 bool
-TexturePaint::getBakeOutputPattern(std::string* pattern,
-                                   std::string* error) const
+USDTexturePaint::getBakeOutputPattern(std::string* pattern,
+                                      std::string* error) const
 {
     KnobOutputFilePtr knob = _bakeOutputPath.lock();
 
@@ -1084,7 +1084,7 @@ TexturePaint::getBakeOutputPattern(std::string* pattern,
 }
 
 bool
-TexturePaint::hasBakedOutput() const
+USDTexturePaint::hasBakedOutput() const
 {
     KnobStringPtr knob = _bakedOutput.lock();
     std::vector<std::string> purposes;
@@ -1096,9 +1096,9 @@ TexturePaint::hasBakedOutput() const
 }
 
 std::string
-TexturePaint::getBakedOutputPath(const std::string& purpose,
-                                 int tile,
-                                 double time) const
+USDTexturePaint::getBakedOutputPath(const std::string& purpose,
+                                    int tile,
+                                    double time) const
 {
     KnobStringPtr knob = _bakedOutput.lock();
     std::vector<std::string> purposes;
@@ -1120,7 +1120,7 @@ TexturePaint::getBakedOutputPath(const std::string& purpose,
 }
 
 std::vector<std::string>
-TexturePaint::getBakedOutputFiles() const
+USDTexturePaint::getBakedOutputFiles() const
 {
     KnobStringPtr knob = _bakedOutput.lock();
     std::vector<std::string> purposes;
@@ -1144,9 +1144,9 @@ TexturePaint::getBakedOutputFiles() const
 }
 
 std::string
-TexturePaint::getBasePath(const std::string& purpose,
-                          int tile,
-                          double time) const
+USDTexturePaint::getBasePath(const std::string& purpose,
+                             int tile,
+                             double time) const
 {
     const std::string output = getBakedOutputPath(purpose, tile, time);
 
@@ -1154,7 +1154,7 @@ TexturePaint::getBasePath(const std::string& purpose,
 }
 
 std::string
-TexturePaint::getViewBaseFiles(double time) const
+USDTexturePaint::getViewBaseFiles(double time) const
 {
     std::set<int> tiles;
     std::vector<std::string> purposes;
@@ -1168,7 +1168,7 @@ TexturePaint::getViewBaseFiles(double time) const
 
     std::string lines;
     for (int tile : tiles) {
-        const std::string path = getBasePath(kTexturePaintPurposeDiffuseColor, tile, time);
+        const std::string path = getBasePath(kUSDTexturePaintPurposeDiffuseColor, tile, time);
         if (!path.empty()) {
             lines += std::to_string(tile) + "\t" + std::to_string(fileStamp(path)) + "\t" + path + "\n";
         }
@@ -1183,8 +1183,8 @@ const std::chrono::seconds kTileClaimRetry(30);
 }
 
 bool
-TexturePaint::getTileDirectory(std::string* directory,
-                               std::string* error) const
+USDTexturePaint::getTileDirectory(std::string* directory,
+                                  std::string* error) const
 {
     const std::string root = appPTR->getDiskCacheLocation().toStdString();
     AppInstancePtr app = getApp();
@@ -1192,7 +1192,7 @@ TexturePaint::getTileDirectory(std::string* directory,
     const NodePtr node = getNode();
     const std::string id = node ? node->getCacheID() : std::string();
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-    std::shared_ptr<TexturePaintCache::TileDirectoryClaim> previous;
+    std::shared_ptr<USDTexturePaintCache::TileDirectoryClaim> previous;
     bool claimed = false;
     bool held = false;
     std::chrono::steady_clock::time_point retry = now;
@@ -1201,7 +1201,7 @@ TexturePaint::getTileDirectory(std::string* directory,
         const bool current = _tileClaim && (_tileClaimId == id) && (_tileClaimSaved == saved);
         const bool waiting = _tileClaimFailed && (_tileClaimFailedId == id) && (_tileClaimFailedSaved == saved) && (now < _tileClaimRetry);
         if (!current && !waiting) {
-            std::shared_ptr<TexturePaintCache::TileDirectoryClaim> claim = TexturePaintCache::claimTileDirectory(root, id, saved);
+            std::shared_ptr<USDTexturePaintCache::TileDirectoryClaim> claim = USDTexturePaintCache::claimTileDirectory(root, id, saved);
             if (claim) {
                 previous.swap(_tileClaim);
                 _tileClaim = claim;
@@ -1224,14 +1224,14 @@ TexturePaint::getTileDirectory(std::string* directory,
         }
     }
     if (previous && !previous->isShared()) {
-        TexturePaintCache::removeTileDirectory(std::move(previous));
+        USDTexturePaintCache::removeTileDirectory(std::move(previous));
     }
     // After a claim, so that the prune never takes this process's own directory for an idle one.
     if (claimed) {
         static std::once_flag pruned;
         std::call_once(pruned, [root]() {
             std::thread([root]() {
-                TexturePaintCache::pruneDeadProcessDirectories(root);
+                USDTexturePaintCache::pruneDeadProcessDirectories(root);
             }).detach();
         });
     }
@@ -1247,7 +1247,7 @@ TexturePaint::getTileDirectory(std::string* directory,
 }
 
 std::vector<std::string>
-TexturePaint::getBakedInputFiles() const
+USDTexturePaint::getBakedInputFiles() const
 {
     std::vector<std::string> purposes;
     std::vector<int> tiles;
@@ -1269,7 +1269,7 @@ TexturePaint::getBakedInputFiles() const
     return files;
 }
 
-struct TexturePaint::BakeInputsRun {
+struct USDTexturePaint::BakeInputsRun {
     double time = 0.;
     ViewIdx view;
     int firstFrame = 1;
@@ -1285,7 +1285,7 @@ struct TexturePaint::BakeInputsRun {
     std::vector<std::string> warnings;
 };
 
-struct TexturePaint::BakeOutputRun {
+struct USDTexturePaint::BakeOutputRun {
     double time = 0.;
     ViewIdx view;
     int firstFrame = 1;
@@ -1310,10 +1310,10 @@ struct TexturePaint::BakeOutputRun {
 };
 
 bool
-TexturePaint::prepareBakeInputs(double time,
-                                ViewIdx view,
-                                BakeInputsRun* run,
-                                std::string* error)
+USDTexturePaint::prepareBakeInputs(double time,
+                                   ViewIdx view,
+                                   BakeInputsRun* run,
+                                   std::string* error)
 {
     if (!getBakeInputsPattern(&run->pattern, error)) {
         return false;
@@ -1336,9 +1336,9 @@ TexturePaint::prepareBakeInputs(double time,
 }
 
 bool
-TexturePaint::runBakeInputs(BakeInputsRun& run,
-                            const BakeControl& control,
-                            std::string* error)
+USDTexturePaint::runBakeInputs(BakeInputsRun& run,
+                               const BakeControl& control,
+                               std::string* error)
 {
     const bool animated = getTextureMode() == eTextureModeAnimated;
 
@@ -1363,7 +1363,7 @@ TexturePaint::runBakeInputs(BakeInputsRun& run,
         args.size = run.size;
         args.pathPattern = expandFrame(run.pattern, run.viewNames, frame);
         args.cancelled = control.cancelled;
-        if (!TexturePaintCache::matchedMeshes(args.stage, run.expression, args.stName, &args.meshes, error)) {
+        if (!USDTexturePaintCache::matchedMeshes(args.stage, run.expression, args.stName, &args.meshes, error)) {
             return false;
         }
         if (args.meshes.empty()) {
@@ -1390,9 +1390,9 @@ TexturePaint::runBakeInputs(BakeInputsRun& run,
 }
 
 void
-TexturePaint::applyBakeInputs(BakeInputsRun& run,
-                              std::vector<std::string>* files,
-                              std::string* warning)
+USDTexturePaint::applyBakeInputs(BakeInputsRun& run,
+                                 std::vector<std::string>* files,
+                                 std::string* warning)
 {
     QStringList purposes;
     QStringList tiles;
@@ -1418,11 +1418,11 @@ TexturePaint::applyBakeInputs(BakeInputsRun& run,
 }
 
 bool
-TexturePaint::bakeInputs(double time,
-                         ViewIdx view,
-                         std::vector<std::string>* files,
-                         std::string* warning,
-                         std::string* error)
+USDTexturePaint::bakeInputs(double time,
+                            ViewIdx view,
+                            std::vector<std::string>* files,
+                            std::string* warning,
+                            std::string* error)
 {
     files->clear();
     warning->clear();
@@ -1447,13 +1447,13 @@ TexturePaint::bakeInputs(double time,
     applyBakeInputs(run, files, warning);
 
     return true;
-} // TexturePaint::bakeInputs
+} // USDTexturePaint::bakeInputs
 
 bool
-TexturePaint::prepareBakeOutput(double time,
-                                ViewIdx view,
-                                BakeOutputRun* run,
-                                std::string* error)
+USDTexturePaint::prepareBakeOutput(double time,
+                                   ViewIdx view,
+                                   BakeOutputRun* run,
+                                   std::string* error)
 {
     if (!getBakeOutputPattern(&run->pattern, error)) {
         return false;
@@ -1465,9 +1465,9 @@ TexturePaint::prepareBakeOutput(double time,
     run->undoFiles = std::make_shared<BakeOutputFiles>();
     run->undoFiles->owner = _bakeOwnerId;
     // Before the bake runs, so that its thread reads the identity without the file queue's.
-    run->undoFiles->bake = TexturePaintFileQueue::newId();
+    run->undoFiles->bake = USDTexturePaintFileQueue::newId();
     // A group's renaming reaches no onScriptNameChanged() of the nodes in it.
-    TexturePaintFileQueue::setOwnerName(_bakeOwnerId, getNode()->getFullyQualifiedName());
+    USDTexturePaintFileQueue::setOwnerName(_bakeOwnerId, getNode()->getFullyQualifiedName());
     run->primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
     run->expression = _primPattern.getExpression();
     run->size = getTileResolution();
@@ -1482,8 +1482,8 @@ TexturePaint::prepareBakeOutput(double time,
 }
 
 void
-TexturePaint::snapshotBakeOutput(BakeOutputRun* run,
-                                 bool closeOpenSession)
+USDTexturePaint::snapshotBakeOutput(BakeOutputRun* run,
+                                    bool closeOpenSession)
 {
     run->planes = getOutputPlanes(run->time, run->view);
     run->purposes.clear();
@@ -1512,7 +1512,7 @@ TexturePaint::snapshotBakeOutput(BakeOutputRun* run,
 }
 
 bool
-TexturePaint::isBakeOutputSnapshotCurrent(const BakeOutputRun& run) const
+USDTexturePaint::isBakeOutputSnapshotCurrent(const BakeOutputRun& run) const
 {
     const std::list<RotoLayerPtr> sessions = getSessions();
 
@@ -1526,23 +1526,23 @@ TexturePaint::isBakeOutputSnapshotCurrent(const BakeOutputRun& run) const
 }
 
 bool
-TexturePaint::runBakeOutput(BakeOutputRun& run,
-                            const BakeControl& control,
-                            std::string* error)
+USDTexturePaint::runBakeOutput(BakeOutputRun& run,
+                               const BakeControl& control,
+                               std::string* error)
 {
     // A bake that does not finish leaves the files as they were, and the tiles composed over the
     // files it wrote meanwhile are not used again. Its rollback follows its last file step on the
-    // TexturePaintFileQueue, even when a cancelled wait left that step to run later.
+    // USDTexturePaintFileQueue, even when a cancelled wait left that step to run later.
     struct RollBack {
-        std::shared_ptr<TexturePaint::BakeOutputFiles> files;
+        std::shared_ptr<USDTexturePaint::BakeOutputFiles> files;
         std::shared_ptr<std::atomic<std::uint64_t>> epoch;
-        std::weak_ptr<TexturePaint> node;
+        std::weak_ptr<USDTexturePaint> node;
         std::function<bool()> cancelled;
         bool armed;
         ~RollBack()
         {
             if (armed && files) {
-                (void)TexturePaintFileQueue::wait(TexturePaint::enqueueBakeOutputRollback(files, epoch, node), cancelled);
+                (void)USDTexturePaintFileQueue::wait(USDTexturePaint::enqueueBakeOutputRollback(files, epoch, node), cancelled);
             }
         }
     } rollBack = { run.undoFiles, _tileEpoch, weakSelf(), control.cancelled, true };
@@ -1557,7 +1557,7 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
     }
     const PXR_NS::TfToken stName(run.primvar.empty() ? std::string("st") : run.primvar);
     std::vector<PXR_NS::SdfPath> meshes;
-    if (!TexturePaintCache::matchedMeshes(scene.stage, run.expression, stName, &meshes, error)) {
+    if (!USDTexturePaintCache::matchedMeshes(scene.stage, run.expression, stName, &meshes, error)) {
         return false;
     }
     std::set<int> tiles;
@@ -1600,7 +1600,7 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
                 }
                 std::vector<float> rgba;
                 const std::size_t planeIndex = index++;
-                if (!TexturePaintCache::readTile(paths[planeIndex], RectI(0, 0, run.size, run.size), &rgba, error)) {
+                if (!USDTexturePaintCache::readTile(paths[planeIndex], RectI(0, 0, run.size, run.size), &rgba, error)) {
                     // The lease keeps this node's own pruning off the files; anything else
                     // deleting the cache gets the tiles built again, once.
                     std::error_code ec;
@@ -1610,7 +1610,7 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
                     rebuilt = true;
                     lease.reset();
                     error->clear();
-                    if (!ensureTiles(frameTime, run.view, tile, run.planes, &paths, &note, error, control.cancelled, &lease, &run.rendered) || !TexturePaintCache::readTile(paths[planeIndex], RectI(0, 0, run.size, run.size), &rgba, error)) {
+                    if (!ensureTiles(frameTime, run.view, tile, run.planes, &paths, &note, error, control.cancelled, &lease, &run.rendered) || !USDTexturePaintCache::readTile(paths[planeIndex], RectI(0, 0, run.size, run.size), &rgba, error)) {
                         return false;
                     }
                 }
@@ -1669,7 +1669,7 @@ bakeProcess()
         char digits[17] = {};
         std::snprintf(digits, sizeof(digits), "%016llx", (unsigned long long)hash);
         found.space.assign(digits, kBakeSpaceDigits);
-        found.known = TexturePaint::processStartTime((long)::getpid(), &found.started);
+        found.known = USDTexturePaint::processStartTime((long)::getpid(), &found.started);
 
         return found;
     }();
@@ -1679,7 +1679,7 @@ bakeProcess()
 } // anon namespace
 
 const std::string&
-TexturePaint::bakeProcessSpace()
+USDTexturePaint::bakeProcessSpace()
 {
     static const std::string empty;
 
@@ -1687,8 +1687,8 @@ TexturePaint::bakeProcessSpace()
 }
 
 bool
-TexturePaint::processStartTime(long pid,
-                               unsigned long long* ticks)
+USDTexturePaint::processStartTime(long pid,
+                                  unsigned long long* ticks)
 {
     if (pid <= 0) {
         return false;
@@ -1724,11 +1724,11 @@ TexturePaint::processStartTime(long pid,
 }
 
 std::string
-TexturePaint::bakeTempPath(const std::string& path,
-                           const std::string& space,
-                           long pid,
-                           unsigned long long started,
-                           unsigned int serial)
+USDTexturePaint::bakeTempPath(const std::string& path,
+                              const std::string& space,
+                              long pid,
+                              unsigned long long started,
+                              unsigned int serial)
 {
     const std::filesystem::path target(path);
     std::filesystem::path temp = target;
@@ -1739,7 +1739,7 @@ TexturePaint::bakeTempPath(const std::string& path,
 }
 
 void
-TexturePaint::removeStaleBakeTemps(const std::string& directory)
+USDTexturePaint::removeStaleBakeTemps(const std::string& directory)
 {
     const std::string& space = bakeProcessSpace();
     if (space.empty()) {
@@ -1792,11 +1792,11 @@ TexturePaint::removeStaleBakeTemps(const std::string& directory)
 }
 
 bool
-TexturePaint::writeBakeTarget(const BakeOutputRun& run,
-                              const std::string& path,
-                              const std::shared_ptr<std::vector<float>>& rgba,
-                              const BakeControl& control,
-                              std::string* error)
+USDTexturePaint::writeBakeTarget(const BakeOutputRun& run,
+                                 const std::string& path,
+                                 const std::shared_ptr<std::vector<float>>& rgba,
+                                 const BakeControl& control,
+                                 std::string* error)
 {
     struct Write {
         bool ok = false;
@@ -1804,7 +1804,7 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
         std::string error;
     };
     const std::shared_ptr<BakeOutputFiles> files = run.undoFiles;
-    const std::string key = TexturePaintFileQueue::claimKey(path);
+    const std::string key = USDTexturePaintFileQueue::claimKey(path);
     // Only a bake that can be cancelled waits for an earlier Bake Output of this node that wrote
     // path to land or go back; the synchronous one refuses to start meanwhile.
     const bool waits = bool(control.cancelled);
@@ -1812,8 +1812,8 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
     for (;;) {
         // Encoding is the long part: it waits for the earlier bake rather than being redone on every try.
         std::uint64_t holder = 0;
-        if (waits && TexturePaintFileQueue::isHeldByAnotherBake(files->bake, key, &holder) && (holder == files->owner)) {
-            TexturePaintFileQueue::waitForSettlement(std::chrono::milliseconds(50));
+        if (waits && USDTexturePaintFileQueue::isHeldByAnotherBake(files->bake, key, &holder) && (holder == files->owner)) {
+            USDTexturePaintFileQueue::waitForSettlement(std::chrono::milliseconds(50));
             if (control.cancelled()) {
                 error->clear();
 
@@ -1824,7 +1824,7 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
         static std::atomic<unsigned int> written(0);
         const std::string temp = bakeTempPath(path, bakeProcessSpace(), (long)::getpid(), bakeProcess().started, ++written);
         std::error_code ec;
-        if (!TexturePaintCache::writeTile(temp, run.size, *rgba, std::string(), error, true)) {
+        if (!USDTexturePaintCache::writeTile(temp, run.size, *rgba, std::string(), error, true)) {
             std::filesystem::remove(temp, ec);
 
             return false;
@@ -1836,7 +1836,7 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
             return false;
         }
         const std::shared_ptr<Write> write = std::make_shared<Write>();
-        const TexturePaintFileTicket step = TexturePaintFileQueue::submit([files, path, temp, write](bool shuttingDown) {
+        const USDTexturePaintFileTicket step = USDTexturePaintFileQueue::submit([files, path, temp, write](bool shuttingDown) {
             std::error_code moved;
             if (backUpBakeTarget(files.get(), path, &write->error, &write->heldBySameOwner)) {
                 std::filesystem::rename(temp, path, moved);
@@ -1854,7 +1854,7 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
             }
         });
         // A cancelled wait leaves the temporary file to the step, which still runs in its turn.
-        if (!TexturePaintFileQueue::wait(step, control.cancelled)) {
+        if (!USDTexturePaintFileQueue::wait(step, control.cancelled)) {
             error->clear();
 
             return false;
@@ -1871,8 +1871,8 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
 }
 
 void
-TexturePaint::applyBakeOutput(BakeOutputRun& run,
-                              BakeOutputState* state)
+USDTexturePaint::applyBakeOutput(BakeOutputRun& run,
+                                 BakeOutputState* state)
 {
     KnobStringPtr record = _bakedOutput.lock();
     // Read as the bake lands rather than as it was queued: an earlier bake may have landed since.
@@ -1890,12 +1890,12 @@ TexturePaint::applyBakeOutput(BakeOutputRun& run,
 }
 
 bool
-TexturePaint::writeBakeOutput(double time,
-                              ViewIdx view,
-                              std::vector<std::string>* files,
-                              std::shared_ptr<BakeOutputFiles>* undoFiles,
-                              BakeOutputState* state,
-                              std::string* error)
+USDTexturePaint::writeBakeOutput(double time,
+                                 ViewIdx view,
+                                 std::vector<std::string>* files,
+                                 std::shared_ptr<BakeOutputFiles>* undoFiles,
+                                 BakeOutputState* state,
+                                 std::string* error)
 {
     files->clear();
     undoFiles->reset();
@@ -1931,10 +1931,10 @@ TexturePaint::writeBakeOutput(double time,
     applyBakeOutput(run, state);
 
     return true;
-} // TexturePaint::writeBakeOutput
+} // USDTexturePaint::writeBakeOutput
 
 void
-TexturePaint::restoreBakeOutputState(const BakeOutputState& state)
+USDTexturePaint::restoreBakeOutputState(const BakeOutputState& state)
 {
     for (const RotoLayerWPtr& weak : state.frozen) {
         RotoLayerPtr session = weak.lock();
@@ -1953,7 +1953,7 @@ TexturePaint::restoreBakeOutputState(const BakeOutputState& state)
 }
 
 void
-TexturePaint::reapplyBakeOutputState(const BakeOutputState& state)
+USDTexturePaint::reapplyBakeOutputState(const BakeOutputState& state)
 {
     for (const RotoLayerWPtr& weak : state.frozen) {
         RotoLayerPtr session = weak.lock();
@@ -1970,7 +1970,7 @@ TexturePaint::reapplyBakeOutputState(const BakeOutputState& state)
 }
 
 void
-TexturePaint::syncStrokeLifetimes()
+USDTexturePaint::syncStrokeLifetimes()
 {
     const RotoCurveContextPtr context = getNode()->getCurveContext();
 
@@ -1980,10 +1980,10 @@ TexturePaint::syncStrokeLifetimes()
 }
 
 UndoCommandPtr
-TexturePaint::bakeOutput(double time,
-                         ViewIdx view,
-                         std::vector<std::string>* files,
-                         std::string* error)
+USDTexturePaint::bakeOutput(double time,
+                            ViewIdx view,
+                            std::vector<std::string>* files,
+                            std::string* error)
 {
     std::shared_ptr<BakeOutputFiles> undoFiles;
     BakeOutputState state;
@@ -1992,7 +1992,7 @@ TexturePaint::bakeOutput(double time,
         return UndoCommandPtr();
     }
 
-    return std::make_shared<TexturePaintBakeOutputUndoCommand>(getNode(), state, undoFiles);
+    return std::make_shared<USDTexturePaintBakeOutputUndoCommand>(getNode(), state, undoFiles);
 }
 
 namespace {
@@ -2046,7 +2046,7 @@ public:
     {
         std::error_code ec;
         if (!moveFile(from, to, ec)) {
-            *error = QCoreApplication::translate("TexturePaint", "%1 cannot be moved to %2: %3").arg(QString::fromStdString(from)).arg(QString::fromStdString(to)).arg(QString::fromStdString(ec.message())).toStdString();
+            *error = QCoreApplication::translate("USDTexturePaint", "%1 cannot be moved to %2: %3").arg(QString::fromStdString(from)).arg(QString::fromStdString(to)).arg(QString::fromStdString(ec.message())).toStdString();
 
             return false;
         }
@@ -2061,7 +2061,7 @@ public:
     {
         std::error_code ec;
         if (!keepFile(from, to, ec)) {
-            *error = QCoreApplication::translate("TexturePaint", "%1 cannot be kept to undo the bake: %2").arg(QString::fromStdString(from)).arg(QString::fromStdString(ec.message())).toStdString();
+            *error = QCoreApplication::translate("USDTexturePaint", "%1 cannot be kept to undo the bake: %2").arg(QString::fromStdString(from)).arg(QString::fromStdString(ec.message())).toStdString();
 
             return false;
         }
@@ -2093,19 +2093,19 @@ private:
 };
 
 void
-evictBakeTargets(const TexturePaint::BakeOutputFiles& files)
+evictBakeTargets(const USDTexturePaint::BakeOutputFiles& files)
 {
     std::vector<std::string> paths;
 
-    for (const TexturePaint::BakeOutputFiles::Entry& entry : files.entries) {
+    for (const USDTexturePaint::BakeOutputFiles::Entry& entry : files.entries) {
         paths.push_back(entry.target);
     }
     OiioReadSupport::evictHeaders(paths);
 }
 } // anon namespace
 
-TexturePaint::BakeOutputFiles::FileIdentity
-TexturePaint::BakeOutputFiles::FileIdentity::of(const std::string& path)
+USDTexturePaint::BakeOutputFiles::FileIdentity
+USDTexturePaint::BakeOutputFiles::FileIdentity::of(const std::string& path)
 {
     FileIdentity identity;
     struct stat info;
@@ -2124,15 +2124,15 @@ TexturePaint::BakeOutputFiles::FileIdentity::of(const std::string& path)
 }
 
 bool
-TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
-                               const std::string& target,
-                               std::string* error,
-                               bool* heldBySameOwner)
+USDTexturePaint::backUpBakeTarget(BakeOutputFiles* files,
+                                  const std::string& target,
+                                  std::string* error,
+                                  bool* heldBySameOwner)
 {
     if (heldBySameOwner) {
         *heldBySameOwner = false;
     }
-    const std::string key = TexturePaintFileQueue::claimKey(target);
+    const std::string key = USDTexturePaintFileQueue::claimKey(target);
     if (files->targets.count(key)) {
         return true;
     }
@@ -2141,11 +2141,11 @@ TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
         files->token = std::to_string((long)::getpid()) + "_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" + std::to_string(++bakes);
     }
     if (files->bake == 0) {
-        files->bake = TexturePaintFileQueue::newId();
+        files->bake = USDTexturePaintFileQueue::newId();
     }
     std::uint64_t holder = 0;
-    const TexturePaintFileQueue::ClaimResultEnum claim = TexturePaintFileQueue::claim(files->bake, files->owner, key, &holder);
-    if (claim == TexturePaintFileQueue::eClaimResultHeldBySameOwner) {
+    const USDTexturePaintFileQueue::ClaimResultEnum claim = USDTexturePaintFileQueue::claim(files->bake, files->owner, key, &holder);
+    if (claim == USDTexturePaintFileQueue::eClaimResultHeldBySameOwner) {
         if (heldBySameOwner) {
             *heldBySameOwner = true;
         }
@@ -2153,8 +2153,8 @@ TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
 
         return false;
     }
-    if (claim == TexturePaintFileQueue::eClaimResultHeldByAnotherOwner) {
-        const std::string name = TexturePaintFileQueue::getOwnerName(holder);
+    if (claim == USDTexturePaintFileQueue::eClaimResultHeldByAnotherOwner) {
+        const std::string name = USDTexturePaintFileQueue::getOwnerName(holder);
         *error = tr("%1 is being baked by %2, whose Bake Output has not finished; bake again once it has.").arg(QString::fromStdString(target)).arg(name.empty() ? tr("another node") : QString::fromStdString(name)).toStdString();
 
         return false;
@@ -2163,7 +2163,7 @@ TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
     files->targets.insert(key);
     const std::filesystem::path path(target);
     // Beside the target, on its file system, so that every swap is a rename.
-    const std::filesystem::path directory = path.parent_path() / ".texturepaint-undo" / files->token;
+    const std::filesystem::path directory = path.parent_path() / ".usdtexturepaint-undo" / files->token;
     std::error_code ec;
     // Another bake's discard deletes the shared parent once it looks empty, which can fall
     // between the parent's creation and the token directory's.
@@ -2200,10 +2200,10 @@ TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
 }
 
 void
-TexturePaint::markBakeTargetWritten(BakeOutputFiles* files,
-                                    const std::string& target)
+USDTexturePaint::markBakeTargetWritten(BakeOutputFiles* files,
+                                       const std::string& target)
 {
-    const std::string key = TexturePaintFileQueue::claimKey(target);
+    const std::string key = USDTexturePaintFileQueue::claimKey(target);
     for (BakeOutputFiles::Entry& entry : files->entries) {
         if (entry.key == key) {
             entry.wrote = true;
@@ -2215,7 +2215,7 @@ TexturePaint::markBakeTargetWritten(BakeOutputFiles* files,
 }
 
 void
-TexturePaint::sealBakeOutputFiles(BakeOutputFiles* files)
+USDTexturePaint::sealBakeOutputFiles(BakeOutputFiles* files)
 {
     for (BakeOutputFiles::Entry& entry : files->entries) {
         if (entry.wrote) {
@@ -2226,9 +2226,9 @@ TexturePaint::sealBakeOutputFiles(BakeOutputFiles* files)
 }
 
 void
-TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files,
-                                      bool evict,
-                                      std::vector<std::string>* kept)
+USDTexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files,
+                                         bool evict,
+                                         std::vector<std::string>* kept)
 {
     // Directories holding a backup that could not leave them, which may be all that is left of
     // what a target held before the bake.
@@ -2284,48 +2284,48 @@ TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files,
 }
 
 void
-TexturePaint::settleBakeOutputFiles(const BakeOutputFiles& files)
+USDTexturePaint::settleBakeOutputFiles(const BakeOutputFiles& files)
 {
-    TexturePaintFileQueue::settle(files.bake);
+    USDTexturePaintFileQueue::settle(files.bake);
 }
 
 namespace {
 void
-reportKeptOriginals(const std::weak_ptr<TexturePaint>& node,
+reportKeptOriginals(const std::weak_ptr<USDTexturePaint>& node,
                     const std::vector<std::string>& kept)
 {
     QStringList paths;
     for (const std::string& path : kept) {
         paths.push_back(QString::fromStdString(path));
     }
-    const QString message = QCoreApplication::translate("TexturePaint", "A Bake Output that did not finish could not put back every file it replaced; what they held before the bake is kept as %1.").arg(paths.join(QString::fromUtf8(", ")));
+    const QString message = QCoreApplication::translate("USDTexturePaint", "A Bake Output that did not finish could not put back every file it replaced; what they held before the bake is kept as %1.").arg(paths.join(QString::fromUtf8(", ")));
     if (appPTR) {
-        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("TexturePaint"), QDateTime::currentDateTime(), message);
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("USDTexturePaint"), QDateTime::currentDateTime(), message);
     }
     QCoreApplication* app = QCoreApplication::instance();
     if (!app || node.expired()) {
         return;
     }
     QMetaObject::invokeMethod(app, [node, message]() {
-        const std::shared_ptr<TexturePaint> self = node.lock();
+        const std::shared_ptr<USDTexturePaint> self = node.lock();
         if (self) {
             self->setPersistentMessage(eMessageTypeWarning, message.toStdString());
         } }, Qt::QueuedConnection);
 }
 } // anon namespace
 
-TexturePaintFileTicket
-TexturePaint::enqueueBakeOutputRollback(const std::shared_ptr<BakeOutputFiles>& files,
-                                        const std::shared_ptr<std::atomic<std::uint64_t>>& epoch,
-                                        const std::weak_ptr<TexturePaint>& node)
+USDTexturePaintFileTicket
+USDTexturePaint::enqueueBakeOutputRollback(const std::shared_ptr<BakeOutputFiles>& files,
+                                           const std::shared_ptr<std::atomic<std::uint64_t>>& epoch,
+                                           const std::weak_ptr<USDTexturePaint>& node)
 {
     if (!files) {
-        return TexturePaintFileTicket();
+        return USDTexturePaintFileTicket();
     }
 
     // Thousands of files for an Animated output, maybe on a network file system: never on the
     // main thread. What the bake wrote is only known on the queue, after its last write.
-    return TexturePaintFileQueue::submit([files, epoch, node](bool shuttingDown) {
+    return USDTexturePaintFileQueue::submit([files, epoch, node](bool shuttingDown) {
         if (files->entries.empty()) {
             settleBakeOutputFiles(*files);
 
@@ -2343,16 +2343,16 @@ TexturePaint::enqueueBakeOutputRollback(const std::shared_ptr<BakeOutputFiles>& 
             ++*epoch;
         }
         if (!kept.empty()) {
-            reportKeptOriginals(shuttingDown ? std::weak_ptr<TexturePaint>() : node, kept);
+            reportKeptOriginals(shuttingDown ? std::weak_ptr<USDTexturePaint>() : node, kept);
         }
     });
 }
 
 bool
-TexturePaint::swapBakeOutputFiles(BakeOutputFiles* files,
-                                  bool undo,
-                                  std::string* error,
-                                  bool evict)
+USDTexturePaint::swapBakeOutputFiles(BakeOutputFiles* files,
+                                     bool undo,
+                                     std::string* error,
+                                     bool evict)
 {
     // An undo that failed leaves the files baked while the undo stack has moved on: the redo that
     // follows must not back up the baked file over the original's backup.
@@ -2366,8 +2366,8 @@ TexturePaint::swapBakeOutputFiles(BakeOutputFiles* files,
     }
     for (const BakeOutputFiles::Entry& entry : files->entries) {
         std::uint64_t holder = 0;
-        if (TexturePaintFileQueue::isHeldByAnotherBake(files->bake, entry.key, &holder)) {
-            const std::string name = TexturePaintFileQueue::getOwnerName(holder);
+        if (USDTexturePaintFileQueue::isHeldByAnotherBake(files->bake, entry.key, &holder)) {
+            const std::string name = USDTexturePaintFileQueue::getOwnerName(holder);
             *error = tr("%1 is being baked by %2, whose Bake Output has not finished, so the bake cannot be undone or redone now.").arg(QString::fromStdString(entry.target)).arg(name.empty() ? tr("another node") : QString::fromStdString(name)).toStdString();
 
             return false;
@@ -2437,7 +2437,7 @@ TexturePaint::swapBakeOutputFiles(BakeOutputFiles* files,
 }
 
 void
-TexturePaint::discardBakeOutputFiles(const BakeOutputFiles& files)
+USDTexturePaint::discardBakeOutputFiles(const BakeOutputFiles& files)
 {
     for (const std::string& directory : files.directories) {
         std::error_code ec;
@@ -2483,21 +2483,21 @@ struct BakeOutputSwap {
 } // anon namespace
 
 void
-TexturePaint::setFailReverseSwapsForTesting(bool fail)
+USDTexturePaint::setFailReverseSwapsForTesting(bool fail)
 {
     failReverseSwapsForTesting() = fail;
 }
 
 bool
-TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& files,
-                                    const BakeOutputState& state,
-                                    bool undo,
-                                    const std::shared_ptr<bool>& applied)
+USDTexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& files,
+                                       const BakeOutputState& state,
+                                       bool undo,
+                                       const std::shared_ptr<bool>& applied)
 {
     if (!files || !applied) {
         return false;
     }
-    TexturePaintFileQueue::setOwnerName(_bakeOwnerId, getNode()->getFullyQualifiedName());
+    USDTexturePaintFileQueue::setOwnerName(_bakeOwnerId, getNode()->getFullyQualifiedName());
     const std::shared_ptr<BakeOutputSwap> swap = std::make_shared<BakeOutputSwap>();
     // The completion owns the swap: one that never runs leaves the files as they were, the file
     // step skipping when it has not begun and its reverse following it when it has.
@@ -2505,7 +2505,7 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
         std::shared_ptr<BakeOutputFiles> files;
         std::shared_ptr<BakeOutputSwap> swap;
         std::shared_ptr<std::atomic<int>> pending;
-        std::weak_ptr<TexturePaint> node;
+        std::weak_ptr<USDTexturePaint> node;
         BakeOutputState state;
         std::shared_ptr<bool> applied;
         bool undo = false;
@@ -2517,11 +2517,11 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
                 if (!swap->phase.compare_exchange_strong(armed, eSwapPhaseDropped)) {
                     const std::shared_ptr<BakeOutputFiles> moved = files;
                     const std::shared_ptr<BakeOutputSwap> ran = swap;
-                    const std::weak_ptr<TexturePaint> weak = node;
+                    const std::weak_ptr<USDTexturePaint> weak = node;
                     const BakeOutputState kept = state;
                     const std::shared_ptr<bool> flag = applied;
                     const bool swapped = undo;
-                    (void)TexturePaintFileQueue::submit([moved, ran, weak, kept, flag, swapped](bool shuttingDown) {
+                    (void)USDTexturePaintFileQueue::submit([moved, ran, weak, kept, flag, swapped](bool shuttingDown) {
                         if (!ran->ok) {
                             return;
                         }
@@ -2537,7 +2537,7 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
                         }
                         // The files stay as the swap left them: the node follows them, on the thread its state lives on.
                         QMetaObject::invokeMethod(app, [weak, kept, flag, swapped, failure]() {
-                            const std::shared_ptr<TexturePaint> self = weak.lock();
+                            const std::shared_ptr<USDTexturePaint> self = weak.lock();
                             if (!self) {
                                 return;
                             }
@@ -2554,11 +2554,11 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
                             }
                             QString message;
                             if (!followed) {
-                                message = swapped ? TexturePaint::tr("An undo of Bake Output stopped after moving its files, which could not be moved back (%1).") : TexturePaint::tr("A redo of Bake Output stopped after moving its files, which could not be moved back (%1).");
+                                message = swapped ? USDTexturePaint::tr("An undo of Bake Output stopped after moving its files, which could not be moved back (%1).") : USDTexturePaint::tr("A redo of Bake Output stopped after moving its files, which could not be moved back (%1).");
                             } else if (swapped) {
-                                message = TexturePaint::tr("An undo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays undone, as its files are.");
+                                message = USDTexturePaint::tr("An undo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays undone, as its files are.");
                             } else {
-                                message = TexturePaint::tr("A redo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays redone, as its files are.");
+                                message = USDTexturePaint::tr("A redo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays redone, as its files are.");
                             }
                             self->setPersistentMessage(eMessageTypeError, message.arg(QString::fromStdString(failure)).toStdString()); }, Qt::QueuedConnection);
                     });
@@ -2567,7 +2567,7 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
             --*pending;
         }
     };
-    const std::weak_ptr<TexturePaint> weak = weakSelf();
+    const std::weak_ptr<USDTexturePaint> weak = weakSelf();
     std::shared_ptr<Owner> owner = std::make_shared<Owner>();
     owner->files = files;
     owner->swap = swap;
@@ -2578,9 +2578,9 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
     owner->undo = undo;
     ++*_pendingBakeOutputs;
 
-    TexturePaintBaker::Bake bake;
+    USDTexturePaintBaker::Bake bake;
     bake.label = undo ? tr("Undoing Bake Output") : tr("Redoing Bake Output");
-    bake.work = [weak, files, state, undo, applied, swap](TexturePaintBaker::Context& context) -> bool {
+    bake.work = [weak, files, state, undo, applied, swap](USDTexturePaintBaker::Context& context) -> bool {
         QCoreApplication* app = QCoreApplication::instance();
         if (!app) {
             return false;
@@ -2589,7 +2589,7 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
         // sees the record as they left it; the record is read there, never on this thread.
         QMetaObject::invokeMethod(app, [weak, state, undo, applied, swap]() {
             SwapCheckEnum check = eSwapCheckRefused;
-            const std::shared_ptr<TexturePaint> self = weak.lock();
+            const std::shared_ptr<USDTexturePaint> self = weak.lock();
             if (self) {
                 const KnobStringPtr record = self->_bakedOutput.lock();
                 const std::string current = record ? record->getValue() : std::string();
@@ -2617,7 +2617,7 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
                 return swap->check == eSwapCheckNothingToDo;
             }
         }
-        const TexturePaintFileTicket step = TexturePaintFileQueue::submit([files, undo, swap](bool shuttingDown) {
+        const USDTexturePaintFileTicket step = USDTexturePaintFileQueue::submit([files, undo, swap](bool shuttingDown) {
             int armed = eSwapPhaseArmed;
             if (!swap->phase.compare_exchange_strong(armed, eSwapPhaseRan)) {
                 return;
@@ -2625,10 +2625,10 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
             swap->ok = swapBakeOutputFiles(files.get(), undo, &swap->failure, !shuttingDown);
         });
 
-        return TexturePaintFileQueue::wait(step, [&context]() { return context.cancelled(); }) && swap->ok;
+        return USDTexturePaintFileQueue::wait(step, [&context]() { return context.cancelled(); }) && swap->ok;
     };
     bake.completion = [weak, state, undo, applied, swap, owner](bool ok) {
-        const std::shared_ptr<TexturePaint> self = weak.lock();
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
         if (!self) {
             return;
         }
@@ -2658,12 +2658,12 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
 }
 
 void
-TexturePaint::enqueueBakeOutputDiscard(const std::shared_ptr<BakeOutputFiles>& files)
+USDTexturePaint::enqueueBakeOutputDiscard(const std::shared_ptr<BakeOutputFiles>& files)
 {
     if (!files) {
         return;
     }
-    TexturePaintFileQueue::submit([files](bool /*shuttingDown*/) {
+    USDTexturePaintFileQueue::submit([files](bool /*shuttingDown*/) {
         files->discarded = true;
         discardBakeOutputFiles(*files);
     });
@@ -2679,7 +2679,7 @@ tilesCached(const std::vector<std::string>& paths,
     note->clear();
     for (std::size_t i = 0; i < paths.size(); ++i) {
         std::string fileNote;
-        if (!TexturePaintCache::readTileNote(paths[i], size, &fileNote)) {
+        if (!USDTexturePaintCache::readTileNote(paths[i], size, &fileNote)) {
             note->clear();
 
             return false;
@@ -2703,9 +2703,9 @@ callerAbortInfo(const EffectInstance& effect)
 } // anon namespace
 
 void
-TexturePaint::removeUnusedTiles(const std::string& directory)
+USDTexturePaint::removeUnusedTiles(const std::string& directory)
 {
-    const std::map<U64, std::vector<std::string>> tiles = TexturePaintCache::listTiles(directory);
+    const std::map<U64, std::vector<std::string>> tiles = USDTexturePaintCache::listTiles(directory);
     std::vector<U64> keys;
     std::vector<std::string> paths;
     {
@@ -2732,7 +2732,7 @@ TexturePaint::removeUnusedTiles(const std::string& directory)
     if (keys.empty()) {
         return;
     }
-    TexturePaintCache::removeTiles(paths);
+    USDTexturePaintCache::removeTiles(paths);
     {
         std::lock_guard<std::mutex> lock(_tilesMutex);
         for (U64 key : keys) {
@@ -2743,16 +2743,16 @@ TexturePaint::removeUnusedTiles(const std::string& directory)
 }
 
 bool
-TexturePaint::ensureTiles(double time,
-                          ViewIdx view,
-                          int tile,
-                          const std::list<ImageLayerDesc>& planes,
-                          std::vector<std::string>* paths,
-                          std::string* note,
-                          std::string* error,
-                          const std::function<bool()>& cancel,
-                          std::shared_ptr<void>* lease,
-                          const std::vector<RotoLayerPtr>* only)
+USDTexturePaint::ensureTiles(double time,
+                             ViewIdx view,
+                             int tile,
+                             const std::list<ImageLayerDesc>& planes,
+                             std::vector<std::string>* paths,
+                             std::string* note,
+                             std::string* error,
+                             const std::function<bool()>& cancel,
+                             std::shared_ptr<void>* lease,
+                             const std::vector<RotoLayerPtr>* only)
 {
     const int size = getTileResolution();
     const bool animated = getTextureMode() == eTextureModeAnimated;
@@ -2770,7 +2770,7 @@ TexturePaint::ensureTiles(double time,
     note->clear();
     for (const ImageLayerDesc& plane : planes) {
         const std::string name = plane.isColorLayer() ? std::string("rgba") : plane.getLayerID();
-        paths->push_back(TexturePaintCache::tilePath(directory, key, frame, name, tile));
+        paths->push_back(USDTexturePaintCache::tilePath(directory, key, frame, name, tile));
     }
 
     {
@@ -2863,18 +2863,18 @@ TexturePaint::ensureTiles(double time,
 
         return ok;
     }
-} // TexturePaint::ensureTiles
+} // USDTexturePaint::ensureTiles
 
 bool
-TexturePaint::buildTiles(double time,
-                         ViewIdx view,
-                         int tile,
-                         const std::list<ImageLayerDesc>& planes,
-                         const std::vector<std::string>& paths,
-                         std::string* note,
-                         std::string* error,
-                         const std::function<bool()>& cancelled,
-                         const std::vector<RotoLayerPtr>* only)
+USDTexturePaint::buildTiles(double time,
+                            ViewIdx view,
+                            int tile,
+                            const std::list<ImageLayerDesc>& planes,
+                            const std::vector<std::string>& paths,
+                            std::string* note,
+                            std::string* error,
+                            const std::function<bool()>& cancelled,
+                            const std::vector<RotoLayerPtr>* only)
 {
     const int size = getTileResolution();
     AppInstancePtr app = getApp();
@@ -2921,7 +2921,7 @@ TexturePaint::buildTiles(double time,
     if (!openInputScene(input, time, view, fps, &scene, error)) {
         return false;
     }
-    TexturePaintCache::TileArgs args;
+    USDTexturePaintCache::TileArgs args;
     args.udimTile = tile;
     args.size = size;
     args.cancelled = cancelled;
@@ -2931,7 +2931,7 @@ TexturePaint::buildTiles(double time,
         KnobStringPtr uvPrimvar = _uvPrimvar.lock();
         const std::string primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
         args.stName = PXR_NS::TfToken(primvar.empty() ? std::string("st") : primvar);
-        if (!TexturePaintCache::matchedMeshes(args.stage, _primPattern.getExpression(), args.stName, &args.meshes, error)) {
+        if (!USDTexturePaintCache::matchedMeshes(args.stage, _primPattern.getExpression(), args.stName, &args.meshes, error)) {
             return false;
         }
     }
@@ -2954,10 +2954,10 @@ TexturePaint::buildTiles(double time,
     for (const ImageLayerDesc& plane : planes) {
         const std::string& path = paths[index++];
         const bool paints = (plane.isColorLayer() && painted.isColorLayer()) || (plane.getLayerID() == painted.getLayerID());
-        std::vector<TexturePaintCache::PaintSession> layered;
+        std::vector<USDTexturePaintCache::PaintSession> layered;
         if (paints) {
             for (const std::pair<RotoLayerPtr, NodePtr>& session : sessions) {
-                TexturePaintCache::PaintSession entry;
+                USDTexturePaintCache::PaintSession entry;
                 (void)getSessionCamera(session.first, &entry.camera);
                 const RotoLayerPtr layer = session.first;
                 const NodePtr viewNode = session.second;
@@ -2994,15 +2994,15 @@ TexturePaint::buildTiles(double time,
             }
         }
         std::vector<float> rgba;
-        std::vector<TexturePaintCache::MeshPair> overlaps;
+        std::vector<USDTexturePaintCache::MeshPair> overlaps;
         args.basePath = basePaths[index - 1];
-        if (!TexturePaintCache::composeTile(args, plane.isColorLayer(), layered, &rgba, overlapsFound ? 0 : &overlaps, error)) {
+        if (!USDTexturePaintCache::composeTile(args, plane.isColorLayer(), layered, &rgba, overlapsFound ? 0 : &overlaps, error)) {
             return false;
         }
         if (!overlapsFound) {
             overlapsFound = true;
             QStringList pairs;
-            for (const TexturePaintCache::MeshPair& pair : overlaps) {
+            for (const USDTexturePaintCache::MeshPair& pair : overlaps) {
                 pairs.push_back(tr("%1 and %2").arg(QString::fromUtf8(pair.first.GetString().c_str()), QString::fromUtf8(pair.second.GetString().c_str())));
             }
             QStringList lines;
@@ -3018,16 +3018,16 @@ TexturePaint::buildTiles(double time,
             }
             *note = lines.join(QLatin1Char('\n')).toStdString();
         }
-        if (!TexturePaintCache::writeTile(path, size, rgba, *note, error)) {
+        if (!USDTexturePaintCache::writeTile(path, size, rgba, *note, error)) {
             return false;
         }
     }
 
     return true;
-} // TexturePaint::buildTiles
+} // USDTexturePaint::buildTiles
 
 StatusEnum
-TexturePaint::render(const RenderActionArgs& args)
+USDTexturePaint::render(const RenderActionArgs& args)
 {
     KnobIntPtr outputTile = _outputTile.lock();
     const int tile = outputTile ? outputTile->getValue() : 1001;
@@ -3075,7 +3075,7 @@ TexturePaint::render(const RenderActionArgs& args)
         RectI window(roi.x1 * step, roi.y1 * step, roi.x2 * step, roi.y2 * step);
         window = window.intersect(RectI(0, 0, size, size));
         std::vector<float> texels;
-        if (!window.isNull() && !TexturePaintCache::readTile(paths[planeIndex], window, &texels, &error)) {
+        if (!window.isNull() && !USDTexturePaintCache::readTile(paths[planeIndex], window, &texels, &error)) {
             // The lease keeps this node's own pruning off the files; anything else deleting the
             // cache gets the tiles built again, once.
             std::error_code ec;
@@ -3091,7 +3091,7 @@ TexturePaint::render(const RenderActionArgs& args)
 
                     return eStatusFailed;
                 }
-                read = TexturePaintCache::readTile(paths[planeIndex], window, &texels, &error);
+                read = USDTexturePaintCache::readTile(paths[planeIndex], window, &texels, &error);
             }
             if (!read) {
                 setPersistentMessage(eMessageTypeError, error);
@@ -3129,39 +3129,39 @@ TexturePaint::render(const RenderActionArgs& args)
     }
 
     return eStatusOK;
-} // TexturePaint::render
+} // USDTexturePaint::render
 
 FramesNeededMap
-TexturePaint::getFramesNeeded(double /*time*/,
-                              ViewIdx /*view*/)
+USDTexturePaint::getFramesNeeded(double /*time*/,
+                                 ViewIdx /*view*/)
 {
     return FramesNeededMap();
 }
 
 void
-TexturePaint::getRegionsOfInterest(double /*time*/,
-                                   const RenderScale& /*scale*/,
-                                   const RectD& /*outputRoD*/,
-                                   const RectD& /*renderWindow*/,
-                                   ViewIdx /*view*/,
-                                   RoIMap* /*ret*/)
+USDTexturePaint::getRegionsOfInterest(double /*time*/,
+                                      const RenderScale& /*scale*/,
+                                      const RectD& /*outputRoD*/,
+                                      const RectD& /*renderWindow*/,
+                                      ViewIdx /*view*/,
+                                      RoIMap* /*ret*/)
 {
 }
 
 int
-TexturePaint::getTileResolution() const
+USDTexturePaint::getTileResolution() const
 {
     return resolutionFromChoice(_tileResolution.lock(), kDefaultTileResolutionIndex);
 }
 
 int
-TexturePaint::getBufferResolution() const
+USDTexturePaint::getBufferResolution() const
 {
     return resolutionFromChoice(_bufferResolution.lock(), kDefaultBufferResolutionIndex);
 }
 
 double
-TexturePaint::getTextureTime(double time) const
+USDTexturePaint::getTextureTime(double time) const
 {
     if (getTextureMode() == eTextureModeAnimated) {
         return time;
@@ -3174,8 +3174,8 @@ TexturePaint::getTextureTime(double time) const
 }
 
 void
-TexturePaint::getBakeFrames(int* first,
-                            int* last) const
+USDTexturePaint::getBakeFrames(int* first,
+                               int* last) const
 {
     double projectFirst = 1.;
     double projectLast = 1.;
@@ -3189,7 +3189,7 @@ TexturePaint::getBakeFrames(int* first,
 }
 
 bool
-TexturePaint::hasFrameToken(const std::string& pattern)
+USDTexturePaint::hasFrameToken(const std::string& pattern)
 {
     const std::vector<std::string> views;
 
@@ -3197,12 +3197,12 @@ TexturePaint::hasFrameToken(const std::string& pattern)
 }
 
 bool
-TexturePaint::bakedFilePath(const std::string& pattern,
-                            const std::string& purpose,
-                            int tile,
-                            int frame,
-                            std::string* path,
-                            std::string* error) const
+USDTexturePaint::bakedFilePath(const std::string& pattern,
+                               const std::string& purpose,
+                               int tile,
+                               int frame,
+                               std::string* path,
+                               std::string* error) const
 {
     std::vector<std::string> views;
     AppInstancePtr app = getApp();
@@ -3215,9 +3215,9 @@ TexturePaint::bakedFilePath(const std::string& pattern,
 }
 
 int
-TexturePaint::recordFrame(double time,
-                          int firstFrame,
-                          int lastFrame) const
+USDTexturePaint::recordFrame(double time,
+                             int firstFrame,
+                             int lastFrame) const
 {
     if (getTextureMode() != eTextureModeAnimated) {
         return firstFrame;
@@ -3226,8 +3226,8 @@ TexturePaint::recordFrame(double time,
     return std::clamp((int)std::floor(time + 0.5), firstFrame, std::max(firstFrame, lastFrame));
 }
 
-TexturePaint::TextureModeEnum
-TexturePaint::getTextureMode() const
+USDTexturePaint::TextureModeEnum
+USDTexturePaint::getTextureMode() const
 {
     KnobChoicePtr knob = _textureMode.lock();
 
@@ -3235,7 +3235,7 @@ TexturePaint::getTextureMode() const
 }
 
 RotoLayerPtr
-TexturePaint::addSession(const SceneRaster::ExplicitCamera& camera)
+USDTexturePaint::addSession(const SceneRaster::ExplicitCamera& camera)
 {
     RotoCurveContextPtr context = getNode()->getCurveContext();
 
@@ -3252,14 +3252,14 @@ TexturePaint::addSession(const SceneRaster::ExplicitCamera& camera)
 }
 
 RotoLayerPtr
-TexturePaint::getSessionOf(const RotoItem& item)
+USDTexturePaint::getSessionOf(const RotoItem& item)
 {
     RotoLayerPtr layer = item.getParentLayer();
 
     while (layer && (layer->getHierarchyLevel() > 1)) {
         layer = layer->getParentLayer();
     }
-    if (!layer || (layer->getHierarchyLevel() != 1) || !sessionKnob<KnobBool>(layer, kTexturePaintSessionParamFrozen)) {
+    if (!layer || (layer->getHierarchyLevel() != 1) || !sessionKnob<KnobBool>(layer, kUSDTexturePaintSessionParamFrozen)) {
         return RotoLayerPtr();
     }
 
@@ -3267,13 +3267,13 @@ TexturePaint::getSessionOf(const RotoItem& item)
 }
 
 bool
-TexturePaint::isPaintTreeRoot(const RotoLayer& layer) const
+USDTexturePaint::isPaintTreeRoot(const RotoLayer& layer) const
 {
-    return (layer.getHierarchyLevel() == 1) && layer.getHostKnobByName(kTexturePaintSessionParamFrozen);
+    return (layer.getHierarchyLevel() == 1) && layer.getHostKnobByName(kUSDTexturePaintSessionParamFrozen);
 }
 
 NodePtr
-TexturePaint::findSessionView(const RotoLayer* session) const
+USDTexturePaint::findSessionView(const RotoLayer* session) const
 {
     std::lock_guard<std::mutex> lock(_viewsMutex);
     std::map<const RotoLayer*, SessionView>::const_iterator found = _views.find(session);
@@ -3282,7 +3282,7 @@ TexturePaint::findSessionView(const RotoLayer* session) const
 }
 
 NodePtr
-TexturePaint::getPaintTreeSourceFor(const RotoDrawableItem& item) const
+USDTexturePaint::getPaintTreeSourceFor(const RotoDrawableItem& item) const
 {
     RotoLayerPtr session = getSessionOf(item);
 
@@ -3290,17 +3290,17 @@ TexturePaint::getPaintTreeSourceFor(const RotoDrawableItem& item) const
 }
 
 NodePtr
-TexturePaint::getPaintTreeRevealSource(const RotoDrawableItem& item,
-                                       int /*inputNb*/) const
+USDTexturePaint::getPaintTreeRevealSource(const RotoDrawableItem& item,
+                                          int /*inputNb*/) const
 {
     return getPaintTreeSourceFor(item);
 }
 
 void
-TexturePaint::syncSessionView(const RotoLayerPtr& session,
-                              const NodePtr& viewNode)
+USDTexturePaint::syncSessionView(const RotoLayerPtr& session,
+                                 const NodePtr& viewNode)
 {
-    TexturePaintView* view = viewNode ? dynamic_cast<TexturePaintView*>(viewNode->getEffectInstance().get()) : 0;
+    USDTexturePaintView* view = viewNode ? dynamic_cast<USDTexturePaintView*>(viewNode->getEffectInstance().get()) : 0;
     SceneRaster::ExplicitCamera camera;
 
     if (!view || !getSessionCamera(session, &camera)) {
@@ -3326,11 +3326,11 @@ TexturePaint::syncSessionView(const RotoLayerPtr& session,
 }
 
 NodePtr
-TexturePaint::ensureSessionView(const RotoLayerPtr& session,
-                                bool* created)
+USDTexturePaint::ensureSessionView(const RotoLayerPtr& session,
+                                   bool* created)
 {
     *created = false;
-    if (!session || (session->getHierarchyLevel() != 1) || !sessionKnob<KnobBool>(session, kTexturePaintSessionParamFrozen)) {
+    if (!session || (session->getHierarchyLevel() != 1) || !sessionKnob<KnobBool>(session, kUSDTexturePaintSessionParamFrozen)) {
         return NodePtr();
     }
     NodePtr viewNode = findSessionView(session.get());
@@ -3339,7 +3339,7 @@ TexturePaint::ensureSessionView(const RotoLayerPtr& session,
         if (!app) {
             return NodePtr();
         }
-        CreateNodeArgs args(PLUGINID_NATRON_TEXTUREPAINTVIEW, NodeCollectionPtr());
+        CreateNodeArgs args(PLUGINID_NATRON_USDTEXTUREPAINTVIEW, NodeCollectionPtr());
         args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
         args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
         args.setProperty<bool>(kCreateNodeArgsPropTrustPluginID, true);
@@ -3367,10 +3367,10 @@ TexturePaint::ensureSessionView(const RotoLayerPtr& session,
     syncSessionView(session, viewNode);
 
     return viewNode;
-} // TexturePaint::ensureSessionView
+} // USDTexturePaint::ensureSessionView
 
 NodePtr
-TexturePaint::getSessionView(const RotoLayerPtr& session)
+USDTexturePaint::getSessionView(const RotoLayerPtr& session)
 {
     bool created = false;
     NodePtr viewNode = ensureSessionView(session, &created);
@@ -3386,7 +3386,7 @@ TexturePaint::getSessionView(const RotoLayerPtr& session)
 }
 
 void
-TexturePaint::syncSessionViews()
+USDTexturePaint::syncSessionViews()
 {
     std::vector<std::pair<RotoLayerPtr, NodePtr>> views;
     {
@@ -3404,7 +3404,7 @@ TexturePaint::syncSessionViews()
 }
 
 void
-TexturePaint::quitBackgroundWork(bool /*blocking*/)
+USDTexturePaint::quitBackgroundWork(bool /*blocking*/)
 {
     if (!_baker) {
         return;
@@ -3417,31 +3417,31 @@ TexturePaint::quitBackgroundWork(bool /*blocking*/)
 }
 
 void
-TexturePaint::onScriptNameChanged(const std::string& fullyQualifiedName)
+USDTexturePaint::onScriptNameChanged(const std::string& fullyQualifiedName)
 {
-    TexturePaintFileQueue::setOwnerName(_bakeOwnerId, fullyQualifiedName);
+    USDTexturePaintFileQueue::setOwnerName(_bakeOwnerId, fullyQualifiedName);
     NativeEffectBase::onScriptNameChanged(fullyQualifiedName);
 }
 
 void
-TexturePaint::setUndoCommandSinkForTesting(const std::function<void(const UndoCommandPtr&)>& sink)
+USDTexturePaint::setUndoCommandSinkForTesting(const std::function<void(const UndoCommandPtr&)>& sink)
 {
     _undoSinkForTesting = sink;
 }
 
 void
-TexturePaint::onInputChanged(int inputNo)
+USDTexturePaint::onInputChanged(int inputNo)
 {
     syncSessionViews();
     NativeEffectBase::onInputChanged(inputNo);
 }
 
 bool
-TexturePaint::knobChanged(KnobI* k,
-                          ValueChangedReasonEnum reason,
-                          ViewSpec view,
-                          double time,
-                          bool originatedFromMainThread)
+USDTexturePaint::knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread)
 {
     const KnobStringPtr primPattern = _primPattern.getKnob();
     const KnobIPtr viewKnobs[] = {
@@ -3500,30 +3500,30 @@ TexturePaint::knobChanged(KnobI* k,
     return NativeEffectBase::knobChanged(k, reason, view, time, originatedFromMainThread);
 }
 
-TexturePaintBaker*
-TexturePaint::getBaker()
+USDTexturePaintBaker*
+USDTexturePaint::getBaker()
 {
     if (!_baker) {
-        _baker.reset(new TexturePaintBaker);
+        _baker.reset(new USDTexturePaintBaker);
     }
 
     return _baker.get();
 }
 
 bool
-TexturePaint::isBaking() const
+USDTexturePaint::isBaking() const
 {
     return _baker && _baker->isBaking();
 }
 
 quint64
-TexturePaint::getBakeGeneration() const
+USDTexturePaint::getBakeGeneration() const
 {
     return _baker ? _baker->getGeneration() : 0;
 }
 
 bool
-TexturePaint::isSessionBakePending(const RotoLayerPtr& session) const
+USDTexturePaint::isSessionBakePending(const RotoLayerPtr& session) const
 {
     if (!session) {
         return false;
@@ -3534,7 +3534,7 @@ TexturePaint::isSessionBakePending(const RotoLayerPtr& session) const
 }
 
 void
-TexturePaint::landBake(bool ok)
+USDTexturePaint::landBake(bool ok)
 {
     KnobIntPtr generation = _bakeGeneration.lock();
 
@@ -3543,17 +3543,17 @@ TexturePaint::landBake(bool ok)
     }
 }
 
-std::weak_ptr<TexturePaint>
-TexturePaint::weakSelf()
+std::weak_ptr<USDTexturePaint>
+USDTexturePaint::weakSelf()
 {
-    return std::static_pointer_cast<TexturePaint>(shared_from_this());
+    return std::static_pointer_cast<USDTexturePaint>(shared_from_this());
 }
 
 namespace {
 // Tells the baker's progress and cancellation to the worker bodies, which know neither the baker nor Qt signals.
 template <typename Control>
 Control
-makeControl(TexturePaintBaker::Context& context)
+makeControl(USDTexturePaintBaker::Context& context)
 {
     Control control;
 
@@ -3571,8 +3571,8 @@ makeControl(TexturePaintBaker::Context& context)
 // The effect alone does not keep its node, and the node's teardown expects the main thread: both
 // stay alive until the baker releases them there.
 static bool
-holdForBake(const std::shared_ptr<TexturePaint>& self,
-            TexturePaintBaker::Context& context)
+holdForBake(const std::shared_ptr<USDTexturePaint>& self,
+            USDTexturePaintBaker::Context& context)
 {
     if (!self) {
         return false;
@@ -3588,8 +3588,8 @@ holdForBake(const std::shared_ptr<TexturePaint>& self,
 }
 
 bool
-TexturePaint::enqueueBakeInputs(double time,
-                                ViewIdx view)
+USDTexturePaint::enqueueBakeInputs(double time,
+                                   ViewIdx view)
 {
     std::shared_ptr<BakeInputsRun> run = std::make_shared<BakeInputsRun>();
     std::string error;
@@ -3600,11 +3600,11 @@ TexturePaint::enqueueBakeInputs(double time,
         return false;
     }
     std::shared_ptr<std::string> failure = std::make_shared<std::string>();
-    TexturePaintBaker::Bake bake;
+    USDTexturePaintBaker::Bake bake;
     bake.label = tr("Baking inputs");
-    const std::weak_ptr<TexturePaint> weak = weakSelf();
-    bake.work = [weak, run, failure](TexturePaintBaker::Context& context) -> bool {
-        const std::shared_ptr<TexturePaint> self = weak.lock();
+    const std::weak_ptr<USDTexturePaint> weak = weakSelf();
+    bake.work = [weak, run, failure](USDTexturePaintBaker::Context& context) -> bool {
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
         if (!holdForBake(self, context)) {
             return false;
         }
@@ -3613,7 +3613,7 @@ TexturePaint::enqueueBakeInputs(double time,
         return self->runBakeInputs(*run, control, failure.get());
     };
     bake.completion = [weak, run, failure](bool ok) {
-        const std::shared_ptr<TexturePaint> self = weak.lock();
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
         if (!self) {
             return;
         }
@@ -3648,9 +3648,9 @@ struct SnapshotHop {
 } // anon namespace
 
 bool
-TexturePaint::awaitBakeOutputSnapshot(const std::weak_ptr<TexturePaint>& weak,
-                                      const std::shared_ptr<BakeOutputRun>& run,
-                                      const std::function<bool()>& cancelled)
+USDTexturePaint::awaitBakeOutputSnapshot(const std::weak_ptr<USDTexturePaint>& weak,
+                                         const std::shared_ptr<BakeOutputRun>& run,
+                                         const std::function<bool()>& cancelled)
 {
     QCoreApplication* app = QCoreApplication::instance();
 
@@ -3665,7 +3665,7 @@ TexturePaint::awaitBakeOutputSnapshot(const std::weak_ptr<TexturePaint>& weak,
         if (hop->abandoned) {
             return;
         }
-        const std::shared_ptr<TexturePaint> self = weak.lock();
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
         if (self) {
             self->snapshotBakeOutput(run.get(), true);
         }
@@ -3687,8 +3687,8 @@ TexturePaint::awaitBakeOutputSnapshot(const std::weak_ptr<TexturePaint>& weak,
 }
 
 bool
-TexturePaint::enqueueBakeOutput(double time,
-                                ViewIdx view)
+USDTexturePaint::enqueueBakeOutput(double time,
+                                   ViewIdx view)
 {
     std::shared_ptr<BakeOutputRun> run = std::make_shared<BakeOutputRun>();
     std::string error;
@@ -3705,7 +3705,7 @@ TexturePaint::enqueueBakeOutput(double time,
     struct Owner {
         std::shared_ptr<BakeOutputFiles> files;
         std::shared_ptr<std::atomic<std::uint64_t>> epoch;
-        std::weak_ptr<TexturePaint> node;
+        std::weak_ptr<USDTexturePaint> node;
         std::shared_ptr<std::atomic<int>> pending;
         bool adopted = false;
         ~Owner()
@@ -3717,7 +3717,7 @@ TexturePaint::enqueueBakeOutput(double time,
             --*pending;
         }
     };
-    const std::weak_ptr<TexturePaint> weak = weakSelf();
+    const std::weak_ptr<USDTexturePaint> weak = weakSelf();
     std::shared_ptr<Owner> owner = std::make_shared<Owner>();
     owner->files = run->undoFiles;
     owner->epoch = _tileEpoch;
@@ -3725,10 +3725,10 @@ TexturePaint::enqueueBakeOutput(double time,
     owner->pending = _pendingBakeOutputs;
     ++*_pendingBakeOutputs;
     std::shared_ptr<std::string> failure = std::make_shared<std::string>();
-    TexturePaintBaker::Bake bake;
+    USDTexturePaintBaker::Bake bake;
     bake.label = tr("Baking output");
-    bake.work = [weak, run, failure](TexturePaintBaker::Context& context) -> bool {
-        const std::shared_ptr<TexturePaint> self = weak.lock();
+    bake.work = [weak, run, failure](USDTexturePaintBaker::Context& context) -> bool {
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
         if (!holdForBake(self, context) || !awaitBakeOutputSnapshot(weak, run, [&context]() { return context.cancelled(); })) {
             return false;
         }
@@ -3737,7 +3737,7 @@ TexturePaint::enqueueBakeOutput(double time,
         return self->runBakeOutput(*run, control, failure.get());
     };
     bake.completion = [weak, run, failure, owner](bool ok) {
-        const std::shared_ptr<TexturePaint> self = weak.lock();
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
         if (!self) {
             return;
         }
@@ -3761,7 +3761,7 @@ TexturePaint::enqueueBakeOutput(double time,
         self->landBake(true);
         owner->adopted = true;
         settleBakeOutputFiles(*run->undoFiles);
-        const UndoCommandPtr command = std::make_shared<TexturePaintBakeOutputUndoCommand>(self->getNode(), state, run->undoFiles);
+        const UndoCommandPtr command = std::make_shared<USDTexturePaintBakeOutputUndoCommand>(self->getNode(), state, run->undoFiles);
         if (self->_undoSinkForTesting) {
             command->redo();
             self->_undoSinkForTesting(command);
@@ -3774,10 +3774,10 @@ TexturePaint::enqueueBakeOutput(double time,
 }
 
 bool
-TexturePaint::runSessionBake(double time,
-                             ViewIdx view,
-                             const BakeControl& control,
-                             std::string* error)
+USDTexturePaint::runSessionBake(double time,
+                                ViewIdx view,
+                                const BakeControl& control,
+                                std::string* error)
 {
     time = getTextureTime(time);
     AppInstancePtr app = getApp();
@@ -3794,7 +3794,7 @@ TexturePaint::runSessionBake(double time,
     }
     const PXR_NS::TfToken stName(primvar.empty() ? std::string("st") : primvar);
     std::vector<PXR_NS::SdfPath> meshes;
-    if (!TexturePaintCache::matchedMeshes(scene.stage, _primPattern.getExpression(), stName, &meshes, error)) {
+    if (!USDTexturePaintCache::matchedMeshes(scene.stage, _primPattern.getExpression(), stName, &meshes, error)) {
         return false;
     }
     std::set<int> tiles;
@@ -3825,20 +3825,20 @@ TexturePaint::runSessionBake(double time,
 }
 
 bool
-TexturePaint::enqueueSessionBake(const RotoLayerPtr& session,
-                                 double time,
-                                 ViewIdx view)
+USDTexturePaint::enqueueSessionBake(const RotoLayerPtr& session,
+                                    double time,
+                                    ViewIdx view)
 {
     if (!session) {
         return false;
     }
     const RotoLayer* key = session.get();
     std::shared_ptr<std::string> failure = std::make_shared<std::string>();
-    TexturePaintBaker::Bake bake;
+    USDTexturePaintBaker::Bake bake;
     bake.label = tr("Baking session");
-    const std::weak_ptr<TexturePaint> weak = weakSelf();
-    bake.work = [weak, failure, time, view](TexturePaintBaker::Context& context) -> bool {
-        const std::shared_ptr<TexturePaint> self = weak.lock();
+    const std::weak_ptr<USDTexturePaint> weak = weakSelf();
+    bake.work = [weak, failure, time, view](USDTexturePaintBaker::Context& context) -> bool {
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
         if (!holdForBake(self, context)) {
             return false;
         }
@@ -3847,7 +3847,7 @@ TexturePaint::enqueueSessionBake(const RotoLayerPtr& session,
         return self->runSessionBake(time, view, control, failure.get());
     };
     bake.completion = [weak, failure, key](bool ok) {
-        const std::shared_ptr<TexturePaint> self = weak.lock();
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
         if (!self) {
             return;
         }
@@ -3880,14 +3880,14 @@ TexturePaint::enqueueSessionBake(const RotoLayerPtr& session,
 }
 
 void
-TexturePaint::getSessionBufferSize(const RotoLayerPtr& session,
-                                   int* width,
-                                   int* height) const
+USDTexturePaint::getSessionBufferSize(const RotoLayerPtr& session,
+                                      int* width,
+                                      int* height) const
 {
     SceneRaster::ExplicitCamera camera;
     const double aspect = getSessionCamera(session, &camera) ? camera.aspect : 1.;
-    const RectD bounds = TexturePaintView::paintSpaceBounds(aspect);
-    const RectI pixels = bounds.toPixelEnclosing(TexturePaintView::bufferMipmapLevel(getBufferResolution()), 1.);
+    const RectD bounds = USDTexturePaintView::paintSpaceBounds(aspect);
+    const RectI pixels = bounds.toPixelEnclosing(USDTexturePaintView::bufferMipmapLevel(getBufferResolution()), 1.);
 
     *width = pixels.width();
     *height = pixels.height();
@@ -3958,12 +3958,12 @@ readPlane(bool ok,
 } // anon namespace
 
 bool
-TexturePaint::renderSessionBuffer(const RotoLayerPtr& session,
-                                  const ImageLayerDesc& plane,
-                                  double time,
-                                  ViewIdx view,
-                                  SessionBuffer* buffer,
-                                  std::string* error)
+USDTexturePaint::renderSessionBuffer(const RotoLayerPtr& session,
+                                     const ImageLayerDesc& plane,
+                                     double time,
+                                     ViewIdx view,
+                                     SessionBuffer* buffer,
+                                     std::string* error)
 {
     NodePtr viewNode = getSessionView(session);
 
@@ -3977,21 +3977,21 @@ TexturePaint::renderSessionBuffer(const RotoLayerPtr& session,
 }
 
 bool
-TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
-                                      const RotoLayerPtr& session,
-                                      const ImageLayerDesc& plane,
-                                      double time,
-                                      ViewIdx view,
-                                      SessionBuffer* buffer,
-                                      std::string* error,
-                                      const AbortableRenderInfoPtr& abortInfo)
+USDTexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
+                                         const RotoLayerPtr& session,
+                                         const ImageLayerDesc& plane,
+                                         double time,
+                                         ViewIdx view,
+                                         SessionBuffer* buffer,
+                                         std::string* error,
+                                         const AbortableRenderInfoPtr& abortInfo)
 {
     ++_sessionRenders;
     syncStrokeLifetimes();
     SceneRaster::ExplicitCamera camera;
     (void)getSessionCamera(session, &camera);
-    const unsigned int level = TexturePaintView::bufferMipmapLevel(getBufferResolution());
-    const RectI pixels = TexturePaintView::paintSpaceBounds(camera.aspect).toPixelEnclosing(level, 1.);
+    const unsigned int level = USDTexturePaintView::bufferMipmapLevel(getBufferResolution());
+    const RectI pixels = USDTexturePaintView::paintSpaceBounds(camera.aspect).toPixelEnclosing(level, 1.);
     const std::size_t count = (std::size_t)pixels.width() * (std::size_t)pixels.height();
 
     buffer->width = pixels.width();
@@ -4054,14 +4054,14 @@ TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
     }
 
     return layStrokesOverBase(base, strokesEmpty ? NULL : &strokes, selected, buffer, error);
-} // TexturePaint::renderSessionBufferFrom
+} // USDTexturePaint::renderSessionBufferFrom
 
 bool
-TexturePaint::layStrokesOverBase(std::vector<float>& base,
-                                 const std::vector<float>* strokes,
-                                 const bool selected[4],
-                                 SessionBuffer* buffer,
-                                 std::string* error)
+USDTexturePaint::layStrokesOverBase(std::vector<float>& base,
+                                    const std::vector<float>* strokes,
+                                    const bool selected[4],
+                                    SessionBuffer* buffer,
+                                    std::string* error)
 {
     if (strokes && (strokes->size() != base.size())) {
         *error = tr("The session's strokes rendered %1 values where its view rendered %2.").arg((qulonglong)strokes->size()).arg((qulonglong)base.size()).toStdString();
@@ -4093,7 +4093,7 @@ TexturePaint::layStrokesOverBase(std::vector<float>& base,
 }
 
 std::list<RotoLayerPtr>
-TexturePaint::getSessions() const
+USDTexturePaint::getSessions() const
 {
     std::list<RotoLayerPtr> sessions;
     RotoCurveContextPtr context = getNode()->getCurveContext();
@@ -4108,7 +4108,7 @@ TexturePaint::getSessions() const
     }
     for (const RotoItemPtr& item : base->getItems_mt_safe()) {
         RotoLayerPtr child = std::dynamic_pointer_cast<RotoLayer>(item);
-        if (child && sessionKnob<KnobBool>(child, kTexturePaintSessionParamFrozen)) {
+        if (child && sessionKnob<KnobBool>(child, kUSDTexturePaintSessionParamFrozen)) {
             sessions.push_back(child);
         }
     }
@@ -4117,15 +4117,15 @@ TexturePaint::getSessions() const
 }
 
 bool
-TexturePaint::getSessionCamera(const RotoLayerPtr& layer,
-                               SceneRaster::ExplicitCamera* camera)
+USDTexturePaint::getSessionCamera(const RotoLayerPtr& layer,
+                                  SceneRaster::ExplicitCamera* camera)
 {
-    KnobDoublePtr cameraToWorld = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamCameraToWorld);
-    KnobDoublePtr viewHeight = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamViewHeight);
-    KnobDoublePtr aspect = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamAspect);
-    KnobBoolPtr orthographic = sessionKnob<KnobBool>(layer, kTexturePaintSessionParamOrthographic);
-    KnobDoublePtr nearClip = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamNearClip);
-    KnobDoublePtr farClip = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamFarClip);
+    KnobDoublePtr cameraToWorld = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamCameraToWorld);
+    KnobDoublePtr viewHeight = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamViewHeight);
+    KnobDoublePtr aspect = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamAspect);
+    KnobBoolPtr orthographic = sessionKnob<KnobBool>(layer, kUSDTexturePaintSessionParamOrthographic);
+    KnobDoublePtr nearClip = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamNearClip);
+    KnobDoublePtr farClip = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamFarClip);
 
     if (!cameraToWorld || !viewHeight || !aspect || !orthographic || !nearClip || !farClip) {
         return false;
@@ -4143,15 +4143,15 @@ TexturePaint::getSessionCamera(const RotoLayerPtr& layer,
 }
 
 void
-TexturePaint::setSessionCamera(const RotoLayerPtr& layer,
-                               const SceneRaster::ExplicitCamera& camera)
+USDTexturePaint::setSessionCamera(const RotoLayerPtr& layer,
+                                  const SceneRaster::ExplicitCamera& camera)
 {
-    KnobDoublePtr cameraToWorld = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamCameraToWorld);
-    KnobDoublePtr viewHeight = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamViewHeight);
-    KnobDoublePtr aspect = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamAspect);
-    KnobBoolPtr orthographic = sessionKnob<KnobBool>(layer, kTexturePaintSessionParamOrthographic);
-    KnobDoublePtr nearClip = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamNearClip);
-    KnobDoublePtr farClip = sessionKnob<KnobDouble>(layer, kTexturePaintSessionParamFarClip);
+    KnobDoublePtr cameraToWorld = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamCameraToWorld);
+    KnobDoublePtr viewHeight = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamViewHeight);
+    KnobDoublePtr aspect = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamAspect);
+    KnobBoolPtr orthographic = sessionKnob<KnobBool>(layer, kUSDTexturePaintSessionParamOrthographic);
+    KnobDoublePtr nearClip = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamNearClip);
+    KnobDoublePtr farClip = sessionKnob<KnobDouble>(layer, kUSDTexturePaintSessionParamFarClip);
 
     if (cameraToWorld) {
         for (int i = 0; i < 16; ++i) {
@@ -4176,7 +4176,7 @@ TexturePaint::setSessionCamera(const RotoLayerPtr& layer,
 
     RotoCurveContextPtr context = layer ? layer->getContext() : RotoCurveContextPtr();
     NodePtr host = context ? context->getNode() : NodePtr();
-    TexturePaint* effect = host ? dynamic_cast<TexturePaint*>(host->getEffectInstance().get()) : 0;
+    USDTexturePaint* effect = host ? dynamic_cast<USDTexturePaint*>(host->getEffectInstance().get()) : 0;
     NodePtr viewNode = effect ? effect->findSessionView(layer.get()) : NodePtr();
     if (viewNode) {
         effect->syncSessionView(layer, viewNode);
@@ -4184,18 +4184,18 @@ TexturePaint::setSessionCamera(const RotoLayerPtr& layer,
 }
 
 bool
-TexturePaint::isSessionFrozen(const RotoLayerPtr& layer)
+USDTexturePaint::isSessionFrozen(const RotoLayerPtr& layer)
 {
-    KnobBoolPtr frozen = sessionKnob<KnobBool>(layer, kTexturePaintSessionParamFrozen);
+    KnobBoolPtr frozen = sessionKnob<KnobBool>(layer, kUSDTexturePaintSessionParamFrozen);
 
     return frozen && frozen->getValue();
 }
 
 void
-TexturePaint::setSessionFrozen(const RotoLayerPtr& layer,
-                               bool frozen)
+USDTexturePaint::setSessionFrozen(const RotoLayerPtr& layer,
+                                  bool frozen)
 {
-    KnobBoolPtr knob = sessionKnob<KnobBool>(layer, kTexturePaintSessionParamFrozen);
+    KnobBoolPtr knob = sessionKnob<KnobBool>(layer, kUSDTexturePaintSessionParamFrozen);
 
     if (knob) {
         knob->setValue(frozen);

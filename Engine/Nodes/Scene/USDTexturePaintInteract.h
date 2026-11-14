@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Scene_TexturePaintInteract_h
-#define Engine_Nodes_Scene_TexturePaintInteract_h
+#ifndef Engine_Nodes_Scene_USDTexturePaintInteract_h
+#define Engine_Nodes_Scene_USDTexturePaintInteract_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -32,14 +32,14 @@
 
 NATRON_NAMESPACE_ENTER
 
-class TexturePaint;
+class USDTexturePaint;
 
 namespace SceneRaster {
 struct ExplicitCamera;
 }
 
 /**
- * @brief Paints a TexturePaint node from a 3D view: pen events in normalized view coordinates,
+ * @brief Paints a USDTexturePaint node from a 3D view: pen events in normalized view coordinates,
  * with the camera the view looks through, become strokes of the node's shared stroke builder in
  * the current session.
  *
@@ -51,15 +51,15 @@ struct ExplicitCamera;
  * a session through the same camera.
  *
  * Brush sizes are in pixels of the view, as the toolbar shows them: they are scaled into the paint
- * space, which spans TexturePaintView::kPaintSpaceSize on the view's longer side.
+ * space, which spans USDTexturePaintView::kPaintSpaceSize on the view's longer side.
  *
  * Owned by the node. Main thread; never waits on the baker.
  **/
-class TexturePaintInteract {
+class USDTexturePaintInteract {
 public:
-    explicit TexturePaintInteract(TexturePaint* node);
+    explicit USDTexturePaintInteract(USDTexturePaint* node);
 
-    ~TexturePaintInteract();
+    ~USDTexturePaintInteract();
 
     /**
      * @brief The factor from pixels of a viewWidth x viewHeight view to paint-space units:
@@ -121,7 +121,7 @@ private:
 
     void toPaintSpace(double u, double v, double* x, double* y) const;
 
-    TexturePaint* _node;
+    USDTexturePaint* _node;
     RotoLayerWPtr _session;
     // The RotoToolEnum the current session is painted with.
     int _sessionTool;
@@ -133,4 +133,4 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Scene_TexturePaintInteract_h
+#endif // Engine_Nodes_Scene_USDTexturePaintInteract_h

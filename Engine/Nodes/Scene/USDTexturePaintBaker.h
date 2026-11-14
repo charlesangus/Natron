@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Scene_TexturePaintBaker_h
-#define Engine_Nodes_Scene_TexturePaintBaker_h
+#ifndef Engine_Nodes_Scene_USDTexturePaintBaker_h
+#define Engine_Nodes_Scene_USDTexturePaintBaker_h
 
 #include "Global/Macros.h"
 
@@ -42,7 +42,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Runs the bakes of a TexturePaint node one after the other on a thread of its own, so the
+ * @brief Runs the bakes of a USDTexturePaint node one after the other on a thread of its own, so the
  * main thread only ever enqueues them. A bake is a worker function and a completion function:
  * the worker runs on the scheduler thread and polls Context for cancellation between tiles and
  * sessions; the completion runs on the main thread, queued, once the worker returned, and is
@@ -57,7 +57,7 @@ NATRON_NAMESPACE_ENTER
  * Every baker of the process, retired ones included, is known, so that shutdownAll() can stop and
  * join them all without the event loop that deletes retired ones.
  **/
-class TexturePaintBaker
+class USDTexturePaintBaker
     : public GenericSchedulerThread {
     GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
@@ -68,7 +68,7 @@ class TexturePaintBaker
 public:
     class Context {
     public:
-        explicit Context(TexturePaintBaker* baker,
+        explicit Context(USDTexturePaintBaker* baker,
                          Task* task = nullptr)
             : _baker(baker)
             , _task(task)
@@ -92,7 +92,7 @@ public:
         void keepAlive(const std::shared_ptr<void>& object);
 
     private:
-        TexturePaintBaker* _baker;
+        USDTexturePaintBaker* _baker;
         Task* _task;
     };
 
@@ -104,9 +104,9 @@ public:
         std::function<void(bool ok)> completion;
     };
 
-    TexturePaintBaker();
+    USDTexturePaintBaker();
 
-    virtual ~TexturePaintBaker();
+    virtual ~USDTexturePaintBaker();
 
     /**
      * @brief Queues bake behind those already queued or running. Does not wait. Main thread.
@@ -128,17 +128,17 @@ public:
      * @brief Stops baker for good without waiting and deletes it on the main thread once its thread
      * has exited. Safe to call from inside one of its own signals or completions.
      **/
-    static void retire(std::unique_ptr<TexturePaintBaker> baker);
+    static void retire(std::unique_ptr<USDTexturePaintBaker> baker);
 
     /**
      * @brief Stops every baker for good and waits for its thread, drops every completion not yet
      * run, whose bakes put their files back, deletes the retired bakers, then shuts the
-     * TexturePaintFileQueue down. Main thread, once, while the application shuts down, before
+     * USDTexturePaintFileQueue down. Main thread, once, while the application shuts down, before
      * the plug-ins and statics the bakes use go.
      **/
     static void shutdownAll();
 
-    // Lets bakers made afterwards, and the file queue, work again after shutdownAll(): see TexturePaintFileQueue::restartForTesting().
+    // Lets bakers made afterwards, and the file queue, work again after shutdownAll(): see USDTexturePaintFileQueue::restartForTesting().
     static void restartForTesting();
 
     // Whether a bake is queued or running, or finished but its completion has not run yet.
@@ -226,8 +226,8 @@ private:
     QString _lastLabel;
 };
 
-struct TexturePaintFileStep;
-typedef std::shared_ptr<TexturePaintFileStep> TexturePaintFileTicket;
+struct USDTexturePaintFileStep;
+typedef std::shared_ptr<USDTexturePaintFileStep> USDTexturePaintFileTicket;
 
 /**
  * @brief The one thread of the process on which every Bake Output file step of every node runs,
@@ -240,7 +240,7 @@ typedef std::shared_ptr<TexturePaintFileStep> TexturePaintFileTicket;
  * node; one an earlier bake of the same node holds is reported so that the caller can wait for it
  * to land or to be put back.
  **/
-class TexturePaintFileQueue {
+class USDTexturePaintFileQueue {
 public:
     // shuttingDown: shutdown() has begun, and what outlives the application must not be touched.
     typedef std::function<void(bool shuttingDown)> Work;
@@ -252,21 +252,21 @@ public:
     };
 
     // A step that runs work once submitted.
-    static TexturePaintFileTicket makeStep(const Work& work);
+    static USDTexturePaintFileTicket makeStep(const Work& work);
 
     /**
      * @brief Queues step behind every step submitted before it; returns at once. Once shutdown()
      * has finished, runs it on the caller, with shuttingDown.
      **/
-    static void submit(const TexturePaintFileTicket& step);
+    static void submit(const USDTexturePaintFileTicket& step);
 
-    static TexturePaintFileTicket submit(const Work& work);
+    static USDTexturePaintFileTicket submit(const Work& work);
 
     /**
      * @brief Waits until step has run. False when cancelled() turned true first: the step still
      * runs, in its turn. Never on the queue's own thread.
      **/
-    static bool wait(const TexturePaintFileTicket& step,
+    static bool wait(const USDTexturePaintFileTicket& step,
                      const std::function<bool()>& cancelled = std::function<bool()>());
 
     // A number no call returned before, never 0: the identity of a bake or of a node.
@@ -335,4 +335,4 @@ public:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Scene_TexturePaintBaker_h
+#endif // Engine_Nodes_Scene_USDTexturePaintBaker_h

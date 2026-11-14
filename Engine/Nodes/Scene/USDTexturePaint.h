@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Scene_TexturePaint_h
-#define Engine_Nodes_Scene_TexturePaint_h
+#ifndef Engine_Nodes_Scene_USDTexturePaint_h
+#define Engine_Nodes_Scene_USDTexturePaint_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -52,48 +52,48 @@
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
 
-#define PLUGINID_NATRON_TEXTUREPAINT "TexturePaint"
+#define PLUGINID_NATRON_USDTEXTUREPAINT "USDTexturePaint"
 
-#define kTexturePaintParamPrimPattern "primPattern"
-#define kTexturePaintParamUvPrimvar "uvPrimvar"
-#define kTexturePaintParamTileResolution "tileResolution"
-#define kTexturePaintParamBufferResolution "bufferResolution"
-#define kTexturePaintParamTextureMode "textureMode"
-#define kTexturePaintParamBakeInputsPath "bakeInputsPath"
-#define kTexturePaintParamBakeInputs "bakeInputs"
-#define kTexturePaintParamBakedInputs "bakedInputs"
-#define kTexturePaintParamBakeOutputPath "bakeOutputPath"
-#define kTexturePaintParamBakeOutput "bakeOutput"
-#define kTexturePaintParamBakedOutput "bakedOutput"
-#define kTexturePaintParamBakeGeneration "bakeGeneration"
-#define kTexturePaintParamOutputTile "outputTile"
+#define kUSDTexturePaintParamPrimPattern "primPattern"
+#define kUSDTexturePaintParamUvPrimvar "uvPrimvar"
+#define kUSDTexturePaintParamTileResolution "tileResolution"
+#define kUSDTexturePaintParamBufferResolution "bufferResolution"
+#define kUSDTexturePaintParamTextureMode "textureMode"
+#define kUSDTexturePaintParamBakeInputsPath "bakeInputsPath"
+#define kUSDTexturePaintParamBakeInputs "bakeInputs"
+#define kUSDTexturePaintParamBakedInputs "bakedInputs"
+#define kUSDTexturePaintParamBakeOutputPath "bakeOutputPath"
+#define kUSDTexturePaintParamBakeOutput "bakeOutput"
+#define kUSDTexturePaintParamBakedOutput "bakedOutput"
+#define kUSDTexturePaintParamBakeGeneration "bakeGeneration"
+#define kUSDTexturePaintParamOutputTile "outputTile"
 
 /**
  * The output metadata names the material input each plane of the texture set feeds, under this
  * prefix followed by the plane: <prefix>rgba is "diffuseColor", and the plane of any other paint
  * layer, such as <prefix>specular, holds that layer's name.
  **/
-#define kTexturePaintMetadataPurposePrefix "natron/texturePaint/purpose/"
-#define kTexturePaintPurposeDiffuseColor "diffuseColor"
+#define kUSDTexturePaintMetadataPurposePrefix "natron/usdTexturePaint/purpose/"
+#define kUSDTexturePaintPurposeDiffuseColor "diffuseColor"
 
 // The knobs every session layer carries (RotoLayer::getHostKnobs()).
-#define kTexturePaintSessionParamCameraToWorld "cameraToWorld"
-#define kTexturePaintSessionParamViewHeight "viewHeight"
-#define kTexturePaintSessionParamAspect "aspect"
-#define kTexturePaintSessionParamOrthographic "orthographic"
-#define kTexturePaintSessionParamNearClip "nearClip"
-#define kTexturePaintSessionParamFarClip "farClip"
-#define kTexturePaintSessionParamFrozen "frozen"
+#define kUSDTexturePaintSessionParamCameraToWorld "cameraToWorld"
+#define kUSDTexturePaintSessionParamViewHeight "viewHeight"
+#define kUSDTexturePaintSessionParamAspect "aspect"
+#define kUSDTexturePaintSessionParamOrthographic "orthographic"
+#define kUSDTexturePaintSessionParamNearClip "nearClip"
+#define kUSDTexturePaintSessionParamFarClip "farClip"
+#define kUSDTexturePaintSessionParamFrozen "frozen"
 
 NATRON_NAMESPACE_ENTER
 
-namespace TexturePaintCache {
+namespace USDTexturePaintCache {
 class TileDirectoryClaim;
 }
 
-class TexturePaintBaker;
-struct TexturePaintFileStep;
-class TexturePaintInteract;
+class USDTexturePaintBaker;
+struct USDTexturePaintFileStep;
+class USDTexturePaintInteract;
 
 namespace SceneRaster {
 struct ExplicitCamera;
@@ -108,7 +108,7 @@ struct ExplicitCamera;
  *
  * The output is the UDIM tile Output Tile names, at Tile Resolution: the colour plane, and the
  * Layer knob's plane when it is another one and a session has strokes. Tiles are baked from the
- * sessions on first use and cached on disk (TexturePaintCache), keyed by a hash of the strokes,
+ * sessions on first use and cached on disk (USDTexturePaintCache), keyed by a hash of the strokes,
  * the sessions and their cameras, the scene, the knobs that shape the texture and the Bake Inputs
  * files, which once baked are the base the sessions are painted over.
  *
@@ -118,7 +118,7 @@ struct ExplicitCamera;
  * projected again. The strokes stay the truth: undoing the bake unfreezes its sessions, puts back
  * the output files it overwrote, and the tiles are rebuilt from the strokes.
  **/
-class TexturePaint
+class USDTexturePaint
     : public NativeEffectBase {
 public:
     enum TextureModeEnum {
@@ -131,8 +131,8 @@ public:
     };
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_TEXTUREPAINT,
-        .label = "TexturePaint",
+        .id = PLUGINID_NATRON_USDTEXTUREPAINT,
+        .label = "USDTexturePaint",
         .description = "Paint on the meshes of the input scene that Prim Pattern selects, in the Viewer's 3D view, with "
                        "RotoPaint's brushes. The matched meshes share one UDIM texture set, laid out by their UV Primvar. "
                        "Strokes land in a paint buffer of Buffer Resolution through the view camera they were painted "
@@ -145,18 +145,18 @@ public:
         .minorVersion = 0,
         .outputKind = eDataKindImage,
         .inputs = kInputs,
-        .primPathKnob = kTexturePaintParamPrimPattern,
+        .primPathKnob = kUSDTexturePaintParamPrimPattern,
         .primPathKnobTakesPattern = true,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new TexturePaint(node);
+        return new USDTexturePaint(node);
     }
 
-    explicit TexturePaint(NodePtr node);
+    explicit USDTexturePaint(NodePtr node);
 
-    virtual ~TexturePaint();
+    virtual ~USDTexturePaint();
 
     virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -210,7 +210,7 @@ public:
     RotoPaintInteractPtr getPaintInteract() const;
 
     // What paints this node from a 3D view, created on first use. Main thread.
-    TexturePaintInteract* getViewInteract();
+    USDTexturePaintInteract* getViewInteract();
 
     virtual bool isMultiPlanar() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -403,7 +403,7 @@ public:
     /**
      * @brief The files one Bake Output wrote and what its undo step swaps them with. Backups and
      * stashes sit in a hidden directory beside each target, so that every swap is a rename. Only
-     * steps of the TexturePaintFileQueue touch one once its bake has begun.
+     * steps of the USDTexturePaintFileQueue touch one once its bake has begun.
      **/
     struct BakeOutputFiles {
         /**
@@ -436,7 +436,7 @@ public:
 
         struct Entry {
             std::string target;
-            // target's TexturePaintFileQueue::claimKey().
+            // target's USDTexturePaintFileQueue::claimKey().
             std::string key;
             // What target held before the bake, while it is not at target.
             std::string backup;
@@ -456,10 +456,10 @@ public:
         // Where the backups and stashes are, deleted with them.
         std::set<std::string> directories;
         std::string token;
-        // The bake's identity in the TexturePaintFileQueue claims, given when the bake is queued or
+        // The bake's identity in the USDTexturePaintFileQueue claims, given when the bake is queued or
         // with its first claim; 0 before.
         std::uint64_t bake = 0;
-        // The node that bakes, by TexturePaintFileQueue::newId(), which names it; 0 for none.
+        // The node that bakes, by USDTexturePaintFileQueue::newId(), which names it; 0 for none.
         std::uint64_t owner = 0;
         bool undone = false;
         // Whether the backups and stashes are deleted, after which nothing can be swapped.
@@ -467,7 +467,7 @@ public:
     };
 
     /**
-     * @brief Before target is written, on the TexturePaintFileQueue: claims it, adds it to *files
+     * @brief Before target is written, on the USDTexturePaintFileQueue: claims it, adds it to *files
      * and, when it exists, keeps what it holds as its backup, by a hard link so that the write's
      * rename leaves the link holding it. False with *error set when another bake holds target or
      * it cannot be kept; *heldBySameOwner tells whether the holder is an earlier bake of the same
@@ -491,16 +491,16 @@ public:
                                         std::vector<std::string>* kept = 0);
 
     /**
-     * @brief Submits rollBackBakeOutputFiles() to the TexturePaintFileQueue, for a Bake Output that
+     * @brief Submits rollBackBakeOutputFiles() to the USDTexturePaintFileQueue, for a Bake Output that
      * failed or whose completion was dropped, then settles the claims of files; returns at once
      * with the step to wait for. Bumps *epoch before and after the files go back. A backup kept
      * is reported in the error log and as node's warning.
      **/
-    static std::shared_ptr<TexturePaintFileStep> enqueueBakeOutputRollback(const std::shared_ptr<BakeOutputFiles>& files,
-                                                                           const std::shared_ptr<std::atomic<std::uint64_t>>& epoch,
-                                                                           const std::weak_ptr<TexturePaint>& node = std::weak_ptr<TexturePaint>());
+    static std::shared_ptr<USDTexturePaintFileStep> enqueueBakeOutputRollback(const std::shared_ptr<BakeOutputFiles>& files,
+                                                                              const std::shared_ptr<std::atomic<std::uint64_t>>& epoch,
+                                                                              const std::weak_ptr<USDTexturePaint>& node = std::weak_ptr<USDTexturePaint>());
 
-    // Drops the TexturePaintFileQueue claims of files, once an undo step owns them.
+    // Drops the USDTexturePaintFileQueue claims of files, once an undo step owns them.
     static void settleBakeOutputFiles(const BakeOutputFiles& files);
 
     // Marks target, backed up in *files, as written by the bake and records its identity, right after the bake's file reached it.
@@ -556,7 +556,7 @@ public:
     // Deletes the backups and stashes of files.
     static void discardBakeOutputFiles(const BakeOutputFiles& files);
 
-    // Submits discardBakeOutputFiles() to the TexturePaintFileQueue, behind every swap of files.
+    // Submits discardBakeOutputFiles() to the USDTexturePaintFileQueue, behind every swap of files.
     static void enqueueBakeOutputDiscard(const std::shared_ptr<BakeOutputFiles>& files);
 
     /**
@@ -582,7 +582,7 @@ public:
      * @brief Queues an undo (or redo) of the Bake Output of files and state on the node's baker,
      * behind every bake queued before it. When the baker reaches it, the main thread checks that
      * the record is still the one the bake set (undo) or found (redo); if so the files swap on
-     * the TexturePaintFileQueue and, once that lands, the state is restored (undo) or reapplied.
+     * the USDTexturePaintFileQueue and, once that lands, the state is restored (undo) or reapplied.
      * Otherwise, or when the files cannot be swapped, nothing changes and the persistent message
      * says why. *applied, which the undo step shares with every swap it queues, tells whether its
      * bake is applied as the swaps landed so far left it: a swap asking for the state it is in
@@ -603,7 +603,7 @@ public:
     void setUndoCommandSinkForTesting(const std::function<void(const UndoCommandPtr&)>& sink);
 
     /**
-     * @brief The bakes below queue on the node's TexturePaintBaker, in order, and return at once;
+     * @brief The bakes below queue on the node's USDTexturePaintBaker, in order, and return at once;
      * main thread. Each lands later on the main thread, where it changes the node as the
      * synchronous bake of the same name does and bumps the bake generation, which refreshes the
      * output. A bake that fails shows its error as the node's persistent message. False, with the
@@ -632,14 +632,14 @@ public:
     quint64 getBakeGeneration() const WARN_UNUSED_RETURN;
 
     // The node's baker, created on first use. Main thread.
-    TexturePaintBaker* getBaker();
+    USDTexturePaintBaker* getBaker();
 
 protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
     // What the baker's closures hold instead of this, so that a bake never outlives the node unseen.
-    std::weak_ptr<TexturePaint> weakSelf();
+    std::weak_ptr<USDTexturePaint> weakSelf();
 
     struct BakeControl {
         std::function<bool()> cancelled;
@@ -665,13 +665,13 @@ private:
      * @brief On the baker: has the main thread take run's snapshot, and waits for it. False when
      * the node is gone or the bake is cancelled first.
      **/
-    static bool awaitBakeOutputSnapshot(const std::weak_ptr<TexturePaint>& weak,
+    static bool awaitBakeOutputSnapshot(const std::weak_ptr<USDTexturePaint>& weak,
                                         const std::shared_ptr<BakeOutputRun>& run,
                                         const std::function<bool()>& cancelled) WARN_UNUSED_RETURN;
     bool runBakeOutput(BakeOutputRun& run, const BakeControl& control, std::string* error);
     /**
      * @brief Writes rgba to a temporary file beside path on the calling thread, then backs path up
-     * and renames the temporary file over it on the TexturePaintFileQueue, waiting for that. The
+     * and renames the temporary file over it on the USDTexturePaintFileQueue, waiting for that. The
      * temporary file is gone once the step ran, whether or not the write landed.
      **/
     static bool writeBakeTarget(const BakeOutputRun& run,
@@ -739,7 +739,7 @@ private:
     // The file a tile of purpose starts from: the Bake Output file, else the Bake Inputs one.
     std::string getBasePath(const std::string& purpose, int tile, double time) const WARN_UNUSED_RETURN;
 
-    // The colour plane's base files as TexturePaintView::setBase() takes them.
+    // The colour plane's base files as USDTexturePaintView::setBase() takes them.
     std::string getViewBaseFiles(double time) const WARN_UNUSED_RETURN;
 
     /**
@@ -833,7 +833,7 @@ private:
     mutable std::mutex _tileDirectoryMutex;
     // The directory getTileDirectory() names, held until the node's cache id or the project's
     // saved state changes, and deleted with the node unless others can reuse it.
-    mutable std::shared_ptr<TexturePaintCache::TileDirectoryClaim> _tileClaim;
+    mutable std::shared_ptr<USDTexturePaintCache::TileDirectoryClaim> _tileClaim;
     mutable std::string _tileClaimId;
     mutable bool _tileClaimSaved = false;
     // The cache id and saved state no directory could be claimed for, and when to try again, so
@@ -865,10 +865,10 @@ private:
     KnobIntWPtr _bakeGeneration;
     KnobIntWPtr _outputTile;
     RotoPaintInteractPtr _paintInteract;
-    std::unique_ptr<TexturePaintInteract> _viewInteract;
+    std::unique_ptr<USDTexturePaintInteract> _viewInteract;
     std::atomic<int> _sessionRenders;
-    std::unique_ptr<TexturePaintBaker> _baker;
-    // This node's identity as the owner of TexturePaintFileQueue claims.
+    std::unique_ptr<USDTexturePaintBaker> _baker;
+    // This node's identity as the owner of USDTexturePaintFileQueue claims.
     const std::uint64_t _bakeOwnerId;
     // Bake Outputs, and their undos and redos, queued, running or landing, whose files are not
     // yet owned by an undo step or put back.
@@ -883,4 +883,4 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Scene_TexturePaint_h
+#endif // Engine_Nodes_Scene_USDTexturePaint_h

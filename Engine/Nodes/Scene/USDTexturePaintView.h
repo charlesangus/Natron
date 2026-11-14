@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Scene_TexturePaintView_h
-#define Engine_Nodes_Scene_TexturePaintView_h
+#ifndef Engine_Nodes_Scene_USDTexturePaintView_h
+#define Engine_Nodes_Scene_USDTexturePaintView_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -38,18 +38,18 @@
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
 
-#define PLUGINID_NATRON_TEXTUREPAINTVIEW "TexturePaintView"
+#define PLUGINID_NATRON_USDTEXTUREPAINTVIEW "USDTexturePaintView"
 
-#define kTexturePaintViewParamCameraToWorld "cameraToWorld"
-#define kTexturePaintViewParamViewHeight "viewHeight"
-#define kTexturePaintViewParamAspect "aspect"
-#define kTexturePaintViewParamOrthographic "orthographic"
-#define kTexturePaintViewParamNearClip "nearClip"
-#define kTexturePaintViewParamFarClip "farClip"
-#define kTexturePaintViewParamPrimPattern "primPattern"
-#define kTexturePaintViewParamUvPrimvar "uvPrimvar"
-#define kTexturePaintViewParamBaseFiles "baseFiles"
-#define kTexturePaintViewParamBaseResolution "baseResolution"
+#define kUSDTexturePaintViewParamCameraToWorld "cameraToWorld"
+#define kUSDTexturePaintViewParamViewHeight "viewHeight"
+#define kUSDTexturePaintViewParamAspect "aspect"
+#define kUSDTexturePaintViewParamOrthographic "orthographic"
+#define kUSDTexturePaintViewParamNearClip "nearClip"
+#define kUSDTexturePaintViewParamFarClip "farClip"
+#define kUSDTexturePaintViewParamPrimPattern "primPattern"
+#define kUSDTexturePaintViewParamUvPrimvar "uvPrimvar"
+#define kUSDTexturePaintViewParamBaseFiles "baseFiles"
+#define kUSDTexturePaintViewParamBaseResolution "baseResolution"
 
 NATRON_NAMESPACE_ENTER
 
@@ -58,7 +58,7 @@ struct ExplicitCamera;
 }
 
 /**
- * @brief The image a TexturePaint session's strokes are painted over: the meshes of the scene on
+ * @brief The image a USDTexturePaint session's strokes are painted over: the meshes of the scene on
  * its input that Prim Pattern selects, unlit, as the session camera sees them. A mesh pixel holds
  * the texel of the base file of its UDIM tile under its st, sampled bilinearly, when Base Files
  * names one for the tile; otherwise the constant diffuseColor of the mesh's bound
@@ -71,10 +71,10 @@ struct ExplicitCamera;
  * is the paint space rendered at the mipmap level bufferMipmapLevel() gives, so neither the
  * strokes nor the buffer depend on the size of the Viewer they were painted in.
  *
- * Internal: TexturePaint creates one per session, outside the project, and keeps its knobs in step
+ * Internal: USDTexturePaint creates one per session, outside the project, and keeps its knobs in step
  * with the session and its own knobs.
  **/
-class TexturePaintView
+class USDTexturePaintView
     : public NativeEffectBase {
 public:
     // The largest Buffer Resolution, so every buffer is the paint space at a mipmap level >= 0.
@@ -85,9 +85,9 @@ public:
     };
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_TEXTUREPAINTVIEW,
-        .label = "TexturePaintView",
-        .description = "The unlit view of a TexturePaint session's meshes through its camera, which the session's "
+        .id = PLUGINID_NATRON_USDTEXTUREPAINTVIEW,
+        .label = "USDTexturePaintView",
+        .description = "The unlit view of a USDTexturePaint session's meshes through its camera, which the session's "
                        "strokes are painted over.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
@@ -99,12 +99,12 @@ public:
 
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new TexturePaintView(node);
+        return new USDTexturePaintView(node);
     }
 
-    explicit TexturePaintView(NodePtr node);
+    explicit USDTexturePaintView(NodePtr node);
 
-    virtual ~TexturePaintView();
+    virtual ~USDTexturePaintView();
 
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -186,4 +186,4 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Scene_TexturePaintView_h
+#endif // Engine_Nodes_Scene_USDTexturePaintView_h

@@ -85,11 +85,11 @@
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
-#include "Engine/Nodes/Scene/TexturePaint.h"
-#include "Engine/Nodes/Scene/TexturePaintBaker.h"
-#include "Engine/Nodes/Scene/TexturePaintInteract.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
+#include "Engine/Nodes/Scene/USDTexturePaint.h"
+#include "Engine/Nodes/Scene/USDTexturePaintBaker.h"
+#include "Engine/Nodes/Scene/USDTexturePaintInteract.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 #include "Engine/RotoCurveContext.h"
@@ -3994,14 +3994,14 @@ struct SceneViewport::Implementation {
         return dynamic_cast<USDEditTransform*>((*node)->getEffectInstance().get());
     }
 
-    TexturePaint* getPaintNode(NodePtr* node) const
+    USDTexturePaint* getPaintNode(NodePtr* node) const
     {
         *node = paintNodeProvider ? paintNodeProvider() : NodePtr();
         if (!*node) {
             return nullptr;
         }
 
-        return dynamic_cast<TexturePaint*>((*node)->getEffectInstance().get());
+        return dynamic_cast<USDTexturePaint*>((*node)->getEffectInstance().get());
     }
 
     // The device pixel of a widget position.
@@ -5407,7 +5407,7 @@ releaseOnMainThread(std::shared_ptr<void> held)
 }
 
 QImage
-overlayImage(const TexturePaint::SessionBuffer& buffer)
+overlayImage(const USDTexturePaint::SessionBuffer& buffer)
 {
     QImage image(buffer.width, buffer.height, QImage::Format_ARGB32_Premultiplied);
     const bool consistent = (buffer.width > 0) && (buffer.height > 0) && (buffer.rgba.size() == (std::size_t)buffer.width * buffer.height * 4) && (buffer.touched.size() == (std::size_t)buffer.width * buffer.height);
@@ -5440,7 +5440,7 @@ void
 SceneViewport::followPaintNode()
 {
     NodePtr node;
-    TexturePaint* effect = _imp->getPaintNode(&node);
+    USDTexturePaint* effect = _imp->getPaintNode(&node);
     if (node == _imp->paintHostNode.lock()) {
         return;
     }
@@ -5457,7 +5457,7 @@ SceneViewport::followPaintNode()
     if (!effect) {
         return;
     }
-    TexturePaintBaker* baker = effect->getBaker();
+    USDTexturePaintBaker* baker = effect->getBaker();
     if (!baker) {
         return;
     }
@@ -5466,16 +5466,16 @@ SceneViewport::followPaintNode()
         _imp->paintConnections.push_back(QObject::connect(context.get(), &RotoCurveContext::itemInserted, this, [this](int, int) { schedulePaintRefresh(); }));
         _imp->paintConnections.push_back(QObject::connect(context.get(), &RotoCurveContext::itemRemoved, this, [this](const RotoItemPtr&, int) { schedulePaintRefresh(); }));
     }
-    _imp->paintConnections.push_back(QObject::connect(baker, &TexturePaintBaker::progress, this, [this](double fraction, const QString& label) {
+    _imp->paintConnections.push_back(QObject::connect(baker, &USDTexturePaintBaker::progress, this, [this](double fraction, const QString& label) {
         _imp->bakeFraction = fraction;
         _imp->bakeLabel = label;
         update();
     }));
-    _imp->paintConnections.push_back(QObject::connect(baker, &TexturePaintBaker::bakeFinished, this, [this](bool, quint64) {
+    _imp->paintConnections.push_back(QObject::connect(baker, &USDTexturePaintBaker::bakeFinished, this, [this](bool, quint64) {
         refreshPaintOverlays();
         update();
     }));
-    _imp->paintConnections.push_back(QObject::connect(baker, &TexturePaintBaker::idle, this, [this]() {
+    _imp->paintConnections.push_back(QObject::connect(baker, &USDTexturePaintBaker::idle, this, [this]() {
         refreshPaintOverlays();
         update();
     }));
@@ -5495,7 +5495,7 @@ SceneViewport::refreshPaintOverlays()
 {
     _imp->paintRefreshTimer->stop();
     NodePtr node;
-    TexturePaint* effect = _imp->getPaintNode(&node);
+    USDTexturePaint* effect = _imp->getPaintNode(&node);
     if (!effect) {
         ++_imp->paintEpoch;
         _imp->abortPaintJob();
@@ -5516,11 +5516,11 @@ SceneViewport::refreshPaintOverlays()
     const std::list<ImageLayerDesc> planes = effect->getOutputPlanes(time, view);
     const RotoLayerPtr current = effect->getViewInteract()->getCurrentSession();
     std::vector<RotoLayerPtr> wanted;
-    if (current && !TexturePaint::isSessionFrozen(current)) {
+    if (current && !USDTexturePaint::isSessionFrozen(current)) {
         wanted.push_back(current);
     }
     for (const RotoLayerPtr& session : effect->getSessions()) {
-        if ((session != current) && !TexturePaint::isSessionFrozen(session) && effect->isSessionBakePending(session)) {
+        if ((session != current) && !USDTexturePaint::isSessionFrozen(session) && effect->isSessionBakePending(session)) {
             wanted.push_back(session);
         }
     }
@@ -5541,7 +5541,7 @@ SceneViewport::refreshPaintOverlays()
             job.push_back(std::move(entry));
             continue;
         }
-        if (!planes.empty() && TexturePaint::getSessionCamera(session, &entry.camera)) {
+        if (!planes.empty() && USDTexturePaint::getSessionCamera(session, &entry.camera)) {
             entry.viewNode = effect->getSessionView(session);
             entry.render = !entry.viewNode.expired();
         }
@@ -5566,7 +5566,7 @@ SceneViewport::refreshPaintOverlays()
             if (!entry.render || abortInfo->isAborted()) {
                 continue;
             }
-            TexturePaint::SessionBuffer buffer;
+            USDTexturePaint::SessionBuffer buffer;
             std::string error;
             bool ok = false;
             {
@@ -5576,8 +5576,8 @@ SceneViewport::refreshPaintOverlays()
                 NodePtr viewNode = entry.viewNode.lock();
                 RotoLayerPtr session = entry.session.lock();
                 EffectInstancePtr effect = paintNode ? paintNode->getEffectInstance() : EffectInstancePtr();
-                TexturePaint* texturePaint = dynamic_cast<TexturePaint*>(effect.get());
-                ok = texturePaint && viewNode && session && texturePaint->renderSessionBufferFrom(viewNode, session, plane, time, view, &buffer, &error, abortInfo);
+                USDTexturePaint* usdTexturePaint = dynamic_cast<USDTexturePaint*>(effect.get());
+                ok = usdTexturePaint && viewNode && session && usdTexturePaint->renderSessionBufferFrom(viewNode, session, plane, time, view, &buffer, &error, abortInfo);
                 releaseOnMainThread(std::move(session));
                 releaseOnMainThread(std::move(effect));
                 releaseOnMainThread(std::move(viewNode));
@@ -5598,7 +5598,7 @@ SceneViewport::drawPaintOverlays(QPainter& painter,
                                  const SceneViewportRenderer::CameraPose& pose)
 {
     NodePtr node;
-    TexturePaint* effect = _imp->getPaintNode(&node);
+    USDTexturePaint* effect = _imp->getPaintNode(&node);
     int quads = 0;
     // The buffers were painted through a camera; once the view moved away they are not drawn, and the bake landing shows the paint.
     if (effect && poseKnown) {
@@ -5891,7 +5891,7 @@ SceneViewport::beginPaint(const QPointF& pos,
                           double timestamp)
 {
     NodePtr node;
-    TexturePaint* effect = _imp->getPaintNode(&node);
+    USDTexturePaint* effect = _imp->getPaintNode(&node);
     if (!effect) {
         return false;
     }
@@ -5927,7 +5927,7 @@ SceneViewport::continuePaint(const QPointF& pos,
                              double timestamp)
 {
     const NodePtr node = _imp->paintNode.lock();
-    TexturePaint* effect = node ? dynamic_cast<TexturePaint*>(node->getEffectInstance().get()) : nullptr;
+    USDTexturePaint* effect = node ? dynamic_cast<USDTexturePaint*>(node->getEffectInstance().get()) : nullptr;
     if (!_imp->painting || !effect) {
         return;
     }
@@ -5941,7 +5941,7 @@ void
 SceneViewport::endPaint()
 {
     const NodePtr node = _imp->paintNode.lock();
-    TexturePaint* effect = node ? dynamic_cast<TexturePaint*>(node->getEffectInstance().get()) : nullptr;
+    USDTexturePaint* effect = node ? dynamic_cast<USDTexturePaint*>(node->getEffectInstance().get()) : nullptr;
     const bool painting = _imp->painting;
 
     _imp->painting = false;
@@ -5958,7 +5958,7 @@ SceneViewport::closePaintSession()
 {
     endPaint();
     NodePtr node;
-    if (TexturePaint* effect = _imp->getPaintNode(&node)) {
+    if (USDTexturePaint* effect = _imp->getPaintNode(&node)) {
         const bool hadSession = (bool)effect->getViewInteract()->getCurrentSession();
         (void)effect->getViewInteract()->closeSession(_imp->frame);
         if (hadSession) {

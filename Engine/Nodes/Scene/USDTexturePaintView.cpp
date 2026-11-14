@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "TexturePaintView.h"
+#include "USDTexturePaintView.h"
 
 #include <algorithm>
 #include <cmath>
@@ -46,7 +46,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneRaster.h"
-#include "Engine/Nodes/Scene/TexturePaintCache.h"
+#include "Engine/Nodes/Scene/USDTexturePaintCache.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -112,74 +112,74 @@ setIfDifferent(const std::shared_ptr<K>& knob,
 }
 } // anon namespace
 
-TexturePaintView::TexturePaintView(NodePtr node)
+USDTexturePaintView::USDTexturePaintView(NodePtr node)
     : NativeEffectBase(node)
 {
 }
 
-TexturePaintView::~TexturePaintView()
+USDTexturePaintView::~USDTexturePaintView()
 {
 }
 
 const NodeSpec*
-TexturePaintView::nodeSpec() const
+USDTexturePaintView::nodeSpec() const
 {
     return staticNodeSpec<kNodeSpec>();
 }
 
 void
-TexturePaintView::initializeKnobs()
+USDTexturePaintView::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
     const SceneRaster::ExplicitCamera defaults;
 
     KnobDoublePtr cameraToWorld = createKnob<KnobDouble>(tr("Camera To World"), 16);
-    cameraToWorld->setName(kTexturePaintViewParamCameraToWorld);
+    cameraToWorld->setName(kUSDTexturePaintViewParamCameraToWorld);
     for (int i = 0; i < 16; ++i) {
         cameraToWorld->setDefaultValue(defaults.cameraToWorld[i], i);
     }
     _cameraToWorld = cameraToWorld;
 
     KnobDoublePtr viewHeight = createKnob<KnobDouble>(tr("View Height"));
-    viewHeight->setName(kTexturePaintViewParamViewHeight);
+    viewHeight->setName(kUSDTexturePaintViewParamViewHeight);
     viewHeight->setDefaultValue(defaults.viewHeight);
     _viewHeight = viewHeight;
 
     KnobDoublePtr aspect = createKnob<KnobDouble>(tr("Aspect"));
-    aspect->setName(kTexturePaintViewParamAspect);
+    aspect->setName(kUSDTexturePaintViewParamAspect);
     aspect->setDefaultValue(defaults.aspect);
     _aspect = aspect;
 
     KnobBoolPtr orthographic = createKnob<KnobBool>(tr("Orthographic"));
-    orthographic->setName(kTexturePaintViewParamOrthographic);
+    orthographic->setName(kUSDTexturePaintViewParamOrthographic);
     orthographic->setDefaultValue(defaults.orthographic);
     _orthographic = orthographic;
 
     KnobDoublePtr nearClip = createKnob<KnobDouble>(tr("Near Clip"));
-    nearClip->setName(kTexturePaintViewParamNearClip);
+    nearClip->setName(kUSDTexturePaintViewParamNearClip);
     nearClip->setDefaultValue(defaults.nearClip);
     _nearClip = nearClip;
 
     KnobDoublePtr farClip = createKnob<KnobDouble>(tr("Far Clip"));
-    farClip->setName(kTexturePaintViewParamFarClip);
+    farClip->setName(kUSDTexturePaintViewParamFarClip);
     farClip->setDefaultValue(defaults.farClip);
     _farClip = farClip;
 
     KnobStringPtr primPattern = createKnob<KnobString>(tr("Prim Pattern"));
-    primPattern->setName(kTexturePaintViewParamPrimPattern);
+    primPattern->setName(kUSDTexturePaintViewParamPrimPattern);
     _primPattern = primPattern;
 
     KnobStringPtr uvPrimvar = createKnob<KnobString>(tr("UV Primvar"));
-    uvPrimvar->setName(kTexturePaintViewParamUvPrimvar);
+    uvPrimvar->setName(kUSDTexturePaintViewParamUvPrimvar);
     uvPrimvar->setDefaultValue("st");
     _uvPrimvar = uvPrimvar;
 
     KnobStringPtr baseFiles = createKnob<KnobString>(tr("Base Files"));
-    baseFiles->setName(kTexturePaintViewParamBaseFiles);
+    baseFiles->setName(kUSDTexturePaintViewParamBaseFiles);
     _baseFiles = baseFiles;
 
     KnobIntPtr baseResolution = createKnob<KnobInt>(tr("Base Resolution"));
-    baseResolution->setName(kTexturePaintViewParamBaseResolution);
+    baseResolution->setName(kUSDTexturePaintViewParamBaseResolution);
     baseResolution->setDefaultValue(1024);
     _baseResolution = baseResolution;
 
@@ -187,10 +187,10 @@ TexturePaintView::initializeKnobs()
         knob->setAnimationEnabled(false);
         page->addKnob(knob);
     }
-} // TexturePaintView::initializeKnobs
+} // USDTexturePaintView::initializeKnobs
 
 RectD
-TexturePaintView::paintSpaceBounds(double aspect)
+USDTexturePaintView::paintSpaceBounds(double aspect)
 {
     if (!(aspect > 0.) || !std::isfinite(aspect)) {
         aspect = 1.;
@@ -202,7 +202,7 @@ TexturePaintView::paintSpaceBounds(double aspect)
 }
 
 unsigned int
-TexturePaintView::bufferMipmapLevel(int bufferResolution)
+USDTexturePaintView::bufferMipmapLevel(int bufferResolution)
 {
     unsigned int level = 0;
 
@@ -214,11 +214,11 @@ TexturePaintView::bufferMipmapLevel(int bufferResolution)
 }
 
 void
-TexturePaintView::viewToPaintSpace(double aspect,
-                                   double u,
-                                   double v,
-                                   double* x,
-                                   double* y)
+USDTexturePaintView::viewToPaintSpace(double aspect,
+                                      double u,
+                                      double v,
+                                      double* x,
+                                      double* y)
 {
     const RectD bounds = paintSpaceBounds(aspect);
 
@@ -227,7 +227,7 @@ TexturePaintView::viewToPaintSpace(double aspect,
 }
 
 void
-TexturePaintView::setCamera(const SceneRaster::ExplicitCamera& camera)
+USDTexturePaintView::setCamera(const SceneRaster::ExplicitCamera& camera)
 {
     KnobDoublePtr cameraToWorld = _cameraToWorld.lock();
 
@@ -244,27 +244,27 @@ TexturePaintView::setCamera(const SceneRaster::ExplicitCamera& camera)
 }
 
 void
-TexturePaintView::setPrimPattern(const std::string& pattern)
+USDTexturePaintView::setPrimPattern(const std::string& pattern)
 {
     setIfDifferent(_primPattern.lock(), pattern);
 }
 
 void
-TexturePaintView::setUvPrimvar(const std::string& primvar)
+USDTexturePaintView::setUvPrimvar(const std::string& primvar)
 {
     setIfDifferent(_uvPrimvar.lock(), primvar);
 }
 
 void
-TexturePaintView::setBase(const std::string& files,
-                          int resolution)
+USDTexturePaintView::setBase(const std::string& files,
+                             int resolution)
 {
     setIfDifferent(_baseFiles.lock(), files);
     setIfDifferent(_baseResolution.lock(), resolution);
 }
 
 double
-TexturePaintView::getAspect() const
+USDTexturePaintView::getAspect() const
 {
     KnobDoublePtr aspect = _aspect.lock();
 
@@ -272,9 +272,9 @@ TexturePaintView::getAspect() const
 }
 
 StatusEnum
-TexturePaintView::getPreferredMetadataAt(double /*time*/,
-                                         ViewIdx /*view*/,
-                                         NodeMetadata& metadata)
+USDTexturePaintView::getPreferredMetadataAt(double /*time*/,
+                                            ViewIdx /*view*/,
+                                            NodeMetadata& metadata)
 {
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setComponentsType(-1, kNatronColorLayerID);
@@ -288,11 +288,11 @@ TexturePaintView::getPreferredMetadataAt(double /*time*/,
 }
 
 StatusEnum
-TexturePaintView::getRegionOfDefinition(U64 /*hash*/,
-                                        double /*time*/,
-                                        const RenderScale& /*scale*/,
-                                        ViewIdx /*view*/,
-                                        RectD* rod)
+USDTexturePaintView::getRegionOfDefinition(U64 /*hash*/,
+                                           double /*time*/,
+                                           const RenderScale& /*scale*/,
+                                           ViewIdx /*view*/,
+                                           RectD* rod)
 {
     *rod = paintSpaceBounds(getAspect());
 
@@ -300,28 +300,28 @@ TexturePaintView::getRegionOfDefinition(U64 /*hash*/,
 }
 
 FramesNeededMap
-TexturePaintView::getFramesNeeded(double /*time*/,
-                                  ViewIdx /*view*/)
+USDTexturePaintView::getFramesNeeded(double /*time*/,
+                                     ViewIdx /*view*/)
 {
     return FramesNeededMap();
 }
 
 void
-TexturePaintView::getRegionsOfInterest(double /*time*/,
-                                       const RenderScale& /*scale*/,
-                                       const RectD& /*outputRoD*/,
-                                       const RectD& /*renderWindow*/,
-                                       ViewIdx /*view*/,
-                                       RoIMap* /*ret*/)
+USDTexturePaintView::getRegionsOfInterest(double /*time*/,
+                                          const RenderScale& /*scale*/,
+                                          const RectD& /*outputRoD*/,
+                                          const RectD& /*renderWindow*/,
+                                          ViewIdx /*view*/,
+                                          RoIMap* /*ret*/)
 {
 }
 
 bool
-TexturePaintView::renderView(double time,
-                             ViewIdx view,
-                             const RectI& pixels,
-                             std::vector<float>* rgba,
-                             std::string* error)
+USDTexturePaintView::renderView(double time,
+                                ViewIdx view,
+                                const RectI& pixels,
+                                std::vector<float>* rgba,
+                                std::string* error)
 {
     const int width = pixels.width();
     const int height = pixels.height();
@@ -416,7 +416,7 @@ TexturePaintView::renderView(double time,
     std::vector<PXR_NS::GfVec3f> colors;
     colors.reserve(buffers.meshPaths.size());
     for (const PXR_NS::SdfPath& path : buffers.meshPaths) {
-        colors.push_back(TexturePaintCache::meshBaseColor(stage->GetPrimAtPath(path), timeCode));
+        colors.push_back(USDTexturePaintCache::meshBaseColor(stage->GetPrimAtPath(path), timeCode));
     }
 
     const std::size_t count = (std::size_t)width * (std::size_t)height;
@@ -461,10 +461,10 @@ TexturePaintView::renderView(double time,
     }
 
     return true;
-} // TexturePaintView::renderView
+} // USDTexturePaintView::renderView
 
 StatusEnum
-TexturePaintView::render(const RenderActionArgs& args)
+USDTexturePaintView::render(const RenderActionArgs& args)
 {
     const RectI pixels = paintSpaceBounds(getAspect()).toPixelEnclosing(args.mappedScale.toMipmapLevel(), 1.);
     std::vector<float> rgba;
@@ -512,6 +512,6 @@ TexturePaintView::render(const RenderActionArgs& args)
     clearPersistentMessage(false);
 
     return eStatusOK;
-} // TexturePaintView::render
+} // USDTexturePaintView::render
 
 NATRON_NAMESPACE_EXIT

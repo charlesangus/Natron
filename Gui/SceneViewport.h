@@ -692,7 +692,7 @@ public:
     void setTransformNodeProvider(const std::function<NodePtr()>& provider);
 
     /**
-     * @brief Sets the function that names the TexturePaint node the view paints: one with its
+     * @brief Sets the function that names the USDTexturePaint node the view paints: one with its
      * settings panel open, or null for none. While it names one, a left drag with no modifier
      * paints that node through the view's camera, unless the mouse bindings give it to
      * navigation; the other bindings keep their actions. Navigating, and the Bake Paint key,

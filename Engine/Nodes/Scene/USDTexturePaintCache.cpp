@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "TexturePaintCache.h"
+#include "USDTexturePaintCache.h"
 
 #include <algorithm>
 #include <atomic>
@@ -62,13 +62,13 @@
 
 NATRON_NAMESPACE_ENTER
 
-namespace TexturePaintCache {
+namespace USDTexturePaintCache {
 namespace {
     // UsdPreviewSurface's own default diffuseColor, so a mesh with no usable colour looks as a
     // renderer would show it.
     const float kNeutralGrey = 0.18f;
 
-    const char* const kNoteAttribute = "natron:texturePaintNote";
+    const char* const kNoteAttribute = "natron:usdTexturePaintNote";
 
     bool
     fail(std::string* error,
@@ -300,7 +300,7 @@ composeTile(const TileArgs& args,
         if (isCancelled(args, error)) {
             return false;
         }
-        TexturePaint::SessionBuffer buffer;
+        USDTexturePaint::SessionBuffer buffer;
         if (!session.renderBuffer(&buffer, error)) {
             return false;
         }
@@ -362,7 +362,7 @@ tileDirectory(const std::string& root,
         name += "_p" + std::to_string(pid);
     }
 
-    return root + "/TexturePaint/" + name;
+    return root + "/USDTexturePaint/" + name;
 }
 
 namespace {
@@ -588,7 +588,7 @@ pruneDeadProcessDirectories(const std::string& root,
     const std::filesystem::file_time_type now = std::filesystem::file_time_type::clock::now();
     const std::filesystem::file_time_type::duration age = std::chrono::hours(24 * (long)olderThanDays);
 
-    for (std::filesystem::directory_iterator it(root + "/TexturePaint", ec), end; !ec && (it != end); it.increment(ec)) {
+    for (std::filesystem::directory_iterator it(root + "/USDTexturePaint", ec), end; !ec && (it != end); it.increment(ec)) {
         const std::string name = it->path().filename().string();
         const std::size_t mark = name.rfind("_p");
         const std::string digits = ((mark == std::string::npos) || (mark + 2 >= name.size())) ? std::string() : name.substr(mark + 2);
@@ -798,6 +798,6 @@ removeTiles(const std::vector<std::string>& paths)
     }
     OiioReadSupport::evictHeaders(paths);
 }
-} // namespace TexturePaintCache
+} // namespace USDTexturePaintCache
 
 NATRON_NAMESPACE_EXIT

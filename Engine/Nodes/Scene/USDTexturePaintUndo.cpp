@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "TexturePaintUndo.h"
+#include "USDTexturePaintUndo.h"
 
 #include <QCoreApplication>
 
@@ -31,10 +31,10 @@
 
 NATRON_NAMESPACE_ENTER
 
-TexturePaintBakeOutputUndoCommand::TexturePaintBakeOutputUndoCommand(const NodePtr& node,
-                                                                     const TexturePaint::BakeOutputState& state,
-                                                                     const std::shared_ptr<TexturePaint::BakeOutputFiles>& files)
-    : UndoCommand(QCoreApplication::translate("TexturePaint", "Bake Output").toStdString())
+USDTexturePaintBakeOutputUndoCommand::USDTexturePaintBakeOutputUndoCommand(const NodePtr& node,
+                                                                           const USDTexturePaint::BakeOutputState& state,
+                                                                           const std::shared_ptr<USDTexturePaint::BakeOutputFiles>& files)
+    : UndoCommand(QCoreApplication::translate("USDTexturePaint", "Bake Output").toStdString())
     , _node(node)
     , _state(state)
     , _files(files)
@@ -43,23 +43,23 @@ TexturePaintBakeOutputUndoCommand::TexturePaintBakeOutputUndoCommand(const NodeP
 {
 }
 
-TexturePaintBakeOutputUndoCommand::~TexturePaintBakeOutputUndoCommand()
+USDTexturePaintBakeOutputUndoCommand::~USDTexturePaintBakeOutputUndoCommand()
 {
-    TexturePaint::enqueueBakeOutputDiscard(_files);
+    USDTexturePaint::enqueueBakeOutputDiscard(_files);
 }
 
-std::shared_ptr<TexturePaint>
-TexturePaintBakeOutputUndoCommand::getPaint() const
+std::shared_ptr<USDTexturePaint>
+USDTexturePaintBakeOutputUndoCommand::getPaint() const
 {
     NodePtr node = _node.lock();
 
-    return node ? std::dynamic_pointer_cast<TexturePaint>(node->getEffectInstance()) : std::shared_ptr<TexturePaint>();
+    return node ? std::dynamic_pointer_cast<USDTexturePaint>(node->getEffectInstance()) : std::shared_ptr<USDTexturePaint>();
 }
 
 void
-TexturePaintBakeOutputUndoCommand::undo()
+USDTexturePaintBakeOutputUndoCommand::undo()
 {
-    std::shared_ptr<TexturePaint> paint = getPaint();
+    std::shared_ptr<USDTexturePaint> paint = getPaint();
 
     if (paint) {
         (void)paint->enqueueBakeOutputSwap(_files, _state, true, _applied);
@@ -67,7 +67,7 @@ TexturePaintBakeOutputUndoCommand::undo()
 }
 
 void
-TexturePaintBakeOutputUndoCommand::redo()
+USDTexturePaintBakeOutputUndoCommand::redo()
 {
     // The bake was done before the command was pushed.
     if (_firstRedo) {
@@ -75,7 +75,7 @@ TexturePaintBakeOutputUndoCommand::redo()
 
         return;
     }
-    std::shared_ptr<TexturePaint> paint = getPaint();
+    std::shared_ptr<USDTexturePaint> paint = getPaint();
     if (paint) {
         (void)paint->enqueueBakeOutputSwap(_files, _state, false, _applied);
     }

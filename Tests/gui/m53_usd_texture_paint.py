@@ -1,7 +1,7 @@
 """Painting on a UV-mapped quad in the Viewer's 3D view, orbiting, and the texture the node outputs.
 
-Graph: USDRead(texture-paint-quad.usda) into TexturePaint and into Viewer1, so the 3D view shows the
-scene, with TexturePaint's panel open, which makes it the node the view paints into, and TexturePaint
+Graph: USDRead(texture-paint-quad.usda) into USDTexturePaint and into Viewer1, so the 3D view shows the
+scene, with USDTexturePaint's panel open, which makes it the node the view paints into, and USDTexturePaint
 into a Write. Viewer 3D Navigation set to the Nuke preset (Ctrl+left tumbles). A plain left drag paints a Solid
 stroke in pure red through the view camera. A Ctrl+left drag tumbles the camera, which closes the
 session and queues its bake; the node's hidden bakeGeneration knob counts the bakes that landed.
@@ -50,8 +50,8 @@ try:
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
     usd.getParam("filename").setValue(scene_path)
-    paint = app.createNode("TexturePaint")
-    require(paint is not None, "create TexturePaint", plugin_problem("TexturePaint"))
+    paint = app.createNode("USDTexturePaint")
+    require(paint is not None, "create USDTexturePaint", plugin_problem("USDTexturePaint"))
     viewer = app.getNode("Viewer1")
     if viewer is None:
         viewer = app.createNode("Viewer")
@@ -149,9 +149,9 @@ try:
         return red, image
 
     def steps():
-        require(paint.connectInput(0, usd), "connect TexturePaint to the USDRead")
+        require(paint.connectInput(0, usd), "connect USDTexturePaint to the USDRead")
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
-        require(write.connectInput(0, paint), "connect the Write to TexturePaint")
+        require(write.connectInput(0, paint), "connect the Write to USDTexturePaint")
         colour = paint.getParam("strokeColorButton")
         for dim, value in enumerate((1., 0., 0.)):
             colour.setValue(value, dim)
@@ -163,7 +163,7 @@ try:
         app.selectNode(paint, True)
         QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
         ok = yield ("until", lambda: panel_of(paint) is not None, POLL_TIMEOUT_S)
-        require(ok, "open TexturePaint's settings panel")
+        require(ok, "open USDTexturePaint's settings panel")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         v = view()
         require(ok, "the scene view shows the scene (%r)" % (v.property("natronSceneError") if v else None,))

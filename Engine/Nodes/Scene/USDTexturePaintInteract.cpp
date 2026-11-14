@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "TexturePaintInteract.h"
+#include "USDTexturePaintInteract.h"
 
 #include <algorithm>
 #include <cmath>
@@ -32,8 +32,8 @@
 #include <QPointF>
 
 #include "Engine/Nodes/Scene/SceneRaster.h"
-#include "Engine/Nodes/Scene/TexturePaint.h"
-#include "Engine/Nodes/Scene/TexturePaintView.h"
+#include "Engine/Nodes/Scene/USDTexturePaint.h"
+#include "Engine/Nodes/Scene/USDTexturePaintView.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/ViewIdx.h"
@@ -86,7 +86,7 @@ sameCamera(const SceneRaster::ExplicitCamera& a,
 }
 } // anonymous namespace
 
-TexturePaintInteract::TexturePaintInteract(TexturePaint* node)
+USDTexturePaintInteract::USDTexturePaintInteract(USDTexturePaint* node)
     : _node(node)
     , _session()
     , _sessionTool((int)eRotoToolSolidBrush)
@@ -96,21 +96,21 @@ TexturePaintInteract::TexturePaintInteract(TexturePaint* node)
 {
 }
 
-TexturePaintInteract::~TexturePaintInteract()
+USDTexturePaintInteract::~USDTexturePaintInteract()
 {
 }
 
 double
-TexturePaintInteract::brushSizeScale(int viewWidth,
-                                     int viewHeight)
+USDTexturePaintInteract::brushSizeScale(int viewWidth,
+                                        int viewHeight)
 {
     const int longer = std::max(1, std::max(viewWidth, viewHeight));
 
-    return (double)TexturePaintView::kPaintSpaceSize / (double)longer;
+    return (double)USDTexturePaintView::kPaintSpaceSize / (double)longer;
 }
 
 RotoLayerPtr
-TexturePaintInteract::getCurrentSession() const
+USDTexturePaintInteract::getCurrentSession() const
 {
     const RotoLayerPtr session = _session.lock();
 
@@ -118,7 +118,7 @@ TexturePaintInteract::getCurrentSession() const
 }
 
 bool
-TexturePaintInteract::isPainting() const
+USDTexturePaintInteract::isPainting() const
 {
     if (_penDown) {
         return true;
@@ -129,9 +129,9 @@ TexturePaintInteract::isPainting() const
 }
 
 bool
-TexturePaintInteract::acceptsStrokes(const RotoLayerPtr& session) const
+USDTexturePaintInteract::acceptsStrokes(const RotoLayerPtr& session) const
 {
-    if (!session || TexturePaint::isSessionFrozen(session)) {
+    if (!session || USDTexturePaint::isSessionFrozen(session)) {
         return false;
     }
     const std::list<RotoLayerPtr> sessions = _node->getSessions();
@@ -140,23 +140,23 @@ TexturePaintInteract::acceptsStrokes(const RotoLayerPtr& session) const
 }
 
 void
-TexturePaintInteract::toPaintSpace(double u,
-                                   double v,
-                                   double* x,
-                                   double* y) const
+USDTexturePaintInteract::toPaintSpace(double u,
+                                      double v,
+                                      double* x,
+                                      double* y) const
 {
-    TexturePaintView::viewToPaintSpace(_strokeAspect, u, v, x, y);
+    USDTexturePaintView::viewToPaintSpace(_strokeAspect, u, v, x, y);
 }
 
 bool
-TexturePaintInteract::penDown(const SceneRaster::ExplicitCamera& camera,
-                              int viewWidth,
-                              int viewHeight,
-                              double u,
-                              double v,
-                              double pressure,
-                              double timestamp,
-                              double time)
+USDTexturePaintInteract::penDown(const SceneRaster::ExplicitCamera& camera,
+                                 int viewWidth,
+                                 int viewHeight,
+                                 double u,
+                                 double v,
+                                 double pressure,
+                                 double timestamp,
+                                 double time)
 {
     if (_penDown) {
         (void)penUp();
@@ -169,7 +169,7 @@ TexturePaintInteract::penDown(const SceneRaster::ExplicitCamera& camera,
     RotoLayerPtr session = _session.lock();
     if (session) {
         SceneRaster::ExplicitCamera sessionCamera;
-        const bool sameView = TexturePaint::getSessionCamera(session, &sessionCamera) && sameCamera(sessionCamera, camera);
+        const bool sameView = USDTexturePaint::getSessionCamera(session, &sessionCamera) && sameCamera(sessionCamera, camera);
         if (!sameView || ((int)paint->selectedTool != _sessionTool) || !acceptsStrokes(session)) {
             (void)closeSession(time);
             session.reset();
@@ -196,13 +196,13 @@ TexturePaintInteract::penDown(const SceneRaster::ExplicitCamera& camera,
     _sessionPainted = true;
 
     return true;
-} // TexturePaintInteract::penDown
+} // USDTexturePaintInteract::penDown
 
 bool
-TexturePaintInteract::penMotion(double u,
-                                double v,
-                                double pressure,
-                                double timestamp)
+USDTexturePaintInteract::penMotion(double u,
+                                   double v,
+                                   double pressure,
+                                   double timestamp)
 {
     const RotoPaintInteractPtr paint = _node->getPaintInteract();
     if (!_penDown || !paint) {
@@ -216,7 +216,7 @@ TexturePaintInteract::penMotion(double u,
 }
 
 bool
-TexturePaintInteract::penUp()
+USDTexturePaintInteract::penUp()
 {
     if (!_penDown) {
         return false;
@@ -230,7 +230,7 @@ TexturePaintInteract::penUp()
 }
 
 bool
-TexturePaintInteract::closeSession(double time)
+USDTexturePaintInteract::closeSession(double time)
 {
     (void)penUp();
     const RotoLayerPtr session = _session.lock();
@@ -247,7 +247,7 @@ TexturePaintInteract::closeSession(double time)
 }
 
 void
-TexturePaintInteract::onToolChanged(double time)
+USDTexturePaintInteract::onToolChanged(double time)
 {
     const RotoPaintInteractPtr paint = _node->getPaintInteract();
     if (paint && _session.lock() && ((int)paint->selectedTool != _sessionTool)) {

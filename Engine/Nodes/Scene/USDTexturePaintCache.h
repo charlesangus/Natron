@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Scene_TexturePaintCache_h
-#define Engine_Nodes_Scene_TexturePaintCache_h
+#ifndef Engine_Nodes_Scene_USDTexturePaintCache_h
+#define Engine_Nodes_Scene_USDTexturePaintCache_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -38,7 +38,7 @@
 #include <vector>
 
 #include "Engine/Nodes/Scene/SceneRaster.h"
-#include "Engine/Nodes/Scene/TexturePaint.h"
+#include "Engine/Nodes/Scene/USDTexturePaint.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/RectI.h"
 #include "Global/GlobalDefines.h"
@@ -46,7 +46,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief How TexturePaint turns its sessions into UDIM tiles, and the disk cache it keeps them in.
+ * @brief How USDTexturePaint turns its sessions into UDIM tiles, and the disk cache it keeps them in.
  *
  * A tile of one plane starts from the base: the file TileArgs::basePath names when set (the
  * material's look baked by MaterialBake), else, on the texels a matched mesh's UV layout covers,
@@ -60,7 +60,7 @@ NATRON_NAMESPACE_ENTER
  * Tiles are cached on disk, one half-float RGBA OpenEXR file per plane, tile and frame, and read
  * back by region, so no more than the tile being baked is ever held in memory.
  **/
-namespace TexturePaintCache {
+namespace USDTexturePaintCache {
 /**
  * @brief The constant diffuseColor of the UsdPreviewSurface bound to prim, or UsdPreviewSurface's
  * default grey (0.18) when there is none, it is not a UsdPreviewSurface, or the colour comes
@@ -97,7 +97,7 @@ struct TileArgs {
 // A session to lay over the tile: its camera, and how to get its buffer of the plane baked.
 struct PaintSession {
     SceneRaster::ExplicitCamera camera;
-    std::function<bool(TexturePaint::SessionBuffer* buffer, std::string* error)> renderBuffer;
+    std::function<bool(USDTexturePaint::SessionBuffer* buffer, std::string* error)> renderBuffer;
 };
 
 typedef std::pair<PXR_NS::SdfPath, PXR_NS::SdfPath> MeshPair;
@@ -237,8 +237,8 @@ bool readTile(const std::string& path,
 std::map<U64, std::vector<std::string>> listTiles(const std::string& directory) WARN_UNUSED_RETURN;
 
 void removeTiles(const std::vector<std::string>& paths);
-} // namespace TexturePaintCache
+} // namespace USDTexturePaintCache
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Scene_TexturePaintCache_h
+#endif // Engine_Nodes_Scene_USDTexturePaintCache_h

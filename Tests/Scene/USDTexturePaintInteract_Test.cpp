@@ -46,9 +46,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
-#include "Engine/Nodes/Scene/TexturePaint.h"
-#include "Engine/Nodes/Scene/TexturePaintInteract.h"
-#include "Engine/Nodes/Scene/TexturePaintView.h"
+#include "Engine/Nodes/Scene/USDTexturePaint.h"
+#include "Engine/Nodes/Scene/USDTexturePaintInteract.h"
+#include "Engine/Nodes/Scene/USDTexturePaintView.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
@@ -132,15 +132,15 @@ subStrokesIn(const RotoLayerPtr& session)
 }
 } // anonymous namespace
 
-class TexturePaintInteractTest
+class USDTexturePaintInteractTest
     : public BaseTest {
 protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
         getApp()->getProject()->reset(false, true);
-        _node = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
-        _effect = _node ? dynamic_cast<TexturePaint*>(_node->getEffectInstance().get()) : nullptr;
+        _node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTEXTUREPAINT));
+        _effect = _node ? dynamic_cast<USDTexturePaint*>(_node->getEffectInstance().get()) : nullptr;
         if (_effect) {
             pickTool(_effect->getPaintInteract()->brushAction.lock());
         }
@@ -177,7 +177,7 @@ protected:
                 double u,
                 double v)
     {
-        TexturePaintInteract* view = _effect->getViewInteract();
+        USDTexturePaintInteract* view = _effect->getViewInteract();
 
         ASSERT_TRUE(view->penDown(camera, kViewWidth, kViewHeight, u, v, 1., 1., time()));
         EXPECT_TRUE(view->isPenDown());
@@ -188,13 +188,13 @@ protected:
     }
 
     NodePtr _node;
-    TexturePaint* _effect = nullptr;
+    USDTexturePaint* _effect = nullptr;
 };
 
-TEST_F(TexturePaintInteractTest, StrokesThroughOnePoseShareOneSession)
+TEST_F(USDTexturePaintInteractTest, StrokesThroughOnePoseShareOneSession)
 {
     ASSERT_TRUE(_effect != nullptr);
-    TexturePaintInteract* view = _effect->getViewInteract();
+    USDTexturePaintInteract* view = _effect->getViewInteract();
     ASSERT_TRUE(view != nullptr);
     EXPECT_FALSE(bool(view->getCurrentSession()));
 
@@ -210,16 +210,16 @@ TEST_F(TexturePaintInteractTest, StrokesThroughOnePoseShareOneSession)
     EXPECT_TRUE(pumpUntil([&]() { return subStrokesIn(sessions.front()) >= 3u; }, 30000));
     EXPECT_EQ(3u, subStrokesIn(sessions.front()));
     SceneRaster::ExplicitCamera stored;
-    ASSERT_TRUE(TexturePaint::getSessionCamera(sessions.front(), &stored));
+    ASSERT_TRUE(USDTexturePaint::getSessionCamera(sessions.front(), &stored));
     EXPECT_DOUBLE_EQ(5., stored.cameraToWorld[14]);
     EXPECT_DOUBLE_EQ(camera.aspect, stored.aspect);
     EXPECT_FALSE(_effect->isSessionBakePending(sessions.front())) << "an open session is not baked";
 }
 
-TEST_F(TexturePaintInteractTest, ACameraChangeEndsTheSessionAndQueuesItsBake)
+TEST_F(USDTexturePaintInteractTest, ACameraChangeEndsTheSessionAndQueuesItsBake)
 {
     ASSERT_TRUE(_effect != nullptr);
-    TexturePaintInteract* view = _effect->getViewInteract();
+    USDTexturePaintInteract* view = _effect->getViewInteract();
 
     stroke(cameraAt(5.), 0.5, 0.5);
     const RotoLayerPtr first = view->getCurrentSession();
@@ -236,7 +236,7 @@ TEST_F(TexturePaintInteractTest, ACameraChangeEndsTheSessionAndQueuesItsBake)
     landNeatRender();
     EXPECT_FALSE(_effect->isSessionBakePending(second));
     SceneRaster::ExplicitCamera stored;
-    ASSERT_TRUE(TexturePaint::getSessionCamera(second, &stored));
+    ASSERT_TRUE(USDTexturePaint::getSessionCamera(second, &stored));
     EXPECT_DOUBLE_EQ(7., stored.cameraToWorld[14]);
 
     // As the view does when it navigates or Bake Paint is pressed.
@@ -253,16 +253,16 @@ TEST_F(TexturePaintInteractTest, ACameraChangeEndsTheSessionAndQueuesItsBake)
     EXPECT_FALSE(_effect->isSessionBakePending(second));
 }
 
-TEST_F(TexturePaintInteractTest, AStrokeOnAFrozenSessionStartsANewOneThroughTheSameCamera)
+TEST_F(USDTexturePaintInteractTest, AStrokeOnAFrozenSessionStartsANewOneThroughTheSameCamera)
 {
     ASSERT_TRUE(_effect != nullptr);
-    TexturePaintInteract* view = _effect->getViewInteract();
+    USDTexturePaintInteract* view = _effect->getViewInteract();
     const SceneRaster::ExplicitCamera camera = cameraAt(5.);
 
     stroke(camera, 0.5, 0.5);
     const RotoLayerPtr frozen = view->getCurrentSession();
     ASSERT_TRUE(bool(frozen));
-    TexturePaint::setSessionFrozen(frozen, true);
+    USDTexturePaint::setSessionFrozen(frozen, true);
     EXPECT_FALSE(bool(view->getCurrentSession())) << "a frozen session takes no more strokes";
 
     stroke(camera, 0.25, 0.5);
@@ -274,17 +274,17 @@ TEST_F(TexturePaintInteractTest, AStrokeOnAFrozenSessionStartsANewOneThroughTheS
     EXPECT_EQ(1u, strokesIn(next).size());
     EXPECT_FALSE(_effect->isSessionBakePending(frozen)) << "a frozen session is never projected again";
     SceneRaster::ExplicitCamera stored;
-    ASSERT_TRUE(TexturePaint::getSessionCamera(next, &stored));
+    ASSERT_TRUE(USDTexturePaint::getSessionCamera(next, &stored));
     for (int i = 0; i < 16; ++i) {
         EXPECT_DOUBLE_EQ(camera.cameraToWorld[i], stored.cameraToWorld[i]) << i;
     }
     EXPECT_DOUBLE_EQ(camera.viewHeight, stored.viewHeight);
 }
 
-TEST_F(TexturePaintInteractTest, AToolSwitchEndsTheSession)
+TEST_F(USDTexturePaintInteractTest, AToolSwitchEndsTheSession)
 {
     ASSERT_TRUE(_effect != nullptr);
-    TexturePaintInteract* view = _effect->getViewInteract();
+    USDTexturePaintInteract* view = _effect->getViewInteract();
     const RotoPaintInteractPtr paint = _effect->getPaintInteract();
     const SceneRaster::ExplicitCamera camera = cameraAt(5.);
 
@@ -309,18 +309,18 @@ TEST_F(TexturePaintInteractTest, AToolSwitchEndsTheSession)
     EXPECT_EQ(3u, _effect->getSessions().size());
 }
 
-TEST_F(TexturePaintInteractTest, BrushSizeAndPositionMapIntoPaintSpace)
+TEST_F(USDTexturePaintInteractTest, BrushSizeAndPositionMapIntoPaintSpace)
 {
     ASSERT_TRUE(_effect != nullptr);
-    TexturePaintInteract* view = _effect->getViewInteract();
+    USDTexturePaintInteract* view = _effect->getViewInteract();
     const RotoPaintInteractPtr paint = _effect->getPaintInteract();
     const KnobDoublePtr size = paint->sizeSpinbox.lock();
     ASSERT_TRUE(bool(size));
     size->setValue(20.);
 
-    EXPECT_DOUBLE_EQ(8192. / 1600., TexturePaintInteract::brushSizeScale(1600, 900));
-    EXPECT_DOUBLE_EQ(8192. / 1200., TexturePaintInteract::brushSizeScale(800, 1200));
-    EXPECT_DOUBLE_EQ(8192., TexturePaintInteract::brushSizeScale(0, 0));
+    EXPECT_DOUBLE_EQ(8192. / 1600., USDTexturePaintInteract::brushSizeScale(1600, 900));
+    EXPECT_DOUBLE_EQ(8192. / 1200., USDTexturePaintInteract::brushSizeScale(800, 1200));
+    EXPECT_DOUBLE_EQ(8192., USDTexturePaintInteract::brushSizeScale(0, 0));
 
     const SceneRaster::ExplicitCamera camera = cameraAt(5.);
     stroke(camera, 0.25, 0.75);
@@ -329,13 +329,13 @@ TEST_F(TexturePaintInteractTest, BrushSizeAndPositionMapIntoPaintSpace)
     const std::list<RotoStrokeItemPtr> strokes = strokesIn(session);
     ASSERT_EQ(1u, strokes.size());
     const RotoStrokeItemPtr painted = strokes.front();
-    EXPECT_NEAR(20. * (double)TexturePaintView::kPaintSpaceSize / (double)kViewWidth, painted->getBrushSizeKnob()->getValue(), 1e-9)
+    EXPECT_NEAR(20. * (double)USDTexturePaintView::kPaintSpaceSize / (double)kViewWidth, painted->getBrushSizeKnob()->getValue(), 1e-9)
         << "the knob's pixels of the view, in paint-space units";
     EXPECT_DOUBLE_EQ(20., size->getValue()) << "the toolbar keeps its value";
 
     double x = 0.;
     double y = 0.;
-    TexturePaintView::viewToPaintSpace(camera.aspect, 0.25, 0.75, &x, &y);
+    USDTexturePaintView::viewToPaintSpace(camera.aspect, 0.25, 0.75, &x, &y);
     std::list<std::list<std::pair<Point, double>>> points;
     painted->evaluateStroke(0, time(), &points);
     ASSERT_FALSE(points.empty());

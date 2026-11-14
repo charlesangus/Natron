@@ -162,7 +162,7 @@
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
-#include "Engine/Nodes/Scene/TexturePaintBaker.h"
+#include "Engine/Nodes/Scene/USDTexturePaintBaker.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -804,10 +804,10 @@ AppManager::~AppManager()
         }
     }
 
-    // No event loop deletes retired bakers or lands bakes any more: every TexturePaint bake is
+    // No event loop deletes retired bakers or lands bakes any more: every USDTexturePaint bake is
     // stopped and joined here, the files of those that never landed go back, and every file step
     // runs whole, while the plug-ins and statics they use still exist.
-    TexturePaintBaker::shutdownAll();
+    USDTexturePaintBaker::shutdownAll();
 
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {

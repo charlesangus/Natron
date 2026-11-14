@@ -44,7 +44,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
-#include "Engine/Nodes/Scene/TexturePaint.h"
+#include "Engine/Nodes/Scene/USDTexturePaint.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
@@ -56,7 +56,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// The script names of the brush knobs RotoPaint has always had, which TexturePaint now has too.
+// The script names of the brush knobs RotoPaint has always had, which USDTexturePaint now has too.
 const char* const kBrushKnobNames[] = {
     "multiStrokeEnabledButton",
     "strokeColorButton",
@@ -187,13 +187,13 @@ protected:
     }
 };
 
-TEST_F(RotoPaintHostTest, TexturePaintPaintsSessionStrokesWithTheSharedBrushKnobs)
+TEST_F(RotoPaintHostTest, USDTexturePaintPaintsSessionStrokesWithTheSharedBrushKnobs)
 {
     getApp()->getProject()->reset(false, true);
 
-    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTEXTUREPAINT));
     ASSERT_TRUE(bool(node));
-    TexturePaint* effect = dynamic_cast<TexturePaint*>(node->getEffectInstance().get());
+    USDTexturePaint* effect = dynamic_cast<USDTexturePaint*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect != nullptr);
 
     for (const char* name : kBrushKnobNames) {

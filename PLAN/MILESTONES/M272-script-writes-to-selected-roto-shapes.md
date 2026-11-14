@@ -38,12 +38,12 @@ Root cause (consultant, at 7b1b9a9b6):
 
 ## Phase 272.1: Selection mirrors, edits forward
 
-- [ ] M272.P1.T1 — Replace item-knob slaving with a mirrored proxy that forwards edits
+- [x] M272.P1.T1 — Replace item-knob slaving with a mirrored proxy that forwards edits
   - files: `Engine/RotoCurveContext.cpp/.h` (tieItemKnob, untieItemKnob, selectInternal, deselectInternal, refreshTransformKnobTies, onSelectedKnob*Changed), new `Tests/RotoSelectionProxy_Test.cpp`, `Tests/CMakeLists.txt`; tests asserting slave semantics: `Tests/Native/NativeRetouch_Test.cpp` (SourceDragOfASelectedShapeMovesTheNodeOffset), `Tests/Native/SplineWarpTransform_Test.cpp`, `Tests/RotoContentHash_Test.cpp`
   - approach: Never call slaveTo/unSlave. On select, and on deselect when items remain, call `proxy->cloneAndUpdateGui(lastSelectedItemKnob)` inside a MirrorScope guard. Connect the proxy's signals once (valueChanged, keyFrameSet/Removed/Moved, animationRemoved, keyFrameInterpolationChanged, derivativeMoved, expressionChanged). Outside a mirror, replay the operation on each selected item's own same-named knob per the Scope edge cases. Item signals re-mirror the proxy only when they come from the last-selected item; drop the fan-out in onSelectedKnobValueChanged. Update the listed tests to the new semantics: own values are kept; the node knob mirrors the last-selected item.
   - verify: gtests. Strokes with lifeTimeFrame 5 and 12 plus Beziers with different opacity keys keep every value and key through select, select-add, deselect and clearSelection in any order. The proxy shows the last-selected item. A proxy setValue or setValueAtTime, or a key removal, reaches every selected item and nothing else. A write to one selected item's knob changes only it and reads back. No item→proxy→item echo (listener refresh count unchanged).
   - size: L
-- [ ] M272.P1.T2 — Remove the slave-aware branches in roto hosts
+- [x] M272.P1.T2 — Remove the slave-aware branches in roto hosts
   - files: `Engine/RotoDrawableItem.cpp` (:947, :1586-1597), `Engine/Nodes/Filter/Retouch.cpp` (:198, :325, :1128, :1147), `Engine/Nodes/Transform/AutoStraighten.cpp` (:1270), `Tests/Native/RetouchTestSupport.h` (:117)
   - approach: Item knobs are never slaved now: serialize own values, reset the centre without unslaving, and decide keying from the item's own animation. AutoStraighten re-mirrors the proxy through the T1 path. Drop the deselect workaround in makeShape.
   - verify: the existing Roto, Retouch, SplineWarp, AutoStraighten and RotoPaint save/load gtests pass unchanged; rg finds no isSlave/getMaster on roto item knobs.
@@ -82,3 +82,4 @@ Root cause (consultant, at 7b1b9a9b6):
 - 2026-11-14 — Forward operations, not state: replaying the operation per item keeps each item's other keys; copying state is what caused the loss.
 - 2026-11-14 — A Python write to one shape's knob reaches that shape only: the panel (or node knob) edit stays the only way to change several items at once (user, in the stub).
 - 2026-11-14 — PM defaults pending the user's answer (Open questions): no Python selection API; an expression set on the node knob with shapes selected is set on each selected shape.
+- 2026-11-14 — Phase 1 implemented (b161fadda, main merged in first). Deviation: key set, key removal and animation removal are found by diffing the proxy against a per-knob snapshot on value change rather than replayed from their own signals, because `cloneCurve` itself fires animation-removed and replaying it would wipe items' animation. Known limits: a proxy linked to another knob doesn't forward; a child selected through its layer and then directly stays non-forwarded; `makeShape` leaves the new shape selected alone. Building with the roto GUI scripts; Phases 2–3 started.

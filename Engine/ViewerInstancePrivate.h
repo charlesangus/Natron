@@ -142,11 +142,13 @@ public:
         , viewerParamsAlphaLayer( ImageLayerDesc::getRGBAComponents() )
         , viewerParamsAlphaChannelName("a")
         , knobWritesFromSetter(0)
+        , lockColourApplied(false)
+        , colourBeforeLock(false)
+        , savedColour{0., 0., 0.}
         , knobRenderRequests(0)
         , knobEditDepth(0)
         , knobEditRenderPending(false)
         , knobs()
-        , activateInputChangedFromViewer(false)
         , lastRenderParamsMutex()
         , lastRenderParams()
         , lastLookupMutex()
@@ -513,6 +515,9 @@ public:
     // Main thread only. Non-zero while a ViewerInstance setter writes knobs: the setter applies the
     // change itself, so knobChanged() must not apply it a second time.
     int knobWritesFromSetter;
+    bool lockColourApplied; // the grey lock colour was set by refreshLockDecoration
+    bool colourBeforeLock; // the node had a user colour before the first lock
+    double savedColour[3];
     unsigned int knobRenderRequests; // main thread only
     // Main thread only. Non-zero inside beginKnobEdits()/endKnobEdits(), which hold the knobs'
     // render requests back to one at the outermost end.
@@ -524,7 +529,6 @@ public:
         KnobDoubleWPtr gain; // f-stops
         KnobBoolWPtr enableGamma;
         KnobDoubleWPtr gamma;
-        KnobBoolWPtr autoContrast;
         KnobBoolWPtr checkerboard;
         // First entries: Project default for the display and view, None for the look.
         KnobChoiceWPtr display;
@@ -535,6 +539,7 @@ public:
         KnobLayerSelectWPtr layer;
         KnobChannelSelectWPtr alphaChannel;
         KnobIntWPtr inputs[2]; // input numbers, -1 for none
+        KnobStringWPtr lockedInputs[10]; // script names in this viewer's collection, empty for none
         KnobChoiceWPtr operation;
         KnobDoubleWPtr wipeCenter;
         KnobDoubleWPtr wipeAmount;
@@ -558,8 +563,6 @@ public:
     };
     Knobs knobs;
 
-    ///Only accessed from MT
-    bool activateInputChangedFromViewer;
     mutable QMutex textureBeingRenderedMutex;
     QWaitCondition textureBeingRenderedCond;
     std::list<FrameEntryPtr> textureBeingRendered; ///< a list of all the texture being rendered simultaneously

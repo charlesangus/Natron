@@ -72,6 +72,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneBreadcrumbBar.h"
 #include "Gui/SceneSelectionActions.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneViewport.h"
@@ -90,7 +91,6 @@ const char* const kViewerKnobNames[] = {
     kViewerParamGain,
     kViewerParamEnableGamma,
     kViewerParamGamma,
-    kViewerParamAutoContrast,
     kViewerParamCheckerboard,
     kViewerParamDisplay,
     kViewerParamView,
@@ -690,7 +690,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->firstInputImage->setFixedWidth(_imp->firstInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->firstInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->firstInputImage->addItem( QString::fromUtf8(" - ") );
-    QObject::connect( _imp->firstInputImage, SIGNAL(currentIndexChanged(QString)), this, SLOT(onFirstInputNameChanged(QString)) );
+    QObject::connect(_imp->firstInputImage, SIGNAL(currentIndexChanged(int)), this, SLOT(onFirstInputMenuChanged(int)));
     _imp->firstRowLayout->addWidget(_imp->firstInputImage);
 
     QIcon mergeIcon;
@@ -729,7 +729,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->secondInputImage->setFixedWidth(_imp->secondInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->secondInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->secondInputImage->addItem( QString::fromUtf8(" - ") );
-    QObject::connect( _imp->secondInputImage, SIGNAL(currentIndexChanged(QString)), this, SLOT(onSecondInputNameChanged(QString)) );
+    QObject::connect(_imp->secondInputImage, SIGNAL(currentIndexChanged(int)), this, SLOT(onSecondInputMenuChanged(int)));
     _imp->firstRowLayout->addWidget(_imp->secondInputImage);
 
     _imp->firstRowLayout->addStretch();
@@ -768,20 +768,6 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->gainSlider, SIGNAL(editingFinished(bool)), this, SLOT(onGainSliderEditingFinished(bool)) );
     _imp->gainSlider->setToolTip(gainTt);
     _imp->secondRowLayout->addWidget(_imp->gainSlider);
-
-    QString autoContrastToolTip(QString::fromUtf8("<p><b>") + tr("Auto-contrast:") + QString::fromUtf8("</b></p><p>") + tr("Automatically adjusts the gain and the offset applied "
-                                                                                                                           "to the colors of the visible image portion on the viewer.")
-                                + QString::fromUtf8("</p>"));
-    QIcon acIc;
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_AUTOCONTRAST_ENABLED, pixmapIconSize, &acIc);
-    _imp->autoContrast = new Button(acIc, QString(), _imp->secondSettingsRow);
-    _imp->autoContrast->setCheckable(true);
-    _imp->autoContrast->setChecked(false);
-    _imp->autoContrast->setDown(false);
-    _imp->autoContrast->setIconSize(buttonIconSize);
-    _imp->autoContrast->setFixedSize(buttonSize);
-    _imp->autoContrast->setToolTip(autoContrastToolTip);
-    _imp->secondRowLayout->addWidget(_imp->autoContrast);
 
     QIcon gammaIc;
     appPTR->getIcon(NATRON_PIXMAP_VIEWER_GAMMA_ENABLED, pixmapIconSize, &gammaIc);
@@ -1389,8 +1375,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->clipToProjectFormatButton, SIGNAL(clicked(bool)), this, SLOT(onClipToProjectButtonToggle(bool)) );
     QObject::connect( _imp->fullFrameProcessingButton, SIGNAL(clicked(bool)), this, SLOT(onFullFrameButtonToggle(bool)) );
     QObject::connect( _imp->viewsComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onViewsComboboxChanged(int)) );
-    QObject::connect( _imp->enableViewerRoI, SIGNAL(clicked(bool)), this, SLOT(onEnableViewerRoIButtonToggle(bool)) );
-    QObject::connect( _imp->autoContrast, SIGNAL(clicked(bool)), this, SLOT(onAutoContrastChanged(bool)) );
+    QObject::connect(_imp->enableViewerRoI, SIGNAL(clicked(bool)), this, SLOT(onEnableViewerRoIButtonToggle(bool)));
     QObject::connect( _imp->renderScaleCombo, SIGNAL(currentIndexChanged(int)), this, SLOT(onRenderScaleComboIndexChanged(int)) );
     QObject::connect( _imp->activateRenderScale, SIGNAL(toggled(bool)), this, SLOT(onRenderScaleButtonClicked(bool)) );
 
@@ -1494,7 +1479,15 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         _imp->sceneViewport->hide();
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
-        _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneViewport, 1);
+        _imp->sceneBreadcrumbBar = new SceneBreadcrumbBar(_imp->sceneViewport, _imp->viewerSubContainer);
+        _imp->sceneBreadcrumbBar->hide();
+        QObject::connect(_imp->sceneBreadcrumbBar, &SceneBreadcrumbBar::showInSceneGraphRequested, this, [this](const QStringList& paths) {
+            if (Gui* gui = getGui()) {
+                gui->showPrimsInSceneGraph(this, paths);
+            }
+        });
+        _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneBreadcrumbBar);
+        _imp->viewerSubContainerLayout->insertWidget(index + 2, _imp->sceneViewport, 1);
         // The USDEditTransform whose settings panel was opened last.
         const std::function<NodePtr()> openEditNode = [this]() -> NodePtr {
             Gui* gui = getGui();
@@ -1599,9 +1592,11 @@ ViewerTab::onActiveInputDataKindChanged()
     }
     if (scene) {
         _imp->viewer->hide();
+        _imp->sceneBreadcrumbBar->show();
         _imp->sceneViewport->show();
         onSceneEvaluated(0);
     } else {
+        _imp->sceneBreadcrumbBar->hide();
         _imp->sceneViewport->hide();
         // Lets go of the scene's layers; the viewport keeps its stage and engine for the next one.
         _imp->sceneViewport->clearScene();
@@ -1737,7 +1732,7 @@ ViewerTab::onViewerKnobValueChanged(ViewSpec /*view*/,
 void
 ViewerTab::refreshFromViewerKnob(const std::string& name)
 {
-    if ((name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamAutoContrast) || (name == kViewerParamCheckerboard)) {
+    if ((name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamCheckerboard)) {
         refreshColorControlsFromKnobs();
     } else if ((name == kViewerParamDisplay) || (name == kViewerParamView) || (name == kViewerParamLook)) {
         refreshDisplayTransformMenus();
@@ -1792,13 +1787,12 @@ ViewerTab::refreshColorControlsFromKnobs()
     const double fstop = gainEnabled ? _imp->viewerValue<double>(kViewerParamGain, 0.) : 0.;
     const bool gammaEnabled = _imp->viewerValue<bool>(kViewerParamEnableGamma, false);
     const double gamma = gammaEnabled ? _imp->viewerValue<double>(kViewerParamGamma, 1.) : 1.;
-    const bool autoContrast = _imp->viewerValue<bool>(kViewerParamAutoContrast, false);
     const bool checkerboard = _imp->viewerValue<bool>(kViewerParamCheckerboard, false);
 
     {
         QSignalBlocker b0(_imp->toggleGainButton), b1(_imp->gainBox), b2(_imp->gainSlider);
         QSignalBlocker b3(_imp->toggleGammaButton), b4(_imp->gammaBox), b5(_imp->gammaSlider);
-        QSignalBlocker b6(_imp->autoContrast), b7(_imp->checkerboardButton);
+        QSignalBlocker b6(_imp->checkerboardButton);
 
         _imp->toggleGainButton->setChecked(gainEnabled);
         _imp->toggleGainButton->setDown(gainEnabled);
@@ -1813,15 +1807,6 @@ ViewerTab::refreshColorControlsFromKnobs()
             _imp->gammaBox->setValue(gamma);
         }
         _imp->gammaSlider->seekScalePosition(gamma);
-
-        _imp->autoContrast->setChecked(autoContrast);
-        _imp->autoContrast->setDown(autoContrast);
-        _imp->gainSlider->setEnabled(!autoContrast);
-        _imp->gainBox->setEnabled(!autoContrast);
-        _imp->toggleGainButton->setEnabled(!autoContrast);
-        _imp->gammaSlider->setEnabled(!autoContrast);
-        _imp->gammaBox->setEnabled(!autoContrast);
-        _imp->toggleGammaButton->setEnabled(!autoContrast);
 
         _imp->checkerboardButton->setChecked(checkerboard);
         _imp->checkerboardButton->setDown(checkerboard);

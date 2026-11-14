@@ -899,6 +899,11 @@ public:
     // visible view, taken in by the engine, so that the next paint shows it.
     bool isSceneSynced() const;
 
+    // Whether the stage tryReadStage() reads is the one the last setScene(), setError() or
+    // clearScene() asked for. Unlike isSceneSynced(), this does not wait for the engine's frame, so
+    // readers of the stage are not left waiting on a frame that announces nothing when it ends.
+    bool isStageSynced() const;
+
     void setFrame(double frame, double framesPerSecond);
 
     /**
@@ -950,6 +955,22 @@ public:
     void frameScene();
 
     void frameSelection();
+
+    enum PickwalkEnum {
+        ePickwalkParent,
+        ePickwalkChild,
+        ePickwalkPrevSibling,
+        ePickwalkNextSibling
+    };
+
+    /**
+     * @brief Moves every selected prim one step through the stage by the children the scene graph
+     * lists, and merges prims that land on one: the current prim stays last. A prim with nowhere
+     * to go stays; siblings wrap. Child takes the child last left by a Parent walk of the same
+     * parent, else the first. Returns false, changing nothing, when the stage is busy, as reading
+     * it must not wait on the stage's writers.
+     **/
+    bool pickwalk(PickwalkEnum direction);
 
     // The prim drawn at pos (widget coordinates), empty for none. If the scene can't be picked
     // without waiting, sets busy instead: an empty result then says nothing about pos.
@@ -1078,6 +1099,9 @@ public:
     void restoreSceneView(const Serialization::SceneViewSerialization& serialization);
 
 public Q_SLOTS:
+    // Replaces the selection. A slot, so that scripts reach it through the meta object.
+    void selectPaths(const QStringList& paths);
+
     // Prim paths. A slot, so that scripts reach it through the meta object.
     void requestLoad(const QStringList& paths, bool withDescendants);
 

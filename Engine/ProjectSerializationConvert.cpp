@@ -152,13 +152,17 @@ layoutToSerialization(const Node& node,
         layout->height = h;
     }
 
-    if (node.hasUserColor()) {
-        double r, g, b;
-        node.getUserColor(&r, &g, &b);
+    bool hasColor = node.hasUserColor();
+    double rgb[3];
+    node.getUserColor(&rgb[0], &rgb[1], &rgb[2]);
+    if (const ViewerInstance* viewer = dynamic_cast<const ViewerInstance*>(node.getEffectInstance().get())) {
+        viewer->getColourToSave(&hasColor, rgb);
+    }
+    if (hasColor) {
         layout->hasColor = true;
-        layout->colorR = (float)r;
-        layout->colorG = (float)g;
-        layout->colorB = (float)b;
+        layout->colorR = (float)rgb[0];
+        layout->colorG = (float)rgb[1];
+        layout->colorB = (float)rgb[2];
     }
 
     if (node.hasOverlayColor()) {

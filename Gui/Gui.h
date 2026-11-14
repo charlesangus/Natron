@@ -114,6 +114,9 @@ public:
 
     void setActiveViewer(ViewerTab* viewer);
     ViewerTab* getActiveViewer() const;
+
+    // Every viewer tab that was made active or given the click focus, most recent first.
+    std::list<ViewerTab*> getViewersByRecentFocus() const;
     NodeCollectionPtr getLastSelectedNodeCollection() const;
 
     /**
@@ -368,6 +371,12 @@ public:
 
     // Every Scene Graph panel, the first one first.
     std::list<SceneGraphPanel*> getSceneGraphPanels() const;
+
+    // Brings up a Scene Graph panel following viewer, the first that does or a new one in the
+    // first pane other than the viewer's, and reveals paths in it. With the viewer's pane the only
+    // one, the panel is added there but not raised over the viewer. A pin is never changed.
+    // Returns the panel, null if there is no pane to show it in.
+    SceneGraphPanel* showPrimsInSceneGraph(ViewerTab* viewer, const QStringList& paths);
 
     // Destroys the panels addNewSceneGraphPanel made that are in no pane.
     void removeSceneGraphPanelsOutsidePanes();
@@ -730,6 +739,8 @@ public Q_SLOTS:
 private:
 
     void setCurrentPanelFocus(PanelWidget* widget);
+
+    void noteViewerFocused(ViewerTab* viewer);
 
     AppInstancePtr openProjectInternal(const std::string & absoluteFileName, bool attemptToLoadAutosave) WARN_UNUSED_RETURN;
 

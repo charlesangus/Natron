@@ -181,19 +181,19 @@ Acceptance sketch:
   - verify: input 1 smaller than input 2, both modes, CPU == GPU.
   - size: M
 
-- [ ] M136.P4.T11 — Map inputs of IBlur, IErodeDilate, IDefocus and EdgeBlur
+- [x] M136.P4.T11 — Map inputs of IBlur, IErodeDilate, IDefocus and EdgeBlur
   - files: `Engine/Nodes/Image/MapInput.{h,cpp}` (`MapPlane::outside`, `tileRange`), `Engine/Gpu/Kernels/mapremap.slang`, `IBlur.cpp`, `IErodeDilate.cpp`, `IDefocus.cpp`, `EdgeBlur.cpp`
   - approach: Map planes follow the map input's bit; Stretch clamps.
   - verify: a Map smaller than the source, both modes, CPU == GPU.
   - size: M
 
-- [ ] M136.P4.T12 — IDistort and STMap UV inputs
+- [x] M136.P4.T12 — IDistort and STMap UV inputs
   - files: `Engine/Nodes/Transform/IDistort.cpp`, `STMap.cpp`, `Engine/Gpu/Kernels/coordmap.slang`, `stmap.slang`
   - approach: as T11 for UV reads.
   - verify: a UV input smaller than the source, both modes, CPU == GPU.
   - size: M
 
-- [ ] M136.P4.T13 — LensCorrect, SplineWarp and AutoStraighten onto the Edge Mode knob
+- [x] M136.P4.T13 — LensCorrect, SplineWarp and AutoStraighten onto the Edge Mode knob
   - files: their `.{h,cpp}`, `Engine/Gpu/Kernels/lenscorrect.slang`, `splinewarp.slang`
   - approach: replace each `black_outside` knob (default on today) with the stage; LensCorrect's edge fade, its outside shortcut and its source-region bound key off the resolved mode.
   - verify: as P4.T4.
@@ -276,3 +276,4 @@ Acceptance sketch:
 - 2026-11-13 — Phase 3 implemented (42f35f04a). Transform's default changes from Black to Input (stretches over Stretch sources). The Stretch band is now computed after concatenation, and GPU input reads get it too. The Transform and Crop soft goldens may need re-recording. The Phase 3 gate replaces the Phase 2 one.
 - 2026-11-13 — P4.T1–T7 implemented (e7e9b31dd). EdgeBlur's GPU read the matte as black past its edge while the CPU used the mode; fixed. The EdgeBlur and EdgeDetect matte always repeats its edge (PM: a black border would read as an edge), and only the blurred source follows the knob. Input resolves to Stretch for most sources, so border goldens change. Gating with `--record-goldens`, replacing the Phase 3 gate.
 - 2026-11-13 — P4.T8–T10 implemented (ce6d616fc). Merge's transparent-A skip stays under both modes, since it checks A's actual pixels. Mask and route inputs get the Stretch RoI band on GPU too.
+- 2026-11-13 — P4.T11–T13 implemented (5062b6c65). The Map reads of IWarp, IDistort and STMap follow the Map's mode through the shared `MapInput`. LensCorrect, SplineWarp and AutoStraighten now default to Input instead of Black. To check under T14 to T19: SplineWarp's mask/mix reference for a concatenated plane is still hard-coded Black.

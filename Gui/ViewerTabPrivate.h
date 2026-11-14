@@ -55,6 +55,7 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+class SceneBreadcrumbBar;
 class SceneViewport;
 
 struct ViewerTabPrivate
@@ -77,6 +78,8 @@ struct ViewerTabPrivate
     QVBoxLayout* viewerSubContainerLayout;
     // Beside viewer in viewerSubContainerLayout; one of the two is visible.
     SceneViewport* sceneViewport;
+    // Above sceneViewport, shown and hidden with it.
+    SceneBreadcrumbBar* sceneBreadcrumbBar;
     // The node the scene view last showed: loads asked for on another node's scene are dropped.
     NodeWPtr sceneLoadsNode;
     QVBoxLayout* mainLayout;

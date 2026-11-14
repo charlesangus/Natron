@@ -369,6 +369,12 @@ public:
     // Every Scene Graph panel, the first one first.
     std::list<SceneGraphPanel*> getSceneGraphPanels() const;
 
+    // Brings up a Scene Graph panel following viewer, the first that does or a new one in the
+    // first pane other than the viewer's, and reveals paths in it. With the viewer's pane the only
+    // one, the panel is added there but not raised over the viewer. A pin is never changed.
+    // Returns the panel, null if there is no pane to show it in.
+    SceneGraphPanel* showPrimsInSceneGraph(ViewerTab* viewer, const QStringList& paths);
+
     // Destroys the panels addNewSceneGraphPanel made that are in no pane.
     void removeSceneGraphPanelsOutsidePanes();
 

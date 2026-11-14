@@ -78,3 +78,11 @@ Make M234 - Camera Projection Nodes' `USDProject3D` render in Cycles and MoonRay
 - 2026-11-13 — First gate (ae7c6e416): six projection test failures, now fixed (e2fa2cc79, F9 merged in): the plate references were never recorded, because the golden-recording step's regex left out the projection suites (the workflow now includes them); test unit errors (orthographic aperture is in mm, and USDEditTransform appends after the card's scale); and a real USDWrite bug, where the bake left unread Cycles and MoonRay nodes (it now strips every material child the Storm surface doesn't read). Re-gating with `--record-goldens`.
 - 2026-11-13 — Gate green on e2fa2cc79 with `--record-goldens`. The Cycles and MoonRay references are committed (2b1122c5b, about 5 KB each). F9 merged in (1a1167531). PR #277 into F9 is open and under review; re-gating against the committed references.
 - 2026-11-13 — PR #277 review round 1: no blockers; the projection maths matches Storm. Medium findings: the bake stripped material children it doesn't own; Project On applied to curves and points (Storm skips them); the Cycles frame-column path was untested; nothing compared against Storm. PM calls: materials that keep their Storm shader also drop the networks on export (Scope: the networks never reach exported files); topology and values are authored in separate layers so scrubs stay cheap. Being fixed; re-gate cancelled.
+- 2026-11-13 — Round 1 fixes committed (4baf6fdd9).
+  - Network shaders now carry a `natronProjectionNetwork` mark, and the bake strips only marked shaders.
+  - Cycles skips Project On on curves and points.
+  - Kept-Storm exports drop the networks.
+  - Topology is memoized separately from values, and digest compares replace layer-text compares.
+  - Tests now compare against Storm's references.
+  - Cycles colourspace is explicit (data, unassociated alpha), so the Cycles reference must be re-recorded.
+  PM decision for MoonRay: USDProject3D authors a constant `natronProjectionNoFaces` primvar on the non-mesh geometry it projects onto, the MoonRay network reads it, and export strips it. Being implemented; a `--record-goldens` gate follows.

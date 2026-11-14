@@ -29,6 +29,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QObject>
 #include <QString>
 
 #include "BaseTest.h"
@@ -38,15 +39,18 @@
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_USING
 NATRON_PYTHON_NAMESPACE_USING
 
 /*
  * A Python setExpression evaluates the change like the GUI's expression edit: the node's
- * onParamChanged callback runs once, as a user edit, and its content hash moves. The callback
- * stands in for the evaluation since it runs from the same endChanges() that requests renders.
+ * onParamChanged callback runs as a user edit and its content hash moves. Value-changed callbacks
+ * are not held back by beginChanges(), as for setValue; only the render request is, and it
+ * comes once, from the outermost endChanges().
  */
 class PySetExpressionEvaluatesTest
     : public BaseTest {
@@ -129,20 +133,45 @@ TEST_F(PySetExpressionEvaluatesTest, SettingTheSameExpressionAgainLeavesTheHash)
     EXPECT_EQ(first, constant->getContentHash());
 }
 
-TEST_F(PySetExpressionEvaluatesTest, ABeginEndChangesBatchEvaluatesOnce)
+TEST_F(PySetExpressionEvaluatesTest, ABeginEndChangesBatchRequestsOneRenderAtTheEnd)
 {
     NodePtr constant = createConstantWithCallback();
+    NodePtr viewerNode = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWER));
     ASSERT_TRUE(constant != nullptr);
+    ASSERT_TRUE(viewerNode != nullptr);
+    connectNodes(constant, viewerNode, 0, true);
+
+    ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(viewerNode->getEffectInstance().get());
+    ASSERT_TRUE(viewer != nullptr);
+    RenderEnginePtr engine = viewer->getRenderEngine();
+    ASSERT_TRUE(engine != nullptr);
+
+    int renderRequests = 0;
+    QObject receiver;
+    QObject::connect(engine.get(), &RenderEngine::currentFrameRenderRequestPosted, &receiver, [&renderRequests]() { ++renderRequests; }, Qt::DirectConnection);
 
     run("n = " + py(constant) + "\n"
                                 "c = n.getParam('" kConstantParamColor "')\n"
                                 "n.beginChanges()\n"
-                                "assert c.setExpression('0.1', False, 0)\n"
-                                "assert c.setExpression('0.2', False, 1)\n"
-                                "assert c.setExpression('0.3', False, 2)\n"
-                                "assert m424_calls == [], m424_calls\n"
+                                "c.setValue(0.1, 0)\n"
+                                "c.setValue(0.2, 1)\n"
+                                "c.setValue(0.3, 2)\n"
+                                "m424_set_value_calls = len(m424_calls)\n"
                                 "n.endChanges()\n"
-                                "assert m424_calls == [('" kConstantParamColor "', False)], m424_calls\n");
+                                "del m424_calls[:]\n");
+    const int setValueRenderRequests = renderRequests;
+    EXPECT_EQ(1, setValueRenderRequests);
+
+    renderRequests = 0;
+    run("n.beginChanges()\n"
+        "assert c.setExpression('0.1', False, 0)\n"
+        "assert c.setExpression('0.2', False, 1)\n"
+        "assert c.setExpression('0.3', False, 2)\n"
+        "m424_expression_calls = len(m424_calls)\n");
+    EXPECT_EQ(0, renderRequests);
+    run("n.endChanges()\n");
+    EXPECT_EQ(1, renderRequests);
+    run("assert m424_expression_calls == m424_set_value_calls, (m424_expression_calls, m424_set_value_calls)\n");
 }
 
 TEST_F(PySetExpressionEvaluatesTest, AnInvalidExpressionThatReplacesOneStillEvaluates)

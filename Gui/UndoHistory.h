@@ -190,6 +190,11 @@ public:
     bool isCapturing() const;
 
     /**
+     * @brief Whether an entry is being undone or redone.
+     **/
+    bool isReplaying() const;
+
+    /**
      * @brief Changes each time a step or a pushed command opens with nothing open around it.
      **/
     quint64 getCaptureSerial() const;

@@ -123,8 +123,8 @@ moveDriverKeys(const DopeSheetKeyPtrList& keys,
 
 /**
  * @brief Returns the knob whose curve a key edit must change. A slaved knob shows and renders
- * its master's curve and leaves its own unused: a roto item's knobs are slaved to the host's
- * proxy knobs while the item is selected, so editing the item knob itself would change nothing.
+ * its master's curve and leaves its own unused, so editing the slaved knob itself would change
+ * nothing.
  **/
 KnobIPtr
 editedKnob(const KnobIPtr& knob,

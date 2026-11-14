@@ -57,6 +57,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
@@ -886,13 +887,30 @@ SplineWarp::writeTransformKnobs()
     if (targets.sources.empty()) {
         return;
     }
+    const std::list<KnobIPtr> pageKnobs = transformValueKnobs(context->getTransformKnobs());
     SplineWarpTransform transform;
-    transform.readKnobs(transformValueKnobs(context->getTransformKnobs()));
+    transform.readKnobs(pageKnobs);
+    const bool replaying = context->isReplayingUndo();
     for (std::list<RotoItemPtr>::const_iterator it = targets.sources.begin(); it != targets.sources.end(); ++it) {
         // The curve context already replayed the edit on a tied source curve's own knobs.
-        if (std::find(targets.tied.begin(), targets.tied.end(), *it) == targets.tied.end()) {
-            context->setOwnTransform(*it, transform);
+        if (std::find(targets.tied.begin(), targets.tied.end(), *it) != targets.tied.end()) {
+            continue;
         }
+        if (RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it)) {
+            // A curve's own transform knobs undo through their own records, which keep each curve's
+            // transform; writing the page's would give every source the same one.
+            if (replaying) {
+                continue;
+            }
+            std::list<KnobIPtr> own;
+            for (std::list<KnobIPtr>::const_iterator k = pageKnobs.begin(); k != pageKnobs.end(); ++k) {
+                if (KnobIPtr ownKnob = drawable->getKnobByName((*k)->getName())) {
+                    own.push_back(ownKnob);
+                }
+            }
+            context->recordForwardedEdit(own);
+        }
+        context->setOwnTransform(*it, transform);
     }
 }
 

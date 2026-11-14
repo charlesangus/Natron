@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -43,10 +44,13 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
+#include "Engine/UndoCommand.h"
+#include "Engine/UndoRecorder.h"
 
 NATRON_NAMESPACE_USING
 
@@ -71,6 +75,63 @@ keysOf(const KnobIPtr& knob,
     return keys;
 }
 
+// Keeps what is recorded and the step each record was made in, the way the window's history would.
+class StepRecorder
+    : public UndoRecorderI {
+public:
+    StepRecorder()
+        : UndoRecorderI()
+        , depth(0)
+        , serial(0)
+        , replaying(false)
+        , commands()
+        , serials()
+    {
+    }
+
+    virtual void openStep(const std::string& /*text*/) OVERRIDE FINAL
+    {
+        if (depth++ == 0) {
+            ++serial;
+        }
+    }
+
+    virtual void closeStep() OVERRIDE FINAL
+    {
+        if (depth > 0) {
+            --depth;
+        }
+    }
+
+    virtual bool isCapturing() const OVERRIDE FINAL
+    {
+        return (depth > 0) && !replaying;
+    }
+
+    virtual std::uint64_t getCaptureSerial() const OVERRIDE FINAL
+    {
+        return serial;
+    }
+
+    virtual bool isReplaying() const OVERRIDE FINAL
+    {
+        return replaying;
+    }
+
+    virtual void record(const UndoCommandPtr& command,
+                        const UndoTouched& /*touched*/) OVERRIDE FINAL
+    {
+        commands.push_back(command);
+        serials.push_back(serial);
+    }
+
+    int depth;
+    std::uint64_t serial;
+    bool replaying;
+    std::vector<UndoCommandPtr> commands;
+    std::vector<std::uint64_t> serials;
+};
+
 } // namespace
 
 class RotoSelectionProxyTest
@@ -84,6 +145,11 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
+        if (_recorder) {
+            _recorder->commands.clear();
+            getApp()->setUndoRecorder(UndoRecorderPtr());
+            _recorder.reset();
+        }
         getApp()->getProject()->reset(false, true);
         BaseTest::TearDown();
     }
@@ -123,7 +189,37 @@ protected:
         return context->makeSquare(x, 0., 10., context->getTimelineCurrentTime());
     }
 
+    std::shared_ptr<StepRecorder> installRecorder()
+    {
+        _recorder = std::make_shared<StepRecorder>();
+        getApp()->setUndoRecorder(_recorder);
+
+        return _recorder;
+    }
+
+    // Undoes, then redoes, everything recorded, the way the history replays one entry.
+    void undoRecorded()
+    {
+        UndoReplayGuard replay(getApp());
+        _recorder->replaying = true;
+        for (std::vector<UndoCommandPtr>::reverse_iterator it = _recorder->commands.rbegin(); it != _recorder->commands.rend(); ++it) {
+            (*it)->undo();
+        }
+        _recorder->replaying = false;
+    }
+
+    void redoRecorded()
+    {
+        UndoReplayGuard replay(getApp());
+        _recorder->replaying = true;
+        for (std::vector<UndoCommandPtr>::iterator it = _recorder->commands.begin(); it != _recorder->commands.end(); ++it) {
+            (*it)->redo();
+        }
+        _recorder->replaying = false;
+    }
+
     NodePtr _node;
+    std::shared_ptr<StepRecorder> _recorder;
 };
 
 // Selecting, adding to, removing from and clearing the selection never write an item: each stroke
@@ -354,5 +450,91 @@ TEST_F(RotoSelectionProxyTest, ACurveSelectedThroughItsLayerIsNotEdited)
 
     proxy<KnobDouble>("opacity")->setValue(0.2);
     EXPECT_DOUBLE_EQ(1., inside->getOpacityKnob()->getValue());
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// An edit on the node's knob, made in one step, records each selected item's own knob in that step:
+// undoing the step gives each item back its own curve, and redoing it reapplies the edit.
+TEST_F(RotoSelectionProxyTest, AForwardedEditIsOneUndoStep)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = makeSquare(context, 0.);
+    BezierPtr b = makeSquare(context, 30.);
+    BezierPtr outside = makeSquare(context, 60.);
+    ASSERT_TRUE(a && b && outside);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    a->getOpacityKnob()->setValueAtTime(1., 0.2, ViewSpec::all(), 0);
+    a->getOpacityKnob()->setValueAtTime(10., 0.8, ViewSpec::all(), 0);
+    b->getOpacityKnob()->setValueAtTime(5., 0.5, ViewSpec::all(), 0);
+    const Keys aKeys = keysOf(a->getOpacityKnob());
+    const Keys bKeys = keysOf(b->getOpacityKnob());
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("opacity");
+    ASSERT_TRUE(bool(shown));
+    ASSERT_EQ(bKeys, keysOf(shown));
+
+    std::shared_ptr<StepRecorder> recorder = installRecorder();
+    {
+        UndoStepGuard step(getApp(), "Set opacity");
+        // What a pushed knob command or a Python write records for the node's knob.
+        recordKnobEdit(shown);
+        shown->setValueAtTime(7., 0.9, ViewSpec::all(), 0);
+    }
+    Keys aEdited = aKeys;
+    aEdited.insert(aEdited.begin() + 1, std::make_pair(7., 0.9));
+    Keys bEdited = bKeys;
+    bEdited.push_back(std::make_pair(7., 0.9));
+    EXPECT_EQ(aEdited, keysOf(a->getOpacityKnob()));
+    EXPECT_EQ(bEdited, keysOf(b->getOpacityKnob()));
+    EXPECT_FALSE(outside->getOpacityKnob()->isAnimated(0));
+
+    // The node's knob and the two selected items, all in the one step.
+    ASSERT_EQ(3u, recorder->commands.size());
+    for (std::size_t i = 0; i < recorder->serials.size(); ++i) {
+        EXPECT_EQ(recorder->serials.front(), recorder->serials[i]);
+    }
+
+    undoRecorded();
+    EXPECT_EQ(aKeys, keysOf(a->getOpacityKnob()));
+    EXPECT_EQ(bKeys, keysOf(b->getOpacityKnob()));
+    EXPECT_EQ(bKeys, keysOf(shown));
+
+    redoRecorded();
+    EXPECT_EQ(aEdited, keysOf(a->getOpacityKnob()));
+    EXPECT_EQ(bEdited, keysOf(b->getOpacityKnob()));
+    EXPECT_EQ(bEdited, keysOf(shown));
+    EXPECT_FALSE(outside->getOpacityKnob()->isAnimated(0));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// While the history replays an entry, an edit of the node's knob is not forwarded: the entry holds
+// the selected items' own records.
+TEST_F(RotoSelectionProxyTest, AReplayedEditIsNotForwarded)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = makeSquare(context, 0.);
+    BezierPtr b = makeSquare(context, 30.);
+    ASSERT_TRUE(a && b);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("opacity");
+    ASSERT_TRUE(bool(shown));
+
+    std::shared_ptr<StepRecorder> recorder = installRecorder();
+    recorder->replaying = true;
+    shown->setValue(0.3);
+    recorder->replaying = false;
+    EXPECT_DOUBLE_EQ(1., a->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(1., b->getOpacityKnob()->getValue());
+    EXPECT_TRUE(recorder->commands.empty());
+
+    // Edits after the replay are forwarded again, from what the node's knob then shows.
+    shown->setValue(0.6);
+    EXPECT_DOUBLE_EQ(0.6, a->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.6, b->getOpacityKnob()->getValue());
     context->clearSelection(RotoItem::eSelectionReasonOther);
 }

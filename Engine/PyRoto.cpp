@@ -146,6 +146,10 @@ ItemBase::getParam(const QString& name) const
         return 0;
     }
     Param* ret = Effect::createParamWrapperForKnob(knob);
+    RotoCurveContextPtr context = drawable->getContext();
+    if (ret && context) {
+        ret->_itemNode = context->getNode();
+    }
 
     return ret;
 }
@@ -194,6 +198,26 @@ Layer::removeItem(ItemBase* item)
     context->removeItem(internalItem);
 }
 
+namespace {
+// A wrapper of item's own type, so that Python sees its type's methods; strokes have no type of
+// their own.
+ItemBase*
+wrapItem(const RotoItemPtr& item)
+{
+    if (!item) {
+        return 0;
+    }
+    if (std::dynamic_pointer_cast<RotoLayer>(item)) {
+        return new Layer(item);
+    }
+    if (std::dynamic_pointer_cast<Bezier>(item)) {
+        return new BezierCurve(item);
+    }
+
+    return new ItemBase(item);
+}
+} // anonymous namespace
+
 std::list<ItemBase*>
 Layer::getChildren() const
 {
@@ -201,7 +225,7 @@ Layer::getChildren() const
     std::list<RotoItemPtr> items = _layer->getItems_mt_safe();
 
     for (std::list<RotoItemPtr>::iterator it = items.begin(); it != items.end(); ++it) {
-        ret.push_back( new ItemBase(*it) );
+        ret.push_back(wrapItem(*it));
     }
 
     return ret;
@@ -662,25 +686,7 @@ Roto::getBaseLayer() const
 ItemBase*
 Roto::getItemByName(const QString& name) const
 {
-    RotoItemPtr item =  _ctx->getItemByName( name.toStdString() );
-
-    if (!item) {
-        return 0;
-    }
-    RotoLayer* isLayer = dynamic_cast<RotoLayer*>( item.get() );
-    if (isLayer) {
-        return new Layer(item);
-    }
-    Bezier* isBezier = dynamic_cast<Bezier*>( item.get() );
-    if (isBezier) {
-        return new BezierCurve(item);
-    }
-    RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>( item.get() );
-    if (isStroke) {
-        return new ItemBase(item);
-    }
-
-    return 0;
+    return wrapItem(_ctx->getItemByName(name.toStdString()));
 }
 
 Layer*

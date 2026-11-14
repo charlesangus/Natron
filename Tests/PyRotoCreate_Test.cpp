@@ -41,7 +41,11 @@
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/PyRoto.h"
+#include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/RotoLayer.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/ViewIdx.h"
@@ -205,4 +209,54 @@ TEST_F(PyRotoCreateTest, UnlinkBakeDuringARenderKeepsAPointEdit)
         EXPECT_EQ(41., x) << "gui " << gui;
         EXPECT_EQ(63., y) << "gui " << gui;
     }
+}
+
+// A layer's children are wrapped as their own types, so a child layer, a Bezier and a stroke each
+// offer their type's methods to the script.
+TEST_F(PyRotoCreateTest, LayerChildrenHaveTheirOwnTypes)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(node));
+    RotoContextPtr ctx = node->getRotoContext();
+    ASSERT_TRUE(bool(ctx));
+    ASSERT_FALSE(ctx->getLayers().empty());
+    RotoLayerPtr base = ctx->getLayers().front();
+
+    BezierPtr shape = ctx->makeSquare(0., 0., 10., ctx->getTimelineCurrentTime());
+    ASSERT_TRUE(bool(shape));
+    ASSERT_TRUE(shape->setScriptName("childShape"));
+    RotoStrokeItemPtr stroke(new RotoStrokeItem(eRotoStrokeTypeSolid, ctx, "childStroke", RotoLayerPtr()));
+    stroke->createNodes();
+    ctx->addItem(base, 0, stroke, RotoItem::eSelectionReasonOther);
+    for (int i = 0; i < 8; ++i) {
+        stroke->appendPoint(i == 0, RotoPoint(4. + 2. * i, 20., 0.5, 1.));
+    }
+    stroke->setStrokeFinished();
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    RotoLayerPtr layer = ctx->addLayer();
+    ASSERT_TRUE(bool(layer));
+    ASSERT_TRUE(layer->setScriptName("childLayer"));
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    ASSERT_EQ(base, shape->getParentLayer());
+    ASSERT_EQ(base, stroke->getParentLayer());
+    ASSERT_EQ(base, layer->getParentLayer());
+
+    const std::string script = "import NatronEngine\n"
+                               "r = "
+        + pythonName(node) + ".getRotoContext()\n"
+                             "children = dict((c.getScriptName(), c) for c in r.getBaseLayer().getChildren())\n"
+                             "assert sorted(children.keys()) == [\"childLayer\", \"childShape\", \"childStroke\"], children.keys()\n"
+                             "l = children[\"childLayer\"]\n"
+                             "assert isinstance(l, NatronEngine.Layer), type(l)\n"
+                             "assert l.getChildren() == [], l.getChildren()\n"
+                             "b = children[\"childShape\"]\n"
+                             "assert isinstance(b, NatronEngine.BezierCurve), type(b)\n"
+                             "assert b.isCurveFinished()\n"
+                             "assert b.getNumControlPoints() == 4, b.getNumControlPoints()\n"
+                             "s = children[\"childStroke\"]\n"
+                             "assert type(s) is NatronEngine.ItemBase, type(s)\n"
+                             "assert s.getParam(\"opacity\") is not None\n";
+    std::string error, output;
+    EXPECT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error << "\n"
+                                                                                                           << script;
 }

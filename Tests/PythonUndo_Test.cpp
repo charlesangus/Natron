@@ -39,11 +39,13 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/Bezier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
+#include "Engine/RotoContext.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
@@ -476,4 +478,54 @@ TEST_F(PythonUndo, NothingIsRecordedOutsideAStepUnderSuppressionOrWhileCreatingA
         ASSERT_TRUE(run(script));
     }
     EXPECT_TRUE(recorder->commands.empty());
+}
+
+// A Python write to a shape's own parameter is recorded in its step for the shape's node, on a
+// selected and an unselected shape alike, and undoing the step gives the shape its value back.
+TEST_F(PythonUndo, AShapeParameterWriteUndoesInOneStep)
+{
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr selected = context->makeSquare(0., 0., 10., context->getTimelineCurrentTime());
+    BezierPtr unselected = context->makeSquare(30., 0., 10., context->getTimelineCurrentTime());
+    ASSERT_TRUE(selected && unselected);
+    ASSERT_TRUE(selected->setScriptName("selectedShape"));
+    ASSERT_TRUE(unselected->setScriptName("unselectedShape"));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(selected, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = std::dynamic_pointer_cast<KnobDouble>(roto->getKnobByName("opacity"));
+    ASSERT_TRUE(bool(shown));
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+    const std::string shapes = "r = " + py(roto) + ".getRotoContext()\n";
+
+    ASSERT_TRUE(runStep(shapes + "r.getItemByName(\"selectedShape\").getParam(\"opacity\").set(0.25)\n"));
+    EXPECT_DOUBLE_EQ(0.25, selected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(1., unselected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, shown->getValue());
+    ASSERT_EQ(1u, recorder->commands.size());
+    EXPECT_EQ(roto, recorder->touchedNodes.front());
+    undoAll();
+    EXPECT_DOUBLE_EQ(1., selected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(1., shown->getValue());
+    redoAll();
+    EXPECT_DOUBLE_EQ(0.25, selected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(1., unselected->getOpacityKnob()->getValue());
+
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+    ASSERT_TRUE(runStep(shapes + "r.getItemByName(\"unselectedShape\").getParam(\"opacity\").set(0.5)\n"));
+    EXPECT_DOUBLE_EQ(0.5, unselected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, selected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, shown->getValue());
+    ASSERT_EQ(1u, recorder->commands.size());
+    EXPECT_EQ(roto, recorder->touchedNodes.front());
+    undoAll();
+    EXPECT_DOUBLE_EQ(1., unselected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, selected->getOpacityKnob()->getValue());
+    redoAll();
+    EXPECT_DOUBLE_EQ(0.5, unselected->getOpacityKnob()->getValue());
+    context->clearSelection(RotoItem::eSelectionReasonOther);
 }

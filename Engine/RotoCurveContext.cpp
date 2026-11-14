@@ -47,6 +47,7 @@
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
@@ -56,6 +57,7 @@
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/Transform.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -1692,6 +1694,28 @@ RotoCurveContext::onMirroredItemKnobChanged()
     snapshotProxy(proxy);
 }
 
+bool
+RotoCurveContext::isReplayingUndo() const
+{
+    NodePtr node = getNode();
+    AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
+    if (!app) {
+        return false;
+    }
+    UndoRecorderPtr recorder = app->getUndoRecorder();
+
+    return app->isReplayingUndo() || (recorder && recorder->isReplaying());
+}
+
+void
+RotoCurveContext::recordForwardedEdit(const std::list<KnobIPtr>& targets) const
+{
+    NodePtr node = getNode();
+    for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+        recordRotoItemKnobEdit(node, *it);
+    }
+}
+
 void
 RotoCurveContext::forwardDimensionEdit(const KnobIPtr& proxy,
                                        int dimension,
@@ -1793,8 +1817,9 @@ RotoCurveContext::onProxyKnobValueChanged(ViewSpec /*view*/,
     if (!proxy || !knobListHas(_imp->knobs, proxy.get())) {
         return;
     }
-    if (_imp->proxyBaselines.find(proxy.get()) != _imp->proxyBaselines.end()) {
+    if ((_imp->proxyBaselines.find(proxy.get()) != _imp->proxyBaselines.end()) && !isReplayingUndo()) {
         const std::list<KnobIPtr> targets = forwardTargets(proxy);
+        recordForwardedEdit(targets);
         {
             ProxySyncScope sync(_imp->proxySyncDepth);
             // Every dimension: a multi-dimension write may report only one of those it changed.
@@ -1826,6 +1851,11 @@ RotoCurveContext::onProxyKeyFrameMoved(ViewSpec /*view*/,
     if (baseline == _imp->proxyBaselines.end()) {
         return;
     }
+    if (isReplayingUndo()) {
+        snapshotProxy(proxy);
+
+        return;
+    }
     double dv = 0.;
     KeyFrame moved, old;
     if ((dimension < (int)baseline->second.curves.size()) && hasKeyAt(proxy.get(), dimension, newTime, &moved) && baseline->second.curves[dimension]->getKeyFrameWithTime(oldTime, &old)) {
@@ -1833,6 +1863,7 @@ RotoCurveContext::onProxyKeyFrameMoved(ViewSpec /*view*/,
     }
     {
         const std::list<KnobIPtr> targets = forwardTargets(proxy);
+        recordForwardedEdit(targets);
         ProxySyncScope sync(_imp->proxySyncDepth);
         for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
             KeyFrame targetMoved;
@@ -1857,8 +1888,9 @@ RotoCurveContext::onProxyKeyFrameInterpolationChanged(double time,
     if (!proxy || !knobListHas(_imp->knobs, proxy.get())) {
         return;
     }
-    if (hasKeyAt(proxy.get(), dimension, time, &key)) {
+    if (hasKeyAt(proxy.get(), dimension, time, &key) && !isReplayingUndo()) {
         const std::list<KnobIPtr> targets = forwardTargets(proxy);
+        recordForwardedEdit(targets);
         ProxySyncScope sync(_imp->proxySyncDepth);
         for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
             KeyFrame changed;
@@ -1883,13 +1915,14 @@ RotoCurveContext::onProxyDerivativeMoved(double time,
     if (!proxy || !knobListHas(_imp->knobs, proxy.get())) {
         return;
     }
-    if (hasKeyAt(proxy.get(), dimension, time, &key)) {
+    if (hasKeyAt(proxy.get(), dimension, time, &key) && !isReplayingUndo()) {
         KeyTangents tangents;
         tangents.left = key.getLeftDerivative();
         tangents.right = key.getRightDerivative();
         tangents.leftWeight = key.getLeftWeight();
         tangents.rightWeight = key.getRightWeight();
         const std::list<KnobIPtr> targets = forwardTargets(proxy);
+        recordForwardedEdit(targets);
         ProxySyncScope sync(_imp->proxySyncDepth);
         for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
             KeyFrame changed;
@@ -1908,12 +1941,13 @@ RotoCurveContext::onProxyExpressionChanged(int dimension)
         return;
     }
     KnobIPtr proxy = senderKnob(sender());
-    if (!proxy || !knobListHas(_imp->knobs, proxy.get()) || (dimension < 0) || (dimension >= proxy->getDimension())) {
+    if (!proxy || !knobListHas(_imp->knobs, proxy.get()) || (dimension < 0) || (dimension >= proxy->getDimension()) || isReplayingUndo()) {
         return;
     }
     const std::string expression = proxy->getExpression(dimension);
     const bool hasRetVariable = proxy->isExpressionUsingRetVariable(dimension);
     const std::list<KnobIPtr> targets = forwardTargets(proxy);
+    recordForwardedEdit(targets);
     ProxySyncScope sync(_imp->proxySyncDepth);
     for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
         try {

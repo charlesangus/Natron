@@ -190,6 +190,18 @@ public:
     void addHostItemKnob(const KnobIPtr& knob);
 
     /**
+     * @brief True while the undo history undoes or redoes an entry: the entry restores the selected
+     * items' own knobs itself, so an edit it makes on the node's knobs is not forwarded.
+     **/
+    bool isReplayingUndo() const;
+
+    /**
+     * @brief Records the state of targets before an edit is forwarded to them, so that the undo step
+     * that records the edit on the node's knob restores each item's own knob.
+     **/
+    void recordForwardedEdit(const std::list<KnobIPtr>& targets) const;
+
+    /**
      * @brief Copies a Bezier or stroke of this context under the given name, through onItemCreated(),
      * for the curve panel's paste and duplicate. A Bezier copy is not inserted in any layer; a stroke
      * copy is inserted at the top of the source's layer.

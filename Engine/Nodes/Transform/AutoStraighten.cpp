@@ -941,22 +941,8 @@ AutoStraighten::knobChanged(KnobI* k,
         return ret;
     }
     if (k && (k->getName() == kAutoStraightenParamLineOrientation)) {
-        // The node's knob edits every selected line: write the value to each line's own knob,
-        // which the fit reads.
-        RotoCurveContextPtr context = getNode()->getCurveContext();
-        KnobChoicePtr master = _lineOrientation.lock();
-        if (context && master) {
-            const int value = master->getValue();
-            const std::list<RotoDrawableItemPtr> selected = context->getSelectedCurves();
-            for (std::list<RotoDrawableItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
-                KnobChoicePtr own = lineOrientationKnob(*it);
-                if (own && (ownOrientation(own) != value)) {
-                    own->setValue(value, ViewSpec::all(), 0, true);
-                    context->emitItemPanelColumnsChanged(*it);
-                }
-            }
-        }
-
+        // The curve context forwards the edit to each selected line's own knob, which the fit reads.
+        // Writing them here, before it records them, would leave undo nothing to restore.
         return true;
     }
 

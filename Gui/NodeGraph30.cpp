@@ -58,97 +58,285 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiMacros.h"
 #include "Gui/Histogram.h"
 #include "Gui/NodeGraphDeleteLinks.h"
+#include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
+#include "Gui/TabWidget.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
 #include "Global/QtCompat.h"
 
 NATRON_NAMESPACE_ENTER
+namespace {
+bool
+paneHoldsTab(TabWidget* pane,
+             PanelWidget* tab)
+{
+    if (!pane) {
+        return false;
+    }
+    for (int i = 0; i < pane->count(); ++i) {
+        if (pane->tabAt(i) == tab) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // anon namespace
+
+bool
+NodeGraph::isUsableViewerTab(ViewerTab* tab) const
+{
+    if (!tab) {
+        return false;
+    }
+    ViewerInstance* viewer = tab->getInternalNode();
+    NodePtr node = viewer ? viewer->getNode() : NodePtr();
+    if (!node || !node->isActivated()) {
+        return false;
+    }
+    NodeCollectionPtr collection = node->getGroup();
+
+    return collection && collection->getNodeGraph() == this;
+}
+
+ViewerTab*
+NodeGraph::mostRecentlyFocusedViewer(const ViewerTab* excluded) const
+{
+    Gui* gui = getGui();
+    if (!gui) {
+        return 0;
+    }
+    const std::list<ViewerTab*> viewers = gui->getViewersByRecentFocus();
+    for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
+        if ((*it != excluded) && isUsableViewerTab(*it)) {
+            return *it;
+        }
+    }
+
+    return 0;
+}
+
+InspectorNodePtr
+NodeGraph::findViewerInGroup()
+{
+    Gui* gui = getGui();
+    ViewerTab* found = 0;
+    if (isUsableViewerTab(getLastSelectedViewer())) {
+        found = getLastSelectedViewer();
+    } else if (isUsableViewerTab(gui->getActiveViewer())) {
+        found = gui->getActiveViewer();
+    } else {
+        found = mostRecentlyFocusedViewer(0);
+    }
+
+    InspectorNodePtr viewerNode;
+    if (found) {
+        viewerNode = std::dynamic_pointer_cast<InspectorNode>(found->getInternalNode()->getNode());
+    } else {
+        NodeCollectionPtr group = getGroup();
+        const NodesList nodes = group ? group->getNodes() : NodesList();
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            ViewerInstance* isViewer = (*it)->isEffectViewer();
+            if (!isViewer || !(*it)->isActivated()) {
+                continue;
+            }
+            viewerNode = std::dynamic_pointer_cast<InspectorNode>(*it);
+            if (viewerNode) {
+                found = gui->getViewerTabForInstance(isViewer);
+                break;
+            }
+        }
+    }
+    if (!viewerNode) {
+        return viewerNode;
+    }
+
+    if (found) {
+        // A tab taken out of its pane keeps that pane as its Qt parent, so the parent alone
+        // does not say whether the tab is still shown there.
+        TabWidget* pane = found->getParentPane();
+        if (paneHoldsTab(pane, found)) {
+            pane->setCurrentWidget(found);
+        } else {
+            gui->activateViewerTab(found->getInternalNode());
+        }
+        setLastSelectedViewer(found);
+    }
+
+    return viewerNode;
+} // findViewerInGroup
+
+ViewerTab*
+NodeGraph::getViewerForInputKeys()
+{
+    InspectorNodePtr viewerNode = findViewerInGroup();
+    ViewerInstance* viewer = viewerNode ? viewerNode->isEffectViewer() : 0;
+
+    return viewer ? getGui()->getViewerTabForInstance(viewer) : 0;
+}
+
+NodeGuiPtr
+NodeGraph::getOrCreateViewerForInputKeys()
+{
+    NodePtr viewerNode = findViewerInGroup();
+
+    if (!viewerNode) {
+        CreateNodeArgs args( PLUGINID_NATRON_VIEWER,
+                             getGroup() );
+        // The key decides which input the selection goes to, not the preferred input.
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+        viewerNode = getGui()->getApp()->createNode(args);
+    }
+
+    /// if the node is no longer active (i.e: it was deleted by the user), don't do anything.
+    if (!viewerNode || !viewerNode->isActivated()) {
+        return NodeGuiPtr();
+    }
+
+    return std::dynamic_pointer_cast<NodeGui>(viewerNode->getNodeGui());
+}
+
+NodeGuiPtr
+NodeGraph::getSelectionForViewerInput() const
+{
+    if (_imp->_selection.size() != 1) {
+        return NodeGuiPtr();
+    }
+    const NodeGuiPtr& selected = _imp->_selection.front();
+    const NodePtr node = selected->getNode();
+    if (node->isEffectViewer() || !node->canOthersConnectToThisNode()) {
+        return NodeGuiPtr();
+    }
+
+    return selected;
+}
+
+void
+NodeGraph::pipeViewerInput(const NodeGuiPtr& viewerGui,
+                           int inputNB,
+                           const NodeGuiPtr& source,
+                           bool isASide)
+{
+    InspectorNodePtr inspector = std::dynamic_pointer_cast<InspectorNode>(viewerGui->getNode());
+    Edge* input = viewerGui->getInputArrow(inputNB);
+
+    if (!inspector || !input) {
+        return;
+    }
+    int activeA, activeB;
+    inspector->getActiveInputs(activeA, activeB);
+    if (input->getSource() != source) {
+        pushUndoCommand(new ConnectCommand(this, input, input->getSource(), source),
+                        NodesGuiList { input->getDest(), input->getSource(), source });
+    }
+    // A connection always makes the new pipe input A, which the B side must not change.
+    if (!isASide && (activeA != -1)) {
+        inspector->setInputA(activeA);
+    }
+    inspector->setActiveInputAndRefresh(inputNB, isASide);
+    viewerGui->refreshEdges();
+}
+
+bool
+NodeGraph::recallLockedViewerInput(const NodeGuiPtr& viewerGui,
+                                   int inputNB,
+                                   bool isASide)
+{
+    const NodePtr viewerNode = viewerGui->getNode();
+    ViewerInstance* viewer = viewerNode->isEffectViewer();
+
+    if (!viewer) {
+        return false;
+    }
+    const std::string lockedName = viewer->getLockedInput(inputNB);
+    if (lockedName.empty()) {
+        return false;
+    }
+    NodeCollectionPtr collection = viewerNode->getGroup();
+    NodePtr locked = collection ? collection->getNodeByName(lockedName) : NodePtr();
+    NodeGuiPtr lockedGui = locked ? std::dynamic_pointer_cast<NodeGui>(locked->getNodeGui()) : NodeGuiPtr();
+    if (!lockedGui || !locked->isActivated() || !locked->canOthersConnectToThisNode()) {
+        viewer->setLockedInput(inputNB, std::string());
+
+        return false;
+    }
+    pipeViewerInput(viewerGui, inputNB, lockedGui, isASide);
+
+    return true;
+}
+
 void
 NodeGraph::connectCurrentViewerToSelection(int inputNB,
                                            bool isASide)
 {
-    ViewerTab* lastUsedViewer =  getLastSelectedViewer();
+    // Creating a viewer selects it, so the selection has to be read first.
+    const NodeGuiPtr selected = getSelectionForViewerInput();
+    const NodeGuiPtr viewerGui = getOrCreateViewerForInputKeys();
 
-    if (lastUsedViewer) {
-        NodeCollectionPtr collection = lastUsedViewer->getInternalNode()->getNode()->getGroup();
-        if ( collection && (collection->getNodeGraph() != this) ) {
-            //somehow the group doesn't belong to this nodegraph , pick another one
-            const std::list<ViewerTab*>& tabs = getGui()->getViewersList();
-            lastUsedViewer = 0;
-            for (std::list<ViewerTab*>::const_iterator it = tabs.begin(); it != tabs.end(); ++it) {
-                NodeCollectionPtr otherCollection = (*it)->getInternalNode()->getNode()->getGroup();
-                if ( otherCollection && (otherCollection->getNodeGraph() == this) ) {
-                    lastUsedViewer = *it;
-                    break;
-                }
-            }
-        }
-    }
-
-
-    InspectorNodePtr v;
-    if (lastUsedViewer) {
-        v = std::dynamic_pointer_cast<InspectorNode>( lastUsedViewer->
-                                                        getInternalNode()->getNode() );
-    } else {
-        CreateNodeArgs args( PLUGINID_NATRON_VIEWER,
-                             getGroup() );
-        NodePtr viewerNode = getGui()->getApp()->createNode(args);
-
-        if (!viewerNode) {
-            return;
-        }
-        v = std::dynamic_pointer_cast<InspectorNode>(viewerNode);
-    }
-
-    if (!v) {
+    if (!viewerGui) {
         return;
     }
-
-    ///if the node is no longer active (i.e: it was deleted by the user), don't do anything.
-    if ( !v->isActivated() ) {
+    if (recallLockedViewerInput(viewerGui, inputNB, isASide)) {
         return;
     }
-
-    ///get a ptr to the NodeGui
-    NodeGuiIPtr gui_i = v->getNodeGui();
-    NodeGuiPtr gui = std::dynamic_pointer_cast<NodeGui>(gui_i);
-    assert(gui);
-    ///if there's no selected node or the viewer is selected, then try refreshing that input nb if it is connected.
-    bool viewerAlreadySelected = _imp->_selection.contains(gui);
-    if (_imp->_selection.empty() || (_imp->_selection.size() > 1) || viewerAlreadySelected) {
-        v->setActiveInputAndRefresh(inputNB, isASide);
-        gui->refreshEdges();
+    if (selected) {
+        pipeViewerInput(viewerGui, inputNB, selected, isASide);
 
         return;
     }
-
-    NodeGuiPtr selected = _imp->_selection.front();
-
-
-    if ( !selected->getNode()->canOthersConnectToThisNode() ) {
-        return;
+    InspectorNodePtr inspector = std::dynamic_pointer_cast<InspectorNode>(viewerGui->getNode());
+    if (inspector) {
+        inspector->setActiveInputAndRefresh(inputNB, isASide);
     }
-
-    ///if the node doesn't have the input 'inputNb' created yet, populate enough input
-    ///so it can be created.
-    Edge* foundInput = gui->getInputArrow(inputNB);
-    assert(foundInput);
-
-    ///and push a connect command to the selected node.
-    pushUndoCommand(new ConnectCommand(this, foundInput, foundInput->getSource(), selected),
-                    NodesGuiList { foundInput->getDest(), foundInput->getSource(), selected });
-
+    viewerGui->refreshEdges();
 } // connectCurrentViewerToSelection
+
+void
+NodeGraph::lockViewerInputToSelection(int inputNB)
+{
+    const NodeGuiPtr selected = getSelectionForViewerInput();
+    if (!selected) {
+        return;
+    }
+    const NodeGuiPtr viewerGui = getOrCreateViewerForInputKeys();
+    if (!viewerGui) {
+        return;
+    }
+    Edge* input = viewerGui->getInputArrow(inputNB);
+    if (!input) {
+        return;
+    }
+    pushUndoCommand(new ViewerInputLockCommand(this, viewerGui, input, selected),
+                    NodesGuiList { viewerGui, input->getSource(), selected });
+}
+
+void
+NodeGraph::unlockViewerInput(int inputNB)
+{
+    ViewerTab* viewerTab = getViewerForInputKeys();
+    if (!viewerTab) {
+        return;
+    }
+    const NodePtr viewerNode = viewerTab->getInternalNode()->getNode();
+    if (viewerTab->getInternalNode()->getLockedInput(inputNB).empty()) {
+        return;
+    }
+    const NodeGuiPtr viewerGui = std::dynamic_pointer_cast<NodeGui>(viewerNode->getNodeGui());
+    Edge* input = viewerGui ? viewerGui->getInputArrow(inputNB) : 0;
+    if (!input) {
+        return;
+    }
+    pushUndoCommand(new ViewerInputLockCommand(this, viewerGui, input, NodeGuiPtr()),
+                    NodesGuiList(1, viewerGui));
+}
 
 void
 NodeGraph::enterEvent(QEnterEvent* e)
 {
     enterEventBase();
     QGraphicsView::enterEvent(e);
-    _imp->_nodeCreationShortcutEnabled = true;
 }
 
 void
@@ -156,8 +344,6 @@ NodeGraph::leaveEvent(QEvent* e)
 {
     leaveEventBase();
     QGraphicsView::leaveEvent(e);
-
-    _imp->_nodeCreationShortcutEnabled = false;
     // setFocus();
 }
 
@@ -530,6 +716,9 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
 
         return;
     }
+    if (rebuildGrid) {
+        nodesBoundsDirty = true;
+    }
     if (navigatorBatchDepth > 0) {
         navigatorBatchPending = true;
         navigatorDeferredRebuildsGrid = navigatorDeferredRebuildsGrid || rebuildGrid;
@@ -538,8 +727,11 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
     }
     rebuildGrid = rebuildGrid || navigatorDeferredRebuildsGrid;
     navigatorDeferredRebuildsGrid = false;
-    navigatorDeferredByDrag = false;
-    nodesBoundsDirty = true;
+    if (navigatorDeferredByDrag) {
+        // The drag only grew the bounds, as endNavigatorDragDeferral() knows.
+        navigatorDeferredByDrag = false;
+        nodesBoundsDirty = true;
+    }
     if (rebuildGrid) {
         itemGridDirty = true;
     }

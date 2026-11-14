@@ -48,7 +48,7 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
   - verify: P2.T2's item-knob section passes.
   - size: M
 
-- [ ] M421.P1.T4 — Selected items' knob keys as markers
+- [x] M421.P1.T4 — Selected items' knob keys as markers
   - files: `Gui/RotoPanel.{h,cpp}`
   - approach: `publishMarkers` adds the curve keys of each selected item's animatable, non-secret knobs. Track them by connecting `keyFrameSet`, `keyFrameRemoved`, `keyFrameMoved` and `animationRemoved` on each item knob's handler where `trackBezierKeyframes`/`trackStrokeLifeTime` are set up, disconnecting on untrack, so Python, GUI and undo edits all refresh.
   - verify: `m421_stroke_markers.py`'s item-knob section passes (opacity keyed at 9 on two strokes and a Bezier, and on a stroke selected through its layer, adds a marker at 9; removing the keys removes it).
@@ -79,3 +79,4 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 - 2026-11-13 — P2.T1 implemented (18beb7da2); painted-frame keys are filtered at the DopeSheet model entry points, so no command sees them. P1.T3: no stale path found in the code; P2.T2's item-knob section decides.
 - 2026-11-13 — P2.T2 script added (a545e77c7); P1.T3 needed no code (no stale path found; the script's item-knob section is the check). Full gate running with the three GUI scripts.
 - 2026-11-13 — **Item-knob keys show as markers for selected roto items (user):** keys on an item's own knobs never reached the timeline (the node's mirror knobs are non-persistent and excluded from markers; upstream never showed them either). P1.T4 adds them to the panel's derived set for strokes and Beziers alike. P1.T3's check found no stale path.
+- 2026-11-13 — P1.T4 implemented (06548d96e). Gate with the three GUI scripts running.

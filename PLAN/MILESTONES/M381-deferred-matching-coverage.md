@@ -186,3 +186,4 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 - 2026-11-13 — Link tests rewritten (97575b2c3); re-gating with `m381_deferred_matching_gui.py`.
 - 2026-11-13 — Gate fixes (test and script only) and F4 merged in (30a9be6bc); re-gating.
 - 2026-11-13 — Gate green on 30a9be6bc (ctest; GUI script 57/57). F4 merged in (071720688). PR #278 into F4 opened; review running.
+- 2026-11-13 — PR #278 review round 1: 18 findings, 4 high. USDRender's settings menu and `readActiveSettings` still compose upstream on the main thread with load-everything. `findOwner` regressed through grafts. `withPaths` loaded too little when the root rule was absent. Medium: the viewer choice didn't follow the 'reaches the node' rule; detached menu and pivot threads; context-id collisions; camera menus ignored the viewer's loads. Being fixed.

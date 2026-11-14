@@ -78,6 +78,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -260,6 +261,8 @@ public:
 
     // The project knobs declared as attributes of the app object, by name.
     std::map<std::string, KnobIWPtr> pythonProjectParams;
+
+    bool quitRequested = false; //< quit() or quitNow() has been called, main thread only
 
     AppInstancePrivate(int appID,
                        AppInstance* app)
@@ -1548,6 +1551,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
     //}
     assert(node);
     try {
+        NodeCreationStageLog::Scope stage("engineCreateNode");
         node->load(args);
     } catch (const std::exception & e) {
         if (argsGroup) {
@@ -2527,15 +2531,27 @@ AppInstance::aboutToQuit()
     }
 }
 
+bool
+AppInstance::isQuitRequested() const
+{
+    return _imp->quitRequested;
+}
+
 void
 AppInstance::quit()
 {
+    // A second quit while the first still waits for the renders would close the instance twice.
+    if (_imp->quitRequested) {
+        return;
+    }
+    _imp->quitRequested = true;
     appPTR->quit( shared_from_this() );
 }
 
 void
 AppInstance::quitNow()
 {
+    _imp->quitRequested = true;
     appPTR->quitNow( shared_from_this() );
 }
 

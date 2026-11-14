@@ -30,6 +30,7 @@
 #include <exception>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <string>
@@ -54,6 +55,7 @@
 #include "Engine/Image.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -584,6 +586,7 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
                               const NodePtr& parentMultiInstance,
                               const CreateNodeArgs& args)
 {
+    NodeCreationStageLog::Scope createStage("createNodeGui");
     NodeCollectionPtr group = node->getGroup();
     NodeGraph* graph;
 
@@ -606,7 +609,18 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
     if (!serialization) {
         selectedNodes = graph->getSelectedNodes();
     }
-    NodeGuiPtr nodegui = _imp->_gui->createNodeGUI(node, args);
+    // Lays out the name and edges once, after every input, label and selection change below has
+    // arrived, and before positioning, which reads the laid-out size. A backdrop's own creation
+    // reads its name's height.
+    std::optional<NodeRefreshBatch> refreshBatch;
+    if (!serialization && !node->isBackdropNode()) {
+        refreshBatch.emplace(graph);
+    }
+    NodeGuiPtr nodegui;
+    {
+        NodeCreationStageLog::Scope stage("nodeGraphItem");
+        nodegui = _imp->_gui->createNodeGUI(node, args);
+    }
     assert(nodegui);
 
     followTrackingInModal(node);
@@ -652,13 +666,25 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
 
     if ( !serialization && !isViewer ) {
         ///we make sure we can have a clean preview.
-        node->computePreviewImage( getTimeLine()->currentFrame() );
-        triggerAutoSave();
+        {
+            NodeCreationStageLog::Scope stage("preview");
+            node->computePreviewImage(getTimeLine()->currentFrame());
+        }
+        {
+            NodeCreationStageLog::Scope stage("autosave");
+            triggerAutoSave();
+        }
+    }
+
+    if (refreshBatch) {
+        NodeCreationStageLog::Scope stage("nameAndEdges");
+        refreshBatch.reset();
     }
 
     // NodeGui::initialize already placed a node whose serialization holds a position.
     const bool hasStoredPosition = serialization && serialization->layout.hasPosition;
     if (node->getParentMultiInstanceName().empty() && !hasStoredPosition) {
+        NodeCreationStageLog::Scope stage("positioning");
         bool autoConnect = args.getProperty<bool>(kCreateNodeArgsPropAutoConnect);
 
         if ( selectedNodes.empty() || serialization) {

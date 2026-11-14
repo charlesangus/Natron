@@ -1404,7 +1404,7 @@ serveFromDeviceTier(const FrameRenderContext& context,
 
     std::map<ImageLayerDesc, CacheDeviceEntryPtr> entries;
     for (const ImageLayerDesc& layer : task.components) {
-        const CacheDeviceEntryPtr entry = tier->find(base.forEntry(task.key.mipmapLevel, layer, eImageBitDepthFloat));
+        const CacheDeviceEntryPtr entry = tier->findServing(base.forEntry(task.key.mipmapLevel, layer, eImageBitDepthFloat));
         if (!entry) {
             return false;
         }

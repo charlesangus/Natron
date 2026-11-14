@@ -186,6 +186,8 @@ public:
 
     //When a node tree is created
     int _creatingTree;
+    mutable QMutex draftEditsMutex;
+    std::list<NodeWPtr> draftEdits;
     mutable QMutex renderQueueMutex;
     std::list<RenderQueueItem> renderQueue, activeRenders;
     // Files saved for render processes that a task may still restart from, guarded by renderQueueMutex.
@@ -348,6 +350,59 @@ AppInstance::setProjectBeingLoadedInfo(const ProjectBeingLoadedInfo& info)
 {
     assert(QThread::currentThread() == qApp->thread());
     _imp->projectBeingLoaded = info;
+}
+
+void
+AppInstance::noteDraftEdit(const NodePtr& node)
+{
+    if (!node) {
+        return;
+    }
+    QMutexLocker k(&_imp->draftEditsMutex);
+    for (const NodeWPtr& edit : _imp->draftEdits) {
+        if (edit.lock() == node) {
+            return;
+        }
+    }
+    _imp->draftEdits.push_back(node);
+}
+
+void
+AppInstance::clearDraftEdits()
+{
+    QMutexLocker k(&_imp->draftEditsMutex);
+    _imp->draftEdits.clear();
+}
+
+bool
+AppInstance::draftAppliesToEdits() const
+{
+    const std::list<NodePtr> edits = getDraftEdits();
+    if (edits.empty()) {
+        return true;
+    }
+    for (const NodePtr& node : edits) {
+        const EffectInstancePtr effect = node->getEffectInstance();
+        if (!effect || !effect->isPointOp()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::list<NodePtr>
+AppInstance::getDraftEdits() const
+{
+    std::list<NodePtr> edits;
+    QMutexLocker k(&_imp->draftEditsMutex);
+    for (const NodeWPtr& edit : _imp->draftEdits) {
+        if (const NodePtr node = edit.lock()) {
+            edits.push_back(node);
+        }
+    }
+
+    return edits;
 }
 
 const std::list<NodePtr>&

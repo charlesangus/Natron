@@ -558,6 +558,22 @@ public:
 
     virtual void setDraftRenderEnabled(bool /*b*/) {}
 
+    /**
+     * @brief Notes node as edited while draft is on. The draft session's edits decide whether the viewer drafts:
+     * draftAppliesToEdits(). clearDraftEdits() starts a new session.
+     **/
+    void noteDraftEdit(const NodePtr& node);
+    void clearDraftEdits();
+
+    /**
+     * @brief Whether a draft render should raise the viewer's mipmap level: true with no edit noted, as when
+     * scrubbing the timeline, or when any node edited is not a point op.
+     **/
+    bool draftAppliesToEdits() const WARN_UNUSED_RETURN;
+
+    // The nodes edited this draft session that still exist.
+    std::list<NodePtr> getDraftEdits() const WARN_UNUSED_RETURN;
+
     virtual void setUserIsPainting(const NodePtr& /*rotopaintNode*/,
                                    const RotoStrokeItemPtr& /*stroke*/,
                                    bool /*isPainting*/) {}

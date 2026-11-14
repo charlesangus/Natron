@@ -1373,6 +1373,12 @@ Composite and Route are Point (1), Passes and Resample are Filter
 renders through a runtime shader, or averages several matrices per pixel, returns
 `GpuWeight::heavy()`.
 
+`OpKind::Point` also makes `EffectInstance::isPointOp()` true, which exempts the
+node from draft: dragging its controls renders at the viewer's own mip, since the
+upstream images it reads are already cached and one pass over the viewer's pixels
+is cheap. An op that only looks like a colour op but reads
+neighbouring pixels must not be declared `Point`.
+
 A runtime shader finds its source and destination by name, not by binding: its
 only storage buffers are the blocks named `Src` and `Dst`
 (`kGpuShaderSourceBuffer`, `kGpuShaderDestinationBuffer`), at any binding of set

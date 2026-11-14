@@ -263,6 +263,11 @@ public:
         return std::nullopt;
     }
 
+    virtual bool isPointOp() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return opKind() == OpKind::Point;
+    }
+
     /**
      * @brief How much the node weighs when GPU placement groups it into a region, for a render at
      * time and view, mipmapLevel levels below full resolution. By default the weight of the node's

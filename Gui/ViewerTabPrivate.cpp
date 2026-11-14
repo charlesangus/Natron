@@ -87,6 +87,7 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , iconRefreshOn()
     , activateRenderScale(NULL)
     , renderScaleCombo(NULL)
+    , autoProxyButton(NULL)
     , firstInputLabel(NULL)
     , firstInputImage(NULL)
     , compositingOperatorLabel(NULL)

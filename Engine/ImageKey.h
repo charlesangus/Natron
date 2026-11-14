@@ -79,6 +79,12 @@ public:
     ImageKey forEntry(unsigned int mipmapLevel, const ImageLayerDesc& layer, ImageBitDepthEnum bitdepth) const;
 
     /**
+     * @brief This key with draft mode off. A full-quality entry answers a draft request as well as a draft one would,
+     * so a draft lookup tries it first.
+     **/
+    ImageKey nonDraft() const;
+
+    /**
      * @brief The layer a request is cached under: a colour request shares the node's first colour
      * output whichever colour layout it asked for, any other layer is itself. Null if the node has
      * no colour output for a colour request.

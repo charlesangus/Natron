@@ -239,6 +239,12 @@ public:
     CacheDeviceEntryPtr find(const ImageKey& key);
 
     /**
+     * @brief find() of the entry that best answers key: for a draft key, its full-quality entry before its draft one,
+     * so that drafting reads what full-quality renders cached instead of rendering upstream again.
+     **/
+    CacheDeviceEntryPtr findServing(const ImageKey& key);
+
+    /**
      * @brief Makes holderEvict, in place of the entry's, the eviction of another holder of its image, as insert()
      * takes it, so that a frame store handed the image in place still gets its pixels in RAM when the pool takes the
      * buffer. The entry replaced is the one the tier holds now under entry's key with entry's image, which an earlier

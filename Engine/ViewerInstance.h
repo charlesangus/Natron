@@ -217,6 +217,41 @@ private:
     bool _placed = false;
 };
 
+/**
+ * @brief Whether a viewer edit drafts. It keeps a rolling estimate of what an update would cost at the viewer's
+ * own level, from the updates rendered so far scaled by their pixel ratio, and turns draft off once that fits the
+ * frame budget, back on once it overruns it. The gap between the two thresholds keeps it from toggling per frame.
+ **/
+class AdaptiveDraft {
+public:
+    static constexpr double kBudgetMs = 1000. / 30.;
+    static constexpr double kEnterFullRatio = 0.8;
+    static constexpr double kLeaveFullRatio = 1.25;
+
+    /**
+     * @brief Notes an update rendered at renderedLevel in ms, for a viewer whose own level is fullLevel.
+     **/
+    void noteRender(double ms, unsigned int renderedLevel, unsigned int fullLevel);
+
+    // Whether the next update drafts. True until a render has been noted.
+    bool drafts() const
+    {
+        return !_full;
+    }
+
+    // The estimated cost of an update at the viewer's own level, negative before any render has been noted.
+    double predictedFullMs() const
+    {
+        return _predictedFullMs;
+    }
+
+    void reset();
+
+private:
+    double _predictedFullMs = -1.;
+    bool _full = false;
+};
+
 class ViewerArgs
 {
 public:
@@ -524,6 +559,40 @@ public:
      * processing is on.
      **/
     unsigned int getMipmapLevelWithoutDraft() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The mipmap level of a zoom factor: the nearest finer one (48% renders at 50%, 51% at 100%), or with
+     * nearest, the nearest power of two (33% renders at 25%). Zooms of 100% and more are level 0.
+     **/
+    static unsigned int mipmapLevelForZoom(double zoomFactor, bool nearest) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The level a draft update renders at under auto-proxy: at least autoProxyLevel, less one per doubling
+     * of a zoom above 100%, and never finer than withoutDraft.
+     **/
+    static unsigned int autoProxyMipmapLevel(unsigned int withoutDraft, double zoomFactor, unsigned int autoProxyLevel) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether an update drafts, and at which level: draft is on, the edits call for it
+     * (AppInstance::draftAppliesToEdits()) and adaptive draft does not predict that the viewer's own level keeps up.
+     **/
+    static void resolveDraft(bool draftOn,
+                             bool editsDraft,
+                             bool autoProxy,
+                             const AdaptiveDraft& adaptive,
+                             unsigned int withoutDraft,
+                             double zoomFactor,
+                             unsigned int autoProxyLevel,
+                             bool* draftModeEnabled,
+                             unsigned int* withDraft);
+
+    /**
+     * @brief Notes how long an interactive update took for adaptive draft. Ignored while draft is off.
+     **/
+    void noteInteractiveRender(double ms, unsigned int renderedLevel, unsigned int fullLevel);
+
+    // A copy of the viewer's adaptive draft state, for tests.
+    AdaptiveDraft getAdaptiveDraft() const WARN_UNUSED_RETURN;
 
     /**
      * @brief The display settings and tiles of the last full-quality texture-cache lookup of input

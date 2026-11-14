@@ -3054,6 +3054,13 @@ ViewerInstance::renderViewer(ViewIdx view,
         placementBuilder.emplace();
         placementStamp = _imp->currentGpuPlacementStamp();
     }
+    // The A and B inputs of one update together make what it costs.
+    struct {
+        double ms = 0.;
+        bool timed = false;
+        unsigned int renderedLevel = 0;
+        unsigned int fullLevel = 0;
+    } interactive;
     for (int i = 0; i < 2; ++i) {
         if (args[i] && args[i]->params) {
             if ( (i == 1) && (_imp->uiContext->getCompositingOperator() == eViewerCompositingOperatorNone) ) {
@@ -3080,10 +3087,20 @@ ViewerInstance::renderViewer(ViewIdx view,
                         effect->renderOverlayImages(args[i]->overlayImageRequest, args[i]->params->abortInfo);
                     }
                 }
+                const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
                 ret[i] = renderViewer_internal(view, singleThreaded, isSequentialRender, viewerHash, canAbort, rotoPaintNode, useTLS, request,
                                                i == 0 ? stats : RenderStatsPtr(),
                                                placementBuilder ? &*placementBuilder : nullptr,
                                                *args[i]);
+                // An aborted update stopped early, so its time would understate the cost.
+                if (!isSequentialRender && (ret[i] == eViewerRenderRetCodeRender) && args[i]->params && !args[i]->params->abortInfo->isAborted()) {
+                    interactive.ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                    if (!interactive.timed) {
+                        interactive.timed = true;
+                        interactive.renderedLevel = args[i]->draftModeEnabled ? args[i]->mipmapLevelWithDraft : args[i]->mipmapLevelWithoutDraft;
+                        interactive.fullLevel = args[i]->mipmapLevelWithoutDraft;
+                    }
+                }
 
                 // Reset the rednering flag
                 args[i]->isRenderingFlag.reset();
@@ -3124,6 +3141,10 @@ ViewerInstance::renderViewer(ViewIdx view,
                 args[i].reset();
             }
         }
+    }
+
+    if (interactive.timed) {
+        noteInteractiveRender(interactive.ms, interactive.renderedLevel, interactive.fullLevel);
     }
 
     if (placementBuilder && _imp->publishGpuPlacement(*placementBuilder, placementStamp, false)) {
@@ -3347,28 +3368,113 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
 } // ViewerInstance::setupMinimalUpdateViewerParams
 
 void
+AdaptiveDraft::noteRender(double ms,
+                          unsigned int renderedLevel,
+                          unsigned int fullLevel)
+{
+    if (!(ms >= 0.)) {
+        return;
+    }
+    // A fixed per-update overhead scales up with the pixels, which errs towards drafting.
+    const unsigned int levels = renderedLevel > fullLevel ? renderedLevel - fullLevel : 0;
+    const double predicted = ms * std::ldexp(1., 2 * (int)levels);
+    _predictedFullMs = (_predictedFullMs < 0.) ? predicted : (0.5 * _predictedFullMs + 0.5 * predicted);
+    if (!_full && (_predictedFullMs <= kBudgetMs * kEnterFullRatio)) {
+        _full = true;
+    } else if (_full && (_predictedFullMs > kBudgetMs * kLeaveFullRatio)) {
+        _full = false;
+    }
+}
+
+void
+AdaptiveDraft::reset()
+{
+    _predictedFullMs = -1.;
+    _full = false;
+}
+
+unsigned int
+ViewerInstance::mipmapLevelForZoom(double zoomFactor,
+                                   bool nearest)
+{
+    if (!(zoomFactor < 1.) || !(zoomFactor > 0.)) {
+        return 0;
+    }
+    const double levels = -std::log2(zoomFactor);
+
+    return (unsigned int)(nearest ? std::lround(levels) : std::floor(levels));
+}
+
+unsigned int
+ViewerInstance::autoProxyMipmapLevel(unsigned int withoutDraft,
+                                     double zoomFactor,
+                                     unsigned int autoProxyLevel)
+{
+    if (zoomFactor > 1) {
+        // Decrease draft mode at each inverse mipmaplevel level taken
+        const unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
+        autoProxyLevel = (invLevel < autoProxyLevel) ? autoProxyLevel - invLevel : 0;
+    }
+
+    return std::max(withoutDraft, autoProxyLevel);
+}
+
+void
+ViewerInstance::resolveDraft(bool draftOn,
+                             bool editsDraft,
+                             bool autoProxy,
+                             const AdaptiveDraft& adaptive,
+                             unsigned int withoutDraft,
+                             double zoomFactor,
+                             unsigned int autoProxyLevel,
+                             bool* draftModeEnabled,
+                             unsigned int* withDraft)
+{
+    // An update that does not draft renders as the release would, so the release finds it in the cache.
+    *draftModeEnabled = draftOn && editsDraft && adaptive.drafts();
+    *withDraft = (*draftModeEnabled && autoProxy) ? autoProxyMipmapLevel(withoutDraft, zoomFactor, autoProxyLevel) : withoutDraft;
+}
+
+void
+ViewerInstance::noteInteractiveRender(double ms,
+                                      unsigned int renderedLevel,
+                                      unsigned int fullLevel)
+{
+    if (!getApp()->isDraftRenderEnabled()) {
+        return;
+    }
+    QMutexLocker k(&_imp->adaptiveDraftMutex);
+    _imp->adaptiveDraft.noteRender(ms, renderedLevel, fullLevel);
+}
+
+AdaptiveDraft
+ViewerInstance::getAdaptiveDraft() const
+{
+    QMutexLocker k(&_imp->adaptiveDraftMutex);
+
+    return _imp->adaptiveDraft;
+}
+
+void
 ViewerInstance::computeMipmapLevels(double zoomFactor,
                                     ViewerArgs* outArgs) const
 {
     outArgs->mipmapLevelWithoutDraft = getMipmapLevelWithoutDraft();
-    outArgs->mipmapLevelWithDraft = outArgs->mipmapLevelWithoutDraft;
 
-    outArgs->draftModeEnabled = getApp()->isDraftRenderEnabled();
-
-    // If draft mode is enabled, compute the mipmap level according to the auto-proxy setting in the preferences
-    if (outArgs->draftModeEnabled && appPTR->getCurrentSettings()->isAutoProxyEnabled()) {
-        unsigned int autoProxyLevel = appPTR->getCurrentSettings()->getAutoProxyMipmapLevel();
-        if (zoomFactor > 1) {
-            // Decrease draft mode at each inverse mipmaplevel level taken
-            unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
-            if (invLevel < autoProxyLevel) {
-                autoProxyLevel -= invLevel;
-            } else {
-                autoProxyLevel = 0;
-            }
+    const bool draftOn = getApp()->isDraftRenderEnabled();
+    AdaptiveDraft adaptive;
+    {
+        QMutexLocker k(&_imp->adaptiveDraftMutex);
+        // Each drag or scrub judges its own cost.
+        if (!draftOn) {
+            _imp->adaptiveDraft.reset();
         }
-        outArgs->mipmapLevelWithDraft = std::max(outArgs->mipmapLevelWithoutDraft, autoProxyLevel);
+        adaptive = _imp->adaptiveDraft;
     }
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    resolveDraft(draftOn, draftOn && getApp()->draftAppliesToEdits(), settings->isAutoProxyEnabled(), adaptive,
+                 outArgs->mipmapLevelWithoutDraft, zoomFactor, settings->getAutoProxyMipmapLevel(),
+                 &outArgs->draftModeEnabled, &outArgs->mipmapLevelWithDraft);
 }
 
 void
@@ -6514,24 +6620,14 @@ ViewerInstance::getMipmapLevelWithoutDraft() const
     if (isFullFrameProcessingEnabled()) {
         return 0;
     }
-    const unsigned int proxyLevel = getMipmapLevel();
 
-    // The nearest mipmap level higher in quality than the zoom factor: 48% renders at 50%
-    // (level 1), 51% at 100% (level 0).
-    double zoomFactor = _imp->uiContext->getZoomFactor();
-    double closestPowerOf2 = zoomFactor >= 1 ? 1 : ipow(2, (int)-std::ceil(std::log(zoomFactor) / M_LN2));
-    unsigned int zoomMipmapLevel = std::log(closestPowerOf2) / M_LN2;
-
-    return std::max(proxyLevel, zoomMipmapLevel);
+    return std::max(getMipmapLevel(), getMipmapLevelFromZoomFactor());
 }
 
 unsigned int
 ViewerInstance::getMipmapLevelFromZoomFactor() const
 {
-    double zoomFactor = _imp->uiContext->getZoomFactor();
-    double closestPowerOf2 = zoomFactor >= 1 ? 1 : std::pow( 2, -std::ceil(std::log(zoomFactor) / M_LN2) );
-
-    return std::log(closestPowerOf2) / M_LN2;
+    return mipmapLevelForZoom(_imp->uiContext->getZoomFactor(), appPTR->getCurrentSettings()->isViewerMipRoundingNearest());
 }
 
 double

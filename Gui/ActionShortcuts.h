@@ -288,6 +288,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionProxyEnabled "proxyEnabled"
 #define kShortcutDescActionProxyEnabled "Enable Proxy Rendering"
 
+#define kShortcutIDActionAutoProxyScrubbing "autoProxyScrubbing"
+#define kShortcutDescActionAutoProxyScrubbing "Auto Proxy Scrubbing"
+
 #define kShortcutIDActionProxyLevel2 "proxy2"
 #define kShortcutDescActionProxyLevel2 "Proxy Level 2"
 

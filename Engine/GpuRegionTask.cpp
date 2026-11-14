@@ -763,7 +763,7 @@ private:
         if ((_deviceGrowth == DeviceGrowth::None) || task.deviceMissingRoI.isNull() || !tier || (tier->runtime() != &_runtime)) {
             return false;
         }
-        const CacheDeviceEntryPtr entry = tier->find(cacheKeyOf(*member, *out));
+        const CacheDeviceEntryPtr entry = tier->findServing(cacheKeyOf(*member, *out));
         if (!entry) {
             return false;
         }

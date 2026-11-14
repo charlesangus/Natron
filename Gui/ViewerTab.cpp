@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
@@ -635,6 +636,24 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->renderScaleCombo->addAction(proxy32);
     _imp->firstRowLayout->addWidget(_imp->renderScaleCombo);
 
+    _imp->autoProxyButton = new Button(tr("Auto Proxy"), _imp->firstSettingsRow);
+    _imp->autoProxyButton->setFocusPolicy(Qt::NoFocus);
+    _imp->autoProxyButton->setFixedHeight(buttonSize.height());
+    _imp->autoProxyButton->setCheckable(true);
+    {
+        const bool autoProxy = appPTR->getCurrentSettings()->isAutoProxyEnabled();
+        _imp->autoProxyButton->setChecked(autoProxy);
+        _imp->autoProxyButton->setDown(autoProxy);
+    }
+    setToolTipWithShortcut(kShortcutGroupViewer, kShortcutIDActionAutoProxyScrubbing,
+                           "<p><b>" + tr("Auto Proxy Scrubbing:").toStdString() + "</b></p><p>" + tr("When checked, the viewer drafts while the timeline is scrubbed or a control is dragged, "
+                                                                                                     "at the auto-proxy level of the preferences. Dragging a control of a colour node that works "
+                                                                                                     "pixel by pixel never drafts, and draft turns off on its own when the viewer's full "
+                                                                                                     "resolution keeps up.")
+                                                                                                      .toStdString()
+                               + "</p>" + "<p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>",
+                           _imp->autoProxyButton);
+    _imp->firstRowLayout->addWidget(_imp->autoProxyButton);
 
     addSpacer(_imp->firstRowLayout);
 
@@ -1363,6 +1382,16 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     QObject::connect( _imp->clipToProjectFormatButton, SIGNAL(clicked(bool)), this, SLOT(onClipToProjectButtonToggle(bool)) );
     QObject::connect( _imp->fullFrameProcessingButton, SIGNAL(clicked(bool)), this, SLOT(onFullFrameButtonToggle(bool)) );
+    QObject::connect(_imp->autoProxyButton, SIGNAL(clicked(bool)), this, SLOT(onAutoProxyButtonToggle(bool)));
+    QObject::connect(appPTR->getCurrentSettings().get(), &Settings::settingChanged, this, [this](KnobI* knob) {
+        if (!knob || (knob->getName() != "autoProxyScrubbing")) {
+            return;
+        }
+        const bool autoProxy = appPTR->getCurrentSettings()->isAutoProxyEnabled();
+        QSignalBlocker blocker(_imp->autoProxyButton);
+        _imp->autoProxyButton->setChecked(autoProxy);
+        _imp->autoProxyButton->setDown(autoProxy);
+    });
     QObject::connect( _imp->viewsComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onViewsComboboxChanged(int)) );
     QObject::connect(_imp->enableViewerRoI, SIGNAL(clicked(bool)), this, SLOT(onEnableViewerRoIButtonToggle(bool)));
     QObject::connect( _imp->renderScaleCombo, SIGNAL(currentIndexChanged(int)), this, SLOT(onRenderScaleComboIndexChanged(int)) );

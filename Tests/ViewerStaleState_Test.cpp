@@ -38,7 +38,10 @@
 #include "ViewerInstanceTestAccess.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
 #include "Engine/ViewerInstance.h"
 
@@ -215,4 +218,128 @@ TEST_F(ViewerStaleStateTest, SettlingTwiceKeepsTheViewerCurrent)
     EXPECT_FALSE(viewer->isStale());
     drain();
     EXPECT_EQ(2u, transitions.size());
+}
+
+namespace {
+
+// Auto-proxy's default "4", at a fit-to-window zoom whose own level is 1.
+const unsigned int kAutoProxyLevel = 2;
+const unsigned int kOwnLevel = 1;
+const double kFitZoom = 0.4;
+
+void
+resolveForEdits(const AppInstancePtr& app,
+                const AdaptiveDraft& adaptive,
+                bool* drafts,
+                unsigned int* level)
+{
+    ViewerInstance::resolveDraft(true, app->draftAppliesToEdits(), true, adaptive, kOwnLevel, kFitZoom, kAutoProxyLevel, drafts, level);
+}
+
+} // namespace
+
+TEST_F(ViewerStaleStateTest, DraggingAPointOpRendersAtTheViewersOwnLevel)
+{
+    const NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
+    const NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(grade && transform);
+    EXPECT_TRUE(grade->getEffectInstance()->isPointOp());
+    EXPECT_FALSE(transform->getEffectInstance()->isPointOp());
+    const AppInstancePtr app = getApp();
+    const AdaptiveDraft adaptive;
+    bool drafts = false;
+    unsigned int level = 0;
+
+    app->clearDraftEdits();
+    app->noteDraftEdit(grade);
+    resolveForEdits(app, adaptive, &drafts, &level);
+    EXPECT_FALSE(drafts);
+    EXPECT_EQ(kOwnLevel, level);
+
+    app->clearDraftEdits();
+    app->noteDraftEdit(transform);
+    resolveForEdits(app, adaptive, &drafts, &level);
+    EXPECT_TRUE(drafts);
+    EXPECT_EQ(kAutoProxyLevel, level);
+
+    // A link or an expression edits several nodes at once: any of them that is not a point op drafts.
+    app->noteDraftEdit(grade);
+    resolveForEdits(app, adaptive, &drafts, &level);
+    EXPECT_TRUE(drafts);
+    EXPECT_EQ(kAutoProxyLevel, level);
+
+    // Scrubbing the timeline edits nothing, and drafts as it always has.
+    app->clearDraftEdits();
+    resolveForEdits(app, adaptive, &drafts, &level);
+    EXPECT_TRUE(drafts);
+    EXPECT_EQ(kAutoProxyLevel, level);
+
+    ViewerInstance::resolveDraft(false, true, true, adaptive, kOwnLevel, kFitZoom, kAutoProxyLevel, &drafts, &level);
+    EXPECT_FALSE(drafts);
+    EXPECT_EQ(kOwnLevel, level);
+}
+
+TEST(AdaptiveDraftTest, CheapEditsSwitchToFullResolution)
+{
+    AdaptiveDraft adaptive;
+    EXPECT_TRUE(adaptive.drafts());
+    // 1 ms at two levels below the viewer's own predicts 16 ms there, inside the budget.
+    adaptive.noteRender(1., kAutoProxyLevel + kOwnLevel, kOwnLevel);
+    EXPECT_FALSE(adaptive.drafts());
+    for (int i = 0; i < 20; ++i) {
+        adaptive.noteRender(16., kOwnLevel, kOwnLevel);
+        EXPECT_FALSE(adaptive.drafts()) << "update " << i;
+    }
+}
+
+TEST(AdaptiveDraftTest, ExpensiveEditsStayInDraft)
+{
+    AdaptiveDraft adaptive;
+    // 10 ms at two levels below predicts 160 ms at the viewer's own level.
+    for (int i = 0; i < 20; ++i) {
+        adaptive.noteRender(10., kAutoProxyLevel + kOwnLevel, kOwnLevel);
+        EXPECT_TRUE(adaptive.drafts()) << "update " << i;
+    }
+}
+
+TEST(AdaptiveDraftTest, CostsNearTheBudgetDoNotOscillate)
+{
+    AdaptiveDraft adaptive;
+    adaptive.noteRender(1., 2, 0);
+    ASSERT_FALSE(adaptive.drafts());
+    // Full-resolution updates alternating around the budget stay inside the hysteresis band.
+    const double costs[] = { 30., 38., 28., 40., 33., 36. };
+    for (int round = 0; round < 4; ++round) {
+        for (double ms : costs) {
+            adaptive.noteRender(ms, 0, 0);
+            EXPECT_FALSE(adaptive.drafts()) << ms << " ms";
+        }
+    }
+    // A sustained overrun goes back to draft, and then the drafts at a quarter of the pixels, still predicting an
+    // overrun, keep it there.
+    for (int i = 0; i < 4; ++i) {
+        adaptive.noteRender(80., 0, 0);
+    }
+    EXPECT_TRUE(adaptive.drafts());
+    for (int i = 0; i < 8; ++i) {
+        adaptive.noteRender(9., 1, 0);
+        EXPECT_TRUE(adaptive.drafts()) << "update " << i;
+    }
+
+    adaptive.reset();
+    EXPECT_TRUE(adaptive.drafts());
+    EXPECT_LT(adaptive.predictedFullMs(), 0.);
+}
+
+TEST(ViewerMipRoundingTest, FinerAndNearest)
+{
+    EXPECT_EQ(1u, ViewerInstance::mipmapLevelForZoom(0.33, false));
+    EXPECT_EQ(2u, ViewerInstance::mipmapLevelForZoom(0.33, true));
+    EXPECT_EQ(1u, ViewerInstance::mipmapLevelForZoom(0.48, false));
+    EXPECT_EQ(0u, ViewerInstance::mipmapLevelForZoom(0.51, false));
+    EXPECT_EQ(1u, ViewerInstance::mipmapLevelForZoom(0.51, true));
+    EXPECT_EQ(1u, ViewerInstance::mipmapLevelForZoom(0.5, false));
+    EXPECT_EQ(1u, ViewerInstance::mipmapLevelForZoom(0.5, true));
+    EXPECT_EQ(0u, ViewerInstance::mipmapLevelForZoom(1., true));
+    EXPECT_EQ(0u, ViewerInstance::mipmapLevelForZoom(4., false));
 }

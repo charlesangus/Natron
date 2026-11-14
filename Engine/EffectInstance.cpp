@@ -6673,6 +6673,9 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
         mustCallOnFileNameParameterChanged = true;
     }
 
+    if ((reason != eValueChangedReasonTimeChanged) && getApp()->isDraftRenderEnabled()) {
+        getApp()->noteDraftEdit(node);
+    }
 
     bool ret = false;
 

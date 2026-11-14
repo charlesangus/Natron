@@ -109,6 +109,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionPauseViewer);
     (void)QT_TR_NOOP(kShortcutDescActionPauseViewerInputA);
     (void)QT_TR_NOOP(kShortcutDescActionProxyEnabled);
+    (void)QT_TR_NOOP(kShortcutDescActionAutoProxyScrubbing);
     (void)QT_TR_NOOP(kShortcutDescActionProxyLevel2);
     (void)QT_TR_NOOP(kShortcutDescActionProxyLevel4);
     (void)QT_TR_NOOP(kShortcutDescActionProxyLevel8);

@@ -406,6 +406,7 @@ public Q_SLOTS:
     void togglePlaybackMode();
     void onViewerChannelsChanged(int);
     void onFullFrameButtonToggle(bool);
+    void onAutoProxyButtonToggle(bool);
     void onClipToProjectButtonToggle(bool);
     void onTimeLineTimeChanged(SequenceTime time, int);
     void onCurrentTimeSpinBoxChanged(double);

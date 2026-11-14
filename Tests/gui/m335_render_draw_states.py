@@ -1,32 +1,9 @@
-"""Delegate viewer renders follow the viewer's draw states (M335 - Viewer Render Draw States).
+"""A Cycles viewer render follows the viewer's draw states: boxed rows leave the frame and the
+overlay boxes them, only requested payloads load, and Render Everything draws and loads all of it,
+restores the rules when turned off, and survives a save and reopen.
 
-Graph: USDRead of a four-building payload city (tools/bench/heavy_scene_make.py, one block of four
-buildings, each its own payload) into Viewer1, every payload unloaded. B1..B3 author an extentsHint,
-B0 does not. Under Storm the script sets Load All on /World/Block0/B1 and BBox on the other three
-buildings, frames everything, then picks Cycles in the view's Renderer submenu, so the rules reach
-the worker on the switch. It checks:
-  - only B1's payload is opened, the other three stay unloaded;
-  - the view keeps a rule for each boxed building, and none for B1: Load All under a drawn parent
-    only loads, it draws what is drawn already; it draws the boxed rows over the frame
-    (natronSceneDrawBoxes and natronSceneDrawMarkers above 0);
-  - clicks at the projected centres of the opened payloads' prims and over a grid of the view
-    (picked from the Cycles primId AOV and the boxes) find prims below B1 and none below another
-    building;
-  - BBox on B1 while Cycles renders reaches the rules (ruleCount) and the overlay (one more box),
-    and B1's prims leave the frame: a later sweep picks no prim below any building;
-  - Render Everything on loads every payload, the boxes leave the overlay, and the sweep picks
-    prims below all four buildings;
-    off brings the draw rules back (no prim picked, every building boxed) and unloads nothing;
-    on again it is still on after the project is saved and reopened.
-
-If the Renderer submenu has no available Cycles entry the run is skipped (exit 0).
-
-File: $NATRON_CITY_FILE, by default the city the script writes under $NATRON_GUI_TEST_OUT.
-
-Screenshots: m335-cycles-one-asset, m335-cycles-all-boxed.
-
-Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
-(default build/gui-test-out/). Exit status 0 only if every check passed.
+Skips (exit 0) when the Renderer submenu has no available Cycles entry. Run through
+Tests/gui/run-gui-test.sh.
 """
 import math
 import os
@@ -356,6 +333,7 @@ try:
 
         unrequested = [payload_of(r) for r in BOXED if payload_of(r) in opened_payloads()]
         check(len(unrequested) == 0, "unrequested payloads stay unloaded under Cycles (%d open: %r)" % (len(unrequested), unrequested))
+        # The fixture's B0 has no extentsHint, so it is drawn as a marker, not a box.
         ok = yield ("until", lambda: drawn()[0] > 0 and sum(drawn()) == len(BOXED), POLL_TIMEOUT_S)
         check(ok, "the boxed buildings draw over the Cycles frame (boxes, markers %r)" % (drawn(),))
         check(int(draw_stats().get("ruleCount", 0)) == len(BOXED), "the rules survive the switch (%r)" % (draw_stats().get("ruleCount"),))

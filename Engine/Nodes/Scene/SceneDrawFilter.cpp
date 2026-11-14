@@ -59,29 +59,24 @@ std::unordered_map<std::string, SceneDrawFilter::WeakPtr> filters;
 // "UsdImagingGLEngine_%s_%p" in libusd_usdImagingGL.so, whose %p appears to be the engine, known
 // only once the constructor has returned, and HdUtils::RenderInstanceTracker's register-first
 // protocol (pxr/imaging/hd/utils.h) needs it earlier. So the id is learned here, which relies on
-// UsdImagingGLEngine's constructor building its render index synchronously, within the scope.
+// UsdImagingGLEngine's constructor building its render index synchronously, on its own thread.
 // hd/utils.h only says the callback "currently" runs during render index construction.
-std::mutex scopeMutex;
-bool scopeActive = false;
-std::string scopeInstanceId;
+thread_local SceneDrawFilter::EngineScope* activeScope = nullptr;
 
 HdSceneIndexBaseRefPtr
 appendFilter(const std::string& renderInstanceId,
              const HdSceneIndexBaseRefPtr& input,
              const HdContainerDataSourceHandle& /*inputArgs*/)
 {
-    {
-        std::lock_guard<std::mutex> lock(filtersMutex);
-        if (!scopeActive) {
-            return input;
-        }
+    if (!activeScope) {
+        return input;
     }
     TfRefPtr<SceneDrawFilter> filter = SceneDrawFilter::New(input);
     {
         std::lock_guard<std::mutex> lock(filtersMutex);
         filters[renderInstanceId] = SceneDrawFilter::WeakPtr(filter);
-        scopeInstanceId = renderInstanceId;
     }
+    activeScope->setInstanceId(renderInstanceId);
 
     return filter;
 }
@@ -278,26 +273,39 @@ SceneDrawFilter::registerForAllRenderers()
 }
 
 SceneDrawFilter::EngineScope::EngineScope()
-    : _lock(scopeMutex)
+    : _previous(activeScope)
 {
-    std::lock_guard<std::mutex> lock(filtersMutex);
-    scopeActive = true;
-    scopeInstanceId.clear();
+    activeScope = this;
 }
 
 SceneDrawFilter::EngineScope::~EngineScope()
 {
-    std::lock_guard<std::mutex> lock(filtersMutex);
-    scopeActive = false;
-    scopeInstanceId.clear();
+    activeScope = _previous;
 }
 
 std::string
 SceneDrawFilter::EngineScope::getInstanceId() const
 {
-    std::lock_guard<std::mutex> lock(filtersMutex);
+    return _instanceId;
+}
 
-    return scopeInstanceId;
+void
+SceneDrawFilter::EngineScope::setInstanceId(const std::string& renderInstanceId)
+{
+    _instanceId = renderInstanceId;
+}
+
+std::vector<std::string>
+SceneDrawFilter::getInstanceIds()
+{
+    std::lock_guard<std::mutex> lock(filtersMutex);
+    std::vector<std::string> ids;
+    ids.reserve(filters.size());
+    for (const auto& entry : filters) {
+        ids.push_back(entry.first);
+    }
+
+    return ids;
 }
 
 SceneDrawFilter::WeakPtr

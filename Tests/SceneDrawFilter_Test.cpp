@@ -27,9 +27,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <latch>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -43,6 +45,7 @@
 #undef emit
 #endif
 #include <pxr/imaging/hd/changeTracker.h>
+#include <pxr/imaging/hd/filteringSceneIndex.h>
 #include <pxr/imaging/hd/instancerTopologySchema.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/renderIndex.h>
@@ -50,6 +53,7 @@
 #include <pxr/imaging/hd/retainedSceneIndex.h>
 #include <pxr/imaging/hd/rprim.h>
 #include <pxr/imaging/hd/sceneIndexObserver.h>
+#include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
 #include <pxr/imaging/hd/sprim.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/unitTestNullRenderDelegate.h>
@@ -1344,20 +1348,110 @@ TEST_F(SceneDrawFilterTest, ACyclesEngineBuiltUnderAScopeHasAFilterFindCanLocate
     EXPECT_TRUE(get_pointer(SceneDrawFilter::find(id)) != nullptr);
 }
 
-TEST_F(SceneDrawFilterTest, ACyclesEngineBuiltWithoutAScopeHasNoFilter)
+namespace {
+std::set<std::string>
+liveFilterIds()
+{
+    const std::vector<std::string> ids = SceneDrawFilter::getInstanceIds();
+
+    return std::set<std::string>(ids.begin(), ids.end());
+}
+
+bool
+chainHasDrawFilter(const HdSceneIndexBaseRefPtr& scene)
+{
+    HdSceneIndexBase* const base = get_pointer(scene);
+    if (dynamic_cast<SceneDrawFilter*>(base)) {
+        return true;
+    }
+    const HdFilteringSceneIndexBase* const filtering = dynamic_cast<const HdFilteringSceneIndexBase*>(base);
+    if (!filtering) {
+        return false;
+    }
+    for (const HdSceneIndexBaseRefPtr& input : filtering->GetInputScenes()) {
+        if (chainHasDrawFilter(input)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+const char* const kChainRenderer = "NatronDrawFilterTestRenderer";
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, ACyclesEngineBuiltOnAnotherThreadWhileAScopeLivesHasNoFilter)
 {
     if (!RenderDelegates::unavailableMessage(kRenderDelegateCyclesId).empty()) {
         return;
     }
     SceneDrawFilter::registerForAllRenderers();
-    std::unique_ptr<UsdImagingGLEngine> engine = makeCyclesEngine();
-    ASSERT_TRUE(engine != nullptr);
-
+    const std::set<std::string> before = liveFilterIds();
+    std::unique_ptr<UsdImagingGLEngine> unscoped;
+    std::unique_ptr<UsdImagingGLEngine> scoped;
+    std::string id;
     {
         const SceneDrawFilter::EngineScope scope;
+        std::thread other([&]() { unscoped = makeCyclesEngine(); });
+        other.join();
+        ASSERT_TRUE(unscoped != nullptr);
+        ASSERT_EQ(TfToken(kRenderDelegateCyclesId), unscoped->GetCurrentRendererId());
+
+        EXPECT_EQ(before, liveFilterIds());
         EXPECT_TRUE(scope.getInstanceId().empty());
+
+        scoped = makeCyclesEngine();
+        id = scope.getInstanceId();
     }
-    EXPECT_TRUE(SceneDrawFilter::EngineScope().getInstanceId().empty());
+    ASSERT_TRUE(scoped != nullptr);
+
+    std::set<std::string> expected = before;
+    expected.insert(id);
+    EXPECT_FALSE(id.empty());
+    EXPECT_EQ(expected, liveFilterIds());
+}
+
+TEST_F(SceneDrawFilterTest, ConcurrentChainsGetAFilterOnlyWhereAScopeAskedForIt)
+{
+    SceneDrawFilter::registerForAllRenderers();
+    HdSceneIndexPluginRegistry& registry = HdSceneIndexPluginRegistry::GetInstance();
+    EXPECT_FALSE(chainHasDrawFilter(registry.AppendSceneIndicesForRenderer(kChainRenderer, HdRetainedSceneIndex::New(), "warm-up")));
+
+    const int kThreads = 8;
+    for (int round = 0; round < 20; ++round) {
+        std::vector<HdSceneIndexBaseRefPtr> chains(kThreads);
+        std::vector<std::string> scopeIds(kThreads);
+        std::latch start(kThreads);
+        std::vector<std::thread> threads;
+        for (int i = 0; i < kThreads; ++i) {
+            threads.emplace_back([&, i]() {
+                const std::string instanceId = "chain-" + std::to_string(round) + "-" + std::to_string(i);
+                start.arrive_and_wait();
+                if (i % 2 == 0) {
+                    const SceneDrawFilter::EngineScope scope;
+                    chains[i] = registry.AppendSceneIndicesForRenderer(kChainRenderer, HdRetainedSceneIndex::New(), instanceId);
+                    scopeIds[i] = scope.getInstanceId();
+                } else {
+                    chains[i] = registry.AppendSceneIndicesForRenderer(kChainRenderer, HdRetainedSceneIndex::New(), instanceId);
+                }
+            });
+        }
+        for (std::thread& thread : threads) {
+            thread.join();
+        }
+
+        for (int i = 0; i < kThreads; ++i) {
+            const std::string instanceId = "chain-" + std::to_string(round) + "-" + std::to_string(i);
+            if (i % 2 == 0) {
+                EXPECT_TRUE(chainHasDrawFilter(chains[i])) << instanceId;
+                EXPECT_EQ(instanceId, scopeIds[i]);
+                EXPECT_TRUE(get_pointer(SceneDrawFilter::find(instanceId)) != nullptr) << instanceId;
+            } else {
+                EXPECT_FALSE(chainHasDrawFilter(chains[i])) << instanceId;
+                EXPECT_FALSE(get_pointer(SceneDrawFilter::find(instanceId))) << instanceId;
+            }
+        }
+    }
 }
 
 TEST_F(SceneDrawFilterTest, ABoxedRowMasksTheNativeInstancesBelowItAndKeepsTheirInstancer)

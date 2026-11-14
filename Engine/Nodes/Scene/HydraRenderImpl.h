@@ -471,7 +471,6 @@ public:
      **/
     void setDrawRules(const SceneDrawFilter::Rules& rules);
 
-    // Changes the draw rules by each delta in turn, as SceneDrawFilter::applyToRules() does.
     void applyDrawDeltas(const std::vector<SceneDrawDelta>& deltas);
 
     /**

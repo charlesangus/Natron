@@ -111,10 +111,10 @@ public:
     // Must run before the render index it is to reach is constructed.
     static void registerForAllRenderers();
 
-    // An engine built while one of these lives gets a filter; any other engine gets none. The
-    // render index builds its scene index chain inside the engine's constructor, which can run on
-    // a thread other than the one holding the scope (Cycles builds in a TBB arena), so the scope
-    // is process-wide and holds a lock: one engine at a time is built under a scope.
+    // An engine built on this thread while one of these lives gets a filter; any other engine,
+    // whichever thread builds it meanwhile, gets none. A Cycles engine built through
+    // CyclesAovs::withThreadBudget() still counts: task_arena::execute() runs the build on the
+    // calling thread, the arena keeping a slot for it.
     class EngineScope {
     public:
         EngineScope();
@@ -125,11 +125,17 @@ public:
         // The renderInstanceId of the filter the engine built under this scope got, or empty.
         std::string getInstanceId() const;
 
+        void setInstanceId(const std::string& renderInstanceId);
+
     private:
-        std::unique_lock<std::mutex> _lock;
+        EngineScope* _previous;
+        std::string _instanceId;
     };
 
     static WeakPtr find(const std::string& renderInstanceId);
+
+    // The renderInstanceIds of every live filter.
+    static std::vector<std::string> getInstanceIds();
 
     static PXR_NS::TfRefPtr<SceneDrawFilter> New(const PXR_NS::HdSceneIndexBaseRefPtr& input);
 

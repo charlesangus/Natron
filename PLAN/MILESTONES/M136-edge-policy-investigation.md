@@ -163,19 +163,19 @@ Acceptance sketch:
   - size: M
 
 
-- [ ] M136.P4.T8 — Mask inputs and the MaskMix stage
+- [x] M136.P4.T8 — Mask inputs and the MaskMix stage
   - files: `Engine/Nodes/Image/PassExecutor.cpp`, `Engine/Nodes/Image/StagePlan.cpp`, `Engine/Nodes/Image/ResampleExecutor.cpp`, `Engine/Gpu/Kernels/pixelwrap.slang`, `Engine/Gpu/Kernels/compositestep.slang`, `Engine/Nodes/Image/StagedImageEffect.cpp` (the mask-misses-window shortcut)
   - approach: every input follows its own edge bit (Q1): masks read through the shared samplers by the mask input's bit; the mask-misses-window identity shortcut applies only under Black.
   - verify: Blur and Merge with a small mask under Stretch and Black, CPU == GPU.
   - size: M
 
-- [ ] M136.P4.T9 — Composite sources: Merge, KeyMix, Dissolve
+- [x] M136.P4.T9 — Composite sources: Merge, KeyMix, Dissolve
   - files: `Engine/Nodes/Image/StagePlan.cpp` (the composite fold), `Engine/Nodes/Merge/Merge.{h,cpp}`, `KeyMix.{h,cpp}`, `Dissolve.{h,cpp}`, `Engine/Gpu/Kernels/merge.slang`, `dissolve.slang`, `compositestep.slang`, `pixelwrap.slang`; their Native and Gpu tests
   - approach: each source and its alpha read by its own bit; Merge's transparent-A skip runs only under Black. Remove references to other applications from Merge's tooltips.
   - verify: A smaller than B, both modes, for each node, CPU == GPU.
   - size: L
 
-- [ ] M136.P4.T10 — ShuffleCopy channel routes
+- [x] M136.P4.T10 — ShuffleCopy channel routes
   - files: `Engine/Nodes/Channel/ChannelCopy.{h,cpp}`, `Engine/Nodes/Channel/Shuffle.cpp`, `Engine/Gpu/Kernels/channelroute.slang`, `Tests/Native/NativeShuffleGpu_Test.cpp`
   - approach: each routed input reads by its own bit.
   - verify: input 1 smaller than input 2, both modes, CPU == GPU.
@@ -275,3 +275,4 @@ Acceptance sketch:
 - 2026-11-13 — P2.T5 and P2.T6 implemented (9dc00592c). Stretch RoI runs as a post-hook (`adjustInputRegionsOfInterest`) after `getRegionsOfInterest`, because staged nodes adjust the base result. Open points: the GPU input RoI gets no band yet; under concatenation `transformInputRois` runs after the hook. Phase 2 gate running.
 - 2026-11-13 — Phase 3 implemented (42f35f04a). Transform's default changes from Black to Input (stretches over Stretch sources). The Stretch band is now computed after concatenation, and GPU input reads get it too. The Transform and Crop soft goldens may need re-recording. The Phase 3 gate replaces the Phase 2 one.
 - 2026-11-13 — P4.T1–T7 implemented (e7e9b31dd). EdgeBlur's GPU read the matte as black past its edge while the CPU used the mode; fixed. The EdgeBlur and EdgeDetect matte always repeats its edge (PM: a black border would read as an edge), and only the blurred source follows the knob. Input resolves to Stretch for most sources, so border goldens change. Gating with `--record-goldens`, replacing the Phase 3 gate.
+- 2026-11-13 — P4.T8–T10 implemented (ce6d616fc). Merge's transparent-A skip stays under both modes, since it checks A's actual pixels. Mask and route inputs get the Stretch RoI band on GPU too.

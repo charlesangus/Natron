@@ -42,6 +42,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -110,6 +111,13 @@ NATRON_NAMESPACE_ENTER
 
 using std::make_pair;
 using std::shared_ptr;
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+QMutex liveViewersMutex;
+std::unordered_set<ViewerInstance*> liveViewers;
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 static void scaleToTexture8bits(const RectI& roi,
                                 const RenderViewerArgs & args,
@@ -362,12 +370,19 @@ ViewerInstance::ViewerInstance(NodePtr node)
             QObject::connect(node.get(), SIGNAL(activeInputsChanged()), this, SLOT(onInspectorActiveInputsChanged()));
         }
     }
+    QMutexLocker l(&liveViewersMutex);
+    liveViewers.insert(this);
 }
 
 ViewerInstance::~ViewerInstance()
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+
+    {
+        QMutexLocker l(&liveViewersMutex);
+        liveViewers.erase(this);
+    }
 
     // A plan reads this viewer until its thread has stopped.
     _imp->gpuPlacementPlanner->quitThread(false);
@@ -387,6 +402,31 @@ ViewerInstance::~ViewerInstance()
     if (_imp->uiContext) {
         _imp->uiContext->removeGUI();
     }
+}
+
+bool
+ViewerInstance::isAnyViewerConnected()
+{
+    // The nodes are checked, and released, outside the lock: dropping the last reference to one
+    // destroys its viewer, which takes the lock.
+    std::vector<NodePtr> nodes;
+    {
+        QMutexLocker l(&liveViewersMutex);
+        nodes.reserve(liveViewers.size());
+        for (ViewerInstance* viewer : liveViewers) {
+            NodePtr node = viewer->getNode();
+            if (node) {
+                nodes.push_back(std::move(node));
+            }
+        }
+    }
+    for (const NodePtr& node : nodes) {
+        if (node->hasInputOrQueuedInputConnected()) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 RenderEngine*

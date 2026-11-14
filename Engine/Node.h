@@ -1100,6 +1100,12 @@ private:
 
     int disconnectInputInternal(Node* input, bool queueWhileRendering);
 
+    /**
+     * @brief Forgets input wherever it is a real or GUI input, at once even while rendering, so no
+     * slot names it once its effect is destroyed. False when none did.
+     **/
+    bool dropInputsFromDeactivated(const Node* input);
+
     bool isSettingsPanelVisibleInternal(std::set<const Node*>& recursionList) const;
 
 public:

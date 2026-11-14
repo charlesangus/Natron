@@ -73,7 +73,7 @@ Acceptance sketch:
   - verify: gtest on the helper: reads at x=-3, x=width+3, corners and an empty-rect source for both modes; `PassExec::readChannelRow` (`PassExecutor.cpp`) takes the mode instead of a fill value; `Tests/Native/NodeSpec_Test.cpp` moves off `InputBoundary`; the existing `Resampler_Test` and `StagedResample_Test` pass unchanged.
   - size: M
 
-- [ ] M136.P2.T4 — One shared GPU out-of-bounds sampler
+- [x] M136.P2.T4 — One shared GPU out-of-bounds sampler
   - files: new `Engine/Gpu/Kernels/edgesample.slang`, `Engine/Gpu/Kernels/resamplecore.slang`, `Engine/Gpu/Kernels/pixelwrap.slang`, `Engine/Gpu/GpuResample.{h,cpp}`, `Engine/Nodes/Transform/WarpGpu.h`
   - approach: `edgesample.slang` holds one function returning the clamped or zero tap for an edge-mode parameter. One mode constant replaces every `k*BlackOutside` flag in these shared paths; per-kernel buffer fills move with their node tasks in Phase 136.4. Each kernel's arithmetic is otherwise unchanged. (CPU and GPU morphology already agree; nothing to fix there.)
   - verify: the kernels compile under `tools/ci/local/syntax-check.py`; a parity test samples both modes against the T3 CPU helper on a small image with taps outside the source.

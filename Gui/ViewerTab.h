@@ -372,6 +372,9 @@ Q_SIGNALS:
     // The tab switched between the scene view and the 2D viewer.
     void sceneViewChanged();
 
+    // The scene view shows another node, or none, as its input was reconnected or disconnected.
+    void sceneViewedNodeChanged();
+
 public Q_SLOTS:
 
     // Shows the scene view or the 2D viewer, whichever the active input's data kind needs, and

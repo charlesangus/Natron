@@ -97,6 +97,9 @@ public:
         double minimum = 0.;
         double displayMaximum = 0.;
         bool hasRange = false;
+        // A hard maximum as well, with hasRange.
+        double maximum = 0.;
+        bool hasMaximum = false;
         // The name of the GroupSpec the knob goes in; empty for the curated group.
         std::string group;
         // The next setting's knob shares this one's row.
@@ -123,7 +126,7 @@ public:
         // The sections settings name in CuratedSetting::group. One is made when its first setting
         // (or a setting of a group inside it) is added, so the order of settings sets the order of groups.
         std::vector<GroupSpec> groups;
-        // Declared keys Natron sets itself, given no knob.
+        // Declared keys Natron sets itself or keeps off, given no knob.
         std::vector<std::string> excludedKeys;
         // Declared keys of the "Other Settings" group whose knob is shown disabled, with the reason.
         std::vector<std::pair<std::string, std::string>> disabledKeys;

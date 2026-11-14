@@ -273,6 +273,12 @@ SceneStage::getPayload() const
 }
 
 bool
+SceneStage::isSyncedTo(const ScenePayload& payload) const
+{
+    return _stage && (payload.getMetadata() == _metadata) && (SceneOps::getSubLayerPaths(payload) == _subLayerPaths);
+}
+
+bool
 SceneStage::sync(const ScenePayload& payload)
 {
     if (!_stage) {

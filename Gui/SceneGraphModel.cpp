@@ -352,6 +352,8 @@ struct SceneGraphModel::Implementation {
     struct DrawCell {
         int state = 0;
         bool inherited = false;
+        int origin = (int)eSceneDrawOriginDefault;
+        QString originNode;
     };
     // By path, what the viewer's draw states resolved to since they last changed.
     mutable QHash<QString, DrawCell> drawCells;
@@ -425,6 +427,12 @@ struct SceneGraphModel::Implementation {
             const SceneDrawResolved resolved = states.resolve(path);
             cell->state = (int)resolved.state;
             cell->inherited = (resolved.origin == eSceneDrawOriginInherited) || (resolved.origin == eSceneDrawOriginDefault);
+            cell->origin = (int)resolved.origin;
+            cell->originNode.clear();
+            SceneDrawStates::Policy policy;
+            if ((resolved.origin == eSceneDrawOriginGraphPolicy) && states.getPolicyState(path, &policy)) {
+                cell->originNode = QString::fromStdString(policy.origin);
+            }
         });
         if (!free) {
             return false;
@@ -1361,6 +1369,22 @@ SceneGraphModel::drawStateLabel(int state)
     }
 }
 
+QString
+SceneGraphModel::drawOriginTip(int origin,
+                               const QString& node)
+{
+    switch (origin) {
+    case eSceneDrawOriginViewer:
+        return tr("Set in this viewer");
+    case eSceneDrawOriginGraphPolicy:
+        return node.isEmpty() ? tr("Set by the node graph") : tr("Set by %1").arg(node);
+    case eSceneDrawOriginInherited:
+        return tr("Inherited from the row above");
+    default:
+        return tr("Default: nothing sets this row or a row above it");
+    }
+}
+
 void
 SceneGraphModel::setDrawStateAccess(const DrawStatesReader& reader,
                                     const DrawStateWriter& writer)
@@ -1505,9 +1529,23 @@ SceneGraphModel::data(const QModelIndex& index,
 
         return _imp->drawCellOf(item, &cell) ? QVariant(cell.inherited) : QVariant();
     }
+    case eDrawStateOriginRole: {
+        Implementation::DrawCell cell;
+
+        return _imp->drawCellOf(item, &cell) ? QVariant(cell.origin) : QVariant();
+    }
+    case eDrawStateOriginNodeRole: {
+        Implementation::DrawCell cell;
+
+        return _imp->drawCellOf(item, &cell) ? QVariant(cell.originNode) : QVariant();
+    }
     case Qt::ToolTipRole: {
         if (item->path.IsEmpty()) {
             return QVariant();
+        }
+        Implementation::DrawCell cell;
+        if ((index.column() == eColumnDrawState) && _imp->drawCellOf(item, &cell)) {
+            return drawOriginTip(cell.origin, cell.originNode);
         }
         QString tip = _imp->changedHere.contains(item->pathString) ? tr("%1\nChanged here").arg(item->pathString) : item->pathString;
         switch (_imp->payloadStateOf(item)) {

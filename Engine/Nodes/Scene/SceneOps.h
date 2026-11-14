@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -404,6 +405,60 @@ bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
                  std::vector<PXR_NS::SdfPath>* paths,
                  std::string* errorMessage,
                  const std::function<bool()>& cancelled);
+
+/**
+ * @brief Whether matchDrawRules() needs a stage for rules: false when every rule names plain paths
+ * only and walks nothing below them, so loads cannot change what they match.
+ **/
+bool drawRulesNeedStage(const SceneDrawRules& rules);
+
+/**
+ * @brief The graph policy rules ask for on stage, in their order (sceneAddDrawRuleMatch()). A
+ * pattern matches the active, defined, non-abstract prims stage has composed, an unloaded payload's
+ * own prim included; plain paths are taken without a stage, whether they exist or not. A rule
+ * that matches nothing, or whose pattern does not parse, adds nothing and is no error. stage may
+ * be null. Polls cancelled as it walks; returns false with *policy empty once it turns true.
+ **/
+bool matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+                    const SceneDrawRules& rules,
+                    SceneDrawStates::PolicyStates* policy,
+                    const std::function<bool()>& cancelled);
+
+// One prim a draw rule's pattern matched, and the rows the rule sets at and below it, in order.
+struct SceneDrawRuleMatch {
+    std::string path;
+    std::vector<std::pair<std::string, SceneDrawStateEnum>> rows;
+};
+
+// For each rule, in the rules' order, its matches in path order.
+typedef std::vector<std::vector<SceneDrawRuleMatch>> SceneDrawRuleMatches;
+
+/**
+ * @brief matchDrawRules() stopping short of the policy: what each rule matched, which
+ * rematchDrawRulesUnder() can bring up to date after loads, and getDrawRulePolicy() turns into the
+ * policy. Returns false with *matches empty once cancelled turns true.
+ **/
+bool matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+                    const SceneDrawRules& rules,
+                    SceneDrawRuleMatches* matches,
+                    const std::function<bool()>& cancelled);
+
+/**
+ * @brief Brings *matches, made by matchDrawRules() for rules on stage, up to date with the prims
+ * now at and below roots, which loads or unloads changed: only those subtrees are walked, and a
+ * match outside them keeps its rows unless its walk reaches into one. Returns false, leaving
+ * *matches unusable, once cancelled turns true.
+ **/
+bool rematchDrawRulesUnder(const PXR_NS::UsdStageRefPtr& stage,
+                           const SceneDrawRules& rules,
+                           const std::vector<std::string>& roots,
+                           SceneDrawRuleMatches* matches,
+                           const std::function<bool()>& cancelled);
+
+// The graph policy matches make for rules, as matchDrawRules() returns it.
+void getDrawRulePolicy(const SceneDrawRules& rules,
+                       const SceneDrawRuleMatches& matches,
+                       SceneDrawStates::PolicyStates* policy);
 
 // The stage load rules loadSet stands for: every payload for a null one.
 PXR_NS::UsdStageLoadRules getLoadRules(const SceneLoadSet* loadSet);

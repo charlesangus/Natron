@@ -424,6 +424,42 @@ bool matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
                     SceneDrawStates::PolicyStates* policy,
                     const std::function<bool()>& cancelled);
 
+// One prim a draw rule's pattern matched, and the rows the rule sets at and below it, in order.
+struct SceneDrawRuleMatch {
+    std::string path;
+    std::vector<std::pair<std::string, SceneDrawStateEnum>> rows;
+};
+
+// For each rule, in the rules' order, its matches in path order.
+typedef std::vector<std::vector<SceneDrawRuleMatch>> SceneDrawRuleMatches;
+
+/**
+ * @brief matchDrawRules() stopping short of the policy: what each rule matched, which
+ * rematchDrawRulesUnder() can bring up to date after loads, and getDrawRulePolicy() turns into the
+ * policy. Returns false with *matches empty once cancelled turns true.
+ **/
+bool matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+                    const SceneDrawRules& rules,
+                    SceneDrawRuleMatches* matches,
+                    const std::function<bool()>& cancelled);
+
+/**
+ * @brief Brings *matches, made by matchDrawRules() for rules on stage, up to date with the prims
+ * now at and below roots, which loads or unloads changed: only those subtrees are walked, and a
+ * match outside them keeps its rows unless its walk reaches into one. Returns false, leaving
+ * *matches unusable, once cancelled turns true.
+ **/
+bool rematchDrawRulesUnder(const PXR_NS::UsdStageRefPtr& stage,
+                           const SceneDrawRules& rules,
+                           const std::vector<std::string>& roots,
+                           SceneDrawRuleMatches* matches,
+                           const std::function<bool()>& cancelled);
+
+// The graph policy matches make for rules, as matchDrawRules() returns it.
+void getDrawRulePolicy(const SceneDrawRules& rules,
+                       const SceneDrawRuleMatches& matches,
+                       SceneDrawStates::PolicyStates* policy);
+
 // The stage load rules loadSet stands for: every payload for a null one.
 PXR_NS::UsdStageLoadRules getLoadRules(const SceneLoadSet* loadSet);
 

@@ -25,17 +25,62 @@
 
 #include "ScenePayloadImpl.h"
 
-#include <algorithm>
+#include <functional>
+#include <unordered_set>
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+struct DrawRuleHash {
+    std::size_t operator()(const SceneDrawRule* rule) const
+    {
+        const std::hash<std::string> hashString;
+        std::size_t h = hashString(rule->pattern);
+        const auto mix = [&h](std::size_t value) { h ^= value + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2); };
+        mix((std::size_t)rule->state);
+        mix((std::size_t)rule->levels);
+        mix(hashString(rule->toKind));
+        mix(hashString(rule->origin));
+        for (const std::string& layer : rule->layers) {
+            mix(hashString(layer));
+        }
+
+        return h;
+    }
+};
+
+struct DrawRuleEqual {
+    bool operator()(const SceneDrawRule* a,
+                    const SceneDrawRule* b) const
+    {
+        return *a == *b;
+    }
+};
+} // anonymous namespace
 
 void
 appendSceneDrawRules(const SceneDrawRules& rules,
                      SceneDrawRules* to)
 {
+    if (rules.empty()) {
+        return;
+    }
+    if (to->empty()) {
+        *to = rules;
+
+        return;
+    }
+    // Reserved first, so the set's pointers into *to stay valid as it grows.
+    to->reserve(to->size() + rules.size());
+    std::unordered_set<const SceneDrawRule*, DrawRuleHash, DrawRuleEqual> held;
+    held.reserve(to->size() + rules.size());
+    for (const SceneDrawRule& rule : *to) {
+        held.insert(&rule);
+    }
     for (const SceneDrawRule& rule : rules) {
-        if (std::find(to->begin(), to->end(), rule) == to->end()) {
+        if (held.find(&rule) == held.end()) {
             to->push_back(rule);
+            held.insert(&to->back());
         }
     }
 }

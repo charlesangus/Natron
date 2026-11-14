@@ -161,7 +161,8 @@ SceneDrawStateQueue::edit(const Edit& edit,
 {
     if ((_outstanding == 0) && (rows <= _inlineRows)) {
         std::unique_lock<std::mutex> lock(_statesMutex);
-        if (_states.storedCount() <= _inlineRows) {
+        // Policy rows are walked like set ones: a big policy is as slow to edit.
+        if ((_states.storedCount() + _states.getPolicyStates().size()) <= _inlineRows) {
             const SceneDrawChange change = run(edit, startedAt);
             lock.unlock();
             _deliver(change);

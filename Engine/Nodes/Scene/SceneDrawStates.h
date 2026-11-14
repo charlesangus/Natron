@@ -194,6 +194,13 @@ public:
     std::vector<std::pair<std::string, Stored>> getSetStates() const;
     /** @brief Puts states in place of every state set by the viewer, as one edit. */
     SceneDrawDelta replaceSetStates(const std::vector<std::pair<std::string, Stored>>& states);
+    /**
+     * @brief Puts states in place of the viewer's at their paths, as one edit that looks only below
+     * them: the states set at other paths stay.
+     **/
+    SceneDrawDelta mergeSetStates(const std::vector<std::pair<std::string, Stored>>& states);
+    // Clears the viewer's states at paths, as one edit that looks only below them.
+    SceneDrawDelta clearSetStates(const std::vector<std::string>& paths);
 
     enum RuleEnum {
         eRuleNone,

@@ -1099,6 +1099,22 @@ public:
     // Puts states in place of every draw state this viewer sets, as one edit. Main thread.
     void replaceSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states);
 
+    // Puts states in place of this viewer's at their paths, as one edit; the others stay. Main thread.
+    void mergeSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states);
+
+    // Clears this viewer's states at paths, as one edit; the others stay. Main thread.
+    void clearSetDrawStates(const std::vector<std::string>& paths);
+
+    // Whether this viewer sets any draw state, as the last edit left them. Any thread; never waits on an edit.
+    bool hasSetDrawStates() const;
+
+    /**
+     * @brief Holds drawing until the next graph policy the worker matches is in the draw states,
+     * for a short while at most, so that an edit made now and the policy it leads to show in one
+     * frame. Main thread.
+     **/
+    void holdDrawingForGraphPolicy();
+
 public Q_SLOTS:
     // Replaces the selection. A slot, so that scripts reach it through the meta object.
     void selectPaths(const QStringList& paths);
@@ -1240,11 +1256,15 @@ private:
     // A menu of the cameras at paths, under the pointer: the one picked is looked through, locked.
     void showLockCameraMenu(const std::vector<std::string>& paths);
 
-    // Queues payload for the worker; the error shown once it is synced.
-    void requestSync(const ScenePayload& payload, const QString& error);
+    // Queues payload for the worker; the error shown once it is synced. keepsFrame lets a frame
+    // rendering the stage go on, for a payload that likely leaves the stage as it is.
+    void requestSync(const ScenePayload& payload, const QString& error, bool keepsFrame = false);
 
-    // Main thread: the worker synced request serial, with error set on failure.
-    void onSynced(U64 serial, bool ok, const QString& error, const SceneViewportRenderer::FrameBounds& bounds);
+    /**
+     * @brief Main thread: the worker synced request serial, with error set on failure. Drawing
+     * waits for the worker's match awaitedMatch, if not 0, before it shows the stage.
+     **/
+    void onSynced(U64 serial, bool ok, const QString& error, const SceneViewportRenderer::FrameBounds& bounds, U64 awaitedMatch);
 
     // Puts a framing on the worker. selection is empty for the scene.
     void requestFraming(const std::vector<std::string>& selection);
@@ -1257,8 +1277,14 @@ private:
     void editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit, std::size_t rows = 0);
     void editDrawStateRows(const std::vector<SceneDrawRowEdit>& edits);
     void deliverDrawChange(const SceneDrawChange& change);
-    // Main thread: the graph policy the scene's draw rules, of the generation given, matched.
-    void onDrawRulesMatched(U64 generation, const SceneDrawStates::PolicyStates& policy);
+    // Main thread: the graph policy the scene's draw rules, of the generation given, matched; matchId
+    // numbers the worker's matches, 0 for one after loads.
+    void onDrawRulesMatched(U64 generation, U64 matchId, const SceneDrawStates::PolicyStates& policy);
+    // Main thread: holds drawing until the worker's match matchId lands and its policy is in the draw
+    // states, for kPolicyHoldMs at most.
+    void holdDrawingUntilMatch(U64 matchId);
+    void releasePolicyHoldIfDone();
+    void releasePolicyHold();
     void wakeLoadsAskedBeforeStage();
     // A restore's load set stops standing in for loads the stage has yet to take.
     void forgetRestoredLoads();

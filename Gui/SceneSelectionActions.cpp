@@ -42,7 +42,6 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/USDExpandHierarchy.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
@@ -261,41 +260,45 @@ insertAfterViewed(const NodePtr& viewed,
 
 typedef std::vector<std::pair<std::string, SceneDrawStates::Stored>> SetDrawStates;
 
-class ReplaceDrawStatesCommand
+// Clears the draw states a bake turned into rules. Undo puts them back over whatever the viewer
+// set since, and leaves the states set elsewhere since as they are.
+class BakeDrawStatesCommand
     : public QUndoCommand {
 public:
-    ReplaceDrawStatesCommand(SceneViewport* viewport,
-                             const SetDrawStates& before,
-                             const SetDrawStates& after,
-                             const QString& text)
+    BakeDrawStatesCommand(SceneViewport* viewport,
+                          const SetDrawStates& baked,
+                          const QString& text)
         : QUndoCommand(text)
         , _viewport(viewport)
-        , _before(before)
-        , _after(after)
+        , _baked(baked)
     {
+        _paths.reserve(baked.size());
+        for (const SetDrawStates::value_type& state : baked) {
+            _paths.push_back(state.first);
+        }
     }
 
     void undo() override
     {
-        set(_before);
+        if (_viewport) {
+            _viewport->holdDrawingForGraphPolicy();
+            _viewport->mergeSetDrawStates(_baked);
+        }
     }
 
     void redo() override
     {
-        set(_after);
-    }
-
-private:
-    void set(const SetDrawStates& states)
-    {
         if (_viewport) {
-            _viewport->replaceSetDrawStates(states);
+            // The rules stand in for the states: drawing waits for both, so no frame shows neither.
+            _viewport->holdDrawingForGraphPolicy();
+            _viewport->clearSetDrawStates(_paths);
         }
     }
 
+private:
     QPointer<SceneViewport> _viewport;
-    SetDrawStates _before;
-    SetDrawStates _after;
+    SetDrawStates _baked;
+    std::vector<std::string> _paths;
 };
 
 class StepScope {
@@ -339,75 +342,6 @@ expandHierarchyBelow(const NodePtr& viewed)
     return NodePtr();
 }
 
-// The row after the last shown rule with a pattern, where new rules go.
-int
-firstFreeRule(const NodePtr& node)
-{
-    USDExpandHierarchy* expand = dynamic_cast<USDExpandHierarchy*>(node->getEffectInstance().get());
-    const std::vector<USDExpandHierarchy::Rule> rules = expand ? expand->getRules() : std::vector<USDExpandHierarchy::Rule>();
-    int at = (int)rules.size();
-
-    while ((at > 0) && PrimSelector::isBlank(rules[at - 1].pattern)) {
-        --at;
-    }
-
-    return at;
-}
-
-KnobIPtr
-ruleKnob(const NodePtr& node,
-         const char* prefix,
-         int row)
-{
-    return node->getKnobByName(std::string(prefix) + std::to_string(row));
-}
-
-// Joins the knobs of rows [from, to) to the open undo step; a knob joins once, as it was first.
-void
-recordRules(const NodePtr& node,
-            int from,
-            int to)
-{
-    for (int i = from; i < to; ++i) {
-        for (const char* prefix : { kUSDExpandHierarchyParamPattern, kUSDExpandHierarchyParamDraw, kUSDExpandHierarchyParamLevels }) {
-            recordKnobEdit(ruleKnob(node, prefix, i));
-        }
-    }
-}
-
-// Writes rules into rows from at on, inside the open undo step.
-void
-writeRules(const NodePtr& node,
-           int at,
-           const std::vector<USDExpandHierarchy::Rule>& rules)
-{
-    const int end = at + (int)rules.size();
-    KnobIntPtr count = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kUSDExpandHierarchyParamRuleCount));
-
-    recordKnobEdit(count);
-    recordRules(node, at, end);
-    if (count && (count->getValue() < end)) {
-        // The node creates the rows a larger count needs; they join the step with their defaults.
-        count->setValue(end);
-        recordRules(node, at, end);
-    }
-    EffectInstancePtr effect = node->getEffectInstance();
-    effect->beginChanges();
-    for (int i = at; i < end; ++i) {
-        const USDExpandHierarchy::Rule& rule = rules[i - at];
-        if (KnobStringPtr pattern = std::dynamic_pointer_cast<KnobString>(ruleKnob(node, kUSDExpandHierarchyParamPattern, i))) {
-            pattern->setValue(rule.pattern);
-        }
-        if (KnobChoicePtr draw = std::dynamic_pointer_cast<KnobChoice>(ruleKnob(node, kUSDExpandHierarchyParamDraw, i))) {
-            draw->setValueFromID(sceneDrawStateName(rule.state), 0);
-        }
-        if (KnobIntPtr levels = std::dynamic_pointer_cast<KnobInt>(ruleKnob(node, kUSDExpandHierarchyParamLevels, i))) {
-            levels->setValue(rule.levels);
-        }
-    }
-    effect->endChanges();
-}
-
 // Creates a USDExpandHierarchy reading viewed that takes viewed's place in every input viewed fed
 // and that can read it, the viewer's included, as an undoable edit.
 NodePtr
@@ -443,7 +377,7 @@ createExpandHierarchyAfter(const NodePtr& viewed,
 
     const NodePtr previousInput = created->getInput(0);
     if (!created->replaceInput(viewed, 0)) {
-        return created;
+        return NodePtr();
     }
     std::vector<ReconnectInputsCommand::InputChange> changes;
     changes.push_back(ReconnectInputsCommand::InputChange { created, 0, previousInput, viewed });
@@ -699,7 +633,7 @@ bakeBlocker(ViewerTab* viewer)
     if (!viewport || !viewed || !graph) {
         return tr("Bake to Node: the viewer shows no scene.");
     }
-    if (viewport->getSetDrawStates().empty()) {
+    if (!viewport->hasSetDrawStates()) {
         return tr("Bake to Node: this viewer sets no draw state.");
     }
 
@@ -726,23 +660,26 @@ bakeToNode(Gui* gui,
     NodeGraph* graph = dynamic_cast<NodeGraph*>(viewed->getGroup()->getNodeGraph());
     const SetDrawStates states = viewport->getSetDrawStates();
 
-    // Set states come in path order, so reversed, each row's rules come after those of the rows below it.
-    std::vector<USDExpandHierarchy::Rule> rules;
-    rules.reserve(states.size());
-    for (SetDrawStates::const_reverse_iterator it = states.rbegin(); it != states.rend(); ++it) {
-        USDExpandHierarchy::Rule rule;
-        rule.pattern = it->first;
-        rule.state = it->second.state;
-        rules.push_back(rule);
+    if (states.empty()) {
+        showHint(gui, tr("Bake to Node: this viewer sets no draw state."));
+
+        return false;
     }
+    std::vector<std::pair<std::string, SceneDrawStateEnum>> stateOf;
+    stateOf.reserve(states.size());
+    for (const SetDrawStates::value_type& state : states) {
+        stateOf.push_back(std::make_pair(state.first, state.second.state));
+    }
+    const std::vector<USDExpandHierarchy::Rule> rules = USDExpandHierarchy::getRulesForStates(stateOf);
 
     NodePtr target = isExpandHierarchy(viewed) ? viewed : expandHierarchyBelow(viewed);
-    const int at = target ? firstFreeRule(target) : 0;
-    if (at + (int)rules.size() > kUSDExpandHierarchyMaxRules) {
+    USDExpandHierarchy* expand = target ? dynamic_cast<USDExpandHierarchy*>(target->getEffectInstance().get()) : nullptr;
+    const int room = expand ? expand->getFreeRuleCount() : (int)kUSDExpandHierarchyMaxRules;
+    if ((int)rules.size() > room) {
         if (target) {
-            showHint(gui, tr("Bake to Node: %1 has room for %2 more rules, and this viewer sets %3 draw states.").arg(QString::fromStdString(target->getLabel())).arg(kUSDExpandHierarchyMaxRules - at).arg(rules.size()));
+            showHint(gui, tr("Bake to Node: %1 has room for %2 more rules, and the draw states of this viewer take %3.").arg(QString::fromStdString(target->getLabel())).arg(room).arg(rules.size()));
         } else {
-            showHint(gui, tr("Bake to Node: a USDExpandHierarchy holds at most %1 rules, and this viewer sets %2 draw states.").arg(kUSDExpandHierarchyMaxRules).arg(rules.size()));
+            showHint(gui, tr("Bake to Node: a USDExpandHierarchy holds at most %1 rules, and the draw states of this viewer take %2.").arg(room).arg(rules.size()));
         }
 
         return false;
@@ -757,9 +694,17 @@ bakeToNode(Gui* gui,
             return false;
         }
     }
+    if (!expand) {
+        expand = dynamic_cast<USDExpandHierarchy*>(target->getEffectInstance().get());
+    }
+    if (!expand) {
+        showHint(gui, tr("Bake to Node: the USDExpandHierarchy could not be created."));
+
+        return false;
+    }
     viewNode(viewer, target);
-    writeRules(target, at, rules);
-    history->push(new ReplaceDrawStatesCommand(viewport, states, SetDrawStates(), tr("Clear Draw States")), UndoScope());
+    expand->appendRules(rules);
+    history->push(new BakeDrawStatesCommand(viewport, states, tr("Clear Draw States")), UndoScope());
 
     return true;
 } // bakeToNode

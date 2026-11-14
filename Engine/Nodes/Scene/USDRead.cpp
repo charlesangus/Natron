@@ -26,6 +26,7 @@
 #include "USDRead.h"
 
 #include <algorithm>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -81,19 +82,25 @@ upAxisToken(SceneMetadata::UpAxisEnum upAxis)
     return (upAxis == SceneMetadata::eUpAxisZ) ? PXR_NS::UsdGeomTokens->z : PXR_NS::UsdGeomTokens->y;
 }
 
+struct RootPrims {
+    std::vector<std::string> names;
+    // The identifiers of the layers of the file's sublayer stack, sorted.
+    std::vector<std::string> layers;
+};
+
 /**
  * The names of the prims some layer of layer's sublayer stack defines at its root, sorted. A
  * root prim the file only overs is left out: what defines it comes from elsewhere in the graph,
  * and its draw is not the file's to set. Only sublayers are followed: references and payloads
  * cannot add a root prim, and following them would open payload files.
  **/
-std::vector<std::string>
+RootPrims
 definedRootPrims(const PXR_NS::SdfLayerRefPtr& layer)
 {
-    std::vector<std::string> names;
+    RootPrims roots;
 
     if (!layer) {
-        return names;
+        return roots;
     }
     std::set<std::string> visited;
     std::set<std::string> found;
@@ -119,9 +126,10 @@ definedRootPrims(const PXR_NS::SdfLayerRefPtr& layer)
     }
     // A missing sublayer is the stage's error to report when it composes.
     mark.Clear();
-    names.assign(found.begin(), found.end());
+    roots.names.assign(found.begin(), found.end());
+    roots.layers.assign(visited.begin(), visited.end());
 
-    return names;
+    return roots;
 }
 } // anonymous namespace
 
@@ -135,11 +143,42 @@ struct USDRead::Implementation {
     U64 sourceDigest;
     double sourceTimeCodesPerSecond;
     ScenePayload correctionSource;
+    // What getInitialDrawRules() last read of the file, at the path and digest it read it at: each
+    // evaluation asks again, and the file only changes with the digest.
+    std::mutex rootPrimsMutex;
+    bool rootPrimsRead = false;
+    std::string rootPrimsPath;
+    U64 rootPrimsDigest = 0;
+    RootPrims rootPrims;
 
     Implementation()
         : sourceDigest(0)
         , sourceTimeCodesPerSecond(0.)
     {
+    }
+
+    RootPrims getRootPrims(const std::string& path)
+    {
+        const U64 digest = source.getDigest();
+        {
+            std::lock_guard<std::mutex> lock(rootPrimsMutex);
+            if (rootPrimsRead && (rootPrimsPath == path) && (rootPrimsDigest == digest)) {
+                return rootPrims;
+            }
+        }
+        RootPrims read;
+        {
+            SceneWriteBarrier::ReadScope readScope;
+            std::string error;
+            read = definedRootPrims(SceneFileSource::openLayer(path, &error));
+        }
+        std::lock_guard<std::mutex> lock(rootPrimsMutex);
+        rootPrimsRead = true;
+        rootPrimsPath = path;
+        rootPrimsDigest = digest;
+        rootPrims = read;
+
+        return read;
     }
 
     ScenePayload getCorrectionSource(const PXR_NS::SdfLayerRefPtr& fileLayer,
@@ -347,18 +386,14 @@ USDRead::refreshInitialDrawKnobs()
 SceneDrawRules
 USDRead::getInitialDrawRules(const std::string& path) const
 {
-    std::vector<std::string> roots;
-    {
-        SceneWriteBarrier::ReadScope read;
-        std::string error;
-        roots = definedRootPrims(SceneFileSource::openLayer(path, &error));
-    }
-    if (roots.empty()) {
+    const RootPrims roots = _imp->getRootPrims(path);
+    if (roots.names.empty()) {
         return SceneDrawRules();
     }
 
     SceneDrawRule rule;
-    for (const std::string& name : roots) {
+    rule.layers = roots.layers;
+    for (const std::string& name : roots.names) {
         if (!rule.pattern.empty()) {
             rule.pattern += ' ';
         }

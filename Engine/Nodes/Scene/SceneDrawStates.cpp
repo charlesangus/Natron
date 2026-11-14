@@ -613,7 +613,8 @@ SceneDrawStates::replacePolicyStates(const PolicyStates& policy)
             changed.push_back(now->first);
             ++now;
         } else {
-            if (was->second.state != now->second.state) {
+            // The origin alone changing still changes what the row shows of where its state comes from.
+            if (was->second != now->second) {
                 changed.push_back(now->first);
             }
             ++was;
@@ -752,6 +753,32 @@ SceneDrawStates::replaceSetStates(const std::vector<std::pair<std::string, Store
     _states = StateMap(states.begin(), states.end());
 
     return applyEdit("/", std::vector<std::string>(), before, visited);
+}
+
+SceneDrawDelta
+SceneDrawStates::mergeSetStates(const std::vector<std::pair<std::string, Stored>>& states)
+{
+    std::vector<std::string> roots;
+    roots.reserve(states.size());
+    for (const std::pair<std::string, Stored>& state : states) {
+        roots.push_back(state.first);
+    }
+
+    return editUnder(roots, std::vector<std::string>(), [this, &states]() {
+        for (const std::pair<std::string, Stored>& state : states) {
+            _states[state.first] = state.second;
+        }
+    });
+}
+
+SceneDrawDelta
+SceneDrawStates::clearSetStates(const std::vector<std::string>& paths)
+{
+    return editUnder(paths, std::vector<std::string>(), [this, &paths]() {
+        for (const std::string& path : paths) {
+            _states.erase(path);
+        }
+    });
 }
 
 const char*

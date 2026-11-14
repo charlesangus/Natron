@@ -1637,6 +1637,11 @@ ViewerTab::onSceneEvaluated(int textureIndex)
     if ((textureIndex != 0) || !_imp->viewerNode || !isShowingScene()) {
         return;
     }
+    const NodePtr viewedNode = getSceneViewedNode();
+    if (viewedNode != _imp->sceneViewedNode.lock()) {
+        _imp->sceneViewedNode = viewedNode;
+        Q_EMIT sceneViewedNodeChanged();
+    }
     ScenePayload scene;
     std::string error;
     SceneLoadSetPtr loadSet;
@@ -1655,7 +1660,6 @@ ViewerTab::onSceneEvaluated(int textureIndex)
     if (getGui() && getGui()->getApp()) {
         fps = getGui()->getApp()->getProjectFrameRate();
     }
-    const NodePtr viewedNode = getSceneViewedNode();
     if (viewedNode != _imp->sceneLoadsNode.lock()) {
         _imp->sceneLoadsNode = viewedNode;
         _imp->sceneViewport->cancelPendingLoads();

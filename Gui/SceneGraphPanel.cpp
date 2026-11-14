@@ -548,6 +548,7 @@ struct SceneGraphPanel::Implementation {
     QToolButton* changedHereButton = nullptr;
     QToolButton* resetDrawStatesButton = nullptr;
     QToolButton* bakeDrawStatesButton = nullptr;
+    QToolButton* cancelLoadsButton = nullptr;
     QTreeView* changedHereTree = nullptr;
     SceneChangedHereModel* changedHereModel = nullptr;
     SceneGraphStageSourcePtr changedHereSource;
@@ -976,6 +977,7 @@ struct SceneGraphPanel::Implementation {
         viewport = newViewport;
         if (viewport) {
             QObject::connect(viewport, &SceneViewport::sceneSynced, panel, &SceneGraphPanel::onSceneSynced);
+            QObject::connect(viewport, &SceneViewport::sceneSynced, panel, [this]() { updateBakeButton(); });
             QObject::connect(viewport, &SceneViewport::stageLoadsChanged, panel, &SceneGraphPanel::onStageLoadsChanged);
             QObject::connect(viewport, &SceneViewport::selectionChanged, panel, &SceneGraphPanel::onViewportSelectionChanged);
             QObject::connect(viewport, &SceneViewport::drawStatesChanged, panel, [this]() {
@@ -992,6 +994,9 @@ struct SceneGraphPanel::Implementation {
     {
         if (bakeDrawStatesButton) {
             bakeDrawStatesButton->setEnabled(viewport && SceneSelectionActions::bakeBlocker(viewer.data()).isEmpty());
+        }
+        if (cancelLoadsButton) {
+            cancelLoadsButton->setEnabled(!viewport.isNull());
         }
     }
 
@@ -1030,6 +1035,7 @@ struct SceneGraphPanel::Implementation {
             viewer = newViewer;
             if (viewer) {
                 QObject::connect(viewer, &ViewerTab::sceneViewChanged, panel, &SceneGraphPanel::onViewerSceneChanged);
+                QObject::connect(viewer, &ViewerTab::sceneViewedNodeChanged, panel, [this]() { updateBakeButton(); });
             }
             if (viewerTimeLine) {
                 QObject::disconnect(viewerTimeLine, nullptr, panel, nullptr);
@@ -1040,6 +1046,8 @@ struct SceneGraphPanel::Implementation {
             }
         }
         connectViewport((viewer && viewer->isShowingScene()) ? viewer->getSceneViewport() : nullptr);
+        // The same viewport can come back for another viewed node.
+        updateBakeButton();
         if (viewport && sharesViewerSelection()) {
             panel->showSelection(viewport->getSelection());
         }
@@ -1738,6 +1746,13 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
                                               "takes the rules itself when it is a USDExpandHierarchy, and so does one directly below it."));
     _imp->bakeDrawStatesButton->setEnabled(false);
     filterLayout->addWidget(_imp->bakeDrawStatesButton);
+    _imp->cancelLoadsButton = new QToolButton(this);
+    _imp->cancelLoadsButton->setObjectName(QString::fromUtf8("sceneGraphCancelLoads"));
+    _imp->cancelLoadsButton->setText(tr("Cancel Loads"));
+    _imp->cancelLoadsButton->setToolTip(tr("Drops the payload loads the linked viewer has queued for prims set to Full or Load and not started yet, "
+                                           "as switching the viewer to another node does. A load under way finishes, and what is loaded stays."));
+    _imp->cancelLoadsButton->setEnabled(false);
+    filterLayout->addWidget(_imp->cancelLoadsButton);
     layout->addLayout(filterLayout);
 
     QSplitter* splitter = new QSplitter(Qt::Vertical, this);
@@ -1842,6 +1857,11 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->resetDrawStatesButton, &QToolButton::clicked, this, [this]() {
         if (_imp->viewport) {
             _imp->viewport->clearDrawStates();
+        }
+    });
+    QObject::connect(_imp->cancelLoadsButton, &QToolButton::clicked, this, [this]() {
+        if (_imp->viewport) {
+            _imp->viewport->cancelPendingLoads();
         }
     });
     QObject::connect(_imp->bakeDrawStatesButton, &QToolButton::clicked, this, [this]() {

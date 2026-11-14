@@ -312,16 +312,24 @@ try:
         save("scene-expand-hierarchy-removed")
 
         section("node deleted")
+        # Viewed again, so that deleting it changes what the panel reads.
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, expand), "connect the Viewer to the USDExpandHierarchy again")
+        yield from expect_rows("viewed again", {"/World": ("loadAll", False), "/Annex": ("bbox", False)})
         expand.destroy()
         expand = None
-        yield ("sleep", SETTLE_MS)
+        viewed = viewer.getInput(0)
+        check(viewed is not None and viewed.getScriptName() == usd.getScriptName(),
+              "deleting the node reconnects the Viewer to the USDRead (got %r)" % (viewed.getScriptName() if viewed is not None else None,))
+        viewed = None
         yield from expect_rows("deleted", dict((p, ("bbox", False)) for p in TOP_LEVEL))
         check(all(load_state(p) == STATE_LOADED for p in WORLD_BUILDINGS),
               "the /World buildings stay loaded after deleting the node (%r)" % [load_state(p) for p in WORLD_BUILDINGS])
 
         section("unload")
         seen = row_menu(WORLD_BUILDINGS, "sceneGraphUnload")
-        yield ("until", lambda: bool(seen), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: bool(seen), POLL_TIMEOUT_S)
+        require(ok, "the row menu opens on the /World buildings")
         check(seen.get("sceneGraphUnload") is True, "the row menu offers Unload (%r)" % seen)
         ok = yield ("until", lambda: all(load_state(p) == STATE_UNLOADED for p in WORLD_BUILDINGS), LOAD_TIMEOUT_S)
         check(ok, "Unload unloads the /World buildings (%r)" % [load_state(p) for p in WORLD_BUILDINGS])

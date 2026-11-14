@@ -82,6 +82,8 @@ struct ViewerTabPrivate
     SceneBreadcrumbBar* sceneBreadcrumbBar;
     // The node the scene view last showed: loads asked for on another node's scene are dropped.
     NodeWPtr sceneLoadsNode;
+    // The node the scene view last showed, for sceneViewedNodeChanged().
+    NodeWPtr sceneViewedNode;
     QVBoxLayout* mainLayout;
 
     /*Viewer Settings*/

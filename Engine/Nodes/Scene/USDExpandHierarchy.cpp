@@ -43,6 +43,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/PythonUndoCommands.h"
 #include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
@@ -348,6 +349,50 @@ USDExpandHierarchy::getRules() const
     return rules;
 }
 
+int
+USDExpandHierarchy::firstFreeRow() const
+{
+    const std::vector<Rule> current = getRules();
+    int at = (int)current.size();
+
+    while ((at > 0) && PrimSelector::isBlank(current[at - 1].pattern)) {
+        --at;
+    }
+
+    return at;
+}
+
+int
+USDExpandHierarchy::getFreeRuleCount() const
+{
+    return (int)kUSDExpandHierarchyMaxRules - firstFreeRow();
+}
+
+std::vector<USDExpandHierarchy::Rule>
+USDExpandHierarchy::getRulesForStates(const std::vector<std::pair<std::string, SceneDrawStateEnum>>& states)
+{
+    std::vector<Rule> rules;
+    // In path order a path's descendants follow it, so, walking back, a path that is an ancestor
+    // of any path of the open rule is an ancestor of the last one added.
+    std::string last;
+    for (std::vector<std::pair<std::string, SceneDrawStateEnum>>::const_reverse_iterator it = states.rbegin(); it != states.rend(); ++it) {
+        const std::string& path = it->first;
+        const bool ancestor = !last.empty() && ((path == "/") || ((last.size() > path.size()) && (last.compare(0, path.size(), path) == 0) && (last[path.size()] == '/')));
+        if (rules.empty() || (rules.back().state != it->second) || ancestor) {
+            Rule rule;
+            rule.pattern = path;
+            rule.state = it->second;
+            rules.push_back(rule);
+        } else {
+            rules.back().pattern += ' ';
+            rules.back().pattern += path;
+        }
+        last = path;
+    }
+
+    return rules;
+}
+
 void
 USDExpandHierarchy::appendRules(const std::vector<Rule>& rules)
 {
@@ -355,15 +400,18 @@ USDExpandHierarchy::appendRules(const std::vector<Rule>& rules)
     if (!count || rules.empty()) {
         return;
     }
-    const std::vector<Rule> current = getRules();
-    int at = (int)current.size();
-    while ((at > 0) && PrimSelector::isBlank(current[at - 1].pattern)) {
-        --at;
-    }
+    const int at = firstFreeRow();
     const int needed = std::min((int)kUSDExpandHierarchyMaxRules, at + (int)rules.size());
     ensureRows(needed, false);
     const int rows = std::min(needed, createdRows());
 
+    recordKnobEdit(count);
+    for (int i = at; i < rows; ++i) {
+        const Row row = rowAt(i);
+        recordKnobEdit(row.pattern.lock());
+        recordKnobEdit(row.draw.lock());
+        recordKnobEdit(row.levels.lock());
+    }
     beginChanges();
     for (int i = at; i < rows; ++i) {
         const Rule& rule = rules[i - at];
@@ -391,10 +439,13 @@ USDExpandHierarchy::appendRules(const std::vector<Rule>& rules)
 SceneDrawRules
 USDExpandHierarchy::getDrawRules() const
 {
+    const std::vector<Rule> rules = getRules();
     SceneDrawRules drawRules;
+    drawRules.reserve(rules.size());
     const std::string origin = getScriptName_mt_safe();
 
-    for (const Rule& rule : getRules()) {
+    // Every row in order, a repeat too: of two rows deciding a prim the later one wins.
+    for (const Rule& rule : rules) {
         if (PrimSelector::isBlank(rule.pattern)) {
             continue;
         }
@@ -403,7 +454,7 @@ USDExpandHierarchy::getDrawRules() const
         drawRule.state = rule.state;
         drawRule.levels = rule.levels;
         drawRule.origin = origin;
-        appendSceneDrawRules(SceneDrawRules(1, drawRule), &drawRules);
+        drawRules.push_back(drawRule);
     }
 
     return drawRules;

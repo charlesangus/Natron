@@ -86,6 +86,70 @@ makeRule(const std::string& pattern,
     return rule;
 }
 
+TEST(ScenePayloadTest, AWalkKeepingToItsLayersStopsAtPrimsOtherLayersAdded)
+{
+    PXR_NS::SdfLayerRefPtr file = makeLayerDefiningAll(std::vector<std::string> { "/World", "/World/a", "/World/a/geo" });
+    PXR_NS::SdfLayerRefPtr other = makeLayerDefiningAll(std::vector<std::string> { "/World/added", "/World/added/geo" });
+    PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("root.usda");
+    root->InsertSubLayerPath(file->GetIdentifier());
+    root->InsertSubLayerPath(other->GetIdentifier());
+    const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(root);
+    ASSERT_TRUE(stage);
+    ASSERT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/added")).IsValid());
+
+    SceneDrawRule levels = makeRule("/World", eSceneDrawStateBBox, "Read1");
+    levels.levels = 2;
+    levels.layers.push_back(file->GetIdentifier());
+    SceneDrawStates::PolicyStates policy;
+    ASSERT_TRUE(SceneOps::matchDrawRules(stage, SceneDrawRules(1, levels), &policy, std::function<bool()>()));
+    EXPECT_EQ(eSceneDrawStateChildren, policy["/World"].state);
+    EXPECT_EQ(eSceneDrawStateChildren, policy["/World/a"].state);
+    EXPECT_EQ(eSceneDrawStateBBox, policy["/World/a/geo"].state);
+    EXPECT_EQ(policy.end(), policy.find("/World/added"));
+    EXPECT_EQ(policy.end(), policy.find("/World/added/geo"));
+
+    // Without layers to keep to, the walk takes every prim.
+    levels.layers.clear();
+    ASSERT_TRUE(SceneOps::matchDrawRules(stage, SceneDrawRules(1, levels), &policy, std::function<bool()>()));
+    EXPECT_EQ(eSceneDrawStateBBox, policy["/World/added/geo"].state);
+}
+
+TEST(ScenePayloadTest, RematchingUnderALoadedPayloadMatchesAsAWholeMatchDoes)
+{
+    PXR_NS::SdfLayerRefPtr asset = makeLayerDefiningAll(std::vector<std::string> { "/Asset", "/Asset/geo", "/Asset/geo/mesh" });
+    PXR_NS::SdfLayerRefPtr file = makeLayerDefiningAll(std::vector<std::string> { "/World", "/World/a", "/World/b" });
+    PXR_NS::SdfPrimSpecHandle b = file->GetPrimAtPath(PXR_NS::SdfPath("/World/b"));
+    ASSERT_TRUE(b);
+    b->GetPayloadList().Prepend(PXR_NS::SdfPayload(asset->GetIdentifier(), PXR_NS::SdfPath("/Asset")));
+    const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(file, PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage);
+
+    SceneDrawRule levels = makeRule("/World", eSceneDrawStateBBox, "Read1");
+    levels.levels = 3;
+    const SceneDrawRules rules { makeRule("/World//geo", eSceneDrawStateHidden, "Expand1"), levels, makeRule("/World/b/geo/mesh", eSceneDrawStateFull, "Expand2") };
+    SceneOps::SceneDrawRuleMatches matches;
+    ASSERT_TRUE(SceneOps::matchDrawRules(stage, rules, &matches, std::function<bool()>()));
+    SceneDrawStates::PolicyStates before;
+    SceneOps::getDrawRulePolicy(rules, matches, &before);
+
+    stage->Load(PXR_NS::SdfPath("/World/b"));
+    ASSERT_TRUE(SceneOps::rematchDrawRulesUnder(stage, rules, std::vector<std::string>(1, "/World/b"), &matches, std::function<bool()>()));
+    SceneDrawStates::PolicyStates rematched;
+    SceneOps::getDrawRulePolicy(rules, matches, &rematched);
+    SceneDrawStates::PolicyStates whole;
+    ASSERT_TRUE(SceneOps::matchDrawRules(stage, rules, &whole, std::function<bool()>()));
+
+    EXPECT_EQ(whole, rematched);
+    EXPECT_NE(before, rematched);
+    EXPECT_EQ(eSceneDrawStateFull, rematched["/World/b/geo/mesh"].state);
+
+    stage->Unload(PXR_NS::SdfPath("/World/b"));
+    ASSERT_TRUE(SceneOps::rematchDrawRulesUnder(stage, rules, std::vector<std::string>(1, "/World/b"), &matches, std::function<bool()>()));
+    SceneOps::getDrawRulePolicy(rules, matches, &rematched);
+    ASSERT_TRUE(SceneOps::matchDrawRules(stage, rules, &whole, std::function<bool()>()));
+    EXPECT_EQ(whole, rematched);
+}
+
 std::string
 exportComposed(const PXR_NS::UsdStageRefPtr& stage)
 {
@@ -302,6 +366,40 @@ TEST(ScenePayloadTest, AppendingDrawRulesKeepsOrderAndTheFirstOfARepeat)
     EXPECT_EQ(a, rules[0]);
     EXPECT_EQ(b, rules[1]);
     EXPECT_EQ(c, rules[2]);
+}
+
+TEST(ScenePayloadTest, AppendingDrawRulesIntoNoneTakesThemAsTheyAre)
+{
+    const SceneDrawRule a = makeRule("/A", eSceneDrawStateBBox, "Policy1");
+    const SceneDrawRule b = makeRule("/B", eSceneDrawStateHidden, "Policy1");
+    SceneDrawRules rules;
+
+    appendSceneDrawRules(SceneDrawRules { a, b, a }, &rules);
+
+    EXPECT_EQ((SceneDrawRules { a, b, a }), rules);
+}
+
+TEST(ScenePayloadTest, AppendingManyDrawRulesLeavesOutEveryRepeat)
+{
+    SceneDrawRules first;
+    SceneDrawRules second;
+    for (int i = 0; i < 5000; ++i) {
+        first.push_back(makeRule("/P" + std::to_string(i), eSceneDrawStateBBox, "Policy1"));
+        second.push_back(makeRule("/P" + std::to_string(i * 2), eSceneDrawStateBBox, "Policy1"));
+    }
+    SceneDrawRule walked = makeRule("/P1", eSceneDrawStateBBox, "Policy1");
+    walked.layers.push_back("file.usda");
+    second.push_back(walked);
+    SceneDrawRules rules;
+
+    appendSceneDrawRules(first, &rules);
+    appendSceneDrawRules(second, &rules);
+
+    // The even paths below 5000 repeat; the rule keeping to a layer differs from the plain one.
+    ASSERT_EQ((std::size_t)(5000 + 2500 + 1), rules.size());
+    EXPECT_EQ(first[4999], rules[4999]);
+    EXPECT_EQ(std::string("/P5000"), rules[5000].pattern);
+    EXPECT_EQ(walked, rules.back());
 }
 
 TEST(ScenePayloadTest, DrawRulesLeaveNoTraceOnAComposedOrSyncedStage)

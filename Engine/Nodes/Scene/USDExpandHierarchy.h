@@ -112,10 +112,21 @@ public:
     std::vector<Rule> getRules() const;
 
     /**
-     * @brief Writes rules into the rows after the last shown row with a pattern, and shows them.
-     * Each knob edit is undoable on its own. Main thread only.
+     * @brief Writes rules into the rows after the last shown row with a pattern, and shows them,
+     * as far as there is room. Inside an undo step being recorded, the step takes every knob it
+     * changes, so undoing it restores the rows and the count. Main thread only.
      **/
     void appendRules(const std::vector<Rule>& rules);
+
+    // How many rules appendRules() still has room for.
+    int getFreeRuleCount() const;
+
+    /**
+     * @brief The rules that set states, given in path order as a viewer sets them. A path's rule
+     * comes before its ancestors', so a row below is set before the row it opens; consecutive
+     * paths of one state, none an ancestor of another, share a rule that names them all.
+     **/
+    static std::vector<Rule> getRulesForStates(const std::vector<std::pair<std::string, SceneDrawStateEnum>>& states);
 
     // The draw rules the node's output adds to its input's, origin set to the node's script name.
     SceneDrawRules getDrawRules() const;
@@ -146,6 +157,8 @@ private:
 
     void createRow(int index);
     int createdRows() const;
+    // The row after the last shown row with a pattern, where appended rules go.
+    int firstFreeRow() const;
     Row rowAt(int index) const;
     // Rule Count, clamped to the rows created.
     int ruleCount() const;

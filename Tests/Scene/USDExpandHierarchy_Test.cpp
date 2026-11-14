@@ -337,6 +337,109 @@ TEST_F(USDExpandHierarchyTest, RowsGrowAndRuleCountHidesTheRest)
     EXPECT_EQ(std::string("/P0"), effect->getDrawRules()[0].pattern);
 }
 
+// A bake turns a viewer's states into as few rules as keep their order: a path's rule before its
+// ancestors', and one rule for consecutive paths of a state that hold no ancestor of each other.
+TEST(USDExpandHierarchyRulesForStates, PathsShareARuleUntilAnAncestorOrAnotherState)
+{
+    const std::vector<std::pair<std::string, SceneDrawStateEnum>> states = {
+        { "/A", eSceneDrawStateFull },
+        { "/A/x", eSceneDrawStateHidden },
+        { "/A/y", eSceneDrawStateHidden },
+        { "/AB", eSceneDrawStateHidden },
+        { "/C", eSceneDrawStateFull },
+        { "/C/d", eSceneDrawStateFull },
+    };
+    const std::vector<USDExpandHierarchy::Rule> rules = USDExpandHierarchy::getRulesForStates(states);
+
+    ASSERT_EQ((std::size_t)4, rules.size());
+    EXPECT_EQ(std::string("/C/d"), rules[0].pattern);
+    EXPECT_EQ(eSceneDrawStateFull, rules[0].state);
+    EXPECT_EQ(std::string("/C"), rules[1].pattern);
+    EXPECT_EQ(eSceneDrawStateFull, rules[1].state);
+    EXPECT_EQ(std::string("/AB /A/y /A/x"), rules[2].pattern);
+    EXPECT_EQ(eSceneDrawStateHidden, rules[2].state);
+    EXPECT_EQ(std::string("/A"), rules[3].pattern);
+    EXPECT_EQ(eSceneDrawStateFull, rules[3].state);
+    for (const USDExpandHierarchy::Rule& rule : rules) {
+        EXPECT_EQ(0, rule.levels);
+    }
+
+    const std::vector<USDExpandHierarchy::Rule> underRoot = USDExpandHierarchy::getRulesForStates({ { "/", eSceneDrawStateBBox }, { "/World", eSceneDrawStateBBox } });
+    ASSERT_EQ((std::size_t)2, underRoot.size());
+    EXPECT_EQ(std::string("/World"), underRoot[0].pattern);
+    EXPECT_EQ(std::string("/"), underRoot[1].pattern);
+
+    EXPECT_TRUE(USDExpandHierarchy::getRulesForStates({}).empty());
+}
+
+// More states than rows fit in one bake once those of a state share rules.
+TEST(USDExpandHierarchyRulesForStates, UnrelatedPathsOfAStateTakeOneRule)
+{
+    std::vector<std::pair<std::string, SceneDrawStateEnum>> states;
+    for (int i = 0; i < 3 * kUSDExpandHierarchyMaxRules; ++i) {
+        states.push_back(std::make_pair("/P" + std::to_string(100000 + i), eSceneDrawStateHidden));
+    }
+    const std::vector<USDExpandHierarchy::Rule> rules = USDExpandHierarchy::getRulesForStates(states);
+
+    ASSERT_EQ((std::size_t)1, rules.size());
+    EXPECT_EQ(0u, rules[0].pattern.find("/P" + std::to_string(100000 + 3 * kUSDExpandHierarchyMaxRules - 1) + " "));
+}
+
+// Bake writes its rules through appendRules inside one undo step: undoing the step takes back the
+// rows, the rows it had to create included, and the count; redoing it puts them back.
+TEST_F(USDExpandHierarchyTest, AppendingRulesInAStepUndoesAsOne)
+{
+    NodePtr expand = createExpand(NodePtr());
+    USDExpandHierarchy* effect = effectOf(expand);
+    ASSERT_TRUE(expand && effect);
+    effect->appendRules({ makeRule("/Kept", eSceneDrawStateBBox) });
+    const int roomBefore = effect->getFreeRuleCount();
+    const std::vector<USDExpandHierarchy::Rule> before = effect->getRules();
+
+    std::vector<USDExpandHierarchy::Rule> many;
+    for (int i = 0; i <= kUSDExpandHierarchyRuleChunk; ++i) {
+        many.push_back(makeRule("/P" + std::to_string(i), eSceneDrawStateHidden, i % 3));
+    }
+    std::shared_ptr<CollectingRecorder> recorder = std::make_shared<CollectingRecorder>();
+    getApp()->setUndoRecorder(recorder);
+    recorder->openStep("Bake to Node");
+    effect->appendRules(many);
+    recorder->closeStep();
+    ASSERT_FALSE(recorder->commands.empty());
+    EXPECT_EQ(roomBefore - (int)many.size(), effect->getFreeRuleCount());
+    const std::vector<USDExpandHierarchy::Rule> after = effect->getRules();
+    ASSERT_EQ(before.size() + many.size(), after.size());
+
+    const auto expectRules = [](const std::vector<USDExpandHierarchy::Rule>& expected,
+                                const std::vector<USDExpandHierarchy::Rule>& actual,
+                                const char* when) {
+        ASSERT_EQ(expected.size(), actual.size()) << when;
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            EXPECT_EQ(expected[i].pattern, actual[i].pattern) << when << " " << i;
+            EXPECT_EQ(expected[i].state, actual[i].state) << when << " " << i;
+            EXPECT_EQ(expected[i].levels, actual[i].levels) << when << " " << i;
+        }
+    };
+    {
+        UndoReplayGuard replaying(getApp());
+        for (std::vector<UndoCommandPtr>::reverse_iterator it = recorder->commands.rbegin(); it != recorder->commands.rend(); ++it) {
+            (*it)->undo();
+        }
+    }
+    expectRules(before, effect->getRules(), "undone");
+    EXPECT_EQ(roomBefore, effect->getFreeRuleCount());
+    {
+        UndoReplayGuard replaying(getApp());
+        for (std::vector<UndoCommandPtr>::iterator it = recorder->commands.begin(); it != recorder->commands.end(); ++it) {
+            (*it)->redo();
+        }
+    }
+    expectRules(after, effect->getRules(), "redone");
+
+    recorder->commands.clear();
+    getApp()->setUndoRecorder(UndoRecorderPtr());
+}
+
 // The same rules decide differently in two viewers: a pattern matches the prims each has loaded,
 // and a viewer's own state beats them.
 TEST_F(USDExpandHierarchyTest, EachViewerResolvesTheRulesItself)

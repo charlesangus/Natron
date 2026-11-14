@@ -64,10 +64,14 @@ struct SceneDrawRule {
     std::string toKind;
     // The script name of the node that set the rule, for the rows it decides.
     std::string origin;
+    // The identifiers of the layers a walk below a match keeps to: it stops at a prim that only
+    // other layers of the stage's own layer stack author, which another node added. Empty, it
+    // walks every prim.
+    std::vector<std::string> layers;
 
     bool operator==(const SceneDrawRule& other) const
     {
-        return (pattern == other.pattern) && (state == other.state) && (levels == other.levels) && (toKind == other.toKind) && (origin == other.origin);
+        return (pattern == other.pattern) && (state == other.state) && (levels == other.levels) && (toKind == other.toKind) && (origin == other.origin) && (layers == other.layers);
     }
 
     bool operator!=(const SceneDrawRule& other) const
@@ -82,7 +86,8 @@ typedef std::vector<SceneDrawRule> SceneDrawRules;
 /**
  * @brief Appends rules to *to, leaving out any rule *to already holds: a rule reached through
  * several inputs of a merge comes from one upstream node, and keeps its first, weakest place, as
- * that node's layers do in the merged stack.
+ * that node's layers do in the merged stack. Into an empty *to, rules go as they are, repeats
+ * included: they are one node's or one input's, in the order that decides between them.
  **/
 void appendSceneDrawRules(const SceneDrawRules& rules,
                           SceneDrawRules* to);

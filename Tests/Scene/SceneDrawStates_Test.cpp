@@ -636,6 +636,48 @@ TEST(SceneDrawStates, ClearAllLeavesThePolicy)
     EXPECT_EQ(0u, states.storedCount());
 }
 
+TEST(SceneDrawStates, APolicyWhoseOriginAloneChangesStillLooksAtTheRow)
+{
+    SceneDrawStates states;
+    SceneDrawStates::PolicyStates policy;
+    policy["/a"] = SceneDrawStates::Policy { eSceneDrawStateBBox, "First" };
+    policy["/b"] = SceneDrawStates::Policy { eSceneDrawStateHidden, "First" };
+    states.replacePolicyStates(policy);
+
+    policy["/a"].origin = "Second";
+    const SceneDrawDelta delta = states.replacePolicyStates(policy);
+
+    EXPECT_TRUE(delta.isEmpty());
+    EXPECT_EQ(Paths { "/a" }, delta.roots);
+    SceneDrawStates::Policy now;
+    ASSERT_TRUE(states.getPolicyState("/a", &now));
+    EXPECT_EQ(std::string("Second"), now.origin);
+    EXPECT_TRUE(states.replacePolicyStates(policy).roots.empty());
+}
+
+TEST(SceneDrawStates, MergingASnapshotBackKeepsTheStatesSetSince)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateBBox);
+    states.setState("/b/x", eSceneDrawStateHidden);
+    const std::vector<std::pair<std::string, SceneDrawStates::Stored>> snapshot = states.getSetStates();
+
+    const SceneDrawDelta cleared = states.clearSetStates(Paths { "/a", "/b/x" });
+    EXPECT_EQ(0u, states.storedCount());
+    EXPECT_EQ((Paths { "/a", "/b/x" }), cleared.roots);
+
+    states.setState("/c", eSceneDrawStateHidden);
+    states.setState("/a", eSceneDrawStateFull);
+    const SceneDrawDelta merged = states.mergeSetStates(snapshot);
+
+    EXPECT_EQ(3u, states.storedCount());
+    expectState(states, "/a", eSceneDrawStateBBox, eSceneDrawOriginViewer);
+    expectState(states, "/b/x", eSceneDrawStateHidden, eSceneDrawOriginViewer);
+    expectState(states, "/c", eSceneDrawStateHidden, eSceneDrawOriginViewer);
+    EXPECT_EQ((Paths { "/a", "/b/x" }), merged.roots);
+    EXPECT_EQ(Paths { "/a" }, merged.boxed);
+}
+
 TEST(SceneDrawStates, OneDeltaOverAHundredThousandStoredStatesLooksOnlyAtItsSubtree)
 {
     SceneDrawStates states;

@@ -77,7 +77,7 @@ constexpr NodeSpec kDefocusNodeSpec = {
                    "Highlight Gain pushes the values above the Highlight Threshold away from it before the defocus and pulls them back after it, so that bright "
                    "out-of-focus highlights bloom into the bokeh's shape while the rest of the image keeps its brightness.\n"
                    "\n"
-                   "The defocus is black outside the image, and the Mask and Mix limit the result as usual.",
+                   "Outside the image the defocus reads as Edge Mode says, and the Mask and Mix limit the result as usual.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_DEFOCUS,
     .icon = NATRON_IMAGES_PATH "NativeNodes/Defocus.png",
@@ -85,7 +85,7 @@ constexpr NodeSpec kDefocusNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kDefocusPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Passes,
 };
@@ -339,6 +339,7 @@ const int kGpuMaxHalo = 256;
 const uint32_t kGpuBlock = 256;
 const uint32_t kGpuBoost = 1;
 const uint32_t kGpuLens = 2;
+const uint32_t kGpuEdgeBlack = 4;
 // The most bytes of kernel runs and cell tables the GPU uploads for a render with lens aberrations;
 // more stays on the CPU, which holds a band of cells' kernels at a time.
 const uint64_t kGpuMaxLensBytes = (uint64_t)256 << 20;
@@ -504,6 +505,9 @@ recordDefocusGpu(const PassGpuIO& io,
         base.cellColumns = lens->cellColumns;
         base.cellRows = lens->cellRows;
         base.channelGroups = lens->channelGroups;
+    }
+    if (io.edgeMode == EdgeMode::Black) {
+        base.flags |= kGpuEdgeBlack;
     }
     base.threshold = params.highlight.threshold;
     base.gain = params.highlight.gain;
@@ -780,6 +784,7 @@ Defocus::passes(const DefocusParams& params,
                 const RectI& window)
 {
     PassList list;
+    list.edgeMode = context.edgeMode;
     double rx = 0.;
     double ry = 0.;
     radii(params, context, params.lens.maxScale(), &rx, &ry);
@@ -832,6 +837,7 @@ Defocus::lensPasses(const DefocusParams& params,
                     const RectI& window)
 {
     PassList list;
+    list.edgeMode = context.edgeMode;
     double rx = 0.;
     double ry = 0.;
     radii(params, context, params.lens.maxScale(), &rx, &ry);

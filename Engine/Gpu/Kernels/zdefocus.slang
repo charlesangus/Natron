@@ -1,3 +1,5 @@
+import edgesample;
+
 // ZDefocus's passes, after the workers of Engine/Nodes/Filter/ZDefocus.cpp and the block-prefix
 // gather of Kernels/defocus.slang. The work buffer covers the CPU's scratch rect, the domain of
 // domWidth x domHeight pixels from (domX1, domY1):
@@ -73,6 +75,7 @@ static const uint kFirst = 4;
 static const uint kInverseDistance = 8;
 static const uint kHasDepth = 16;
 static const uint kLens = 32;
+static const uint kEdgeBlackFlag = 64;
 static const uint kMetaDepthX1 = 0;
 static const uint kMetaDepthY1 = 1;
 static const uint kMetaDepthX2 = 2;
@@ -161,11 +164,13 @@ float circleOfConfusion(float raw)
     return 0.0;
 }
 
+// The source at (x, y), read past its pixels by its edge mode.
 float sourceValue(int x, int y, uint c)
 {
-    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2)
+    int2 at;
+    if (!edgePixel(int2(x, y), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), edgeModeFromFlags(params.flags, kEdgeBlackFlag), at))
         return 0.0;
-    return asfloat(srcBuf[params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels + c]);
+    return asfloat(srcBuf[params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * params.channels + c]);
 }
 
 float boost(float v)

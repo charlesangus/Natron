@@ -67,7 +67,7 @@ constexpr std::size_t kGodRaysGpuSampleWords = 16;
 constexpr uint32_t kGodRaysGpuSourceValid = 1;
 constexpr uint32_t kGodRaysGpuMax = 2;
 constexpr uint32_t kGodRaysGpuClamp = 16;
-constexpr uint32_t kGodRaysGpuBlackOutside = 32;
+constexpr uint32_t kGodRaysGpuEdgeBlack = 32;
 constexpr uint32_t kGodRaysGpuIdentityNearest = 64;
 #endif
 
@@ -85,7 +85,7 @@ constexpr NodeSpec kGodRaysNodeSpec = {
                    "\n"
                    "The copies are tinted from From Color, at the untransformed copy, to To Color, at the fully transformed one. Gamma bends the ramp between them: above 1 the tint reaches To Color sooner, below 1 later. With white tints the rays keep the image's energy; a darker To Color fades them out.\n"
                    "\n"
-                   "Beyond the source's region of definition the image reads black, or with Black outside off the source's edge pixels, extended outwards.",
+                   "Beyond the source's region of definition the copies read as Edge Mode says: black, or the source's edge pixels extended outwards.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_GODRAYS,
     .minorVersion = 0,
@@ -94,7 +94,7 @@ constexpr NodeSpec kGodRaysNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kGodRaysPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::color(true, true, true, true),
     .op = OpKind::Custom,
 };
@@ -345,13 +345,6 @@ GodRays::initializeKnobs()
     page->addKnob(clampKnob);
     _clamp = clampKnob;
 
-    KnobBoolPtr blackOutsideKnob = AppManager::createKnob<KnobBool>(this, tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutsideKnob->setName(kResamplerParamFilterBlackOutside);
-    blackOutsideKnob->setHintToolTip(tr("Fill the area outside the source image with black. Unchecked, the copies read the source's edge pixels beyond it, extended outwards."));
-    blackOutsideKnob->setDefaultValue(true);
-    page->addKnob(blackOutsideKnob);
-    _blackOutside = blackOutsideKnob;
-
     _filterKnobs.create(this, page, filterKnob, clampKnob);
 
     addStageKnobs(page);
@@ -393,7 +386,7 @@ GodRays::getParams(double time,
     params.max = reader.value(_max);
     params.filter = _filterKnobs.read(reader);
     params.clamp = reader.value(_clamp);
-    params.blackOutside = reader.value(_blackOutside);
+    params.edgeMode = resolvedEdgeMode(time, view);
 
     return params;
 }
@@ -559,7 +552,7 @@ GodRays::getRegionOfDefinition(U64 /*hash*/,
         mergeInto(r, &region);
     }
     if (!region.isNull()) {
-        Resampler::expandRoD(outputPar(time, view), scale.toOfxPointD().x, scale.toOfxPointD().y, (params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch), &region);
+        Resampler::expandRoD(outputPar(time, view), scale.toOfxPointD().x, scale.toOfxPointD().y, params.edgeMode, &region);
     }
     if (isMaskApplied() || (getMixValue(time, view) != 1.)) {
         mergeInto(srcRoD, &region);
@@ -587,7 +580,7 @@ GodRays::getRegionsOfInterest(double time,
     // The window itself too, which the mask and mix blend with.
     RectD roi = renderWindow;
     if (!TransformMath::isIdentity(params.transform)) {
-        mergeInto(DirBlur::sourceRegion(canonicalSamples(params), renderWindow, scale, outputPar(time, view), params.filter, sourceRoD(time, view, scale), params.blackOutside), &roi);
+        mergeInto(DirBlur::sourceRegion(canonicalSamples(params), renderWindow, scale, outputPar(time, view), params.filter, sourceRoD(time, view, scale), params.edgeMode), &roi);
     }
     (*ret)[source] = roi;
 }
@@ -669,7 +662,7 @@ GodRays::renderOp(const RenderActionArgs& args,
                     rp.count = 1;
                     rp.filter = s.inverse.isIdentity() ? Resampler::FilterSpec(Resampler::eFilterImpulse) : filter;
                     rp.clamp = clamp;
-                    rp.edgeMode = params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
+                    rp.edgeMode = params.edgeMode;
                     rp.motionBlur = 0.;
                     Resampler::resampleRow(rp, source, io.y, io.x0, io.x0 + io.width, &tmp[0]);
                     for (int i = 0; i < io.width; ++i) {
@@ -746,7 +739,7 @@ GodRays::getOpGpuInputRoI(int inputNb,
     const double sx = scale.toOfxPointD().x;
     const double sy = scale.toOfxPointD().y;
     const RectD window(outputRect.x1 * par / sx, outputRect.y1 / sy, outputRect.x2 * par / sx, outputRect.y2 / sy);
-    const RectD read = DirBlur::sourceRegion(canonicalSamples(params), window, scale, par, params.filter, sourceRoD(time, view, scale), params.blackOutside);
+    const RectD read = DirBlur::sourceRegion(canonicalSamples(params), window, scale, par, params.filter, sourceRoD(time, view, scale), params.edgeMode);
     RectI roi = outputRect;
     if (!read.isNull()) {
         roi.merge(read.toPixelEnclosing(scale, par));
@@ -785,8 +778,8 @@ GodRays::renderOpGpu(const GpuRenderArgs& args)
     if (params.clamp && Resampler::filterHonoursClamp(filter.filter)) {
         flags |= kGodRaysGpuClamp;
     }
-    if (params.blackOutside) {
-        flags |= kGodRaysGpuBlackOutside;
+    if (params.edgeMode == EdgeMode::Black) {
+        flags |= kGodRaysGpuEdgeBlack;
     }
     const float bicubicB = (float)filter.B;
     const float bicubicC = (float)filter.C;

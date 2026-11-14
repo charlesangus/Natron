@@ -7,7 +7,7 @@ Tolerance:
 | AdjustBBox | exact | `ParityTolerance::exact()` | pixels are copied |
 
 AdjustBBox grows the source's region by `numpixels` (in canonical units; negative values crop).
-With `boundary` Black the added border is zero; with Nearest it repeats the nearest source pixel.
-Nearest reads a halo of the pad around the requested window, so a tile renders the same pixels
+The Edge Mode knob (`edgeMode`) sets what fills the added border: Input takes the source's own
+edge mode, Black fills it with zero, and Stretch repeats the nearest source pixel. Stretch reads a halo of the pad around the requested window, so a tile renders the same pixels
 as the whole frame. The GPU copies pixels with the same clamp and is bit-exact
 (`Tests/Native/NativeAdjustBBoxGpu_Test.cpp`).

@@ -68,7 +68,7 @@ constexpr std::size_t kDirBlurGpuSampleWords = 16;
 constexpr uint32_t kDirBlurGpuSourceValid = 1;
 constexpr uint32_t kDirBlurGpuMax = 2;
 constexpr uint32_t kDirBlurGpuClamp = 16;
-constexpr uint32_t kDirBlurGpuBlackOutside = 32;
+constexpr uint32_t kDirBlurGpuEdgeBlack = 32;
 #endif
 
 constexpr InputSpec kDirBlurInputs[] = {
@@ -87,7 +87,7 @@ constexpr NodeSpec kDirBlurNodeSpec = {
                    "\n"
                    "Only the controls the selected Mode uses are shown.\n"
                    "\n"
-                   "Beyond the source's region of definition the image reads black, or with Black outside off the source's edge pixels, extended outwards.",
+                   "Beyond the source's region of definition the copies read as Edge Mode says: black, or the source's edge pixels extended outwards.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_DIRBLUR,
     .minorVersion = 0,
@@ -96,7 +96,7 @@ constexpr NodeSpec kDirBlurNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kDirBlurPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::color(true, true, true, true),
     .op = OpKind::Custom,
 };
@@ -328,13 +328,6 @@ DirBlur::initializeKnobs()
     page->addKnob(clampKnob);
     _clamp = clampKnob;
 
-    KnobBoolPtr blackOutsideKnob = AppManager::createKnob<KnobBool>(this, tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutsideKnob->setName(kResamplerParamFilterBlackOutside);
-    blackOutsideKnob->setHintToolTip(tr("Fill the area outside the source image with black. Unchecked, the copies read the source's edge pixels beyond it, extended outwards."));
-    blackOutsideKnob->setDefaultValue(true);
-    page->addKnob(blackOutsideKnob);
-    _blackOutside = blackOutsideKnob;
-
     _filterKnobs.create(this, page, filterKnob, clampKnob);
 
     KnobGroupPtr tintGroup = AppManager::createKnob<KnobGroup>(this, tr("Tint"));
@@ -409,7 +402,7 @@ DirBlur::getParams(double time,
     params.max = reader.value(_max);
     params.filter = _filterKnobs.read(reader);
     params.clamp = reader.value(_clamp);
-    params.blackOutside = reader.value(_blackOutside);
+    params.edgeMode = resolvedEdgeMode(time, view);
 
     return params;
 }
@@ -659,7 +652,7 @@ DirBlur::sourceRegion(const std::vector<DirBlurSample>& canonical,
                       double par,
                       const Resampler::FilterSpec& filter,
                       const RectD& srcRoD,
-                      bool blackOutside)
+                      EdgeMode edgeMode)
 {
     RectD region = nullRect();
     if (window.isNull()) {
@@ -680,7 +673,7 @@ DirBlur::sourceRegion(const std::vector<DirBlurSample>& canonical,
         r.y2 += grow / sy;
         mergeInto(r, &region);
     }
-    if (!srcRoD.isNull() && !region.isNull() && !blackOutside) {
+    if (!srcRoD.isNull() && !region.isNull() && (edgeMode == EdgeMode::Stretch)) {
         // Edge repeat: a read beyond srcRoD lands on its nearest pixel row or column, so the
         // region is clamped into srcRoD, reaching its edge wherever a read goes past it.
         const double px = std::min(par / sx, srcRoD.width());
@@ -733,7 +726,7 @@ DirBlur::getRegionOfDefinition(U64 /*hash*/,
         mergeInto(r, &region);
     }
     if (!region.isNull()) {
-        Resampler::expandRoD(outputPar(time, view), scale.toOfxPointD().x, scale.toOfxPointD().y, (params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch), &region);
+        Resampler::expandRoD(outputPar(time, view), scale.toOfxPointD().x, scale.toOfxPointD().y, params.edgeMode, &region);
     }
     if (isMaskApplied() || (getMixValue(time, view) != 1.)) {
         mergeInto(srcRoD, &region);
@@ -768,7 +761,7 @@ DirBlur::getRegionsOfInterest(double time,
         // The window itself too, which the mask and mix blend with.
         RectD roi = renderWindow;
         if (moves) {
-            mergeInto(sourceRegion(canonical, renderWindow, scale, par, params.filter, sourceRoD(time, view, scale), params.blackOutside), &roi);
+            mergeInto(sourceRegion(canonical, renderWindow, scale, par, params.filter, sourceRoD(time, view, scale), params.edgeMode), &roi);
         }
         (*ret)[source] = roi;
     }
@@ -852,7 +845,7 @@ DirBlur::renderOp(const RenderActionArgs& args,
                     rp.count = 1;
                     rp.filter = filter;
                     rp.clamp = clamp;
-                    rp.edgeMode = params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
+                    rp.edgeMode = params.edgeMode;
                     rp.motionBlur = 0.;
                     Resampler::resampleRow(rp, source, io.y, io.x0, io.x0 + io.width, &tmp[0]);
                     for (int i = 0; i < io.width; ++i) {
@@ -929,7 +922,7 @@ DirBlur::getOpGpuInputRoI(int inputNb,
     const double sx = scale.toOfxPointD().x;
     const double sy = scale.toOfxPointD().y;
     const RectD window(outputRect.x1 * par / sx, outputRect.y1 / sy, outputRect.x2 * par / sx, outputRect.y2 / sy);
-    const RectD read = sourceRegion(canonicalSamples(params, zoomReference(time, view)), window, scale, par, params.filter, sourceRoD(time, view, scale), params.blackOutside);
+    const RectD read = sourceRegion(canonicalSamples(params, zoomReference(time, view)), window, scale, par, params.filter, sourceRoD(time, view, scale), params.edgeMode);
     RectI roi = outputRect;
     if (!read.isNull()) {
         roi.merge(read.toPixelEnclosing(scale, par));
@@ -968,8 +961,8 @@ DirBlur::renderOpGpu(const GpuRenderArgs& args)
     if (params.clamp && Resampler::filterHonoursClamp(filter.filter)) {
         flags |= kDirBlurGpuClamp;
     }
-    if (params.blackOutside) {
-        flags |= kDirBlurGpuBlackOutside;
+    if (params.edgeMode == EdgeMode::Black) {
+        flags |= kDirBlurGpuEdgeBlack;
     }
     const float bicubicB = (float)filter.B;
     const float bicubicC = (float)filter.C;

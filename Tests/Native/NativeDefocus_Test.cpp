@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Filter/Defocus.h"
 #include "Engine/Nodes/Filter/LensAberration.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
@@ -598,4 +599,29 @@ TEST_F(NativeDefocusTest, Golden)
         return sized(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });
     }));
     runGoldenCases(getApp(), spec, v);
+}
+
+// A constant filling the window keeps its value up to the border under Stretch, and darkens there
+// under Black, where the bokeh reaches past the image.
+TEST_F(NativeDefocusTest, EdgeModeDecidesTheBorder)
+{
+    const double color[4] = { 0.3, 0.6, 0.9, 1. };
+    NodePtr constant = makeConstant(kWindow, { color[0], color[1], color[2], color[3] });
+    NodePtr defocus = makeDefocus(constant, NodePtr(), 9.);
+    ASSERT_TRUE(bool(constant) && bool(defocus));
+
+    ASSERT_TRUE(setKnobValue(defocus, kEdgeModeParam, std::string("stretch")));
+    RenderedPlane stretched;
+    ASSERT_TRUE(renderRGBA(defocus, kWindow, &stretched));
+    double worst = 0.;
+    for (std::size_t i = 0; i < stretched.pixels.size(); ++i) {
+        worst = std::max(worst, std::fabs((double)stretched.pixels[i] - color[i % 4]));
+    }
+    EXPECT_LE(worst, 1e-5);
+
+    ASSERT_TRUE(setKnobValue(defocus, kEdgeModeParam, std::string("black")));
+    RenderedPlane black;
+    ASSERT_TRUE(renderRGBA(defocus, kWindow, &black));
+    EXPECT_LT(pixelAt(black, kWindow.x1, kWindow.y1, 3), 0.9f);
+    EXPECT_NEAR(color[3], pixelAt(black, kWindow.x1 + kWindow.width() / 2, kWindow.y1 + kWindow.height() / 2, 3), 1e-5);
 }

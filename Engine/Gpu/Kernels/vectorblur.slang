@@ -1,3 +1,4 @@
+import edgesample;
 import pixelwrap;
 
 // VectorBlur::renderOp per pixel (Gather::pixel() in VectorBlur.cpp, step for step). The wrap's
@@ -13,6 +14,7 @@ static const uint kVectorBlurUV = 1;
 static const uint kVectorBlurOcclusion = 2;
 static const uint kVectorBlurInverseDepth = 4;
 static const uint kVectorBlurTriangle = 8;
+static const uint kVectorBlurEdgeBlack = 16;
 
 static const float kDepthTolerance = 0.01;
 
@@ -136,8 +138,17 @@ bool vectorBlurReaches(VectorBlur b, int2 q, float2 c)
     return (rx * rx + ry * ry) <= 1.0;
 }
 
-// Gather::tap(): bilinear, black outside the Source.
-float4 vectorBlurTap(float sx, float sy)
+// Gather::corner(): the Source pixel a bilinear corner at p reads, past the Source by its edge mode.
+float4 vectorBlurCorner(VectorBlur b, int2 p)
+{
+    int2 at;
+    if (!edgePixel(p, int4(wrap.srcX1, wrap.srcY1, wrap.srcX2, wrap.srcY2), edgeModeFromFlags(b.flags, kVectorBlurEdgeBlack), at))
+        return float4(0.0, 0.0, 0.0, 0.0);
+    return wrapReadSource(at);
+}
+
+// Gather::tap(): bilinear over vectorBlurCorner().
+float4 vectorBlurTap(VectorBlur b, float sx, float sy)
 {
     const float gx = sx - 0.5;
     const float gy = sy - 0.5;
@@ -148,10 +159,10 @@ float4 vectorBlurTap(float sx, float sy)
     const int x0 = int(x0f);
     const int y0 = int(y0f);
     float4 v = float4(0.0, 0.0, 0.0, 0.0);
-    v += ((1.0 - ax) * (1.0 - ay)) * wrapReadSource(int2(x0, y0));
-    v += (ax * (1.0 - ay)) * wrapReadSource(int2(x0 + 1, y0));
-    v += ((1.0 - ax) * ay) * wrapReadSource(int2(x0, y0 + 1));
-    v += (ax * ay) * wrapReadSource(int2(x0 + 1, y0 + 1));
+    v += ((1.0 - ax) * (1.0 - ay)) * vectorBlurCorner(b, int2(x0, y0));
+    v += (ax * (1.0 - ay)) * vectorBlurCorner(b, int2(x0 + 1, y0));
+    v += ((1.0 - ax) * ay) * vectorBlurCorner(b, int2(x0, y0 + 1));
+    v += (ax * ay) * vectorBlurCorner(b, int2(x0 + 1, y0 + 1));
     return v;
 }
 
@@ -195,7 +206,7 @@ struct VectorBlurOp : IPixelOp
                     continue;
             }
             const float w = triangle ? (1.0 - abs(2.0 * u - 1.0)) : 1.0;
-            acc += w * vectorBlurTap(sx, sy);
+            acc += w * vectorBlurTap(b, sx, sy);
             weights += w;
         }
         if (!(weights > 0.0))

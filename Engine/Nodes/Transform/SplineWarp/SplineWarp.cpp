@@ -2029,7 +2029,8 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             }
             if (plane.concatenated) {
                 // The reference is this node's immediate input: the fetched image through the
-                // concatenated transform alone, black outside its own region.
+                // concatenated transform alone, read past its region under this node's edge mode,
+                // which concatenation guarantees the transform resolves to as well.
                 for (int i = 0; i < width; ++i) {
                     sx[i] = (float)(roi.x1 + i + 0.5);
                     sy[i] = (float)(y + 0.5);
@@ -2042,7 +2043,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                     }
                 }
                 mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
-                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, EdgeMode::Black,
+                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, &referenceRow[0], nComps);
             } else {
                 PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);

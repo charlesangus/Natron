@@ -93,7 +93,7 @@ constexpr NodeSpec kZDefocusNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kZDefocusPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Passes,
 };
@@ -679,6 +679,7 @@ const uint32_t kGpuFirst = 4;
 const uint32_t kGpuInverseDistance = 8;
 const uint32_t kGpuHasDepth = 16;
 const uint32_t kGpuLens = 32;
+const uint32_t kGpuEdgeBlack = 64;
 const std::size_t kGpuMetaCocScale = 12;
 const std::size_t kGpuMetaGroups = 13;
 const std::size_t kGpuMetaCellColumns = 14;
@@ -1580,6 +1581,9 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
     if (lensActive) {
         base.flags |= kGpuLens;
     }
+    if (io.edgeMode == EdgeMode::Black) {
+        base.flags |= kGpuEdgeBlack;
+    }
     base.threshold = params.highlight.threshold;
     base.gain = params.highlight.gain;
     if (depth->view.buffer) {
@@ -1743,6 +1747,7 @@ ZDefocus::opPasses(double time,
     // Every slice gathers its layer and its coverage, at most two reads per kernel row each.
     const std::size_t taps = (std::size_t)(2 * (2 * haloY + 1)) * sliceList.size();
     PassList list = resultPasses(haloX, haloY, taps, ZDefocusStatePtr(), std::vector<unsigned char>());
+    list.edgeMode = context.edgeMode;
 
 #ifdef NATRON_HAVE_GPU
     ImageLayerDesc depthLayer;
@@ -2228,7 +2233,10 @@ ZDefocus::renderOp(const RenderActionArgs& args,
     const PassExtent extent = passListExtent(full);
     const Pass& first = full.passes.front();
 
-    return runPassesCpu(*this, plan, args, resultPasses(extent.haloX, extent.haloY, first.tapsPerSample, state, used));
+    PassList list = resultPasses(extent.haloX, extent.haloY, first.tapsPerSample, state, used);
+    list.edgeMode = full.edgeMode;
+
+    return runPassesCpu(*this, plan, args, list);
 } // ZDefocus::renderOp
 
 void

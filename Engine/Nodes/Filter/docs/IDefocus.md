@@ -31,11 +31,11 @@ I-variant registry (`IDefocus.reg.inc`); every knob they share has the same name
   with the area of the largest bokeh.
 - **NaN and infinity.** A NaN or infinite source counts as 0 in the sums, on the CPU and the GPU alike.
 - **Region.** The region of interest, of the source and of the Map, grows by the halo at the larger of Size and
-  Size At Black, since the Map is not known when the region is requested. The source reads black outside its image,
+  Size At Black, since the Map is not known when the region is requested. The source reads past its image as Edge Mode says,
   and the region of definition grows by the same halo. Sizes scale with the render scale and the pixel aspect ratio,
   as Defocus's do.
 - **Knobs.** Size At Black, Size, Aspect Ratio, Kernel Type, Blades, Rotation, Roundness, Kernel Channel, Highlight
-  Threshold, Highlight Gain, the Map knobs (Map Channel, Invert Map, Map Response, Map Gamma) and the standard
+  Threshold, Highlight Gain, Edge Mode (`edgeMode`, default Input: the Source's own mode; Black; or Stretch, its edge pixels), the Map knobs (Map Channel, Invert Map, Map Response, Map Gamma) and the standard
   channel, mask and mix knobs. No premultiply knob, as for every filter.
 
 Tests: `Tests/Native/NativeIDefocus_Test.cpp`. A constant Map, white, grey with a Size At Black, or absent, matches

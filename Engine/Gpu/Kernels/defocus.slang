@@ -1,3 +1,5 @@
+import edgesample;
+
 // Defocus's passes, after the workers of Engine/Nodes/Filter/Defocus.cpp and the gather of
 // Engine/Nodes/Filter/BokehKernel.cpp. The work buffer covers the CPU's scratch rect, the domain
 // of domWidth x domHeight pixels from (domX1, domY1): the boosted source, `channels` floats per
@@ -35,7 +37,7 @@ struct DefocusParams
     uint localOffset;
     uint totalOffset;
     uint runCount;
-    // kBoost while the highlight boost is on.
+    // kBoost while the highlight boost is on, kEdgeBlackFlag when the source reads 0 past its pixels.
     uint flags;
     float threshold;
     float gain;
@@ -66,6 +68,7 @@ struct DefocusParams
 static const uint kBlock = 256;
 static const uint kBoost = 1;
 static const uint kLens = 2;
+static const uint kEdgeBlackFlag = 4;
 
 bool isFiniteValue(float v)
 {
@@ -82,7 +85,7 @@ uint totalIndex(uint c, uint y, uint k)
     return params.totalOffset + (c * params.domHeight + y) * params.nBlocks + k;
 }
 
-// boostWorker(): the source with its highlights boosted, 0 outside the source.
+// boostWorker(): the source with its highlights boosted, read past the source by the edge mode.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void defocus_load(uint3 tid : SV_DispatchThreadID)
@@ -93,12 +96,13 @@ void defocus_load(uint3 tid : SV_DispatchThreadID)
     const uint dst = (tid.y * params.domWidth + tid.x) * n;
     const int x = params.domX1 + int(tid.x);
     const int y = params.domY1 + int(tid.y);
-    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2) {
+    int2 at;
+    if (!edgePixel(int2(x, y), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), edgeModeFromFlags(params.flags, kEdgeBlackFlag), at)) {
         for (uint c = 0; c < n && c < 4; ++c)
             workBuf[dst + c] = 0.0;
         return;
     }
-    const uint src = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * n;
+    const uint src = params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * n;
     const bool boost = (params.flags & kBoost) != 0u;
     for (uint c = 0; c < n && c < 4; ++c) {
         const float v = asfloat(srcBuf[src + c]);

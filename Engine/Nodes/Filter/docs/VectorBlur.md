@@ -16,8 +16,9 @@ Smears each pixel of the Source along its own motion vector, read from a layer o
   A non-finite or zero vector leaves the pixel unchanged.
 - **Streak.** The pixel centre `c` is averaged over `c + (u - Offset) * d` for `n` stratified
   `u = (i + 0.5) / n`. Offset 0.5 centres the streak on the pixel, 0 smears it back along the
-  vector (the pixel gathers from ahead of it), 1 forward. Taps are bilinear, black outside the
-  Source.
+  vector (the pixel gathers from ahead of it), 1 forward. Taps are bilinear; past the
+  Source's image they read as Edge Mode says, black or its edge pixels. The UV and depth layers
+  read black there.
 - **Minimum Samples.** `n = min(Max Samples, max(Minimum Samples, ceil(length)))`: at least Minimum Samples, about one per
   pixel of length, never more than Max Samples (128 by default, never below Minimum Samples).
 - **Filter.** Box weighs every sample alike; Triangle weighs them by a tent peaking at the
@@ -37,7 +38,8 @@ Smears each pixel of the Source along its own motion vector, read from a layer o
   grown by `ceil(Max Length * render scale) + 2`: vectors are unknown before rendering, which is
   why Max Length bounds them. The region of definition is the Source's.
 - **Knobs.** UV, Vector Units, Offset, Scale, Minimum Samples, Max Samples, Filter, Max Length,
-  Occlusion, Depth, Depth Units, and the standard channel, mask and mix knobs. Mask and mix are
+  Occlusion, Depth, Depth Units, Edge Mode (`edgeMode`, default Input: the Source's own mode),
+  and the standard channel, mask and mix knobs. Mask and mix are
   the host's stages; as a filter, VectorBlur has no "(Un)premult by".
 
 There is no OFX VectorBlur to port; the controls follow the milestone and Nuke's VectorBlur.

@@ -153,19 +153,6 @@ AdjustBBoxOp::createKnobs(KnobHolder* holder,
     numPixelsKnob->setDimensionName(1, "h");
     page->addKnob(numPixelsKnob);
     numPixels = numPixelsKnob;
-
-    KnobChoicePtr boundaryKnob = AppManager::createKnob<KnobChoice>(holder, EffectInstance::tr("Boundary"));
-    boundaryKnob->setName(kAdjustBBoxParamBoundary);
-    boundaryKnob->setHintToolTip(EffectInstance::tr("What fills the border added around the input."));
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kAdjustBBoxBoundaryBlack, EffectInstance::tr("Black").toStdString(), EffectInstance::tr("Transparent black.").toStdString()));
-        options.push_back(ChoiceOption(kAdjustBBoxBoundaryNearest, EffectInstance::tr("Nearest").toStdString(), EffectInstance::tr("The nearest pixel of the input's edge.").toStdString()));
-        boundaryKnob->populateChoices(options);
-    }
-    boundaryKnob->setDefaultValue((int)eBoundaryBlack);
-    page->addKnob(boundaryKnob);
-    boundary = boundaryKnob;
 }
 
 AdjustBBoxOp::Params
@@ -175,7 +162,6 @@ AdjustBBoxOp::bake(const KnobReader& reader) const
 
     params.padX = reader.valueOr(numPixels, 0., 0);
     params.padY = reader.valueOr(numPixels, 0., 1);
-    params.nearest = (reader.valueOr(boundary, (int)eBoundaryBlack) == (int)eBoundaryNearest);
 
     return params;
 }
@@ -193,7 +179,7 @@ AdjustBBoxOp::passes(const Params& params,
 {
     PassList list;
 
-    if (!params.nearest) {
+    if (context.edgeMode == EdgeMode::Black) {
         return list;
     }
     const double par = (context.pixelAspectRatio > 0.) ? context.pixelAspectRatio : 1.;
@@ -203,7 +189,6 @@ AdjustBBoxOp::passes(const Params& params,
     if ((haloX == 0) && (haloY == 0)) {
         return list;
     }
-    list.edgeMode = EdgeMode::Stretch;
     // No work: it only widens what is read, so that every border pixel's nearest source pixel is
     // read whatever the window.
     Pass reach;

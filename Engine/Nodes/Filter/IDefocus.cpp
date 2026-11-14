@@ -84,7 +84,7 @@ constexpr NodeSpec kIDefocusNodeSpec = {
                    "Highlight Gain pushes the values above the Highlight Threshold away from it before the defocus and pulls them back after it, so that bright "
                    "out-of-focus highlights bloom into the bokeh's shape while the rest of the image keeps its brightness.\n"
                    "\n"
-                   "The defocus is black outside the image, and the Mask and Mix limit the result as usual.",
+                   "Outside the image the defocus reads as Edge Mode says, and the Mask and Mix limit the result as usual.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_IDEFOCUS,
     .icon = NATRON_IMAGES_PATH "NativeNodes/IDefocus.png",
@@ -92,7 +92,7 @@ constexpr NodeSpec kIDefocusNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kIDefocusPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Passes,
 };
@@ -525,6 +525,7 @@ const int kGpuMaxHalo = 64;
 // Mirror kHeader, kBoost and kMap* in Kernels/idefocus.slang.
 const uint32_t kGpuHeader = 16;
 const uint32_t kGpuBoost = 1;
+const uint32_t kGpuEdgeBlack = 2;
 const uint32_t kGpuMapConnected = 1;
 const uint32_t kGpuMapRead = 2;
 const uint32_t kGpuMapInvert = 4;
@@ -701,7 +702,7 @@ recordIDefocusGpu(const PassGpuIO& io,
     p.lvWidth = (uint32_t)lvWidth;
     p.lvHeight = (uint32_t)lvHeight;
     p.channels = (uint32_t)nComps;
-    p.flags = params.defocus.highlight.isActive() ? kGpuBoost : 0u;
+    p.flags = (params.defocus.highlight.isActive() ? kGpuBoost : 0u) | ((io.edgeMode == EdgeMode::Black) ? kGpuEdgeBlack : 0u);
     p.threshold = params.defocus.highlight.threshold;
     p.gain = params.defocus.highlight.gain;
     p.haloX = haloX;
@@ -1050,6 +1051,7 @@ IDefocus::opPasses(double time,
     int haloX = 0, haloY = 0;
     levelRangeHalo(params, context, lo, count, count, &haloX, &haloY);
     PassList list = makePasses(params.defocus.highlight, haloX, haloY, IDefocusStatePtr());
+    list.edgeMode = context.edgeMode;
 
 #ifdef NATRON_HAVE_GPU
     if (!list.empty() && !image && (haloX <= kGpuMaxHalo) && (haloY <= kGpuMaxHalo)) {
@@ -1372,7 +1374,10 @@ IDefocus::renderOp(const RenderActionArgs& args,
         state->rowHaloY[(std::size_t)y] = most;
     }
 
-    return runPassesCpu(*this, plan, args, makePasses(params.defocus.highlight, haloX, haloY, state));
+    PassList list = makePasses(params.defocus.highlight, haloX, haloY, state);
+    list.edgeMode = context.edgeMode;
+
+    return runPassesCpu(*this, plan, args, list);
 } // IDefocus::renderOp
 
 void

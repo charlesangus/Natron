@@ -48,6 +48,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
@@ -71,6 +72,7 @@ const uint32_t kVectorBlurGpuUV = 1;
 const uint32_t kVectorBlurGpuOcclusion = 2;
 const uint32_t kVectorBlurGpuInverseDepth = 4;
 const uint32_t kVectorBlurGpuTriangle = 8;
+const uint32_t kVectorBlurGpuEdgeBlack = 16;
 
 // vectorblur.slang's parameter block, word for word.
 struct VectorBlurGpuParams {
@@ -148,6 +150,7 @@ struct Gather {
     bool triangle = false;
     bool occlusion = false;
     bool inverseDepth = false;
+    EdgeMode edgeMode = EdgeMode::Black;
 
     // The vector at pixel (x, y) in pixels, shortened to maxLength; false for none.
     bool vector(int x,
@@ -223,6 +226,19 @@ struct Gather {
         return (rx * rx + ry * ry) <= 1.f;
     }
 
+    // The source pixel a bilinear corner at (x, y) reads, null for zero.
+    const float* corner(int x,
+                        int y) const
+    {
+        int sx = 0;
+        int sy = 0;
+        if (!src.pixels || !EdgeSample::pixel(x, y, src.bounds, edgeMode, &sx, &sy)) {
+            return nullptr;
+        }
+
+        return src.at(sx, sy);
+    }
+
     void tap(float sx,
              float sy,
              float* out) const
@@ -239,10 +255,10 @@ struct Gather {
         const float w10 = ax * (1.f - ay);
         const float w01 = (1.f - ax) * ay;
         const float w11 = ax * ay;
-        const float* p00 = src.at(x0, y0);
-        const float* p10 = src.at(x0 + 1, y0);
-        const float* p01 = src.at(x0, y0 + 1);
-        const float* p11 = src.at(x0 + 1, y0 + 1);
+        const float* p00 = corner(x0, y0);
+        const float* p10 = corner(x0 + 1, y0);
+        const float* p01 = corner(x0, y0 + 1);
+        const float* p11 = corner(x0 + 1, y0 + 1);
         for (int c = 0; c < nComps; ++c) {
             float v = 0.f;
             if (p00) {
@@ -969,6 +985,7 @@ VectorBlur::renderOp(const RenderActionArgs& args,
         planes.push_back(std::move(plane));
     }
 
+    const EdgeMode sourceEdgeMode = resolvedEdgeMode(args.time, args.view);
     const RectI& roi = args.roi;
     const int width = roi.width();
     if ((width <= 0) || (roi.height() <= 0)) {
@@ -1043,6 +1060,7 @@ VectorBlur::renderOp(const RenderActionArgs& args,
         g.triangle = settings.triangle;
         g.occlusion = layers.depthValid && (bool)depthImage;
         g.inverseDepth = settings.inverseDepth;
+        g.edgeMode = sourceEdgeMode;
         plane.dstAccess = std::make_shared<Image::WriteAccess>(plane.dst.get());
     }
 
@@ -1336,6 +1354,9 @@ VectorBlur::renderOpGpu(const GpuRenderArgs& args)
     }
     if (settings.triangle) {
         params.flags |= kVectorBlurGpuTriangle;
+    }
+    if (resolvedEdgeMode(query.time, query.view) == EdgeMode::Black) {
+        params.flags |= kVectorBlurGpuEdgeBlack;
     }
     params.minSamples = settings.minimumSamples;
     params.maxSamples = settings.maxSamples;

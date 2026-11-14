@@ -15,7 +15,7 @@ import edgesample;
 static const uint kDirBlurSourceValid = 1;
 static const uint kDirBlurMax = 2;
 static const uint kDirBlurClamp = 16;
-static const uint kDirBlurBlackOutside = 32;
+static const uint kDirBlurEdgeBlack = 32;
 static const uint kDirBlurIdentityNearest = 64;
 static const uint kDirBlurHeaderWords = 6;
 static const uint kDirBlurSampleWords = 16;
@@ -48,7 +48,7 @@ ResampleSource dirblurSource(uint flags)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = (flags & kDirBlurSourceValid) != 0 && wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.edgeMode = edgeModeFromFlags(flags, kDirBlurBlackOutside);
+    src.edgeMode = edgeModeFromFlags(flags, kDirBlurEdgeBlack);
     return src;
 }
 

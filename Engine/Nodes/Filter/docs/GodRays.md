@@ -4,7 +4,7 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| GodRays (GodRays) | resampling | `kGodRaysTolerance` = `ParityTolerance::make(0., 1e-4)` | GPU against CPU, every filter, with and without Clamp and Black outside: the GPU runs DirBlur's kernel on the CPU's matrices, factors and summation order |
+| GodRays (GodRays) | resampling | `kGodRaysTolerance` = `ParityTolerance::make(0., 1e-4)` | GPU against CPU, every filter, with and without Clamp, under Black and Stretch: the GPU runs DirBlur's kernel on the CPU's matrices, factors and summation order |
 
 Light rays: copies of the image moved, rotated, scaled or skewed by even steps from none of the
 transform to all of it, tinted from From Color to To Color along the way, and averaged (or, with
@@ -34,7 +34,7 @@ No transform, white tints and Max off is the identity.
 
 ## Resampling
 
-Filter, Clamp, Black outside, Lobes, Bicubic B and Bicubic C are the Transform node's knobs, with
+Filter, Clamp, Lobes, Bicubic B and Bicubic C are the Transform node's knobs, with
 its filter set and semantics; see [Transform](../../Transform/docs/Transform.md). The CPU resamples
 each copy with `Resampler::resampleRow`, widening the kernel of a minified copy as Transform does.
 Draft renders use Impulse.
@@ -43,14 +43,15 @@ Draft renders use Impulse.
 - **Clamp** is shown only for the filters that can overshoot (Keys, Simon, Rifman, Mitchell, the
   Lanczos filters, Sinc and Bicubic).
 - **Lobes** is shown only for Sinc, **Bicubic B** and **Bicubic C** only for Bicubic.
-- **Black outside** (default on): a copy reads black beyond the Source's image, and the region of
-  definition grows by one pixel. Off, a copy reads the Source's edge pixels, extended outwards.
+- **Edge Mode** (`edgeMode`, default Input): what a copy reads beyond the Source's image. Input
+  takes the Source's own edge mode. Under Black a copy reads black there, and the region of
+  definition grows by one pixel. Under Stretch a copy reads the Source's edge pixels, extended outwards.
 
 ## Region
 
 The copies are DirBlur's samples (`DirBlurSample`), and the regions are DirBlur's. The region of
 definition is the union of the Source's region of definition carried by every copy's forward
-matrix, grown by a pixel with Black outside, plus the Source's own region under a mask or a mix
+matrix, grown by a pixel under Black, plus the Source's own region under a mask or a mix
 below 1. The Source is read over the window's preimage under every copy, grown by the filter's
 footprint (`DirBlur::sourceRegion`). The CPU region of interest and the GPU input region are the
 same region. Each copy is resampled on its own and summed in sample order, so a pixel does not
@@ -59,7 +60,7 @@ depend on the tile it is rendered in.
 ## GPU
 
 The GPU path reuses DirBlur's kernel (`dirblur.slang`): GodRays fills its parameter block with the
-copies' matrices and tints. Every filter, Clamp, Black outside, Max, the
+copies' matrices and tints. Every filter, Clamp, both edge modes, Max, the
 mask, mix and channels render on the device.
 
 ## Knobs
@@ -81,7 +82,7 @@ mask and mix knobs follow. There is no "(Un)premult by": GodRays is a filter.
 | `max` | Max | off | Per channel maximum of the tinted copies instead of their mean |
 | `filter` | Filter | Cubic | The Transform node's filters |
 | `clamp` | Clamp | off | Clamp the filter's overshoot |
-| `black_outside` | Black outside | on | Read black beyond the Source; off repeats its edge pixels |
+| `edgeMode` | Edge Mode | Input | What a copy reads beyond the Source: its own mode (Input), black (Black) or its edge pixels (Stretch) |
 | `lobes` | Lobes | 4 | Sinc's lobe count and radius, 2 to 8 |
 | `bicubicB` | Bicubic B | 1/3 | Bicubic's B; higher blurs more |
 | `bicubicC` | Bicubic C | 1/3 | Bicubic's C; higher sharpens more |

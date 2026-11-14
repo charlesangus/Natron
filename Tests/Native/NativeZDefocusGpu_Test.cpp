@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Filter/BokehKnobs.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -373,4 +374,17 @@ TEST_F(NativeZDefocusGpuTest, CombinedLensAberrationsMatchTheCpu)
     ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamSphericalAberration, { 0.5 }));
 
     expectParity(zdefocus, "cat-eye, chromatic and spherical aberrations");
+}
+
+// The window is the source's image, so the bokeh at its border reads past the image under each mode.
+TEST_F(NativeZDefocusGpuTest, EdgeModesMatchTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr zdefocus = makeZDefocus(source);
+    ASSERT_TRUE(bool(source) && bool(zdefocus));
+
+    for (const char* mode : { "black", "stretch" }) {
+        ASSERT_TRUE(setKnobValue(zdefocus, kEdgeModeParam, std::string(mode)));
+        expectParity(zdefocus, std::string("edge mode ") + mode);
+    }
 }

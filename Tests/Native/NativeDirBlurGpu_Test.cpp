@@ -49,6 +49,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/DirBlur.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Project.h"
@@ -212,7 +213,7 @@ TEST_F(NativeDirBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
     for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
         for (const bool blackOutside : { true, false }) {
             ASSERT_TRUE(setKnobValue(node, kDirBlurParamMode, std::string(mode)));
-            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
             for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
                 const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
                 const DirBlurParams params = effect->getParams(kTime, ViewIdx(0));
@@ -222,7 +223,7 @@ TEST_F(NativeDirBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
                 RectD srcRoD;
                 EffectInstancePtr sourceEffect = source->getEffectInstance();
                 ASSERT_NE(eStatusFailed, sourceEffect->getRegionOfDefinition(sourceEffect->getRenderHash(), kTime, scale, ViewIdx(0), &srcRoD));
-                const RectD region = DirBlur::sourceRegion(DirBlur::canonicalSamples(params, effect->zoomReference(kTime, ViewIdx(0))), window, scale, 1., params.filter, srcRoD, params.blackOutside);
+                const RectD region = DirBlur::sourceRegion(DirBlur::canonicalSamples(params, effect->zoomReference(kTime, ViewIdx(0))), window, scale, 1., params.filter, srcRoD, params.edgeMode);
                 RectI expected = rect;
                 if (!region.isNull()) {
                     expected.merge(region.toPixelEnclosing(scale, 1.));
@@ -234,8 +235,8 @@ TEST_F(NativeDirBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
 }
 
 // Every filter of the Transform node's set, with Clamp where the filter honours it, in every mode,
-// against the CPU render. Black outside alternates with the mode, so each filter renders with it
-// on and off. Its own suite, so its own ctest timeout: each end-to-end render brings up a fresh
+// against the CPU render. The Edge Mode alternates between Black and Stretch with the mode, so each
+// filter renders under both. Its own suite, so its own ctest timeout: each end-to-end render brings up a fresh
 // device, and on a software device building the resampling pipeline takes seconds. The length is
 // not a round value: the format's half diagonal is 40, and 15 over it makes a zoom of exactly 2/3,
 // whose sample positions land on pixel edges, where a discontinuous filter's tap is decided by the
@@ -259,7 +260,7 @@ TEST_F(NativeDirBlurGpuFilterTest, MatchesTheCpuRenderForEveryFilter)
             ASSERT_TRUE(bool(node));
             ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, filters[f].id));
             ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
-            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15.5 }));
             ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
@@ -463,7 +464,7 @@ TEST_F(NativeDirBlurGpuTest, MatchesTheCpuRenderAtRenderScalesOverABrightSource)
                 NodePtr node = makeDirBlur(bright, mode);
                 ASSERT_TRUE(bool(node));
                 ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter.id)));
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
                 ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
                 ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15.5 }));
                 ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));

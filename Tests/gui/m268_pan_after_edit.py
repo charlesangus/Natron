@@ -313,6 +313,7 @@ try:
             set_choice(camera.getParam("type1"), "string")
             camera.getParam("stringValue1").set("Canon")
             node = create("DenoiseProfiled", False)
+            node.disconnectInput(0)
             require(node.connectInput(0, camera), "DenoiseProfiled reads the plate with a camera make")
             gt.close_all_panels()
             set_choice(node.getParam("profile"), "generic")

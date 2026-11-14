@@ -2904,6 +2904,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     bool lastConverged = false;
     bool firstPass = false;
     bool engineFresh = false;
+    // Whether the engine has rendered a pass, so that its delegate may be sampling on its own threads.
+    bool engineRendered = false;
     Clock::time_point restartTime = Clock::now();
     Clock::time_point stallSince = restartTime;
     bool done = false;
@@ -2988,6 +2990,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             keepFrame = false;
             lastSamples = -1;
             lastConverged = false;
+            engineRendered = false;
             engineFresh = true;
             ++status.engines;
             needRestart = true;
@@ -3083,13 +3086,16 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 
         const View v = view;
         const int cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
-        if (engine && CyclesAovs::isCycles(engineRenderer) && !samplesKey.IsEmpty() && (cap > 0) && (appliedCap > 0) && (cap != appliedCap) && (lastSamples >= cap) && !lastConverged) {
+        if (engine && engineRendered && CyclesAovs::isCycles(engineRenderer) && !samplesKey.IsEmpty() && (cap > 0) && (appliedCap > 0) && (cap < appliedCap) && !lastConverged) {
             // Cycles told mid-render to stop at or below the samples it already holds resets to no
             // sample and renders none again, with its AOVs cleared: a new engine starts under the
-            // cap, and the frame shown stays until it draws.
+            // cap, and the frame shown stays until it draws. Any lowering of a render under way
+            // counts, not only one below the samples last read: Cycles samples on between passes.
+            const bool lit = headlit;
             lock.unlock();
             dropEngine();
             lock.lock();
+            carriedHeadlight = lit;
             keepFrame = true;
             continue;
         }
@@ -3176,6 +3182,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         const int samples = samplesOf(stats, cap);
         const double clock = clockOf(stats);
         lock.lock();
+        engineRendered = engineRendered || rendered;
         if (quit) {
             break;
         }

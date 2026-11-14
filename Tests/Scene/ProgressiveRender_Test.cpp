@@ -1017,6 +1017,32 @@ TEST_F(ProgressiveRenderTest, ACapLoweredBelowTheSamplesRenderedEndsAtIt)
     EXPECT_TRUE(anyUnder(picked, "/World/Near"));
 }
 
+// A cap above the samples of the frame last read, but below those Cycles has rendered since, ends the
+// render at the cap all the same: Cycles samples on while the worker waits between passes.
+TEST_F(ProgressiveRenderTest, ACapLoweredAboveTheSamplesLastReadEndsAtIt)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    hold(true);
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "the first frame"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const std::shared_ptr<const ProgressiveRender::Frame> first = _render->getFrame();
+    ASSERT_TRUE(first != nullptr);
+    const int cap = std::max(1, first->samples) + 1;
+    ASSERT_LT(cap, kSamples);
+    const std::size_t mark = publishedCount();
+    _render->setMaxSamples(cap);
+    hold(false);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(cap, frames.back()->samples);
+    const std::set<std::string> picked = pickedPrims(*frames.back());
+    EXPECT_TRUE(anyUnder(picked, "/World/Near"));
+}
+
 // A prim the draw rules hide leaves the frame, and what they leave stays.
 TEST_F(ProgressiveRenderTest, ThePrimsTheDrawRulesHideLeaveTheFrame)
 {

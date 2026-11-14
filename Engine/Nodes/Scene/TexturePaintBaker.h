@@ -51,7 +51,8 @@ NATRON_NAMESPACE_ENTER
  *
  * Stopping (the node is deleted, the project closes) cancels the running worker and drops the
  * queued bakes and every completion not yet run. requestStop() and retire() return at once;
- * stop() also waits for the thread to exit.
+ * stop() also waits for the thread to exit. A stop that allows restarting takes bakes again at
+ * once: those enqueued while the thread exits wait, in order, and start once it has.
  *
  * Every baker of the process, retired ones included, is known, so that shutdownAll() can stop and
  * join them all without the event loop that deletes retired ones.
@@ -109,7 +110,7 @@ public:
 
     /**
      * @brief Queues bake behind those already queued or running. Does not wait. Main thread.
-     * False once stop() was called.
+     * False once the baker stopped for good.
      **/
     bool enqueue(const Bake& bake);
 
@@ -182,6 +183,8 @@ private Q_SLOTS:
 
     void onWorkDone();
 
+    void onThreadFinished();
+
 private:
     virtual TaskQueueBehaviorEnum tasksQueueBehaviour() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -201,6 +204,8 @@ private:
     std::atomic<bool> _stopped;
     // Counts the stops, so that a bake enqueued before one never runs its completion after it.
     std::atomic<int> _epoch;
+    // Set under _mutex while a stop lets the thread exit, until onThreadFinished() has seen it gone.
+    std::atomic<bool> _quitting;
     // Main thread, under the registry's lock.
     bool _retired;
     bool _shutDown;
@@ -214,6 +219,8 @@ private:
     };
     // Bakes whose work returned, oldest first, awaiting their completion on the main thread.
     std::deque<Finished> _finished;
+    // Bakes enqueued while _quitting, oldest first, started once the thread has exited.
+    std::deque<std::shared_ptr<Task>> _deferred;
     std::chrono::steady_clock::time_point _lastProgress;
     double _lastFraction;
     QString _lastLabel;

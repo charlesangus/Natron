@@ -648,6 +648,21 @@ private:
     void applyBakeInputs(BakeInputsRun& run, std::vector<std::string>* files, std::string* warning);
 
     bool prepareBakeOutput(double time, ViewIdx view, BakeOutputRun* run, std::string* error);
+    /**
+     * @brief Main thread, as the bake begins: takes the planes and the sessions run renders and
+     * freezes, leaving out one a stroke is going into. With closeOpenSession the open session,
+     * when it is taken, is closed, so that the next stroke starts another.
+     **/
+    void snapshotBakeOutput(BakeOutputRun* run, bool closeOpenSession);
+    // Whether every session of run's snapshot is unchanged, live and still a session. Main thread.
+    bool isBakeOutputSnapshotCurrent(const BakeOutputRun& run) const WARN_UNUSED_RETURN;
+    /**
+     * @brief On the baker: has the main thread take run's snapshot, and waits for it. False when
+     * the node is gone or the bake is cancelled first.
+     **/
+    static bool awaitBakeOutputSnapshot(const std::weak_ptr<TexturePaint>& weak,
+                                        const std::shared_ptr<BakeOutputRun>& run,
+                                        const std::function<bool()>& cancelled) WARN_UNUSED_RETURN;
     bool runBakeOutput(BakeOutputRun& run, const BakeControl& control, std::string* error);
     /**
      * @brief Writes rgba to a temporary file beside path on the calling thread, then backs path up
@@ -673,7 +688,6 @@ private:
     static bool hasFrameToken(const std::string& pattern) WARN_UNUSED_RETURN;
     // The frame of a baked file the texture at time is built over, within the frames record names.
     int recordFrame(double time, int firstFrame, int lastFrame) const WARN_UNUSED_RETURN;
-    int sessionStrokeCount(const RotoLayerPtr& session) const WARN_UNUSED_RETURN;
     void landBake(bool ok);
 
     struct SessionView {
@@ -731,10 +745,20 @@ private:
     bool getTileDirectory(std::string* directory, std::string* error) const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The sessions a tile lays over its base, in order. With only, the sessions that are
+     * not frozen are those of only alone; *narrowed tells whether that left any out.
+     **/
+    std::vector<RotoLayerPtr> getLaidSessions(const std::vector<RotoLayerPtr>* only, bool* narrowed) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief What the tiles of view are cached under; changes with anything they depend on. In
      * Animated mode the frame is in the tile's file name instead, so the key is that of every frame.
+     * With only, the key of tiles laying getLaidSessions(only) alone, *narrowed as it tells.
      **/
-    U64 getTileCacheKey(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+    U64 getTileCacheKey(double time,
+                        ViewIdx view,
+                        const std::vector<RotoLayerPtr>* only = nullptr,
+                        bool* narrowed = nullptr) const WARN_UNUSED_RETURN;
 
     // Hashes the baked files' paths and modification stamps, read once per bake record and epoch.
     U64 getBakedFilesDigest() const WARN_UNUSED_RETURN;
@@ -747,7 +771,8 @@ private:
                     const std::vector<std::string>& paths,
                     std::string* note,
                     std::string* error,
-                    const std::function<bool()>& cancelled);
+                    const std::function<bool()>& cancelled,
+                    const std::vector<RotoLayerPtr>* only);
 
     // Deletes the cached tiles no view, reader or build still uses. Without _tilesMutex held.
     void removeUnusedTiles(const std::string& directory);
@@ -760,7 +785,8 @@ private:
      *
      * One tile is built once however many threads ask for it, the others waiting for it, while
      * different tiles build at once. When lease is set it receives what keeps *paths from being
-     * deleted as stale; the files may be read until it is released.
+     * deleted as stale; the files may be read until it is released. With only, the tiles lay
+     * getLaidSessions(only).
      **/
     bool ensureTiles(double time,
                      ViewIdx view,
@@ -770,7 +796,8 @@ private:
                      std::string* note,
                      std::string* error,
                      const std::function<bool()>& cancel = std::function<bool()>(),
-                     std::shared_ptr<void>* lease = nullptr);
+                     std::shared_ptr<void>* lease = nullptr,
+                     const std::vector<RotoLayerPtr>* only = nullptr);
 
     // Views are looked up from render threads while the main thread creates them.
     mutable std::mutex _viewsMutex;

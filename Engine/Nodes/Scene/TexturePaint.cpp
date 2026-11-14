@@ -895,9 +895,43 @@ TexturePaint::getBakedFilesDigest() const
     return value;
 }
 
+std::vector<RotoLayerPtr>
+TexturePaint::getLaidSessions(const std::vector<RotoLayerPtr>* only,
+                              bool* narrowed) const
+{
+    // Frozen sessions are in the Bake Output files; while those are the base they are not laid
+    // over again.
+    const bool skipFrozen = hasBakedOutput();
+    std::vector<RotoLayerPtr> laid;
+
+    if (narrowed) {
+        *narrowed = false;
+    }
+    for (const RotoLayerPtr& session : getSessions()) {
+        if (!sessionHasStrokes(session)) {
+            continue;
+        }
+        const bool frozen = isSessionFrozen(session);
+        if (skipFrozen && frozen) {
+            continue;
+        }
+        if (only && !frozen && (std::find(only->begin(), only->end(), session) == only->end())) {
+            if (narrowed) {
+                *narrowed = true;
+            }
+            continue;
+        }
+        laid.push_back(session);
+    }
+
+    return laid;
+}
+
 U64
 TexturePaint::getTileCacheKey(double time,
-                              ViewIdx view) const
+                              ViewIdx view,
+                              const std::vector<RotoLayerPtr>* only,
+                              bool* narrowed) const
 {
     ContentHasher hasher;
 
@@ -932,6 +966,22 @@ TexturePaint::getTileCacheKey(double time,
         hasher.appendU64(knob ? knob->getContentHash() : 0);
     }
     hasher.appendU64(getBakedFilesDigest());
+
+    bool narrower = false;
+    if (only) {
+        // Tiles that lay every session there is keep the key of the unrestricted ones, which the
+        // session bakes have cached already.
+        const std::vector<RotoLayerPtr> laid = getLaidSessions(only, &narrower);
+        if (narrower) {
+            hasher.appendBool(true);
+            for (const RotoLayerPtr& session : laid) {
+                hasher.appendString(session->getScriptName());
+            }
+        }
+    }
+    if (narrowed) {
+        *narrowed = narrower;
+    }
 
     return hasher.finalize();
 }
@@ -1249,8 +1299,11 @@ struct TexturePaint::BakeOutputRun {
     EffectInstancePtr input;
     std::list<ImageLayerDesc> planes;
     QStringList purposes;
-    // The sessions with strokes that were not frozen when the bake began, with their stroke counts then.
-    std::vector<std::pair<RotoLayerPtr, int>> sessions;
+    // Taken on the main thread as the bake begins: the sessions with strokes not frozen then, each
+    // with its content hash then. They are all the bake renders and all it freezes.
+    std::vector<std::pair<RotoLayerPtr, U64>> sessions;
+    // The same sessions, which the bake's tiles lay over the base.
+    std::vector<RotoLayerPtr> rendered;
     std::vector<std::string> files;
     std::shared_ptr<BakeOutputFiles> undoFiles;
     QStringList tileNames;
@@ -1424,14 +1477,48 @@ TexturePaint::prepareBakeOutput(double time,
         run->viewNames = app->getProject()->getProjectViewNames();
     }
     run->input = getInput(0);
-    run->planes = getOutputPlanes(run->time, view);
+
+    return true;
+}
+
+void
+TexturePaint::snapshotBakeOutput(BakeOutputRun* run,
+                                 bool closeOpenSession)
+{
+    run->planes = getOutputPlanes(run->time, run->view);
+    run->purposes.clear();
     for (const ImageLayerDesc& plane : run->planes) {
         run->purposes.push_back(QString::fromStdString(planePurpose(plane)));
     }
+    // A session a stroke is going into would change under the bake: it is left out, and stays live.
+    RotoLayerPtr painting;
+    if (_viewInteract) {
+        const RotoLayerPtr open = _viewInteract->getOpenSession();
+        if (open && _viewInteract->isPainting()) {
+            painting = open;
+        } else if (open && closeOpenSession && sessionHasStrokes(open) && !isSessionFrozen(open)) {
+            // The next stroke then starts a session of its own rather than changing one the bake renders.
+            (void)_viewInteract->closeSession(run->time);
+        }
+    }
+    run->sessions.clear();
+    run->rendered.clear();
     for (const RotoLayerPtr& session : getSessions()) {
-        const int strokes = sessionStrokeCount(session);
-        if ((strokes > 0) && !isSessionFrozen(session)) {
-            run->sessions.push_back(std::make_pair(session, strokes));
+        if ((session != painting) && sessionHasStrokes(session) && !isSessionFrozen(session)) {
+            run->sessions.push_back(std::make_pair(session, session->getContentHash()));
+            run->rendered.push_back(session);
+        }
+    }
+}
+
+bool
+TexturePaint::isBakeOutputSnapshotCurrent(const BakeOutputRun& run) const
+{
+    const std::list<RotoLayerPtr> sessions = getSessions();
+
+    for (const std::pair<RotoLayerPtr, U64>& entry : run.sessions) {
+        if (isSessionFrozen(entry.first) || (std::find(sessions.begin(), sessions.end(), entry.first) == sessions.end()) || (entry.first->getContentHash() != entry.second)) {
+            return false;
         }
     }
 
@@ -1502,7 +1589,7 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
             std::vector<std::string> paths;
             std::string note;
             std::shared_ptr<void> lease;
-            if (!ensureTiles(frameTime, run.view, tile, run.planes, &paths, &note, error, control.cancelled, &lease)) {
+            if (!ensureTiles(frameTime, run.view, tile, run.planes, &paths, &note, error, control.cancelled, &lease, &run.rendered)) {
                 return false;
             }
             bool rebuilt = false;
@@ -1523,7 +1610,7 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
                     rebuilt = true;
                     lease.reset();
                     error->clear();
-                    if (!ensureTiles(frameTime, run.view, tile, run.planes, &paths, &note, error, control.cancelled, &lease) || !TexturePaintCache::readTile(paths[planeIndex], RectI(0, 0, run.size, run.size), &rgba, error)) {
+                    if (!ensureTiles(frameTime, run.view, tile, run.planes, &paths, &note, error, control.cancelled, &lease, &run.rendered) || !TexturePaintCache::readTile(paths[planeIndex], RectI(0, 0, run.size, run.size), &rgba, error)) {
                         return false;
                     }
                 }
@@ -1793,12 +1880,9 @@ TexturePaint::applyBakeOutput(BakeOutputRun& run,
     // Read as the bake lands rather than as it was queued: an earlier bake may have landed since.
     state->record = record ? record->getValue() : std::string();
     state->frozen.clear();
-    // A session painted on while the bake ran has strokes the files lack: it stays live.
-    for (const std::pair<RotoLayerPtr, int>& entry : run.sessions) {
-        if (!isSessionFrozen(entry.first) && (sessionStrokeCount(entry.first) == entry.second)) {
-            setSessionFrozen(entry.first, true);
-            state->frozen.push_back(entry.first);
-        }
+    for (const std::pair<RotoLayerPtr, U64>& entry : run.sessions) {
+        setSessionFrozen(entry.first, true);
+        state->frozen.push_back(entry.first);
     }
     if (record) {
         state->bakedRecord = nextBakeRecord(state->record, run.purposes, run.tileNames, run.firstFrame, run.lastFrame);
@@ -1828,6 +1912,8 @@ TexturePaint::writeBakeOutput(double time,
     if (!prepareBakeOutput(time, view, &run, error)) {
         return false;
     }
+    // Nothing changes the sessions while this thread waits for the bake.
+    snapshotBakeOutput(&run, false);
     bool ok = false;
     // Live textures render on threads of their own and never on the main thread, which waits here.
     std::thread worker([&]() {
@@ -2647,7 +2733,8 @@ TexturePaint::ensureTiles(double time,
                           std::string* note,
                           std::string* error,
                           const std::function<bool()>& cancel,
-                          std::shared_ptr<void>* lease)
+                          std::shared_ptr<void>* lease,
+                          const std::vector<RotoLayerPtr>* only)
 {
     const int size = getTileResolution();
     const bool animated = getTextureMode() == eTextureModeAnimated;
@@ -2658,7 +2745,8 @@ TexturePaint::ensureTiles(double time,
     if (!getTileDirectory(&directory, error)) {
         return false;
     }
-    const U64 key = getTileCacheKey(time, view);
+    bool narrowed = false;
+    const U64 key = getTileCacheKey(time, view, only, &narrowed);
 
     paths->clear();
     note->clear();
@@ -2670,7 +2758,10 @@ TexturePaint::ensureTiles(double time,
     {
         std::unique_lock<std::mutex> lock(_tilesMutex);
         ++_tileReaders[key];
-        _liveTileKeys[view.value()] = key;
+        // Tiles of fewer sessions than there are are a bake's alone, kept by its lease.
+        if (!narrowed) {
+            _liveTileKeys[view.value()] = key;
+        }
         // A prune that took the key for unused before this reader came is deleting its files:
         // they are built again once it is done, never read while they vanish.
         while (_pruningKeys.count(key)) {
@@ -2736,7 +2827,7 @@ TexturePaint::ensureTiles(double time,
             _tileBuilds[id] = build;
         }
 
-        const bool ok = buildTiles(time, view, tile, planes, *paths, note, error, cancelled);
+        const bool ok = buildTiles(time, view, tile, planes, *paths, note, error, cancelled, only);
         {
             std::lock_guard<std::mutex> lock(_tilesMutex);
             build->done = true;
@@ -2764,7 +2855,8 @@ TexturePaint::buildTiles(double time,
                          const std::vector<std::string>& paths,
                          std::string* note,
                          std::string* error,
-                         const std::function<bool()>& cancelled)
+                         const std::function<bool()>& cancelled,
+                         const std::vector<RotoLayerPtr>* only)
 {
     const int size = getTileResolution();
     AppInstancePtr app = getApp();
@@ -2827,14 +2919,8 @@ TexturePaint::buildTiles(double time,
     }
 
     const ImageLayerDesc painted = getPaintedPlane(time, view);
-    // Frozen sessions are in the Bake Output files; while those are the base they are not laid
-    // over again.
-    const bool skipFrozen = hasBakedOutput();
     std::vector<std::pair<RotoLayerPtr, NodePtr>> sessions;
-    for (const RotoLayerPtr& session : getSessions()) {
-        if (!sessionHasStrokes(session) || (skipFrozen && isSessionFrozen(session))) {
-            continue;
-        }
+    for (const RotoLayerPtr& session : getLaidSessions(only, nullptr)) {
         NodePtr viewNode = findSessionView(session.get());
         if (!viewNode) {
             *error = tr("The session %1 has no view to paint over.").arg(QString::fromUtf8(session->getScriptName().c_str())).toStdString();
@@ -3429,24 +3515,6 @@ TexturePaint::isSessionBakePending(const RotoLayerPtr& session) const
     return (_pendingSessionBakes.find(session.get()) != _pendingSessionBakes.end());
 }
 
-int
-TexturePaint::sessionStrokeCount(const RotoLayerPtr& session) const
-{
-    RotoCurveContextPtr context = getNode()->getCurveContext();
-    int count = 0;
-
-    if (!context || !session) {
-        return 0;
-    }
-    for (const RotoDrawableItemPtr& item : context->getCurvesByRenderOrder(false)) {
-        if (item && (getSessionOf(*item) == session)) {
-            ++count;
-        }
-    }
-
-    return count;
-}
-
 void
 TexturePaint::landBake(bool ok)
 {
@@ -3551,6 +3619,55 @@ TexturePaint::enqueueBakeInputs(double time,
     return getBaker()->enqueue(bake);
 }
 
+namespace {
+struct SnapshotHop {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool ran = false;
+    bool ok = false;
+    bool abandoned = false;
+};
+} // anon namespace
+
+bool
+TexturePaint::awaitBakeOutputSnapshot(const std::weak_ptr<TexturePaint>& weak,
+                                      const std::shared_ptr<BakeOutputRun>& run,
+                                      const std::function<bool()>& cancelled)
+{
+    QCoreApplication* app = QCoreApplication::instance();
+
+    if (!app) {
+        return false;
+    }
+    const std::shared_ptr<SnapshotHop> hop = std::make_shared<SnapshotHop>();
+    // Posted after the completions of every bake that ran before this one, so that the sessions
+    // they froze are seen frozen; the sessions are read there, never on this thread.
+    QMetaObject::invokeMethod(app, [weak, run, hop]() {
+        std::lock_guard<std::mutex> lock(hop->mutex);
+        if (hop->abandoned) {
+            return;
+        }
+        const std::shared_ptr<TexturePaint> self = weak.lock();
+        if (self) {
+            self->snapshotBakeOutput(run.get(), true);
+        }
+        hop->ok = bool(self);
+        hop->ran = true;
+        hop->changed.notify_all(); }, Qt::QueuedConnection);
+    // Holds this baker, and every bake queued behind it, until the main loop takes the snapshot.
+    std::unique_lock<std::mutex> lock(hop->mutex);
+    while (!hop->ran) {
+        if (cancelled()) {
+            hop->abandoned = true;
+
+            return false;
+        }
+        hop->changed.wait_for(lock, std::chrono::milliseconds(20));
+    }
+
+    return hop->ok;
+}
+
 bool
 TexturePaint::enqueueBakeOutput(double time,
                                 ViewIdx view)
@@ -3594,7 +3711,7 @@ TexturePaint::enqueueBakeOutput(double time,
     bake.label = tr("Baking output");
     bake.work = [weak, run, failure](TexturePaintBaker::Context& context) -> bool {
         const std::shared_ptr<TexturePaint> self = weak.lock();
-        if (!holdForBake(self, context)) {
+        if (!holdForBake(self, context) || !awaitBakeOutputSnapshot(weak, run, [&context]() { return context.cancelled(); })) {
             return false;
         }
         BakeControl control = makeControl<BakeControl>(context);
@@ -3608,6 +3725,14 @@ TexturePaint::enqueueBakeOutput(double time,
         }
         if (!ok) {
             self->setPersistentMessage(eMessageTypeError, failure->empty() ? tr("The painted texture could not be baked.").toStdString() : *failure);
+            self->landBake(false);
+
+            return;
+        }
+        // Frozen, a session changed since it was rendered would show what the files lack; live,
+        // what they hold twice. Unadopted, the files go back.
+        if (!self->isBakeOutputSnapshotCurrent(*run)) {
+            self->setPersistentMessage(eMessageTypeError, tr("A session this Bake Output baked was changed while it baked, so its files were put back: bake the output again.").toStdString());
             self->landBake(false);
 
             return;

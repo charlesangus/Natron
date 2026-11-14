@@ -98,6 +98,7 @@ TexturePaintBaker::TexturePaintBaker()
     , _generation(0)
     , _stopped(false)
     , _epoch(0)
+    , _quitting(false)
     , _retired(false)
     , _shutDown(false)
     , _lastProgress()
@@ -106,6 +107,9 @@ TexturePaintBaker::TexturePaintBaker()
     setThreadName("TexturePaintBaker");
     // The thread object lives on the main thread, so this slot does too.
     connect(this, &TexturePaintBaker::workDone, this, &TexturePaintBaker::onWorkDone, Qt::QueuedConnection);
+    // Queued behind the workDone() of the thread's last bake, so that the results of the bakes
+    // before a stop are taken, or dropped, before any bake deferred by it starts.
+    connect(this, &QThread::finished, this, &TexturePaintBaker::onThreadFinished, Qt::QueuedConnection);
     BakerRegistry& registry = bakerRegistry();
     std::lock_guard<std::mutex> lock(registry.mutex);
     registry.bakers.insert(this);
@@ -126,8 +130,16 @@ TexturePaintBaker::enqueue(const Bake& bake)
         return false;
     }
     std::shared_ptr<Task> task = std::make_shared<Task>(bake);
+    std::lock_guard<std::mutex> lock(_mutex);
     task->epoch = _epoch.load();
     ++_pending;
+    // A quitting thread refuses tasks until it has resolved the quit, and strands those given
+    // after that until it is started again.
+    if (_quitting.load() || !_deferred.empty()) {
+        _deferred.push_back(task);
+
+        return true;
+    }
     if (!startTask(task)) {
         --_pending;
 
@@ -140,13 +152,27 @@ TexturePaintBaker::enqueue(const Bake& bake)
 void
 TexturePaintBaker::requestStop(bool allowRestart)
 {
-    if (!allowRestart) {
-        _stopped = true;
+    std::deque<std::shared_ptr<Task>> dropped;
+    bool quitting = false;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!allowRestart) {
+            _stopped = true;
+        }
+        ++_epoch;
+        _pending = 0;
+        _cancel = true;
+        dropped.swap(_deferred);
+        quitting = _quitting.load();
+        if (!quitting && isRunning()) {
+            _quitting = true;
+        }
     }
-    ++_epoch;
-    _pending = 0;
-    _cancel = true;
-    quitThread(allowRestart);
+    // A second quit, given once the first has been resolved and before the thread has exited,
+    // would never be resolved and would refuse every task after it.
+    if (!quitting) {
+        quitThread(allowRestart);
+    }
 }
 
 void
@@ -161,6 +187,31 @@ TexturePaintBaker::stop(bool allowRestart)
     {
         std::lock_guard<std::mutex> lock(_mutex);
         dropped.swap(_finished);
+    }
+}
+
+void
+TexturePaintBaker::onThreadFinished()
+{
+    if (!_quitting.load()) {
+        return;
+    }
+    // finished() is emitted on the thread before it has quite exited.
+    QThread::wait();
+    // Released once the lock is: what a dropped bake holds may enqueue as it goes.
+    std::deque<std::shared_ptr<Task>> deferred;
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    _quitting = false;
+    deferred.swap(_deferred);
+    for (const std::shared_ptr<Task>& task : deferred) {
+        // A stop since the bake was enqueued has dropped it and its count already.
+        if (_stopped.load() || (task->epoch != _epoch.load())) {
+            continue;
+        }
+        if (!startTask(task)) {
+            --_pending;
+        }
     }
 }
 

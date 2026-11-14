@@ -118,6 +118,17 @@ TexturePaintInteract::getCurrentSession() const
 }
 
 bool
+TexturePaintInteract::isPainting() const
+{
+    if (_penDown) {
+        return true;
+    }
+    const RotoPaintInteractPtr paint = _node->getPaintInteract();
+
+    return paint && paint->isPaintStrokePending();
+}
+
+bool
 TexturePaintInteract::acceptsStrokes(const RotoLayerPtr& session) const
 {
     if (!session || TexturePaint::isSessionFrozen(session)) {

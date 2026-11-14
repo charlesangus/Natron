@@ -361,6 +361,12 @@ public:
      **/
     RotoStrokeItemPtr finishPaintStroke();
 
+    // Whether a stroke beginPaintStroke() began is open, or one is still to be painted once the previous stroke's render lands.
+    bool isPaintStrokePending() const WARN_UNUSED_RETURN
+    {
+        return paintStrokeOpen || mustDeferPenEvents();
+    }
+
 private:
     /**
      * @brief A stroke as the overlay draws it until its render catches up: dabs placed, sized and shaded by the stroke

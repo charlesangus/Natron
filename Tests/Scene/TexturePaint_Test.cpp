@@ -2362,6 +2362,10 @@ TEST_F(TexturePaintTest, AFailedBakeOutputComposesItsTilesAgain)
     EXPECT_GT(effect->getSessionRenderCount(), before) << "tiles composed while the bake ran are not reused";
 }
 
+namespace {
+void startBakeOutputWithoutLanding(TexturePaint* effect);
+} // anon namespace
+
 TEST_F(TexturePaintTest, ABakeOutputThatNeverLandsPutsItsFilesBack)
 {
     QTemporaryDir dir;
@@ -2376,7 +2380,7 @@ TEST_F(TexturePaintTest, ABakeOutputThatNeverLandsPutsItsFilesBack)
     TexturePaint* effect = getTexturePaint(paint);
     setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
 
-    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+    startBakeOutputWithoutLanding(effect);
     // The baker runs one bake at a time: once the next starts, the first has written its files.
     std::atomic<bool> next(false);
     TexturePaintBaker::Bake marker;
@@ -2974,7 +2978,7 @@ TEST_F(TexturePaintTest, ShuttingDownStopsEveryBakerAndPutsBackTheFilesOfABakeTh
     TexturePaint* effect = getTexturePaint(paint);
     setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
 
-    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+    startBakeOutputWithoutLanding(effect);
     // Running once the bake has written its files, and only cancellation ends it; nothing pumps
     // the main thread meanwhile, so the bake's completion is still queued when shutting down.
     std::atomic<bool> started(false);
@@ -3308,19 +3312,11 @@ drainBaker(TexturePaint* effect)
     marker.completion = [done](bool) {
         *done = true;
     };
+    if (!effect->getBaker()->enqueue(marker)) {
+        return false;
+    }
 
-    // A baker asked to quit refuses bakes until its thread has stopped, so the marker is offered
-    // again until it is taken.
-    bool queued = false;
-
-    return pumpUntil([&]() {
-        if (!queued) {
-            queued = effect->getBaker()->enqueue(marker);
-        }
-
-        return queued && done->load();
-    },
-                     60000);
+    return pumpUntil([&]() { return done->load(); }, 60000);
 }
 
 /**
@@ -3391,6 +3387,19 @@ persistentMessageOf(const NodePtr& node)
     node->getPersistentMessage(&message, &type, false);
 
     return message.toStdString();
+}
+
+/**
+ * Enqueues a Bake Output of effect and pumps the main thread only until the bake has taken its
+ * snapshot there and reached its first file step, so that its completion stays queued for as long
+ * as the caller does not pump.
+ **/
+void
+startBakeOutputWithoutLanding(TexturePaint* effect)
+{
+    StepGate gate;
+    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+    ASSERT_TRUE(pumpUntil([&]() { return gate.waitUntilArrived(1, 0); }, 60000)) << "the bake writes its files";
 }
 } // anon namespace
 
@@ -3665,6 +3674,108 @@ TEST_F(TexturePaintTest, TwoQueuedBakeOutputsOfANodeToTheSameFilesLandInOrder)
     undoBakeOutput(paint, commands[0], true);
     expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.5f, 0.5f, 0.5f, 1.f, "the file before both bakes");
     EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
+}
+
+TEST_F(TexturePaintTest, ASessionPaintedAfterABakeOutputStartedIsNotBakedAndStaysLive)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeOutputPath(paint, dir);
+    const std::string blue = (dir.path() + QString::fromUtf8("/out.1002.exr")).toStdString();
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+
+    std::vector<UndoCommandPtr> commands;
+    effect->setUndoCommandSinkForTesting([&commands](const UndoCommandPtr& command) {
+        commands.push_back(command);
+    });
+    RotoLayerPtr later;
+    {
+        // Held at the write of tile 1001, the bake has not rendered tile 1002 yet, which the
+        // later session paints.
+        StepGate gate;
+        ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+        ASSERT_TRUE(pumpUntil([&]() { return gate.waitUntilArrived(1, 0); }, 60000)) << "the bake writes its files";
+        later = effect->addSession(viewCamera());
+        ASSERT_TRUE(bool(later));
+        setColor(addBrushStroke(paint, later, eRotoStrokeTypeSolid, "later", kBlueU, 0.5), 1., 1., 0.);
+        gate.open();
+        ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
+    }
+
+    EXPECT_FALSE(paint->hasPersistentMessage()) << persistentMessageOf(paint);
+    ASSERT_EQ(1u, commands.size());
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the session the bake began with");
+    EXPECT_LT(bakedTexelAt(blue, kSmallTile, 0.5, 0.5).rgba[0], 0.9f) << "the later session is not in the files";
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
+    EXPECT_FALSE(TexturePaint::isSessionFrozen(later)) << "the later session stays live";
+
+    // The next bake takes it.
+    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+    ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
+    effect->setUndoCommandSinkForTesting(std::function<void(const UndoCommandPtr&)>());
+    EXPECT_FALSE(paint->hasPersistentMessage()) << persistentMessageOf(paint);
+    expectColor(bakedTexelAt(blue, kSmallTile, 0.5, 0.5), 1.f, 1.f, 0.f, 1.f, "the later session, baked next");
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(later));
+}
+
+TEST_F(TexturePaintTest, ASessionPaintedWhileABakeOutputIsQueuedIsBakedAndFrozen)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeOutputPath(paint, dir);
+    const std::string blue = (dir.path() + QString::fromUtf8("/out.1002.exr")).toStdString();
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+
+    std::atomic<bool> release(false);
+    holdBaker(effect, &release);
+    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+    RotoLayerPtr later = effect->addSession(viewCamera());
+    ASSERT_TRUE(bool(later));
+    setColor(addBrushStroke(paint, later, eRotoStrokeTypeSolid, "later", kBlueU, 0.5), 1., 1., 0.);
+    release = true;
+    ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
+
+    EXPECT_FALSE(paint->hasPersistentMessage()) << persistentMessageOf(paint);
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the session painted before the bake was queued");
+    expectColor(bakedTexelAt(blue, kSmallTile, 0.5, 0.5), 1.f, 1.f, 0.f, 1.f, "the session painted while the bake was queued");
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(later)) << "a bake freezes every session it rendered";
+}
+
+TEST_F(TexturePaintTest, ABakeOutputEnqueuedAsTheNodeStopsItsBakerRunsOnceItHasStopped)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeOutputPath(paint, dir);
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+
+    // Still running when asked to stop, the held bake keeps the baker's thread from exiting at once.
+    std::atomic<bool> release(false);
+    holdBaker(effect, &release);
+    effect->quitBackgroundWork(true);
+    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0))) << "queued behind the restart rather than refused";
+    EXPECT_FALSE(paint->hasPersistentMessage()) << persistentMessageOf(paint);
+    release = true;
+    ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
+
+    EXPECT_FALSE(paint->hasPersistentMessage()) << persistentMessageOf(paint);
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the bake enqueued after the stop");
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
 }
 
 TEST_F(TexturePaintTest, ABakeOutputOfFilesAnotherNodeIsBakingFailsNamingIt)

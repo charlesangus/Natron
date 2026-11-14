@@ -106,6 +106,15 @@ public:
     // The session the next stroke goes into, null when it will start one.
     RotoLayerPtr getCurrentSession() const WARN_UNUSED_RETURN;
 
+    // The session last painted into and not closed, whether or not it still takes strokes.
+    RotoLayerPtr getOpenSession() const WARN_UNUSED_RETURN
+    {
+        return _session.lock();
+    }
+
+    // Whether a stroke is open, or begun and still to land in its session.
+    bool isPainting() const WARN_UNUSED_RETURN;
+
 private:
     // Whether session is still one of the node's sessions, live.
     bool acceptsStrokes(const RotoLayerPtr& session) const WARN_UNUSED_RETURN;

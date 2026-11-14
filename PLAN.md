@@ -306,7 +306,7 @@ future core work has solid ground to build on.
 | M119 | Trackball Panel Layout | done | M56, M69 | bosley-native-nodes | E10 | | | [M119-trackball-panel-layout.md](PLAN/MILESTONES/M119-trackball-panel-layout.md) |
 | M134 | Output Picker Pixel Aspect | done | - | bosley-native-nodes | E10 | | | [M134-output-picker-pixel-aspect.md](PLAN/MILESTONES/M134-output-picker-pixel-aspect.md) |
 | M135 | Flaky Test Fixes | done | - | bosley-native-nodes | E2 | | | [M135-pool-sharing-flake-fix.md](PLAN/MILESTONES/M135-pool-sharing-flake-fix.md) |
-| M136 | Edge Policy Investigation | doing | M167 | bosley-native-nodes | E3 | |  | [M136-edge-policy-investigation.md](PLAN/MILESTONES/M136-edge-policy-investigation.md) |
+| M136 | Edge Policy Investigation | doing | M167 | bosley-native-nodes | E3 | | response | [M136-edge-policy-investigation.md](PLAN/MILESTONES/M136-edge-policy-investigation.md) |
 | M137 | Native Base Class Flexibility | done | - | bosley-native-nodes | E3 | | | [M137-native-base-class-flexibility.md](PLAN/MILESTONES/M137-native-base-class-flexibility.md) |
 | M138 | GUI Papercuts | done | - | bosley-native-nodes | E10 | | | [M138-gui-papercuts.md](PLAN/MILESTONES/M138-gui-papercuts.md) |
 | M139 | Blur In-Graph Overhead | todo | M90, M137 |  | E6 | | | [M139-blur-in-graph-overhead.md](PLAN/MILESTONES/M139-blur-in-graph-overhead.md) |
@@ -554,6 +554,8 @@ future core work has solid ground to build on.
 | F24 | Deep Rendering | open |  |  | feature/f24-deep-rendering | Render true deep images in process from Nucleon Utility, Cycles and MoonRay through one host-side deep render buffer, with DeepCompact. |
 
 # Open questions
+
+- **M136 - Edge Policy Investigation (2026-11-14):** with Q1 (every input follows its own edge bit) and sources defaulting to Stretch, any finite-region source read at the same position fills the frame with its edge: a Constant at Size as Merge A, Roto shapes inside RotoPaint's merges, offset masks in Grade/Saturation/ColorMath, KeyMix, Dissolve and the LightWrap group (renders black). 56 test suites fail on this. Options: (a) accept it and re-record those tests to Q1; (b) finite-region generators and Roto/Bezier shapes report Black (shapes have nothing beyond their edge), keeping Stretch for Read and plates; (c) limit Stretch reads to the primary input. PM recommendation: (b), which keeps your Merge answer for plates while shapes and masks behave as expected.
 
 - **M221 - Neural Optical Flow (2026-11-14):** the exported SEA-RAFT M model (74.4 MB) needs a home. The manifest points at a GitHub release `ai-models-1` on charlesangus/Natron; may I create that release and upload the package? Also, its training data includes FlyingChairs (research-only) and KITTI 2015 (CC BY-NC-SA 3.0); FlyingThings3D, Sintel and HD1K are unconfirmed, and the entry is marked `osaid: Open Source AI`. Is shipping it as a downloadable, licence-shown-before-download model acceptable?
 

@@ -55,6 +55,11 @@ Make a downstream edit feel immediate: a point-op edit (Grade at the end of a ~2
   - verify: a GPU test of the raw chain at mip 1 stays on the GPU and matches the CPU T1/T2 result within the GPU parity tolerance; strip and device-tier tests pass.
   - size: L
 
+- [ ] M303.P1.T4 — GPU regions downscale mip-0 results on the device
+  - files: `Engine/GpuRegionTask.cpp`, `Engine/GpuPlacement.cpp`, `Engine/Gpu/Kernels/` (a downscale kernel if none fits), `Tests/Native/NativeRawChainGpu_Test.cpp`, `Tests/GpuResidency_Test.cpp`
+  - approach: a node without render-scale support inside a GPU region renders at mip 0, and the region box-downscales its result on the device to the consumer's mip (also when a finer-mip device-tier hit serves a coarser request), so Full demosaic and mosaic stages viewed directly below 100% stay on the GPU. Reuse an existing GPU downscale kernel if there is one.
+  - verify: gtests — Full demosaic at mip 1 runs as one resident region with one upload and one download and matches the CPU's mip-0-then-downscale result within tolerance; a finer-mip device hit serves a mip-1 request without a host round trip.
+  - size: L
 ## Phase 303.2: Selective, cache-friendly draft
 
 - [x] M303.P2.T1 — Serve draft lookups from non-draft entries

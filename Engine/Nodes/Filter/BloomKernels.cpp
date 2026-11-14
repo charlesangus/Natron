@@ -941,7 +941,7 @@ recordGpu(const Plan& plan,
         return eStatusFailed;
     }
     gpu::GpuBuffer* window = nullptr;
-    if (!plan.fir && !gpu::recordFilterWindow(ctx, PassExec::toGpuBlurRect(output), PassExec::toGpuBlurRect(io.rod), io.haloX, io.haloY, window)) {
+    if (!plan.fir && !gpu::recordFilterWindow(ctx, PassExec::toGpuBlurRect(output), PassExec::toGpuBlurRect(io.domain), io.haloX, io.haloY, window)) {
         return eStatusFailed;
     }
 

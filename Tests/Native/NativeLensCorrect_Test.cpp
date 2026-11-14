@@ -987,6 +987,7 @@ TEST_F(NativeLensCorrectTest, RegionOfDefinitionFollowsThePixels)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
+    setBlackOutside(source, true);
     NodePtr node = makeCanon(source);
     ASSERT_TRUE(bool(node));
     const RectD sourceRoD = regionOf(source);

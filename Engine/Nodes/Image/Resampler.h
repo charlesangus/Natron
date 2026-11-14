@@ -641,8 +641,8 @@ ResampleParams makeResampleParams(const SamplingTransforms& transforms, const Fi
  * without mask or mix. Each pixel centre (x + 0.5, y + 0.5) is mapped through the inverse
  * matrix; a point at or behind infinity (z <= 0) is 0. Impulse samples the nearest pixel,
  * every other filter goes through interpolateSuper() with the Jacobian of the matrix at that
- * point (zeroed along an axis whose sample falls outside the source, or along both when
- * edgeMode is Black and either does). With motionBlur != 0 and several matrices, each pixel is a
+ * point, also past the source's bounds, so that the footprint filters the source extended by
+ * edgeMode as it would that image materialised. With motionBlur != 0 and several matrices, each pixel is a
  * Monte Carlo average over the matrices: at least motionBlurMinSamples() stratified samples,
  * then more until the standard error falls under motionBlurMaxError() or
  * motionBlurMaxIterations() is reached, the sequence seeded by (x, y, motionBlur) so the result

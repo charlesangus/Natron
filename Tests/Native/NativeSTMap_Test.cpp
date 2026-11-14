@@ -802,6 +802,7 @@ TEST_F(NativeSTMapTest, MaskAndMixFromTheBase)
     NodePtr mask = makeSource();
     ASSERT_TRUE(source && uv && mask);
     setParitySourceOrigin(mask, 8, 4);
+    setBlackOutside(mask, true);
     NodePtr node = makeSTMap(source, uv, "impulse");
     ASSERT_TRUE(bool(node));
     // The flipped map, so that the warp differs from the Source almost everywhere.

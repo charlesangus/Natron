@@ -714,6 +714,7 @@ TEST_F(NativeLensDistortionTest, STMapOutputMatchesImageOutput)
         resetProject();
         NodePtr source = makeSource();
         ASSERT_TRUE(bool(source));
+        setBlackOutside(source, true);
         NodePtr image = c.make(source);
         NodePtr map = c.make(source);
         ASSERT_TRUE(image && map);

@@ -113,10 +113,10 @@ inline constexpr InputSpec kErodeDilateInputs[] = {
  * filter on X, then one on Y, each with its own axis's operation; min and max filters don't
  * commute, so the order is part of the result.
  *
- * Its passes are those line filters over one buffer covering the render window plus the halo,
- * clipped to the output's region of definition: outside the source image the buffer reads as
- * zero, and the window clamps at the buffer's edge. Each pass runs over whole lines, which gives
- * the same pixels at any thread count.
+ * Its passes are those line filters over one buffer covering the render window plus the halo:
+ * outside the source image the buffer reads by the edge mode, so under Black an erode eats in from
+ * the source's border. Each pass runs over whole lines, which gives the same pixels at any thread
+ * count.
  **/
 struct ErodeDilateOp {
     using Params = ErodeDilateParams;

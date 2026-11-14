@@ -136,7 +136,7 @@ inline constexpr InputSpec kEdgeDetectInputs[] = {
  * The source region of interest adds the erosion radius and the non-maxima suppression's one
  * pixel to the gradient filter's halo, which the OpenFX plug-in omits, so a tile renders what a
  * full-frame render shows there. As in Blur, the passes run over one buffer covering the window
- * plus that halo, clipped to the output's region of definition, each over whole rows or whole
+ * plus that halo, each over whole rows or whole
  * columns, giving the same pixels at any thread count. The GPU records the same passes over the
  * same buffer, unless the erosion radius exceeds the device kernel's limit.
  **/

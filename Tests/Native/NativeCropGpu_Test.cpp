@@ -508,8 +508,34 @@ expectCropEqual(const std::vector<float>& cpu,
     EXPECT_GT(exactDiff.compared + softDiff.compared, 0u) << what;
 }
 
+// On each axis the overlap of roi and rod, or where they miss, the one-pixel column or row of rod
+// nearest to roi.
+RectI
+nearestEdgeBand(const RectI& roi,
+                const RectI& rod)
+{
+    const auto axis = [](int r1, int r2, int d1, int d2, int* b1, int* b2) {
+        if ((r1 < d2) && (r2 > d1)) {
+            *b1 = std::max(r1, d1);
+            *b2 = std::min(r2, d2);
+        } else if (r1 >= d2) {
+            *b1 = d2 - 1;
+            *b2 = d2;
+        } else {
+            *b1 = d1;
+            *b2 = d1 + 1;
+        }
+    };
+    RectI band;
+    axis(roi.x1, roi.x2, rod.x1, rod.x2, &band.x1, &band.x2);
+    axis(roi.y1, roi.y2, rod.y1, rod.y2, &band.y1, &band.y2);
+
+    return band;
+}
+
 // Renders roi on the CPU and on the device from the source over the node's region of interest of
-// roi, clipped to the source's own region.
+// roi, clipped to the source's own region. A Stretch read whose region misses the source gets the
+// source's nearest edge band instead, as the render fetches it, and a Black one gets nothing.
 void
 expectCropMatches(GpuParityRuntime& runtime,
                   const NodePtr& source,
@@ -531,7 +557,12 @@ expectCropMatches(GpuParityRuntime& runtime,
     ASSERT_EQ(4u, cpu.channels.size()) << what;
     ASSERT_EQ(roi, cpu.window) << what;
 
-    const RectI bounds = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel)).intersect(pixelRegionOfDefinition(source, mipmapLevel));
+    const RectI inputRoI = effect->getGpuInputRoI(0, effect->getCurrentTime(), effect->getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel));
+    const RectI sourceRoD = pixelRegionOfDefinition(source, mipmapLevel);
+    RectI bounds = inputRoI.intersect(sourceRoD);
+    if (bounds.isNull() && !inputRoI.isNull() && !sourceRoD.isNull() && (effect->getTimeInvariantMetadata()->getEdgeMode() == EdgeMode::Stretch)) {
+        bounds = nearestEdgeBand(inputRoI, sourceRoD);
+    }
     std::vector<GpuParityImage> inputs(1);
     if (!bounds.isNull()) {
         ASSERT_TRUE(sourceImage(source, mipmapLevel, bounds, &inputs[0])) << what;

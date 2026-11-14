@@ -604,6 +604,7 @@ protected:
             if (!column) {
                 return NodePtr();
             }
+            setBlackOutside(column, true);
             if (!ramp) {
                 ramp = column;
                 continue;

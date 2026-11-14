@@ -557,6 +557,7 @@ TEST_F(NativeIWarpTest, MapRampHasASingleEdge)
     NodePtr upper = makeConstant(RectI(-200, 24, 264, 400), { 1., 1., 1., 1. });
     NodePtr ramp = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
     ASSERT_TRUE(bool(stripe) && bool(upper) && bool(ramp));
+    setBlackOutside(upper, true);
     connectNodes(upper, ramp, 0, true);
     EXPECT_TRUE(setKnobValues(ramp, kBlurParamCropToFormat, { 0. }));
     EXPECT_TRUE(setKnobValues(ramp, kBlurParamSize, { 0., 40. }));

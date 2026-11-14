@@ -663,6 +663,8 @@ makeParityPair(const AppInstancePtr& app,
     if (!pair.source) {
         return pair;
     }
+    // The references were recorded with the source read as black past its region.
+    setBlackOutside(pair.source, true);
     pair.native = createNodeAtMajor(app, id, nativeMajor);
     if (!pair.native) {
         return pair;

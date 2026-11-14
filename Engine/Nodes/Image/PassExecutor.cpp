@@ -1100,13 +1100,6 @@ runPassesCpu(EffectInstance& effect,
         return eStatusOK;
     }
 
-    // The passes run over the window plus the halo, clipped to this effect's own region of
-    // definition, as CImgFilterPluginHelper::render() clips its source region of interest.
-    RectI dstRoDPixel;
-    if (!effectRoDPixels(effect, args.time, args.mappedScale, args.view, &dstRoDPixel)) {
-        return eStatusFailed;
-    }
-
     MaskInput maskSource;
     maskSource.applied = doMask;
     maskSource.invert = plan.maskInvert;
@@ -1133,9 +1126,12 @@ runPassesCpu(EffectInstance& effect,
     }
     const bool processing = !isEmptyRect(processWindow);
 
+    // The buffer keeps the whole halo, unclipped by this effect's region of definition: a tap past
+    // the source reads it extended by the edge mode, as it would that image materialised, where a
+    // window clamped at the buffer's edge would not.
     RectI bufferRect(0, 0, 0, 0);
     if (processing) {
-        intersectRects(passListSourceRoI(processWindow, list), dstRoDPixel, &bufferRect);
+        bufferRect = passListSourceRoI(processWindow, list);
     }
     const int bufferWidth = std::max(0, bufferRect.width());
     const int bufferHeight = std::max(0, bufferRect.height());
@@ -1284,15 +1280,13 @@ recordPassesGpu(EffectInstance& effect,
     const ViewIdx view = query.view;
     const RenderScale& scale = query.mappedScale;
 
-    // runPassesCpu() runs the passes over the window plus its halo clipped to this effect's region
-    // of definition, and fillBuffer() resolves the source against the input image.
+    // runPassesCpu() runs the passes over the window plus its halo, and fillBuffer() resolves the
+    // source against the input image.
     RectI rodPixel;
     if (!effectRoDPixels(effect, time, scale, view, &rodPixel)) {
         return eStatusFailed;
     }
-    const RectI sourceRoI = passListSourceRoI(rect, list);
-    RectI domain;
-    intersectRects(sourceRoI, rodPixel, &domain);
+    const RectI domain = passListSourceRoI(rect, list);
 
     const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
     RectD srcRoD;
@@ -1361,8 +1355,8 @@ recordPassesGpu(EffectInstance& effect,
     io.output = rect;
     io.domain = domain;
     io.rod = rodPixel;
-    io.haloX = rect.x1 - sourceRoI.x1;
-    io.haloY = rect.y1 - sourceRoI.y1;
+    io.haloX = rect.x1 - domain.x1;
+    io.haloY = rect.y1 - domain.y1;
     io.nComps = nComps;
     io.channels = plan.processChannels;
     // The other inputs as the CPU passes read them through getImage(): over their own region of

@@ -848,20 +848,11 @@ namespace {
             interpolateT<N>(filter, clamp, fx, fy, src, edgeMode, tmpPix);
             return;
         }
-        const int x1 = src.bounds.x1;
-        const int x2 = src.bounds.x2;
-        const int y1 = src.bounds.y1;
-        const int y2 = src.bounds.y2;
-        bool xinside = (x1 <= fx + 0.5 && fx - 0.5 < x2);
-        bool yinside = (y1 <= fy + 0.5 && fy - 0.5 < y2);
-        if ((edgeMode == EdgeMode::Black) && !(xinside && yinside)) {
-            xinside = yinside = false;
-        }
         const double z2 = transformed.z * transformed.z;
-        double Jxx = xinside ? (H(0, 0) * transformed.z - transformed.x * H(2, 0)) / z2 : 0.;
-        double Jxy = xinside ? (H(0, 1) * transformed.z - transformed.x * H(2, 1)) / z2 : 0.;
-        double Jyx = yinside ? (H(1, 0) * transformed.z - transformed.y * H(2, 0)) / z2 : 0.;
-        double Jyy = yinside ? (H(1, 1) * transformed.z - transformed.y * H(2, 1)) / z2 : 0.;
+        const double Jxx = (H(0, 0) * transformed.z - transformed.x * H(2, 0)) / z2;
+        const double Jxy = (H(0, 1) * transformed.z - transformed.x * H(2, 1)) / z2;
+        const double Jyx = (H(1, 0) * transformed.z - transformed.y * H(2, 0)) / z2;
+        const double Jyy = (H(1, 1) * transformed.z - transformed.y * H(2, 1)) / z2;
         interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, edgeMode, tmpPix);
     }
 
@@ -890,16 +881,7 @@ namespace {
             interpolateT<N>(filter, clamp, fx, fy, src, edgeMode, tmpPix);
             return;
         }
-        bool xinside = (src.bounds.x1 <= fx + 0.5 && fx - 0.5 < src.bounds.x2);
-        bool yinside = (src.bounds.y1 <= fy + 0.5 && fy - 0.5 < src.bounds.y2);
-        if ((edgeMode == EdgeMode::Black) && !(xinside && yinside)) {
-            xinside = yinside = false;
-        }
-        const double Jxx = xinside ? H(0, 0) : 0.;
-        const double Jxy = xinside ? H(0, 1) : 0.;
-        const double Jyx = yinside ? H(1, 0) : 0.;
-        const double Jyy = yinside ? H(1, 1) : 0.;
-        interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, edgeMode, tmpPix);
+        interpolateSuperT<N>(filter, clamp, fx, fy, H(0, 0), H(0, 1), H(1, 0), H(1, 1), src, edgeMode, tmpPix);
     }
 
     inline bool
@@ -1114,7 +1096,6 @@ namespace {
                     float* out,
                     int nComps)
     {
-        const RectI& b = src.bounds;
         float tmpPix[N];
 
         for (int i = 0; i < n; ++i, out += nComps) {
@@ -1136,15 +1117,10 @@ namespace {
                 double Jxy = finiteOrZero(J[1]);
                 double Jyx = finiteOrZero(J[2]);
                 double Jyy = finiteOrZero(J[3]);
-                bool xinside = (b.x1 <= fx + 0.5 && fx - 0.5 < b.x2);
-                bool yinside = (b.y1 <= fy + 0.5 && fy - 0.5 < b.y2);
-                if ((edgeMode == EdgeMode::Black) && !(xinside && yinside)) {
-                    xinside = yinside = false;
-                }
-                if (!xinside || movedX) {
+                if (movedX) {
                     Jxx = Jxy = 0.;
                 }
-                if (!yinside || movedY) {
+                if (movedY) {
                     Jyx = Jyy = 0.;
                 }
                 interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, edgeMode, tmpPix);

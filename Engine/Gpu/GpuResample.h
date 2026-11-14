@@ -49,22 +49,17 @@ inline constexpr uint32_t kGpuResampleFilterCount = 17;
 // below 2^16.
 inline constexpr uint32_t kGpuResampleMaxMatrices = 65535;
 
-// Whether one Jacobian of the matrix is zero, which sends box to its nearest pixel.
-struct GpuResampleJacobian {
-    bool zero = true;
-};
-
 // One destination-to-source pixel matrix, rows (m[0] m[1] m[2]) and (m[3] m[4] m[5]) and the third
-// row `perspective`, with its Jacobians indexed by which axes sample inside the source: bit 0 x,
-// bit 1 y; entry 0 must be zero. A third row other than (0, 0, 1) makes the matrix projective, sampled
-// as Resampler's samplePixel does: divided by z, zero where z <= 0, with the Jacobian and the kernel
-// scales worked out per pixel, so `jacobians` and the scales are not read. scaleX and scaleY are
+// row `perspective`; jacobianZero is set when its linear part is zero, which sends box to its nearest
+// pixel. A third row other than (0, 0, 1) makes the matrix projective, sampled as Resampler's
+// samplePixel does: divided by z, zero where z <= 0, with the Jacobian and the kernel scales worked
+// out per pixel, so jacobianZero and the scales are not read. scaleX and scaleY are
 // Resampler::kernelScale of the two rows, carried as the CPU's doubles so that the exact kernels'
 // tap ranges fall where the CPU's do. weight is only read by a weighted blur.
 struct GpuResampleMatrix {
     std::array<double, 6> matrix {};
     std::array<double, 3> perspective { 0., 0., 1. };
-    std::array<GpuResampleJacobian, 4> jacobians {};
+    bool jacobianZero = true;
     double scaleX = 1.;
     double scaleY = 1.;
     double weight = 1.;

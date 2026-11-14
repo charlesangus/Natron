@@ -173,6 +173,8 @@ protected:
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(pair.native && effectOf(pair.native));
+        // The expectations resample the source under Stretch, which the node reads under Input.
+        setBlackOutside(pair.source, false);
 
         return pair;
     }

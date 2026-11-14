@@ -229,7 +229,7 @@ bool isPluginMajorRegistered(const std::string& id, int major);
 /**
  * @brief Creates the node at its exact major and a parity source connected to its input 0. With a
  * non-empty `maskInputLabel`, also creates a second parity source and connects it to the input
- * bearing that label. A node that cannot be created is reported with ADD_FAILURE() and leaves
+ * bearing that label. Every source it creates has Black Outside on. A node that cannot be created is reported with ADD_FAILURE() and leaves
  * `native` null.
  **/
 ParityPair makeParityPair(const AppInstancePtr& app,

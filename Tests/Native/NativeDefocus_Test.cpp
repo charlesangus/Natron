@@ -191,6 +191,7 @@ protected:
     {
         NodePtr black = makeConstant(kWindow, { 0., 0., 0., 0. });
         NodePtr inside = makeConstant(box, color);
+        setBlackOutside(inside, true);
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
 
         EXPECT_TRUE(bool(black) && bool(inside) && bool(merge));

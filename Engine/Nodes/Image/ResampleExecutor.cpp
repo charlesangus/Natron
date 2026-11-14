@@ -415,15 +415,7 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
         }
         m.scaleX = Resampler::kernelScale(H(0, 0), H(0, 1));
         m.scaleY = Resampler::kernelScale(H(1, 0), H(1, 1));
-        // The Jacobian the CPU samples an affine matrix with, by which axes fall inside the
-        // source. The kernel works a projective matrix's out per pixel.
-        for (int state = 1; state < 4 && !m.isProjective(); ++state) {
-            const bool x = (state & 1) != 0;
-            const bool y = (state & 2) != 0;
-            const bool zeroX = !x || (H(0, 0) == 0. && H(0, 1) == 0.);
-            const bool zeroY = !y || (H(1, 0) == 0. && H(1, 1) == 0.);
-            m.jacobians[state].zero = zeroX && zeroY;
-        }
+        m.jacobianZero = (H(0, 0) == 0.) && (H(0, 1) == 0.) && (H(1, 0) == 0.) && (H(1, 1) == 0.);
     }
     if (resample.matrices.size() > 1) {
         const double quality = transforms.motionBlur;

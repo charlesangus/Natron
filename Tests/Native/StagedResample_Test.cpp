@@ -350,6 +350,7 @@ protected:
         }
         setParitySourceComponents(*mask, "rgba");
         setParitySourceOrigin(*mask, 10, 6);
+        setBlackOutside(*mask, true);
         connectNodes(*mask, *op, 1, true);
 
         return setKnobValues(*op, "enableMask_Mask", { 1. }) && setKnobValues(*op, kOfxMixParamName, { kMix });

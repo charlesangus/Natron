@@ -98,22 +98,18 @@ float4 lensDistortionPixel(LensDistortion d, int2 p)
         const bool inside = !ffLess(u, zeroFF) && ffLess(u, oneFF) && !ffLess(v, zeroFF) && ffLess(v, oneFF);
         return float4(ffToFloat(u), ffToFloat(v), 0.0, inside ? 1.0 : 0.0);
     }
-    // Source pixel coordinates at the render scale, NaN where the model has no solution, which the
-    // sampler reads as black.
-    float sx = asfloat(0x7fc00000u);
-    float sy = sx;
+    // Where the model has no solution the pixel is black whatever the edge mode, as on the CPU.
+    if (!ok)
+        return zero;
+    const float sx = ffToFloat(ffMul(ffMul(s.x, d.toSourceX), d.scaleX));
+    const float sy = ffToFloat(ffMul(s.y, d.scaleY));
     float4 J = zero;
     const bool jacobian = (d.flags & kLensDistortionJacobian) != 0;
-    if (ok)
+    if (jacobian)
     {
-        sx = ffToFloat(ffMul(ffMul(s.x, d.toSourceX), d.scaleX));
-        sy = ffToFloat(ffMul(s.y, d.scaleY));
-        if (jacobian)
-        {
-            // d(source at scale) / d(output at scale), from the model's full-resolution one.
-            J = float4(ffToFloat(ffMul(s.J.j0, d.toSourceX)), ffToFloat(ffDiv(ffMul(ffMul(s.J.j1, d.toSourceX), d.scaleX), d.scaleY)),
-                       ffToFloat(ffDiv(ffMul(s.J.j2, d.scaleY), d.scaleX)), ffToFloat(s.J.j3));
-        }
+        // d(source at scale) / d(output at scale), from the model's full-resolution one.
+        J = float4(ffToFloat(ffMul(s.J.j0, d.toSourceX)), ffToFloat(ffDiv(ffMul(ffMul(s.J.j1, d.toSourceX), d.scaleX), d.scaleY)),
+                   ffToFloat(ffDiv(ffMul(s.J.j2, d.scaleY), d.scaleX)), ffToFloat(s.J.j3));
     }
     const float4 v = sampleAt(lensDistortionSource(d), sx, sy, J, jacobian, d.spec, (d.flags & kLensDistortionClamp) != 0, kWrapNone, kWrapNone,
                               int4(0, 0, 0, 0));

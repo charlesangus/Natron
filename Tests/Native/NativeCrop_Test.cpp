@@ -277,27 +277,18 @@ TEST_F(NativeCropTest, SoftEdges)
     expectParity(pair, "softness-20", kSoftTolerance, true);
 }
 
-TEST_F(NativeCropTest, ForcedBlack)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setRectangle(pair, 10., 8., 40., 30.));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeModeParam, std::string("black")));
-    expectParity(pair, "black-outside", kExactTolerance, true);
-}
-
 namespace {
 
 bool
 renderRGBA(const NodePtr& node,
            const RectI& window,
-           RenderedPlane* plane)
+           RenderedPlane* plane,
+           unsigned mipmapLevel = 0)
 {
     std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
     std::vector<RenderedPlane> planes;
     std::string error;
-    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error);
+    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), mipmapLevel, window, layers, &planes, &error);
 
     EXPECT_TRUE(ok) << error;
     if (!ok || (planes.size() != 1) || (planes[0].channels.size() != 4)) {
@@ -403,6 +394,29 @@ TEST_F(NativeCropTest, ForcedStretchOverABlackSourceStretches)
 TEST_F(NativeCropTest, ForcedBlackOverAStretchSourceIsBlack)
 {
     expectCropLargerThanTheSource(EdgeMode::Stretch, EdgeModeChoice::Black, "black");
+}
+
+// The OpenFX Crop's Black Outside paints a black border pixel inside the rectangle, which the
+// native Black does not: it keeps every source pixel of the rectangle and is zero past it.
+TEST_F(NativeCropTest, ForcedBlack)
+{
+    resetProject();
+    ParityPair pair = makePair();
+    ASSERT_TRUE(bool(pair.native));
+    ASSERT_TRUE(setRectangle(pair, 10., 8., 40., 30.));
+    ASSERT_TRUE(setKnobValue(pair.native, kEdgeModeParam, std::string("black")));
+    setBlackOutside(pair.source, false);
+    EXPECT_EQ(EdgeMode::Black, outputEdgeMode(pair.native));
+
+    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+        const std::string what = "black-outside, mipmap " + std::to_string(mipmapLevel);
+        const RectI kept = RectD(10., 8., 50., 38.).toPixelEnclosing(mipmapLevel, 1.);
+        RenderedPlane sourcePlane;
+        RenderedPlane cropPlane;
+        ASSERT_TRUE(renderRGBA(pair.source, paritySourceWindow(pair.source, kTime, mipmapLevel), &sourcePlane, mipmapLevel)) << what;
+        ASSERT_TRUE(renderRGBA(pair.native, caseWindow(mipmapLevel), &cropPlane, mipmapLevel)) << what;
+        expectEdge(cropPlane, sourcePlane, kept, EdgeMode::Black, what);
+    }
 }
 
 // A Crop smaller than its source carries the resolved mode, so what reads past the crop

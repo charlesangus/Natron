@@ -525,13 +525,13 @@ ResampleSource lensCorrectSource(LensCorrect d)
 
 bool finite2(float2 p)
 {
-    return !isnan(p.x) && !isinf(p.x) && !isnan(p.y) && !isinf(p.y);
+    return isFiniteF(p.x) && isFiniteF(p.y);
 }
 
 // A difference that is not finite contributes nothing, as coordJacobians() on the CPU.
 float finiteOr0(float v)
 {
-    return (isnan(v) || isinf(v)) ? 0.0 : v;
+    return isFiniteF(v) ? v : 0.0;
 }
 
 float4 lensCorrectPixel(LensCorrect d, int2 p)

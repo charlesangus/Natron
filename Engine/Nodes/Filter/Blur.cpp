@@ -191,7 +191,7 @@ lineGpuRecorder(const LineFilterPtr& filterX,
         // A recursive filter depends on whole lines, so the filtered rect must be the CPU's: the
         // window grown by the halo and clipped to the region of definition.
         gpu::GpuBuffer* window = nullptr;
-        if (!gpu::recordFilterWindow(io.context, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.rod), io.haloX, io.haloY, window)) {
+        if (!gpu::recordFilterWindow(io.context, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.domain), io.haloX, io.haloY, window)) {
             return eStatusFailed;
         }
         gpu::GpuLineBlur blur;

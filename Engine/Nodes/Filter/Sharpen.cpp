@@ -421,7 +421,7 @@ sharpenGpuRecorder(const std::shared_ptr<const SharpenGpuPlan>& plan)
                 }
             } else {
                 gpu::GpuBuffer* window = nullptr;
-                if (!gpu::recordFilterWindow(ctx, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.rod), io.haloX, io.haloY, window)) {
+                if (!gpu::recordFilterWindow(ctx, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.domain), io.haloX, io.haloY, window)) {
                     return eStatusFailed;
                 }
                 gpu::GpuLineBlur blur;

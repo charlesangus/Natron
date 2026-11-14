@@ -819,7 +819,7 @@ edgeDetectGpuRecorder(const std::shared_ptr<const EdgeDetectGpuPlan>& plan)
 
         const bool lines = !plan->finiteDifference || plan->preBlur;
         gpu::GpuBuffer* window = nullptr;
-        if (lines && !gpu::recordFilterWindow(ctx, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.rod), io.haloX, io.haloY, window)) {
+        if (lines && !gpu::recordFilterWindow(ctx, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.domain), io.haloX, io.haloY, window)) {
             return eStatusFailed;
         }
         if (plan->finiteDifference) {

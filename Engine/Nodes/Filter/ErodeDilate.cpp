@@ -276,7 +276,7 @@ recordUnfiltered(const PassGpuIO& io)
         return eStatusFailed;
     }
     gpu::GpuBuffer* window = nullptr;
-    if (!gpu::recordFilterWindow(io.context, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.rod), io.haloX, io.haloY, window)) {
+    if (!gpu::recordFilterWindow(io.context, PassExec::toGpuBlurRect(io.output), PassExec::toGpuBlurRect(io.domain), io.haloX, io.haloY, window)) {
         return eStatusFailed;
     }
     gpu::GpuLineBlur copy;
@@ -304,7 +304,7 @@ morphologyGpuRecorder(std::vector<gpu::GpuMorphPass> passes)
         morph.edgeMode = io.edgeMode;
         morph.dst = PassExec::toGpuBlurImage(io.filtered);
         morph.output = PassExec::toGpuBlurRect(io.output);
-        morph.rod = PassExec::toGpuBlurRect(io.rod);
+        morph.rod = PassExec::toGpuBlurRect(io.domain);
         morph.haloX = io.haloX;
         morph.haloY = io.haloY;
         morph.passes = passes;

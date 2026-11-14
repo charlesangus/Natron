@@ -518,6 +518,7 @@ TEST_F(NativeGodRaysTest, ScaleStreaksAwayFromCenter)
     ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { (double)box.x1, (double)box.y1 }));
     ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)box.width(), (double)box.height() }));
     ASSERT_TRUE(setKnobValues(source, kConstantParamColor, { 1., 1., 1., 1. }));
+    setBlackOutside(source, true);
     NodePtr node = makeGodRays(source);
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(setKnobValues(node, kGodRaysParamScale, { 2., 2. }));

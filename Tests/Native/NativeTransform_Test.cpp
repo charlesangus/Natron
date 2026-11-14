@@ -506,6 +506,8 @@ TEST_F(NativeTransformTest, MaskedAfterATransformMixesWithItsImmediateInput)
     ASSERT_TRUE(isNative(plain));
     setParitySourceOrigin(source, 0, 0);
     setParitySourceOrigin(maskSource, 10, 6);
+    // The expected blend takes the mask as 0 past its region.
+    setBlackOutside(maskSource, true);
     connectNodes(source, first, 0, true);
     connectNodes(first, masked, 0, true);
     connectNodes(maskSource, masked, 1, true);
@@ -615,6 +617,8 @@ TEST_F(NativeTransformTest, InvertedMaskKeepsTheInputWhereTheMaskIsOpaque)
     ASSERT_TRUE(isNative(plain));
     setParitySourceOrigin(source, 0, 0);
     setParitySourceOrigin(maskSource, 10, 6);
+    // The expected blend takes the mask as 0 past its region.
+    setBlackOutside(maskSource, true);
     connectNodes(source, masked, 0, true);
     connectNodes(maskSource, masked, 1, true);
     connectNodes(source, plain, 0, true);
@@ -757,6 +761,7 @@ protected:
             return crop;
         }
         connectNodes(input, crop, 0, true);
+        EXPECT_TRUE(setKnobValue(crop, kEdgeModeParam, std::string("input")));
         EXPECT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { (double)rect.x1, (double)rect.y1 }));
         EXPECT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { (double)rect.width(), (double)rect.height() }));
         EXPECT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));

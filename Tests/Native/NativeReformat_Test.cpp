@@ -591,6 +591,7 @@ TEST_F(NativeReformatTest, ToALargerFormatTheBandFollowsTheResolvedMode)
                 NodePtr reader = createNodeAtMajor(getApp(), PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP);
                 ASSERT_TRUE(bool(reader)) << what;
                 connectNodes(reformat, reader, 0, true);
+                ASSERT_TRUE(setKnobValue(reader, kEdgeModeParam, std::string("input"))) << what;
                 ASSERT_TRUE(setKnobValues(reader, kNativeGeneratorParamBottomLeft, { 0., 0. })) << what;
                 ASSERT_TRUE(setKnobValues(reader, kNativeGeneratorParamSize, { 96., 80. })) << what;
                 ASSERT_TRUE(setKnobValues(reader, kCropParamSoftness, { 0. })) << what;

@@ -126,11 +126,13 @@ public:
         _viewExtra[view.value()] = extra;
     }
 
-    // Makes the source report that edge mode, as a node that sets one does. Read without a lock
-    // and invisible to the node hash, so it must be set before the first metadata query.
+    // Makes the source report that edge mode, as a node that sets one does. Read without a lock,
+    // so it must be set from the thread that asks for metadata; invisible to the node hash, so it
+    // drops the metadata already cached here and downstream.
     void setForcedEdgeMode(EdgeMode mode)
     {
         _forcedEdgeMode = static_cast<int>(mode);
+        invalidateOutputMetadata();
     }
 
     int derivationCount() const

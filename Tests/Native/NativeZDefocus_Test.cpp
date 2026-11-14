@@ -212,6 +212,7 @@ protected:
                         const std::vector<double>& color)
     {
         NodePtr inside = makeConstant(box, color);
+        setBlackOutside(inside, true);
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
 
         EXPECT_TRUE(bool(under) && bool(inside) && bool(merge));

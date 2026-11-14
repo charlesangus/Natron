@@ -422,6 +422,8 @@ outputLayout()
 }
 
 // The source over getGpuInputRoI(roi), inside a larger buffer at an offset and with padded rows.
+// An input region that misses the source leaves the image empty, as the render fetches nothing
+// for a Black input there.
 bool
 sourceImage(const NodePtr& source,
             StagedImageEffect& effect,
@@ -430,6 +432,11 @@ sourceImage(const NodePtr& source,
             GpuParityImage* image)
 {
     const RectI inputRoI = effect.getGpuInputRoI(0, effect.getCurrentTime(), effect.getCurrentView(), roi, RenderScale::fromMipmapLevel(mipmapLevel));
+    if (!inputRoI.intersects(pixelRegionOfDefinition(source, mipmapLevel))) {
+        *image = GpuParityImage();
+
+        return true;
+    }
     RenderedPlane in;
     if (!renderColor(source, mipmapLevel, inputRoI, &in)) {
         return false;

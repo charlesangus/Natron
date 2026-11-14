@@ -52,8 +52,7 @@ ResampleSource dirblurSource(uint flags)
     return src;
 }
 
-// Resampler's samplePixel for an affine matrix: z is 1, the Jacobian is the matrix's linear part,
-// zeroed along each axis the sample falls outside the source on, and along both under Black.
+// Resampler's samplePixel for an affine matrix: z is 1, the Jacobian is the matrix's linear part.
 float4 dirblurSample(ResampleSource src, FilterSpec spec, bool clampOn, uint base, int2 p)
 {
     const FF h00 = dirblurFF(base);
@@ -70,19 +69,7 @@ float4 dirblurSample(ResampleSource src, FilterSpec spec, bool clampOn, uint bas
     const FF zero = ffMake(0.0, 0.0);
     if (spec.filter == kFilterImpulse)
         return interpolateSuper(src, spec, clampOn, fx, fy, zero, zero, zero, zero);
-    // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
-    bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
-    bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
-    if (src.edgeMode == kEdgeBlack && !(xinside && yinside))
-    {
-        xinside = false;
-        yinside = false;
-    }
-    const FF Jxx = xinside ? h00 : zero;
-    const FF Jxy = xinside ? h01 : zero;
-    const FF Jyx = yinside ? h10 : zero;
-    const FF Jyy = yinside ? h11 : zero;
-    return interpolateSuper(src, spec, clampOn, fx, fy, Jxx, Jxy, Jyx, Jyy);
+    return interpolateSuper(src, spec, clampOn, fx, fy, h00, h01, h10, h11);
 }
 
 struct DirBlurOp : IPixelOp

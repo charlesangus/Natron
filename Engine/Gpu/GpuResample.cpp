@@ -151,20 +151,8 @@ namespace {
             | (rowExactInFloats(m[3], m[4], m[5], output) ? kFlagExactRowY : 0u);
     }
 
-    uint32_t packStates(const std::array<GpuResampleJacobian, 4>& jacobians)
-    {
-        uint32_t states = 0;
-        for (uint32_t s = 0; s < 4; ++s) {
-            states |= (jacobians[s].zero ? 1u : 0u) << s;
-        }
-        return states;
-    }
-
     GpuStatus validateMatrix(const GpuResampleMatrix& m, bool weighted)
     {
-        if (!m.jacobians[0].zero) {
-            return invalid("the Jacobian with both axes outside must be zero");
-        }
         for (double v : m.matrix) {
             if (!std::isfinite(v)) {
                 return invalid("the matrix is not finite");
@@ -256,7 +244,7 @@ namespace {
             const GpuResampleMatrix& m = r.matrices[i];
             uint32_t* w = &words[kBlurHeaderWords + i * kBlurMatrixWords];
             packMatrix(m.matrix, exact, w);
-            w[12] = packStates(m.jacobians);
+            w[12] = m.jacobianZero ? 1u : 0u;
             splitDouble(m.weight, hi, lo);
             w[13] = floatBits(hi);
             w[14] = floatBits(lo);
@@ -342,7 +330,7 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     if (!blurred && !projective && !(exact && exactReadsScales(r.filter))) {
         const GpuResampleMatrix& m = r.matrices[0];
         packMatrix(m.matrix, exact, p.matrix);
-        p.states = packStates(m.jacobians);
+        p.states = m.jacobianZero ? 1u : 0u;
         if (exact) {
             p.flags |= exactRowFlags(m.matrix, r.output);
         }

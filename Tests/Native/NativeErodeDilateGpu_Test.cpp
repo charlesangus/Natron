@@ -656,6 +656,8 @@ TEST_F(NativeErodeDilateGpuTest, SpecialValuesMatchFilterLineBitForBit)
             ASSERT_TRUE(effect != NULL);
             connectNodes(source, node, 0, true);
             ASSERT_TRUE(setSize(node, dilate, size.x, size.y));
+            // The reference pads the source with zeros, so the node reads black past it.
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
             const RectI rod = pixelRegionOfDefinition(node, 0);
 
             for (const RectI& roi : testWindows(rod)) {

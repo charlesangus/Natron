@@ -261,6 +261,7 @@ TEST_F(NativeEdgeDetectTest, UnitStepEdgeHasUnitGradientMagnitude)
     ASSERT_TRUE(setKnobValues(white, kNativeGeneratorParamBottomLeft, { (double)whiteBox.x1, (double)whiteBox.y1 }));
     ASSERT_TRUE(setKnobValues(white, kNativeGeneratorParamSize, { (double)whiteBox.width(), (double)whiteBox.height() }));
     ASSERT_TRUE(setKnobValues(white, kConstantParamColor, { 1., 1., 1., 1. }));
+    setBlackOutside(white, true);
     ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
     connectNodes(black, merge, 0, true);
     connectNodes(white, merge, 1, true);
@@ -368,7 +369,9 @@ TEST_F(NativeEdgeDetectTest, EdgeModeDecidesTheBorderResponseOfAConstant)
                         }
                     }
                 }
-                EXPECT_LE(centre, 1e-4f) << what << ": the inside of a constant has no edge";
+                // The black border's response reaches the centre through the blur's tails.
+                const float centreLimit = (std::string(mode) == "black") ? 2e-3f : 1e-4f;
+                EXPECT_LE(centre, centreLimit) << what << ": the inside of a constant has no edge";
                 if (std::string(mode) == "black") {
                     EXPECT_GT(border, 0.05f) << what << ": the black past the source makes an edge";
                 } else {
@@ -394,6 +397,7 @@ TEST_F(NativeEdgeDetectTest, MaskAndMixBlendTheUnmaskedRender)
     ASSERT_TRUE(isNative(plain) && isNative(masked));
     setParitySourceOrigin(source, 0, 0);
     setParitySourceOrigin(mask, 8, 4);
+    setBlackOutside(mask, true);
     connectNodes(source, plain, 0, true);
     connectNodes(source, masked, 0, true);
     connectNodes(mask, masked, 1, true);

@@ -63,12 +63,13 @@ const ChoiceCase kChoices[] = {
 struct NodeCase {
     const char* id;
     int major;
+    EdgeModeChoice defaultChoice;
 };
 
 const NodeCase kNodes[] = {
-    { PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM },
-    { PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT },
-    { PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP },
+    { PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, EdgeModeChoice::Input },
+    { PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT, EdgeModeChoice::Input },
+    { PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP, EdgeModeChoice::Black },
 };
 
 const char*
@@ -123,7 +124,7 @@ protected:
     }
 };
 
-TEST_F(EdgeModeKnobTest, TheKnobIsAnUnanimatedChoiceDefaultingToInput)
+TEST_F(EdgeModeKnobTest, TheKnobIsAnUnanimatedChoiceWithEachNodesDefault)
 {
     for (const NodeCase& n : kNodes) {
         NodePtr node = createNode(QString::fromUtf8(n.id), n.major);
@@ -131,8 +132,8 @@ TEST_F(EdgeModeKnobTest, TheKnobIsAnUnanimatedChoiceDefaultingToInput)
         KnobChoice* knob = dynamic_cast<KnobChoice*>(node->getKnobByName(kEdgeModeParam).get());
         ASSERT_TRUE(knob != NULL) << n.id;
         EXPECT_EQ(std::string(kEdgeModeParamLabel), knob->getLabel()) << n.id;
-        EXPECT_EQ((int)EdgeModeChoice::Input, knob->getDefaultValue(0)) << n.id;
-        EXPECT_EQ((int)EdgeModeChoice::Input, knob->getValue()) << n.id;
+        EXPECT_EQ((int)n.defaultChoice, knob->getDefaultValue(0)) << n.id;
+        EXPECT_EQ((int)n.defaultChoice, knob->getValue()) << n.id;
         EXPECT_FALSE(knob->isAnimationEnabled()) << n.id;
         EXPECT_TRUE(knob->getIsMetadataSlave()) << n.id;
         const std::vector<ChoiceOption> entries = knob->getEntries_mt_safe();

@@ -75,8 +75,10 @@ FIRST_SAMPLES = 5
 SECOND_SAMPLES = 9
 FINAL_SAMPLES = 13
 RELOAD_SAMPLES = 17
-# The reloads' content: every mesh's colour, then the light's intensity.
+# The reloads' content: every mesh's colour and size, then the light's intensity. The size shows in
+# the view however the meshes are lit.
 RELOAD_COLOR = (0.9, 0.2, 0.1)
+RELOAD_GRID_SCALE = 0.6
 RELOAD_SUN = 0.5
 GRID_SIZE = 10.0
 GRID_SPACING = 11.0
@@ -90,11 +92,11 @@ try:
     from guitest import (check, finish, plugin_problem, report, require, run, section, shot, viewer_up,
                          widgets_of)
 
-    def scene_texts(meshes, quads, color=(0.6, 0.6, 0.6), sun=3.0):
+    def scene_texts(meshes, quads, color=(0.6, 0.6, 0.6), sun=3.0, grid_scale=1.0):
         """The text of grid.usda and of scene.usda, as (grid, scene)."""
         n = quads
         columns = int(math.ceil(math.sqrt(meshes)))
-        step = GRID_SIZE / n
+        step = GRID_SIZE * grid_scale / n
         points = []
         for j in range(n + 1):
             for i in range(n + 1):
@@ -546,8 +548,8 @@ try:
             return
         require(reload is not None, "the USDRead has a Reload button")
         # Written ahead, so the phases count only renaming them into place.
-        grid_text, _ = scene_texts(meshes, quads, RELOAD_COLOR)
-        _, scene_text = scene_texts(meshes, quads, RELOAD_COLOR, RELOAD_SUN)
+        grid_text, _ = scene_texts(meshes, quads, RELOAD_COLOR, grid_scale=RELOAD_GRID_SCALE)
+        _, scene_text = scene_texts(meshes, quads, RELOAD_COLOR, RELOAD_SUN, RELOAD_GRID_SCALE)
         grid_path = os.path.join(scene_dir, "grid.usda")
         with open(grid_path + ".reload", "w") as f:
             f.write(grid_text)
@@ -580,8 +582,9 @@ try:
         timer.stop()
         for name in ("reload the meshes", "reload the light", "converge after the reloads"):
             check(worst(name) < STALL_LIMIT_MS, "%s does not stall the GUI (%.1f ms, limit %.1f ms)" % (name, worst(name), STALL_LIMIT_MS))
+        # The node's other messages, such as its unit warning, stay: only a failed reload is an error.
         message = read.getPersistentMessage()
-        check(not message, "the USDRead reports no reload error (%r)" % (message,))
+        check("Reload failed" not in (message or ""), "the USDRead reports no reload error (%r)" % (message,))
         check(not prop("natronSceneRendererError") and not prop("natronSceneError"),
               "no renderer error after the reloads (%r, %r)" % (prop("natronSceneRendererError"), prop("natronSceneError")))
         after = grab_view()

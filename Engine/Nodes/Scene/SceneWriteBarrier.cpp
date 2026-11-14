@@ -85,6 +85,9 @@ struct BarrierState {
     // The waiting requests hold a park hold, and their write is queued on the main thread.
     bool asyncParking = false;
     bool asyncQueued = false;
+    // Set while runExclusiveAsync() asks the participants to park: one that parks at once, from
+    // inside its park, must leave the write to run inline rather than queue it to the event loop.
+    bool asyncStarting = false;
     int asyncPending = 0;
 };
 
@@ -161,7 +164,7 @@ void runAsyncWrites();
 bool
 takeAsyncReady(BarrierState& s)
 {
-    if (!s.asyncParking || s.asyncQueued || !allParked(s)) {
+    if (!s.asyncParking || s.asyncQueued || s.asyncStarting || !allParked(s)) {
         return false;
     }
     s.asyncQueued = true;
@@ -520,6 +523,7 @@ SceneWriteBarrier::runExclusiveAsync(const std::function<void()>& write,
         ++s.asyncPending;
         if (!s.asyncParking) {
             s.asyncParking = true;
+            s.asyncStarting = true;
             startParking = true;
         }
     }
@@ -530,6 +534,7 @@ SceneWriteBarrier::runExclusiveAsync(const std::function<void()>& write,
     bool ready = false;
     {
         std::lock_guard<std::mutex> lock(s.mutex);
+        s.asyncStarting = false;
         ready = takeAsyncReady(s);
     }
     // Nothing had to stop: the write runs now, as runExclusive() would, so code without a viewer

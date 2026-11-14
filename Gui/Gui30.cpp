@@ -411,9 +411,11 @@ Gui::onDoDialog(int type,
         setQMessageBoxThemedIcon(&ques);
         ques.setDefaultButton(QtEnumConvert::toQtStandardButton((StandardButtonEnum)defaultB));
         ques.setWindowFlags(ques.windowFlags() | Qt::WindowStaysOnTopHint);
-        if ( ques.exec() ) {
-            _imp->_lastQuestionDialogAnswer = QtEnumConvert::fromQtStandardButton( ques.standardButton( ques.clickedButton() ) );
-        }
+        ignore_result(ques.exec());
+        // A box closed without a click, such as one a termination signal dismissed, answers Escape rather than
+        // leaving the previous question's answer in place.
+        QAbstractButton* clicked = ques.clickedButton();
+        _imp->_lastQuestionDialogAnswer = clicked ? QtEnumConvert::fromQtStandardButton(ques.standardButton(clicked)) : eStandardButtonEscape;
     }
 
     {

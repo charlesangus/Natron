@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <functional>
 #include <list>
 #include <mutex>
 #include <optional>
@@ -53,12 +54,13 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The knobs the stages read: mix and maskInvert. A knob the node does not have reads as
- * its default, mix 1 and no inversion.
+ * @brief The knobs the stages read: mix, maskInvert and edgeMode. A knob the node does not have
+ * reads as its default, mix 1, no inversion and Input.
  **/
 struct StageKnobs {
     KnobDoubleWPtr mix;
     KnobBoolWPtr maskInvert;
+    KnobChoiceWPtr edgeMode;
 };
 
 /**
@@ -117,7 +119,9 @@ struct StageSourceLayers {
  * resolveStageSourcesLayers() has filled it, for inputs that read a selected layer or have an alpha
  * source; it is empty otherwise. compositeResultIsAlpha is CompositeInputs::resultIsAlpha. plane
  * is the plane a Composite op's plan renders, which every input without a selected layer is read
- * in; empty when the plan serves no one plane.
+ * in; empty when the plan serves no one plane. edgeMode is how the op reads its source outside
+ * the source's region: the Edge Mode knob resolved against the source's edge mode
+ * (resolveStageEdgeMode()) with the EdgeMode stage, and the source's own edge mode without it.
  **/
 struct StagePlan {
     double time = 0.;
@@ -137,6 +141,7 @@ struct StagePlan {
     std::vector<StageSourceLayers> compositeLayers;
     bool compositeResultIsAlpha = false;
     ImageLayerDesc plane;
+    EdgeMode edgeMode = EdgeMode::Stretch;
 };
 
 /**
@@ -205,16 +210,48 @@ RectD stretchRegionOfInterest(const RectD& roi,
                               double pixelHeight) WARN_UNUSED_RETURN;
 
 /**
- * @brief Replaces, in rois, the region of each input of effect whose edge mode is Stretch at
- * time and view by stretchRegionOfInterest() of it against the input's region of definition at
- * scale, with one full-scale pixel of that input for the band. Black inputs, and regions of effects that
- * are not inputs of effect, are left alone, so a Black input missed by the window is not fetched.
+ * @brief The edge mode inputNb of effect is read by at time and view: the Edge Mode knob resolved
+ * against the input's edge mode for the source input of a node with the EdgeMode stage, the
+ * input's own edge mode otherwise, Stretch for an unconnected input.
+ **/
+EdgeMode resolveInputEdgeMode(const EffectInstance& effect,
+                              const StageSet& stages,
+                              const StageKnobs& knobs,
+                              int sourceInput,
+                              int inputNb,
+                              double time,
+                              ViewIdx view) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Replaces, in rois, the region read from each input of effect that inputEdgeMode() says
+ * is read under Stretch at time and view by stretchRegionOfInterest() of it against the region
+ * of definition of the effect actually fetched at scale, with one full-scale pixel of that effect
+ * for the band. Where transforms concatenates an input, the effect fetched is the one upstream of
+ * the concatenated transforms and rois holds the region already mapped into its space, as
+ * EffectInstance::transformInputRois() leaves it. Black inputs, and regions of effects that are
+ * not fetched from an input, are left alone, so a Black input missed by the window is not fetched.
  **/
 void clampStretchRegionsOfInterest(const EffectInstance& effect,
                                    double time,
                                    const RenderScale& scale,
                                    ViewIdx view,
+                                   const InputMatrixMap* transforms,
+                                   const std::function<EdgeMode(int inputNb)>& inputEdgeMode,
                                    RoIMap* rois);
+
+/**
+ * @brief rect, in pixels at scale, when mode is Stretch and rect misses the region of definition
+ * of input inputNb of effect, replaced by the one-pixel band of that region nearest to it
+ * (stretchRegionOfInterest() in pixels), so a GPU read past the edge has the edge to repeat.
+ * rect itself otherwise.
+ **/
+RectI stretchGpuInputRoI(const EffectInstance& effect,
+                         EdgeMode mode,
+                         int inputNb,
+                         double time,
+                         ViewIdx view,
+                         const RectI& rect,
+                         const RenderScale& scale) WARN_UNUSED_RETURN;
 
 /**
  * @brief Resolves the stages of effect for a render at time and view: mix and mask inversion

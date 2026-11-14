@@ -53,6 +53,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -190,6 +191,46 @@ protected:
         return setKnobOnBoth(pair, kNativeGeneratorParamBottomLeft, { x, y }) && setKnobOnBoth(pair, kNativeGeneratorParamSize, { w, h });
     }
 
+    // The parity source at the origin, carrying mode: under Black, through a Crop to its own
+    // window that forces Black, since the parity source itself carries Stretch.
+    NodePtr createEdgeSource(EdgeMode mode)
+    {
+        NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+
+        EXPECT_TRUE(bool(source));
+        if (!source) {
+            return source;
+        }
+        setParitySourceComponents(source, "rgba");
+        setParitySourceOrigin(source, 0, 0);
+        if (mode == EdgeMode::Stretch) {
+            return source;
+        }
+        const RectI window = paritySourceWindow(source, kTime, 0);
+
+        return createCrop(source, RectD(window.x1, window.y1, window.x2, window.y2), "black");
+    }
+
+    // A hard Crop of input to rect at the given Edge Mode option.
+    NodePtr createCrop(const NodePtr& input,
+                       const RectD& rect,
+                       const char* edgeModeID)
+    {
+        NodePtr crop = createNode(QString::fromUtf8(kCropID), kNativeCropMajor);
+
+        EXPECT_TRUE(isNative(crop));
+        if (!crop) {
+            return crop;
+        }
+        connectNodes(input, crop, 0, true);
+        const bool ok = setKnobValues(crop, kNativeGeneratorParamBottomLeft, { rect.x1, rect.y1 }) && setKnobValues(crop, kNativeGeneratorParamSize, { rect.width(), rect.height() }) && setKnobValues(crop, kCropParamSoftness, { 0. }) && setKnobValue(crop, kEdgeModeParam, std::string(edgeModeID));
+        EXPECT_TRUE(ok) << edgeModeID;
+
+        return ok ? crop : NodePtr();
+    }
+
+    void expectCropLargerThanTheSource(EdgeMode sourceMode, EdgeModeChoice choice, const char* choiceID);
+
     void expectParity(const ParityPair& pair,
                       const std::string& caseName,
                       const ParityTolerance& tolerance,
@@ -236,61 +277,172 @@ TEST_F(NativeCropTest, SoftEdges)
     expectParity(pair, "softness-20", kSoftTolerance, true);
 }
 
-TEST_F(NativeCropTest, BlackOutside)
+TEST_F(NativeCropTest, ForcedBlack)
 {
     resetProject();
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setRectangle(pair, 10., 8., 40., 30.));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamBlackOutside, { 1. }));
+    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeModeParam, std::string("black")));
     expectParity(pair, "black-outside", kExactTolerance, true);
 }
 
-TEST_F(NativeCropTest, ReadsBlackOutsideTheSource)
-{
-    resetProject();
-    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-    NodePtr crop = createNode(QString::fromUtf8(kCropID), kNativeCropMajor);
-    ASSERT_TRUE(bool(source));
-    ASSERT_TRUE(isNative(crop));
-    setParitySourceOrigin(source, 0, 0);
-    connectNodes(source, crop, 0, true);
-    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { -10., -8. }));
-    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { 90., 70. }));
-    ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
-    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 1. }));
+namespace {
 
-    const RectI window(-10, -8, 80, 62);
-    const RectI sourceWindow = paritySourceWindow(source, kTime, 0);
-    std::list<ImageLayerDesc> layers;
-    layers.push_back(ImageLayerDesc::getRGBAComponents());
+bool
+renderRGBA(const NodePtr& node,
+           const RectI& window,
+           RenderedPlane* plane)
+{
+    std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
     std::vector<RenderedPlane> planes;
     std::string error;
-    ASSERT_TRUE(renderNodePlanesDirect(crop, kTime, ViewIdx(0), 0, window, layers, &planes, &error)) << error;
-    ASSERT_EQ(1u, planes.size());
+    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error);
 
-    const std::size_t nComps = planes[0].channels.size();
-    ASSERT_EQ(4u, nComps);
-    int outside = 0;
-    for (int y = window.y1; y < window.y2; ++y) {
-        for (int x = window.x1; x < window.x2; ++x) {
-            const bool inside = (x >= sourceWindow.x1) && (x < sourceWindow.x2) && (y >= sourceWindow.y1) && (y < sourceWindow.y2);
-            const std::size_t i = ((std::size_t)(y - window.y1) * window.width() + (x - window.x1)) * nComps;
-            for (std::size_t c = 0; c < nComps; ++c) {
-                if (inside) {
-                    EXPECT_EQ(paritySourceColorValue((int)c, x - sourceWindow.x1, y - sourceWindow.y1, kTime), planes[0].pixels[i + c]) << x << "," << y << " channel " << c;
-                } else {
-                    EXPECT_EQ(0.f, planes[0].pixels[i + c]) << x << "," << y << " channel " << c;
-                }
-            }
-            outside += inside ? 0 : 1;
-        }
+    EXPECT_TRUE(ok) << error;
+    if (!ok || (planes.size() != 1) || (planes[0].channels.size() != 4)) {
+        return false;
     }
-    EXPECT_GT(outside, 0);
+    *plane = planes[0];
+
+    return true;
 }
 
-// Without black outside, a pixel centre exactly on a soft edge weighs 0 and is multiplied by it
-// rather than written 0, so a negative source becomes -0 and an infinite one NaN.
+EdgeMode
+outputEdgeMode(const NodePtr& node)
+{
+    return node->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode();
+}
+
+const char*
+edgeModeName(EdgeMode mode)
+{
+    return (mode == EdgeMode::Stretch) ? "Stretch" : "Black";
+}
+
+// Inside kept the plane holds the source's pixels; outside it, the nearest pixel of kept under
+// Stretch and zero under Black.
+void
+expectEdge(const RenderedPlane& plane,
+           const RenderedPlane& source,
+           const RectI& kept,
+           EdgeMode mode,
+           const std::string& what)
+{
+    const RectI& w = plane.window;
+    const RectI& s = source.window;
+    int mismatches = 0;
+    int outside = 0;
+    std::string first;
+
+    for (int y = w.y1; y < w.y2; ++y) {
+        for (int x = w.x1; x < w.x2; ++x) {
+            const bool inside = kept.contains(x, y);
+            const int sx = std::min(std::max(x, kept.x1), kept.x2 - 1);
+            const int sy = std::min(std::max(y, kept.y1), kept.y2 - 1);
+            outside += inside ? 0 : 1;
+            for (int c = 0; c < 4; ++c) {
+                const float got = plane.pixels[((std::size_t)(y - w.y1) * w.width() + (x - w.x1)) * 4 + c];
+                const float want = (inside || (mode == EdgeMode::Stretch)) ? source.pixels[((std::size_t)(sy - s.y1) * s.width() + (sx - s.x1)) * 4 + c] : 0.f;
+                if (got != want) {
+                    if (mismatches == 0) {
+                        first = std::to_string(x) + "," + std::to_string(y) + " channel " + std::to_string(c) + ": " + std::to_string(got) + ", want " + std::to_string(want);
+                    }
+                    ++mismatches;
+                }
+            }
+        }
+    }
+    EXPECT_EQ(0, mismatches) << what << " under " << edgeModeName(mode) << ", first at " << first;
+    EXPECT_GT(outside, 0) << what;
+}
+
+} // namespace
+
+// Over a source that carries mode, a Crop at choice larger than the source fills the band
+// between them as the resolved mode says and carries that mode on.
+void
+NativeCropTest::expectCropLargerThanTheSource(EdgeMode sourceMode,
+                                              EdgeModeChoice choice,
+                                              const char* choiceID)
+{
+    resetProject();
+    NodePtr source = createEdgeSource(sourceMode);
+    ASSERT_TRUE(bool(source));
+    NodePtr crop = createCrop(source, RectD(-10., -8., 80., 62.), choiceID);
+    ASSERT_TRUE(bool(crop));
+
+    const EdgeMode mode = resolveEdgeMode(choice, sourceMode);
+    const std::string what = std::string(choiceID) + " over a " + edgeModeName(sourceMode) + " source";
+    EXPECT_EQ(sourceMode, outputEdgeMode(source)) << what;
+    EXPECT_EQ(mode, outputEdgeMode(crop)) << what;
+
+    const RectI sourceWindow = paritySourceWindow(source, kTime, 0);
+    RenderedPlane sourcePlane;
+    RenderedPlane cropPlane;
+    ASSERT_TRUE(renderRGBA(source, sourceWindow, &sourcePlane)) << what;
+    ASSERT_TRUE(renderRGBA(crop, RectI(-10, -8, 80, 62), &cropPlane)) << what;
+    expectEdge(cropPlane, sourcePlane, sourceWindow, mode, what);
+}
+
+TEST_F(NativeCropTest, LargerThanAStretchSourceStretchesUnderInput)
+{
+    expectCropLargerThanTheSource(EdgeMode::Stretch, EdgeModeChoice::Input, "input");
+}
+
+TEST_F(NativeCropTest, LargerThanABlackSourceIsBlackUnderInput)
+{
+    expectCropLargerThanTheSource(EdgeMode::Black, EdgeModeChoice::Input, "input");
+}
+
+TEST_F(NativeCropTest, ForcedStretchOverABlackSourceStretches)
+{
+    expectCropLargerThanTheSource(EdgeMode::Black, EdgeModeChoice::Stretch, "stretch");
+}
+
+TEST_F(NativeCropTest, ForcedBlackOverAStretchSourceIsBlack)
+{
+    expectCropLargerThanTheSource(EdgeMode::Stretch, EdgeModeChoice::Black, "black");
+}
+
+// A Crop smaller than its source carries the resolved mode, so what reads past the crop
+// rectangle sees black under Black and the rectangle's own edge under Stretch, never the source
+// pixels the crop removed.
+TEST_F(NativeCropTest, SmallerThanTheSourceForEachChoice)
+{
+    const struct {
+        EdgeModeChoice choice;
+        const char* id;
+    } choices[] = { { EdgeModeChoice::Input, "input" }, { EdgeModeChoice::Black, "black" }, { EdgeModeChoice::Stretch, "stretch" } };
+
+    for (EdgeMode sourceMode : { EdgeMode::Stretch, EdgeMode::Black }) {
+        for (const auto& choice : choices) {
+            resetProject();
+            NodePtr source = createEdgeSource(sourceMode);
+            ASSERT_TRUE(bool(source));
+            NodePtr crop = createCrop(source, RectD(10., 8., 50., 38.), choice.id);
+            ASSERT_TRUE(bool(crop));
+            NodePtr reader = createCrop(crop, RectD(-10., -8., 80., 62.), "input");
+            ASSERT_TRUE(bool(reader));
+
+            const EdgeMode mode = resolveEdgeMode(choice.choice, sourceMode);
+            const std::string what = std::string(choice.id) + " over a " + edgeModeName(sourceMode) + " source";
+            EXPECT_EQ(mode, outputEdgeMode(crop)) << what;
+            EXPECT_EQ(mode, outputEdgeMode(reader)) << what;
+            EXPECT_EQ(RectD(10., 8., 50., 38.), regionOfDefinition(crop, kTime)) << what;
+
+            const RectI sourceWindow = paritySourceWindow(source, kTime, 0);
+            RenderedPlane sourcePlane;
+            RenderedPlane readerPlane;
+            ASSERT_TRUE(renderRGBA(source, sourceWindow, &sourcePlane)) << what;
+            ASSERT_TRUE(renderRGBA(reader, RectI(-10, -8, 80, 62), &readerPlane)) << what;
+            expectEdge(readerPlane, sourcePlane, RectI(10, 8, 50, 38), mode, what);
+        }
+    }
+}
+
+// A pixel centre exactly on a soft edge weighs 0 and is multiplied by it rather than written 0,
+// so a negative source becomes -0 and an infinite one NaN.
 TEST_F(NativeCropTest, ZeroSoftEdgeWeightMultipliesTheSource)
 {
     resetProject();
@@ -304,7 +456,6 @@ TEST_F(NativeCropTest, ZeroSoftEdgeWeightMultipliesTheSource)
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 10.5, 8.5 }));
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { 40., 30. }));
     ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 6. }));
-    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 0. }));
 
     const RectI window = regionOfDefinition(crop, kTime).toPixelEnclosing(0, 1.);
     ASSERT_TRUE(window.contains(10, 20));
@@ -348,7 +499,7 @@ TEST_F(NativeCropTest, ReformatOnFormatSetsTheOutputFormat)
     EXPECT_EQ(40, format.y2);
 }
 
-TEST_F(NativeCropTest, UserReformatEditTogglesBlackOutsideAndTheOverlay)
+TEST_F(NativeCropTest, UserReformatEditTogglesTheOverlay)
 {
     resetProject();
     NodePtr node = createNode(QString::fromUtf8(kCropID), kNativeCropMajor);
@@ -368,17 +519,17 @@ TEST_F(NativeCropTest, UserReformatEditTogglesBlackOutsideAndTheOverlay)
     EXPECT_TRUE(enable->getIsSecret());
     EXPECT_TRUE(enable->getValue());
 
-    KnobBool* blackOutside = dynamic_cast<KnobBool*>(node->getKnobByName(kCropParamBlackOutside).get());
-    ASSERT_TRUE(blackOutside != NULL);
-    EXPECT_FALSE(blackOutside->getValue());
+    KnobChoice* edgeMode = dynamic_cast<KnobChoice*>(node->getKnobByName(kEdgeModeParam).get());
+    ASSERT_TRUE(edgeMode != NULL);
+    EXPECT_EQ((int)EdgeModeChoice::Input, edgeMode->getValue());
 
     ASSERT_TRUE(setBoolAsUser(node, kCropParamReformat, true));
     EXPECT_FALSE(enable->getValue());
-    EXPECT_FALSE(blackOutside->getValue());
+    EXPECT_EQ((int)EdgeModeChoice::Input, edgeMode->getValue());
 
     ASSERT_TRUE(setBoolAsUser(node, kCropParamReformat, false));
     EXPECT_TRUE(enable->getValue());
-    EXPECT_TRUE(blackOutside->getValue());
+    EXPECT_EQ((int)EdgeModeChoice::Input, edgeMode->getValue());
 }
 
 TEST_F(NativeCropTest, RecenterCentresTheRectangleOnTheSource)
@@ -425,7 +576,7 @@ TEST_F(NativeCropTest, RendersTheSameInBothSchedulerModes)
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 10., 8. }));
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { 40., 30. }));
     ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 7. }));
-    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 1. }));
+    ASSERT_TRUE(setKnobValue(crop, kEdgeModeParam, std::string("black")));
 
     for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
         std::vector<int> unplannedPulls;

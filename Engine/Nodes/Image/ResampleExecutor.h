@@ -47,16 +47,16 @@ NATRON_NAMESPACE_ENTER
 struct StagePlan;
 
 /**
- * @brief How a Resample op of the matrix form samples, for one set of Params: the filter, clamp
- * and black-outside settings Resampler takes, the node's invert switch, its motion or directional
- * blur, and whether its matrix at amount 1 is the identity. The last one is what the region
+ * @brief How a Resample op samples, for one set of Params: the filter and clamp Resampler takes,
+ * the edge mode both forms read past the source under, the node's invert switch, its motion or
+ * directional blur, and whether its matrix at amount 1 is the identity. The last one is what the region
  * helpers call isIdentity: it keeps the source's region unchanged, whatever the blur says, so it
  * can differ from the op's own identity, which also looks at the blur.
  **/
 struct ResampleSettings {
     Resampler::FilterSpec filter = Resampler::eFilterCubic;
     bool clamp = false;
-    bool blackOutside = true;
+    EdgeMode edgeMode = EdgeMode::Black;
     bool invert = false;
     Resampler::BlurSettings blur;
     bool transformIsIdentity = false;
@@ -101,8 +101,7 @@ struct ResampleMatte {
  * reading the op's Params at whatever time it is asked for, and settings says how to sample
  * through it. Offset: the source is shifted by offset whole pixels; then, when set, matte
  * weights each shifted pixel of a plane whose source was fetched, and with clipSourceToRoI the
- * source reads zero outside the region of interest it was fetched for, as an OpenFX host shows
- * it. None: the node has no Resample op.
+ * source ends at the region of interest it was fetched for, read past as settings.edgeMode says. None: the node has no Resample op.
  *
  * transform is only valid while the node is, and is called on the thread running the action,
  * never from band threads.

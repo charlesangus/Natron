@@ -65,8 +65,10 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/ImagePipelineSpec.h"
 #include "Engine/Nodes/Image/Op.h"
@@ -76,6 +78,7 @@
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Plugin.h"
@@ -511,7 +514,8 @@ expectWithinExceptions(const std::vector<float>& cpu,
 
 // Renders node on the CPU and through renderGpu() over each test window at both mipmap levels,
 // expecting the resampling bound; `mask`, when given, is the mask input's source. With
-// `exceptions`, a few pixels may miss the tolerance as those allow.
+// `exceptions`, a few pixels may miss the tolerance as those allow. With `corners`, small windows
+// at two corners of the region are compared too, which a rotation maps wholly past the source.
 void
 expectGpuMatchesCpu(GpuParityRuntime& runtime,
                     const NodePtr& source,
@@ -520,7 +524,8 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
                     const std::string& base,
                     int* nCompared,
                     const ParityTolerance& tolerance = ParityTolerance::resampling(),
-                    const ToleranceExceptions* exceptions = nullptr)
+                    const ToleranceExceptions* exceptions = nullptr,
+                    bool corners = false)
 {
     StagedImageEffect* effect = dynamic_cast<StagedImageEffect*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
@@ -543,7 +548,12 @@ expectGpuMatchesCpu(GpuParityRuntime& runtime,
             mask.layout.rowPadFloats = 5;
         }
 
-        for (const RectI& roi : testWindows(rod)) {
+        std::vector<RectI> windows = testWindows(rod);
+        if (corners) {
+            windows.push_back(RectI(rod.x1, rod.y1, rod.x1 + 3, rod.y1 + 3));
+            windows.push_back(RectI(rod.x2 - 3, rod.y2 - 3, rod.x2, rod.y2));
+        }
+        for (const RectI& roi : windows) {
             const std::string what = level + " " + describeRoI(roi);
             RenderedPlane cpu;
             ASSERT_TRUE(renderColor(node, mipmapLevel, roi, &cpu)) << what;
@@ -612,7 +622,7 @@ TEST_P(NativeTransformGpuFilterTest, ResamplingMatchesTheCpuRender)
                 ASSERT_TRUE(setGeometry(node, g));
                 ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filters[f].id)));
                 ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
                 std::ostringstream base;
                 base << filters[f].id << " " << g.name << (clamp ? " clamp" : "") << (blackOutside ? " black-outside" : "");
                 expectGpuMatchesCpu(*runtime, source, NodePtr(), node, base.str(), &nCompared);
@@ -749,7 +759,7 @@ TEST_F(NativeTransformGpuTest, MotionBlurMatchesTheCpuRender)
         ASSERT_TRUE(setKnobValue(node, kResamplerParamShutterOffset, std::string(c.shutterOffset)));
         ASSERT_TRUE(setKnobValues(node, kResamplerParamShutterCustomOffset, { c.customOffset }));
         ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(c.filter)));
-        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { c.blackOutside ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(c.blackOutside ? "black" : "stretch")));
         const bool blurred = c.motionBlur != 0.;
         const TransformNode* transform = dynamic_cast<const TransformNode*>(effect);
         ASSERT_TRUE(transform != NULL);
@@ -894,6 +904,66 @@ TEST_F(NativeTransformGpuTest, MotionBlur8kKernelTime)
         const std::string key = "motion_blur_" + std::to_string((int)quality) + "_8k_ms";
         RecordProperty(key, std::to_string(best));
     }
+}
+
+// Translated by half the image and rotated, over a source that carries each mode, under each
+// choice: the corners of the region read past the source, and the device reads there what the
+// CPU does, the source's edge under Stretch and 0 under Black.
+TEST_F(NativeTransformGpuTest, EdgeModesMatchTheCpuRenderPastTheSource)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    int nCompared = 0;
+    for (bool blackSource : { false, true }) {
+        for (const char* choice : { "input", "black", "stretch" }) {
+            resetProject();
+            NodePtr parity = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+            ASSERT_TRUE(bool(parity));
+            setParitySourceOrigin(parity, 0, 0);
+            NodePtr source = parity;
+            if (blackSource) {
+                // The parity source carries Stretch; a Crop to its own window under Black gives
+                // the same pixels carrying Black.
+                source = createNode(QString::fromUtf8(PLUGINID_NATRON_CROP), PLUGIN_MAJOR_NATRON_CROP);
+                ASSERT_TRUE(bool(source));
+                connectNodes(parity, source, 0, true);
+                ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+                ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)kParitySourceWidth, (double)kParitySourceHeight }));
+                ASSERT_TRUE(setKnobValue(source, kEdgeModeParam, std::string("black")));
+            }
+            NodePtr node = makeNode();
+            ASSERT_TRUE(bool(node));
+            connectNodes(source, node, 0, true);
+            const GeometryCase half = { "half", 32., 24., 30., 1., 1., 0., 0., false };
+            ASSERT_TRUE(setGeometry(node, half));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(choice)));
+
+            const bool stretch = (std::string(choice) == "stretch") || ((std::string(choice) == "input") && !blackSource);
+            EXPECT_TRUE(node->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode() == (stretch ? EdgeMode::Stretch : EdgeMode::Black)) << choice << (blackSource ? " black source" : "");
+            const std::string base = std::string(choice) + (blackSource ? " over a Black source" : " over a Stretch source");
+            expectGpuMatchesCpu(*runtime, source, NodePtr(), node, base, &nCompared, ParityTolerance::resampling(), nullptr, true);
+            if (HasFatalFailure()) {
+                return;
+            }
+
+            const RectI rod = pixelRegionOfDefinition(node, 0);
+            RenderedPlane cpu;
+            ASSERT_TRUE(renderColor(node, 0, rod, &cpu)) << base;
+            ASSERT_FALSE(cpu.channels.empty()) << base;
+            float corner = 0.f;
+            for (std::size_t c = 0; c < cpu.channels.size(); ++c) {
+                corner += std::fabs(cpu.pixels[c]);
+            }
+            if (stretch) {
+                EXPECT_NE(0.f, corner) << base << ": the corner past the source is not the source's edge";
+            } else {
+                EXPECT_EQ(0.f, corner) << base;
+            }
+        }
+    }
+    EXPECT_GT(nCompared, 0);
 }
 
 #endif // NATRON_HAVE_GPU
@@ -1435,7 +1505,7 @@ TEST_F(NativeFilterSpecGpuTest, NewFiltersMatchTheCpuRenderAtEveryScale)
                 gFilterSpecSettings = ResampleSettings();
                 gFilterSpecSettings.filter = f.spec;
                 gFilterSpecSettings.clamp = clamp;
-                gFilterSpecSettings.blackOutside = true;
+                gFilterSpecSettings.edgeMode = EdgeMode::Black;
                 NodePtr node = makeSpecNode(source, s);
                 ASSERT_TRUE(bool(node));
                 expectGpuMatchesCpu(*runtime, source, NodePtr(), node, std::string(f.name) + " " + s.name + (clamp ? " clamp" : ""), &nCompared);
@@ -1464,7 +1534,7 @@ TEST_F(NativeFilterSpecGpuTest, MotionBlurMatchesTheCpuRenderWithAFilterSpec)
     const FilterScaleCase blurred = { "directional-blur", 6., -4., 0.6, 0.55, 0., 0. };
     gFilterSpecSettings = ResampleSettings();
     gFilterSpecSettings.filter = Resampler::FilterSpec(Resampler::eFilterSinc, 8);
-    gFilterSpecSettings.blackOutside = true;
+    gFilterSpecSettings.edgeMode = EdgeMode::Black;
     gFilterSpecSettings.blur.motionBlur = 1.;
     gFilterSpecSettings.blur.directionalBlur = true;
     gFilterSpecSettings.blur.shutter = 1.;

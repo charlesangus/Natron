@@ -69,6 +69,7 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Noise.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
@@ -914,7 +915,7 @@ TEST_F(NativeGoldenTest, Crop)
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
     v.push_back(variant("rect", rect));
-    v.push_back(variant("soft", [rect](const GoldenGraph& g) { return rect(g) && num(g, kCropParamSoftness, { 7. }) && num(g, kCropParamBlackOutside, { 1. }); }));
+    v.push_back(variant("soft", [rect](const GoldenGraph& g) { return rect(g) && num(g, kCropParamSoftness, { 7. }) && choice(g, kEdgeModeParam, "black"); }));
     v.push_back(variant("reformat", [rect](const GoldenGraph& g) { return rect(g) && num(g, kCropParamReformat, { 1. }); }));
     run(plainSpec("Crop", PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP), v);
 }

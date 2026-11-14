@@ -80,7 +80,7 @@ MirrorOp::settings(const Params& params,
 
     settings.filter = Resampler::eFilterImpulse;
     settings.clamp = false;
-    settings.blackOutside = true;
+    settings.edgeMode = EdgeMode::Black;
     settings.invert = false;
     settings.transformIsIdentity = !params.flip && !params.flop;
 

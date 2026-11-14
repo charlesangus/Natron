@@ -219,13 +219,6 @@ TransformOp::createKnobs(KnobHolder* holder,
     page->addKnob(clampKnob);
     clamp = clampKnob;
 
-    KnobBoolPtr blackOutsideKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutsideKnob->setName(kResamplerParamFilterBlackOutside);
-    blackOutsideKnob->setHintToolTip(EffectInstance::tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutsideKnob->setDefaultValue(true);
-    page->addKnob(blackOutsideKnob);
-    blackOutside = blackOutsideKnob;
-
     filterKnobs.create(holder, page, filterKnob, clampKnob);
 
     KnobDoublePtr motionBlurKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Motion Blur"));
@@ -242,7 +235,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 
     KnobBoolPtr directionalBlurKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Directional Blur Mode"));
     directionalBlurKnob->setName(kTransformNodeParamDirectionalBlur);
-    directionalBlurKnob->setHintToolTip(EffectInstance::tr("Motion blur is computed from the original image to the transformed image, each parameter being interpolated linearly. The motionBlur parameter must be set to a nonzero value, and the blackOutside parameter may have an important effect on the result."));
+    directionalBlurKnob->setHintToolTip(EffectInstance::tr("Motion blur is computed from the original image to the transformed image, each parameter being interpolated linearly. The motionBlur parameter must be set to a nonzero value, and how the node reads past the edge of the source may have an important effect on the result."));
     directionalBlurKnob->setDefaultValue(false);
     page->addKnob(directionalBlurKnob);
     directionalBlur = directionalBlurKnob;
@@ -308,7 +301,6 @@ TransformOp::bake(const KnobReader& reader) const
     params.invert = reader.value(invert);
     params.filter = filterKnobs.read(reader);
     params.clamp = reader.value(clamp);
-    params.blackOutside = reader.value(blackOutside);
 
     Resampler::BlurSettings& blur = params.blur;
     blur.motionBlur = reader.value(motionBlur);
@@ -339,7 +331,6 @@ TransformOp::settings(const Params& params,
 
     settings.filter = params.filter;
     settings.clamp = params.clamp;
-    settings.blackOutside = params.blackOutside;
     settings.invert = params.invert;
     settings.blur = params.blur;
     settings.transformIsIdentity = TransformMath::isIdentity(params.transform);

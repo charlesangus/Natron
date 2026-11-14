@@ -108,9 +108,11 @@ struct GpuResample {
 
 GpuStatus recordResample(GpuRecordContext& ctx, const GpuResample& resample);
 
-// Mirrors OffsetParams in Kernels/offset.slang. The valid rect is in thread coordinates, the
-// source's offset addressing the pixel its first thread reads, so the kernel does no signed
-// arithmetic that a large offset could overflow.
+// Mirrors OffsetParams in Kernels/offset.slang. The valid rect is the part of the source the
+// dispatch can read, in thread coordinates, the source's offset addressing the pixel its first
+// thread reads. It lies within one pixel of the dispatch, so a large offset cannot overflow the
+// kernel's signed arithmetic: a Stretch source wholly beside the dispatch is cut down to the one
+// row or column next to it.
 struct GpuOffsetParams {
     uint32_t width;
     uint32_t height;
@@ -118,10 +120,10 @@ struct GpuOffsetParams {
     uint32_t dstStride;
     uint32_t srcOffset;
     uint32_t srcStride;
-    uint32_t validX1;
-    uint32_t validY1;
-    uint32_t validX2;
-    uint32_t validY2;
+    int32_t validX1;
+    int32_t validY1;
+    int32_t validX2;
+    int32_t validY2;
     uint32_t nComps;
     uint32_t flags;
     // Where the row entries start in the weight buffer, in floats.
@@ -129,9 +131,9 @@ struct GpuOffsetParams {
 };
 static_assert(sizeof(GpuOffsetParams) == 52);
 
-// A whole-pixel translation over `output`: dst(x, y) = src(x - dx, y - dy), zero where that pixel
-// lies outside src.bounds. Every channel is copied bit for bit. A source without a buffer, or with
-// empty bounds, renders zeros.
+// A whole-pixel translation over `output`: dst(x, y) = src(x - dx, y - dy), where that pixel lies
+// outside src.bounds the nearest pixel of src.bounds for Stretch and zero for Black. Every channel
+// is copied bit for bit. A source without a buffer, or with empty bounds, renders zeros.
 //
 // With a matte, one weight and one black flag per column and per row of `output` from its
 // origin, the pixel is then weighed as runResampleCpu() weighs it: written 0 where its column or
@@ -146,6 +148,7 @@ struct GpuOffset {
     uint32_t channels = 0;
     int32_t dx = 0;
     int32_t dy = 0;
+    EdgeMode edgeMode = EdgeMode::Black;
     // All empty, or as many as output's columns and rows; a nonzero black flag blackens.
     std::vector<double> columnWeights;
     std::vector<double> rowWeights;

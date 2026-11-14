@@ -186,7 +186,7 @@ struct TestResampleOp {
 
         s.filter = gTestFilter;
         s.clamp = gTestClamp;
-        s.blackOutside = true;
+        s.edgeMode = EdgeMode::Black;
         s.invert = false;
         s.transformIsIdentity = isIdentity(params, context);
 

@@ -37,6 +37,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
@@ -47,7 +48,10 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
@@ -164,6 +168,8 @@ protected:
         }
         if (pair.native) {
             EXPECT_TRUE(setKnobOnBoth(pair, kTransformNodeParamCenter, { 32., 24. }));
+            // The recorded references read black past the source, which carries Stretch.
+            EXPECT_TRUE(setKnobOnBoth(pair, kEdgeModeParam, std::string("black")));
         }
 
         return pair;
@@ -652,4 +658,231 @@ TEST_F(NativeTransformTest, InvertedMaskKeepsTheInputWhereTheMaskIsOpaque)
 TEST_F(NativeTransformTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, "Transform");
+}
+
+namespace {
+
+const float kEdgeValue = 0.25f;
+
+const struct {
+    EdgeModeChoice choice;
+    const char* id;
+} kEdgeChoices[] = { { EdgeModeChoice::Input, "input" }, { EdgeModeChoice::Black, "black" }, { EdgeModeChoice::Stretch, "stretch" } };
+
+const char*
+edgeModeName(EdgeMode mode)
+{
+    return (mode == EdgeMode::Stretch) ? "Stretch" : "Black";
+}
+
+EdgeMode
+outputEdgeMode(const NodePtr& node)
+{
+    return node->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode();
+}
+
+RectI
+pixelRegionOfDefinition(const NodePtr& node)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+    RectD rod;
+    bool isProjectFormat = false;
+
+    EXPECT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+
+    return rod.toPixelEnclosing(0, 1.);
+}
+
+// Every channel of plane at (x, y) is value under Stretch and 0 under Black.
+void
+expectEdgePixel(const RenderedPlane& plane,
+                int x,
+                int y,
+                EdgeMode mode,
+                const std::string& what)
+{
+    for (int c = 0; c < 4; ++c) {
+        if (mode == EdgeMode::Stretch) {
+            EXPECT_NEAR(kEdgeValue, planeValue(plane, x, y, c), 1e-5) << what << " at " << x << "," << y << " channel " << c;
+        } else {
+            EXPECT_EQ(0.f, planeValue(plane, x, y, c)) << what << " at " << x << "," << y << " channel " << c;
+        }
+    }
+}
+
+} // namespace
+
+class NativeTransformEdgeModeTest
+    : public NativeTransformTest {
+protected:
+    // A 32x32 constant source of kEdgeValue that carries mode.
+    NodePtr createConstantSource(EdgeMode mode)
+    {
+        NodePtr source = createNode(QString::fromUtf8(kTestPluginIDCounting));
+
+        EXPECT_TRUE(bool(source));
+        if (source) {
+            EXPECT_TRUE(setKnobValues(source, "value", { (double)kEdgeValue }));
+            EXPECT_TRUE(setKnobValues(source, "blackEdge", { (mode == EdgeMode::Black) ? 1. : 0. }));
+        }
+
+        return source;
+    }
+
+    NodePtr createTransform(const NodePtr& input,
+                            const char* edgeModeID)
+    {
+        NodePtr node = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
+
+        EXPECT_TRUE(isNative(node));
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeModeID)));
+        EXPECT_TRUE(setKnobValues(node, kTransformNodeParamCenter, { 16., 16. }));
+        connectNodes(input, node, 0, true);
+
+        return node;
+    }
+
+    // A hard Crop under Input of input to rect, which reads input past its region as input's
+    // edge mode says.
+    NodePtr createReader(const NodePtr& input,
+                         const RectI& rect)
+    {
+        NodePtr crop = createNode(QString::fromUtf8(PLUGINID_NATRON_CROP), PLUGIN_MAJOR_NATRON_CROP);
+
+        EXPECT_TRUE(bool(crop));
+        if (!crop) {
+            return crop;
+        }
+        connectNodes(input, crop, 0, true);
+        EXPECT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { (double)rect.x1, (double)rect.y1 }));
+        EXPECT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { (double)rect.width(), (double)rect.height() }));
+        EXPECT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
+
+        return crop;
+    }
+};
+
+// Translated by half the image and rotated, the corners of the region read past the source: a
+// Stretch read repeats the source's edge there and a Black one reads 0, under the mode the knob
+// resolves to, which the output carries on to what reads past the Transform's own region.
+TEST_F(NativeTransformEdgeModeTest, TranslatedByHalfTheImageReadsPastTheSourceInTheResolvedMode)
+{
+    for (EdgeMode sourceMode : { EdgeMode::Stretch, EdgeMode::Black }) {
+        for (const auto& c : kEdgeChoices) {
+            resetProject();
+            const std::string what = std::string(c.id) + " over a " + edgeModeName(sourceMode) + " source";
+            NodePtr source = createConstantSource(sourceMode);
+            ASSERT_TRUE(bool(source)) << what;
+            NodePtr transform = createTransform(source, c.id);
+            ASSERT_TRUE(bool(transform)) << what;
+            ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamTranslate, { 16., 16. }));
+            ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamRotate, { 30. }));
+
+            const EdgeMode mode = resolveEdgeMode(c.choice, sourceMode);
+            EXPECT_EQ(mode, outputEdgeMode(transform)) << what;
+
+            const RectI rod = pixelRegionOfDefinition(transform);
+            ASSERT_FALSE(rod.isNull()) << what;
+            RenderedPlane out;
+            ASSERT_TRUE(renderRGBA(transform, rod, &out)) << what;
+            expectEdgePixel(out, 32, 32, EdgeMode::Stretch, what + ", centre");
+            expectEdgePixel(out, rod.x1, rod.y1, mode, what + ", corner");
+            expectEdgePixel(out, rod.x2 - 1, rod.y2 - 1, mode, what + ", corner");
+
+            const RectI around(rod.x1 - 8, rod.y1 - 8, rod.x2 + 8, rod.y2 + 8);
+            NodePtr reader = createReader(transform, around);
+            ASSERT_TRUE(bool(reader)) << what;
+            EXPECT_EQ(mode, outputEdgeMode(reader)) << what;
+            RenderedPlane read;
+            ASSERT_TRUE(renderRGBA(reader, around, &read)) << what;
+            expectEdgePixel(read, around.x1, around.y1, mode, what + ", past the Transform");
+            expectEdgePixel(read, 32, 32, EdgeMode::Stretch, what + ", centre through the reader");
+        }
+    }
+}
+
+// The chain is resampled under one mode, so a Transform concatenates its input Transform only when
+// both resolve to the same mode.
+TEST_F(NativeTransformEdgeModeTest, ConcatenationStopsWhereTheModesDiffer)
+{
+    for (EdgeMode sourceMode : { EdgeMode::Stretch, EdgeMode::Black }) {
+        for (const auto& c : kEdgeChoices) {
+            resetProject();
+            const std::string what = std::string(c.id) + " over a " + edgeModeName(sourceMode) + " source";
+            NodePtr source = createConstantSource(sourceMode);
+            ASSERT_TRUE(bool(source)) << what;
+            NodePtr first = createTransform(source, "input");
+            ASSERT_TRUE(bool(first)) << what;
+            ASSERT_TRUE(setKnobValues(first, kTransformNodeParamTranslate, { 3., 1. }));
+            NodePtr second = createTransform(first, c.id);
+            ASSERT_TRUE(bool(second)) << what;
+            ASSERT_TRUE(setKnobValues(second, kTransformNodeParamRotate, { 10. }));
+
+            InputMatrixMap transforms;
+            second->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+            const bool same = resolveEdgeMode(c.choice, sourceMode) == sourceMode;
+            EXPECT_EQ(same ? 1u : 0u, transforms.count(0)) << what;
+            expectBothSchedulerModesAgree(second);
+        }
+    }
+}
+
+// A window that the concatenated chain maps past a Stretch source, though inside the region of
+// the Transform it concatenates, asks the source itself for its edge, in the source's space, and
+// renders the source's edge; over a Black source it renders 0.
+TEST_F(NativeTransformEdgeModeTest, AConcatenatedWindowPastTheSourceReadsTheSourceEdge)
+{
+    for (EdgeMode sourceMode : { EdgeMode::Stretch, EdgeMode::Black }) {
+        resetProject();
+        const std::string what = std::string("over a ") + edgeModeName(sourceMode) + " source";
+        NodePtr source = createConstantSource(sourceMode);
+        ASSERT_TRUE(bool(source)) << what;
+        NodePtr first = createTransform(source, "input");
+        ASSERT_TRUE(bool(first)) << what;
+        ASSERT_TRUE(setKnobValues(first, kTransformNodeParamRotate, { 45. }));
+        NodePtr second = createTransform(first, "input");
+        ASSERT_TRUE(bool(second)) << what;
+        ASSERT_TRUE(setKnobValues(second, kTransformNodeParamTranslate, { 100., 0. }));
+        ASSERT_TRUE(setKnobValue(first, kResamplerParamFilterType, std::string("impulse")));
+        ASSERT_TRUE(setKnobValue(second, kResamplerParamFilterType, std::string("impulse")));
+
+        EffectInstancePtr effect = second->getEffectInstance();
+        InputMatrixMapPtr transforms(new InputMatrixMap());
+        effect->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, transforms.get());
+        ASSERT_EQ(1u, transforms->count(0)) << what;
+        ASSERT_EQ(first->getEffectInstance(), (*transforms)[0].newInputEffect) << what;
+
+        // The corner of the region lies past the rotated square, so the whole window maps past
+        // the source while staying inside the first Transform's region.
+        const RectI rod = pixelRegionOfDefinition(second);
+        const RectI corner(rod.x1, rod.y1, rod.x1 + 2, rod.y1 + 2);
+        const RectD window = corner.toCanonical_noClipping(0, 1.);
+        const RectD sourceRoD(0., 0., kCountingTestSize, kCountingTestSize);
+
+        RoIMap rois;
+        std::map<int, EffectInstancePtr> reroutes;
+        effect->getRegionsOfInterest_public(kTime, RenderScale::identity, RectD(rod.x1, rod.y1, rod.x2, rod.y2), window, ViewIdx(0), &rois, transforms, 1., &reroutes);
+        RoIMap::const_iterator found = rois.find(source->getEffectInstance());
+        if (sourceMode == EdgeMode::Stretch) {
+            ASSERT_TRUE(found != rois.end()) << what;
+            EXPECT_TRUE(found->second.intersects(sourceRoD)) << what << ": the region asked of the source misses it";
+            EXPECT_GE(found->second.x1, sourceRoD.x1) << what;
+            EXPECT_LE(found->second.x2, sourceRoD.x2) << what;
+            EXPECT_GE(found->second.y1, sourceRoD.y1) << what;
+            EXPECT_LE(found->second.y2, sourceRoD.y2) << what;
+        } else if (found != rois.end()) {
+            EXPECT_FALSE(found->second.intersects(sourceRoD)) << what;
+        }
+
+        RenderedPlane out;
+        ASSERT_TRUE(renderRGBA(second, corner, &out)) << what;
+        for (int y = corner.y1; y < corner.y2; ++y) {
+            for (int x = corner.x1; x < corner.x2; ++x) {
+                expectEdgePixel(out, x, y, sourceMode, what);
+            }
+        }
+    }
 }

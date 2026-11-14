@@ -31,6 +31,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -46,6 +47,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -719,40 +721,94 @@ stretchRegionOfInterest(const RectD& roi,
     return band;
 }
 
+EdgeMode
+resolveInputEdgeMode(const EffectInstance& effect,
+                     const StageSet& stages,
+                     const StageKnobs& knobs,
+                     int sourceInput,
+                     int inputNb,
+                     double time,
+                     ViewIdx view)
+{
+    const EffectInstancePtr input = (inputNb >= 0) ? effect.getInput(inputNb) : EffectInstancePtr();
+    const NodeMetadataConstPtr metadata = input ? input->getRenderMetadata(time, view) : NodeMetadataConstPtr();
+    const EdgeMode inputMode = metadata ? metadata->getEdgeMode() : EdgeMode::Stretch;
+
+    if ((inputNb >= 0) && (inputNb == sourceInput) && stages.has(Stage::EdgeMode)) {
+        return resolveEdgeMode(readEdgeModeChoice(knobs.edgeMode, time, view), inputMode);
+    }
+
+    return inputMode;
+}
+
 void
 clampStretchRegionsOfInterest(const EffectInstance& effect,
                               double time,
                               const RenderScale& scale,
                               ViewIdx view,
+                              const InputMatrixMap* transforms,
+                              const std::function<EdgeMode(int inputNb)>& inputEdgeMode,
                               RoIMap* rois)
 {
     const int nInputs = effect.getNInputs();
+    // Several inputs may fetch from one effect, which then has one region: it is banded when any
+    // of them reads it under Stretch.
+    std::set<EffectInstancePtr> stretched;
 
-    for (RoIMap::iterator it = rois->begin(); it != rois->end(); ++it) {
-        const EffectInstancePtr& input = it->first;
-        if (!input) {
+    for (int i = 0; i < nInputs; ++i) {
+        EffectInstancePtr fetched = effect.getInput(i);
+        if (!fetched) {
             continue;
         }
-        bool isInput = false;
-        for (int i = 0; (i < nInputs) && !isInput; ++i) {
-            isInput = (effect.getInput(i) == input);
+        if (transforms) {
+            const InputMatrixMap::const_iterator found = transforms->find(i);
+            if ((found != transforms->end()) && found->second.newInputEffect) {
+                fetched = found->second.newInputEffect->getInput(found->second.newInputNbToFetchFrom);
+            }
         }
-        if (!isInput) {
-            continue;
+        if (fetched && (rois->find(fetched) != rois->end()) && (inputEdgeMode(i) == EdgeMode::Stretch)) {
+            stretched.insert(fetched);
         }
-        const NodeMetadataConstPtr metadata = input->getRenderMetadata(time, view);
-        if (!metadata || (metadata->getEdgeMode() != EdgeMode::Stretch)) {
-            continue;
-        }
-        const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    }
+    for (const EffectInstancePtr& fetched : stretched) {
+        const NodeMetadataConstPtr metadata = fetched->getRenderMetadata(time, view);
+        const RenderScale fetchedScale = fetched->supportsRenderScale() ? scale : RenderScale::identity;
         RectD rod;
         bool isProjectFormat = false;
-        if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+        if (fetched->getRegionOfDefinition_public(fetched->getRenderHash(), time, fetchedScale, view, &rod, &isProjectFormat) == eStatusFailed) {
             continue;
         }
+        RectD& roi = (*rois)[fetched];
         // A full-scale pixel encloses at least one pixel at every mipmap level.
-        it->second = stretchRegionOfInterest(it->second, rod, metadata->getPixelAspectRatio(-1), 1.);
+        roi = stretchRegionOfInterest(roi, rod, metadata ? metadata->getPixelAspectRatio(-1) : 1., 1.);
     }
+}
+
+RectI
+stretchGpuInputRoI(const EffectInstance& effect,
+                   EdgeMode mode,
+                   int inputNb,
+                   double time,
+                   ViewIdx view,
+                   const RectI& rect,
+                   const RenderScale& scale)
+{
+    const EffectInstancePtr input = (inputNb >= 0) ? effect.getInput(inputNb) : EffectInstancePtr();
+
+    if ((mode != EdgeMode::Stretch) || !input || rect.isNull()) {
+        return rect;
+    }
+    const NodeMetadataConstPtr metadata = input->getRenderMetadata(time, view);
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD rod;
+    bool isProjectFormat = false;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+        return rect;
+    }
+    const RectI rodPixel = PassExec::toPixelEnclosing(rod, scale, metadata ? metadata->getPixelAspectRatio(-1) : 1.);
+    const RectD band = stretchRegionOfInterest(RectD(rect.x1, rect.y1, rect.x2, rect.y2), RectD(rodPixel.x1, rodPixel.y1, rodPixel.x2, rodPixel.y2), 1., 1.);
+
+    return RectI((int)band.x1, (int)band.y1, (int)band.x2, (int)band.y2);
 }
 
 StagePlan
@@ -771,6 +827,7 @@ resolveStagePlan(EffectInstance& effect,
     plan.processChannels = processChannels;
     plan.stages = stages;
     plan.sourceInput = sourceInput;
+    plan.edgeMode = resolveInputEdgeMode(effect, stages, knobs, sourceInput, sourceInput, time, view);
 
     if (stages.has(Stage::MaskMix)) {
         const KnobReader reader(time, view);

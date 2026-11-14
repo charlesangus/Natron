@@ -40,14 +40,17 @@ NATRON_NAMESPACE_ENTER
  * channel picked the node is an identity. Its selector starts on rgba.A and is labelled
  * ImagePipelineSpec::divisorLabel. ClampAlpha limits the alpha channel of a result the MaskMix
  * stage has blended with the source to 0 to 1, a NaN giving 0; the alpha a blend leaves as the
- * source is not touched.
+ * source is not touched. EdgeMode adds the Edge Mode knob (EdgeModeKnob.h): the op reads its
+ * source outside the source's region by the knob's resolved mode, which is also the edge mode of
+ * the node's output.
  **/
 enum class Stage : unsigned char {
     Premult = 1 << 0,
     MaskMix = 1 << 1,
     PassThroughUnprocessed = 1 << 2,
     Divisor = 1 << 3,
-    ClampAlpha = 1 << 4
+    ClampAlpha = 1 << 4,
+    EdgeMode = 1 << 5
 };
 
 class StageSet {

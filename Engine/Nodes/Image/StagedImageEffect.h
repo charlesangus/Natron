@@ -138,7 +138,8 @@ public:
      * @brief When inputNb is the source, at time and view: for a Passes op, outputRect
      * grown by the halo of the op's passes; for a Resample op that opts into the GPU,
      * resampleGpuSourceRoI(). For an Aux input of a Passes op, opPassesInputRoI(). For a Custom
-     * op, getOpGpuInputRoI() for any input. outputRect otherwise.
+     * op, getOpGpuInputRoI() for any input. outputRect otherwise. A region that misses a Stretch
+     * input then moves into it, as stretchGpuInputRoI() does.
      **/
     virtual RectI getGpuInputRoI(int inputNb,
                                  double time,
@@ -301,11 +302,33 @@ protected:
     /**
      * @brief Moves the regions of interest of Stretch inputs that miss their input into it, as
      * clampStretchRegionsOfInterest() does, so a read past the edge has the edge to repeat.
+     * Under concatenation the regions are already in the space of the effect the input fetches
+     * from, and that effect's region bounds them.
      **/
     virtual void adjustInputRegionsOfInterest(double time,
                                               const RenderScale& scale,
                                               ViewIdx view,
+                                              const InputMatrixMap* transforms,
                                               RoIMap* ret) OVERRIDE;
+
+    /**
+     * @brief The edge mode the node reads inputNb under at time and view: for the source with the
+     * EdgeMode stage, the Edge Mode knob resolved against the source's mode; the input's own
+     * mode otherwise, Stretch with nothing connected.
+     **/
+    EdgeMode inputEdgeMode(int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief inputEdgeMode() of the source: the mode the op samples under, and with the EdgeMode
+     * stage the one the output carries.
+     **/
+    EdgeMode resolvedEdgeMode(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For an op with a matrix, the edge mode opResample() samples under; none otherwise.
+     **/
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
+                                                             ViewIdx view) const OVERRIDE WARN_UNUSED_RETURN;
 
     /**
      * @brief Where route() chooses an input, whatever the op kind, only that input at the time
@@ -330,7 +353,8 @@ protected:
     /**
      * @brief Where route() answers Black, RGBA float at the project format and PAR, as a node
      * with no input answers; the identity rule covers an Input answer, and None keeps the
-     * default derivation. A node that overrides this has no Black answer.
+     * default derivation. With the EdgeMode stage, a forced Edge Mode is the output's edge mode.
+     * A node with that stage that overrides this calls it first.
      **/
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
@@ -795,6 +819,9 @@ private:
                 if constexpr (requires { requires OP::kClipsSourceToRoI; }) {
                     request.clipSourceToRoI = true;
                 }
+            }
+            if constexpr (PIPELINE.stages.has(Stage::EdgeMode)) {
+                request.settings.edgeMode = resolvedEdgeMode(time, view);
             }
 
             return request;

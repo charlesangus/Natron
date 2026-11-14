@@ -53,6 +53,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -96,32 +97,35 @@ struct CropCase {
     double formatPar;
     bool reformat;
     bool intersect;
-    bool blackOutside;
+    const char* edgeMode;
     double softness;
 };
 
 // The parity source covers (3,5)-(67,53). Rectangles run inside it, across its edge, around it,
 // and sit on half pixels, where a pixel centre lies exactly on the rectangle's edge.
 const CropCase kCases[] = {
-    { "size", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., false, false, false, 0. },
-    { "size reformat", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., true, false, false, 0. },
-    { "size black outside", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., false, false, true, 0. },
-    { "size black outside reformat", kNativeGeneratorExtentSize, 11., 9., 37., 25., 0, 0, 1., true, false, true, 0. },
-    { "size soft", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., false, false, false, 6. },
-    { "size soft reformat", kNativeGeneratorExtentSize, 10.3, 8.6, 40.4, 30.2, 0, 0, 1., true, false, false, 7.5 },
-    { "size soft black outside reformat", kNativeGeneratorExtentSize, 12., 7., 35., 28., 0, 0, 1., true, false, true, 5. },
-    { "size softer than half", kNativeGeneratorExtentSize, 14., 10., 30., 20., 0, 0, 1., false, false, false, 40. },
-    { "size half pixel edges", kNativeGeneratorExtentSize, 10.5, 8.5, 40., 30., 0, 0, 1., false, false, false, 6. },
-    { "size larger than source", kNativeGeneratorExtentSize, -10., -8., 90., 70., 0, 0, 1., false, false, true, 0. },
-    { "size larger than source soft", kNativeGeneratorExtentSize, -10., -8., 90., 70., 0, 0, 1., true, false, false, 9. },
-    { "size larger than source intersect", kNativeGeneratorExtentSize, -10., -8., 90., 70., 0, 0, 1., false, true, true, 0. },
-    { "size across the source edge intersect soft", kNativeGeneratorExtentSize, 40., 30., 50., 40., 0, 0, 1., true, true, false, 8. },
-    { "format", kNativeGeneratorExtentFormat, 0., 0., 0., 0., 50, 40, 1., false, false, false, 0. },
-    { "format reformat soft anamorphic", kNativeGeneratorExtentFormat, 0., 0., 0., 0., 50, 40, 2., true, false, false, 6. },
-    { "project reformat soft", kNativeGeneratorExtentProject, 0., 0., 0., 0., 0, 0, 1., true, false, false, 5. },
-    { "project black outside", kNativeGeneratorExtentProject, 0., 0., 0., 0., 0, 0, 1., false, false, true, 0. },
-    { "default reformat", kNativeGeneratorExtentDefault, 0., 0., 0., 0., 0, 0, 1., true, true, false, 0. },
-    { "default soft black outside", kNativeGeneratorExtentDefault, 0., 0., 0., 0., 0, 0, 1., false, false, true, 10. },
+    { "size", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., false, false, "input", 0. },
+    { "size reformat", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., true, false, "input", 0. },
+    { "size black", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., false, false, "black", 0. },
+    { "size black reformat", kNativeGeneratorExtentSize, 11., 9., 37., 25., 0, 0, 1., true, false, "black", 0. },
+    { "size soft", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., false, false, "input", 6. },
+    { "size soft reformat", kNativeGeneratorExtentSize, 10.3, 8.6, 40.4, 30.2, 0, 0, 1., true, false, "input", 7.5 },
+    { "size soft black reformat", kNativeGeneratorExtentSize, 12., 7., 35., 28., 0, 0, 1., true, false, "black", 5. },
+    { "size softer than half", kNativeGeneratorExtentSize, 14., 10., 30., 20., 0, 0, 1., false, false, "input", 40. },
+    { "size half pixel edges", kNativeGeneratorExtentSize, 10.5, 8.5, 40., 30., 0, 0, 1., false, false, "input", 6. },
+    { "size stretch", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., false, false, "stretch", 0. },
+    { "size larger than source", kNativeGeneratorExtentSize, -10., -8., 90., 70., 0, 0, 1., false, false, "input", 0. },
+    { "size larger than source black", kNativeGeneratorExtentSize, -10., -8., 90., 70., 0, 0, 1., false, false, "black", 0. },
+    { "size larger than source stretch reformat", kNativeGeneratorExtentSize, -10., -8., 90., 70., 0, 0, 1., true, false, "stretch", 0. },
+    { "size larger than source soft", kNativeGeneratorExtentSize, -10., -8., 90., 70., 0, 0, 1., true, false, "input", 9. },
+    { "size larger than source intersect", kNativeGeneratorExtentSize, -10., -8., 90., 70., 0, 0, 1., false, true, "black", 0. },
+    { "size across the source edge intersect soft", kNativeGeneratorExtentSize, 40., 30., 50., 40., 0, 0, 1., true, true, "input", 8. },
+    { "format", kNativeGeneratorExtentFormat, 0., 0., 0., 0., 50, 40, 1., false, false, "input", 0. },
+    { "format reformat soft anamorphic", kNativeGeneratorExtentFormat, 0., 0., 0., 0., 50, 40, 2., true, false, "input", 6. },
+    { "project reformat soft", kNativeGeneratorExtentProject, 0., 0., 0., 0., 0, 0, 1., true, false, "input", 5. },
+    { "project black", kNativeGeneratorExtentProject, 0., 0., 0., 0., 0, 0, 1., false, false, "black", 0. },
+    { "default reformat", kNativeGeneratorExtentDefault, 0., 0., 0., 0., 0, 0, 1., true, true, "input", 0. },
+    { "default soft black", kNativeGeneratorExtentDefault, 0., 0., 0., 0., 0, 0, 1., false, false, "black", 10. },
 };
 
 } // namespace
@@ -161,7 +165,7 @@ protected:
             }
         }
 
-        return setKnobValues(node, kCropParamReformat, { c.reformat ? 1. : 0. }) && setKnobValues(node, kCropParamIntersect, { c.intersect ? 1. : 0. }) && setKnobValues(node, kCropParamBlackOutside, { c.blackOutside ? 1. : 0. }) && setKnobValues(node, kCropParamSoftness, { c.softness });
+        return setKnobValues(node, kCropParamReformat, { c.reformat ? 1. : 0. }) && setKnobValues(node, kCropParamIntersect, { c.intersect ? 1. : 0. }) && setKnobValue(node, kEdgeModeParam, std::string(c.edgeMode)) && setKnobValues(node, kCropParamSoftness, { c.softness });
     }
 
     // A source moved off the origin, or one that is NaN in rgb and infinite in alpha, connected to
@@ -229,7 +233,8 @@ TEST_F(NativeCropGpuTest, EligibilityFollowsTheRequest)
 }
 
 // The source the GPU is given is the region Crop asks the host for on the CPU: the crop rectangle
-// clipped to the source, moved back by the reformat offset.
+// clipped to the source, or under Stretch the source's edge nearest it, moved back by the
+// reformat offset.
 TEST_F(NativeCropGpuTest, InputRegionIsTheNodesRegionOfInterest)
 {
     for (double par : { 1., 2. }) {
@@ -431,7 +436,7 @@ reformatShift(const NodePtr& node,
     RectD rect;
     double par = 1.;
 
-    crop->getCropRectangle(kTime, ViewIdx(0), RenderScale::fromMipmapLevel(mipmapLevel), false, false, false, false, &rect, &par);
+    crop->getCropRectangle(kTime, ViewIdx(0), RenderScale::fromMipmapLevel(mipmapLevel), false, false, false, &rect, &par);
     *tx = -(int)std::floor(rect.x1 * scale / par + 0.5);
     *ty = -(int)std::floor(rect.y1 * scale + 0.5);
 }
@@ -545,7 +550,7 @@ expectCropMatches(GpuParityRuntime& runtime,
 
 } // namespace
 
-// Every extent type, with and without reformat, intersect and the black border, soft and hard,
+// Every extent type, with and without reformat and intersect, under each edge mode, soft and hard,
 // over the whole region of definition, an odd window, and tiles, at both mipmap levels and at an
 // anamorphic project, into padded output views.
 TEST_F(NativeCropGpuTest, CropMatchesTheCpuRender)
@@ -575,17 +580,17 @@ TEST_F(NativeCropGpuTest, CropMatchesTheCpuRender)
     }
 }
 
-// A NaN or infinite source pixel on the black border comes out 0 on both sides, one on a
-// zero-weight soft edge is multiplied by 0 into NaN, and a NaN one the crop keeps stays NaN.
-TEST_F(NativeCropGpuTest, NaNSourceOnTheBorderIsWrittenZero)
+// A NaN source pixel on the crop rectangle's edge is kept as it is, one on a zero-weight soft
+// edge is multiplied by 0 into NaN, and a NaN one the crop keeps stays NaN.
+TEST_F(NativeCropGpuTest, NaNSourceOnTheCropEdge)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
     if (!createRuntime(runtime)) {
         return;
     }
     resetProject();
-    const CropCase borderCase = { "nan border", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., false, false, true, 0. };
-    const CropCase edgeCase = { "nan exact edge", kNativeGeneratorExtentSize, 10.5, 8.5, 40., 30., 0, 0, 1., false, false, false, 6. };
+    const CropCase borderCase = { "nan edge", kNativeGeneratorExtentSize, 10., 8., 40., 30., 0, 0, 1., false, false, "black", 0. };
+    const CropCase edgeCase = { "nan exact edge", kNativeGeneratorExtentSize, 10.5, 8.5, 40., 30., 0, 0, 1., false, false, "input", 6. };
     for (const CropCase& c : { borderCase, edgeCase }) {
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             NodePtr source;
@@ -607,10 +612,10 @@ TEST_F(NativeCropGpuTest, NaNSourceOnTheBorderIsWrittenZero)
                 nNaN += std::isnan(cpu[i]) ? 1 : 0;
             }
             EXPECT_GT(nNaN, 0) << c.name << ": no source pixel was kept, so the NaN source is not exercised";
-            if (c.blackOutside) {
+            if (c.softness == 0.) {
                 for (int y = 8; y < 38; ++y) {
-                    EXPECT_EQ(0.f, at(10, y, 0)) << c.name << " left border row " << y;
-                    EXPECT_EQ(0.f, at(49, y, 3)) << c.name << " right border row " << y;
+                    EXPECT_TRUE(std::isnan(at(10, y, 0))) << c.name << " left edge row " << y;
+                    EXPECT_TRUE(std::isinf(at(49, y, 3))) << c.name << " right edge row " << y;
                 }
             } else {
                 for (int y = 9; y < 38; ++y) {
@@ -619,6 +624,60 @@ TEST_F(NativeCropGpuTest, NaNSourceOnTheBorderIsWrittenZero)
                 }
                 EXPECT_TRUE(std::isnan(at(25, 20, 0))) << c.name;
             }
+        }
+    }
+}
+
+// Over a source that carries Black, a Crop larger than the source reads black past it under
+// Input and Black and the source's edge under Stretch, on the device as on the CPU.
+TEST_F(NativeCropGpuTest, EdgeModeOverABlackSource)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    for (const char* edgeMode : { "input", "black", "stretch" }) {
+        resetProject();
+        const CropCase sourceCase = { "black source", kNativeGeneratorExtentSize, 3., 5., (double)kParitySourceWidth, (double)kParitySourceHeight, 0, 0, 1., false, false, "black", 0. };
+        const CropCase c = { edgeMode, kNativeGeneratorExtentSize, -10., -8., 90., 70., 0, 0, 1., false, false, edgeMode, 0. };
+        NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+        NodePtr blackSource = createNode(QString::fromUtf8(PLUGINID_NATRON_CROP), PLUGIN_MAJOR_NATRON_CROP);
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CROP), PLUGIN_MAJOR_NATRON_CROP);
+        ASSERT_TRUE(source && blackSource && node);
+        setParitySourceComponents(source, "rgba");
+        setParitySourceOrigin(source, 3, 5);
+        connectNodes(source, blackSource, 0, true);
+        connectNodes(blackSource, node, 0, true);
+        ASSERT_TRUE(applyCase(blackSource, sourceCase));
+        ASSERT_TRUE(applyCase(node, c));
+
+        const bool stretch = std::string(edgeMode) == "stretch";
+        EXPECT_TRUE(blackSource->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode() == EdgeMode::Black);
+        EXPECT_TRUE(node->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode() == (stretch ? EdgeMode::Stretch : EdgeMode::Black)) << edgeMode;
+        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+            const std::string level = std::string(edgeMode) + " mipmap " + std::to_string(mipmapLevel);
+            const RectI rod = pixelRegionOfDefinition(node, mipmapLevel);
+            ASSERT_FALSE(rod.isNull()) << level;
+            for (const RectI& roi : testWindows(rod, mipmapLevel == 0)) {
+                expectCropMatches(*runtime, blackSource, node, c, mipmapLevel, roi, level + " " + describeRoI(roi));
+                if (HasFatalFailure()) {
+                    return;
+                }
+            }
+        }
+
+        const RectI rod = pixelRegionOfDefinition(node, 0);
+        const RectI sourceRoD = pixelRegionOfDefinition(source, 0);
+        RenderedPlane cpu;
+        RenderedPlane in;
+        ASSERT_TRUE(renderColor(node, 0, rod, &cpu)) << edgeMode;
+        ASSERT_TRUE(renderColor(source, 0, sourceRoD, &in)) << edgeMode;
+        ASSERT_EQ(4u, in.channels.size());
+        const auto at = [](const RenderedPlane& p, int x, int y, int channel) { return p.pixels[((std::size_t)(y - p.window.y1) * p.window.width() + (x - p.window.x1)) * 4 + channel]; };
+        const int corner[2] = { sourceRoD.x1, sourceRoD.y1 };
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_EQ(stretch ? at(in, corner[0], corner[1], c) : 0.f, at(cpu, rod.x1, rod.y1, c)) << edgeMode << " channel " << c;
+            EXPECT_EQ(stretch ? at(in, sourceRoD.x2 - 1, 20, c) : 0.f, at(cpu, rod.x2 - 1, 20, c)) << edgeMode << " channel " << c;
         }
     }
 }

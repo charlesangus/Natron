@@ -42,6 +42,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 
@@ -229,14 +230,16 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
             return passListSourceRoI(outputRect, list);
         }
     }
+    RectI roi;
     if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
-        return resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
-    }
-    if (kind == OpKind::Custom) {
-        return getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
+        roi = resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
+    } else if (kind == OpKind::Custom) {
+        roi = getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
+    } else {
+        roi = NativeEffectBase::getGpuInputRoI(inputNb, time, view, outputRect, scale);
     }
 
-    return NativeEffectBase::getGpuInputRoI(inputNb, time, view, outputRect, scale);
+    return stretchGpuInputRoI(*this, inputEdgeMode(inputNb, time, view), inputNb, time, view, roi, scale);
 }
 
 bool
@@ -453,6 +456,9 @@ StagedImageEffect::createControlsPage()
 void
 StagedImageEffect::addStageKnobs(const KnobPagePtr& page)
 {
+    if (imagePipelineSpec().stages.has(Stage::EdgeMode)) {
+        _stageKnobs.edgeMode = createEdgeModeKnob(this, page);
+    }
     if (imagePipelineSpec().stages.has(Stage::MaskMix)) {
         addMaskMixKnobs(page);
     }
@@ -651,9 +657,36 @@ void
 StagedImageEffect::adjustInputRegionsOfInterest(double time,
                                                 const RenderScale& scale,
                                                 ViewIdx view,
+                                                const InputMatrixMap* transforms,
                                                 RoIMap* ret)
 {
-    clampStretchRegionsOfInterest(*this, time, scale, view, ret);
+    clampStretchRegionsOfInterest(*this, time, scale, view, transforms, [&](int inputNb) { return inputEdgeMode(inputNb, time, view); }, ret);
+}
+
+EdgeMode
+StagedImageEffect::inputEdgeMode(int inputNb,
+                                 double time,
+                                 ViewIdx view) const
+{
+    return resolveInputEdgeMode(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), inputNb, time, view);
+}
+
+EdgeMode
+StagedImageEffect::resolvedEdgeMode(double time,
+                                    ViewIdx view) const
+{
+    return inputEdgeMode(getSourceInput(), time, view);
+}
+
+std::optional<EdgeMode>
+StagedImageEffect::getConcatenationEdgeMode(double time,
+                                            ViewIdx view) const
+{
+    if (!opHasMatrix()) {
+        return std::nullopt;
+    }
+
+    return opResample(time, view, RenderScale::identity).settings.edgeMode;
 }
 
 ResampleRegionStages
@@ -770,7 +803,13 @@ StagedImageEffect::getPreferredMetadataAt(double time,
                                           ViewIdx view,
                                           NodeMetadata& metadata)
 {
+    const EdgeModeChoice choice = imagePipelineSpec().stages.has(Stage::EdgeMode) ? readEdgeModeChoice(_stageKnobs.edgeMode, time, view) : EdgeModeChoice::Input;
     if (route(time, view).kind != Route::Kind::Black) {
+        // Under Input the default derivation already carries the source's mode.
+        if (choice != EdgeModeChoice::Input) {
+            metadata.setEdgeMode(resolveEdgeMode(choice, EdgeMode::Stretch));
+        }
+
         return eStatusOK;
     }
     // The defaults come from whichever inputs are connected, which a Black answer reads none of.
@@ -782,7 +821,7 @@ StagedImageEffect::getPreferredMetadataAt(double time,
     metadata.setPixelAspectRatio(-1, projectFormat.getPixelAspectRatio());
     metadata.setOutputFormat(projectFormat);
     // A constant black image reads no input, so like any source it carries no edge of an input's.
-    metadata.setEdgeMode(EdgeMode::Stretch);
+    metadata.setEdgeMode(resolveEdgeMode(choice, EdgeMode::Stretch));
 
     return eStatusOK;
 }

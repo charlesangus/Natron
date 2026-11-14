@@ -567,7 +567,7 @@ AutoStraightenOp::settings(const Params& params,
 
     s.filter = params.filter;
     s.clamp = params.clamp;
-    s.blackOutside = params.blackOutside;
+    s.edgeMode = params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
     s.invert = false;
     s.transformIsIdentity = isIdentity(params, context);
 

@@ -73,6 +73,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
@@ -2070,15 +2071,15 @@ TEST_F(USDRenderStormTest, StormProject3DIsTransparentBeyondTheDataWindow)
     KnobDouble* bottomLeft = knob<KnobDouble>(crop, kNativeGeneratorParamBottomLeft);
     KnobDouble* size = knob<KnobDouble>(crop, kNativeGeneratorParamSize);
     KnobDouble* softness = knob<KnobDouble>(crop, kCropParamSoftness);
-    KnobBool* blackOutside = knob<KnobBool>(crop, kCropParamBlackOutside);
+    KnobChoice* edgeMode = knob<KnobChoice>(crop, kEdgeModeParam);
     KnobDouble* translate = knob<KnobDouble>(transform, kTransformNodeParamTranslate);
-    ASSERT_TRUE(bottomLeft && size && softness && blackOutside && translate);
+    ASSERT_TRUE(bottomLeft && size && softness && edgeMode && translate);
     bottomLeft->setValue(0., ViewSpec::all(), 0);
     bottomLeft->setValue(0., ViewSpec::all(), 1);
     size->setValue(kWidth, ViewSpec::all(), 0);
     size->setValue(kHeight / 2., ViewSpec::all(), 1);
     softness->setValue(0.);
-    blackOutside->setValue(true);
+    edgeMode->setValue((int)EdgeModeChoice::Black);
     translate->setValue(kHeight / 4., ViewSpec::all(), 1);
     connectNodes(plate, crop, 0, true);
     connectNodes(crop, transform, 0, true);

@@ -149,7 +149,6 @@ protected:
         EXPECT_TRUE(setKnobValues(c.crop, kNativeGeneratorParamBottomLeft, { kCropX, kCropY }));
         EXPECT_TRUE(setKnobValues(c.crop, kNativeGeneratorParamSize, { kCropWidth, kCropHeight }));
         EXPECT_TRUE(setKnobValues(c.crop, kCropParamSoftness, { 0. }));
-        EXPECT_TRUE(setKnobValues(c.crop, kCropParamBlackOutside, { 0. }));
         c.denoise = createAfter(PLUGINID_NATRON_DENOISEPROFILED, c.crop);
 
         return c;

@@ -1,13 +1,17 @@
 // A whole-pixel translation of the source, as runResampleCpu's offset form reads it: every
-// channel of each output pixel is the source pixel it shifts from, or zero outside the source.
-// Pixels travel as their bits, so the copy is exact whatever they hold. With a matte, each pixel
-// is then weighed as ResampleMatte describes. GpuOffsetParams in Engine/Gpu/GpuResample.h mirrors
-// OffsetParams.
+// channel of each output pixel is the source pixel it shifts from, and outside the source the
+// nearest source pixel for Stretch or zero for Black (edgesample). Pixels travel as their bits,
+// so the copy is exact whatever they hold. With a matte, each pixel is then weighed as
+// ResampleMatte describes. GpuOffsetParams in Engine/Gpu/GpuResample.h mirrors OffsetParams.
 
-// The destination's offset addresses the output origin. Threads inside [validX1, validX2) x
-// [validY1, validY2) read the source, whose offset addresses the pixel thread (validX1, validY1)
-// reads; the others write zero. With kOffsetFlagMatte, offsetWeights holds a (hi, lo, black)
-// triple per output column from the origin, then from rowWeights one per output row.
+import edgesample;
+
+// The destination's offset addresses the output origin. The source covers threads
+// [validX1, validX2) x [validY1, validY2), which may reach past the dispatch on any side, and its
+// offset addresses the pixel thread (validX1, validY1) reads; an empty range is no source. The
+// edge mode is Black where flags has kFlagEdgeBlack. With kOffsetFlagMatte, offsetWeights holds a
+// (hi, lo, black) triple per output column from the origin, then from rowWeights one per output
+// row.
 struct OffsetParams
 {
     uint width;
@@ -16,10 +20,10 @@ struct OffsetParams
     uint dstStride;
     uint srcOffset;
     uint srcStride;
-    uint validX1;
-    uint validY1;
-    uint validX2;
-    uint validY2;
+    int validX1;
+    int validY1;
+    int validX2;
+    int validY2;
     uint nComps;
     uint flags;
     uint rowWeights;
@@ -107,13 +111,14 @@ void offset_main(uint3 tid : SV_DispatchThreadID)
         return;
     const uint n = offsetParams.nComps;
     const uint dst = offsetParams.dstOffset + tid.y * offsetParams.dstStride + tid.x * n;
-    const bool inside = tid.x >= offsetParams.validX1 && tid.x < offsetParams.validX2
-                        && tid.y >= offsetParams.validY1 && tid.y < offsetParams.validY2;
+    const int4 valid = int4(offsetParams.validX1, offsetParams.validY1, offsetParams.validX2, offsetParams.validY2);
+    int2 sampled;
+    const bool hit = edgePixel(int2(tid.xy), valid, edgeModeFromFlags(offsetParams.flags, kFlagEdgeBlack), sampled);
     uint pixel[4] = { 0u, 0u, 0u, 0u };
-    if (inside)
+    if (hit)
     {
-        const uint src = offsetParams.srcOffset + (tid.y - offsetParams.validY1) * offsetParams.srcStride
-                         + (tid.x - offsetParams.validX1) * n;
+        const uint src = offsetParams.srcOffset + uint(sampled.y - valid.y) * offsetParams.srcStride
+                         + uint(sampled.x - valid.x) * n;
         for (uint c = 0; c < n && c < 4; ++c)
             pixel[c] = offsetSrc[src + c];
     }

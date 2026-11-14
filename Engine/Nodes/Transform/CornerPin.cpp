@@ -435,7 +435,7 @@ CornerPinOp::settings(const Params& params,
 
     settings.filter = params.filter;
     settings.clamp = params.clamp;
-    settings.blackOutside = params.blackOutside;
+    settings.edgeMode = params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
     settings.invert = params.invert;
     settings.blur = params.blur;
     settings.transformIsIdentity = isIdentityPin(params.pin);

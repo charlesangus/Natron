@@ -67,21 +67,6 @@ intersectRects(const RectD& a,
 }
 
 RectI
-toPixelEnclosing(const RectD& r,
-                 double scale,
-                 double par)
-{
-    if (isEmptyRect(r)) {
-        return RectI(0, 0, 0, 0);
-    }
-
-    return RectI((int)std::floor(r.x1 * scale / par),
-                 (int)std::floor(r.y1 * scale),
-                 (int)std::ceil(r.x2 * scale / par),
-                 (int)std::ceil(r.y2 * scale));
-}
-
-RectI
 toPixelNearest(const RectD& r,
                double scale,
                double par)
@@ -143,7 +128,6 @@ CropOp::bake(const KnobReader& reader) const
     params.time = reader.time();
     params.view = reader.view();
     params.reformat = reader.value(reformat);
-    params.blackOutside = reader.value(blackOutside);
     // Softness is in canonical units, so the render scale does not apply to it.
     params.softness = reader.value(softness);
 
@@ -168,7 +152,7 @@ CropOp::offset(const Params& params,
     }
     RectD cropFull;
     double par = 1.;
-    crop->getCropRectangle(params.time, params.view, context.scale, false, false, false, false, &cropFull, &par);
+    crop->getCropRectangle(params.time, params.view, context.scale, false, false, false, &cropFull, &par);
     const RectI fullPixel = toPixelNearest(cropFull, context.scale.toOfxPointD().x, par);
     shift.x = -fullPixel.x1;
     shift.y = -fullPixel.y1;
@@ -180,10 +164,9 @@ ResampleMatte
 CropOp::matte(const Params& params,
               const PassContext& context) const
 {
-    const bool blackOutside = params.blackOutside;
     const double softness = params.softness;
 
-    if (!crop || (!blackOutside && (softness == 0))) {
+    if (!crop || (softness == 0)) {
         return ResampleMatte();
     }
     const double scale = context.scale.toOfxPointD().x;
@@ -191,13 +174,12 @@ CropOp::matte(const Params& params,
     const double dstPar = own ? own->getPixelAspectRatio(-1) : 1.;
     RectD cropFull;
     double par = 1.;
-    crop->getCropRectangle(params.time, params.view, context.scale, false, false, false, false, &cropFull, &par);
-    const RectI fullPixel = toPixelNearest(cropFull, scale, par);
+    crop->getCropRectangle(params.time, params.view, context.scale, false, false, false, &cropFull, &par);
     const PixelOffset shift = offset(params, context);
 
     // The weight of one axis, from the distance d of the pixel centre inside the crop rectangle.
     const auto weight = [softness](double d) -> double {
-        if ((softness == 0) || (d >= softness)) {
+        if (d >= softness) {
             return 1.;
         }
 
@@ -221,15 +203,6 @@ CropOp::matte(const Params& params,
     matte.row = [weight, rowDistance](int y) {
         return weight(rowDistance(y));
     };
-    if (blackOutside) {
-        matte.blackColumn = [columnDistance, fullPixel, tx = shift.x](int x) {
-            return (x == (fullPixel.x1 + tx)) || (x == (fullPixel.x2 - 1 + tx)) || (columnDistance(x) <= 0);
-        };
-        matte.blackRow = [rowDistance, fullPixel, ty = shift.y](int y) {
-            return (y == (fullPixel.y1 + ty)) || (y == (fullPixel.y2 - 1 + ty)) || (rowDistance(y) <= 0);
-        };
-    }
-
     return matte;
 } // CropOp::matte
 
@@ -293,13 +266,6 @@ Crop::initializeKnobs()
     page->addKnob(intersect);
     _intersect = intersect;
 
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr("Black Outside"));
-    blackOutside->setName(kCropParamBlackOutside);
-    blackOutside->setHintToolTip(tr("Add 1 black and transparent pixel to the region of definition so that all the area outside the crop rectangle is black."));
-    blackOutside->setDefaultValue(false);
-    page->addKnob(blackOutside);
-    op().blackOutside = blackOutside;
-
     addStageKnobs(page);
     _extentKnobs.finishKnobs();
 } // Crop::initializeKnobs
@@ -358,12 +324,6 @@ Crop::knobChanged(KnobI* k,
     KnobBoolPtr reformat = op().reformat.lock();
     if (reformat && (k == reformat.get())) {
         updateRectangleEnable();
-        if (reason == eValueChangedReasonUserEdited) {
-            KnobBoolPtr blackOutside = op().blackOutside.lock();
-            if (blackOutside) {
-                blackOutside->setValue(!reformat->getValue());
-            }
-        }
 
         return true;
     }
@@ -377,20 +337,17 @@ Crop::getCropRectangle(double time,
                        const RenderScale& scale,
                        bool useIntersect,
                        bool forceIntersect,
-                       bool useBlackOutside,
                        bool useReformat,
                        RectD* cropRect,
                        double* par) const
 {
     KnobBoolPtr intersectKnob = _intersect.lock();
-    KnobBoolPtr blackOutsideKnob = op().blackOutside.lock();
     KnobBoolPtr reformatKnob = op().reformat.lock();
 
     bool intersect = false;
     if (useIntersect) {
         intersect = forceIntersect || (intersectKnob && intersectKnob->getValueAtTime(time, 0, view));
     }
-    const bool blackOutside = useBlackOutside && blackOutsideKnob && blackOutsideKnob->getValueAtTime(time, 0, view);
     const bool reformat = useReformat && reformatKnob && reformatKnob->getValueAtTime(time, 0, view);
 
     EffectInstancePtr source = getInput(0);
@@ -452,15 +409,6 @@ Crop::getCropRectangle(double time,
     if (intersect && hasSourceRoD) {
         rod = intersectRects(rod, sourceRoD);
     }
-    if (blackOutside) {
-        const double s = scale.toOfxPointD().x;
-        RectI rodPixel = toPixelEnclosing(rod, s, rodPar);
-        rodPixel.x1 -= 1;
-        rodPixel.y1 -= 1;
-        rodPixel.x2 += 1;
-        rodPixel.y2 += 1;
-        rod = toCanonical(rodPixel, s, rodPar);
-    }
 
     if (cropRect) {
         *cropRect = rod;
@@ -477,7 +425,7 @@ Crop::getRegionOfDefinition(U64 /*hash*/,
                             ViewIdx view,
                             RectD* rod)
 {
-    getCropRectangle(time, view, scale, true, false, true, true, rod, NULL);
+    getCropRectangle(time, view, scale, true, false, true, rod, NULL);
 
     return eStatusOK;
 }
@@ -495,8 +443,10 @@ Crop::getRegionsOfInterest(double time,
     if (!source) {
         return;
     }
+    // The rectangle may reach past the source, whose edge mode then says what the band past it
+    // reads, so the region of interest keeps that band rather than clip to the source.
     RectD cropRect;
-    getCropRectangle(time, view, scale, true, true, false, false, &cropRect, NULL);
+    getCropRectangle(time, view, scale, true, false, false, &cropRect, NULL);
 
     RectD roi = renderWindow;
     KnobBoolPtr reformat = op().reformat.lock();
@@ -515,6 +465,9 @@ Crop::getPreferredMetadataAt(double time,
                              ViewIdx view,
                              NodeMetadata& metadata)
 {
+    if (const StatusEnum status = ImageNode<CropOp>::getPreferredMetadataAt(time, view, metadata); status != eStatusOK) {
+        return status;
+    }
     KnobBoolPtr reformat = op().reformat.lock();
 
     if (!reformat || !reformat->getValueAtTime(time, 0, view)) {
@@ -539,7 +492,7 @@ Crop::getPreferredMetadataAt(double time,
         // these extents. The format is the rectangle at time, so an animated rectangle gives
         // each frame its own format.
         RectD rect;
-        getCropRectangle(time, view, RenderScale::identity, false, false, false, true, &rect, &par);
+        getCropRectangle(time, view, RenderScale::identity, false, false, true, &rect, &par);
         pixelFormat = toPixelNearest(rect, 1., par);
     }
     if (par != 0.) {

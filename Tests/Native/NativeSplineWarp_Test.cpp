@@ -605,7 +605,6 @@ TEST_F(NativeSplineWarpTest, RoICoversWhatTheWindowReads)
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { x1, y1 }));
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { std::ceil(roi.x2) - x1, std::ceil(roi.y2) - y1 }));
     ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
-    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 0. }));
 
     const RectI all(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane whole, part;
@@ -652,7 +651,6 @@ TEST_F(NativeSplineWarpTest, ConcatenatesAPrecedingTransform)
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 0., 0. }));
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { (double)kParitySourceWidth, (double)kParitySourceHeight }));
     ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
-    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 0. }));
     NodePtr warp = makeSplineWarp(transform);
     NodePtr twice = makeSplineWarp(crop);
     ASSERT_TRUE(warp && twice);

@@ -123,7 +123,7 @@ struct StretchShiftOp {
 
         s.filter = Resampler::eFilterImpulse;
         s.clamp = false;
-        s.blackOutside = false;
+        s.edgeMode = EdgeMode::Stretch;
         s.invert = false;
         s.transformIsIdentity = false;
 

@@ -38,6 +38,7 @@
 #include <ofxNatron.h>
 
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
@@ -49,6 +50,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -213,9 +215,10 @@ TEST_F(NativeReformatTest, VisibleKnobsFollowTheType)
     KnobChoice* type = dynamic_cast<KnobChoice*>(node->getKnobByName(kReformatParamType).get());
     ASSERT_TRUE(type != NULL);
     EXPECT_EQ((int)Reformat::eReformatTypeToProjectFormat, type->getValue());
-    KnobBool* blackOutside = dynamic_cast<KnobBool*>(node->getKnobByName(kResamplerParamFilterBlackOutside).get());
-    ASSERT_TRUE(blackOutside != NULL);
-    EXPECT_FALSE(blackOutside->getValue());
+    KnobChoice* edgeMode = dynamic_cast<KnobChoice*>(node->getKnobByName(kEdgeModeParam).get());
+    ASSERT_TRUE(edgeMode != NULL);
+    EXPECT_EQ((int)EdgeModeChoice::Input, edgeMode->getValue());
+    EXPECT_TRUE(node->getKnobByName(kResamplerParamFilterBlackOutside) == NULL);
 
     EXPECT_TRUE(isSecret(node, kNatronParamFormatChoice));
     EXPECT_TRUE(isSecret(node, kReformatParamBoxSize));
@@ -457,7 +460,7 @@ TEST_F(NativeReformatTest, EdgePixelsDoNotDependOnTheRequestWindow)
     ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxSize, { 100., 80. }));
     ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxFixed, { 1. }));
     ASSERT_TRUE(setKnobValue(reformat, kReformatParamResize, kReformatParamResizeOptionDistort));
-    ASSERT_TRUE(setKnobValues(reformat, kResamplerParamFilterBlackOutside, { 0. }));
+    ASSERT_TRUE(setKnobValue(reformat, kEdgeModeParam, std::string("stretch")));
 
     const RectI full = regionOfDefinition(reformat, kTime).toPixelEnclosing(0, 1.);
     const RectI corner(full.x2 - 6, full.y2 - 6, full.x2, full.y2);
@@ -540,6 +543,84 @@ TEST_F(NativeReformatTest, AQuarterScaleLanczos3HasLessAliasEnergyThanImpulse)
     EXPECT_GT(impulse, 0.2);
     EXPECT_GE(lanczos, 0.);
     EXPECT_LT(lanczos, 1e-2);
+}
+
+// Reformatted to a larger box without resizing, the source covers part of the format; the band
+// between the source and the format lies past the Reformat's region, so what reads it there
+// follows the mode the Reformat's output carries: the source's under Input, the forced one
+// otherwise.
+TEST_F(NativeReformatTest, ToALargerFormatTheBandFollowsTheResolvedMode)
+{
+    const float value = 0.25f;
+    const struct {
+        EdgeModeChoice choice;
+        const char* id;
+    } choices[] = { { EdgeModeChoice::Input, "input" }, { EdgeModeChoice::Black, "black" }, { EdgeModeChoice::Stretch, "stretch" } };
+
+    for (bool centered : { true, false }) {
+        for (EdgeMode sourceMode : { EdgeMode::Stretch, EdgeMode::Black }) {
+            for (const auto& c : choices) {
+                resetProject();
+                const std::string what = std::string(c.id) + " over a " + ((sourceMode == EdgeMode::Stretch) ? "Stretch" : "Black") + " source" + (centered ? ", centred" : "");
+                NodePtr source = createNode(QString::fromUtf8(kTestPluginIDCounting));
+                ASSERT_TRUE(bool(source)) << what;
+                ASSERT_TRUE(setKnobValues(source, "value", { (double)value })) << what;
+                ASSERT_TRUE(setKnobValues(source, "blackEdge", { (sourceMode == EdgeMode::Black) ? 1. : 0. })) << what;
+                NodePtr reformat = createNode(QString::fromUtf8(kReformatID), kNativeReformatMajor);
+                ASSERT_TRUE(isNative(reformat)) << what;
+                connectNodes(source, reformat, 0, true);
+                ASSERT_TRUE(setKnobValue(reformat, kReformatParamType, std::string(kReformatParamTypeOptionToBox))) << what;
+                ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxSize, { 96., 80. })) << what;
+                ASSERT_TRUE(setKnobValues(reformat, kReformatParamBoxFixed, { 1. })) << what;
+                ASSERT_TRUE(setKnobValue(reformat, kReformatParamResize, std::string(kReformatParamResizeOptionNone))) << what;
+                ASSERT_TRUE(setKnobValues(reformat, kReformatParamCenter, { centered ? 1. : 0. })) << what;
+                ASSERT_TRUE(setKnobValue(reformat, kEdgeModeParam, std::string(c.id))) << what;
+
+                const EdgeMode mode = resolveEdgeMode(c.choice, sourceMode);
+                EXPECT_EQ(mode, reformat->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode()) << what;
+                const RectI format = reformat->getEffectInstance()->getTimeInvariantMetadata()->getOutputFormat();
+                EXPECT_EQ(RectI(0, 0, 96, 80), format) << what;
+
+                const RectI rod = regionOfDefinition(reformat, kTime).toPixelEnclosing(0, 1.);
+                ASSERT_FALSE(rod.isNull()) << what;
+                const int cx = (rod.x1 + rod.x2) / 2;
+                const int cy = (rod.y1 + rod.y2) / 2;
+
+                // A hard Crop under Input over the whole format reads the band in the Reformat's
+                // mode.
+                NodePtr reader = createNodeAtMajor(getApp(), PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP);
+                ASSERT_TRUE(bool(reader)) << what;
+                connectNodes(reformat, reader, 0, true);
+                ASSERT_TRUE(setKnobValues(reader, kNativeGeneratorParamBottomLeft, { 0., 0. })) << what;
+                ASSERT_TRUE(setKnobValues(reader, kNativeGeneratorParamSize, { 96., 80. })) << what;
+                ASSERT_TRUE(setKnobValues(reader, kCropParamSoftness, { 0. })) << what;
+                EXPECT_EQ(mode, reader->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode()) << what;
+
+                std::list<ImageLayerDesc> layers;
+                layers.push_back(ImageLayerDesc::getRGBAComponents());
+                std::vector<RenderedPlane> planes;
+                std::string error;
+                ASSERT_TRUE(renderNodePlanesDirect(reader, kTime, ViewIdx(0), 0, format, layers, &planes, &error)) << what << ": " << error;
+                ASSERT_EQ(1u, planes.size()) << what;
+                const RenderedPlane& plane = planes[0];
+                ASSERT_EQ(4u, plane.channels.size()) << what;
+                const auto at = [&](int x, int y, int ch) {
+                    return plane.pixels[((std::size_t)(y - format.y1) * format.width() + (x - format.x1)) * 4 + ch];
+                };
+                for (int ch = 0; ch < 4; ++ch) {
+                    EXPECT_NEAR(value, at(cx, cy, ch), 1e-5) << what << ", the source, channel " << ch;
+                    for (const auto& band : { std::make_pair(format.x2 - 1, format.y2 - 1), std::make_pair(format.x2 - 1, cy), std::make_pair(cx, format.y2 - 1) }) {
+                        const float v = at(band.first, band.second, ch);
+                        if (mode == EdgeMode::Stretch) {
+                            EXPECT_NEAR(value, v, 1e-5) << what << ", the band at " << band.first << "," << band.second << " channel " << ch;
+                        } else {
+                            EXPECT_EQ(0.f, v) << what << ", the band at " << band.first << "," << band.second << " channel " << ch;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 TEST_F(NativeReformatTest, RegisteredIdentity)

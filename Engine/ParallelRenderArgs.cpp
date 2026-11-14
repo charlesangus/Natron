@@ -1092,16 +1092,14 @@ visitRequestPassItem(bool useTransforms,
 
     ///Compute the regions of interest in input for this RoI
     FrameViewPerRequestData fvPerRequestData;
-    effect->getRegionsOfInterest_public(time, nodeRequest->mappedScale, fvRequest->globalData.rod, canonicalRenderWindow, view, &fvPerRequestData.inputsRoi);
-
-
     ///Transform Rois and get the reroutes map
-    if (useTransforms) {
-        if (fvRequest->globalData.transforms) {
-            fvRequest->globalData.reroutesMap.reset( new std::map<int, EffectInstancePtr>() );
-            EffectInstance::transformInputRois(effect.get(), fvRequest->globalData.transforms, par, nodeRequest->mappedScale, &fvPerRequestData.inputsRoi, fvRequest->globalData.reroutesMap.get());
-        }
+    InputMatrixMapPtr roiTransforms;
+    if (useTransforms && fvRequest->globalData.transforms) {
+        roiTransforms = fvRequest->globalData.transforms;
+        fvRequest->globalData.reroutesMap.reset(new std::map<int, EffectInstancePtr>());
     }
+    effect->getRegionsOfInterest_public(time, nodeRequest->mappedScale, fvRequest->globalData.rod, canonicalRenderWindow, view, &fvPerRequestData.inputsRoi,
+                                        roiTransforms, par, roiTransforms ? fvRequest->globalData.reroutesMap.get() : nullptr);
 
     EffectInstance::ComponentsNeededMap neededComps;
     {

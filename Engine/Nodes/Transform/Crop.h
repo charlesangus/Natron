@@ -43,7 +43,6 @@
 #define kCropParamSoftness "softness"
 #define kCropParamReformat "reformat"
 #define kCropParamIntersect "intersect"
-#define kCropParamBlackOutside "blackOutside"
 
 NATRON_NAMESPACE_ENTER
 
@@ -63,14 +62,13 @@ struct CropOp {
         double time = 0.;
         ViewIdx view;
         bool reformat = false;
-        bool blackOutside = false;
         double softness = 0.;
     };
 
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_CROP,
         .label = "Crop",
-        .description = "Removes everything outside the defined rectangle and optionally adds black edges so everything outside is black.\n"
+        .description = "Removes everything outside the defined rectangle. Edge Mode says what lies outside it: black, or its edge pixels repeated.\n"
                        "If 'Reformat' is checked, the crop rectangle, moved to (0,0), becomes the output format; with the 'Format' extent the output pixel aspect ratio is also set to this of the format.\n"
                        "This plugin does not concatenate transforms.",
         .grouping = PLUGIN_GROUP_TRANSFORM,
@@ -81,7 +79,7 @@ struct CropOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = {},
+        .stages = { Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Resample,
     };
@@ -106,11 +104,9 @@ struct CropOp {
                        const PassContext& context) const;
 
     /**
-     * @brief The black border and the softness fade, or an unset matte when neither applies. Each
-     * axis weighs 0 on the border pixels and, with blackOutside, outside the rectangle; else 1 at
-     * least softness inside it, and the smoothstep of the distance over softness nearer the edge.
-     * The fade is the product of the two axes' smoothsteps, and every black pixel lies on a black
-     * row or column, which makes the matte separable.
+     * @brief The softness fade, or an unset matte without softness. Each axis weighs 1 at least
+     * softness inside the rectangle, and the smoothstep of the distance over softness nearer the
+     * edge. The fade is the product of the two axes' smoothsteps, which makes the matte separable.
      **/
     ResampleMatte matte(const Params& params,
                         const PassContext& context) const;
@@ -119,7 +115,6 @@ struct CropOp {
     Crop* crop = nullptr;
     KnobDoubleWPtr softness;
     KnobBoolWPtr reformat;
-    KnobBoolWPtr blackOutside;
 };
 
 static_assert(GpuOffsetResampleOp<CropOp> && !MatrixResampleOp<CropOp>);
@@ -127,15 +122,16 @@ static_assert(GpuOffsetResampleOp<CropOp> && !MatrixResampleOp<CropOp>);
 /**
  * @brief Crop: keeps the pixels inside a rectangle, optionally fading them to black at its edges
  * (softness), translating the rectangle to the origin and making it the output format
- * (reformat), clipping it to the source's region of definition (intersect) and adding a black
- * border around it (blackOutside). The rectangle comes from the same extent knobs as a generator
- * (Format, Size, Project or Default, with Size as the initial extent), shown with the host
- * rectangle overlay while it is editable. Knob names, defaults, region of definition, clip
- * preferences and per-pixel arithmetic are the openfx-misc CropPlugin's, except that reformat
- * there sets the output format for the Format and Project extents only, and that a pixel whose
- * fade weight is exactly 0 (its centre on the rectangle's edge, without blackOutside) is written
- * 0 rather than multiplied, so a NaN or infinite source pixel there becomes 0. It registers under
- * that plug-in's ID two majors above.
+ * (reformat) and clipping it to the source's region of definition (intersect). The rectangle
+ * comes from the same extent knobs as a generator (Format, Size, Project or Default, with Size as
+ * the initial extent), shown with the host rectangle overlay while it is editable. The region of
+ * definition is the rectangle, and the Edge Mode stage says what lies past it: the output
+ * carries the resolved mode, and inside the rectangle the source reads past its own region
+ * under that mode. Knob names, defaults, clip preferences and per-pixel arithmetic are the
+ * openfx-misc CropPlugin's, except that reformat there sets the output format for the Format and
+ * Project extents only, and that a pixel whose fade weight is exactly 0 (its centre on the
+ * rectangle's edge) is written 0 rather than multiplied, so a NaN or infinite source pixel there
+ * becomes 0. It registers under that plug-in's ID two majors above.
  *
  * Every channel of every requested plane is cropped; the unprocessed-channel copy stays with
  * the host. The regions of definition and of interest are the node's own, not the offset form's:
@@ -175,15 +171,13 @@ public:
      *
      * useIntersect lets the intersect knob clip the rectangle to the source's region of
      * definition, and forceIntersect clips it whatever the knob says. useReformat moves the
-     * rectangle's bottom left corner to the origin, and useBlackOutside grows it by one pixel
-     * at scale on every side.
+     * rectangle's bottom left corner to the origin.
      **/
     void getCropRectangle(double time,
                           ViewIdx view,
                           const RenderScale& scale,
                           bool useIntersect,
                           bool forceIntersect,
-                          bool useBlackOutside,
                           bool useReformat,
                           RectD* cropRect,
                           double* par) const;

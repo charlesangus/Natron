@@ -31,6 +31,7 @@
 #include <bitset>
 #include <list>
 #include <mutex>
+#include <optional>
 
 #include "Global/GlobalDefines.h"
 #include "Global/KeySymbols.h"
@@ -1948,15 +1949,31 @@ protected:
     /**
      * @brief Called by getRegionsOfInterest_public() on what getRegionsOfInterest() returned, so
      * a node can adjust every input's region whatever its subclasses' getRegionsOfInterest() do.
-     * Does nothing by default.
+     * When transforms is set, ret is already keyed by the effects the concatenated inputs fetch
+     * from, in their space, as transformInputRois() leaves it. Does nothing by default.
      **/
     virtual void adjustInputRegionsOfInterest(double /*time*/,
                                               const RenderScale& /*scale*/,
                                               ViewIdx /*view*/,
+                                              const InputMatrixMap* /*transforms*/,
                                               RoIMap* /*ret*/)
     {
     }
 
+public:
+    /**
+     * @brief The edge mode this node resamples its concatenated chain under at time and view,
+     * when it offers its transform; none when it has no say. tryConcatenateTransforms() stops at
+     * an upstream node whose mode differs from this node's, since a chain samples its source under
+     * one mode.
+     **/
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double /*time*/,
+                                                             ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return std::nullopt;
+    }
+
+protected:
     /**
      * @brief Can be derived to indicate for each input node what is the frame range(s) (which can be discontinuous)
      * that this effects need in order to render the frame at the given time.
@@ -1998,14 +2015,19 @@ public:
     bool hasComponentsNeededInCache(U64 hash, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
 public:
-
-
+    /**
+     * @brief getRegionsOfInterest(), then, when transforms and reroutesMap are set,
+     * transformInputRois() with par, then adjustInputRegionsOfInterest().
+     **/
     void getRegionsOfInterest_public(double time,
-                                     const RenderScale & scale,
-                                     const RectD & outputRoD,
-                                     const RectD & renderWindow,   //!< the region to be rendered in the output image, in Canonical Coordinates
+                                     const RenderScale& scale,
+                                     const RectD& outputRoD,
+                                     const RectD& renderWindow, //!< the region to be rendered in the output image, in Canonical Coordinates
                                      ViewIdx view,
-                                     RoIMap* ret);
+                                     RoIMap* ret,
+                                     const InputMatrixMapPtr& transforms = InputMatrixMapPtr(),
+                                     double par = 1.,
+                                     std::map<int, EffectInstancePtr>* reroutesMap = nullptr);
 
     FramesNeededMap getFramesNeeded_public(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel) WARN_UNUSED_RETURN;
 

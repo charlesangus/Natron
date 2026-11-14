@@ -96,6 +96,12 @@ ITransform::initializeKnobs()
     const KnobPagePtr page = createControlsPage();
 
     _op.createKnobs(static_cast<KnobHolder*>(this), page);
+    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
+    blackOutside->setName(kResamplerParamFilterBlackOutside);
+    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
+    blackOutside->setDefaultValue(true);
+    page->addKnob(blackOutside);
+    _blackOutside = blackOutside;
     createMapKnobs(page);
     addStageKnobs(page);
 
@@ -235,7 +241,7 @@ ITransform::readWarpSettings(double time,
 
     settings->filter = params.filter;
     settings->clamp = params.clamp;
-    settings->blackOutside = params.blackOutside;
+    settings->blackOutside = KnobReader(time, view).valueOr(_blackOutside, true);
     settings->invert = params.invert;
     settings->blur = params.blur;
     // As Transform renders it: a directional blur has no shutter.

@@ -153,6 +153,66 @@ GPU_TEST_F(GpuBufferPoolTest, LastReleaseReturnsBufferToPool)
     EXPECT_EQ(pool->stats().pooledBytes, 0u);
 }
 
+GPU_TEST_F(GpuBufferPoolTest, CachedLeasesGoBeforeRequiredOnesLowestScoreFirst)
+{
+    constexpr int n = 4;
+    std::vector<GpuBufferHandle> held(n);
+    std::vector<int> order;
+    for (int i = 0; i < n; ++i) {
+        ASSERT_TRUE(pool->acquire(8 * kMiB, held[i]).ok());
+    }
+    auto onEvict = [&](int i) {
+        return [&, i] {
+            order.push_back(i);
+            held[i] = GpuBufferHandle();
+        };
+    };
+    held[0].markEvictable(onEvict(0));
+    held[1].markCached(onEvict(1), 5.0);
+    held[2].markCached(onEvict(2), 1.0);
+    held[3].markEvictable(onEvict(3));
+    held[0].touch();
+
+    std::vector<GpuBufferHandle> fresh(3);
+    for (auto& h : fresh) {
+        ASSERT_TRUE(pool->acquire(8 * kMiB, h).ok());
+        EXPECT_LE(usage(), kBudget);
+    }
+    EXPECT_EQ(order, (std::vector<int> { 2, 1, 3 }));
+}
+
+GPU_TEST_F(GpuBufferPoolTest, SetCachedScoreReordersEviction)
+{
+    std::vector<GpuBufferHandle> held(2);
+    std::vector<int> order;
+    for (int i = 0; i < 2; ++i) {
+        ASSERT_TRUE(pool->acquire(16 * kMiB, held[i]).ok());
+        held[i].markCached([&, i] {
+            order.push_back(i);
+            held[i] = GpuBufferHandle();
+        },
+                           i == 0 ? 1.0 : 2.0);
+    }
+    held[0].setCachedScore(9.0);
+    GpuBufferHandle fresh;
+    ASSERT_TRUE(pool->acquire(16 * kMiB, fresh).ok());
+    EXPECT_EQ(order, (std::vector<int> { 1 }));
+}
+
+GPU_TEST_F(GpuBufferPoolTest, DroppedCachedLeaseFreesItsBudget)
+{
+    GpuBufferHandle cached;
+    ASSERT_TRUE(pool->acquire(kBudget, cached).ok());
+    cached.markCached([&] { cached = GpuBufferHandle(); }, 1.0);
+    EXPECT_EQ(pool->stats().liveBytes, kBudget);
+
+    GpuBufferHandle fresh;
+    ASSERT_TRUE(pool->acquire(16 * kMiB, fresh).ok());
+    EXPECT_FALSE(cached);
+    EXPECT_EQ(pool->stats().evictions, 1u);
+    EXPECT_LE(usage(), kBudget);
+}
+
 GPU_TEST_F(GpuBufferPoolTest, PooledBuffersAreTrimmedBeforeEvicting)
 {
     GpuBufferHandle victim;

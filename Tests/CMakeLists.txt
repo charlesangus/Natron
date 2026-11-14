@@ -132,6 +132,7 @@ set(Tests_SOURCES
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
     Gpu/CacheStressGpu_Test.cpp
+    Gpu/CacheDeviceTier_Test.cpp
     Gpu/RawAmazeGpu_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp

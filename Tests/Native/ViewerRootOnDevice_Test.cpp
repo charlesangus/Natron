@@ -581,6 +581,51 @@ protected:
         return run->future->wait() == EffectInstance::eRenderRoIRetCodeOk;
     }
 
+    // The key renderRoI looks the RGBA output of node's task in graph up by.
+    static ImageKey outputKey(const FrameGraph& graph,
+                              const NodePtr& node)
+    {
+        const int index = taskOf(graph, node);
+        if (index < 0) {
+            return ImageKey();
+        }
+        const FrameGraph::Task& task = graph.tasks[index];
+
+        return task.key.node->getEffectInstance()->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, false /*draft*/, task.cacheMipmapLevel).forEntry(task.key.mipmapLevel, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+    }
+
+    // A RAM entry of the host tier, not the stub a peek makes of a device entry.
+    static bool inHostTier(const ImageKey& key)
+    {
+        std::list<ImagePtr> cached;
+        if (!appPTR->peekImage(key, &cached)) {
+            return false;
+        }
+        for (const ImagePtr& image : cached) {
+            if (image && (image->getStorageMode() == eStorageModeRAM) && image->isAllocated()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // The bytes of the RAM entry of the host tier under key, 0 without one.
+    static std::size_t hostTierBytes(const ImageKey& key)
+    {
+        std::list<ImagePtr> cached;
+        if (!appPTR->peekImage(key, &cached)) {
+            return 0;
+        }
+        for (const ImagePtr& image : cached) {
+            if (image && (image->getStorageMode() == eStorageModeRAM) && image->isAllocated()) {
+                return (std::size_t)image->getBounds().area() * image->getComponentsCount() * sizeof(float);
+            }
+        }
+
+        return 0;
+    }
+
     // The chain's RAM root, rendered on the GPU without asking for the root on the device.
     bool renderRamRoot(ImagePtr* root,
                        std::string* error)
@@ -727,6 +772,10 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     setGpuStripOverridesForTests(1u << 20, 64);
     FrameRun run;
     ASSERT_TRUE(prepareChainFrame(true, &run, &error)) << error;
+    const ImageKey gradeKey = outputKey(run.graph, _grade);
+    const ImageKey blurKey = outputKey(run.graph, _blur);
+    ASSERT_FALSE(inHostTier(gradeKey));
+    ASSERT_FALSE(inHostTier(blurKey));
     ASSERT_TRUE(render(&run));
 
     const RenderScheduler::RegionReport report = *_last;
@@ -734,9 +783,15 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     EXPECT_EQ(1, run.stats->getGpuRegionsRun());
     EXPECT_GT(report.strips, 1);
     const std::size_t rootBytes = (std::size_t)ramRoot->getBounds().area() * 4 * sizeof(float);
-    EXPECT_EQ(rootBytes, report.downloadBytes);
     EXPECT_GT(run.stats->getDownloadCount(), 0);
-    EXPECT_EQ((unsigned long long)rootBytes, run.stats->getDownloadBytes());
+    EXPECT_TRUE(inHostTier(gradeKey)) << "the host tier did not admit the Grade";
+    EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
+    // The Grade and the Blur reach the host tier, and the root comes back to RAM whole on top of them.
+    const std::size_t gradeBytes = hostTierBytes(gradeKey);
+    const std::size_t blurBytes = hostTierBytes(blurKey);
+    EXPECT_GT(gradeBytes, 0u);
+    EXPECT_GT(blurBytes, 0u);
+    EXPECT_GE(report.downloadBytes, rootBytes + gradeBytes + blurBytes);
     EXPECT_EQ(1, legacyFallbacksOf(run, kStripsReason));
     EXPECT_TRUE(run.context->takeRootDevicePlanes().empty());
 

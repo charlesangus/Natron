@@ -149,8 +149,17 @@ struct FrameGraph {
         bool probesCachedOutput = false;
 
         // The planned cache hit let its dependencies go, all of them or those only the cached part of its output read.
-        // Such a task can't join a GPU region, which renders the whole RoI from the region's inputs.
+        // Such a task can't join a GPU region, which renders the whole RoI from the region's inputs, unless the hit is
+        // a partial one of the device tier (deviceMissingRoI).
         bool servedFromCache = false;
+
+        // Where the entries that serve the task were found; meaningful when servedFromCache.
+        EffectInstance::OutputCacheTier servedTier = EffectInstance::OutputCacheTier::Memory;
+
+        // For a partial hit whose every entry is in the device tier: the bounding rectangle, within renderedRoI, of
+        // what the entries miss, which a region renders alone into an image grown from theirs. Null otherwise. The
+        // dependencies servedFromCache let go are unread by this rectangle only.
+        RectI deviceMissingRoI;
 
         // Empty when the request doesn't know the region of definition.
         RectI pixelRoD;
@@ -329,6 +338,25 @@ public:
         // The strips the region ran as, 0 when it ran whole, and the most of them in flight at once.
         int strips = 0;
         int stripsInFlight = 0;
+
+        // The device bytes the plan of a region run whole expects at most without and with its outputs kept for the
+        // device tier, both 0 for one run as strips; and what the region's buffers held at most.
+        unsigned long long wholePeakDeviceBytes = 0;
+        unsigned long long plannedPeakDeviceBytes = 0;
+        unsigned long long peakDeviceBytes = 0;
+
+        // The member outputs the region left in the device tier.
+        int publishedToDevice = 0;
+
+        // The member outputs the region read back to RAM and admitted to the host tier.
+        int admittedToHost = 0;
+
+        // What each task of Region::members rendered, over all its planes: less than its renderedRoI where the device
+        // tier held the rest. Null for an identity task.
+        std::vector<RectI> renderedRects;
+
+        // The member outputs grown from a partial entry of the device tier, its pixels copied in on the device.
+        int grownFromDevice = 0;
 
         // The region fits the device whole and was stripped anyway, to overlap its transfers with its compute.
         bool overlapStrips = false;

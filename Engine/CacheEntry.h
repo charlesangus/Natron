@@ -253,6 +253,10 @@ struct CacheEntryHeader {
     std::atomic<U64> lastReuseRender { 0 };
     // Its file lives among a holder's pins, so RAM pressure only drops the entry.
     std::atomic<bool> pinned { false };
+
+    // The header of a copy of the entry in another tier, made from this one or this one's source. Each tier keeps its
+    // own header, so a hit on one copy reaches the other's eviction score only through this.
+    std::atomic<std::weak_ptr<CacheEntryHeader>> twin;
 };
 
 typedef std::shared_ptr<CacheEntryHeader> CacheEntryHeaderPtr;

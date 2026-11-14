@@ -100,6 +100,8 @@ void evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
                                             const std::function<std::size_t()>& getAccountedMemory,
                                             const std::function<bool()>& evictOnce);
 
+class CacheDeviceTier;
+class CacheDeviceHost;
 class CacheDiskTier;
 class CacheHostTier;
 struct AppManagerPrivate;
@@ -409,6 +411,13 @@ public:
     void checkCacheFreeMemoryIsGoodEnough();
 
     CacheHostTier& getNodeCacheHostTier() const;
+
+    /**
+     * @brief The image cache as what a render admits an image it made outside the cache to the host tier through: the
+     * image is made with deviceHostCache() as its cache and put in the table with adoptFromDevice(). Null without an
+     * image cache.
+     **/
+    const CacheDeviceHost* getNodeCacheHost() const;
     // Null when the node cache has no disk tier.
     std::shared_ptr<CacheDiskTier> getNodeCacheDiskTier() const;
 
@@ -463,6 +472,13 @@ public:
      * settings would not select. No render may be running.
      **/
     std::unique_ptr<GpuContext> swapGpuContextForTests(std::unique_ptr<GpuContext> context);
+
+    /**
+     * @brief The image cache's tier of the GPU context's device, made and attached to the cache the first time it is
+     * asked for once the device is ready. Null without a ready device or an image cache. The caller holds the runtime
+     * through GpuContext::holdRuntime() while it uses the tier.
+     **/
+    std::shared_ptr<CacheDeviceTier> getDeviceCacheTier() const;
 
     /**
      * @brief Overrides the mode, whatever its source, until the next Settings change.

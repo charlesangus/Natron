@@ -318,7 +318,9 @@ regionTransfersAreFree(const FrameGraph& graph,
                        bool rootOnDevice)
 {
     for (int e : region.externalInputs) {
-        if (graph.tasks[e].device != FrameGraph::Device::Gpu) {
+        const FrameGraph::Task& input = graph.tasks[e];
+        const bool servedFromDevice = input.servedFromCache && (input.servedTier == EffectInstance::OutputCacheTier::Device) && input.deviceMissingRoI.isNull();
+        if ((input.device != FrameGraph::Device::Gpu) && !servedFromDevice) {
             return false;
         }
     }
@@ -1060,8 +1062,9 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         GpuTransferModel::session().setTransferRates(rates);
     }
 
+    // A partial hit of the device tier stays a GPU candidate: a region renders what is missing into the cached image.
     inputs.isCached = [](const FrameGraph::Task& task) {
-        return task.servedFromCache;
+        return task.servedFromCache && task.deviceMissingRoI.isNull();
     };
 
     return inputs;

@@ -869,11 +869,26 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
                                    double par,
                                    const std::list<ImageLayerDesc>& layers,
                                    ImageBitDepthEnum bitdepth,
-                                   RectD* missing)
+                                   RectD* missing,
+                                   OutputCacheTier* servedBy)
 {
     if (layers.empty() || region.isNull()) {
         return OutputCacheCoverage::None;
     }
+    bool everyLayerOnDevice = true;
+    bool anyLayerOnDisk = false;
+    const auto noteTier = [&](const ImagePtr& entry) {
+        if (entry->getStorageMode() == eStorageModeGLTex) {
+            return;
+        }
+        everyLayerOnDevice = false;
+        anyLayerOnDisk = anyLayerOnDisk || !entry->isAllocated();
+    };
+    const auto reportTier = [&]() {
+        if (servedBy) {
+            *servedBy = everyLayerOnDevice ? OutputCacheTier::Device : (anyLayerOnDisk ? OutputCacheTier::Disk : OutputCacheTier::Memory);
+        }
+    };
 
     ComponentsNeededMap neededComps;
     std::list<ImageLayerDesc> passThroughLayers;
@@ -911,6 +926,10 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
                     }
                 }
                 if (image->getBounds().isNull()) {
+                    continue;
+                }
+                // A device holder's entry has no pin to find it by, so renderRoI would not see it.
+                if (pinsOutput && (image->getStorageMode() == eStorageModeGLTex)) {
                     continue;
                 }
                 if ((candidate._mipmapLevel == level) || (image->getStorageMode() == eStorageModeRAM)) {
@@ -967,6 +986,7 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
         if (rendersFullScale) {
             const ImagePtr atRequestedLevel = findEntry(mipmapLevel, *cachedLayer);
             if (atRequestedLevel && coversInFull(atRequestedLevel, mipmapLevel, region)) {
+                noteTier(atRequestedLevel);
                 continue;
             }
         }
@@ -979,8 +999,10 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
             if (!coversInFull(entry, renderLevel, renderRegion)) {
                 return OutputCacheCoverage::None;
             }
+            noteTier(entry);
             continue;
         }
+        noteTier(entry);
         std::list<RectI> rest;
         if (!settledRest(entry, renderRegion, &rest)) {
             return OutputCacheCoverage::None;
@@ -998,6 +1020,7 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
         }
     }
 
+    reportTier();
     if (missingCanonical.isNull()) {
         return OutputCacheCoverage::Full;
     }

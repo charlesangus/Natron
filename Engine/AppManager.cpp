@@ -113,6 +113,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Backdrop.h"
 #include "Engine/CLArgs.h"
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/CacheDiskTier.h"
 #include "Engine/CacheRetention.h"
 #include "Engine/DiskCacheNode.h"
@@ -550,6 +551,7 @@ AppManager::~AppManager()
         _imp->renderScheduler.reset();
     }
 
+    _imp->dropDeviceTier();
     ///Kill caches now because decreaseNCacheFilesOpened can be called
     if (_imp->_nodeCache) {
         _imp->_nodeCache->waitForDeleterThread();
@@ -3137,6 +3139,12 @@ AppManager::getNodeCacheHostTier() const
     return _imp->_nodeCache->hostTier();
 }
 
+const CacheDeviceHost*
+AppManager::getNodeCacheHost() const
+{
+    return _imp->_nodeCache.get();
+}
+
 std::shared_ptr<CacheDiskTier>
 AppManager::getNodeCacheDiskTier() const
 {
@@ -3214,9 +3222,55 @@ AppManager::getGpuContext() const
     return _imp->gpuContext.get();
 }
 
+CacheDeviceTierPtr
+AppManager::getDeviceCacheTier() const
+{
+    GpuContext* gpu = _imp->gpuContext.get();
+    gpu::GpuRuntime* runtime = (gpu && gpu->isAvailable()) ? gpu->runtime() : nullptr;
+    std::lock_guard<std::mutex> k(_imp->deviceTierMutex);
+    if (!runtime || !_imp->_nodeCache) {
+        return CacheDeviceTierPtr();
+    }
+    if (!_imp->deviceTier) {
+        _imp->deviceTier = std::make_shared<CacheDeviceTier>(runtime);
+        // Looks the context up on each call: the tier can outlive a context swapped out for tests, so it must not keep
+        // a pointer to it, and only the context still running the tier's runtime protects it.
+        _imp->deviceTier->setRuntimeHold([runtime]() -> std::shared_ptr<void> {
+            GpuContext* current = appPTR ? appPTR->getGpuContext() : nullptr;
+            if (!current || (current->runtime() != runtime)) {
+                return std::shared_ptr<void>();
+            }
+
+            return current->holdRuntime();
+        });
+        _imp->_nodeCache->addDeviceTier(_imp->deviceTier);
+    }
+
+    return (_imp->deviceTier->runtime() == runtime) ? _imp->deviceTier : CacheDeviceTierPtr();
+}
+
+void
+AppManagerPrivate::dropDeviceTier()
+{
+    CacheDeviceTierPtr tier;
+    {
+        std::lock_guard<std::mutex> k(deviceTierMutex);
+        tier.swap(deviceTier);
+    }
+    if (!tier) {
+        return;
+    }
+    if (_nodeCache) {
+        _nodeCache->removeDeviceTier(tier);
+    } else {
+        tier->clear();
+    }
+}
+
 std::unique_ptr<GpuContext>
 AppManager::swapGpuContextForTests(std::unique_ptr<GpuContext> context)
 {
+    _imp->dropDeviceTier();
     _imp->gpuContext.swap(context);
 
     return context;

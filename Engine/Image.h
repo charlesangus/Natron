@@ -95,7 +95,6 @@ public:
     Image(const ImageKey & key,
           const ImageParamsPtr& params);
 
-
     virtual ~Image();
 
     bool usesBitMap() const { return _useBitmap; }

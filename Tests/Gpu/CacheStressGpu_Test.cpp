@@ -84,9 +84,16 @@
 #include "Engine/ViewIdx.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Cache.h"
+#include "Engine/CacheDiskTier.h"
+#include "Engine/CacheTier.h"
+#include "Engine/Gpu/GpuBuffer.h"
 #include "Engine/Gpu/GpuPipelineCache.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/Gpu/GpuShaderCompiler.h"
+#include "Engine/HostImageMemory.h"
+#include "Engine/ImageKey.h"
+#include "Engine/ImageParams.h"
 #endif
 
 NATRON_NAMESPACE_USING
@@ -742,6 +749,177 @@ TEST_F(CacheStressGpuTest, DiskCacheSourcesAreNotImportedByAddress)
 }
 
 #ifdef NATRON_HAVE_GPU
+
+namespace {
+const int kRoundTripSide = 512;
+const float kRoundTripCostNs = 1e9f;
+
+ImageKey
+roundTripKey(U64 hash)
+{
+    return Image::makeKey(NULL, hash, false, 1., ViewIdx(0), false, false).forEntry(0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+}
+
+float
+roundTripPixel(float seed,
+               int x,
+               int y,
+               int component)
+{
+    return seed + (float)x * 0.001f + (float)y * 0.25f + (float)component * 16.f;
+}
+
+void
+fillRoundTrip(const ImagePtr& image,
+              float seed)
+{
+    const RectI bounds = image->getBounds();
+    Image::WriteAccess access = image->getWriteRights();
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            float* const pixel = reinterpret_cast<float*>(access.pixelAt(x, y));
+            for (int c = 0; c < 4; ++c) {
+                pixel[c] = roundTripPixel(seed, x, y, c);
+            }
+        }
+    }
+}
+
+// Uploads the image's pixels the way a region task does, caching the host import when its memory allows, reads them
+// back from the device and compares them with the pattern of seed. Returns the failure, or "".
+std::string
+uploadAndCompare(gpu::GpuRuntime& runtime,
+                 const ImagePtr& image,
+                 float seed)
+{
+    const RectI bounds = image->getBounds();
+    const std::size_t bytes = (std::size_t)bounds.area() * 4 * sizeof(float);
+    std::vector<float> back(bytes / sizeof(float), -1.f);
+    gpu::GpuBuffer buffer;
+    gpu::GpuStatus status = gpu::GpuBuffer::createDeviceLocal(runtime.device(), bytes, gpu::kGpuBufferDefaultUsage, buffer);
+    if (!status) {
+        return "could not create the device buffer: " + status.message;
+    }
+    {
+        Image::ReadAccess access = image->getReadRights();
+        const unsigned char* data = access.pixelAt(bounds.x1, bounds.y1);
+        gpu::StreamOptions up;
+        up.handoff = gpu::ComputeHandoff::None;
+        up.cacheImport = (HostImageMemory::bytesFrom(data) >= bytes);
+        gpu::TimelineValue uploaded;
+        status = runtime.upload({ const_cast<unsigned char*>(data), bytes }, buffer, 0, uploaded, up);
+        if (!status) {
+            return "the upload failed: " + status.message;
+        }
+        gpu::StreamOptions down;
+        down.handoff = gpu::ComputeHandoff::None;
+        down.waits = { &uploaded, 1 };
+        gpu::TimelineValue downloaded;
+        status = runtime.download(buffer, 0, { back.data(), bytes }, downloaded, down);
+        if (!status) {
+            return "the download failed: " + status.message;
+        }
+        status = runtime.wait(downloaded);
+        if (!status) {
+            return "waiting for the download failed: " + status.message;
+        }
+    }
+    std::size_t i = 0;
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            for (int c = 0; c < 4; ++c, ++i) {
+                if (back[i] != roundTripPixel(seed, x, y, c)) {
+                    std::ostringstream os;
+                    os << "the device holds " << back[i] << " at (" << x << ", " << y << ") component " << c << ", expected "
+                       << roundTripPixel(seed, x, y, c);
+
+                    return os.str();
+                }
+            }
+        }
+    }
+
+    return std::string();
+}
+} // namespace
+
+// A host entry demoted to the disk tier and promoted into a new buffer is uploaded from its new pixels. The buffer is
+// likely to sit where the first entry's did, whose host import was cached, so a stale import would serve the old
+// pixels; correctness is asserted whatever the addresses turn out to be.
+TEST_F(CacheStressGpuTest, DiskTierRoundTripIsReimportedCorrectly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    GpuContext* context = appPTR->getGpuContext();
+    const std::shared_ptr<void> held = context->holdRuntime();
+    gpu::GpuRuntime* runtime = context->runtime();
+    ASSERT_TRUE(runtime != nullptr);
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    CacheDiskTier::Config config;
+    config.root = dir.path().toStdString();
+    config.buildId = "test-build";
+    config.sizeBytes = 256ULL * 1024 * 1024;
+    config.idlePublisher = false;
+    config.backgroundMaintenance = false;
+    const CacheDiskTierPtr tier = CacheDiskTier::open(config);
+    ASSERT_TRUE(tier != nullptr);
+    Cache<Image> cache("CacheStressGpu_DiskRoundTrip", 1, 1024ULL * 1024 * 1024, 1.);
+    cache.useEvictionScore();
+    cache.setDiskTier(tier);
+
+    const ImageParamsPtr params = Image::makeParams(RectD(0, 0, kRoundTripSide, kRoundTripSide), 1., 0, false,
+                                                    ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat,
+                                                    eImageFieldingOrderNone);
+    auto create = [&](U64 hash, float seed) {
+        ImagePtr image;
+        if (cache.getOrCreate(roundTripKey(hash), params, 0, &image) || !image) {
+            return ImagePtr();
+        }
+        image->allocateMemory();
+        fillRoundTrip(image, seed);
+        image->markForRendered(image->getBounds());
+        image->getEntryHeader()->recomputeCostNs.store(kRoundTripCostNs);
+        image->getEntryHeader()->lastUse.store(CacheEviction::nowNs());
+
+        return image;
+    };
+    // Entries nobody holds leave the host table, the costly ones for the disk tier.
+    auto evictEverything = [&]() {
+        EXPECT_TRUE(tier->waitIdle(60000));
+        cache.setMaximumCacheSize(1024);
+        cache.setMaximumInMemorySize(1.);
+        cache.clearExceedingEntries();
+        EXPECT_TRUE(tier->waitIdle(60000));
+        cache.setMaximumCacheSize(1024ULL * 1024 * 1024);
+        cache.setMaximumInMemorySize(1.);
+    };
+
+    const float oldSeed = 1.f;
+    ImagePtr first = create(1, oldSeed);
+    ASSERT_TRUE(first != nullptr);
+    ASSERT_GE(HostImageMemory::bytesFrom(first->getReadRights().pixelAt(0, 0)), first->getBounds().area() * 4 * sizeof(float))
+        << "the entry is not in HostImageMemory, so the import is never cached";
+    EXPECT_EQ(std::string(), uploadAndCompare(*runtime, first, oldSeed));
+    first.reset();
+    evictEverything();
+
+    const float newSeed = 7.f;
+    ImagePtr second = create(2, newSeed);
+    ASSERT_TRUE(second != nullptr);
+    second.reset();
+    evictEverything();
+
+    std::list<ImagePtr> found;
+    tier->forgetProbes();
+    ASSERT_TRUE(cache.get<Image>(roundTripKey(2), &found) && !found.empty()) << "the entry was not promoted from the disk tier";
+    const ImagePtr promoted = found.front();
+    ASSERT_TRUE(promoted->isAllocated());
+    EXPECT_TRUE(promoted->getEntryHeader()->residency.load() & CacheEntryHeader::eResidencyDisk);
+    EXPECT_EQ(std::string(), uploadAndCompare(*runtime, promoted, newSeed));
+}
 
 // A shader one device rejects is rejected for that device only: after a switch to another device
 // it is built again, and back on the first one it is not.

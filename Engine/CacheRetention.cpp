@@ -164,6 +164,24 @@ admitUnder(AdmissionPolicyEnum policy,
     return (reasons != 0) || (retention.rememberedCostNs() >= kAdmissionCostNs) || retention.hasLiveStamp(nowNs);
 }
 
+namespace {
+
+    void
+    countHit(CacheEntryHeader& header,
+             const CacheRetentionSignalsPtr& holder,
+             std::uint64_t renderSequence)
+    {
+        if (header.retention.load() != holder) {
+            header.retention.store(holder);
+        }
+        // A render with no abort info has no sequence to tell its reads apart, so each one counts.
+        if ((renderSequence == 0) || (header.lastReuseRender.exchange(renderSequence, std::memory_order_relaxed) != renderSequence)) {
+            header.reuseCount.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+} // namespace
+
 void
 noteHit(CacheEntryHeader& header,
         const CacheRetentionSignalsPtr& holder,
@@ -173,12 +191,9 @@ noteHit(CacheEntryHeader& header,
     if (!header.key) {
         return;
     }
-    if (header.retention.load() != holder) {
-        header.retention.store(holder);
-    }
-    // A render with no abort info has no sequence to tell its reads apart, so each one counts.
-    if ((renderSequence == 0) || (header.lastReuseRender.exchange(renderSequence, std::memory_order_relaxed) != renderSequence)) {
-        header.reuseCount.fetch_add(1, std::memory_order_relaxed);
+    countHit(header, holder, renderSequence);
+    if (const CacheEntryHeaderPtr twin = header.twin.load().lock()) {
+        countHit(*twin, holder, renderSequence);
     }
 }
 

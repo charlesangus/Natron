@@ -30,6 +30,7 @@
 #include <functional>
 #include <utility>
 
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/IsolatedJob.h"
@@ -110,6 +111,25 @@ FrameStore::putDevice(const TaskKey& key,
 }
 
 void
+FrameStore::put(const TaskKey& key,
+                std::map<ImageLayerDesc, ImagePtr> layers,
+                std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers,
+                const RectI& renderedRoI,
+                int consumers)
+{
+    if (consumers <= 0) {
+        return;
+    }
+
+    std::shared_ptr<Entry> entry = std::make_shared<Entry>();
+    entry->layers = std::move(layers);
+    entry->deviceLayers = std::move(deviceLayers);
+    entry->renderedRoI = renderedRoI;
+    entry->consumersLeft = consumers;
+    putEntry(key, entry);
+}
+
+void
 FrameStore::putEntry(const TaskKey& key,
                      const std::shared_ptr<Entry>& entry)
 {
@@ -131,7 +151,9 @@ FrameStore::putEntry(const TaskKey& key,
     for (std::map<ImageLayerDesc, DeviceImagePtr>::const_iterator it = entry->deviceLayers.begin(); it != entry->deviceLayers.end(); ++it) {
         if (it->second) {
             addBounds(it->second->bounds());
-            entry->deviceBytes += it->second->bytes();
+            const std::size_t bytes = it->second->bytes();
+            entry->deviceLayerBytes[it->first] = bytes;
+            entry->deviceBytes += bytes;
         }
     }
 
@@ -306,7 +328,8 @@ FrameStore::findDevice(const TaskKey& key,
 }
 
 std::size_t
-FrameStore::evictToRam(const TaskKey& key)
+FrameStore::evictToRam(const TaskKey& key,
+                       const DeviceImage* only)
 {
     std::shared_ptr<Entry> entry;
     {
@@ -322,10 +345,19 @@ FrameStore::evictToRam(const TaskKey& key)
     std::size_t freed = 0;
     std::map<ImageLayerDesc, DeviceImagePtr>::iterator it = entry->deviceLayers.begin();
     while (it != entry->deviceLayers.end()) {
-        const std::size_t bytes = it->second ? it->second->bytes() : 0;
+        if (only && (it->second.get() != only)) {
+            ++it;
+            continue;
+        }
+        const std::map<ImageLayerDesc, std::size_t>::const_iterator stored = entry->deviceLayerBytes.find(it->first);
+        const std::size_t bytes = (stored != entry->deviceLayerBytes.end()) ? stored->second : 0;
         // A layer already downloaded keeps the RAM image it has.
         const bool inRam = entry->layers.find(it->first) != entry->layers.end();
         ImagePtr image = inRam ? ImagePtr() : (it->second ? it->second->evictToRam() : ImagePtr());
+        if (!inRam && !image && it->second) {
+            // The device tier may hold the image too, and have moved its pixels to RAM already.
+            image = it->second->downloadToRam();
+        }
         if (!inRam && !image) {
             // A failed eviction leaves the device image valid.
             ++it;
@@ -337,6 +369,7 @@ FrameStore::evictToRam(const TaskKey& key)
             entry->layers[it->first] = image;
         }
         freed += bytes;
+        entry->deviceLayerBytes.erase(it->first);
         it = entry->deviceLayers.erase(it);
     }
     if (!entry->retired) {
@@ -449,6 +482,7 @@ FrameRenderContext::FrameRenderContext()
     , _wantsRootOnDevice(false)
     , _rootDeviceMutex()
     , _rootDevicePlanes()
+    , _deviceTierGeneration(CacheDeviceTier::purgeGeneration())
 #endif
 {
 }

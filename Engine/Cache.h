@@ -36,6 +36,7 @@
 #include <functional>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -58,6 +59,7 @@ GCC_DIAG_OFF(deprecated)
 GCC_DIAG_ON(deprecated)
 
 #include "Engine/AppManager.h" //for access to settings
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/CacheDiskTier.h"
 #include "Engine/CacheEntry.h"
 #include "Engine/CacheRetention.h"
@@ -402,7 +404,8 @@ Q_SIGNALS:
 template <typename EntryType>
 class Cache
     : public CacheAPI,
-      public CacheHostStorage {
+      public CacheHostStorage,
+      public CacheDeviceHost {
     friend class CacheCleanerThread;
 public:
 
@@ -502,6 +505,9 @@ private:
     // threads at the end, whose entry destructions charge it until they are joined.
     mutable CacheHostTier _hostTier;
     std::shared_ptr<CacheDiskTier> _diskTier;
+    // A tier is attached once its device is ready, which can be during renders, so readers take a copy.
+    mutable std::mutex _deviceTiersMutex;
+    std::vector<CacheDeviceTierPtr> _deviceTiers;
     // A promotion reads its file off every lock. One that began before a clear finished may have
     // read a file the clear removed, and must not land in RAM the clear emptied.
     std::atomic<std::uint64_t> _clearGeneration { 0 };
@@ -606,6 +612,12 @@ public:
 
     virtual ~Cache()
     {
+        // Detaching waits for demotions in flight, which must not reach a host table being torn down.
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+            tier->attachHost(NULL);
+            tier->clear();
+        }
+
         // Off _lock: joining the writers releases the entries they hold, which reach back into this.
         if (_diskTier) {
             _diskTier->shutdown();
@@ -735,7 +747,8 @@ public:
      * @brief Finds entries as get() does without counting as a use of them: the replacement order and the eviction
      * score stay as they were, no signal is emitted and an entry held on disk is not opened, so its data may turn out
      * to be unreadable later. An entry only in the disk tier comes back as an unallocated stub made from its verified
-     * header, which claims all of its pixels if the file holds them all and none otherwise.
+     * header, which claims all of its pixels if the file holds them all and none otherwise. An image entry only in a
+     * device tier comes back as an unallocated stub with a copy of the device entry's header, in GL texture storage mode.
      *
      * Skips _getLock, which getOrCreate() holds while it evicts and allocates; a miss on an entry being created at that
      * moment only means the caller doesn't count on it.
@@ -761,8 +774,8 @@ public:
                     }
                 }
 
-                if (!returnValue->empty() || !_diskTier) {
-                    return !returnValue->empty();
+                if (!returnValue->empty()) {
+                    return true;
                 }
                 break;
             }
@@ -786,6 +799,19 @@ public:
                 std::vector<CacheDiskFileInfo> candidates;
                 if (_diskTier->probe(PayloadType::diskIdentityOfKey(key), NULL, &candidates)) {
                     appendStubs<PayloadType>(key, candidates, returnValue);
+                }
+            }
+        }
+
+        if constexpr (std::is_same_v<PayloadType, Image>) {
+            // After the cache lock is released: the tier takes the image's mutex, which comes before the tier's lock.
+            if (returnValue->empty()) {
+                for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+                    const ImagePtr stub = tier->peekStub(key, this);
+                    if (stub) {
+                        returnValue->push_back(stub);
+                        break;
+                    }
                 }
             }
         }
@@ -866,6 +892,109 @@ public:
     const std::shared_ptr<CacheDiskTier>& diskTier() const
     {
         return _diskTier;
+    }
+
+    /**
+     * @brief Puts the tier of a device above the host tier, which receives its demotions.
+     **/
+    void addDeviceTier(const CacheDeviceTierPtr& tier)
+    {
+        if (!tier) {
+            return;
+        }
+        tier->setNext(&_hostTier);
+        tier->attachHost(this);
+        std::lock_guard<std::mutex> k(_deviceTiersMutex);
+        _deviceTiers.push_back(tier);
+    }
+
+    /**
+     * @brief Detaches the tier and empties it, which must happen while its runtime is alive.
+     **/
+    void removeDeviceTier(const CacheDeviceTierPtr& tier)
+    {
+        if (!tier) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> k(_deviceTiersMutex);
+            _deviceTiers.erase(std::remove(_deviceTiers.begin(), _deviceTiers.end(), tier), _deviceTiers.end());
+        }
+        tier->attachHost(NULL);
+        tier->clear();
+    }
+
+    // Off the cache lock: the tier takes its images' mutexes, which come before it.
+    void removeFromDeviceTiers(U64 hash) const
+    {
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+            tier->removeKey(hash);
+        }
+    }
+
+    std::vector<CacheDeviceTierPtr> deviceTiers() const
+    {
+        std::lock_guard<std::mutex> k(_deviceTiersMutex);
+
+        return _deviceTiers;
+    }
+
+    virtual const CacheAPI* deviceHostCache() const OVERRIDE FINAL
+    {
+        return this;
+    }
+
+    virtual std::uint64_t deviceHostGeneration() const OVERRIDE FINAL
+    {
+        return _clearGeneration.load();
+    }
+
+    virtual void makeHostRoom(std::size_t bytes) const OVERRIDE FINAL
+    {
+        evictForPromotion(bytes);
+    }
+
+    virtual bool adoptFromDevice(const CacheEntryPtr& entry,
+                                 std::uint64_t generation) const OVERRIDE FINAL
+    {
+        const EntryTypePtr typed = std::dynamic_pointer_cast<EntryType>(entry);
+        if (!typed) {
+            return false;
+        }
+        QMutexLocker getlocker(&_getLock);
+        QMutexLocker locker(&_lock);
+        // A render can have made the entry again while the pixels were downloaded.
+        if (clearedSince(generation) || findInMemory<EntryType>(typed->getKey(), typed->getParams().get())) {
+            return false;
+        }
+        sealEntry(entry, true);
+
+        return true;
+    }
+
+    virtual bool hostHolds(const ImageKey& key,
+                           const AbstractCacheEntryBase* instance) const OVERRIDE FINAL
+    {
+        if constexpr (std::is_same<typename EntryType::key_type, ImageKey>::value) {
+            QMutexLocker locker(&_lock);
+            const CacheIterator found = _memoryCache.peek(key.getHash());
+            if (found == _memoryCache.end()) {
+                return false;
+            }
+            for (const StoredEntryPtr& stored : getValueFromIterator(found)) {
+                const std::shared_ptr<EntryType> typed = std::dynamic_pointer_cast<EntryType>(stored);
+                if (typed && (instance ? (stored.get() == instance) : (typed->getKey() == key))) {
+                    return true;
+                }
+            }
+
+            return false;
+        } else {
+            (void)key;
+            (void)instance;
+
+            return false;
+        }
     }
 
 private:
@@ -1289,6 +1418,10 @@ public:
     void clear()
     {
         const ClearUnderWay clearing(*this);
+        // After the generation moved, so that a demotion that took its entry out first is refused by the host.
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+            tier->clear();
+        }
         const PublishPaused paused(*this);
         // Freed off the lock, after everything else.
         std::vector<CacheEntryPtr> droppedDemotions;
@@ -1350,6 +1483,11 @@ public:
      **/
     void clearInRam()
     {
+        // A demotion from a device tier already under way must not land in the RAM this empties.
+        const ClearUnderWay clearing(*this);
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+            tier->clear();
+        }
         const PublishPaused paused(*this);
         std::vector<const AbstractCacheEntryBase*> abandonedPublishes;
 
@@ -1888,6 +2026,13 @@ public:
         if (_diskTier) {
             _diskTier->retract(entry, true);
         }
+        // Other entries of the hash, on the device too, may hold pixels unrelated to this instance, as the finished
+        // render of a region whose RAM copy an abort leaves half written.
+        if (const CacheEntryHeader* header = entry->evictionHeader()) {
+            for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+                tier->removeCopiesOf(header);
+            }
+        }
         if ( !toRemove.empty() ) {
             _deleterThread.appendToQueue(toRemove);
 
@@ -1953,6 +2098,7 @@ public:
                 _diskTier->retract(entry, true);
             }
         }
+        removeFromDeviceTiers(hash);
         if ( !toRemove.empty() ) {
             _deleterThread.appendToQueue(toRemove);
 
@@ -2084,6 +2230,10 @@ private:
             for (const StoredEntryPtr& entry : toDelete) {
                 _diskTier->retract(entry, false);
             }
+        }
+        // Off the cache lock: the tier takes its images' mutexes, which come before it.
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+            tier->removeHolder(holderID, nodeHash, removeAll);
         }
         if ( !toDelete.empty() ) {
             _deleterThread.appendToQueue(toDelete);

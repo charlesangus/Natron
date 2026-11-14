@@ -944,7 +944,130 @@ default is the user's choice.
 
 ## Device tier
 
-Filled by M301.P1.T1 (member-output tracing).
+**Do region members each write their output to a separate device buffer, so that publishing a member is keeping its lease
+rather than an extra copy? Yes, in a region run whole.** Each member that renders writes a lease of its own, never one of
+its inputs, and nothing copies it afterwards. What stands in the way of keeping it is that the run hands the lease to a
+later member once the last reader is done, or drops it after a download. Publishing turns that recycling off for the
+members it keeps. The exceptions are identity members, which share their producer's lease and are not published, and
+strip mode, where no member's full output ever exists on the device.
+
+### How a run holds its images
+
+A run keeps one `Slot` per image it holds: an external input or a member's output (`Engine/GpuRegionTask.cpp:250-295`).
+`plan()` gives every rendering plane its own slot, with bounds equal to the task's `renderedRoI` (`:949-953`, layout at
+`:566-595`).
+
+| Case | Buffer | Released | Evidence |
+| --- | --- | --- | --- |
+| Rendering member, run whole | A lease acquired for its slot as it is recorded, then bound as `args.output` | Into the run's `_spare` list after its last reader is recorded, unless the slot is `keep` or `download` | Acquire `:1927-1931`, release `:1262-1279` called after each member `:1965` |
+| Same, buffer reuse | `acquireBuffer` takes the smallest fitting `_spare` lease before asking the pool | `_spare` is cleared, and so returned to the pool's free lists, once the chain is done on the device | `:1060-1095`; `:1468`, `:2076` |
+| Inputs of the member being recorded | Never its output: every input slot's `lastRead` is at least the member's position, so none is in `_spare` when the output is acquired | No member writes in place | `:958-965`, `:1965` |
+| Identity or pass-through plane | No buffer of its own: `aliasTask` points it at the producer's slot, or at a task outside the region | A slot shared by more than one output that leaves the region is downloaded, because evicting it under one key would leave the others without pixels | `:674-695`, `:1008-1013` |
+| Output read on the CPU (`download`) | Its lease, downloaded once nothing in the region reads it | The handle is dropped after the download lands | `:993-1006`, `:1035-1038`, `:2106-2108` |
+| Output read by another region (`keep`) | Its lease, wrapped in a `GpuDeviceImage` and put in the frame store under the task key | When the frame store lets go, or on eviction through `FrameStore::evictToRam` | `:3021-3060`; `Engine/FrameRenderContext.cpp:308-339` |
+| External input in RAM | An upload lease | As an interior slot: recycled after the last reader | `:1190-1203`, `:1262-1279` |
+| Device image of another region | Pinned and read in place, not copied | Unpinned after submission | `:1135-1144`, `:1273-1275`, `:1469-1472` |
+
+Kernel scratch buffers come from the same pool through the record context (`Engine/Gpu/GpuRecord.cpp:270`). They are no
+member's output and are not cache candidates.
+
+No region output reaches any cache today, host or device: `storeOutputs` writes only the per-frame `FrameStore`, and
+`GpuRegionTask.cpp` and `GpuPlacement.cpp` contain no admission call. Only the CPU fallback caches, because it goes
+through `renderRoI` (`:139-208`).
+
+### Strip mode
+
+A stripped run acquires each member's buffer per strip, sized to the strip's rows plus whatever later members read beyond
+them (`:2419-2423`; windows from `stripOf`, `Engine/GpuRegionStrips.cpp:125-175`). It recycles the buffer within the
+strip (`:2491-2505`), and drops or recycles every handle at the end of the strip (`:2300-2306`; pipelined, `:2746-2757`
+and `:2780-2787`). `planStrips` sends every `keep` slot to RAM as soon as the run is stripped (`:2209-2214`), and the strip
+planner counts kept and downloaded slots as `interior`, downloaded strip by strip (`:2128`; `Engine/GpuRegionStrips.cpp:231-249`).
+A device image another region left is `resident` and stays whole (`Engine/GpuRegionStrips.cpp:137-138`).
+
+So no member output, interior or region output, ever exists whole on the device in strip mode. Putting it in the device
+tier would mean assembling it in a new buffer of full size, which is the very allocation stripping avoids. A stripped run
+publishes nothing to the device tier. Its region outputs reach RAM whole, as downloaded `Image`s (`:3007-3012`), and the
+host tier's ordinary admission is where they belong.
+
+The interior members go there too. Caching only the region outputs would leave a downstream edit after a stripped frame
+re-running every interior member upstream of it, and strips are the only path on a low-VRAM device. Once a run comes back
+stripped, `planHostDownloads` also marks for download every admitted (`isCachedOutput`), non-identity member that
+nothing reads after the region. Each one is assembled in RAM strip by strip, in an image allocated as a host-tier entry,
+and `admitToHostTier` admits it after the run under the same key and cost as a region output (`cacheKeyOf`,
+`stampCacheHeader`, `CacheDeviceHost::adoptFromDevice`). A downloaded slot is `interior` to the strip planner, which keeps
+its rows on the device until the end of each strip instead of recycling them, so the strips are planned again with the
+downloads included. When they no longer fit, the members are left out cheapest per byte first (`expectedCostNs` over
+device bytes, as in publishing), by a binary search over how many of the ranked members are kept. A run with none kept
+falls back to the plan made without them, so the extra downloads never fail a run. The same applies when a region that was
+stripped only to hide its transfers would come back whole with the extra downloads. When no host entry can be allocated
+for one of these members, it is not downloaded. A run planned whole is unchanged and publishes to the device tier.
+
+### The viewer root
+
+When the viewer can take a device root, `plan()` marks the root's slots `deviceRoot` (`:967-986`, unless an identity root
+shares an input's slot). `storeOutputs` then wraps the lease in a `GpuDeviceImage`, makes it evictable with an
+`onEvict` that downloads it into the image itself, and hands it over through `setRootDevicePlanes` (`:3063-3090`). The
+viewer takes it (`Engine/ViewerInstance.cpp:3928-3950`). `DeviceRootHolds` pins frames still waiting to be shown, up to
+half the pool budget (`:1408-1460`, `:4050`), and `ViewerGL` keeps the last shown root for the picker and the histogram
+(`Gui/ViewerGL.cpp:1583-1593`). The root's lease therefore already outlives the run with no copy, and publishing it
+means registering the same `GpuDeviceImage` under its entry key.
+
+A stripped root is downloaded instead and counted as a fallback (`:3007-3012`).
+
+Once read back, a device image stays readable from RAM but can no longer be pinned. `downloadToRam` sets `downloaded`
+(`Engine/GpuContext.cpp:775`, `:846-861`), and `pin()` refuses while it is set (`:907`). A root the viewer read back (CPU
+viewer process, `Engine/ViewerInstance.cpp:3945`, `:5294`) would then be a device-tier entry whose device copy cannot be
+read. The tier must treat such an entry as host-resident, or clear the flag, when it serves a hit.
+
+### Out of memory
+
+A run that fails for want of memory is destroyed first, and `drain()` returns its buffers (`:3142-3191`).
+`runGpuRegion` then calls `pool().evict(workingSetBytes)` once and retries (`:3496-3506`), before falling back to serial
+strips, then halved strips, and at last the CPU (`:3508-3539`). `GpuBufferPool::evict` frees the free lists, then calls
+`onEvict` on evictable leases oldest first (`Engine/Gpu/GpuBufferPool.cpp:134-171`). `acquire` does the same inline when
+the budget is short (`:233-273`). The memory comes back only when the callback's owner drops its handle (`:168`, `:277-295`).
+
+Today every evictable lease is one some reader may still need: a frame-store output, downloaded through
+`FrameStore::evictToRam` (`Engine/GpuRegionTask.cpp:3051-3059`), or a root, downloaded into itself (`:3077-3086`).
+Downloading is mandatory for both. A cached entry may instead be dropped, so the pool has to tell the two apart, and
+`evict` and `acquire` must take cached-only leases first, in score order rather than recency.
+
+Publishing happens only in `storeOutputs`, after a successful run (`:462`). A failed run therefore publishes nothing, and
+the CPU fallback caches through `renderRoI` as before.
+
+### Publish design
+
+Keep the lease. Do not copy it.
+
+- **What.** Each non-identity member whose task is admitted (`task.sharesCachedOutput` and the M300 admission rule,
+  `Engine/RenderScheduler.cpp:682-688`), interior members included, in a run planned whole. One lease is one entry, per
+  task and plane. Identity and pass-through members are not published: the CPU path does not cache identities either
+  (`:677`), and their slot belongs to the producer.
+- **Marking.** `plan()` sets a `publish` flag on the slot. `releaseSlotsReadLastBy` skips it, the same way it skips
+  `keep`. A `download` slot that is published keeps its handle after the download instead of dropping it at `:2108`, so
+  the entry is resident on host and device from the same render. A stripped run clears every `publish` flag.
+- **Wrapping.** `storeOutputs` already creates `GpuDeviceImage`s for kept slots, and `deviceImages` shares one per slot
+  (`:3021-3031`). Published interior slots get the same wrapper, with an `onEvict` of the cache's, not the frame
+  store's. A slot both kept and published is one image held by both. The frame store's `evictToRam` keeps working, because
+  the RAM copy it makes is the demotion.
+- **Key.** Use `outputCacheKey(...).forEntry(mip, layer, eImageBitDepthFloat)` (`Engine/EffectInstance.cpp:848-856`),
+  not `GpuImageLayout::key`. That key is built with `fullScaleWithDownscaleInputs = (mip == 0)`, without
+  `!pullsInputsAtScaleOne()`, and with draft taken from `frameArgs->draftMode` without the node's draft support
+  (`Engine/GpuRegionTask.cpp:585-592`), so it would miss lookups made by `probeOutputInCache` (`Engine/EffectInstance.cpp:891-892`).
+- **Cost.** The run times each member on the device, and `reportTimesByTask` sums the time per task
+  (`Engine/GpuRegionTask.cpp:3095-3106`). Devices without timestamps spread wall time evenly (`chargeEvenly`, `:2036-2039`).
+  That time is the recompute cost of the GPU path. It excludes inputs, as the [recompute cost](#recompute-cost) rule wants.
+- **Peak memory.** Keeping interior leases ends their reuse, so the run's peak grows by the bytes it publishes.
+  `gpuStripCost` (`Engine/GpuRegionStrips.cpp:324-376`) and `workingSetBytes` (`Engine/GpuPlacement.cpp:190`, `:208`) do
+  not count that growth. Publishing must never turn a run that fits into an out-of-memory retry. The run therefore
+  publishes only within the headroom its plan leaves under the pool budget, most expensive per byte first, and a slot
+  over the headroom is recycled as today.
+- **Root.** Register the `deviceRoot` image (`:3072`) under its key as well. `DeviceRootHolds` pins keep it from being
+  demoted while a frame waits to be shown.
+- **Layering.** `GpuBufferPool` lives in `NatronGpu` (`Engine/Gpu/CMakeLists.txt:34`), which does not include Engine
+  headers. `CacheEntryHeader` is an Engine type with a `QMutex` (`Engine/CacheEntry.h:210-256`). The header belongs to the
+  Engine-side wrapper (`GpuDeviceImage` or the device tier's entry). The lease carries only an eviction class next to its
+  `onEvict`.
 
 ## Coverage checklist
 
@@ -971,6 +1094,7 @@ The brief's further items:
 
 - [x] `not_admitted` and `behind_hit`, with planning change and owner: [How the gate is met](#how-the-gate-is-met), [Gaps](#gaps-against-the-task-list)
 - [x] Device tier hooks: [Device tier hooks](#device-tier-hooks)
+- [x] How region members hold their outputs, and publishing by keeping the lease: [Device tier](#device-tier)
 - [x] Assumptions checked against the code: [Assumptions checked](#assumptions-checked)
 - [x] Constants with start values and measurements: [Tunable constants](#tunable-constants)
 - [x] Hardware range: [Hardware range](#hardware-range)

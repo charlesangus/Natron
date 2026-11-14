@@ -79,6 +79,9 @@ struct GpuStripSlot {
     // Read after the region on the device, by another region or by the viewer as the root: stripping would download it
     // and lose that, so a region holding one is never stripped only to hide its transfer.
     bool keptOnDevice = false;
+
+    // Kept on the device to the end of a region run whole, so its buffer is never reused for a later member.
+    bool held = false;
 };
 
 /**

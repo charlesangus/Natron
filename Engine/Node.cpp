@@ -3792,8 +3792,7 @@ Node::isActivated() const
 bool
 Node::isBeingDestroyed() const
 {
-    // destroyNode() sets the flag under activatedMutex.
-    QMutexLocker l(&_imp->activatedMutex);
+    QMutexLocker l(&_imp->isBeingDestroyedMutex);
 
     return _imp->isBeingDestroyed;
 }
@@ -7009,6 +7008,11 @@ Node::postPersistentMessage(MessageTypeEnum type,
                             U64 renderSequence,
                             const AbortableRenderInfo* render)
 {
+    // Late messages from detached jobs would otherwise reach a node whose GUI is already gone.
+    if (isBeingDestroyed()) {
+        return;
+    }
+
     if (!_imp->nodeCreated && _imp->wasCreatedSilently) {
         std::cerr << getScriptName_mt_safe() << " message: " << content << std::endl;
         return;

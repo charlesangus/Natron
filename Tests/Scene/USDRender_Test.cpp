@@ -1035,6 +1035,10 @@ TEST_F(USDRenderRendererTest, ChangingTheRendererChangesTheHash)
     ASSERT_TRUE(bool(node));
     KnobChoice* renderer = rendererKnob(node);
     ASSERT_TRUE(renderer);
+    // A USDRead's hash is a placeholder until its first evaluation walks the file; settle it so the
+    // hashes below are not taken across that change.
+    std::string error;
+    ASSERT_FALSE(activeRendererOf(node, &error).empty()) << error;
     const U64 stormHash = node->getHashValue();
     ASSERT_TRUE(selectRenderer(renderer, kStubRendererId));
     const U64 stubHash = node->getHashValue();

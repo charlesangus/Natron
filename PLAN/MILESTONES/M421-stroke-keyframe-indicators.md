@@ -8,11 +8,11 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 - A timeline marker at `lifeTimeFrame` for each selected stroke and for the current stroke (the one this RotoPaint last painted), while the node's panel is open. Next and previous keyframe navigation includes these frames.
 - RotoPanel's roto markers become a derived set per panel instead of incremental counts, for Beziers and strokes alike.
 - Dope sheet: a "Painted Frame" row under each stroke's item row with one key at `lifeTimeFrame`; selectable, not movable, deletable or interpolable.
+- Timeline markers for the keys of every animated knob of the selected roto items, strokes and Beziers alike (user, 2026-11-13).
 - A GUI test script.
 
 **Out:**
 - Moving the painted frame from the dope sheet or timeline (the Lifetime "Frame" knob does that).
-- Markers for item-knob keys beyond what the proxy knobs already show.
 - Tracker markers and user markers.
 
 **Edge cases:**
@@ -22,7 +22,7 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 - Painted frame changed through the Lifetime "Frame" knob or the Lifetime mode, on the item or the context proxy: the marker follows at once.
 - Undo of a stroke (`AddStrokeUndoCommand`): the marker goes on undo and returns on redo.
 - RotoPaint inside a Group behaves the same.
-- Beziers unaffected: shape-key markers and Shape rows unchanged.
+- Beziers: shape-key markers and Shape rows unchanged; their item-knob keys now also show while selected (user).
 
 **Assumptions:**
 - "Painted frame" is `lifeTimeFrame` in every Lifetime mode, including All and Custom where the knob is hidden. Confirm at UAT.
@@ -46,6 +46,12 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
   - files: `Engine/RotoCurveContext.cpp` (only if the check fails)
   - approach: item knobs have a null holder, so `invalidateMarkersOfEffect` (`Engine/Knob.cpp` ~:1189-1199) returns early for them; markers rely on `tieItemKnob`'s echo into the proxy. P2.T2 keys an item opacity from Python with two strokes and a Bezier selected, and with a stroke selected through its layer. If markers go stale, call `getApp()->invalidateNodeKeyframeIndicators()` from `onSelectedKnobCurveChanged`/`onSelectedKnobValueChanged`.
   - verify: P2.T2's item-knob section passes.
+  - size: M
+
+- [ ] M421.P1.T4 — Selected items' knob keys as markers
+  - files: `Gui/RotoPanel.{h,cpp}`
+  - approach: `publishMarkers` adds the curve keys of each selected item's animatable, non-secret knobs. Track them by connecting `keyFrameSet`, `keyFrameRemoved`, `keyFrameMoved` and `animationRemoved` on each item knob's handler where `trackBezierKeyframes`/`trackStrokeLifeTime` are set up, disconnecting on untrack, so Python, GUI and undo edits all refresh.
+  - verify: `m421_stroke_markers.py`'s item-knob section passes (opacity keyed at 9 on two strokes and a Bezier, and on a stroke selected through its layer, adds a marker at 9; removing the keys removes it).
   - size: M
 
 ## Phase 421.2: Dope sheet and test
@@ -72,3 +78,4 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 - 2026-11-13 — P1.T2 implemented (3c58df3a5). The current stroke comes from `GuiAppInstance::getActiveRotoDrawingStroke`; a stroke painted while the panel is closed isn't adopted as current on reopen (confirm at UAT).
 - 2026-11-13 — P2.T1 implemented (18beb7da2); painted-frame keys are filtered at the DopeSheet model entry points, so no command sees them. P1.T3: no stale path found in the code; P2.T2's item-knob section decides.
 - 2026-11-13 — P2.T2 script added (a545e77c7); P1.T3 needed no code (no stale path found; the script's item-knob section is the check). Full gate running with the three GUI scripts.
+- 2026-11-13 — **Item-knob keys show as markers for selected roto items (user):** keys on an item's own knobs never reached the timeline (the node's mirror knobs are non-persistent and excluded from markers; upstream never showed them either). P1.T4 adds them to the panel's derived set for strokes and Beziers alike. P1.T3's check found no stale path.

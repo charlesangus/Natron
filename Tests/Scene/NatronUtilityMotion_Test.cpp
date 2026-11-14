@@ -285,7 +285,8 @@ protected:
         }
         _registry.reset(new gpu::GpuKernelRegistry(*_device));
         _pool.reset(new gpu::GpuBufferPool(*_device));
-        _gpu.reset(new WavefrontGpu(*_registry, *_pool));
+        // A device film without a runtime hold counts as released, so the colour could not stay on the GPU.
+        _gpu.reset(new WavefrontGpu(*_registry, *_pool, std::make_shared<int>(0)));
         _available = true;
 #else
         std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU executor\n");
@@ -734,14 +735,19 @@ TEST(NatronUtilityMotionDelegate, AMovingFrameTracesEachSegment)
     MotionRender render(stage(std::string("    point3f[] points = ") + kStripePoints + "\n"
                                                                                        "    double3 xformOp:translate.timeSamples = { 1: (0, 0, 0), 2: (4, 0, 0) }\n"
                                                                                        "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"),
-                        GfVec2d(0., 1.), 2, 4);
+                        GfVec2d(0., 1.), 4, 4);
 
     render.render(1.);
 
     const VtDoubleArray buckets = VtDictionaryGet<VtDoubleArray>(render.stats(), kUtilityStatBucketSeconds, VtDefault = VtDoubleArray());
 
     EXPECT_EQ(4u, buckets.size());
-    EXPECT_GT(render.alphaAt(kRestPixel + 1), 0.f) << "the stripe sweeps the pixels between";
+
+    // Still at mid-shutter the stripe would cover only the moved pixel. Which neighbour a bucket's
+    // samples land in depends on where they fall in each pixel, so only their sum is certain.
+    const float swept = render.alphaAt(kRestPixel) + render.alphaAt(kRestPixel + 1) + render.alphaAt(kMovedPixel + 1) + render.alphaAt(kMovedPixel + 2);
+
+    EXPECT_GT(swept, 0.f) << "the stripe sweeps the pixels either side of its mid-shutter position";
     EXPECT_TRUE(VtDictionaryGet<std::string>(render.stats(), kUtilityStatMotionWarning, VtDefault = std::string()).empty());
 }
 

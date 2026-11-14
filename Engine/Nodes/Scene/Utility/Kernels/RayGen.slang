@@ -71,10 +71,44 @@ float filterWeight(float t)
     }
 }
 
+// Kensler's hashed permutation of [0, length), different for each pattern.
+uint permute(uint index, uint length, uint pattern)
+{
+    uint mask = length - 1u;
+    mask |= mask >> 1u;
+    mask |= mask >> 2u;
+    mask |= mask >> 4u;
+    mask |= mask >> 8u;
+    mask |= mask >> 16u;
+    uint i = index;
+    do {
+        i ^= pattern;
+        i *= 0xe170893du;
+        i ^= pattern >> 16u;
+        i ^= (i & mask) >> 4u;
+        i ^= pattern >> 8u;
+        i *= 0x0929eb3fu;
+        i ^= pattern >> 23u;
+        i ^= (i & mask) >> 1u;
+        i *= 1u | pattern >> 27u;
+        i *= 0x6935fa69u;
+        i ^= (i & mask) >> 11u;
+        i *= 0x74dcb303u;
+        i ^= (i & mask) >> 2u;
+        i *= 0x9e501cc3u;
+        i ^= (i & mask) >> 2u;
+        i *= 0xc860a3dfu;
+        i &= mask;
+        i ^= i >> 5u;
+    } while (i >= length);
+    return (i + pattern) % length;
+}
+
 // Correlated multi-jitter: one sample per cell of the samplesPerSide grid, and one per column and row
 // of the grid's samplesPerSide squared subdivisions, so that an edge along either axis is covered to
-// within one sample. Each pixel visits the cells in its own order, so a partial pass shows noise
-// rather than a pattern.
+// within one sample. The subdivisions are shuffled: unshuffled, a sample's place within its cell
+// follows the cell's row, which ties x to y and biases any filter that weights them both. Each pixel
+// visits the cells in its own order, so a partial pass shows noise rather than a pattern.
 float2 samplePosition(int pixelX, int pixelY)
 {
     const uint n = max(params.samplesPerSide, 1u);
@@ -87,8 +121,10 @@ float2 samplePosition(int pixelX, int pixelY)
     const uint j = cell / n;
     const uint jitterX = pcgHash(pixelHash ^ (params.sampleIndex * 2654435769u));
     const uint jitterY = pcgHash(jitterX);
-    return float2((float(i) + (float(j) + unitFloat(jitterX)) / float(n)) / float(n),
-                  (float(j) + (float(i) + unitFloat(jitterY)) / float(n)) / float(n));
+    const uint subX = permute(j, n, pixelHash * 0xa511e9b3u);
+    const uint subY = permute(i, n, pixelHash * 0x63d83595u);
+    return float2((float(i) + (float(subX) + unitFloat(jitterX)) / float(n)) / float(n),
+                  (float(j) + (float(subY) + unitFloat(jitterY)) / float(n)) / float(n));
 }
 
 // Rays start on the near plane and end on the far plane, so a hit is clipped to the camera's range

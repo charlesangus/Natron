@@ -53,6 +53,7 @@
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -64,6 +65,7 @@
 #include "BaseTest.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -319,9 +321,17 @@ viewOf(bool showRender)
 class NatronUtilityCancelTest
     : public BaseTest {
 protected:
+    // One sample a pixel, so that every frame published is a finished one.
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
+    }
+
     virtual void TearDown() OVERRIDE
     {
         _render.reset();
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, std::map<std::string, PXR_NS::VtValue>());
         BaseTest::TearDown();
     }
 

@@ -288,12 +288,24 @@ wavefrontSampleOrder(int samplesPerPixel,
 
         return order;
     }
-    // A stride near the golden fraction of the count, coprime with it, visits every sample once and
-    // scatters consecutive ones over the pixel's grid, where consecutive indices would fill it row by row.
-    int stride = std::max(1, static_cast<int>(std::lround(count * 0.6180339887)));
+    // A stride coprime with the count visits every sample once. Index s is cell (s % side, s / side)
+    // of the pixel's grid, so a stride of rows * side + columns steps consecutive samples that many
+    // columns and rows on; golden fractions of the side for both spread a bucket over both axes.
+    const int side = static_cast<int>(std::lround(std::sqrt(static_cast<double>(count))));
+    int stride = 1;
 
-    while (std::gcd(stride, count) != 1) {
-        ++stride;
+    if (side > 1 && side * side == count) {
+        int columns = std::max(1, static_cast<int>(std::lround(side * 0.6180339887)));
+
+        while (std::gcd(columns, side) != 1) {
+            ++columns;
+        }
+        stride = (static_cast<int>(std::lround(side * 0.3819660113)) * side + columns) % count;
+    } else {
+        stride = std::max(1, static_cast<int>(std::lround(count * 0.6180339887)));
+        while (std::gcd(stride, count) != 1) {
+            ++stride;
+        }
     }
     for (int i = 0; i < count; ++i) {
         order[static_cast<std::size_t>(i)] = static_cast<int>((static_cast<long long>(i) * stride) % count);

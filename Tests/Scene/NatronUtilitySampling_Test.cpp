@@ -304,7 +304,8 @@ protected:
         }
         _registry.reset(new gpu::GpuKernelRegistry(*_device));
         _pool.reset(new gpu::GpuBufferPool(*_device));
-        _gpu.reset(new WavefrontGpu(*_registry, *_pool));
+        // A device film without a runtime hold counts as released, so the colour could not stay on the GPU.
+        _gpu.reset(new WavefrontGpu(*_registry, *_pool, std::make_shared<int>(0)));
         _available = true;
 #else
         std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU executor\n");
@@ -739,9 +740,17 @@ TEST(NatronUtilitySamplingDelegate, DefaultsToThreeByThreeBlackmanHarrisSamples)
     const std::vector<GfVec4f> colors = render.colors();
 
     ASSERT_EQ(static_cast<std::size_t>(kSize * kSize), colors.size());
-    EXPECT_NEAR(stripeResponse(eKernelPixelFilterBlackmanHarris, kUtilityDefaultFilterWidth, pixelCentre(7), -0.35, 0.8), colors[4 * kSize + 7][3], 0.1);
-    EXPECT_GT(colors[4 * kSize + 7][3], 0.05f);
-    EXPECT_LT(colors[4 * kSize + 7][3], 0.95f);
+
+    // Nine filter-weighted samples leave one pixel's coverage noisy, so the column's mean is what
+    // must match the filter's response.
+    double mean = 0.;
+
+    for (int y = 0; y < kSize; ++y) {
+        mean += colors[y * kSize + 7][3] / kSize;
+    }
+    EXPECT_NEAR(stripeResponse(eKernelPixelFilterBlackmanHarris, kUtilityDefaultFilterWidth, pixelCentre(7), -0.35, 0.8), mean, 0.05);
+    EXPECT_GT(mean, 0.05);
+    EXPECT_LT(mean, 0.95);
 }
 
 TEST(NatronUtilitySamplingDelegate, AnEditPartWayRestartsTheSamples)

@@ -1230,8 +1230,16 @@ protected:
     virtual void SetUp() OVERRIDE
     {
         USDRenderRendererTest::SetUp();
+        // Natron Utility too traces one ray through each pixel's centre.
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
         const char* samples = std::getenv("HDX_MSAA_SAMPLE_COUNT");
         ASSERT_TRUE(samples && (std::strcmp(samples, "1") == 0)) << "run this suite alone with HDX_MSAA_SAMPLE_COUNT=1, as ctest does";
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, {});
+        USDRenderRendererTest::TearDown();
     }
 };
 

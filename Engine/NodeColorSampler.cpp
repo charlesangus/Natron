@@ -26,6 +26,7 @@
 #include "NodeColorSampler.h"
 
 #include <algorithm>
+#include <exception>
 #include <list>
 #include <map>
 #include <string>
@@ -97,6 +98,7 @@ renderLayer(const NodePtr& node,
             const RectI& pixelRect,
             const ImageLayerDesc& layer,
             const RectI* window,
+            bool emptyIsResult,
             const RenderContextPtr& context,
             RectI* roi,
             ImagePtr* image)
@@ -144,7 +146,9 @@ renderLayer(const NodePtr& node,
         *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
     }
     if (roi->isNull()) {
-        return false;
+        image->reset();
+
+        return emptyIsResult;
     }
 
     FrameRequestMap request;
@@ -183,7 +187,19 @@ renderLayer(const NodePtr& node,
                                        eStorageModeRAM,
                                        time);
     std::map<ImageLayerDesc, ImagePtr> layers;
-    if ((effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) || layers.empty()) {
+    try {
+        if (effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) {
+            return false;
+        }
+        if (layers.empty()) {
+            // renderRoI succeeds with no image when there is nothing to draw, a plane the node
+            // neither produces nor passes through among them: transparent black, not a failure.
+            image->reset();
+
+            return emptyIsResult && !abortInfo->isAborted();
+        }
+    } catch (const std::exception&) {
+        // A top-level render that fails throws rather than returning a code.
         return false;
     }
     *image = layers.begin()->second;
@@ -205,6 +221,7 @@ renderNodeImageImpl(const NodePtr& node,
                     const RenderContextPtr& context,
                     RectI* renderedRect,
                     const AbortableRenderInfoPtr& abortInfoArg,
+                    bool emptyIsResult,
                     bool* rendered)
 {
     *rendered = false;
@@ -233,7 +250,7 @@ renderNodeImageImpl(const NodePtr& node,
 
     RectI roi;
     ImagePtr image;
-    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, window, context, &roi, &image);
+    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, window, emptyIsResult, context, &roi, &image);
 
     // The main thread's TLS also holds the state of whatever action is running on it, so only a
     // worker thread, which owns nothing else, is cleaned up as the tracker does.
@@ -264,7 +281,28 @@ renderNodeImage(const NodePtr& node,
 {
     bool rendered;
 
-    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, RenderContextPtr(), renderedRect, abortInfo, &rendered);
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, RenderContextPtr(), renderedRect, abortInfo, false, &rendered);
+}
+
+bool
+renderNodeImageIfAny(const NodePtr& node,
+                     double time,
+                     ViewIdx view,
+                     unsigned int mipmapLevel,
+                     const RectI& pixelRect,
+                     const ImageLayerDesc& layer,
+                     ImagePtr* image,
+                     RectI* renderedRect,
+                     const AbortableRenderInfoPtr& abortInfo)
+{
+    bool rendered;
+
+    *image = renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, RenderContextPtr(), renderedRect, abortInfo, true, &rendered);
+    if (rendered && !*image && renderedRect) {
+        *renderedRect = RectI();
+    }
+
+    return rendered;
 }
 
 bool
@@ -322,7 +360,7 @@ renderNodeImageOverWindow(const NodePtr& node,
 {
     bool rendered;
 
-    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, context, renderedRect, AbortableRenderInfoPtr(), &rendered);
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, context, renderedRect, AbortableRenderInfoPtr(), false, &rendered);
 
     return rendered;
 }

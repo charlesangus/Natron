@@ -449,6 +449,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DCreateFromSelection "createNodeFromSelection"
 #define kShortcutDescActionViewer3DCreateFromSelection "Create Node from Selection"
 
+#define kShortcutIDActionViewer3DBakePaint "bakePaint"
+#define kShortcutDescActionViewer3DBakePaint "Bake Paint"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 

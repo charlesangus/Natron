@@ -332,8 +332,7 @@ class AddStrokeUndoCommand
     Q_DECLARE_TR_FUNCTIONS(AddStrokeUndoCommand)
 
 public:
-
-    AddStrokeUndoCommand(const RotoPaintInteractPtr& roto,
+    AddStrokeUndoCommand(const RotoCurveInteractPtr& roto,
                          const RotoStrokeItemPtr& item);
 
     virtual ~AddStrokeUndoCommand();
@@ -341,8 +340,7 @@ public:
     virtual void redo() OVERRIDE FINAL;
 
 private:
-
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     RotoStrokeItemPtr _item;
     RotoLayerPtr _layer;
@@ -355,8 +353,7 @@ class AddMultiStrokeUndoCommand
     Q_DECLARE_TR_FUNCTIONS(AddMultiStrokeUndoCommand)
 
 public:
-
-    AddMultiStrokeUndoCommand(const RotoPaintInteractPtr& roto,
+    AddMultiStrokeUndoCommand(const RotoCurveInteractPtr& roto,
                               const RotoStrokeItemPtr& item);
 
     virtual ~AddMultiStrokeUndoCommand();
@@ -364,8 +361,7 @@ public:
     virtual void redo() OVERRIDE FINAL;
 
 private:
-
-    RotoPaintInteractWPtr _roto;
+    RotoCurveInteractWPtr _roto;
     bool _firstRedoCalled;
     RotoStrokeItemPtr _item;
     RotoLayerPtr _layer;

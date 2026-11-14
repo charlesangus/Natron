@@ -52,6 +52,7 @@
 class QContextMenuEvent;
 class QKeyEvent;
 class QMouseEvent;
+class QPainter;
 class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
@@ -691,6 +692,15 @@ public:
     void setTransformNodeProvider(const std::function<NodePtr()>& provider);
 
     /**
+     * @brief Sets the function that names the TexturePaint node the view paints: one with its
+     * settings panel open, or null for none. While it names one, a left drag with no modifier
+     * paints that node through the view's camera, unless the mouse bindings give it to
+     * navigation; the other bindings keep their actions. Navigating, and the Bake Paint key,
+     * close the session being painted and queue its bake.
+     **/
+    void setPaintNodeProvider(const std::function<NodePtr()>& provider);
+
+    /**
      * @brief Where drags of the transform widget on the selection are written. Without one, or
      * while the natronSceneTransformRecordOnly property is true, they are only recorded into the
      * natronSceneTransformDelta property.
@@ -782,6 +792,7 @@ protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
     void paintGL() override;
+    void leaveEvent(QEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
@@ -828,6 +839,36 @@ private:
 
     // Forgets the mouse gesture under way.
     void clearGesture();
+
+    /**
+     * @brief Begins a stroke on the painted node at pos (widget coordinates) with pressure. False
+     * when no node is painted or its tool is not a brush.
+     **/
+    bool beginPaint(const QPointF& pos, double pressure, double timestamp);
+
+    void continuePaint(const QPointF& pos, double pressure, double timestamp);
+
+    void endPaint();
+
+    // Closes the painted node's session, queueing its bake: the camera moved, or Bake Paint.
+    void closePaintSession();
+
+    // Follows the painted node: connects to its baker's progress, drops the overlays of another node.
+    void followPaintNode();
+
+    // Asks for refreshPaintOverlays() at most every 100 ms.
+    void schedulePaintRefresh();
+
+    /**
+     * @brief Renders the strokes of the session being painted, and of the closed ones whose bake
+     * has not landed, into the images paintGL() draws over the view. A closed session's image is
+     * kept as it was painted and dropped when its bake lands. The rendering runs on a worker, one
+     * refresh at a time; the images are swapped in here when it ends.
+     **/
+    void refreshPaintOverlays();
+
+    // Draws the unbaked buffers, brush ring and bake progress; paintGL(), inside its painter.
+    void drawPaintOverlays(QPainter& painter, bool poseKnown, const SceneViewportRenderer::CameraPose& pose);
 
     // Whether navigation moves the camera looked through, not the free camera.
     bool navigatesLockedCamera() const;

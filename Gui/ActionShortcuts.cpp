@@ -524,6 +524,9 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DTogglePivot, kShortcutDescActionViewer3DTogglePivot, Qt::NoModifier, Qt::Key(0), Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab, Qt::NoModifier, Qt::Key(0) },
+        // B is the Viewer's Blue key, which the 3D view does not use; it takes it only while it
+        // paints a TexturePaint.
+        { kShortcutIDActionViewer3DBakePaint, kShortcutDescActionViewer3DBakePaint, Qt::NoModifier, Qt::Key_B, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

@@ -195,10 +195,12 @@ enum RotoLayerChildTypeEnum {
 struct RotoLayerChildSerialization;
 
 /**
- * @brief The saved state of a layer and, in order, of the items it holds.
+ * @brief The saved state of a layer and, in order, of the items it holds. knobs are those the
+ * hosting effect adds to the layer (RotoLayer::addHostKnob()), empty for most hosts.
  **/
 struct RotoLayerSerialization
     : public RotoItemSerialization {
+    std::list<KnobSerialization> knobs;
     std::list<RotoLayerChildSerialization> children;
 
     RotoLayerSerialization();
@@ -226,6 +228,7 @@ struct RotoLayerChildSerialization {
 // Defined once RotoLayerChildSerialization is complete, which the children list needs.
 inline RotoLayerSerialization::RotoLayerSerialization()
     : RotoItemSerialization()
+    , knobs()
     , children()
 {
 }

@@ -496,7 +496,7 @@ RotoObjectSelect::sourceNode() const
 {
     NodePtr node = _roto->getNode();
 
-    return node ? node->getInput(0) : NodePtr();
+    return node ? node->getEffectInstance()->getPaintTreeSource() : NodePtr();
 }
 
 void

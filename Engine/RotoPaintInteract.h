@@ -225,26 +225,13 @@ NATRON_NAMESPACE_ENTER
 #define kShortcutIDActionRotoLockCurve "lock"
 #define kShortcutDescActionRotoLockCurve "Lock Shape"
 
-class RotoPaintInteract;
-struct RotoPaintPrivate
-{
-    RotoPaint* publicInterface;
-    bool isPaintByDefault;
-    RotoPaintInteractPtr ui;
-
-    RotoPaintPrivate(RotoPaint* publicInterface,
-                     bool isPaintByDefault);
-};
-
-class RotoPaintInteract
-    : public RotoCurveInteract {
-public:
-    RotoPaintPrivate* p;
-    RotoStrokeItemPtr strokeBeingPaint;
-    int strokeBeingPaintedTimelineFrame; // the frame at which we painted the last brush stroke
-    KnobButtonWPtr lastPaintToolAction;
-    bool lastTabletDownTriggeredEraser;
-
+/**
+ * @brief The paint toolbar and brush knobs a paint-kind host carries: the brush tool groups and
+ * their tools, and the settings a stroke is painted with (colour, blending mode, opacity, size,
+ * hardness, the pressure toggles, build-up, effect strength, the clone/reveal source and time
+ * offset, multi-stroke). RotoPaintInteract reads them when a stroke begins.
+ **/
+struct RotoPaintBrushKnobs {
     //////// Toolbar
     KnobGroupWPtr paintBrushToolGroup;
     KnobButtonWPtr brushAction;
@@ -277,16 +264,62 @@ public:
     KnobChoiceWPtr sourceTypeChoice;
     KnobBoolWPtr multiStrokeEnabled;
 
+    /**
+     * @brief Creates the brush setting knobs on page, hidden until a viewer shows them, in the order
+     * Multi-Stroke, Stroke Color, Blending Mode, Opacity, its pressure toggle, Brush Size, its
+     * pressure toggle, Brush Hardness, its pressure toggle, Build-Up, Auto-connect Viewer, Effect
+     * Strength, Time Offset, Time Offset Mode, Source.
+     **/
+    void createSettingKnobs(EffectInstance* host, const KnobPagePtr& page);
+
+    /**
+     * @brief Adds the setting knobs, then resetCloneOffset when given, to host's viewer UI in
+     * creation order. The viewer shows its knobs in the order they were added.
+     **/
+    void addSettingKnobsToViewerUI(EffectInstance* host, const KnobButtonPtr& resetCloneOffset) const;
+
+    /**
+     * @brief Creates the brush tool groups and their tools on toolbar: the Paint Brush group
+     * (solid brush, pencil, eraser), and with allTools the Clone (clone, reveal), Effect (blur,
+     * smear) and Merging (dodge, burn) groups too.
+     **/
+    void createToolKnobs(EffectInstance* host, const KnobPagePtr& toolbar, bool allTools);
+
+    // The shortcuts of the knobs createSettingKnobs() and createToolKnobs() create, plus the
+    // Reset Clone Offset button's, for the host's getPluginShortcuts().
+    static void getSettingShortcuts(std::list<PluginActionShortcut>* shortcuts);
+    static void getToolShortcuts(std::list<PluginActionShortcut>* shortcuts);
+};
+
+/**
+ * @brief The interact of a paint-kind Roto host: RotoCurveInteract's curve tools plus the brush
+ * tools, painting strokes with the brush knobs. The host creates the knobs through the
+ * RotoPaintBrushKnobs base and forwards knob changes to onKnobChanged(). Strokes are painted from
+ * the host's viewer overlay, or by any other caller through beginPaintStroke(),
+ * continuePaintStroke() and finishPaintStroke().
+ **/
+class RotoPaintInteract
+    : public RotoCurveInteract,
+      public RotoPaintBrushKnobs {
+public:
+    RotoStrokeItemPtr strokeBeingPaint;
+    int strokeBeingPaintedTimelineFrame; // the frame at which we painted the last brush stroke
+    KnobButtonWPtr lastPaintToolAction;
+    bool lastTabletDownTriggeredEraser;
 
 private:
     struct MakeSharedEnabler;
 
     // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
 
-    RotoPaintInteract(RotoPaintPrivate* p);
+    RotoPaintInteract(EffectInstance* host, bool paintByDefault);
 
 public:
-    static RotoPaintInteractPtr create(RotoPaintPrivate* p);
+    /**
+     * @brief The interact of host. With paintByDefault the brush tools draw the brush outline
+     * and a tablet eraser switches to the eraser tool while it is down.
+     **/
+    static RotoPaintInteractPtr create(EffectInstance* host, bool paintByDefault);
 
     RotoContextPtr getContext();
 
@@ -306,6 +339,33 @@ public:
     virtual void refreshAfterTimeChanged(double time) OVERRIDE FINAL;
 
     virtual void removeCurve(const RotoDrawableItemPtr& curve) OVERRIDE FINAL;
+
+    /**
+     * @brief Begins a stroke as a pen-down with the selected brush tool does, for a caller other
+     * than the viewer overlay. The stroke takes the tool and brush knobs' settings, starts its
+     * life at frame time and goes into layer, or into the deepest selected layer (else the base
+     * layer) when layer is null. A multi-stroke item only takes strokes aimed at its own layer.
+     * pos is in the host's canonical coordinates, as the overlay's pen positions are; the brush
+     * size knob's value is multiplied by sizeScale into that space. False, with nothing begun,
+     * when the selected tool is not a brush. Main thread.
+     **/
+    bool beginPaintStroke(const RotoLayerPtr& layer, const QPointF& pos, double pressure, double time, double timestamp, double sizeScale = 1.);
+
+    // Adds a point to the stroke beginPaintStroke() began. False when none is open.
+    bool continuePaintStroke(const QPointF& pos, double pressure, double timestamp);
+
+    /**
+     * @brief Ends the stroke beginPaintStroke() began and pushes its undo command. Returns the
+     * painted item, or null when no stroke is open or the stroke waits for the previous stroke's
+     * neat render: it is then painted, and its undo pushed, once that render lands.
+     **/
+    RotoStrokeItemPtr finishPaintStroke();
+
+    // Whether a stroke beginPaintStroke() began is open, or one is still to be painted once the previous stroke's render lands.
+    bool isPaintStrokePending() const WARN_UNUSED_RETURN
+    {
+        return paintStrokeOpen || mustDeferPenEvents();
+    }
 
 private:
     /**
@@ -372,6 +432,8 @@ private:
         std::pair<double, double> cloneOffset = std::make_pair(0., 0.);
         int frame = 0;
         RotoLayerWPtr layer;
+        // The layer a caller of beginPaintStroke() asked for; null for the overlay's strokes.
+        RotoLayerWPtr targetLayer;
         bool multiStroke = false;
         quint64 multiStrokeBreak = 0;
 
@@ -399,6 +461,11 @@ private:
 
     // Counts multi-stroke breaks, so that a pen-down knows whether one came between it and the last stroke.
     quint64 multiStrokeBreak = 0;
+
+    bool paintByDefault;
+
+    // Whether beginPaintStroke() began a stroke that finishPaintStroke() has not ended.
+    bool paintStrokeOpen = false;
 
     StrokeConfig captureStrokeConfig();
     void makeStroke(bool prepareForLater, const RotoPoint& p, const StrokeConfig& config);

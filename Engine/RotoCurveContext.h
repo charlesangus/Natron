@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <functional>
 #include <list>
 #include <map>
@@ -183,6 +184,12 @@ public:
     virtual void onItemCreated(const RotoDrawableItemPtr& item, bool connectNodes);
 
     /**
+     * @brief Called on every layer made for this context other than the base layer, by creation,
+     * copy or load, before it is loaded or cloned into: the host adds its layer knobs here.
+     **/
+    void onLayerCreated(const RotoLayerPtr& layer);
+
+    /**
      * @brief Registers a node knob that edits the per-item host knob of the same name: on
      * selection it is slaved to the selected item's knob like the Shape page knobs.
      **/
@@ -267,6 +274,12 @@ public:
      * the main thread.
      **/
     const std::list<RotoLayerPtr>& getLayers() const;
+
+    /**
+     * @brief The base layer every other layer is nested in, or null before it is made. Unlike
+     * getOrCreateBaseLayer() it never creates it. MT-safe.
+     **/
+    RotoLayerPtr getBaseLayer() const;
 
     /**
      * @brief Returns a bezier curves nearby the point (x,y) and the parametric value
@@ -520,6 +533,20 @@ public:
     int getNCurves() const;
 
     /**
+     * @brief Whether the items' lifetime knobs are left out of RotoDrawableItem::isActivated(),
+     * for a host whose strokes belong to no frame in particular. Not saved. MT-safe.
+     **/
+    void setIgnoreItemLifetimes(bool ignore)
+    {
+        _ignoreItemLifetimes.store(ignore);
+    }
+
+    bool getIgnoreItemLifetimes() const
+    {
+        return _ignoreItemLifetimes.load();
+    }
+
+    /**
      * @brief True for a node knob that mirrors the selected item's knob of the same name; its
      * animation belongs to the item, so the editors list it under the item instead.
      **/
@@ -664,6 +691,8 @@ private:
     void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 
     void removeItemRecursively(const RotoItemPtr& item, RotoItem::SelectionReasonEnum reason);
+
+    std::atomic<bool> _ignoreItemLifetimes { false };
 
 protected:
     std::unique_ptr<RotoContextPrivate> _imp;

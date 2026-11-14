@@ -44,7 +44,9 @@
 #include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QFocusEvent>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
@@ -53,13 +55,17 @@
 #include <QPainter>
 #include <QPointer>
 #include <QSignalBlocker>
+#include <QTabletEvent>
+#include <QThread>
 #include <QTimer>
 #include <QUndoCommand>
 #include <QWheelEvent>
 #include <QWidgetAction>
+#include <QtConcurrentRun>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDebug>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
@@ -74,14 +80,20 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneRaster.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
+#include "Engine/Nodes/Scene/TexturePaint.h"
+#include "Engine/Nodes/Scene/TexturePaintBaker.h"
+#include "Engine/Nodes/Scene/TexturePaintInteract.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+#include "Engine/RotoCurveContext.h"
+#include "Engine/RotoPaintInteract.h"
 #include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
 
@@ -3840,6 +3852,72 @@ struct SceneViewport::Implementation {
     double framesPerSecond = 0.;
 
     std::function<NodePtr()> transformNodeProvider;
+    std::function<NodePtr()> paintNodeProvider;
+    // The node of the stroke under way, and whether a tablet pen, rather than the mouse, draws it.
+    NodeWPtr paintNode;
+    bool painting = false;
+    bool tabletPainting = false;
+
+    // A session's strokes over its view, as painted through camera.
+    struct PaintOverlay {
+        RotoLayerWPtr session;
+        QImage image;
+        SceneRaster::ExplicitCamera camera;
+    };
+    std::vector<PaintOverlay> paintOverlays;
+    // One session of a refresh: rendered on the worker when render is set, else, or when the
+    // render fails, the fallback it had.
+    struct PaintJobEntry {
+        RotoLayerWPtr session;
+        NodeWPtr viewNode;
+        bool render = false;
+        bool hasFallback = false;
+        PaintOverlay fallback;
+        SceneRaster::ExplicitCamera camera;
+        QImage image;
+    };
+    typedef std::vector<PaintJobEntry> PaintJob;
+    // Replaces the overlays with a refresh's results.
+    void applyPaintJob(PaintJob* job)
+    {
+        std::vector<PaintOverlay> overlays;
+        for (PaintJobEntry& entry : *job) {
+            if (entry.render && !entry.image.isNull()) {
+                PaintOverlay overlay;
+                overlay.session = entry.session;
+                overlay.camera = entry.camera;
+                overlay.image = std::move(entry.image);
+                overlays.push_back(std::move(overlay));
+            } else if (entry.hasFallback) {
+                overlays.push_back(std::move(entry.fallback));
+            }
+        }
+        paintOverlays.swap(overlays);
+    }
+    // At most one refresh renders at a time; those asked for meanwhile coalesce into one that runs when it ends,
+    // from the state then. A running render is only aborted when the painted node changes or the viewport closes:
+    // aborting it for each newer request would starve a stroke whose render outlasts the refresh interval.
+    QFutureWatcher<PaintJob>* paintJobWatcher = nullptr;
+    bool paintJobRunning = false;
+    bool paintJobAgain = false;
+    AbortableRenderInfoPtr paintJobAbort;
+    void abortPaintJob()
+    {
+        if (paintJobAbort) {
+            paintJobAbort->setAborted();
+        }
+    }
+    // Bumped when the painted node changes, so a refresh of the previous one is dropped.
+    unsigned paintEpoch = 0;
+    unsigned paintJobEpoch = 0;
+    // The node whose baker paintGL() is connected to.
+    NodeWPtr paintHostNode;
+    std::vector<QMetaObject::Connection> paintConnections;
+    QTimer* paintRefreshTimer = nullptr;
+    QPointF cursorPos;
+    bool cursorInside = false;
+    double bakeFraction = 0.;
+    QString bakeLabel;
     // The drag of a transform handle under way: the handle, the node whose op it moves (null
     // for the widget on the selection), and the last change it made. The renderer draws the
     // change as a preview; the release writes it once.
@@ -3916,6 +3994,16 @@ struct SceneViewport::Implementation {
         return dynamic_cast<USDEditTransform*>((*node)->getEffectInstance().get());
     }
 
+    TexturePaint* getPaintNode(NodePtr* node) const
+    {
+        *node = paintNodeProvider ? paintNodeProvider() : NodePtr();
+        if (!*node) {
+            return nullptr;
+        }
+
+        return dynamic_cast<TexturePaint*>((*node)->getEffectInstance().get());
+    }
+
     // The device pixel of a widget position.
     static GfVec2d toPixel(const QWidget* widget,
                            const QPoint& pos)
@@ -3974,6 +4062,24 @@ SceneViewport::SceneViewport(QWidget* parent)
     QObject::connect(_imp->wheelMoveTimer, &QTimer::timeout, this, [this]() {
         if (_imp->button == Qt::NoButton) {
             endCameraLock();
+        }
+    });
+    _imp->paintRefreshTimer = new QTimer(this);
+    _imp->paintRefreshTimer->setSingleShot(true);
+    _imp->paintRefreshTimer->setInterval(100);
+    QObject::connect(_imp->paintRefreshTimer, &QTimer::timeout, this, [this]() { refreshPaintOverlays(); });
+    _imp->paintJobWatcher = new QFutureWatcher<Implementation::PaintJob>(this);
+    QObject::connect(_imp->paintJobWatcher, &QFutureWatcher<Implementation::PaintJob>::finished, this, [this]() {
+        Implementation::PaintJob job = _imp->paintJobWatcher->result();
+        _imp->paintJobRunning = false;
+        _imp->paintJobAbort.reset();
+        if (_imp->paintJobEpoch == _imp->paintEpoch) {
+            _imp->applyPaintJob(&job);
+            update();
+        }
+        if (_imp->paintJobAgain) {
+            _imp->paintJobAgain = false;
+            refreshPaintOverlays();
         }
     });
     _imp->previewTimer = new QTimer(this);
@@ -4066,6 +4172,10 @@ SceneViewport::~SceneViewport()
     if (_imp->worker.joinable()) {
         _imp->worker.join();
     }
+    // The overlay job holds nothing of the viewport, so it is only told to stop: it finishes on
+    // its pool thread after the viewport is gone, and its watcher, destroyed with the viewport,
+    // drops its result.
+    _imp->abortPaintJob();
     GLContextLoss::releaseNow(this);
 }
 
@@ -4543,6 +4653,12 @@ SceneViewport::setTransformNodeProvider(const std::function<NodePtr()>& provider
 {
     _imp->transformNodeProvider = provider;
     update();
+}
+
+void
+SceneViewport::setPaintNodeProvider(const std::function<NodePtr()>& provider)
+{
+    _imp->paintNodeProvider = provider;
 }
 
 void
@@ -5093,6 +5209,7 @@ SceneViewport::paintGL()
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
     refreshTransformHandles();
+    followPaintNode();
     {
         // The free camera this paint draws with, for scripts: pivot x, y, z, distance, azimuth,
         // elevation and vertical field of view.
@@ -5204,6 +5321,8 @@ SceneViewport::paintGL()
             painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignBottom, _imp->lockMessage);
         }
     }
+    SceneViewportRenderer::CameraPose pose;
+    drawPaintOverlays(painter, _imp->renderer.getViewPose(w, h, &pose), pose);
     if (_imp->dragging && (_imp->dragRole == Implementation::eDragRoleMarquee)) {
         painter.setPen(QPen(QColor(230, 230, 230), 1., Qt::DashLine));
         painter.setBrush(QColor(255, 255, 255, 30));
@@ -5219,9 +5338,343 @@ SceneViewport::paintGL()
     // eRenderStatusWaiting: the background render's listener asks for the next paint.
 } // paintGL
 
+namespace {
+bool
+isPaintBrushTool(RotoToolEnum tool)
+{
+    switch (tool) {
+    case eRotoToolSolidBrush:
+    case eRotoToolEraserBrush:
+    case eRotoToolClone:
+    case eRotoToolReveal:
+    case eRotoToolBlur:
+    case eRotoToolSharpen:
+    case eRotoToolSmear:
+    case eRotoToolDodge:
+    case eRotoToolBurn:
+
+        return true;
+    default:
+
+        return false;
+    }
+}
+
+bool
+sameViewCamera(const SceneRaster::ExplicitCamera& a,
+               const SceneViewportRenderer::CameraPose& b)
+{
+    const auto close = [](double x, double y) { return std::abs(x - y) <= 1e-5 * (1. + std::abs(x)); };
+    for (int i = 0; i < 16; ++i) {
+        if (!close(a.cameraToWorld[i], b.cameraToWorld[i])) {
+            return false;
+        }
+    }
+
+    return (a.orthographic == b.orthographic) && close(a.viewHeight, b.viewHeight) && close(a.aspect, b.aspect);
+}
+
+// The display encoding of a linear value, from a table: a buffer holds a million pixels or more.
+unsigned char
+encodeDisplay(float linear)
+{
+    static const std::vector<unsigned char> table = []() {
+        std::vector<unsigned char> t(4097);
+        for (std::size_t i = 0; i < t.size(); ++i) {
+            const double v = (double)i / 4096.;
+            const double e = (v <= 0.0031308) ? 12.92 * v : 1.055 * std::pow(v, 1. / 2.4) - 0.055;
+            t[i] = (unsigned char)std::lround(std::min(1., std::max(0., e)) * 255.);
+        }
+
+        return t;
+    }();
+    const float c = std::min(1.f, std::max(0.f, linear));
+
+    return table[(std::size_t)(c * 4096.f + 0.5f)];
+}
+
+// Drops held on the main thread, which the teardown of a node or roto item its last reference
+// ends expects.
+void
+releaseOnMainThread(std::shared_ptr<void> held)
+{
+    QCoreApplication* app = QCoreApplication::instance();
+
+    if (!held || !app || (QThread::currentThread() == app->thread())) {
+        return;
+    }
+    QMetaObject::invokeMethod(app, [held = std::move(held)]() mutable { held.reset(); }, Qt::QueuedConnection);
+}
+
+QImage
+overlayImage(const TexturePaint::SessionBuffer& buffer)
+{
+    QImage image(buffer.width, buffer.height, QImage::Format_ARGB32_Premultiplied);
+    const bool consistent = (buffer.width > 0) && (buffer.height > 0) && (buffer.rgba.size() == (std::size_t)buffer.width * buffer.height * 4) && (buffer.touched.size() == (std::size_t)buffer.width * buffer.height);
+    if (!consistent || image.isNull()) {
+        return QImage();
+    }
+    for (int y = 0; y < buffer.height; ++y) {
+        // Buffers are bottom-up.
+        const std::size_t row = (std::size_t)(buffer.height - 1 - y) * buffer.width;
+        QRgb* out = reinterpret_cast<QRgb*>(image.scanLine(y));
+        for (int x = 0; x < buffer.width; ++x) {
+            const std::size_t i = row + x;
+            if (!buffer.touched[i]) {
+                out[x] = 0;
+                continue;
+            }
+            const float* p = &buffer.rgba[i * 4];
+            // A plane without alpha reads 0 there.
+            const float a = (p[3] > 0.f) ? std::min(1.f, p[3]) : 1.f;
+            const int alpha = (int)std::lround(a * 255.f);
+            out[x] = qPremultiply(qRgba(encodeDisplay(p[0]), encodeDisplay(p[1]), encodeDisplay(p[2]), alpha));
+        }
+    }
+
+    return image;
+}
+} // anon namespace
+
+void
+SceneViewport::followPaintNode()
+{
+    NodePtr node;
+    TexturePaint* effect = _imp->getPaintNode(&node);
+    if (node == _imp->paintHostNode.lock()) {
+        return;
+    }
+    for (const QMetaObject::Connection& connection : _imp->paintConnections) {
+        QObject::disconnect(connection);
+    }
+    _imp->paintConnections.clear();
+    _imp->paintOverlays.clear();
+    ++_imp->paintEpoch;
+    _imp->abortPaintJob();
+    _imp->paintHostNode = node;
+    _imp->bakeFraction = 0.;
+    _imp->bakeLabel.clear();
+    if (!effect) {
+        return;
+    }
+    TexturePaintBaker* baker = effect->getBaker();
+    if (!baker) {
+        return;
+    }
+    baker->getLastProgress(&_imp->bakeFraction, &_imp->bakeLabel);
+    if (RotoCurveContextPtr context = node->getCurveContext()) {
+        _imp->paintConnections.push_back(QObject::connect(context.get(), &RotoCurveContext::itemInserted, this, [this](int, int) { schedulePaintRefresh(); }));
+        _imp->paintConnections.push_back(QObject::connect(context.get(), &RotoCurveContext::itemRemoved, this, [this](const RotoItemPtr&, int) { schedulePaintRefresh(); }));
+    }
+    _imp->paintConnections.push_back(QObject::connect(baker, &TexturePaintBaker::progress, this, [this](double fraction, const QString& label) {
+        _imp->bakeFraction = fraction;
+        _imp->bakeLabel = label;
+        update();
+    }));
+    _imp->paintConnections.push_back(QObject::connect(baker, &TexturePaintBaker::bakeFinished, this, [this](bool, quint64) {
+        refreshPaintOverlays();
+        update();
+    }));
+    _imp->paintConnections.push_back(QObject::connect(baker, &TexturePaintBaker::idle, this, [this]() {
+        refreshPaintOverlays();
+        update();
+    }));
+    schedulePaintRefresh();
+}
+
+void
+SceneViewport::schedulePaintRefresh()
+{
+    if (!_imp->paintRefreshTimer->isActive()) {
+        _imp->paintRefreshTimer->start();
+    }
+}
+
+void
+SceneViewport::refreshPaintOverlays()
+{
+    _imp->paintRefreshTimer->stop();
+    NodePtr node;
+    TexturePaint* effect = _imp->getPaintNode(&node);
+    if (!effect) {
+        ++_imp->paintEpoch;
+        _imp->abortPaintJob();
+        if (!_imp->paintOverlays.empty()) {
+            _imp->paintOverlays.clear();
+            update();
+        }
+
+        return;
+    }
+    if (_imp->paintJobRunning) {
+        _imp->paintJobAgain = true;
+
+        return;
+    }
+    const double time = _imp->frame;
+    const ViewIdx view(0);
+    const std::list<ImageLayerDesc> planes = effect->getOutputPlanes(time, view);
+    const RotoLayerPtr current = effect->getViewInteract()->getCurrentSession();
+    std::vector<RotoLayerPtr> wanted;
+    if (current && !TexturePaint::isSessionFrozen(current)) {
+        wanted.push_back(current);
+    }
+    for (const RotoLayerPtr& session : effect->getSessions()) {
+        if ((session != current) && !TexturePaint::isSessionFrozen(session) && effect->isSessionBakePending(session)) {
+            wanted.push_back(session);
+        }
+    }
+
+    Implementation::PaintJob job;
+    bool anyRender = false;
+    for (const RotoLayerPtr& session : wanted) {
+        Implementation::PaintJobEntry entry;
+        entry.session = session;
+        for (const Implementation::PaintOverlay& overlay : _imp->paintOverlays) {
+            if (overlay.session.lock() == session) {
+                entry.fallback = overlay;
+                entry.hasFallback = true;
+            }
+        }
+        // A closed session no longer changes: the image it had when it closed stays until its bake lands.
+        if (entry.hasFallback && (session != current)) {
+            job.push_back(std::move(entry));
+            continue;
+        }
+        if (!planes.empty() && TexturePaint::getSessionCamera(session, &entry.camera)) {
+            entry.viewNode = effect->getSessionView(session);
+            entry.render = !entry.viewNode.expired();
+        }
+        anyRender |= entry.render;
+        job.push_back(std::move(entry));
+    }
+    if (!anyRender) {
+        _imp->applyPaintJob(&job);
+        update();
+
+        return;
+    }
+
+    const ImageLayerDesc plane = planes.back();
+    _imp->paintJobRunning = true;
+    _imp->paintJobEpoch = _imp->paintEpoch;
+    const AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    _imp->paintJobAbort = abortInfo;
+    const NodeWPtr weakNode = node;
+    _imp->paintJobWatcher->setFuture(QtConcurrent::run([weakNode, abortInfo, time, view, plane, job = std::move(job)]() mutable {
+        for (Implementation::PaintJobEntry& entry : job) {
+            if (!entry.render || abortInfo->isAborted()) {
+                continue;
+            }
+            TexturePaint::SessionBuffer buffer;
+            std::string error;
+            bool ok = false;
+            {
+                // Held for the render alone, so that a node deleted meanwhile goes as soon as it
+                // ends, and released on the main thread in case these are the last references.
+                NodePtr paintNode = weakNode.lock();
+                NodePtr viewNode = entry.viewNode.lock();
+                RotoLayerPtr session = entry.session.lock();
+                EffectInstancePtr effect = paintNode ? paintNode->getEffectInstance() : EffectInstancePtr();
+                TexturePaint* texturePaint = dynamic_cast<TexturePaint*>(effect.get());
+                ok = texturePaint && viewNode && session && texturePaint->renderSessionBufferFrom(viewNode, session, plane, time, view, &buffer, &error, abortInfo);
+                releaseOnMainThread(std::move(session));
+                releaseOnMainThread(std::move(effect));
+                releaseOnMainThread(std::move(viewNode));
+                releaseOnMainThread(std::move(paintNode));
+            }
+            if (ok) {
+                entry.image = overlayImage(buffer);
+            }
+        }
+
+        return job;
+    }));
+}
+
+void
+SceneViewport::drawPaintOverlays(QPainter& painter,
+                                 bool poseKnown,
+                                 const SceneViewportRenderer::CameraPose& pose)
+{
+    NodePtr node;
+    TexturePaint* effect = _imp->getPaintNode(&node);
+    int quads = 0;
+    // The buffers were painted through a camera; once the view moved away they are not drawn, and the bake landing shows the paint.
+    if (effect && poseKnown) {
+        painter.save();
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        for (const Implementation::PaintOverlay& overlay : _imp->paintOverlays) {
+            if (sameViewCamera(overlay.camera, pose)) {
+                painter.drawImage(rect(), overlay.image);
+                ++quads;
+            }
+        }
+        painter.restore();
+    }
+    setProperty("natronScenePaintOverlayDrawn", quads > 0);
+    setProperty("natronScenePaintOverlayCount", quads);
+
+    QVariantList ring;
+    const RotoPaintInteractPtr paint = effect ? effect->getPaintInteract() : RotoPaintInteractPtr();
+    if (paint && _imp->cursorInside && isPaintBrushTool(paint->selectedTool)) {
+        const double radius = std::max(1., paint->sizeSpinbox.lock()->getValue() / 2. / devicePixelRatio());
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(0, 0, 0, 200), 3.));
+        painter.drawEllipse(_imp->cursorPos, radius, radius);
+        painter.setPen(QPen(QColor(255, 255, 255, 230), 1.));
+        painter.drawEllipse(_imp->cursorPos, radius, radius);
+        painter.restore();
+        ring = QVariantList { _imp->cursorPos.x(), _imp->cursorPos.y(), radius };
+    }
+    setProperty("natronScenePaintBrushRing", ring);
+
+    const bool baking = effect && effect->isBaking();
+    setProperty("natronScenePaintBakeFraction", baking ? _imp->bakeFraction : -1.);
+    if (baking) {
+        const int barHeight = 3;
+        const double fraction = std::min(1., std::max(0., _imp->bakeFraction));
+        const QRect bar(0, height() - barHeight, width(), barHeight);
+        painter.save();
+        painter.fillRect(bar, QColor(0, 0, 0, 160));
+        painter.fillRect(QRect(bar.left(), bar.top(), (int)std::lround(bar.width() * fraction), barHeight), QColor(120, 200, 255));
+        painter.setPen(QColor(220, 220, 220));
+        const QString label = _imp->bakeLabel.isEmpty() ? tr("Baking") : _imp->bakeLabel;
+        painter.drawText(rect().adjusted(8, 6, -8, -barHeight - 4), Qt::AlignLeft | Qt::AlignBottom, tr("%1 (%2%)").arg(label).arg((int)std::lround(fraction * 100.)));
+        painter.restore();
+    }
+}
+
+void
+SceneViewport::leaveEvent(QEvent* e)
+{
+    _imp->cursorInside = false;
+    if (_imp->paintHostNode.lock()) {
+        update();
+    }
+    QOpenGLWidget::leaveEvent(e);
+}
+
+namespace {
+// Pen events are stamped as the 2D viewer stamps them, so strokes painted in either view time alike.
+double
+paintTimestamp(const QInputEvent* e)
+{
+    return (double)e->timestamp() / 1000000.;
+}
+} // anon namespace
+
 void
 SceneViewport::mousePressEvent(QMouseEvent* e)
 {
+    // Another button pressed during a stroke starts nothing.
+    if (_imp->painting) {
+        e->accept();
+
+        return;
+    }
     if ((e->button() == Qt::LeftButton) && (e->modifiers() == Qt::NoModifier) && !_imp->spaceHeld && beginHandleDrag(e->position().toPoint())) {
         e->accept();
 
@@ -5239,6 +5692,13 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
         role = Implementation::eDragRoleDolly;
     } else if (matchesMouseBinding(kShortcutIDMouseViewer3DMarquee, modifiers, button)) {
         role = Implementation::eDragRoleMarquee;
+    }
+    // Painting takes a plain left press from selection and marquee, never from navigation.
+    const bool navigationRole = (role == Implementation::eDragRoleTumble) || (role == Implementation::eDragRolePan) || (role == Implementation::eDragRoleDolly);
+    if ((button == Qt::LeftButton) && (modifiers == Qt::NoModifier) && !navigationRole && beginPaint(e->position(), 1., paintTimestamp(e))) {
+        e->accept();
+
+        return;
     }
     bool clickSelects = true;
     SelectionModeEnum mode = eSelectionModeReplace;
@@ -5282,10 +5742,27 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
 void
 SceneViewport::mouseMoveEvent(QMouseEvent* e)
 {
+    _imp->cursorPos = e->position();
+    _imp->cursorInside = true;
+    if (_imp->paintHostNode.lock()) {
+        update();
+    }
     const QPoint pos = e->position().toPoint();
 
     if (_imp->handle != SceneGizmo::kNoHandle) {
         dragHandle(pos);
+        e->accept();
+
+        return;
+    }
+    if (_imp->painting) {
+        if (!_imp->tabletPainting) {
+            if (e->buttons() & Qt::LeftButton) {
+                continuePaint(e->position(), 1., paintTimestamp(e));
+            } else {
+                endPaint();
+            }
+        }
         e->accept();
 
         return;
@@ -5303,11 +5780,15 @@ SceneViewport::mouseMoveEvent(QMouseEvent* e)
     if (!_imp->dragging && ((pos - _imp->pressPos).manhattanLength() < 4)) {
         return;
     }
+    const bool firstMove = !_imp->dragging;
     _imp->dragging = true;
     const QPoint delta = pos - _imp->lastPos;
     _imp->lastPos = pos;
 
     const bool navigates = (_imp->dragRole == Implementation::eDragRoleTumble) || (_imp->dragRole == Implementation::eDragRolePan) || (_imp->dragRole == Implementation::eDragRoleDolly);
+    if (navigates && firstMove) {
+        closePaintSession();
+    }
     if (navigates && navigatesLockedCamera()) {
         if (!_imp->cameraLock.active && !_imp->cameraLock.refused) {
             beginCameraLock();
@@ -5347,6 +5828,14 @@ SceneViewport::mouseReleaseEvent(QMouseEvent* e)
 {
     if (_imp->handle != SceneGizmo::kNoHandle) {
         endHandleDrag();
+        e->accept();
+
+        return;
+    }
+    if (_imp->painting) {
+        if (!_imp->tabletPainting && (e->button() == Qt::LeftButton)) {
+            endPaint();
+        }
         e->accept();
 
         return;
@@ -5393,6 +5882,88 @@ SceneViewport::clearGesture()
     _imp->menuOnRelease = false;
     if (marquee) {
         update();
+    }
+}
+
+bool
+SceneViewport::beginPaint(const QPointF& pos,
+                          double pressure,
+                          double timestamp)
+{
+    NodePtr node;
+    TexturePaint* effect = _imp->getPaintNode(&node);
+    if (!effect) {
+        return false;
+    }
+    const qreal dpr = devicePixelRatio();
+    const int w = std::max(1, int(width() * dpr));
+    const int h = std::max(1, int(height() * dpr));
+    SceneViewportRenderer::CameraPose pose;
+    if (!_imp->renderer.getViewPose(w, h, &pose)) {
+        return false;
+    }
+    SceneRaster::ExplicitCamera camera;
+    std::copy(pose.cameraToWorld, pose.cameraToWorld + 16, camera.cameraToWorld);
+    camera.viewHeight = pose.viewHeight;
+    camera.aspect = pose.aspect;
+    camera.orthographic = pose.orthographic;
+    camera.nearClip = pose.nearClip;
+    camera.farClip = pose.farClip;
+    const double u = pos.x() / std::max(1, width());
+    const double v = 1. - pos.y() / std::max(1, height());
+    if (!effect->getViewInteract()->penDown(camera, w, h, u, v, pressure, timestamp, _imp->frame)) {
+        return false;
+    }
+    _imp->paintNode = node;
+    _imp->painting = true;
+    schedulePaintRefresh();
+
+    return true;
+}
+
+void
+SceneViewport::continuePaint(const QPointF& pos,
+                             double pressure,
+                             double timestamp)
+{
+    const NodePtr node = _imp->paintNode.lock();
+    TexturePaint* effect = node ? dynamic_cast<TexturePaint*>(node->getEffectInstance().get()) : nullptr;
+    if (!_imp->painting || !effect) {
+        return;
+    }
+    const double u = pos.x() / std::max(1, width());
+    const double v = 1. - pos.y() / std::max(1, height());
+    (void)effect->getViewInteract()->penMotion(u, v, pressure, timestamp);
+    schedulePaintRefresh();
+}
+
+void
+SceneViewport::endPaint()
+{
+    const NodePtr node = _imp->paintNode.lock();
+    TexturePaint* effect = node ? dynamic_cast<TexturePaint*>(node->getEffectInstance().get()) : nullptr;
+    const bool painting = _imp->painting;
+
+    _imp->painting = false;
+    _imp->tabletPainting = false;
+    _imp->paintNode.reset();
+    if (painting && effect) {
+        (void)effect->getViewInteract()->penUp();
+        refreshPaintOverlays();
+    }
+}
+
+void
+SceneViewport::closePaintSession()
+{
+    endPaint();
+    NodePtr node;
+    if (TexturePaint* effect = _imp->getPaintNode(&node)) {
+        const bool hadSession = (bool)effect->getViewInteract()->getCurrentSession();
+        (void)effect->getViewInteract()->closeSession(_imp->frame);
+        if (hadSession) {
+            refreshPaintOverlays();
+        }
     }
 }
 
@@ -5559,6 +6130,7 @@ SceneViewport::wheelEvent(QWheelEvent* e)
 
         return;
     }
+    closePaintSession();
     if (navigatesLockedCamera()) {
         // A run of wheel steps is one move, written once the wheel rests; a drag under way owns
         // the move and ends it itself.
@@ -5596,6 +6168,40 @@ SceneViewport::event(QEvent* e)
 
             return true;
         }
+        NodePtr paintNode;
+        if (matchesKeyBinding(kShortcutIDActionViewer3DBakePaint, k->modifiers(), k->key()) && _imp->getPaintNode(&paintNode)) {
+            e->accept();
+
+            return true;
+        }
+    }
+    // A pen's own events carry its pressure; ignored, they come back as mouse events without it.
+    if ((e->type() == QEvent::TabletPress) || (e->type() == QEvent::TabletMove) || (e->type() == QEvent::TabletRelease)) {
+        QTabletEvent* t = static_cast<QTabletEvent*>(e);
+        _imp->cursorPos = t->position();
+        _imp->cursorInside = true;
+        if (e->type() == QEvent::TabletPress) {
+            const Qt::KeyboardModifiers modifiers = mouseBindingModifiers(t->modifiers(), _imp->spaceHeld);
+            const bool navigationBinding = matchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, Qt::LeftButton) || matchesMouseBinding(kShortcutIDMouseViewer3DPan, modifiers, Qt::LeftButton)
+                || matchesMouseBinding(kShortcutIDMouseViewer3DDolly, modifiers, Qt::LeftButton);
+            if (!_imp->painting && (t->button() == Qt::LeftButton) && (modifiers == Qt::NoModifier) && !navigationBinding && (_imp->handle == SceneGizmo::kNoHandle)
+                && beginPaint(t->position(), t->pressure(), paintTimestamp(t))) {
+                clearGesture();
+                _imp->tabletPainting = true;
+                t->accept();
+
+                return true;
+            }
+        } else if (_imp->tabletPainting) {
+            if (e->type() == QEvent::TabletMove) {
+                continuePaint(t->position(), t->pressure(), paintTimestamp(t));
+            } else {
+                endPaint();
+            }
+            t->accept();
+
+            return true;
+        }
     }
     // QWidget::event() spends Tab on moving the focus before keyPressEvent() sees it.
     if (e->type() == QEvent::KeyPress) {
@@ -5613,6 +6219,13 @@ SceneViewport::event(QEvent* e)
 void
 SceneViewport::keyPressEvent(QKeyEvent* e)
 {
+    NodePtr paintNode;
+    if (matchesKeyBinding(kShortcutIDActionViewer3DBakePaint, e->modifiers(), e->key()) && _imp->getPaintNode(&paintNode)) {
+        closePaintSession();
+        e->accept();
+
+        return;
+    }
     if ((e->key() == Qt::Key_Space) && bindingsUseSpace()) {
         _imp->spaceHeld = true;
         e->accept();
@@ -5670,12 +6283,14 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
         return;
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DFrameSelection, e->modifiers(), e->key())) {
+        closePaintSession();
         frameSelection();
         e->accept();
 
         return;
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DFrameAll, e->modifiers(), e->key())) {
+        closePaintSession();
         frameScene();
         e->accept();
 
@@ -5683,6 +6298,7 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     }
     const int mode = viewModeForKey(e->modifiers(), e->key());
     if (mode >= 0) {
+        closePaintSession();
         setViewMode((SceneViewportRenderer::ViewModeEnum)mode);
         e->accept();
 
@@ -5708,6 +6324,7 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
         return;
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DLockView, e->modifiers(), e->key())) {
+        closePaintSession();
         if (navigatesLockedCamera()) {
             setLockView(false);
         } else {
@@ -5742,6 +6359,7 @@ SceneViewport::focusOutEvent(QFocusEvent* e)
     if (_imp->handle != SceneGizmo::kNoHandle) {
         endHandleDrag();
     }
+    endPaint();
     clearGesture();
     _imp->spaceHeld = false;
     QOpenGLWidget::focusOutEvent(e);

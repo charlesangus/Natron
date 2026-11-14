@@ -859,6 +859,11 @@ namespace YamlDetail {
         {
             em << YAML::BeginMap;
             emitItemCommon(em, layer, expectedParent);
+            if (!layer.knobs.empty()) {
+                emitKey(em, "knobs");
+                em << YAML::Value;
+                emitKnobMap(em, layer.knobs);
+            }
             if (!layer.children.empty()) {
                 emitKey(em, "items");
                 em << YAML::Value << YAML::BeginSeq;
@@ -898,6 +903,9 @@ namespace YamlDetail {
         {
             MapReader reader(node, context, warnings);
             readItemCommon(reader, layer, expectedParent);
+            if (YAML::Node knobs = reader.get("knobs")) {
+                layer->knobs = readKnobMap(knobs, context + ".knobs", reader.warnings());
+            }
             if (YAML::Node items = reader.get("items")) {
                 if (!items.IsSequence()) {
                     fail(items, context + ".items", "expected a list of items");

@@ -5746,6 +5746,16 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         }
         if (dc) {
             int inputNb = output->getInputIndex(this);
+            if (inputNb == -1) {
+                // A connection queued behind a render is in the GUI inputs only.
+                const std::vector<NodeWPtr>& guiInputs = output->getGuiInputs();
+                for (std::size_t i = 0; i < guiInputs.size(); ++i) {
+                    if (guiInputs[i].lock().get() == this) {
+                        inputNb = (int)i;
+                        break;
+                    }
+                }
+            }
             if (inputNb != -1) {
                 _imp->deactivatedState.insert( make_pair(*it, inputNb) );
 
@@ -5755,6 +5765,23 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                 } else {
                     ignore_result( output->disconnectInputInternal(this, false) );
                 }
+            }
+        }
+    }
+
+    // An output whose disconnect from this node is queued behind its render has left the GUI
+    // outputs but still reads this node through its real input, which would outlive the effect.
+    if (disconnectAll) {
+        NodesWList remaining;
+        {
+            QMutexLocker l(&_imp->outputsMutex);
+            remaining = _imp->outputs;
+            remaining.insert(remaining.end(), _imp->guiOutputs.begin(), _imp->guiOutputs.end());
+        }
+        for (NodesWList::iterator it = remaining.begin(); it != remaining.end(); ++it) {
+            NodePtr output = it->lock();
+            if (output && output->dropInputsFromDeactivated(this)) {
+                disconnectOutput(false, output.get());
             }
         }
     }

@@ -1383,20 +1383,25 @@ RotoCurveContext::onSelectedKnobCurveChanged()
 }
 
 void
-RotoCurveContext::onSelectedKnobValueChanged()
+RotoCurveContext::onSelectedKnobValueChanged(ViewSpec /*view*/,
+                                             int dimension,
+                                             int reason)
 {
     KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
 
-    if (!handler) {
+    // A slave refresh is the context knob's own value arriving in the item.
+    if (!handler || (reason == (int)eValueChangedReasonSlaveRefresh)) {
         return;
     }
     KnobIPtr knob = handler->getKnob();
     for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         KnobIPtr k = it->lock();
         if (k && (k->getName() == knob->getName())) {
-            // The context knob pushes itself back into its slaved items, which emit this again;
-            // by then they match and the check stops the echo.
-            ignore_result(k->cloneAndCheckIfChanged(knob.get()));
+            // Only the dimension that changed: while the context knob refreshes its items one
+            // dimension at a time, an item's other dimensions still hold the old values, and
+            // copying them would undo the edit. The context knob then pushes itself back into its
+            // slaved items, which emit this again; by then they match and the check stops the echo.
+            ignore_result(k->cloneAndCheckIfChanged(knob.get(), dimension, dimension));
             break;
         }
     }
@@ -1433,7 +1438,7 @@ RotoCurveContext::tieItemKnob(const KnobIPtr& itemKnob,
     // A value written to the item at a time it already has a key emits no keyFrameSet, and
     // the slaved item reads the context knob, so the write would be lost without this.
     QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
-                     this, SLOT(onSelectedKnobValueChanged()));
+                     this, SLOT(onSelectedKnobValueChanged(ViewSpec, int, int)));
 }
 
 void
@@ -1457,7 +1462,7 @@ RotoCurveContext::untieItemKnob(const KnobIPtr& itemKnob,
     QObject::disconnect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
                         this, SLOT(onSelectedKnobCurveChanged()));
     QObject::disconnect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
-                        this, SLOT(onSelectedKnobValueChanged()));
+                        this, SLOT(onSelectedKnobValueChanged(ViewSpec, int, int)));
 }
 
 void

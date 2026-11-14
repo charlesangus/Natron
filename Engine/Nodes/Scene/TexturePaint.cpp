@@ -4083,15 +4083,15 @@ TexturePaint::getSessions() const
     if (!context) {
         return sessions;
     }
-    const std::list<RotoLayerPtr>& layers = context->getLayers();
-    for (const RotoLayerPtr& layer : layers) {
-        if (layer && (layer->getHierarchyLevel() == 0)) {
-            for (const RotoItemPtr& item : layer->getItems()) {
-                RotoLayerPtr child = std::dynamic_pointer_cast<RotoLayer>(item);
-                if (child && sessionKnob<KnobBool>(child, kTexturePaintSessionParamFrozen)) {
-                    sessions.push_back(child);
-                }
-            }
+    // Render threads list the sessions too, so this reads only the MT-safe accessors.
+    RotoLayerPtr base = context->getBaseLayer();
+    if (!base) {
+        return sessions;
+    }
+    for (const RotoItemPtr& item : base->getItems_mt_safe()) {
+        RotoLayerPtr child = std::dynamic_pointer_cast<RotoLayer>(item);
+        if (child && sessionKnob<KnobBool>(child, kTexturePaintSessionParamFrozen)) {
+            sessions.push_back(child);
         }
     }
 

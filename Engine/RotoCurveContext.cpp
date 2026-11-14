@@ -679,6 +679,14 @@ RotoCurveContext::getLayers() const
     return _imp->layers;
 }
 
+RotoLayerPtr
+RotoCurveContext::getBaseLayer() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+
+    return _imp->layers.empty() ? RotoLayerPtr() : _imp->layers.front();
+}
+
 BezierPtr
 RotoCurveContext::isNearbyBezier(double x,
                                  double y,
@@ -1967,13 +1975,7 @@ RotoCurveContext::getContentHash() const
 {
     // Renders walk the base layer only (getCurvesByRenderOrder()); the other entries of
     // _imp->layers are nested in it.
-    RotoLayerPtr base;
-    {
-        QMutexLocker l(&_imp->rotoContextMutex);
-        if (!_imp->layers.empty()) {
-            base = _imp->layers.front();
-        }
-    }
+    RotoLayerPtr base = getBaseLayer();
 
     ContentHasher h;
     h.appendBool(bool(base));

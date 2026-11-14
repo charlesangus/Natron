@@ -276,6 +276,12 @@ public:
     const std::list<RotoLayerPtr>& getLayers() const;
 
     /**
+     * @brief The base layer every other layer is nested in, or null before it is made. Unlike
+     * getOrCreateBaseLayer() it never creates it. MT-safe.
+     **/
+    RotoLayerPtr getBaseLayer() const;
+
+    /**
      * @brief Returns a bezier curves nearby the point (x,y) and the parametric value
      * which would be used to find the exact Bezier point lying on the curve. When accept is
      * given, curves it refuses are skipped.

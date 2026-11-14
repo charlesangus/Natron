@@ -61,7 +61,7 @@ Acceptance sketch:
   - verify: a gtest that a default metadata is Stretch, copies keep the field, and two metadata differing only in `edgeMode` compare unequal.
   - size: M
 
-- [ ] M136.P2.T2 — Propagate the bit through native nodes and make OpenFX opaque
+- [x] M136.P2.T2 — Propagate the bit through native nodes and make OpenFX opaque
   - files: `Engine/EffectInstance.cpp` (`getDefaultMetadataFromInputs`, `applyIdentityRule`), `Engine/OfxEffectInstance.cpp` (metadata path), `Engine/Nodes/Image/StagedImageEffect.{h,cpp}` (`getPreferredMetadataAt`), `Tests/PerFrameMetadata_Test.cpp`
   - approach: a node with no override forwards the primary input's (B, else first) `edgeMode`; Switch and other identity nodes report the picked input's, per M167's identity rule. Sources (Read, generators) report Stretch. A node that sets the mode does so in `getPreferredMetadataAt`. OpenFX effects report Stretch regardless of inputs.
   - verify: gtest graph: Constant (Stretch) → Grade → Merge (B primary); an upstream node forced to Black reaches the output through pass-through nodes, Switch follows its picked input, and an OpenFX node resets to Stretch.

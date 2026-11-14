@@ -37,10 +37,22 @@ Make a downstream edit feel immediate: a point-op edit (Grade at the end of a ~2
 
 ## Phase 303.1: Keep the raw chain on the GPU at any zoom
 
-- [ ] M303.P1.T1 — Run non-scaling nodes at mip 0 in GPU regions and downscale on the device
-  - files: `Engine/GpuPlacement.cpp` (~:659), `Engine/GpuRegionTask.cpp` (~:557, ~:820), `Engine/Gpu/` downscale kernel, `Tests/GpuPlacement_Test.cpp`
-  - approach: Placement accepts an `eSupportsNo` task at mip ≠ 0. The region renders it at mip 0, and a device box-downscale (matching `Image::downscaleMipmap`) produces the consumer's mip, so the CPU path's semantics (`EffectInstanceRenderRoI.cpp` ~:457) are mirrored. The mip-0 output is cached as its own entry.
-  - verify: A GPU test of the raw chain at mip 1 stays on the GPU and matches the CPU result within the existing GPU parity tolerance.
+- [ ] M303.P1.T1 — Mosaic stages pull their inputs at mip 0
+  - files: `Engine/EffectInstance.{h,cpp}` (`pullsInputsAtScaleOne` ~:841, getImage ~:1760), `Engine/ParallelRenderArgs.cpp` (~:491, ~:1129), `Engine/Nodes/Raw/*` (Prepare, Temperature, Highlights, HotPixels, CACorrect, RawDenoise, NeuralDenoise, Demosaic), a CPU test
+  - approach: make `pullsInputsAtScaleOne` an overridable trait (not `supportsMultiResolution`, which NodeInputs uses for connections), set it on every mosaic-domain raw node and Demosaic, and make the planner and getImage agree on it (they disagree today). At reduced zoom the mosaic stages then render at mip 0 on real photosites. Today the Read averages each 2x2 quad into one luma value, and Demosaic outputs grey.
+  - verify: a CPU test renders the Canon raw chain at mip 1 and compares it with the mip-0 render box-downscaled (colour, not grey), within tolerance; existing raw tests pass.
+  - size: M
+
+- [ ] M303.P1.T2 — Superpixel demosaic below 100% zoom
+  - files: `Engine/Nodes/Raw/RawDemosaic.{h,cpp}`, new superpixel CPU kernel and `Engine/Gpu/Kernels/demosaic_superpixel.slang`, `Engine/Settings.{h,cpp}` (preference), tests
+  - approach: Demosaic changes scale for the chain. It reads the mip-0 mosaic and, at mip ≥1, writes one RGB pixel per 2x2 Bayer quad (R, mean G, B) or per 3x3 X-Trans block, then box-filters to the target mip. RGB stages after it run at the viewer's mip. A preference "Zoomed-Out Demosaic" (Fast = superpixel, default; Full = full demosaic at mip 0, then downscale) keeps the full path for anyone who needs an exact match.
+  - verify: at mip 1 the Fast output matches the Full output within a preview tolerance on the Canon and an X-Trans fixture; CPU equals GPU for the superpixel kernel; Full equals mip 0 box-downscaled.
+  - size: L
+
+- [ ] M303.P1.T3 — GPU regions feed mosaic stages at mip 0
+  - files: `Engine/GpuPlacement.cpp` (`isDownscaleUnsupported` ~:299, ~:711, ~:1043), `Engine/GpuRegionTask.cpp` (`RegionRun::plan`/`planInputs` ~:940-1200, ~:1061), `Engine/RenderScheduler.cpp` (`rendersFullScale`/`cacheMipmapLevel`), `Tests/GpuPlacement_Test.cpp`
+  - approach: a GPU region accepts members that pull mip-0 inputs: they get mip-0 slots and layouts, strips and halos at mip 0, and device-tier keys at their own cache mip. The run's scale changes only at Demosaic (superpixel kernel), so the raw chain stays on the GPU below 100% zoom.
+  - verify: a GPU test of the raw chain at mip 1 stays on the GPU and matches the CPU T1/T2 result within the GPU parity tolerance; strip and device-tier tests pass.
   - size: L
 
 ## Phase 303.2: Selective, cache-friendly draft
@@ -85,3 +97,4 @@ Make a downstream edit feel immediate: a point-op edit (Grade at the end of a ~2
 
 **Verification gate:** cache, GPU and viewer suites pass. On the user's host with a release AppImage, a Grade edit at the end of the Canon raw chain at fit-to-window reaches the viewer in ≤33 ms median with the GPU on, with no upstream execution and no draft. A Transform drag drafts without re-running upstream. The user accepts it at UAT.
 - 2026-11-14 — Claimed by bosley-native-nodes (user request).
+- 2026-11-14 — **Raw at reduced zoom reopened (user, 2026-11-14):** the 2026-11-01 'raw render scale out' decision is replaced. Cause: today, below 100% the Read averages each Bayer quad into one luma value and every raw stage replicates and re-averages, so Demosaic outputs grey (consultant). The user asked whether a better half-res path exists, with caching full res and the downscale as the fallback. PM call: mosaic stages run at mip 0, Demosaic does a superpixel (half-size) demosaic at mip ≥1, and a 'Zoomed-Out Demosaic' preference (Fast/Full) keeps the user's fallback as Full. P1 is re-planned into T1–T3 accordingly.

@@ -111,6 +111,13 @@ public:
     // The selected prims, the current one last.
     QStringList getSelection() const;
 
+    // Selects the rows of paths and scrolls to the last, opening their ancestors one level at a time
+    // so that no payload is loaded on the way. The viewer's selection is left as it is.
+    void revealPaths(const QStringList& paths);
+
+    // Whether the panel is unpinned and follows the active viewer, which is viewer.
+    bool followsViewer(const ViewerTab* viewer) const;
+
 public Q_SLOTS:
 
     void onActiveViewerChanged();

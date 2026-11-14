@@ -2086,6 +2086,20 @@ SceneGraphPanel::showSelection(const QStringList& paths)
     _imp->inspectorRefresh.start();
 }
 
+void
+SceneGraphPanel::revealPaths(const QStringList& paths)
+{
+    if (!paths.isEmpty()) {
+        showSelection(paths);
+    }
+}
+
+bool
+SceneGraphPanel::followsViewer(const ViewerTab* viewer) const
+{
+    return viewer && !_imp->userPinned && (_imp->follow == eFollowViewer) && (_imp->viewer == viewer);
+}
+
 QStringList
 SceneGraphPanel::getSelection() const
 {
@@ -2248,7 +2262,9 @@ SceneGraphPanel::onViewportSelectionChanged(const QStringList& paths)
 void
 SceneGraphPanel::onTreeSelectionChanged()
 {
-    if (_imp->syncingSelection) {
+    // Rows removed by an edit of the stage leave the selection: a selected prim that is gone is
+    // kept, as selectTreeRows() keeps one it cannot show, so that its return restores it.
+    if (_imp->syncingSelection || _imp->model->isChanging()) {
         return;
     }
     _imp->treeSelectionOwed = false;

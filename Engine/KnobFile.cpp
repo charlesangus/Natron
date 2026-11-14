@@ -75,12 +75,26 @@ KnobFile::KnobFile(KnobHolder* holder,
                    bool declaredByPlugin)
     : AnimatingKnobStringHelper(holder, description, dimension, declaredByPlugin)
     , _isInputImage(false)
-    , _showsReloadButton(true)
+    , _reloadButton()
 {
 }
 
 KnobFile::~KnobFile()
 {
+}
+
+KnobButtonPtr
+KnobFile::createReloadButton(const std::string& scriptName,
+                             const QString& hint)
+{
+    KnobButtonPtr button = AppManager::createKnob<KnobButton>(getHolder(), tr("Reload").toStdString());
+
+    button->setName(scriptName);
+    button->setHintToolTip(hint);
+    setAddNewLine(false);
+    _reloadButton = button;
+
+    return button;
 }
 
 void

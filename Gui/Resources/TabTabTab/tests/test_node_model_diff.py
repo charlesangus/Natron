@@ -457,8 +457,8 @@ def test_invalidate_color_cache_forces_recompute_on_next_access():
     so the next data() call recomputes it. Needed because an unchanged
     row is retained as the very same dict across update() calls (the
     _apply_items fast path), so without this a stale cached colour would
-    survive forever — even across the TabTabTabWidget._refresh_fresh tick
-    that's supposed to surface host-side colour/preference edits."""
+    survive forever — even across the TabTabTabWidget._refresh_before_show
+    refresh that's supposed to surface host-side colour edits."""
     module = _load_core()
     counter = _CountingColorFn()
     all_items = [_menu_item("Cat/Apple")]

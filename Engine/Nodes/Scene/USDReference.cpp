@@ -170,16 +170,13 @@ USDReference::initializeKnobs()
     file->setHintToolTip(tr("The USD file (.usd, .usda, .usdc, .usdz) or Alembic file (.abc) to reference."));
     file->setFileExtensions({ "usd", "usda", "usdc", "usdz", "abc" });
     file->setAnimationEnabled(false);
-    file->setShowsReloadButton(false);
-    file->setAddNewLine(false);
     page->addKnob(file);
     _file = file;
 
-    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
-    reload->setName(kUSDReferenceParamReload);
-    reload->setHintToolTip(tr("Reads the file again, and every file it sublayers, references or loads as a payload, in "
-                              "place: every scene using them shows their content on disk. Renders reading scenes are "
-                              "stopped or waited for first."));
+    KnobButtonPtr reload = file->createReloadButton(kUSDReferenceParamReload,
+                                                    tr("Reads the file again, and every file it sublayers, references or loads as a payload, in "
+                                                       "place: every scene using them shows their content on disk. Renders reading scenes are "
+                                                       "stopped or waited for first."));
     page->addKnob(reload);
     _reload = reload;
 

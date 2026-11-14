@@ -37,11 +37,30 @@
 #include <QtCore/QSet>
 #include <QtCore/QStringList>
 
+#include <pxr/pxr.h>
+
 #include "Global/GlobalDefines.h"
 
-// Free of USD, like SceneViewport.h: the panel's header includes it.
+// Only pxr.h's namespace macros and forward declarations, like SceneViewport.h: the panel's header
+// includes this one, and the USD headers stay out of it.
+
+PXR_NAMESPACE_OPEN_SCOPE
+class Usd_PrimFlagsPredicate;
+PXR_NAMESPACE_CLOSE_SCOPE
+
+class QIcon;
+class QString;
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The children the scene graph lists: active, defined and not abstract, instance proxies
+ * and unloaded payloads included. Whatever lists a prim's children uses it, so they agree.
+ **/
+PXR_NS::Usd_PrimFlagsPredicate childPredicate();
+
+// The icon the scene graph gives a prim of this type name, null when it has none.
+QIcon iconForType(const QString& type);
 
 class SceneDrawStates;
 class SceneStage;
@@ -193,6 +212,10 @@ public:
     // The mime type of dragged prim paths: UTF-8, one path per line.
     static QString primPathsMimeType();
 
+    // The mime data of a drag of paths, owned by the caller: primPathsMimeType() and the text, one
+    // path per line. Null for no paths.
+    static QMimeData* mimeDataOfPaths(const QStringList& paths);
+
     explicit SceneGraphModel(QObject* parent = nullptr);
 
     ~SceneGraphModel() override;
@@ -218,6 +241,10 @@ public:
 
     // Whether a read that found the stage busy has yet to happen.
     bool hasOwedReads() const;
+
+    // Whether the model is adding, removing or resetting rows, so that a view's selection is
+    // changing because rows came or went rather than because the user picked rows.
+    bool isChanging() const;
 
     /**
      * @brief Adds rows a SceneGraphPathRowsBuilder read, without touching the stage, so that

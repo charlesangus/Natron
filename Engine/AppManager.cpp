@@ -49,15 +49,21 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <clocale>
+#include <condition_variable>
 #include <csignal>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring> // for std::memcpy
+#include <iostream>
 #include <locale>
+#include <mutex>
 #include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <thread>
 
 #include <QtGlobal> // for Q_OS_*
 #if defined(Q_OS_LINUX)
@@ -70,8 +76,12 @@
 #endif
 
 #ifdef Q_OS_UNIX
+#include <cerrno>
+#include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #ifdef Q_OS_DARWIN
 #include <sys/sysctl.h>
 #include <libproc.h>
@@ -168,37 +178,293 @@ NATRON_NAMESPACE_ENTER
 
 AppManager* AppManager::_instance = 0;
 
+namespace {
+
+// NATRON_SHUTDOWN_WATCHDOG_SECONDS: once a quit can no longer be cancelled, the process gets this long (default 30,
+// fractions allowed, 0 turns the watchdog off) to end before it prints the stalled stage and exits with 124.
+#define kNatronShutdownWatchdogEnv "NATRON_SHUTDOWN_WATCHDOG_SECONDS"
+// NATRON_DEBUG_SHUTDOWN_STALL_SECONDS (DEBUG builds only): sleeps this long at the start of ~AppManager, a stall
+// for testing the watchdog.
+#define kNatronDebugShutdownStallEnv "NATRON_DEBUG_SHUTDOWN_STALL_SECONDS"
+
+const double kDefaultShutdownWatchdogSeconds = 30.;
+
+// How long a background process, which has no event loop to take a quit request, waits after aborting its renders
+// for the main thread to reach teardown on its own before it leaves anyway.
+const std::chrono::seconds kBackgroundSignalGrace(5);
+
+static_assert(std::atomic<int>::is_always_lock_free && std::atomic<bool>::is_always_lock_free,
+              "the termination signal handler relies on lock-free atomics");
+
+// Once set, a termination signal ends the process at once: the manager may be half destroyed, or gone.
+std::atomic<bool> g_pastTeardown(false);
+std::atomic<int> g_signalsReceived(0);
+std::atomic<int> g_signalExitCode(0);
+int g_signalPipe[2] = { -1, -1 };
+
+// Heap-allocated and never destroyed: the reader and watchdog threads outlive main() on every exit() path.
+struct ShutdownState {
+    // Held by the signal reader while it uses the manager, and taken to set g_pastTeardown from the main thread,
+    // so the reader never touches a manager whose destruction has begun.
+    std::mutex readerMutex;
+    std::condition_variable teardownStarted;
+
+    std::mutex watchdogMutex;
+    bool watchdogArmed = false;
+    std::atomic<const char*> stage { "quitting" };
+};
+
+ShutdownState&
+shutdownState()
+{
+    static ShutdownState* state = new ShutdownState;
+
+    return *state;
+}
+
+double
+shutdownWatchdogSeconds()
+{
+    const char* env = std::getenv(kNatronShutdownWatchdogEnv);
+    if (!env || !*env) {
+        return kDefaultShutdownWatchdogSeconds;
+    }
+    char* end = nullptr;
+    const double seconds = std::strtod(env, &end);
+    if ((end == env) || (*end != '\0') || !(seconds >= 0.)) {
+        std::cerr << kNatronShutdownWatchdogEnv << "=" << env << " is not a number of seconds; using "
+                  << kDefaultShutdownWatchdogSeconds << std::endl;
+
+        return kDefaultShutdownWatchdogSeconds;
+    }
+
+    return seconds;
+}
+
+void
+setTeardownStage(const char* stage)
+{
+    shutdownState().stage.store(stage);
+}
+
+// Started by the first quit that cannot be cancelled any more, and never disarmed: the process is ending either way,
+// and _exit() takes the thread down with it.
+void
+armShutdownWatchdog(const char* stage)
+{
+    ShutdownState& state = shutdownState();
+
+    state.stage.store(stage);
+    std::lock_guard<std::mutex> k(state.watchdogMutex);
+    if (state.watchdogArmed) {
+        return;
+    }
+    state.watchdogArmed = true;
+    const double seconds = shutdownWatchdogSeconds();
+    if (seconds <= 0.) {
+        return;
+    }
+    std::thread([seconds]() {
+        std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+        char line[512];
+        int n = std::snprintf(line, sizeof(line), "Natron: shutdown stalled for %g s while %s; exiting with 124 (" kNatronShutdownWatchdogEnv " sets the limit)\n",
+                              seconds, shutdownState().stage.load());
+        if (n > 0) {
+            ssize_t ignored = ::write(STDERR_FILENO, line, std::min<std::size_t>((std::size_t)n, sizeof(line) - 1));
+            (void)ignored;
+        }
+        _exit(124);
+    }).detach();
+}
+
+void
+beginTeardown(const char* stage)
+{
+    ShutdownState& state = shutdownState();
+    {
+        std::lock_guard<std::mutex> k(state.readerMutex);
+        g_pastTeardown.store(true);
+    }
+    state.teardownStarted.notify_all();
+    armShutdownWatchdog(stage);
+}
+
 #ifdef __NATRON_UNIX__
 
-//namespace  {
-static void
-handleShutDownSignal( int /*signalId*/ )
+void
+handleShutDownSignal(int signalId)
 {
-    if (appPTR) {
-        std::cerr << "\nCaught termination signal, exiting!" << std::endl;
-        appPTR->quitApplication();
+    if (g_pastTeardown.load() || (g_signalsReceived.fetch_add(1) > 0)) {
+        static const char kImmediate[] = "\nNatron: termination signal during shutdown, exiting at once\n";
+        ssize_t ignored = ::write(STDERR_FILENO, kImmediate, sizeof(kImmediate) - 1);
+        (void)ignored;
+        _exit(128 + signalId);
+    }
+    const int savedErrno = errno;
+    g_signalExitCode.store(128 + signalId);
+    const unsigned char byte = (unsigned char)signalId;
+    if (::write(g_signalPipe[1], &byte, 1) != 1) {
+        _exit(128 + signalId);
+    }
+    errno = savedErrno;
+}
+
+void
+onTerminationSignal(int signalId)
+{
+    ShutdownState& state = shutdownState();
+    std::unique_lock<std::mutex> k(state.readerMutex);
+
+    // The flag first: beginTeardown() cannot set it while this thread holds readerMutex, so once it reads false the
+    // destructor has not started and _instance is not being written.
+    if (g_pastTeardown.load()) {
+        return;
+    }
+    AppManager* manager = AppManager::instance();
+    if (!manager) {
+        return;
+    }
+    std::cerr << "\nCaught termination signal, exiting!" << std::endl;
+    armShutdownWatchdog("quitting after a termination signal");
+
+    if (!manager->isBackground()) {
+        // The closure holds no manager: it may be delivered by an event loop pumped during teardown, so it looks the
+        // manager up again and gives up once teardown has begun.
+        QMetaObject::invokeMethod(manager, []() {
+            if (g_pastTeardown.load()) {
+                return;
+            }
+            if (AppManager* current = AppManager::instance()) {
+                current->requestTermination();
+            } }, Qt::QueuedConnection);
+
+        return;
+    }
+
+    // A background main thread blocks in its render or in the Python interpreter and never runs an event loop.
+    manager->abortAnyProcessing();
+    if (!state.teardownStarted.wait_for(k, kBackgroundSignalGrace, []() { return g_pastTeardown.load(); })) {
+        AppManager::exitWithoutLibraryDestructors(128 + signalId);
     }
 }
 
-static void
+void
+runTerminationSignalReader()
+{
+    for (;;) {
+        struct pollfd pfd;
+        pfd.fd = g_signalPipe[0];
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        if (::poll(&pfd, 1, -1) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            std::perror("polling the termination signal pipe");
+
+            return;
+        }
+        unsigned char byte = 0;
+        if (::read(g_signalPipe[0], &byte, 1) == 1) {
+            onTerminationSignal(byte);
+        }
+    }
+}
+
+void
 setShutDownSignal(int signalId)
 {
-#if defined(__NATRON_UNIX__)
+    static std::once_flag readerStarted;
+    std::call_once(readerStarted, []() {
+        if (::pipe2(g_signalPipe, O_NONBLOCK | O_CLOEXEC) == -1) {
+            std::perror("creating the termination signal pipe");
+            AppManager::exitWithoutLibraryDestructors(1);
+        }
+        std::thread(runTerminationSignalReader).detach();
+    });
+
     struct sigaction sa;
-    sa.sa_flags = 0;
+    sa.sa_flags = SA_RESTART;
     sigemptyset(&sa.sa_mask);
     sa.sa_handler = handleShutDownSignal;
     if (sigaction(signalId, &sa, NULL) == -1) {
         std::perror("setting up termination signal");
-        std::exit(1);
+        AppManager::exitWithoutLibraryDestructors(1);
     }
-#else
-    std::signal(signalId, handleShutDownSignal);
-#endif
 }
 
+#endif // __NATRON_UNIX__
+
+#if defined(__GLIBC__)
+// exit() called while the manager is alive (sys.exit() reaching PyErr_Print(), Qt's xcb plugin on a lost X
+// connection, a glog fatal check) would otherwise go on to the library destructors. A program that destroys its
+// manager and then returns from main(), such as the unit tests, keeps its normal exit.
+void
+exitGuard(int status,
+          void* /*arg*/)
+{
+    if (AppManager::instance()) {
+        AppManager::exitWithoutLibraryDestructors(status);
+    }
+}
 #endif
 
+} // anon namespace
+
+bool
+AppManager::isTearingDown()
+{
+    return g_pastTeardown.load();
+}
+
+void
+AppManager::markTeardownStarted(const char* stage)
+{
+    beginTeardown(stage);
+}
+
+void
+AppManager::requestTermination()
+{
+    // File > Quit's path without its save question: it stops the viewers and then waits for the renders off the main
+    // thread. quitApplication() would wait on the main thread instead, and deadlock against a playback scheduler
+    // blocked in requestExecutionOnMainThread(). The last closed project ends the event loop; the explicit
+    // qApp->quit() is only for a request that arrives before the first project exists, because quitting the loop
+    // while a close is still waiting would leave ~AppManager to close that project with the same blocking wait.
+    if (_imp->terminationRequested) {
+        return;
+    }
+    _imp->terminationRequested = true;
+    exitApp(false);
+    if (qApp && (getNumInstances() == 0)) {
+        qApp->quit();
+    }
+}
+
+void
+AppManager::exitWithoutLibraryDestructors(int rc)
+{
+    g_pastTeardown.store(true);
+    setTeardownStage("flushing output before exit");
+    const int signalExitCode = g_signalExitCode.load();
+    if (signalExitCode != 0) {
+        rc = signalExitCode;
+    }
+    RenderScheduler::flushProfile();
+#ifdef NATRON_LOG
+    Log::Destroy();
+#endif
+    std::cout.flush();
+    std::cerr.flush();
+    std::clog.flush();
+    std::fflush(nullptr);
+#ifdef __NATRON_UNIX__
+    // libGLX_nvidia's library destructor (driver 580) can deadlock in _dl_fini against its own CPMMListener thread.
+    _exit(rc);
+#else
+    std::exit(rc);
+#endif
+}
 
 #if defined(__NATRON_LINUX__) && !defined(__FreeBSD__)
 
@@ -291,11 +557,11 @@ setSigSegvSignal()
 
     if (sigaction(SIGSEGV, &sa, NULL) == -1) {
         std::perror("setting up sigsegv signal");
-        std::exit(1);
+        AppManager::exitWithoutLibraryDestructors(1);
     }
     if (sigaction(SIGFPE, &sa, NULL) == -1) {
         std::perror("setting up sigfpe signal");
-        std::exit(1);
+        AppManager::exitWithoutLibraryDestructors(1);
     }
 }
 
@@ -457,6 +723,14 @@ AppManager::loadFromArgs(const CLArgs& cl)
     QThreadPool::globalInstance()->setExpiryTimeout(-1); //< make threads never exit on their own
     //otherwise it might crash with thread-local storage
 
+#if defined(__GLIBC__)
+    // Registered after OpenGL, Python and the global thread pool exist, so exit() reaches it before their
+    // destructors, and long before _dl_fini.
+    static std::once_flag exitGuardRegistered;
+    std::call_once(exitGuardRegistered, []() {
+        ::on_exit(exitGuard, nullptr);
+    });
+#endif
 
     ///the QCoreApplication must have been created so far.
     assert(qApp);
@@ -498,6 +772,17 @@ AppManager::loadW(int argc,
 
 AppManager::~AppManager()
 {
+    beginTeardown("closing the remaining projects");
+#ifdef DEBUG
+    if (const char* stall = std::getenv(kNatronDebugShutdownStallEnv)) {
+        const double seconds = std::atof(stall);
+        if (seconds > 0.) {
+            setTeardownStage("stalling on " kNatronDebugShutdownStallEnv);
+            std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+        }
+    }
+#endif
+
     bool appsEmpty;
     {
         QMutexLocker k(&_imp->_appInstancesMutex);
@@ -526,12 +811,14 @@ AppManager::~AppManager()
 
     _imp->_backgroundIPC.reset();
 
+    setTeardownStage("saving the caches");
     try {
         _imp->saveCaches();
     } catch (std::runtime_error&) {
         // ignore errors
     }
 
+    setTeardownStage("waiting for the global thread pool");
     ///Caches may have launched some threads to delete images, wait for them to be done
     QThreadPool::globalInstance()->waitForDone();
 
@@ -543,6 +830,7 @@ AppManager::~AppManager()
         _imp->renderScheduler.reset();
     }
 
+    setTeardownStage("stopping the caches");
     ///Kill caches now because decreaseNCacheFilesOpened can be called
     if (_imp->_nodeCache) {
         _imp->_nodeCache->waitForDeleterThread();
@@ -561,10 +849,14 @@ AppManager::~AppManager()
     _imp->_diskCache.reset();
     _imp->_deepImageCache.reset();
 
+    setTeardownStage("finalizing Python");
     tearDownPython();
+    setTeardownStage("tearing down OpenGL");
     _imp->tearDownGL();
 
     _instance = 0;
+
+    setTeardownStage("destroying the QApplication and the manager's state");
 
     // After this line, everything is cleaned-up (should be) and the process may resume in the main and could in theory be able to re-create a new AppManager
     _imp->_qApp.reset();
@@ -2857,7 +3149,10 @@ AppManager::exec()
 #ifdef DEBUG
     boost_adaptbx::floating_point::exception_trapping trap(0);
 #endif
-    return qApp->exec();
+    const int rc = qApp->exec();
+    beginTeardown("leaving the event loop");
+
+    return rc;
 }
 
 void
@@ -2933,7 +3228,8 @@ AppManager::clearErrorLog_mt_safe()
 void
 AppManager::exitApp(bool /*warnUserForSave*/)
 {
-    const AppInstanceVec & instances = getAppInstances();
+    // A copy: quitting an instance removes it from the manager's list.
+    const AppInstanceVec instances = getAppInstances();
 
     for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
         (*it)->quitNow();

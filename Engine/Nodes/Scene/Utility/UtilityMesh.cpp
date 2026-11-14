@@ -336,7 +336,18 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
 {
     const SdfPath& id = GetId();
     const HdDirtyBits bits = *dirtyBits;
-    UtilityScene* scene = static_cast<UtilityRenderParam*>(renderParam)->scene();
+    UtilityRenderParam* param = static_cast<UtilityRenderParam*>(renderParam);
+    UtilityScene* scene = param->scene();
+    const UtilitySubdivRefinement::StopCheck stopped = [param]() { return param->isStopped(); };
+    // A stopped refinement leaves nothing half made: the whole sync runs again once restarted.
+    const auto syncAgain = [&]() {
+        _subdivLevel = -1;
+        _subdiv.reset();
+        _refinedPoints = VtVec3fArray();
+        _normals = VtVec3fArray();
+        param->syncAgain(id, (bits & HdChangeTracker::AllSceneDirtyBits) | HdChangeTracker::DirtyTopology | HdChangeTracker::DirtyPoints);
+        *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
+    };
 
     if (_geometry) {
         scene->setPrimId(_geometry, GetPrimId());
@@ -365,11 +376,20 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
     if (topologyDirty || HdChangeTracker::IsDisplayStyleDirty(bits, id)
         || HdChangeTracker::IsPrimvarDirty(bits, id, TfToken(kUtilityPrimvarSubdivLevel))
         || (_subdiv && (HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayColor) || HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayOpacity)))) {
-        topologyDirty = syncSubdivTopology(sceneDelegate, scene, topologyDirty) || topologyDirty;
+        const SubdivSync subdiv = syncSubdivTopology(sceneDelegate, scene, topologyDirty, stopped);
+
+        if (subdiv == SubdivSync::Stopped) {
+            syncAgain();
+
+            return;
+        }
+        topologyDirty = subdiv == SubdivSync::Changed || topologyDirty;
     }
     if (pointsDirty || topologyDirty) {
-        if (_subdiv) {
-            _subdiv->evaluate(_points, &_refinedPoints, &_normals);
+        if (_subdiv && !_subdiv->evaluate(_points, &_refinedPoints, &_normals, stopped)) {
+            syncAgain();
+
+            return;
         }
 
         const bool filterChanged = filterTriangles();
@@ -435,12 +455,12 @@ UtilityMesh::subdivLevel(HdSceneDelegate* sceneDelegate) const
     return std::max(0, std::min(intValue(setting, UtilitySubdivRefinement::kDefaultLevel), UtilitySubdivRefinement::kMaxLevel));
 }
 
-// Refines or triangulates the cage into _allTriangles. Returns whether they changed, which they do
-// whenever the topology did.
-bool
+// Refines or triangulates the cage into _allTriangles. They change whenever the topology did.
+UtilityMesh::SubdivSync
 UtilityMesh::syncSubdivTopology(HdSceneDelegate* sceneDelegate,
                                 UtilityScene* scene,
-                                bool topologyChanged)
+                                bool topologyChanged,
+                                const UtilitySubdivRefinement::StopCheck& stopped)
 {
     const SdfPath& id = GetId();
     const bool subdivides = _topology.GetScheme() != PxOsdOpenSubdivTokens->none;
@@ -448,7 +468,7 @@ UtilityMesh::syncSubdivTopology(HdSceneDelegate* sceneDelegate,
     const TfTokenVector faceVaryingNames = requested > 0 ? faceVaryingChannelNames(sceneDelegate, id) : TfTokenVector();
 
     if (!topologyChanged && requested == _subdivLevel && faceVaryingNames == _faceVaryingNames) {
-        return false;
+        return SubdivSync::Unchanged;
     }
     _subdivLevel = requested;
     _faceVaryingNames = faceVaryingNames;
@@ -488,12 +508,16 @@ UtilityMesh::syncSubdivTopology(HdSceneDelegate* sceneDelegate,
         }
 
         std::string error;
+        UtilitySubdivRefinement::Outcome outcome = UtilitySubdivRefinement::Outcome::Failed;
 
-        _subdiv = UtilitySubdivRefinement::get(_topology.GetPxOsdMeshTopology(), level, faceVaryingIndices, &error);
-        if (!_subdiv && !faceVaryingIndices.empty()) {
+        _subdiv = UtilitySubdivRefinement::get(_topology.GetPxOsdMeshTopology(), level, faceVaryingIndices, stopped, &outcome, &error);
+        if (outcome == UtilitySubdivRefinement::Outcome::Failed && !faceVaryingIndices.empty()) {
             // A broken face-varying primvar should cost only its own channel, not the refinement.
             _faceVaryingNames.clear();
-            _subdiv = UtilitySubdivRefinement::get(_topology.GetPxOsdMeshTopology(), level, std::vector<VtIntArray>(), &error);
+            _subdiv = UtilitySubdivRefinement::get(_topology.GetPxOsdMeshTopology(), level, std::vector<VtIntArray>(), stopped, &outcome, &error);
+        }
+        if (outcome == UtilitySubdivRefinement::Outcome::Stopped) {
+            return SubdivSync::Stopped;
         }
         if (!_subdiv) {
             warning = id.GetString() + ": rendered unrefined, " + error;
@@ -516,7 +540,7 @@ UtilityMesh::syncSubdivTopology(HdSceneDelegate* sceneDelegate,
     }
     scene->setWarning(_geometry, warning);
 
-    return true;
+    return SubdivSync::Changed;
 }
 
 const VtVec3fArray&

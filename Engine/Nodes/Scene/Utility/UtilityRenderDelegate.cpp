@@ -258,6 +258,26 @@ UtilityRenderParam::restart()
     _cancel.store(false);
 }
 
+void
+UtilityRenderParam::syncAgain(const SdfPath& id,
+                              HdDirtyBits dirtyBits)
+{
+    const std::lock_guard<std::mutex> l(_syncAgainMutex);
+
+    _syncAgain.emplace_back(id, dirtyBits);
+}
+
+std::vector<std::pair<SdfPath, HdDirtyBits>>
+UtilityRenderParam::takeSyncsAgain()
+{
+    std::vector<std::pair<SdfPath, HdDirtyBits>> taken;
+    const std::lock_guard<std::mutex> l(_syncAgainMutex);
+
+    taken.swap(_syncAgain);
+
+    return taken;
+}
+
 bool
 UtilityRenderParam::startFrame(const std::function<void()>& body)
 {

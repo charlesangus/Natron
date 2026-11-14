@@ -34,8 +34,12 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/renderDelegate.h>
+#include <pxr/usd/sdf/path.h>
 
 #include "Global/Macros.h"
 
@@ -144,6 +148,15 @@ public:
     void restart();
 
     /**
+     * @brief Has a prim whose sync a stop cut short synced again, with dirtyBits, by the next render
+     * pass sync: Hydra would not call it again on its own, its bits having been handed back clean.
+     * MT-safe, since prims sync in parallel.
+     **/
+    void syncAgain(const PXR_NS::SdfPath& id,
+                   PXR_NS::HdDirtyBits dirtyBits);
+    std::vector<std::pair<PXR_NS::SdfPath, PXR_NS::HdDirtyBits>> takeSyncsAgain();
+
+    /**
      * @brief Runs body on a thread of its own and returns at once, because Hydra's sync and everything
      * else under Render() holds locks the host's main thread can block on. Returns false, without
      * running it, when stopped. A frame must not be running.
@@ -178,6 +191,8 @@ private:
     std::atomic<bool> _stop { false };
     std::atomic<bool> _cancel { false };
     std::atomic<bool> _frameRunning { false };
+    std::mutex _syncAgainMutex;
+    std::vector<std::pair<PXR_NS::SdfPath, PXR_NS::HdDirtyBits>> _syncAgain;
     // Guards _thread, and is held only for as long as a cancelled frame takes to return.
     std::mutex _threadMutex;
     std::thread _thread;

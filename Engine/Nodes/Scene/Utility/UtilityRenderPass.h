@@ -82,7 +82,8 @@ private:
 
     virtual void _Execute(const PXR_NS::HdRenderPassStateSharedPtr& renderPassState,
                           const PXR_NS::TfTokenVector& renderTags) OVERRIDE;
-    // Hydra syncs tasks before rprims, so a subdivision setting changed here re-syncs every mesh this frame.
+    // Hydra syncs tasks before rprims, so a subdivision setting changed here re-syncs every mesh this frame,
+    // as it does the prims a stop cut short.
     virtual void _Sync() OVERRIDE;
 
     UtilityRenderParam* _renderParam;

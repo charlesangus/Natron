@@ -71,9 +71,17 @@ private:
                     PXR_NS::HdDirtyBits dirtyBits);
     bool filterTriangles();
     int subdivLevel(PXR_NS::HdSceneDelegate* sceneDelegate) const;
-    bool syncSubdivTopology(PXR_NS::HdSceneDelegate* sceneDelegate,
-                            UtilityScene* scene,
-                            bool topologyChanged);
+    // Stopped leaves the mesh without a refinement, for its sync to be run again.
+    enum class SubdivSync {
+        Unchanged,
+        Changed,
+        Stopped,
+    };
+
+    SubdivSync syncSubdivTopology(PXR_NS::HdSceneDelegate* sceneDelegate,
+                                  UtilityScene* scene,
+                                  bool topologyChanged,
+                                  const UtilitySubdivRefinement::StopCheck& stopped);
     const PXR_NS::VtVec3fArray& scenePoints() const;
     void syncColors(PXR_NS::HdSceneDelegate* sceneDelegate,
                     UtilityScene* scene);

@@ -51,9 +51,11 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <string>
@@ -172,6 +174,22 @@ public:
         return VtDictionaryGet<std::size_t>(_engine->GetRenderStats(), key, VtDefault = std::size_t(0));
     }
 
+    // Stops the delegate, from any thread, as an abort does.
+    bool stop()
+    {
+        return _engine->StopRenderer();
+    }
+
+    void restart()
+    {
+        EXPECT_TRUE(_engine->RestartRenderer());
+    }
+
+    bool isConverged() const
+    {
+        return _engine->IsConverged();
+    }
+
     std::string warning() const
     {
         return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatWarning, VtDefault = std::string());
@@ -207,9 +225,6 @@ public:
         ASSERT_TRUE(mesh.GetPointsAttr().Set(points));
     }
 
-    UsdStageRefPtr stage;
-
-private:
     void renderOnce()
     {
         GfFrustum camera;
@@ -229,6 +244,9 @@ private:
         _engine->Render(stage->GetPseudoRoot(), params);
     }
 
+    UsdStageRefPtr stage;
+
+private:
     int _size;
     SdfLayerRefPtr _layer;
     std::unique_ptr<UsdImagingGLEngine> _engine;
@@ -290,6 +308,51 @@ defineSphereCage(const UsdStageRefPtr& stage,
     mesh.CreatePointsAttr(VtValue(points));
     mesh.CreateFaceVertexCountsAttr(VtValue(counts));
     mesh.CreateFaceVertexIndicesAttr(VtValue(indices));
+    mesh.CreateSubdivisionSchemeAttr(VtValue(UsdGeomTokens->catmullClark));
+}
+
+// A Catmull-Clark grid of n by n quads, its points row by row.
+PxOsdMeshTopology
+gridTopology(int n)
+{
+    VtIntArray counts(n * n, 4);
+    VtIntArray indices;
+
+    indices.reserve(n * n * 4);
+    for (int y = 0; y < n; ++y) {
+        for (int x = 0; x < n; ++x) {
+            const int corner = y * (n + 1) + x;
+
+            indices.push_back(corner);
+            indices.push_back(corner + 1);
+            indices.push_back(corner + n + 2);
+            indices.push_back(corner + n + 1);
+        }
+    }
+
+    return PxOsdMeshTopology(PxOsdOpenSubdivTokens->catmullClark, PxOsdOpenSubdivTokens->rightHanded, counts, indices);
+}
+
+// The grid topology of n, 20 units wide and facing the camera.
+void
+defineGridCage(const UsdStageRefPtr& stage,
+               int n)
+{
+    const PxOsdMeshTopology topology = gridTopology(n);
+    VtVec3fArray points;
+
+    points.reserve((n + 1) * (n + 1));
+    for (int y = 0; y <= n; ++y) {
+        for (int x = 0; x <= n; ++x) {
+            points.push_back(GfVec3f(-10.f + 20.f * x / n, -10.f + 20.f * y / n, 0.f));
+        }
+    }
+
+    UsdGeomMesh mesh = UsdGeomMesh::Define(stage, SdfPath("/Grid"));
+
+    mesh.CreatePointsAttr(VtValue(points));
+    mesh.CreateFaceVertexCountsAttr(VtValue(topology.GetFaceVertexCounts()));
+    mesh.CreateFaceVertexIndicesAttr(VtValue(topology.GetFaceVertexIndices()));
     mesh.CreateSubdivisionSchemeAttr(VtValue(UsdGeomTokens->catmullClark));
 }
 } // anon namespace
@@ -552,6 +615,66 @@ TEST(NatronUtilitySubdiv, AUvSeamStaysContinuousPerTheInterpolationRule)
     }
 }
 
+// The grid refines for seconds. A caller that stops must let go within the bound while the
+// refinement goes on, unrepeated, for the caller still waiting on it.
+TEST(NatronUtilitySubdiv, AStoppedCallerLeavesASharedRefinementToTheOthers)
+{
+    typedef std::chrono::steady_clock Clock;
+    typedef UtilitySubdivRefinement::Outcome Outcome;
+    const int grid = 96;
+    const int level = 4;
+    const PxOsdMeshTopology topology = gridTopology(grid);
+    const std::chrono::milliseconds bound(500);
+
+    UtilitySubdivRefinement::clearCache();
+
+    const UtilitySubdivRefinement::Stats before = UtilitySubdivRefinement::stats();
+    std::atomic<bool> stop { false };
+    std::atomic<bool> stoppingReturned { false };
+    Outcome stoppingOutcome = Outcome::Done;
+    UtilitySubdivRefinementPtr stoppingGot;
+    Clock::time_point stoppingReturnedAt;
+    std::thread stopping([&]() {
+        std::string error;
+
+        stoppingGot = UtilitySubdivRefinement::get(topology, level, std::vector<VtIntArray>(), [&]() { return stop.load(); }, &stoppingOutcome, &error);
+        stoppingReturnedAt = Clock::now();
+        stoppingReturned.store(true);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    Outcome waitingOutcome = Outcome::Failed;
+    UtilitySubdivRefinementPtr waited;
+    std::thread waiting([&]() {
+        std::string error;
+
+        waited = UtilitySubdivRefinement::get(topology, level, std::vector<VtIntArray>(), UtilitySubdivRefinement::StopCheck(), &waitingOutcome, &error);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+    const bool refining = !stoppingReturned.load();
+    const Clock::time_point stoppedAt = Clock::now();
+
+    stop.store(true);
+    stopping.join();
+    waiting.join();
+    ASSERT_TRUE(refining) << "the grid refines too fast to test this";
+    EXPECT_EQ(Outcome::Stopped, stoppingOutcome);
+    EXPECT_TRUE(stoppingGot == nullptr);
+    EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(stoppingReturnedAt - stoppedAt).count(), bound.count());
+
+    const UtilitySubdivRefinement::Stats after = UtilitySubdivRefinement::stats();
+
+    EXPECT_EQ(Outcome::Done, waitingOutcome);
+    ASSERT_TRUE(waited != nullptr);
+    EXPECT_EQ(static_cast<std::size_t>(grid) * grid * 2 * static_cast<std::size_t>(std::pow(4., level)), waited->triangles().size());
+    EXPECT_EQ(before.refinementsStarted + 1, after.refinementsStarted);
+    EXPECT_EQ(before.refinerBuilds + 1, after.refinerBuilds);
+    EXPECT_EQ(1u, after.cachedEntries);
+}
+
 TEST(NatronUtilitySubdivRender, MeshesRefineToTheSettingsLevel)
 {
     SubdivRender render(std::string("#usda 1.0\n") + cubeAt("Cube", ""));
@@ -665,4 +788,57 @@ TEST(NatronUtilitySubdivRender, ACatmullClarkSphereCageMatchesTheSphereSilhouett
     }
     EXPECT_GT(covered, 0);
     EXPECT_LT(worst, 0.5);
+}
+
+// The grid refines for seconds: a stop well into it must end the render within the bound, cache
+// nothing, and leave the mesh to refine in full once the delegate restarts.
+TEST(NatronUtilitySubdivRender, AStopDuringARefinementReturnsWithinTheBoundAndCachesNothing)
+{
+    typedef std::chrono::steady_clock Clock;
+    const int grid = 96;
+    const int level = 4;
+    const std::chrono::milliseconds stopAfter(100);
+    const std::chrono::milliseconds bound(500);
+
+    UtilitySubdivRefinement::clearCache();
+
+    SubdivRender render("#usda 1.0\n");
+
+    defineGridCage(render.stage, grid);
+    render.setSetting(kUtilitySettingSubdivLevel, level);
+
+    const std::size_t buildsBefore = UtilitySubdivRefinement::stats().refinerBuilds;
+    std::atomic<bool> returned { false };
+    Clock::time_point returnedAt;
+    std::thread thread([&]() {
+        render.renderOnce();
+        returnedAt = Clock::now();
+        returned.store(true);
+    });
+
+    std::this_thread::sleep_for(stopAfter);
+
+    const bool refining = !returned.load();
+    const Clock::time_point stoppedAt = Clock::now();
+    const bool stopped = render.stop();
+
+    thread.join();
+    ASSERT_TRUE(refining) << "the grid refines too fast to test this";
+    EXPECT_TRUE(stopped);
+
+    const long took = static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(returnedAt - stoppedAt).count());
+
+    std::cout << "[   NOTE   ] the render returned " << took << " ms after the stop" << std::endl;
+    EXPECT_LT(took, static_cast<long>(bound.count()));
+    EXPECT_FALSE(render.isConverged());
+
+    const UtilitySubdivRefinement::Stats afterStop = UtilitySubdivRefinement::stats();
+
+    EXPECT_EQ(0u, afterStop.cachedEntries);
+    EXPECT_EQ(buildsBefore, afterStop.refinerBuilds);
+
+    render.restart();
+    render.render();
+    EXPECT_EQ(1u, UtilitySubdivRefinement::stats().cachedEntries);
+    EXPECT_EQ(static_cast<std::size_t>(grid) * grid * 2 * static_cast<std::size_t>(std::pow(4., level)), render.stat(kUtilityStatTriangleCount));
 }

@@ -262,6 +262,11 @@ UtilityRenderPass::_Sync()
     _subdivSettingsSeen = true;
     _subdivLevel = level;
     _subdivBudget = budget;
+    for (const std::pair<SdfPath, HdDirtyBits>& prim : _renderParam->takeSyncsAgain()) {
+        if (index->HasRprim(prim.first)) {
+            index->GetChangeTracker().MarkRprimDirty(prim.first, prim.second);
+        }
+    }
 }
 
 void

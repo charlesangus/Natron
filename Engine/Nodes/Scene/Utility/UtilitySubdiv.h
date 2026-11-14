@@ -29,6 +29,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -59,10 +60,21 @@ public:
     static const std::size_t kDefaultMaxTriangles = 50000000;
 
     struct Stats {
+        // Refinements begun, whether finished, failed or stopped; a caller joining one does not count.
+        std::size_t refinementsStarted = 0;
         std::size_t refinerBuilds = 0;
         std::size_t evaluations = 0;
         std::size_t cachedEntries = 0;
         std::size_t cachedBytes = 0;
+    };
+
+    // Polled while refining or evaluating, from any thread: true asks the work to end. Must be MT-safe.
+    typedef std::function<bool()> StopCheck;
+
+    enum class Outcome {
+        Done,
+        Failed,
+        Stopped,
     };
 
     struct Impl;
@@ -78,6 +90,18 @@ public:
     static std::shared_ptr<const UtilitySubdivRefinement> get(const PXR_NS::PxOsdMeshTopology& topology,
                                                               int level,
                                                               const std::vector<PXR_NS::VtIntArray>& faceVaryingIndices,
+                                                              std::string* error);
+    /**
+     * @brief As above, ending soon after stopped returns true: the caller gets Stopped back within a
+     * poll interval however long the refinement would take, and nothing is cached for it. A long
+     * refinement is shared by every caller asking for it while it runs and halts once none waits, so
+     * a caller asking again before then resumes it.
+     **/
+    static std::shared_ptr<const UtilitySubdivRefinement> get(const PXR_NS::PxOsdMeshTopology& topology,
+                                                              int level,
+                                                              const std::vector<PXR_NS::VtIntArray>& faceVaryingIndices,
+                                                              const StopCheck& stopped,
+                                                              Outcome* outcome,
                                                               std::string* error);
 
     // Triangles uniform refinement to level gives, holes excluded, without refining.
@@ -115,6 +139,11 @@ public:
     void evaluate(const PXR_NS::VtVec3fArray& coarse,
                   PXR_NS::VtVec3fArray* points,
                   PXR_NS::VtVec3fArray* normals) const;
+    // As above, unless stopped returns true first: then false, with points and normals left alone.
+    bool evaluate(const PXR_NS::VtVec3fArray& coarse,
+                  PXR_NS::VtVec3fArray* points,
+                  PXR_NS::VtVec3fArray* normals,
+                  const StopCheck& stopped) const;
 
     /**
      * @brief Carries count coarse values of width floats each to the refined ones in dst, which must hold

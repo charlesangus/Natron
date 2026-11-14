@@ -27,11 +27,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <exception>
+#include <iterator>
 #include <limits>
 #include <list>
 #include <mutex>
 #include <numeric>
+#include <system_error>
+#include <thread>
 #include <unordered_map>
 
 #include <opensubdiv/far/primvarRefiner.h>
@@ -39,6 +45,8 @@
 #include <opensubdiv/far/stencilTableFactory.h>
 #include <opensubdiv/far/topologyLevel.h>
 #include <opensubdiv/far/topologyRefiner.h>
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_for.h>
 
 #include <pxr/base/tf/hash.h>
 #include <pxr/imaging/pxOsd/refinerFactory.h>
@@ -56,7 +64,8 @@ struct UtilitySubdivRefinement::Impl {
     std::vector<VtIntArray> faceVaryingIndices;
     std::vector<std::size_t> coarseFaceVaryingCounts;
     PxOsdTopologyRefinerSharedPtr refiner;
-    std::unique_ptr<const Far::StencilTable> vertex;
+    // Shared with an evaluation, which may outlive the refinement once stopped.
+    std::shared_ptr<const Far::StencilTable> vertex;
     std::unique_ptr<const Far::StencilTable> varying;
     std::vector<std::unique_ptr<const Far::StencilTable>> faceVarying;
     VtVec3iArray triangles;
@@ -95,13 +104,103 @@ stencilBytes(const Far::StencilTable* table)
         + table->GetControlIndices().size() * sizeof(Far::Index) + table->GetWeights().size() * sizeof(float);
 }
 
+typedef UtilitySubdivRefinement::StopCheck StopCheck;
+typedef UtilitySubdivRefinement::Outcome Outcome;
+
+const std::chrono::milliseconds kStopPoll(5);
+// The work in a chunk of a long loop, between two stop checks.
+const int kChunk = 1 << 14;
+// Below these the work takes less than a thread does to start, and runs on the caller's.
+const std::size_t kThreadedTriangles = std::size_t(1) << 17;
+const std::size_t kThreadedPoints = std::size_t(1) << 16;
+
+bool
+never()
+{
+    return false;
+}
+
+struct StoppableJob {
+    std::mutex mutex;
+    std::condition_variable done;
+    bool finished = false;
+    std::atomic<bool> abandoned { false };
+    std::exception_ptr failure;
+};
+
+/**
+ * OpenSubdiv's limit evaluation cannot be interrupted, so when threaded the work runs on a thread of
+ * its own while the caller polls stopped: a stop then returns within a poll however long the call in
+ * progress takes. The abandoned work sees its halt check turn true and ends at its next
+ * one, dropping what it made, so it must own everything it touches. work returns false when halted.
+ **/
+bool
+runStoppable(bool threaded,
+             const std::function<bool(const StopCheck&)>& work,
+             const StopCheck& stopped)
+{
+    if (!stopped) {
+        return work(StopCheck(never));
+    }
+    if (!threaded) {
+        return work(stopped);
+    }
+    if (stopped()) {
+        return false;
+    }
+
+    std::shared_ptr<StoppableJob> job = std::make_shared<StoppableJob>();
+    std::thread thread;
+
+    try {
+        thread = std::thread([job, work]() {
+            try {
+                work([job]() { return job->abandoned.load(); });
+            } catch (...) {
+                job->failure = std::current_exception();
+            }
+            {
+                const std::lock_guard<std::mutex> l(job->mutex);
+
+                job->finished = true;
+            }
+            job->done.notify_all();
+        });
+    } catch (const std::system_error&) {
+        return work(stopped);
+    }
+
+    std::unique_lock<std::mutex> l(job->mutex);
+
+    while (!job->finished) {
+        if (stopped()) {
+            job->abandoned.store(true);
+            l.unlock();
+            thread.detach();
+
+            return false;
+        }
+        job->done.wait_for(l, kStopPoll);
+    }
+    l.unlock();
+    thread.join();
+    if (job->failure) {
+        std::rethrow_exception(job->failure);
+    }
+
+    return true;
+}
+
+// False, with *halted set when halt turned true, if dst is not filled.
 bool
 applyStencils(const Far::StencilTable* table,
               const float* src,
               std::size_t count,
               std::size_t expected,
               int width,
-              float* dst)
+              float* dst,
+              const StopCheck& halt = StopCheck(never),
+              bool* halted = nullptr)
 {
     if (!table || count < expected || width <= 0) {
         return false;
@@ -111,20 +210,109 @@ applyStencils(const Far::StencilTable* table,
     const Far::Index* indices = table->GetControlIndices().data();
     const float* weights = table->GetWeights().data();
     const int stencils = table->GetNumStencils();
+    std::atomic<bool> stop { false };
 
-    for (int i = 0; i < stencils; ++i) {
-        float* out = dst + static_cast<std::size_t>(i) * width;
+    tbb::parallel_for(tbb::blocked_range<int>(0, stencils, kChunk), [&](const tbb::blocked_range<int>& range) {
+        if (stop.load() || halt()) {
+            stop.store(true);
 
-        std::fill(out, out + width, 0.f);
-        for (int j = offsets[i]; j < offsets[i] + sizes[i]; ++j) {
-            const float* in = src + static_cast<std::size_t>(indices[j]) * width;
-            const float weight = weights[j];
+            return;
+        }
+        for (int i = range.begin(); i < range.end(); ++i) {
+            float* out = dst + static_cast<std::size_t>(i) * width;
 
-            for (int k = 0; k < width; ++k) {
-                out[k] += weight * in[k];
+            std::fill(out, out + width, 0.f);
+            for (int j = offsets[i]; j < offsets[i] + sizes[i]; ++j) {
+                const float* in = src + static_cast<std::size_t>(indices[j]) * width;
+                const float weight = weights[j];
+
+                for (int k = 0; k < width; ++k) {
+                    out[k] += weight * in[k];
+                }
             }
         }
+    });
+    if (stop.load()) {
+        if (halted) {
+            *halted = true;
+        }
+
+        return false;
     }
+
+    return true;
+}
+
+// The limit points, and normals when smooth, of coarse; both empty when coarse is too short. False
+// when halted.
+bool
+evaluateLimit(const Far::TopologyRefiner& refiner,
+              const Far::StencilTable* vertex,
+              const VtVec3fArray& coarse,
+              std::size_t coarseCount,
+              bool smooth,
+              const StopCheck& halt,
+              VtVec3fArray* points,
+              VtVec3fArray* normals)
+{
+    const std::size_t count = vertex ? static_cast<std::size_t>(vertex->GetNumStencils()) : 0;
+    bool halted = false;
+
+    points->clear();
+    normals->clear();
+    if (count == 0) {
+        return true;
+    }
+
+    std::vector<LimitPoint> refined(count);
+
+    if (!applyStencils(vertex, reinterpret_cast<const float*>(coarse.cdata()), coarse.size(), coarseCount, 3, &refined[0].v[0], halt, &halted)) {
+        return !halted;
+    }
+
+    VtVec3fArray limitPoints(count);
+
+    if (!smooth) {
+        std::copy(&refined[0].v[0], &refined[0].v[0] + 3 * count, reinterpret_cast<float*>(limitPoints.data()));
+        *points = limitPoints;
+
+        return true;
+    }
+    if (halt()) {
+        return false;
+    }
+
+    LimitPoint* limit = reinterpret_cast<LimitPoint*>(limitPoints.data());
+    std::vector<LimitPoint> du(count);
+    std::vector<LimitPoint> dv(count);
+
+    Far::PrimvarRefiner(refiner).Limit(refined, limit, du, dv);
+    if (halt()) {
+        return false;
+    }
+
+    VtVec3fArray limitNormals(count);
+    GfVec3f* out = limitNormals.data();
+    std::atomic<bool> stop { false };
+
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, count, kChunk), [&](const tbb::blocked_range<std::size_t>& range) {
+        if (stop.load() || halt()) {
+            stop.store(true);
+
+            return;
+        }
+        for (std::size_t i = range.begin(); i < range.end(); ++i) {
+            const GfVec3f normal = GfCross(GfVec3f(du[i].v[0], du[i].v[1], du[i].v[2]), GfVec3f(dv[i].v[0], dv[i].v[1], dv[i].v[2]));
+            const float length = normal.GetLength();
+
+            out[i] = length > 0.f && std::isfinite(length) ? normal / length : GfVec3f(0.f);
+        }
+    });
+    if (stop.load()) {
+        return false;
+    }
+    *points = limitPoints;
+    *normals = limitNormals;
 
     return true;
 }
@@ -178,6 +366,27 @@ struct CacheEntry {
     UtilitySubdivRefinementPtr refinement;
 };
 
+/**
+ * A refinement too long to make on the caller's thread, made on one of its own that every caller
+ * asking for it joins while it runs. A stop only lets the caller go: the work halts once no caller
+ * waits on it, so a frame stopped by an edit and synced again at once resumes the refinement rather
+ * than starting it over, and an abandoned one ends at its next halt check.
+ **/
+struct Job {
+    std::size_t key = 0;
+    std::unique_ptr<UtilitySubdivRefinement::Impl> imp;
+    std::atomic<int> waiters { 0 };
+    std::mutex mutex;
+    std::condition_variable done;
+    // Under mutex.
+    bool finished = false;
+    // Written before finished, read after it.
+    UtilitySubdivRefinement::Outcome outcome = UtilitySubdivRefinement::Outcome::Failed;
+    std::string error;
+    // Under the cache's mutex, which also guards imp once the job has finished.
+    UtilitySubdivRefinementPtr made;
+};
+
 // Meshes hold their refinement, so an evicted entry lives on while one still uses it.
 struct Cache {
     std::mutex mutex;
@@ -185,6 +394,8 @@ struct Cache {
     std::unordered_multimap<std::size_t, std::list<CacheEntry>::iterator> byKey;
     std::size_t bytes = 0;
     std::size_t budget = std::size_t(1) << 30;
+    std::list<std::shared_ptr<Job>> building;
+    std::atomic<std::size_t> refinementsStarted { 0 };
     std::atomic<std::size_t> refinerBuilds { 0 };
     std::atomic<std::size_t> evaluations { 0 };
 
@@ -223,11 +434,12 @@ sameRefinement(const UtilitySubdivRefinement::Impl& imp,
     return imp.level == level && imp.topology == topology && imp.faceVaryingIndices == faceVaryingIndices;
 }
 
+// Null, with error set, when OpenSubdiv is not to be asked to refine topology.
 std::unique_ptr<UtilitySubdivRefinement::Impl>
-build(const PxOsdMeshTopology& topology,
-      int level,
-      const std::vector<VtIntArray>& faceVaryingIndices,
-      std::string* error)
+prepare(const PxOsdMeshTopology& topology,
+        int level,
+        const std::vector<VtIntArray>& faceVaryingIndices,
+        std::string* error)
 {
     const TfToken scheme = topology.GetScheme();
 
@@ -278,11 +490,28 @@ build(const PxOsdMeshTopology& topology,
     for (const VtIntArray& indices : faceVaryingIndices) {
         imp->coarseFaceVaryingCounts.push_back(indices.empty() ? 0 : static_cast<std::size_t>(*std::max_element(indices.begin(), indices.end())) + 1);
     }
+
+    return imp;
+}
+
+// Fills what prepare() left of imp, checking halt between OpenSubdiv's calls and through the loops.
+Outcome
+refineInto(UtilitySubdivRefinement::Impl* imp,
+           const StopCheck& halt,
+           std::string* error)
+{
+    const PxOsdMeshTopology& topology = imp->topology;
+    const std::vector<VtIntArray>& faceVaryingIndices = imp->faceVaryingIndices;
+    const int level = imp->level;
+
     imp->refiner = faceVaryingIndices.empty() ? PxOsdRefinerFactory::Create(topology) : PxOsdRefinerFactory::Create(topology, faceVaryingIndices);
     if (!imp->refiner) {
         *error = "OpenSubdiv rejects the topology";
 
-        return nullptr;
+        return Outcome::Failed;
+    }
+    if (halt()) {
+        return Outcome::Stopped;
     }
 
     Far::TopologyRefiner::UniformOptions options(level);
@@ -293,21 +522,42 @@ build(const PxOsdMeshTopology& topology,
     if (imp->refiner->GetMaxLevel() != level) {
         *error = "OpenSubdiv could not refine the topology";
 
-        return nullptr;
+        return Outcome::Failed;
+    }
+    if (halt()) {
+        return Outcome::Stopped;
     }
 
     const Far::TopologyRefiner& refiner = *imp->refiner;
     const Far::TopologyLevel& last = refiner.GetLevel(level);
+    const std::size_t channels = faceVaryingIndices.size();
+    std::vector<std::unique_ptr<const Far::StencilTable>> tables(2 + channels);
 
-    imp->vertex = makeStencils(refiner, Far::StencilTableFactory::INTERPOLATE_VERTEX, 0);
-    imp->varying = makeStencils(refiner, Far::StencilTableFactory::INTERPOLATE_VARYING, 0);
-    for (std::size_t channel = 0; channel < faceVaryingIndices.size(); ++channel) {
-        imp->faceVarying.push_back(makeStencils(refiner, Far::StencilTableFactory::INTERPOLATE_FACE_VARYING, static_cast<int>(channel)));
+    // Each table only reads the refined refiner, so they are made side by side.
+    tbb::parallel_for(std::size_t(0), tables.size(), [&](std::size_t table) {
+        if (halt()) {
+            return;
+        }
+        if (table == 0) {
+            tables[table] = makeStencils(refiner, Far::StencilTableFactory::INTERPOLATE_VERTEX, 0);
+        } else if (table == 1) {
+            tables[table] = makeStencils(refiner, Far::StencilTableFactory::INTERPOLATE_VARYING, 0);
+        } else {
+            tables[table] = makeStencils(refiner, Far::StencilTableFactory::INTERPOLATE_FACE_VARYING, static_cast<int>(table - 2));
+        }
+    });
+    if (halt()) {
+        return Outcome::Stopped;
+    }
+    imp->vertex = std::move(tables[0]);
+    imp->varying = std::move(tables[1]);
+    for (std::size_t channel = 0; channel < channels; ++channel) {
+        imp->faceVarying.push_back(std::move(tables[2 + channel]));
     }
     if (!imp->vertex || !imp->varying || imp->vertex->GetNumStencils() != last.GetNumVertices()) {
         *error = "OpenSubdiv could not make the stencils";
 
-        return nullptr;
+        return Outcome::Failed;
     }
 
     std::vector<int> parents(refiner.GetLevel(0).GetNumFaces());
@@ -318,10 +568,12 @@ build(const PxOsdMeshTopology& topology,
 
         Far::PrimvarRefiner(refiner).InterpolateFaceUniform(l, parents, children);
         parents.swap(children);
+        if (halt()) {
+            return Outcome::Stopped;
+        }
     }
 
     const int faceCount = last.GetNumFaces();
-    const std::size_t channels = faceVaryingIndices.size();
     std::vector<GfVec3i> triangles;
     std::vector<int> coarseFaces;
     std::vector<std::vector<GfVec3i>> faceVaryingTriangles(channels);
@@ -329,6 +581,9 @@ build(const PxOsdMeshTopology& topology,
     triangles.reserve(static_cast<std::size_t>(faceCount) * 2);
     coarseFaces.reserve(static_cast<std::size_t>(faceCount) * 2);
     for (int face = 0; face < faceCount; ++face) {
+        if (face % kChunk == 0 && halt()) {
+            return Outcome::Stopped;
+        }
         if (last.IsFaceHole(face)) {
             continue;
         }
@@ -359,7 +614,32 @@ build(const PxOsdMeshTopology& topology,
         imp->bytes += stencilBytes(table.get());
     }
 
-    return imp;
+    return halt() ? Outcome::Stopped : Outcome::Done;
+}
+
+// Hydra's sync must not see OpenSubdiv's exceptions, so they fail the refinement instead.
+void
+runJob(const std::shared_ptr<Job>& job,
+       const StopCheck& halt)
+{
+    Outcome outcome = Outcome::Failed;
+    std::string error;
+
+    try {
+        outcome = refineInto(job->imp.get(), halt, &error);
+    } catch (const std::exception& e) {
+        error = std::string("OpenSubdiv failed: ") + e.what();
+    } catch (...) {
+        error = "OpenSubdiv failed";
+    }
+    {
+        const std::lock_guard<std::mutex> l(job->mutex);
+
+        job->outcome = outcome;
+        job->error = error;
+        job->finished = true;
+    }
+    job->done.notify_all();
 }
 } // anon namespace
 
@@ -378,11 +658,27 @@ UtilitySubdivRefinement::get(const PxOsdMeshTopology& topology,
                              const std::vector<VtIntArray>& faceVaryingIndices,
                              std::string* error)
 {
+    return get(topology, level, faceVaryingIndices, StopCheck(), nullptr, error);
+}
+
+UtilitySubdivRefinementPtr
+UtilitySubdivRefinement::get(const PxOsdMeshTopology& topology,
+                             int level,
+                             const std::vector<VtIntArray>& faceVaryingIndices,
+                             const StopCheck& stopped,
+                             Outcome* outcome,
+                             std::string* error)
+{
     std::string ignored;
+    Outcome ignoredOutcome;
 
     if (!error) {
         error = &ignored;
     }
+    if (!outcome) {
+        outcome = &ignoredOutcome;
+    }
+    *outcome = Outcome::Failed;
     if (level < 1) {
         *error = "the level is below 1";
 
@@ -410,30 +706,152 @@ UtilitySubdivRefinement::get(const PxOsdMeshTopology& topology,
         std::lock_guard<std::mutex> l(c.mutex);
 
         if (UtilitySubdivRefinementPtr found = find()) {
+            *outcome = Outcome::Done;
+
             return found;
         }
     }
 
-    // Built outside the lock, so other prims' lookups do not wait on a long refinement.
-    std::unique_ptr<Impl> imp = build(topology, level, faceVaryingIndices, error);
+    const auto publish = [&](const UtilitySubdivRefinementPtr& made) -> UtilitySubdivRefinementPtr {
+        if (UtilitySubdivRefinementPtr found = find()) {
+            return found;
+        }
+        c.entries.push_front(CacheEntry { key, made });
+        c.byKey.emplace(key, c.entries.begin());
+        c.bytes += made->memoryBytes();
+        c.evict();
 
-    if (!imp) {
+        return made;
+    };
+    const auto stoppedNow = [&]() -> UtilitySubdivRefinementPtr {
+        *outcome = Outcome::Stopped;
+        *error = "the refinement was stopped";
+
         return nullptr;
+    };
+
+    if (estimateTriangles(topology, level) < kThreadedTriangles) {
+        std::unique_ptr<Impl> imp = prepare(topology, level, faceVaryingIndices, error);
+
+        if (!imp) {
+            return nullptr;
+        }
+
+        ++c.refinementsStarted;
+
+        const Outcome refined = refineInto(imp.get(), stopped ? stopped : StopCheck(never), error);
+
+        if (refined == Outcome::Stopped) {
+            return stoppedNow();
+        }
+        if (refined == Outcome::Failed) {
+            return nullptr;
+        }
+        ++c.refinerBuilds;
+        *outcome = Outcome::Done;
+
+        const UtilitySubdivRefinementPtr made = std::make_shared<const UtilitySubdivRefinement>(std::move(imp));
+        const std::lock_guard<std::mutex> l(c.mutex);
+
+        return publish(made);
     }
-    ++c.refinerBuilds;
 
-    UtilitySubdivRefinementPtr made = std::make_shared<const UtilitySubdivRefinement>(std::move(imp));
-    std::lock_guard<std::mutex> l(c.mutex);
+    for (;;) {
+        // Made outside the lock, as the refinement is, so other prims' lookups do not wait on it.
+        std::unique_ptr<Impl> prepared = prepare(topology, level, faceVaryingIndices, error);
 
-    if (UtilitySubdivRefinementPtr found = find()) {
-        return found;
+        if (!prepared) {
+            return nullptr;
+        }
+
+        std::shared_ptr<Job> job;
+        bool started = false;
+
+        {
+            const std::lock_guard<std::mutex> l(c.mutex);
+
+            if (UtilitySubdivRefinementPtr found = find()) {
+                *outcome = Outcome::Done;
+
+                return found;
+            }
+            for (auto it = c.building.begin(); it != c.building.end();) {
+                const std::shared_ptr<Job>& other = *it;
+
+                if (!job && other->key == key && sameRefinement(*other->imp, topology, level, faceVaryingIndices)) {
+                    job = other;
+                    ++job->waiters;
+                    ++it;
+                    continue;
+                }
+
+                bool idle = false;
+
+                {
+                    const std::lock_guard<std::mutex> jl(other->mutex);
+
+                    idle = other->finished && other->waiters.load() == 0;
+                }
+                it = idle ? c.building.erase(it) : std::next(it);
+            }
+            if (!job) {
+                job = std::make_shared<Job>();
+                job->key = key;
+                job->imp = std::move(prepared);
+                job->waiters.store(1);
+                c.building.push_back(job);
+                ++c.refinementsStarted;
+                started = true;
+            }
+        }
+        if (started) {
+            try {
+                std::thread([job]() { runJob(job, [job]() { return job->waiters.load() == 0; }); }).detach();
+            } catch (const std::system_error&) {
+                runJob(job, stopped ? stopped : StopCheck(never));
+            }
+        }
+        {
+            std::unique_lock<std::mutex> l(job->mutex);
+
+            while (!job->finished) {
+                if (stopped && stopped()) {
+                    --job->waiters;
+
+                    return stoppedNow();
+                }
+                if (stopped) {
+                    job->done.wait_for(l, kStopPoll);
+                } else {
+                    job->done.wait(l);
+                }
+            }
+        }
+        --job->waiters;
+
+        const std::lock_guard<std::mutex> l(c.mutex);
+
+        c.building.remove(job);
+        if (job->outcome == Outcome::Stopped) {
+            // It halted for want of a caller before this one joined it, so the work starts again.
+            if (stopped && stopped()) {
+                return stoppedNow();
+            }
+            continue;
+        }
+        if (job->outcome == Outcome::Failed) {
+            *error = job->error;
+
+            return nullptr;
+        }
+        if (!job->made) {
+            ++c.refinerBuilds;
+            job->made = publish(std::make_shared<const UtilitySubdivRefinement>(std::move(job->imp)));
+        }
+        *outcome = Outcome::Done;
+
+        return job->made;
     }
-    c.entries.push_front(CacheEntry { key, made });
-    c.byKey.emplace(key, c.entries.begin());
-    c.bytes += made->memoryBytes();
-    c.evict();
-
-    return made;
 }
 
 std::size_t
@@ -483,6 +901,7 @@ UtilitySubdivRefinement::stats()
     Cache& c = cache();
     Stats stats;
 
+    stats.refinementsStarted = c.refinementsStarted.load();
     stats.refinerBuilds = c.refinerBuilds.load();
     stats.evaluations = c.evaluations.load();
 
@@ -591,36 +1010,40 @@ UtilitySubdivRefinement::evaluate(const VtVec3fArray& coarse,
                                   VtVec3fArray* points,
                                   VtVec3fArray* normals) const
 {
-    const std::size_t count = refinedPointCount();
-    std::vector<LimitPoint> refined(count);
+    (void)evaluate(coarse, points, normals, StopCheck());
+}
+
+bool
+UtilitySubdivRefinement::evaluate(const VtVec3fArray& coarse,
+                                  VtVec3fArray* points,
+                                  VtVec3fArray* normals,
+                                  const StopCheck& stopped) const
+{
+    struct Evaluation {
+        VtVec3fArray points;
+        VtVec3fArray normals;
+    };
+
+    std::shared_ptr<Evaluation> evaluation = std::make_shared<Evaluation>();
+    const PxOsdTopologyRefinerSharedPtr refiner = _imp->refiner;
+    const std::shared_ptr<const Far::StencilTable> vertex = _imp->vertex;
+    const std::size_t coarseCount = coarsePointCount();
+    const bool smooth = _imp->smooth;
 
     ++cache().evaluations;
-    normals->clear();
-    if (count == 0 || !interpolateVertex(reinterpret_cast<const float*>(coarse.cdata()), coarse.size(), 3, &refined[0].v[0])) {
-        points->clear();
 
-        return;
+    const auto work = [evaluation, refiner, vertex, coarse, coarseCount, smooth](const StopCheck& halt) {
+        return evaluateLimit(*refiner, vertex.get(), coarse, coarseCount, smooth, halt, &evaluation->points, &evaluation->normals);
+    };
+    const bool finished = runStoppable(refinedPointCount() >= kThreadedPoints, work, stopped);
+
+    if (!finished) {
+        return false;
     }
-    points->resize(count);
-    if (!_imp->smooth) {
-        std::copy(&refined[0].v[0], &refined[0].v[0] + 3 * count, reinterpret_cast<float*>(points->data()));
+    *points = evaluation->points;
+    *normals = evaluation->normals;
 
-        return;
-    }
-
-    LimitPoint* limit = reinterpret_cast<LimitPoint*>(points->data());
-    std::vector<LimitPoint> du(count);
-    std::vector<LimitPoint> dv(count);
-
-    Far::PrimvarRefiner(*_imp->refiner).Limit(refined, limit, du, dv);
-    normals->resize(count);
-    GfVec3f* out = normals->data();
-    for (std::size_t i = 0; i < count; ++i) {
-        const GfVec3f normal = GfCross(GfVec3f(du[i].v[0], du[i].v[1], du[i].v[2]), GfVec3f(dv[i].v[0], dv[i].v[1], dv[i].v[2]));
-        const float length = normal.GetLength();
-
-        out[i] = length > 0.f && std::isfinite(length) ? normal / length : GfVec3f(0.f);
-    }
+    return true;
 }
 
 bool

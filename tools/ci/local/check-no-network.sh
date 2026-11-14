@@ -23,10 +23,25 @@
 # to port 53. AF_UNIX (X11, D-Bus) is allowed. It works where strace is missing and
 # `unshare -n` is denied, but cannot see raw syscalls or statically linked programs.
 #
-# Examples:
-#   tools/ci/local/check-no-network.sh --setting aiEnabled=true -- \
-#       squashfs-root/AppRun -b -w Write1 project.ntp
-#   tools/ci/local/check-no-network.sh --xvfb --setting aiEnabled=true -- build/release/App/Natron
+# CI, GITHUB_ACTIONS and the other variables ONNX Runtime reads as "running on a build server"
+# are removed from the command's environment, as is ORT_DISABLE_TELEMETRY: with any of them set,
+# ONNX Runtime never starts its telemetry client, and the natron-dev container sets CI=True. The
+# program under test has to switch telemetry off itself.
+#
+# aiEnabled=true alone loads nothing: ONNX Runtime is loaded when the Preferences window opens or
+# an AI node renders. Pass check-no-network-load-ort.py, beside this script, as the script to
+# run; it makes Natron load ONNX Runtime the way Preferences does, and in NatronRenderer -t it
+# then waits 30 s before exiting, since the telemetry client's first lookup comes about 8 s
+# later, so give it 60 s. The GUI keeps running until it is stopped.
+#
+# --xvfb needs /tmp/.X11-unix to be writable, so in the natron-dev container run it as root
+# (docker exec -u root) after `chmod 1777 /tmp/.X11-unix`.
+#
+# Examples, from the natron-dev container as root with LD_LIBRARY_PATH unset:
+#   tools/ci/local/check-no-network.sh --seconds 60 --setting aiEnabled=true -- \
+#       squashfs-root/bin/NatronRenderer -t tools/ci/local/check-no-network-load-ort.py
+#   tools/ci/local/check-no-network.sh --seconds 60 --xvfb --setting aiEnabled=true -- \
+#       squashfs-root/AppRun tools/ci/local/check-no-network-load-ort.py
 #
 # Exit status: 0 nothing tried to leave the machine; 1 something did (the calls are printed);
 # 2 usage or setup errors, the shim never loaded, or the command failed before its time was up.
@@ -117,6 +132,13 @@ mkdir -p "${TEST_HOME}/.config/INRIA" "${TEST_HOME}/.cache" "${TEST_HOME}/.local
     done
 } > "${TEST_HOME}/.config/INRIA/Natron.conf"
 
+UNSET_ENV=()
+for name in CI TF_BUILD GITHUB_ACTIONS GITLAB_CI CIRCLECI TRAVIS JENKINS_URL CODEBUILD_BUILD_ID \
+    BUILDKITE TEAMCITY_VERSION APPVEYOR BITBUCKET_BUILD_NUMBER SYSTEM_TEAMFOUNDATIONCOLLECTIONURI \
+    ORT_RUNNING_UNIT_TESTS ORT_DISABLE_TELEMETRY; do
+    UNSET_ENV+=(-u "${name}")
+done
+
 RUN_ENV=(
     "HOME=${TEST_HOME}"
     "XDG_CONFIG_HOME=${TEST_HOME}/.config"
@@ -128,6 +150,9 @@ RUN_ENV=(
 
 if [ "${USE_XVFB}" = 1 ]; then
     command -v Xvfb >/dev/null || die "--xvfb needs Xvfb"
+    if [ -e /tmp/.X11-unix ] && [ ! -w /tmp/.X11-unix ]; then
+        die "--xvfb needs a writable /tmp/.X11-unix: run as root after chmod 1777 /tmp/.X11-unix"
+    fi
     # The container's /etc/ld.so.preload forces a libGL without a mesa vendor onto everything,
     # Xvfb included; the system copies in /usr/lib64 are the ones that can do GLX.
     GL_DIR="${WORK_DIR}/gl"
@@ -159,7 +184,7 @@ fi
 
 echo "check-no-network: running for up to ${RUN_SECONDS} s: $*" >&2
 status=0
-timeout --signal=TERM --kill-after=15 "${RUN_SECONDS}" env "${RUN_ENV[@]}" "$@" \
+timeout --signal=TERM --kill-after=15 "${RUN_SECONDS}" env "${UNSET_ENV[@]}" "${RUN_ENV[@]}" "$@" \
     >"${OUTPUT}" 2>&1 || status=$?
 
 touch "${LOG}"

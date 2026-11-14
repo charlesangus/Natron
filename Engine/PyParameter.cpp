@@ -996,17 +996,23 @@ AnimatedParam::setExpression(const QString& expr,
     if (!checkIsEditable()) {
         return false;
     }
-    if (!recordPythonKnobEdit(getInternalKnob())) {
-        return false;
-    }
     KnobIPtr thisKnob = _knob.lock();
     if (!thisKnob) {
         return false;
     }
     const std::string previous = thisKnob->getExpression(dimension);
+    const std::string newExpression = expr.toStdString();
+    std::string validityError;
+    const bool unchanged = (previous == newExpression) && (newExpression.empty() || ((thisKnob->isExpressionUsingRetVariable(dimension) == hasRetVariable) && thisKnob->isExpressionValid(dimension, &validityError)));
+    if (unchanged) {
+        return true;
+    }
+    if (!recordPythonKnobEdit(getInternalKnob())) {
+        return false;
+    }
     bool ok = true;
     try {
-        thisKnob->setExpression(dimension, expr.toStdString(), hasRetVariable, true);
+        thisKnob->setExpression(dimension, newExpression, hasRetVariable, true);
     } catch (...) {
         ok = false;
     }

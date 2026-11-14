@@ -10047,6 +10047,15 @@ KnobHolder::onDoEndChangesOnMainThreadTriggered()
     endChanges();
 }
 
+void
+KnobHolder::notifyInputsChangedDuringBlock()
+{
+    QMutexLocker l(&_imp->evaluationBlockedMutex);
+
+    ++_imp->nbSignificantChangesDuringEvaluationBlock;
+    ++_imp->nbChangesDuringEvaluationBlock;
+}
+
 bool
 KnobHolder::endChanges(bool discardRendering)
 {

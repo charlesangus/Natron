@@ -38,6 +38,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
@@ -93,6 +94,28 @@ protected:
                              "del m424_calls[:]\n");
 
         return constant;
+    }
+
+    // The engine must outlive the connection, so it is handed back to the caller.
+    RenderEnginePtr countRenderRequests(const NodePtr& source,
+                                        QObject* receiver,
+                                        int* renderRequests)
+    {
+        NodePtr viewerNode = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWER));
+        if (!viewerNode) {
+            return RenderEnginePtr();
+        }
+        connectNodes(source, viewerNode, 0, true);
+        ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(viewerNode->getEffectInstance().get());
+        if (!viewer) {
+            return RenderEnginePtr();
+        }
+        RenderEnginePtr engine = viewer->getRenderEngine();
+        if (engine) {
+            QObject::connect(engine.get(), &RenderEngine::currentFrameRenderRequestPosted, receiver, [renderRequests]() { ++*renderRequests; }, Qt::DirectConnection);
+        }
+
+        return engine;
     }
 };
 
@@ -199,4 +222,79 @@ TEST_F(PySetExpressionEvaluatesTest, RestoringAnExpressionStaysSilent)
     color->restoreExpression(0, "0.5", false);
     EXPECT_EQ(std::string("0.5"), color->getExpression(0));
     run("assert m424_calls == [], m424_calls\n");
+}
+
+TEST_F(PySetExpressionEvaluatesTest, RepeatingASetOrAClearIsANoOp)
+{
+    NodePtr constant = createConstantWithCallback();
+    ASSERT_TRUE(constant != nullptr);
+    int renderRequests = 0;
+    QObject receiver;
+    RenderEnginePtr engine = countRenderRequests(constant, &receiver, &renderRequests);
+    ASSERT_TRUE(engine != nullptr);
+
+    run("c = " + py(constant) + ".getParam('" kConstantParamColor "')\n"
+                                "assert c.setExpression('0.25', False, 0)\n"
+                                "del m424_calls[:]\n");
+    EXPECT_GE(renderRequests, 1);
+
+    renderRequests = 0;
+    run("assert c.setExpression('0.25', False, 0)\n"
+        "assert m424_calls == [], m424_calls\n");
+    EXPECT_EQ(0, renderRequests);
+
+    run("assert c.setExpression('', False, 1)\n"
+        "assert m424_calls == [], m424_calls\n");
+    EXPECT_EQ(0, renderRequests);
+
+    run("assert c.setExpression('', False, 0)\n"
+        "del m424_calls[:]\n");
+    renderRequests = 0;
+    run("assert c.setExpression('', False, 0)\n"
+        "assert m424_calls == [], m424_calls\n");
+    EXPECT_EQ(0, renderRequests);
+}
+
+TEST_F(PySetExpressionEvaluatesTest, InputOnlyKnobOnlyAndMixedBatchesEachRequestOneRender)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(constant != nullptr);
+    ASSERT_TRUE(other != nullptr);
+    ASSERT_TRUE(grade != nullptr);
+    int renderRequests = 0;
+    QObject receiver;
+    RenderEnginePtr engine = countRenderRequests(grade, &receiver, &renderRequests);
+    ASSERT_TRUE(engine != nullptr);
+
+    run("g = " + py(grade) + "\n"
+                             "a = "
+        + py(constant) + "\n"
+                         "b = "
+        + py(other) + "\n"
+                      "p = g.getParam('" kGradeParamBlackPoint "')\n");
+
+    renderRequests = 0;
+    run("g.beginChanges()\n"
+        "assert g.connectInput(0, a)\n");
+    EXPECT_EQ(0, renderRequests);
+    run("g.endChanges()\n");
+    EXPECT_EQ(1, renderRequests);
+
+    renderRequests = 0;
+    run("g.beginChanges()\n"
+        "assert p.setExpression('0.1', False, 0)\n");
+    EXPECT_EQ(0, renderRequests);
+    run("g.endChanges()\n");
+    EXPECT_EQ(1, renderRequests);
+
+    renderRequests = 0;
+    run("g.beginChanges()\n"
+        "g.disconnectInput(0)\n"
+        "assert g.connectInput(0, b)\n"
+        "assert p.setExpression('0.2', False, 0)\n");
+    EXPECT_EQ(0, renderRequests);
+    run("g.endChanges()\n");
+    EXPECT_EQ(1, renderRequests);
 }

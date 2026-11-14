@@ -28,6 +28,7 @@
 #include <condition_variable>
 #include <map>
 #include <mutex>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QThread>
@@ -48,7 +49,12 @@ struct BarrierState {
 
     // Serializes writers, and guards the participants while one is quiesced.
     std::mutex writerMutex;
-    std::map<SceneWriteBarrier::ParticipantId, std::pair<std::function<void()>, std::function<void()>>> participants;
+    struct Participant {
+        std::function<void()> quiesce;
+        std::function<void()> resume;
+        SceneWriteBarrier::QuiesceOrderEnum order;
+    };
+    std::map<SceneWriteBarrier::ParticipantId, Participant> participants;
     SceneWriteBarrier::ParticipantId nextParticipant = 1;
     U64 writeCount = 0;
 };
@@ -137,13 +143,14 @@ SceneWriteBarrier::ReadScope::~ReadScope()
 
 SceneWriteBarrier::ParticipantId
 SceneWriteBarrier::registerParticipant(const std::function<void()>& quiesce,
-                                       const std::function<void()>& resume)
+                                       const std::function<void()>& resume,
+                                       QuiesceOrderEnum order)
 {
     BarrierState& s = state();
     std::lock_guard<std::mutex> lock(s.writerMutex);
     const ParticipantId id = s.nextParticipant++;
 
-    s.participants[id] = std::make_pair(quiesce, resume);
+    s.participants[id] = BarrierState::Participant { quiesce, resume, order };
 
     return id;
 }
@@ -196,16 +203,25 @@ SceneWriteBarrier::runExclusive(const std::function<void()>& write,
     } writeEnd { s };
 
     // No ReadScope is held anywhere; the participants stop reading too.
-    for (auto& participant : s.participants) {
-        if (participant.second.first) {
-            participant.second.first();
+    std::vector<const BarrierState::Participant*> ordered;
+    ordered.reserve(s.participants.size());
+    for (const SceneWriteBarrier::QuiesceOrderEnum order : { eQuiesceOrderNormal, eQuiesceOrderLast }) {
+        for (const auto& participant : s.participants) {
+            if (participant.second.order == order) {
+                ordered.push_back(&participant.second);
+            }
+        }
+    }
+    for (const BarrierState::Participant* participant : ordered) {
+        if (participant->quiesce) {
+            participant->quiesce();
         }
     }
 
-    const auto resumeAll = [&s]() {
-        for (auto it = s.participants.rbegin(); it != s.participants.rend(); ++it) {
-            if (it->second.second) {
-                it->second.second();
+    const auto resumeAll = [&ordered]() {
+        for (auto it = ordered.rbegin(); it != ordered.rend(); ++it) {
+            if ((*it)->resume) {
+                (*it)->resume();
             }
         }
     };

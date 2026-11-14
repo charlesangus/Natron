@@ -44,6 +44,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct SceneStageSnapshot;
+
 /**
  * @brief USDRender's Storm render: a composed stage seen through a camera, read back from GL into
  * CPU buffers per AOV.
@@ -128,7 +130,10 @@ struct Request {
     // The render delegate's plug-in id. One that is not installed or cannot render here fails the
     // render with an error naming it, before any engine is made: there is no fallback.
     std::string renderer = kRenderDelegateStormId;
-    // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
+    // Polled on the calling thread while any delegate renders; true cancels the render: Storm's
+    // between its passes, a path tracer's once the Render() call under way returns, when its
+    // engine is dropped. A request without one renders until its delegate converges, however
+    // long that takes.
     std::function<bool()> aborted;
     // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
     // calling task; any count when 0. Cycles and MoonRay take it when an engine is made. Every
@@ -333,8 +338,25 @@ std::string contextDescription(std::string* error);
  * the next invalidate(), setSettings() or setMaxSamples() that changes something, which try it
  * again with a new engine, or until another renderer is set; setView() does not.
  *
- * The stage is read, and the engine renders, under the lock given at construction, the one that
- * guards the stage's edits; nothing else of the class takes that lock while holding its own.
+ * The worker renders a stage of its own, kept for its whole life, that composes the same layers as
+ * the caller's: before each pass it takes a snapshot of the caller's stage (its payload and drag
+ * preview) and the edit count under the lock given at construction, the one that guards the
+ * stage's edits, and then syncs its stage to the snapshot and renders it without that lock. A
+ * sync of a large scene or a long Render() so never holds up the caller, and the engine,
+ * subscribed to the worker's stage alone, can be dropped without it. The worker takes the
+ * caller's lock only to snapshot, by polling rather than blocking on it, and holds none of the
+ * class's locks meanwhile except the one the destructor takes to detach it; under the caller's
+ * lock it takes the lock guarding its requests, never the other way round.
+ *
+ * The worker's stage shares the caller's layers read from files, which a layer reload edits in
+ * place: the worker is a SceneWriteBarrier participant whose quiesce waits for the delegate call
+ * under way, the sync of the worker's stage or a Render(), as both read those layers.
+ *
+ * An edit interrupts the delegate's render at once where the delegate can stop its threads
+ * (IsStopRendererSupported()); one that cannot, such as Cycles or MoonRay, is reset by the sync
+ * that brings the edit. A change of renderer or of settings drops the engine on the worker as soon
+ * as the delegate call under way returns. No setter waits for the worker, and neither does the
+ * destructor.
  **/
 class ProgressiveRender {
 public:
@@ -384,23 +406,37 @@ public:
         int samples = -1;
         int maxSamples = 0;
         std::uint64_t restarts = 0;
+        // The engines made for the renderer. Each one restarts the render without an edit, and one
+        // is made again when the delegate does not show it restarted within a bound, as a loaded
+        // machine may not.
+        std::uint64_t engines = 0;
         std::uint64_t frames = 0;
         // Why the delegate cannot render, empty if it can.
         std::string error;
     };
 
     /**
-     * @brief stage, called on the worker with *stageLock held, gives the stage to render, null for
-     * none. listener is called on the worker after each frame is published and when the delegate
-     * fails. background is the
-     * linear grey the colour is composited over.
+     * @brief snapshot, called on the worker with *stageLock held, sets what the stage to render
+     * composes (SceneStage::getSnapshot()) and returns true, or returns false when there is none.
+     * The caller calls invalidate() for an edit of its stage before it lets go of *stageLock, so
+     * that a snapshot and the edit count read with it agree; the other setters need no lock.
+     * They may be called with *stageLock held. listener is called on the
+     * worker after each frame is published and when the delegate fails. background is the linear
+     * grey the colour is composited over. None of snapshot, listener, setThreads()' function or
+     * *stageLock is used once the destructor returns.
      **/
     ProgressiveRender(std::mutex* stageLock,
-                      const std::function<PXR_NS::UsdStageRefPtr()>& stage,
+                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
                       const std::function<void()>& listener,
                       float background);
 
-    // Stops the delegate's threads and drops the engine, on the worker, then joins it.
+    /**
+     * @brief Tells the worker to end and returns without waiting for it: the worker finishes the
+     * delegate call under way, drops the engine and its stage and ends on its own, keeping alive
+     * what it uses. Waits only for a call of the snapshot, the listener or the threads function
+     * under way, so it must not run while the caller holds *stageLock or inside the listener.
+     * waitForDetachedWorkers() waits for the workers so ended.
+     **/
     ~ProgressiveRender();
 
     /**
@@ -450,19 +486,35 @@ public:
     /**
      * @brief The path of the prim drawn at the pixel (x, y) of frame, one getFrame() gave, counted
      * from its bottom-left pixel, or empty. Empty too once the render was edited since frame's pass:
-     * the engine's IDs are then of another render than the pixels frame shows. Takes the stage lock.
+     * the engine's IDs are then of another render than the pixels frame shows, and while the
+     * worker is in a pass: it never waits for one. Does not take the stage lock.
      **/
     std::string pick(const Frame& frame,
                      int x,
                      int y);
 
-    // How many workers are alive in the process, for leak checks.
+    // How many workers are alive in the process, those still ending after their render went
+    // included, for leak checks.
     static int getLiveCount();
+
+    /**
+     * @brief Waits up to timeoutMs for every worker whose render was destroyed to end; false, with
+     * a warning, if some still run then. For process exit, ahead of the teardown of what the
+     * delegates use, and for tests. MT-safe.
+     **/
+    static bool waitForDetachedWorkers(int timeoutMs);
+
+    /**
+     * @brief For tests: hook is called on every worker in each pass, after it synced its stage to
+     * the snapshot and before the delegate renders, under the lock the sync and the render hold
+     * (never the stage lock). Empty for none.
+     **/
+    static void setPassHook(const std::function<void()>& hook);
 
     struct Implementation;
 
 private:
-    std::unique_ptr<Implementation> _imp;
+    std::shared_ptr<Implementation> _imp;
 };
 } // namespace HydraRender
 

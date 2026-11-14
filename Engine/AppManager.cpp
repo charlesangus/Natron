@@ -822,6 +822,18 @@ AppManager::~AppManager()
     ///Caches may have launched some threads to delete images, wait for them to be done
     QThreadPool::globalInstance()->waitForDone();
 
+    // The viewers closed above left their delegates to stop on their own threads, which still use
+    // OpenUSD and the delegates' libraries. Bounded, so a stuck delegate cannot hang
+    // the exit.
+    if (!SceneCaches::waitForViewerRenderWorkers(30000)) {
+        // The rest of the teardown frees what a live worker still uses (the caches, Python, GL),
+        // and the delegates' libraries unload at exit: the process ends here instead, the
+        // caches already saved, without running static destructors or atexit handlers.
+        qWarning("A viewer's render delegate did not stop; exiting without the rest of the teardown.");
+        std::fflush(nullptr);
+        std::_Exit(EXIT_FAILURE);
+    }
+
     // No render is left to abort, and the watchdog thread reads this manager.
     AbortWatchdog::shutdown();
 
@@ -1751,7 +1763,7 @@ AppManager::freeGpuMemory()
 {
     SceneCaches::releaseRenderEngines();
     SceneCaches::releaseLiveTextures();
-    releaseSceneViewEngines();
+    releaseSceneViewEngines(false);
     if (_imp->gpuContext) {
         _imp->gpuContext->releaseIdleMemory();
     }
@@ -1793,6 +1805,9 @@ AppManager::clearAllCaches()
     SceneCaches::releaseRenderEngines();
     SceneCaches::releaseLiveTextures();
     SceneCaches::releaseCpuRenderEngines();
+    // A Storm view's engine is drawing and would only be made again by a full sync on the GUI
+    // thread, but one kept behind another delegate holds the scene's GPU memory unused.
+    releaseSceneViewEngines(true);
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {

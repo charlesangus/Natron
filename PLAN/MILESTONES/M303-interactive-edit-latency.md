@@ -57,31 +57,31 @@ Make a downstream edit feel immediate: a point-op edit (Grade at the end of a ~2
 
 ## Phase 303.2: Selective, cache-friendly draft
 
-- [ ] M303.P2.T1 — Serve draft lookups from non-draft entries
+- [x] M303.P2.T1 — Serve draft lookups from non-draft entries
   - files: `Engine/ImageKey.cpp`, `Engine/EffectInstance.cpp` (lookup), `Engine/CacheDeviceTier.cpp`, `Tests/CacheStress_Test.cpp`
   - approach: A draft lookup that misses tries the non-draft key at the same or a finer mip and downscales the hit, on the host or the device. A node's draft entry is only written when the node itself rendered in draft.
   - verify: A test caches a non-draft upstream, then renders in draft, and the profile shows the upstream served from cache, not executed.
   - size: M
 
-- [ ] M303.P2.T2 — Declare point ops and exempt them from draft
+- [x] M303.P2.T2 — Declare point ops and exempt them from draft
   - files: `Engine/Nodes/NodeSpec.h`, `Engine/EffectInstance.h`, `Engine/ViewerInstance.cpp` (~:1172), `Engine/Nodes/README.md`
   - approach: Add a `pointOp` trait to `NodeSpec` with an `EffectInstance::isPointOp()` accessor (OFX: false). Draft raises the mip only when a node being edited is not a point op. Set the trait on native point-op nodes (Grade, ColorCorrect, Saturation, Clamp, the colour utilities and the like) in their specs.
   - verify: A unit test dragging Grade renders at the viewer's own mip, while dragging Transform renders at the auto-proxy mip.
   - size: M
 
-- [ ] M303.P2.T3 — Turn draft off when full resolution would keep up
+- [x] M303.P2.T3 — Turn draft off when full resolution would keep up
   - files: `Engine/ViewerInstance.cpp`, `Engine/ViewerInstance.h`, `Tests/ViewerStaleState_Test.cpp`
   - approach: Keep a rolling estimate of the draft render time of the edited subgraph. Scale it by the full/draft pixel ratio; when that predicts ≤33 ms, render the next update at full resolution, with hysteresis so it doesn't toggle per frame.
   - verify: A unit test with a fake cost model switches to full resolution under a cheap cost and stays in draft under an expensive one, without oscillating.
   - size: M
 
-- [ ] M303.P2.T4 — Add a viewer draft toggle and shortcut
+- [x] M303.P2.T4 — Add a viewer draft toggle and shortcut
   - files: `Gui/ViewerTab.cpp`, `Gui/ViewerTab10.cpp`, `Gui/ActionShortcuts.h`, `Gui/ActionShortcuts.cpp`, `Engine/Settings.cpp`
   - approach: A checkable viewer toolbar button bound to `autoProxyScrubbing`, with a registered, rebindable shortcut. The label matches the setting's readable name.
   - verify: A GUI script under Xvfb toggles the button via the shortcut and reads the setting; a screenshot goes to the user.
   - size: M
 
-- [ ] M303.P2.T5 — Add the mip-rounding preference
+- [x] M303.P2.T5 — Add the mip-rounding preference
   - files: `Engine/ViewerInstance.cpp` (`getMipmapLevelWithoutDraft` ~:4372-4390), `Engine/Settings.cpp`, `Engine/Settings.h`
   - approach: Preference `viewerMipRounding`: `finer` (default, `-ceil(log2 zoom)`) or `nearest` (round to nearest power of two).
   - verify: A unit test gives mip 1 at 33% zoom under `finer` and mip 2 under `nearest`.
@@ -98,3 +98,4 @@ Make a downstream edit feel immediate: a point-op edit (Grade at the end of a ~2
 **Verification gate:** cache, GPU and viewer suites pass. On the user's host with a release AppImage, a Grade edit at the end of the Canon raw chain at fit-to-window reaches the viewer in ≤33 ms median with the GPU on, with no upstream execution and no draft. A Transform drag drafts without re-running upstream. The user accepts it at UAT.
 - 2026-11-14 — Claimed by bosley-native-nodes (user request).
 - 2026-11-14 — **Raw at reduced zoom reopened (user, 2026-11-14):** the 2026-11-01 'raw render scale out' decision is replaced. Cause: today, below 100% the Read averages each Bayer quad into one luma value and every raw stage replicates and re-averages, so Demosaic outputs grey (consultant). The user asked whether a better half-res path exists, with caching full res and the downscale as the fallback. PM call: mosaic stages run at mip 0, Demosaic does a superpixel (half-size) demosaic at mip ≥1, and a 'Zoomed-Out Demosaic' preference (Fast/Full) keeps the user's fallback as Full. P1 is re-planned into T1–T3 accordingly.
+- 2026-11-14 — Phase 2 implemented (1ada744a3). Point ops come from `opKind()==Point`, so no NodeSpec field is needed. Adaptive draft measures the whole viewer update. The toolbar button reads 'Auto Proxy' (the setting is 'Auto Proxy Scrubbing', named in full in the tooltip), with shortcut Ctrl+Shift+P. A GPU downscale of a finer-mip device hit waits for P1. The toggle screenshot is owed to the user after the build.

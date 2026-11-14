@@ -26,6 +26,7 @@
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
 #                        NativeIWarpTest, USDRenderCyclesTest,
 #                        USDRenderCyclesLiveTextureTest, USDRenderMoonRayLiveTextureTest,
+#                        USDRenderCyclesProjectionTest, USDRenderMoonRayProjectionTest,
 #                        USDRenderStormTest)
 #                        remotely and downloads them, STAMP included, into
 #                        Tests/fixtures/native-golden/ of this checkout. The

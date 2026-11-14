@@ -47,6 +47,7 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
@@ -750,12 +751,40 @@ authorProjectionFrame(const PXR_NS::UsdPrim& prim,
     if (projection.framePrimvar.empty()) {
         return true;
     }
-    const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(prim).CreatePrimvar(PXR_NS::TfToken(projection.framePrimvar), PXR_NS::SdfValueTypeNames->Matrix4d, PXR_NS::UsdGeomTokens->constant);
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+    std::vector<PXR_NS::UsdAttribute> attributes(1, primvars.CreatePrimvar(PXR_NS::TfToken(projection.framePrimvar), PXR_NS::SdfValueTypeNames->Matrix4d, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    for (int column = 0; column < 3; ++column) {
+        const PXR_NS::TfToken name(SceneProjectionCameras::frameColumnPrimvar(projection.framePrimvar, column));
+        attributes.push_back(primvars.CreatePrimvar(name, PXR_NS::SdfValueTypeNames->Float4Array, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    }
+    for (int part = 0; part < 4; ++part) {
+        const PXR_NS::TfToken name(SceneProjectionCameras::moonRayFramePrimvar(projection.framePrimvar, part));
+        attributes.push_back(primvars.CreatePrimvar(name, PXR_NS::SdfValueTypeNames->Float3, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    }
+    const auto setFrame = [&attributes](const PXR_NS::GfMatrix4d& frame, PXR_NS::UsdTimeCode time) {
+        bool ok = attributes[0] && attributes[0].Set(frame, time);
+        for (int column = 0; ok && (column < 3); ++column) {
+            ok = attributes[column + 1] && attributes[column + 1].Set(SceneProjectionCameras::frameColumn(frame, column), time);
+        }
+        for (int part = 0; ok && (part < 4); ++part) {
+            ok = attributes[part + 4] && attributes[part + 4].Set(SceneProjectionCameras::moonRayFramePart(frame, part), time);
+        }
+
+        return ok;
+    };
     if (projection.held) {
-        return primvar && primvar.Set(frameAt(projection.holdFrame));
+        return setFrame(frameAt(projection.holdFrame), PXR_NS::UsdTimeCode::Default());
+    }
+    if (!animated) {
+        return setFrame(frameAt(edit.firstFrame), PXR_NS::UsdTimeCode::Default());
+    }
+    for (double frame : getSampleFrames(edit)) {
+        if (!setFrame(frameAt(frame), frameToTimeCode(edit, frame))) {
+            return false;
+        }
     }
 
-    return authorValue(primvar.GetAttr(), edit, animated, frameAt);
+    return true;
 }
 
 namespace {

@@ -138,6 +138,8 @@ private:
     PXR_NS::SdfLayerRefPtr _root;
     // The strongest sublayer: the projection cameras the payload leaves for the stage to resolve.
     PXR_NS::SdfLayerRefPtr _projections;
+    // Of what resolve() last authored into _projections, 0 for nothing.
+    U64 _projectionsDigest = 0;
     std::vector<SceneProjectionCameras::Unresolved> _unresolvedProjections;
     PXR_NS::UsdStageRefPtr _stage;
     ScenePayload _payload;

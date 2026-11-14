@@ -63,6 +63,7 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
@@ -1281,6 +1282,175 @@ TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
     const PXR_NS::UsdPrim projection = material.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DShaderName));
     ASSERT_TRUE(projection.IsValid());
     EXPECT_FALSE(projection.IsActive());
+}
+
+// Exported, a projection keeps no Cycles or MoonRay network: those renderers resolve the material
+// to the baked preview surface Storm reads, and neither the networks nor the frame primvars they
+// read are written, in World space or held in Geometry space, flattened or layered.
+TEST_F(USDWriteProjectionTest, ABakedProjectionDropsItsCyclesAndMoonRayNetworks)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(projector && card);
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(3., 0.5, ViewSpec::all(), 0);
+    struct Case {
+        const char* dir;
+        USDWrite::ExportModeEnum mode;
+        bool held;
+    };
+    const Case cases[] = {
+        { "/world-flattened", USDWrite::eExportModeFlattened, false },
+        { "/world-layered", USDWrite::eExportModeLayered, false },
+        { "/held-flattened", USDWrite::eExportModeFlattened, true },
+        { "/held-layered", USDWrite::eExportModeLayered, true },
+    };
+    for (const Case& c : cases) {
+        getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)(c.held ? USDProject3D::eProjectionSpaceGeometry : USDProject3D::eProjectionSpaceWorld));
+        getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(c.held);
+        getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+        const QString dir = tmp.path() + QString::fromUtf8(c.dir);
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(card, dir, c.mode);
+        ASSERT_TRUE(bool(stage)) << c.dir;
+
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            for (const char* needle : { "cycles:", "moonray:", "cycles_", "AttributeMap", "OpMap", "natronProjectionFrame", "natronReferencePoints" }) {
+                EXPECT_FALSE(file.second.contains(needle)) << c.dir << " " << file.first.toStdString() << " holds " << needle;
+            }
+        }
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1"));
+        ASSERT_TRUE(bool(prim)) << c.dir;
+        for (const PXR_NS::UsdGeomPrimvar& primvar : PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvars()) {
+            EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronProjectionFrame")) << c.dir;
+        }
+        const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+        ASSERT_TRUE(bool(material)) << c.dir;
+        const PXR_NS::UsdShadeShader storm = material.ComputeSurfaceSource();
+        ASSERT_TRUE(bool(storm)) << c.dir;
+        PXR_NS::TfToken id;
+        ASSERT_TRUE(storm.GetShaderId(&id)) << c.dir;
+        EXPECT_EQ(std::string("UsdPreviewSurface"), id.GetString()) << c.dir;
+        for (const char* context : { "cycles", "moonray" }) {
+            EXPECT_FALSE(bool(material.GetSurfaceOutput(PXR_NS::TfToken(context)))) << c.dir << " " << context;
+            const PXR_NS::UsdShadeShader surface = material.ComputeSurfaceSource(PXR_NS::TfTokenVector { PXR_NS::TfToken(context), PXR_NS::UsdShadeTokens->universalRenderContext });
+            EXPECT_EQ(storm.GetPath(), surface.GetPath()) << c.dir << " " << context;
+        }
+        for (const PXR_NS::UsdPrim& child : material.GetPrim().GetChildren()) {
+            const std::string name = child.GetName().GetString();
+            EXPECT_NE(0u, name.rfind("Cycles", 0)) << c.dir << " keeps " << name;
+            EXPECT_NE(0u, name.rfind("MoonRay", 0)) << c.dir << " keeps " << name;
+        }
+        const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+        ASSERT_TRUE(bool(st)) << c.dir;
+        const std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> bounds = boundsOf(st, PXR_NS::UsdTimeCode(1.));
+        EXPECT_NEAR(0.f, bounds.first[0], 1e-4f) << c.dir;
+        EXPECT_NEAR(0.f, bounds.first[1], 1e-4f) << c.dir;
+        EXPECT_NEAR(1.f, bounds.second[0], 1e-4f) << c.dir;
+        EXPECT_NEAR(1.f, bounds.second[1], 1e-4f) << c.dir;
+    }
+}
+
+// The bake strips what the projection authored, not what shares its names: a shader the user
+// put under the projection's material stays.
+TEST_F(USDWriteProjectionTest, ABakeKeepsAShaderTheUserPutUnderTheMaterial)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(projector && card);
+    getKnob<KnobString>(projector, kSceneParamPrimPath)->setValue("/Projection");
+    const QString source = tmp.path() + QString::fromUtf8("/user.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        // The card grafts the material it is given under itself.
+        PXR_NS::UsdShadeShader user = PXR_NS::UsdShadeShader::Define(file, PXR_NS::SdfPath("/Card1/Projection/CyclesUser"));
+        user.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPrimvarReader_float2")));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(reader && merge);
+    getKnob<KnobFile>(reader, kUSDReadParamFile)->setValue(source.toStdString());
+    ASSERT_TRUE(merge->connectInput(card, 0));
+    ASSERT_TRUE(merge->connectInput(reader, 1));
+
+    const std::pair<const char*, USDWrite::ExportModeEnum> modes[] = {
+        { "/flattened", USDWrite::eExportModeFlattened },
+        { "/layered", USDWrite::eExportModeLayered },
+    };
+    for (const std::pair<const char*, USDWrite::ExportModeEnum>& mode : modes) {
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(merge, tmp.path() + QString::fromUtf8(mode.first), mode.second);
+        ASSERT_TRUE(bool(stage)) << mode.first;
+        const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+        EXPECT_TRUE(st.GetAttr() && st.HasValue()) << mode.first << ": not baked";
+        const PXR_NS::UsdPrim user = stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1/Projection/CyclesUser"));
+        ASSERT_TRUE(user.IsValid()) << mode.first;
+        PXR_NS::TfToken id;
+        EXPECT_TRUE(PXR_NS::UsdShadeShader(user).GetShaderId(&id)) << mode.first;
+        EXPECT_EQ(std::string("UsdPrimvarReader_float2"), id.GetString()) << mode.first;
+        for (const PXR_NS::UsdPrim& child : stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1/Projection")).GetChildren()) {
+            EXPECT_FALSE(child.GetCustomDataByKey(PXR_NS::TfToken(kSceneProjectionNetworkMark)).IsHolding<bool>()) << mode.first << " keeps " << child.GetName().GetString();
+        }
+    }
+}
+
+// Curves keep Storm's projection unbaked, read through the frame primvars; a layered export of
+// them with the camera named by path keeps that and nothing of the other delegates' networks.
+TEST_F(USDWriteProjectionTest, AnUnbakedProjectionWithADeferredCameraExportsStormsAlone)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/Curves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        curves.CreatePointsAttr().Set(framePoints(0.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Curves");
+    ASSERT_TRUE(bool(assign));
+    camera->setScriptName("Camera1");
+    projector->disconnectInput(kUSDProject3DInputCamera);
+    getKnob<KnobString>(projector, kUSDProject3DParamCameraPath)->setValue("/Camera1");
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(bool(merge));
+    ASSERT_TRUE(merge->connectInput(assign, 0));
+    ASSERT_TRUE(merge->connectInput(camera, 1));
+
+    const QString dir = tmp.path() + QString::fromUtf8("/out");
+    const PXR_NS::UsdStageRefPtr stage = writeAndOpen(merge, dir, USDWrite::eExportModeLayered);
+    ASSERT_TRUE(bool(stage));
+    for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+        for (const char* needle : { "cycles:", "moonray:", "cycles_", "AttributeMap", "OpMap" }) {
+            EXPECT_FALSE(file.second.contains(needle)) << file.first.toStdString() << " holds " << needle;
+        }
+    }
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Curves"));
+    ASSERT_TRUE(bool(prim));
+    const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+    ASSERT_TRUE(bool(material));
+    SceneGeometryProjection projection;
+    ASSERT_TRUE(SceneNodeAuthoring::readGeometryProjection(material.GetPrim(), &projection));
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+    const PXR_NS::UsdGeomPrimvar frame = primvars.GetPrimvar(PXR_NS::TfToken(projection.framePrimvar));
+    EXPECT_TRUE(frame.GetAttr() && frame.HasValue());
+    for (int column = 0; column < 3; ++column) {
+        EXPECT_FALSE(bool(primvars.GetPrimvar(PXR_NS::TfToken(SceneProjectionCameras::frameColumnPrimvar(projection.framePrimvar, column))).GetAttr())) << column;
+    }
+    for (int part = 0; part < 4; ++part) {
+        EXPECT_FALSE(bool(primvars.GetPrimvar(PXR_NS::TfToken(SceneProjectionCameras::moonRayFramePrimvar(projection.framePrimvar, part))).GetAttr())) << part;
+    }
+    for (const char* context : { "cycles", "moonray" }) {
+        EXPECT_FALSE(bool(material.GetSurfaceOutput(PXR_NS::TfToken(context)))) << context;
+    }
+    for (const PXR_NS::UsdPrim& child : material.GetPrim().GetChildren()) {
+        EXPECT_FALSE(child.GetCustomDataByKey(PXR_NS::TfToken(kSceneProjectionNetworkMark)).IsHolding<bool>()) << child.GetName().GetString();
+    }
 }
 
 TEST_F(USDWriteProjectionTest, AProjectionBoundToNothingWarns)

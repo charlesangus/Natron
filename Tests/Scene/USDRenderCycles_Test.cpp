@@ -40,6 +40,7 @@
 #include <limits>
 #include <list>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -51,6 +52,10 @@
 
 #include <gtest/gtest.h>
 
+#include <OpenImageIO/imageio.h>
+
+#include <QDir>
+#include <QFileInfo>
 #include <QString>
 
 #include <pxr/base/plug/registry.h>
@@ -65,8 +70,10 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Ramp.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
@@ -84,11 +91,13 @@
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
+#include "ProjectionTestUtils.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
@@ -1915,4 +1924,281 @@ TEST_F(USDRenderCyclesTest, TransparentBackgroundHidesTheDomeOnly)
             }
         }
     }
+}
+
+namespace {
+const char* const kGoldenCaseCyclesProject3D = "CyclesProject3DReference";
+} // anon namespace
+
+using namespace ProjectionTestUtils;
+
+class USDRenderCyclesProjectionTest
+    : public ProjectionFixture<USDRenderCyclesTest> {
+protected:
+    virtual const char* rendererId() const OVERRIDE
+    {
+        return kRenderDelegateCyclesId;
+    }
+};
+
+// Projected from the render camera, the plate reappears on the card pixel for pixel.
+TEST_F(USDRenderCyclesProjectionTest, APlateFromTheRenderCameraReproducesThePlate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+
+    RenderedPlane rgba;
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+    EXPECT_FALSE(graph.projector->hasPersistentMessage()) << messageOf(graph.projector);
+    EXPECT_FALSE(graph.render->hasPersistentMessage()) << messageOf(graph.render);
+    matchGoldenCrop(rgba, RectI(16, 8, 112, 56), kGoldenCaseCyclesProject3D);
+}
+
+// A plate larger than the format, projected from half the distance: Crop leaves the card around
+// the projector's frame transparent, and without it the plate's overscan covers that band.
+TEST_F(USDRenderCyclesProjectionTest, CropHidesThePlateBeyondTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* extent = knob<KnobChoice>(graph.plate, kNativeGeneratorParamExtent);
+    KnobDouble* bottomLeft = knob<KnobDouble>(graph.plate, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = knob<KnobDouble>(graph.plate, kNativeGeneratorParamSize);
+    KnobBool* crop = knob<KnobBool>(graph.projector, kUSDProject3DParamCrop);
+    ASSERT_TRUE(extent && bottomLeft && size && crop);
+    extent->setValue((int)ExtentKnobs::eExtentSize);
+    bottomLeft->setValue(-kProjectionWidth / 4., ViewSpec::all(), 0);
+    bottomLeft->setValue(-kProjectionHeight / 4., ViewSpec::all(), 1);
+    size->setValue(kProjectionWidth * 1.5, ViewSpec::all(), 0);
+    size->setValue(kProjectionHeight * 1.5, ViewSpec::all(), 1);
+    ASSERT_TRUE(setTriple(graph.projectorCamera, kSceneParamTranslate, 0., 0., kProjectionCameraZ / 2.));
+
+    // The frame covers render pixels 32..96 by 16..48 and the overscan 16..112 by 8..56.
+    const RectI frame(36, 20, 92, 44);
+    const RectI band(19, 20, 29, 44);
+    RenderedPlane cropped;
+    crop->setValue(true);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &cropped));
+    EXPECT_PROJECTS(checkProjection(cropped, kProjectionPlaneWidth / 2., 0.));
+    EXPECT_EQ(band.area(), countIn(cropped, band, eProjectedTransparent));
+
+    RenderedPlane uncropped;
+    crop->setValue(false);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &uncropped));
+    EXPECT_EQ(0, countIn(uncropped, band, eProjectedTransparent));
+    EXPECT_GT(countIn(uncropped, band, eProjectedRed) + countIn(uncropped, band, eProjectedBlue), band.area() / 2);
+    EXPECT_GT(countIn(uncropped, frame, eProjectedRed) + countIn(uncropped, frame, eProjectedBlue), frame.area() / 2);
+}
+
+// The card faces the projector: Front keeps the plate and Back shows the outside mode instead.
+TEST_F(USDRenderCyclesProjectionTest, ProjectOnPicksTheFacesThatShowThePlate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* projectOn = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectOn);
+    KnobChoice* outside = knob<KnobChoice>(graph.projector, kUSDProject3DParamOutside);
+    ASSERT_TRUE(projectOn && outside);
+
+    RenderedPlane rgba;
+    projectOn->setValue((int)USDProject3D::eProjectOnFront);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+
+    projectOn->setValue((int)USDProject3D::eProjectOnBack);
+    outside->setValue((int)USDProject3D::eOutsideBlack);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedBlack));
+
+    outside->setValue((int)USDProject3D::eOutsideTransparent);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedTransparent));
+}
+
+// The projector moves 2 units along x from frame 1 to frame 10, and the plate with it.
+TEST_F(USDRenderCyclesProjectionTest, AnAnimatedProjectorFollowsTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobDouble* translate = knob<KnobDouble>(graph.projectorCamera, kSceneParamTranslate);
+    ASSERT_TRUE(translate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(10., 2., ViewSpec::all(), 0);
+
+    RenderedPlane first, tenth;
+    ASSERT_TRUE(renderProjection(graph.render, 1., &first));
+    ASSERT_TRUE(renderProjection(graph.render, 10., &tenth));
+    EXPECT_PROJECTS(checkProjection(first, kProjectionPlaneWidth, 0.));
+    EXPECT_PROJECTS(checkProjection(tenth, kProjectionPlaneWidth, 2.));
+    int differing = 0;
+    for (int y = kProjectionCardInterior.y1; y < kProjectionCardInterior.y2; ++y) {
+        for (int x = kProjectionCardInterior.x1; x < kProjectionCardInterior.x2; ++x) {
+            differing += (classify(first, x, y) != classify(tenth, x, y)) ? 1 : 0;
+        }
+    }
+    EXPECT_GT(differing, kProjectionCardInterior.area() / 4);
+}
+
+// An orthographic projector's aperture sets the frame whatever its distance. The knob is in
+// millimetres and the stage in metres, so 20000 x 10000 spans the render camera's 20 x 10 units of
+// the card's plane from 10 units and from 40.
+TEST_F(USDRenderCyclesProjectionTest, AnOrthographicProjectorIgnoresItsDistance)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* projection = knob<KnobChoice>(graph.projectorCamera, kUSDCameraParamProjection);
+    ASSERT_TRUE(projection);
+    ASSERT_TRUE(selectRenderer(projection, "orthographic"));
+    ASSERT_TRUE(setLens(graph.projectorCamera, 20000., 10000.));
+
+    RenderedPlane rgba;
+    for (double z : { kProjectionCameraZ, 4. * kProjectionCameraZ }) {
+        SCOPED_TRACE(z);
+        ASSERT_TRUE(setTriple(graph.projectorCamera, kSceneParamTranslate, 0., 0., z));
+        ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+        EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+    }
+}
+
+// The card is 10 units from the projector: a far clip of 5 or a near clip of 12 puts it outside.
+TEST_F(USDRenderCyclesProjectionTest, ClipNearFarPutsTheCardOutside)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobBool* clip = knob<KnobBool>(graph.projector, kUSDProject3DParamClipNearFar);
+    KnobChoice* outside = knob<KnobChoice>(graph.projector, kUSDProject3DParamOutside);
+    KnobDouble* nearClip = knob<KnobDouble>(graph.projectorCamera, kUSDCameraParamNear);
+    KnobDouble* farClip = knob<KnobDouble>(graph.projectorCamera, kUSDCameraParamFar);
+    ASSERT_TRUE(clip && outside && nearClip && farClip);
+    outside->setValue((int)USDProject3D::eOutsideBlack);
+    nearClip->setValue(1.);
+    farClip->setValue(5.);
+
+    RenderedPlane rgba;
+    clip->setValue(false);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+
+    clip->setValue(true);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedBlack));
+
+    farClip->setValue(100.);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+
+    nearClip->setValue(12.);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedBlack));
+}
+
+// In Geometry space held at frame 1 the plate sticks to the card as it moves 2 units by frame 11;
+// in World space it stays where the projector puts it.
+TEST_F(USDRenderCyclesProjectionTest, GeometrySpaceHeldSticksToTheMovingCard)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* space = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectionSpace);
+    KnobBool* useHold = knob<KnobBool>(graph.projector, kUSDProject3DParamUseFrameHold);
+    KnobDouble* hold = knob<KnobDouble>(graph.projector, kUSDProject3DParamFrameHold);
+    KnobDouble* translate = knob<KnobDouble>(graph.card, kSceneParamTranslate);
+    ASSERT_TRUE(space && useHold && hold && translate);
+    const double shift = 2.;
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(11., shift, ViewSpec::all(), 0);
+
+    RenderedPlane rgba;
+    ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, 0.));
+
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    useHold->setValue(true);
+    hold->setValue(1.);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+    ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));
+}
+
+// Linear curves, not a mesh: held in Geometry space, the plate rides on the projection's frame
+// alone as the curves' transform carries them.
+TEST_F(USDRenderCyclesProjectionTest, GeometrySpaceHeldSticksToMovingCurvesWithoutReferencePoints)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    expectHeldCurvesCarryThePlate();
+}
+
+// A transform after the card carries the plate along in Geometry space, and a mirror there
+// mirrors it.
+TEST_F(USDRenderCyclesProjectionTest, GeometrySpaceFollowsATransformAfterTheCard)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    expectATransformAfterTheCardCarriesThePlate();
+}
+
+// Project On picks faces, and curves have none: they show the plate under Front and Back alike.
+TEST_F(USDRenderCyclesProjectionTest, ProjectOnLeavesCurvesShowingThePlate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    expectCurvesShowThePlateOnEitherSide();
+}
+
+// Where the plate's colour is flat the card shows what Storm shows, in World space, held in
+// Geometry space and from a plate with overscan.
+TEST_F(USDRenderCyclesProjectionTest, Project3DMatchesStormsPlate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    {
+        SCOPED_TRACE("World");
+        expectStormsWorldPlate(kStormMaxToleranceCycles);
+    }
+    {
+        SCOPED_TRACE("GeometryHeld");
+        expectStormsHeldPlate(kStormMaxToleranceCycles);
+    }
+    {
+        SCOPED_TRACE("Overscan");
+        expectStormsOverscanPlate(kStormMaxToleranceCycles);
+    }
+}
+
+// The plate's alpha is the card's opacity over what is behind it, its colour straight.
+TEST_F(USDRenderCyclesProjectionTest, AHalfAlphaPlateBlendsOverTheBackground)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    expectAHalfAlphaPlateOverTheBackground();
 }

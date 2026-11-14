@@ -818,10 +818,21 @@ struct UnbakedProjection {
     std::string prim;
 };
 
+// Whether prim is a node of the Cycles or MoonRay network USDProject3D authors.
+bool
+isProjectionNetworkNode(const PXR_NS::UsdPrim& prim)
+{
+    const PXR_NS::VtValue mark = prim ? prim.GetCustomDataByKey(PXR_NS::TfToken(kSceneProjectionNetworkMark)) : PXR_NS::VtValue();
+
+    return mark.IsHolding<bool>() && mark.UncheckedGet<bool>();
+}
+
 /**
- * @brief Copies a deferred camera's matrix and origin from the composed scene onto shader's prim in
- * out. A layered export writes the scene's own layers, which name the camera but hold no values
- * for it: compose() resolves those into a layer that is not exported.
+ * @brief Copies a deferred camera's values (SceneProjectionCameras::projectorValues()) from the
+ * composed scene onto the Storm surface of shader's material in out: the delegate networks are
+ * stripped from every export. A layered export writes the
+ * scene's own layers, which name the camera but hold no values for it: compose() resolves those
+ * into a layer that is not exported.
  **/
 bool
 authorResolvedProjector(const PXR_NS::UsdShadeShader& shader,
@@ -832,14 +843,17 @@ authorResolvedProjector(const PXR_NS::UsdShadeShader& shader,
     if (!camera || !camera.Get(&cameraPath) || cameraPath.empty()) {
         return true;
     }
-    const PXR_NS::UsdPrim over = out->OverridePrim(shader.GetPath());
-    if (!over) {
-        return false;
-    }
-    for (const char* name : { kUSDProject3DInputWorldToProjector, kUSDProject3DInputProjectorOrigin }) {
-        const PXR_NS::UsdShadeInput input = shader.GetInput(PXR_NS::TfToken(name));
+    const PXR_NS::SdfPath material = shader.GetPath().GetParentPath();
+    const PXR_NS::UsdStageRefPtr scene = shader.GetPrim().GetStage();
+    for (const SceneProjectionCameras::ShaderValue& projected : SceneProjectionCameras::projectorValues(PXR_NS::GfMatrix4d(0.), PXR_NS::GfVec4f(0.f))) {
+        const PXR_NS::UsdShadeShader owner(scene->GetPrimAtPath(material.AppendChild(projected.shader)));
+        const PXR_NS::UsdShadeInput input = (owner && !isProjectionNetworkNode(owner.GetPrim())) ? owner.GetInput(projected.input) : PXR_NS::UsdShadeInput();
         if (!input) {
             continue;
+        }
+        const PXR_NS::UsdPrim over = out->OverridePrim(owner.GetPath());
+        if (!over) {
+            return false;
         }
         const PXR_NS::UsdAttribute source = input.GetAttr();
         PXR_NS::UsdAttribute target = over.GetAttribute(source.GetName());
@@ -923,7 +937,8 @@ struct WrittenSpecLocator {
     }
 };
 
-// What only a Storm projection reads, recorded per material and gprim.
+// What only a live projection reads, recorded per material and gprim: the Storm surface's
+// placement and the Cycles and MoonRay networks.
 struct ProjectionSpecs {
     WrittenSpecs properties;
     WrittenSpecs prims;
@@ -943,6 +958,10 @@ struct ProjectionBake {
     // referenced layer can serve both.
     ProjectionSpecs baked;
     ProjectionSpecs kept;
+    // The Cycles and MoonRay networks and the primvars only they read, stripped from every
+    // projection: a renderer reading the export takes the baked surface, or the Storm shader of a
+    // kept one, which it ignores, rather than a network nothing outside Natron maintains.
+    ProjectionSpecs networks;
 };
 
 /**
@@ -1032,7 +1051,44 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
                 : PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(geometryProjection.framePrimvar));
         };
+        // By the mark on their nodes, since a network holds nodes no surface reads, such as the
+        // facing test under Project On Both, and the user may author shaders of their own under
+        // the material.
+        const auto recordNetworks = [&](const std::vector<PXR_NS::UsdPrim>& prims) {
+            ProjectionSpecs* specs = &result->networks;
+            const PXR_NS::UsdPrim materialPrim = scene->GetPrimAtPath(materialPath);
+            const PXR_NS::UsdShadeMaterial material(materialPrim);
+            if (materialPrim) {
+                for (const PXR_NS::UsdPrim& child : materialPrim.GetAllChildren()) {
+                    if (isProjectionNetworkNode(child)) {
+                        locator.addPrim(child, &specs->prims);
+                    }
+                }
+            }
+            for (const char* context : { "cycles", "moonray" }) {
+                const PXR_NS::UsdShadeOutput output = material ? material.GetSurfaceOutput(PXR_NS::TfToken(context)) : PXR_NS::UsdShadeOutput();
+                if (output) {
+                    locator.addAttribute(output.GetAttr(), &specs->properties);
+                }
+            }
+            if (geometryProjection.framePrimvar.empty()) {
+                return;
+            }
+            std::vector<std::string> names;
+            for (int column = 0; column < 3; ++column) {
+                names.push_back(SceneProjectionCameras::frameColumnPrimvar(geometryProjection.framePrimvar, column));
+            }
+            for (int part = 0; part < 4; ++part) {
+                names.push_back(SceneProjectionCameras::moonRayFramePrimvar(geometryProjection.framePrimvar, part));
+            }
+            for (const PXR_NS::UsdPrim& prim : prims) {
+                for (const std::string& name : names) {
+                    locator.addAttribute(PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(name)).GetAttr(), &specs->properties);
+                }
+            }
+        };
         const auto recordSpecs = [&](const std::vector<PXR_NS::UsdPrim>& prims, ProjectionSpecs* specs) {
+            recordNetworks(prims);
             if (geometryProjection.framePrimvar.empty()) {
                 return;
             }
@@ -1246,20 +1302,25 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
     }
 } // bakeProjections
 
-// Of baked, what kept does not reach, by written stack.
+// Of baked, what kept does not reach, and all of always, by written stack.
 std::map<std::size_t, std::vector<PXR_NS::SdfPath>>
 getStrippableSpecs(const WrittenSpecs& baked,
-                   const WrittenSpecs& kept)
+                   const WrittenSpecs& kept,
+                   const WrittenSpecs& always)
 {
-    std::map<std::size_t, std::vector<PXR_NS::SdfPath>> strippable;
+    WrittenSpecs strippable = always;
 
     for (const WrittenSpec& spec : baked) {
         if (!kept.count(spec)) {
-            strippable[spec.first].push_back(spec.second);
+            strippable.insert(spec);
         }
     }
+    std::map<std::size_t, std::vector<PXR_NS::SdfPath>> byStack;
+    for (const WrittenSpec& spec : strippable) {
+        byStack[spec.first].push_back(spec.second);
+    }
 
-    return strippable;
+    return byStack;
 }
 
 void
@@ -1678,10 +1739,19 @@ USDWrite::writeFrameRange(int firstFrame,
             for (int frame = firstFrame; frame <= lastFrame; ++frame) {
                 times.push_back(SceneOps::frameToTimeCode(scene, frame, fps));
             }
+            // The bake's overs go through schemas, which see a prim as a material or a shader only
+            // where its definition composes: a layered stack whose strongest layers come from
+            // another node, a USDRead above the geometry, holds those definitions below the output.
+            std::vector<std::string> definitions;
+            for (const StackItem& item : stacks[0].layout.sublayers) {
+                definitions.push_back(item.layer->GetIdentifier());
+            }
+            stacks[0].layout.output->SetSubLayerPaths(definitions);
             bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, locator, &projectionBake);
+            stacks[0].layout.output->SetSubLayerPaths(std::vector<std::string>());
             if (projectionBake.failed.empty()) {
-                const std::map<std::size_t, std::vector<PXR_NS::SdfPath>> properties = getStrippableSpecs(projectionBake.baked.properties, projectionBake.kept.properties);
-                const std::map<std::size_t, std::vector<PXR_NS::SdfPath>> prims = getStrippableSpecs(projectionBake.baked.prims, projectionBake.kept.prims);
+                const std::map<std::size_t, std::vector<PXR_NS::SdfPath>> properties = getStrippableSpecs(projectionBake.baked.properties, projectionBake.kept.properties, projectionBake.networks.properties);
+                const std::map<std::size_t, std::vector<PXR_NS::SdfPath>> prims = getStrippableSpecs(projectionBake.baked.prims, projectionBake.kept.prims, projectionBake.networks.prims);
                 const std::vector<PXR_NS::SdfPath> none;
                 for (std::size_t i = 0; i < stacks.size(); ++i) {
                     const std::map<std::size_t, std::vector<PXR_NS::SdfPath>>::const_iterator stackProperties = properties.find(i);

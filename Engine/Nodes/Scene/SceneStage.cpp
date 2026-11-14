@@ -118,23 +118,21 @@ SceneStage::syncProjections()
 {
     _unresolvedProjections.clear();
     const bool deferred = SceneOps::hasDeferredProjections(_payload);
-    if (!deferred && _projections->GetRootPrims().empty()) {
+    if (!deferred && (_projectionsDigest == 0)) {
         return;
     }
     // Resolved apart and swapped in whole: the stage hears of one change, and of none when the
-    // values are the ones it has.
+    // digest of what would be authored is the one it has.
     PXR_NS::SdfLayerRefPtr resolved = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-projections");
     if (!resolved) {
         return;
     }
-    if (deferred) {
-        SceneProjectionCameras::resolve(_stage, resolved, &_unresolvedProjections);
-    }
-    std::string wanted, current;
-    if (resolved->ExportToString(&wanted) && _projections->ExportToString(&current) && (wanted == current)) {
+    const U64 digest = deferred ? SceneProjectionCameras::resolve(_stage, resolved, &_unresolvedProjections, _projectionsDigest) : 0;
+    if (digest == _projectionsDigest) {
         return;
     }
     _projections->TransferContent(resolved);
+    _projectionsDigest = digest;
 }
 
 const std::vector<SceneProjectionCameras::Unresolved>&

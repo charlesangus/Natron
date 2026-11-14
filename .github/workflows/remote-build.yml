@@ -221,7 +221,7 @@ jobs:
           set -o pipefail
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
-          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest|USDRenderCyclesLiveTextureTest|USDRenderMoonRayLiveTextureTest)$' --timeout 300 --output-on-failure || rc=$?
+          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest|USDRenderCyclesLiveTextureTest|USDRenderMoonRayLiveTextureTest|USDRenderCyclesProjectionTest|USDRenderMoonRayProjectionTest)$' --timeout 300 --output-on-failure || rc=$?
           # Storm skips and passes when no GL context can be made; REQUIRE_GL turns that into a failure.
           NATRON_TEST_REQUIRE_GL=1 xvfb-run --auto-servernum ctest -R '^USDRenderStormTest$' --timeout 600 --output-on-failure || rc=$?
           # The node suites' own Golden cases go through the same recorder. ctest entries are whole

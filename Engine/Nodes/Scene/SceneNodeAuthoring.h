@@ -317,8 +317,10 @@ bool readGeometryProjection(const PXR_NS::UsdPrim& material,
 /**
  * @brief Authors projection's frame primvar on prim, its local to world transform as the node
  * places it, frameAt(frame) at a project frame: once at the projection's hold frame when it holds
- * its camera, else as a default or, when animated, at every frame of getSampleFrames(). Does
- * nothing when projection is empty.
+ * its camera, else as a default or, when animated, at every frame of getSampleFrames(), with
+ * the columns Cycles reads (SceneProjectionCameras::frameColumnPrimvar()) and the parts MoonRay
+ * reads (SceneProjectionCameras::moonRayFramePrimvar()) beside it. Does nothing when projection
+ * is empty.
  **/
 bool authorProjectionFrame(const PXR_NS::UsdPrim& prim,
                            const SceneLayerEdit& edit,

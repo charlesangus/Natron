@@ -350,22 +350,34 @@ SceneReparentNode::getPlacement(bool* wrapping,
                                 std::string* moved,
                                 bool* autoRename) const
 {
+    return getPlacement(getCurrentTime(), ViewIdx(0), wrapping, destination, moved, autoRename);
+}
+
+bool
+SceneReparentNode::getPlacement(double time,
+                                ViewIdx view,
+                                bool* wrapping,
+                                std::string* destination,
+                                std::string* moved,
+                                bool* autoRename) const
+{
     PXR_NS::SdfPath path;
     std::string error;
-    if (!SceneNodeAuthoring::getPrimPath(_primPath.lock(), &path, &error)) {
+    if (!SceneNodeAuthoring::getPrimPath(_primPath.lock(), time, view, &path, &error)) {
         return false;
     }
-    *wrapping = isWrapping();
+    KnobChoicePtr mode = _mode.lock();
+    *wrapping = mode && (mode->getValueAtTime(time, 0, view) == (int)eSceneReparentModeWrap);
     *destination = path.GetString();
     moved->clear();
     KnobBoolPtr autoRenameKnob = _autoRename.lock();
-    *autoRename = autoRenameKnob && autoRenameKnob->getValue();
+    *autoRename = autoRenameKnob && autoRenameKnob->getValueAtTime(time, 0, view);
     if (!*wrapping) {
         return true;
     }
     KnobStringPtr wrapNameKnob = _wrapName.lock();
     PXR_NS::SdfPath wrapPath;
-    if (!getWrapPath(path, wrapNameKnob ? wrapNameKnob->getValue() : std::string(), &wrapPath, &error)) {
+    if (!getWrapPath(path, wrapNameKnob ? wrapNameKnob->getValueAtTime(time, 0, view) : std::string(), &wrapPath, &error)) {
         return false;
     }
     *moved = wrapPath.AppendChild(path.GetNameToken()).GetString();
@@ -384,21 +396,23 @@ SceneReparentNode::getPassThroughRoot() const
 SceneEvaluationContext
 SceneReparentNode::getSceneInputContext(int inputNb,
                                         const SceneEvaluationContext& ctx,
-                                        double /*time*/,
-                                        ViewIdx /*view*/) const
+                                        double time,
+                                        ViewIdx view) const
 {
     bool wrapping = false;
     std::string destination;
     std::string moved;
     bool autoRename = false;
-    if ((inputNb < 0) || (inputNb >= kSceneReparentInputCount) || !getPlacement(&wrapping, &destination, &moved, &autoRename)) {
+    if ((inputNb < 0) || (inputNb >= kSceneReparentInputCount) || !getPlacement(time, view, &wrapping, &destination, &moved, &autoRename)) {
         return ctx;
     }
     if (wrapping) {
         return (inputNb == 0) ? SceneEvaluationContext(ctx.id, SceneOps::mapWrapLoadSet(ctx.loadSet, destination, moved)) : ctx;
     }
 
-    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, destination, getPassThroughRoot(), autoRename));
+    AppInstancePtr app = getApp();
+
+    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, destination, app ? app->getProject()->getProjectMaterialsScope(time, view) : std::string(), autoRename));
 }
 
 void

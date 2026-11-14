@@ -193,23 +193,9 @@ SceneLoadSet::withPaths(const SceneLoadSetPtr& base,
                 continue;
             }
 
-            // The nearest rule at or above prefix decides; a subtree already loaded in full stays so.
-            bool includedInFull = false;
-            for (std::string at = prefix;;) {
-                const std::map<std::string, RuleEnum>::const_iterator it = byPath.find(at);
-                if (it != byPath.end()) {
-                    includedInFull = (it->second == eRuleAll);
-                    break;
-                }
-                const std::string::size_type slash = at.rfind('/');
-                if (slash == 0 || slash == std::string::npos) {
-                    at = "/";
-                    const std::map<std::string, RuleEnum>::const_iterator root = byPath.find(at);
-                    includedInFull = (root != byPath.end()) && (root->second == eRuleAll);
-                    break;
-                }
-                at.resize(slash);
-            }
+            // The nearest rule at or above prefix decides, none at all meaning everything; a
+            // subtree already loaded in full stays so.
+            const bool includedInFull = includesBelow(nearestRule(byPath, prefix));
             if (!includedInFull) {
                 byPath[prefix] = eRuleOnly;
             }

@@ -215,6 +215,15 @@ USDReference::getSource() const
     return (source && (source->getValue() == (int)eSourceInput)) ? eSourceInput : eSourceFile;
 }
 
+USDReference::SourceEnum
+USDReference::getSource(double time,
+                        ViewIdx view) const
+{
+    KnobChoicePtr source = _source.lock();
+
+    return (source && (source->getValueAtTime(time, 0, view) == (int)eSourceInput)) ? eSourceInput : eSourceFile;
+}
+
 void
 USDReference::refreshVisibility()
 {
@@ -283,14 +292,23 @@ bool
 USDReference::getArcPaths(std::string* targetPath,
                           std::string* sourcePath) const
 {
+    return getArcPaths(getCurrentTime(), ViewIdx(0), targetPath, sourcePath);
+}
+
+bool
+USDReference::getArcPaths(double time,
+                          ViewIdx view,
+                          std::string* targetPath,
+                          std::string* sourcePath) const
+{
     PXR_NS::SdfPath target;
     std::string error;
-    if (!SceneNodeAuthoring::getPrimPath(_primPath.lock(), &target, &error)) {
+    if (!SceneNodeAuthoring::getPrimPath(_primPath.lock(), time, view, &target, &error)) {
         return false;
     }
     *targetPath = target.GetString();
     KnobStringPtr sourcePrimKnob = _sourcePrim.lock();
-    const std::string sourcePrim = sourcePrimKnob ? sourcePrimKnob->getValue() : std::string();
+    const std::string sourcePrim = sourcePrimKnob ? sourcePrimKnob->getValueAtTime(time, 0, view) : std::string();
     const bool valid = PXR_NS::SdfPath::IsValidPathString(sourcePrim) && PXR_NS::SdfPath(sourcePrim).IsAbsolutePath() && PXR_NS::SdfPath(sourcePrim).IsPrimPath();
     *sourcePath = valid ? sourcePrim : std::string();
 
@@ -300,19 +318,19 @@ USDReference::getArcPaths(std::string* targetPath,
 SceneEvaluationContext
 USDReference::getSceneInputContext(int inputNb,
                                    const SceneEvaluationContext& ctx,
-                                   double /*time*/,
-                                   ViewIdx /*view*/) const
+                                   double time,
+                                   ViewIdx view) const
 {
     if (inputNb != 1) {
         return ctx;
     }
     // Referencing a file, the node reads nothing of the Source input.
-    if (getSource() == eSourceFile) {
+    if (getSource(time, view) == eSourceFile) {
         return SceneEvaluationContext(ctx.id, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
     }
     std::string targetPath;
     std::string sourcePath;
-    if (!getArcPaths(&targetPath, &sourcePath) || sourcePath.empty()) {
+    if (!getArcPaths(time, view, &targetPath, &sourcePath) || sourcePath.empty()) {
         return SceneEvaluationContext(ctx.id, SceneLoadSetPtr());
     }
 

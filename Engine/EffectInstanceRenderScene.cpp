@@ -27,6 +27,7 @@
 #include "EffectInstancePrivate.h"
 
 #include <exception>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -226,6 +227,18 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
             args.context.reach->add(mapped);
         }
     };
+    // Whatever way the evaluation ends, a load in what its inputs read has to re-evaluate it.
+    struct InputReachesGuard {
+        const std::function<void()> add;
+
+        ~InputReachesGuard()
+        {
+            try {
+                add();
+            } catch (...) {
+            }
+        }
+    } inputReachesGuard { addInputReaches };
 
     const int nInputs = getNInputs();
     for (int i = 0; i < nInputs; ++i) {
@@ -255,14 +268,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         if (inputContext.hasSameLoadSet(args.context) && (inputContext.reach == args.context.reach)) {
             inputCode = input->evaluateScene(args, &inputScene, errorMessage);
         } else {
-            {
-                QMutexLocker locker(&_imp->sceneInputContextIdsMutex);
-                U64& id = _imp->sceneInputContextIds[std::make_pair(args.context.id, i)];
-                if (id == 0) {
-                    id = SceneEvaluationContext::makeId();
-                }
-                inputContext.id = id;
-            }
+            inputContext.id = getSceneInputContextId(args.context.id, i);
             inputContext.reach.reset();
             if (args.context.reach) {
                 inputContext.reach = std::make_shared<SceneLoadReach>();
@@ -272,10 +278,6 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
             inputCode = input->evaluateScene(EvaluateSceneArgs(args.time, args.view, inputContext, args.abortInfo), &inputScene, errorMessage);
         }
         if (inputCode != eRenderRoIRetCodeOk) {
-            if (inputCode == eRenderRoIRetCodeFailed) {
-                addInputReaches();
-            }
-
             return inputCode;
         }
         actionArgs.inputScenes[i] = inputScene;
@@ -306,8 +308,6 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return eRenderRoIRetCodeAborted;
     }
 
-    addInputReaches();
-
     if (st != eStatusOK) {
         if (st == eStatusReplyDefault) {
             setSceneError(errorMessage, getScriptName_mt_safe() + " does not produce a scene");
@@ -324,5 +324,53 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::evaluateScene
+
+U64
+EffectInstance::getSceneInputContextId(U64 ctxId,
+                                       int inputNb) const
+{
+    static const std::size_t kSceneInputContextIdsMax = 256;
+    const EffectInstance* owner = _imp->mainInstance ? _imp->mainInstance : this;
+    EffectInstance::Implementation& imp = *owner->_imp;
+    const EffectInstance::Implementation::SceneInputContextKey key(ctxId, inputNb);
+    QMutexLocker locker(&imp.sceneInputContextIdsMutex);
+
+    std::map<EffectInstance::Implementation::SceneInputContextKey, EffectInstance::Implementation::SceneInputContextIdsEntry>::iterator found = imp.sceneInputContextIds.find(key);
+    if (found != imp.sceneInputContextIds.end()) {
+        imp.sceneInputContextIdUses.splice(imp.sceneInputContextIdUses.begin(), imp.sceneInputContextIdUses, found->second.use);
+
+        return found->second.id;
+    }
+    if (imp.sceneInputContextIds.size() >= kSceneInputContextIdsMax) {
+        imp.sceneInputContextIds.erase(imp.sceneInputContextIdUses.back());
+        imp.sceneInputContextIdUses.pop_back();
+    }
+    imp.sceneInputContextIdUses.push_front(key);
+    const U64 id = SceneEvaluationContext::makeId();
+    imp.sceneInputContextIds[key] = EffectInstance::Implementation::SceneInputContextIdsEntry { id, imp.sceneInputContextIdUses.begin() };
+
+    return id;
+}
+
+SceneEvaluationContext
+EffectInstance::getEvaluatedSceneInputContext(int inputNb,
+                                              const SceneEvaluationContext& ctx,
+                                              double time,
+                                              ViewIdx view) const
+{
+    // evaluateScene() always has a reach to compare, so one stands in when ctx has none.
+    SceneEvaluationContext asked = ctx;
+    if (!asked.reach) {
+        asked.reach = std::make_shared<SceneLoadReach>();
+    }
+    SceneEvaluationContext mapped = getSceneInputContext(inputNb, asked, time, view);
+    if (mapped.hasSameLoadSet(asked) && (mapped.reach == asked.reach)) {
+        return ctx;
+    }
+    mapped.id = getSceneInputContextId(ctx.id, inputNb);
+    mapped.reach.reset();
+
+    return mapped;
+}
 
 NATRON_NAMESPACE_EXIT

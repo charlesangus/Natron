@@ -442,9 +442,17 @@ public:
     mutable QMutex renderClonesMutex;
     std::list<EffectInstancePtr> renderClonesPool;
     // The id of each scene input context mapped onto another load set, by the id of the
-    // context it was mapped from and the input number. Kept on the main instance.
+    // context it was mapped from and the input number, the most recently used first and at most
+    // kSceneInputContextIdsMax of them: viewers and menu refreshes make contexts that are never
+    // retired. Kept on the main instance.
+    typedef std::pair<U64, int> SceneInputContextKey;
+    struct SceneInputContextIdsEntry {
+        U64 id;
+        std::list<SceneInputContextKey>::iterator use;
+    };
     QMutex sceneInputContextIdsMutex;
-    std::map<std::pair<U64, int>, U64> sceneInputContextIds;
+    std::list<SceneInputContextKey> sceneInputContextIdUses;
+    std::map<SceneInputContextKey, SceneInputContextIdsEntry> sceneInputContextIds;
     bool mustSyncPrivateData; //!< true if the effect's knobs were changed but instanceChanged could not be called (e.g. when loading a PyPlug), so that syncPrivateData should be called before the main-thread time-invariant derivation calls the clip preferences
     mutable QMutex mustSyncPrivateDataMutex; //!< protects mustSyncPrivateData
 

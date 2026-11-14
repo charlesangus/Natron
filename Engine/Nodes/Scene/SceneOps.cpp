@@ -897,9 +897,11 @@ getLoadRules(const SceneLoadSet* loadSet)
         entries.emplace_back(path, rule);
     }
     // USD loads the ancestors of every path a rule loads, so an OnlyRule above another loading
-    // rule says nothing; and UsdStageLoadRules::Minimize() drops an OnlyRule nested under
-    // another as redundant, which would unload the inner path. Keeping only the innermost
-    // OnlyRule of a chain is equivalent and survives Minimize().
+    // rule says nothing for its own path; and UsdStageLoadRules::Minimize() drops an OnlyRule
+    // nested under another as redundant, which would unload the inner path. Keeping only the
+    // innermost OnlyRule of a chain is equivalent and survives Minimize(), but only where the
+    // rule inherited from above excludes the siblings anyway: under an AllRule or no rule, the
+    // OnlyRule is what keeps the siblings of the inner path unloaded.
     std::sort(entries.begin(), entries.end(), [](const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& a, const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& b) {
         return a.first < b.first;
     });
@@ -907,7 +909,14 @@ getLoadRules(const SceneLoadSet* loadSet)
     kept.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
         bool implied = false;
-        if (entries[i].second == PXR_NS::UsdStageLoadRules::OnlyRule) {
+        bool inheritsExclusion = false;
+        for (std::size_t j = i; j > 0; --j) {
+            if (entries[i].first.HasPrefix(entries[j - 1].first)) {
+                inheritsExclusion = (entries[j - 1].second != PXR_NS::UsdStageLoadRules::AllRule);
+                break;
+            }
+        }
+        if (inheritsExclusion && (entries[i].second == PXR_NS::UsdStageLoadRules::OnlyRule)) {
             // Sorted, so the paths below entries[i] follow it.
             for (std::size_t j = i + 1; (j < entries.size()) && entries[j].first.HasPrefix(entries[i].first); ++j) {
                 if (entries[j].second != PXR_NS::UsdStageLoadRules::NoneRule) {

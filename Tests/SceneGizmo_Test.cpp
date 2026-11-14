@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Project.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -646,4 +647,34 @@ TEST_F(SceneTransformOwnerTest, AReplaceTransformOwnsThePrimsItsTypePredicateSel
     setMode("append");
     evaluate();
     EXPECT_EQ(_cube, findSceneTransformOwner(_transform, "/Box", SceneEvaluationContext()));
+}
+
+TEST_F(SceneTransformOwnerTest, AReplaceTransformUpstreamOfAGraftOwnsTheGraftedPrim)
+{
+    CreateNodeArgs graftArgs(PLUGINID_NATRON_USDXFORMPRIM, _app->getProject());
+    NodePtr graft = _app->createNode(graftArgs);
+    ASSERT_TRUE(bool(graft));
+    KnobString* graftPath = dynamic_cast<KnobString*>(graft->getKnobByName(kSceneParamPrimPath).get());
+    ASSERT_TRUE(graftPath != NULL);
+    graftPath->setValue(std::string("/Grp"));
+    ASSERT_TRUE(graft->connectInput(_transform, 0));
+    setMode("replace");
+    setPattern("/Box");
+
+    const SceneLoadSetPtr loadSet = std::make_shared<const SceneLoadSet>(std::vector<SceneLoadSet::Entry>({ { "/", SceneLoadSet::eRuleNone }, { "/Grp/Box", SceneLoadSet::eRuleAll } }));
+    const SceneEvaluationContext viewer(SceneEvaluationContext::makeId(), loadSet, std::make_shared<SceneLoadReach>());
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              graft->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), viewer), &payload, &error))
+        << error;
+
+    // A later evaluation of the transform alone, on a cube moved away, matches nothing, so only
+    // the viewer's own result, under the id the graft mapped its context to, finds the prim.
+    KnobString* cubePath = dynamic_cast<KnobString*>(_cube->getKnobByName(kSceneParamPrimPath).get());
+    ASSERT_TRUE(cubePath != NULL);
+    cubePath->setValue(std::string("/Other"));
+    evaluate();
+
+    EXPECT_EQ(_transform, findSceneTransformOwner(graft, "/Grp/Box", SceneEvaluationContext(viewer.id, viewer.loadSet)));
 }

@@ -28,8 +28,8 @@
 #include <algorithm>
 #include <list>
 #include <mutex>
+#include <set>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <QCoreApplication>
@@ -171,6 +171,7 @@ struct USDEditTransform::Implementation {
     PrimPatternCache patternMatches;
     // The request whose result the button applies. Under lock.
     std::shared_ptr<CentrePivotJob> pivotJob;
+    SceneWorker pivotWorker;
 
     // The result of context, or null. Call with lock held.
     const Result* find(U64 context) const
@@ -199,6 +200,13 @@ USDEditTransform::USDEditTransform(NodePtr node)
 
 USDEditTransform::~USDEditTransform()
 {
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (_imp->pivotJob) {
+            _imp->pivotJob->cancel();
+        }
+    }
+    _imp->pivotWorker.stop();
 }
 
 const NodeSpec*
@@ -345,6 +353,9 @@ USDEditTransform::transformsPrim(const std::string& primPath,
     {
         std::lock_guard<std::mutex> l(_imp->lock);
         const Implementation::Result* result = _imp->find(context.id);
+        if (!result) {
+            result = _imp->latest();
+        }
         if (!result) {
             return false;
         }
@@ -526,6 +537,8 @@ computeCentre(const CentreSnapshot& snapshot,
     PXR_NS::UsdGeomBBoxCache bboxes(time, { PXR_NS::UsdGeomTokens->default_, PXR_NS::UsdGeomTokens->render, PXR_NS::UsdGeomTokens->proxy }, true);
     PXR_NS::GfRange3d range;
     int unmeasured = 0;
+    // Several matches can sit under one unloaded payload; its hint is counted once.
+    std::set<PXR_NS::SdfPath> hintedAncestors;
     for (const PXR_NS::SdfPath& path : snapshot.matches) {
         if (job->isCancelled()) {
             job->finish(CentrePivotJob::eStateFailed, nullptr, std::string());
@@ -535,7 +548,16 @@ computeCentre(const CentreSnapshot& snapshot,
         // A match inside a payload the load set leaves unloaded is not on the stage.
         const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
         if (!prim) {
-            ++unmeasured;
+            PXR_NS::UsdPrim ancestor;
+            for (PXR_NS::SdfPath at = path.GetParentPath(); !at.IsEmpty() && !ancestor; at = at.GetParentPath()) {
+                ancestor = stage->GetPrimAtPath(at);
+            }
+            // The payload holding the match bounds it; nothing nearer is on the stage.
+            if (!ancestor || !ancestor.HasPayload() || ancestor.IsLoaded()) {
+                ++unmeasured;
+            } else if (hintedAncestors.insert(ancestor.GetPath()).second) {
+                addUnloadedHints(ancestor, time, *job, &range, &unmeasured);
+            }
             continue;
         }
         if (!prim.HasPayload() || prim.IsLoaded()) {
@@ -604,8 +626,12 @@ USDEditTransform::startCentrePivot(const SceneEvaluationContext* context)
 
     const bool noViewer = !context;
     NodeWPtr weakNode = getNode();
-    std::thread([job, snapshot, noViewer, weakNode]() {
-        computeCentre(*snapshot, job.get(), noViewer);
+    _imp->pivotWorker.post([job, snapshot, noViewer, weakNode]() {
+        try {
+            computeCentre(*snapshot, job.get(), noViewer);
+        } catch (...) {
+            job->finish(CentrePivotJob::eStateFailed, nullptr, std::string());
+        }
         if (QCoreApplication::instance()) {
             QMetaObject::invokeMethod(QCoreApplication::instance(), [job, weakNode]() {
                 NodePtr node = weakNode.lock();
@@ -613,7 +639,7 @@ USDEditTransform::startCentrePivot(const SceneEvaluationContext* context)
                 if (effect) {
                     effect->applyCentrePivot(job);
                 } }, Qt::QueuedConnection);
-        } }).detach();
+        } }, [job]() { job->finish(CentrePivotJob::eStateFailed, nullptr, std::string()); });
 
     return job;
 }

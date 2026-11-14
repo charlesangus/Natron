@@ -370,9 +370,119 @@ SceneMenuJob::finish(const Result& result)
     _done.notify_all();
 }
 
+struct SceneWorker::Implementation {
+    std::mutex lock;
+    std::condition_variable wake;
+    bool stopping = false;
+    bool pending = false;
+    Task pendingRun;
+    Task pendingDropped;
+    std::thread thread;
+
+    void loop()
+    {
+        for (;;) {
+            Task run;
+            {
+                std::unique_lock<std::mutex> l(lock);
+                wake.wait(l, [this]() { return stopping || pending; });
+                if (stopping) {
+                    return;
+                }
+                run.swap(pendingRun);
+                pendingDropped = Task();
+                pending = false;
+            }
+            try {
+                run();
+            } catch (...) {
+            }
+        }
+    }
+};
+
+namespace {
+void
+callDropped(const SceneWorker::Task& dropped)
+{
+    if (!dropped) {
+        return;
+    }
+    try {
+        dropped();
+    } catch (...) {
+    }
+}
+} // anonymous namespace
+
+SceneWorker::SceneWorker()
+    : _imp(std::make_shared<Implementation>())
+{
+}
+
+SceneWorker::~SceneWorker()
+{
+    stop();
+}
+
+void
+SceneWorker::post(const Task& run,
+                  const Task& dropped)
+{
+    Task replaced;
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (_imp->stopping) {
+            replaced = dropped;
+        } else {
+            if (_imp->pending) {
+                replaced.swap(_imp->pendingDropped);
+            }
+            _imp->pendingRun = run;
+            _imp->pendingDropped = dropped;
+            _imp->pending = true;
+            if (!_imp->thread.joinable()) {
+                std::shared_ptr<Implementation> imp = _imp;
+                _imp->thread = std::thread([imp]() { imp->loop(); });
+            }
+        }
+    }
+    _imp->wake.notify_one();
+    callDropped(replaced);
+}
+
+void
+SceneWorker::stop()
+{
+    Task dropped;
+    std::thread thread;
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        _imp->stopping = true;
+        if (_imp->pending) {
+            dropped.swap(_imp->pendingDropped);
+            _imp->pendingRun = Task();
+            _imp->pending = false;
+        }
+        thread.swap(_imp->thread);
+    }
+    _imp->wake.notify_one();
+    callDropped(dropped);
+    if (!thread.joinable()) {
+        return;
+    }
+    // A job whose captures held the owner's last reference stops it from the worker itself.
+    if (thread.get_id() == std::this_thread::get_id()) {
+        thread.detach();
+    } else {
+        thread.join();
+    }
+}
+
 struct SceneMenuRefresh::State {
     std::mutex lock;
     std::shared_ptr<SceneMenuJob> current;
+    SceneWorker worker;
     const U64 noViewerId = SceneEvaluationContext::makeId();
     const U64 mappedId = SceneEvaluationContext::makeId();
     // The rest is main thread only.
@@ -432,11 +542,13 @@ SceneMenuRefresh::setRerun(const RerunFunc& rerun)
 
 SceneMenuRefresh::~SceneMenuRefresh()
 {
-    std::lock_guard<std::mutex> l(_state->lock);
-
-    if (_state->current) {
-        _state->current->cancel();
+    {
+        std::lock_guard<std::mutex> l(_state->lock);
+        if (_state->current) {
+            _state->current->cancel();
+        }
     }
+    _state->worker.stop();
 }
 
 SceneEvaluationContext
@@ -444,10 +556,14 @@ SceneMenuRefresh::getContext(EffectInstance* effect,
                              bool* noViewer) const
 {
     SceneEvaluationContext context;
+    SceneEvaluationContext viewerContext;
 
-    *noViewer = !SceneNodeAuthoring::getShowingViewerContext(effect, &context);
+    *noViewer = !SceneNodeAuthoring::getShowingViewerContext(effect, &context, &viewerContext);
     if (*noViewer) {
         context = SceneEvaluationContext(_state->noViewerId, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    } else if (!context.hasSameLoadSet(viewerContext)) {
+        // A set mapped through the graph must not share the memos the viewer's own id keys.
+        context.id = _state->mappedId;
     }
     context.reach = std::make_shared<SceneLoadReach>();
 
@@ -486,7 +602,7 @@ SceneMenuRefresh::start(EffectInstance* effect,
     }
     std::weak_ptr<State> weakState = _state;
     std::weak_ptr<EffectInstance> weakEffect = effect ? effect->weak_from_this() : std::weak_ptr<EffectInstance>();
-    std::thread([job, work, apply, weakState, weakEffect]() {
+    _state->worker.post([job, work, apply, weakState, weakEffect]() {
         SceneMenuJob::Result result;
         if (!job->isCancelled()) {
             try {
@@ -504,8 +620,7 @@ SceneMenuRefresh::start(EffectInstance* effect,
             const EffectInstancePtr effect = weakEffect.lock();
             if (state && effect) {
                 apply(job);
-            } }, Qt::QueuedConnection);
-    }).detach();
+            } }, Qt::QueuedConnection); }, [job]() { job->finish(SceneMenuJob::Result()); });
 
     return job;
 }
@@ -922,24 +1037,42 @@ openLayerStage(const SceneLayerEdit& edit,
     return stage;
 }
 
+namespace {
+    bool
+    getPrimPathFrom(const std::string& value,
+                    PXR_NS::SdfPath* path,
+                    std::string* errorMessage)
+    {
+        if (PXR_NS::SdfPath::IsValidPathString(value)) {
+            const PXR_NS::SdfPath candidate(value);
+            if (candidate.IsAbsolutePath() && candidate.IsPrimPath()) {
+                *path = candidate;
+
+                return true;
+            }
+        }
+        *errorMessage = EffectInstance::tr("\"%1\" is not an absolute prim path such as /World/Prim.").arg(QString::fromStdString(value)).toStdString();
+
+        return false;
+    }
+} // anonymous namespace
+
 bool
 getPrimPath(const KnobStringPtr& knob,
             PXR_NS::SdfPath* path,
             std::string* errorMessage)
 {
-    const std::string value = knob ? knob->getValue() : std::string();
+    return getPrimPathFrom(knob ? knob->getValue() : std::string(), path, errorMessage);
+}
 
-    if (PXR_NS::SdfPath::IsValidPathString(value)) {
-        const PXR_NS::SdfPath candidate(value);
-        if (candidate.IsAbsolutePath() && candidate.IsPrimPath()) {
-            *path = candidate;
-
-            return true;
-        }
-    }
-    *errorMessage = EffectInstance::tr("\"%1\" is not an absolute prim path such as /World/Prim.").arg(QString::fromStdString(value)).toStdString();
-
-    return false;
+bool
+getPrimPath(const KnobStringPtr& knob,
+            double time,
+            ViewIdx view,
+            PXR_NS::SdfPath* path,
+            std::string* errorMessage)
+{
+    return getPrimPathFrom(knob ? knob->getValueAtTime(time, 0, view) : std::string(), path, errorMessage);
 }
 
 bool
@@ -1203,9 +1336,13 @@ namespace {
                      ViewIdx view,
                      std::map<const EffectInstance*, bool>* memo,
                      bool* hasRoute,
-                     SceneLoadSetPtr* united)
+                     SceneLoadSetPtr* united,
+                     U64* firstRouteId)
     {
         if (consumer == target) {
+            if (!*hasRoute) {
+                *firstRouteId = ctx.id;
+            }
             *united = *hasRoute ? SceneLoadSet::unite(*united, ctx.loadSet) : ctx.loadSet;
             *hasRoute = true;
 
@@ -1219,12 +1356,12 @@ namespace {
             }
             SceneEvaluationContext inputContext;
             try {
-                inputContext = consumer->getSceneInputContext_public(i, ctx, time, view);
+                inputContext = consumer->getEvaluatedSceneInputContext(i, ctx, time, view);
             } catch (...) {
                 // A mapping that fails is one nothing is known about, which is every payload.
                 inputContext = SceneEvaluationContext(ctx.id, SceneLoadSetPtr());
             }
-            mapThroughRoutes(input.get(), target, inputContext, time, view, memo, hasRoute, united);
+            mapThroughRoutes(input.get(), target, inputContext, time, view, memo, hasRoute, united, firstRouteId);
         }
     }
 } // anonymous namespace
@@ -1243,40 +1380,55 @@ mapContextDownToNode(const EffectInstance* consumer,
     }
     bool hasRoute = false;
     SceneLoadSetPtr united;
-    mapThroughRoutes(consumer, target, ctx, time, view, &memo, &hasRoute, &united);
-    *mapped = SceneEvaluationContext(ctx.id, united);
+    U64 firstRouteId = ctx.id;
+    mapThroughRoutes(consumer, target, ctx, time, view, &memo, &hasRoute, &united, &firstRouteId);
+    *mapped = SceneEvaluationContext(firstRouteId, united);
 
     return hasRoute;
 }
 
 bool
 getShowingViewerContext(EffectInstance* effect,
-                        SceneEvaluationContext* context)
+                        SceneEvaluationContext* context,
+                        SceneEvaluationContext* viewerContext)
 {
     const NodePtr node = effect ? effect->getNode() : NodePtr();
     if (!node) {
         return false;
     }
-    std::list<ViewerInstance*> viewers;
-    Node::getViewersDownstreamOf(std::list<NodePtr>(1, node), &viewers);
-    if (viewers.empty()) {
+    std::list<ViewerInstance*> downstream;
+    Node::getViewersDownstreamOf(std::list<NodePtr>(1, node), &downstream);
+    if (downstream.empty()) {
         return false;
     }
-    ViewerInstance* shown = viewers.front();
+    std::vector<ViewerInstance*> candidates;
     const AppInstancePtr app = effect->getApp();
-    const NodePtr active = app ? app->getActiveViewerNode() : NodePtr();
-    for (ViewerInstance* viewer : viewers) {
-        if (active && (viewer->getNode() == active)) {
-            shown = viewer;
-            break;
+    const std::list<NodePtr> recent = app ? app->getViewerNodesByRecentActivity() : std::list<NodePtr>();
+    for (const NodePtr& viewerNode : recent) {
+        for (ViewerInstance* viewer : downstream) {
+            if ((viewer->getNode() == viewerNode) && (std::find(candidates.begin(), candidates.end(), viewer) == candidates.end())) {
+                candidates.push_back(viewer);
+            }
         }
     }
-    const SceneEvaluationContext viewerContext = shown->getSceneEvaluationContext();
-    if (!mapContextDownToNode(shown, effect, viewerContext, effect->getCurrentTime(), ViewIdx(0), context)) {
-        *context = viewerContext;
+    for (ViewerInstance* viewer : downstream) {
+        if (std::find(candidates.begin(), candidates.end(), viewer) == candidates.end()) {
+            candidates.push_back(viewer);
+        }
+    }
+    const double time = effect->getCurrentTime();
+    for (ViewerInstance* viewer : candidates) {
+        const SceneEvaluationContext shown = viewer->getSceneEvaluationContext();
+        if (mapContextDownToNode(viewer, effect, shown, time, ViewIdx(0), context)) {
+            if (viewerContext) {
+                *viewerContext = shown;
+            }
+
+            return true;
+        }
     }
 
-    return true;
+    return false;
 }
 
 bool
@@ -1319,6 +1471,17 @@ getCameraInputContext(const SceneEvaluationContext& ctx,
     }
 
     return SceneEvaluationContext(ctx.id, SceneLoadSet::withPaths(std::make_shared<const SceneLoadSet>(SceneLoadSet::none()), std::vector<std::string>(1, cameraPath)));
+}
+
+SceneEvaluationContext
+getCameraMenuContext(const SceneEvaluationContext& ctx,
+                     const std::string& cameraPath)
+{
+    if (!PXR_NS::SdfPath::IsValidPathString(cameraPath) || !PXR_NS::SdfPath(cameraPath).IsAbsolutePath() || !PXR_NS::SdfPath(cameraPath).IsPrimPath()) {
+        return ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneLoadSet::withPaths(ctx.loadSet, std::vector<std::string>(1, cameraPath)), ctx.reach);
 }
 
 SceneEvaluationContext

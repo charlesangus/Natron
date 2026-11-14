@@ -132,7 +132,16 @@ private:
     bool getArcPaths(std::string* targetPath,
                      std::string* sourcePath) const;
 
+    // getArcPaths() with the knobs read at time and view.
+    bool getArcPaths(double time,
+                     ViewIdx view,
+                     std::string* targetPath,
+                     std::string* sourcePath) const;
+
     SourceEnum getSource() const;
+
+    SourceEnum getSource(double time,
+                         ViewIdx view) const;
     void refreshVisibility();
     void reloadFile();
 

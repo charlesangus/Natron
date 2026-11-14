@@ -564,8 +564,18 @@ findOwner(const NodePtr& node,
             }
         }
     }
+    const EffectInstancePtr effect = node->getEffectInstance();
     for (int i = 0; i < inputs; ++i) {
-        NodePtr found = findOwner(node->getInput(i), inputPath, context, visited);
+        // Each input is asked in the context its evaluation stored its result under.
+        SceneEvaluationContext inputContext = context;
+        if (effect) {
+            try {
+                inputContext = effect->getEvaluatedSceneInputContext(i, context, effect->getCurrentTime(), ViewIdx(0));
+            } catch (...) {
+                inputContext = context;
+            }
+        }
+        NodePtr found = findOwner(node->getInput(i), inputPath, inputContext, visited);
         if (found) {
             return found;
         }

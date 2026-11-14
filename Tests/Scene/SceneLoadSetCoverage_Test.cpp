@@ -1276,9 +1276,21 @@ TEST_F(SceneLoadSetCoverageTest, AUSDRenderReadsItsResolutionOpeningOnlyTheCamer
     ASSERT_TRUE(source && render);
     ASSERT_TRUE(render->connectInput(source, 0));
 
+    // The main thread reads the prim with nothing loaded; the worker it starts, like any reader
+    // off the main thread, opens the camera's building and no other.
     RectD rod;
     ASSERT_EQ(eStatusOK, render->getEffectInstance()->getRegionOfDefinition(render->getHashValue(), 1., RenderScale::identity, ViewIdx(0), &rod));
     EXPECT_EQ(RectD(0., 0., 320., 200.), rod);
+    EXPECT_LE(city.openedBuildings(), 1);
+
+    EffectInstance* effect = render->getEffectInstance().get();
+    const U64 hash = render->getHashValue();
+    const RectD offMain = std::async(std::launch::async, [effect, hash]() {
+        RectD r;
+        EXPECT_EQ(eStatusOK, effect->getRegionOfDefinition(hash, 2., RenderScale::identity, ViewIdx(0), &r));
+
+        return r; }).get();
+    EXPECT_EQ(RectD(0., 0., 320., 200.), offMain);
     EXPECT_LE(city.openedBuildings(), 1);
 }
 
@@ -1448,6 +1460,34 @@ TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnNothingLoadedUsesExtentsHintsAndO
     EXPECT_DOUBLE_EQ(2., centre[1]);
     EXPECT_DOUBLE_EQ(3., centre[2]);
     EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnMatchesInsideUnloadedPayloadsUsesThePayloadsHint)
+{
+    CarCity city(2, 2, true);
+    NodePtr source = reader(city);
+    NodePtr node = editTransform(source, "/World/Block_0/B_*/car_0");
+    ASSERT_TRUE(source && node);
+    USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+    ASSERT_TRUE(edit != nullptr);
+    const SceneEvaluationContext everything(SceneEvaluationContext::makeId(), SceneLoadSetPtr());
+    const SceneEvaluationContext none(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    std::string error;
+    ScenePayload payload;
+
+    // The matches come from a fully loaded evaluation; the pivot is taken where none is loaded.
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), everything), &payload, &error))
+        << error;
+    const int opened = city.openedBuildings();
+    std::shared_ptr<CentrePivotJob> job = edit->startCentrePivot(&none);
+    ASSERT_EQ(CentrePivotJob::eStateDone, job->wait()) << job->getError();
+    double centre[3];
+    job->getCentre(&centre[0], &centre[1], &centre[2]);
+    EXPECT_DOUBLE_EQ(1., centre[0]);
+    EXPECT_DOUBLE_EQ(2., centre[1]);
+    EXPECT_DOUBLE_EQ(3., centre[2]);
+    EXPECT_EQ(opened, city.openedBuildings());
 }
 
 TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnUnloadedPrimsWithoutHintsFailsAndOpensNoBuilding)

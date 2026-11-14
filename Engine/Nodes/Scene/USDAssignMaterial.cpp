@@ -265,14 +265,15 @@ USDAssignMaterial::getMaterialsScope() const
 SceneEvaluationContext
 USDAssignMaterial::getSceneInputContext(int inputNb,
                                         const SceneEvaluationContext& ctx,
-                                        double /*time*/,
-                                        ViewIdx /*view*/) const
+                                        double time,
+                                        ViewIdx view) const
 {
     if (inputNb != kUSDAssignMaterialInputMaterial) {
         return ctx;
     }
+    AppInstancePtr app = getApp();
 
-    return SceneNodeAuthoring::getSharedMaterialContext(ctx, getMaterialsScope());
+    return SceneNodeAuthoring::getSharedMaterialContext(ctx, app ? app->getProject()->getProjectMaterialsScope(time, view) : std::string());
 }
 
 void

@@ -367,15 +367,21 @@ USDVariant::renderScene(const SceneRenderActionArgs& args,
 
             return eStatusFailed;
         }
+        std::vector<std::string> unchecked;
         for (const PXR_NS::SdfPath& path : found.paths) {
             const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
             // The set may be authored inside a payload that is not loaded in this evaluation.
             if (!prim || (prim.HasAuthoredPayloads() && !prim.IsLoaded())) {
+                unchecked.push_back(path.GetString());
                 continue;
             }
             if (!prim.GetVariantSets().HasVariantSet(setName)) {
                 lacking.push_back(path.GetString());
             }
+        }
+        // Loading them would let the check see their sets.
+        if (args.context.reach && !unchecked.empty()) {
+            args.context.reach->add(unchecked);
         }
     }
     const std::vector<PXR_NS::SdfPath>& matches = found.paths;

@@ -179,6 +179,13 @@ bool getPrimPath(const KnobStringPtr& knob,
                  PXR_NS::SdfPath* path,
                  std::string* errorMessage);
 
+// getPrimPath() with the knob read at time and view.
+bool getPrimPath(const KnobStringPtr& knob,
+                 double time,
+                 ViewIdx view,
+                 PXR_NS::SdfPath* path,
+                 std::string* errorMessage);
+
 // Whether any dimension of knob has keyframes or an expression.
 bool isAnimated(const KnobIPtr& knob);
 
@@ -302,8 +309,9 @@ void mapSharedMaterialReach(SceneGraftMemo* memo,
 /**
  * @brief Sets *mapped to the context target evaluates on when consumer evaluates on ctx: ctx is
  * mapped through each node between them by getSceneInputContext(), and the sets of several routes
- * are united. False, leaving *mapped alone, when no scene input chain leads from consumer to
- * target.
+ * are united. Its id is the one target's evaluation on the first route stores its result under,
+ * so a set that differs from that route's is not to be evaluated on with it. False, leaving
+ * *mapped alone, when no scene input chain leads from consumer to target.
  **/
 bool mapContextDownToNode(const EffectInstance* consumer,
                           const EffectInstance* target,
@@ -314,11 +322,14 @@ bool mapContextDownToNode(const EffectInstance* consumer,
 
 /**
  * @brief The context of the viewer showing effect, for work on effect's scene done outside an
- * evaluation, mapped down to effect's own paths: the active viewer when its scene input reaches
- * effect, else the first viewer whose does. False, leaving *context alone, when no viewer shows effect. Main thread.
+ * evaluation, mapped down to effect's own paths: of the viewers whose scene input reaches effect,
+ * the most recently active, else the first. *viewerContext, when given, is set to that viewer's
+ * own context, unmapped. False, leaving both alone, when no viewer's scene input reaches effect.
+ * Main thread.
  **/
 bool getShowingViewerContext(EffectInstance* effect,
-                             SceneEvaluationContext* context);
+                             SceneEvaluationContext* context,
+                             SceneEvaluationContext* viewerContext = nullptr);
 
 /**
  * @brief Evaluates input at time on context into *scene for a menu refresh running as job, and
@@ -347,6 +358,14 @@ std::size_t countMenuUnsearched(const PXR_NS::UsdStageRefPtr& stage,
  **/
 SceneEvaluationContext getCameraInputContext(const SceneEvaluationContext& ctx,
                                              const std::string& cameraPath);
+
+/**
+ * @brief The context a camera menu searches a camera input on: what the viewer's ctx loads,
+ * so the cameras the viewer loaded are listed, and the payloads on the way to cameraPath, so
+ * the chosen camera is. ctx itself when cameraPath is not an absolute prim path.
+ **/
+SceneEvaluationContext getCameraMenuContext(const SceneEvaluationContext& ctx,
+                                            const std::string& cameraPath);
 
 /**
  * @brief One collection-based material binding authorCollectionBinding() writes on a root prim.

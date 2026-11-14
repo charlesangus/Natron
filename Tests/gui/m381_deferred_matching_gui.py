@@ -379,24 +379,35 @@ try:
         end_window("editing the pattern and filling the menus with the USDVariant panel open")
 
         check(options(variant, "variantSets") == [UNSEARCHED_ID], "the Variant Sets menu holds only the unsearched entry (got %r)" % (options(variant, "variantSets"),))
-        for knob in ("variantSets", "variants"):
-            box, items = combo_texts(variant, knob)
+        def refuses_unsearched(node, knob):
+            box, items = combo_texts(node, knob)
             check(box is not None and any(UNSEARCHED_TEXT in i for i in items),
                   "the %s combo shows an 'N unloaded branches not searched' entry (items %r)" % (knob, items))
             if box is not None:
                 index = [n for n, i in enumerate(items) if UNSEARCHED_TEXT in i][0]
-                before = variant.getParam(knob).getValue()
+                before = node.getParam(knob).getValue()
                 box.setCurrentIndex(index)
                 QApplication.processEvents()
-                check(variant.getParam(knob).getValue() == before, "the %s combo refuses the unsearched entry (disabled)" % knob)
-        notes = [i for i in options(settings, "camera") if i == UNSEARCHED_ID]
-        report("NOTE USDRenderSettings camera menu: %r" % (options(settings, "camera"),) + (" (unsearched entry present)" if notes else ""))
+                check(node.getParam(knob).getValue() == before, "the %s combo refuses the unsearched entry (disabled)" % knob)
+
+        for knob in ("variantSets", "variants"):
+            refuses_unsearched(variant, knob)
+        camera_options = options(settings, "camera")
+        check(CAMERA in camera_options and UNSEARCHED_ID in camera_options,
+              "the camera menu lists %s and the unsearched entry (got %r)" % (CAMERA, camera_options))
+        opened = yield from open_panel(settings)
+        check(opened, "the USDRenderSettings panel opens again")
+        yield ("sleep", SETTLE_MS)
+        refuses_unsearched(settings, "camera")
+        opened = yield from open_panel(variant)
+        check(opened, "the USDVariant panel opens again")
+        yield ("sleep", SETTLE_MS)
         check(opened_buildings() == [], "filling the menus opens no building's layer (got %d)" % len(opened_buildings()))
         check(load_edits() == 0, "filling the menus loads nothing in the viewer (load edits %r)" % (load_edits(),))
         shot("m381-menus-unloaded.png")
 
-        # 2. One building loaded in the viewer. The load itself is the Scene Graph panel's and the
-        # viewer's; the window starts once it has committed, which is what sends the menus to refill.
+        # 2. One building loaded in the viewer from the Scene Graph panel. The window starts before
+        # the twirl that commits the load, so that the refill it sends lands inside the window.
         section("menus after a load")
         home = view()
         while home is not None and home.metaObject().className().split("::")[-1] != "TabWidget":
@@ -417,12 +428,12 @@ try:
         target_view = view()
         require(target_row.isValid() and target_tree is not None and target_view is not None, "the target's row and the scene view are found")
         edits = load_edits()
+        require(VARIANT_SET not in options(variant, "variantSets"),
+                "the Variant Sets menu has not refilled before the load (got %r)" % (options(variant, "variantSets"),))
+        window.start()
         target_tree.expand(target_row)
         ok = yield ("until", lambda: target_view.property("natronSceneLoadEdits") != edits, POLL_TIMEOUT_S)
         check(ok, "the load moves the viewer's load edits (%r, then %r)" % (edits, load_edits()))
-        window.start()
-        refilled = VARIANT_SET in options(variant, "variantSets")
-        report("NOTE the Variant Sets menu had %srefilled when the window started" % ("" if refilled else "not "))
         ok = yield ("until", lambda: VARIANT_SET in options(variant, "variantSets"), POLL_TIMEOUT_S)
         check(ok, "the Variant Sets menu refills with %r (got %r)" % (VARIANT_SET, options(variant, "variantSets")))
         ok = yield ("until", lambda: set(VARIANTS) <= set(options(variant, "variants")), POLL_TIMEOUT_S)

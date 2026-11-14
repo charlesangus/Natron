@@ -161,6 +161,41 @@ ChoiceOption makeSceneUnsearchedOption(std::size_t unsearched,
 bool isSceneUnsearchedOption(const std::string& id);
 
 /**
+ * @brief One thread that runs a node's scene jobs one at a time, started on the first post().
+ * It holds the running job and at most one waiting: a post() replaces the waiting one, which is
+ * then dropped. stop() drops the waiting job and joins the thread once the running one returns,
+ * so the owner cancels that one first.
+ **/
+class SceneWorker {
+public:
+    typedef std::function<void()> Task;
+
+    SceneWorker();
+
+    // Calls stop().
+    ~SceneWorker();
+
+    SceneWorker(const SceneWorker&) = delete;
+    SceneWorker& operator=(const SceneWorker&) = delete;
+
+    /**
+     * @brief Queues run. dropped is called instead when run is replaced before it starts or the
+     * worker stops first, so whoever waits on the job is released. After stop(), dropped is
+     * called at once.
+     **/
+    void post(const Task& run,
+              const Task& dropped);
+
+    // Main thread or the owner's destruction. Idempotent.
+    void stop();
+
+private:
+    struct Implementation;
+    // Shared with the thread, which may outlive the worker when the worker is stopped from it.
+    std::shared_ptr<Implementation> _imp;
+};
+
+/**
  * @brief One refresh of a menu filled from a scene, run on a worker: the names it found, list by
  * list as the node fills its menus, and how many unloaded branches it did not search.
  **/
@@ -238,8 +273,8 @@ public:
     /**
      * @brief The context a refresh of effect's menus searches in: that of the viewer showing
      * effect (SceneNodeAuthoring::getShowingViewerContext()), else nothing loaded, with
-     * *noViewer set. It has a reach of its own, which gathers what the search depends on. Main
-     * thread.
+     * *noViewer set; a set the graph maps away from the viewer's own gets getMappedContextId().
+     * It has a reach of its own, which gathers what the search depends on. Main thread.
      **/
     SceneEvaluationContext getContext(EffectInstance* effect,
                                       bool* noViewer) const;

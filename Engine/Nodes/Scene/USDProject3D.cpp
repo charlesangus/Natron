@@ -317,7 +317,7 @@ USDProject3D::refreshCameraMenu()
     const double time = getCurrentTime();
     SceneEvaluationContext context = viewerContext;
     if (input) {
-        context = getSceneInputContext(inputNb, viewerContext, time, ViewIdx(0));
+        context = SceneNodeAuthoring::getCameraMenuContext(viewerContext, _camera.getPath());
         if (!context.hasSameLoadSet(viewerContext)) {
             context.id = _cameraMenuRefresh.getMappedContextId();
         }

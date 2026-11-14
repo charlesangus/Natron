@@ -159,6 +159,7 @@ public:
     virtual void setLastViewerUsingTimeline(const NodePtr& node) OVERRIDE FINAL;
     virtual ViewerInstance* getLastViewerUsingTimeline() const OVERRIDE FINAL;
     virtual NodePtr getActiveViewerNode() const OVERRIDE FINAL;
+    virtual std::list<NodePtr> getViewerNodesByRecentActivity() const OVERRIDE FINAL;
 
     void discardLastViewerUsingTimeline();
 

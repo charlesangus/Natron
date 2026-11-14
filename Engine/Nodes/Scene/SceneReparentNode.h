@@ -153,6 +153,14 @@ private:
                       std::string* moved,
                       bool* autoRename) const;
 
+    // getPlacement() with the knobs read at time and view.
+    bool getPlacement(double time,
+                      ViewIdx view,
+                      bool* wrapping,
+                      std::string* destination,
+                      std::string* moved,
+                      bool* autoRename) const;
+
     std::string getPassThroughRoot() const;
 
     bool authorOverrides(const SceneLayerEdit& edit,

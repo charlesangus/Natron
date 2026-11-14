@@ -524,6 +524,15 @@ protected:
         return render->activeRenderer(1., ViewIdx(0), &id, error) ? id : std::string();
     }
 
+    // Refreshes effect's Settings Prim menu and waits for its entries.
+    static void refreshSettingsPrimMenuOf(USDRender* effect)
+    {
+        const std::shared_ptr<SceneMenuJob> job = effect->refreshSettingsPrimMenu();
+        ASSERT_TRUE(job != nullptr);
+        job->wait();
+        EXPECT_TRUE(effect->applySettingsPrimMenu(job));
+    }
+
     // The node's output format as its region of definition at frame 1.
     static RectD rodOf(const NodePtr& node)
     {
@@ -554,7 +563,7 @@ TEST_F(USDRenderNodeTest, TheSettingsPrimMenuListsTheScenesRenderSettingsPrims)
     ASSERT_TRUE(node != nullptr);
     USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshSettingsPrimMenu();
+    refreshSettingsPrimMenuOf(effect);
     KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
     ASSERT_TRUE(settingsPrim);
     const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
@@ -838,7 +847,7 @@ TEST_F(USDRenderRendererTest, TheSettingsPrimKnobBeatsTheStageMetadata)
 
     USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshSettingsPrimMenu();
+    refreshSettingsPrimMenuOf(effect);
     KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
     ASSERT_TRUE(settingsPrim);
     const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
@@ -967,7 +976,7 @@ TEST_F(USDRenderRendererTest, AHandWrittenRenderSettingsPrimIsHonoured)
 
     USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshSettingsPrimMenu();
+    refreshSettingsPrimMenuOf(effect);
     KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
     ASSERT_TRUE(settingsPrim);
     const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();

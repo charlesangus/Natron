@@ -1904,6 +1904,22 @@ public:
         return getSceneInputContext(inputNb, ctx, time, view);
     }
 
+    /**
+     * @brief The context input inputNb evaluates on when this node evaluates on ctx, with the id
+     * evaluateScene() gives it, so that a caller outside an evaluation finds what that evaluation
+     * stored for the input. Its reach is ctx's when the input shares ctx's, else null.
+     **/
+    SceneEvaluationContext getEvaluatedSceneInputContext(int inputNb,
+                                                         const SceneEvaluationContext& ctx,
+                                                         double time,
+                                                         ViewIdx view) const;
+
+private:
+    // The id evaluateScene() gives input inputNb when it maps ctxId's context onto another load set.
+    U64 getSceneInputContextId(U64 ctxId,
+                               int inputNb) const;
+
+public:
 protected:
 /**
  * @brief Can be overloaded to indicates whether the effect is an identity, i.e it doesn't produce

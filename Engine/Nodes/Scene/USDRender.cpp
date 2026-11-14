@@ -54,6 +54,7 @@
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
+#include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -95,16 +96,32 @@ primIdKey(std::uint32_t hash)
 
     return std::string(kUSDRenderMetadataPrimIdPrefix) + hex;
 }
+
+// How many frames' settings summaries are kept under one hash.
+const std::size_t kMaxSettingsSummaries = 64;
+
+bool
+onMainThread()
+{
+    const QCoreApplication* app = QCoreApplication::instance();
+
+    return app && (QThread::currentThread() == app->thread());
+}
 } // anon namespace
 
 USDRender::USDRender(NodePtr node)
     : NativeEffectBase(node)
     , _settingsPrimMenuRefreshPending(false)
+    , _settingsNothingContextId(SceneEvaluationContext::makeId())
+    , _settingsPrimContextId(SceneEvaluationContext::makeId())
+    , _settingsCameraContextId(SceneEvaluationContext::makeId())
+    , _settingsSummariesHash(0)
     , _primIdTablesMutex()
     , _primIdTablesHash(0)
     , _primIdTables()
     , _primIdTablesMissed()
 {
+    _settingsPrimMenuRefresh.setRerun([this]() { return refreshSettingsPrimMenu(); });
 }
 
 USDRender::~USDRender()
@@ -264,44 +281,81 @@ USDRender::scheduleSettingsPrimMenuRefresh()
         refreshSettingsPrimMenu(); }, Qt::QueuedConnection);
 }
 
-void
+std::shared_ptr<SceneMenuJob>
 USDRender::refreshSettingsPrimMenu()
 {
-    KnobChoicePtr settingsPrim = _settingsPrim.lock();
-
-    if (!settingsPrim) {
-        return;
-    }
-    std::vector<ChoiceOption> options(1, ChoiceOption(kUSDRenderSettingsPrimStageDefault, tr("Stage Default").toStdString(), ""));
-    EffectInstancePtr input = getInput(0);
-    ScenePayload scene;
-    std::string error;
-    if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
+    bool noViewer = false;
+    const SceneEvaluationContext context = _settingsPrimMenuRefresh.getContext(this, &noViewer);
+    const EffectInstancePtr input = getInput(0);
+    const double time = getCurrentTime();
+    SceneMenuRefresh::WorkFunc work = [input, time, context](const SceneMenuJob& job,
+                                                             SceneMenuJob::Result* result) {
+        result->lists.resize(1);
         // Render settings prims live under /Render, which is all this reads.
-        const SceneLoadSetPtr renderOnly = std::make_shared<const SceneLoadSet>(std::vector<SceneLoadSet::Entry> {
-            SceneLoadSet::Entry { std::string("/"), SceneLoadSet::eRuleNone },
-            SceneLoadSet::Entry { std::string("/Render"), SceneLoadSet::eRuleAll } });
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, renderOnly, &error);
-        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        const PXR_NS::UsdPrim render = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/Render")) : PXR_NS::UsdPrim();
-        if (render) {
-            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(render)) {
-                if (prim.IsA<PXR_NS::UsdRenderSettings>()) {
-                    const std::string path = prim.GetPath().GetString();
-                    options.push_back(ChoiceOption(path, path, ""));
-                }
+        if (context.reach) {
+            context.reach->add(std::vector<std::string>(1, std::string("/Render")));
+        }
+        ScenePayload scene;
+        SceneQueryPool::Lease lease;
+        if (!SceneNodeAuthoring::borrowMenuScene(input, time, context, job, &scene, &lease)) {
+            return;
+        }
+        const PXR_NS::UsdPrim render = lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/Render"));
+        if (!render) {
+            return;
+        }
+        // Unloaded prims are walked too, to count the payloads left unsearched.
+        const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
+        PXR_NS::UsdPrimRange prims(render, predicate);
+        for (PXR_NS::UsdPrimRange::iterator it = prims.begin(); it != prims.end(); ++it) {
+            if (job.isCancelled()) {
+                return;
+            }
+            if (it->HasPayload() && !it->IsLoaded()) {
+                ++result->unsearched;
+                it.PruneChildren();
+                continue;
+            }
+            if (it->IsA<PXR_NS::UsdRenderSettings>()) {
+                result->lists[0].push_back(it->GetPath().GetString());
             }
         }
+    };
+
+    return _settingsPrimMenuRefresh.start(this, context, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applySettingsPrimMenu(job); });
+}
+
+bool
+USDRender::applySettingsPrimMenu(const std::shared_ptr<SceneMenuJob>& job)
+{
+    if (!_settingsPrimMenuRefresh.take(job)) {
+        return false;
+    }
+    KnobChoicePtr settingsPrim = _settingsPrim.lock();
+    if (!settingsPrim) {
+        return false;
+    }
+    const SceneMenuJob::Result result = job->getResult();
+    std::vector<ChoiceOption> options(1, ChoiceOption(kUSDRenderSettingsPrimStageDefault, tr("Stage Default").toStdString(), ""));
+    if (!result.lists.empty()) {
+        for (const std::string& path : result.lists[0]) {
+            options.push_back(ChoiceOption(path, path, ""));
+        }
+    }
+    if (result.unsearched > 0) {
+        options.push_back(makeSceneUnsearchedOption(result.unsearched, job->hasNoViewer()));
     }
     // Repopulating an unchanged menu would move the hash and come back here.
     const std::vector<ChoiceOption> current = settingsPrim->getEntries_mt_safe();
     bool same = current.size() == options.size();
     for (std::size_t i = 0; same && (i < options.size()); ++i) {
-        same = current[i].id == options[i].id;
+        same = (current[i].id == options[i].id) && (current[i].label == options[i].label);
     }
     if (!same) {
         settingsPrim->populateChoices(options);
     }
+
+    return true;
 }
 
 struct USDRender::ActiveSettings {
@@ -319,7 +373,7 @@ struct USDRender::ActiveSettings {
 bool
 USDRender::readActiveSettings(double time,
                               ViewIdx view,
-                              bool everything,
+                              SettingsLoadEnum load,
                               ActiveSettings* active,
                               std::string* error) const
 {
@@ -333,16 +387,24 @@ USDRender::readActiveSettings(double time,
     if (!input) {
         return failWith(tr("USDRender needs a scene on its Scene input.").toStdString());
     }
-    if (input->evaluateScene(EvaluateSceneArgs(time, view), &active->scene, error) != eRenderRoIRetCodeOk) {
-        if (error->empty()) {
-            *error = tr("The input scene could not be evaluated.").toStdString();
+    // The input scene evaluated on loadSet, under id; everything without one.
+    auto evaluate = [&](U64 id, const SceneLoadSetPtr& loadSet) {
+        const SceneEvaluationContext context = loadSet ? SceneEvaluationContext(id, loadSet) : SceneEvaluationContext();
+        active->lease.release();
+        active->stage.Reset();
+        if (input->evaluateScene(EvaluateSceneArgs(time, view, context), &active->scene, error) != eRenderRoIRetCodeOk) {
+            if (error->empty()) {
+                *error = tr("The input scene could not be evaluated.").toStdString();
+            }
+
+            return false;
+        }
+        if (active->scene.isEmpty()) {
+            return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
         }
 
-        return false;
-    }
-    if (active->scene.isEmpty()) {
-        return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
-    }
+        return true;
+    };
     auto borrowStage = [active, error](const SceneLoadSetPtr& loadSet) {
         active->lease.release();
         active->lease = SceneQueryPool::instance().borrow(active->scene, loadSet, error);
@@ -354,9 +416,9 @@ USDRender::readActiveSettings(double time,
         return bool(active->stage);
     };
     const std::string chosenPrim = settingsPrimOverride();
-    if (everything) {
+    if (load == eSettingsLoadEverything) {
         // A render draws the whole scene.
-        if (!borrowStage(SceneLoadSet::everything())) {
+        if (!evaluate(0, SceneLoadSetPtr()) || !borrowStage(SceneLoadSet::everything())) {
             return false;
         }
     } else {
@@ -364,20 +426,24 @@ USDRender::readActiveSettings(double time,
         // the prim and the camera it targets are opened one after the other, as the second is learned from the first.
         const SceneLoadSetPtr nothing = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
         std::string primPath = chosenPrim;
-        if (!borrowStage(nothing)) {
+        if (!evaluate(_settingsNothingContextId, nothing) || !borrowStage(nothing)) {
             return false;
         }
         if (primPath.empty() && active->stage->HasAuthoredMetadata(PXR_NS::UsdRenderTokens->renderSettingsPrimPath)) {
             active->stage->GetMetadata(PXR_NS::UsdRenderTokens->renderSettingsPrimPath, &primPath);
         }
-        if (!primPath.empty() && PXR_NS::SdfPath::IsValidPathString(primPath)) {
-            if (!borrowStage(SceneLoadSet::withPaths(nothing, { primPath }))) {
+        if ((load == eSettingsLoadSettingsPrim) && !primPath.empty() && PXR_NS::SdfPath::IsValidPathString(primPath)) {
+            const SceneLoadSetPtr primOnly = SceneLoadSet::withPaths(nothing, { primPath });
+            if (!evaluate(_settingsPrimContextId, primOnly) || !borrowStage(primOnly)) {
                 return false;
             }
             const PXR_NS::UsdRenderSettings found = RenderSettingsPrim::activePrim(active->stage, chosenPrim, nullptr);
             const PXR_NS::SdfPath camera = found ? RenderSettingsPrim::standardAttributes(found).camera : PXR_NS::SdfPath();
-            if (!camera.IsEmpty() && !borrowStage(SceneLoadSet::withPaths(nothing, { primPath, camera.GetString() }))) {
-                return false;
+            if (!camera.IsEmpty()) {
+                const SceneLoadSetPtr withCamera = SceneLoadSet::withPaths(nothing, { primPath, camera.GetString() });
+                if (!evaluate(_settingsCameraContextId, withCamera) || !borrowStage(withCamera)) {
+                    return false;
+                }
             }
         }
     }
@@ -409,6 +475,123 @@ USDRender::readActiveSettings(double time,
     return true;
 } // USDRender::readActiveSettings
 
+USDRender::SettingsSummary
+USDRender::summarizeSettings(double time,
+                             ViewIdx view,
+                             SettingsLoadEnum load) const
+{
+    SettingsSummary summary;
+    ActiveSettings active;
+
+    summary.read = readActiveSettings(time, view, load, &active, &summary.error);
+    if (summary.read) {
+        summary.error.clear();
+        summary.renderer = active.renderer;
+        summary.hasPrim = bool(active.prim);
+        if (summary.hasPrim) {
+            summary.width = active.standard.resolution[0];
+            summary.height = active.standard.resolution[1];
+            summary.pixelAspectRatio = active.standard.pixelAspectRatio;
+        }
+    }
+
+    return summary;
+}
+
+USDRender::SettingsSummary
+USDRender::getSettingsSummary(double time,
+                              ViewIdx view) const
+{
+    const std::pair<double, int> key(time, view.value());
+    const NodePtr node = getNode();
+    const U64 hash = node ? node->getHashValue() : 0;
+    {
+        std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+        if (hash != _settingsSummariesHash) {
+            _settingsSummariesHash = hash;
+            _settingsSummaries.clear();
+            _settingsSummariesGiven.clear();
+        }
+        std::map<std::pair<double, int>, SettingsSummary>::const_iterator found = _settingsSummaries.find(key);
+        if (found != _settingsSummaries.end()) {
+            return found->second;
+        }
+        // A worker already reads this one.
+        found = _settingsSummariesGiven.find(key);
+        if (onMainThread() && (found != _settingsSummariesGiven.end())) {
+            return found->second;
+        }
+    }
+    if (!onMainThread()) {
+        const SettingsSummary summary = summarizeSettings(time, view, eSettingsLoadSettingsPrim);
+        storeSettingsSummary(hash, time, view, summary);
+
+        return summary;
+    }
+    const SettingsSummary provisional = summarizeSettings(time, view, eSettingsLoadNothing);
+    {
+        std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+        if ((hash != _settingsSummariesHash) || !_settingsSummariesGiven.insert(std::make_pair(key, provisional)).second) {
+            return provisional;
+        }
+    }
+    const std::weak_ptr<const EffectInstance> weakThis = weak_from_this();
+    _settingsWorker.post([weakThis, hash, time, view]() {
+        const std::shared_ptr<const EffectInstance> effect = weakThis.lock();
+        const USDRender* render = dynamic_cast<const USDRender*>(effect.get());
+        if (!render) {
+            return;
+        }
+        const NodePtr node = render->getNode();
+        if (!node || (node->getHashValue() != hash)) {
+            std::lock_guard<std::mutex> locker(render->_settingsSummariesMutex);
+            render->_settingsSummariesGiven.erase(std::make_pair(time, view.value()));
+
+            return;
+        }
+        render->storeSettingsSummary(hash, time, view, render->summarizeSettings(time, view, eSettingsLoadSettingsPrim)); }, [weakThis, time, view]() {
+        const std::shared_ptr<const EffectInstance> effect = weakThis.lock();
+        if (const USDRender* render = dynamic_cast<const USDRender*>(effect.get())) {
+            std::lock_guard<std::mutex> locker(render->_settingsSummariesMutex);
+            render->_settingsSummariesGiven.erase(std::make_pair(time, view.value()));
+        } });
+
+    return provisional;
+} // USDRender::getSettingsSummary
+
+void
+USDRender::storeSettingsSummary(U64 hash,
+                                double time,
+                                ViewIdx view,
+                                const SettingsSummary& summary) const
+{
+    const std::pair<double, int> key(time, view.value());
+    bool differs = false;
+    {
+        std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+        // A summary of a scene that moved while it was read must not be served under the newer hash.
+        const NodePtr node = getNode();
+        if (!node || (node->getHashValue() != hash) || (hash != _settingsSummariesHash)) {
+            _settingsSummariesGiven.erase(key);
+
+            return;
+        }
+        if (_settingsSummaries.size() >= kMaxSettingsSummaries) {
+            _settingsSummaries.clear();
+        }
+        _settingsSummaries[key] = summary;
+        std::map<std::pair<double, int>, SettingsSummary>::iterator given = _settingsSummariesGiven.find(key);
+        if (given != _settingsSummariesGiven.end()) {
+            differs = !(given->second == summary);
+            _settingsSummariesGiven.erase(given);
+        }
+    }
+    if (differs) {
+        USDRender* self = const_cast<USDRender*>(this);
+        QMetaObject::invokeMethod(self, [self]() { self->invalidateOutputMetadata(); }, Qt::QueuedConnection);
+    }
+}
+
 bool
 USDRender::activeRenderer(double time,
                           ViewIdx view,
@@ -422,11 +605,13 @@ USDRender::activeRenderer(double time,
 
         return true;
     }
-    ActiveSettings active;
-    if (!readActiveSettings(time, view, false, &active, error)) {
+    const SettingsSummary summary = getSettingsSummary(time, view);
+    if (!summary.read) {
+        *error = summary.error;
+
         return false;
     }
-    *rendererId = active.renderer;
+    *rendererId = summary.renderer;
 
     return true;
 }
@@ -479,13 +664,12 @@ USDRender::outputFormat(double time,
                         RectI* format,
                         double* par) const
 {
-    ActiveSettings active;
-    std::string error;
+    const SettingsSummary summary = getSettingsSummary(time, view);
 
-    if (readActiveSettings(time, view, false, &active, &error) && active.prim) {
-        const int width = active.standard.resolution[0];
-        const int height = active.standard.resolution[1];
-        const double aspect = active.standard.pixelAspectRatio;
+    if (summary.read && summary.hasPrim) {
+        const int width = summary.width;
+        const int height = summary.height;
+        const double aspect = summary.pixelAspectRatio;
         if ((width > 0) && (height > 0) && (aspect > 0.)) {
             *format = RectI(0, 0, width, height);
             *par = aspect;
@@ -604,14 +788,6 @@ primIdTableOf(const PXR_NS::UsdStageRefPtr& stage)
     }
 
     return table;
-}
-
-bool
-onMainThread()
-{
-    const QCoreApplication* app = QCoreApplication::instance();
-
-    return app && (QThread::currentThread() == app->thread());
 }
 } // anon namespace
 
@@ -769,7 +945,7 @@ USDRender::prepareRender(double time,
     const NodePtr node = getNode();
     const U64 hash = node ? node->getHashValue() : 0;
     ActiveSettings active;
-    if (!readActiveSettings(time, view, true, &active, error)) {
+    if (!readActiveSettings(time, view, eSettingsLoadEverything, &active, error)) {
         return false;
     }
     // The output's primId table, which the main thread is never given the whole stage to read.

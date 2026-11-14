@@ -4832,6 +4832,13 @@ Project::getProjectMaterialsScope() const
     return validateMaterialsScope(_imp->materialsScope->getValue());
 }
 
+std::string
+Project::getProjectMaterialsScope(double time,
+                                  ViewIdx view) const
+{
+    return validateMaterialsScope(_imp->materialsScope->getValueAtTime(time, 0, view));
+}
+
 KnobPathPtr
 Project::getEnvVarKnob() const
 {

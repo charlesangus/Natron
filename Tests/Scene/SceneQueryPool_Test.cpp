@@ -438,3 +438,58 @@ TEST_F(SceneInputContextTest, ANodeReachedThroughAMappingAndDirectlyKeepsTwoSlot
         }
     }
 }
+
+TEST(SceneQueryPoolLoadSets, WithPathsKeepsWhatABaseWithNoRootRuleLoads)
+{
+    CarCity city(2, 3);
+    SceneQueryPool pool(1);
+    std::string error;
+    const SceneLoadSetPtr unloadedBlock = SceneLoadSet::minimal({ { "/World/Block_1", SceneLoadSet::eRuleNone } });
+    const SceneLoadSetPtr united = SceneLoadSet::unite(loadingOnly({ "/World/Block_0" }), withRules({ { "/World/Block_1", SceneLoadSet::eRuleNone } }));
+
+    for (const SceneLoadSetPtr& base : { unloadedBlock, united }) {
+        ASSERT_TRUE(bool(base));
+        ASSERT_TRUE(std::none_of(base->getEntries().begin(), base->getEntries().end(), [](const SceneLoadSet::Entry& entry) {
+            return entry.path == "/";
+        }));
+        const SceneLoadSetPtr set = SceneLoadSet::withPaths(base, { carPath(1, 0) });
+        ASSERT_TRUE(bool(set));
+        {
+            SceneQueryPool::Lease lease = pool.borrow(city.payload(), set, &error);
+            ASSERT_TRUE(lease.isValid()) << error;
+            EXPECT_EQ(city.openedBuildings(), 4);
+            EXPECT_TRUE(lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/World/Block_0/B_2")).IsLoaded());
+            EXPECT_TRUE(lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/World/Block_1/B_0")).IsLoaded());
+            EXPECT_FALSE(lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/World/Block_1/B_1")).IsLoaded());
+        }
+        pool.releaseIdle();
+    }
+}
+
+TEST(SceneQueryPoolLoadSets, AnOnlyRuleUnderEverythingKeepsItsSiblingsUnloaded)
+{
+    CarCity city(2, 3);
+    SceneQueryPool pool(1);
+    std::string error;
+    const std::vector<SceneLoadSetPtr> sets = {
+        withRules({ { "/World/Block_0", SceneLoadSet::eRuleOnly }, { "/World/Block_0/B_1", SceneLoadSet::eRuleAll } }),
+        withRules({ { "/", SceneLoadSet::eRuleAll }, { "/World/Block_0", SceneLoadSet::eRuleOnly }, { "/World/Block_0/B_1", SceneLoadSet::eRuleAll } }),
+    };
+
+    for (std::size_t i = 0; i < sets.size(); ++i) {
+        PXR_NS::UsdStageLoadRules rules = SceneOps::getLoadRules(sets[i].get());
+        PXR_NS::UsdStageLoadRules minimized = rules;
+        minimized.Minimize();
+        for (const PXR_NS::UsdStageLoadRules* r : { &rules, &minimized }) {
+            EXPECT_TRUE(r->IsLoaded(PXR_NS::SdfPath("/World/Block_0/B_1"))) << "set " << i;
+            EXPECT_FALSE(r->IsLoaded(PXR_NS::SdfPath("/World/Block_0/B_0"))) << "set " << i;
+            EXPECT_TRUE(r->IsLoaded(PXR_NS::SdfPath("/World/Block_1/B_0"))) << "set " << i;
+        }
+        {
+            SceneQueryPool::Lease lease = pool.borrow(city.payload(), sets[i], &error);
+            ASSERT_TRUE(lease.isValid()) << error;
+            EXPECT_EQ(city.openedBuildings(), 4) << "set " << i;
+        }
+        pool.releaseIdle();
+    }
+}

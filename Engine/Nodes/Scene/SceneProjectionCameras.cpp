@@ -220,6 +220,16 @@ moonRayFramePrimvar(const std::string& framePrimvar,
     return framePrimvar + "MoonRay" + std::to_string(part);
 }
 
+std::string
+cyclesReferencePresentPrimvar(const std::string& referencePrimvar)
+{
+    // Not under the reference points' own prefix, which names the per-vertex primvars only.
+    const std::string prefix("natronReferencePoints");
+    const std::string hold = (referencePrimvar.compare(0, prefix.size(), prefix) == 0) ? referencePrimvar.substr(prefix.size()) : referencePrimvar;
+
+    return "natronReferencePresent" + hold;
+}
+
 PXR_NS::GfVec3f
 moonRayFramePart(const PXR_NS::GfMatrix4d& frame,
                  int part)

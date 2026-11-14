@@ -231,9 +231,14 @@ public:
      * keeps its render state. Renders nothing on the main thread, which must never wait on a render.
      * A texture that cannot be rendered, there or elsewhere, stays missing, which every renderer
      * shows as kLiveTextureMissingColour, and its consumer gets a warning. Returns how many it could not render.
+     *
+     * Once aborted, called on the calling thread only, returns true, the texture being rendered is
+     * stopped and prepare() returns without the rest: what it did not finish is not a failure and
+     * warns no one, and a later prepare() renders it.
      **/
     int prepare(const LiveTextureSourceList& sources,
-                double frame);
+                double frame,
+                const std::function<bool()>& aborted = std::function<bool()>());
 
     /**
      * @brief The texture uri as a file a render delegate can read, with its mip chain, written the

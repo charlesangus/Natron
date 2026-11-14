@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <new>
@@ -43,6 +44,7 @@
 #include <QtCore/QCoreApplication>
 #include <QtCore/QThread>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -256,6 +258,7 @@ LiveTextureBufferConstPtr
 renderSource(const LiveTextureSource& source,
              double frame,
              ViewIdx view,
+             const AbortableRenderInfoPtr& abortInfo,
              std::string* failure)
 {
     NodePtr node = source.node.lock();
@@ -288,7 +291,7 @@ renderSource(const LiveTextureSource& source,
     }
     RectI rect;
     ImagePtr image;
-    const bool rendered = renderNodeImageOverWindow(node, frame, view, ImageLayerDesc::getRGBAComponents(), window.window, &image, &rect);
+    const bool rendered = renderNodeImageOverWindow(node, frame, view, ImageLayerDesc::getRGBAComponents(), window.window, &image, &rect, abortInfo);
     if (!rendered || (image && rect.isNull())) {
         *failure = node->getFullyQualifiedName() + " could not be rendered at frame " + frameText;
 
@@ -886,7 +889,8 @@ LiveTextureStore::getFailure(const std::string& uri) const
 
 int
 LiveTextureStore::prepare(const LiveTextureSourceList& sources,
-                          double frame)
+                          double frame,
+                          const std::function<bool()>& aborted)
 {
     // A render on the main thread would block the UI and could deadlock against it.
     QCoreApplication* app = QCoreApplication::instance();
@@ -930,13 +934,22 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         }
     }
 
+    const auto isAborted = [&aborted]() { return aborted && aborted(); };
     int numFailed = 0;
+    bool gaveUp = false;
     for (const LiveTextureSource& source : sources) {
         const std::string uri = source.getUri(frame);
         {
             std::unique_lock<std::mutex> lock(_mutex);
             // Another consumer rendering the same texture: wait for it rather than render twice.
-            _rendered.wait(lock, [&]() { return _rendering.find(uri) == _rendering.end(); });
+            const auto idle = [&]() { return _rendering.find(uri) == _rendering.end(); };
+            while (!idle() && !isAborted()) {
+                _rendered.wait_for(lock, kAbortPoll);
+            }
+            if (!idle()) {
+                gaveUp = true;
+                break;
+            }
             std::map<std::string, Entry>::iterator found = _entries.find(uri);
             if (found != _entries.end()) {
                 _uses.splice(_uses.begin(), _uses, found->second.use);
@@ -950,9 +963,12 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         // the caller may be in the middle of a render of its own (USDRender).
         std::string failure;
         LiveTextureBufferConstPtr buffer;
+        const AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        std::promise<void> finished;
+        std::future<void> done = finished.get_future();
         std::thread renderer([&]() {
             try {
-                buffer = renderSource(source, source.getSourceFrame(frame), kLiveTextureView, &failure);
+                buffer = renderSource(source, source.getSourceFrame(frame), kLiveTextureView, abortInfo, &failure);
             } catch (const std::exception& e) {
                 buffer.reset();
                 failure = e.what();
@@ -960,8 +976,21 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                 buffer.reset();
                 failure = "an unknown error occurred";
             }
+            finished.set_value();
         });
+        // aborted reads the caller's render state, so it is asked here, on the caller's thread.
+        while (aborted && (done.wait_for(kAbortPoll) != std::future_status::ready)) {
+            if (!abortInfo->isAborted() && aborted()) {
+                abortInfo->setAborted();
+            }
+        }
         renderer.join();
+        // A render stopped half way says nothing about the texture, so it is neither kept nor
+        // recorded as failed, and the next prepare() renders it again.
+        const bool stopped = abortInfo->isAborted();
+        if (stopped) {
+            buffer.reset();
+        }
         if (buffer) {
             insert(uri, buffer);
         }
@@ -971,18 +1000,22 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
             if (buffer) {
                 _failures.erase(uri);
                 addConsumerLocked(uri, source.consumer);
-            } else {
+            } else if (!stopped) {
                 recordFailureLocked(uri, failure);
             }
         }
         _rendered.notify_all();
 
-        if (!buffer) {
+        if (!buffer && !stopped) {
             ++numFailed;
             const NodePtr consumer = source.consumer.lock();
             if (consumer) {
                 consumer->setPersistentMessage(eMessageTypeWarning, fallbackWarning(uri, failure));
             }
+        }
+        if (stopped || isAborted()) {
+            gaveUp = true;
+            break;
         }
     }
 
@@ -994,7 +1027,10 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                 _pinned.erase(pin);
             }
         }
-        _lastPrepared.swap(uris);
+        // An abandoned prepare() leaves the last finished one's textures held for the frame on screen.
+        if (!gaveUp) {
+            _lastPrepared.swap(uris);
+        }
         evictLocked();
     }
 

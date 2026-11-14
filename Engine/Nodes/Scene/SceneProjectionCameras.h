@@ -76,6 +76,7 @@ bool computeProjector(const PXR_NS::UsdStageRefPtr& stage,
 #define kSceneProjectionCyclesPlateTransform "CyclesPlateTransform"
 #define kSceneProjectionCyclesPlateTexture "CyclesPlateTexture"
 #define kSceneProjectionCyclesReferencePoints "CyclesReferencePoints"
+#define kSceneProjectionCyclesReferencePresent "CyclesReferencePresent"
 std::string cyclesProjectorDot(int component);
 std::string cyclesProjectorOffset(int component);
 // The attribute node reading frameColumnPrimvar(..., column).
@@ -134,6 +135,13 @@ std::string moonRayFramePrimvar(const std::string& framePrimvar,
                                 int part);
 PXR_NS::GfVec3f moonRayFramePart(const PXR_NS::GfMatrix4d& frame,
                                  int part);
+
+/**
+ * @brief Cycles reads a missing attribute as zero, which a reference point at the world origin
+ * also reads as, so a prim carrying reference points also carries this constant float primvar,
+ * set to one, for the Cycles network to tell the two apart.
+ **/
+std::string cyclesReferencePresentPrimvar(const std::string& referencePrimvar);
 
 struct Unresolved {
     PXR_NS::SdfPath shader;

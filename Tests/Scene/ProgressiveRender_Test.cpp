@@ -49,9 +49,16 @@
 
 #include <gtest/gtest.h>
 
+#include <QtCore/QElapsedTimer>
+#include <QtCore/QThread>
+
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
@@ -1189,4 +1196,88 @@ TEST_F(ProgressiveRenderTest, MoonRayReturnsAtOnceFromChangesMidPass)
     }
     const bool cycles = bool(PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hdCycles"));
     interruptsMidPass(kMoonRayRendererId, MoonRaySettings::samplesKey(), cycles ? std::string(kRenderDelegateCyclesId) : std::string());
+}
+
+// A pass waiting on a texture export stops waiting when a change makes its engine again, and the
+// render goes on with a new engine, which asks for the texture afresh.
+TEST_F(ProgressiveRenderTest, AnEngineChangeCutsTheTextureExportThePassWaitsOn)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const long long kCutMs = 1000;
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["cycles:samples"] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+
+    // A source whose texture is rendering until the test ends it: an export of it waits.
+    CountingTestRegistry::reset();
+    std::atomic<bool> rendering(false);
+    CountingTestRegistry::setRenderHook([&rendering](const Node* node) {
+        rendering = true;
+        QElapsedTimer timer;
+        timer.start();
+        while (!node->aborted() && (timer.elapsed() < 20000)) {
+            QThread::msleep(5);
+        }
+    });
+    NodePtr slow = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(slow));
+    LiveTextureSource source;
+    source.node = slow;
+    source.nodeName = slow->getFullyQualifiedName();
+    source.layer = "rgba";
+    source.contentHash = slow->getEffectInstance()->getHash();
+    const std::string uri = source.getUri(1.);
+    std::atomic<bool> sourceAborted(false);
+    std::thread preparing([&source, &sourceAborted]() {
+        LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1., [&sourceAborted]() { return sourceAborted.load(); });
+    });
+    const bool started = waitUntil([&rendering]() { return rendering.load(); }, "the source's render");
+
+    struct Export {
+        std::atomic<bool> armed { false };
+        std::atomic<bool> entered { false };
+        std::atomic<bool> returned { false };
+    };
+    std::shared_ptr<Export> waiting = std::make_shared<Export>();
+    ProgressiveRender::setPassHook([waiting, uri]() {
+        if (!waiting->armed.exchange(false)) {
+            return;
+        }
+        waiting->entered = true;
+        (void)LiveTextureStore::instance().exportToSharedMemory(uri);
+        waiting->returned = true;
+    });
+    if (started) {
+        const std::uint64_t builds = HydraRender::getEngineBuildCount();
+        waiting->armed = true;
+        _render->invalidate();
+        EXPECT_TRUE(waitUntil([&waiting]() { return waiting->entered.load(); }, "the pass's export"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        EXPECT_FALSE(waiting->returned.load()) << "the export did not wait for the texture being rendered";
+
+        const std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
+        const std::size_t mark = publishedCount();
+        settings["cycles:samples"] = PXR_NS::VtValue(3);
+        _render->setSettings(settings);
+        EXPECT_TRUE(waitUntil([&waiting]() { return waiting->returned.load(); }, "the cut export"));
+        EXPECT_LT(millisecondsSince(asked), kCutMs) << "the export waited on through the change";
+        EXPECT_TRUE(LiveTextureStore::instance().getFailure(uri).empty()) << "a cut export is not a failure of the texture";
+
+        std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
+        EXPECT_TRUE(collectUntilDone(mark, &after));
+        EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
+    }
+
+    ProgressiveRender::setPassHook(std::function<void()>());
+    sourceAborted = true;
+    preparing.join();
+    CountingTestRegistry::reset();
+    EXPECT_TRUE(started) << "the source never started rendering";
 }

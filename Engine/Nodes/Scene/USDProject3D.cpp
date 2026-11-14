@@ -253,13 +253,14 @@ public:
             const ShaderSocket offset = combine("CyclesFrameOffsets", offsets[0], offsets[1], offsets[2]);
             position = vectorMath("CyclesFramePosition", "add", object, offset);
             if (!projection.referencePrimvar.empty()) {
-                // Cycles reads a missing attribute as zero and says no more, so a zero point is
-                // taken for a prim without reference points.
                 PXR_NS::UsdShadeShader reference = node(kSceneProjectionCyclesReferencePoints, "cycles_attribute");
                 setValue(reference, "attribute", PXR_NS::SdfValueTypeNames->String, PXR_NS::VtValue(projection.referencePrimvar));
                 const ShaderSocket point { reference, "vector" };
-                const ShaderSocket length = vectorMath("CyclesReferenceLength", "length", point, ShaderOperand(), ShaderOperand(), ShaderOperand(), "value");
-                const ShaderSocket present = math("CyclesReferencePresent", "greater_than", length, 0.f);
+                // A missing attribute reads as zero in every output, its alpha included, so only a
+                // primvar of its own can say a point at the origin is really there.
+                PXR_NS::UsdShadeShader presence = node(kSceneProjectionCyclesReferencePresent, "cycles_attribute");
+                setValue(presence, "attribute", PXR_NS::SdfValueTypeNames->String, PXR_NS::VtValue(SceneProjectionCameras::cyclesReferencePresentPrimvar(projection.referencePrimvar)));
+                const ShaderSocket present { presence, "fac" };
                 const ShaderSocket delta = vectorMath("CyclesReferenceDelta", "subtract", point, position);
                 position = vectorMath("CyclesReferencePosition", "multiply_add", delta, present, position);
             }

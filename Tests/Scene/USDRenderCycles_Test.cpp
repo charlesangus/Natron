@@ -59,6 +59,7 @@
 #include <QString>
 
 #include <pxr/base/plug/registry.h>
+#include <pxr/usd/usdGeom/points.h>
 
 #include "BaseTest.h"
 
@@ -2142,6 +2143,56 @@ TEST_F(USDRenderCyclesProjectionTest, GeometrySpaceHeldSticksToTheMovingCard)
     EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
     ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
     EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));
+}
+
+// One point 2 units wide at the world origin at the hold, frame 1, moved by its points to x 2.5
+// by frame 11. The projector is off by half a checker square, so the origin sees a red square's
+// middle and x 2.5 a blue one's: the point keeps the origin's red only if its reference point at
+// the origin is told apart from having none.
+TEST_F(USDRenderCyclesProjectionTest, AHeldPointAtTheOriginKeepsItsReferencePoint)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString file = tmp.path() + QString::fromUtf8("/point.usda");
+    const double moved = kProjectionBox * kProjectionUnitsPerPixel;
+    {
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(file.toStdString());
+        ASSERT_TRUE(bool(stage));
+        PXR_NS::UsdGeomPoints points = PXR_NS::UsdGeomPoints::Define(stage, PXR_NS::SdfPath("/Card"));
+        points.CreatePointsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f)), PXR_NS::UsdTimeCode(1.));
+        points.CreatePointsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f((float)moved, 0.f, 0.f)), PXR_NS::UsdTimeCode(11.));
+        points.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(1, 2.f));
+        points.SetWidthsInterpolation(PXR_NS::UsdGeomTokens->constant);
+        ASSERT_TRUE(stage->GetRootLayer()->Save());
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    const double halfSquare = moved / 2.;
+    ASSERT_TRUE(setTriple(graph.projectorCamera, kSceneParamTranslate, halfSquare, halfSquare, kProjectionCameraZ));
+    KnobChoice* space = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectionSpace);
+    KnobBool* useHold = knob<KnobBool>(graph.projector, kUSDProject3DParamUseFrameHold);
+    KnobDouble* hold = knob<KnobDouble>(graph.projector, kUSDProject3DParamFrameHold);
+    ASSERT_TRUE(space && useHold && hold);
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    useHold->setValue(true);
+    hold->setValue(1.);
+    const NodePtr assign = replaceCardWithCurves(graph, file);
+    ASSERT_TRUE(bool(assign));
+
+    RenderedPlane rgba;
+    ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
+    EXPECT_FALSE(assign->hasPersistentMessage()) << messageOf(assign);
+    const int centreX = (int)std::lround(kProjectionWidth / 2. + moved / kProjectionUnitsPerPixel);
+    const int centreY = kProjectionHeight / 2;
+    const RectI middle(centreX - 2, centreY - 2, centreX + 2, centreY + 2);
+    EXPECT_EQ(16, countIn(rgba, middle, eProjectedRed)) << "blue where the point takes its own position for a missing reference point";
 }
 
 // Linear curves, not a mesh: held in Geometry space, the plate rides on the projection's frame

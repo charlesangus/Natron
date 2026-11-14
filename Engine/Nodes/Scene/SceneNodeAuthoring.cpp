@@ -788,18 +788,33 @@ authorProjectionFrame(const PXR_NS::UsdPrim& prim,
 }
 
 namespace {
+    // The samples inside the range miss a value held into it from a sample outside, so its ends
+    // are read too.
+    std::vector<double>
+    getTimesOverRange(const PXR_NS::UsdAttribute& attribute,
+                      const SceneReferenceContext& context)
+    {
+        std::vector<double> times;
+        attribute.GetTimeSamplesInInterval(PXR_NS::GfInterval(context.firstTime, context.lastTime), &times);
+        times.push_back(context.firstTime);
+        times.push_back(context.lastTime);
+
+        return times;
+    }
+
     // By value: a cache can re-sample unchanged arrays, and USD then reports them as time-varying.
     template <typename ArrayType>
     bool
     holdsItsValueOverRange(const PXR_NS::UsdAttribute& attribute,
                            const SceneReferenceContext& context)
     {
+        if (!attribute || !attribute.HasValue()) {
+            return true;
+        }
         ArrayType reference;
         attribute.Get(&reference, context.holdTime);
-        std::vector<double> times;
-        attribute.GetTimeSamplesInInterval(PXR_NS::GfInterval(context.firstTime, context.lastTime), &times);
-        ArrayType value;
-        for (const double time : times) {
+        for (const double time : getTimesOverRange(attribute, context)) {
+            ArrayType value;
             if (!attribute.Get(&value, time) || (value != reference)) {
                 return false;
             }
@@ -829,8 +844,7 @@ namespace {
         }
         // Unchanged indices can still come with more or fewer unused points, and Storm drops a
         // vertex primvar whose size differs from the points'.
-        std::vector<double> times;
-        pointsAttribute.GetTimeSamplesInInterval(PXR_NS::GfInterval(context.firstTime, context.lastTime), &times);
+        const std::vector<double> times = getTimesOverRange(pointsAttribute, context);
         PXR_NS::VtVec3fArray value;
         for (const double time : times) {
             if (!pointsAttribute.Get(&value, time) || (value.size() != pointCount)) {
@@ -967,9 +981,11 @@ authorReferencePoints(const PXR_NS::UsdPrim& prim,
                       const SceneGeometryProjection& projection,
                       const PXR_NS::VtVec3fArray& points)
 {
-    const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(prim).CreatePrimvar(PXR_NS::TfToken(projection.referencePrimvar), PXR_NS::SdfValueTypeNames->Point3fArray, PXR_NS::UsdGeomTokens->vertex);
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+    const PXR_NS::UsdGeomPrimvar primvar = primvars.CreatePrimvar(PXR_NS::TfToken(projection.referencePrimvar), PXR_NS::SdfValueTypeNames->Point3fArray, PXR_NS::UsdGeomTokens->vertex);
+    const PXR_NS::UsdGeomPrimvar present = primvars.CreatePrimvar(PXR_NS::TfToken(SceneProjectionCameras::cyclesReferencePresentPrimvar(projection.referencePrimvar)), PXR_NS::SdfValueTypeNames->Float, PXR_NS::UsdGeomTokens->constant);
 
-    return primvar && primvar.Set(points);
+    return primvar && primvar.Set(points) && present && present.Set(1.f);
 }
 
 bool

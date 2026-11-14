@@ -1081,6 +1081,9 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
             for (int part = 0; part < 4; ++part) {
                 names.push_back(SceneProjectionCameras::moonRayFramePrimvar(geometryProjection.framePrimvar, part));
             }
+            if (!geometryProjection.referencePrimvar.empty()) {
+                names.push_back(SceneProjectionCameras::cyclesReferencePresentPrimvar(geometryProjection.referencePrimvar));
+            }
             for (const PXR_NS::UsdPrim& prim : prims) {
                 for (const std::string& name : names) {
                     locator.addAttribute(PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(name)).GetAttr(), &specs->properties);

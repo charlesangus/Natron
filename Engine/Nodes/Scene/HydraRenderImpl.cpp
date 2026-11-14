@@ -2689,6 +2689,10 @@ struct ProgressiveRender::Implementation {
     bool quit = false;
     // quit, read without the mutex by a texture export the pass is waiting on.
     std::atomic<bool> quitting { false };
+    // Bumped by each change that makes the engine again, read without the mutex by a texture
+    // export the pass is waiting on: the new engine syncs every material afresh, so the export
+    // cut short is asked for again.
+    std::atomic<std::uint64_t> engineChanges { 0 };
     // Bumped by each edit; a pass begun under another is not published.
     std::uint64_t generation = 0;
     bool pending = false;
@@ -3326,12 +3330,20 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         std::string renderFailure;
         std::string sessionFailure;
         std::shared_ptr<Frame> read;
+        const std::uint64_t passEngineChanges = engineChanges.load();
+        std::atomic<bool> exportCut { false };
         if (hasStage) {
             std::lock_guard<std::mutex> l(engineMutex);
             if (!workerStage) {
                 workerStage.reset(new SceneStage);
             }
-            const LiveTextureStore::ExportAbortScope exportAbort([this]() { return quitting.load(); });
+            const LiveTextureStore::ExportAbortScope exportAbort([this, passEngineChanges, &exportCut]() {
+                if (engineChanges.load() != passEngineChanges) {
+                    exportCut = true;
+                }
+
+                return exportCut.load() || quitting.load();
+            });
             (void)workerStage->syncTo(snapshot);
             {
                 std::function<void()> hook;
@@ -3389,6 +3401,15 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         lock.lock();
         if (quit) {
             break;
+        }
+        if (exportCut) {
+            // The engine has the missing-texture colour where the cut export's image goes, and
+            // a later edit need not touch that material again: only a new engine asks for it.
+            lock.unlock();
+            dropEngine();
+            lock.lock();
+            keepFrame = true;
+            continue;
         }
         if (!renderFailure.empty()) {
             // The engine is left in an unknown state: a retry builds a fresh one. Ahead of the
@@ -3547,6 +3568,7 @@ ProgressiveRender::setRenderer(const std::string& id)
         return;
     }
     _imp->renderer = id;
+    ++_imp->engineChanges;
     _imp->defaultMaxSamples = 0;
     _imp->failedRenderer.clear();
     _imp->status = Status();
@@ -3594,6 +3616,7 @@ ProgressiveRender::setSettings(const std::map<std::string, VtValue>& settings)
         return;
     }
     _imp->settings = settings;
+    ++_imp->engineChanges;
     ++_imp->sceneEdits;
     _imp->edited();
 }

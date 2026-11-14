@@ -64,6 +64,7 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
@@ -1523,6 +1524,15 @@ TEST_F(USDProject3DTest, AssignedHeldToAMovingMeshItAuthorsThePointsAtTheHold)
     SceneGeometryProjection projection;
     ASSERT_TRUE(SceneNodeAuthoring::readGeometryProjection(PXR_NS::UsdShadeMaterialBindingAPI(moving).ComputeBoundMaterial().GetPrim(), &projection));
     EXPECT_EQ(std::string("natronReferencePointsHold1"), projection.referencePrimvar);
+    // Cycles reads a missing reference point as the origin, so a separate primvar says it is there.
+    const PXR_NS::TfToken presentName(SceneProjectionCameras::cyclesReferencePresentPrimvar(projection.referencePrimvar));
+    const PXR_NS::UsdGeomPrimvar present = PXR_NS::UsdGeomPrimvarsAPI(moving).GetPrimvar(presentName);
+    float presentValue = 0.f;
+    ASSERT_TRUE(hasValue(present));
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->constant, present.GetInterpolation());
+    EXPECT_TRUE(present.Get(&presentValue));
+    EXPECT_EQ(1.f, presentValue);
+    EXPECT_FALSE(hasValue(PXR_NS::UsdGeomPrimvarsAPI(still).GetPrimvar(presentName)));
 
     getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(6.);
     stage = composeNode(assign);
@@ -1786,6 +1796,41 @@ TEST_F(USDProject3DTest, ChangingTopologyStaysRigidAndWarnsNamingThePrim)
         EXPECT_TRUE(getReferencePrimvars(prim).empty()) << name;
         EXPECT_TRUE(hasValue(getFramePrimvar(prim))) << name;
     }
+}
+
+// Faces sampled only before the project's range differ at a hold there from what the whole range
+// holds, which no sample inside the range shows.
+TEST_F(USDProject3DTest, TopologyDifferingOnlyAtTheRangesEndsFromTheHoldStaysRigidAndWarns)
+{
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomMesh mesh = defineRisingQuad(file, "/Remeshed", 0.f);
+        PXR_NS::VtIntArray indices;
+        ASSERT_TRUE(mesh.GetFaceVertexIndicesAttr().Get(&indices));
+        PXR_NS::VtIntArray swapped = indices;
+        std::swap(swapped[0], swapped[1]);
+        mesh.GetFaceVertexIndicesAttr().Set(swapped, PXR_NS::UsdTimeCode(first - 20.));
+        mesh.GetFaceVertexIndicesAttr().Set(indices, PXR_NS::UsdTimeCode(first - 10.));
+        defineRisingQuad(file, "/Fine", 5.f);
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Remeshed /Fine");
+    ASSERT_TRUE(bool(assign));
+    holdInGeometrySpace(projector, first - 15.);
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    const QString message = getMessage(assign);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Remeshed"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("/Fine"))) << message.toStdString();
+    EXPECT_TRUE(getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Remeshed"))).empty());
+    EXPECT_EQ((std::size_t)1, getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Fine"))).size());
 }
 
 TEST_F(USDProject3DTest, ADeformingMatchInsideAnInstanceWarnsAndTakesNoReferencePoints)

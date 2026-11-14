@@ -638,7 +638,7 @@ USDRender::prepareRender(double time,
 
     // Hydra reads live textures from the store and never renders them: render the frame's first.
     const LiveTextureSourceList liveTextures = SceneOps::getLiveTextures(active.scene);
-    LiveTextureStore::instance().prepare(liveTextures, time);
+    LiveTextureStore::instance().prepare(liveTextures, time, [this]() { return aborted(); });
     for (const LiveTextureSource& source : liveTextures) {
         setup->liveTextureUris.push_back(source.getUri(time));
     }

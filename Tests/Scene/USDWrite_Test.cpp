@@ -1088,7 +1088,7 @@ protected:
                                        const char* what)
     {
         for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
-            for (const char* needle : { "natronProjectionFrame", "natronReferencePoints", kUSDProject3DFrameReaderName, kUSDProject3DReferenceReaderName, kUSDProject3DInputGeometryFrame, kUSDProject3DInputReferencePoints, kUSDProject3DAttrFrameHold }) {
+            for (const char* needle : { "natronProjectionFrame", "natronReferencePoints", "natronReferencePresent", kUSDProject3DFrameReaderName, kUSDProject3DReferenceReaderName, kUSDProject3DInputGeometryFrame, kUSDProject3DInputReferencePoints, kUSDProject3DAttrFrameHold }) {
                 EXPECT_FALSE(file.second.contains(needle)) << what << " " << file.first.toStdString() << " holds " << needle;
             }
         }
@@ -1316,7 +1316,7 @@ TEST_F(USDWriteProjectionTest, ABakedProjectionDropsItsCyclesAndMoonRayNetworks)
         ASSERT_TRUE(bool(stage)) << c.dir;
 
         for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
-            for (const char* needle : { "cycles:", "moonray:", "cycles_", "AttributeMap", "OpMap", "natronProjectionFrame", "natronReferencePoints" }) {
+            for (const char* needle : { "cycles:", "moonray:", "cycles_", "AttributeMap", "OpMap", "natronProjectionFrame", "natronReferencePoints", "natronReferencePresent" }) {
                 EXPECT_FALSE(file.second.contains(needle)) << c.dir << " " << file.first.toStdString() << " holds " << needle;
             }
         }
@@ -1903,6 +1903,7 @@ TEST_F(USDWriteProjectionTest, ABakedProjectionLosesItsDataWhileAnUnbakedOneKeep
         for (const PXR_NS::UsdGeomPrimvar& primvar : PXR_NS::UsdGeomPrimvarsAPI(moving).GetPrimvars()) {
             EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronProjectionFrame")) << mode.first;
             EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronReferencePoints")) << mode.first;
+            EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronReferencePresent")) << mode.first;
         }
         const PXR_NS::UsdShadeMaterial baked = PXR_NS::UsdShadeMaterialBindingAPI(moving).ComputeBoundMaterial();
         ASSERT_TRUE(bool(baked)) << mode.first;

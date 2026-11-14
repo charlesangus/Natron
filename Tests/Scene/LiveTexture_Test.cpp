@@ -52,7 +52,11 @@
 
 #include <gtest/gtest.h>
 
+#include <QtCore/QElapsedTimer>
+#include <QtCore/QThread>
+
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -1522,4 +1526,123 @@ TEST_F(LiveTextureTest, AFullSharedMemoryKeepsTheHeldFileInTheNetwork)
     PXR_NS::HdMaterialNetwork2 unheld = makeTexturedNetwork(tooBig, "diffuseColor", "rgb");
     applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &unheld);
     EXPECT_FALSE(hasTextureNode(unheld));
+}
+
+namespace {
+const qint64 kSlowSourceMs = 20000;
+const qint64 kPromptPrepareMs = 2000;
+
+// A source whose render runs until it is aborted, and a consumer to warn.
+struct SlowSource {
+    NodePtr node;
+    NodePtr consumer;
+    LiveTextureSource source;
+    std::atomic<bool> rendering;
+
+    SlowSource(const NodePtr& counting,
+               const NodePtr& consumerNode)
+        : node(counting)
+        , consumer(consumerNode)
+        , rendering(false)
+    {
+        CountingTestRegistry::reset();
+        CountingTestRegistry::setRenderHook([this](const Node* rendered) {
+            rendering = true;
+            QElapsedTimer timer;
+            timer.start();
+            while (!rendered->aborted() && (timer.elapsed() < kSlowSourceMs)) {
+                QThread::msleep(5);
+            }
+        });
+        if (node) {
+            source.node = node;
+            source.consumer = consumer;
+            source.nodeName = node->getFullyQualifiedName();
+            source.layer = "rgba";
+            source.contentHash = node->getEffectInstance()->getHash();
+        }
+    }
+
+    ~SlowSource()
+    {
+        CountingTestRegistry::reset();
+    }
+
+    bool waitForRendering() const
+    {
+        QElapsedTimer started;
+        started.start();
+        while (!rendering && (started.elapsed() < kSlowSourceMs)) {
+            QThread::msleep(5);
+        }
+
+        return rendering.load();
+    }
+};
+} // anonymous namespace
+
+// A render cancelled while a source is rendering for it must not wait for that source.
+TEST_F(LiveTextureTest, AnAbortedPrepareStopsTheSourceAndRecordsNoFailure)
+{
+    SlowSource slow(createNode(QString::fromUtf8(kTestPluginIDCounting)), createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT)));
+    ASSERT_TRUE(bool(slow.node));
+    ASSERT_TRUE(bool(slow.consumer));
+    const std::string uri = slow.source.getUri(1.);
+
+    std::atomic<bool> aborted(false);
+    int numFailed = -1;
+    std::thread worker([&]() {
+        numFailed = LiveTextureStore::instance().prepare(LiveTextureSourceList(1, slow.source), 1.,
+                                                         [&aborted]() { return aborted.load(); });
+    });
+    EXPECT_TRUE(slow.waitForRendering()) << "the source never started rendering";
+
+    QElapsedTimer aborting;
+    aborting.start();
+    aborted = true;
+    worker.join();
+    EXPECT_LT(aborting.elapsed(), kPromptPrepareMs);
+    EXPECT_EQ(0, numFailed);
+    EXPECT_FALSE(LiveTextureStore::instance().contains(uri));
+    EXPECT_TRUE(LiveTextureStore::instance().getFailure(uri).empty());
+    EXPECT_FALSE(slow.consumer->hasPersistentMessage());
+
+    // Not remembered as failed: the next prepare renders it.
+    CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+    EXPECT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, slow.source), 1.));
+    EXPECT_TRUE(LiveTextureStore::instance().contains(uri));
+}
+
+// Waiting on another render's texture is cancelled as promptly as rendering one.
+TEST_F(LiveTextureTest, AnAbortedPrepareStopsWaitingForAnotherRendersTexture)
+{
+    SlowSource slow(createNode(QString::fromUtf8(kTestPluginIDCounting)), createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT)));
+    ASSERT_TRUE(bool(slow.node));
+    const std::string uri = slow.source.getUri(1.);
+
+    std::atomic<bool> firstAborted(false);
+    std::thread first([&]() {
+        LiveTextureStore::instance().prepare(LiveTextureSourceList(1, slow.source), 1.,
+                                             [&firstAborted]() { return firstAborted.load(); });
+    });
+    EXPECT_TRUE(slow.waitForRendering()) << "the source never started rendering";
+
+    std::atomic<bool> secondAborted(false);
+    int numFailed = -1;
+    std::thread second([&]() {
+        numFailed = LiveTextureStore::instance().prepare(LiveTextureSourceList(1, slow.source), 1.,
+                                                         [&secondAborted]() { return secondAborted.load(); });
+    });
+    QThread::msleep(100);
+
+    QElapsedTimer aborting;
+    aborting.start();
+    secondAborted = true;
+    second.join();
+    EXPECT_LT(aborting.elapsed(), kPromptPrepareMs);
+    EXPECT_EQ(0, numFailed);
+    EXPECT_TRUE(LiveTextureStore::instance().getFailure(uri).empty());
+
+    firstAborted = true;
+    first.join();
 }

@@ -301,11 +301,12 @@ renderNodeImageOverWindow(const NodePtr& node,
                           const ImageLayerDesc& layer,
                           const RectI& window,
                           ImagePtr* image,
-                          RectI* renderedRect)
+                          RectI* renderedRect,
+                          const AbortableRenderInfoPtr& abortInfo)
 {
     bool rendered;
 
-    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, AbortableRenderInfoPtr(), &rendered);
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, abortInfo, &rendered);
 
     return rendered;
 }

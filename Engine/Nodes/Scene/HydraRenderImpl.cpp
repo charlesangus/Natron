@@ -2524,6 +2524,12 @@ struct ProgressiveRender::Implementation {
     // Whether the engine has the headlight that stands in for the scene's lights while the rules
     // hide every one, as Storm's viewer lights such a scene.
     bool headlit = false;
+    // An engine made again because its delegate did not show a restart starts with the headlight
+    // its predecessor had. Its filter learns the stage's lights only in its first render, so finding
+    // the headlight missing after that pass would restart the render; that restart may come too
+    // soon after the delegate starts for its counts to show it, which makes the engine again, and
+    // so on without end on a loaded machine.
+    bool carriedHeadlight = false;
     bool paused = false;
     View engineView;
     bool engineHasView = false;
@@ -3131,7 +3137,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     }
                     appliedDrawEdits = passDrawEdits;
                 }
-                const bool headlight = wantsHeadlight(stage);
+                const bool headlight = carriedHeadlight || wantsHeadlight(stage);
+                carriedHeadlight = false;
                 if ((headlight != headlit) || (headlight && viewMoved)) {
                     applyHeadlight(headlight, v);
                 }
@@ -3206,9 +3213,12 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             restartSeen = samplesFell || clockFell || blind;
             if (!restartSeen && (now - restartTime >= kRestartUnseen)) {
                 // A new engine has no pixels from before to mistake for the restart's.
+                const bool lit = headlit;
                 lock.unlock();
                 dropEngine();
                 lock.lock();
+                carriedHeadlight = lit;
+                ++status.unseenRemakes;
                 keepFrame = true;
                 continue;
             }

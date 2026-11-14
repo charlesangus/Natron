@@ -389,6 +389,8 @@ public:
         // is made again when the delegate does not show it restarted within a bound, as a loaded
         // machine may not.
         std::uint64_t engines = 0;
+        // Of those, the ones made again for that bound alone, which no edit asked for.
+        std::uint64_t unseenRemakes = 0;
         std::uint64_t frames = 0;
         // Why the delegate cannot render, empty if it can.
         std::string error;

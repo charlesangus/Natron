@@ -503,6 +503,7 @@ protected:
         ASSERT_GT(keyRed, 0.02f) << "the key light does not light the near cube";
         ASSERT_LT(keyGreen, 0.1f * keyRed) << "something other than the red key lights the near cube";
         const U64 builds = HydraRender::getEngineBuildCount();
+        const U64 remakesBefore = _render->getStatus().unseenRemakes;
 
         rules[PXR_NS::SdfPath(kKey)] = SceneDrawFilter::eRuleHidden;
         _render->setDrawRules(rules);
@@ -550,7 +551,8 @@ protected:
         EXPECT_GT(everythingRed, 0.02f);
         EXPECT_LT(meanOver(*everything, c - 3, c + 3, c - 3, c + 3, 1, onNear(*everything)), 0.1f * everythingRed)
             << "the headlight stays with Render Everything on";
-        EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+        // Less the engines the worker makes again when a delegate is slow to show a restart.
+        EXPECT_EQ(builds + (_render->getStatus().unseenRemakes - remakesBefore), HydraRender::getEngineBuildCount());
     }
 
     // Waits for the render to finish from the mark-th frame on, and gives its last frame's prims.
@@ -1027,13 +1029,14 @@ TEST_F(ProgressiveRenderTest, CoalescesDrawChangesIntoOneRestart)
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
     ASSERT_TRUE(collectUntilDone(0, &frames));
     const U64 builds = HydraRender::getEngineBuildCount();
+    const U64 remakesBefore = _render->getStatus().unseenRemakes;
     hold(true);
     const std::size_t mark = publishedCount();
     SceneDrawDelta boxFar;
     boxFar.boxed.push_back("/World/Far");
     _render->applyDrawDeltas(std::vector<SceneDrawDelta> { boxFar });
     ASSERT_TRUE(waitUntil([this]() { return _held; }, "a frame with the far cube boxed"));
-    const U64 restartsRefining = _render->getRestartCount();
+    const ProgressiveRender::Status refining = _render->getStatus();
 
     SceneDrawDelta clearFar;
     clearFar.cleared.push_back("/World/Far");
@@ -1050,10 +1053,14 @@ TEST_F(ProgressiveRenderTest, CoalescesDrawChangesIntoOneRestart)
     hold(false);
     std::set<std::string> after;
     ASSERT_TRUE(pickedWhenDone(mark, &after));
-    EXPECT_EQ(restartsRefining + 1, _render->getRestartCount());
+    const ProgressiveRender::Status end = _render->getStatus();
+    // The worker makes its engine again when Cycles is slow to show a restart, a restart and an
+    // engine of its own that no draw change caused.
+    const U64 remade = end.unseenRemakes - refining.unseenRemakes;
+    EXPECT_EQ(refining.restarts + 1 + remade, end.restarts) << remade << " engine(s) made after the draw changes";
     EXPECT_FALSE(anyUnder(after, "/World/Near"));
     EXPECT_FALSE(anyUnder(after, "/World/Far"));
-    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    EXPECT_EQ(builds + (end.unseenRemakes - remakesBefore), HydraRender::getEngineBuildCount());
 }
 
 // Render Everything draws what the rules hide, and off again draws by them as before, all with
@@ -1073,6 +1080,7 @@ TEST_F(ProgressiveRenderTest, RenderEverythingIgnoresTheDrawRulesUntilOff)
     ASSERT_FALSE(anyUnder(ruled, "/World/Near"));
     ASSERT_FALSE(ruled.empty());
     const U64 builds = HydraRender::getEngineBuildCount();
+    const U64 remakesBefore = _render->getStatus().unseenRemakes;
 
     mark = publishedCount();
     _render->setRenderEverything(true);
@@ -1086,7 +1094,8 @@ TEST_F(ProgressiveRenderTest, RenderEverythingIgnoresTheDrawRulesUntilOff)
     std::set<std::string> restored;
     ASSERT_TRUE(pickedWhenDone(mark, &restored));
     EXPECT_EQ(ruled, restored);
-    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    // Less the engines the worker makes again when Cycles is slow to show a restart.
+    EXPECT_EQ(builds + (_render->getStatus().unseenRemakes - remakesBefore), HydraRender::getEngineBuildCount());
 }
 
 TEST_F(ProgressiveRenderTest, AHeadlightStandsInForHiddenLightsOnCycles)

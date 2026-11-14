@@ -551,6 +551,8 @@ future core work has solid ground to build on.
 | F22 | Native VDB | open |  |  | feature/f22-native-vdb | An OpenVDB volume primitive in native geometry, bridged to USD, with conversion, SDF ops and a volume wrangle. |
 
 # Open questions
+
+- **M272 - Script Writes To Selected Roto Shapes (2026-11-14):** (1) Should Python get `Roto.selectItems()` / `getSelectedItems()`? PM default: no, out of scope. (2) With several shapes selected, should an expression set on the node knob be copied to each selected shape (PM default, as cloning does today) or stay on the node knob only? Work proceeds on the defaults.
 - **For /cat-plan (user decision 2026-11-13):** add a new milestone "UDIM Textures In Delegates" (E9, no Feature, Deps M311 and F9 - Delegate Projection landed / M343) carrying M311 - UDIM Live Textures' Phase 311.4 brief (P4.T1, UDIM live textures in Cycles and MoonRay), split out so F11 - Texture Painting does not wait on F9.
 - **M221 - Neural Optical Flow (PM, 2026-11-12; weights supplied by the user 2026-11-14):** confirm the training-data licence strings for the manifest (TartanAir CC BY 4.0 confirmed; KITTI, FlyingThings3D/Chairs, Sintel, HD1K, Spring being re-checked under P1.T1). The exported archive will need uploading to a fork release by you.
 - **Nucleon 1.0 must-land list (user, 2026-11-10: "I'll decide later"):** which Features and milestones must be on `main` before 1.0. M396 - Release 1.0 Cut is held, not eligible for pickup, until the user names them; they are then added to its `Deps`.

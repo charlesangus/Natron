@@ -23,6 +23,8 @@ wedge (`--restarts 0`). It takes a few minutes on a healthy build, and stays in 
 ops wedge. `--preset full` covers `chain`, `wide`, `comp` and `mixed` at 300, 1000 and 3000 with the
 same settings but restarts Natron after every wedge (`--restarts unlimited`), in about 15 minutes on
 a healthy build. `--sizes`, `--topologies`, `--reps` and `--restarts` override a preset's choice.
+`--preset create` is not a matrix of the standing ops: it runs only the node-creation ops (see
+[Node-creation latency](#node-creation-latency)).
 
 The bench rule: run the gate at every milestone gate of a GUI- or Engine-touching milestone,
 against the committed gate baseline (`--baseline` sets the timeouts from it, and `compare.py`
@@ -43,6 +45,99 @@ suspected regression; `compare.py` prints the exact line when it wants one. With
 op that goes over budget still runs every rep, so a re-run gathers 5 samples of it; with `--reps auto`
 it stops at the first rep that goes over. A cycle step that goes over still ends its rep's cycle,
 since the steps after it depend on it, but the next rep starts the cycle again.
+
+## Node-creation latency
+
+`run.sh --preset create` runs four ops on `mixed` at 0, 300 and 3000 nodes (the empty graph is
+the generator's single `Source`) and nothing else:
+
+```
+tools/bench/gui/run.sh --xvfb --preset create [--stages] [--appimage PATH]
+```
+
+The ops run only when named, by the preset or by `--ops`; the `gate` and `full` presets do not
+include them.
+
+| Op | What it does |
+|---|---|
+| `create_by_shortcut` | With a node selected, sends Blur's plugin shortcut (`B`) to the graph. |
+| `tab_menu_open` | Sends Tab to the graph with a node selected and waits for the menu to be painted with items in its list. |
+| `tab_menu_create` | With the menu open and `blur` typed (setup, untimed), sends Enter on the Blur row. |
+| `create_then_key` | Sends `B` as `create_by_shortcut` does, then Tab as soon as the new node has painted, and waits for the menu's paint. The sample runs from the `B` to the menu's paint, so the work creation defers past the node's first paint (the properties panel's build), which the next key waits on, is counted. |
+
+Each rep brings the project's tab forward, activates the window, focuses the graph and puts the
+pointer over its viewport, because the graph only takes the create-node key when it has focus or
+the pointer (`NodeGraph::isNodeCreationShortcutTarget`). The sample runs from just before the key
+event is posted to the first `QEvent::Paint` that shows the result, caught by an event filter: on
+the graph viewport for the creating ops, once the new node is selected or exists, and on the tab
+menu's popup, its input, list and list viewport for `tab_menu_open` and the Tab of
+`create_then_key`, while its list holds rows. The filter sits on the whole application only for a
+Tab that comes before the popup is built. The sample then runs on to the next idle: it ends at the
+end of the event-loop pass that delivered the last paint to those widgets before 150 ms went by
+without one, so a repaint a creation queues behind its first paint (the whole-widget one about
+60 ms later) counts in `create_by_shortcut` as it does in `tab_menu_create`. Settling stops 1 s
+after the first paint. The `B` of `create_then_key` does not settle: its Tab follows the node's
+first paint, as a person's next key does, and the Tab's sample settles instead. A pass can include
+other queued events, so the figure is an upper bound on the last paint's own end. A paint taken
+inside the key call does not count, and no first paint within 2 s fails the run.
+
+A creating rep checks that exactly one new Blur appeared, then undoes it through the Edit menu and
+checks the root is as it was. The undo history keeps an undone entry until the next push and
+destroys its node then, which would put the node's teardown (its properties panel among it) inside
+the next rep's sample. So the rep then pushes a label edit on the selected node as an undo step of
+its own ("Bench Drain"), which drops the undone creation, and undoes that edit through the Edit
+menu, checking that the label is back. The undone label edit is what the next creation drops, at
+the cost of one knob-value command. Before each key, and after each creating rep's undo, the bench
+drains what is left queued: posted events, deferred deletes and due timers, until the loop has
+been idle for 20 ms and nothing in the application has painted for 150 ms, 2 s at most.
+`create_then_key` does not drain between its two keys.
+
+The records are in the usual format, with 20 reps each and `median_ms`, `p95_ms`, `min_ms` and
+`max_ms` taken from the latencies (the key-to-paint time, not the rep's wall time), plus
+`headline: "latency"`, `budget_ms` (50, 33, 50 and 50), `latency_ms` (every sample) and
+`latency_reps`. `create_then_key` adds `node_paint_ms`, the median and max of its `B`-to-node-paint
+part. `--reps` does not apply. The session's first-ever Tab is a sample of its own:
+`tab_menu_open` runs one extra rep when it is the process's first Tab, keeps it out of the 20 and
+records it as `first_open_ms`; `tab_menu_create` records it the same way when it is the one that
+opened the menu first, and `create_then_key`, when its Tab is the first, runs one extra rep and records that rep's whole
+span as `first_open_ms`. The run opens a Natron process per size, so each size has its own first
+open.
+
+### The stage split
+
+`--stages` (or `NATRON_NODE_CREATION_STAGE_LOG=FILE` for a run by hand) makes Natron append one
+line per stage span to FILE, and adds three fields to each record: `latency_stages_ms`, the median
+and max over reps of each stage's time between the key and the paint, `deferred_stages_ms`, the
+same for stages that started in that span and ended after the paint (for `create_then_key`, the
+span runs to the menu's paint, so `panelBuild` lands in `latency_stages_ms`), and `first_open_stages_ms`
+(`tab_menu_open`, first open only). A stage a rep never ran counts as 0 in that rep. Stages nest, so
+their times overlap and do not add up to the latency.
+
+```
+{"stage": "createNodeGui", "start_ms": ..., "end_ms": ...}
+```
+
+The stamps are milliseconds on `steady_clock`, the clock of the stall log and of Python's
+`time.monotonic()`. Without the variable each stage site costs one relaxed atomic load.
+
+| Stage | Span |
+|---|---|
+| `engineCreateNode` | `Node::load`, in `AppInstance::createNodeInternal`; includes `pythonCallbacks`. |
+| `createNodeGui` | `GuiAppInstance::createNodeGui`, which holds the stages up to `positioning`. |
+| `panelBuild` | `NodeGui::ensurePanelCreated`, the properties panel. A node made from the nodes menu, a plug-in shortcut or the tab menu builds it after the graph's first paint, so it lands in `deferred_stages_ms`. |
+| `nameAndEdges` | Laying out the new node's name and edges, which creation collects and runs once before `positioning`. |
+| `preview` | `computePreviewImage` for the new node. |
+| `autosave` | `triggerAutoSave` for the new node. |
+| `positioning` | Placing the node: auto-connect and `moveNodesForIdealPosition`. |
+| `pythonCallbacks` | The `onNodeCreated` callbacks and the node's Python variable declaration. |
+| `tabMenuLaunch` | `tabtabtab_natron.launch`, the whole Python side of Tab. |
+| `tabMenuShow` | The popup's `show()`. |
+| `tabMenuGetItems` | `get_items()`, wherever it is called from (inside `tabMenuRefresh`). |
+| `tabMenuRefresh` | The popup's refresh of its items, inside `tabMenuShow`. |
+
+The `tabMenu*` stages are timed by wrapping the Python functions from the bench itself, so they
+need no Natron support and only exist while the op's setup has run. `launch`'s time does not
+include the C++ side of `TabMenuBridge::launch`: building the context and calling it.
 
 ## The two modes
 

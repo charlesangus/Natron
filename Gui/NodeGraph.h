@@ -127,6 +127,19 @@ public:
     void noteNodeGeometryChanged(NodeGui* node);
     void noteEdgeGeometryChanged(NodeGui* owner, int slot, Edge* edge);
 
+    /**
+     * @brief Call once node, newly in this graph's node list, has its edges: files just it and
+     * its edges in the hit-test grid, the nodes' bounds and the low-detail layers, where
+     * invalidateNavigatorContent() would refile every item.
+     **/
+    void noteNodeAdded(NodeGui* node);
+
+    /**
+     * @brief Call once node has left this graph's node list, to the trash or for good: drops it
+     * and its edges from the hit-test grid and repaints just where the low-detail layers drew them.
+     **/
+    void noteNodeRemoved(NodeGui* node);
+
     // Repaints what the low-detail layers draw of item, a node or an edge, both where its grid
     // entry still has it and where it is now: a faded item ignores its own update().
     void repaintLowDetailItem(QGraphicsItem* item);
@@ -318,6 +331,19 @@ public:
      **/
     void registerFrameDependentNode(NodeGui* node);
 
+    /**
+     * @brief Builds the node's properties panel once the graph has painted, so that a new node is
+     * on screen before its panel's cost is paid. A node queued twice is built once, and a panel
+     * created in the meantime by any other caller is left as it is.
+     **/
+    void schedulePanelBuild(const NodeGuiPtr& node);
+
+    // Takes the node out of the schedulePanelBuild() queue; returns whether it was queued.
+    bool cancelPanelBuild(const NodeGuiPtr& node);
+
+    // The activated Viewer of this graph's group whose tab was focused last, other than excluded.
+    ViewerTab* mostRecentlyFocusedViewer(const ViewerTab* excluded) const;
+
 Q_SIGNALS:
 
     /**
@@ -416,10 +442,23 @@ public Q_SLOTS:
     void onSettingsSaved();
 
 private:
+    void armPanelBuildWait();
+    void postPanelBuildFlush();
+    void flushPanelBuilds();
 
     NodeGraph(const NodeGraph&) = delete;
 
     NodeGraph& operator=(const NodeGraph&) = delete;
+
+    bool isUsableViewerTab(ViewerTab* tab) const;
+
+    // An activated Viewer of this graph's group, its tab shown and recorded as the last selected
+    // viewer; null when the group has none.
+    InspectorNodePtr findViewerInGroup();
+
+    // Whether the create-node key opens the tab menu here: the pointer is over the viewport or
+    // the graph has keyboard focus.
+    bool isNodeCreationShortcutTarget() const;
 
     void showNodePanel(bool casIsCtrl, bool casIsShift, NodeGui* nearbyNode);
 

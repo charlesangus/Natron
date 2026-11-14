@@ -113,9 +113,10 @@ Warp warpLoad(StructuredBuffer<uint> params)
 }
 
 // A component that is not read has no bounds: the Jacobian's edge rule then never applies to it.
-bool uvInside(WarpUV uv, int component, int x, int y)
+// Neither does it to a Black UV input, whose zero past its bounds is a value differences cross.
+bool uvInside(WarpUV uv, uint flags, int component, int x, int y)
 {
-    return component >= 0 && wrapInside(int2(x, y), uv.x1, uv.y1, uv.x2, uv.y2);
+    return component >= 0 && (flags & kWarpUVEdgeBlack) == 0 && wrapInside(int2(x, y), uv.x1, uv.y1, uv.x2, uv.y2);
 }
 
 // Whether (x, y) reads a pixel of component: inside the UV bounds, or anywhere on a UV input that
@@ -223,20 +224,20 @@ float centralDifferenceFF(FF before, FF after)
 // Resampler::coordJacobiansWithinBounds' differencesWithinBounds for one coordinate: inside the
 // UV bounds with a neighbour outside, the pixel's own coordinate moved by `step` stands in for the
 // neighbour.
-float2 differences(WarpUV uv, int component, int2 p, float centre, float left, float right, float below, float above,
+float2 differences(WarpUV uv, uint flags, int component, int2 p, float centre, float left, float right, float below, float above,
                    float2 step)
 {
     float dx = centralDifference(left, right);
     float dy = centralDifference(below, above);
-    if (!uvInside(uv, component, p.x, p.y))
+    if (!uvInside(uv, flags, component, p.x, p.y))
         return float2(dx, dy);
     const FF c = ffMake(centre, 0.0);
-    const bool hasLeft = uvInside(uv, component, p.x - 1, p.y);
-    const bool hasRight = uvInside(uv, component, p.x + 1, p.y);
+    const bool hasLeft = uvInside(uv, flags, component, p.x - 1, p.y);
+    const bool hasRight = uvInside(uv, flags, component, p.x + 1, p.y);
     if (!hasLeft || !hasRight)
         dx = centralDifferenceFF(hasLeft ? ffMake(left, 0.0) : ffAddF(c, -step.x), hasRight ? ffMake(right, 0.0) : ffAddF(c, step.x));
-    const bool hasBelow = uvInside(uv, component, p.x, p.y - 1);
-    const bool hasAbove = uvInside(uv, component, p.x, p.y + 1);
+    const bool hasBelow = uvInside(uv, flags, component, p.x, p.y - 1);
+    const bool hasAbove = uvInside(uv, flags, component, p.x, p.y + 1);
     if (!hasBelow || !hasAbove)
         dy = centralDifferenceFF(hasBelow ? ffMake(below, 0.0) : ffAddF(c, -step.y), hasAbove ? ffMake(above, 0.0) : ffAddF(c, step.y));
     return float2(dx, dy);
@@ -269,11 +270,9 @@ float4 warpSample(Warp w, int2 p, bool idistort)
     // outside the Source format.
     if (warpMapped(w) && warpMap(w, p.x, p.y) == 0.0)
         return wrapReadSource(p);
-    // Off the UV view, as with no alpha channel at all, every position is valid; where the Map is
-    // 0 the pixel keeps its own, so the gate does not apply.
-    int2 alphaAt;
-    if (!idistort && uvReadable(w.uv, w.flags, w.uv.alpha, p.x, p.y, alphaAt) && !(uvAt(w.uv, w.flags, w.uv.alpha, p.x, p.y) > 0.0)
-        && warpMap(w, p.x, p.y) > 0.0)
+    // With no alpha channel every position is valid; past a Black UV input's bounds its alpha is 0
+    // like its U and V. Where the Map is 0 the pixel keeps its own, so the gate does not apply.
+    if (!idistort && w.uv.alpha >= 0 && !(uvAt(w.uv, w.flags, w.uv.alpha, p.x, p.y) > 0.0) && warpMap(w, p.x, p.y) > 0.0)
         return zero;
     const float2 s = idistort ? idistortCoord(w, p.x, p.y) : stmapCoord(w, p.x, p.y);
     float4 J = zero;
@@ -285,8 +284,8 @@ float4 warpSample(Warp w, int2 p, bool idistort)
         const float2 b = idistort ? idistortCoord(w, p.x, p.y - 1) : stmapCoord(w, p.x, p.y - 1);
         const float2 above = idistort ? idistortCoord(w, p.x, p.y + 1) : stmapCoord(w, p.x, p.y + 1);
         const float step = idistort ? 1.0 : 0.0;
-        const float2 dsx = differences(w.uv, w.uv.u, p, s.x, l.x, r.x, b.x, above.x, float2(step, 0.0));
-        const float2 dsy = differences(w.uv, w.uv.v, p, s.y, l.y, r.y, b.y, above.y, float2(0.0, step));
+        const float2 dsx = differences(w.uv, w.flags, w.uv.u, p, s.x, l.x, r.x, b.x, above.x, float2(step, 0.0));
+        const float2 dsy = differences(w.uv, w.flags, w.uv.v, p, s.y, l.y, r.y, b.y, above.y, float2(0.0, step));
         J = float4(dsx.x, dsx.y, dsy.x, dsy.y);
     }
     const uint wrapU = idistort ? kWrapNone : w.wrapU;

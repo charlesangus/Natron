@@ -221,6 +221,8 @@ blurPasses(BlurKernels::Filter filter,
 {
     PassList list;
     list.edgeMode = edgeMode;
+    list.stretchReachX = 0;
+    list.stretchReachY = 0;
     LineFilterPtr filterX;
     LineFilterPtr filterY;
     int haloX = 0;
@@ -262,6 +264,9 @@ blurPasses(BlurKernels::Filter filter,
         haloY = iter * static_cast<int>(std::floor((s.y - 1) / 2) + 1);
         growX = iter * (int)std::ceil((s.x - 1) / 2);
         growY = iter * (int)std::ceil((s.y - 1) / 2);
+        // Each box after the first reads what the one before it computed past the source.
+        list.stretchReachX = haloX - haloX / iter;
+        list.stretchReachY = haloY - haloY / iter;
         filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.x), 0, edgeMode));
         filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.y), 0, edgeMode));
     }

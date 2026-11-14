@@ -744,6 +744,10 @@ buildMatrixRows()
             return NodePtr();
         }
         out2->setLayer("");
+        // The default rows take colour from the main input; colour from input 1 is what reads the box.
+        for (int c = 0; c < 3; ++c) {
+            mapping->setSource(1, c, ShuffleSource::makeInput(1, c));
+        }
         mapping->setSource(1, 3, ShuffleSource::makeInput(2, 3));
         return orNull(n, setKnobValue(n, kShuffleCopyParamBBox, std::string("2")));
     }));

@@ -1028,6 +1028,8 @@ glowPasses(const GlowParams& params,
     PassList list;
 
     list.edgeMode = edgeMode;
+    list.stretchReachX = BloomKernels::stretchReachX(*plan);
+    list.stretchReachY = BloomKernels::stretchReachY(*plan);
     list.scratchSlots = 3;
     list.resultSlot = kSlotGlow;
     // The mask multiplies the map, as the PyPlug's did, rather than mixing the output.

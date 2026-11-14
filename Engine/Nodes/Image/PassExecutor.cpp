@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <list>
@@ -711,14 +712,32 @@ effectRoDPixels(EffectInstance& effect,
  *  - under Black, clipped to rod and the source's region sourceRoD with a one-pixel border, and
  *    the window: past that border every pass reads zero, which a window clamped to the border
  *    reads too, while a halo far larger than the image would not fit in memory;
- *  - under Stretch, left whole, so that each pass reads what it would of the image extended.
+ *  - under Stretch, for a list with a stretch reach, clipped to the source's region grown by that
+ *    reach, the op mask's region opMaskRoD with a one-pixel border, and the window: past them
+ *    every pass result repeats the scratch's edge, which is what a pass reading past the
+ *    scratch reads, so a halo of any size costs no more than the image;
+ *  - under Stretch otherwise, left whole, so that each pass reads what it would of the image
+ *    extended.
  * runPassesCpu() and recordPassesGpu() share it so that both filter the same scratch.
  **/
+RectI
+grownRect(const RectI& r,
+          int dx,
+          int dy)
+{
+    const auto clamp = [](int64_t v) {
+        return (int)std::max<int64_t>(std::numeric_limits<int>::min(), std::min<int64_t>(std::numeric_limits<int>::max(), v));
+    };
+
+    return RectI(clamp((int64_t)r.x1 - dx), clamp((int64_t)r.y1 - dy), clamp((int64_t)r.x2 + dx), clamp((int64_t)r.y2 + dy));
+}
+
 RectI
 passBufferRect(const RectI& window,
                const PassList& list,
                const RectI& rod,
-               const RectI& sourceRoD)
+               const RectI& sourceRoD,
+               const RectI& opMaskRoD)
 {
     const RectI full = passListSourceRoI(window, list);
     RectI clip;
@@ -730,10 +749,18 @@ passBufferRect(const RectI& window,
             clip.merge(sourceRoD);
         }
         if (!isEmptyRect(clip)) {
-            clip.x1 = (clip.x1 > std::numeric_limits<int>::min()) ? clip.x1 - 1 : clip.x1;
-            clip.y1 = (clip.y1 > std::numeric_limits<int>::min()) ? clip.y1 - 1 : clip.y1;
-            clip.x2 = (clip.x2 < std::numeric_limits<int>::max()) ? clip.x2 + 1 : clip.x2;
-            clip.y2 = (clip.y2 < std::numeric_limits<int>::max()) ? clip.y2 + 1 : clip.y2;
+            clip = grownRect(clip, 1, 1);
+        }
+        clip.merge(window);
+    } else if ((list.stretchReachX >= 0) && (list.stretchReachY >= 0)) {
+        clip = RectI(0, 0, 0, 0);
+        if (!isEmptyRect(sourceRoD)) {
+            clip = grownRect(sourceRoD, list.stretchReachX, list.stretchReachY);
+        }
+        // The mask multiplies what the passes read, so they vary wherever it does, and under Black
+        // it reads zero only from a pixel past its region on.
+        if (!isEmptyRect(opMaskRoD)) {
+            clip.merge(grownRect(opMaskRoD, 1, 1));
         }
         clip.merge(window);
     } else {
@@ -765,6 +792,23 @@ sourceRoDPixels(EffectInstance& effect,
     }
 
     return toPixelEnclosing(rod, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput));
+}
+
+// The region of definition in pixels of the op mask a list with opMask applies through
+// maskPlan, already resolved by resolveStageOpMask(); empty when none is applied.
+RectI
+opMaskRoDPixels(EffectInstance& effect,
+                const PassList& list,
+                const StagePlan& maskPlan,
+                double time,
+                const RenderScale& scale,
+                ViewIdx view)
+{
+    if (!list.opMask || !maskPlan.applyMask || (maskPlan.maskInput < 0)) {
+        return RectI(0, 0, 0, 0);
+    }
+
+    return sourceRoDPixels(effect, maskPlan.maskInput, time, scale, view);
 }
 
 void
@@ -1195,7 +1239,9 @@ runPassesCpu(EffectInstance& effect,
         if (!effectRoDPixels(effect, args.time, args.mappedScale, args.view, &dstRoDPixel)) {
             return eStatusFailed;
         }
-        bufferRect = passBufferRect(processWindow, list, dstRoDPixel, sourceRoDPixels(effect, sourceInput, args.time, args.mappedScale, args.view));
+        const RectI srcRoDPixel = sourceRoDPixels(effect, sourceInput, args.time, args.mappedScale, args.view);
+        const RectI maskRoDPixel = opMaskRoDPixels(effect, list, opMaskPlan, args.time, args.mappedScale, args.view);
+        bufferRect = passBufferRect(processWindow, list, dstRoDPixel, srcRoDPixel, maskRoDPixel);
     }
     const int bufferWidth = std::max(0, bufferRect.width());
     const int bufferHeight = std::max(0, bufferRect.height());
@@ -1358,7 +1404,11 @@ recordPassesGpu(EffectInstance& effect,
     }
     const RectI srcRoDPixel = toPixelEnclosing(srcRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput));
     const RectI sourceRoI = passListSourceRoI(rect, list);
-    const RectI domain = passBufferRect(rect, list, rodPixel, srcRoDPixel);
+    StagePlan maskPlan = plan;
+    if (list.opMask) {
+        resolveStageOpMask(effect, &maskPlan);
+    }
+    const RectI domain = passBufferRect(rect, list, rodPixel, srcRoDPixel, opMaskRoDPixels(effect, list, maskPlan, time, scale, view));
     RectI valid;
     intersectRects(src.bounds, srcRoDPixel, &valid);
 
@@ -1462,8 +1512,6 @@ recordPassesGpu(EffectInstance& effect,
         io.layerInputs.push_back(cropped);
     }
     if (list.opMask) {
-        StagePlan maskPlan = plan;
-        resolveStageOpMask(effect, &maskPlan);
         io.maskApplied = maskPlan.applyMask;
         io.maskEdgeMode = maskPlan.maskEdgeMode;
         const int maskInput = maskPlan.maskInput;

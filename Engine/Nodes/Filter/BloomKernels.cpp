@@ -225,26 +225,33 @@ struct Plan {
     std::vector<Blur> blurs;
     int haloX = 0;
     int haloY = 0;
+    int stretchReachX = 0;
+    int stretchReachY = 0;
 };
 
 namespace {
     /// The rect of each level when the first is r0: the samples of each whose kernel reaches into the
-    /// previous level.
+    /// previous level, and under Stretch one more on each side along the halved axis.
     std::vector<RectI>
     levelRects(const Plan& plan,
                const RectI& r0)
     {
         std::vector<RectI> rects(1, r0);
+        // The extra sample's kernel reads only the previous level's repeated edge, so it holds the
+        // value every sample past it has: the level then repeats its own edge, as reads past it
+        // do, and a level computed over a rect that ends at the source matches one computed over
+        // the whole halo.
+        const int pad = (plan.edgeMode == EdgeMode::Stretch) ? 1 : 0;
 
         for (int axis : plan.steps) {
             RectI r = rects.back();
             if (!PassExec::isEmptyRect(r)) {
                 if (axis == 0) {
-                    r.x1 = ceilDiv(r.x1 - 2, 2);
-                    r.x2 = floorDiv(r.x2, 2) + 1;
+                    r.x1 = ceilDiv(r.x1 - 2, 2) - pad;
+                    r.x2 = floorDiv(r.x2, 2) + 1 + pad;
                 } else {
-                    r.y1 = ceilDiv(r.y1 - 2, 2);
-                    r.y2 = floorDiv(r.y2, 2) + 1;
+                    r.y1 = ceilDiv(r.y1 - 2, 2) - pad;
+                    r.y2 = floorDiv(r.y2, 2) + 1 + pad;
                 }
             }
             rects.push_back(r);
@@ -613,6 +620,11 @@ makePlan(const Settings& settings,
             blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)py, 0, edgeMode));
             haloX = blur.filterX->isIdentity() ? 0 : iter * (int64_t)(std::floor((px - 1) / 2) + 1);
             haloY = blur.filterY->isIdentity() ? 0 : iter * (int64_t)(std::floor((py - 1) / 2) + 1);
+            // Each box after the first reads what the one before it computed past the source.
+            const int64_t reachX = haloX - haloX / iter;
+            const int64_t reachY = haloY - haloY / iter;
+            plan->stretchReachX = std::max(plan->stretchReachX, (int)std::min(reachX, kMaxHalo));
+            plan->stretchReachY = std::max(plan->stretchReachY, (int)std::min(reachY, kMaxHalo));
         }
 #ifdef NATRON_HAVE_GPU
         if (!plan->fir) {
@@ -638,6 +650,18 @@ int
 haloY(const Plan& plan)
 {
     return plan.haloY;
+}
+
+int
+stretchReachX(const Plan& plan)
+{
+    return plan.stretchReachX;
+}
+
+int
+stretchReachY(const Plan& plan)
+{
+    return plan.stretchReachY;
 }
 
 void

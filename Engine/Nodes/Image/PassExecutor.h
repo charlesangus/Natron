@@ -481,6 +481,18 @@ struct PassList {
     // For a list whose windows shrink at this effect's region of definition rather than read past
     // it: the scratch is then clipped to that region, and edgeMode never reaches the passes.
     bool clipToRegion = false;
+    // Under Stretch, how far past the source along each axis the scratch must reach for passes
+    // that read past the scratch by repeating its edge to give what they would over the source
+    // extended indefinitely; negative for a list that must hold its whole halo instead.
+    //
+    // Outside the source a stretched image repeats its edge row or column, so a pass that reads
+    // the same way at every position gives, outside the source grown by its reach along an axis,
+    // a result that repeats along that axis too: holding the source and the window is enough, and
+    // a halo far larger than the image costs no memory. A reach is needed only where a pass reads
+    // what an earlier pass computed past the source, as an iterated box does along its line; a
+    // pass that reads in a frame other than the scratch's axes reads that frame's edge instead.
+    int stretchReachX = -1;
+    int stretchReachY = -1;
     PassGpuRecorder gpu;
     // When set, gpu records the list only for the queries it accepts, as a frame within the
     // device's scratch.
@@ -572,8 +584,9 @@ private:
  * @brief Renders args through plan with list on the CPU.
  *
  * The images are fetched and locked as runStagesCpu() does. The window, empty with a mix of 0,
- * grown by the halo and clipped by the edge mode (clipToRegion, or Black's one-pixel border past
- * the region and the source's region), is the scratch rect: slot 0 is
+ * grown by the halo and clipped by the edge mode (clipToRegion, Black's one-pixel border past
+ * the region and the source's region, or under Stretch the source grown by the list's stretch
+ * reach), is the scratch rect: slot 0 is
  * filled with the source there (fillBuffer()), the passes run in order, each over whole lines
  * split between threads, and the window is written from resultSlot (writeWindow()). Fails on a
  * list isRunnablePassList() refuses.

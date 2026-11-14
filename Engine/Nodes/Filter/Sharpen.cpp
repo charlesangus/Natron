@@ -470,6 +470,8 @@ sharpenPasses(const SharpenParams& params,
     LineFilterPtr filterY;
     int haloX = 0;
     int haloY = 0;
+    int reachX = 0;
+    int reachY = 0;
     std::size_t taps[2] = { 1, 1 };
 
     if (blurIsIdentity(filter, s)) {
@@ -492,12 +494,17 @@ sharpenPasses(const SharpenParams& params,
         const int iter = boxIterations(filter);
         haloX = iter * static_cast<int>(std::floor((s.x - 1) / 2) + 1);
         haloY = iter * static_cast<int>(std::floor((s.y - 1) / 2) + 1);
+        // Each box after the first reads what the one before it computed past the source.
+        reachX = haloX - haloX / iter;
+        reachY = haloY - haloY / iter;
         filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.x), 0, edgeMode));
         filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, static_cast<float>(s.y), 0, edgeMode));
     }
 
     PassList list;
     list.edgeMode = edgeMode;
+    list.stretchReachX = reachX;
+    list.stretchReachY = reachY;
     list.scratchSlots = 2;
     list.resultSlot = kSlotSource;
 

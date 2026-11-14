@@ -582,6 +582,8 @@ IDistort::renderOp(const RenderActionArgs& args,
     const int gridWidth = width + 2;
     const UVChannel* const uvChannel = uvChannels;
     const EdgeMode uvEdgeMode = stageInputEdgeMode(*this, kIDistortInputUV, args.time, args.view);
+    // A Black UV input's 0 past its bounds is a value the Jacobians difference across like any other.
+    const RectI jacobianBounds[2] = { (uvEdgeMode == EdgeMode::Stretch) ? uvBounds[0] : RectI(), (uvEdgeMode == EdgeMode::Stretch) ? uvBounds[1] : RectI() };
     const auto coordRow = [&](int y, float* uRow, float* vRow, float* sx, float* sy) {
         float* const values[2] = { uRow, vRow };
         for (int i = 0; i < 2; ++i) {
@@ -667,7 +669,7 @@ IDistort::renderOp(const RenderActionArgs& args,
                 }
                 coordRow(y + 1, uRow.data(), vRow.data(), rows.sx[2].data(), rows.sy[2].data());
                 Resampler::coordJacobiansWithinBounds(rows.sx[0].data(), rows.sx[1].data(), rows.sx[2].data(), rows.sy[0].data(), rows.sy[1].data(), rows.sy[2].data(),
-                                                      gridX0, y, gridWidth, uvBounds[0], uvBounds[1], 1., 1., jacobian.data());
+                                                      gridX0, y, gridWidth, jacobianBounds[0], jacobianBounds[1], 1., 1., jacobian.data());
                 Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, jacobian.data() + 4, width, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
             }

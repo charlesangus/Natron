@@ -112,6 +112,14 @@ struct UVPlane {
         PassExec::readChannelRow(image.get(), access.get(), bounds, nComps, channel, x0, y, width, outside, row);
     }
 };
+
+// The bounds coordJacobiansWithinBounds() keeps differences inside: none for a Black UV input,
+// whose 0 past its bounds is a value like any other.
+RectI
+uvEdgeBounds(const UVPlane& plane)
+{
+    return (plane.access && (plane.edgeMode == EdgeMode::Stretch)) ? plane.bounds : RectI();
+}
 } // namespace
 
 STMap::STMap(NodePtr node)
@@ -656,7 +664,6 @@ STMap::renderOp(const RenderActionArgs& args,
             if (alpha.valid && holder.access && (alpha.channel < holder.nComps)) {
                 alphaPlane = holder;
                 alphaPlane.channel = alpha.channel;
-                alphaPlane.outside = 1.f;
                 gated = true;
             }
         }
@@ -757,7 +764,7 @@ STMap::renderOp(const RenderActionArgs& args,
                 if (jacobians) {
                     jacobian.resize((std::size_t)4 * n);
                     Resampler::coordJacobiansWithinBounds(&sx[0], &sx[n], &sx[2 * n], &sy[0], &sy[n], &sy[2 * n], io.x0 - 1, io.y, n,
-                                                          uvPlanes[0].access ? uvPlanes[0].bounds : RectI(), uvPlanes[1].access ? uvPlanes[1].bounds : RectI(), 0., 0., &jacobian[0]);
+                                                          uvEdgeBounds(uvPlanes[0]), uvEdgeBounds(uvPlanes[1]), 0., 0., &jacobian[0]);
                 }
                 Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
                                                  settings.filter, settings.clamp, settings.edgeMode, settings.wrapU, settings.wrapV,

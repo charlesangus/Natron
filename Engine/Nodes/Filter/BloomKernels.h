@@ -103,6 +103,11 @@ PlanPtr makePlan(const Settings& settings, EdgeMode edgeMode) WARN_UNUSED_RETURN
 int haloX(const Plan& plan) WARN_UNUSED_RETURN;
 int haloY(const Plan& plan) WARN_UNUSED_RETURN;
 
+/// PassList::stretchReachX and stretchReachY for a list running the bloom on a source it reads
+/// unchanged.
+int stretchReachX(const Plan& plan) WARN_UNUSED_RETURN;
+int stretchReachY(const Plan& plan) WARN_UNUSED_RETURN;
+
 /**
  * @brief Appends the passes that write the bloom of scratch slot input into slot acc, both
  * nComps-plane slots of the pass list: an extent-only pass carrying the halo, growX and growY,

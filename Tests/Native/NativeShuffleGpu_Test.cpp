@@ -572,6 +572,11 @@ TEST_F(NativeShuffleGpuTest, ShuffleCopyRoutesFollowEachInputsEdgeMode)
         ASSERT_TRUE(setKnobValue(shuffle, kShuffleCopyParamBBox, "2")) << modes[m];
         KnobShuffleMapPtr mapping = mappingOf(shuffle);
         ASSERT_TRUE(bool(mapping)) << modes[m];
+        // The default rows take colour from input 2, which with alpha from input 2 too would make
+        // the node an identity on input 2 that never reads input 1.
+        for (int c = 0; c < 3; ++c) {
+            mapping->setSource(1, c, ShuffleSource::makeInput(1, c));
+        }
         mapping->setSource(1, 3, ShuffleSource::makeInput(2, 3));
 
         const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);

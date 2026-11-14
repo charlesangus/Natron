@@ -1365,7 +1365,8 @@ TEST_F(USDWriteProjectionTest, ABakeKeepsAShaderTheUserPutUnderTheMaterial)
     {
         const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
         ASSERT_TRUE(bool(file));
-        PXR_NS::UsdShadeShader user = PXR_NS::UsdShadeShader::Define(file, PXR_NS::SdfPath("/Projection/CyclesUser"));
+        // The card grafts the material it is given under itself.
+        PXR_NS::UsdShadeShader user = PXR_NS::UsdShadeShader::Define(file, PXR_NS::SdfPath("/Card1/Projection/CyclesUser"));
         user.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPrimvarReader_float2")));
         ASSERT_TRUE(file->GetRootLayer()->Save());
     }
@@ -1385,12 +1386,12 @@ TEST_F(USDWriteProjectionTest, ABakeKeepsAShaderTheUserPutUnderTheMaterial)
         ASSERT_TRUE(bool(stage)) << mode.first;
         const PXR_NS::UsdGeomPrimvar st = stOf(stage);
         EXPECT_TRUE(st.GetAttr() && st.HasValue()) << mode.first << ": not baked";
-        const PXR_NS::UsdPrim user = stage->GetPrimAtPath(PXR_NS::SdfPath("/Projection/CyclesUser"));
+        const PXR_NS::UsdPrim user = stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1/Projection/CyclesUser"));
         ASSERT_TRUE(user.IsValid()) << mode.first;
         PXR_NS::TfToken id;
         EXPECT_TRUE(PXR_NS::UsdShadeShader(user).GetShaderId(&id)) << mode.first;
         EXPECT_EQ(std::string("UsdPrimvarReader_float2"), id.GetString()) << mode.first;
-        for (const PXR_NS::UsdPrim& child : stage->GetPrimAtPath(PXR_NS::SdfPath("/Projection")).GetChildren()) {
+        for (const PXR_NS::UsdPrim& child : stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1/Projection")).GetChildren()) {
             EXPECT_FALSE(child.GetCustomDataByKey(PXR_NS::TfToken(kSceneProjectionNetworkMark)).IsHolding<bool>()) << mode.first << " keeps " << child.GetName().GetString();
         }
     }

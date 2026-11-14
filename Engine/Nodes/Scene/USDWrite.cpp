@@ -1739,7 +1739,16 @@ USDWrite::writeFrameRange(int firstFrame,
             for (int frame = firstFrame; frame <= lastFrame; ++frame) {
                 times.push_back(SceneOps::frameToTimeCode(scene, frame, fps));
             }
+            // The bake's overs go through schemas, which see a prim as a material or a shader only
+            // where its definition composes: a layered stack whose strongest layers come from
+            // another node, a USDRead above the geometry, holds those definitions below the output.
+            std::vector<std::string> definitions;
+            for (const StackItem& item : stacks[0].layout.sublayers) {
+                definitions.push_back(item.layer->GetIdentifier());
+            }
+            stacks[0].layout.output->SetSubLayerPaths(definitions);
             bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, locator, &projectionBake);
+            stacks[0].layout.output->SetSubLayerPaths(std::vector<std::string>());
             if (projectionBake.failed.empty()) {
                 const std::map<std::size_t, std::vector<PXR_NS::SdfPath>> properties = getStrippableSpecs(projectionBake.baked.properties, projectionBake.kept.properties, projectionBake.networks.properties);
                 const std::map<std::size_t, std::vector<PXR_NS::SdfPath>> prims = getStrippableSpecs(projectionBake.baked.prims, projectionBake.kept.prims, projectionBake.networks.prims);

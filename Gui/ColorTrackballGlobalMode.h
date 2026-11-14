@@ -555,6 +555,7 @@ private:
     bool warpNearScreenEdge(const QPointF& globalPos);
     void grabForStroke();
     void releaseStrokeGrab();
+    void tearDown();
 
     bool handleMousePress(QObject* watched, QMouseEvent* e);
     bool handleMouseMove(QObject* watched, QMouseEvent* e);

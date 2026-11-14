@@ -60,6 +60,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h" // PLUGINID_OFX_*
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -318,12 +319,6 @@ pixmapEnumToPath(PixmapEnum e)
         break;
     case NATRON_PIXMAP_VIEWER_RENDER_SCALE_CHECKED:
         path = NATRON_ICONS_PATH "natron/render-scale.svg";
-        break;
-    case NATRON_PIXMAP_VIEWER_AUTOCONTRAST_ENABLED:
-        path = NATRON_ICONS_PATH "lucide/contrast.svg";
-        break;
-    case NATRON_PIXMAP_VIEWER_AUTOCONTRAST_DISABLED:
-        path = NATRON_ICONS_PATH "lucide/contrast.svg";
         break;
     case NATRON_PIXMAP_OPEN_FILE:
         path = NATRON_ICONS_PATH "lucide/folder-open.svg";
@@ -1104,6 +1099,7 @@ GuiApplicationManager::initGui(const CLArgs& args)
     _imp->stallMonitor = StallMonitor::createFromEnvironment();
     // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
     RotoLatencyProbe::startFromEnvironment();
+    NodeCreationStageLog::startFromEnvironment();
 
     return exec();
 } // GuiApplicationManager::initGui
@@ -1654,6 +1650,8 @@ GuiApplicationManager::refreshNodesMenuPluginProperties(const QString& pluginID)
 {
     if (_imp->nodesMenu) {
         refreshPluginActionsProperties(_imp->nodesMenu, pluginID);
+        // The shortcut and colour properties just set send the menu no change event.
+        TabMenuBridge::invalidateItems();
     }
 }
 
@@ -1705,6 +1703,7 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     CreateNodeArgs args(pluginID.toStdString(), group);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
+    args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
     if (nodesMenuArgsDecorator) {
         nodesMenuArgsDecorator(args);
     }

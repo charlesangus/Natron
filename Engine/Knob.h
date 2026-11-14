@@ -2230,8 +2230,17 @@ public:
      **/
     bool showsKeysOnTimeline() const;
 
+    /**
+     * @brief Tells the timeline this knob's keys changed. Callable from any thread.
+     **/
+    void invalidateTimelineMarkers() const;
+
+    /**
+     * @brief Whether the GUI curve holds edits not yet copied to the internal curve, which happens while a render is running.
+     **/
+    bool hasGuiCurveChanged(ViewSpec view, int dimension) const;
+
 private:
-    void updateDriverKeysOnTimeline(const KnobDriverPtr& previous, const KnobDriverPtr& driver);
     static void appendDriverKeyTimes(const KnobDriver& driver, std::list<SequenceTime>* times);
 
 public:
@@ -2595,7 +2604,6 @@ protected:
     virtual std::shared_ptr<Curve> getGuiCurve(ViewSpec view, int dimension, bool byPassMaster = false) const OVERRIDE FINAL;
 
     void setGuiCurveHasChanged(ViewSpec view, int dimension, bool changed);
-    bool hasGuiCurveChanged(ViewSpec view, int dimension) const;
     void clearExpressionsResultsIfNeeded(std::map<int, Natron::ValueChangedReasonEnum>& modifiedDimensions);
 
 
@@ -3379,9 +3387,6 @@ public:
      * @brief Restore all knobs to their default values
      **/
     void restoreDefaultValues();
-    virtual void aboutToRestoreDefaultValues()
-    {
-    }
 
     /**
      * @brief When frozen is true all the knobs of this effect read-only so the user can't interact with it.

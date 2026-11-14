@@ -25,8 +25,12 @@
 
 #include "GuiAppInstance.h"
 
+#include <algorithm>
+#include <atomic>
 #include <exception>
+#include <map>
 #include <memory>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <string>
@@ -51,6 +55,7 @@
 #include "Engine/Image.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -209,7 +214,14 @@ struct GuiAppInstancePrivate
     int overlayRedrawRequests;
     mutable QMutex rotoDataMutex;
     RotoPaintData rotoData;
+    // Roto shape and tracker marks, which their panels add and remove themselves.
     std::list<SequenceTime> timelineKeyframes, timelineUserKeys;
+    std::map<Node*, NodeWPtr> nodesShownOnTimeline;
+    // Sorted, without duplicates, derived from nodesShownOnTimeline.
+    std::vector<SequenceTime> nodeKeys;
+    std::atomic<bool> nodeKeysDirty;
+    std::atomic<bool> nodeKeysRefreshQueued;
+    bool nodeKeysChangedSinceSignal;
     KnobDnDData knobDnd;
 
     GuiAppInstancePrivate()
@@ -227,10 +239,52 @@ struct GuiAppInstancePrivate
         , rotoData()
         , timelineKeyframes()
         , timelineUserKeys()
+        , nodesShownOnTimeline()
+        , nodeKeys()
+        , nodeKeysDirty(false)
+        , nodeKeysRefreshQueued(false)
+        , nodeKeysChangedSinceSignal(false)
         , knobDnd()
     {
         _previewProvider = std::make_shared<FileDialogPreviewProvider>();
         rotoData.turboAlreadyActiveBeforePainting = false;
+    }
+
+    void refreshNodeKeysIfDirty()
+    {
+        if (!nodeKeysDirty.exchange(false)) {
+            return;
+        }
+        std::list<SequenceTime> keys;
+        for (std::map<Node*, NodeWPtr>::iterator it = nodesShownOnTimeline.begin(); it != nodesShownOnTimeline.end();) {
+            NodePtr node = it->second.lock();
+            if (!node) {
+                it = nodesShownOnTimeline.erase(it);
+                continue;
+            }
+            if (node->isActivated()) {
+                node->getAllKnobsKeyframes(&keys);
+            }
+            ++it;
+        }
+        std::vector<SequenceTime> sorted(keys.begin(), keys.end());
+        std::sort(sorted.begin(), sorted.end());
+        sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+        if (sorted != nodeKeys) {
+            nodeKeys.swap(sorted);
+            nodeKeysChangedSinceSignal = true;
+        }
+    }
+
+    std::vector<SequenceTime> sortedKeysWithExtras()
+    {
+        refreshNodeKeysIfDirty();
+        std::vector<SequenceTime> keys = nodeKeys;
+        keys.insert(keys.end(), timelineKeyframes.begin(), timelineKeyframes.end());
+        std::sort(keys.begin(), keys.end());
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+
+        return keys;
     }
 };
 
@@ -532,6 +586,7 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
                               const NodePtr& parentMultiInstance,
                               const CreateNodeArgs& args)
 {
+    NodeCreationStageLog::Scope createStage("createNodeGui");
     NodeCollectionPtr group = node->getGroup();
     NodeGraph* graph;
 
@@ -554,7 +609,18 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
     if (!serialization) {
         selectedNodes = graph->getSelectedNodes();
     }
-    NodeGuiPtr nodegui = _imp->_gui->createNodeGUI(node, args);
+    // Lays out the name and edges once, after every input, label and selection change below has
+    // arrived, and before positioning, which reads the laid-out size. A backdrop's own creation
+    // reads its name's height.
+    std::optional<NodeRefreshBatch> refreshBatch;
+    if (!serialization && !node->isBackdropNode()) {
+        refreshBatch.emplace(graph);
+    }
+    NodeGuiPtr nodegui;
+    {
+        NodeCreationStageLog::Scope stage("nodeGraphItem");
+        nodegui = _imp->_gui->createNodeGUI(node, args);
+    }
     assert(nodegui);
 
     followTrackingInModal(node);
@@ -600,13 +666,25 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
 
     if ( !serialization && !isViewer ) {
         ///we make sure we can have a clean preview.
-        node->computePreviewImage( getTimeLine()->currentFrame() );
-        triggerAutoSave();
+        {
+            NodeCreationStageLog::Scope stage("preview");
+            node->computePreviewImage(getTimeLine()->currentFrame());
+        }
+        {
+            NodeCreationStageLog::Scope stage("autosave");
+            triggerAutoSave();
+        }
+    }
+
+    if (refreshBatch) {
+        NodeCreationStageLog::Scope stage("nameAndEdges");
+        refreshBatch.reset();
     }
 
     // NodeGui::initialize already placed a node whose serialization holds a position.
     const bool hasStoredPosition = serialization && serialization->layout.hasPosition;
     if (node->getParentMultiInstanceName().empty() && !hasStoredPosition) {
+        NodeCreationStageLog::Scope stage("positioning");
         bool autoConnect = args.getProperty<bool>(kCreateNodeArgsPropAutoConnect);
 
         if ( selectedNodes.empty() || serialization) {
@@ -1618,11 +1696,47 @@ GuiAppInstance::removeAllKeyframesIndicators()
     ///runs only in the main thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    bool wasEmpty = _imp->timelineKeyframes.empty();
+    bool wasEmpty = _imp->timelineKeyframes.empty() && _imp->nodeKeys.empty();
     _imp->timelineKeyframes.clear();
+    _imp->nodesShownOnTimeline.clear();
+    _imp->nodeKeys.clear();
     if (!wasEmpty) {
         Q_EMIT keyframeIndicatorsChanged();
     }
+}
+
+void
+GuiAppInstance::setNodeShownOnTimeline(const NodePtr& node,
+                                       bool shown)
+{
+    /// runs only in the main thread
+    assert(QThread::currentThread() == qApp->thread());
+
+    if (shown) {
+        _imp->nodesShownOnTimeline[node.get()] = node;
+    } else {
+        _imp->nodesShownOnTimeline.erase(node.get());
+    }
+    invalidateNodeKeyframeIndicators();
+}
+
+void
+GuiAppInstance::invalidateNodeKeyframeIndicators()
+{
+    _imp->nodeKeysDirty.store(true);
+    if (_imp->nodeKeysRefreshQueued.exchange(true)) {
+        return;
+    }
+    // Not a timer: this can run on a render thread, where a timer of this object cannot be started.
+    QMetaObject::invokeMethod(this, [this]() {
+        // Cleared before the dirty flag is read, so an invalidation arriving during the rebuild
+        // queues another pass rather than being lost.
+        _imp->nodeKeysRefreshQueued.store(false);
+        _imp->refreshNodeKeysIfDirty();
+        if (_imp->nodeKeysChangedSinceSignal) {
+            _imp->nodeKeysChangedSinceSignal = false;
+            Q_EMIT keyframeIndicatorsChanged();
+        } }, Qt::QueuedConnection);
 }
 
 void
@@ -1819,7 +1933,9 @@ GuiAppInstance::getKeyframes(std::list<SequenceTime>* keys) const
     ///runs only in the main thread
     assert( QThread::currentThread() == qApp->thread() );
 
+    _imp->refreshNodeKeysIfDirty();
     *keys = _imp->timelineKeyframes;
+    keys->insert(keys->end(), _imp->nodeKeys.begin(), _imp->nodeKeys.end());
 }
 
 void
@@ -1828,11 +1944,11 @@ GuiAppInstance::goToPreviousKeyframe()
     ///runs only in the main thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    _imp->timelineKeyframes.sort();
+    const std::vector<SequenceTime> keys = _imp->sortedKeysWithExtras();
     TimeLinePtr timeline = getProject()->getTimeLine();
     SequenceTime currentFrame = timeline->currentFrame();
-    std::list<SequenceTime>::iterator lowerBound = std::lower_bound(_imp->timelineKeyframes.begin(), _imp->timelineKeyframes.end(), currentFrame);
-    if ( lowerBound != _imp->timelineKeyframes.begin() ) {
+    std::vector<SequenceTime>::const_iterator lowerBound = std::lower_bound(keys.begin(), keys.end(), currentFrame);
+    if (lowerBound != keys.begin()) {
         --lowerBound;
         timeline->seekFrame(*lowerBound, true, NULL, eTimelineChangeReasonPlaybackSeek);
     }
@@ -1844,11 +1960,11 @@ GuiAppInstance::goToNextKeyframe()
     ///runs only in the main thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    _imp->timelineKeyframes.sort();
+    const std::vector<SequenceTime> keys = _imp->sortedKeysWithExtras();
     TimeLinePtr timeline = getProject()->getTimeLine();
     SequenceTime currentFrame = timeline->currentFrame();
-    std::list<SequenceTime>::iterator upperBound = std::upper_bound(_imp->timelineKeyframes.begin(), _imp->timelineKeyframes.end(), currentFrame);
-    if ( upperBound != _imp->timelineKeyframes.end() ) {
+    std::vector<SequenceTime>::const_iterator upperBound = std::upper_bound(keys.begin(), keys.end(), currentFrame);
+    if (upperBound != keys.end()) {
         timeline->seekFrame(*upperBound, true, NULL, eTimelineChangeReasonPlaybackSeek);
     }
 }

@@ -819,7 +819,6 @@ RestoreDefaultsCommand::undo()
 {
     assert( _clones.size() == _knobs.size() );
 
-    std::list<SequenceTime> times;
     KnobHolder* holder = liveHolder();
     if (!holder) {
         setObsolete(true);
@@ -839,25 +838,7 @@ RestoreDefaultsCommand::undo()
 
             continue;
         }
-        itKnob->cloneAndUpdateGui( itClone->get() );
-
-        if (itKnob->getHolder() && itKnob->getHolder()->getApp()) {
-            int dim = itKnob->getDimension();
-            for (int i = 0; i < dim; ++i) {
-                if ( (i == _targetDim) || (_targetDim == -1) ) {
-                    CurvePtr c = itKnob->getCurve(ViewIdx(0), i);
-                    if (c) {
-                        KeyFrameSet kfs = c->getKeyFrames_mt_safe();
-                        for (KeyFrameSet::iterator it = kfs.begin(); it != kfs.end(); ++it) {
-                            times.push_back( std::floor(it->getTime() + 0.5) );
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (app) {
-        app->addMultipleKeyframeIndicatorsAdded(times, true);
+        itKnob->cloneAndUpdateGui(itClone->get());
     }
 
     holder->incrHashAndEvaluate(true, true);
@@ -882,7 +863,6 @@ RestoreDefaultsCommand::liveHolder() const
 void
 RestoreDefaultsCommand::redo()
 {
-    std::list<SequenceTime> times;
     KnobHolder* holder = liveHolder();
     if (!holder) {
         setObsolete(true);
@@ -902,21 +882,6 @@ RestoreDefaultsCommand::redo()
         if (!itKnob) {
             continue;
         }
-        if ( itKnob->getHolder() && itKnob->getHolder()->getApp() ) {
-            int dim = itKnob->getDimension();
-            for (int i = 0; i < dim; ++i) {
-                if ( (i == _targetDim) || (_targetDim == -1) ) {
-                    CurvePtr c = itKnob->getCurve(ViewIdx(0), i);
-                    if (c) {
-                        KeyFrameSet kfs = c->getKeyFrames_mt_safe();
-                        for (KeyFrameSet::iterator it = kfs.begin(); it != kfs.end(); ++it) {
-                            times.push_back( std::floor(it->getTime() + 0.5) );
-                        }
-                    }
-                }
-            }
-        }
-
         if ( itKnob->getHolder() ) {
             itKnob->getHolder()->beginChanges();
         }
@@ -951,10 +916,6 @@ RestoreDefaultsCommand::redo()
         if ( itKnob->getHolder() ) {
             itKnob->getHolder()->onKnobValueChanged_public(itKnob.get(), eValueChangedReasonRestoreDefault, time, ViewIdx(0), true);
         }
-    }
-
-    if (app) {
-        app->removeMultipleKeyframeIndicator(times, true);
     }
 
     if (app) {

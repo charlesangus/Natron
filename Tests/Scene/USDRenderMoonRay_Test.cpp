@@ -111,6 +111,9 @@ const char* const kPortalFixture = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-por
 const char* const kTexturedJpg = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-textured.usda";
 const char* const kTexturedPng = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-textured-png.usda";
 const char* const kTexturedMaketx = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-textured-tx.usda";
+// The fixture's cubes with materials: Left's has a green DwaBaseMaterial on outputs:moonray:surface
+// and a red UsdPreviewSurface on outputs:surface, Right's only a blue UsdPreviewSurface.
+const char* const kRenderContextFixture = NATRON_TESTS_FIXTURES_DIR "/scene-moonray-render-context.usda";
 const char* const kCamera = "/World/Cam";
 
 // Keeps the text of every coding error posted while it is attached.
@@ -758,6 +761,35 @@ TEST_F(USDRenderMoonRayTest, RendersWithoutCodingErrors)
     ASSERT_TRUE(renderAll(node, &planes));
     std::lock_guard<std::mutex> lock(collector.mutex);
     EXPECT_TRUE(collector.messages.empty()) << collector.messages.front();
+}
+
+// A material's outputs:moonray:surface wins over its universal outputs:surface, and a material with
+// only universal outputs still renders through them.
+TEST_F(USDRenderMoonRayTest, ReadsTheMoonRayRenderContext)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(kRenderContextFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    EXPECT_FALSE(node->hasPersistentMessage());
+    const std::vector<float>& rgba = planes[0].pixels;
+
+    const std::size_t left = pixel(kRow, kLeftColumn);
+    const float leftR = rgba[left * 4];
+    const float leftG = rgba[left * 4 + 1];
+    const float leftB = rgba[left * 4 + 2];
+    EXPECT_GT(leftG, 2.f * leftR) << "Left renders (" << leftR << ", " << leftG << ", " << leftB << "), not its moonray green";
+    EXPECT_GT(leftG, 2.f * leftB) << "Left renders (" << leftR << ", " << leftG << ", " << leftB << "), not its moonray green";
+
+    const std::size_t right = pixel(kRow, kRightColumn);
+    const float rightR = rgba[right * 4];
+    const float rightG = rgba[right * 4 + 1];
+    const float rightB = rgba[right * 4 + 2];
+    EXPECT_GT(rightB, 2.f * rightR) << "Right renders (" << rightR << ", " << rightG << ", " << rightB << "), not its preview blue";
+    EXPECT_GT(rightB, 2.f * rightG) << "Right renders (" << rightR << ", " << rightG << ", " << rightB << "), not its preview blue";
 }
 
 namespace {

@@ -97,6 +97,10 @@ public:
     void invalidateCache();
     void invalidateCache(const QRectF& rect);
 
+    // Adds rect to rects, merged with any rect it overlaps or nearly covers the same area as, so
+    // that changes far apart stay separate small rects instead of one union spanning the graph.
+    static void addDirtyRect(std::vector<QRectF>* rects, const QRectF& rect);
+
 private:
     void paintContent(QPainter* painter, const QRectF& exposed, QPainter::RenderHints viewHints, QWidget* widget);
 

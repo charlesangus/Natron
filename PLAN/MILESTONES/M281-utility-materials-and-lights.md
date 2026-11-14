@@ -63,19 +63,19 @@ Foundation is replaced: a scene with no lights renders emission only.
 
 ## Phase 281.2: Lights and shadows
 
-- [ ] M281.P2.T1 — Light sprims and light sampling
+- [x] M281.P2.T1 — Light sprims and light sampling
   - files: `Engine/Nodes/Scene/Utility/UtilityLight.{h,cpp}`, `Engine/Nodes/Scene/Utility/Kernels/Lights.slang`, `Engine/Nodes/Scene/Utility/UtilityRenderDelegate.cpp`, `Tests/Scene/NatronUtilityLights_Test.cpp`
   - approach: support the six UsdLux sprims; sync intensity, exposure, colour, temperature, normalize and shaping (cone, softness, focus, IES via `HioImage`/an IES parser if the pinned USD has one, else a small in-tree parser). Lights.slang samples a point on each light, returns radiance and pdf; the Dome builds a CDF for importance sampling.
   - verify: gtest — a distant light at normal incidence on a white diffuse quad gives the analytic irradiance/π; a spot cone cuts off at its angle; an IES profile scales intensity by its table.
   - size: L
 
-- [ ] M281.P2.T2 — Shadow rays and direct lighting in ShadeSurface
+- [x] M281.P2.T2 — Shadow rays and direct lighting in ShadeSurface
   - files: `Engine/Nodes/Scene/Utility/Kernels/ShadeSurface.slang`, `Engine/Nodes/Scene/Utility/UtilityRenderPass.cpp`, `Engine/Nodes/Scene/Utility/WavefrontCpu.cpp`, `Engine/Nodes/Scene/Utility/WavefrontGpu.cpp`, `Tests/Scene/NatronUtilityLights_Test.cpp`
   - approach: the shading stage emits one shadow ray per light into an occlusion batch; a second shading stage accumulates unoccluded light contributions. Wavefront stays backend-agnostic.
   - verify: gtest — a cube on a ground plane under a distant light casts a shadow whose interior is black and whose lit region matches the analytic value; CPU and GPU agree within tolerance.
   - size: L
 
-- [ ] M281.P2.T3 — Light and shadow linking
+- [x] M281.P2.T3 — Light and shadow linking
   - files: `Engine/Nodes/Scene/Utility/UtilityLight.cpp`, `Engine/Nodes/Scene/Utility/UtilityMesh.cpp`, `Engine/Nodes/Scene/Utility/Kernels/Lights.slang`, `Tests/Scene/NatronUtilityLights_Test.cpp`
   - approach: resolve each light's light-link and shadow-link collections (the pinned USD's light-linking scene index / `HdLightTokens` collection names; cite them) into per-instance bitmasks; lighting skips unlinked lights and shadow rays ignore unlinked casters.
   - verify: gtest — a light linked to one of two spheres lights only it; a shadow-link exclusion removes one sphere's shadow while it still receives light.
@@ -91,3 +91,4 @@ Foundation is replaced: a scene with no lights renders emission only.
 - 2026-11-01 — **No default light (user):** a lightless scene is emission only.
 - 2026-11-14 — Claimed by bosley-native-nodes (user request).
 - 2026-11-14 — Phase 1 implemented (eedb6717d). Textures are float4 storage buffers rather than GpuTextures, so CPU and GPU share one Slang path; mips come from the pixel's ray-cone footprint. Gaps: textures over the device limit are not downsampled; Project3D facing comes from winding (negative-scale transforms may differ from Storm); renaming a material's st primvar doesn't re-sync bound meshes. The NatronUtility goldens need re-recording (a displayColor-only scene is black when lightless), and `natron_utility_viewer.py` waits on Phase 2. Building; Phase 2 started.
+- 2026-11-14 — Phase 2 implemented (8f21e4425), F7 merged in. All six UsdLux types with IES (LM-63 in-tree; `ies:normalize` divides by the sphere average); one shadow ray per light, batched; light/shadow linking through the pinned `HdsiLightLinkingSceneIndex` with per-instance bitmasks (native-instance categories not read yet). The dome lights but isn't seen by camera rays. Open: whether the viewer headlight reaches the delegate as a light sprim (`natron_utility_viewer.py` has no stage light); the gate shows it. Phase 1's build cancelled as superseded; gating.

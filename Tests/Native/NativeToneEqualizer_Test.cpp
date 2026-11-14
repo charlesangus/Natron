@@ -27,20 +27,26 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <functional>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QString>
 
 #include "BaseTest.h"
 #include "NativePluginIdentity.h"
 #include "RawReferenceSupport.h"
 #include "RawTestSource.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -50,6 +56,7 @@
 #include "Engine/Nodes/Color/ToneEqualizerInteract.h"
 #include "Engine/Nodes/Color/ToneEqualizerKernels.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Raw/RawNodeSupport.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_USING
@@ -367,6 +374,38 @@ protected:
         ASSERT_TRUE(bool(knob)) << name;
         knob->trigger();
     }
+
+    // Delivers the main thread's events until done answers true or timeout passes; done's answer.
+    static bool processEventsUntil(const std::function<bool()>& done,
+                                   std::chrono::seconds timeout = std::chrono::seconds(30))
+    {
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + timeout;
+        while (!done()) {
+            if (std::chrono::steady_clock::now() > end) {
+                return false;
+            }
+            QCoreApplication::processEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+
+        return true;
+    }
+
+    // A width x height ramp across 2.5 EV from -9 EV, each channel a little brighter.
+    static std::vector<float> ramp(int width,
+                                   int height)
+    {
+        std::vector<float> rgb((std::size_t)width * height * 3);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    rgb[((std::size_t)y * width + x) * 3 + c] = std::exp2(-9.f + 2.5f * (float)x / (float)(width - 1)) * (1.f + 0.1f * (float)c);
+                }
+            }
+        }
+
+        return rgb;
+    }
 };
 
 TEST_F(NativeToneEqualizerTest, Identity)
@@ -478,14 +517,7 @@ TEST_F(NativeToneEqualizerTest, AutoMaskExposureCompensation)
 {
     const int width = 64;
     const int height = 48;
-    std::vector<float> rgb((std::size_t)width * height * 3);
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            for (int c = 0; c < 3; ++c) {
-                rgb[((std::size_t)y * width + x) * 3 + c] = std::exp2(-9.f + 2.5f * (float)x / (float)(width - 1)) * (1.f + 0.1f * (float)c);
-            }
-        }
-    }
+    const std::vector<float> rgb = ramp(width, height);
     NodePtr source = createSource(rgb, width, height);
     NodePtr node = createAfter(source);
     ASSERT_TRUE(source && node);
@@ -496,8 +528,10 @@ TEST_F(NativeToneEqualizerTest, AutoMaskExposureCompensation)
     const float want = autoExposureBoost(maskDeciles(mask.data(), mask.size()), 0.f, 0.f);
     ASSERT_GT(want, 0.f);
 
+    // The mask is computed off the main thread, and the boost set once it lands.
     trigger(node, kToneEqualizerParamAutoMaskExposureCompensation);
     ASSERT_FALSE(HasFatalFailure());
+    EXPECT_TRUE(processEventsUntil([&]() { return getDouble(node, kToneEqualizerParamMaskExposureCompensation) != 0.; }));
     EXPECT_NEAR(want, getDouble(node, kToneEqualizerParamMaskExposureCompensation), 0.05);
 
     // With nothing rendered, the mask the button computed is kept for the viewer readout, which
@@ -511,6 +545,54 @@ TEST_F(NativeToneEqualizerTest, AutoMaskExposureCompensation)
     const QPointF centre(width / 2., height / 2.);
     EXPECT_TRUE(effect->readingAt(*kept, centre, kept->time, kept->view).valid);
     EXPECT_FALSE(effect->readingAt(*kept, centre, kept->time + 1., kept->view).valid);
+}
+
+// Moving the pen over the viewer with no mask kept asks for one and returns at once: the mask is
+// computed on another thread, and the readout shows once it lands.
+TEST_F(NativeToneEqualizerTest, PenMotionNeverComputesTheMaskOnTheCallingThread)
+{
+    const int width = 1920;
+    const int height = 1080;
+    NodePtr source = createSource(ramp(width, height), width, height);
+    NodePtr node = createAfter(source);
+    ASSERT_TRUE(source && node);
+    ToneEqualizer* effect = dynamic_cast<ToneEqualizer*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect);
+    ASSERT_FALSE(effect->lastMask().has_value());
+    KnobStringPtr readout = effect->getKnobByNameAndType<KnobString>(kToneEqualizerParamCursorReadout);
+    ASSERT_TRUE(bool(readout));
+
+    std::mutex mutex;
+    std::vector<std::thread::id> computedOn;
+    RawNodeSupport::setFrameComputedHookForTests([&](const char* what, U64) {
+        if (std::string(what) == kToneEqualizerFrameMask) {
+            std::lock_guard<std::mutex> lock(mutex);
+            computedOn.push_back(std::this_thread::get_id());
+        }
+    });
+
+    const double time = effect->getCurrentTime();
+    const QPointF centre(width / 2., height / 2.);
+    const std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    EXPECT_FALSE(effect->onOverlayPenMotion_public(time, RenderScale::identity, ViewIdx(0), QPointF(), centre, 1., 0.));
+    const std::chrono::steady_clock::duration took = std::chrono::steady_clock::now() - begin;
+    // Under a viewer frame, and far under the mask's compute over the 1920x1080 frame.
+    EXPECT_LT(took, std::chrono::milliseconds(16)) << std::chrono::duration_cast<std::chrono::microseconds>(took).count() << " us";
+
+    const std::string unread = readout->getValue();
+    EXPECT_TRUE(processEventsUntil([&]() { return effect->lastMask() && (readout->getValue() != unread); }));
+    RawNodeSupport::setFrameComputedHookForTests(std::function<void(const char*, U64)>());
+    std::lock_guard<std::mutex> lock(mutex);
+    EXPECT_EQ(1u, computedOn.size());
+    for (const std::thread::id& id : computedOn) {
+        EXPECT_NE(std::this_thread::get_id(), id);
+    }
+
+    const std::optional<ToneEqualizer::Mask> kept = effect->lastMask();
+    ASSERT_TRUE(kept.has_value());
+    const ToneEqualizerInteract::Reading reading = effect->readingAt(*kept, centre, time, ViewIdx(0));
+    EXPECT_TRUE(reading.valid);
+    EXPECT_EQ(ToneEqualizerInteract::summaryText(reading), readout->getValue());
 }
 
 namespace {
@@ -640,3 +722,78 @@ TEST_F(NativeToneEqualizerTest, MatchesDarktable)
         EXPECT_LE(outliers, job.outliers) << job.file << ": largest " << worst / level << " at (" << worstX << ", " << worstY << ")";
     }
 }
+
+namespace {
+
+// A ToneEqualizer of source with a curve that lifts the shadows and pulls the highlights down,
+// and details preserved by details.
+NodePtr
+setUpRegionToneEqualizer(const NodePtr& node,
+                         DetailsEnum details)
+{
+    if (!node) {
+        return node;
+    }
+    const char* const names[kBands] = {
+        kToneEqualizerParamBlacks,
+        kToneEqualizerParamDeepShadows,
+        kToneEqualizerParamShadows,
+        kToneEqualizerParamLightShadows,
+        kToneEqualizerParamMidtones,
+        kToneEqualizerParamDarkHighlights,
+        kToneEqualizerParamHighlights,
+        kToneEqualizerParamWhites,
+        kToneEqualizerParamSpeculars,
+    };
+    const double gains[kBands] = { 1.2, 0.9, 0.6, 0.3, 0., -0.2, -0.5, -0.8, -1. };
+    EffectInstancePtr effect = node->getEffectInstance();
+    for (int b = 0; b < kBands; ++b) {
+        KnobDoublePtr knob = effect->getKnobByNameAndType<KnobDouble>(names[b]);
+        EXPECT_TRUE(bool(knob)) << names[b];
+        if (knob) {
+            knob->setValue(gains[b]);
+        }
+    }
+    KnobChoicePtr preserve = effect->getKnobByNameAndType<KnobChoice>(kToneEqualizerParamPreserveDetails);
+    EXPECT_TRUE(bool(preserve));
+    if (preserve) {
+        preserve->setValue((int)details);
+    }
+    KnobDoublePtr diameter = effect->getKnobByNameAndType<KnobDouble>(kToneEqualizerParamSmoothingDiameter);
+    EXPECT_TRUE(bool(diameter));
+    if (diameter) {
+        diameter->setValue(10.);
+    }
+
+    return node;
+}
+
+// No filter, and the fast guided filter and the EIGF, each averaged (geometric mean blending) or
+// not (linear blending).
+const DetailsEnum kRegionDetails[] = { eDetailsNone, eDetailsAveragedGuided, eDetailsGuided, eDetailsAveragedEigf, eDetailsEigf };
+
+class ToneEqualizerRegionTest
+    : public RegionIndependenceTest {
+};
+
+TEST_F(ToneEqualizerRegionTest, RegionIndependentCpu)
+{
+    for (DetailsEnum details : kRegionDetails) {
+        SCOPED_TRACE((int)details);
+        expectRegionIndependent([this, details](const NodePtr& source) {
+            return setUpRegionToneEqualizer(createAfter(PLUGINID_NATRON_TONEEQUALIZER, source), details);
+        });
+    }
+}
+
+TEST_F(ToneEqualizerRegionTest, InfiniteSourceFails)
+{
+    for (DetailsEnum details : kRegionDetails) {
+        SCOPED_TRACE((int)details);
+        expectInfiniteRoDFails([this, details](const NodePtr& source) {
+            return setUpRegionToneEqualizer(createAfter(PLUGINID_NATRON_TONEEQUALIZER, source), details);
+        });
+    }
+}
+
+} // namespace

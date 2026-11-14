@@ -327,13 +327,18 @@ backtransformY0U0V0(float* buf,
 Vec3d
 measureVariance(const float* in,
                 std::size_t n,
-                const Settings& settings)
+                const Settings& settings,
+                const std::function<bool()>& cancelled)
 {
     Vec3d variance = { 0., 0., 0. };
 
     if (n < 2) {
         return variance;
     }
+    // Pixels between two cancellation checks: about 64 rows of a 1K-wide frame.
+    const std::size_t block = 65536;
+    const auto stop = [&cancelled]() { return cancelled && cancelled(); };
+
     Vec3 wb = settings.wb;
     Vec3 p;
     for (int c = 0; c < 3; ++c) {
@@ -342,10 +347,19 @@ measureVariance(const float* in,
     }
     const float compensateP = 0.05f / std::pow(0.05f, settings.shadows);
     std::vector<float> pre(3 * n);
-    preconditionV2(in, pre.data(), n, settings.profileA * compensateP, p, settings.profileB, wb);
+    for (std::size_t first = 0; first < n; first += block) {
+        if (stop()) {
+            return variance;
+        }
+        const std::size_t count = std::min(block, n - first);
+        preconditionV2(in + 3 * first, pre.data() + 3 * first, count, settings.profileA * compensateP, p, settings.profileB, wb);
+    }
 
     Vec3d mean = { 0., 0., 0. };
     for (std::size_t j = 0; j < 3 * n; j += 3) {
+        if (((j / 3) % block == 0) && stop()) {
+            return variance;
+        }
         for (int c = 0; c < 3; ++c) {
             mean[c] += pre[j + c];
         }
@@ -354,6 +368,9 @@ measureVariance(const float* in,
         mean[c] /= (double)n;
     }
     for (std::size_t j = 0; j < 3 * n; j += 3) {
+        if (((j / 3) % block == 0) && stop()) {
+            return variance;
+        }
         for (int c = 0; c < 3; ++c) {
             const double d = pre[j + c] - mean[c];
             variance[c] += d * d;

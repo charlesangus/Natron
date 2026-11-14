@@ -277,7 +277,7 @@ protected:
         return cpu;
     }
 
-private:
+protected:
     // The CPU render of node over window and its renderGpu() render, fed the CPU render of source
     // over the region the GPU path reads, or false with the failure reported.
     bool renderBothWays(GpuParityRuntime& runtime,

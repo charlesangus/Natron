@@ -39,6 +39,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -49,6 +50,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/Nodes/Raw/RawSegmentation.h"
@@ -763,18 +765,15 @@ RawHighlights::RawHighlights(NodePtr node)
     , _scales()
     , _solidColor()
     , _message()
-    , _chromaMutex()
-    , _chromaValid(false)
-    , _chromaKey(0)
-    , _chroma { 0.f, 0.f, 0.f }
-    , _frameMutex()
-    , _frameValid(false)
-    , _frameKey(0)
-    , _frame()
-    , _maskFrameKey(0)
-    , _maskFrameView(RawKernels::eSegmentsMaskOff)
-    , _maskFrame()
+    , _chromaFrame(kRawHighlightsFrameOpposedChroma, 1)
+    , _inpaintFrame(kRawHighlightsFrameReconstructColor, 1)
+    , _segmentsFrame(kRawHighlightsFrameSegments, 1)
+    , _segmentsMaskFrame(kRawHighlightsFrameSegments, 1)
+    , _laplacianFrame(kRawHighlightsFrameLaplacian, 1)
 {
+    for (WholeFrameCache* cache : { &_chromaFrame, &_inpaintFrame, &_segmentsFrame, &_segmentsMaskFrame, &_laplacianFrame }) {
+        cache->setOnAbandonedResult(wholeFrameRerenderViewers(this));
+    }
     setSupportsRenderScaleMaybe(eSupportsNo);
 }
 
@@ -785,22 +784,17 @@ RawHighlights::~RawHighlights()
 void
 RawHighlights::purgeCaches()
 {
-    {
-        std::lock_guard<std::mutex> lock(_chromaMutex);
-        _chromaValid = false;
-    }
-    std::lock_guard<std::mutex> lock(_frameMutex);
-    _frameValid = false;
-    _frame.reset();
-    _maskFrame.reset();
+    _chromaFrame.clear();
+    _inpaintFrame.clear();
+    _segmentsFrame.clear();
+    _segmentsMaskFrame.clear();
+    _laplacianFrame.clear();
 }
 
 void
 RawHighlights::releaseOverlayImageResources()
 {
-    std::lock_guard<std::mutex> lock(_frameMutex);
-
-    _maskFrame.reset();
+    _segmentsMaskFrame.clear();
 }
 
 const NodeSpec*
@@ -1302,109 +1296,184 @@ RawHighlights::renderOp(const RenderActionArgs& args,
     std::array<float, 3> chroma = { 0.f, 0.f, 0.f };
     std::shared_ptr<const std::vector<float>> frameMosaic;
     std::shared_ptr<const std::vector<float>> photositeMask;
+    std::size_t photositeMaskOffset = 0;
     RectI laplacianWindow;
     float clips[3] = { s.clip, s.clip, s.clip };
-    const U64 key = RawNodeSupport::frameKey(getRenderHash(), args.time, args.view);
-    float opposedClips[3];
+    const std::string key = std::to_string(RawNodeSupport::frameKey(getRenderHash(), args.time, args.view));
+    std::array<float, 3> opposedClips;
     for (int c = 0; c < 3; ++c) {
         opposedClips[c] = kClipMagicOpposed * s.clip * s.coeffs[c];
     }
-    // Segmentation Based starts from Inpaint Opposed, whose chrominance it shares, as darktable's
-    // chrominance cache leaves the mode out. whole is the source when the caller has it.
-    const auto opposedChromaOf = [&](const ImageView* whole) {
-        std::lock_guard<std::mutex> lock(_chromaMutex);
-        if (!_chromaValid || (_chromaKey != key)) {
-            RawNodeSupport::noteFrameComputed(kRawHighlightsFrameOpposedChroma, key);
-            std::optional<ImageView> own;
-            RawNodeSupport::TopDownBuffer ownBuffer;
-            if (!whole) {
-                viewWholeSource(source, s.sourceRoD, parallel, &own, &ownBuffer);
-                whole = &*own;
-            }
-            if (hasCfa) {
-                _chroma = opposedChroma(*whole, CfaLookup(s.layout, s.sourceRoD), opposedClips, parallel);
-            } else if (nComps >= 3) {
-                _chroma = linearOpposedChroma(*whole, opposedClips, parallel);
-            } else {
-                _chroma = { 0.f, 0.f, 0.f };
-            }
-            _chromaKey = key;
-            _chromaValid = !cancel.check();
-        }
+    const std::function<bool()> waitCancelled = wholeFrameWaitCancelled(*this, cancel);
+    const ImagePtr sourceImage = source.image;
+    const Settings settings = s;
+    // A job reads the source under a lock of its own thread, which a recursive image lock needs.
+    const auto lockedOnJob = [](const ImagePtr& image) {
+        RawNodeSupport::LockedSource own;
+        own.image = image;
+        own.lock();
 
-        return _chroma;
+        return own;
     };
-    if (mode == eRawHighlightsModeOpposed) {
-        std::copy(opposedClips, opposedClips + 3, clips);
-        chroma = opposedChromaOf(NULL);
-    } else if ((mode == eRawHighlightsModeInpaint) || (mode == eRawHighlightsModeSegments)) {
-        std::lock_guard<std::mutex> lock(_frameMutex);
-        const bool maskMissing = (segmentsMask != RawKernels::eSegmentsMaskOff) && (!_maskFrame || (_maskFrameKey != key) || (_maskFrameView != (int)segmentsMask));
-        if (!_frameValid || (_frameKey != key) || maskMissing) {
-            RawNodeSupport::noteFrameComputed((mode == eRawHighlightsModeInpaint) ? kRawHighlightsFrameReconstructColor : kRawHighlightsFrameSegments, key);
-            _frame.reset();
+    // Segmentation Based starts from Inpaint Opposed, whose chrominance it shares, as darktable's
+    // chrominance cache leaves the mode out.
+    const auto opposedChromaJob = [sourceImage, settings, hasCfa, nComps, opposedClips, lockedOnJob]() -> WholeFrameCache::Job {
+        return [sourceImage, settings, hasCfa, nComps, opposedClips, lockedOnJob](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+            RenderCancellation jobCancel(jobCancelled);
+            const int jobThreads = wholeFrameJobThreads();
+            const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
+            const RawNodeSupport::LockedSource own = lockedOnJob(sourceImage);
             std::optional<ImageView> whole;
             RawNodeSupport::TopDownBuffer wholeBuffer;
-            viewWholeSource(source, s.sourceRoD, parallel, &whole, &wholeBuffer);
-            const int width = s.sourceRoD.width();
-            const int height = s.sourceRoD.height();
-            auto mosaic = std::make_shared<std::vector<float>>((std::size_t)width * (std::size_t)height, 0.f);
-            std::uint8_t xtrans[6][6] = {};
-            std::uint32_t filters = RawKernels::kFiltersXTrans;
-            if (s.layout.period() == 2) {
-                filters = RawNodeSupport::bayerFiltersAt(s.layout, s.sourceRoD);
-            } else {
-                RawNodeSupport::xtransAt(s.layout, s.sourceRoD, xtrans);
+            viewWholeSource(own, settings.sourceRoD, jobParallel, &whole, &wholeBuffer);
+            std::array<float, 3> chroma = { 0.f, 0.f, 0.f };
+            if (hasCfa) {
+                chroma = opposedChroma(*whole, CfaLookup(settings.layout, settings.sourceRoD), opposedClips.data(), jobParallel);
+            } else if (nComps >= 3) {
+                chroma = linearOpposedChroma(*whole, opposedClips.data(), jobParallel);
             }
-            if (mode == eRawHighlightsModeInpaint) {
+            if (jobCancel.check()) {
+                return WholeFrameCache::Result();
+            }
+
+            return std::make_shared<const std::vector<float>>(chroma.begin(), chroma.end());
+        };
+    };
+    // Each mode keeps only its own frame.
+    if (mode != eRawHighlightsModeInpaint) {
+        _inpaintFrame.clear();
+    }
+    if (mode != eRawHighlightsModeSegments) {
+        _segmentsFrame.clear();
+        _segmentsMaskFrame.clear();
+    }
+    if (mode != eRawHighlightsModeLaplacian) {
+        _laplacianFrame.clear();
+    }
+    if (mode == eRawHighlightsModeOpposed) {
+        std::copy(opposedClips.begin(), opposedClips.end(), clips);
+        const WholeFrameCache::Result found = _chromaFrame.get(key, waitCancelled, opposedChromaJob);
+        if (!found) {
+            return cancel.check() ? eStatusOK : eStatusFailed;
+        }
+        std::copy(found->begin(), found->end(), chroma.begin());
+    } else if (mode == eRawHighlightsModeInpaint) {
+        frameMosaic = _inpaintFrame.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
+            return [sourceImage, settings, lockedOnJob](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                RenderCancellation jobCancel(jobCancelled);
+                const int jobThreads = wholeFrameJobThreads();
+                const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
+                const RawNodeSupport::LockedSource own = lockedOnJob(sourceImage);
+                std::optional<ImageView> whole;
+                RawNodeSupport::TopDownBuffer wholeBuffer;
+                viewWholeSource(own, settings.sourceRoD, jobParallel, &whole, &wholeBuffer);
+                const int width = settings.sourceRoD.width();
+                const int height = settings.sourceRoD.height();
+                auto mosaic = std::make_shared<std::vector<float>>((std::size_t)width * (std::size_t)height, 0.f);
+                std::uint8_t xtrans[6][6] = {};
+                std::uint32_t filters = RawKernels::kFiltersXTrans;
+                if (settings.layout.period() == 2) {
+                    filters = RawNodeSupport::bayerFiltersAt(settings.layout, settings.sourceRoD);
+                } else {
+                    RawNodeSupport::xtransAt(settings.layout, settings.sourceRoD, xtrans);
+                }
                 float inpaintClips[3];
                 for (int c = 0; c < 3; ++c) {
-                    inpaintClips[c] = kClipMagicInpaint * s.clip * s.coeffs[c];
+                    inpaintClips[c] = kClipMagicInpaint * settings.clip * settings.coeffs[c];
                 }
-                RawKernels::inpaintColor(whole->pixel(0, 0), whole->rowStride, whole->nComps, mosaic->data(), width, height, filters, xtrans, inpaintClips, parallel);
-            } else {
-                const std::array<float, 3> wholeChroma = opposedChromaOf(&*whole);
-                const ImageView& view = *whole;
-                const CfaLookup cfa(s.layout, s.sourceRoD);
-                float* opposed = mosaic->data();
-                parallel(height, [&](int row) {
+                RawKernels::inpaintColor(whole->pixel(0, 0), whole->rowStride, whole->nComps, mosaic->data(), width, height, filters, xtrans, inpaintClips, jobParallel);
+                if (jobCancel.check()) {
+                    return WholeFrameCache::Result();
+                }
+
+                return mosaic;
+            };
+        });
+        if (!frameMosaic) {
+            return cancel.check() ? eStatusOK : eStatusFailed;
+        }
+    } else if (mode == eRawHighlightsModeSegments) {
+        const std::size_t frameSize = (std::size_t)s.sourceRoD.width() * (std::size_t)s.sourceRoD.height();
+        // A mask view's result holds the mosaic followed by the photosite mask, so a render of the
+        // image can use it too.
+        const auto segmentsJob = [&](RawKernels::SegmentsMaskEnum view) -> WholeFrameCache::Job {
+            WholeFrameCache* chromaFrame = &_chromaFrame;
+            const std::string chromaKey = key;
+            return [sourceImage, settings, opposedClips, lockedOnJob, opposedChromaJob, chromaFrame, chromaKey, view, frameSize](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                const WholeFrameCache::Result wholeChroma = chromaFrame->get(chromaKey, jobCancelled, opposedChromaJob);
+                const int jobThreads = wholeFrameJobThreads();
+                if (!wholeChroma) {
+                    return WholeFrameCache::Result();
+                }
+                RenderCancellation jobCancel(jobCancelled);
+                const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
+                const RawNodeSupport::LockedSource own = lockedOnJob(sourceImage);
+                std::optional<ImageView> whole;
+                RawNodeSupport::TopDownBuffer wholeBuffer;
+                viewWholeSource(own, settings.sourceRoD, jobParallel, &whole, &wholeBuffer);
+                const int width = settings.sourceRoD.width();
+                const int height = settings.sourceRoD.height();
+                const bool masked = (view != RawKernels::eSegmentsMaskOff);
+                auto result = std::make_shared<std::vector<float>>(frameSize * (masked ? 2 : 1), 0.f);
+                std::uint8_t xtrans[6][6] = {};
+                std::uint32_t filters = RawKernels::kFiltersXTrans;
+                if (settings.layout.period() == 2) {
+                    filters = RawNodeSupport::bayerFiltersAt(settings.layout, settings.sourceRoD);
+                } else {
+                    RawNodeSupport::xtransAt(settings.layout, settings.sourceRoD, xtrans);
+                }
+                const ImageView& wholeView = *whole;
+                const CfaLookup cfa(settings.layout, settings.sourceRoD);
+                const std::vector<float>& chromaValues = *wholeChroma;
+                float* opposed = result->data();
+                jobParallel(height, [&](int row) {
                     float* line = opposed + (std::size_t)row * (std::size_t)width;
                     for (int col = 0; col < width; ++col) {
-                        const float v = view.at(row, col);
+                        const float v = wholeView.at(row, col);
                         const int color = cfa.at(row, col);
-                        line[col] = (v >= opposedClips[color]) ? std::max(v, calcRefavg(view, cfa, row, col) + wholeChroma[color]) : v;
+                        line[col] = (v >= opposedClips[color]) ? std::max(v, calcRefavg(wholeView, cfa, row, col) + chromaValues[color]) : v;
                     }
                 });
                 RawKernels::SegmentsParams params;
-                params.clip = s.clip;
+                params.clip = settings.clip;
                 for (int c = 0; c < 3; ++c) {
-                    params.coeffs[c] = s.coeffs[c];
+                    params.coeffs[c] = settings.coeffs[c];
                 }
-                params.candidating = s.candidating;
-                params.combine = s.combine;
-                params.recovery = s.recovery;
-                params.strength = s.strength;
-                params.noiseLevel = s.noiseLevel;
-                std::shared_ptr<std::vector<float>> masked;
-                if (segmentsMask != RawKernels::eSegmentsMaskOff) {
-                    masked = std::make_shared<std::vector<float>>((std::size_t)width * (std::size_t)height, 0.f);
+                params.candidating = settings.candidating;
+                params.combine = settings.combine;
+                params.recovery = settings.recovery;
+                params.strength = settings.strength;
+                params.noiseLevel = settings.noiseLevel;
+                RawKernels::segmentsHighlights(wholeView.pixel(0, 0), wholeView.rowStride, wholeView.nComps, opposed, width, height, filters, xtrans, params, jobParallel, view, masked ? opposed + frameSize : nullptr);
+                if (jobCancel.check()) {
+                    return WholeFrameCache::Result();
                 }
-                RawKernels::segmentsHighlights(whole->pixel(0, 0), whole->rowStride, whole->nComps, opposed, width, height, filters, xtrans, params, parallel, segmentsMask, masked ? masked->data() : nullptr);
-                // refreshOverlayImages() moves the generation before it releases the mask, so under
-                // this lock either the release comes after this store or the check below sees it.
-                if (masked && !cancel.check() && !isOverlayImagePassSuperseded()) {
-                    _maskFrame = std::move(masked);
-                    _maskFrameKey = key;
-                    _maskFrameView = (int)segmentsMask;
+
+                return result;
+            };
+        };
+        if (segmentsMask != RawKernels::eSegmentsMaskOff) {
+            const WholeFrameCache::Result found = _segmentsMaskFrame.get(key + '|' + std::to_string((int)segmentsMask), waitCancelled, [&]() { return segmentsJob(segmentsMask); });
+            // refreshOverlayImages() moves the generation before it releases the mask, so a pass
+            // it replaced drops what it kept after that release.
+            if (isOverlayImagePassSuperseded()) {
+                _segmentsMaskFrame.clear();
+            }
+            frameMosaic = found;
+            photositeMask = found;
+            photositeMaskOffset = frameSize;
+        } else {
+            for (int view : { (int)RawKernels::eSegmentsMaskCombine, (int)RawKernels::eSegmentsMaskCandidating, (int)RawKernels::eSegmentsMaskStrength }) {
+                if (!frameMosaic) {
+                    frameMosaic = _segmentsMaskFrame.kept(key + '|' + std::to_string(view));
                 }
             }
-            _frame = std::move(mosaic);
-            _frameKey = key;
-            _frameValid = !cancel.check();
+            if (!frameMosaic) {
+                frameMosaic = _segmentsFrame.get(key, waitCancelled, [&]() { return segmentsJob(RawKernels::eSegmentsMaskOff); });
+            }
         }
-        frameMosaic = _frame;
-        if ((segmentsMask != RawKernels::eSegmentsMaskOff) && (_maskFrameKey == key) && (_maskFrameView == (int)segmentsMask)) {
-            photositeMask = _maskFrame;
+        if (!frameMosaic) {
+            return cancel.check() ? eStatusOK : eStatusFailed;
         }
     } else if (mode == eRawHighlightsModeLaplacian) {
         RawKernels::LaplacianParams params;
@@ -1419,22 +1488,26 @@ RawHighlights::renderOp(const RenderActionArgs& args,
         const std::uint32_t filters = RawNodeSupport::bayerFiltersAt(s.layout, s.sourceRoD);
         const int width = s.sourceRoD.width();
         const int height = s.sourceRoD.height();
-        std::shared_ptr<const std::vector<float>> reconstructed;
-        {
-            std::lock_guard<std::mutex> lock(_frameMutex);
-            if (!_frameValid || (_frameKey != key)) {
-                RawNodeSupport::noteFrameComputed(kRawHighlightsFrameLaplacian, key);
-                _frame.reset();
+        const std::shared_ptr<const std::vector<float>> reconstructed = _laplacianFrame.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
+            return [sourceImage, settings, params, filters, width, height, lockedOnJob](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                RenderCancellation jobCancel(jobCancelled);
+                const int jobThreads = wholeFrameJobThreads();
+                const RawKernels::ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
+                const RawNodeSupport::LockedSource own = lockedOnJob(sourceImage);
                 std::optional<ImageView> whole;
                 RawNodeSupport::TopDownBuffer wholeBuffer;
-                viewWholeSource(source, s.sourceRoD, parallel, &whole, &wholeBuffer);
+                viewWholeSource(own, settings.sourceRoD, jobParallel, &whole, &wholeBuffer);
                 auto ds = std::make_shared<std::vector<float>>((std::size_t)RawKernels::laplacianDownsampledWidth(width) * (std::size_t)RawKernels::laplacianDownsampledHeight(height) * 4, 0.f);
-                RawKernels::laplacianReconstruct(whole->pixel(0, 0), whole->rowStride, whole->nComps, width, height, filters, params, ds->data(), parallel);
-                _frame = std::move(ds);
-                _frameKey = key;
-                _frameValid = !cancel.check();
-            }
-            reconstructed = _frame;
+                RawKernels::laplacianReconstruct(whole->pixel(0, 0), whole->rowStride, whole->nComps, width, height, filters, params, ds->data(), jobParallel);
+                if (jobCancel.check()) {
+                    return WholeFrameCache::Result();
+                }
+
+                return ds;
+            };
+        });
+        if (!reconstructed) {
+            return cancel.check() ? eStatusOK : eStatusFailed;
         }
         // The window's mosaic, top-down, over the part of roi inside the source.
         const RectI inside = roi.intersect(s.sourceRoD);
@@ -1531,7 +1604,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
             for (int y = maskTile.y1; y < maskTile.y2; ++y) {
                 const std::size_t row = (std::size_t)(rod.y2 - 1 - y);
                 for (int x = maskTile.x1; x < maskTile.x2; ++x) {
-                    const unsigned char value = overlayImageCoverageByte((*photositeMask)[row * (std::size_t)rod.width() + (std::size_t)(x - rod.x1)]);
+                    const unsigned char value = overlayImageCoverageByte((*photositeMask)[photositeMaskOffset + row * (std::size_t)rod.width() + (std::size_t)(x - rod.x1)]);
                     values[(std::size_t)(y - maskTile.y1) * tileWidth + (std::size_t)(x - maskTile.x1)] = value;
                     any = any || (value > 0);
                 }
@@ -1549,7 +1622,7 @@ RawHighlights::renderOp(const RenderActionArgs& args,
             const bool clippedView = maskView == (int)eRawHighlightsMaskViewClipped;
             const auto photosite = [&](int row, int col) {
                 if (!clippedView) {
-                    return (*photositeMask)[(std::size_t)row * (std::size_t)rod.width() + (std::size_t)col];
+                    return (*photositeMask)[photositeMaskOffset + (std::size_t)row * (std::size_t)rod.width() + (std::size_t)col];
                 }
 
                 return (in.pixel(row, col)[0] >= viewClips[cfa.at(row, col)]) ? 1.f : 0.f;

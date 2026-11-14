@@ -53,6 +53,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 
 #include <QCoreApplication>
 #include <QMetaObject>
@@ -190,23 +191,6 @@ sampleCurves(const KnobParametricPtr& knob,
     }
 }
 
-bool
-effectRoDPixels(EffectInstance& effect,
-                double time,
-                const RenderScale& scale,
-                ViewIdx view,
-                RectI* out)
-{
-    RectD rod;
-    bool isProjectFormat = false;
-
-    if (effect.getRegionOfDefinition_public(effect.getRenderHash(), time, scale, view, &rod, &isProjectFormat) == eStatusFailed) {
-        return false;
-    }
-    *out = PassExec::toPixelEnclosing(rod, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1));
-
-    return true;
-}
 } // namespace
 
 struct DenoiseProfiled::Resolved {
@@ -224,12 +208,12 @@ DenoiseProfiled::DenoiseProfiled(NodePtr node)
     , _profilesValid(false)
     , _profilesKey()
     , _profiles()
-    , _frameMutex()
-    , _frameValid(false)
-    , _frameKey()
-    , _frame()
+    , _waveletFrame(kDenoiseProfiledFrameWavelets)
+    , _varianceFrame(kDenoiseProfiledFrameVariance)
     , _message()
 {
+    _waveletFrame.setOnAbandonedResult(wholeFrameRerenderViewers(this));
+    _varianceFrame.setOnAbandonedResult(wholeFrameRerenderViewers(this));
 }
 
 DenoiseProfiled::~DenoiseProfiled()
@@ -556,8 +540,9 @@ DenoiseProfiled::initializeKnobs()
     KnobStringPtr variance = createKnob<KnobString>(tr("Variance").toStdString());
     variance->setName(kDenoiseProfiledParamVariance);
     variance->setHintToolTip(tr("Use only with a perfectly uniform image if you want to estimate the noise variance: the red, "
-                                "green and blue variance of the stabilised image over the last region rendered, 1 where the "
-                                "profile fits.")
+                                "green and blue variance of the stabilised image over the whole frame at the render scale, 1 "
+                                "where the profile fits. The readout names the frame's size and the scale it was measured at, "
+                                "so panning does not change it, while a zoomed-out viewer measures at a lower scale.")
                                  .toStdString());
     variance->setAsLabel();
     variance->setEvaluateOnChange(false);
@@ -727,9 +712,17 @@ DenoiseProfiled::purgeCaches()
         _profilesValid = false;
         _profiles.clear();
     }
-    std::lock_guard<std::mutex> lock(_frameMutex);
-    _frameValid = false;
-    _frame.reset();
+    _waveletFrame.clear();
+    _varianceFrame.clear();
+}
+
+bool
+DenoiseProfiled::framePixels(double time,
+                             ViewIdx view,
+                             const RenderScale& scale,
+                             RectI* pixels) const
+{
+    return wholeFramePixels(*this, getSourceInput(), time, view, scale, pixels);
 }
 
 std::optional<std::array<double, 3>>
@@ -741,16 +734,21 @@ DenoiseProfiled::lastVariance() const
 }
 
 void
-DenoiseProfiled::showVariance(const std::array<double, 3>& variance)
+DenoiseProfiled::showVariance(const std::array<double, 3>& variance,
+                              const RectI& frame,
+                              double renderScale)
 {
     {
         std::lock_guard<std::mutex> lock(_varianceMutex);
         _lastVariance = variance;
     }
-    const std::string text = tr("red %1, green %2, blue %3")
+    const std::string text = tr("red %1, green %2, blue %3 over the whole frame (%4\u00d7%5 at %6%)")
                                  .arg(variance[0], 0, 'f', 2)
                                  .arg(variance[1], 0, 'f', 2)
                                  .arg(variance[2], 0, 'f', 2)
+                                 .arg(frame.width())
+                                 .arg(frame.height())
+                                 .arg(renderScale * 100., 0, 'g', 4)
                                  .toStdString();
     const KnobStringWPtr weak = _variance;
     const auto apply = [weak, text]() {
@@ -848,9 +846,9 @@ DenoiseProfiled::resolve(double time,
     sampleCurves(_rgbCurves.lock(), kRgbCurveCount, eCurveAll, &s);
     sampleCurves(_y0u0v0Curves.lock(), kY0U0V0CurveCount, eCurveY0, &s);
 
-    RectI fullRoD;
-    if (RawNodeSupport::getInputPixelRoD(*this, getSourceInput(), time, view, &fullRoD)) {
-        r.fullSize = std::max(fullRoD.width(), fullRoD.height());
+    RectI fullFrame;
+    if (framePixels(time, view, RenderScale::identity, &fullFrame)) {
+        r.fullSize = std::max(fullFrame.width(), fullFrame.height());
     }
 
     return r;
@@ -864,7 +862,10 @@ DenoiseProfiled::isOpIdentity(double time,
 {
     const std::optional<Resolved> r = resolve(time, view);
 
-    if (r && !r->message.empty()) {
+    if (wholeFrameSourceIsInfinite(*this, getSourceInput(), time, view)) {
+        // The infinite-size error resolve() posted outranks these notes.
+        _message.withdraw(getNode());
+    } else if (r && !r->message.empty()) {
         _message.post(getNode(), eMessageTypeWarning, r->message);
     } else {
         _message.withdraw(getNode());
@@ -888,19 +889,21 @@ DenoiseProfiled::getRegionsOfInterest(double time,
     if (!input || !r) {
         return;
     }
-    if (isWavelets(r->settings.mode)) {
-        RectD sourceRoD;
-        bool isProjectFormat = false;
-        if (input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &sourceRoD, &isProjectFormat) != eStatusFailed) {
-            (*ret)[input] = sourceRoD;
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
+    if (isWavelets(r->settings.mode) || (r->settings.mode == eModeVariance)) {
+        // The whole frame when the window touches it; a window outside it passes through.
+        RectI frame;
+        if (framePixels(time, view, scale, &frame)) {
+            const RectD frameCanonical = PassExec::toCanonical(frame, scale, par);
+            RectD need = renderWindow;
+            if (need.intersects(frameCanonical)) {
+                need.merge(frameCanonical);
+            }
+            (*ret)[input] = need;
         }
 
         return;
     }
-    if (r->settings.mode == eModeVariance) {
-        return;
-    }
-    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
     const int halo = nlmGeometry(r->settings, scale.toOfxPointD().x).halo();
     const RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
     const RectI need(window.x1 - halo, window.y1 - halo, window.x2 + halo, window.y2 + halo);
@@ -921,6 +924,10 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
     const DenoiseProfiledKernels::Settings& s = r.settings;
     const int sourceInput = plan.sourceInput;
     const double renderScale = args.mappedScale.toOfxPointD().x;
+    const int nThreads = appPTR->getNCPUsAvailableForEffect();
+    RenderCancellation cancel(this);
+    const ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, nThreads);
+    const std::function<bool()> waitCancelled = wholeFrameWaitCancelled(*this, cancel);
 
     ImagePtr mask;
     if (plan.applyMask && (plan.maskChannel >= 0)) {
@@ -955,6 +962,9 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
                 job.divisor.reset();
             }
         }
+        if (cancel.check()) {
+            return eStatusFailed;
+        }
         if (!isFloatImage(job.dst) || !isFloatImage(job.src) || !isFloatImage(job.divisor)) {
             return eStatusFailed;
         }
@@ -969,8 +979,59 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
         return eStatusOK;
     }
     RectI rodPixel;
-    if (!effectRoDPixels(*this, args.time, args.mappedScale, args.view, &rodPixel)) {
+    if (!framePixels(args.time, args.view, args.mappedScale, &rodPixel)) {
         return eStatusFailed;
+    }
+
+    // A window outside the frame did not ask for the frame, so it cannot measure it.
+    RectI frameOverlap;
+    const bool touchesFrame = intersectRects(roi, rodPixel, &frameOverlap) && !isEmptyRect(frameOverlap);
+    if ((s.mode == eModeVariance) && touchesFrame && !jobs.empty() && jobs[0].src && (jobs[0].nComps >= 3)) {
+        // Measured over the whole frame, so neither the window nor the tile changes it; the
+        // output passes through.
+        PlaneJob measureJob = jobs[0];
+        measureJob.channels.reset().set(0).set(1).set(2);
+        const std::string key = wholeFrameKey(*this, sourceInput, args.time, args.view, args.mappedScale, rodPixel, layerIds[0], measureJob.nComps);
+        if (cancel.check()) {
+            return eStatusFailed;
+        }
+        const WholeFrameCache::Result measured = _varianceFrame.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
+            measureJob.lock();
+            const ProcessedPlanes measurePlanes(measureJob);
+            const int bw = rodPixel.width();
+            const int bh = rodPixel.height();
+            const std::size_t planeSize = (std::size_t)bw * bh;
+            std::vector<float> filled(planeSize * measurePlanes.count());
+            fillBuffer(measureJob, measurePlanes, rodPixel, Boundary::Zero, nThreads, cancel, filled.data());
+            if (cancel.check()) {
+                return WholeFrameCache::Job();
+            }
+            auto rgb = std::make_shared<std::vector<float>>(planeSize * 3);
+            parallel(bh, [&](int y) {
+                const std::size_t first = (std::size_t)y * bw;
+                for (std::size_t i = first; i < first + (std::size_t)bw; ++i) {
+                    for (int c = 0; c < 3; ++c) {
+                        (*rgb)[3 * i + c] = filled[(std::size_t)measurePlanes.planeOfChannel[c] * planeSize + i];
+                    }
+                }
+            });
+            if (cancel.check()) {
+                return WholeFrameCache::Job();
+            }
+
+            return [rgb, planeSize, s](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                const Vec3d v = measureVariance(rgb->data(), planeSize, s, jobCancelled);
+                if (jobCancelled()) {
+                    return WholeFrameCache::Result();
+                }
+
+                return std::make_shared<const std::vector<float>>(std::vector<float> { (float)v[0], (float)v[1], (float)v[2] });
+            };
+        });
+        if (!measured) {
+            return eStatusFailed;
+        }
+        showVariance({ (double)(*measured)[0], (double)(*measured)[1], (double)(*measured)[2] }, rodPixel, renderScale);
     }
 
     MaskInput maskSource;
@@ -984,22 +1045,17 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
     }
 
     RectI window(0, 0, 0, 0);
-    bool processing = (plan.mix != 0.) && intersectRects(roi, rodPixel, &window) && !isEmptyRect(window);
+    bool processing = (plan.mix != 0.) && (s.mode != eModeVariance) && intersectRects(roi, rodPixel, &window) && !isEmptyRect(window);
     RectI bufferRect(0, 0, 0, 0);
     if (processing) {
         if (isWavelets(s.mode)) {
             bufferRect = rodPixel;
-        } else if (s.mode == eModeVariance) {
-            bufferRect = window;
         } else {
             const int halo = nlmGeometry(s, renderScale).halo();
             processing = intersectRects(RectI(window.x1 - halo, window.y1 - halo, window.x2 + halo, window.y2 + halo), rodPixel, &bufferRect);
         }
     }
 
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    RenderCancellation cancel(this);
-    const ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, nThreads);
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);
@@ -1023,11 +1079,11 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             if (cancel.check()) {
                 return eStatusOK;
             }
-            std::vector<float> rgb(planeSize * 3);
+            auto rgb = std::make_shared<std::vector<float>>(planeSize * 3);
             parallel(bh, [&](int y) {
                 for (int c = 0; c < 3; ++c) {
                     const float* plane = filled.data() + (std::size_t)fillPlanes.planeOfChannel[c] * planeSize + (std::size_t)y * bw;
-                    float* line = rgb.data() + (std::size_t)y * bw * 3;
+                    float* line = rgb->data() + (std::size_t)y * bw * 3;
                     for (int x = 0; x < bw; ++x) {
                         line[3 * x + c] = plane[x];
                     }
@@ -1044,35 +1100,34 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             int outX = 0;
             int outY = 0;
             std::shared_ptr<const std::vector<float>> frame;
-            if (s.mode == eModeVariance) {
-                if (j == 0) {
-                    showVariance(measureVariance(rgb.data(), planeSize, s));
-                }
-                out = rgb.data();
-                outStride = bw;
-                outX = wx;
-                outY = wy;
-            } else if (isWavelets(s.mode)) {
+            if (isWavelets(s.mode)) {
                 const std::string key = std::to_string(RawNodeSupport::frameKey(getRenderHash(), args.time, args.view)) + '|' + std::to_string(renderScale) + '|' + layerIds[j]
                     + '|' + std::to_string(bufferRect.x1) + ',' + std::to_string(bufferRect.y1) + ',' + std::to_string(bw) + ',' + std::to_string(bh);
-                std::lock_guard<std::mutex> lock(_frameMutex);
-                if (!_frameValid || (_frameKey != key)) {
-                    RawNodeSupport::noteFrameComputed(kDenoiseProfiledFrameWavelets, RawNodeSupport::frameKey(getRenderHash(), args.time, args.view));
-                    _frame.reset();
-                    std::shared_ptr<std::vector<float>> computed = std::make_shared<std::vector<float>>(planeSize * 3);
-                    denoiseWavelets(rgb.data(), bw, bh, (r.fullSize > 0) ? r.fullSize : std::max(bw, bh), s, renderScale, computed->data(), parallel);
-                    _frame = std::move(computed);
-                    _frameKey = key;
-                    _frameValid = !cancel.check();
+                const int fullSize = (r.fullSize > 0) ? r.fullSize : std::max(bw, bh);
+                frame = _waveletFrame.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
+                    return [rgb, bw, bh, planeSize, fullSize, s, renderScale](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                        RenderCancellation jobCancel(jobCancelled);
+                        const int jobThreads = wholeFrameJobThreads();
+                        const ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, jobThreads);
+                        auto computed = std::make_shared<std::vector<float>>(planeSize * 3);
+                        denoiseWavelets(rgb->data(), bw, bh, fullSize, s, renderScale, computed->data(), jobParallel);
+                        if (jobCancel.check()) {
+                            return WholeFrameCache::Result();
+                        }
+
+                        return computed;
+                    };
+                });
+                if (!frame) {
+                    return cancel.check() ? eStatusOK : eStatusFailed;
                 }
-                frame = _frame;
                 out = frame->data();
                 outStride = bw;
                 outX = wx;
                 outY = wy;
             } else {
                 denoised.resize((std::size_t)ww * wh * 3);
-                denoiseNlm(rgb.data(), bw, bh, wx, wy, ww, wh, s, renderScale, denoised.data(), parallel);
+                denoiseNlm(rgb->data(), bw, bh, wx, wy, ww, wh, s, renderScale, denoised.data(), parallel);
                 out = denoised.data();
             }
             if (cancel.check()) {
@@ -1125,12 +1180,10 @@ DenoiseProfiled::canRenderOpOnGpu(const GpuQuery& query) const
         // The wavelets run over the whole frame, in three-channel buffers of its size beside the divided source;
         // a frame over what the device binds renders on the CPU.
         RectI rodPixel;
-        if (!effectRoDPixels(*const_cast<DenoiseProfiled*>(this), query.time, query.mappedScale, query.view, &rodPixel)) {
+        if (!framePixels(query.time, query.view, query.mappedScale, &rodPixel)) {
             return false;
         }
-        const uint64_t floats = (uint64_t)std::max(0, rodPixel.width()) * (uint64_t)std::max(0, rodPixel.height()) * (uint64_t)std::max(3, query.nComps);
-
-        return (floats <= UINT32_MAX) && (floats * sizeof(float) <= query.maxScratchBytes);
+        return wholeFrameFitsGpu(rodPixel, std::max(3, query.nComps), query.maxScratchBytes);
     }
 
     return (nlmGeometry(r->settings, query.mappedScale.toOfxPointD().x).patchRadius <= DenoiseProfiledGpu::kMaxPatchRadius);
@@ -1172,7 +1225,7 @@ DenoiseProfiled::getOpGpuInputRoI(int inputNb,
         // The whole frame, which the wavelets' thresholds depend on.
         RectI need = outputRect;
         RectI rodPixel;
-        if (effectRoDPixels(*self, time, scale, view, &rodPixel)) {
+        if (framePixels(time, view, scale, &rodPixel)) {
             need.merge(rodPixel);
         }
 
@@ -1215,7 +1268,7 @@ DenoiseProfiled::renderOpGpu(const GpuRenderArgs& args)
     const double renderScale = scale.toOfxPointD().x;
 
     RectI rodPixel;
-    if (!effectRoDPixels(*this, time, scale, view, &rodPixel)) {
+    if (!framePixels(time, view, scale, &rodPixel)) {
         return eStatusFailed;
     }
     const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
@@ -1274,7 +1327,7 @@ DenoiseProfiled::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     // The wavelets run over the whole frame for every strip; there is no device frame cache to
-    // share them through, as the CPU path's _frame does.
+    // share them through, as the CPU path's _waveletFrame does.
     const gpu::GpuStatus status = isWavelets(s.mode) ? DenoiseProfiledGpu::recordWavelets(ctx, divided, bufferRect, r.fullSize, s, renderScale, filtered)
                                                      : DenoiseProfiledGpu::recordNlm(ctx, divided, bufferRect, window, s, renderScale, filtered);
     if (!status) {

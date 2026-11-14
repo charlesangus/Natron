@@ -808,6 +808,29 @@ EffectInstance::aborted() const
 } // EffectInstance::aborted
 
 bool
+EffectInstance::abortIfSuperseded() const
+{
+    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
+    bool isRenderUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    if (!isAbortableThread || !isAbortableThread->getAbortInfo(&isRenderUserInteraction, &abortInfo, &treeRoot)) {
+        EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+        if (!tls || tls->frameArgs.empty()) {
+            return false;
+        }
+        abortInfo = tls->frameArgs.back()->abortInfo.lock();
+    }
+    if (!abortInfo || !abortInfo->canAbort() || !abortInfo->isSuperseded()) {
+        return false;
+    }
+    abortInfo->setAborted();
+
+    return true;
+}
+
+bool
 EffectInstance::shouldCacheOutput(bool isFrameVaryingOrAnimated,
                                   double time,
                                   ViewIdx view,
@@ -5022,6 +5045,26 @@ EffectInstance::hasComponentsNeededInCache(U64 hash,
                                            ViewIdx view) const
 {
     return (bool)_imp->actionsCache->getComponentsNeededResults(hash, time, view);
+}
+
+bool
+EffectInstance::isRegionOfDefinitionInfinite(double time,
+                                             ViewIdx view)
+{
+    if (!isEffectCreated()) {
+        return false;
+    }
+    if (getNode()->isNodeDisabled(time)) {
+        NodePtr preferredInput = getNode()->getPreferredInputNode();
+
+        return preferredInput && preferredInput->getEffectInstance()->isRegionOfDefinitionInfinite(time, view);
+    }
+
+    RECURSIVE_ACTION();
+    RectD rod;
+    const StatusEnum stat = getRegionOfDefinition(getRenderHash(), time, RenderScale::identity, view, &rod);
+
+    return ((stat == eStatusOK) || (stat == eStatusReplyDefault)) && rod.isInfinite();
 }
 
 StatusEnum

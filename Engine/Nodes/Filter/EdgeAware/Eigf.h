@@ -46,7 +46,8 @@ NATRON_NAMESPACE_ENTER
  * logarithm. The local averages are gaussian, not box, and a and b are not averaged again.
  *
  * Borders: the gaussian's recursions start from the edge sample, as if the image went on with
- * its edge value; the subsampling clamps to the last row and column.
+ * its edge value; the subsampling clamps to the last row and column. Both start at the buffer's
+ * edges, so they reach across the whole buffer: pass the whole frame (EdgeAwareCommon.h).
  **/
 namespace EdgeAware {
 /// The coefficients of the order-0 Deriche recursion recursiveGaussianBlur() runs.

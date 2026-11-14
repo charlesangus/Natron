@@ -49,6 +49,12 @@ NATRON_NAMESPACE_ENTER
  * Non-finite samples count as 0 in every statistic, and the filters copy them through unchanged at
  * their own position in the output, as each function's documentation details. The single-pass
  * primitives documented as such do no non-finite handling.
+ *
+ * Every function treats its buffer as the whole image. Subsampling grids, tile grids, border
+ * rules, scale caps and recursions are anchored to the buffer's top-left corner and follow its
+ * size, so a pixel's result depends on where it sits in the buffer and on everything else in it.
+ * A node must pass its whole frame (Engine/Nodes/Image/WholeFrame.h), never the window being
+ * rendered; anything else makes its output depend on the requested region.
  **/
 namespace EdgeAware {
 using ParallelFor = std::function<void(int count, const std::function<void(int)>& body)>;

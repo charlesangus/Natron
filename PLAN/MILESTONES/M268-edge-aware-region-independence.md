@@ -298,3 +298,4 @@ Each task adds `RegionIndependent*` cases to that node's existing test files, so
 - 2026-11-14 — Gate on 1f674464a: ctest and three of the four GUI scripts are green. `m268_pan_after_edit.py` failed only at setup: its helper had already wired Denoise to the plate, so connecting the camera-make node was refused. Fixed in 7d6aa8fde; GUI-only rerun from run 43545299457.
 - 2026-11-14 — Gate green: run 43545299457 on 1f674464a (ctest; m211, m212 and m268_region_independence), plus the GUI-only rerun of `m268_pan_after_edit.py` on 7d6aa8fde. The UAT AppImage is refreshed in build/appimages, and its steps file gains Round 3. Waiting on the user's UAT; PR #185 targets main.
 - 2026-11-14 — UAT approved (user). It merges to main once PR #185 CI is green.
+- 2026-11-14 — Merged into main (PR #185, f5b6c563c).

@@ -48,6 +48,8 @@ BEZIER_KEYS = (1, 20)
 STROKE_FRAMES = (5, 5, 12)
 EXTRA_STROKE_FRAME = 15
 ITEM_KEY_FRAME = 9
+MULTI_KEY_FRAMES = (7, 10)
+PROXY_FRAME = 20
 
 try:
     import NatronEngine
@@ -248,6 +250,9 @@ try:
         return param
 
     def frame_of(st, name):
+        """The stroke's lifeTimeFrame as Python reads it. A selected item's knob reads through the
+        node's proxy, which holds one selected item's state, so this is the item's own value only
+        while it is unselected or the only selected stroke."""
         return int(param_of(st, name, "lifeTimeFrame").getValue())
 
     def item_times(st, it, item):
@@ -256,7 +261,8 @@ try:
         return set([frame_of(st, it.getScriptName())])
 
     def derived(st):
-        """The markers the panel should show, from the live selection and the items' own values."""
+        """The markers the panel should show, from the live selection and the items' values. Only
+        used where at most one stroke is selected, since frame_of follows the proxy."""
         sel = selected_labels(st)
         times = set()
 
@@ -488,6 +494,37 @@ try:
         ok = yield ("until", lambda: EXTRA_STROKE_FRAME in (markers() or []), POLL_TIMEOUT_S)
         check(ok, "the redone stroke's marker is back (%r)" % markers())
 
+        gt.section(tag + "-multi-frame")
+        # D is current; A and C sit on different frames, so a read through the proxy shows one of them.
+        clear_selection(st)
+        yield from expect(tag + ": D is current before the multi-frame selection", [EXTRA_STROKE_FRAME], st)
+        select_rows(st, [it(a), it(c)])
+        yield from expect(tag + ": strokes on frames 5 and 12 selected, D current",
+                          [5, 12, EXTRA_STROKE_FRAME], st)
+        timeline_shot("m421-%s-timeline-multi-frame.png" % tag)
+        select_rows(st, [it(c), it(a)])
+        yield from expect(tag + ": the same strokes selected in the other order",
+                          [5, 12, EXTRA_STROKE_FRAME], st)
+        clear_selection(st)
+        yield ("sleep", SETTLE_MS)
+        check(frame_of(st, a) == 5 and frame_of(st, c) == 12,
+              "selecting A and C together left their own frames at 5 and 12 (%d, %d)" % (frame_of(st, a), frame_of(st, c)))
+        # Each item is keyed alone, so the proxy only ever carries one item's curve.
+        select_rows(st, [it(a)])
+        param_of(st, a, "opacity").setValueAtTime(0.5, MULTI_KEY_FRAMES[0], 0)
+        select_rows(st, [it(c)])
+        param_of(st, c, "opacity").setValueAtTime(0.5, MULTI_KEY_FRAMES[1], 0)
+        select_rows(st, [it(a), it(c)])
+        yield from expect(tag + ": opacity keyed at %d on A and %d on C, both selected" % MULTI_KEY_FRAMES,
+                          sorted([5, 12, EXTRA_STROKE_FRAME] + list(MULTI_KEY_FRAMES)), st)
+        timeline_shot("m421-%s-timeline-multi-frame-keys.png" % tag)
+        for name in (a, c):
+            select_rows(st, [it(name)])
+            param_of(st, name, "opacity").removeAnimation(0)
+        select_rows(st, [it(a), it(c)])
+        yield from expect(tag + ": those keys removed", [5, 12, EXTRA_STROKE_FRAME], st)
+        clear_selection(st)
+
         gt.section(tag + "-panel")
         select_rows(st, [bez, it(a)])
         yield from expect(tag + ": Bezier and A selected", None, st)
@@ -631,6 +668,9 @@ try:
               "the Bezier has a Shape row and no Painted Frame row (%r)" % (bez_kids,))
         dope_shot("m421-%s-dope-sheet.png" % tag)
 
+        # Strokes on different frames selected together read through one proxy if the row follows it.
+        select_rows(st, [item_named(st, names["a"]), item_named(st, names["c"])])
+        yield ("sleep", SETTLE_MS)
         view = dope_view()
         xs = {}
         for key in ("a", "b", "c", "d"):
@@ -647,6 +687,8 @@ try:
             per_frame = (xs["c"] - xs["a"]) / 7.0
             check(per_frame > 0 and abs((xs["d"] - xs["c"]) / 3.0 - per_frame) <= 1.0,
                   "the keys sit at frames 5, 12 and 15 in proportion (%.2f px per frame)" % per_frame)
+            clear_selection(st)
+            yield ("sleep", SETTLE_MS)
             before = markers()
             ya = row_center_y(tree, painted["a"])
             dope_drag(view, xs["a"], ya, 80)
@@ -658,6 +700,81 @@ try:
                   "the key is where it was after the drag (%r)" % (runs,))
             check(markers() == before, "the drag left the timeline markers alone (%r, %r)" % (before, markers()))
             dope_shot("m421-%s-dope-sheet-after-drag.png" % tag)
+
+            def painted_x(key):
+                runs = key_clusters(view, row_center_y(tree, painted[key]))
+                return (runs[0][0] + runs[0][1]) / 2.0 if len(runs) == 1 else None
+
+            def painted_rows_unchanged(what):
+                for key in ("a", "b", "c", "d"):
+                    x = painted_x(key)
+                    check(x is not None and abs(x - xs[key]) <= 1.5,
+                          "%s: stroke %s's Painted Frame key stays at x %.1f (%r)" % (what, key, xs[key], x))
+                ok = yield ("until", lambda: markers() == before, POLL_TIMEOUT_S)
+                check(ok, "%s: the timeline markers are unchanged (%r, %r)" % (what, before, markers()))
+
+            gt.section(tag + "-dope-sheet-edits")
+            bez_keys = sorted(int(k) for k in bez.getKeyframes())
+
+            def select_painted_key():
+                y = row_center_y(tree, painted["a"])
+                dope_mouse(view, QEvent.MouseButtonPress, xs["a"], y, Qt.LeftButton, Qt.LeftButton)
+                dope_mouse(view, QEvent.MouseButtonRelease, xs["a"], y, Qt.LeftButton, Qt.NoButton)
+
+            select_painted_key()
+            QMetaObject.invokeMethod(view, "deleteSelectedKeyframes")
+            yield ("sleep", SETTLE_MS)
+            yield from painted_rows_unchanged("Delete on a selected Painted Frame key")
+            select_painted_key()
+            QMetaObject.invokeMethod(view, "copySelectedKeyframes")
+            py_viewer.seek(30)
+            yield ("sleep", SETTLE_MS)
+            QMetaObject.invokeMethod(view, "pasteKeyframesAbsolute")
+            yield ("sleep", SETTLE_MS)
+            yield from painted_rows_unchanged("pasting a copied Painted Frame key")
+            QMetaObject.invokeMethod(view, "onSelectedAllTriggered")
+            yield ("sleep", SETTLE_MS)
+            yield from painted_rows_unchanged("select all")
+            QMetaObject.invokeMethod(view, "copySelectedKeyframes")
+            tree.selectionModel().select(painted["a"], QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            QApplication.processEvents()
+            for slot in ("pasteKeyframesAbsolute", "pasteKeyframesRelative"):
+                QMetaObject.invokeMethod(view, slot)
+                yield ("sleep", SETTLE_MS)
+            yield from painted_rows_unchanged("pasting every key onto a Painted Frame row")
+            got = sorted(int(k) for k in bez.getKeyframes())
+            check(got == bez_keys, "pasting onto a Painted Frame row left the Bezier's shape keys alone (%r, %r)" % (
+                bez_keys, got))
+            for key, frame in zip(("a", "b", "c", "d"), (5, 5, 12, EXTRA_STROKE_FRAME)):
+                check(frame_of(st, names[key]) == frame,
+                      "the edits left stroke %s's lifeTimeFrame at %d (%d)" % (key, frame, frame_of(st, names[key])))
+            tree.selectionModel().clearSelection()
+            dope_mouse(view, QEvent.MouseButtonPress, 2, ya, Qt.LeftButton, Qt.LeftButton)
+            dope_mouse(view, QEvent.MouseButtonRelease, 2, ya, Qt.LeftButton, Qt.NoButton)
+            yield ("sleep", SETTLE_MS)
+
+            gt.section(tag + "-dope-sheet-proxy")
+            proxy_frame = st.node.getParam("lifeTimeFrame")
+            if proxy_frame is None:
+                report("NOTE the node has no lifeTimeFrame proxy; the proxy edit of the row is not checked")
+            else:
+                select_rows(st, [item_named(st, names["c"])])
+                yield ("sleep", SETTLE_MS)
+                proxy_frame.setValue(PROXY_FRAME)
+                want = xs["c"] + per_frame * (PROXY_FRAME - 12)
+                ok = yield ("until", lambda: painted_x("c") is not None and abs(painted_x("c") - want) <= 1.5,
+                            POLL_TIMEOUT_S)
+                check(ok, "the proxy Frame set to %d moves C's Painted Frame key to x %.1f (%r)" % (
+                    PROXY_FRAME, want, painted_x("c")))
+                dope_shot("m421-%s-dope-sheet-proxy-frame.png" % tag)
+                proxy_frame.setValue(12)
+                ok = yield ("until", lambda: painted_x("c") is not None and abs(painted_x("c") - xs["c"]) <= 1.5,
+                            POLL_TIMEOUT_S)
+                check(ok, "the proxy Frame set back to 12 moves the key back (%r)" % (painted_x("c"),))
+            clear_selection(st)
+            yield ("sleep", SETTLE_MS)
+            check(frame_of(st, names["a"]) == 5 and frame_of(st, names["c"]) == 12,
+                  "A and C are back at frames 5 and 12 (%d, %d)" % (frame_of(st, names["a"]), frame_of(st, names["c"])))
 
     # ---- steps -----------------------------------------------------------------------------------
 
@@ -711,7 +828,25 @@ try:
         require(ok, "the viewer is visible")
         yield ("sleep", RENDER_MS)
         gst = State(inner, True)
-        yield from core(gst, "group")
+        gnames = yield from core(gst, "group")
+
+        gt.section("two-panels")
+        require(panel_of_node(inner) is not None, "the grouped RotoPaint's panel is open")
+        yield from reopen_panel(st)
+        require(panel_of_node(rp) is not None, "the top-level RotoPaint's panel is open again")
+        select_rows(st, [item_named(st, names["a"])])
+        select_rows(gst, [item_named(gst, gnames["c"])])
+        yield ("sleep", SETTLE_MS)
+        top_only, group_only = derived(st), derived(gst)
+        check(top_only and group_only and not set(top_only) & set(group_only),
+              "the two panels' strokes sit on different frames (%r, %r)" % (top_only, group_only))
+        yield from expect("two RotoPaint panels open: both owners' markers merged",
+                          sorted(set(top_only) | set(group_only)), st)
+        timeline_shot("m421-two-panels-timeline.png")
+        yield from close_panel(st)
+        yield from expect("the top-level panel closed: only the grouped RotoPaint's markers", group_only, gst)
+        clear_selection(gst)
+        yield from expect("the grouped selection cleared", [], gst)
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

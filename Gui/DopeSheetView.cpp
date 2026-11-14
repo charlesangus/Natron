@@ -4084,13 +4084,13 @@ DopeSheetView::mouseDoubleClickEvent(QMouseEvent *e)
 
     if ( modCASIsControl(e) ) {
         DSKnobPtr dsKnob = _imp->hierarchyView->getDSKnobAt( e->pos().y() );
-        if (dsKnob && !dsKnob->getDriverCurve()) {
+        KnobIPtr knob = dsKnob ? dsKnob->getInternalKnob() : KnobIPtr();
+        if (dsKnob && !dsKnob->getDriverCurve() && knob && !dsKnob->isShape() && !dsKnob->isPaintedFrame()) {
             std::vector<DopeSheetKey> toPaste;
             double displayTime = std::floor(_imp->zoomContext.toZoomCoordinates(e->pos().x(), 0).x() + 0.5);
             _imp->refreshKeyTimeOffsets();
             double keyframeTime = displayTime - _imp->keyTimeOffset(dsKnob);
             int dim = dsKnob->getDimension();
-            KnobIPtr knob = dsKnob->getInternalKnob();
             bool hasKeyframe = false;
             for (int i = 0; i < knob->getDimension(); ++i) {
                 if ( (i == dim) || (dim == -1) ) {

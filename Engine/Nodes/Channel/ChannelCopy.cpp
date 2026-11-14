@@ -130,13 +130,17 @@ selectCopyRow(ImageBitDepthEnum srcDepth,
     }
 }
 
-// Each source of route reads past its image by its input's own edge mode.
+// Each source of route reads past its image by its input's own edge mode. An effect without a
+// node has no inputs to take a mode from, so its sources keep the mode the route gave them.
 void
 setRouteEdgeModes(const EffectInstance& effect,
                   double time,
                   ViewIdx view,
                   ChannelRoute* route)
 {
+    if (!effect.getNode()) {
+        return;
+    }
     for (ChannelRouteSource& source : route->sources) {
         source.edgeMode = stageInputEdgeMode(effect, source.inputNb, time, view);
     }

@@ -242,7 +242,7 @@ regionParams(const ResampleRequest& request,
     params.invert = settings.invert;
     params.blur = settings.blur;
     params.filter = settings.filter;
-    params.blackOutside = settings.blackOutside;
+    params.edgeMode = settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
     params.isIdentity = settings.transformIsIdentity;
     params.doMasking = stages.doMasking;
     params.mix = stages.mix;
@@ -546,11 +546,11 @@ runResampleCpu(EffectInstance& effect,
                         // whatever the op's black-outside setting says.
                         plane.referenceTransforms.invTransforms.push_back(Mat3::identity());
                         Resampler::concatenateInputTransform(inputTransform, &plane.referenceTransforms);
-                        plane.referenceParams = Resampler::makeResampleParams(plane.referenceTransforms, filter, request.settings.clamp, true);
+                        plane.referenceParams = Resampler::makeResampleParams(plane.referenceTransforms, filter, request.settings.clamp, EdgeMode::Black);
                         plane.resampleReference = true;
                     }
                 }
-                plane.params = Resampler::makeResampleParams(plane.transforms, filter, request.settings.clamp, request.settings.blackOutside);
+                plane.params = Resampler::makeResampleParams(plane.transforms, filter, request.settings.clamp, request.settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch);
             }
         } else {
             plane.source = Resampler::SourceImage((const float*)0, RectI(), nComps);

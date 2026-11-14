@@ -1985,7 +1985,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                 }
                 mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
             }
-            Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.blackOutside,
+            Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
                                              Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
             if (plane.concatenated) {
                 return;
@@ -2051,7 +2051,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                     }
                 }
                 mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
-                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, true,
+                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, EdgeMode::Black,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, &referenceRow[0], nComps);
             } else {
                 PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);

@@ -1525,13 +1525,13 @@ LensCorrect::renderOp(const RenderActionArgs& args,
                 const float* J = jacobian.empty() ? 0 : &jacobian[0];
                 // Green's positions carry alpha and, without TCA, every channel.
                 std::vector<float> green((std::size_t)n * io.nComps);
-                Resampler::resampleRowFromCoords(source, &sxc[1][1], &syc[1][1], J, n, settings.filter, settings.clamp, settings.blackOutside,
+                Resampler::resampleRowFromCoords(source, &sxc[1][1], &syc[1][1], J, n, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
                                                  Resampler::eWrapNone, Resampler::eWrapNone, &green[0], io.nComps);
                 out = green;
                 if (tca && colourChannels) {
                     std::vector<float> other((std::size_t)n * io.nComps);
                     for (int c = 0; c < 3; c += 2) {
-                        Resampler::resampleRowFromCoords(source, &sxc[c][1], &syc[c][1], J, n, settings.filter, settings.clamp, settings.blackOutside,
+                        Resampler::resampleRowFromCoords(source, &sxc[c][1], &syc[c][1], J, n, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
                                                          Resampler::eWrapNone, Resampler::eWrapNone, &other[0], io.nComps);
                         for (int i = 0; i < n; ++i) {
                             out[(std::size_t)i * io.nComps + c] = other[(std::size_t)i * io.nComps + c];

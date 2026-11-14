@@ -936,7 +936,7 @@ edgeDetectPasses(const EdgeDetectParams& params,
     }
 
     PassList list;
-    list.boundary = PassExec::Boundary::Nearest;
+    list.edgeMode = EdgeMode::Stretch;
     list.scratchSlots = 3;
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<EdgeDetectGpuPlan> gpuPlan = std::make_shared<EdgeDetectGpuPlan>();

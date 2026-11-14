@@ -203,7 +203,7 @@ AdjustBBoxOp::passes(const Params& params,
     if ((haloX == 0) && (haloY == 0)) {
         return list;
     }
-    list.boundary = PassExec::Boundary::Nearest;
+    list.edgeMode = EdgeMode::Stretch;
     // No work: it only widens what is read, so that every border pixel's nearest source pixel is
     // read whatever the window.
     Pass reach;

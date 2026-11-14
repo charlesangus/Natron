@@ -470,7 +470,7 @@ IWarp::getRegionOfDefinition(U64 hash,
     warpRegion(srcRoD, time, view, true, rod);
     if (hasTimeBlur(settings) || !isTransformIdentity(time, view)) {
         const OfxPointD s = scale.toOfxPointD();
-        Resampler::expandRoD(getRenderMetadata(time, view)->getPixelAspectRatio(-1), s.x, s.y, settings.blackOutside, rod);
+        Resampler::expandRoD(getRenderMetadata(time, view)->getPixelAspectRatio(-1), s.x, s.y, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch), rod);
     }
     if (doMasking || (mix != 1.)) {
         *rod = boundingBox(*rod, srcRoD);
@@ -881,7 +881,7 @@ IWarp::renderOp(const RenderActionArgs& args,
                             J[k] = (float)s.jacobian[k];
                         }
                     }
-                    Resampler::resampleRowFromCoords(plane.source, &fx, &fy, impulse ? NULL : J, 1, settings.filter, settings.clamp, settings.blackOutside,
+                    Resampler::resampleRowFromCoords(plane.source, &fx, &fy, impulse ? NULL : J, 1, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
                                                      Resampler::eWrapNone, Resampler::eWrapNone, one.data(), nComps);
                     if (!weighted) {
                         for (int c = 0; c < nComps; ++c) {
@@ -963,7 +963,7 @@ IWarp::renderOp(const RenderActionArgs& args,
                         }
                     }
                 }
-                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), impulse ? NULL : jacobian.data(), width, settings.filter, settings.clamp, settings.blackOutside,
+                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), impulse ? NULL : jacobian.data(), width, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
                                                  Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
             }
             if (mapped && hasSource) {

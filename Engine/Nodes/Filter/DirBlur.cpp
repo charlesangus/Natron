@@ -733,7 +733,7 @@ DirBlur::getRegionOfDefinition(U64 /*hash*/,
         mergeInto(r, &region);
     }
     if (!region.isNull()) {
-        Resampler::expandRoD(outputPar(time, view), scale.toOfxPointD().x, scale.toOfxPointD().y, params.blackOutside, &region);
+        Resampler::expandRoD(outputPar(time, view), scale.toOfxPointD().x, scale.toOfxPointD().y, (params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch), &region);
     }
     if (isMaskApplied() || (getMixValue(time, view) != 1.)) {
         mergeInto(srcRoD, &region);
@@ -852,7 +852,7 @@ DirBlur::renderOp(const RenderActionArgs& args,
                     rp.count = 1;
                     rp.filter = filter;
                     rp.clamp = clamp;
-                    rp.blackOutside = params.blackOutside;
+                    rp.edgeMode = params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
                     rp.motionBlur = 0.;
                     Resampler::resampleRow(rp, source, io.y, io.x0, io.x0 + io.width, &tmp[0]);
                     for (int i = 0; i < io.width; ++i) {

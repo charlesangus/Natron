@@ -51,14 +51,6 @@ enum class InputTime : unsigned char {
 };
 
 /**
- * @brief What the node reads outside an input's image: zero, or the nearest pixel.
- **/
-enum class InputBoundary : unsigned char {
-    Zero,
-    Nearest
-};
-
-/**
  * @brief The layer an input is read in: the plane being rendered, the layer a knob selects,
  * or whatever layer another input is read in.
  **/
@@ -99,7 +91,6 @@ struct InputSpec {
     InputRole role = InputRole::Source;
     bool optional = false;
     InputTime time = InputTime::Same;
-    InputBoundary boundary = InputBoundary::Zero;
     InputLayer layer = {};
     int count = 1;
     int firstNumber = 0;

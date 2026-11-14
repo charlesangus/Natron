@@ -72,7 +72,7 @@ bloomPasses(const BloomParams& params,
     const BloomKernels::PlanPtr plan = BloomKernels::makePlan(settingsFor(params, context), true);
     PassList list;
 
-    list.boundary = PassExec::Boundary::Nearest;
+    list.edgeMode = EdgeMode::Stretch;
     list.scratchSlots = 2;
     list.resultSlot = kSlotBloom;
     BloomKernels::appendPasses(plan, kSlotSource, kSlotBloom, 0, 0, &list.passes);

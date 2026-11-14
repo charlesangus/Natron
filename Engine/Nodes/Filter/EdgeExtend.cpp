@@ -513,7 +513,7 @@ edgeExtendPasses(const EdgeExtendParams& params,
     const float threshold = (float)params.threshold;
 
     PassList list;
-    list.boundary = PassExec::Boundary::Nearest;
+    list.edgeMode = EdgeMode::Stretch;
     list.scratchSlots = 3;
     list.resultSlot = kSlotResult;
 

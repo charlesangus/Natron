@@ -500,7 +500,7 @@ sharpenPasses(const SharpenParams& params,
     }
 
     PassList list;
-    list.boundary = PassExec::Boundary::Nearest;
+    list.edgeMode = EdgeMode::Stretch;
     list.scratchSlots = 2;
     list.resultSlot = kSlotSource;
 

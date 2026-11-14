@@ -167,7 +167,7 @@ renderCpu(const CoordCase& c)
             }
         }
         Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), c.hasJacobian ? jacobian.data() : 0, c.width, spec, c.clamp,
-                                         c.blackOutside, c.wrapU, c.wrapV, &out[(std::size_t)j * c.width * c.nComps], c.nComps,
+                                         c.blackOutside ? EdgeMode::Black : EdgeMode::Stretch, c.wrapU, c.wrapV, &out[(std::size_t)j * c.width * c.nComps], c.nComps,
                                          c.domain.isNull() ? 0 : &c.domain);
     }
 

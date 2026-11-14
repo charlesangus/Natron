@@ -255,7 +255,7 @@ renderCpu(const KernelCase& c)
     const SplineWarpField identity;
     const auto sampleRow = [&](const SplineWarpField& field, int y, float* row) {
         field.getRow(y, c.window.x1, c.window.x2, sx.data(), sy.data(), jac);
-        Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), jac, width, c.filter, c.clamp, c.blackOutside, Resampler::eWrapNone,
+        Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), jac, width, c.filter, c.clamp, c.blackOutside ? EdgeMode::Black : EdgeMode::Stretch, Resampler::eWrapNone,
                                          Resampler::eWrapNone, row, c.nComps);
         const float cy = (float)(y + 0.5);
         for (int i = 0; i < width; ++i) {

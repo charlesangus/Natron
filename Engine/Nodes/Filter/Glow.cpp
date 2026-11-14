@@ -1013,7 +1013,7 @@ glowPasses(const GlowParams& params,
     const BloomKernels::PlanPtr plan = BloomKernels::makePlan(settingsFor(params, context), false);
     PassList list;
 
-    list.boundary = PassExec::Boundary::Zero;
+    list.edgeMode = EdgeMode::Black;
     list.scratchSlots = 3;
     list.resultSlot = kSlotGlow;
     // The mask multiplies the map, as the PyPlug's did, rather than mixing the output.

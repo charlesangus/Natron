@@ -508,17 +508,13 @@ EdgeBlur::computeEdges(const RenderActionArgs& args,
     // fillBuffer() reads EdgeDetect's source. Read on this thread, which holds the image's lock.
     RectI valid;
     if (PassExec::intersectRects(image->getBounds(), matteRoD, &valid)) {
-        const bool nearest = (edges.boundary == PassExec::Boundary::Nearest);
         Image::ReadAccess access(image.get());
         float* const slot0 = storage[0].data();
         for (int row = 0; row < height; ++row) {
             float* out = slot0 + (std::size_t)row * width;
             int y = buffer.y1 + row;
-            if ((y < valid.y1) || (y >= valid.y2)) {
-                if (!nearest) {
-                    continue;
-                }
-                y = std::min(std::max(y, valid.y1), valid.y2 - 1);
+            if (!EdgeSample::coord(y, valid.y1, valid.y2, edges.edgeMode, &y)) {
+                continue;
             }
             const float* srcRow = (const float*)access.pixelAt(valid.x1, y);
             if (!srcRow) {
@@ -526,11 +522,8 @@ EdgeBlur::computeEdges(const RenderActionArgs& args,
             }
             for (int i = 0; i < width; ++i) {
                 int x = buffer.x1 + i;
-                if ((x < valid.x1) || (x >= valid.x2)) {
-                    if (!nearest) {
-                        continue;
-                    }
-                    x = std::min(std::max(x, valid.x1), valid.x2 - 1);
+                if (!EdgeSample::coord(x, valid.x1, valid.x2, edges.edgeMode, &x)) {
+                    continue;
                 }
                 out[i] = srcRow[(std::size_t)(x - valid.x1) * nComps + channel];
             }

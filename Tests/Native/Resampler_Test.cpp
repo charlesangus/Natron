@@ -310,9 +310,9 @@ TEST(Resampler, TwoDimensionalImpulse)
 
     for (const Case& c : cases) {
         float v = -1.f;
-        EXPECT_TRUE(interpolate(c.f, false, 4.5, 4.5, src, true, &v));
+        EXPECT_TRUE(interpolate(c.f, false, 4.5, 4.5, src, EdgeMode::Black, &v));
         EXPECT_NEAR(v, c.atCentre, 1e-6) << "filter " << c.f;
-        EXPECT_TRUE(interpolate(c.f, false, 5., 5., src, true, &v));
+        EXPECT_TRUE(interpolate(c.f, false, 5., 5., src, EdgeMode::Black, &v));
         EXPECT_NEAR(v, c.atCorner, 1e-6) << "filter " << c.f;
     }
 }
@@ -327,21 +327,21 @@ TEST(Resampler, BlackOutsideAndEdgeClamp)
     float v = -1.f;
 
     // On the left edge of the image, half way between pixel -1 and pixel 0.
-    EXPECT_TRUE(interpolate(eFilterBilinear, false, 0., 2.5, src, true, &v));
+    EXPECT_TRUE(interpolate(eFilterBilinear, false, 0., 2.5, src, EdgeMode::Black, &v));
     EXPECT_NEAR(v, 0.5, 1e-7);
-    EXPECT_TRUE(interpolate(eFilterBilinear, false, 0., 2.5, src, false, &v));
+    EXPECT_TRUE(interpolate(eFilterBilinear, false, 0., 2.5, src, EdgeMode::Stretch, &v));
     EXPECT_NEAR(v, 1., 1e-7);
 
     // Far outside: black and reported as outside, or the nearest edge pixel.
-    EXPECT_FALSE(interpolate(eFilterKeys, false, -10., -10., src, true, &v));
+    EXPECT_FALSE(interpolate(eFilterKeys, false, -10., -10., src, EdgeMode::Black, &v));
     EXPECT_EQ(v, 0.f);
-    EXPECT_TRUE(interpolate(eFilterKeys, false, -10., -10., src, false, &v));
+    EXPECT_TRUE(interpolate(eFilterKeys, false, -10., -10., src, EdgeMode::Stretch, &v));
     EXPECT_NEAR(v, 1., 1e-7);
 
     // A missing source samples as black.
     SourceImage none;
     none.nComps = 1;
-    EXPECT_FALSE(interpolate(eFilterCubic, false, 1., 1., none, false, &v));
+    EXPECT_FALSE(interpolate(eFilterCubic, false, 1., 1., none, EdgeMode::Stretch, &v));
     EXPECT_EQ(v, 0.f);
 }
 
@@ -353,22 +353,22 @@ TEST(Resampler, MinificationWidensTheKernel)
     float v = -1.f;
 
     // Without minification the centre of pixel (10, 10) reads that pixel.
-    interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 0., 0., 0., 0., src, true, &v);
+    interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 0., 0., 0., 0., src, EdgeMode::Black, &v);
     EXPECT_EQ(v, 1.f);
-    interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 1., 0., 0., 1., src, true, &v);
+    interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 1., 0., 0., 1., src, EdgeMode::Black, &v);
     EXPECT_EQ(v, 1.f);
-    interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 0.5, 0., 0., 0.5, src, true, &v);
+    interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 0.5, 0., 0., 0.5, src, EdgeMode::Black, &v);
     EXPECT_EQ(v, 1.f);
 
     // A 3x minification widens the tent to pixels 8 to 12 with weights 1, 2, 3, 2, 1 over 9 on
     // each axis; the parity of the pixels makes the even ones weigh 5/9 and the odd ones 4/9, so
     // the 2-D mean of the checkerboard is (5/9)^2 + (4/9)^2.
-    interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 3., 0., 0., 3., src, true, &v);
+    interpolateSuper(eFilterBilinear, false, 10.5, 10.5, 3., 0., 0., 3., src, EdgeMode::Black, &v);
     EXPECT_NEAR(v, 41. / 81, 1e-5);
 
     // The box filter integrates over the back-transformed pixel [9.5, 11.5]^2:
     // (1 + 4 * 0.25) / 4.
-    interpolateSuper(eFilterBox, false, 10.5, 10.5, 2., 0., 0., 2., src, true, &v);
+    interpolateSuper(eFilterBox, false, 10.5, 10.5, 2., 0., 0., 2., src, EdgeMode::Black, &v);
     EXPECT_NEAR(v, 0.5, 1e-6);
 }
 
@@ -449,13 +449,13 @@ TEST(Resampler, RoIExpansion)
 
     // RoD: one output pixel more on each side when black outside.
     RectD rod(0., 0., 100., 50.);
-    expandRoD(2., 0.5, 0.5, true, &rod);
+    expandRoD(2., 0.5, 0.5, EdgeMode::Black, &rod);
     EXPECT_EQ(rod.x1, -4.);
     EXPECT_EQ(rod.x2, 104.);
     EXPECT_EQ(rod.y1, -2.);
     EXPECT_EQ(rod.y2, 52.);
     rod = RectD(0., 0., 100., 50.);
-    expandRoD(1., 1., 1., false, &rod);
+    expandRoD(1., 1., 1., EdgeMode::Stretch, &rod);
     EXPECT_EQ(rod.x1, 0.);
     EXPECT_EQ(rod.x2, 100.);
 }
@@ -575,7 +575,7 @@ TEST(Resampler, MotionBlurSampleCounts)
     EXPECT_NEAR(moving.invTransforms.front()(0, 2), 0., kEps);
     EXPECT_NEAR(moving.invTransforms.back()(0, 2), -10., kEps);
 
-    const ResampleParams params = makeResampleParams(moving, eFilterBilinear, false, true);
+    const ResampleParams params = makeResampleParams(moving, eFilterBilinear, false, EdgeMode::Black);
     const RectI bounds(0, 0, 64, 64);
     int samples = -1;
     float v = -1.f;
@@ -635,7 +635,7 @@ TEST(Resampler, ResampleRowIdentityAndShift)
     SamplingTransforms identity;
     identity.invTransforms.push_back(Mat3::identity());
     for (FilterEnum f : kInterpolatingFilters) {
-        const ResampleParams params = makeResampleParams(identity, f, false, true);
+        const ResampleParams params = makeResampleParams(identity, f, false, EdgeMode::Black);
         std::vector<float> row(16, -1.f);
         resampleRow(params, src, 2, 0, 16, &row.front());
         for (int x = 0; x < 16; ++x) {
@@ -647,7 +647,7 @@ TEST(Resampler, ResampleRowIdentityAndShift)
     SamplingTransforms shift;
     buildSamplingTransforms(movingTranslation(3.), 1., false, BlurSettings(), 1., 1., false, 1., 1., &shift);
     {
-        const ResampleParams params = makeResampleParams(shift, eFilterCubic, false, true);
+        const ResampleParams params = makeResampleParams(shift, eFilterCubic, false, EdgeMode::Black);
         std::vector<float> row(20, -1.f);
         resampleRow(params, src, 1, 0, 20, &row.front());
         EXPECT_EQ(row[0], 0.f);
@@ -659,7 +659,7 @@ TEST(Resampler, ResampleRowIdentityAndShift)
     }
     {
         // Without black outside the edge pixels repeat.
-        const ResampleParams params = makeResampleParams(shift, eFilterCubic, false, false);
+        const ResampleParams params = makeResampleParams(shift, eFilterCubic, false, EdgeMode::Stretch);
         std::vector<float> row(20, -1.f);
         resampleRow(params, src, 1, 0, 20, &row.front());
         EXPECT_NEAR(row[0], 0.125f, 1e-6);
@@ -670,7 +670,7 @@ TEST(Resampler, ResampleRowIdentityAndShift)
     SamplingTransforms half;
     buildSamplingTransforms(movingTranslation(0.5), 1., false, BlurSettings(), 1., 1., false, 1., 1., &half);
     {
-        const ResampleParams params = makeResampleParams(half, eFilterBilinear, false, true);
+        const ResampleParams params = makeResampleParams(half, eFilterBilinear, false, EdgeMode::Black);
         std::vector<float> row(16, -1.f);
         resampleRow(params, src, 0, 0, 16, &row.front());
         for (int x = 1; x < 16; ++x) {
@@ -682,7 +682,7 @@ TEST(Resampler, ResampleRowIdentityAndShift)
     SamplingTransforms behind;
     behind.invTransforms.push_back(Mat3(1., 0., 0., 0., 1., 0., 0., 0., -1.));
     {
-        const ResampleParams params = makeResampleParams(behind, eFilterCubic, false, false);
+        const ResampleParams params = makeResampleParams(behind, eFilterCubic, false, EdgeMode::Stretch);
         std::vector<float> row(16, -1.f);
         resampleRow(params, src, 0, 0, 16, &row.front());
         for (int x = 0; x < 16; ++x) {
@@ -701,7 +701,7 @@ TEST(Resampler, ResampleRowMultiChannel)
     const SourceImage src(&data.front(), bounds, 4);
     SamplingTransforms identity;
     identity.invTransforms.push_back(Mat3::identity());
-    const ResampleParams params = makeResampleParams(identity, eFilterKeys, true, true);
+    const ResampleParams params = makeResampleParams(identity, eFilterKeys, true, EdgeMode::Black);
     std::vector<float> row(8 * 4, -1.f);
 
     resampleRow(params, src, 5, 0, 8, &row.front());
@@ -768,8 +768,8 @@ TEST(Resampler, AffinePathMatchesProjectivePath)
                     for (int blackIndex = 0; blackIndex < 2; ++blackIndex) {
                         const bool clamp = clampIndex != 0;
                         const bool blackOutside = blackIndex != 0;
-                        const ResampleParams pa = makeResampleParams(a, f, clamp, blackOutside);
-                        const ResampleParams pb = makeResampleParams(b, f, clamp, blackOutside);
+                        const ResampleParams pa = makeResampleParams(a, f, clamp, blackOutside ? EdgeMode::Black : EdgeMode::Stretch);
+                        const ResampleParams pb = makeResampleParams(b, f, clamp, blackOutside ? EdgeMode::Black : EdgeMode::Stretch);
                         for (int y = -2; y < 36; y += 3) {
                             std::vector<float> rowA(n, -1.f);
                             std::vector<float> rowB(n, -2.f);
@@ -911,7 +911,7 @@ renderRows(const Mat3& inverse,
     SamplingTransforms t;
 
     t.invTransforms.push_back(inverse);
-    const ResampleParams params = makeResampleParams(t, filter, clamp, blackOutside);
+    const ResampleParams params = makeResampleParams(t, filter, clamp, blackOutside ? EdgeMode::Black : EdgeMode::Stretch);
     out->assign((size_t)(x2 - x1) * src.nComps, -1.f);
     resampleRow(params, src, y, x1, x2, &out->front());
 }
@@ -1118,8 +1118,8 @@ TEST(Resampler, BicubicWithBAndCZeroHasNoOuterLobe)
     const SourceImage src(pixels.data(), RectI(0, 0, w, h), 1);
     float clamped = 0.f;
     float plain = 0.f;
-    ASSERT_TRUE(interpolate(spec, true, 4.75, 4.5, src, false, &clamped));
-    ASSERT_TRUE(interpolate(FilterSpec(eFilterCubic), false, 4.75, 4.5, src, false, &plain));
+    ASSERT_TRUE(interpolate(spec, true, 4.75, 4.5, src, EdgeMode::Stretch, &clamped));
+    ASSERT_TRUE(interpolate(FilterSpec(eFilterCubic), false, 4.75, 4.5, src, EdgeMode::Stretch, &plain));
     EXPECT_NEAR(clamped, plain, 1e-6f);
 }
 
@@ -1283,11 +1283,11 @@ TEST(Resampler, KernelScalePerSourceAxis)
     float v = -1.f;
 
     // Row x wide: the stripes average away. Only the y row wide, or a rotation, leaves x plain.
-    interpolateSuper(eFilterLanczos3, false, 20.5, 20.5, 4., 0., 0., 1., src, false, &v);
+    interpolateSuper(eFilterLanczos3, false, 20.5, 20.5, 4., 0., 0., 1., src, EdgeMode::Stretch, &v);
     EXPECT_NEAR(v, 0.5, 0.1);
-    interpolateSuper(eFilterLanczos3, false, 20.5, 20.5, 1., 0., 0., 4., src, false, &v);
+    interpolateSuper(eFilterLanczos3, false, 20.5, 20.5, 1., 0., 0., 4., src, EdgeMode::Stretch, &v);
     EXPECT_NEAR(v, 0., 1e-6);
-    interpolateSuper(eFilterLanczos3, false, 20.5, 20.5, 0.70710678, -0.70710678, 0.70710678, 0.70710678, src, false, &v);
+    interpolateSuper(eFilterLanczos3, false, 20.5, 20.5, 0.70710678, -0.70710678, 0.70710678, 0.70710678, src, EdgeMode::Stretch, &v);
     EXPECT_NEAR(v, 0., 1e-6);
 }
 
@@ -1385,7 +1385,7 @@ TEST(Resampler, RoIOfAMotionBlurCoversAScalePeakBetweenSamples)
     SamplingTransforms transforms;
     buildSamplingTransforms(spike, 0., false, blur, 1., 1., false, 1., 1., &transforms);
     ASSERT_GT(transforms.invTransforms.size(), 1u);
-    const ResampleParams params = makeResampleParams(transforms, region.filter, false, true);
+    const ResampleParams params = makeResampleParams(transforms, region.filter, false, EdgeMode::Black);
 
     const RectI crop((int)std::floor(srcRoI.x1), (int)std::floor(srcRoI.y1), (int)std::ceil(srcRoI.x2), (int)std::ceil(srcRoI.y2));
     ASSERT_TRUE(crop.x1 >= 0 && crop.y1 >= 0 && crop.x2 <= 256 && crop.y2 <= 256);

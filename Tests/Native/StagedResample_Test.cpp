@@ -297,7 +297,7 @@ testRegionParams(bool doMasking,
 
     params.invert = false;
     params.filter = Resampler::eFilterCubic;
-    params.blackOutside = true;
+    params.edgeMode = EdgeMode::Black;
     params.isIdentity = false;
     params.doMasking = doMasking;
     params.mix = doMasking ? mix : 1.;
@@ -427,7 +427,7 @@ protected:
             const Resampler::SourceImage image(&sourcePixels[0], sourceWindow, 4);
             Resampler::SamplingTransforms transforms;
             Resampler::buildSamplingTransforms(testTransformFn(at), kTime, false, Resampler::BlurSettings(), s, s, false, 1., 1., &transforms);
-            const Resampler::ResampleParams params = Resampler::makeResampleParams(transforms, gTestFilter, gTestClamp, true);
+            const Resampler::ResampleParams params = Resampler::makeResampleParams(transforms, gTestFilter, gTestClamp, EdgeMode::Black);
 
             const int width = window.width();
             std::vector<float> want((std::size_t)width * window.height() * 4);

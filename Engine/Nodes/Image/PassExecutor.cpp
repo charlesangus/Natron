@@ -227,6 +227,55 @@ readChannelRow(const Image* image,
     }
 }
 
+void
+readChannelRow(const Image* image,
+               const Image::ReadAccess* access,
+               const RectI& bounds,
+               int imageNComps,
+               int channel,
+               int x0,
+               int y,
+               int width,
+               EdgeMode mode,
+               float* row)
+{
+    std::fill(row, row + std::max(0, width), 0.f);
+    int sy = y;
+    if (!image || !EdgeSample::coord(y, bounds.y1, bounds.y2, mode, &sy)) {
+        return;
+    }
+    const float* line = (const float*)access->pixelAt(bounds.x1, sy);
+    if (!line) {
+        return;
+    }
+    for (int i = 0; i < width; ++i) {
+        int sx = x0 + i;
+        if (EdgeSample::coord(x0 + i, bounds.x1, bounds.x2, mode, &sx)) {
+            row[i] = line[(std::size_t)(sx - bounds.x1) * imageNComps + channel];
+        }
+    }
+}
+
+float
+readChannelAt(const Image* image,
+              const Image::ReadAccess* access,
+              const RectI& bounds,
+              int imageNComps,
+              int channel,
+              int x,
+              int y,
+              EdgeMode mode)
+{
+    int sx = x;
+    int sy = y;
+    if (!image || !EdgeSample::pixel(x, y, bounds, mode, &sx, &sy)) {
+        return 0.f;
+    }
+    const float* pix = (const float*)access->pixelAt(sx, sy);
+
+    return pix ? pix[channel] : 0.f;
+}
+
 PlaneJob::PlaneJob()
     : dst()
     , channels()
@@ -336,7 +385,7 @@ void
 fillBuffer(const PlaneJob& job,
            const ProcessedPlanes& planes,
            const RectI& bufferRect,
-           Boundary boundary,
+           EdgeMode edgeMode,
            int nThreads,
            RenderCancellation& cancel,
            float* buffer)
@@ -358,7 +407,6 @@ fillBuffer(const PlaneJob& job,
         srcIndex[p] = job.src ? channelIndexForBit(job.srcNComps, pixelKernelChannelBit(job.nComps, c)) : -1;
         divided[p] = (c != job.skipChannel);
     }
-    const bool nearest = (boundary == Boundary::Nearest);
     const RectI& b = job.srcBounds;
     const RectI& db = job.divisorBounds;
     const bool hasSource = job.src && !isEmptyRect(b);
@@ -371,14 +419,7 @@ fillBuffer(const PlaneJob& job,
             float* out = buffer + (std::size_t)row * bufferWidth;
             const int y = bufferRect.y1 + row;
             int cy = y;
-            bool rowInside = hasSource;
-            if (hasSource && ((y < b.y1) || (y >= b.y2))) {
-                if (nearest) {
-                    cy = (y < b.y1) ? b.y1 : (b.y2 - 1);
-                } else {
-                    rowInside = false;
-                }
-            }
+            const bool rowInside = hasSource && EdgeSample::coord(y, b.y1, b.y2, edgeMode, &cy);
             const float* srcRow = rowInside ? (const float*)job.srcAccess->pixelAt(b.x1, cy) : NULL;
             if (!srcRow) {
                 for (int p = 0; p < nPlanes; ++p) {
@@ -394,14 +435,11 @@ fillBuffer(const PlaneJob& job,
             for (int i = 0; i < bufferWidth; ++i) {
                 const int x = bufferRect.x1 + i;
                 int cx = x;
-                if ((x < b.x1) || (x >= b.x2)) {
-                    if (!nearest) {
-                        for (int p = 0; p < nPlanes; ++p) {
-                            out[(std::size_t)p * planeSize + i] = 0.f;
-                        }
-                        continue;
+                if (!EdgeSample::coord(x, b.x1, b.x2, edgeMode, &cx)) {
+                    for (int p = 0; p < nPlanes; ++p) {
+                        out[(std::size_t)p * planeSize + i] = 0.f;
                     }
-                    cx = (x < b.x1) ? b.x1 : (b.x2 - 1);
+                    continue;
                 }
                 const float* srcPix = srcRow + (std::size_t)(cx - b.x1) * job.srcNComps;
                 float d = 1.f;
@@ -1130,7 +1168,7 @@ runPassesCpu(EffectInstance& effect,
                 scratch.buffers.push_back(slot.data());
             }
 
-            fillBuffer(job, planes, bufferRect, list.boundary, nThreads, cancel, buffer);
+            fillBuffer(job, planes, bufferRect, list.edgeMode, nThreads, cancel, buffer);
             if (cancel.check()) {
                 return eStatusOK;
             }

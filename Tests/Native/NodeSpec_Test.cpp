@@ -64,7 +64,7 @@ inline constexpr std::string_view kRfvReads[] = { "shot" };
 
 inline constexpr InputSpec kInputs[] = {
     InputSpec { .label = "Source" },
-    InputSpec { .label = "Depth", .kind = eDataKindDeep, .role = InputRole::Aux, .optional = true, .time = InputTime::Any, .boundary = InputBoundary::Nearest, .layer = InputLayer::select("depthLayer") },
+    InputSpec { .label = "Depth", .kind = eDataKindDeep, .role = InputRole::Aux, .optional = true, .time = InputTime::Any, .layer = InputLayer::select("depthLayer") },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
     InputSpec { .label = "In", .role = InputRole::Variadic, .optional = true, .layer = InputLayer::pairWith(0), .count = 3, .firstNumber = 2 },
 };

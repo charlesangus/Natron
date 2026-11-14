@@ -1019,7 +1019,7 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             const int bh = bufferRect.height();
             const std::size_t planeSize = (std::size_t)bw * bh;
             std::vector<float> filled(planeSize * fillPlanes.count());
-            fillBuffer(fillJob, fillPlanes, bufferRect, Boundary::Zero, nThreads, cancel, filled.data());
+            fillBuffer(fillJob, fillPlanes, bufferRect, EdgeMode::Black, nThreads, cancel, filled.data());
             if (cancel.check()) {
                 return eStatusOK;
             }

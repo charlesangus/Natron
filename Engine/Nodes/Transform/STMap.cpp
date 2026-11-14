@@ -759,7 +759,7 @@ STMap::renderOp(const RenderActionArgs& args,
                                                           uvPlanes[0].access ? uvPlanes[0].bounds : RectI(), uvPlanes[1].access ? uvPlanes[1].bounds : RectI(), 0., 0., &jacobian[0]);
                 }
                 Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
-                                                 settings.filter, settings.clamp, settings.blackOutside, settings.wrapU, settings.wrapV,
+                                                 settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch), settings.wrapU, settings.wrapV,
                                                  &out[0], io.nComps, &domain);
                 if (gated) {
                     std::vector<float> alphaRow(io.width);

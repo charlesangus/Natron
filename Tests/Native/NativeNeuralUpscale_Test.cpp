@@ -565,7 +565,7 @@ TEST_F(NativeNeuralUpscaleTest, AlphaFollowsTheChosenFilter)
         for (int y = window.y1; y < window.y2; ++y) {
             for (int x = window.x1; x < window.x2; ++x) {
                 float expected[4];
-                ASSERT_TRUE(Resampler::interpolate(Resampler::eFilterCubic, false, (x + 0.5) / f, (y + 0.5) / f, image, false, expected));
+                ASSERT_TRUE(Resampler::interpolate(Resampler::eFilterCubic, false, (x + 0.5) / f, (y + 0.5) / f, image, EdgeMode::Stretch, expected));
                 for (int c = 0; c < 4; ++c) {
                     ASSERT_NEAR(expected[c], planeValue(cubic, x, y, c), 1e-5) << f << "x " << x << "," << y << " c=" << c;
                 }
@@ -664,7 +664,7 @@ TEST_F(NativeNeuralUpscaleTest, RealModelBeatsCubicInPsnr)
     for (int y = original.y1; y < original.y2; ++y) {
         for (int x = original.x1; x < original.x2; ++x) {
             float cubic[4];
-            ASSERT_TRUE(Resampler::interpolate(Resampler::eFilterCubic, false, (x + 0.5) / 2., (y + 0.5) / 2., image, false, cubic));
+            ASSERT_TRUE(Resampler::interpolate(Resampler::eFilterCubic, false, (x + 0.5) / 2., (y + 0.5) / 2., image, EdgeMode::Stretch, cubic));
             for (int c = 0; c < 3; ++c) {
                 const double truth = planeValue(full, x, y, c);
                 modelError += std::pow(planeValue(upscaled, x, y, c) - truth, 2.);

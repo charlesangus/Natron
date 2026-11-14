@@ -25,6 +25,8 @@
 
 #include "Resampler.h"
 
+#include "Engine/Nodes/Image/EdgeSample.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -330,14 +332,6 @@ filterWeights(FilterEnum filter,
 namespace {
     const double kCoordLimit = 1073741824.;
 
-    inline int
-    clampCoord(int v,
-               int lo,
-               int hiExclusive)
-    {
-        return (std::max)(lo, (std::min)(v, hiExclusive - 1));
-    }
-
     /*
      * floor(v), saturated at +-2^30, far outside any source, NaN on the low side: converting a
      * double outside int's range is undefined. The GPU's toPos (resamplecore.slang) saturates alike.
@@ -427,16 +421,14 @@ namespace {
     readOffset(int v,
                int lo,
                int hiExclusive,
-               bool blackOutside,
+               EdgeMode edgeMode,
                std::ptrdiff_t unit)
     {
-        if ((v < lo) || (v >= hiExclusive)) {
-            if (blackOutside) {
-                return -1;
-            }
-            v = clampCoord(v, lo, hiExclusive);
+        int sampled = v;
+        if (!EdgeSample::coord(v, lo, hiExclusive, edgeMode, &sampled)) {
+            return -1;
         }
-        return (std::ptrdiff_t)(v - lo) * unit;
+        return (std::ptrdiff_t)(sampled - lo) * unit;
     }
 
     // Returns whether any read lands on a source pixel.
@@ -444,7 +436,7 @@ namespace {
     resolveReads(const AxisTaps& taps,
                  int lo,
                  int hiExclusive,
-                 bool blackOutside,
+                 EdgeMode edgeMode,
                  std::ptrdiff_t unit,
                  std::ptrdiff_t* nearReads,
                  std::ptrdiff_t* farReads)
@@ -452,8 +444,8 @@ namespace {
         bool any = false;
 
         for (int i = 0; i < taps.count; ++i) {
-            nearReads[i] = readOffset(taps.lo[i], lo, hiExclusive, blackOutside, unit);
-            farReads[i] = (taps.frac[i] != 0.f) ? readOffset(taps.lo[i] + 1, lo, hiExclusive, blackOutside, unit) : -1;
+            nearReads[i] = readOffset(taps.lo[i], lo, hiExclusive, edgeMode, unit);
+            farReads[i] = (taps.frac[i] != 0.f) ? readOffset(taps.lo[i] + 1, lo, hiExclusive, edgeMode, unit) : -1;
             any = any || (nearReads[i] >= 0) || (farReads[i] >= 0);
         }
         return any;
@@ -495,7 +487,7 @@ namespace {
                   double scaleX,
                   double scaleY,
                   const SourceImage& src,
-                  bool blackOutside,
+                  EdgeMode edgeMode,
                   float* out)
     {
         AxisTaps tx;
@@ -508,8 +500,8 @@ namespace {
 
         buildAxisTaps(filter, fx, scaleX, &tx);
         buildAxisTaps(filter, fy, scaleY, &ty);
-        const bool anyX = resolveReads(tx, b.x1, b.x2, blackOutside, (std::ptrdiff_t)src.nComps, xNear, xFar);
-        const bool anyY = resolveReads(ty, b.y1, b.y2, blackOutside, (std::ptrdiff_t)src.rowStride, yNear, yFar);
+        const bool anyX = resolveReads(tx, b.x1, b.x2, edgeMode, (std::ptrdiff_t)src.nComps, xNear, xFar);
+        const bool anyY = resolveReads(ty, b.y1, b.y2, edgeMode, (std::ptrdiff_t)src.rowStride, yNear, yFar);
         if (!anyX || !anyY) {
             zeroPixel<N>(out);
             return false;
@@ -573,18 +565,12 @@ namespace {
     nearestT(double fx,
              double fy,
              const SourceImage& src,
-             bool blackOutside,
+             EdgeMode edgeMode,
              float* tmpPix)
     {
-        const RectI& b = src.bounds;
-        int mx = floorToInt(fx);
-        int my = floorToInt(fy);
-
-        if (!blackOutside) {
-            mx = clampCoord(mx, b.x1, b.x2);
-            my = clampCoord(my, b.y1, b.y2);
-        }
-        const float* p = src.pixel(mx, my);
+        int mx = 0;
+        int my = 0;
+        const float* p = EdgeSample::pixel(floorToInt(fx), floorToInt(fy), src.bounds, edgeMode, &mx, &my) ? src.pixel(mx, my) : 0;
         if (!p) {
             zeroPixel<N>(tmpPix);
             return false;
@@ -602,7 +588,7 @@ namespace {
                  double fx,
                  double fy,
                  const SourceImage& src,
-                 bool blackOutside,
+                 EdgeMode edgeMode,
                  float* tmpPix)
     {
         if (!src.isValid()) {
@@ -610,9 +596,9 @@ namespace {
             return false;
         }
         if ((filter.filter == eFilterImpulse) || (filter.filter == eFilterBox)) {
-            return nearestT<N>(fx, fy, src, blackOutside, tmpPix);
+            return nearestT<N>(fx, fy, src, edgeMode, tmpPix);
         }
-        return kernelSampleT<N>(filter, clamp, fx, fy, 1., 1., src, blackOutside, tmpPix);
+        return kernelSampleT<N>(filter, clamp, fx, fy, 1., 1., src, edgeMode, tmpPix);
     }
 
     /*
@@ -770,7 +756,7 @@ namespace {
                       double Jyx,
                       double Jyy,
                       const SourceImage& src,
-                      bool blackOutside,
+                      EdgeMode edgeMode,
                       float* tmpPix)
     {
         if (!src.isValid()) {
@@ -778,7 +764,7 @@ namespace {
             return;
         }
         if ((filter.filter == eFilterImpulse) || ((Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.))) {
-            interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
+            interpolateT<N>(filter, clamp, fx, fy, src, edgeMode, tmpPix);
             return;
         }
         if (filter.filter == eFilterBox) {
@@ -807,7 +793,7 @@ namespace {
             y2 = (std::max)(y2, y);
             // NaN corners fall back to the centre too, before integrate2d floors them.
             if (!(x1 < x2) || !(y1 < y2)) {
-                interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
+                interpolateT<N>(filter, clamp, fx, fy, src, edgeMode, tmpPix);
                 return;
             }
 
@@ -819,7 +805,7 @@ namespace {
             x2 -= b.x1;
             y2 -= b.y1;
             float p[N];
-            integrate2d(src.data, awidth, aheight, (size_t)src.nComps, src.rowStride, N, x1, y1, x2, y2, blackOutside, p, tmpPix);
+            integrate2d(src.data, awidth, aheight, (size_t)src.nComps, src.rowStride, N, x1, y1, x2, y2, (edgeMode == EdgeMode::Black), p, tmpPix);
             float s = (float)((x2 - x1) * (y2 - y1));
             if (s != 0.f) {
                 for (int c = 0; c < N; ++c) {
@@ -828,7 +814,7 @@ namespace {
             }
             return;
         }
-        kernelSampleT<N>(filter, clamp, fx, fy, kernelScale(Jxx, Jxy), kernelScale(Jyx, Jyy), src, blackOutside, tmpPix);
+        kernelSampleT<N>(filter, clamp, fx, fy, kernelScale(Jxx, Jxy), kernelScale(Jyx, Jyy), src, edgeMode, tmpPix);
     }
 
     /*
@@ -844,7 +830,7 @@ namespace {
                 int y,
                 const SourceImage& src,
                 bool srcValid,
-                bool blackOutside,
+                EdgeMode edgeMode,
                 float* tmpPix)
     {
         Point3 canonicalCoords((double)x + 0.5, (double)y + 0.5, 1.);
@@ -859,7 +845,7 @@ namespace {
         double fx = transformed.z != 0 ? transformed.x / transformed.z : transformed.x;
         double fy = transformed.z != 0 ? transformed.y / transformed.z : transformed.y;
         if (filter.filter == eFilterImpulse) {
-            interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
+            interpolateT<N>(filter, clamp, fx, fy, src, edgeMode, tmpPix);
             return;
         }
         const int x1 = src.bounds.x1;
@@ -868,7 +854,7 @@ namespace {
         const int y2 = src.bounds.y2;
         bool xinside = (x1 <= fx + 0.5 && fx - 0.5 < x2);
         bool yinside = (y1 <= fy + 0.5 && fy - 0.5 < y2);
-        if (blackOutside && !(xinside && yinside)) {
+        if ((edgeMode == EdgeMode::Black) && !(xinside && yinside)) {
             xinside = yinside = false;
         }
         const double z2 = transformed.z * transformed.z;
@@ -876,7 +862,7 @@ namespace {
         double Jxy = xinside ? (H(0, 1) * transformed.z - transformed.x * H(2, 1)) / z2 : 0.;
         double Jyx = yinside ? (H(1, 0) * transformed.z - transformed.y * H(2, 0)) / z2 : 0.;
         double Jyy = yinside ? (H(1, 1) * transformed.z - transformed.y * H(2, 1)) / z2 : 0.;
-        interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
+        interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, edgeMode, tmpPix);
     }
 
     /*
@@ -894,26 +880,26 @@ namespace {
                       double rowY,
                       int x,
                       const SourceImage& src,
-                      bool blackOutside,
+                      EdgeMode edgeMode,
                       float* tmpPix)
     {
         const double px = (double)x + 0.5;
         const double fx = H(0, 0) * px + rowX + H(0, 2);
         const double fy = H(1, 0) * px + rowY + H(1, 2);
         if (filter.filter == eFilterImpulse) {
-            interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
+            interpolateT<N>(filter, clamp, fx, fy, src, edgeMode, tmpPix);
             return;
         }
         bool xinside = (src.bounds.x1 <= fx + 0.5 && fx - 0.5 < src.bounds.x2);
         bool yinside = (src.bounds.y1 <= fy + 0.5 && fy - 0.5 < src.bounds.y2);
-        if (blackOutside && !(xinside && yinside)) {
+        if ((edgeMode == EdgeMode::Black) && !(xinside && yinside)) {
             xinside = yinside = false;
         }
         const double Jxx = xinside ? H(0, 0) : 0.;
         const double Jxy = xinside ? H(0, 1) : 0.;
         const double Jyx = yinside ? H(1, 0) : 0.;
         const double Jyy = yinside ? H(1, 1) : 0.;
-        interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
+        interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, edgeMode, tmpPix);
     }
 
     inline bool
@@ -969,7 +955,7 @@ namespace {
                 } else {
                     t = (int)(vanDerCorput2(seed) * count);
                 }
-                samplePixel<N>(params.filter, params.clamp, params.invTransforms[t], x, y, src, srcValid, params.blackOutside, tmpPix);
+                samplePixel<N>(params.filter, params.clamp, params.invTransforms[t], x, y, src, srcValid, params.edgeMode, tmpPix);
                 if (!params.alphas) {
                     for (int c = 0; c < N; ++c) {
                         accPix[c] += tmpPix[c];
@@ -1035,12 +1021,12 @@ namespace {
                 const double rowX = H(0, 1) * py;
                 const double rowY = H(1, 1) * py;
                 for (int x = x1; x < x2; ++x, dst += N) {
-                    sampleAffinePixel<N>(params.filter, params.clamp, H, rowX, rowY, x, src, params.blackOutside, dst);
+                    sampleAffinePixel<N>(params.filter, params.clamp, H, rowX, rowY, x, src, params.edgeMode, dst);
                 }
                 return;
             }
             for (int x = x1; x < x2; ++x, dst += N) {
-                samplePixel<N>(params.filter, params.clamp, H, x, y, src, srcValid, params.blackOutside, dst);
+                samplePixel<N>(params.filter, params.clamp, H, x, y, src, srcValid, params.edgeMode, dst);
             }
         } else {
             for (int x = x1; x < x2; ++x, dst += N) {
@@ -1121,7 +1107,7 @@ namespace {
                     const float* sy,
                     const float* jacobian,
                     int n,
-                    bool blackOutside,
+                    EdgeMode edgeMode,
                     WrapMode wrapU,
                     WrapMode wrapV,
                     const RectI& domain,
@@ -1143,7 +1129,7 @@ namespace {
                 continue;
             }
             if ((filter.filter == eFilterImpulse) || !jacobian) {
-                interpolateT<N>(filter, clamp, fx, fy, src, blackOutside, tmpPix);
+                interpolateT<N>(filter, clamp, fx, fy, src, edgeMode, tmpPix);
             } else {
                 const float* J = jacobian + (std::size_t)i * 4;
                 double Jxx = finiteOrZero(J[0]);
@@ -1152,7 +1138,7 @@ namespace {
                 double Jyy = finiteOrZero(J[3]);
                 bool xinside = (b.x1 <= fx + 0.5 && fx - 0.5 < b.x2);
                 bool yinside = (b.y1 <= fy + 0.5 && fy - 0.5 < b.y2);
-                if (blackOutside && !(xinside && yinside)) {
+                if ((edgeMode == EdgeMode::Black) && !(xinside && yinside)) {
                     xinside = yinside = false;
                 }
                 if (!xinside || movedX) {
@@ -1161,7 +1147,7 @@ namespace {
                 if (!yinside || movedY) {
                     Jyx = Jyy = 0.;
                 }
-                interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
+                interpolateSuperT<N>(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, edgeMode, tmpPix);
             }
             const int nc = (std::min)(N, nComps);
             for (int c = 0; c < nc; ++c) {
@@ -1173,11 +1159,11 @@ namespace {
         }
     }
 
-    typedef bool (*InterpolateFn)(const FilterSpec&, bool, double, double, const SourceImage&, bool, float*);
-    typedef void (*InterpolateSuperFn)(const FilterSpec&, bool, double, double, double, double, double, double, const SourceImage&, bool, float*);
+    typedef bool (*InterpolateFn)(const FilterSpec&, bool, double, double, const SourceImage&, EdgeMode, float*);
+    typedef void (*InterpolateSuperFn)(const FilterSpec&, bool, double, double, double, double, double, double, const SourceImage&, EdgeMode, float*);
     typedef void (*RowFn)(const ResampleParams&, const SourceImage&, int, int, int, float*);
     typedef void (*MotionBlurPixelFn)(const ResampleParams&, const SourceImage&, int, int, float*, int*);
-    typedef void (*CoordsFn)(const FilterSpec&, bool, const SourceImage&, const float*, const float*, const float*, int, bool, WrapMode, WrapMode, const RectI&, float*, int);
+    typedef void (*CoordsFn)(const FilterSpec&, bool, const SourceImage&, const float*, const float*, const float*, int, EdgeMode, WrapMode, WrapMode, const RectI&, float*, int);
 
     struct KernelTable {
         InterpolateFn interpolate;
@@ -1247,14 +1233,14 @@ interpolate(const FilterSpec& filter,
             double fx,
             double fy,
             const SourceImage& src,
-            bool blackOutside,
+            EdgeMode edgeMode,
             float* out)
 {
     if (!src.isValid()) {
         zeroPixels(out, src.nComps);
         return false;
     }
-    return selectKernels(src.nComps).interpolate(filter, clamp, fx, fy, src, blackOutside, out);
+    return selectKernels(src.nComps).interpolate(filter, clamp, fx, fy, src, edgeMode, out);
 }
 
 void
@@ -1267,14 +1253,14 @@ interpolateSuper(const FilterSpec& filter,
                  double Jyx,
                  double Jyy,
                  const SourceImage& src,
-                 bool blackOutside,
+                 EdgeMode edgeMode,
                  float* out)
 {
     if (!src.isValid()) {
         zeroPixels(out, src.nComps);
         return;
     }
-    selectKernels(src.nComps).interpolateSuper(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, out);
+    selectKernels(src.nComps).interpolateSuper(filter, clamp, fx, fy, Jxx, Jxy, Jyx, Jyy, src, edgeMode, out);
 }
 
 double
@@ -1477,7 +1463,7 @@ ResampleParams
 makeResampleParams(const SamplingTransforms& transforms,
                    const FilterSpec& filter,
                    bool clamp,
-                   bool blackOutside)
+                   EdgeMode edgeMode)
 {
     ResampleParams p;
 
@@ -1486,7 +1472,7 @@ makeResampleParams(const SamplingTransforms& transforms,
     p.count = transforms.invTransforms.size();
     p.filter = filter;
     p.clamp = clamp;
-    p.blackOutside = blackOutside;
+    p.edgeMode = edgeMode;
     p.motionBlur = transforms.motionBlur;
 
     return p;
@@ -1521,7 +1507,7 @@ resampleRowFromCoords(const SourceImage& src,
                       int n,
                       const FilterSpec& filter,
                       bool clamp,
-                      bool blackOutside,
+                      EdgeMode edgeMode,
                       WrapMode wrapU,
                       WrapMode wrapV,
                       float* out,
@@ -1536,7 +1522,7 @@ resampleRowFromCoords(const SourceImage& src,
         return;
     }
     const RectI& domain = (wrapDomain && (wrapDomain->x2 > wrapDomain->x1) && (wrapDomain->y2 > wrapDomain->y1)) ? *wrapDomain : src.bounds;
-    selectKernels(src.nComps).coords(filter, clamp, src, sx, sy, jacobian, n, blackOutside, wrapU, wrapV, domain, out, nComps);
+    selectKernels(src.nComps).coords(filter, clamp, src, sx, sy, jacobian, n, edgeMode, wrapU, wrapV, domain, out, nComps);
 }
 
 namespace {
@@ -1947,13 +1933,13 @@ void
 expandRoD(double par,
           double sx,
           double sy,
-          bool blackOutside,
+          EdgeMode edgeMode,
           RectD* rod)
 {
     if ((rod->x2 <= rod->x1) || (rod->y2 <= rod->y1)) {
         return;
     }
-    if (!blackOutside) {
+    if (edgeMode == EdgeMode::Stretch) {
         return;
     }
     const double pixelSizeX = par / sx;
@@ -2044,7 +2030,7 @@ getRegionOfDefinition(const CanonicalTransformFn& fn,
 
     transformRegion(fn, srcRoD, time, !params.invert, params.blur, params.isIdentity, rod);
     if (!params.isIdentity) {
-        expandRoD(dstPar, sx, sy, params.blackOutside, rod);
+        expandRoD(dstPar, sx, sy, params.edgeMode, rod);
     }
     if (params.doMasking || (params.mix != 1.) || params.readsUnprocessed) {
         rectBoundingBox(*rod, srcRoD, rod);

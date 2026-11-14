@@ -246,7 +246,7 @@ medianPasses(const MedianParams& params,
     const float threshold = (float)std::max(0., params.threshold);
     const int side = 2 * radius + 1;
 
-    list.boundary = PassExec::Boundary::Zero;
+    list.edgeMode = EdgeMode::Black;
     list.scratchSlots = 2;
     list.resultSlot = kSlotResult;
     Pass pass = Pass::gather(radius, radius, true, medianWorker(radius, threshold));

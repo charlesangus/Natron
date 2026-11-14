@@ -41,6 +41,7 @@
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
@@ -114,7 +115,9 @@ void readSourceRow(const Image* image,
                    float* row);
 
 /**
- * @brief One value per pixel of `channel` of row y, `fill` wherever the image has no pixel.
+ * @brief One value per pixel of `channel` of row y, `fill` wherever the image has no pixel: for
+ * a read whose missing pixels stand for a value (an opaque alpha, an unset mask) rather than for
+ * the image's edge.
  **/
 void readChannelRow(const Image* image,
                     const Image::ReadAccess* access,
@@ -126,6 +129,34 @@ void readChannelRow(const Image* image,
                     int width,
                     float fill,
                     float* row);
+
+/**
+ * @brief One value per pixel of `channel` of row y, read outside the image by mode
+ * (EdgeSample::coord()). With no image, or an empty one, the row is zero.
+ **/
+void readChannelRow(const Image* image,
+                    const Image::ReadAccess* access,
+                    const RectI& bounds,
+                    int imageNComps,
+                    int channel,
+                    int x0,
+                    int y,
+                    int width,
+                    EdgeMode mode,
+                    float* row);
+
+/**
+ * @brief The value of `channel` at (x, y), read outside the image by mode (EdgeSample::pixel()).
+ * Zero with no image, or an empty one.
+ **/
+float readChannelAt(const Image* image,
+                    const Image::ReadAccess* access,
+                    const RectI& bounds,
+                    int imageNComps,
+                    int channel,
+                    int x,
+                    int y,
+                    EdgeMode mode) WARN_UNUSED_RETURN;
 
 /**
  * @brief One output plane of a render with the images it reads. Image::getBounds() takes the
@@ -213,23 +244,13 @@ void forEachLineChunk(int nLines,
                       const std::function<void(int, int)>& body);
 
 /**
- * @brief How the source reads outside its image when filling the buffer.
- **/
-enum class Boundary {
-    // Zero (Dirichlet).
-    Zero,
-    // The nearest pixel of the image (Neumann).
-    Nearest
-};
-
-/**
  * @brief Fills buffer, one bufferRect-sized plane per processed channel, with the source of job,
- * outside its image by boundary, divided by the "(Un)premult by" channel where that is usable.
+ * outside its image by edgeMode (EdgeSample::pixel()), divided by the "(Un)premult by" channel where that is usable.
  **/
 void fillBuffer(const PlaneJob& job,
                 const ProcessedPlanes& planes,
                 const RectI& bufferRect,
-                Boundary boundary,
+                EdgeMode edgeMode,
                 int nThreads,
                 RenderCancellation& cancel,
                 float* buffer);
@@ -422,7 +443,7 @@ using PassGpuRecorder = std::function<StatusEnum(const PassGpuIO&)>;
 
 /**
  * @brief What a Passes op computes for one render: passes in order over scratchSlots scratch
- * buffers, the result read from resultSlot. boundary is how slot 0 reads the source outside its
+ * buffers, the result read from resultSlot. edgeMode is how slot 0 reads the source outside its
  * image. gpu records the whole list on the GPU; without it the op stays on the CPU.
  *
  * opMask is for an op that applies its mask itself, inside the passes, rather than the MaskMix
@@ -432,7 +453,7 @@ using PassGpuRecorder = std::function<StatusEnum(const PassGpuIO&)>;
  **/
 struct PassList {
     std::vector<Pass> passes;
-    PassExec::Boundary boundary = PassExec::Boundary::Zero;
+    EdgeMode edgeMode = EdgeMode::Black;
     int scratchSlots = 1;
     int resultSlot = 0;
     bool opMask = false;

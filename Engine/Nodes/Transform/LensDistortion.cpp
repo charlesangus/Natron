@@ -1125,7 +1125,7 @@ LensDistortion::renderOp(const RenderActionArgs& args,
                     }
                 }
                 Resampler::resampleRowFromCoords(source, &sx[0], &sy[0], jacobians ? &jacobian[0] : 0, io.width,
-                                                 settings.filter, settings.clamp, settings.blackOutside, Resampler::eWrapNone, Resampler::eWrapNone,
+                                                 settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch), Resampler::eWrapNone, Resampler::eWrapNone,
                                                  &out[0], io.nComps);
             }
             for (int c = 0; c < io.nComps; ++c) {

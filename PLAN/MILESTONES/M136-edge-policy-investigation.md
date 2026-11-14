@@ -218,13 +218,13 @@ Acceptance sketch:
   - size: L
 
 
-- [ ] M136.P4.T18 — Depth, UV and time inputs of ZDefocus, VectorBlur and the time nodes
+- [x] M136.P4.T18 — Depth, UV and time inputs of ZDefocus, VectorBlur and the time nodes
   - files: `Engine/Nodes/Filter/ZDefocus.cpp` (Depth input), `VectorBlur.cpp` (UV and Depth inputs), `Engine/Nodes/Time/FrameBlend.cpp`, `TimeBlur.cpp`, `SlitScan.cpp`, their GPU kernels and tests
   - approach: every input follows its own edge bit (Q1): these same-position reads of other inputs follow each input's bit through the shared samplers, as P4.T8–T12 do for masks, composites and maps.
   - verify: an auxiliary input smaller than the source, both modes, CPU == GPU, for each node.
   - size: L
 
-- [ ] M136.P4.T19 — NeuralUpscale onto the Edge Mode knob
+- [x] M136.P4.T19 — NeuralUpscale onto the Edge Mode knob
   - files: `Engine/Nodes/Filter/NeuralUpscale.cpp` (or its location), its tests
   - approach: its taps clamp to the source frame with no knob; add the stage so Black reads zero past the source.
   - verify: an upscale of a small image shows repeated edges under Stretch and black under Black.
@@ -278,3 +278,4 @@ Acceptance sketch:
 - 2026-11-13 — P4.T8–T10 implemented (ce6d616fc). Merge's transparent-A skip stays under both modes, since it checks A's actual pixels. Mask and route inputs get the Stretch RoI band on GPU too.
 - 2026-11-13 — P4.T11–T13 implemented (5062b6c65). The Map reads of IWarp, IDistort and STMap follow the Map's mode through the shared `MapInput`. LensCorrect, SplineWarp and AutoStraighten now default to Input instead of Black. To check under T14 to T19: SplineWarp's mask/mix reference for a concatenated plane is still hard-coded Black.
 - 2026-11-13 — P4.T14–T16 implemented (5863bc857); these nodes now default to Input. SplineWarp's concatenated reference follows the source's resolved mode, but its non-concatenated `readSourceRow` still reads black past the source. That is fixed with T18/T19.
+- 2026-11-13 — P4.T18, P4.T19 and the SplineWarp read are implemented (828db9396). Phase 4 is done. PM calls: Depth and UV are layers of the Source, so they follow its mode. NeuralUpscale's model tiles stay inside the source, and only its alpha filter follows the mode. A `StagePlan::blendSourceFollowsEdgeMode` opt-in serves SplineWarp's GPU reference. The Stretch edge is the source image's own data window.

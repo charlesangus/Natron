@@ -494,6 +494,7 @@ future core work has solid ground to build on.
 | M374 | Remove Node Magnify On Ctrl-Scroll | todo | - |  | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
 | M375 | No CPU Vulkan Auto-Select | done | - | bosley-native-nodes | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |
 | M400 | Pointer Direction Badges | todo | - |  | E10 |  | | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |
+| M425 | No ONNX Runtime Telemetry | todo | - |  | E16 |  | | [M425-no-onnx-runtime-telemetry.md](PLAN/MILESTONES/M425-no-onnx-runtime-telemetry.md) |
 
 # Epics
 

@@ -63,6 +63,9 @@ bool computeProjector(const PXR_NS::UsdStageRefPtr& stage,
                       PXR_NS::GfVec4f* origin,
                       std::string* errorMessage);
 
+// The customData key, set true, on every shader of the Cycles and MoonRay networks.
+#define kSceneProjectionNetworkMark "natronProjectionNetwork"
+
 /**
  * @brief The shaders of the Cycles network USDProject3D authors beside its Storm surface, under
  * the same material, that take values from the projector, the plate's window or the prim.
@@ -141,10 +144,13 @@ struct Unresolved {
  * @brief Authors into layer, as overs at the shaders' paths, the projection of every shader on
  * stage that names its camera by path. Shaders whose camera stage lacks are listed in unresolved
  * and keep projecting nothing. Reads all of stage before writing, so layer may be one of its own.
+ * Returns a digest of everything authored, 0 when there is nothing; when it equals skipIfDigest
+ * layer is left untouched.
  **/
-void resolve(const PXR_NS::UsdStageRefPtr& stage,
-             const PXR_NS::SdfLayerRefPtr& layer,
-             std::vector<Unresolved>* unresolved);
+U64 resolve(const PXR_NS::UsdStageRefPtr& stage,
+            const PXR_NS::SdfLayerRefPtr& layer,
+            std::vector<Unresolved>* unresolved,
+            U64 skipIfDigest = 0);
 } // namespace SceneProjectionCameras
 
 NATRON_NAMESPACE_EXIT

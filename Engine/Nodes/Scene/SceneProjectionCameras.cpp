@@ -27,6 +27,7 @@
 
 #include <pxr/usd/usd/primRange.h>
 
+#include "Engine/ContentHasher.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 
 NATRON_NAMESPACE_ENTER
@@ -271,13 +272,14 @@ computeProjector(const PXR_NS::UsdStageRefPtr& stage,
     return true;
 }
 
-void
+U64
 resolve(const PXR_NS::UsdStageRefPtr& stage,
         const PXR_NS::SdfLayerRefPtr& layer,
-        std::vector<Unresolved>* unresolved)
+        std::vector<Unresolved>* unresolved,
+        U64 skipIfDigest)
 {
     if (!stage || !layer) {
-        return;
+        return 0;
     }
     const PXR_NS::TfToken cameraName(kUSDProject3DAttrCamera);
     const double timeCodesPerSecond = stage->GetTimeCodesPerSecond();
@@ -340,13 +342,33 @@ resolve(const PXR_NS::UsdStageRefPtr& stage,
         projections.push_back(std::move(projection));
     }
     if (projections.empty()) {
-        return;
+        return 0;
+    }
+    ContentHasher hasher;
+    hasher.appendDouble(timeCodesPerSecond);
+    for (const Projection& projection : projections) {
+        hasher.appendString(projection.shader.GetString());
+        hasher.appendU64(projection.times.size());
+        for (const PXR_NS::UsdTimeCode& time : projection.times) {
+            hasher.appendDouble(time.GetValue());
+        }
+        hasher.appendU64(projection.worldToProjector.size());
+        for (std::size_t i = 0; i < projection.worldToProjector.size(); ++i) {
+            hasher.appendBytes(projection.worldToProjector[i].GetArray(), 16 * sizeof(double));
+            hasher.appendBytes(projection.origin[i].GetArray(), 4 * sizeof(float));
+        }
+    }
+    const U64 digest = hasher.finalize();
+    if (digest == skipIfDigest) {
+        return digest;
     }
     // The samples are in the stage's time codes, which the layer's own rate keeps unscaled.
     layer->SetTimeCodesPerSecond(timeCodesPerSecond);
     for (const Projection& projection : projections) {
         setProjection(layer, projection);
     }
+
+    return digest;
 } // resolve
 } // namespace SceneProjectionCameras
 

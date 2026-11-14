@@ -103,6 +103,7 @@
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
+#include "ProjectionTestUtils.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
@@ -1642,406 +1643,19 @@ TEST_F(USDRenderMoonRayLiveTextureTest, MatchesReferenceRender)
 }
 
 namespace {
-// The projection scene: a 16 x 8 card at the origin seen by /Cam from (0, 0, 10) through a lens
-// whose frame is as wide as twice the distance, so the card's plane shows 20 x 10 units over the
-// kProjectionWidth x kProjectionHeight format. A checker plate projects onto it from /Projector.
-const int kProjectionWidth = 128;
-const int kProjectionHeight = 64;
-const double kProjectionBox = 16.;
-const double kProjectionCameraZ = 10.;
-const double kProjectionPlaneWidth = 20.;
-const double kProjectionCardWidth = 16.;
-const double kProjectionCardHeight = 8.;
-const double kProjectionUnitsPerPixel = kProjectionPlaneWidth / kProjectionWidth;
-// MoonRay's pixel filter spreads a checker edge over about two render pixels.
-const double kProjectionEdgeMargin = 2.5;
 const char* const kGoldenCaseMoonRayProject3D = "MoonRayProject3DReference";
-const char* const kProjectionGoldenGroup = "USDRender";
-// Room for a host's arithmetic differing in its last bits; a lost face, a wrong colour transform
-// or a shifted plate is far past these.
-const float kProjectionChannelTolerance = 0.08f;
-const double kProjectionDifferingFraction = 0.01;
-const double kProjectionMeanTolerance = 0.005;
-
-enum ProjectedEnum {
-    eProjectedNone = 0,
-    eProjectedRed,
-    eProjectedBlue,
-    eProjectedTransparent,
-    eProjectedBlack
-};
-
-struct ProjectionCheck {
-    int sure = 0;
-    int wrong = 0;
-    int red = 0;
-    int blue = 0;
-};
-
-ProjectedEnum
-classify(const RenderedPlane& plane,
-         int x,
-         int y)
-{
-    const std::size_t i = ((std::size_t)y * (std::size_t)plane.window.width() + (std::size_t)x) * 4;
-    const float r = plane.pixels[i], g = plane.pixels[i + 1], b = plane.pixels[i + 2], a = plane.pixels[i + 3];
-    if ((a < 0.05f) && (std::max(r, std::max(g, b)) < 0.05f)) {
-        return eProjectedTransparent;
-    }
-    if (a < 0.9f) {
-        return eProjectedNone;
-    }
-    if (std::max(r, std::max(g, b)) < 0.05f) {
-        return eProjectedBlack;
-    }
-    if ((r > 0.7f) && (b < 0.25f) && (g < 0.25f)) {
-        return eProjectedRed;
-    }
-    if ((b > 0.7f) && (r < 0.25f) && (g < 0.25f)) {
-        return eProjectedBlue;
-    }
-
-    return eProjectedNone;
-}
-
-/**
- * Compares every card pixel away from an edge with the projection of the plate from a camera on
- * the z axis whose frame spans frameWidth units of the card's plane, offset by projectorX. The
- * card sits cardShift along x; referenceShift is how far it moved since the projection was held.
- **/
-ProjectionCheck
-checkProjection(const RenderedPlane& plane,
-                double frameWidth,
-                double projectorX,
-                double cardShift = 0.,
-                double referenceShift = 0.)
-{
-    ProjectionCheck check;
-    const double platePerUnit = kProjectionWidth / frameWidth;
-    const double margin = kProjectionEdgeMargin * kProjectionUnitsPerPixel * platePerUnit;
-    const double cardMargin = kProjectionEdgeMargin * kProjectionUnitsPerPixel;
-    for (int y = 0; y < kProjectionHeight; ++y) {
-        for (int x = 0; x < kProjectionWidth; ++x) {
-            const double X = (x + 0.5 - kProjectionWidth / 2.) * kProjectionUnitsPerPixel;
-            const double Y = (y + 0.5 - kProjectionHeight / 2.) * kProjectionUnitsPerPixel;
-            if ((std::fabs(X - cardShift) > kProjectionCardWidth / 2. - cardMargin) || (std::fabs(Y) > kProjectionCardHeight / 2. - cardMargin)) {
-                continue;
-            }
-            const double u = kProjectionWidth / 2. + (X - referenceShift - projectorX) * platePerUnit;
-            const double v = kProjectionHeight / 2. + Y * platePerUnit;
-            ProjectedEnum expected = eProjectedNone;
-            if ((u < -margin) || (u > kProjectionWidth + margin) || (v < -margin) || (v > kProjectionHeight + margin)) {
-                expected = eProjectedTransparent;
-            } else if ((u > margin) && (u < kProjectionWidth - margin) && (v > margin) && (v < kProjectionHeight - margin)) {
-                const double bu = (u - kProjectionWidth / 2.) / kProjectionBox;
-                const double bv = (v - kProjectionHeight / 2.) / kProjectionBox;
-                const double edge = margin / kProjectionBox;
-                if ((std::fabs(bu - std::round(bu)) >= edge) && (std::fabs(bv - std::round(bv)) >= edge)) {
-                    const long sum = (long)std::floor(bu) + (long)std::floor(bv);
-                    expected = ((sum % 2) == 0) ? eProjectedRed : eProjectedBlue;
-                }
-            }
-            if (expected == eProjectedNone) {
-                continue;
-            }
-            const ProjectedEnum seen = classify(plane, x, y);
-            ++check.sure;
-            check.wrong += (seen != expected) ? 1 : 0;
-            check.red += (seen == eProjectedRed) ? 1 : 0;
-            check.blue += (seen == eProjectedBlue) ? 1 : 0;
-        }
-    }
-
-    return check;
-}
-
-// How many pixels of the region are of the given class.
-int
-countIn(const RenderedPlane& plane,
-        const RectI& region,
-        ProjectedEnum what)
-{
-    int count = 0;
-    for (int y = region.y1; y < region.y2; ++y) {
-        for (int x = region.x1; x < region.x2; ++x) {
-            count += (classify(plane, x, y) == what) ? 1 : 0;
-        }
-    }
-
-    return count;
-}
-
-// The card's interior, a render pixel or more from its edges.
-const RectI kProjectionCardInterior(16, 9, 112, 55);
-
-// Records the crop as a half-float, zip compressed EXR under NATRON_GOLDEN_RECORD_DIR, or compares
-// it with the committed one within the golden tolerances. Rows stay bottom first both ways.
-void
-matchGoldenCrop(const RenderedPlane& rgba,
-                const RectI& crop,
-                const char* goldenCase)
-{
-    const int nComps = (int)rgba.channels.size();
-    const int width = crop.width();
-    const int height = crop.height();
-    ASSERT_EQ(4, nComps);
-    ASSERT_LE(width, 256);
-    ASSERT_LE(height, 256);
-    std::vector<float> pixels;
-    pixels.reserve((std::size_t)width * (std::size_t)height * (std::size_t)nComps);
-    for (int y = crop.y1; y < crop.y2; ++y) {
-        const std::size_t row = (std::size_t)(y - rgba.window.y1) * (std::size_t)rgba.window.width();
-        for (int x = crop.x1; x < crop.x2; ++x) {
-            const std::size_t i = (row + (std::size_t)(x - rgba.window.x1)) * (std::size_t)nComps;
-            pixels.insert(pixels.end(), rgba.pixels.begin() + i, rgba.pixels.begin() + i + nComps);
-        }
-    }
-
-    const std::string name = std::string(kProjectionGoldenGroup) + "/" + goldenCase + ".exr";
-    const std::string recordDir = goldenRecordDir();
-    if (!recordDir.empty()) {
-        const QString path = QDir(QString::fromStdString(recordDir)).filePath(QString::fromStdString(name));
-        ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath())) << path.toStdString();
-        std::unique_ptr<OIIO::ImageOutput> out = OIIO::ImageOutput::create(path.toStdString());
-        ASSERT_TRUE(out != nullptr) << OIIO::geterror();
-        OIIO::ImageSpec spec(width, height, nComps, OIIO::TypeDesc::HALF);
-        spec.attribute("compression", "zip");
-        ASSERT_TRUE(out->open(path.toStdString(), spec)) << out->geterror();
-        EXPECT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data())) << out->geterror();
-        EXPECT_TRUE(out->close()) << out->geterror();
-        std::cout << "[ golden ] recorded " << path.toStdString() << std::endl;
-
-        return;
-    }
-
-    const std::string path = goldenReferenceDir() + "/" + name;
-    std::unique_ptr<OIIO::ImageInput> in = OIIO::ImageInput::open(path);
-    if (!in) {
-        ADD_FAILURE() << goldenCase << ": no golden reference " << path << " (" << OIIO::geterror() << "). Record it in the published build image "
-                      << "by running this test with NATRON_GOLDEN_RECORD_DIR set and commit the file.";
-
-        return;
-    }
-    const OIIO::ImageSpec& spec = in->spec();
-    ASSERT_EQ(width, spec.width) << path;
-    ASSERT_EQ(height, spec.height) << path;
-    ASSERT_EQ(nComps, spec.nchannels) << path;
-    std::vector<float> reference(pixels.size());
-    ASSERT_TRUE(in->read_image(0, 0, 0, nComps, OIIO::TypeDesc::FLOAT, reference.data())) << in->geterror();
-    in->close();
-
-    std::size_t differing = 0;
-    double sum = 0.;
-    float worst = 0.f;
-    for (std::size_t p = 0; p < pixels.size() / (std::size_t)nComps; ++p) {
-        bool differs = false;
-        for (int k = 0; k < nComps; ++k) {
-            const float d = std::fabs(pixels[p * nComps + k] - reference[p * nComps + k]);
-            sum += d;
-            worst = std::max(worst, d);
-            differs = differs || !(d <= kProjectionChannelTolerance);
-        }
-        differing += differs ? 1 : 0;
-    }
-    EXPECT_LE((double)differing, kProjectionDifferingFraction * (double)(pixels.size() / (std::size_t)nComps)) << goldenCase << ": worst difference " << worst;
-    EXPECT_LE(sum / (double)pixels.size(), kProjectionMeanTolerance) << goldenCase << ": worst difference " << worst;
-} // matchGoldenCrop
 } // anon namespace
 
+using namespace ProjectionTestUtils;
+
 class USDRenderMoonRayProjectionTest
-    : public USDRenderMoonRayTest {
+    : public ProjectionFixture<USDRenderMoonRayTest> {
 protected:
-    virtual void SetUp() OVERRIDE
+    virtual const char* rendererId() const OVERRIDE
     {
-        USDRenderMoonRayTest::SetUp();
-        ProjectPtr project = getApp()->getProject();
-        project->setAutoSetProjectFormatEnabled(true);
-        project->setOrAddProjectFormat(Format(0, 0, kProjectionWidth, kProjectionHeight, "projection2to1", 1.));
-    }
-
-    virtual void TearDown() OVERRIDE
-    {
-        LiveTextureStore::instance().clear();
-        USDRenderMoonRayTest::TearDown();
-    }
-
-    struct Graph {
-        NodePtr plate;
-        NodePtr projector;
-        NodePtr projectorCamera;
-        NodePtr card;
-        NodePtr render;
-    };
-
-    static bool setString(const NodePtr& node,
-                          const char* name,
-                          const char* value)
-    {
-        KnobString* k = knob<KnobString>(node, name);
-        if (k) {
-            k->setValue(std::string(value));
-        }
-
-        return k != nullptr;
-    }
-
-    static bool setTriple(const NodePtr& node,
-                          const char* name,
-                          double x,
-                          double y,
-                          double z)
-    {
-        KnobDouble* k = knob<KnobDouble>(node, name);
-        if (k) {
-            k->setValue(x, ViewSpec::all(), 0);
-            k->setValue(y, ViewSpec::all(), 1);
-            k->setValue(z, ViewSpec::all(), 2);
-        }
-
-        return k != nullptr;
-    }
-
-    static bool setLens(const NodePtr& camera,
-                        double horizontal,
-                        double vertical)
-    {
-        KnobDouble* focal = knob<KnobDouble>(camera, kUSDCameraParamFocalLength);
-        KnobDouble* h = knob<KnobDouble>(camera, kUSDCameraParamHorizontalAperture);
-        KnobDouble* v = knob<KnobDouble>(camera, kUSDCameraParamVerticalAperture);
-        if (!focal || !h || !v) {
-            return false;
-        }
-        focal->setValue(18.);
-        h->setValue(horizontal);
-        v->setValue(vertical);
-
-        return true;
-    }
-
-    // The scene above with the projector where the render camera is; its graph is empty after a
-    // gtest failure.
-    Graph createProjectionGraph()
-    {
-        Graph graph;
-        NodePtr checker = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
-        NodePtr projectorCamera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
-        NodePtr project3D = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
-        NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
-        NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
-        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
-        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
-        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
-        if (!checker || !projectorCamera || !project3D || !card || !camera || !merge || !settings || !render) {
-            ADD_FAILURE() << "a node is not registered";
-
-            return graph;
-        }
-
-        KnobDouble* boxSize = knob<KnobDouble>(checker, kCheckerBoardParamBoxSize);
-        KnobDouble* centerlineWidth = knob<KnobDouble>(checker, kCheckerBoardParamCenterLineWidth);
-        KnobDouble* lineWidth = knob<KnobDouble>(checker, kCheckerBoardParamLineWidth);
-        KnobChoice* renderer = knob<KnobChoice>(render, kUSDRenderParamRenderer);
-        if (!boxSize || !centerlineWidth || !lineWidth || !renderer) {
-            return graph;
-        }
-        boxSize->setValue(kProjectionBox, ViewSpec::all(), 0);
-        boxSize->setValue(kProjectionBox, ViewSpec::all(), 1);
-        centerlineWidth->setValue(0.);
-        lineWidth->setValue(0.);
-        const char* const colours[4] = { kCheckerBoardParamColor0, kCheckerBoardParamColor1, kCheckerBoardParamColor2, kCheckerBoardParamColor3 };
-        for (int c = 0; c < 4; ++c) {
-            KnobColor* colour = knob<KnobColor>(checker, colours[c]);
-            if (!colour) {
-                return graph;
-            }
-            // Colours 0 and 2 fill the squares whose indices sum to an even number.
-            const bool red = (c % 2) == 0;
-            colour->setValue(red ? 0.9 : 0.05, ViewSpec::all(), 0);
-            colour->setValue(0.05, ViewSpec::all(), 1);
-            colour->setValue(red ? 0.05 : 0.9, ViewSpec::all(), 2);
-            colour->setValue(1., ViewSpec::all(), 3);
-        }
-
-        bool ok = setLens(projectorCamera, 36., 18.) && setLens(camera, 36., 18.);
-        ok = ok && setString(projectorCamera, kSceneParamPrimPath, "/Projector");
-        ok = ok && setTriple(projectorCamera, kSceneParamTranslate, 0., 0., kProjectionCameraZ);
-        ok = ok && setString(card, kSceneParamPrimPath, "/Card");
-        ok = ok && setTriple(card, kSceneParamScale, kProjectionCardWidth, kProjectionCardHeight, 1.);
-        ok = ok && setString(camera, kSceneParamPrimPath, "/Cam");
-        ok = ok && setTriple(camera, kSceneParamTranslate, 0., 0., kProjectionCameraZ);
-        if (!ok) {
-            return graph;
-        }
-        if (!selectRenderer(renderer, kMoonRayRendererId)) {
-            ADD_FAILURE() << "the Renderer menu has no " << kMoonRayRendererId;
-
-            return graph;
-        }
-
-        connectNodes(checker, project3D, kUSDProject3DInputImage, true);
-        connectNodes(projectorCamera, project3D, kUSDProject3DInputCamera, true);
-        connectNodes(project3D, card, 0, true);
-        connectNodes(card, merge, 0, true);
-        connectNodes(camera, merge, 1, true);
-        connectNodes(merge, settings, 0, true);
-        connectNodes(settings, render, 0, true);
-        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kProjectionWidth, kProjectionHeight)) {
-            return graph;
-        }
-        graph.plate = checker;
-        graph.projector = project3D;
-        graph.projectorCamera = projectorCamera;
-        graph.card = card;
-        graph.render = render;
-
-        return graph;
-    } // createProjectionGraph
-
-    // Off the main thread, which is where the plate's live texture is prepared from.
-    static bool renderProjection(const NodePtr& render,
-                                 double frame,
-                                 RenderedPlane* rgba)
-    {
-        bool rendered = false;
-        std::string error;
-        std::vector<RenderedPlane> planes;
-
-        appPTR->clearAllCaches();
-        std::thread worker([&]() {
-            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kProjectionWidth, kProjectionHeight),
-                                              std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, false);
-        });
-        worker.join();
-        appPTR->clearAllCaches();
-        EXPECT_TRUE(rendered) << error;
-        if (!rendered || (planes.size() != 1u) || (planes[0].channels.size() != 4u) || (planes[0].window.width() != kProjectionWidth) || (planes[0].window.height() != kProjectionHeight)) {
-            ADD_FAILURE() << "no " << kProjectionWidth << " x " << kProjectionHeight << " RGBA plane";
-
-            return false;
-        }
-        *rgba = planes[0];
-
-        return true;
-    }
-
-    static std::string messageOf(const NodePtr& node)
-    {
-        QString message;
-        int type = 0;
-        node->getPersistentMessage(&message, &type, false);
-
-        return message.toStdString();
+        return kMoonRayRendererId;
     }
 };
-
-#define EXPECT_PROJECTS(check)                                                                   \
-    do {                                                                                         \
-        const ProjectionCheck c_ = (check);                                                      \
-        EXPECT_GT(c_.sure, 1000) << "too few card pixels away from an edge";                     \
-        EXPECT_LE(c_.wrong, c_.sure / 100) << c_.wrong << " of " << c_.sure << " pixels differ"; \
-        EXPECT_GT(c_.red, 0);                                                                    \
-        EXPECT_GT(c_.blue, 0);                                                                   \
-    } while (0)
 
 // Projected from the render camera, the plate reappears on the card pixel for pixel.
 TEST_F(USDRenderMoonRayProjectionTest, APlateFromTheRenderCameraReproducesThePlate)
@@ -2246,111 +1860,52 @@ TEST_F(USDRenderMoonRayProjectionTest, GeometrySpaceHeldSticksToTheMovingCard)
     EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));
 }
 
-// Linear curves, not a mesh, so no reference points: held at frame 1 in Geometry space, the plate
-// rides on the projection's frame alone as the curves' transform carries them 2 units by frame 11.
-// Ribbons 0.35 wide every 0.25 cover the card's 16 x 8 units.
+// Linear curves, not a mesh: held in Geometry space, the plate rides on the projection's frame
+// alone as the curves' transform carries them.
 TEST_F(USDRenderMoonRayProjectionTest, GeometrySpaceHeldSticksToMovingCurvesWithoutReferencePoints)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    double first = 0., last = 0.;
-    getApp()->getFrameRange(&first, &last);
-    ASSERT_LE(first, 1.);
-    ASSERT_GE(last, 11.);
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    const double shift = 2.;
-    const QString file = tmp.path() + QString::fromUtf8("/curves.usda");
-    {
-        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(file.toStdString());
-        ASSERT_TRUE(bool(stage));
-        PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(stage, PXR_NS::SdfPath("/Card"));
-        const int rows = 33;
-        PXR_NS::VtVec3fArray points;
-        for (int row = 0; row < rows; ++row) {
-            const float y = (float)(-kProjectionCardHeight / 2. + row * kProjectionCardHeight / (rows - 1));
-            points.push_back(PXR_NS::GfVec3f((float)(-kProjectionCardWidth / 2.), y, 0.f));
-            points.push_back(PXR_NS::GfVec3f((float)(kProjectionCardWidth / 2.), y, 0.f));
-        }
-        curves.CreateTypeAttr().Set(PXR_NS::UsdGeomTokens->linear);
-        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(rows, 2));
-        curves.CreatePointsAttr().Set(points);
-        curves.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(1, 0.35f));
-        curves.SetWidthsInterpolation(PXR_NS::UsdGeomTokens->constant);
-        PXR_NS::UsdGeomXformOp translate = curves.AddTranslateOp();
-        translate.Set(PXR_NS::GfVec3d(0.), PXR_NS::UsdTimeCode(1.));
-        translate.Set(PXR_NS::GfVec3d(shift, 0., 0.), PXR_NS::UsdTimeCode(11.));
-        ASSERT_TRUE(stage->GetRootLayer()->Save());
-    }
-    const Graph graph = createProjectionGraph();
-    ASSERT_TRUE(bool(graph.render));
-    KnobChoice* space = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectionSpace);
-    KnobBool* useHold = knob<KnobBool>(graph.projector, kUSDProject3DParamUseFrameHold);
-    KnobDouble* hold = knob<KnobDouble>(graph.projector, kUSDProject3DParamFrameHold);
-    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
-    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
-    KnobFile* fileKnob = reader ? knob<KnobFile>(reader, kUSDReadParamFile) : NULL;
-    NodePtr merge = graph.render->getInput(0)->getInput(0);
-    ASSERT_TRUE(space && useHold && hold && fileKnob && assign && merge);
-    ASSERT_TRUE(setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card"));
-    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
-    useHold->setValue(true);
-    hold->setValue(1.);
-    fileKnob->setValue(file.toStdString());
-    graph.card->disconnectInput(0);
-    merge->disconnectInput(0);
-    connectNodes(reader, assign, kUSDAssignMaterialInputScene, true);
-    connectNodes(graph.projector, assign, kUSDAssignMaterialInputMaterial, true);
-    connectNodes(assign, merge, 0, true);
-
-    RenderedPlane rgba;
-    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
-    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
-    ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
-    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));
-    EXPECT_FALSE(assign->hasPersistentMessage()) << messageOf(assign);
+    expectHeldCurvesCarryThePlate();
 }
 
-// In Geometry space the projection is fixed where the card node places the card, so a transform
-// after it carries the plate along, and a mirror there leaves the face that looked at the
-// projector still showing it under Project On Front.
+// A transform after the card carries the plate along in Geometry space, and a mirror there
+// mirrors it.
 TEST_F(USDRenderMoonRayProjectionTest, GeometrySpaceFollowsATransformAfterTheCard)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    const Graph graph = createProjectionGraph();
-    ASSERT_TRUE(bool(graph.render));
-    KnobChoice* space = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectionSpace);
-    KnobChoice* projectOn = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectOn);
-    KnobChoice* outside = knob<KnobChoice>(graph.projector, kUSDProject3DParamOutside);
-    NodePtr edit = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
-    NodePtr merge = graph.render->getInput(0)->getInput(0);
-    ASSERT_TRUE(space && projectOn && outside && edit && merge);
-    ASSERT_TRUE(setString(edit, kUSDEditTransformParamPrimPattern, "/Card"));
-    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
-    merge->disconnectInput(0);
-    connectNodes(graph.card, edit, 0, true);
-    connectNodes(edit, merge, 0, true);
+    expectATransformAfterTheCardCarriesThePlate();
+}
 
-    // An appended transform applies inside the card's own scale, so the card moves shift units of
-    // the plane when the edit translates it by shift over the card's width.
-    const double shift = 2.;
-    ASSERT_TRUE(setTriple(edit, kSceneParamTranslate, shift / kProjectionCardWidth, 0., 0.));
-    RenderedPlane rgba;
-    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
-    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));
-    EXPECT_FALSE(edit->hasPersistentMessage()) << messageOf(edit);
+// Where the plate's colour is flat the card shows what Storm shows, in World space, held in
+// Geometry space and from a plate with overscan.
+TEST_F(USDRenderMoonRayProjectionTest, Project3DMatchesStormsPlate)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    {
+        SCOPED_TRACE("World");
+        expectStormsWorldPlate(kStormMaxToleranceMoonRay);
+    }
+    {
+        SCOPED_TRACE("GeometryHeld");
+        expectStormsHeldPlate(kStormMaxToleranceMoonRay);
+    }
+    {
+        SCOPED_TRACE("Overscan");
+        expectStormsOverscanPlate(kStormMaxToleranceMoonRay);
+    }
+}
 
-    ASSERT_TRUE(setTriple(edit, kSceneParamTranslate, 0., 0., 0.));
-    ASSERT_TRUE(setTriple(edit, kSceneParamScale, -1., 1., 1.));
-    outside->setValue((int)USDProject3D::eOutsideBlack);
-    projectOn->setValue((int)USDProject3D::eProjectOnFront);
-    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
-    EXPECT_GT(countIn(rgba, kProjectionCardInterior, eProjectedRed), kProjectionCardInterior.area() / 8);
-    EXPECT_GT(countIn(rgba, kProjectionCardInterior, eProjectedBlue), kProjectionCardInterior.area() / 8);
-    projectOn->setValue((int)USDProject3D::eProjectOnBack);
-    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
-    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedBlack));
+// The plate's alpha is the card's opacity over what is behind it, its colour straight.
+TEST_F(USDRenderMoonRayProjectionTest, AHalfAlphaPlateBlendsOverTheBackground)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    expectAHalfAlphaPlateOverTheBackground();
 }

@@ -33,6 +33,8 @@
 
 #include <QMetaObject>
 
+#include <pxr/usd/sdf/copyUtils.h>
+
 #include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
@@ -122,13 +124,6 @@ struct NetworkProjection {
     bool hasPlate = false;
 };
 
-/**
- * @brief The projection as stock Cycles nodes under the material, its surface on
- * outputs:cycles:surface. Cycles takes no matrix input and texture_coordinate no perspective
- * divide, so the projected point is four dot products of the position with the projector's
- * columns and a divide. Only the topology is authored here: the inputs the projector and the
- * plate's window set come from SceneProjectionCameras::projectorValues() and plateValues().
- **/
 // Shader nodes under one material, any failure remembered so a network is checked once.
 class ShaderGraph {
 protected:
@@ -144,6 +139,11 @@ protected:
     {
         PXR_NS::UsdShadeShader shader = _ok ? PXR_NS::UsdShadeShader::Define(_stage, _material.AppendChild(PXR_NS::TfToken(name))) : PXR_NS::UsdShadeShader();
         _ok = shader && shader.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken(id)));
+        // Export strips the delegate networks by this mark, which a shader the user put under the
+        // same material does not carry.
+        if (_ok) {
+            shader.GetPrim().SetCustomDataByKey(PXR_NS::TfToken(kSceneProjectionNetworkMark), PXR_NS::VtValue(true));
+        }
 
         return shader;
     }
@@ -209,6 +209,13 @@ private:
     bool _ok = true;
 };
 
+/**
+ * @brief The projection as stock Cycles nodes under the material, its surface on
+ * outputs:cycles:surface. Cycles takes no matrix input and texture_coordinate no perspective
+ * divide, so the projected point is four dot products of the position with the projector's
+ * columns and a divide. Only the topology is authored here: the inputs the projector and the
+ * plate's window set come from SceneProjectionCameras::projectorValues() and plateValues().
+ **/
 class CyclesNetwork
     : private ShaderGraph {
 public:
@@ -302,6 +309,12 @@ public:
             }
             facing = math((projection.projectOn == USDProject3D::eProjectOnFront) ? "CyclesFacesProjector" : "CyclesFacesAway",
                           (projection.projectOn == USDProject3D::eProjectOnFront) ? "greater_than" : "less_than", facing, 0.f);
+            // Curves and points have no face to turn away, so they take the plate either way, as
+            // in Storm. A mesh reads zero from both.
+            PXR_NS::UsdShadeShader hair = node("CyclesHairInfo", "cycles_hair_info");
+            PXR_NS::UsdShadeShader points = node("CyclesPointInfo", "cycles_point_info");
+            const ShaderSocket isPoint = math("CyclesIsPoint", "greater_than", ShaderSocket { points, "radius" }, 0.f);
+            facing = math("CyclesFacingOrNoFace", "maximum", facing, math("CyclesNoFace", "maximum", ShaderSocket { hair, "is_strand" }, isPoint));
             inside = math("CyclesInsideFacing", "multiply", inside, facing);
         }
         if (projection.clip) {
@@ -317,7 +330,10 @@ public:
             for (const char* name : { "wrapS", "wrapT" }) {
                 setToken(texture, name, "black");
             }
-            setToken(texture, "sourceColorSpace", "auto");
+            // The plate is linear with straight alpha, as Storm reads it, where Cycles would
+            // otherwise guess both from the file.
+            setToken(texture, "sourceColorSpace", "data");
+            setToken(texture, "alpha_type", "unassociated");
             colour = ShaderSocket { texture, "rgb" };
             alpha = ShaderSocket { texture, "a" };
         }
@@ -589,6 +605,13 @@ struct USDProject3D::CameraSamples {
     U64 digest = 0;
 };
 
+// The last material topology built, which only a change to what shapes the networks replaces.
+struct ProjectionTopologyMemo {
+    std::mutex lock;
+    U64 key = 0;
+    PXR_NS::SdfLayerRefPtr layer;
+};
+
 struct USDProject3D::Implementation {
     std::mutex lock;
     // The last samples and what they were read from, so an evaluation that changes nothing they
@@ -596,6 +619,7 @@ struct USDProject3D::Implementation {
     bool samplesValid = false;
     U64 samplesKey = 0;
     std::shared_ptr<const CameraSamples> samples;
+    std::shared_ptr<ProjectionTopologyMemo> topology = std::make_shared<ProjectionTopologyMemo>();
 };
 
 USDProject3D::USDProject3D(NodePtr node)
@@ -1078,15 +1102,21 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         return fail();
     }
     const double framesPerSecond = layerKey.framesPerSecond;
-    SceneLayerMemo::AuthorFunc author = [samples, path, shaderPath, space, useFrameHold, frameHold, projectOn, crop, clip, outside, hasPlate, plate, cameraPath, aspect, fitValue,
-                                         framesPerSecond](const SceneLayerEdit& edit, std::string* error) {
-        PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
-        if (!stage) {
-            return false;
-        }
+    // Everything of the material that depends on no value, built once per topology and copied into
+    // each new layer: the networks are hundreds of prims, which a scrub would otherwise redefine.
+    const auto authorTopology = [](const PXR_NS::UsdStageRefPtr& stage,
+                                   const PXR_NS::SdfPath& path,
+                                   const std::string& shaderPath,
+                                   const NetworkProjection& network,
+                                   std::string* error) {
         const QString pathString = QString::fromStdString(path.GetString());
-        const std::string framePrimvar = useFrameHold ? heldPrimvarName("natronProjectionFrame", frameHold) : std::string("natronProjectionFrame");
-        const std::string referencePrimvar = heldPrimvarName("natronReferencePoints", frameHold);
+        const int space = network.space;
+        const int projectOn = network.projectOn;
+        const bool crop = network.crop;
+        const bool clip = network.clip;
+        const int outside = network.outside;
+        const std::string& framePrimvar = network.framePrimvar;
+        const std::string& referencePrimvar = network.referencePrimvar;
         const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterial::Define(stage, path);
         PXR_NS::UsdShadeShader shader = PXR_NS::UsdShadeShader::Define(stage, path.AppendChild(PXR_NS::TfToken(kUSDProject3DShaderName)));
         if (!material || !shader || !shader.SetSourceAsset(PXR_NS::SdfAssetPath(shaderPath), PXR_NS::TfToken("glslfx"))) {
@@ -1095,26 +1125,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             return false;
         }
         bool ok = true;
-        if (samples->missing) {
-            const PXR_NS::UsdPrim prim = shader.GetPrim();
-            const PXR_NS::UsdAttribute camera = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCamera), PXR_NS::SdfValueTypeNames->String, true);
-            const PXR_NS::UsdAttribute cameraAspect = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraAspect), PXR_NS::SdfValueTypeNames->Double, true);
-            const PXR_NS::UsdAttribute cameraFit = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraFit), PXR_NS::SdfValueTypeNames->Int, true);
-            const PXR_NS::UsdAttribute cameraFrames = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraFrames), PXR_NS::SdfValueTypeNames->DoubleArray, true);
-            const PXR_NS::UsdAttribute cameraRate = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraFramesPerSecond), PXR_NS::SdfValueTypeNames->Double, true);
-            const PXR_NS::VtDoubleArray frames(samples->deferredFrames.begin(), samples->deferredFrames.end());
-            ok = camera && camera.Set(cameraPath) && cameraAspect && cameraAspect.Set(aspect) && cameraFit && cameraFit.Set(fitValue) && cameraFrames && cameraFrames.Set(frames)
-                && cameraRate && cameraRate.Set(framesPerSecond);
-            if (ok && edit.deferredProjections) {
-                *edit.deferredProjections = true;
-            }
-        }
-        // Read by the geometry node the material is grafted under, which takes itself at the same frame.
-        if (ok && (space == (int)eProjectionSpaceGeometry) && useFrameHold) {
-            const PXR_NS::UsdAttribute hold = shader.GetPrim().CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold), PXR_NS::SdfValueTypeNames->Double, true);
-            ok = hold && hold.Set(frameHold);
-        }
-        if (ok && (space == (int)eProjectionSpaceGeometry)) {
+        if (space == (int)eProjectionSpaceGeometry) {
             PXR_NS::UsdShadeShader frameReader = PXR_NS::UsdShadeShader::Define(stage, path.AppendChild(PXR_NS::TfToken(kUSDProject3DFrameReaderName)));
             const PXR_NS::UsdShadeInput frameName = frameReader ? frameReader.CreateInput(PXR_NS::TfToken("varname"), PXR_NS::SdfValueTypeNames->String) : PXR_NS::UsdShadeInput();
             const PXR_NS::UsdShadeInput fallback = frameReader ? frameReader.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdShadeInput();
@@ -1126,7 +1137,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             const PXR_NS::UsdShadeInput frame = ok ? shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame), PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdShadeInput();
             ok = frame && frame.ConnectToSource(result);
         }
-        if (ok && (space == (int)eProjectionSpaceGeometry) && useFrameHold) {
+        if (ok && (space == (int)eProjectionSpaceGeometry) && !network.referencePrimvar.empty()) {
             PXR_NS::UsdShadeShader referenceReader = PXR_NS::UsdShadeShader::Define(stage, path.AppendChild(PXR_NS::TfToken(kUSDProject3DReferenceReaderName)));
             const PXR_NS::UsdShadeInput referenceName = referenceReader ? referenceReader.CreateInput(PXR_NS::TfToken("varname"), PXR_NS::SdfValueTypeNames->String) : PXR_NS::UsdShadeInput();
             const PXR_NS::UsdShadeInput fallback = referenceReader ? referenceReader.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Float3) : PXR_NS::UsdShadeInput();
@@ -1186,17 +1197,6 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             return false;
         }
 
-        NetworkProjection network;
-        network.space = space;
-        network.framePrimvar = framePrimvar;
-        if ((space == (int)eProjectionSpaceGeometry) && useFrameHold) {
-            network.referencePrimvar = referencePrimvar;
-        }
-        network.projectOn = projectOn;
-        network.crop = crop;
-        network.clip = clip;
-        network.outside = outside;
-        network.hasPlate = hasPlate;
         if (!CyclesNetwork(stage, path).author(material, network)) {
             *error = tr("USD could not author the Cycles projection network of the material at %1.").arg(pathString).toStdString();
 
@@ -1208,7 +1208,100 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             return false;
         }
 
-        // From here on every value is set on both renderers' shaders from one list.
+        return true;
+    };
+    const std::shared_ptr<ProjectionTopologyMemo> topologyMemo = _imp->topology;
+    SceneLayerMemo::AuthorFunc author = [samples, topologyMemo, authorTopology, path, shaderPath, space, useFrameHold, frameHold, projectOn, crop, clip, outside, hasPlate, plate, cameraPath, aspect, fitValue,
+                                         framesPerSecond](const SceneLayerEdit& edit, std::string* error) {
+        PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
+        if (!stage) {
+            return false;
+        }
+        const QString pathString = QString::fromStdString(path.GetString());
+        const std::string framePrimvar = useFrameHold ? heldPrimvarName("natronProjectionFrame", frameHold) : std::string("natronProjectionFrame");
+        const std::string referencePrimvar = heldPrimvarName("natronReferencePoints", frameHold);
+        NetworkProjection network;
+        network.space = space;
+        network.framePrimvar = framePrimvar;
+        if ((space == (int)eProjectionSpaceGeometry) && useFrameHold) {
+            network.referencePrimvar = referencePrimvar;
+        }
+        network.projectOn = projectOn;
+        network.crop = crop;
+        network.clip = clip;
+        network.outside = outside;
+        network.hasPlate = hasPlate;
+        ContentHasher topologyHasher;
+        topologyHasher.appendString(path.GetString());
+        topologyHasher.appendString(shaderPath);
+        topologyHasher.appendU64((U64)space);
+        topologyHasher.appendString(framePrimvar);
+        topologyHasher.appendString(network.referencePrimvar);
+        topologyHasher.appendU64((U64)projectOn);
+        topologyHasher.appendBool(crop);
+        topologyHasher.appendBool(clip);
+        topologyHasher.appendU64((U64)outside);
+        topologyHasher.appendBool(hasPlate);
+        const U64 topologyKey = topologyHasher.finalize();
+        PXR_NS::SdfLayerRefPtr topology;
+        {
+            std::lock_guard<std::mutex> l(topologyMemo->lock);
+            if (topologyMemo->key == topologyKey) {
+                topology = topologyMemo->layer;
+            }
+        }
+        if (!topology) {
+            topology = PXR_NS::SdfLayer::CreateAnonymous("natron-projection-topology");
+            const PXR_NS::UsdStageRefPtr topologyStage = topology ? PXR_NS::UsdStage::Open(topology, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadNone) : PXR_NS::UsdStageRefPtr();
+            if (!topologyStage) {
+                *error = tr("USD could not author the projection material at %1.").arg(pathString).toStdString();
+
+                return false;
+            }
+            if (!authorTopology(topologyStage, path, shaderPath, network, error)) {
+                return false;
+            }
+            std::lock_guard<std::mutex> l(topologyMemo->lock);
+            topologyMemo->key = topologyKey;
+            topologyMemo->layer = topology;
+        }
+        {
+            PXR_NS::SdfChangeBlock block;
+            for (const PXR_NS::SdfPrimSpecHandle& root : topology->GetRootPrims()) {
+                if (!PXR_NS::SdfCopySpec(topology, root->GetPath(), edit.layer, root->GetPath())) {
+                    *error = tr("USD could not author the projection material at %1.").arg(pathString).toStdString();
+
+                    return false;
+                }
+            }
+        }
+        PXR_NS::UsdShadeShader shader(stage->GetPrimAtPath(path.AppendChild(PXR_NS::TfToken(kUSDProject3DShaderName))));
+        bool ok = true;
+        if (samples->missing) {
+            const PXR_NS::UsdPrim prim = shader.GetPrim();
+            const PXR_NS::UsdAttribute camera = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCamera), PXR_NS::SdfValueTypeNames->String, true);
+            const PXR_NS::UsdAttribute cameraAspect = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraAspect), PXR_NS::SdfValueTypeNames->Double, true);
+            const PXR_NS::UsdAttribute cameraFit = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraFit), PXR_NS::SdfValueTypeNames->Int, true);
+            const PXR_NS::UsdAttribute cameraFrames = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraFrames), PXR_NS::SdfValueTypeNames->DoubleArray, true);
+            const PXR_NS::UsdAttribute cameraRate = prim.CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrCameraFramesPerSecond), PXR_NS::SdfValueTypeNames->Double, true);
+            const PXR_NS::VtDoubleArray frames(samples->deferredFrames.begin(), samples->deferredFrames.end());
+            ok = camera && camera.Set(cameraPath) && cameraAspect && cameraAspect.Set(aspect) && cameraFit && cameraFit.Set(fitValue) && cameraFrames && cameraFrames.Set(frames)
+                && cameraRate && cameraRate.Set(framesPerSecond);
+            if (ok && edit.deferredProjections) {
+                *edit.deferredProjections = true;
+            }
+        }
+        // Read by the geometry node the material is grafted under, which takes itself at the same frame.
+        if (ok && (space == (int)eProjectionSpaceGeometry) && useFrameHold) {
+            const PXR_NS::UsdAttribute hold = shader.GetPrim().CreateAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold), PXR_NS::SdfValueTypeNames->Double, true);
+            ok = hold && hold.Set(frameHold);
+        }
+        if (!ok) {
+            *error = tr("USD could not author the projection shader of the material at %1.").arg(pathString).toStdString();
+
+            return false;
+        }
+
         const auto inputOf = [&stage, &path](const SceneProjectionCameras::ShaderValue& value) {
             PXR_NS::UsdShadeShader owner(stage->GetPrimAtPath(path.AppendChild(value.shader)));
 

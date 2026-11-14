@@ -286,6 +286,12 @@ try:
         check(value() == "/World/*", "one Undo undoes the difference (got %r)" % (value(),))
 
         yield from select([BOX])
+        # Select Matches searches through a viewer whose scene reaches the node, so the viewer moves onto
+        # the USDPrune; the search reads the node's input, which the prune's own matches do not hide from.
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, prune), "connect the Viewer to the USDPrune")
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        require(ok, "the scene view shows the USDPrune's scene")
         trigger(menu, "knobPrimSelectMatches")
         ok = yield ("until", lambda: viewer_selection() == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
         check(ok, "Select Matches on /World/* selects Box, Ball and Cam (got %r)" % (viewer_selection(),))

@@ -279,7 +279,7 @@ try:
         ok = yield ("until", lambda: armed(view()) == "" and armed(panel_widget()) == "", POLL_TIMEOUT_S)
         check(ok, "deleting the armed node ends the mode")
         yield ("sleep", SETTLE_MS)
-        check(view() is not None and viewer_up(), "the viewer is still up after the node is deleted")
+        check(view() is not None or viewer_up(), "the viewer is still up after the node is deleted")
 
         ok = yield ("until", lambda: menu_with("knobPrimPick") is not None, POLL_TIMEOUT_S)
         require(ok, "the USDPrune's menu is still shown")

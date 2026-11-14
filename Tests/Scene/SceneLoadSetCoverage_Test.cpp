@@ -1505,7 +1505,10 @@ TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnMatchesInsideUnloadedPayloadsUses
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
               node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), everything), &payload, &error))
         << error;
-    const int opened = city.openedBuildings();
+    // The idle fully loaded stage would otherwise be reused by the job, whose unloads close
+    // buildings and hide whether it opened any.
+    SceneQueryPool::instance().releaseIdle();
+    ASSERT_EQ(0, city.openedBuildings());
     std::shared_ptr<CentrePivotJob> job = edit->startCentrePivot(&none);
     ASSERT_EQ(CentrePivotJob::eStateDone, job->wait()) << job->getError();
     double centre[3];
@@ -1513,7 +1516,7 @@ TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnMatchesInsideUnloadedPayloadsUses
     EXPECT_DOUBLE_EQ(1., centre[0]);
     EXPECT_DOUBLE_EQ(2., centre[1]);
     EXPECT_DOUBLE_EQ(3., centre[2]);
-    EXPECT_EQ(opened, city.openedBuildings());
+    EXPECT_EQ(0, city.openedBuildings());
 }
 
 TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnUnloadedPrimsWithoutHintsFailsAndOpensNoBuilding)

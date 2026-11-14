@@ -169,6 +169,13 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return _imp->mainInstance->evaluateScene(args, outputScene, errorMessage);
     }
 
+    // A scene worker's job outlives the destruction of the nodes it evaluates, which leaves their
+    // effects without a node; held, the node stays valid until this evaluation ends.
+    const NodePtr node = getNode();
+    if (!node) {
+        return eRenderRoIRetCodeAborted;
+    }
+
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
     ParallelRenderArgsPtr frameArgs;
@@ -179,7 +186,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         frameArgs = std::make_shared<ParallelRenderArgs>();
         {
             NodesWList outputs;
-            getNode()->getOutputs_mt_safe(outputs);
+            node->getOutputs_mt_safe(outputs);
             frameArgs->visitsCount = (int)outputs.size();
         }
         frameArgs->time = args.time;
@@ -296,7 +303,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
             continue;
         }
 
-        NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), i);
+        NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(node.get(), i);
 
         SceneEvaluationContext inputContext;
         try {

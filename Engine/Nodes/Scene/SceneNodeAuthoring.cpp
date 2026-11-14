@@ -720,7 +720,7 @@ SceneMenuRefresh::start(EffectInstance* effect,
         QMetaObject::invokeMethod(QCoreApplication::instance(), [job, apply, weakState, weakEffect]() {
             const std::shared_ptr<State> state = weakState.lock();
             const EffectInstancePtr effect = weakEffect.lock();
-            if (state && effect) {
+            if (state && effect && effect->getNode()) {
                 apply(job);
             } }, Qt::QueuedConnection); }, [job]() { job->finish(SceneMenuJob::Result()); });
 

@@ -866,6 +866,14 @@ primIdTableOf(const PXR_NS::UsdStageRefPtr& stage)
 }
 } // anon namespace
 
+U64
+USDRender::primIdTableHash() const
+{
+    const EffectInstancePtr input = getInput(0);
+
+    return input ? input->getHash() : 0;
+}
+
 bool
 USDRender::findPrimIdTable(U64 hash,
                            double time,
@@ -902,10 +910,13 @@ USDRender::storePrimIdTable(U64 hash,
                             const ImageMetadata& table)
 {
     const std::pair<double, int> key(time, view.value());
-    bool missed;
+    bool missed = false;
     {
         std::lock_guard<std::mutex> locker(_primIdTablesMutex);
         if (hash != _primIdTablesHash) {
+            // The main-thread readers given the provisional answer under the hash the node left
+            // never ask again under the new one unless told to, as nothing else changed for them.
+            missed = !_primIdTablesMissed.empty();
             _primIdTablesHash = hash;
             _primIdTables.clear();
             _primIdTablesMissed.clear();
@@ -914,7 +925,7 @@ USDRender::storePrimIdTable(U64 hash,
             _primIdTables.clear();
         }
         _primIdTables[key] = table;
-        missed = _primIdTablesMissed.erase(key) > 0;
+        missed = (_primIdTablesMissed.erase(key) > 0) || missed;
     }
     if (missed) {
         QMetaObject::invokeMethod(this, [this]() { invalidateOutputMetadata(); }, Qt::QueuedConnection);
@@ -929,8 +940,7 @@ USDRender::deriveOutputMetadata(double time,
     // is never done on the main thread, which is served the table a render or another thread stored
     // and, until one has, an empty provisional answer.
     ImageMetadata metadata;
-    const NodePtr node = getNode();
-    const U64 hash = node ? node->getHashValue() : 0;
+    const U64 hash = primIdTableHash();
     const bool mainThread = onMainThread();
 
     if (findPrimIdTable(hash, time, view, mainThread, &metadata)) {
@@ -955,7 +965,7 @@ USDRender::deriveOutputMetadata(double time,
     }
     metadata = primIdTableOf(stage);
     // A table of a scene that moved while it was read must not be served under the newer hash.
-    if (node && (node->getHashValue() == hash)) {
+    if (input->getHash() == hash) {
         storePrimIdTable(hash, time, view, metadata);
     }
 
@@ -1018,17 +1028,17 @@ USDRender::prepareRender(double time,
 
     // The render draws every prim, and the camera fallback looks through all of them.
     const NodePtr node = getNode();
-    const U64 hash = node ? node->getHashValue() : 0;
     ActiveSettings active;
     if (!readActiveSettings(time, view, eSettingsLoadEverything, &active, error)) {
         return false;
     }
     // The output's primId table, which the main thread is never given the whole stage to read.
     ImageMetadata primIds;
-    if (node && !findPrimIdTable(hash, time, view, false, &primIds)) {
+    const U64 primIdHash = primIdTableHash();
+    if (node && !findPrimIdTable(primIdHash, time, view, false, &primIds)) {
         primIds = primIdTableOf(active.stage);
-        if (node->getHashValue() == hash) {
-            storePrimIdTable(hash, time, view, primIds);
+        if (primIdTableHash() == primIdHash) {
+            storePrimIdTable(primIdHash, time, view, primIds);
         }
     }
     const PXR_NS::UsdStageRefPtr& stage = active.stage;

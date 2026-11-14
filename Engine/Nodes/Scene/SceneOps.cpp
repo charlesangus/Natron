@@ -1072,26 +1072,39 @@ applyLoadSet(const PXR_NS::UsdStageRefPtr& stage,
     }
 
     // Then the target's own rules, the outer ones first: an inner rule only has a prim to apply
-    // to once the payload above it is in. A load with descendants also takes the payloads a
-    // rule below it excludes, which the unloads of the last pass take out again.
-    PXR_NS::SdfPathSet withDescendants, withoutDescendants;
+    // to once the payload above it is in. Each LoadAndUnload() call composes the payloads it
+    // loads before the next call can restrict them, so a subtree that loads in full except for
+    // a rule below it is never loaded with descendants: it loads without them and its children
+    // are visited one depth further down, each loading in full unless a rule lies below it too.
+    PXR_NS::SdfPathSet ruled;
+    PXR_NS::SdfPathSet allRules, onlyRules;
     for (const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& rule : minimalTarget.GetRules()) {
+        ruled.insert(rule.first);
         if (rule.second == PXR_NS::UsdStageLoadRules::AllRule) {
-            withDescendants.insert(rule.first);
+            allRules.insert(rule.first);
         } else if (rule.second == PXR_NS::UsdStageLoadRules::OnlyRule) {
-            withoutDescendants.insert(rule.first);
+            onlyRules.insert(rule.first);
         }
     }
-    if (minimalTarget.GetRules().empty()) {
-        withDescendants.insert(PXR_NS::SdfPath::AbsoluteRootPath());
+    const PXR_NS::SdfPath& root = PXR_NS::SdfPath::AbsoluteRootPath();
+    if (ruled.find(root) == ruled.end()) {
+        allRules.insert(root);
     }
+    const auto hasRuleBelow = [&ruled](const PXR_NS::SdfPath& path) {
+        // Sorted, so the paths below path follow it.
+        const PXR_NS::SdfPathSet::const_iterator next = ruled.upper_bound(path);
+
+        return (next != ruled.end()) && next->HasPrefix(path);
+    };
     std::map<std::size_t, std::pair<PXR_NS::SdfPathSet, PXR_NS::SdfPathSet>> byDepth;
-    for (const PXR_NS::SdfPath& path : withDescendants) {
+    for (const PXR_NS::SdfPath& path : allRules) {
         byDepth[path.GetPathElementCount()].first.insert(path);
     }
-    for (const PXR_NS::SdfPath& path : withoutDescendants) {
+    for (const PXR_NS::SdfPath& path : onlyRules) {
         byDepth[path.GetPathElementCount()].second.insert(path);
     }
+    // Inserting deeper keys while iterating is safe: std::map iterators stay valid and the
+    // iteration reaches the new keys in order.
     for (std::pair<const std::size_t, std::pair<PXR_NS::SdfPathSet, PXR_NS::SdfPathSet>>& depth : byDepth) {
         const auto loadable = [&stage](PXR_NS::SdfPathSet* paths) {
             for (PXR_NS::SdfPathSet::iterator it = paths->begin(); it != paths->end();) {
@@ -1100,13 +1113,38 @@ applyLoadSet(const PXR_NS::UsdStageRefPtr& stage,
         };
         loadable(&depth.second.first);
         loadable(&depth.second.second);
-        if (!depth.second.first.empty()) {
-            stage->LoadAndUnload(depth.second.first, PXR_NS::SdfPathSet(), PXR_NS::UsdLoadWithDescendants);
+        PXR_NS::SdfPathSet whole, carved;
+        for (const PXR_NS::SdfPath& path : depth.second.first) {
+            // An instance has no children of its own to visit; its prototype loads as a whole.
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+            const bool instance = prim && prim.IsInstance();
+            ((hasRuleBelow(path) && !instance) ? carved : whole).insert(path);
+        }
+        PXR_NS::SdfPathSet alone = depth.second.second;
+        for (const PXR_NS::SdfPath& path : carved) {
+            if (!path.IsAbsoluteRootPath()) {
+                alone.insert(path);
+            }
+        }
+        if (!whole.empty()) {
+            stage->LoadAndUnload(whole, PXR_NS::SdfPathSet(), PXR_NS::UsdLoadWithDescendants);
             edited = true;
         }
-        if (!depth.second.second.empty()) {
-            stage->LoadAndUnload(depth.second.second, PXR_NS::SdfPathSet(), PXR_NS::UsdLoadWithoutDescendants);
+        if (!alone.empty()) {
+            stage->LoadAndUnload(alone, PXR_NS::SdfPathSet(), PXR_NS::UsdLoadWithoutDescendants);
             edited = true;
+        }
+        for (const PXR_NS::SdfPath& path : carved) {
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+            if (!prim) {
+                continue;
+            }
+            for (const PXR_NS::UsdPrim& child : prim.GetAllChildren()) {
+                // A child with a rule of its own is already queued under that rule.
+                if (ruled.find(child.GetPath()) == ruled.end()) {
+                    byDepth[depth.first + 1].first.insert(child.GetPath());
+                }
+            }
         }
     }
     PXR_NS::SdfPathSet reloaded;

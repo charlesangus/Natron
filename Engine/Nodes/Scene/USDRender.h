@@ -274,10 +274,13 @@ private:
     void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;
 
     // The primId table of the output at time and view (every key under kUSDRenderMetadataPrimIdPrefix)
-    // under the node's hash, when a render or a reader off the main thread has stored it. Without
+    // under primIdTableHash(), when a render or a reader off the main thread has stored it. Without
     // one, noteMiss records that a reader was given none, so that the store tells it to ask again.
     bool findPrimIdTable(U64 hash, double time, ViewIdx view, bool noteMiss, ImageMetadata* table);
     void storePrimIdTable(U64 hash, double time, ViewIdx view, const ImageMetadata& table);
+    // The hash of the input, the only thing the table depends on: the node's own hash also moves
+    // when a menu of its knobs is repopulated, which leaves the table it named unchanged.
+    U64 primIdTableHash() const;
 
     KnobChoiceWPtr _settingsPrim;
     KnobBoolWPtr _headlight;

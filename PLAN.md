@@ -559,6 +559,8 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **Storm primId on projected cards (2026-11-14, found in M281 - Utility Materials And Lights):** `natronProject3D.glslfx` is tagged translucent, and Storm's transparency passes write colour only, so USDRender's primId (and picking) misses every card carrying a projection under Storm. Fix options: make the projection material opaque when its plate and outside mode are opaque, or write ids in Storm's OIT passes. Add a follow-up milestone?
+
 
 - **M221 - Neural Optical Flow (2026-11-14):** the exported SEA-RAFT M model (74.4 MB) needs a home. The manifest points at a GitHub release `ai-models-1` on charlesangus/Natron; may I create that release and upload the package? Also, its training data includes FlyingChairs (research-only) and KITTI 2015 (CC BY-NC-SA 3.0); FlyingThings3D, Sintel and HD1K are unconfirmed, and the entry is marked `osaid: Open Source AI`. Is shipping it as a downloadable, licence-shown-before-download model acceptable?
 

@@ -309,6 +309,7 @@ void
 Gui::setActiveViewer(ViewerTab* viewer)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    noteViewerFocused(viewer);
     if (_imp->_activeViewer == viewer) {
         return;
     }
@@ -325,6 +326,37 @@ Gui::getActiveViewer() const
     assert( QThread::currentThread() == qApp->thread() );
 
     return _imp->_activeViewer;
+}
+
+void
+Gui::noteViewerFocused(ViewerTab* viewer)
+{
+    if (!viewer) {
+        return;
+    }
+    std::list<QPointer<ViewerTab>>& history = _imp->_viewerFocusHistory;
+    for (std::list<QPointer<ViewerTab>>::iterator it = history.begin(); it != history.end();) {
+        if (it->isNull() || (it->data() == viewer)) {
+            it = history.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    history.push_front(viewer);
+}
+
+std::list<ViewerTab*>
+Gui::getViewersByRecentFocus() const
+{
+    assert(QThread::currentThread() == qApp->thread());
+    std::list<ViewerTab*> viewers;
+    for (const QPointer<ViewerTab>& viewer : _imp->_viewerFocusHistory) {
+        if (viewer) {
+            viewers.push_back(viewer.data());
+        }
+    }
+
+    return viewers;
 }
 
 NodeCollectionPtr

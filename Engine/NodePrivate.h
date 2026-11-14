@@ -49,7 +49,7 @@
 NATRON_NAMESPACE_ENTER
 
 /*The output node was connected from inputNumber to this...*/
-typedef std::map<NodeWPtr, int32_t, std::owner_less<NodeWPtr>> DeactivatedState;
+typedef std::multimap<NodeWPtr, int32_t, std::owner_less<NodeWPtr>> DeactivatedState;
 typedef std::list<Node::KnobLink> KnobLinkList;
 typedef std::vector<NodeWPtr> InputsV;
 
@@ -290,6 +290,11 @@ public:
         , currentCanTransform(false)
         , draftModeUsed(false)
         , mustComputeInputRelatedData(true)
+        , inputEditStamp(0)
+        , inputRelatedDataRefreshedAt(0)
+        , upstreamInputEditStamp(0)
+        , upstreamInputEditStampEpoch(0)
+        , upstreamInputEditStampComputing(false)
         , duringPaintStrokeCreation(false)
         , lastStrokeMovementMutex()
         , strokeBitmapCleared(false)
@@ -375,6 +380,9 @@ public:
     bool inputsInitialized;
     mutable QMutex outputsMutex;
     NodesWList outputs, guiOutputs;
+    // Under outputsMutex. Never cleared, so that a node still listing this one as an input after
+    // the edges were dropped (a queued disconnect, a deactivated output) is not missed.
+    bool everConnectedAsInput = false;
     mutable QMutex inputsMutex; //< protects guiInputs so the serialization thread can access them
 
     ///The  inputs are the ones used while rendering and guiInputs the ones used by the gui whenever
@@ -621,6 +629,13 @@ public:
     SequentialPreferenceEnum currentSupportSequentialRender;
     bool currentCanTransform;
     bool draftModeUsed, mustComputeInputRelatedData;
+    // Main thread only. An edit of this node (its inputs, or the metadata it derives from them)
+    // leaves every node below it dirty: a node is dirty while an edit stamp upstream of it is
+    // later than its last refresh. The newest stamp upstream is memoized until an edit or a
+    // connection upstream drops it, or a graph change the memos cannot tell the reach of drops all.
+    U64 inputEditStamp, inputRelatedDataRefreshedAt;
+    mutable U64 upstreamInputEditStamp, upstreamInputEditStampEpoch;
+    mutable bool upstreamInputEditStampComputing;
     bool duringPaintStrokeCreation; // protected by lastStrokeMovementMutex
     mutable QMutex lastStrokeMovementMutex;
     bool strokeBitmapCleared;

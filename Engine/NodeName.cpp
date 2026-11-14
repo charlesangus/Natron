@@ -35,6 +35,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupOutput.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Project.h"
@@ -437,7 +438,9 @@ Node::setNameInternal(const std::string& name,
         GraphEditRecorder::onNodeRenamed(this);
     }
     // A loop lists its LoopBegins by script name.
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    absorbGraphChangeOfOwnSources(upstreamStampGeneration, false);
     std::string fullySpecifiedName = getFullyQualifiedName();
 
     if (collection) {
@@ -454,6 +457,7 @@ Node::setNameInternal(const std::string& name,
                 }
             }
         } else if (!deferPythonDeclarationToBatch()) {
+            NodeCreationStageLog::Scope stage("pythonCallbacks");
             declareNodeVariableToPython(fullySpecifiedName);
         }
 

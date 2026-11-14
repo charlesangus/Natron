@@ -99,9 +99,17 @@ void launch(NodeGraph* graph);
 void launch(NodeGraph* graph, const LaunchContext& context);
 
 /**
- * @brief Puts the bundled tabtabtab folder (<bin>/../Resources/tabtabtab) on sys.path and imports the adapter.
+ * @brief Puts the bundled tabtabtab folder (<bin>/../Resources/tabtabtab) on sys.path, imports the
+ * adapter, and has it build the menu once the main window is up. The menu's items are then kept
+ * between launches; the nodes menu's rebuilds and the tab menu's Preferences reach it from here.
  **/
 void bootstrap();
+
+/**
+ * @brief Makes the next launch list the menus anew, for a change their menus report no event for,
+ * such as an action's shortcut or colour property.
+ **/
+void invalidateItems();
 } // namespace TabMenuBridge
 
 NATRON_NAMESPACE_EXIT

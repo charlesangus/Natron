@@ -77,6 +77,7 @@ set(Tests_SOURCES
     GpuResidency_Test.cpp
     GpuWeight_Test.cpp
     GraphScaling_Test.cpp
+    GraphScalingConnect_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
     GraphScalingGuiEdits_Test.cpp
     GraphScalingNaming_Test.cpp

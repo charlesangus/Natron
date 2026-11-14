@@ -6810,16 +6810,6 @@ EffectInstance::clearLastRenderedImage()
 {
 }
 
-void
-EffectInstance::aboutToRestoreDefaultValues()
-{
-    NodePtr node = getNode();
-
-    if ( node->areKeyframesVisibleOnTimeline() ) {
-        node->hideKeyframesFromTimeline(true);
-    }
-}
-
 /**
  * @brief Returns a pointer to the first non disabled upstream node.
  * When cycling through the tree, we prefer non optional inputs and we span inputs

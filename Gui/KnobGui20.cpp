@@ -67,75 +67,39 @@ KnobGui::updateCurveEditorKeyframes()
 }
 
 void
-KnobGui::onMultipleKeySet(const std::list<double>& keys,
+KnobGui::onMultipleKeySet(const std::list<double>& /*keys*/,
                           ViewSpec /*view*/,
                           int /*dimension*/,
-                          int reason)
+                          int /*reason*/)
 {
-    if ( (ValueChangedReasonEnum)reason != eValueChangedReasonUserEdited ) {
-        KnobIPtr knob = getKnob();
-        if ( !knob->getIsSecret() && ( knob->isDeclaredByPlugin()  || knob->isUserKnob() ) ) {
-            std::list<SequenceTime> intKeys;
-            for (std::list<double>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
-                intKeys.push_back(*it);
-            }
-            knob->getHolder()->getApp()->addMultipleKeyframeIndicatorsAdded(intKeys, true);
-        }
-    }
-
     updateCurveEditorKeyframes();
 }
 
 void
-KnobGui::onMultipleKeyRemoved(const std::list<double>& keys,
-                              ViewSpec /*view*/,
-                              int /*dimension*/,
-                              int reason)
-{
-    if ( (ValueChangedReasonEnum)reason != eValueChangedReasonUserEdited ) {
-        KnobIPtr knob = getKnob();
-        if ( !knob->getIsSecret() && ( knob->isDeclaredByPlugin()  || knob->isUserKnob() ) ) {
-            std::list<SequenceTime> intKeys;
-            for (std::list<double>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
-                intKeys.push_back(*it);
-            }
-            knob->getHolder()->getApp()->removeMultipleKeyframeIndicator(intKeys, true);
-        }
-    }
-
-    Q_EMIT keyFrameRemoved();
-}
-
-void
-KnobGui::onInternalKeySet(double time,
-                          ViewSpec /*view*/,
-                          int /*dimension*/,
-                          int reason,
-                          bool added )
-{
-    if ( (ValueChangedReasonEnum)reason != eValueChangedReasonUserEdited ) {
-        if (added) {
-            KnobIPtr knob = getKnob();
-            if ( !knob->getIsSecret() && ( knob->isDeclaredByPlugin() || knob->isUserKnob() ) ) {
-                knob->getHolder()->getApp()->addKeyframeIndicator(time);
-            }
-        }
-    }
-
-    updateCurveEditorKeyframes();
-}
-
-void
-KnobGui::onInternalKeyRemoved(double time,
+KnobGui::onMultipleKeyRemoved(const std::list<double>& /*keys*/,
                               ViewSpec /*view*/,
                               int /*dimension*/,
                               int /*reason*/)
 {
-    KnobIPtr knob = getKnob();
+    Q_EMIT keyFrameRemoved();
+}
 
-    if ( !knob->getIsSecret() && ( knob->isDeclaredByPlugin() || knob->isUserKnob() ) ) {
-        knob->getHolder()->getApp()->removeKeyFrameIndicator(time);
-    }
+void
+KnobGui::onInternalKeySet(double /*time*/,
+                          ViewSpec /*view*/,
+                          int /*dimension*/,
+                          int /*reason*/,
+                          bool /*added*/)
+{
+    updateCurveEditorKeyframes();
+}
+
+void
+KnobGui::onInternalKeyRemoved(double /*time*/,
+                              ViewSpec /*view*/,
+                              int /*dimension*/,
+                              int /*reason*/)
+{
     Q_EMIT keyFrameRemoved();
 }
 
@@ -522,96 +486,9 @@ KnobGui::setKnobGuiPointer()
 }
 
 void
-KnobGui::onInternalAnimationAboutToBeRemoved(ViewSpec /*view*/,
-                                             int dimension)
-{
-    removeAllKeyframeMarkersOnTimeline(dimension);
-}
-
-void
 KnobGui::onInternalAnimationRemoved()
 {
     Q_EMIT keyFrameRemoved();
-}
-
-void
-KnobGui::removeAllKeyframeMarkersOnTimeline(int dimension)
-{
-    KnobIPtr knob = getKnob();
-
-    if ( knob->getHolder() && knob->getHolder()->getApp() && !knob->getIsSecret() && ( knob->isDeclaredByPlugin() || knob->isUserKnob() ) ) {
-        AppInstancePtr app = knob->getHolder()->getApp();
-        assert(app);
-        std::list<SequenceTime> times;
-        std::set<SequenceTime> tmpTimes;
-        if (dimension == -1) {
-            int dim = knob->getDimension();
-            for (int i = 0; i < dim; ++i) {
-                CurvePtr curve = knob->getCurve(ViewIdx(0), i);
-                if (curve) {
-                    KeyFrameSet kfs = curve->getKeyFrames_mt_safe();
-                    for (KeyFrameSet::iterator it = kfs.begin(); it != kfs.end(); ++it) {
-                        tmpTimes.insert( it->getTime() );
-                    }
-                }
-            }
-            for (std::set<SequenceTime>::iterator it = tmpTimes.begin(); it != tmpTimes.end(); ++it) {
-                times.push_back(*it);
-            }
-        } else {
-            CurvePtr curve = knob->getCurve(ViewIdx(0), dimension);
-            if (curve) {
-                KeyFrameSet kfs = curve->getKeyFrames_mt_safe();
-                for (KeyFrameSet::iterator it = kfs.begin(); it != kfs.end(); ++it) {
-                    times.push_back( it->getTime() );
-                }
-            }
-        }
-        if ( !times.empty() ) {
-            app->removeMultipleKeyframeIndicator(times, true);
-        }
-    }
-}
-
-void
-KnobGui::setAllKeyframeMarkersOnTimeline(int dimension)
-{
-    KnobIPtr knob = getKnob();
-    AppInstancePtr app = knob->getHolder()->getApp();
-
-    assert(app);
-    std::list<SequenceTime> times;
-
-    if (dimension == -1) {
-        int dim = knob->getDimension();
-        for (int i = 0; i < dim; ++i) {
-            KeyFrameSet kfs = knob->getCurve(ViewIdx(0), i)->getKeyFrames_mt_safe();
-            for (KeyFrameSet::iterator it = kfs.begin(); it != kfs.end(); ++it) {
-                times.push_back( it->getTime() );
-            }
-        }
-    } else {
-        KeyFrameSet kfs = knob->getCurve(ViewIdx(0), dimension)->getKeyFrames_mt_safe();
-        for (KeyFrameSet::iterator it = kfs.begin(); it != kfs.end(); ++it) {
-            times.push_back( it->getTime() );
-        }
-    }
-    app->addMultipleKeyframeIndicatorsAdded(times, true);
-}
-
-void
-KnobGui::setKeyframeMarkerOnTimeline(double time)
-{
-    setKeyframeMarkerOnTimeline(getKnob(), time);
-}
-
-void
-KnobGui::setKeyframeMarkerOnTimeline(const KnobIPtr& knob,
-                                     double time)
-{
-    if ( knob->isDeclaredByPlugin() || knob->isUserKnob() ) {
-        knob->getHolder()->getApp()->addKeyframeIndicator(time);
-    }
 }
 
 KnobGuiPtr
@@ -645,25 +522,6 @@ KnobGui::refreshLiveGui(const KnobIPtr& knob,
 
     if (gui && gui->_imp->widgetCreated) {
         gui->updateGUI(dimension);
-    }
-}
-
-void
-KnobGui::onKeyFrameMoved(ViewSpec /*view*/,
-                         int /*dimension*/,
-                         double oldTime,
-                         double newTime)
-{
-    KnobIPtr knob = getKnob();
-
-    if ( !knob->isAnimationEnabled() || !knob->canAnimate() ) {
-        return;
-    }
-    if ( knob->isDeclaredByPlugin() || knob->isUserKnob() ) {
-        AppInstancePtr app = knob->getHolder()->getApp();
-        assert(app);
-        app->removeKeyFrameIndicator(oldTime);
-        app->addKeyframeIndicator(newTime);
     }
 }
 

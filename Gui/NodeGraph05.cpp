@@ -35,9 +35,10 @@
 #include <stdexcept>
 
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Project.h"
-#include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/BackdropGui.h"
@@ -150,6 +151,17 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
 
     ///default
     QPointF position;
+    // Placed before any connection is made, so that its new edges are laid out once, at the
+    // place it ends at, rather than from where it was created.
+    bool placed = false;
+    auto placeNode = [&node, &position, &placed]() {
+        if (placed) {
+            return;
+        }
+        placed = true;
+        QPointF inParent = node->mapToParent(node->mapFromScene(position));
+        node->setPosition(inParent.x(), inParent.y());
+    };
     if (behavior == 0) {
         position.setX( ( viewPos.bottomRight().x() + viewPos.topLeft().x() ) / 2. );
         position.setY( ( viewPos.topLeft().y() + viewPos.bottomRight().y() ) / 2. );
@@ -193,6 +205,7 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
                 }
             }
 
+            placeNode();
             int selectedInput = selectedNodeInternal->getPreferredInputForConnection();
             if (selectedInput != -1) {
                 bool ok = proj->connectNodes(selectedInput, createdNodeInternal, selectedNodeInternal, true);
@@ -215,6 +228,7 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
             position.setX(x  - createdNodeSize.width() / 2.);
             position.setY(y);
 
+            placeNode();
             int index = selectedNodeInternal->getPreferredInputForConnection();
             if (index != -1) {
                 bool ok = proj->connectNodes(index, createdNodeInternal, selectedNodeInternal, true);
@@ -239,22 +253,27 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
             QRectF createdNodeRect( position.x(), position.y(), createdNodeSize.width(), createdNodeSize.height() );
 
             ///and move the selected node below recursively
-            for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
-                NodePtr output = it->lock();
-                if (!output) {
-                    continue;
-                }
-                NodeGuiIPtr output_i = output->getNodeGui();
-                if (!output_i) {
-                    continue;
-                }
-                NodeGui* outputGui = dynamic_cast<NodeGui*>( output_i.get() );
-                assert(outputGui);
-                if (outputGui) {
-                    outputGui->moveBelowPositionRecursively(createdNodeRect);
+            {
+                NodeCreationStageLog::Scope moveStage("positioningMove");
+                for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+                    NodePtr output = it->lock();
+                    if (!output) {
+                        continue;
+                    }
+                    NodeGuiIPtr output_i = output->getNodeGui();
+                    if (!output_i) {
+                        continue;
+                    }
+                    NodeGui* outputGui = dynamic_cast<NodeGui*>(output_i.get());
+                    assert(outputGui);
+                    if (outputGui) {
+                        outputGui->moveBelowPositionRecursively(createdNodeRect);
+                    }
                 }
             }
 
+            placeNode();
+            NodeCreationStageLog::Scope connectStage("positioningConnect");
             ///Connect the created node to the selected node
             ///finally we connect the created node to the selected node
             int createdInput = createdNodeInternal->getPreferredInputForConnection();
@@ -268,6 +287,13 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
                 std::map<NodePtr, int> outputsConnectedToSelectedNode;
                 selectedNodeInternal->getOutputsConnectedToThisNode(&outputsConnectedToSelectedNode);
 
+                // Each reconnection would otherwise refresh everything below its output, which on a fan-out
+                // is the same nodes again. The created node's own connection above is refreshed first, so
+                // each output's input-changed action reads its new input's data.
+                std::unique_ptr<Node::InputEditBatch> reconnectBatch;
+                if (outputsConnectedToSelectedNode.size() > 1) {
+                    reconnectBatch.reset(new Node::InputEditBatch(getGui()->getApp()));
+                }
                 for (std::map<NodePtr, int>::iterator it = outputsConnectedToSelectedNode.begin();
                      it != outputsConnectedToSelectedNode.end(); ++it) {
                     if ( it->first->getParentMultiInstanceName().empty() && (it->first != createdNodeInternal) ) {
@@ -304,14 +330,13 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
 
             //Don't pop a dot, it will most likely annoy the user, just fallback on behavior 0
 
+            placeNode();
             int index = createdNodeInternal->getPreferredInputForConnection();
             bool ok = proj->connectNodes(index, selectedNodeInternal, createdNodeInternal, true);
             Q_UNUSED(ok);
         }
     }
-    position = node->mapFromScene(position);
-    position = node->mapToParent(position);
-    node->setPosition( position.x(), position.y() );
+    placeNode();
 } // moveNodesForIdealPosition
 
 NATRON_NAMESPACE_EXIT

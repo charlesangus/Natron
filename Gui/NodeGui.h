@@ -278,9 +278,16 @@ public:
     void initialize(NodeGraph* dag,
                     const NodePtr & internalNode);
 
-    //Creates panel if needed, might be expensive
+    // Creates the panel if needed, or finishes a buildDeferredPanel() build, so might be expensive.
     void ensurePanelCreated(bool minimized = false, bool hideUnmodified = false);
 
+    // NodeGraph::schedulePanelBuild()'s build: skipped once the node is deleted or undone. The panel is
+    // filled over several passes of the event loop.
+    void buildDeferredPanel();
+
+    // Throws away a buildDeferredPanel() panel whose knob GUIs are still being built, leaving the node
+    // with no panel; returns whether it did.
+    bool dropUnbuiltPanel();
 
     virtual void destroyGui() OVERRIDE FINAL;
 
@@ -404,7 +411,7 @@ public:
 
     void changePosition(double dx, double dy);
 
-    void removeSettingsPanel();
+    void removeSettingsPanel(NodeSettingsPanel* panel);
 
     void discardGraphPointer();
     /**
@@ -773,7 +780,17 @@ Q_SIGNALS:
 protected:
 
     virtual void createGui();
-    virtual NodeSettingsPanel* createPanel(QVBoxLayout* container, const NodeGuiPtr & thisAsShared);
+    // An open panel is added to the properties bin only if dock is set.
+    virtual NodeSettingsPanel* createPanel(QVBoxLayout* container, const NodeGuiPtr& thisAsShared, bool dock);
+
+private:
+    void startPanelBuild(bool incremental);
+    void dockPendingPanel();
+    void connectSettingsPanel();
+    void schedulePanelTail();
+    void runPanelTail(bool all);
+
+protected:
     virtual bool canMakePreview()
     {
         return true;
@@ -932,6 +949,12 @@ private:
 
     //True when the settings panel has been  created
     bool _panelCreated;
+    // Set from the creation of the panel until it has been added to the viewer and the editors.
+    bool _panelTailPending = false;
+    bool _panelDockPending = false;
+    bool _panelTailRunning = false;
+    int _panelTailStep = 0;
+    bool _panelTailReselect = false;
     mutable QMutex _currentColorMutex; //< protects _currentColor, _hasUserColor and _userColor
     QColor _currentColor; //< accessed by the serialization thread
     bool _hasUserColor;

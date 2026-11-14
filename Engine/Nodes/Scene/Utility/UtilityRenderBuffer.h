@@ -31,16 +31,114 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <vector>
 
 #include <pxr/imaging/hd/renderBuffer.h>
 
 #include "Global/Macros.h"
 
+#ifdef NATRON_HAVE_GPU
+namespace gpu {
+class GpuBuffer;
+class GpuBufferHandle;
+class GpuBufferPool;
+class GpuDevice;
+class GpuKernelRegistry;
+class GpuRecordContext;
+struct GpuStatus;
+}
+#endif
+
 NATRON_NAMESPACE_ENTER
 
+#ifdef NATRON_HAVE_GPU
+class UtilityDeviceFilm;
+struct UtilityFilmKernels;
+
+// The kernels a device film runs, made once per device. Null with *status set when the device cannot make them.
+std::shared_ptr<const UtilityFilmKernels> makeUtilityFilmKernels(gpu::GpuDevice& device,
+                                                                 gpu::GpuStatus* status);
+
 /**
- * @brief An AOV image in host memory, holding one sample per pixel.
+ * @brief Releases every device film whose device is lost, wherever it is held, so that none keeps the runtime from
+ * recovering. GpuContext::recoverIfLost() calls it once a film was made. MT-safe.
+ **/
+void releaseLostUtilityDeviceFilms();
+
+/**
+ * @brief What UtilityRenderBuffer::GetResource() returns while a frame's colour is on the device: the
+ * film, whose pixels are RGBA floats, row by row from the bottom row.
+ **/
+class UtilityDeviceResource {
+public:
+    UtilityDeviceResource();
+    explicit UtilityDeviceResource(const std::shared_ptr<UtilityDeviceFilm>& film);
+
+    // Null without a film or once it was released.
+    gpu::GpuDevice* device() const;
+    unsigned int width() const;
+    unsigned int height() const;
+
+    /**
+     * @brief Records into context a copy of the film's window [x1, x2) x [y1, y2) into out, as
+     * HydraRender::PlaneWindow lays out a colour window of nComps components, from out's float
+     * outOffset with outRowStride floats from row to row. context must be on the film's device.
+     * The film is kept until context's work is done.
+     **/
+    gpu::GpuStatus recordWindow(gpu::GpuRecordContext& context,
+                                int x1,
+                                int y1,
+                                int x2,
+                                int y2,
+                                int nComps,
+                                const gpu::GpuBuffer& out,
+                                std::uint64_t outOffset,
+                                std::uint32_t outRowStride) const;
+
+    /**
+     * @brief The film's pixels, width() x height() RGBA floats with no padding, and the hold on the runtime that keeps
+     * them valid while the caller uses them. False without a film or once it was released.
+     **/
+    bool lease(gpu::GpuBufferHandle* pixels,
+               std::shared_ptr<void>* runtimeHold) const;
+
+    // Releases the film, and with it every copy of this resource, when its device is lost.
+    void releaseIfLost() const;
+
+    /**
+     * @brief Releases the film, and with it every copy of this resource; work already recorded on it
+     * keeps what it reads until it is done.
+     **/
+    void release() const;
+
+    /**
+     * @brief Copies the film's pixels into *out, as pixels() lays them out, and waits for the copy.
+     * False with *error set when the device cannot.
+     **/
+    bool download(std::vector<float>* out,
+                  std::string* error) const;
+
+    bool operator==(const UtilityDeviceResource& other) const
+    {
+        return _film == other._film;
+    }
+
+    bool operator!=(const UtilityDeviceResource& other) const
+    {
+        return _film != other._film;
+    }
+
+private:
+    std::shared_ptr<UtilityDeviceFilm> _film;
+};
+#endif // NATRON_HAVE_GPU
+
+/**
+ * @brief An AOV image holding one sample per pixel, in host memory or, for the colour of a frame
+ * rendered on the GPU, in device memory until Map() asks for it.
  **/
 class UtilityRenderBuffer : public PXR_NS::HdRenderBuffer {
 public:
@@ -70,6 +168,9 @@ public:
     virtual void Resolve() OVERRIDE;
     virtual bool IsConverged() const OVERRIDE;
 
+    // A UtilityDeviceResource while the device holds the pixels, else empty.
+    virtual PXR_NS::VtValue GetResource(bool multiSampled) const OVERRIDE;
+
     /**
      * @brief Fills every pixel with value: a scalar or a vector of float, double or int. Components
      * the value does not have are written as zero. An empty value leaves the buffer as it is.
@@ -90,7 +191,50 @@ public:
                   unsigned int y,
                   std::int32_t value);
 
+    // How many times Map() has copied a device frame to the host, over every buffer. MT-safe.
+    static std::uint64_t deviceDownloadCount();
+
+#ifdef NATRON_HAVE_GPU
+    /**
+     * @brief Releases the device film, for every holder of a copy of it: the frame is read back to the host pixels
+     * first unless the device is lost. Not while a frame runs.
+     **/
+    void releaseDevice();
+
+    /**
+     * @brief Whether a frame can keep these pixels on the device: they are RGBA floats and the last
+     * clear() gave a value, which the device frame starts from.
+     **/
+    bool canRenderOnDevice() const;
+
+    /**
+     * @brief Moves the pixels to the device for a frame: records into context the clear to the last
+     * clear() value. The host pixels are stale from here until Map() or clear().
+     **/
+    gpu::GpuStatus beginDeviceFrame(gpu::GpuRecordContext& context,
+                                    gpu::GpuKernelRegistry& registry,
+                                    gpu::GpuBufferPool& pool,
+                                    const std::shared_ptr<const UtilityFilmKernels>& kernels,
+                                    const std::shared_ptr<void>& runtimeHold);
+
+    /**
+     * @brief Records into context the writing of a batch's colours, for the rays of the width x
+     * height pixels from (x, y), to the pixels they hit. hitIds and color are laid out as the
+     * shading kernel reads and writes them. After beginDeviceFrame() only.
+     **/
+    gpu::GpuStatus recordDeviceBatch(gpu::GpuRecordContext& context,
+                                     const gpu::GpuBuffer& hitIds,
+                                     const gpu::GpuBuffer& color,
+                                     int x,
+                                     int y,
+                                     int width,
+                                     int height);
+#endif
+
 private:
+    // Fills the host pixels with the device film's, under _deviceMutex.
+    void downloadLocked();
+
     virtual void _Deallocate() OVERRIDE;
 
     unsigned int _width = 0;
@@ -100,6 +244,15 @@ private:
     std::vector<std::uint8_t> _pixels;
     std::atomic<int> _mappers { 0 };
     std::atomic<bool> _converged { false };
+
+    // The last clear() value as one encoded pixel, empty when that clear() gave none.
+    std::vector<std::uint8_t> _clearPixel;
+    mutable std::mutex _deviceMutex;
+#ifdef NATRON_HAVE_GPU
+    std::shared_ptr<UtilityDeviceFilm> _film;
+#endif
+    // Set while the film holds the frame and the host pixels are stale.
+    bool _onDevice = false;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -43,6 +43,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class UtilityRenderBuffer;
+
 // A rectangle of pixels in the render buffers. Row 0 is the bottom of the image.
 struct WavefrontRect {
     int x = 0;
@@ -58,12 +60,23 @@ struct WavefrontFrame {
     WavefrontRect window;
 };
 
+// The outputs a film takes in tiles. An executor may leave the arrays of the others null.
+struct WavefrontAovs {
+    bool color = true;
+    bool depth = true;
+    bool primId = true;
+    bool instanceId = true;
+
+    bool any() const { return color || depth || primId || instanceId; }
+};
+
 // Shaded pixels of one tile, in rows from its bottom. Where hitGeometry is Tracer::kNoHit the other
 // arrays hold nothing.
 struct WavefrontTile {
     WavefrontRect rect;
     const std::uint32_t* hitGeometry = nullptr;
-    const float* color = nullptr; // four per pixel
+    // Four per pixel; null when the colour went to the film's deviceColor() on the device.
+    const float* color = nullptr;
     const float* depth = nullptr;
     const std::int32_t* primId = nullptr;
     const std::int32_t* instanceId = nullptr;
@@ -78,6 +91,21 @@ public:
 
     // MT-safe for tiles that do not overlap.
     virtual void writeTile(const WavefrontTile& tile) = 0;
+
+    /**
+     * @brief The one buffer the colour goes to, when an executor on a device may keep it there
+     * rather than hand it over in tiles; null when the colour must come in tiles.
+     **/
+    virtual UtilityRenderBuffer* deviceColor() const
+    {
+        return nullptr;
+    }
+
+    // What writeTile() reads, the colour included even when deviceColor() may take it instead.
+    virtual WavefrontAovs aovs() const
+    {
+        return WavefrontAovs();
+    }
 };
 
 /**

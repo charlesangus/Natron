@@ -45,10 +45,25 @@ namespace SceneCaches {
 void releaseIdleQueryStages();
 
 /**
- * @brief Drops every USDRender node's stage and Storm engine, and with them the GPU memory they
- * hold; the next render of a node makes them again. Does not wait. MT-safe.
+ * @brief Drops every USDRender node's stage and Storm engine, and the GPU frames the Natron Utility
+ * engines handed over, and has every Natron Utility engine give back the GPU memory it keeps between
+ * frames while keeping its stage. Engines of other delegates stay. The next render of a node makes
+ * what it needs again. Does not wait. MT-safe.
  **/
 void releaseRenderEngines();
+
+/**
+ * @brief Drops every USDRender node's stage and engine, of every render delegate, and waits until
+ * the render threads ran all that was queued before, so that no engine or queued job still uses the
+ * GPU context. MT-safe; not from a render thread.
+ **/
+void releaseRenderEnginesAndWait();
+
+/**
+ * @brief releaseRenderEngines(), and once the Natron Utility engines gave back the GPU memory they
+ * keep between frames, empties the GPU pool of its free buffers. Does not wait. MT-safe.
+ **/
+void releaseRenderEnginesGpuMemory();
 
 /**
  * @brief Drops every USDRender node's stage and engine of a render delegate other than Storm, and

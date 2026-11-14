@@ -48,6 +48,7 @@
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
+#include "Engine/Nodes/Scene/UtilitySettings.h"
 
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec2i.h>
@@ -576,6 +577,8 @@ RenderSettingsKnobs::curatedFor(const std::string& rendererId)
         return &CyclesSettings::curated();
     } else if (MoonRayAovs::isMoonRay(rendererId)) {
         return &MoonRaySettings::curated();
+    } else if (rendererId == kRenderDelegateUtilityId) {
+        return &UtilitySettings::curated();
     }
 
     return nullptr;

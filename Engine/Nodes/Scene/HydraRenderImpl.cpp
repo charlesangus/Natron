@@ -40,6 +40,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <thread>
 #include <utility>
 
@@ -95,6 +96,17 @@
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/AppManager.h"
+#include "Engine/Gpu/GpuDevice.h"
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/GpuContext.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Engine/RectI.h"
+#endif
 #include "Engine/TLSHolder.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -146,6 +158,7 @@ HydraGLContextFactory gFactory;
 
 std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
 std::atomic<std::uint64_t> gEngineBuilds(0);
+std::atomic<std::uint64_t> gEngineRenders(0);
 
 // A cancel asked for on the waiting caller's thread while the render thread is inside
 // UsdImagingGLEngine::Render, which only the delegate's stop can cut short. The render thread takes
@@ -215,6 +228,51 @@ private:
     bool _stopTried = false;
     bool _stopped = false;
 };
+
+#ifdef NATRON_HAVE_GPU
+struct DeviceFallback {
+    std::uint64_t generation = 0;
+    std::uint64_t budget = 0;
+    std::string device;
+};
+
+std::string
+deviceSetting(const std::map<std::string, VtValue>& settings)
+{
+    const std::map<std::string, VtValue>::const_iterator found = settings.find(kUtilitySettingDevice);
+    if ((found == settings.end()) || !found->second.IsHolding<TfToken>()) {
+        return kUtilityDeviceAuto;
+    }
+
+    return found->second.UncheckedGet<TfToken>().GetString();
+}
+
+std::mutex gDeviceFallbacksMutex;
+std::map<const void*, DeviceFallback> gDeviceFallbacks;
+
+void
+forgetDeviceFallback(const void* owner)
+{
+    const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+
+    gDeviceFallbacks.erase(owner);
+}
+
+void
+rememberDeviceFallback(const void* owner,
+                       const std::map<std::string, VtValue>& settings)
+{
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    const std::uint64_t generation = gpu ? gpu->generation() : 0;
+    const std::uint64_t budget = utilityGpuBudget();
+    const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+    DeviceFallback& fallback = gDeviceFallbacks[owner];
+
+    fallback.generation = generation;
+    fallback.budget = budget;
+    fallback.device = deviceSetting(settings);
+}
+#endif
 
 typedef std::map<std::string, VtValue> RendererSettings;
 std::mutex gSettingsMutex;
@@ -413,6 +471,7 @@ struct EngineEntry {
     // log, and the errors it logged naming no prim of it; empty for a delegate that reports neither.
     std::string warning;
     std::string errors;
+    std::string device;
     UsdTimeCode time;
     GfMatrix4d view;
     GfMatrix4d projection;
@@ -543,6 +602,16 @@ public:
     static RenderThread& cpu()
     {
         static RenderThread* thread = new RenderThread(false);
+#ifdef NATRON_HAVE_GPU
+        // A Natron Utility engine idle since its device was lost would keep it from recovering.
+        static std::once_flag releaser;
+        std::call_once(releaser, []() {
+            GpuContext::addLossReleaser([]() {
+                RenderThread& lost = cpu();
+                (void)lost.post([&lost]() { lost.releaseLostUtilityGpu(); }, false);
+            });
+        });
+#endif
 
         return *thread;
     }
@@ -712,6 +781,27 @@ public:
     {
         while (!_engines.empty()) {
             releaseEngine(_engines.begin()->first);
+        }
+    }
+
+    // Has every Natron Utility engine give back what it keeps on the GPU. The engines and their stages stay,
+    // so that the next render only builds the GPU's side again.
+    void releaseUtilityGpu()
+    {
+        for (std::map<const void*, EngineEntry>::iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (it->second.engine && (it->second.renderer == kRenderDelegateUtilityId)) {
+                (void)it->second.engine->InvokeRendererCommand(TfToken(kUtilityCommandReleaseGpu));
+                it->second.rendered = false;
+            }
+        }
+    }
+
+    void releaseLostUtilityGpu()
+    {
+        for (std::map<const void*, EngineEntry>::iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (it->second.engine && (it->second.renderer == kRenderDelegateUtilityId)) {
+                (void)it->second.engine->InvokeRendererCommand(TfToken(kUtilityCommandReleaseLostGpu));
+            }
         }
     }
 
@@ -1395,6 +1485,27 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
         entry.warning = entry.supportWarning;
         entry.errors.clear();
+        entry.device.clear();
+        if (renderer == kRenderDelegateUtilityId) {
+            const VtDictionary utilityStats = engine->GetRenderStats();
+            const VtDictionary::const_iterator device = utilityStats.find(kUtilityStatDevice);
+            const VtDictionary::const_iterator fallback = utilityStats.find(kUtilityStatWarning);
+            if ((device != utilityStats.end()) && device->second.IsHolding<std::string>()) {
+                entry.device = device->second.UncheckedGet<std::string>();
+            }
+#ifdef NATRON_HAVE_GPU
+            if (entry.device.rfind("GPU", 0) == 0) {
+                forgetDeviceFallback(request.owner);
+            } else if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
+                // A frame the scheduler took off the GPU before the delegate saw it, for want of room for the
+                // output, renders here, so the delegate's own fallback is only ever reported on this path.
+                rememberDeviceFallback(request.owner, request.settings);
+            }
+#endif
+            if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + fallback->second.UncheckedGet<std::string>();
+            }
+        }
         if (log) {
             const std::vector<MoonRayAovs::Notice> notices = log->notices();
             const std::string logged = MoonRayAovs::warningText(stage, MoonRayAovs::unsupportedLights(stage, MoonRayAovs::supportedPrimTypes()), notices);
@@ -1415,6 +1526,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     }
 
     entry.rendered = true;
+    ++gEngineRenders;
     entry.serial = ++_renderSerial;
     entry.writeCount = writeCount;
     entry.time = request.time;
@@ -1545,6 +1657,7 @@ RenderThread::cpuFrame(EngineEntry& entry,
 
     result->warning = entry.warning;
     result->errors = entry.errors;
+    result->device = entry.device;
 
     if (!decodeIds(entry, error)) {
         return false;
@@ -2310,9 +2423,254 @@ packsOnGpu()
     return ran && ok;
 }
 
+#ifdef NATRON_HAVE_GPU
+namespace {
+    // What makes two requests the same frame of an owner, its window included.
+    struct DeviceFrameKey {
+        std::string renderer;
+        U64 stackHash = 0;
+        SceneMetadata metadata;
+        U64 writeCount = 0;
+        UsdTimeCode time;
+        GfMatrix4d view;
+        GfMatrix4d projection;
+        int width = 0;
+        int height = 0;
+        bool headlight = false;
+        bool showRender = false;
+        bool showProxy = false;
+        bool showGuides = false;
+        RendererSettings settings;
+
+        bool operator==(const DeviceFrameKey& other) const
+        {
+            return (renderer == other.renderer) && (stackHash == other.stackHash) && (metadata == other.metadata) && (writeCount == other.writeCount) && (time == other.time) && (view == other.view) && (projection == other.projection) && (width == other.width) && (height == other.height) && (headlight == other.headlight) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (settings == other.settings);
+        }
+    };
+
+    DeviceFrameKey
+    deviceFrameKey(const Request& request)
+    {
+        DeviceFrameKey key;
+        key.renderer = request.renderer.empty() ? std::string(kRenderDelegateStormId) : request.renderer;
+        key.stackHash = request.scene.getStackHash();
+        key.metadata = request.scene.getMetadata();
+        key.writeCount = SceneWriteBarrier::getWriteCount();
+        key.time = request.time;
+        key.view = request.frustum.ComputeViewMatrix();
+        key.projection = request.frustum.ComputeProjectionMatrix();
+        key.width = request.width;
+        key.height = request.height;
+        key.headlight = request.headlight;
+        key.showRender = request.showRender;
+        key.showProxy = request.showProxy;
+        key.showGuides = request.showGuides;
+        key.settings = request.settings;
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(key.renderer)) {
+            key.settings[setting.first] = setting.second;
+        }
+
+        return key;
+    }
+
+    // An owner's last frame left on the device, which every strip of a region copies its window from.
+    // The mutex is held across the render, so strips running at once wait for the one that renders.
+    struct DeviceFrame {
+        std::mutex mutex;
+        bool valid = false;
+        DeviceFrameKey key;
+        UtilityDeviceResource film;
+        std::string warning;
+        std::string errors;
+        std::string device;
+    };
+
+    std::mutex gDeviceFramesMutex;
+    std::map<const void*, std::shared_ptr<DeviceFrame>> gDeviceFrames;
+
+    std::shared_ptr<DeviceFrame>
+    deviceFrameOf(const void* owner)
+    {
+        const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
+        std::shared_ptr<DeviceFrame>& frame = gDeviceFrames[owner];
+        if (!frame) {
+            frame = std::make_shared<DeviceFrame>();
+        }
+
+        return frame;
+    }
+} // anon namespace
+
+bool
+recordDeviceWindow(const Request& request,
+                   const PlaneWindow& window,
+                   gpu::GpuRecordContext& context,
+                   const GpuImageView& output,
+                   const RectI& outputRect,
+                   Result* info,
+                   std::string* error)
+{
+    if (request.scene.isEmpty() || (request.width <= 0) || (request.height <= 0)) {
+        *error = "Nothing to render.";
+
+        return false;
+    }
+    const int width = window.x2 - window.x1;
+    const int height = window.y2 - window.y1;
+    if ((window.plane != ePlaneColor) || !output.buffer || (width != outputRect.width()) || (height != outputRect.height()) || (window.nComps != output.nComps) || !output.bounds.contains(outputRect)) {
+        *error = "USDRender's GPU output does not match the window it renders.";
+
+        return false;
+    }
+    RenderThread* routed = routeRequest(request, error);
+    if (!routed) {
+        return false;
+    }
+    RenderThread& thread = *routed;
+    if (thread.usesGl()) {
+        *error = "Storm hands its pixels over through GL, not from a frame on the device.";
+
+        return false;
+    }
+    const DeviceFrameKey key = deviceFrameKey(request);
+    const std::shared_ptr<DeviceFrame> frame = deviceFrameOf(request.owner);
+    UtilityDeviceResource film;
+    {
+        // A strip waiting for the one that renders must still see its own abort.
+        std::unique_lock<std::mutex> frameLock(frame->mutex, std::try_to_lock);
+        while (!frameLock.owns_lock()) {
+            if (request.aborted && request.aborted()) {
+                *error = "The render was cancelled while it waited for its frame.";
+
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            (void)frameLock.try_lock();
+        }
+        if (frame->valid) {
+            frame->film.releaseIfLost();
+        }
+        if (!frame->valid || !(frame->key == key) || !frame->film.device()) {
+            // The engine's next frame goes into this film when nothing else holds it.
+            frame->valid = false;
+            frame->film = UtilityDeviceResource();
+
+            bool ok = false;
+            UtilityDeviceResource rendered;
+            Result renderedInfo;
+            RenderCancel cancel;
+            std::function<void()> whileWaiting;
+            if (request.aborted) {
+                whileWaiting = [&request, &cancel]() {
+                    if (request.aborted()) {
+                        cancel.request();
+                    }
+                };
+            }
+            const int threadBudget = AppTLS::currentThreadBudget();
+            bool fellBack = false;
+            const bool ran = thread.runAndWait([&]() {
+                // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
+                AppTLS::ThreadBudgetScope budget(threadBudget);
+
+                try {
+                    EngineEntry* entry = thread.renderEngine(request, &cancel, error);
+                    if (!entry) {
+                        return;
+                    }
+                    HdRenderBuffer* buffer = entry->engine->GetAovRenderBuffer(HdAovTokens->color);
+                    if (!buffer) {
+                        *error = entry->rendererName + " rendered no color AOV.";
+
+                        return;
+                    }
+                    buffer->Resolve();
+                    if (((int)buffer->GetWidth() != entry->width) || ((int)buffer->GetHeight() != entry->height)) {
+                        *error = entry->rendererName + "'s color AOV is not the size asked for.";
+
+                        return;
+                    }
+                    const VtValue resource = buffer->GetResource(false);
+                    if (!resource.IsHolding<UtilityDeviceResource>()) {
+                        *error = entry->rendererName + " did not leave its frame on the GPU.";
+                        fellBack = true;
+
+                        return;
+                    }
+                    rendered = resource.UncheckedGet<UtilityDeviceResource>();
+                    renderedInfo.warning = entry->warning;
+                    renderedInfo.errors = entry->errors;
+                    renderedInfo.device = entry->device;
+                    ok = true;
+                } catch (const std::exception& e) {
+                    *error = std::string("Hydra failed: ") + e.what();
+                    ok = false;
+                }
+            },
+                                               error, whileWaiting);
+            if (ran && fellBack) {
+                rememberDeviceFallback(request.owner, request.settings);
+            }
+            if (!ran || !ok) {
+                return false;
+            }
+            frame->key = key;
+            frame->film = rendered;
+            frame->warning = renderedInfo.warning;
+            frame->errors = renderedInfo.errors;
+            frame->device = renderedInfo.device;
+            frame->valid = true;
+        }
+        film = frame->film;
+        info->warning = frame->warning;
+        info->errors = frame->errors;
+        info->device = frame->device;
+    }
+    // A record context belongs to the thread that made it, so the copy is recorded here, not on the render thread.
+    if (film.device() != &context.device()) {
+        *error = "Natron Utility rendered on another GPU than the one its output is on.";
+
+        return false;
+    }
+    if ((width <= 0) || (height <= 0)) {
+        return true;
+    }
+    const std::int64_t origin = (std::int64_t)(output.byteOffset / sizeof(float)) + ((std::int64_t)(outputRect.y1 - output.bounds.y1) * output.rowStrideFloats) + (std::int64_t)(outputRect.x1 - output.bounds.x1) * output.nComps;
+    const gpu::GpuStatus status = film.recordWindow(context, window.x1, window.y1, window.x2, window.y2, window.nComps, *output.buffer, (std::uint64_t)origin, (std::uint32_t)output.rowStrideFloats);
+    if (!status) {
+        *error = "Natron Utility's frame could not be copied on the GPU: " + status.message;
+
+        return false;
+    }
+
+    return true;
+} // recordDeviceWindow
+#endif // NATRON_HAVE_GPU
+
+#ifdef NATRON_HAVE_GPU
+bool
+deviceFrameFellBack(const void* owner,
+                    std::uint64_t generation,
+                    std::uint64_t budget,
+                    const std::string& device)
+{
+    const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+    const std::map<const void*, DeviceFallback>::const_iterator found = gDeviceFallbacks.find(owner);
+
+    return (found != gDeviceFallbacks.end()) && (found->second.generation == generation) && (found->second.budget == budget) && (found->second.device == device);
+}
+#endif
+
 void
 release(const void* owner)
 {
+#ifdef NATRON_HAVE_GPU
+    {
+        const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
+        gDeviceFrames.erase(owner);
+    }
+    forgetDeviceFallback(owner);
+#endif
     RenderThread& storm = RenderThread::storm();
     RenderThread& cpu = RenderThread::cpu();
 
@@ -2323,9 +2681,38 @@ release(const void* owner)
 void
 releaseAll()
 {
+#ifdef NATRON_HAVE_GPU
+    {
+        const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
+        gDeviceFrames.clear();
+    }
+    {
+        // The memory given back may be what the delegates fell back for.
+        const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+        gDeviceFallbacks.clear();
+    }
+#endif
     RenderThread& thread = RenderThread::storm();
+    RenderThread& cpu = RenderThread::cpu();
 
     (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
+    (void)cpu.post([&cpu]() { cpu.releaseUtilityGpu(); }, false);
+}
+
+void
+releaseAllGpuMemory()
+{
+    releaseAll();
+#ifdef NATRON_HAVE_GPU
+    ProgressiveRender::releaseAllGpu();
+    // Queued behind releaseAll()'s job, so the pool is trimmed after the engines gave their buffers back.
+    (void)RenderThread::cpu().post([]() {
+        if (GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr) {
+            gpu->releaseIdleMemory();
+        }
+    },
+                                   false);
+#endif
 }
 
 void
@@ -2434,6 +2821,12 @@ getEngineBuildCount()
     return gEngineBuilds.load();
 }
 
+std::uint64_t
+getEngineRenderCount()
+{
+    return gEngineRenders.load();
+}
+
 std::string
 contextDescription(std::string* error)
 {
@@ -2474,6 +2867,10 @@ namespace {
     const int kRefineNice = 10;
 
     std::atomic<int> gProgressiveLive(0);
+
+    // Every ProgressiveRender alive, for the GPU releases that reach them all.
+    std::mutex gProgressivesMutex;
+    std::set<ProgressiveRender::Implementation*> gProgressives;
 
     int
     intOf(const VtValue& value,
@@ -2582,6 +2979,21 @@ namespace {
 
         return table;
     }
+
+    // A premultiplied linear pixel over the background, then encoded.
+    void
+    encodePixel(const float c[4],
+                float background,
+                const std::vector<unsigned char>& table,
+                unsigned char* out)
+    {
+        const float under = background * (1.f - std::min(1.f, std::max(0.f, c[3])));
+        for (int k = 0; k < 3; ++k) {
+            const float value = std::min(1.f, std::max(0.f, c[k] + under));
+            out[k] = table[(std::size_t)(value * 4095.f + 0.5f)];
+        }
+        out[3] = 255;
+    }
 } // anon namespace
 
 struct ProgressiveRender::Implementation {
@@ -2591,6 +3003,8 @@ struct ProgressiveRender::Implementation {
     const std::function<UsdStageRefPtr()> stageOf;
     const std::function<void()> listener;
     const float background;
+    // setDeviceColor()'s; readFrame() reads it without mutex.
+    std::atomic<bool> deviceColor { false };
 
     // Guards the requests, the status and the frame; never held while taking stageLock.
     mutable std::mutex mutex;
@@ -2641,6 +3055,9 @@ struct ProgressiveRender::Implementation {
     int engineThreads = 0;
     int askedThreads = -1;
     int cyclesHolder = 0;
+    // What releaseGpu() and releaseLostGpu() asked of the worker, under mutex.
+    bool gpuReleaseAsked = false;
+    bool lostGpuReleaseAsked = false;
 
     std::thread worker;
 
@@ -2813,6 +3230,18 @@ struct ProgressiveRender::Implementation {
         const std::vector<unsigned char>& table = srgbTable();
         out->width = width;
         out->height = height;
+#ifdef NATRON_HAVE_GPU
+        if (deviceColor.load() && (engineRenderer == kRenderDelegateUtilityId)) {
+            HdRenderBuffer* buffer = engine->GetAovRenderBuffer(HdAovTokens->color);
+            if (buffer && ((int)buffer->GetWidth() == width) && ((int)buffer->GetHeight() == height)) {
+                const VtValue resource = buffer->GetResource(false);
+                if (resource.IsHolding<UtilityDeviceResource>()) {
+                    out->deviceColor = std::make_shared<const UtilityDeviceResource>(resource.UncheckedGet<UtilityDeviceResource>());
+                }
+            }
+        }
+        if (!out->deviceColor)
+#endif
         {
             MappedAov color(engine.get(), rendererName, width, height, HdAovTokens->color, error);
             if (!color.valid()) {
@@ -2828,13 +3257,7 @@ struct ProgressiveRender::Implementation {
                 for (std::size_t k = 0; (k < components) && (k < 4); ++k) {
                     c[k] = componentToFloat(componentFormat, at + k * componentSize);
                 }
-                // Premultiplied: over the background, then encoded.
-                const float under = background * (1.f - std::min(1.f, std::max(0.f, c[3])));
-                for (int k = 0; k < 3; ++k) {
-                    const float value = std::min(1.f, std::max(0.f, c[k] + under));
-                    out->rgba[i * 4 + k] = table[(std::size_t)(value * 4095.f + 0.5f)];
-                }
-                out->rgba[i * 4 + 3] = 255;
+                encodePixel(c, background, table, &out->rgba[i * 4]);
             }
         }
         {
@@ -2934,6 +3357,92 @@ struct ProgressiveRender::Implementation {
         fail(lock, workingRenderer, "The " + name + " render failed: " + reason, workingEdits);
     }
 
+#ifdef NATRON_HAVE_GPU
+    bool hostColorOf(const Frame& from,
+                     std::vector<unsigned char>* rgba,
+                     std::string* error) const
+    {
+        if (!from.deviceColor) {
+            *error = "The frame's colour is not on the device.";
+
+            return false;
+        }
+        const std::size_t pixels = (std::size_t)from.width * (std::size_t)from.height;
+        if (((std::size_t)from.deviceColor->width() * from.deviceColor->height()) != pixels) {
+            *error = "The frame's colour on the device is not the frame's size.";
+
+            return false;
+        }
+        std::vector<float> linear;
+        if (!from.deviceColor->download(&linear, error)) {
+            return false;
+        }
+        const std::vector<unsigned char>& table = srgbTable();
+        rgba->resize(pixels * 4);
+        for (std::size_t i = 0; i < pixels; ++i) {
+            encodePixel(&linear[i * 4], background, table, &(*rgba)[i * 4]);
+        }
+
+        return true;
+    }
+#endif
+
+    // Under mutex, and again on return: what releaseGpu() and releaseLostGpu() asked for. Only the
+    // worker changes the engine, so it is read here without engineMutex.
+    void runGpuReleases(std::unique_lock<std::mutex>& lock)
+    {
+        const bool full = gpuReleaseAsked;
+        gpuReleaseAsked = false;
+        lostGpuReleaseAsked = false;
+#ifdef NATRON_HAVE_GPU
+        if (!engine || (engineRenderer != kRenderDelegateUtilityId)) {
+            return;
+        }
+        const std::shared_ptr<const Frame> shown = (full && frame && frame->deviceColor) ? frame : std::shared_ptr<const Frame>();
+        lock.unlock();
+        std::shared_ptr<Frame> hosted;
+        if (shown) {
+            // Read back while the film is still held: the engine's release lets go of it.
+            std::vector<unsigned char> rgba;
+            std::string error;
+            if (hostColorOf(*shown, &rgba, &error)) {
+                hosted = std::make_shared<Frame>(*shown);
+                hosted->deviceColor.reset();
+                hosted->rgba = std::move(rgba);
+            } else {
+                qWarning("The 3D viewer's frame could not be read back from the GPU: %s", error.c_str());
+            }
+        }
+        {
+            std::lock_guard<std::mutex> l(engineMutex);
+            try {
+                (void)engine->InvokeRendererCommand(TfToken(full ? kUtilityCommandReleaseGpu : kUtilityCommandReleaseLostGpu));
+            } catch (...) {
+                qWarning("A render delegate threw while giving its GPU memory back.");
+            }
+        }
+        if (shown) {
+            // The viewer still holds the frame it shows, and with it the film.
+            shown->deviceColor->release();
+        }
+        if (full) {
+            if (GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr) {
+                gpu->releaseIdleMemory();
+            }
+        }
+        lock.lock();
+        if (hosted && (frame == shown)) {
+            frame = hosted;
+            lock.unlock();
+            notifyListener();
+            lock.lock();
+        }
+#else
+        Q_UNUSED(lock);
+        Q_UNUSED(full);
+#endif
+    }
+
     void refine(std::unique_lock<std::mutex>& lock);
     void run();
 };
@@ -2985,6 +3494,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     std::unique_ptr<MoonRayAovs::LogCapture> log;
 
     while (!quit) {
+        if (gpuReleaseAsked || lostGpuReleaseAsked) {
+            runGpuReleases(lock);
+            continue;
+        }
         workingRenderer = renderer;
         workingEdits = sceneEdits;
         const bool idle = renderer.empty() || (renderer == kRenderDelegateStormId) || !hasView || !stageOf;
@@ -3337,16 +3850,29 @@ ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
     : _imp(new Implementation(stageLock, stage, listener, background))
 {
     ++gProgressiveLive;
+#ifdef NATRON_HAVE_GPU
+    // A Natron Utility engine idle since its device was lost would keep it from recovering.
+    static std::once_flag releaser;
+    std::call_once(releaser, []() { GpuContext::addLossReleaser(&ProgressiveRender::releaseAllLostGpu); });
+#endif
     Implementation* imp = _imp.get();
     _imp->cyclesHolder = CyclesThreads::instance().addHolder([imp]() {
         std::lock_guard<std::mutex> l(imp->mutex);
         imp->wake.notify_all();
     });
     _imp->worker = std::thread([this]() { _imp->run(); });
+    {
+        const std::lock_guard<std::mutex> l(gProgressivesMutex);
+        gProgressives.insert(_imp.get());
+    }
 }
 
 ProgressiveRender::~ProgressiveRender()
 {
+    {
+        const std::lock_guard<std::mutex> l(gProgressivesMutex);
+        gProgressives.erase(_imp.get());
+    }
     {
         std::lock_guard<std::mutex> l(_imp->mutex);
         _imp->quit = true;
@@ -3492,6 +4018,64 @@ ProgressiveRender::getRestartCount() const
     return _imp->status.restarts;
 }
 
+#ifdef NATRON_HAVE_GPU
+void
+ProgressiveRender::setDeviceColor(bool onDevice)
+{
+    _imp->deviceColor.store(onDevice);
+}
+
+bool
+ProgressiveRender::hostColor(const Frame& frame,
+                             std::vector<unsigned char>* rgba,
+                             std::string* error) const
+{
+    return _imp->hostColorOf(frame, rgba, error);
+}
+
+void
+ProgressiveRender::releaseGpu()
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    _imp->gpuReleaseAsked = true;
+    _imp->wake.notify_all();
+}
+
+void
+ProgressiveRender::releaseLostGpu()
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    _imp->lostGpuReleaseAsked = true;
+    _imp->wake.notify_all();
+}
+
+void
+ProgressiveRender::releaseAllGpu()
+{
+    const std::lock_guard<std::mutex> l(gProgressivesMutex);
+
+    for (Implementation* imp : gProgressives) {
+        std::lock_guard<std::mutex> k(imp->mutex);
+        imp->gpuReleaseAsked = true;
+        imp->wake.notify_all();
+    }
+}
+
+void
+ProgressiveRender::releaseAllLostGpu()
+{
+    const std::lock_guard<std::mutex> l(gProgressivesMutex);
+
+    for (Implementation* imp : gProgressives) {
+        std::lock_guard<std::mutex> k(imp->mutex);
+        imp->lostGpuReleaseAsked = true;
+        imp->wake.notify_all();
+    }
+}
+#endif
+
 std::string
 ProgressiveRender::pick(const Frame& frame,
                         int x,
@@ -3555,6 +4139,21 @@ void
 releaseRenderEngines()
 {
     HydraRender::releaseAll();
+}
+
+void
+releaseRenderEnginesAndWait()
+{
+    HydraRender::releaseAll();
+    HydraRender::releaseAllCpuEngines();
+    (void)HydraRender::getEngineCount();
+    (void)HydraRender::getCpuEngineCount();
+}
+
+void
+releaseRenderEnginesGpuMemory()
+{
+    HydraRender::releaseAllGpuMemory();
 }
 
 void

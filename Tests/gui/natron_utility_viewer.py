@@ -44,6 +44,10 @@ MIN_IOU = 0.98
 CENTROID_TOLERANCE_PX = 1.0
 # Per-channel distance from the background beyond which a pixel belongs to the silhouette.
 SILHOUETTE_DISTANCE = 30
+# The GPU frame is encoded in a shader, the CPU one through a 4096-step table, and the two tracers
+# may part on edge pixels: a few levels anywhere, more on a small share of pixels.
+DEVICE_PIXEL_TOLERANCE = 6
+DEVICE_MAX_DIFFERING = 0.005
 
 # The ball sits inside the box's silhouette because the view frames the box alone while the render
 # purpose is off, and the ball must be in that frame when it appears.
@@ -418,6 +422,117 @@ try:
         check(ok, "the view is back on the small stage")
         yield settle()
 
+    def options(param):
+        return [str(o) for o in param.getOptions()]
+
+    def device_param(settings):
+        """The settings node's Device menu for Natron Utility."""
+        for param in settings.getParams():
+            name = param.getScriptName()
+            if name.lower().startswith("natronutility") and name.lower().endswith("device"):
+                return param
+        return None
+
+    def render_on(device_menu, device, tag):
+        """Sets the Device menu to device and waits for the restart it causes to finish. Returns the
+        view's crop and the renderer error, if any."""
+        ids = options(device_menu)
+        require(device in ids, "the Device menu lists %r (%r)" % (device, ids))
+        frames_before = prop("natronSceneRefineFrames") or 0
+        device_menu.set(ids.index(device))
+        # Natron Utility publishes finished frames only: a new one is the new device's.
+        ok = yield ("until", lambda: bool(prop("natronSceneRendererError")) or (
+            (prop("natronSceneRefineFrames") or 0) > frames_before and bool(prop("natronSceneRefineConverged"))
+            and scene_drawn()), POLL_TIMEOUT_S)
+        error = prop("natronSceneRendererError")
+        if error:
+            return None, error
+        check(ok, "Natron Utility finishes a frame with Device %s" % device)
+        yield settle()
+        return save_view("natron-utility-device-%s" % tag), None
+
+    def frame_difference(a, b, step=2):
+        """The share of sampled pixels whose channels differ by more than DEVICE_PIXEL_TOLERANCE, and
+        the largest difference, below the HUD."""
+        over = 0
+        total = 0
+        largest = 0
+        for y in range(HUD_MARGIN, a.height() - HUD_MARGIN, step):
+            for x in range(0, a.width(), step):
+                ca = a.pixelColor(x, y)
+                cb = b.pixelColor(x, y)
+                d = max(abs(ca.red() - cb.red()), abs(ca.green() - cb.green()), abs(ca.blue() - cb.blue()))
+                largest = max(largest, d)
+                total += 1
+                if d > DEVICE_PIXEL_TOLERANCE:
+                    over += 1
+        return (over / float(total) if total else 1.0), largest
+
+    def check_gpu_frame():
+        settings = app.createNode("USDRenderSettings")
+        require(settings is not None, "create USDRenderSettings", plugin_problem("USDRenderSettings"))
+        settings.setPosition(0, 75)
+        require(settings.connectInput(0, usd), "connect the USDRead into the USDRenderSettings")
+        device_menu = device_param(settings)
+        require(device_menu is not None, "the settings node has a Natron Utility Device menu (%r)" % (
+            [p.getScriptName() for p in settings.getParams()],))
+        require(show_in_viewer(settings), "connect the Viewer to the USDRenderSettings")
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view shows the stage with its render settings prim")
+
+        cpu, error = yield from render_on(device_menu, "cpu", "cpu")
+        check(not error, "Natron Utility renders on the CPU (%r)" % (error,))
+        path = prop("natronSceneFramePath")
+        report("NOTE CPU frame path: %r" % (path,))
+        check(path == "upload", "a CPU frame is uploaded from host memory (%r)" % (path,))
+
+        gpu, error = yield from render_on(device_menu, "gpu", "gpu")
+        if error:
+            report("NOTE GPU path not taken: Natron Utility cannot render on the GPU here: %s" % (error,))
+            check(not os.environ.get("NATRON_TEST_REQUIRE_GPU"),
+                  "NATRON_TEST_REQUIRE_GPU is set but Natron Utility cannot render on the GPU (%s)" % (error,))
+        else:
+            path = prop("natronSceneFramePath") or ""
+            unsupported = bool(prop("natronSceneHandoffUnsupported"))
+            best = prop("natronSceneHandoffBest") or ""
+            handoff_error = prop("natronSceneHandoffError") or ""
+            report("NOTE GPU frame path %r; best hand-off the probe found %r; hand-off error %r" % (
+                path, best, handoff_error))
+            check(not os.environ.get("NATRON_VIEWER_HANDOFF"),
+                  "NATRON_VIEWER_HANDOFF is unset, so the viewer picks its own hand-off (it is %r)" % (
+                      os.environ.get("NATRON_VIEWER_HANDOFF"),))
+            # Where the probe allows no path at all, the upload from host memory is the expected one.
+            check(path.startswith("interop:") or (path == "upload" and unsupported),
+                  "the GPU frame is imported through the GL hand-off wherever the probe allows one (path %r, "
+                  "hand-off %s: %s)" % (path, "unavailable" if unsupported else "available",
+                                        handoff_error or "no error"))
+            check(best != "" or unsupported,
+                  "the viewer publishes the best hand-off path its probe found (%r)" % (best,))
+            # lavapipe and llvmpipe share no semaphores, so their best path is hostsync; only a device and a GL
+            # context that share semaphores must take the fastest path rather than any that builds.
+            if best == "zerocopy":
+                check(path == "interop:zerocopy",
+                      "the GPU frame takes the zero-copy hand-off the probe found (path %r, %s)" % (
+                          path, handoff_error or "no error"))
+            if os.environ.get("NATRON_TEST_REQUIRE_INTEROP"):
+                check(path.startswith("interop:"),
+                      "NATRON_TEST_REQUIRE_INTEROP: the GPU frame is imported (path %r, %s)" % (path, handoff_error))
+            check(cpu is not None and gpu is not None and cpu.size() == gpu.size(),
+                  "the CPU and GPU shots have one size")
+            if cpu is not None and gpu is not None and cpu.size() == gpu.size():
+                share, largest = frame_difference(cpu, gpu)
+                report("NOTE CPU against GPU frame: %.4f%% of pixels beyond %d levels, largest difference %d" % (
+                    share * 100.0, DEVICE_PIXEL_TOLERANCE, largest))
+                check(share <= DEVICE_MAX_DIFFERING,
+                      "the GPU frame matches the CPU one: %.4f%% of pixels beyond %d levels (at most %.2f%%)" % (
+                          share * 100.0, DEVICE_PIXEL_TOLERANCE, DEVICE_MAX_DIFFERING * 100.0))
+
+        yield from render_on(device_menu, "auto", "auto")
+        require(show_in_viewer(usd), "connect the Viewer back to the USDRead")
+        settings.destroy()
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view is back on the stage without the settings prim")
+
     def steps():
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -448,6 +563,9 @@ try:
         section("Natron Utility: main-thread stall during an edit in a large render")
         yield from pick_renderer(v, "Natron Utility", UTILITY_ID)
         yield from measure_edit_stall(v)
+
+        section("Natron Utility on the GPU: the view imports its frame wherever the GL hand-off builds")
+        yield from check_gpu_frame()
 
         navigation.setValue(original_navigation)
         lighting.setValue(original_lighting)

@@ -1457,7 +1457,7 @@ AppManager::clearPluginsLoadedCache()
 void
 AppManager::freeGpuMemory()
 {
-    SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseRenderEnginesGpuMemory();
     SceneCaches::releaseLiveTextures();
     releaseSceneViewEngines();
     if (_imp->gpuContext) {
@@ -3118,6 +3118,9 @@ AppManager::getGpuContext() const
 std::unique_ptr<GpuContext>
 AppManager::swapGpuContextForTests(std::unique_ptr<GpuContext> context)
 {
+    // The caller usually destroys the context returned, which the scene engines and their queued
+    // releases may still be using.
+    SceneCaches::releaseRenderEnginesAndWait();
     _imp->gpuContext.swap(context);
 
     return context;

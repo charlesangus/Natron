@@ -47,7 +47,19 @@ class UsdImagingGLEngine;
 class UsdImagingGLRenderParams;
 PXR_NAMESPACE_CLOSE_SCOPE
 
+#ifdef NATRON_HAVE_GPU
+namespace gpu {
+class GpuRecordContext;
+}
+#endif
+
 NATRON_NAMESPACE_ENTER
+
+#ifdef NATRON_HAVE_GPU
+struct GpuImageView;
+class RectI;
+class UtilityDeviceResource;
+#endif
 
 /**
  * @brief USDRender's Storm render: a composed stage seen through a camera, read back from GL into
@@ -166,6 +178,8 @@ struct Result {
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;
+    // The device the delegate says it rendered on; empty for a delegate that does not say.
+    std::string device;
 };
 
 /**
@@ -264,6 +278,34 @@ bool renderWindow(const Request& request,
 // Whether the render thread's context packs windows on the GPU, making it if need be.
 bool packsOnGpu();
 
+#ifdef NATRON_HAVE_GPU
+/**
+ * @brief Renders request as render() does, then records into context the copy of window, a colour
+ * window, into output's outputRect, on the device and from the frame the delegate left there:
+ * Natron Utility's, when it rendered on the GPU. *info gets the render's warning, errors and device.
+ * False with *error set when the frame is not on context's device, so the caller renders on the CPU,
+ * where the frame is read back.
+ **/
+bool recordDeviceWindow(const Request& request,
+                        const PlaneWindow& window,
+                        gpu::GpuRecordContext& context,
+                        const GpuImageView& output,
+                        const RectI& outputRect,
+                        Result* info,
+                        std::string* error) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether a render of owner's found the delegate had rendered on the CPU instead (recordDeviceWindow()
+ * got no frame on the device, or Natron Utility reported falling back from the GPU), under the same device generation, pool budget and Device setting (kUtilitySettingDevice, "auto" when
+ * unset), and no render of owner's has been on the GPU since. A caller asking whether to take the GPU
+ * path then knows it would fall back. Never waits. MT-safe.
+ **/
+bool deviceFrameFellBack(const void* owner,
+                         std::uint64_t generation,
+                         std::uint64_t budget,
+                         const std::string& device);
+#endif
+
 /**
  * @brief Render settings every engine of renderer gets on top of its request's; for tests, to fix
  * a path tracer's sample count and seed whatever the node's knobs say.
@@ -294,8 +336,13 @@ bool engineSetting(const void* owner,
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);
 
-// Drops every owner's stage and Storm engine, on the render thread, without waiting.
+// Drops every owner's stage and Storm engine, and has every Natron Utility engine give back what it
+// keeps on the GPU, on the render threads, without waiting.
 void releaseAll();
+
+// releaseAll() and ProgressiveRender::releaseAllGpu(), then, on the thread the Natron Utility engines
+// render on, once they gave their GPU memory back, empties the GPU pool of its free buffers. Does not wait.
+void releaseAllGpuMemory();
 
 // Drops every owner's stage and engine of a delegate other than Storm, without waiting.
 void releaseAllCpuEngines();
@@ -315,6 +362,10 @@ std::size_t getCpuEngineCount();
 
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
+
+// How many frames engines of every delegate have rendered in this process, not counting a request
+// served by the owner's last render.
+std::uint64_t getEngineRenderCount();
 
 /**
  * @brief The thread count every Cycles session is made under, 0 for any: Cycles' task scheduler is
@@ -395,6 +446,11 @@ public:
         std::uint64_t serial = 0;
         // The edits made before its pass, for pick().
         std::uint64_t generation = 0;
+#ifdef NATRON_HAVE_GPU
+        // Set instead of rgba when setDeviceColor() asked for the colour of a GPU frame to stay
+        // on the device: its linear premultiplied RGBA floats, the bottom row first.
+        std::shared_ptr<const UtilityDeviceResource> deviceColor;
+#endif
     };
 
     struct Status {
@@ -472,6 +528,40 @@ public:
 
     // How many renders have been started, the first included.
     std::uint64_t getRestartCount() const;
+
+#ifdef NATRON_HAVE_GPU
+    /**
+     * @brief Whether frames the Natron Utility renderer leaves on the GPU are published with
+     * deviceColor and no rgba, for a viewer that imports them; off at first. Frames published
+     * before a change keep the form they had.
+     **/
+    void setDeviceColor(bool onDevice);
+
+    /**
+     * @brief The rgba frame would have had without deviceColor, read back from the device. False
+     * with *error set when frame has no deviceColor or the device cannot read it back.
+     **/
+    bool hostColor(const Frame& frame,
+                   std::vector<unsigned char>* rgba,
+                   std::string* error) const;
+
+    /**
+     * @brief Has a Natron Utility engine give back, on the worker, the GPU memory it keeps between
+     * frames, then empties the GPU pool of its free buffers. A frame published with deviceColor is
+     * published again with its colour read back into rgba, and its film is let go for every holder.
+     * Does not wait.
+     **/
+    void releaseGpu();
+
+    // Has a Natron Utility engine let go of its GPU, on the worker, if that was lost. Does not wait.
+    void releaseLostGpu();
+
+    // releaseGpu() on every ProgressiveRender alive. MT-safe.
+    static void releaseAllGpu();
+
+    // releaseLostGpu() on every ProgressiveRender alive; a GPU loss releaser calls it. MT-safe.
+    static void releaseAllLostGpu();
+#endif
 
     /**
      * @brief The path of the prim drawn at the pixel (x, y) of frame, one getFrame() gave, counted

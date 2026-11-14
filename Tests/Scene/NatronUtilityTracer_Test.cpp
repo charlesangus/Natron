@@ -25,14 +25,20 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <memory>
+#include <ostream>
+#include <random>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/rotation.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec3i.h>
@@ -41,12 +47,31 @@
 #include "Engine/Nodes/Scene/Utility/EmbreeTracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuKernelRegistry.h"
+#include "Engine/Nodes/Scene/Utility/GpuTracer.h"
+#include "Gpu/GpuTestDevice.h"
+#endif
+
 PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_USING
 
 namespace {
 const float kBarycentricTolerance = 1e-5f;
+
+enum class Backend {
+    Embree,
+    Gpu,
+};
+
+void
+PrintTo(Backend backend,
+        std::ostream* os)
+{
+    *os << (backend == Backend::Embree ? "Embree" : "Gpu");
+}
 
 // A unit quad in the z = 0 plane, split along its (0,0)-(1,1) diagonal.
 VtVec3fArray
@@ -164,18 +189,102 @@ translation(double x,
 
     return matrix;
 }
+
+// Each test runs against every backend; the GPU one skips, naming what is missing, on a device that
+// cannot trace.
+class NatronUtilityTracer : public ::testing::TestWithParam<Backend> {
+protected:
+    void SetUp() override
+    {
+        if (GetParam() == Backend::Embree) {
+            _available = true;
+
+            return;
+        }
+#ifdef NATRON_HAVE_GPU
+        const gpu::GpuStatus s = gputest::createDevice(_device);
+
+        GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+
+        const std::string missing = GpuTracer::missingRayQuerySupport(*_device);
+
+        if (!missing.empty()) {
+            GPUTEST_SKIP() << missing;
+        }
+        _registry.reset(new gpu::GpuKernelRegistry(*_device));
+        _pool.reset(new gpu::GpuBufferPool(*_device));
+        _available = true;
+#else
+        std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU tracer\n");
+#endif
+    }
+
+    void TearDown() override
+    {
+#ifdef NATRON_HAVE_GPU
+        for (const std::shared_ptr<GpuTracer>& tracer : _gpuTracers) {
+            const GpuTracer::Outcome outcome = tracer->status();
+
+            EXPECT_TRUE(outcome.status == GpuTracer::Status::Ok) << outcome.message;
+        }
+        _gpuTracers.clear();
+        if (_device) {
+            _device->waitIdle();
+        }
+        _pool.reset();
+        _registry.reset();
+        _device.reset();
+        _check.expectClean("the test");
+#endif
+    }
+
+    // Null when the backend is unavailable, in which case SetUp has said why.
+    std::shared_ptr<Tracer> makeTracer()
+    {
+        if (!_available) {
+            return nullptr;
+        }
+        if (GetParam() == Backend::Embree) {
+            return std::make_shared<EmbreeTracer>();
+        }
+#ifdef NATRON_HAVE_GPU
+        const std::shared_ptr<GpuTracer> tracer = std::make_shared<GpuTracer>(*_registry, *_pool);
+
+        _gpuTracers.push_back(tracer);
+
+        return tracer;
+#else
+        return nullptr;
+#endif
+    }
+
+private:
+    bool _available = false;
+#ifdef NATRON_HAVE_GPU
+    gputest::ValidationCheck _check;
+    std::unique_ptr<gpu::GpuDevice> _device;
+    std::unique_ptr<gpu::GpuKernelRegistry> _registry;
+    std::unique_ptr<gpu::GpuBufferPool> _pool;
+    // Held past the test body so TearDown can report their status and free them before the pool.
+    std::vector<std::shared_ptr<GpuTracer>> _gpuTracers;
+#endif
+};
 } // anon namespace
 
-TEST(NatronUtilityTracer, HitsAQuadWithExpectedDistanceAndBarycentrics)
+TEST_P(NatronUtilityTracer, HitsAQuadWithExpectedDistanceAndBarycentrics)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { GfMatrix4d(1.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 2);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 2);
 
     Rays rays;
 
@@ -183,7 +292,7 @@ TEST(NatronUtilityTracer, HitsAQuadWithExpectedDistanceAndBarycentrics)
     rays.add(0.25f, 0.75f);
     rays.add(2.f, 2.f);
 
-    const Hits hits(rays, tracer);
+    const Hits hits(rays, *tracer);
 
     EXPECT_FLOAT_EQ(5.f, hits.t[0]);
     EXPECT_EQ(0u, hits.primitive[0]);
@@ -204,16 +313,20 @@ TEST(NatronUtilityTracer, HitsAQuadWithExpectedDistanceAndBarycentrics)
 }
 
 // A batch longer than a packet has to come back in order, the part-filled last packet included.
-TEST(NatronUtilityTracer, BatchesLongerThanAPacketKeepTheirOrder)
+TEST_P(NatronUtilityTracer, BatchesLongerThanAPacketKeepTheirOrder)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { GfMatrix4d(1.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 1);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 1);
 
     Rays rays;
     const int count = 37;
@@ -222,23 +335,27 @@ TEST(NatronUtilityTracer, BatchesLongerThanAPacketKeepTheirOrder)
         rays.add(i % 2 ? 0.5f : 7.f, 0.25f);
     }
 
-    const Hits hits(rays, tracer);
+    const Hits hits(rays, *tracer);
 
     for (int i = 0; i < count; ++i) {
         EXPECT_EQ(i % 2 ? 0u : Tracer::kNoHit, hits.primitive[i]) << i;
     }
 }
 
-TEST(NatronUtilityTracer, HonoursTheRayInterval)
+TEST_P(NatronUtilityTracer, HonoursTheRayInterval)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { GfMatrix4d(1.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 1);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 1);
 
     Rays rays;
 
@@ -246,41 +363,45 @@ TEST(NatronUtilityTracer, HonoursTheRayInterval)
     rays.add(0.75f, 0.25f, 6.f, 100.f);
     rays.add(0.75f, 0.25f, 4.f, 6.f);
 
-    const Hits hits(rays, tracer);
+    const Hits hits(rays, *tracer);
 
     EXPECT_EQ(Tracer::kNoHit, hits.primitive[0]);
     EXPECT_EQ(Tracer::kNoHit, hits.primitive[1]);
     EXPECT_EQ(0u, hits.primitive[2]);
 }
 
-TEST(NatronUtilityTracer, AnInstanceOffsetMovesTheHit)
+TEST_P(NatronUtilityTracer, AnInstanceOffsetMovesTheHit)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { translation(10., 0., 1.), translation(20., 0., 2.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 2);
+    if (!tracer) {
+        return;
+    }
 
-    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
+    tracer->update(scene.snapshot(), 2);
 
-    const Hits first = shootAt(tracer, 10.75f, 0.25f);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f).primitive[0]);
+
+    const Hits first = shootAt(*tracer, 10.75f, 0.25f);
 
     EXPECT_EQ(0u, first.primitive[0]);
     EXPECT_EQ(0u, first.instance[0]);
     EXPECT_FLOAT_EQ(4.f, first.t[0]);
     EXPECT_NEAR(0.5f, first.u[0], kBarycentricTolerance);
 
-    const Hits second = shootAt(tracer, 20.75f, 0.25f);
+    const Hits second = shootAt(*tracer, 20.75f, 0.25f);
 
     EXPECT_EQ(1u, second.instance[0]);
     EXPECT_EQ(0u, second.geometry[0]);
     EXPECT_FLOAT_EQ(3.f, second.t[0]);
 }
 
-TEST(NatronUtilityTracer, ReportsGeometriesByTheirPositionInTheSnapshot)
+TEST_P(NatronUtilityTracer, ReportsGeometriesByTheirPositionInTheSnapshot)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId a = addQuad(scene, "/a");
@@ -289,36 +410,44 @@ TEST(NatronUtilityTracer, ReportsGeometriesByTheirPositionInTheSnapshot)
     scene.setInstances(a, { translation(10., 0., 0.) });
     scene.setInstances(b, { translation(20., 0., 0.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 1);
+    if (!tracer) {
+        return;
+    }
 
-    EXPECT_EQ(0u, shootAt(tracer, 10.5f, 0.25f).geometry[0]);
-    EXPECT_EQ(1u, shootAt(tracer, 20.5f, 0.25f).geometry[0]);
+    tracer->update(scene.snapshot(), 1);
+
+    EXPECT_EQ(0u, shootAt(*tracer, 10.5f, 0.25f).geometry[0]);
+    EXPECT_EQ(1u, shootAt(*tracer, 20.5f, 0.25f).geometry[0]);
 }
 
-TEST(NatronUtilityTracer, EditingPointsRefitsWithoutRebuildingTheInstanceScene)
+TEST_P(NatronUtilityTracer, EditingPointsRefitsWithoutRebuildingTheInstanceScene)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { translation(10., 0., 0.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 2);
-    EXPECT_EQ(1u, tracer.stats().geometryBuilds);
-    EXPECT_EQ(1u, tracer.stats().instanceSceneBuilds);
-    EXPECT_EQ(0u, tracer.stats().geometryRefits);
-    EXPECT_EQ(0u, tracer.stats().instanceSceneUpdates);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 2);
+    EXPECT_EQ(1u, tracer->stats().geometryBuilds);
+    EXPECT_EQ(1u, tracer->stats().instanceSceneBuilds);
+    EXPECT_EQ(0u, tracer->stats().geometryRefits);
+    EXPECT_EQ(0u, tracer->stats().instanceSceneUpdates);
 
     scene.setPoints(id, quadPoints(2.f));
-    tracer.update(scene.snapshot(), 2);
-    EXPECT_EQ(1u, tracer.stats().geometryBuilds);
-    EXPECT_EQ(1u, tracer.stats().geometryRefits);
-    EXPECT_EQ(1u, tracer.stats().instanceSceneBuilds);
-    EXPECT_EQ(1u, tracer.stats().instanceSceneUpdates);
-    EXPECT_FLOAT_EQ(3.f, shootAt(tracer, 10.75f, 0.25f).t[0]);
+    tracer->update(scene.snapshot(), 2);
+    EXPECT_EQ(1u, tracer->stats().geometryBuilds);
+    EXPECT_EQ(1u, tracer->stats().geometryRefits);
+    EXPECT_EQ(1u, tracer->stats().instanceSceneBuilds);
+    EXPECT_EQ(1u, tracer->stats().instanceSceneUpdates);
+    EXPECT_FLOAT_EQ(3.f, shootAt(*tracer, 10.75f, 0.25f).t[0]);
 
     // The new points leave the old bounds, which a stale structure would fail to hit.
     VtVec3fArray wider = quadPoints();
@@ -327,28 +456,32 @@ TEST(NatronUtilityTracer, EditingPointsRefitsWithoutRebuildingTheInstanceScene)
         point[0] *= 10.f;
     }
     scene.setPoints(id, wider);
-    tracer.update(scene.snapshot(), 2);
-    EXPECT_EQ(2u, tracer.stats().geometryRefits);
-    EXPECT_EQ(1u, tracer.stats().instanceSceneBuilds);
-    EXPECT_EQ(0u, shootAt(tracer, 15.f, 0.1f).primitive[0]);
+    tracer->update(scene.snapshot(), 2);
+    EXPECT_EQ(2u, tracer->stats().geometryRefits);
+    EXPECT_EQ(1u, tracer->stats().instanceSceneBuilds);
+    EXPECT_EQ(0u, shootAt(*tracer, 15.f, 0.1f).primitive[0]);
 }
 
-TEST(NatronUtilityTracer, TheSameVersionDoesNoWork)
+TEST_P(NatronUtilityTracer, TheSameVersionDoesNoWork)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { GfMatrix4d(1.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 1);
+    if (!tracer) {
+        return;
+    }
 
-    const Tracer::Stats before = tracer.stats();
+    tracer->update(scene.snapshot(), 1);
 
-    tracer.update(scene.snapshot(), 1);
+    const Tracer::Stats before = tracer->stats();
 
-    const Tracer::Stats after = tracer.stats();
+    tracer->update(scene.snapshot(), 1);
+
+    const Tracer::Stats after = tracer->stats();
 
     EXPECT_EQ(before.geometryBuilds, after.geometryBuilds);
     EXPECT_EQ(before.geometryRefits, after.geometryRefits);
@@ -356,29 +489,33 @@ TEST(NatronUtilityTracer, TheSameVersionDoesNoWork)
     EXPECT_EQ(before.instanceSceneUpdates, after.instanceSceneUpdates);
 }
 
-TEST(NatronUtilityTracer, MovingAnInstanceRefitsTheInstanceScene)
+TEST_P(NatronUtilityTracer, MovingAnInstanceRefitsTheInstanceScene)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { GfMatrix4d(1.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 1);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 1);
     scene.setInstances(id, { translation(10., 0., 0.) });
-    tracer.update(scene.snapshot(), 1);
+    tracer->update(scene.snapshot(), 1);
 
-    EXPECT_EQ(1u, tracer.stats().geometryBuilds);
-    EXPECT_EQ(0u, tracer.stats().geometryRefits);
-    EXPECT_EQ(1u, tracer.stats().instanceSceneBuilds);
-    EXPECT_EQ(1u, tracer.stats().instanceSceneUpdates);
-    EXPECT_EQ(0u, shootAt(tracer, 10.75f, 0.25f).primitive[0]);
-    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
+    EXPECT_EQ(1u, tracer->stats().geometryBuilds);
+    EXPECT_EQ(0u, tracer->stats().geometryRefits);
+    EXPECT_EQ(1u, tracer->stats().instanceSceneBuilds);
+    EXPECT_EQ(1u, tracer->stats().instanceSceneUpdates);
+    EXPECT_EQ(0u, shootAt(*tracer, 10.75f, 0.25f).primitive[0]);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f).primitive[0]);
 }
 
 // Moves only refit; adding, removing or swapping what an instance places rebuilds.
-TEST(NatronUtilityTracer, OnlyMembershipChangesRebuildTheInstanceScene)
+TEST_P(NatronUtilityTracer, OnlyMembershipChangesRebuildTheInstanceScene)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId a = addQuad(scene, "/a");
@@ -387,98 +524,114 @@ TEST(NatronUtilityTracer, OnlyMembershipChangesRebuildTheInstanceScene)
     scene.setInstances(a, { translation(10., 0., 0.), translation(20., 0., 0.) });
     scene.setInstances(b, { translation(30., 0., 0.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 2);
-    EXPECT_EQ(1u, tracer.stats().instanceSceneBuilds);
-    EXPECT_EQ(0u, tracer.stats().instanceSceneUpdates);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 2);
+    EXPECT_EQ(1u, tracer->stats().instanceSceneBuilds);
+    EXPECT_EQ(0u, tracer->stats().instanceSceneUpdates);
 
     for (int step = 1; step <= 3; ++step) {
         const double offset = 100. * step;
 
         scene.setInstances(a, { translation(10. + offset, 0., 0.), translation(20., 0., 0.) });
         scene.setInstances(b, { translation(30. + offset, 0., 0.) });
-        tracer.update(scene.snapshot(), 2);
+        tracer->update(scene.snapshot(), 2);
 
         const float x = static_cast<float>(offset);
 
-        EXPECT_EQ(0u, shootAt(tracer, x + 10.75f, 0.25f).instance[0]) << step;
-        EXPECT_EQ(1u, shootAt(tracer, 20.75f, 0.25f).instance[0]) << step;
-        EXPECT_EQ(2u, shootAt(tracer, x + 30.75f, 0.25f).instance[0]) << step;
-        EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, x - 89.25f, 0.25f).primitive[0]) << step;
+        EXPECT_EQ(0u, shootAt(*tracer, x + 10.75f, 0.25f).instance[0]) << step;
+        EXPECT_EQ(1u, shootAt(*tracer, 20.75f, 0.25f).instance[0]) << step;
+        EXPECT_EQ(2u, shootAt(*tracer, x + 30.75f, 0.25f).instance[0]) << step;
+        EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, x - 89.25f, 0.25f).primitive[0]) << step;
     }
-    EXPECT_EQ(2u, tracer.stats().geometryBuilds);
-    EXPECT_EQ(0u, tracer.stats().geometryRefits);
-    EXPECT_EQ(1u, tracer.stats().instanceSceneBuilds);
-    EXPECT_EQ(3u, tracer.stats().instanceSceneUpdates);
+    EXPECT_EQ(2u, tracer->stats().geometryBuilds);
+    EXPECT_EQ(0u, tracer->stats().geometryRefits);
+    EXPECT_EQ(1u, tracer->stats().instanceSceneBuilds);
+    EXPECT_EQ(3u, tracer->stats().instanceSceneUpdates);
 
     scene.setInstances(b, { translation(330., 0., 0.), translation(40., 0., 0.) });
-    tracer.update(scene.snapshot(), 2);
-    EXPECT_EQ(2u, tracer.stats().instanceSceneBuilds);
-    EXPECT_EQ(3u, tracer.stats().instanceSceneUpdates);
-    EXPECT_EQ(3u, shootAt(tracer, 40.75f, 0.25f).instance[0]);
+    tracer->update(scene.snapshot(), 2);
+    EXPECT_EQ(2u, tracer->stats().instanceSceneBuilds);
+    EXPECT_EQ(3u, tracer->stats().instanceSceneUpdates);
+    EXPECT_EQ(3u, shootAt(*tracer, 40.75f, 0.25f).instance[0]);
 
     scene.setInstances(b, {});
-    tracer.update(scene.snapshot(), 2);
-    EXPECT_EQ(3u, tracer.stats().instanceSceneBuilds);
-    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 40.75f, 0.25f).primitive[0]);
+    tracer->update(scene.snapshot(), 2);
+    EXPECT_EQ(3u, tracer->stats().instanceSceneBuilds);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 40.75f, 0.25f).primitive[0]);
 }
 
-TEST(NatronUtilityTracer, NewTopologyRebuildsTheGeometryAndItsInstances)
+TEST_P(NatronUtilityTracer, NewTopologyRebuildsTheGeometryAndItsInstances)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { GfMatrix4d(1.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 1);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 1);
     scene.setTopology(id, quadPoints(), VtVec3iArray { GfVec3i(0, 1, 2) });
-    tracer.update(scene.snapshot(), 1);
+    tracer->update(scene.snapshot(), 1);
 
-    EXPECT_EQ(2u, tracer.stats().geometryBuilds);
-    EXPECT_EQ(2u, tracer.stats().instanceSceneBuilds);
-    EXPECT_EQ(0u, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
-    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 0.25f, 0.75f).primitive[0]);
+    EXPECT_EQ(2u, tracer->stats().geometryBuilds);
+    EXPECT_EQ(2u, tracer->stats().instanceSceneBuilds);
+    EXPECT_EQ(0u, shootAt(*tracer, 0.75f, 0.25f).primitive[0]);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.25f, 0.75f).primitive[0]);
 }
 
-TEST(NatronUtilityTracer, RemovedGeometryStopsDrawing)
+TEST_P(NatronUtilityTracer, RemovedGeometryStopsDrawing)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { GfMatrix4d(1.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 1);
-    EXPECT_EQ(0u, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 1);
+    EXPECT_EQ(0u, shootAt(*tracer, 0.75f, 0.25f).primitive[0]);
     scene.removeGeometry(id);
-    tracer.update(scene.snapshot(), 1);
-    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
+    tracer->update(scene.snapshot(), 1);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f).primitive[0]);
 }
 
-TEST(NatronUtilityTracer, AnEmptySceneMissesEverything)
+TEST_P(NatronUtilityTracer, AnEmptySceneMissesEverything)
 {
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
+    if (!tracer) {
+        return;
+    }
+
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f).primitive[0]);
 
     UtilityScene scene;
 
-    tracer.update(scene.snapshot(), 1);
-    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
+    tracer->update(scene.snapshot(), 1);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f).primitive[0]);
 
     const UtilityScene::GeometryId empty = scene.addGeometry(SdfPath("/empty"), 1);
 
     scene.setInstances(empty, { GfMatrix4d(1.) });
-    tracer.update(scene.snapshot(), 1);
-    EXPECT_EQ(0u, tracer.stats().geometryBuilds);
-    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
+    tracer->update(scene.snapshot(), 1);
+    EXPECT_EQ(0u, tracer->stats().geometryBuilds);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f).primitive[0]);
 }
 
-TEST(NatronUtilityTracer, TrianglesOutsideThePointsDoNotDraw)
+TEST_P(NatronUtilityTracer, TrianglesOutsideThePointsDoNotDraw)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/bad"), 1);
@@ -486,22 +639,30 @@ TEST(NatronUtilityTracer, TrianglesOutsideThePointsDoNotDraw)
     scene.setTopology(id, quadPoints(), VtVec3iArray { GfVec3i(0, 1, 9) });
     scene.setInstances(id, { GfMatrix4d(1.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 1);
-    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 1);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f).primitive[0]);
 }
 
-TEST(NatronUtilityTracer, AnswersOcclusionBatches)
+TEST_P(NatronUtilityTracer, AnswersOcclusionBatches)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
 
     scene.setInstances(id, { GfMatrix4d(1.) });
 
-    EmbreeTracer tracer;
+    const std::shared_ptr<Tracer> tracer = makeTracer();
 
-    tracer.update(scene.snapshot(), 1);
+    if (!tracer) {
+        return;
+    }
+
+    tracer->update(scene.snapshot(), 1);
 
     Rays rays;
 
@@ -511,14 +672,14 @@ TEST(NatronUtilityTracer, AnswersOcclusionBatches)
 
     std::vector<std::uint8_t> blocked(3, 7);
 
-    tracer.occluded(rays.batch(), blocked.data());
+    tracer->occluded(rays.batch(), blocked.data());
     EXPECT_EQ(1, blocked[0]);
     EXPECT_EQ(0, blocked[1]);
     EXPECT_EQ(0, blocked[2]);
 }
 
 // One thread and many must agree, and a build must finish whatever the budget.
-TEST(NatronUtilityTracer, AgreesAcrossThreadBudgets)
+TEST_P(NatronUtilityTracer, AgreesAcrossThreadBudgets)
 {
     for (const int threads : { 0, 1, 2, 64 }) {
         UtilityScene scene;
@@ -526,9 +687,193 @@ TEST(NatronUtilityTracer, AgreesAcrossThreadBudgets)
 
         scene.setInstances(id, { GfMatrix4d(1.) });
 
-        EmbreeTracer tracer;
+        const std::shared_ptr<Tracer> tracer = makeTracer();
 
-        tracer.update(scene.snapshot(), threads);
-        EXPECT_FLOAT_EQ(5.f, shootAt(tracer, 0.75f, 0.25f).t[0]) << threads;
+        if (!tracer) {
+            return;
+        }
+
+        tracer->update(scene.snapshot(), threads);
+        EXPECT_FLOAT_EQ(5.f, shootAt(*tracer, 0.75f, 0.25f).t[0]) << threads;
     }
 }
+
+namespace {
+// A 2x2-cell height field: rays falling steeply onto it meet the triangle they aim at before any other.
+VtVec3fArray
+tentPoints()
+{
+    VtVec3fArray points;
+
+    for (int y = 0; y <= 2; ++y) {
+        for (int x = 0; x <= 2; ++x) {
+            points.push_back(GfVec3f(static_cast<float>(x), static_cast<float>(y), 0.1f * static_cast<float>((x * 7 + y * 3) % 5)));
+        }
+    }
+
+    return points;
+}
+
+VtVec3iArray
+tentTriangles()
+{
+    VtVec3iArray triangles;
+
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            const int a = y * 3 + x;
+
+            triangles.push_back(GfVec3i(a, a + 1, a + 4));
+            triangles.push_back(GfVec3i(a, a + 4, a + 3));
+        }
+    }
+
+    return triangles;
+}
+
+struct Target {
+    VtVec3fArray points;
+    VtVec3iArray triangles;
+    GfMatrix4d transform;
+};
+} // anon namespace
+
+// Rays aim inside triangles, well clear of every edge, so both backends must report the same triangle;
+// the misses go between instances or end short of the surface.
+TEST_P(NatronUtilityTracer, AgreesWithEmbree)
+{
+    const std::shared_ptr<Tracer> tracer = makeTracer();
+
+    if (!tracer || GetParam() == Backend::Embree) {
+        return;
+    }
+
+    UtilityScene scene;
+    const UtilityScene::GeometryId tent = scene.addGeometry(SdfPath("/tent"), 1);
+    const UtilityScene::GeometryId quad = addQuad(scene, "/quad");
+    const GfMatrix4d turned = GfMatrix4d().SetScale(2.) * GfMatrix4d().SetRotate(GfRotation(GfVec3d(0., 0., 1.), 30.)) * translation(40., 5., -1.);
+    const std::vector<Target> targets = {
+        { tentPoints(), tentTriangles(), GfMatrix4d(1.) },
+        { tentPoints(), tentTriangles(), translation(20., 0., 1.) },
+        { tentPoints(), tentTriangles(), turned },
+        { quadPoints(), quadTriangles(), translation(60., 0., 0.) },
+        { quadPoints(), quadTriangles(), translation(80., 0., 0.5) },
+    };
+
+    scene.setTopology(tent, tentPoints(), tentTriangles());
+    scene.setInstances(tent, { targets[0].transform, targets[1].transform, targets[2].transform });
+    scene.setInstances(quad, { targets[3].transform, targets[4].transform });
+
+    std::mt19937 random(280);
+    std::uniform_real_distribution<double> corner(0.1, 0.8);
+    std::uniform_real_distribution<double> sideways(-0.3, 0.3);
+    std::vector<float> originX, originY, originZ, directionX, directionY, directionZ, tMin, tMax;
+    std::vector<std::uint32_t> aimedAt;
+
+    auto add = [&](const GfVec3d& origin, const GfVec3d& direction, float nearest, float farthest, std::uint32_t primitive) {
+        originX.push_back(static_cast<float>(origin[0]));
+        originY.push_back(static_cast<float>(origin[1]));
+        originZ.push_back(static_cast<float>(origin[2]));
+        directionX.push_back(static_cast<float>(direction[0]));
+        directionY.push_back(static_cast<float>(direction[1]));
+        directionZ.push_back(static_cast<float>(direction[2]));
+        tMin.push_back(nearest);
+        tMax.push_back(farthest);
+        aimedAt.push_back(primitive);
+    };
+
+    for (const Target& target : targets) {
+        for (std::size_t triangle = 0; triangle < target.triangles.size(); ++triangle) {
+            for (int sample = 0; sample < 4; ++sample) {
+                double u = corner(random);
+                double v = corner(random);
+
+                while (u + v > 0.9) {
+                    u = corner(random);
+                    v = corner(random);
+                }
+
+                const GfVec3i& corners = target.triangles[triangle];
+                const GfVec3d local = (1. - u - v) * GfVec3d(target.points[corners[0]]) + u * GfVec3d(target.points[corners[1]])
+                    + v * GfVec3d(target.points[corners[2]]);
+                const GfVec3d hit = target.transform.Transform(local);
+                const GfVec3d origin = hit + GfVec3d(sideways(random), sideways(random), 6.);
+                const std::uint32_t primitive = static_cast<std::uint32_t>(triangle);
+
+                // The hit lies at t = 1.
+                add(origin, hit - origin, 0.f, 10.f, primitive);
+                if (sample == 3) {
+                    add(origin, hit - origin, 0.f, 0.5f, Tracer::kNoHit);
+                    add(origin, hit - origin, 1.5f, 10.f, Tracer::kNoHit);
+                    add(origin + GfVec3d(10., 0., 0.), GfVec3d(0., 0., -1.), 0.f, 100.f, Tracer::kNoHit);
+                }
+            }
+        }
+    }
+
+    Tracer::RayBatch rays;
+
+    rays.originX = originX.data();
+    rays.originY = originY.data();
+    rays.originZ = originZ.data();
+    rays.directionX = directionX.data();
+    rays.directionY = directionY.data();
+    rays.directionZ = directionZ.data();
+    rays.tMin = tMin.data();
+    rays.tMax = tMax.data();
+    rays.count = originX.size();
+
+    EmbreeTracer reference;
+
+    ASSERT_TRUE(reference.update(scene.snapshot(), 2));
+    ASSERT_TRUE(tracer->update(scene.snapshot(), 2));
+
+    struct Results {
+        explicit Results(std::size_t count)
+            : t(count)
+            , u(count)
+            , v(count)
+            , geometry(count)
+            , instance(count)
+            , primitive(count)
+            , blocked(count, 7)
+        {
+            batch.t = t.data();
+            batch.u = u.data();
+            batch.v = v.data();
+            batch.geometry = geometry.data();
+            batch.instance = instance.data();
+            batch.primitive = primitive.data();
+        }
+
+        std::vector<float> t, u, v;
+        std::vector<std::uint32_t> geometry, instance, primitive;
+        std::vector<std::uint8_t> blocked;
+        Tracer::HitBatch batch;
+    };
+
+    Results expected(rays.count);
+    Results actual(rays.count);
+
+    reference.intersect(rays, expected.batch);
+    reference.occluded(rays, expected.blocked.data());
+    tracer->intersect(rays, actual.batch);
+    tracer->occluded(rays, actual.blocked.data());
+
+    for (std::size_t ray = 0; ray < rays.count; ++ray) {
+        ASSERT_EQ(aimedAt[ray], expected.primitive[ray]) << ray;
+        EXPECT_EQ(expected.geometry[ray], actual.geometry[ray]) << ray;
+        EXPECT_EQ(expected.instance[ray], actual.instance[ray]) << ray;
+        EXPECT_EQ(expected.primitive[ray], actual.primitive[ray]) << ray;
+        EXPECT_EQ(expected.blocked[ray], actual.blocked[ray]) << ray;
+        if (expected.primitive[ray] == Tracer::kNoHit) {
+            EXPECT_TRUE(std::isinf(actual.t[ray])) << ray;
+        } else {
+            EXPECT_NEAR(expected.t[ray], actual.t[ray], 1e-5f * std::abs(expected.t[ray])) << ray;
+            EXPECT_NEAR(expected.u[ray], actual.u[ray], 1e-4f) << ray;
+            EXPECT_NEAR(expected.v[ray], actual.v[ray], 1e-4f) << ray;
+        }
+    }
+}
+
+INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityTracer, ::testing::Values(Backend::Embree, Backend::Gpu));

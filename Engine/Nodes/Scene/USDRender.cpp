@@ -38,6 +38,10 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/Format.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
+#include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -55,6 +59,8 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 
 #include <pxr/usd/usd/primRange.h>
 
@@ -842,20 +848,52 @@ USDRender::render(const RenderActionArgs& args)
             }
         }
     }
-    // The render stands; what the delegate could not render, or logged as an error naming no prim
-    // of the scene, stays on the node until a render without it.
-    std::string warning = setup.warning;
-    if (!result.warning.empty()) {
-        warning = warning.empty() ? result.warning : warning + "\n" + result.warning;
-    }
-    if (!result.errors.empty()) {
-        setPersistentMessage(eMessageTypeError, warning.empty() ? result.errors : result.errors + "\n" + warning);
-    } else {
-        showWarning(warning);
-    }
+    showRenderMessages(setup.warning, result.warning, result.errors, result.device);
 
     return eStatusOK;
 } // USDRender::render
+
+void
+USDRender::showRenderMessages(const std::string& setupWarning,
+                              const std::string& resultWarning,
+                              const std::string& errors,
+                              const std::string& device)
+{
+    // The render stands; what the delegate could not render, or logged as an error naming no prim
+    // of the scene, stays on the node until a render without it.
+    std::string warning = setupWarning;
+    if (!resultWarning.empty()) {
+        warning = warning.empty() ? resultWarning : warning + "\n" + resultWarning;
+    }
+    const std::string rendered = device.empty() ? std::string() : "Rendered on " + device + ".";
+    if (!errors.empty()) {
+        setPersistentMessage(eMessageTypeError, warning.empty() ? errors : errors + "\n" + warning);
+    } else if (!warning.empty()) {
+        showWarning(rendered.empty() ? warning : warning + "\n" + rendered);
+    } else if (!rendered.empty()) {
+        setPersistentMessage(eMessageTypeInfo, rendered);
+    } else {
+        showWarning(warning);
+    }
+}
+
+std::string
+USDRender::utilityDevice(double time,
+                         ViewIdx view) const
+{
+    ActiveSettings active;
+    std::string error;
+    if (!readActiveSettings(time, view, &active, &error) || !active.prim) {
+        return kUtilityDeviceAuto;
+    }
+    const RenderSettingsPrim::Values values = RenderSettingsPrim::settings(active.prim.GetPrim(), kRenderDelegateUtilityId, active.time);
+    const RenderSettingsPrim::Values::const_iterator found = values.find(kUtilitySettingDevice);
+    if ((found == values.end()) || !found->second.IsHolding<PXR_NS::TfToken>()) {
+        return kUtilityDeviceAuto;
+    }
+
+    return found->second.UncheckedGet<PXR_NS::TfToken>().GetString();
+}
 
 void
 USDRender::showWarning(const std::string& warning)
@@ -891,10 +929,32 @@ USDRender::canRenderOnGpu(const GpuQuery& query) const
     if ((query.bitDepth != eImageBitDepthFloat) || (!query.plane.isColorLayer() && (layerID != "depth") && (layerID != "primId"))) {
         return false;
     }
-    // Only Storm renders into GL; the other delegates' host pixels are read back by render().
     std::string renderer;
     std::string error;
-    if (!activeRenderer(query.time, query.view, &renderer, &error) || !RenderDelegates::isStorm(renderer)) {
+    if (!activeRenderer(query.time, query.view, &renderer, &error)) {
+        return false;
+    }
+    // Natron Utility keeps a GPU frame's colour on the device, where renderGpu() copies it from.
+    if (renderer == kRenderDelegateUtilityId) {
+        if (!query.plane.isColorLayer() || (utilityDevice(query.time, query.view) == kUtilityDeviceCpu)) {
+            return false;
+        }
+        // Asked while the frame is being planned, so it neither waits for the GPU nor recovers a lost one:
+        // the render itself does both, and a frame asked before then renders on the CPU.
+        GpuContext* context = appPTR ? appPTR->getGpuContext() : nullptr;
+        if (!context || context->isInitializing() || !context->isAvailable()) {
+            return false;
+        }
+        const std::shared_ptr<void> hold = context->holdRuntime();
+        gpu::GpuRuntime* runtime = hold ? context->runtime() : nullptr;
+        if (!runtime || runtime->isLost() || !WavefrontGpu::missingSupport(*runtime).empty()) {
+            return false;
+        }
+
+        return !HydraRender::deviceFrameFellBack(this, context->generation(), utilityGpuBudget(), utilityDevice(query.time, query.view));
+    }
+    // Only Storm renders into GL; the other delegates' host pixels are read back by render().
+    if (!RenderDelegates::isStorm(renderer)) {
         return false;
     }
 
@@ -925,6 +985,17 @@ USDRender::renderGpu(const GpuRenderArgs& args)
     window.y1 = args.outputRect.y1 - setup.pixels.y1;
     window.x2 = args.outputRect.x2 - setup.pixels.x1;
     window.y2 = args.outputRect.y2 - setup.pixels.y1;
+    if (setup.request.renderer == kRenderDelegateUtilityId) {
+        setup.request.aborted = [this]() { return aborted(); };
+        setup.request.threads = appPTR->getNCPUsAvailableForEffect();
+        HydraRender::Result info;
+        if (!HydraRender::recordDeviceWindow(setup.request, window, args.context, args.output, args.outputRect, &info, &error)) {
+            return eStatusFailed;
+        }
+        showRenderMessages(setup.warning, info.warning, info.errors, info.device);
+
+        return eStatusOK;
+    }
     if (!HydraHandoff::instance().record(setup.request, window, args.context, args.output, args.outputRect, &error)) {
         return eStatusFailed;
     }

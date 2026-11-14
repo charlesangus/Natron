@@ -351,6 +351,7 @@ struct EmbreeTracer::Implementation {
         releaseInstanceScene();
         placements.clear();
         synced = false;
+        stopped = true;
 
         return false;
     }
@@ -365,6 +366,9 @@ struct EmbreeTracer::Implementation {
     std::vector<std::uint32_t> instanceGeometry;
     std::uint64_t version = 0;
     bool synced = false;
+    // Embree's errors go to reportEmbreeError, which warns and lets the update go on, so only a stop
+    // ends one early.
+    bool stopped = false;
     Stats counters;
 };
 
@@ -384,6 +388,7 @@ EmbreeTracer::update(const UtilityScene::Snapshot& snapshot,
 {
     Implementation& imp = *_imp;
 
+    imp.stopped = false;
     if (imp.synced && imp.version == snapshot.version) {
         return true;
     }
@@ -579,6 +584,16 @@ Tracer::Stats
 EmbreeTracer::stats() const
 {
     return _imp->counters;
+}
+
+Tracer::Outcome
+EmbreeTracer::status() const
+{
+    if (_imp->stopped) {
+        return Outcome { Status::Stopped, "EmbreeTracer: the update was stopped" };
+    }
+
+    return Outcome();
 }
 
 NATRON_NAMESPACE_EXIT

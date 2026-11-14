@@ -39,9 +39,11 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -83,8 +85,25 @@
 #include "ofxNatron.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/AbortableRenderInfo.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/Gpu/GpuBufferPool.h"
 #include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/GpuPlacement.h"
+#include "Engine/GpuRegionStrips.h"
+#include "Engine/Image.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Engine/ParallelRenderArgs.h"
+#include "Engine/RenderScheduler.h"
+#include "Engine/RenderStats.h"
+#include "Engine/TimeLine.h"
+#include "Gpu/GpuTestDevice.h"
 #endif
 
 NATRON_NAMESPACE_USING
@@ -1258,6 +1277,423 @@ TEST_F(USDRenderRendererTest, ThePurposeKnobsDefaultToRenderOnlyAndChooseWhatEac
     expectToggles();
 }
 
+#ifdef NATRON_HAVE_GPU
+namespace {
+// Puts a forced GPU context in the application's place while it lives, since the application's may
+// refuse a CPU-type device. The Utility engines hold the context's runtime, so they go first. A non-zero
+// poolBudget caps the runtime's buffer pool, so that a frame runs out of device memory.
+class OwnGpuContext {
+public:
+    explicit OwnGpuContext(std::uint64_t poolBudget = 0)
+    {
+        GpuContextOptions options;
+        std::shared_ptr<std::string> logged = std::make_shared<std::string>();
+
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        options.infoLog = [logged](const std::string& line) {
+            *logged = line;
+        };
+
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            unavailable = logged->empty() ? std::string("the GPU context did not come up") : *logged;
+
+            return;
+        }
+        if (poolBudget) {
+            own->runtime()->pool().setUserBudget(poolBudget);
+        }
+        _saved = appPTR->swapGpuContextForTests(std::move(own));
+        _swapped = true;
+    }
+
+    ~OwnGpuContext()
+    {
+        HydraRender::releaseAll();
+        appPTR->clearAllCaches();
+        if (_swapped) {
+            appPTR->swapGpuContextForTests(std::move(_saved));
+        }
+    }
+
+    gpu::GpuRuntime* runtime() const
+    {
+        return _swapped ? appPTR->getGpuContext()->runtime() : nullptr;
+    }
+
+    std::string unavailable;
+
+private:
+    std::unique_ptr<GpuContext> _saved;
+    bool _swapped = false;
+};
+
+const std::uint64_t kStarvedPoolBytes = 1024;
+} // anon namespace
+
+TEST_F(USDRenderRendererTest, AnAutoUtilityRenderThatFallsBackToTheCpuWarnsOnTheNode)
+{
+    OwnGpuContext gpu(kStarvedPoolBytes);
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    NodePtr node = createRender();
+    ASSERT_TRUE(bool(node));
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateUtilityId));
+    HydraRender::releaseAll();
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+    ASSERT_TRUE(node->hasPersistentMessage());
+
+    QString message;
+    int type = -1;
+
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("out of memory"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Rendered on CPU"))) << message.toStdString();
+    HydraRender::releaseAll();
+}
+
+namespace {
+struct SchedulerFrame {
+    AbortableRenderInfoPtr abortInfo;
+    RenderStatsPtr stats;
+    FrameRenderContextPtr context;
+    FrameFuturePtr future;
+};
+} // anon namespace
+
+class USDRenderUtilityGpuTest
+    : public USDRenderRendererTest {
+protected:
+    // Sets the Device menu the settings node shows for Natron Utility to the entry device.
+    static bool selectUtilityDevice(const NodePtr& settings,
+                                    const std::string& device)
+    {
+        const USDRenderSettings* effect = dynamic_cast<const USDRenderSettings*>(settings->getEffectInstance().get());
+        const RenderSettingsKnobs* knobs = effect ? effect->renderSettings() : nullptr;
+
+        if (!knobs) {
+            return false;
+        }
+        for (const std::pair<std::string, std::string>& setting : knobs->audit(kRenderDelegateUtilityId)) {
+            if (setting.first == kUtilitySettingDevice) {
+                KnobChoice* knob = dynamic_cast<KnobChoice*>(settings->getKnobByName(setting.second).get());
+
+                return knob && selectRenderer(knob, device);
+            }
+        }
+
+        return false;
+    }
+
+    // Renders root's colour over the format as a frame of the scheduler, with the tasks of gpuNodes
+    // placed on the GPU as placeGraph() would if every region were accepted.
+    bool renderFrame(const NodePtr& root,
+                     const std::vector<NodePtr>& gpuNodes,
+                     SchedulerFrame* run,
+                     std::string* error)
+    {
+        const double time = 1.;
+
+        run->abortInfo = AbortableRenderInfo::create(true, 0);
+        run->stats = std::make_shared<RenderStats>(false);
+
+        ParallelRenderArgsSetter frameArgs(time, ViewIdx(0), false, false, run->abortInfo, root, 0, getApp()->getTimeLine().get(), NodePtr(), false, false, run->stats);
+        std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+
+        if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0, RectD(0, 0, kWidth, kHeight), root, *request) == eStatusFailed) {
+            *error = "the request pass failed";
+
+            return false;
+        }
+        frameArgs.updateNodesRequest(*request);
+        run->context = FrameRenderContext::create(time, ViewIdx(0), false, false, run->abortInfo, root, 0, getApp()->getTimeLine().get(), NodePtr(), false, false, run->stats);
+        run->context->setRequest(request);
+
+        FrameGraph graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), 0);
+
+        if (graph.tasks.empty()) {
+            *error = "the frame has no task";
+
+            return false;
+        }
+        // A root nobody consumes asks for every plane it produces, and a task of several planes stays on the CPU;
+        // the viewer narrows its root to the plane it shows the same way.
+        graph.tasks.front().components = std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents());
+
+        std::set<const Node*> onGpu;
+
+        for (const NodePtr& node : gpuNodes) {
+            onGpu.insert(node.get());
+        }
+
+        const FrameRenderContextPtr context = run->context;
+        PlacementInputs inputs;
+
+        inputs.canRenderOnGpu = [onGpu, context](const FrameGraph::Task& task, GpuRefusal*) {
+            GpuQuery query;
+            const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(task.key.node->getEffectInstance().get());
+
+            return onGpu.count(task.key.node.get()) && makeGpuQueryForTask(task, *context, &query) && native && native->canRenderOnGpu(query);
+        };
+        placeGraph(graph, inputs);
+        run->future = appPTR->getRenderScheduler()->submit(run->context, std::move(graph), RenderScheduler::Priority::Interactive);
+        if (run->future->wait() != EffectInstance::eRenderRoIRetCodeOk) {
+            *error = "the frame failed";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    static int gpuRunsOf(const SchedulerFrame& run,
+                         const NodePtr& node)
+    {
+        const std::map<std::string, int> runs = run.stats->getGpuTasksPerNode();
+        const std::map<std::string, int>::const_iterator found = runs.find(node->getScriptName_mt_safe());
+
+        return (found == runs.end()) ? 0 : found->second;
+    }
+
+    // The frame's root colour as float RGBA rows from the bottom one, empty if it has none.
+    static std::vector<float> rootRgba(const SchedulerFrame& run)
+    {
+        const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
+
+        if (planes.empty() || !planes.begin()->second || (planes.begin()->second->getBitDepth() != eImageBitDepthFloat)) {
+            return std::vector<float>();
+        }
+
+        const ImagePtr& image = planes.begin()->second;
+        const int nComps = (int)image->getComponentsCount();
+        std::vector<float> out((std::size_t)kWidth * kHeight * 4, 0.f);
+        Image::ReadAccess access = image->getReadRights();
+
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const float* pixel = (const float*)access.pixelAt(x, y);
+
+                if (!pixel) {
+                    continue;
+                }
+                for (int c = 0; c < std::min(nComps, 4); ++c) {
+                    out[((std::size_t)y * kWidth + x) * 4 + c] = pixel[c];
+                }
+            }
+        }
+
+        return out;
+    }
+};
+
+// A GPU frame's colour stays on the device: a GPU Grade reads it there, so the frame downloads only
+// its root, and a CPU render downloads the same pixels from the device when it maps them.
+TEST_F(USDRenderUtilityGpuTest, AGpuGradeReadsTheGpuFrameOnTheDeviceAndTheCpuMapsTheSamePixels)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    NodePtr settings;
+    NodePtr render = createRender(kFixture, &settings);
+
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(selectRenderer(rendererKnob(render), kRenderDelegateUtilityId));
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceGpu));
+
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
+
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(setKnobValues(grade, "multiply", { 2., 2., 2., 2. }));
+    ASSERT_TRUE(setKnobValues(grade, "offset", { 0.1, 0.1, 0.1, 0.1 }));
+    connectNodes(render, grade, 0, true);
+    HydraRender::releaseAll();
+
+    const std::uint64_t mapped = UtilityRenderBuffer::deviceDownloadCount();
+    SchedulerFrame graded;
+    std::string error;
+
+    ASSERT_TRUE(renderFrame(grade, { render, grade }, &graded, &error)) << error;
+    EXPECT_LT(0, gpuRunsOf(graded, render));
+    EXPECT_LT(0, gpuRunsOf(graded, grade));
+    EXPECT_EQ(0, graded.stats->getUploadCount());
+    EXPECT_EQ(1, graded.stats->getDownloadCount()) << "only the root comes back to the host";
+    EXPECT_EQ(0, graded.context->getStore().downloadCount());
+    EXPECT_EQ(mapped, UtilityRenderBuffer::deviceDownloadCount()) << "the film was mapped on the host";
+
+    SchedulerFrame plain;
+
+    ASSERT_TRUE(renderFrame(render, { render }, &plain, &error)) << error;
+    EXPECT_LT(0, gpuRunsOf(plain, render));
+    EXPECT_EQ(mapped, UtilityRenderBuffer::deviceDownloadCount()) << "the film was mapped on the host";
+
+    const std::vector<float> onGpu = rootRgba(plain);
+    const std::vector<float> gradedOnGpu = rootRgba(graded);
+    std::vector<RenderedPlane> planes;
+
+    ASSERT_TRUE(renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+    EXPECT_GT(UtilityRenderBuffer::deviceDownloadCount(), mapped) << "the CPU render did not map a GPU frame";
+    ASSERT_EQ(1u, planes.size());
+
+    const std::vector<float>& onCpu = planes.front().pixels;
+
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 4, onCpu.size());
+    ASSERT_EQ(onCpu.size(), onGpu.size());
+    ASSERT_EQ(onCpu.size(), gradedOnGpu.size());
+    EXPECT_EQ(0, std::memcmp(onCpu.data(), onGpu.data(), onCpu.size() * sizeof(float)));
+
+    std::size_t covered = 0;
+
+    for (std::size_t i = 0; i < onCpu.size(); i += 4) {
+        covered += (onCpu[i + 3] > 0.f) ? 1 : 0;
+        for (std::size_t c = 0; c < 3; ++c) {
+            const float want = 2.f * onCpu[i + c] + 0.1f;
+
+            ASSERT_NEAR(want, gradedOnGpu[i + c], 1e-5f * std::max(1.f, std::fabs(want))) << "pixel " << (i / 4) << " channel " << c;
+        }
+    }
+    EXPECT_GT(covered, 100u) << "the frame is empty, which proves nothing";
+}
+
+// An Auto frame that ran out of GPU memory keeps later Auto frames off the GPU, but not a frame the
+// Device setting forces onto it.
+TEST_F(USDRenderUtilityGpuTest, AnAutoFallbackDoesNotRefuseAForcedGpuRender)
+{
+    OwnGpuContext gpu(kStarvedPoolBytes);
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    NodePtr settings;
+    NodePtr render = createRender(kFixture, &settings);
+
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(selectRenderer(rendererKnob(render), kRenderDelegateUtilityId));
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceAuto));
+    HydraRender::releaseAll();
+
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(render->getEffectInstance().get());
+
+    ASSERT_TRUE(native);
+
+    GpuQuery query;
+
+    query.time = 1.;
+    query.view = ViewIdx(0);
+    query.plane = ImageLayerDesc::getRGBAComponents();
+    query.nComps = 4;
+    query.bitDepth = eImageBitDepthFloat;
+    ASSERT_TRUE(native->canRenderOnGpu(query));
+
+    SchedulerFrame run;
+    std::string error;
+
+    ASSERT_TRUE(renderFrame(render, { render }, &run, &error)) << error;
+    ASSERT_FALSE(native->canRenderOnGpu(query)) << "the Auto frame did not fall back to the CPU, which proves nothing";
+
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceGpu));
+    EXPECT_TRUE(native->canRenderOnGpu(query)) << "an Auto fallback refused a frame forced onto the GPU";
+
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceAuto));
+    EXPECT_FALSE(native->canRenderOnGpu(query));
+    HydraRender::releaseAll();
+}
+
+namespace {
+// Forces the GPU regions into strips of rows rows while it lives. The row cap alone only bounds the
+// height of strips a region already needs, so the buffer range is capped below a whole RGBA frame too.
+class StripRows {
+public:
+    explicit StripRows(int rows)
+    {
+        const std::uint64_t wholeFrameBytes = (std::uint64_t)kWidth * kHeight * 4 * sizeof(float);
+
+        setGpuStripOverridesForTests(wholeFrameBytes / 2, rows);
+    }
+
+    ~StripRows()
+    {
+        setGpuStripOverridesForTests(0, 0);
+    }
+};
+} // anon namespace
+
+// Each strip of a region copies its window out of one GPU frame, so the frame renders once however
+// many strips there are, and gives the pixels the CPU maps.
+TEST_F(USDRenderUtilityGpuTest, AStrippedRegionRendersTheUtilityFrameOnce)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    NodePtr settings;
+    NodePtr render = createRender(kFixture, &settings);
+
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(selectRenderer(rendererKnob(render), kRenderDelegateUtilityId));
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceGpu));
+    HydraRender::releaseAll();
+
+    const std::uint64_t renders = HydraRender::getEngineRenderCount();
+    SchedulerFrame stripped;
+    std::string error;
+
+    {
+        const StripRows strips(32);
+
+        ASSERT_TRUE(renderFrame(render, { render }, &stripped, &error)) << error;
+    }
+    EXPECT_LT(0, gpuRunsOf(stripped, render));
+    EXPECT_GT(stripped.stats->getDownloadCount(), 1) << "the region did not run as strips";
+    EXPECT_EQ(renders + 1, HydraRender::getEngineRenderCount()) << "the strips did not share one frame";
+
+    const std::vector<float> onGpu = rootRgba(stripped);
+    std::vector<RenderedPlane> planes;
+
+    ASSERT_TRUE(renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+
+    const std::vector<float>& onCpu = planes.front().pixels;
+
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 4, onCpu.size());
+    ASSERT_EQ(onCpu.size(), onGpu.size());
+    EXPECT_EQ(0, std::memcmp(onCpu.data(), onGpu.data(), onCpu.size() * sizeof(float)));
+}
+#endif // NATRON_HAVE_GPU
+
 TEST_F(USDRenderRendererTest, TheMetadataFollowsThePurposeKnobs)
 {
     NodePtr node = createRender(kPurposeFixture);
@@ -1426,3 +1862,234 @@ TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesEnginesAndPooledBuffers)
     HydraRender::releaseAll();
     EXPECT_EQ(0u, HydraRender::getEngineCount());
 }
+
+#ifdef NATRON_HAVE_GPU
+// Free GPU Memory has a Natron Utility engine, which renders on a thread of its own, give back its
+// tracer and its film, and empties the pool of them once it did; the engine itself stays.
+TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesNatronUtilityGpuMemory)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &owner);
+    request.renderer = kRenderDelegateUtilityId;
+    request.settings[kUtilitySettingDevice] = PXR_NS::VtValue(PXR_NS::TfToken(kUtilityDeviceGpu));
+    HydraRender::Result result;
+    std::string error;
+
+    HydraRender::releaseAll();
+    gpu.runtime()->pool().trim();
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    ASSERT_EQ(0u, result.device.rfind("GPU", 0)) << result.device;
+    const std::size_t engines = HydraRender::getCpuEngineCount();
+    EXPECT_GT(gpu.runtime()->pool().stats().liveBytes, 0u);
+
+    appPTR->freeGpuMemory();
+    // Waits for the engine's thread to run what Free GPU Memory queued on it.
+    EXPECT_EQ(engines, HydraRender::getCpuEngineCount());
+
+    const gpu::GpuBufferPoolStats freed = gpu.runtime()->pool().stats();
+
+    EXPECT_EQ(0u, freed.liveBytes);
+    EXPECT_EQ(0u, freed.pooledBytes);
+
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+
+    error.clear();
+    request.time = PXR_NS::UsdTimeCode(2.);
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    EXPECT_EQ(0u, result.device.rfind("GPU", 0)) << result.device;
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+
+    const Coverage box = coverageOf("/World/Box", kWidth, kHeight, result.primId, result.depth, result.rgba);
+
+    EXPECT_GT(box.count, 100);
+    HydraRender::release(&owner);
+    // Waits for the engine, which holds the context's runtime, to go before the context does.
+    EXPECT_EQ(engines - 1, HydraRender::getCpuEngineCount());
+}
+
+namespace {
+typedef HydraRender::ProgressiveRender ProgressiveRender;
+
+const std::chrono::seconds kProgressiveTimeout(60);
+
+// Renders the reference scene through the 3D viewer's progressive engine with Natron Utility forced onto the GPU,
+// its colour left on the device as the viewer asks for it.
+void
+startUtilityOnGpu(ProgressiveRender& render,
+                  const PXR_NS::UsdStageRefPtr& stage,
+                  const void* owner)
+{
+    ProgressiveRender::View view;
+
+    view.frustum = referenceRequest(stage, 1., owner).frustum;
+    view.width = kWidth;
+    view.height = kHeight;
+    view.time = PXR_NS::UsdTimeCode(1.);
+    RenderDelegates::list();
+    render.setDeviceColor(true);
+    render.setSettings({ { kUtilitySettingDevice, PXR_NS::VtValue(PXR_NS::TfToken(kUtilityDeviceGpu)) } });
+    render.setRenderer(kRenderDelegateUtilityId);
+    render.setThreads([]() { return 0; });
+    render.setView(view);
+}
+
+// The converged frame of a restart at least as late as minRestart, null with *error set when the render fails
+// or does not converge in time.
+std::shared_ptr<const ProgressiveRender::Frame>
+convergedFrame(const ProgressiveRender& render,
+               std::uint64_t minRestart,
+               std::string* error)
+{
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kProgressiveTimeout;
+
+    while (std::chrono::steady_clock::now() < end) {
+        const ProgressiveRender::Status status = render.getStatus();
+        const std::shared_ptr<const ProgressiveRender::Frame> frame = render.getFrame();
+
+        if (!status.error.empty()) {
+            *error = status.error;
+
+            return std::shared_ptr<const ProgressiveRender::Frame>();
+        }
+        if (status.converged && frame && frame->converged && (frame->restart == status.restarts) && (status.restarts >= minRestart)) {
+            return frame;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    *error = "the render did not converge in " + std::to_string(kProgressiveTimeout.count()) + " s";
+
+    return std::shared_ptr<const ProgressiveRender::Frame>();
+}
+} // anon namespace
+
+// The 3D viewer's Natron Utility engine renders nothing more once converged, so Free GPU Memory has its own
+// worker give its GPU memory back; the frame shown is published again from host memory.
+TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesAProgressiveNatronUtilityRendersGpuMemory)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    std::mutex stageLock;
+    ProgressiveRender render(&stageLock, [stage]() { return stage; }, std::function<void()>(), 0.05f);
+    std::string error;
+
+    HydraRender::releaseAll();
+    gpu.runtime()->pool().trim();
+    startUtilityOnGpu(render, stage, &owner);
+
+    const std::shared_ptr<const ProgressiveRender::Frame> first = convergedFrame(render, 1, &error);
+
+    ASSERT_TRUE(bool(first)) << error;
+    ASSERT_TRUE(bool(first->deviceColor)) << "the frame is not on the GPU";
+
+    std::vector<unsigned char> before;
+
+    ASSERT_TRUE(render.hostColor(*first, &before, &error)) << error;
+    EXPECT_GT(gpu.runtime()->pool().stats().liveBytes, 0u);
+
+    appPTR->freeGpuMemory();
+
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kProgressiveTimeout;
+    gpu::GpuBufferPoolStats freed = gpu.runtime()->pool().stats();
+    std::shared_ptr<const ProgressiveRender::Frame> hosted = render.getFrame();
+
+    while (((freed.liveBytes != 0) || (freed.pooledBytes != 0) || !hosted || hosted->deviceColor) && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        freed = gpu.runtime()->pool().stats();
+        hosted = render.getFrame();
+    }
+    EXPECT_EQ(0u, freed.liveBytes) << "the frame held here keeps no film";
+    EXPECT_EQ(0u, freed.pooledBytes);
+    ASSERT_TRUE(bool(hosted));
+    EXPECT_FALSE(bool(hosted->deviceColor));
+    EXPECT_EQ(first->restart, hosted->restart);
+    EXPECT_TRUE(hosted->rgba == before) << "the frame published again is not the one shown";
+
+    render.invalidate();
+
+    const std::shared_ptr<const ProgressiveRender::Frame> again = convergedFrame(render, first->restart + 1, &error);
+
+    ASSERT_TRUE(bool(again)) << error;
+    EXPECT_TRUE(bool(again->deviceColor)) << "the render after Free GPU Memory is not on the GPU";
+}
+
+// A converged progressive Natron Utility render issues no further frame that would notice a lost device, so the
+// loss releaser has its worker drop the runtime it holds, and the runtime recovers.
+TEST_F(USDRenderNodeTest, AConvergedProgressiveNatronUtilityRenderLetsALostGpuRecover)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    std::mutex stageLock;
+    ProgressiveRender render(&stageLock, [stage]() { return stage; }, std::function<void()>(), 0.05f);
+    std::string error;
+
+    HydraRender::releaseAll();
+    startUtilityOnGpu(render, stage, &owner);
+
+    const std::shared_ptr<const ProgressiveRender::Frame> first = convergedFrame(render, 1, &error);
+
+    ASSERT_TRUE(bool(first)) << error;
+    ASSERT_TRUE(bool(first->deviceColor)) << "the frame is not on the GPU";
+
+    GpuContext* context = appPTR->getGpuContext();
+    gpu::GpuRuntime* runtime = gpu.runtime();
+    const std::uint64_t generation = context->generation();
+
+    runtime->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 1);
+
+    gpu::GpuBufferHandle handle;
+
+    EXPECT_EQ(VK_ERROR_DEVICE_LOST, runtime->acquire(1 << 20, handle).result);
+    ASSERT_TRUE(runtime->isLost());
+
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kProgressiveTimeout;
+    bool recovered = context->recoverIfLost();
+
+    while (!recovered && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        recovered = context->recoverIfLost();
+    }
+    ASSERT_TRUE(recovered) << "the progressive render kept the lost runtime";
+    EXPECT_NE(generation, context->generation());
+
+    render.invalidate();
+
+    const std::shared_ptr<const ProgressiveRender::Frame> again = convergedFrame(render, first->restart + 1, &error);
+
+    ASSERT_TRUE(bool(again)) << error;
+    EXPECT_TRUE(bool(again->deviceColor)) << "the render after the recovery is not on the GPU";
+}
+#endif

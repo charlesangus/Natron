@@ -104,6 +104,8 @@ namespace {
         VkPhysicalDeviceVulkan11Features f11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
         VkPhysicalDeviceVulkan12Features f12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
         VkPhysicalDeviceVulkan13Features f13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR accel { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
+        VkPhysicalDeviceRayQueryFeaturesKHR rayQuery { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR };
         VkPhysicalDeviceFeatures2 f2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
 
         Features()
@@ -111,6 +113,12 @@ namespace {
             f2.pNext = &f11;
             f11.pNext = &f12;
             f12.pNext = &f13;
+        }
+        // The extension structs may only be chained on a device that exposes their extensions.
+        void chainRayQuery()
+        {
+            f13.pNext = &accel;
+            accel.pNext = &rayQuery;
         }
         Features(const Features&) = delete;
         Features& operator=(const Features&) = delete;
@@ -569,6 +577,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     optional(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, dev->info_.externalSemaphoreFd);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev->info_.externalMemoryHost);
     optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev->info_.memoryBudget);
+    const bool rayQueryExtensions = hasName(exts, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)
+        && hasName(exts, VK_KHR_RAY_QUERY_EXTENSION_NAME)
+        && hasName(exts, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     if (!options.disablePushDescriptor) {
         optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, dev->info_.pushDescriptor);
     }
@@ -600,14 +611,31 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     }
 
     Features avail;
+    if (rayQueryExtensions) {
+        avail.chainRayQuery();
+    }
     vkGetPhysicalDeviceFeatures2(dev->physical_, &avail.f2);
     dev->info_.shaderFloat16 = avail.f12.shaderFloat16 == VK_TRUE;
+    // Every kernel other than the ray-traced ones runs without these, so a device lacking any of them stays on the
+    // plain feature set and keeps allocations free of device-address flags.
+    dev->info_.rayQuery = rayQueryExtensions && !envFlag("NATRON_GPU_NO_RAY_QUERY")
+        && avail.accel.accelerationStructure == VK_TRUE && avail.rayQuery.rayQuery == VK_TRUE
+        && avail.f12.bufferDeviceAddress == VK_TRUE;
 
     Features want;
     want.f11.storageBuffer16BitAccess = VK_TRUE;
     want.f12.timelineSemaphore = VK_TRUE;
     want.f12.shaderFloat16 = avail.f12.shaderFloat16;
     want.f13.synchronization2 = VK_TRUE;
+    if (dev->info_.rayQuery) {
+        want.chainRayQuery();
+        want.accel.accelerationStructure = VK_TRUE;
+        want.rayQuery.rayQuery = VK_TRUE;
+        want.f12.bufferDeviceAddress = VK_TRUE;
+        enabled.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        enabled.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        enabled.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    }
 
     const float prios[3] = { 1.0f, 1.0f, 1.0f };
     std::vector<VkDeviceQueueCreateInfo> qcis;
@@ -675,6 +703,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     aci.vulkanApiVersion = VK_API_VERSION_1_3;
     if (dev->info_.memoryBudget) {
         aci.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+    }
+    if (dev->info_.rayQuery) {
+        aci.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     }
     r = vmaCreateAllocator(&aci, &dev->allocator_);
     if (r != VK_SUCCESS) {

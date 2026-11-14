@@ -52,6 +52,7 @@ public:
     virtual void occluded(const RayBatch& rays,
                           std::uint8_t* blocked) const OVERRIDE;
     virtual Stats stats() const OVERRIDE;
+    virtual Outcome status() const OVERRIDE;
 
 private:
     struct Implementation;

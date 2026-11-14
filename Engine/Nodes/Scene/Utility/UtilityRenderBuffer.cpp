@@ -39,12 +39,35 @@
 
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 
+#ifdef NATRON_HAVE_GPU
+#include <array>
+#include <limits>
+#include <span>
+#include <utility>
+
+#include "Engine/Gpu/GpuBuffer.h"
+#include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuDevice.h"
+#include "Engine/Gpu/GpuKernel.h"
+#include "Engine/Gpu/GpuKernelRegistry.h"
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/GpuContext.h"
+
+#include "utility_film_clear_spirv.h"
+#include "utility_film_pack_spirv.h"
+#include "utility_film_scatter_spirv.h"
+#endif
+
 PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
 std::atomic<int> gLiveBuffers { 0 };
+std::atomic<std::uint64_t> gDeviceDownloads { 0 };
+
+// Device films hold RGBA floats.
+const std::size_t kFilmPixelBytes = 4 * sizeof(float);
 
 // Clear values arrive as whichever type the AOV's descriptor was given.
 std::vector<double>
@@ -113,7 +136,431 @@ encodeComponent(HdFormat componentFormat,
         break;
     }
 }
+#ifdef NATRON_HAVE_GPU
+// Kernels/FilmClear.slang, FilmScatter.slang and FilmPack.slang declare these push constants.
+struct KernelFilmClearParams {
+    std::uint32_t value[4];
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t padding0;
+    std::uint32_t padding1;
+};
+
+struct KernelFilmScatterParams {
+    std::uint32_t filmWidth;
+    std::uint32_t filmHeight;
+    std::int32_t x;
+    std::int32_t y;
+    std::uint32_t width;
+    std::uint32_t count;
+    std::uint32_t padding0;
+    std::uint32_t padding1;
+};
+
+struct KernelFilmPackParams {
+    std::uint32_t filmWidth;
+    std::uint32_t filmHeight;
+    std::int32_t x1;
+    std::int32_t y1;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t nComps;
+    std::uint32_t outOffset;
+    std::uint32_t outRowStride;
+    std::uint32_t padding0;
+    std::uint32_t padding1;
+    std::uint32_t padding2;
+};
+
+static_assert(sizeof(KernelFilmClearParams) == utility_film_clear_push_bytes);
+static_assert(sizeof(KernelFilmScatterParams) == utility_film_scatter_push_bytes);
+static_assert(sizeof(KernelFilmPackParams) == utility_film_pack_push_bytes);
+static_assert(utility_film_clear_storage_buffers == 1 && utility_film_scatter_storage_buffers == 3 && utility_film_pack_storage_buffers == 2);
+
+gpu::GpuStatus
+failure(const std::string& message)
+{
+    return gpu::GpuStatus { VK_ERROR_UNKNOWN, message };
+}
+
+gpu::GpuStatus
+makeKernel(gpu::GpuDevice& device,
+           const gpu::GpuKernelDesc& desc,
+           std::shared_ptr<gpu::GpuKernel>* out)
+{
+    std::unique_ptr<gpu::GpuKernel> kernel;
+
+    if (gpu::GpuStatus s = gpu::GpuKernel::create(device, desc, kernel); !s) {
+        return s;
+    }
+    *out = std::move(kernel);
+
+    return gpu::GpuStatus();
+}
+#endif // NATRON_HAVE_GPU
 } // anon namespace
+
+#ifdef NATRON_HAVE_GPU
+struct UtilityFilmKernels {
+    std::shared_ptr<gpu::GpuKernel> clear;
+    std::shared_ptr<gpu::GpuKernel> scatter;
+    std::shared_ptr<gpu::GpuKernel> pack;
+};
+
+class UtilityDeviceFilm {
+public:
+    UtilityDeviceFilm(gpu::GpuKernelRegistry& registry,
+                      gpu::GpuBufferPool& pool,
+                      const std::shared_ptr<const UtilityFilmKernels>& kernels,
+                      const std::shared_ptr<void>& runtimeHold,
+                      unsigned int width,
+                      unsigned int height)
+        : registry(registry)
+        , pool(pool)
+        , device(registry.device())
+        , width(width)
+        , height(height)
+        , _kernels(kernels)
+        , _runtimeHold(runtimeHold)
+    {
+    }
+
+    // What a user of the film keeps while it reads or writes the pixels: the hold keeps registry, pool and device
+    // valid meanwhile, even once the film was released.
+    struct Lease {
+        std::shared_ptr<void> runtimeHold;
+        gpu::GpuBufferHandle pixels;
+        std::shared_ptr<const UtilityFilmKernels> kernels;
+    };
+
+    // False once the film was released.
+    bool lease(Lease* out) const
+    {
+        const std::lock_guard<std::mutex> l(_mutex);
+
+        if (!_runtimeHold) {
+            return false;
+        }
+        out->runtimeHold = _runtimeHold;
+        out->pixels = _pixels;
+        out->kernels = _kernels;
+
+        return true;
+    }
+
+    bool released() const
+    {
+        const std::lock_guard<std::mutex> l(_mutex);
+
+        return !_runtimeHold;
+    }
+
+    gpu::GpuStatus allocate(VkDeviceSize bytes)
+    {
+        const std::lock_guard<std::mutex> l(_mutex);
+
+        return pool.acquire(bytes, _pixels);
+    }
+
+    // Lets go of the pixels and of the runtime, which a holder of the film no longer keeps from recovering.
+    void release()
+    {
+        // Outside the lock, and in reverse order: the pool's buffer goes back before the hold that keeps the pool.
+        Lease dropped;
+        {
+            const std::lock_guard<std::mutex> l(_mutex);
+            std::swap(dropped.runtimeHold, _runtimeHold);
+            std::swap(dropped.pixels, _pixels);
+            std::swap(dropped.kernels, _kernels);
+        }
+    }
+
+    void releaseIfLost()
+    {
+        bool lost = false;
+        {
+            const std::lock_guard<std::mutex> l(_mutex);
+            lost = _runtimeHold && device.isLost();
+        }
+        if (lost) {
+            release();
+        }
+    }
+
+    // Valid only while the film is not released, or under a lease.
+    gpu::GpuKernelRegistry& registry;
+    gpu::GpuBufferPool& pool;
+    gpu::GpuDevice& device;
+    const unsigned int width;
+    const unsigned int height;
+
+private:
+    mutable std::mutex _mutex;
+    std::shared_ptr<const UtilityFilmKernels> _kernels;
+    std::shared_ptr<void> _runtimeHold;
+    gpu::GpuBufferHandle _pixels;
+};
+
+namespace {
+struct FilmRegistry {
+    std::mutex mutex;
+    std::vector<std::weak_ptr<UtilityDeviceFilm>> films;
+};
+
+FilmRegistry&
+filmRegistry()
+{
+    static FilmRegistry* registry = new FilmRegistry;
+
+    return *registry;
+}
+
+void
+registerFilm(const std::shared_ptr<UtilityDeviceFilm>& film)
+{
+    static std::once_flag releaser;
+
+    std::call_once(releaser, []() { GpuContext::addLossReleaser(&releaseLostUtilityDeviceFilms); });
+
+    FilmRegistry& registry = filmRegistry();
+    const std::lock_guard<std::mutex> l(registry.mutex);
+
+    registry.films.erase(std::remove_if(registry.films.begin(), registry.films.end(), [](const std::weak_ptr<UtilityDeviceFilm>& f) { return f.expired(); }), registry.films.end());
+    registry.films.push_back(film);
+}
+} // anon namespace
+
+void
+releaseLostUtilityDeviceFilms()
+{
+    std::vector<std::shared_ptr<UtilityDeviceFilm>> films;
+    {
+        FilmRegistry& registry = filmRegistry();
+        const std::lock_guard<std::mutex> l(registry.mutex);
+
+        for (const std::weak_ptr<UtilityDeviceFilm>& weak : registry.films) {
+            if (std::shared_ptr<UtilityDeviceFilm> film = weak.lock()) {
+                films.push_back(std::move(film));
+            }
+        }
+    }
+    for (const std::shared_ptr<UtilityDeviceFilm>& film : films) {
+        film->releaseIfLost();
+    }
+}
+
+namespace {
+gpu::GpuStatus
+recordPack(const std::shared_ptr<UtilityDeviceFilm>& film,
+           gpu::GpuRecordContext& context,
+           int x1,
+           int y1,
+           int x2,
+           int y2,
+           int nComps,
+           const gpu::GpuBuffer& out,
+           std::uint64_t outOffset,
+           std::uint32_t outRowStride)
+{
+    UtilityDeviceFilm::Lease lease;
+
+    if (!film->lease(&lease)) {
+        return failure("The Utility renderer's film was released with its GPU");
+    }
+    if (&context.device() != &film->device) {
+        return failure("The Utility renderer's film is on another device");
+    }
+    if ((nComps < 1) || (x2 < x1) || (y2 < y1)) {
+        return failure("The Utility renderer's film was asked for an empty or inverted window");
+    }
+    if ((x2 == x1) || (y2 == y1)) {
+        return gpu::GpuStatus();
+    }
+    const std::uint64_t width = static_cast<std::uint64_t>(x2 - x1);
+    const std::uint64_t height = static_cast<std::uint64_t>(y2 - y1);
+    const std::uint64_t end = outOffset + (height - 1) * outRowStride + width * static_cast<std::uint64_t>(nComps);
+
+    // The kernel indexes the output in 32 bits.
+    if ((end * sizeof(float) > out.size()) || (end > std::numeric_limits<std::uint32_t>::max())) {
+        return failure("The Utility renderer's film window does not fit the buffer it is copied to");
+    }
+
+    const KernelFilmPackParams params = {
+        film->width, film->height, x1, y1, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), static_cast<std::uint32_t>(nComps), static_cast<std::uint32_t>(outOffset), outRowStride, 0, 0, 0
+    };
+    const std::array<gpu::GpuBinding, 2> bindings = { gpu::GpuBinding::storage(0, lease.pixels.buffer()), gpu::GpuBinding::storage(1, out) };
+
+    // Orders the copy after the frame's writes, which earlier submissions on the queue made.
+    context.computeBarrier();
+    if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->pack, bindings, std::as_bytes(std::span(&params, 1)), { params.width, params.height, 1 }); !s) {
+        return s;
+    }
+    // The lease, not the film, so that a release while the copy is pending leaves its buffer alive.
+    context.hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(lease)));
+
+    return gpu::GpuStatus();
+}
+
+// Copies the whole film into out, bytes long, waiting for the copy.
+gpu::GpuStatus
+downloadFilm(const std::shared_ptr<UtilityDeviceFilm>& film,
+             void* out,
+             std::size_t bytes)
+{
+    if (bytes != static_cast<std::size_t>(film->width) * film->height * kFilmPixelBytes) {
+        return failure("The Utility renderer's film is not the size of the buffer it is read into");
+    }
+
+    UtilityDeviceFilm::Lease lease;
+
+    if (!film->lease(&lease)) {
+        return failure("The Utility renderer's film was released with its GPU");
+    }
+
+    std::unique_ptr<gpu::GpuRecordContext> context;
+    gpu::GpuBuffer staging;
+    gpu::GpuStatus status = gpu::GpuRecordContext::create(film->registry, context, &film->pool);
+
+    if (status) {
+        status = gpu::GpuBuffer::createStaging(film->device, bytes, gpu::kGpuBufferDefaultUsage, staging);
+    }
+    if (status) {
+        status = recordPack(film, *context, 0, 0, static_cast<int>(film->width), static_cast<int>(film->height), 4, staging, 0, film->width * 4);
+    }
+    if (status) {
+        status = context->submitAndWait();
+    }
+    if (status) {
+        std::memcpy(out, staging.mapped(), bytes);
+    }
+
+    return status;
+}
+} // anon namespace
+
+std::shared_ptr<const UtilityFilmKernels>
+makeUtilityFilmKernels(gpu::GpuDevice& device,
+                       gpu::GpuStatus* status)
+{
+    std::shared_ptr<UtilityFilmKernels> kernels = std::make_shared<UtilityFilmKernels>();
+    const gpu::GpuKernelDesc clear {
+        utility_film_clear_spirv, utility_film_clear_spirv_words, utility_film_clear_entry, utility_film_clear_storage_buffers, utility_film_clear_push_bytes, { utility_film_clear_group_size[0], utility_film_clear_group_size[1], utility_film_clear_group_size[2] }
+    };
+    const gpu::GpuKernelDesc scatter {
+        utility_film_scatter_spirv, utility_film_scatter_spirv_words, utility_film_scatter_entry, utility_film_scatter_storage_buffers, utility_film_scatter_push_bytes, { utility_film_scatter_group_size[0], utility_film_scatter_group_size[1], utility_film_scatter_group_size[2] }
+    };
+    const gpu::GpuKernelDesc pack {
+        utility_film_pack_spirv, utility_film_pack_spirv_words, utility_film_pack_entry, utility_film_pack_storage_buffers, utility_film_pack_push_bytes, { utility_film_pack_group_size[0], utility_film_pack_group_size[1], utility_film_pack_group_size[2] }
+    };
+
+    *status = makeKernel(device, clear, &kernels->clear);
+    if (status->ok()) {
+        *status = makeKernel(device, scatter, &kernels->scatter);
+    }
+    if (status->ok()) {
+        *status = makeKernel(device, pack, &kernels->pack);
+    }
+
+    return status->ok() ? kernels : std::shared_ptr<const UtilityFilmKernels>();
+}
+
+UtilityDeviceResource::UtilityDeviceResource()
+{
+}
+
+UtilityDeviceResource::UtilityDeviceResource(const std::shared_ptr<UtilityDeviceFilm>& film)
+    : _film(film)
+{
+}
+
+gpu::GpuDevice*
+UtilityDeviceResource::device() const
+{
+    return (_film && !_film->released()) ? &_film->device : nullptr;
+}
+
+unsigned int
+UtilityDeviceResource::width() const
+{
+    return _film ? _film->width : 0;
+}
+
+unsigned int
+UtilityDeviceResource::height() const
+{
+    return _film ? _film->height : 0;
+}
+
+gpu::GpuStatus
+UtilityDeviceResource::recordWindow(gpu::GpuRecordContext& context,
+                                    int x1,
+                                    int y1,
+                                    int x2,
+                                    int y2,
+                                    int nComps,
+                                    const gpu::GpuBuffer& out,
+                                    std::uint64_t outOffset,
+                                    std::uint32_t outRowStride) const
+{
+    if (!_film) {
+        return failure("The Utility renderer holds no frame on the device");
+    }
+
+    return recordPack(_film, context, x1, y1, x2, y2, nComps, out, outOffset, outRowStride);
+}
+
+bool
+UtilityDeviceResource::lease(gpu::GpuBufferHandle* pixels,
+                             std::shared_ptr<void>* runtimeHold) const
+{
+    UtilityDeviceFilm::Lease lease;
+
+    if (!_film || !_film->lease(&lease) || !lease.pixels) {
+        return false;
+    }
+    *pixels = lease.pixels;
+    *runtimeHold = lease.runtimeHold;
+
+    return true;
+}
+
+void
+UtilityDeviceResource::releaseIfLost() const
+{
+    if (_film) {
+        _film->releaseIfLost();
+    }
+}
+
+void
+UtilityDeviceResource::release() const
+{
+    if (_film) {
+        _film->release();
+    }
+}
+
+bool
+UtilityDeviceResource::download(std::vector<float>* out,
+                                std::string* error) const
+{
+    if (!_film) {
+        *error = "The Utility renderer holds no frame on the device";
+
+        return false;
+    }
+    out->resize(static_cast<std::size_t>(_film->width) * _film->height * 4);
+    const gpu::GpuStatus status = downloadFilm(_film, out->data(), out->size() * sizeof(float));
+
+    if (!status) {
+        *error = "The Utility renderer could not read its frame back from the GPU: " + status.message;
+
+        return false;
+    }
+
+    return true;
+}
+#endif // NATRON_HAVE_GPU
 
 UtilityRenderBuffer::UtilityRenderBuffer(const SdfPath& id)
     : HdRenderBuffer(id)
@@ -208,6 +655,13 @@ UtilityRenderBuffer::IsMultiSampled() const
 void*
 UtilityRenderBuffer::Map()
 {
+    {
+        const std::lock_guard<std::mutex> l(_deviceMutex);
+
+        if (_onDevice) {
+            downloadLocked();
+        }
+    }
     ++_mappers;
 
     return _pixels.empty() ? nullptr : _pixels.data();
@@ -236,17 +690,59 @@ UtilityRenderBuffer::IsConverged() const
     return _converged.load();
 }
 
+VtValue
+UtilityRenderBuffer::GetResource(bool /*multiSampled*/) const
+{
+#ifdef NATRON_HAVE_GPU
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    if (_onDevice && _film) {
+        return VtValue(UtilityDeviceResource(_film));
+    }
+#endif
+
+    return VtValue();
+}
+
+std::uint64_t
+UtilityRenderBuffer::deviceDownloadCount()
+{
+    return gDeviceDownloads.load();
+}
+
 void
 UtilityRenderBuffer::clear(const VtValue& value)
 {
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+#ifdef NATRON_HAVE_GPU
+    if (_film) {
+        _film->releaseIfLost();
+        if (_film->released()) {
+            _film.reset();
+            _onDevice = false;
+        }
+    }
+#endif
+    _clearPixel.clear();
     if (value.IsEmpty() || _pixels.empty()) {
+        // What the device holds is the buffer as it is, and a frame that follows writes the host's.
+        if (_onDevice) {
+            downloadLocked();
+        }
+
         return;
     }
     const std::vector<double> components = clearComponents(value);
 
     if (components.empty()) {
+        if (_onDevice) {
+            downloadLocked();
+        }
+
         return;
     }
+    _onDevice = false;
     const HdFormat componentFormat = HdGetComponentFormat(_format);
     const std::size_t componentCount = HdGetComponentCount(_format);
     const std::size_t pixelSize = HdDataSizeOfFormat(_format);
@@ -259,6 +755,7 @@ UtilityRenderBuffer::clear(const VtValue& value)
     for (std::size_t offset = 0; offset < _pixels.size(); offset += pixelSize) {
         std::memcpy(_pixels.data() + offset, pixel.data(), pixelSize);
     }
+    _clearPixel = std::move(pixel);
 }
 
 void
@@ -321,6 +818,171 @@ UtilityRenderBuffer::_Deallocate()
     std::vector<std::uint8_t>().swap(_pixels);
     _mappers.store(0);
     _converged.store(false);
+
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    _clearPixel.clear();
+#ifdef NATRON_HAVE_GPU
+    _film.reset();
+#endif
+    _onDevice = false;
 }
+
+void
+UtilityRenderBuffer::downloadLocked()
+{
+    _onDevice = false;
+#ifdef NATRON_HAVE_GPU
+    if (!_film) {
+        return;
+    }
+
+    UtilityDeviceFilm& film = *_film;
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(film.width) * film.height * kFilmPixelBytes;
+
+    if (bytes != _pixels.size()) {
+        TF_CODING_ERROR("The Utility renderer's film is %ux%u, its buffer %ux%u", film.width, film.height, _width, _height);
+
+        return;
+    }
+
+    const gpu::GpuStatus status = downloadFilm(_film, _pixels.data(), bytes);
+
+    if (!status) {
+        // The host keeps the frame's clear value: the frame is lost with the device, not partly shown.
+        TF_WARN("The Utility renderer could not read its frame back from the GPU: %s", status.message.c_str());
+
+        return;
+    }
+    ++gDeviceDownloads;
+#endif
+}
+
+#ifdef NATRON_HAVE_GPU
+void
+UtilityRenderBuffer::releaseDevice()
+{
+    std::shared_ptr<UtilityDeviceFilm> film;
+    {
+        const std::lock_guard<std::mutex> l(_deviceMutex);
+
+        if (_film) {
+            _film->releaseIfLost();
+        }
+        if (_onDevice && _film && !_film->released()) {
+            downloadLocked();
+        }
+        _onDevice = false;
+        film = std::move(_film);
+    }
+    // Every holder lets go too: a strip still to copy its window renders again on the CPU, and a viewer
+    // showing the frame keeps the pixels it already has. Recorded copies hold a lease of their own.
+    if (film) {
+        film->release();
+    }
+    _converged.store(false);
+}
+
+bool
+UtilityRenderBuffer::canRenderOnDevice() const
+{
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    return (_format == HdFormatFloat32Vec4) && !_multiSampled && (_width > 0) && (_height > 0) && (_clearPixel.size() == kFilmPixelBytes);
+}
+
+gpu::GpuStatus
+UtilityRenderBuffer::beginDeviceFrame(gpu::GpuRecordContext& context,
+                                      gpu::GpuKernelRegistry& registry,
+                                      gpu::GpuBufferPool& pool,
+                                      const std::shared_ptr<const UtilityFilmKernels>& kernels,
+                                      const std::shared_ptr<void>& runtimeHold)
+{
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    if ((_format != HdFormatFloat32Vec4) || (_width == 0) || (_height == 0) || (_clearPixel.size() != kFilmPixelBytes) || !kernels) {
+        return failure("The Utility renderer's colour cannot be held on the GPU");
+    }
+    // A film still held elsewhere has a copy of it recorded and not yet run, which must see the frame it was asked for.
+    if (!_film || (_film.use_count() > 1) || _film->released() || (&_film->device != &registry.device()) || (_film->width != _width) || (_film->height != _height)) {
+        _film.reset();
+
+        std::shared_ptr<UtilityDeviceFilm> film = std::make_shared<UtilityDeviceFilm>(registry, pool, kernels, runtimeHold, _width, _height);
+        const VkDeviceSize bytes = static_cast<VkDeviceSize>(_width) * _height * kFilmPixelBytes;
+
+        if (gpu::GpuStatus s = film->allocate(bytes); !s) {
+            return s;
+        }
+        registerFilm(film);
+        _film = film;
+    }
+
+    UtilityDeviceFilm::Lease lease;
+
+    if (!_film->lease(&lease)) {
+        _film.reset();
+
+        return failure("The Utility renderer's film was released with its GPU");
+    }
+
+    KernelFilmClearParams params = { { 0, 0, 0, 0 }, _width, _height, 0, 0 };
+
+    std::memcpy(params.value, _clearPixel.data(), kFilmPixelBytes);
+
+    const std::array<gpu::GpuBinding, 1> bindings = { gpu::GpuBinding::storage(0, lease.pixels.buffer()) };
+
+    if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->clear, bindings, std::as_bytes(std::span(&params, 1)), { _width, _height, 1 }); !s) {
+        return s;
+    }
+    context.hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(lease)));
+    _onDevice = true;
+
+    return gpu::GpuStatus();
+}
+
+gpu::GpuStatus
+UtilityRenderBuffer::recordDeviceBatch(gpu::GpuRecordContext& context,
+                                       const gpu::GpuBuffer& hitIds,
+                                       const gpu::GpuBuffer& color,
+                                       int x,
+                                       int y,
+                                       int width,
+                                       int height)
+{
+    std::shared_ptr<UtilityDeviceFilm> film;
+
+    {
+        const std::lock_guard<std::mutex> l(_deviceMutex);
+
+        if (_onDevice) {
+            film = _film;
+        }
+    }
+    UtilityDeviceFilm::Lease lease;
+
+    if (!film || !film->lease(&lease)) {
+        return failure("The Utility renderer's colour is not on the GPU");
+    }
+    if ((width <= 0) || (height <= 0)) {
+        return gpu::GpuStatus();
+    }
+
+    const std::uint32_t count = static_cast<std::uint32_t>(width) * static_cast<std::uint32_t>(height);
+    const KernelFilmScatterParams params = { film->width, film->height, x, y, static_cast<std::uint32_t>(width), count, 0, 0 };
+    const std::array<gpu::GpuBinding, 3> bindings = {
+        gpu::GpuBinding::storage(0, hitIds),
+        gpu::GpuBinding::storage(1, color),
+        gpu::GpuBinding::storage(2, lease.pixels.buffer()),
+    };
+
+    context.computeBarrier();
+    if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->scatter, bindings, std::as_bytes(std::span(&params, 1)), { count, 1, 1 }); !s) {
+        return s;
+    }
+    context.hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(lease)));
+
+    return gpu::GpuStatus();
+}
+#endif // NATRON_HAVE_GPU
 
 NATRON_NAMESPACE_EXIT

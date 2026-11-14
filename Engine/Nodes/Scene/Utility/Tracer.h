@@ -31,6 +31,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include "Global/Macros.h"
 
@@ -85,17 +86,38 @@ public:
         std::size_t instanceSceneUpdates = 0;
     };
 
+    enum class Status {
+        Ok,
+        // stop ended the last update early.
+        Stopped,
+        // The device could not hold the structures or a batch; the message gives the sizes involved.
+        OutOfMemory,
+        // The device lacks what the tracer needs, or the tracer could not be set up on it.
+        Unsupported,
+        DeviceLost,
+        Failed,
+    };
+
+    struct Outcome {
+        Status status = Status::Ok;
+        std::string message;
+    };
+
     virtual ~Tracer() { }
 
     /**
      * @brief Brings the acceleration structures up to the snapshot, doing nothing for a version they
-     * already hold. Uses at most threads threads, the caller included. Returns false when stop ended it
-     * early, after which only another update may be called, and redoes what it left unfinished.
+     * already hold. Uses at most threads threads, the caller included. Returns false when it did not
+     * finish, because stop ended it or because it failed, as status() tells. Only another update may
+     * be called after a false return, and it redoes what was left unfinished.
      **/
     virtual bool update(const UtilityScene::Snapshot& snapshot,
                         int threads,
                         const std::atomic<bool>* stop = nullptr)
         = 0;
+    // The first failure since the last update() began, Stopped when stop ended it, or the reason the
+    // tracer cannot run at all. Traces after a successful update may record a failure here too.
+    virtual Outcome status() const = 0;
     virtual void intersect(const RayBatch& rays,
                            const HitBatch& hits) const
         = 0;

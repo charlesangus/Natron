@@ -529,6 +529,16 @@ public:
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
+    // Lets the GL hand-off go if its GPU was lost, so that it does not keep the GPU from being recreated.
+    // Needs the context of render() current.
+    void releaseLostDevice();
+
+    /**
+     * @brief Lets the GL hand-off go with the GPU memory it holds; the next frame the GPU renders builds
+     * it again. The frame shown stays. Needs the context of render() current.
+     **/
+    void releaseDeviceUpload();
+
     /**
      * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
      * empty id. kRenderDelegateSceneDefaultId renders with the renderer the stage's active render
@@ -584,6 +594,22 @@ public:
     // many pixels it had; -1 and 0 before the first.
     double getLastUploadMs() const;
     int getLastUploadPixels() const;
+
+    // How the last progressive frame reached its texture: "interop:" and the GL hand-off's path
+    // ("zerocopy", "hostsync" or "readback") for a GPU frame of the Natron Utility renderer
+    // imported from the device, "upload" for one uploaded from host memory; empty before one.
+    std::string getLastFramePath() const;
+
+    // Whether the probe allows no GL hand-off path in the context of render(), or NATRON_VIEWER_HANDOFF refuses
+    // them, so that GPU frames go through the host.
+    bool isHandoffUnsupported() const;
+
+    // "zerocopy", "hostsync" or "readback": the fastest GL hand-off path the probe found for the context of
+    // render(); empty before a GPU frame reached it.
+    std::string getHandoffBest() const;
+
+    // Why the last GPU frame went through the host rather than the GL hand-off; empty when it did not.
+    std::string getHandoffError() const;
 
 private:
     RenderStatusEnum renderLocked(unsigned int fbo, int width, int height, bool followScene);
@@ -764,6 +790,9 @@ public:
      * Main thread; waits for a sync under way.
      **/
     void releaseEngine();
+
+    // The renderer's releaseDeviceUpload(), in this widget's context. Main thread.
+    void releaseDeviceUpload();
 
 Q_SIGNALS:
 

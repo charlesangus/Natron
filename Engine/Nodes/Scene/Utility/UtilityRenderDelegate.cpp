@@ -40,6 +40,11 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderPass.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -59,6 +64,7 @@ UtilityRenderParam::UtilityRenderParam(UtilityScene* scene,
 UtilityRenderParam::~UtilityRenderParam()
 {
     cancelFrameAndWait();
+    dropGpuExecutor();
 }
 
 UtilityScene*
@@ -71,6 +77,155 @@ WavefrontExecutor*
 UtilityRenderParam::executor() const
 {
     return _executor;
+}
+
+WavefrontGpu*
+UtilityRenderParam::gpuExecutor(std::string* unavailable)
+{
+#ifdef NATRON_HAVE_GPU
+    if (_gpu) {
+        if (!_gpu->deviceLost()) {
+            return _gpu.get();
+        }
+        dropGpuExecutor();
+    }
+
+    UtilityGpu gpu = acquireUtilityGpu();
+
+    if (!gpu.runtime) {
+        *unavailable = gpu.unavailable;
+
+        return nullptr;
+    }
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime);
+
+    if (!missing.empty()) {
+        *unavailable = missing;
+
+        return nullptr;
+    }
+
+    std::unique_ptr<WavefrontGpu> executor(new WavefrontGpu(gpu.runtime->registry(), gpu.runtime->pool(), gpu.hold));
+    const Tracer::Outcome outcome = executor->status();
+
+    if (outcome.status != Tracer::Status::Ok) {
+        *unavailable = outcome.message;
+
+        return nullptr;
+    }
+    _gpuHold = gpu.hold;
+    _gpu = std::move(executor);
+
+    return _gpu.get();
+#else
+    *unavailable = acquireUtilityGpu().unavailable;
+
+    return nullptr;
+#endif
+}
+
+void
+UtilityRenderParam::dropGpuExecutor()
+{
+#ifdef NATRON_HAVE_GPU
+    _gpu.reset();
+#endif
+    _gpuHold.reset();
+}
+
+void
+UtilityRenderParam::rememberGpuOutOfMemory(std::uint64_t version,
+                                           std::uint64_t budget,
+                                           std::uint64_t generation,
+                                           const std::string& message)
+{
+    _outOfMemory = true;
+    _outOfMemoryVersion = version;
+    _outOfMemoryBudget = budget;
+    _outOfMemoryGeneration = generation;
+    _outOfMemoryMessage = message;
+}
+
+bool
+UtilityRenderParam::gpuOutOfMemory(std::uint64_t version,
+                                   std::uint64_t budget,
+                                   std::uint64_t generation,
+                                   std::string* message) const
+{
+    if (!_outOfMemory || (version != _outOfMemoryVersion) || (budget != _outOfMemoryBudget) || (generation != _outOfMemoryGeneration)) {
+        return false;
+    }
+    *message = _outOfMemoryMessage;
+
+    return true;
+}
+
+void
+UtilityRenderParam::releaseGpu()
+{
+    cancelFrameAndWait();
+    dropGpuExecutor();
+    // Memory given back may be what the remembered scene lacked.
+    _outOfMemory = false;
+
+    std::set<UtilityRenderBuffer*> buffers;
+    {
+        const std::lock_guard<std::mutex> l(_buffersMutex);
+        buffers = _buffers;
+    }
+    for (UtilityRenderBuffer* buffer : buffers) {
+        buffer->releaseDevice();
+    }
+}
+
+void
+UtilityRenderParam::releaseGpuIfLost()
+{
+    if (frameRunning()) {
+        return;
+    }
+#ifdef NATRON_HAVE_GPU
+    if (_gpu && _gpu->deviceLost()) {
+        dropGpuExecutor();
+    }
+#endif
+}
+
+void
+UtilityRenderParam::addBuffer(UtilityRenderBuffer* buffer)
+{
+    const std::lock_guard<std::mutex> l(_buffersMutex);
+
+    _buffers.insert(buffer);
+}
+
+void
+UtilityRenderParam::removeBuffer(UtilityRenderBuffer* buffer)
+{
+    const std::lock_guard<std::mutex> l(_buffersMutex);
+
+    _buffers.erase(buffer);
+}
+
+void
+UtilityRenderParam::setFrameReport(const std::string& device,
+                                   const std::string& warning)
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    _reportDevice = device;
+    _reportWarning = warning;
+}
+
+void
+UtilityRenderParam::frameReport(std::string* device,
+                                std::string* warning) const
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    *device = _reportDevice;
+    *warning = _reportWarning;
 }
 
 const std::atomic<bool>&
@@ -179,6 +334,7 @@ UtilityRenderDelegate::construct()
     _scene.reset(new UtilityScene());
     _executor.reset(new WavefrontCpu());
     _renderParam.reset(new UtilityRenderParam(_scene.get(), _executor.get()));
+    _PopulateDefaultSettings(GetRenderSettingDescriptors());
     ++gLiveDelegates;
 }
 
@@ -299,7 +455,11 @@ UtilityRenderDelegate::CreateBprim(const TfToken& typeId,
                                    const SdfPath& bprimId)
 {
     if (typeId == HdPrimTypeTokens->renderBuffer) {
-        return new UtilityRenderBuffer(bprimId);
+        UtilityRenderBuffer* buffer = new UtilityRenderBuffer(bprimId);
+
+        _renderParam->addBuffer(buffer);
+
+        return buffer;
     }
     TF_CODING_ERROR("Unknown Bprim type %s", typeId.GetText());
 
@@ -315,6 +475,8 @@ UtilityRenderDelegate::CreateFallbackBprim(const TfToken& typeId)
 void
 UtilityRenderDelegate::DestroyBprim(HdBprim* bprim)
 {
+    // Every Bprim this delegate makes is a render buffer.
+    _renderParam->removeBuffer(static_cast<UtilityRenderBuffer*>(bprim));
     delete bprim;
 }
 
@@ -367,6 +529,39 @@ UtilityRenderDelegate::Restart()
     return true;
 }
 
+HdCommandDescriptors
+UtilityRenderDelegate::GetCommandDescriptors() const
+{
+    return {
+        HdCommandDescriptor(TfToken(kUtilityCommandReleaseGpu), "Give back the GPU memory the renderer keeps between frames"),
+        HdCommandDescriptor(TfToken(kUtilityCommandReleaseLostGpu), "Let go of a lost GPU, so that it can be recreated"),
+    };
+}
+
+bool
+UtilityRenderDelegate::InvokeCommand(const TfToken& command,
+                                     const HdCommandArgs& /*args*/)
+{
+    if (command == TfToken(kUtilityCommandReleaseGpu)) {
+        _renderParam->releaseGpu();
+
+        return true;
+    }
+    if (command == TfToken(kUtilityCommandReleaseLostGpu)) {
+        _renderParam->releaseGpuIfLost();
+
+        return true;
+    }
+
+    return false;
+}
+
+HdRenderSettingDescriptorList
+UtilityRenderDelegate::GetRenderSettingDescriptors() const
+{
+    return { HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) } };
+}
+
 VtDictionary
 UtilityRenderDelegate::GetRenderStats() const
 {
@@ -380,6 +575,13 @@ UtilityRenderDelegate::GetRenderStats() const
     dictionary[kUtilityStatPointUpdates] = VtValue(stats.pointUpdates);
     dictionary[kUtilityStatColorUpdates] = VtValue(stats.colorUpdates);
     dictionary[kUtilityStatSceneVersion] = VtValue(stats.version);
+
+    std::string device;
+    std::string warning;
+
+    _renderParam->frameReport(&device, &warning);
+    dictionary[kUtilityStatDevice] = VtValue(device);
+    dictionary[kUtilityStatWarning] = VtValue(warning);
 
     return dictionary;
 }

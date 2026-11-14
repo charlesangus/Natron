@@ -34,6 +34,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QAction>
 #include <QApplication>
+#include <QCursor>
 #include <QHelpEvent>
 #include <QMenu>
 #include <QMouseEvent>
@@ -182,16 +183,39 @@ NodeGraph::mouseDoubleClickEvent(QMouseEvent* e)
     }
 } // NodeGraph::mouseDoubleClickEvent
 
+// Asked at key time rather than tracked through enter and leave events: a pointer grab, a popup
+// or another top-level window under the pointer can swallow the enter that a flag would wait for.
+bool
+NodeGraph::isNodeCreationShortcutTarget() const
+{
+    if (hasFocus()) {
+        return true;
+    }
+
+    const QWidget* vp = viewport();
+
+    return vp && vp->isVisible() && vp->rect().contains(vp->mapFromGlobal(QCursor::pos()));
+}
+
 bool
 NodeGraph::event(QEvent* e)
 {
     if ( !getGui() ) {
         return false;
     }
-    if (e->type() == QEvent::KeyPress) {
+    if (e->type() == QEvent::ShortcutOverride) {
+        // A create-node key rebound to one a global action also uses (F2 opens render
+        // statistics) must reach the KeyPress below instead of triggering that action.
+        QKeyEvent* ke = static_cast<QKeyEvent*>(e);
+        if (isNodeCreationShortcutTarget() && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
+            ke->accept();
+
+            return true;
+        }
+    } else if (e->type() == QEvent::KeyPress) {
         QKeyEvent* ke = dynamic_cast<QKeyEvent*>(e);
         assert(ke);
-        if (ke && _imp->_nodeCreationShortcutEnabled && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
+        if (ke && isNodeCreationShortcutTarget() && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
             popCreateNodeDialog();
             takeClickFocus();
             ke->accept();
@@ -627,6 +651,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                         CreateNodeArgs args( plugin->getPluginID().toStdString(), getGroup() );
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.x(), 0);
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.y(), 1);
+                        args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
                         getGui()->getApp()->createNode(args);
 
                         intercepted = true;

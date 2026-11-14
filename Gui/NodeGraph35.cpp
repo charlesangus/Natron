@@ -95,7 +95,7 @@ NodeGraph::moveToTrash(NodeGui* node)
             _imp->_nodesTrash.push_back(removed);
         }
     }
-    invalidateNavigatorContent();
+    noteNodeRemoved(node);
     scheduleLoopBlockRefresh(true);
 }
 
@@ -110,7 +110,7 @@ NodeGraph::restoreFromTrash(NodeGui* node)
             _imp->_nodes.push_back(restored);
         }
     }
-    invalidateNavigatorContent();
+    noteNodeAdded(node);
     scheduleLoopBlockRefresh(true);
 }
 

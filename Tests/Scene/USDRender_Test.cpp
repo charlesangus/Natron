@@ -77,6 +77,7 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
@@ -1150,6 +1151,17 @@ protected:
         USDRenderRendererTest::SetUp();
         const char* samples = std::getenv("HDX_MSAA_SAMPLE_COUNT");
         ASSERT_TRUE(samples && (std::strcmp(samples, "1") == 0)) << "run this suite alone with HDX_MSAA_SAMPLE_COUNT=1, as ctest does";
+        // Storm renders the cage, which a level above 0 would refine on the Utility side.
+        std::map<std::string, PXR_NS::VtValue> settings;
+
+        settings[kUtilitySettingSubdivLevel] = PXR_NS::VtValue(0);
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, settings);
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, std::map<std::string, PXR_NS::VtValue>());
+        USDRenderRendererTest::TearDown();
     }
 };
 

@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,7 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
 #include "ofxNatron.h"
@@ -88,8 +90,19 @@ sameDepth(float reference,
 class NatronUtilityGoldenTest
     : public BaseTest {
 protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        // The goldens are the cage, which a level above 0 would refine.
+        std::map<std::string, PXR_NS::VtValue> settings;
+
+        settings[kUtilitySettingSubdivLevel] = PXR_NS::VtValue(0);
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, settings);
+    }
+
     virtual void TearDown() OVERRIDE
     {
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, std::map<std::string, PXR_NS::VtValue>());
         HydraRender::releaseAll();
         SceneQueryPool::instance().releaseIdle();
         BaseTest::TearDown();

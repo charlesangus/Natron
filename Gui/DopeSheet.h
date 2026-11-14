@@ -30,6 +30,7 @@
 
 #include <list>
 #include <memory>
+#include <unordered_set>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -471,6 +472,7 @@ public:
 
     // Lets a frame change on @p frameKnob refresh @p row without searching the rows
     void registerPaintedFrameRow(const KnobIPtr& frameKnob, const DSKnobPtr& row);
+    void unregisterPaintedFrameRows(const std::unordered_set<const DSKnob*>& rows);
 
     // Other
     SequenceTime getCurrentFrame() const;
@@ -498,7 +500,6 @@ private Q_SLOTS:
     void onCurveContextItemsChanged();
     void onShapeKeyframesChanged();
     void onPaintedFrameChanged();
-    void onPaintedFrameProxyChanged();
     void onItemKnobKeyframesChanged();
 
 private:

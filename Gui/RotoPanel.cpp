@@ -521,6 +521,7 @@ public:
 
     // A stroke's marker is its painted frame, which the Lifetime knobs can change at any time,
     // on the item or through the context's proxies.
+    void trackItemRecursively(const RotoItemPtr& item);
     void trackStrokeLifeTime(const RotoStrokeItemPtr& stroke);
     void untrackStrokeLifeTime(const RotoStrokeItemPtr& stroke);
 
@@ -1270,16 +1271,9 @@ RotoPanelPrivate::insertItemInternal(int reason,
                                      const RotoItemPtr & item,
                                      int indexInParentLayer)
 {
-    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
-
-    if (isBezier) {
-        trackBezierKeyframes(isBezier);
-    }
-    RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
-    if (isStroke) {
-        trackStrokeLifeTime(isStroke);
-    }
     if ( (RotoItem::SelectionReasonEnum)reason == RotoItem::eSelectionReasonSettingsPanel ) {
+        // The context signals one insertion for a layer, though its removal signalled each child.
+        trackItemRecursively(item);
         RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(item);
         if (drawable) {
             publicInterface->makeCustomWidgetsForItem(drawable);
@@ -2375,6 +2369,26 @@ RotoPanelPrivate::untrackBezierKeyframes(const BezierPtr& bezier)
 }
 
 void
+RotoPanelPrivate::trackItemRecursively(const RotoItemPtr& item)
+{
+    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
+    if (isBezier) {
+        trackBezierKeyframes(isBezier);
+    }
+    RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
+    if (isStroke) {
+        trackStrokeLifeTime(isStroke);
+    }
+    RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(item);
+    if (isLayer) {
+        const std::list<RotoItemPtr>& children = isLayer->getItems();
+        for (std::list<RotoItemPtr>::const_iterator it = children.begin(); it != children.end(); ++it) {
+            trackItemRecursively(*it);
+        }
+    }
+}
+
+void
 RotoPanelPrivate::trackStrokeLifeTime(const RotoStrokeItemPtr& stroke)
 {
     trackedStrokes.insert(stroke);
@@ -2450,8 +2464,8 @@ RotoPanelPrivate::rewireMarkerSources(const std::set<RotoDrawableItemPtr>& wante
     }
 }
 
-// A selected item's knobs are slaved to the node's proxies, which hold the state of only one of
-// the selected items, so every read below goes to the item's own value and curves.
+// A selected item's knobs are slaved to the node's proxies, so the reads below bypass the master
+// link and go to the item's own value and curves.
 static int
 ownPaintedFrame(const RotoStrokeItemPtr& stroke)
 {
@@ -2588,8 +2602,7 @@ void
 RotoPanel::onSettingsPanelClosed(bool closed)
 {
     _imp->markersEnabled = !closed;
-    // Items stay tracked while the panel is closed, through its insert and remove signals, so
-    // reopening needs no pass over every item.
+    // Items stay tracked while the panel is closed, through its insert and remove signals.
     if (closed) {
         _imp->currentStroke.reset();
     } else {

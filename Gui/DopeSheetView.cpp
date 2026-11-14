@@ -3591,6 +3591,24 @@ DopeSheetView::refreshSelectionBboxAndRedraw()
     redraw();
 }
 
+QVariantList
+DopeSheetView::selectedKeyframeRows() const
+{
+    QVariantList rows;
+    const std::vector<DopeSheetKey> keys = _imp->model->getSelectionModel()->getKeyframesSelectionCopy();
+    for (std::vector<DopeSheetKey>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        DSKnobPtr context = it->context.lock();
+        QTreeWidgetItem* row = context ? context->getTreeItem() : NULL;
+        if (!row) {
+            continue;
+        }
+        const QString parent = row->parent() ? row->parent()->text(0) : QString();
+        rows.push_back(parent + QLatin1Char('/') + row->text(0) + QLatin1Char('@') + QString::number(it->key.getTime()));
+    }
+
+    return rows;
+}
+
 void
 DopeSheetView::onKeyframeSelectionChanged()
 {

@@ -535,6 +535,15 @@ DopeSheet::removeNode(NodeGui *node)
 
     DSNodePtr dsNode = (*toRemove).second;
 
+    std::unordered_set<const DSKnob*> paintedRows;
+    const DSTreeItemKnobMap& knobRows = dsNode->getItemKnobMap();
+    for (DSTreeItemKnobMap::const_iterator it = knobRows.begin(); it != knobRows.end(); ++it) {
+        if (it->second->isPaintedFrame()) {
+            paintedRows.insert(it->second.get());
+        }
+    }
+    unregisterPaintedFrameRows(paintedRows);
+
     _imp->selectionModel->onNodeAboutToBeRemoved(dsNode);
 
     Q_EMIT nodeAboutToBeRemoved( dsNode.get() );
@@ -1385,35 +1394,26 @@ DopeSheet::onPaintedFrameChanged()
 }
 
 void
-DopeSheet::onPaintedFrameProxyChanged()
-{
-    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
-    KnobIPtr knob = handler ? handler->getKnob() : KnobIPtr();
-    EffectInstance* effect = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : NULL;
-    NodePtr node = effect ? effect->getNode() : NodePtr();
-    DSNodePtr dsNode = node ? findDSNode(node.get()) : DSNodePtr();
-
-    if (!dsNode) {
-        return;
-    }
-    bool changed = false;
-    const DSTreeItemKnobMap& knobRows = dsNode->getItemKnobMap();
-    for (DSTreeItemKnobMap::const_iterator it = knobRows.begin(); it != knobRows.end(); ++it) {
-        if (it->second->isPaintedFrame()) {
-            Q_EMIT keyframeSetOrRemoved(it->second.get());
-            changed = true;
-        }
-    }
-    if (changed) {
-        Q_EMIT modelChanged();
-    }
-}
-
-void
 DopeSheet::registerPaintedFrameRow(const KnobIPtr& frameKnob,
                                    const DSKnobPtr& row)
 {
     _imp->paintedFrameRows[frameKnob.get()] = row;
+}
+
+void
+DopeSheet::unregisterPaintedFrameRows(const std::unordered_set<const DSKnob*>& rows)
+{
+    if (rows.empty()) {
+        return;
+    }
+    for (std::unordered_map<const KnobI*, DSKnobWPtr>::iterator it = _imp->paintedFrameRows.begin(); it != _imp->paintedFrameRows.end();) {
+        DSKnobPtr row = it->second.lock();
+        if (!row || rows.count(row.get())) {
+            it = _imp->paintedFrameRows.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void
@@ -1673,7 +1673,6 @@ DSKnob::getCurve(int dimension) const
         return CurvePtr();
     }
 
-    // A selected item's knobs are slaved to the node's proxies; the keys are the item's own.
     return knob->getCurve(ViewIdx(0), dimension, true);
 }
 
@@ -1687,8 +1686,6 @@ DSKnob::getKeyFrames(int dimension) const
         RotoDrawableItemPtr item = getRotoItem();
         KnobIntPtr frameKnob = item ? item->getLifeTimeFrameKnob() : KnobIntPtr();
         if (frameKnob) {
-            // A selected stroke's knob is slaved to the node's proxy, which holds only one of the
-            // selected strokes' frames; the stroke's own value is its painted frame.
             const int frame = frameKnob->getValueAtTime(frameKnob->getCurrentTime(), 0, ViewIdx(0), false, true);
             ret.insert(KeyFrame(frame, 0., 0., 0., eKeyframeTypeConstant));
         }
@@ -2318,8 +2315,12 @@ DSNode::rebuildItemRows()
         return;
     }
 
+    std::unordered_set<const DSKnob*> oldPaintedRows;
     for (DSTreeItemKnobMap::iterator it = _imp->itemKnobMap.begin(); it != _imp->itemKnobMap.end();) {
         if (isUnderItem(it->first, _imp->itemRows)) {
+            if (it->second->isPaintedFrame()) {
+                oldPaintedRows.insert(it->second.get());
+            }
             _imp->itemKnobMap.erase(it++);
         } else {
             ++it;
@@ -2329,9 +2330,9 @@ DSNode::rebuildItemRows()
         delete *it;
     }
     _imp->itemRows.clear();
+    _imp->dopeSheetModel->unregisterPaintedFrameRows(oldPaintedRows);
 
     std::list<RotoDrawableItemPtr> items = context->getCurvesByRenderOrder(false);
-    bool connectedProxy = false;
     for (std::list<RotoDrawableItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
         const RotoDrawableItemPtr& item = *it;
         QTreeWidgetItem* itemRow = createKnobNameItem(QString::fromUtf8(item->getLabel().c_str()),
@@ -2362,14 +2363,6 @@ DSNode::rebuildItemRows()
             KnobSignalSlotHandlerPtr frameHandler = frameKnob->getSignalSlotHandler();
             if (frameHandler) {
                 QObject::connect(frameHandler.get(), SIGNAL(valueChanged(ViewSpec, int, int)), _imp->dopeSheetModel, SLOT(onPaintedFrameChanged()), Qt::UniqueConnection);
-            }
-            if (!connectedProxy) {
-                connectedProxy = true;
-                KnobIPtr proxy = node->getEffectInstance() ? node->getEffectInstance()->getKnobByName(frameKnob->getName()) : KnobIPtr();
-                KnobSignalSlotHandlerPtr proxyHandler = proxy ? proxy->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
-                if (proxyHandler) {
-                    QObject::connect(proxyHandler.get(), SIGNAL(valueChanged(ViewSpec, int, int)), _imp->dopeSheetModel, SLOT(onPaintedFrameProxyChanged()), Qt::UniqueConnection);
-                }
             }
         }
 

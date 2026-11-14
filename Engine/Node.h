@@ -345,6 +345,14 @@ public:
     U64 getStoredBaseContentHash() const;
 
     /**
+     * @brief The content hash with each connected input folded in as inputHash gives it instead of
+     * by its stored hash, so a caller can ask what the node's hash would be over other input
+     * hashes. Refreshes the dirty hashes first; inputHash runs with hash recomputation suspended,
+     * so the hashes it reads are the stored ones. MT-safe.
+     **/
+    U64 computeContentHashOverInputs(const std::function<U64(const Node&)>& inputHash) const;
+
+    /**
      * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
      * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
      * Scene nodes key their memoized layer on it (SceneLayerMemo): unlike the content hash, it

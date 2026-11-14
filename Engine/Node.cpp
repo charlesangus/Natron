@@ -959,6 +959,20 @@ Node::getStoredBaseContentHash() const
     return _imp->baseContentHash;
 }
 
+U64
+Node::computeContentHashOverInputs(const std::function<U64(const Node&)>& inputHash) const
+{
+    if (!_imp->effect) {
+        return 0;
+    }
+    (void)getContentHash();
+    HashInputs inputs;
+    getHashInputs(&inputs);
+    HashComputeScope computing;
+
+    return computeContentHash(0, inputs, &inputHash);
+}
+
 bool
 Node::getHashValueIfUpToDate(U64* hash) const
 {

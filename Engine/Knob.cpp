@@ -3100,11 +3100,12 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
         }
     }
 
-    // Declared after the nodes, so that rfv, loop and loops always name the variables.
+    // Declared after the nodes, so that rfv, loop, loops and udim always name the variables.
     PyRFV::ensureDeclared();
     ss << tabStr << "rfv = " << PyRFV::kMainGlobalName << "\n";
     ss << tabStr << "loop = " << PyRFV::kMainLoopGlobalName << "\n";
     ss << tabStr << "loops = " << PyRFV::kMainLoopsGlobalName << "\n";
+    ss << tabStr << "udim = " << PyRFV::kMainUdimGlobalName << "\n";
 
     if (isParentGrp) {
         ss << tabStr << "thisGroup = " << appID << "." << collectionScriptName << "\n";
@@ -8312,6 +8313,7 @@ KnobHelper::getRFVExpressionReads(const std::string& expression)
     static const std::string kRFV("rfv");
     static const std::string kLoop("loop");
     static const std::string kLoops("loops");
+    static const std::string kUdim("udim");
     RenderContextReadSet reads;
     const std::vector<bool> code = pythonCodeMask(expression);
     const std::size_t n = expression.size();
@@ -8391,6 +8393,19 @@ KnobHelper::getRFVExpressionReads(const std::string& expression)
             for (const char* name : kLoopVariableNames) {
                 reads.add(RenderContextName::loops(loopName, name));
             }
+        }
+    }
+
+    // udim.<variable>; any other use of udim may read the tile.
+    for (std::size_t pos = expression.find(kUdim); pos != std::string::npos; pos = expression.find(kUdim, pos + 1)) {
+        if (!isBareNameAt(expression, code, pos, kUdim.size())) {
+            continue;
+        }
+        std::string variable;
+        if (attributeAt(expression, code, pos + kUdim.size(), &variable) != std::string::npos) {
+            reads.add(RenderContextName(RenderContextName::udimTile().ns, variable));
+        } else {
+            reads.add(RenderContextName::udimTile());
         }
     }
 

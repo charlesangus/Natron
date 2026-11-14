@@ -182,6 +182,7 @@ set(Tests_SOURCES
     RenderBothWaysSelf_Test.cpp
     RenderContext_Test.cpp
     RenderContextMetadata_Test.cpp
+    RenderContextUdim_Test.cpp
     RenderContextRequest_Test.cpp
     RenderIsolation_Test.cpp
     RenderProfile_Test.cpp
@@ -202,6 +203,7 @@ set(Tests_SOURCES
     TrackerLayer_Test.cpp
     Tracker_Test.cpp
     TypedPassthrough_Test.cpp
+    UdimTileVersion_Test.cpp
     WeightedInterpolation_Test.cpp
     WriteAllLayers_Test.cpp
     ImageConvert_Test.cpp

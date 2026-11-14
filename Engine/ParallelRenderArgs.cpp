@@ -1229,7 +1229,8 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
                                      const NodePtr& /*callerNode*/,
                                      const NodePtr& /*treeRoot*/,
                                      const RectD& canonicalRenderWindow,
-                                     FrameRequestMap& requests)
+                                     FrameRequestMap& requests,
+                                     const RenderContextPtr& rootContext)
 {
     // An explicit stack rather than recursion: the walk is as deep as the longest upstream chain, and request passes
     // run on pool threads with default-sized stacks.
@@ -1245,8 +1246,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
     DeferredContextRequests deferred;
 
-    // The root renders under the empty context.
-    stack.push_back(makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
+    stack.push_back(makeVisitItem(node, rootContext, time, view, originalMipmapLevel, canonicalRenderWindow));
 
     for (;;) {
         if (stack.empty()) {
@@ -1487,7 +1487,8 @@ EffectInstance::computeRequestPass(double time,
                                    unsigned int mipmapLevel,
                                    const RectD& renderWindow,
                                    const NodePtr& treeRoot,
-                                   FrameRequestMap& request)
+                                   FrameRequestMap& request,
+                                   const RenderContextPtr& rootContext)
 {
     bool doTransforms = appPTR->getCurrentSettings()->isTransformConcatenationEnabled();
     StatusEnum stat = getInputsRoIsFunctor(doTransforms,
@@ -1498,7 +1499,8 @@ EffectInstance::computeRequestPass(double time,
                                            treeRoot,
                                            treeRoot,
                                            renderWindow,
-                                           request);
+                                           request,
+                                           rootContext);
 
     if (stat == eStatusFailed) {
         return stat;

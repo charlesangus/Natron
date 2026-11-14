@@ -4226,6 +4226,13 @@ void
 SceneViewport::publishState()
 {
     setProperty("natronSceneError", _imp->error);
+    {
+        QVariantMap tileRenders;
+        for (const std::pair<const int, std::size_t>& count : LiveTextureStore::instance().getRenderCounts()) {
+            tileRenders.insert(QString::number(count.first), QVariant::fromValue<qulonglong>(count.second));
+        }
+        setProperty("natronLiveTextureRenders", tileRenders);
+    }
     setProperty("natronSceneShown", _imp->renderer.hasScene());
     setProperty("natronSceneSynced", isSceneSynced());
     // How many scenes were handed to the worker: navigation alone must not add to it.

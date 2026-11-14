@@ -334,8 +334,9 @@ TEST_F(USDProject3DTest, TheImageIsALiveTextureTheShaderSamples)
     const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
     ASSERT_EQ((std::size_t)1, sources.size());
     EXPECT_EQ(file.GetAssetPath(), sources[0].getUri(1.));
-    ASSERT_EQ((std::size_t)1, sources[0].windows.size());
-    EXPECT_FALSE(sources[0].windows[0].isNull());
+    ASSERT_TRUE(bool(sources[0].windows));
+    ASSERT_EQ((std::size_t)1, sources[0].windows->size());
+    EXPECT_FALSE((*sources[0].windows)[0].isNull());
 }
 
 TEST_F(USDProject3DTest, ACardWithTheProjectionAsItsMaterialIsBoundToIt)

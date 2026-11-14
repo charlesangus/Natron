@@ -38,6 +38,8 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/usdShade/udimUtils.h>
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -396,9 +398,16 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
     // The image inputs' identities and hashes, without rendering them: the layer reads nothing
     // else of them, so an upstream image edit re-authors this layer and no other.
     LiveTextureSourceList liveTextures(kUSDMaterialInputCount);
+    QStringList warnings;
     ContentHasher facts;
     for (int i = 0; i < kUSDMaterialInputCount; ++i) {
-        const bool connected = SceneNodeAuthoring::getLiveTextureSource(*this, i, kLiveTextureLayer, &liveTextures[i]);
+        std::string udimError;
+        const bool connected = SceneNodeAuthoring::getLiveTextureSource(*this, i, kLiveTextureLayer, &liveTextures[i], &udimError);
+        if (!udimError.empty()) {
+            warnings.push_back(tr("The UDIM tiles declared by the image on the %1 input are ignored, and it is read as a single texture: %2.")
+                                   .arg(QString::fromUtf8(kInputs[i].label))
+                                   .arg(QString::fromStdString(udimError)));
+        }
         facts.appendBool(connected);
         if (connected) {
             SceneNodeAuthoring::appendLiveTextureSource(liveTextures[i], &facts);
@@ -415,7 +424,6 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
 
     // Checked on every evaluation, not only when the layer is authored: a file can appear or
     // vanish while the layer stays the same.
-    QStringList warnings;
     const std::pair<KnobFilePtr, int> textureKnobs[] = {
         { _diffuseTexture.lock(), kUSDMaterialInputDiffuseColor },
         { _metallicTexture.lock(), kUSDMaterialInputMetallic },
@@ -427,7 +435,13 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
             continue;
         }
         const std::string texturePath = getTexturePath(knob.first);
-        if (!texturePath.empty() && PXR_NS::ArGetResolver().Resolve(texturePath).IsEmpty()) {
+        if (texturePath.empty()) {
+            continue;
+        }
+        const bool resolves = PXR_NS::UsdShadeUdimUtils::IsUdimIdentifier(texturePath)
+            ? !PXR_NS::UsdShadeUdimUtils::ResolveUdimPath(texturePath, PXR_NS::SdfLayerHandle()).empty()
+            : !PXR_NS::ArGetResolver().Resolve(texturePath).IsEmpty();
+        if (!resolves) {
             warnings.push_back(tr("The texture %1 does not resolve; it is authored anyway, and the surface renders without it "
                                   "wherever it does not resolve.")
                                    .arg(QString::fromStdString(texturePath)));
@@ -438,10 +452,8 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
         if (!source.node.lock()) {
             continue;
         }
-        const std::string uri = source.getUri(args.time);
-        const std::string failure = LiveTextureStore::instance().getFailure(uri);
-        if (!failure.empty()) {
-            warnings.push_back(tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
+        for (const std::string& warning : SceneNodeAuthoring::getLiveTextureWarnings(source, args.time)) {
+            warnings.push_back(QString::fromStdString(warning));
         }
     }
     if (warnings.isEmpty()) {

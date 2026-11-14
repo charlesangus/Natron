@@ -45,6 +45,7 @@
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RenderScale.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/ThreadPool.h"
@@ -96,6 +97,7 @@ renderLayer(const NodePtr& node,
             const RectI& pixelRect,
             const ImageLayerDesc& layer,
             const RectI* window,
+            const RenderContextPtr& context,
             RectI* roi,
             ImagePtr* image)
 {
@@ -112,6 +114,11 @@ renderLayer(const NodePtr& node,
                                              false /*isAnalysis*/,
                                              false /*draftMode*/,
                                              RenderStatsPtr());
+
+    // The node answers its actions, and renders, under its own part of context: none when it reads
+    // nothing context sets, which keeps the render and its cache entries those of the empty context.
+    const U64 rootKey = restrictContextToNode(context, node, nullptr);
+    ActionContextScope rootActions(rootKey != 0, context);
 
     const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
     RectD rod;
@@ -141,10 +148,18 @@ renderLayer(const NodePtr& node,
     }
 
     FrameRequestMap request;
-    if (EffectInstance::computeRequestPass(time, view, mipmapLevel, roi->toCanonical(mipmapLevel, par, rod), node, request) == eStatusFailed) {
+    if (EffectInstance::computeRequestPass(time, view, mipmapLevel, roi->toCanonical(mipmapLevel, par, rod), node, request, (rootKey != 0) ? context : RenderContextPtr()) == eStatusFailed) {
         return false;
     }
     frameRenderArgs.updateNodesRequest(request);
+    ContextFrameArgsScope rootArgs;
+    if (rootKey != 0) {
+        const ParallelRenderArgsPtr planned = request.getContextArgs(NodeCtxKey(node, rootKey));
+        if (!planned) {
+            return false;
+        }
+        rootArgs.install(effect, planned);
+    }
 
     // The viewer renders at the effect's own depth, so asking for the same depth finds its image.
     ImageBitDepthEnum depth = renderMetadata->getBitDepth(-1);
@@ -187,6 +202,7 @@ renderNodeImageImpl(const NodePtr& node,
                     const RectI& pixelRect,
                     const ImageLayerDesc& layer,
                     const RectI* window,
+                    const RenderContextPtr& context,
                     RectI* renderedRect,
                     const AbortableRenderInfoPtr& abortInfoArg,
                     bool* rendered)
@@ -217,7 +233,7 @@ renderNodeImageImpl(const NodePtr& node,
 
     RectI roi;
     ImagePtr image;
-    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, window, &roi, &image);
+    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, window, context, &roi, &image);
 
     // The main thread's TLS also holds the state of whatever action is running on it, so only a
     // worker thread, which owns nothing else, is cleaned up as the tracker does.
@@ -248,7 +264,7 @@ renderNodeImage(const NodePtr& node,
 {
     bool rendered;
 
-    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, abortInfo, &rendered);
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, RenderContextPtr(), renderedRect, abortInfo, &rendered);
 }
 
 bool
@@ -301,11 +317,12 @@ renderNodeImageOverWindow(const NodePtr& node,
                           const ImageLayerDesc& layer,
                           const RectI& window,
                           ImagePtr* image,
-                          RectI* renderedRect)
+                          RectI* renderedRect,
+                          const RenderContextPtr& context)
 {
     bool rendered;
 
-    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, AbortableRenderInfoPtr(), &rendered);
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, context, renderedRect, AbortableRenderInfoPtr(), &rendered);
 
     return rendered;
 }

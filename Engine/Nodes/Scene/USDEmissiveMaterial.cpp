@@ -36,6 +36,8 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/usdShade/udimUtils.h>
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -222,7 +224,8 @@ USDEmissiveMaterial::renderScene(const SceneRenderActionArgs& args,
     // The input's identity and hash, without rendering it: the layer reads nothing else of it, so
     // an upstream image edit re-authors this layer and no other.
     LiveTextureSource live;
-    const bool connected = SceneNodeAuthoring::getLiveTextureSource(*this, kUSDEmissiveMaterialInputEmissive, kLiveTextureLayer, &live);
+    std::string udimError;
+    const bool connected = SceneNodeAuthoring::getLiveTextureSource(*this, kUSDEmissiveMaterialInputEmissive, kLiveTextureLayer, &live, &udimError);
     ContentHasher facts;
     facts.appendBool(connected);
     if (connected) {
@@ -241,25 +244,31 @@ USDEmissiveMaterial::renderScene(const SceneRenderActionArgs& args,
 
     // Checked on every evaluation, not only when the layer is authored: a file can appear or
     // vanish, or a live texture fail to render, while the layer stays the same.
-    QString warning;
+    QStringList warnings;
+    if (!udimError.empty()) {
+        warnings.push_back(tr("The UDIM tiles declared by the image on the Emissive input are ignored, and it is read as a single texture: %1.")
+                               .arg(QString::fromStdString(udimError)));
+    }
     if (connected) {
-        const std::string uri = live.getUri(args.time);
-        const std::string failure = LiveTextureStore::instance().getFailure(uri);
-        if (!failure.empty()) {
-            warning = tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure));
+        for (const std::string& warning : SceneNodeAuthoring::getLiveTextureWarnings(live, args.time)) {
+            warnings.push_back(QString::fromStdString(warning));
         }
     } else {
         const std::string texturePath = SceneNodeAuthoring::getAnchoredFilePath(_emissiveTexture.lock());
-        if (!texturePath.empty() && PXR_NS::ArGetResolver().Resolve(texturePath).IsEmpty()) {
-            warning = tr("The texture %1 does not resolve; it is authored anyway, and the surface renders without it "
-                         "wherever it does not resolve.")
-                          .arg(QString::fromStdString(texturePath));
+        const bool resolves = texturePath.empty()
+            || (PXR_NS::UsdShadeUdimUtils::IsUdimIdentifier(texturePath)
+                    ? !PXR_NS::UsdShadeUdimUtils::ResolveUdimPath(texturePath, PXR_NS::SdfLayerHandle()).empty()
+                    : !PXR_NS::ArGetResolver().Resolve(texturePath).IsEmpty());
+        if (!resolves) {
+            warnings.push_back(tr("The texture %1 does not resolve; it is authored anyway, and the surface renders without it "
+                                  "wherever it does not resolve.")
+                                   .arg(QString::fromStdString(texturePath)));
         }
     }
-    if (warning.isEmpty()) {
+    if (warnings.isEmpty()) {
         clearPersistentMessage(false);
     } else {
-        setPersistentMessage(eMessageTypeWarning, warning.toStdString());
+        setPersistentMessage(eMessageTypeWarning, warnings.join(QString::fromUtf8("\n")).toStdString());
     }
 
     return eStatusOK;

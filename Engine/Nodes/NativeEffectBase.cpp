@@ -1002,7 +1002,7 @@ NativeEffectBase::getSceneLayerKey(const SceneLayerReads& reads,
     NodePtr node = getNode();
     AppInstancePtr app = getApp();
 
-    if (!node || !app || !app->getProject()) {
+    if (!node || node->isBeingDestroyed() || !app || !app->getProject()) {
         if (errorMessage) {
             *errorMessage = "The node is being destroyed";
         }

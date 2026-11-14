@@ -170,9 +170,10 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     }
 
     // A scene worker's job outlives the destruction of the nodes it evaluates, which leaves their
-    // effects without a node; held, the node stays valid until this evaluation ends.
+    // effects without a node, or a node whose effect destroyNode() takes away; held, the node
+    // stays valid until this evaluation ends.
     const NodePtr node = getNode();
-    if (!node) {
+    if (!node || node->isBeingDestroyed()) {
         return eRenderRoIRetCodeAborted;
     }
 

@@ -897,11 +897,11 @@ getLoadRules(const SceneLoadSet* loadSet)
         entries.emplace_back(path, rule);
     }
     // USD loads the ancestors of every path a rule loads, so an OnlyRule above another loading
-    // rule says nothing for its own path; and UsdStageLoadRules::Minimize() drops an OnlyRule
-    // nested under another as redundant, which would unload the inner path. Keeping only the
-    // innermost OnlyRule of a chain is equivalent and survives Minimize(), but only where the
-    // rule inherited from above excludes the siblings anyway: under an AllRule or no rule, the
-    // OnlyRule is what keeps the siblings of the inner path unloaded.
+    // rule says nothing for its own path; and UsdStageLoadRules::Minimize() drops any rule
+    // nested under an OnlyRule as redundant, which would unload the inner path. Where the rule
+    // inherited from above excludes the siblings anyway, such an OnlyRule is dropped; under an
+    // AllRule or no rule it is what keeps the rest of its subtree unloaded, so it becomes a
+    // NoneRule, which does the same and which Minimize() leaves the inner rules under.
     std::sort(entries.begin(), entries.end(), [](const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& a, const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& b) {
         return a.first < b.first;
     });
@@ -916,17 +916,22 @@ getLoadRules(const SceneLoadSet* loadSet)
                 break;
             }
         }
-        if (inheritsExclusion && (entries[i].second == PXR_NS::UsdStageLoadRules::OnlyRule)) {
+        bool loadsBelow = false;
+        if (entries[i].second == PXR_NS::UsdStageLoadRules::OnlyRule) {
             // Sorted, so the paths below entries[i] follow it.
             for (std::size_t j = i + 1; (j < entries.size()) && entries[j].first.HasPrefix(entries[i].first); ++j) {
                 if (entries[j].second != PXR_NS::UsdStageLoadRules::NoneRule) {
-                    implied = true;
+                    loadsBelow = true;
                     break;
                 }
             }
         }
+        implied = loadsBelow && inheritsExclusion;
         if (!implied) {
             kept.push_back(entries[i]);
+            if (loadsBelow) {
+                kept.back().second = PXR_NS::UsdStageLoadRules::NoneRule;
+            }
         }
     }
     rules.SetRules(std::move(kept));

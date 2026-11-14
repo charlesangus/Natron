@@ -180,6 +180,9 @@ public:
         parameters.gpuEnabled = false;
         _engine.reset(new UsdImagingGLEngine(parameters));
         _engine->SetEnablePresentation(false);
+        // The default grid of samples traces the 4096-pixel frame that many times over, which a debug
+        // build cannot finish within the suite's limit; one pass keeps the frame heavy but finishable.
+        _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(1));
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
     }
 

@@ -231,7 +231,7 @@ future core work has solid ground to build on.
 | M410 | 2D Fluid Solver Core | todo | M190 |  | E22 | F20 | | [M410-2d-fluid-solver-core.md](PLAN/MILESTONES/M410-2d-fluid-solver-core.md) |
 | M411 | 2D Fluid Fire And Controls | todo | M410 |  | E22 | F20 | | [M411-2d-fluid-fire-and-controls.md](PLAN/MILESTONES/M411-2d-fluid-fire-and-controls.md) |
 | M420 | Spline Curve Primitive | todo | M358, M376 |  | E9 | F21 | | [M420-spline-curve-primitive.md](PLAN/MILESTONES/M420-spline-curve-primitive.md) |
-| M421 | Stroke Keyframe Indicators | doing | M261, M305 | bosley-native-nodes | E10 | | | [M421-stroke-keyframe-indicators.md](PLAN/MILESTONES/M421-stroke-keyframe-indicators.md) |
+| M421 | Stroke Keyframe Indicators | doing | M261, M305, M272 | bosley-native-nodes | E10 | | | [M421-stroke-keyframe-indicators.md](PLAN/MILESTONES/M421-stroke-keyframe-indicators.md) |
 | M424 | Python setExpression Refreshes The Viewer | doing | - | bosley-native-nodes | E10 | | | [M424-python-set-expression-refreshes-viewer.md](PLAN/MILESTONES/M424-python-set-expression-refreshes-viewer.md) |
 | M422 | Snap Viewer Wheel Zoom | todo | - |  | E10 | | | [M422-snap-viewer-wheel-zoom.md](PLAN/MILESTONES/M422-snap-viewer-wheel-zoom.md) |
 | M413 | Geometry Modeling Ops | todo | M359, M420 |  | E9 | F21 | | [M413-geometry-modeling-ops.md](PLAN/MILESTONES/M413-geometry-modeling-ops.md) |

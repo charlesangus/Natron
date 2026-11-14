@@ -285,6 +285,13 @@ public:
     void noteDrawRevealPresented();
 
     /**
+     * @brief Whether renders leave the stage out, drawing the background and overlays only, so that
+     * no frame shows prims before the policy that applies to them. Main thread.
+     **/
+    void setStageHeld(bool held);
+    bool isStageHeld() const;
+
+    /**
      * @brief How long a reveal still waits for the camera, in milliseconds: none goes out while the
      * user moves it, so the frames it asks for come at the scene's own cost. Main thread.
      **/
@@ -1109,11 +1116,12 @@ public:
     bool hasSetDrawStates() const;
 
     /**
-     * @brief Holds drawing until the next graph policy the worker matches is in the draw states,
-     * for a short while at most, so that an edit made now and the policy it leads to show in one
-     * frame. Main thread.
+     * @brief Runs edit, an edit of this viewer's draw states, once the worker has matched the graph
+     * policy of a sync requested from now on or of rules published from now on, or after a short
+     * while at most, so that a graph edit made now and edit show in one frame. Drawing goes on
+     * meanwhile with the states and policy the view has. Main thread.
      **/
-    void holdDrawingForGraphPolicy();
+    void editWithGraphPolicy(const std::function<void()>& edit);
 
 public Q_SLOTS:
     // Replaces the selection. A slot, so that scripts reach it through the meta object.
@@ -1278,11 +1286,12 @@ private:
     void editDrawStateRows(const std::vector<SceneDrawRowEdit>& edits);
     void deliverDrawChange(const SceneDrawChange& change);
     // Main thread: the graph policy the scene's draw rules, of the generation given, matched; matchId
-    // numbers the worker's matches, 0 for one after loads.
-    void onDrawRulesMatched(U64 generation, U64 matchId, const SceneDrawStates::PolicyStates& policy);
-    // Main thread: holds drawing until the worker's match matchId lands and its policy is in the draw
-    // states, for kPolicyHoldMs at most.
-    void holdDrawingUntilMatch(U64 matchId);
+    // numbers the worker's matches and serial is the sync matched for, both 0 for one after loads.
+    void onDrawRulesMatched(U64 generation, U64 matchId, U64 serial, const SceneDrawStates::PolicyStates& policy);
+    // Main thread: frames leave the stage out until the worker's match matchId lands and its policy
+    // is in the draw states, for kPolicyHoldMs at most.
+    void holdStageUntilMatch(U64 matchId);
+    void runPolicyEdits();
     void releasePolicyHoldIfDone();
     void releasePolicyHold();
     void wakeLoadsAskedBeforeStage();

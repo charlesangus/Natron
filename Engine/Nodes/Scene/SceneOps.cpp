@@ -882,9 +882,11 @@ namespace {
         const SceneDrawRule& rule;
         PXR_NS::TfToken kind;
         const std::function<bool()>& cancelled;
-        // The layers of the stage's own layer stack that are not the rule's; empty when the rule
-        // keeps to no layers.
-        std::set<const PXR_NS::SdfLayer*> otherLayers;
+        // The layers of the stage's own layer stack that are the rule's and that are not; both
+        // empty when the rule keeps to no layers.
+        std::vector<PXR_NS::SdfLayerHandle> ownLayers;
+        std::vector<PXR_NS::SdfLayerHandle> otherLayers;
+        std::set<const PXR_NS::SdfLayer*> otherLayerSet;
         std::vector<std::pair<std::string, SceneDrawStateEnum>>* rows = nullptr;
         std::size_t visited = 0;
         bool stopped = false;
@@ -901,9 +903,18 @@ namespace {
             }
             const std::set<std::string> own(rule.layers.begin(), rule.layers.end());
             for (const PXR_NS::SdfLayerHandle& layer : stage->GetLayerStack(true)) {
-                if (layer && (own.find(layer->GetIdentifier()) == own.end())) {
-                    otherLayers.insert(PXR_NS::get_pointer(layer));
+                if (!layer) {
+                    continue;
                 }
+                if (own.find(layer->GetIdentifier()) == own.end()) {
+                    otherLayers.push_back(layer);
+                    otherLayerSet.insert(PXR_NS::get_pointer(layer));
+                } else {
+                    ownLayers.push_back(layer);
+                }
+            }
+            if (otherLayers.empty()) {
+                ownLayers.clear();
             }
         }
 
@@ -929,8 +940,26 @@ namespace {
             if (otherLayers.empty()) {
                 return false;
             }
+            const PXR_NS::SdfPath& path = prim.GetPath();
+            for (const PXR_NS::SdfLayerHandle& layer : ownLayers) {
+                if (layer->HasSpec(path)) {
+                    return false;
+                }
+            }
+            bool other = false;
+            for (const PXR_NS::SdfLayerHandle& layer : otherLayers) {
+                if (layer->HasSpec(path)) {
+                    other = true;
+                    break;
+                }
+            }
+            if (!other) {
+                return false;
+            }
+            // Composing the prim's stack is costly, so only a prim another layer authors gets it,
+            // to find whether a reference or a payload authors it too.
             for (const PXR_NS::SdfPrimSpecHandle& spec : prim.GetPrimStack()) {
-                if (spec && (otherLayers.find(PXR_NS::get_pointer(spec->GetLayer())) == otherLayers.end())) {
+                if (spec && (otherLayerSet.find(PXR_NS::get_pointer(spec->GetLayer())) == otherLayerSet.end())) {
                     return false;
                 }
             }
@@ -1061,6 +1090,12 @@ namespace {
                 if (ancestor == rootPath) {
                     break;
                 }
+                // A whole traversal never reaches below a prim the predicate leaves out.
+                const PXR_NS::UsdPrim above = stage->GetPrimAtPath(ancestor);
+                if (!above || !predicate(above)) {
+                    pruned = true;
+                    break;
+                }
                 const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(ancestor);
                 if (!result.GetValue() && result.IsConstant()) {
                     pruned = true;
@@ -1174,7 +1209,8 @@ rematchDrawRulesUnder(const PXR_NS::UsdStageRefPtr& stage,
     }
     std::vector<std::string> covering;
     {
-        std::vector<std::string> sorted = roots;
+        // A changed load below a payload changes what the outermost payload above it composes.
+        std::vector<std::string> sorted = getLoadReach(stage, roots);
         std::sort(sorted.begin(), sorted.end(), SceneDrawStates::PathLess());
         for (const std::string& root : sorted) {
             if (covering.empty() || !isAtOrBelowPath(root, covering.back())) {

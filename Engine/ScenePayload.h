@@ -84,10 +84,10 @@ struct SceneDrawRule {
 typedef std::vector<SceneDrawRule> SceneDrawRules;
 
 /**
- * @brief Appends rules to *to, leaving out any rule *to already holds: a rule reached through
+ * @brief Appends rules to *to, leaving out any rule *to held before: a rule reached through
  * several inputs of a merge comes from one upstream node, and keeps its first, weakest place, as
- * that node's layers do in the merged stack. Into an empty *to, rules go as they are, repeats
- * included: they are one node's or one input's, in the order that decides between them.
+ * that node's layers do in the merged stack. Repeats within rules all go, in order: they are one
+ * node's or one input's, in the order that decides between them.
  **/
 void appendSceneDrawRules(const SceneDrawRules& rules,
                           SceneDrawRules* to);

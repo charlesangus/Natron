@@ -379,6 +379,23 @@ TEST(ScenePayloadTest, AppendingDrawRulesIntoNoneTakesThemAsTheyAre)
     EXPECT_EQ((SceneDrawRules { a, b, a }), rules);
 }
 
+TEST(ScenePayloadTest, AppendingDrawRulesKeepsTheirOwnRepeatsBehindTheTargetsRules)
+{
+    const SceneDrawRule up = makeRule("/U", eSceneDrawStateFull, "Policy1");
+    const SceneDrawRule a = makeRule("/A", eSceneDrawStateBBox, "Policy2");
+    const SceneDrawRule b = makeRule("/A/B", eSceneDrawStateHidden, "Policy2");
+    SceneDrawRules rules { up };
+
+    appendSceneDrawRules(SceneDrawRules { a, b, a }, &rules);
+
+    // The later a still decides what b would: the repeat is kept where it was.
+    EXPECT_EQ((SceneDrawRules { up, a, b, a }), rules);
+
+    appendSceneDrawRules(SceneDrawRules { up, a }, &rules);
+
+    EXPECT_EQ((SceneDrawRules { up, a, b, a }), rules);
+}
+
 TEST(ScenePayloadTest, AppendingManyDrawRulesLeavesOutEveryRepeat)
 {
     SceneDrawRules first;

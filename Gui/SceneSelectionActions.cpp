@@ -281,17 +281,20 @@ public:
     void undo() override
     {
         if (_viewport) {
-            _viewport->holdDrawingForGraphPolicy();
-            _viewport->mergeSetDrawStates(_baked);
+            SceneViewport* viewport = _viewport;
+            const SetDrawStates baked = _baked;
+            _viewport->editWithGraphPolicy([viewport, baked]() { viewport->mergeSetDrawStates(baked); });
         }
     }
 
     void redo() override
     {
         if (_viewport) {
-            // The rules stand in for the states: drawing waits for both, so no frame shows neither.
-            _viewport->holdDrawingForGraphPolicy();
-            _viewport->clearSetDrawStates(_paths);
+            // The rules stand in for the states, so the states go with the rules' policy: no frame
+            // shows neither.
+            SceneViewport* viewport = _viewport;
+            const std::vector<std::string> paths = _paths;
+            _viewport->editWithGraphPolicy([viewport, paths]() { viewport->clearSetDrawStates(paths); });
         }
     }
 
@@ -355,6 +358,8 @@ createExpandHierarchyAfter(const NodePtr& viewed,
     CreateNodeArgs args(PLUGINID_NATRON_USDEXPANDHIERARCHY, viewed->getGroup());
     args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
     args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
+    // Its command goes in only once it reads viewed: a node that cannot is removed unseen.
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
     NodePtr created = app->createNode(args);
     if (!created) {
         return NodePtr();
@@ -376,9 +381,15 @@ createExpandHierarchyAfter(const NodePtr& viewed,
     }
 
     const NodePtr previousInput = created->getInput(0);
-    if (!created->replaceInput(viewed, 0)) {
+    const NodeGuiPtr createdGui = std::dynamic_pointer_cast<NodeGui>(created->getNodeGui());
+    if (!createdGui || !created->replaceInput(viewed, 0)) {
+        created->destroyNode(false, false);
+
         return NodePtr();
     }
+    AddMultipleNodesCommand* added = new AddMultipleNodesCommand(graph, createdGui);
+    added->setCreationAutoSaves();
+    graph->pushUndoCommand(added, NodesGuiList(1, createdGui));
     std::vector<ReconnectInputsCommand::InputChange> changes;
     changes.push_back(ReconnectInputsCommand::InputChange { created, 0, previousInput, viewed });
     UndoScope scope;

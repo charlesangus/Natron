@@ -996,7 +996,7 @@ struct SceneGraphPanel::Implementation {
             bakeDrawStatesButton->setEnabled(viewport && SceneSelectionActions::bakeBlocker(viewer.data()).isEmpty());
         }
         if (cancelLoadsButton) {
-            cancelLoadsButton->setEnabled(!viewport.isNull());
+            cancelLoadsButton->setEnabled(viewport && viewport->getRenderer().hasPendingStageLoads());
         }
     }
 
@@ -1090,6 +1090,7 @@ struct SceneGraphPanel::Implementation {
     {
         if (showsViewerStage()) {
             viewport->requestLoad(paths, withDescendants);
+            updateBakeButton();
         } else if (pinned && (model->getSource() == pinned)) {
             pinned->requestLoad(paths, withDescendants);
         } else {
@@ -2242,6 +2243,7 @@ SceneGraphPanel::onViewerSceneChanged()
 void
 SceneGraphPanel::onStageLoadsChanged()
 {
+    _imp->updateBakeButton();
     if (!_imp->showsViewerStage()) {
         return;
     }

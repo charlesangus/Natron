@@ -70,17 +70,17 @@ appendSceneDrawRules(const SceneDrawRules& rules,
 
         return;
     }
-    // Reserved first, so the set's pointers into *to stay valid as it grows.
+    // Reserved first, so the set's pointers into *to stay valid as it grows. Only the rules *to
+    // held before are looked up: a repeat within rules stays, as of two rows the later one wins.
     to->reserve(to->size() + rules.size());
     std::unordered_set<const SceneDrawRule*, DrawRuleHash, DrawRuleEqual> held;
-    held.reserve(to->size() + rules.size());
+    held.reserve(to->size());
     for (const SceneDrawRule& rule : *to) {
         held.insert(&rule);
     }
     for (const SceneDrawRule& rule : rules) {
         if (held.find(&rule) == held.end()) {
             to->push_back(rule);
-            held.insert(&to->back());
         }
     }
 }

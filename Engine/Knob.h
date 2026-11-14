@@ -2230,8 +2230,17 @@ public:
      **/
     bool showsKeysOnTimeline() const;
 
+    /**
+     * @brief Tells the timeline this knob's keys changed. Callable from any thread.
+     **/
+    void invalidateTimelineMarkers() const;
+
+    /**
+     * @brief Whether the GUI curve holds edits not yet copied to the internal curve, which happens while a render is running.
+     **/
+    bool hasGuiCurveChanged(ViewSpec view, int dimension) const;
+
 private:
-    void updateDriverKeysOnTimeline(const KnobDriverPtr& previous, const KnobDriverPtr& driver);
     static void appendDriverKeyTimes(const KnobDriver& driver, std::list<SequenceTime>* times);
 
 public:
@@ -2253,7 +2262,9 @@ public:
      * @brief What the Python expression source reads of the rfv object: the variable named by each
      * rfv.<name>, rfv('<name>') and rfv['<name>'], either quote, in code rather than in a string
      * or a comment. Any other use of the name rfv, such as passing it on, getattr() or a computed
-     * key, may read any variable and makes the result reads-all.
+     * key, may read any variable and makes the result reads-all. loop.<v>, loops.<name>.<v>
+     * and udim.<v> read the variable named; loop, loops.<name> or udim used otherwise read all of
+     * their variables, and loops used otherwise any variable.
      **/
     static RenderContextReadSet getRFVExpressionReads(const std::string& expression);
 
@@ -2593,7 +2604,6 @@ protected:
     virtual std::shared_ptr<Curve> getGuiCurve(ViewSpec view, int dimension, bool byPassMaster = false) const OVERRIDE FINAL;
 
     void setGuiCurveHasChanged(ViewSpec view, int dimension, bool changed);
-    bool hasGuiCurveChanged(ViewSpec view, int dimension) const;
     void clearExpressionsResultsIfNeeded(std::map<int, Natron::ValueChangedReasonEnum>& modifiedDimensions);
 
 
@@ -3377,9 +3387,6 @@ public:
      * @brief Restore all knobs to their default values
      **/
     void restoreDefaultValues();
-    virtual void aboutToRestoreDefaultValues()
-    {
-    }
 
     /**
      * @brief When frozen is true all the knobs of this effect read-only so the user can't interact with it.

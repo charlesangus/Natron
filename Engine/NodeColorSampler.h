@@ -91,6 +91,11 @@ bool getNodeImageWindow(const NodePtr& node,
  *
  * Returns false in the cases sampleNodeColor() returns false. Returns true with a null image when the
  * region of definition misses window: it is then all transparent black.
+ *
+ * node renders under context restricted to what its output reads, as an input pulled under it
+ * would, so its upstream nodes render under the part of it each reads: under {udimTile: N} only
+ * what reads RenderContextName::udimTile() renders per tile. A null or empty context renders as the
+ * viewer does. Its actions, the region of definition included, answer under that context too.
  **/
 bool renderNodeImageOverWindow(const NodePtr& node,
                                double time,
@@ -98,7 +103,8 @@ bool renderNodeImageOverWindow(const NodePtr& node,
                                const ImageLayerDesc& layer,
                                const RectI& window,
                                ImagePtr* image,
-                               RectI* renderedRect);
+                               RectI* renderedRect,
+                               const RenderContextPtr& context = RenderContextPtr());
 
 /**
  * @brief Renders node's output over pixelRect, in pixel coordinates at mipmapLevel, synchronously on

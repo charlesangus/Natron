@@ -75,7 +75,9 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -122,6 +124,7 @@ const char* const kGoldenCaseProject3DGeometryHeld = "StormProject3DGeometryHeld
 const char* const kGoldenCaseProject3DOverscan = "StormProject3DOverscan";
 // A crop, not the whole frame: <dir>/USDRender/StormAssignMaterial.exr, half float, zip.
 const char* const kGoldenCaseAssignMaterial = "StormAssignMaterial";
+const char* const kGoldenCaseUdimTiles = "StormUdimTiles";
 
 // An asset whose box is bound directly to a grey material of its own.
 const char* const kGreyAsset = "#usda 1.0\n"
@@ -2230,6 +2233,136 @@ TEST_F(USDRenderStormTest, OverscanShowsWhereTextureCoordinatesLeaveZeroToOne)
     EXPECT_LT(overscan[1], 0.05);
     EXPECT_GT(formatLeft[0], 0.9) << "0 < u < 0.5 is the format's left half, red " << formatLeft[0];
     EXPECT_LT(formatRight[0], 0.05) << "0.5 < u < 1 is the format's right half the image does not cover, red " << formatRight[0];
+}
+
+// A quad whose texture coordinates run 0 to 2 in u, textured by a Constant whose red is 1 only in
+// tile 1002 and green only in tile 1001, declared as a two-tile UDIM set by a MetadataModify: the
+// left half of the quad shows tile 1001, green, and the right half tile 1002, red.
+TEST_F(USDRenderStormTest, EveryTileOfAUdimLiveTextureShows)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString quadPath = tmp.path() + QString::fromUtf8("/quad.usda");
+    {
+        QFile file(quadPath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write("#usda 1.0\n"
+                   "(\n    upAxis = \"Y\"\n    metersPerUnit = 1\n)\n"
+                   "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                   "    int[] faceVertexCounts = [4]\n"
+                   "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                   "    point3f[] points = [(-1.5, -0.5, 0), (1.5, -0.5, 0), (1.5, 0.5, 0), (-1.5, 0.5, 0)]\n"
+                   "    texCoord2f[] primvars:st = [(0, 0), (2, 0), (2, 1), (0, 1)] (\n        interpolation = \"vertex\"\n    )\n"
+                   "    uniform token subdivisionScheme = \"none\"\n"
+                   "    rel material:binding = </Live>\n"
+                   "}\n");
+    }
+
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+    ASSERT_TRUE(constant && modify && material && reader && camera && merge && render && settings);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
+    KnobBool* useAlpha = knob<KnobBool>(material, kUSDEmissiveMaterialParamUseAlpha);
+    ASSERT_TRUE(color && file && useAlpha);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    ASSERT_NO_THROW(color->setExpression(0, "1 if (udim.tile or 0) == 1002 else 0", false, true));
+    ASSERT_NO_THROW(color->setExpression(1, "1 if (udim.tile or 0) == 1001 else 0", false, true));
+    dynamic_cast<KnobChoice*>(modify->getKnobByName("operation1").get())->setValue((int)MetadataModify::eOperationSet);
+    dynamic_cast<KnobStringBase*>(modify->getKnobByName("key1").get())->setValue(std::string(kNatronMetadataKeyUdimTiles));
+    dynamic_cast<KnobChoice*>(modify->getKnobByName("type1").get())->setValue((int)MetadataModify::eValueTypeString);
+    dynamic_cast<KnobStringBase*>(modify->getKnobByName("stringValue1").get())->setValue(std::string("1001,1002"));
+    file->setValue(quadPath.toStdString());
+    ASSERT_TRUE(setString(material, kSceneParamPrimPath, "/Live"));
+    // The quad is found by its prim id, which Storm does not write for a surface with an opacity.
+    useAlpha->setValue(false);
+    ASSERT_TRUE(setString(camera, kSceneParamPrimPath, "/Cam"));
+    ASSERT_TRUE(setTriple(camera, kSceneParamTranslate, 0., 0., 10.));
+    connectNodes(constant, modify, 0, true);
+    connectNodes(modify, material, kUSDEmissiveMaterialInputEmissive, true);
+    connectNodes(reader, merge, 0, true);
+    connectNodes(material, merge, 1, true);
+    connectNodes(camera, merge, 2, true);
+    connectNodes(merge, settings, 0, true);
+    connectNodes(settings, render, 0, true);
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(settings, "/Cam", kWidth, kHeight));
+
+    const std::map<int, std::size_t> before = LiveTextureStore::instance().getRenderCounts();
+    const auto rendersOf = [&before](int tile) {
+        const std::map<int, std::size_t> now = LiveTextureStore::instance().getRenderCounts();
+        const std::map<int, std::size_t>::const_iterator n = now.find(tile);
+        const std::map<int, std::size_t>::const_iterator b = before.find(tile);
+
+        return (n == now.end() ? 0u : n->second) - (b == before.end() ? 0u : b->second);
+    };
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderOffMainThread(render, 1., &planes, &error)) << error;
+    ASSERT_EQ(3u, planes.size());
+    EXPECT_FALSE(render->hasPersistentMessage());
+    EXPECT_GE(rendersOf(1001), 1u);
+    EXPECT_GE(rendersOf(1002), 1u);
+    EXPECT_EQ(0u, rendersOf(0)) << "a tile set renders no single texture";
+
+    const std::vector<float>& rgba = planes[0].pixels;
+    const std::vector<float>& primId = planes[2].pixels;
+    const std::uint32_t quadId = bitsOf(HydraRender::hashToFloat(HydraRender::primPathHash("/Quad")));
+    int left = kWidth;
+    int right = -1;
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            if (bitsOf(primId[(std::size_t)y * (std::size_t)kWidth + (std::size_t)x]) == quadId) {
+                left = std::min(left, x);
+                right = std::max(right, x);
+            }
+        }
+    }
+    ASSERT_GT(right - left, 60) << "the quad is drawn";
+    const auto meanOver = [&](double from,
+                              double to,
+                              double rg[2]) {
+        int count = 0;
+        rg[0] = rg[1] = 0.;
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const std::size_t i = (std::size_t)y * (std::size_t)kWidth + (std::size_t)x;
+                const double across = (x - left + 0.5) / (double)(right - left + 1);
+                if ((bitsOf(primId[i]) != quadId) || (across < from) || (across > to)) {
+                    continue;
+                }
+                rg[0] += rgba[i * 4 + 0];
+                rg[1] += rgba[i * 4 + 1];
+                ++count;
+            }
+        }
+        if (count) {
+            rg[0] /= count;
+            rg[1] /= count;
+        }
+
+        return count;
+    };
+    double first[2];
+    double second[2];
+    ASSERT_GT(meanOver(0.1, 0.4, first), 50);
+    ASSERT_GT(meanOver(0.6, 0.9, second), 50);
+    EXPECT_GT(first[1], 0.9) << "u in 0 to 1 is tile 1001, green " << first[1];
+    EXPECT_LT(first[0], 0.05);
+    EXPECT_GT(second[0], 0.9) << "u in 1 to 2 is tile 1002, red " << second[0];
+    EXPECT_LT(second[1], 0.05);
+
+    checkCropAgainstReference(planes[0], RectI(0, 0, kWidth, kHeight), kGoldenCaseUdimTiles);
 }
 
 TEST_F(USDRenderStormTest, ASharedMaterialAssignedByPatternRendersAsBound)

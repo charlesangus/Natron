@@ -111,11 +111,14 @@ def test_close_forces_arrow_cursor_and_schedules_restore():
     # constructs a real widget tree we don't need for this test).
     widget = object.__new__(module.TabTabTabWidget)
     widget.weights = MagicMock()
+    widget.weights.dirty = True
+    widget._weights_save_timer = MagicMock()
 
     widget.close()
 
-    # Weights are still saved on close.
-    widget.weights.save.assert_called_once()
+    # Unsaved weights are saved once the save timer fires, not on close.
+    widget.weights.save.assert_not_called()
+    widget._weights_save_timer.start.assert_called_once()
 
     # An arrow-cursor override is pushed immediately, before the widget
     # is actually hidden, guaranteeing an on-screen cursor update.
@@ -141,6 +144,7 @@ def test_close_pairs_override_push_with_restore_across_repeated_opens():
 
     widget = object.__new__(module.TabTabTabWidget)
     widget.weights = MagicMock()
+    widget._weights_save_timer = MagicMock()
 
     for _ in range(3):
         widget.close()

@@ -45,8 +45,12 @@
 
 // Free of USD: the store is filled by Natron renders, which know nothing of pxr.
 
-// The URI scheme live textures are served under: natron://<node>/<layer>?v=<hash>.
+// The URI scheme live textures are served under: natron://<node>/<layer>?v=<hash>, and for a UDIM
+// set natron://<node>/<layer>.<UDIM>?v=<hash>, whose tiles are natron://<node>/<layer>.1001?v=<hash>
+// and so on. USD and Storm find a set's tiles by putting each tile number from 1001 to 1100 in
+// place of the token and resolving the result, so the query after it reaches every tile URI.
 #define kLiveTextureScheme "natron"
+#define kLiveTextureUdimToken "<UDIM>"
 
 NATRON_NAMESPACE_ENTER
 
@@ -160,12 +164,47 @@ struct LiveTextureSource {
     double lastFrame = 0.;
     // Filled by SceneNodeAuthoring::recordLiveTexture: one window per frame from firstFrame when
     // varying, else one. A texture is rendered over the window its layer authored coordinates for.
-    std::vector<LiveTextureWindow> windows;
+    // Shared, as the copies of a source made for each of its frames read the same windows.
+    std::shared_ptr<const std::vector<LiveTextureWindow>> windows;
+    // The UDIM tiles the source declares (kNatronMetadataKeyUdimTiles), sorted and without
+    // duplicates; empty for a single texture. With frameTiles, every tile any frame declares. Each
+    // tile is rendered over the format the source has under that tile, without the overscan, and
+    // windows are not read.
+    std::vector<int> tiles;
+    // Filled by SceneNodeAuthoring::getLiveTextureSource for a varying UDIM source: the tiles
+    // declared at each frame from firstFrame, as windows are, empty where a frame declares none or
+    // does not parse. Otherwise null, and tiles holds the set at every frame. Shared as windows are.
+    std::shared_ptr<const std::vector<std::vector<int>>> frameTiles;
+    // For a varying UDIM source, the warning naming the frames that declare no tiles, or whose
+    // declaration does not parse, where the set shows nothing; empty when every frame has tiles.
+    std::string missingTilesWarning;
+
+    // The last tile USD and Storm look for: tiles above it are rendered but never read.
+    static constexpr int kLastUsdUdimTile = 1100;
 
     // The frame whose image the texture shows at frame: USD holds the sample at or before it.
     double getSourceFrame(double frame) const;
 
+    bool isUdim() const
+    {
+        return !tiles.empty();
+    }
+
+    // The texture's URI at frame; a UDIM set's holds kLiveTextureUdimToken where its tiles' differ.
     std::string getUri(double frame) const;
+
+    // The URI of tile of a UDIM set at frame: getUri(frame) with the tile number for the token.
+    std::string getTileUri(double frame,
+                           int tile) const;
+
+    // The tiles of a UDIM set at frame: those frameTiles holds for it, else tiles.
+    const std::vector<int>& getTiles(double frame) const;
+
+    // The tiles at frame above kLastUsdUdimTile, which nothing reading the set through USD sees.
+    std::vector<int> getTilesBeyondUsd(double frame) const;
+
+    // The warning naming getTilesBeyondUsd() for the set at frame, empty when there are none.
+    std::string getTilesBeyondUsdWarning(double frame) const;
 
     // The window recorded for frame, null when none was.
     LiveTextureWindow getWindow(double frame) const;
@@ -173,6 +212,12 @@ struct LiveTextureSource {
     static std::string makeUri(const std::string& nodeName,
                                const std::string& layer,
                                U64 version);
+
+private:
+    U64 getVersion(double frame) const;
+
+    // The index of frame in windows and frameTiles: 0 for a source that does not vary.
+    double getRecordedIndex(double frame) const;
 };
 
 typedef std::vector<LiveTextureSource> LiveTextureSourceList;
@@ -183,7 +228,9 @@ typedef std::vector<LiveTextureSource> LiveTextureSourceList;
  * recently used, except the textures of a prepare() under way and of the last one finished, which
  * stay even over budget. Cleared on cache purge and Free GPU Memory: a texture Storm needs again is
  * rendered again by the consumer that needs it. A texture is always of the project's first view:
- * neither its URI nor the layers authoring it are per view. MT-safe.
+ * neither its URI nor the layers authoring it are per view. One buffer may be stored under several
+ * URIs, the same UDIM tile under successive versions of its set, and counts against the budget
+ * once. MT-safe.
  **/
 class LiveTextureStore {
 public:
@@ -208,23 +255,61 @@ public:
      * waits for them: each on a thread of its own, so a caller in the middle of a render (USDRender)
      * keeps its render state. Renders nothing on the main thread, which must never wait on a render.
      * A texture that cannot be rendered, there or elsewhere, stays missing, which Storm shows as its
-     * fallback, and its consumer gets a warning. Returns how many it could not render.
+     * fallback, and its consumer gets a warning.
+     *
+     * A UDIM source has a texture per tile, each rendered under that tile's render context
+     * (RenderContextName::udimTile()). A tile whose udimTileVersion() at the source frame is held
+     * under an earlier URI of its set is stored under the new one too, without rendering: an edit
+     * that changes some tiles renders only those. A tile that cannot be rendered is stored as
+     * magenta, so the set still finds it and shows what is missing, and is tried again on the next
+     * call; its consumer gets a warning naming the tile. A stand-in whose tile's format is not
+     * known takes another tile's format, else the source's outside any tile. Tiles above
+     * LiveTextureSource::kLastUsdUdimTile are rendered and warned about, and so are the frames a
+     * set's missingTilesWarning names. A texture that fails is tried once per call, however many
+     * sources name it.
+     *
+     * Returns how many textures, counting each tile, it could not render.
      **/
     int prepare(const LiveTextureSourceList& sources,
                 double frame);
 
-    // The reason uri could not be rendered, empty if it was not tried or succeeded.
+    /**
+     * @brief The reason uri could not be rendered, empty if it was not tried or succeeded. For the
+     * URI of a UDIM set, its tiles' reasons.
+     **/
     std::string getFailure(const std::string& uri) const;
+
+    /**
+     * @brief The tile numbers of the UDIM set uri that could not be rendered, in the order tried;
+     * empty if none failed.
+     **/
+    std::vector<int> getFailedTiles(const std::string& uri) const;
+
+    /**
+     * @brief How many times prepare() has rendered each tile, by tile number; 0 stands for a
+     * texture that is not a UDIM tile. Tiles reused from an earlier URI or already stored count
+     * nothing.
+     **/
+    std::map<int, std::size_t> getRenderCounts() const;
 
 private:
     LiveTextureStore();
 
-    void evictLocked();
-
     struct Entry {
         LiveTextureBufferConstPtr buffer;
         std::list<std::string>::iterator use;
+        // Stands in for a texture that could not be rendered.
+        bool fallback = false;
     };
+
+    void evictLocked();
+    void insertLocked(const std::string& uri,
+                      const LiveTextureBufferConstPtr& buffer,
+                      bool fallback);
+    void eraseLocked(std::map<std::string, Entry>::iterator entry);
+    void setFailureLocked(const std::string& uri,
+                          const std::string& failure,
+                          const std::vector<int>& tiles = std::vector<int>());
 
     mutable std::mutex _mutex;
     std::condition_variable _rendered;
@@ -233,9 +318,16 @@ private:
     std::list<std::string> _uses;
     std::set<std::string> _rendering;
     std::map<std::string, std::string> _failures;
+    std::map<std::string, std::vector<int>> _failedTiles;
+    std::map<int, std::size_t> _renderCounts;
     // The URIs of the prepare() calls under way, with how many hold each.
     std::map<std::string, int> _pinned;
     std::set<std::string> _lastPrepared;
+    // How many URIs hold each buffer, which counts in _byteSize once.
+    std::map<const LiveTextureBuffer*, int> _bufferUses;
+    // The rendered UDIM tiles by what they show (source, layer, tile, frame and tile version), for
+    // as long as a URI holds them.
+    std::map<U64, std::weak_ptr<const LiveTextureBuffer>> _tiles;
     std::size_t _byteSize = 0;
     std::size_t _byteBudget;
 };

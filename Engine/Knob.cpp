@@ -1186,6 +1186,18 @@ Knob<T>::canAnimate() const
     return false;
 }
 
+static void
+invalidateMarkersOfEffect(KnobHolder* holder)
+{
+    if (!dynamic_cast<EffectInstance*>(holder)) {
+        return;
+    }
+    AppInstancePtr app = holder->getApp();
+    if (app) {
+        app->invalidateNodeKeyframeIndicators();
+    }
+}
+
 void
 KnobHelper::setSignalSlotHandler(const KnobSignalSlotHandlerPtr & handler)
 {
@@ -1246,6 +1258,7 @@ KnobHelper::deleteValuesAtTime(CurveChangeReason curveChangeReason,
         }
     }
 
+    invalidateTimelineMarkers();
 
     //virtual portion
     for (std::list<double>::const_iterator it = times.begin(); it != times.end(); ++it) {
@@ -1326,6 +1339,8 @@ KnobHelper::deleteValueAtTime(CurveChangeReason curveChangeReason,
         checkAnimationLevel(view, dimension);
         evaluateValueChange(dimension, time, view, reason);
     }
+    invalidateTimelineMarkers();
+
     if (_signalSlotHandler) {
         _signalSlotHandler->s_redrawGuiCurve(curveChangeReason, view, dimension);
     }
@@ -1434,6 +1449,7 @@ KnobHelper::moveValueAtTimeInternal(bool useGuiCurve,
         isString->stringToKeyFrameValue(newKey->getTime(), view, v, &ret);
     }
 
+    invalidateTimelineMarkers();
 
     if (_signalSlotHandler) {
         _signalSlotHandler->s_keyFrameMoved( view, dimension, time, newKey->getTime() );
@@ -1595,6 +1611,7 @@ KnobHelper::transformValueAtTimeInternal(bool useGuiCurve,
         }
     }
 
+    invalidateTimelineMarkers();
 
     if (_signalSlotHandler) {
         _signalSlotHandler->s_keyFrameMoved(view, dimension, time, p.x);
@@ -1665,6 +1682,7 @@ KnobHelper::cloneCurve(ViewSpec view,
     }
     animationRemoved_virtual(dimension);
     thisCurve->clone(curve);
+    invalidateTimelineMarkers();
     if (!useGuiCurve) {
         evaluateValueChange(dimension, getCurrentTime(), view,  eValueChangedReasonNatronInternalEdited);
         guiCurveCloneInternalCurve(eCurveChangeReasonInternal, view, dimension, eValueChangedReasonNatronInternalEdited);
@@ -1848,6 +1866,7 @@ KnobHelper::removeAnimationWithReason(ViewSpec view,
     if (curve) {
         curve->clearKeyFrames();
     }
+    invalidateTimelineMarkers();
 
     if ( _signalSlotHandler && (reason != eValueChangedReasonUserEdited) ) {
         _signalSlotHandler->s_animationRemoved(view, dimension);
@@ -1922,6 +1941,7 @@ KnobHelper::cloneGuiCurvesIfNeeded(std::map<int, ValueChangedReasonEnum>& modifi
                 guicurve = hasGui->getCurve(ViewIdx(0), i);
                 assert(guicurve);
                 curve->clone(*guicurve);
+                invalidateTimelineMarkers();
             }
 
             _imp->mustCloneGuiCurves[i] = false;
@@ -2373,6 +2393,9 @@ KnobHelper::setSecret(bool b)
     if ( !b && _imp->holder && _imp->holder->getApp() ) {
         onTimeChanged( false, _imp->holder->getApp()->getTimeLine()->currentFrame() );
     }
+    // Not through invalidateTimelineMarkers(): a knob just made secret no longer counts as shown,
+    // and that is the change the timeline has to pick up.
+    invalidateMarkersOfEffect(_imp->holder);
     if (_signalSlotHandler) {
         _signalSlotHandler->s_secretChanged();
     }
@@ -3100,11 +3123,12 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
         }
     }
 
-    // Declared after the nodes, so that rfv, loop and loops always name the variables.
+    // Declared after the nodes, so that rfv, loop, loops and udim always name the variables.
     PyRFV::ensureDeclared();
     ss << tabStr << "rfv = " << PyRFV::kMainGlobalName << "\n";
     ss << tabStr << "loop = " << PyRFV::kMainLoopGlobalName << "\n";
     ss << tabStr << "loops = " << PyRFV::kMainLoopsGlobalName << "\n";
+    ss << tabStr << "udim = " << PyRFV::kMainUdimGlobalName << "\n";
 
     if (isParentGrp) {
         ss << tabStr << "thisGroup = " << appID << "." << collectionScriptName << "\n";
@@ -5824,10 +5848,7 @@ KnobHelper::deleteAnimationConditional(double time,
         evaluateValueChange(dimension, time, view, reason);
     }
 
-    KnobHolder* holder = getHolder();
-    if ( holder && holder->getApp() ) {
-        holder->getApp()->removeMultipleKeyframeIndicator(keysRemoved, true);
-    }
+    invalidateTimelineMarkers();
 }
 
 void
@@ -6218,6 +6239,7 @@ KnobHelper::cloneOneCurve(KnobI* other,
         } else {
             thisCurve->clone(*otherCurve, offset, range);
         }
+        invalidateTimelineMarkers();
     }
     // Each side's own GUI curve, as for the internal curves: through a master, a slaved source
     // would hand back the GUI curve being refreshed, and the clone would leave it stale.
@@ -6294,6 +6316,10 @@ KnobHelper::cloneOneCurveAndCheckIfChanged(KnobI* other,
         } else if (otherCurve) {
             cloningCurveChanged |= guiCurve->cloneAndCheckIfChanged(*otherCurve);
         }
+    }
+
+    if (cloningCurveChanged) {
+        invalidateTimelineMarkers();
     }
 
     if (updateGui && cloningCurveChanged) {
@@ -8312,6 +8338,7 @@ KnobHelper::getRFVExpressionReads(const std::string& expression)
     static const std::string kRFV("rfv");
     static const std::string kLoop("loop");
     static const std::string kLoops("loops");
+    static const std::string kUdim("udim");
     RenderContextReadSet reads;
     const std::vector<bool> code = pythonCodeMask(expression);
     const std::size_t n = expression.size();
@@ -8391,6 +8418,19 @@ KnobHelper::getRFVExpressionReads(const std::string& expression)
             for (const char* name : kLoopVariableNames) {
                 reads.add(RenderContextName::loops(loopName, name));
             }
+        }
+    }
+
+    // udim.<variable>; any other use of udim may read the tile.
+    for (std::size_t pos = expression.find(kUdim); pos != std::string::npos; pos = expression.find(kUdim, pos + 1)) {
+        if (!isBareNameAt(expression, code, pos, kUdim.size())) {
+            continue;
+        }
+        std::string variable;
+        if (attributeAt(expression, code, pos + kUdim.size(), &variable) != std::string::npos) {
+            reads.add(RenderContextName(RenderContextName::udimTile().ns, variable));
+        } else {
+            reads.add(RenderContextName::udimTile());
         }
     }
 
@@ -8697,7 +8737,7 @@ KnobHelper::setDriver(int dimension,
     if (driver) {
         _imp->registerDriverRFVListeners(dimension);
     }
-    updateDriverKeysOnTimeline(previous, driver);
+    invalidateTimelineMarkers();
     evaluateValueChange(dimension, getCurrentTime(), ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     if (_signalSlotHandler) {
         _signalSlotHandler->s_driverChanged(dimension);
@@ -8706,37 +8746,18 @@ KnobHelper::setDriver(int dimension,
     return true;
 }
 
-void
-KnobHelper::updateDriverKeysOnTimeline(const KnobDriverPtr& previous,
-                                       const KnobDriverPtr& driver)
-{
-    if ((QThread::currentThread() != qApp->thread()) || !showsKeysOnTimeline()) {
-        return;
-    }
-    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
-    NodePtr node = effect ? effect->getNode() : NodePtr();
-    if (!node || !node->areKeyframesVisibleOnTimeline() || !node->getApp()) {
-        return;
-    }
-    std::list<SequenceTime> removed, added;
-    if (previous) {
-        appendDriverKeyTimes(*previous, &removed);
-    }
-    if (driver) {
-        appendDriverKeyTimes(*driver, &added);
-    }
-    if (!removed.empty()) {
-        node->getApp()->removeMultipleKeyframeIndicator(removed, true);
-    }
-    if (!added.empty()) {
-        node->getApp()->addMultipleKeyframeIndicatorsAdded(added, true);
-    }
-}
-
 bool
 KnobHelper::showsKeysOnTimeline() const
 {
     return !getIsSecret() && getIsPersistent() && canAnimate() && !dynamic_cast<const KnobFile*>(this);
+}
+
+void
+KnobHelper::invalidateTimelineMarkers() const
+{
+    if (showsKeysOnTimeline()) {
+        invalidateMarkersOfEffect(getHolder());
+    }
 }
 
 void
@@ -10525,8 +10546,6 @@ void
 KnobHolder::restoreDefaultValues()
 {
     assert( QThread::currentThread() == qApp->thread() );
-
-    aboutToRestoreDefaultValues();
 
     beginChanges();
 

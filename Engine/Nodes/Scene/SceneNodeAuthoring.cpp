@@ -28,6 +28,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <string>
+#include <tuple>
 #include <vector>
 
 #include "Engine/AppInstance.h"
@@ -40,10 +46,14 @@
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Metadata/EffectMetadata.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NonTrappingMath.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
 
 #include <pxr/usd/usd/collectionAPI.h>
 #include <pxr/usd/usd/primRange.h>
@@ -51,6 +61,7 @@
 
 #include <QDir>
 #include <QString>
+#include <QStringList>
 
 NATRON_NAMESPACE_ENTER
 
@@ -323,8 +334,12 @@ getMetersPerUnit(const SceneLayerEdit& edit)
 bool
 liveTextureWindowVaries(const LiveTextureSource& recorded)
 {
-    for (std::size_t i = 1; i < recorded.windows.size(); ++i) {
-        if ((recorded.windows[i].format != recorded.windows[0].format) || (recorded.windows[i].window != recorded.windows[0].window)) {
+    if (!recorded.windows) {
+        return false;
+    }
+    const std::vector<LiveTextureWindow>& windows = *recorded.windows;
+    for (std::size_t i = 1; i < windows.size(); ++i) {
+        if ((windows[i].format != windows[0].format) || (windows[i].window != windows[0].window)) {
             return true;
         }
     }
@@ -863,11 +878,146 @@ getTransformMatrixAt(const SceneTransformKnobs& knobs,
                                   (SceneRotateOrderEnum)rotateOrder->getValue());
 }
 
+namespace {
+    /**
+     * The tiles effect declares at frame (kNatronMetadataKeyUdimTiles), none when it declares none.
+     * False, with no tiles and the reason in error, when its declaration does not parse.
+     **/
+    bool
+    readDeclaredTiles(const EffectInstancePtr& effect,
+                      double frame,
+                      std::vector<int>* tiles,
+                      std::string* error)
+    {
+        tiles->clear();
+        const ImageMetadata metadata = getEffectOutputMetadata(effect, frame, ViewIdx(0));
+        const ImageMetadata::Value* declared = metadata.find(kNatronMetadataKeyUdimTiles);
+        if (!declared || parseUdimTiles(*declared, tiles, error)) {
+            return true;
+        }
+        tiles->clear();
+        if (error->empty()) {
+            *error = "the declaration is malformed";
+        }
+
+        return false;
+    }
+
+    // "frame 2" or "frames 2, 4-6": frames, ascending, with runs of consecutive ones joined.
+    QString
+    describeFrames(const std::vector<int>& frames)
+    {
+        QStringList runs;
+
+        for (std::size_t i = 0; i < frames.size();) {
+            std::size_t end = i + 1;
+            while ((end < frames.size()) && (frames[end] == frames[end - 1] + 1)) {
+                ++end;
+            }
+            runs.push_back((end - i == 1) ? QString::number(frames[i]) : QString::fromUtf8("%1-%2").arg(frames[i]).arg(frames[end - 1]));
+            i = end;
+        }
+
+        return ((frames.size() == 1) ? EffectInstance::tr("frame %1") : EffectInstance::tr("frames %1")).arg(runs.join(QString::fromUtf8(", ")));
+    }
+
+    // What a varying source declares over its frames, as LiveTextureSource holds it.
+    struct DeclaredTiles {
+        // Null when no frame declares tiles.
+        std::shared_ptr<const std::vector<std::vector<int>>> frameTiles;
+        std::vector<int> tiles;
+        std::string missingTilesWarning;
+        // Why a declaration does not parse, when no frame declares tiles.
+        std::string error;
+    };
+
+    /**
+     * The tiles effect, named nodeName, declares at each frame of [firstFrame, lastFrame], the frames
+     * as LiveTextureSource::getSourceFrame() holds them. A UDIM set when any frame declares tiles.
+     **/
+    DeclaredTiles
+    readDeclaredTilesOverFrames(const EffectInstancePtr& effect,
+                                const std::string& nodeName,
+                                U64 contentHash,
+                                double firstFrame,
+                                double lastFrame)
+    {
+        // Every evaluation of a consumer reads the whole range, which only an edit of the source, and
+        // so its hash, or of the range changes.
+        typedef std::tuple<const EffectInstance*, std::string, U64, double, double> Key;
+        static std::mutex cacheMutex;
+        static std::map<Key, DeclaredTiles> cache;
+        const Key key(effect.get(), nodeName, contentHash, firstFrame, lastFrame);
+        {
+            std::lock_guard<std::mutex> lock(cacheMutex);
+            const std::map<Key, DeclaredTiles>::const_iterator found = cache.find(key);
+            if (found != cache.end()) {
+                return found->second;
+            }
+        }
+
+        DeclaredTiles result;
+        const double first = std::ceil(firstFrame);
+        const double last = std::max(first, std::floor(lastFrame));
+        std::shared_ptr<std::vector<std::vector<int>>> frameTiles = std::make_shared<std::vector<std::vector<int>>>();
+        frameTiles->reserve((std::size_t)(last - first) + 1);
+        std::set<int> every;
+        std::vector<int> undeclared;
+        std::vector<int> malformed;
+        std::string firstError;
+        for (double frame = first; frame <= last; frame += 1.) {
+            std::vector<int> tiles;
+            std::string error;
+            if (!readDeclaredTiles(effect, frame, &tiles, &error)) {
+                malformed.push_back((int)frame);
+                if (firstError.empty()) {
+                    firstError = error;
+                }
+            } else if (tiles.empty()) {
+                undeclared.push_back((int)frame);
+            }
+            every.insert(tiles.begin(), tiles.end());
+            frameTiles->push_back(std::move(tiles));
+        }
+        result.tiles.assign(every.begin(), every.end());
+        if (result.tiles.empty()) {
+            if (!malformed.empty()) {
+                result.error = EffectInstance::tr("at %1, %2").arg(describeFrames(std::vector<int>(1, malformed[0]))).arg(QString::fromStdString(firstError)).toStdString();
+            }
+        } else {
+            result.frameTiles = frameTiles;
+            QStringList warnings;
+            if (!undeclared.empty()) {
+                warnings.push_back(EffectInstance::tr("%1 declares no UDIM tiles at %2, where its live texture shows nothing.")
+                                       .arg(QString::fromStdString(nodeName))
+                                       .arg(describeFrames(undeclared)));
+            }
+            if (!malformed.empty()) {
+                warnings.push_back(EffectInstance::tr("The UDIM tiles %1 declares at %2 do not parse (%3), so its live texture shows nothing there.")
+                                       .arg(QString::fromStdString(nodeName))
+                                       .arg(describeFrames(malformed))
+                                       .arg(QString::fromStdString(firstError)));
+            }
+            result.missingTilesWarning = warnings.join(QLatin1Char(' ')).toStdString();
+        }
+        {
+            std::lock_guard<std::mutex> lock(cacheMutex);
+            if (cache.size() >= 64) {
+                cache.clear();
+            }
+            cache[key] = result;
+        }
+
+        return result;
+    } // readDeclaredTilesOverFrames
+} // anonymous namespace
+
 bool
 getLiveTextureSource(const EffectInstance& consumer,
                      int inputNb,
                      const std::string& layer,
-                     LiveTextureSource* source)
+                     LiveTextureSource* source,
+                     std::string* udimError)
 {
     const EffectInstancePtr connected = consumer.getInput(inputNb);
     NodePtr node = connected ? connected->getNode() : NodePtr();
@@ -890,6 +1040,21 @@ getLiveTextureSource(const EffectInstance& consumer,
     if (app && app->getProject()) {
         app->getProject()->getFrameRange(&source->firstFrame, &source->lastFrame);
     }
+    source->tiles.clear();
+    source->frameTiles.reset();
+    source->missingTilesWarning.clear();
+    if (udimError) {
+        udimError->clear();
+        if (source->varying) {
+            const DeclaredTiles declared = readDeclaredTilesOverFrames(input, source->nodeName, source->contentHash, source->firstFrame, source->lastFrame);
+            source->tiles = declared.tiles;
+            source->frameTiles = declared.frameTiles;
+            source->missingTilesWarning = declared.missingTilesWarning;
+            *udimError = declared.error;
+        } else {
+            readDeclaredTiles(input, source->getSourceFrame(time), &source->tiles, udimError);
+        }
+    }
 
     return true;
 }
@@ -902,6 +1067,62 @@ appendLiveTextureSource(const LiveTextureSource& source,
     h->appendString(source.layer);
     h->appendU64(source.contentHash);
     h->appendBool(source.varying);
+    h->appendU64(source.tiles.size());
+    for (int tile : source.tiles) {
+        h->appendI64(tile);
+    }
+}
+
+std::vector<std::string>
+getLiveTextureWarnings(const LiveTextureSource& source,
+                       double time)
+{
+    std::vector<std::string> warnings;
+    const double frame = source.getSourceFrame(time);
+    const std::string uri = source.getUri(frame);
+    const std::string failure = LiveTextureStore::instance().getFailure(uri);
+
+    if (!failure.empty()) {
+        if (source.isUdim()) {
+            const std::vector<int> tiles = LiveTextureStore::instance().getFailedTiles(uri);
+            QString numbers;
+            for (int tile : tiles) {
+                numbers += (numbers.isEmpty() ? QString() : QString::fromLatin1(", ")) + QString::number(tile);
+            }
+            if (tiles.size() == 1) {
+                warnings.push_back(EffectInstance::tr("The UDIM tile %1 of the live texture %2 shows magenta: %3.")
+                                       .arg(numbers)
+                                       .arg(QString::fromStdString(uri))
+                                       .arg(QString::fromStdString(failure))
+                                       .toStdString());
+            } else if (!tiles.empty()) {
+                warnings.push_back(EffectInstance::tr("The UDIM tiles %1 of the live texture %2 show magenta: %3.")
+                                       .arg(numbers)
+                                       .arg(QString::fromStdString(uri))
+                                       .arg(QString::fromStdString(failure))
+                                       .toStdString());
+            } else {
+                warnings.push_back(EffectInstance::tr("The UDIM tiles of the live texture %1 that could not be rendered show magenta: %2.")
+                                       .arg(QString::fromStdString(uri))
+                                       .arg(QString::fromStdString(failure))
+                                       .toStdString());
+            }
+        } else {
+            warnings.push_back(EffectInstance::tr("The live texture %1 shows the renderer's fallback: %2.")
+                                   .arg(QString::fromStdString(uri))
+                                   .arg(QString::fromStdString(failure))
+                                   .toStdString());
+        }
+    }
+    const std::string beyond = source.getTilesBeyondUsdWarning(frame);
+    if (!beyond.empty()) {
+        warnings.push_back(beyond);
+    }
+    if (source.isUdim() && !source.missingTilesWarning.empty()) {
+        warnings.push_back(source.missingTilesWarning);
+    }
+
+    return warnings;
 }
 
 LiveTextureSource
@@ -912,17 +1133,35 @@ recordLiveTexture(const SceneLayerEdit& edit,
 
     recorded.firstFrame = edit.firstFrame;
     recorded.lastFrame = edit.lastFrame;
-    recorded.windows.clear();
+    recorded.windows.reset();
     const NodePtr node = source.node.lock();
+    if (recorded.isUdim()) {
+        const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+        // frameTiles is laid out from the source's first frame, which is the project's, as edit's
+        // normally is too.
+        if (source.varying && effect && ((edit.firstFrame != source.firstFrame) || (edit.lastFrame != source.lastFrame))) {
+            const DeclaredTiles declared = readDeclaredTilesOverFrames(effect, source.nodeName, source.contentHash, edit.firstFrame, edit.lastFrame);
+            recorded.tiles = declared.tiles;
+            recorded.frameTiles = declared.frameTiles;
+            recorded.missingTilesWarning = declared.missingTilesWarning;
+        }
+        if (edit.liveTextures) {
+            edit.liveTextures->push_back(recorded);
+        }
+
+        return recorded;
+    }
     const std::vector<double> frames = source.varying ? getSampleFrames(edit) : std::vector<double>(1, recorded.getSourceFrame(edit.firstFrame));
-    recorded.windows.reserve(frames.size());
+    std::shared_ptr<std::vector<LiveTextureWindow>> windows = std::make_shared<std::vector<LiveTextureWindow>>();
+    windows->reserve(frames.size());
     for (double frame : frames) {
         LiveTextureWindow window;
         if (!node || !getNodeImageWindow(node, frame, ViewIdx(0), &window.format, &window.window)) {
             window = LiveTextureWindow();
         }
-        recorded.windows.push_back(window);
+        windows->push_back(window);
     }
+    recorded.windows = windows;
     if (edit.liveTextures) {
         edit.liveTextures->push_back(recorded);
     }
@@ -938,6 +1177,11 @@ connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
                               const PXR_NS::UsdShadeOutput& coordinates,
                               const PXR_NS::UsdShadeInput& st)
 {
+    // A UDIM set's tiles are each their own format and are picked by the coordinates' integer part,
+    // which a transform would shift.
+    if (recorded.isUdim()) {
+        return coordinates && st && st.ConnectToSource(coordinates);
+    }
     PXR_NS::UsdShadeShader transform = PXR_NS::UsdShadeShader::Define(stage, transformPath);
 
     if (!transform || !transform.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdTransform2d")))) {

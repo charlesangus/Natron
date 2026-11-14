@@ -634,6 +634,66 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionGraphFeedLastIntoOthers "feedLastIntoOthers"
 #define kShortcutDescActionGraphFeedLastIntoOthers "Connect Last Selected into Other Selected Nodes"
 
+#define kShortcutIDActionGraphLockViewerInput1 "lockViewerInput1"
+#define kShortcutDescActionGraphLockViewerInput1 "Lock Viewer Input 1"
+
+#define kShortcutIDActionGraphLockViewerInput2 "lockViewerInput2"
+#define kShortcutDescActionGraphLockViewerInput2 "Lock Viewer Input 2"
+
+#define kShortcutIDActionGraphLockViewerInput3 "lockViewerInput3"
+#define kShortcutDescActionGraphLockViewerInput3 "Lock Viewer Input 3"
+
+#define kShortcutIDActionGraphLockViewerInput4 "lockViewerInput4"
+#define kShortcutDescActionGraphLockViewerInput4 "Lock Viewer Input 4"
+
+#define kShortcutIDActionGraphLockViewerInput5 "lockViewerInput5"
+#define kShortcutDescActionGraphLockViewerInput5 "Lock Viewer Input 5"
+
+#define kShortcutIDActionGraphLockViewerInput6 "lockViewerInput6"
+#define kShortcutDescActionGraphLockViewerInput6 "Lock Viewer Input 6"
+
+#define kShortcutIDActionGraphLockViewerInput7 "lockViewerInput7"
+#define kShortcutDescActionGraphLockViewerInput7 "Lock Viewer Input 7"
+
+#define kShortcutIDActionGraphLockViewerInput8 "lockViewerInput8"
+#define kShortcutDescActionGraphLockViewerInput8 "Lock Viewer Input 8"
+
+#define kShortcutIDActionGraphLockViewerInput9 "lockViewerInput9"
+#define kShortcutDescActionGraphLockViewerInput9 "Lock Viewer Input 9"
+
+#define kShortcutIDActionGraphLockViewerInput10 "lockViewerInput10"
+#define kShortcutDescActionGraphLockViewerInput10 "Lock Viewer Input 10"
+
+#define kShortcutIDActionGraphUnlockViewerInput1 "unlockViewerInput1"
+#define kShortcutDescActionGraphUnlockViewerInput1 "Unlock Viewer Input 1"
+
+#define kShortcutIDActionGraphUnlockViewerInput2 "unlockViewerInput2"
+#define kShortcutDescActionGraphUnlockViewerInput2 "Unlock Viewer Input 2"
+
+#define kShortcutIDActionGraphUnlockViewerInput3 "unlockViewerInput3"
+#define kShortcutDescActionGraphUnlockViewerInput3 "Unlock Viewer Input 3"
+
+#define kShortcutIDActionGraphUnlockViewerInput4 "unlockViewerInput4"
+#define kShortcutDescActionGraphUnlockViewerInput4 "Unlock Viewer Input 4"
+
+#define kShortcutIDActionGraphUnlockViewerInput5 "unlockViewerInput5"
+#define kShortcutDescActionGraphUnlockViewerInput5 "Unlock Viewer Input 5"
+
+#define kShortcutIDActionGraphUnlockViewerInput6 "unlockViewerInput6"
+#define kShortcutDescActionGraphUnlockViewerInput6 "Unlock Viewer Input 6"
+
+#define kShortcutIDActionGraphUnlockViewerInput7 "unlockViewerInput7"
+#define kShortcutDescActionGraphUnlockViewerInput7 "Unlock Viewer Input 7"
+
+#define kShortcutIDActionGraphUnlockViewerInput8 "unlockViewerInput8"
+#define kShortcutDescActionGraphUnlockViewerInput8 "Unlock Viewer Input 8"
+
+#define kShortcutIDActionGraphUnlockViewerInput9 "unlockViewerInput9"
+#define kShortcutDescActionGraphUnlockViewerInput9 "Unlock Viewer Input 9"
+
+#define kShortcutIDActionGraphUnlockViewerInput10 "unlockViewerInput10"
+#define kShortcutDescActionGraphUnlockViewerInput10 "Unlock Viewer Input 10"
+
 ///////////CURVEEDITOR SHORTCUTS
 #define kShortcutIDActionCurveEditorRemoveKeys "remove"
 #define kShortcutDescActionCurveEditorRemoveKeys "Delete Keyframes"

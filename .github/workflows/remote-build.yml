@@ -227,6 +227,9 @@ jobs:
           for suite in $suites; do
             (cd Tests && xvfb-run --auto-servernum timeout 300 ./Tests --gtest_filter="$suite.Golden*") || rc=$?
           done
+          # Storm references are recorded only for the cases named here: recording overwrites, so a
+          # wildcard would rewrite every committed Storm golden.
+          (cd Tests && xvfb-run --auto-servernum timeout 300 ./Tests --gtest_filter='USDRenderStormTest.EveryTileOfAUdimLiveTextureShows') || rc=$?
           test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
           exit "$rc"
 

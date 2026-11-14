@@ -406,6 +406,17 @@ public:
     }
 
     /**
+     * @brief A version of what the node puts out for UDIM tile at time in view: it changes when an
+     * edit can change that tile, and stays put for edits that change only other tiles. The default
+     * is the node's content hash with each input folded in by its udimTileVersion() instead of its
+     * own hash, so a node that does not tell tiles apart moves every tile on its own edits and
+     * passes on its inputs' per-tile changes. A node that knows which tiles an edit touches, such as
+     * a painter keeping strokes per tile, overrides it; an override reads its inputs' versions
+     * through udimTileVersion(). Any thread.
+     **/
+    virtual U64 getUdimTileHash(int tile, double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
      * @brief For an effect with hash-namespaced knobs (KnobI::setHashNamespace()): the path of the
      * render settings prim they author, the renderer it names and whether the node makes it the
      * stage's active one (HashNamespaces). False when the effect authors none. Any thread.
@@ -1202,23 +1213,26 @@ public:
                                            double time,
                                            ViewIdx view,
                                            unsigned originalMipmapLevel,
-                                           const NodePtr & node,
+                                           const NodePtr& node,
                                            const NodePtr& callerNode,
-                                           const NodePtr & treeRoot,
-                                           const RectD & canonicalRenderWindow,
-                                           FrameRequestMap & requests);
+                                           const NodePtr& treeRoot,
+                                           const RectD& canonicalRenderWindow,
+                                           FrameRequestMap& requests,
+                                           const RenderContextPtr& rootContext = RenderContextPtr());
 
     /**
      * @brief Visit recursively the compositing tree and computes required information about region of interests for each node and
      * for each frame/view pair. This helps to call render a single time per frame/view pair for a node.
+     * treeRoot is visited under rootContext restricted to what its output reads, the empty context when null.
      * Implem is in ParallelRenderArgs.cpp
      **/
     static StatusEnum computeRequestPass(double time,
                                          ViewIdx view,
                                          unsigned int mipmapLevel,
-                                         const RectD & renderWindow,
-                                         const NodePtr & treeRoot,
-                                         FrameRequestMap & request);
+                                         const RectD& renderWindow,
+                                         const NodePtr& treeRoot,
+                                         FrameRequestMap& request,
+                                         const RenderContextPtr& rootContext = RenderContextPtr());
 
     /**
      * @brief Pre-renders the input frames node needs before rendering. Implem is in ParallelRenderArgs.cpp
@@ -1941,7 +1955,6 @@ public:
                       const ImageBitDepthEnum* textureDepth,
                       RectI* roiPixel,
                       Transform::Matrix3x3Ptr* transform = 0) WARN_UNUSED_RETURN;
-    virtual void aboutToRestoreDefaultValues() OVERRIDE FINAL;
     virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
     /**
@@ -3722,6 +3735,14 @@ public:
     }
 };
 
+/**
+ * @brief node's EffectInstance::getUdimTileHash() for tile at time in view, 0 for a null node or
+ * effect. One top-level call memoizes every (node, tile, time, view) it reaches, so a subgraph
+ * shared by several paths is walked once; the nested calls an implementation of the hook makes
+ * on the same thread share that memo. A node reached again while its own version is computed,
+ * which only a cycle causes, answers with its stored content hash. Any thread.
+ **/
+U64 udimTileVersion(const NodePtr& node, int tile, double time, ViewIdx view) WARN_UNUSED_RETURN;
 
 /**
  * @typedef Any plug-in should have a static function called BuildEffect with the following signature.

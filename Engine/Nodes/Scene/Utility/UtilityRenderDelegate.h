@@ -54,12 +54,30 @@
 #define kUtilityStatDevice "utilityDevice"
 // Why the last frame did not render on the device asked for, as a std::string; empty when it did.
 #define kUtilityStatWarning "utilityWarning"
+// The samples per pixel the running or last frame has drawn, and the number it draws in all.
+#define kUtilityStatSamples "utilitySamples"
+#define kUtilityStatSamplesWanted "utilitySamplesWanted"
 
 // Which device draws: a TfToken, one of the three values below.
 #define kUtilitySettingDevice "device"
 #define kUtilityDeviceAuto "auto"
 #define kUtilityDeviceGpu "gpu"
 #define kUtilityDeviceCpu "cpu"
+
+// How pixels are sampled. Pixel Samples, an int, is the side of the grid of samples a pixel takes; it
+// is not named samples, which the progressive viewer would take for its sample cap. Pixel Filter is a
+// TfToken, one of the four values below. Filter Width, a float, is in pixels. Seed is an int.
+#define kUtilitySettingPixelSamples "pixelSamples"
+#define kUtilitySettingPixelFilter "pixelFilter"
+#define kUtilitySettingFilterWidth "filterWidth"
+#define kUtilitySettingSeed "seed"
+#define kUtilityFilterBox "box"
+#define kUtilityFilterTriangle "triangle"
+#define kUtilityFilterGaussian "gaussian"
+#define kUtilityFilterBlackmanHarris "blackmanHarris"
+#define kUtilityDefaultPixelSamples 3
+#define kUtilityDefaultFilterWidth 1.5f
+#define kUtilityMaxPixelSamples 64
 
 // The renderer command that has the delegate give back what it keeps on the GPU, as Free GPU Memory asks.
 #define kUtilityCommandReleaseGpu "releaseGpu"
@@ -132,6 +150,11 @@ public:
                         const std::string& warning);
     void frameReport(std::string* device,
                      std::string* warning) const;
+    // What the stats report of the frame's samples per pixel. MT-safe.
+    void setSampleProgress(std::size_t done,
+                           std::size_t wanted);
+    void sampleProgress(std::size_t* done,
+                        std::size_t* wanted) const;
 
     // What a running frame polls: set by stop() until restart(), and by cancelFrame() until the next
     // frame starts. MT-safe.
@@ -175,6 +198,8 @@ private:
     mutable std::mutex _reportMutex;
     std::string _reportDevice;
     std::string _reportWarning;
+    std::size_t _samplesDone = 0;
+    std::size_t _samplesWanted = 0;
     std::atomic<bool> _stop { false };
     std::atomic<bool> _cancel { false };
     std::atomic<bool> _frameRunning { false };

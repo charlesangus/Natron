@@ -48,7 +48,8 @@ class UtilityRenderParam;
 /**
  * @brief Clears the bound AOVs and has the delegate's executor for the device setting draw the scene
  * into them, on the delegate's frame thread, returning at once. Auto draws on the GPU when it can trace
- * rays, and on the CPU when it cannot or when the GPU runs out of memory or is lost mid-frame. Only a frame that ran to its end converges. A frame
+ * rays, and on the CPU when it cannot or when the GPU runs out of memory or is lost mid-frame. A frame is drawn one sample per pixel at a time,
+ * each landing whole in the buffers, and only a frame that drew all its samples converges. A frame
  * already in the buffers is not drawn again. A change of what to draw cancels the running frame, and
  * a later Execute() starts the new one when the old has returned.
  **/
@@ -74,6 +75,7 @@ private:
         PXR_NS::GfMatrix4d worldToView;
         PXR_NS::GfMatrix4d projection;
         WavefrontRect window;
+        WavefrontSampling sampling;
         PXR_NS::HdRenderPassAovBindingVector bindings;
 
         bool operator==(const FrameKey& other) const;

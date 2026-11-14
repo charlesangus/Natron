@@ -228,6 +228,26 @@ UtilityRenderParam::frameReport(std::string* device,
     *warning = _reportWarning;
 }
 
+void
+UtilityRenderParam::setSampleProgress(std::size_t done,
+                                      std::size_t wanted)
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    _samplesDone = done;
+    _samplesWanted = wanted;
+}
+
+void
+UtilityRenderParam::sampleProgress(std::size_t* done,
+                                   std::size_t* wanted) const
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    *done = _samplesDone;
+    *wanted = _samplesWanted;
+}
+
 const std::atomic<bool>&
 UtilityRenderParam::cancelFlag() const
 {
@@ -559,7 +579,13 @@ UtilityRenderDelegate::InvokeCommand(const TfToken& command,
 HdRenderSettingDescriptorList
 UtilityRenderDelegate::GetRenderSettingDescriptors() const
 {
-    return { HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) } };
+    return {
+        HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) },
+        HdRenderSettingDescriptor { "Pixel Samples", TfToken(kUtilitySettingPixelSamples), VtValue(int(kUtilityDefaultPixelSamples)) },
+        HdRenderSettingDescriptor { "Pixel Filter", TfToken(kUtilitySettingPixelFilter), VtValue(TfToken(kUtilityFilterBlackmanHarris)) },
+        HdRenderSettingDescriptor { "Filter Width", TfToken(kUtilitySettingFilterWidth), VtValue(kUtilityDefaultFilterWidth) },
+        HdRenderSettingDescriptor { "Seed", TfToken(kUtilitySettingSeed), VtValue(int(0)) },
+    };
 }
 
 VtDictionary
@@ -582,6 +608,13 @@ UtilityRenderDelegate::GetRenderStats() const
     _renderParam->frameReport(&device, &warning);
     dictionary[kUtilityStatDevice] = VtValue(device);
     dictionary[kUtilityStatWarning] = VtValue(warning);
+
+    std::size_t samples = 0;
+    std::size_t samplesWanted = 0;
+
+    _renderParam->sampleProgress(&samples, &samplesWanted);
+    dictionary[kUtilityStatSamples] = VtValue(samples);
+    dictionary[kUtilityStatSamplesWanted] = VtValue(samplesWanted);
 
     return dictionary;
 }

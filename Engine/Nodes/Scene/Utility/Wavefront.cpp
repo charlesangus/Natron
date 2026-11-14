@@ -25,6 +25,7 @@
 
 #include "Wavefront.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include <pxr/base/gf/vec3d.h>
@@ -52,7 +53,6 @@ storePosition(const GfVec3d& v,
     destination[0] = static_cast<float>(v[0]);
     destination[1] = static_cast<float>(v[1]);
     destination[2] = static_cast<float>(v[2]);
-    destination[3] = 0.f;
 }
 
 // Whether a geometry's colours cover what its binding will index them with.
@@ -122,6 +122,13 @@ makeRayGenParams(const WavefrontFrame& frame,
     storePosition(farAtCentre, params.farAtCentre);
     storePosition(inverse.Transform(GfVec3d(1., 0., kNdcFar)) - farAtCentre, params.farPerX);
     storePosition(inverse.Transform(GfVec3d(0., 1., kNdcFar)) - farAtCentre, params.farPerY);
+    const WavefrontSampling& sampling = frame.sampling;
+    params.filterWidth = sampling.filterWidth;
+    params.sampleIndex = static_cast<std::uint32_t>(std::max(0, sampling.sampleIndex));
+    params.seed = sampling.seed;
+    params.samplesPerSide = static_cast<std::uint32_t>(std::max(1, sampling.samplesPerSide));
+    params.filter = sampling.filter;
+    params.padding = 0;
     params.windowX = frame.window.x;
     params.windowY = frame.window.y;
     params.windowWidth = frame.window.width;

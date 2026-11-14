@@ -66,6 +66,7 @@ renderTile(const WavefrontFrame& frame,
 {
     const std::size_t count = static_cast<std::size_t>(rect.width) * rect.height;
     std::vector<float> rays(count * 8);
+    std::vector<float> weights(count);
     std::vector<float> hitSurface(count * 3);
     std::vector<std::uint32_t> hitIds(count * 3);
     std::vector<float> color(count * 4);
@@ -73,7 +74,7 @@ renderTile(const WavefrontFrame& frame,
     std::vector<std::int32_t> primId(count);
     std::vector<std::int32_t> instanceId(count);
 
-    runRayGenKernel(makeRayGenParams(frame, rect), rays.data());
+    runRayGenKernel(makeRayGenParams(frame, rect), rays.data(), weights.data());
 
     Tracer::RayBatch rayBatch;
 
@@ -112,6 +113,7 @@ renderTile(const WavefrontFrame& frame,
 
     tile.rect = rect;
     tile.hitGeometry = hits.geometry;
+    tile.weight = weights.data();
     tile.color = color.data();
     tile.depth = depth.data();
     tile.primId = primId.data();

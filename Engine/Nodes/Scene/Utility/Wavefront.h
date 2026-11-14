@@ -53,11 +53,27 @@ struct WavefrontRect {
     int height = 0;
 };
 
+// How a pixel is sampled: samplesPerSide squared samples over a filterWidth-pixel square, and which of
+// them a render draws. One sample per pixel goes through its centre with a weight of one.
+struct WavefrontSampling {
+    int samplesPerSide = 1;
+    KernelPixelFilter filter = eKernelPixelFilterBox;
+    float filterWidth = 1.f;
+    std::uint32_t seed = 0;
+    int sampleIndex = 0;
+
+    int samplesPerPixel() const
+    {
+        return samplesPerSide * samplesPerSide;
+    }
+};
+
 // What one render draws.
 struct WavefrontFrame {
     PXR_NS::GfMatrix4d worldToView = PXR_NS::GfMatrix4d(1.);
     PXR_NS::GfMatrix4d projection = PXR_NS::GfMatrix4d(1.);
     WavefrontRect window;
+    WavefrontSampling sampling;
 };
 
 // The outputs a film takes in tiles. An executor may leave the arrays of the others null.
@@ -70,11 +86,13 @@ struct WavefrontAovs {
     bool any() const { return color || depth || primId || instanceId; }
 };
 
-// Shaded pixels of one tile, in rows from its bottom. Where hitGeometry is Tracer::kNoHit the other
-// arrays hold nothing.
+// One sample of each pixel of a tile, in rows from its bottom. Where hitGeometry is Tracer::kNoHit
+// the arrays other than weight hold nothing.
 struct WavefrontTile {
     WavefrontRect rect;
     const std::uint32_t* hitGeometry = nullptr;
+    // The filter weight of each pixel's sample, misses included.
+    const float* weight = nullptr;
     // Four per pixel; null when the colour went to the film's deviceColor() on the device.
     const float* color = nullptr;
     const float* depth = nullptr;

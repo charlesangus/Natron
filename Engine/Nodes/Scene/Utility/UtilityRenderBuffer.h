@@ -137,8 +137,9 @@ private:
 #endif // NATRON_HAVE_GPU
 
 /**
- * @brief An AOV image holding one sample per pixel, in host memory or, for the colour of a frame
- * rendered on the GPU, in device memory until Map() asks for it.
+ * @brief An AOV image built from samples, in host memory or, for the colour of a frame rendered on
+ * the GPU, in device memory until Map() asks for it. Its pixels are resolved as samples land, so a
+ * frame part way through its samples is a picture.
  **/
 class UtilityRenderBuffer : public PXR_NS::HdRenderBuffer {
 public:
@@ -191,6 +192,23 @@ public:
                   unsigned int y,
                   std::int32_t value);
 
+    /**
+     * @brief Adds a sample of weight to a pixel; null components is a miss, which counts as the last
+     * clear() value. Filtered, the pixel is the weighted mean of its samples since that clear();
+     * otherwise it is the value of the heaviest of them, as a mean of depths or ids would be a value
+     * no surface has. One outside the buffer is ignored. MT-safe for distinct pixels.
+     **/
+    void addSample(unsigned int x,
+                   unsigned int y,
+                   const float* components,
+                   std::size_t count,
+                   float weight,
+                   bool filtered);
+    void addSample(unsigned int x,
+                   unsigned int y,
+                   const std::int32_t* value,
+                   float weight);
+
     // How many times Map() has copied a device frame to the host, over every buffer. MT-safe.
     static std::uint64_t deviceDownloadCount();
 
@@ -208,8 +226,10 @@ public:
     bool canRenderOnDevice() const;
 
     /**
-     * @brief Moves the pixels to the device for a frame: records into context the clear to the last
-     * clear() value. The host pixels are stale from here until Map() or clear().
+     * @brief Moves the pixels to the device for a frame's samples: the first call after clear()
+     * records into context the clear to its value; a later one has the samples add to those the film
+     * holds from the frame's earlier calls, and fails if the film is gone. The host pixels are stale
+     * from here until Map() or clear().
      **/
     gpu::GpuStatus beginDeviceFrame(gpu::GpuRecordContext& context,
                                     gpu::GpuKernelRegistry& registry,
@@ -218,13 +238,15 @@ public:
                                     const std::shared_ptr<void>& runtimeHold);
 
     /**
-     * @brief Records into context the writing of a batch's colours, for the rays of the width x
-     * height pixels from (x, y), to the pixels they hit. hitIds and color are laid out as the
-     * shading kernel reads and writes them. After beginDeviceFrame() only.
+     * @brief Records into context the adding of a batch's colours, for the rays of the width x
+     * height pixels from (x, y), to their pixels with the rays' filter weights, as addSample() does.
+     * hitIds and color are laid out as the shading kernel reads and writes them, weights as the ray
+     * generation writes them. After beginDeviceFrame() only.
      **/
     gpu::GpuStatus recordDeviceBatch(gpu::GpuRecordContext& context,
                                      const gpu::GpuBuffer& hitIds,
                                      const gpu::GpuBuffer& color,
+                                     const gpu::GpuBuffer& weights,
                                      int x,
                                      int y,
                                      int width,
@@ -247,6 +269,13 @@ private:
 
     // The last clear() value as one encoded pixel, empty when that clear() gave none.
     std::vector<std::uint8_t> _clearPixel;
+    // The last clear() value's components, zero where it gave none.
+    std::vector<float> _clearComponents;
+    // Per pixel since the last clear(): the weighted sums of a filtered buffer's samples, and the sum
+    // of their weights or, unfiltered, the heaviest weight; negative before the first sample.
+    std::vector<float> _sampleSums;
+    std::vector<float> _sampleWeights;
+    bool _deviceRestart = true;
     mutable std::mutex _deviceMutex;
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<UtilityDeviceFilm> _film;

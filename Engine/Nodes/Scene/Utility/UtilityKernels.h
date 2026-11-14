@@ -33,14 +33,29 @@
 
 NATRON_NAMESPACE_ENTER
 
-// Mirrors RayGenParams in Kernels/RayGen.slang.
+// The reconstruction filters, as RayGenParams::filter in Kernels/RayGen.slang numbers them.
+enum KernelPixelFilter : std::uint32_t {
+    eKernelPixelFilterBox = 0,
+    eKernelPixelFilterTriangle = 1,
+    eKernelPixelFilterGaussian = 2,
+    eKernelPixelFilterBlackmanHarris = 3,
+};
+
+// Mirrors RayGenParams in Kernels/RayGen.slang, where each position is a float3 with the scalar after
+// it in the same 16 bytes.
 struct KernelRayGenParams {
-    float nearAtCentre[4];
-    float nearPerX[4];
-    float nearPerY[4];
-    float farAtCentre[4];
-    float farPerX[4];
-    float farPerY[4];
+    float nearAtCentre[3];
+    float filterWidth;
+    float nearPerX[3];
+    std::uint32_t sampleIndex;
+    float nearPerY[3];
+    std::uint32_t seed;
+    float farAtCentre[3];
+    std::uint32_t samplesPerSide;
+    float farPerX[3];
+    std::uint32_t filter;
+    float farPerY[3];
+    std::uint32_t padding;
     std::int32_t windowX;
     std::int32_t windowY;
     std::int32_t windowWidth;
@@ -50,6 +65,7 @@ struct KernelRayGenParams {
     std::int32_t tileWidth;
     std::int32_t tileHeight;
 };
+static_assert(sizeof(KernelRayGenParams) == 128, "KernelRayGenParams must fit the 128 bytes of push constants every device has");
 
 // Mirrors ShadeParams in Kernels/ShadeFlat.slang.
 struct KernelShadeParams {
@@ -89,10 +105,12 @@ struct KernelShadeBuffers {
 
 /**
  * @brief Runs the C++ build of RayGen.slang for one tile, writing tileWidth * tileHeight rays in the
- * eight-array layout of Kernels/UtilityTypes.slang. MT-safe.
+ * eight-array layout of Kernels/UtilityTypes.slang, and when weights is not null each ray's filter
+ * weight. MT-safe.
  **/
 void runRayGenKernel(const KernelRayGenParams& params,
-                     float* rays);
+                     float* rays,
+                     float* weights = nullptr);
 
 /**
  * @brief Runs the C++ build of ShadeFlat.slang over params.count hits. MT-safe.

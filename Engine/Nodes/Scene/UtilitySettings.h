@@ -33,8 +33,8 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The layout of USDRenderSettings' Natron Utility page: the delegate's one setting, which
- * is a menu, not the token it declares.
+ * @brief The layout of USDRenderSettings' Natron Utility page: the delegate's settings, with the
+ * device and the pixel filter as menus, not the tokens they declare.
  **/
 namespace UtilitySettings {
 const RenderSettingsKnobs::Curated& curated();

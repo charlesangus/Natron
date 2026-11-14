@@ -3661,6 +3661,7 @@ void
 ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 {
     int lastSamples = -1;
+    std::size_t lastUtilitySamples = 0;
     RestartWatch restartWatch;
     bool lastConverged = false;
     bool firstPass = false;
@@ -3750,6 +3751,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             keepFrame = false;
             lastSamples = -1;
+            lastUtilitySamples = 0;
             lastConverged = false;
             engineFresh = true;
             needRestart = true;
@@ -3965,10 +3967,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         // not enough: Cycles marks its buffers converged when a reset cuts a render short.
         const bool atCap = (cap > 0) && (samples >= cap);
         const bool finished = restartSeen && converged && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
-        // Natron Utility's tiles land in no order and count no samples, so only its finished frame is
-        // a picture.
+        // Natron Utility's tiles land in no order and count no samples the viewer reads, so its frame is
+        // a picture once a whole sample per pixel has landed, and again as each later one lands.
         const bool wholeFrames = engineRenderer == kRenderDelegateUtilityId;
-        bool publish = restartSeen && (samples != 0) && (wholeFrames ? finished : (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex)));
+        const VtDictionary::const_iterator utilityStat = stats.find(kUtilityStatSamples);
+        const std::size_t utilitySamples = (utilityStat != stats.end() && utilityStat->second.IsHolding<std::size_t>()) ? utilityStat->second.UncheckedGet<std::size_t>() : 0;
+        const bool samplesLanded = (utilitySamples > 0) && (utilitySamples != lastUtilitySamples);
+        lastUtilitySamples = utilitySamples;
+        bool publish = restartSeen && (samples != 0) && (wholeFrames ? (finished || samplesLanded) : (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex)));
         if (publish) {
             lock.unlock();
             read.reset(new Frame);

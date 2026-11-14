@@ -122,7 +122,7 @@ utilityGpuBudget()
 namespace {
 static_assert(sizeof(KernelRayGenParams) == utility_raygen_push_bytes);
 static_assert(sizeof(KernelShadeParams) == utility_shade_flat_push_bytes);
-static_assert(utility_raygen_storage_buffers == 1 && utility_shade_flat_storage_buffers == 11);
+static_assert(utility_raygen_storage_buffers == 2 && utility_shade_flat_storage_buffers == 11);
 static_assert(sizeof(KernelGeometryRecord) == 16);
 
 const std::size_t kRayArrays = kUtilityRayArrays;
@@ -164,6 +164,7 @@ struct BatchReadback {
     std::size_t capacity = 0;
     WavefrontAovs aovs { false, false, false, false };
     gpu::GpuBuffer hitGeometry;
+    gpu::GpuBuffer weight;
     gpu::GpuBuffer color;
     gpu::GpuBuffer depth;
     gpu::GpuBuffer primId;
@@ -330,6 +331,7 @@ WavefrontGpu::Implementation::reserveReadback(std::size_t rays,
         return true;
     }
     if (!stage(rays * sizeof(std::uint32_t), "hit geometry ids", readback.hitGeometry)
+        || !stage(rays * sizeof(float), "sample weights", readback.weight)
         || (aovs.color && !stage(rays * 4 * sizeof(float), "shaded colour", readback.color))
         || (aovs.depth && !stage(rays * sizeof(float), "depth", readback.depth))
         || (aovs.primId && !stage(rays * sizeof(std::int32_t), "prim ids", readback.primId))
@@ -383,6 +385,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     }
 
     gpu::GpuBuffer* rays = nullptr;
+    gpu::GpuBuffer* weights = nullptr;
     gpu::GpuBuffer* hitValues = nullptr;
     gpu::GpuBuffer* hitIds = nullptr;
     gpu::GpuBuffer* color = nullptr;
@@ -393,6 +396,9 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
     if (gpu::GpuStatus s = ctx.scratch(kRayArrays * count * sizeof(float), rays); !s) {
         return fail("WavefrontGpu could not hold a batch of " + rayCount, s);
+    }
+    if (gpu::GpuStatus s = ctx.scratch(count * sizeof(float), weights); !s) {
+        return fail("WavefrontGpu could not hold the sample weights of " + rayCount, s);
     }
     if (gpu::GpuStatus s = ctx.scratch(kHitArrays * count * sizeof(float), hitValues); !s) {
         return fail("WavefrontGpu could not hold the hits of " + rayCount, s);
@@ -414,7 +420,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     }
 
     const KernelRayGenParams rayGenParams = makeRayGenParams(frame, rect);
-    const std::array<gpu::GpuBinding, 1> rayGenBindings = { gpu::GpuBinding::storage(0, *rays) };
+    const std::array<gpu::GpuBinding, 2> rayGenBindings = { gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights) };
 
     if (gpu::GpuStatus s = ctx.dispatchBindings(rayGenKernel, rayGenBindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
         return fail("WavefrontGpu could not generate rays", s);
@@ -444,7 +450,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         return fail("WavefrontGpu could not shade", s);
     }
     if (deviceColor) {
-        if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(ctx, *hitIds, *color, rect.x, rect.y, rect.width, rect.height); !s) {
+        if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(ctx, *hitIds, *color, *weights, rect.x, rect.y, rect.width, rect.height); !s) {
             return fail("WavefrontGpu could not write a batch's colours to the film", s);
         }
     }
@@ -457,6 +463,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         VkDeviceSize bytes;
     } copies[] = {
         { aovs.any(), hitIds, &readback.hitGeometry, count * sizeof(std::uint32_t) },
+        { aovs.any(), weights, &readback.weight, count * sizeof(float) },
         { aovs.color, color, &readback.color, count * 4 * sizeof(float) },
         { aovs.depth, depth, &readback.depth, count * sizeof(float) },
         { aovs.primId, primId, &readback.primId, count * sizeof(std::int32_t) },
@@ -482,6 +489,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
     tile.rect = rect;
     tile.hitGeometry = static_cast<const std::uint32_t*>(readback.hitGeometry.mapped());
+    tile.weight = static_cast<const float*>(readback.weight.mapped());
     tile.color = aovs.color ? static_cast<const float*>(readback.color.mapped()) : nullptr;
     tile.depth = aovs.depth ? static_cast<const float*>(readback.depth.mapped()) : nullptr;
     tile.primId = aovs.primId ? static_cast<const std::int32_t*>(readback.primId.mapped()) : nullptr;

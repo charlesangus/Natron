@@ -525,16 +525,19 @@ TEST_F(NatronUtilityProject3DTest, NatronUtilityMatchesStormOnInteriorPixels)
 
     std::size_t compared = 0;
 
+    // The projection material is translucent, which Storm draws only in its order-independent
+    // transparency passes, and those write colour alone: Storm's primId plane stays empty for the
+    // card. Its coverage comes from its alpha, the card's from Natron Utility's primId.
     for (int y = 1; y < height - 1; ++y) {
         for (int x = 1; x < width - 1; ++x) {
             const std::size_t centre = (std::size_t)y * width + x;
-            bool interior = (storm.primId[centre] != 0.f) && (utility.primId[centre] != 0.f);
+            bool interior = utility.primId[centre] != 0.f;
 
             for (int dy = -1; dy <= 1 && interior; ++dy) {
                 for (int dx = -1; dx <= 1 && interior; ++dx) {
                     const std::size_t at = (std::size_t)(y + dy) * width + x + dx;
 
-                    interior = (storm.primId[at] == storm.primId[centre]) && (utility.primId[at] == utility.primId[centre]) && (storm.rgba[at * 4 + 3] > 0.f) && (utility.rgba[at * 4 + 3] > 0.f);
+                    interior = (utility.primId[at] == utility.primId[centre]) && (storm.rgba[at * 4 + 3] >= 1.f - 1e-3f) && (utility.rgba[at * 4 + 3] >= 1.f - 1e-3f);
                 }
             }
             if (!interior) {

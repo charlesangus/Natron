@@ -642,11 +642,14 @@ public:
     }
 
     // Renders until the frame converges, checking along the way that it converges only once it
-    // drew every sample it wants, and that the count of them only grows.
-    void renderToConvergence()
+    // drew every sample it wants, and that the count of them only grows. With a frame still running
+    // from before an edit, the count may fall once: a render cancels that frame without waiting for
+    // it, so its count stands until a later render starts the edited frame over.
+    void renderToConvergence(bool editedWhileRunning = false)
     {
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         std::size_t last = 0;
+        bool restartAllowed = editedWhileRunning;
 
         renderOnce();
         while (std::chrono::steady_clock::now() < end) {
@@ -655,7 +658,11 @@ public:
             const std::size_t wanted = stat(kUtilityStatSamplesWanted);
 
             EXPECT_LE(samples, wanted);
-            EXPECT_GE(samples, last);
+            if (restartAllowed && (samples < last)) {
+                restartAllowed = false;
+            } else {
+                EXPECT_GE(samples, last);
+            }
             last = samples;
             if (converged) {
                 EXPECT_EQ(wanted, samples) << "the frame converged before it drew all its samples";
@@ -785,7 +792,7 @@ TEST(NatronUtilitySamplingDelegate, AnEditPartWayRestartsTheSamples)
     render.setting(kUtilitySettingPixelSamples, VtValue(int(16)));
     render.renderOnce();
     render.setStripe(-2.2, 1.6);
-    render.renderToConvergence();
+    render.renderToConvergence(true);
 
     DelegateRender fresh(stripeStage(-2.2, 1.6));
 

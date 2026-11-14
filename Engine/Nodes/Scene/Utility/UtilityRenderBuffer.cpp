@@ -744,7 +744,20 @@ UtilityRenderBuffer::Resolve()
 bool
 UtilityRenderBuffer::IsConverged() const
 {
-    return _converged.load();
+    if (!_converged.load()) {
+        return false;
+    }
+#ifdef NATRON_HAVE_GPU
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    // A lost GPU releases the published film without a releaseDevice() to read it back first, so
+    // the frame's pixels are gone and the frame must be drawn again rather than left as finished.
+    if (_frontFilm && _frontFilm->released()) {
+        return false;
+    }
+#endif
+
+    return true;
 }
 
 VtValue

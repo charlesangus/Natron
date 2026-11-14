@@ -35,6 +35,7 @@
 #include <pxr/imaging/hd/resourceRegistry.h>
 #include <pxr/imaging/hd/tokens.h>
 
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMesh.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
@@ -236,6 +237,22 @@ UtilityRenderParam::setSampleProgress(std::size_t done,
 
     _samplesDone = done;
     _samplesWanted = wanted;
+}
+
+void
+UtilityRenderParam::setBucketSeconds(const std::vector<double>& seconds)
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    _bucketSeconds = seconds;
+}
+
+std::vector<double>
+UtilityRenderParam::bucketSeconds() const
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    return _bucketSeconds;
 }
 
 void
@@ -576,6 +593,20 @@ UtilityRenderDelegate::InvokeCommand(const TfToken& command,
     return false;
 }
 
+GfVec2d
+utilityMotionShutter(const HdRenderDelegate& delegate,
+                     const char* toggleKey)
+{
+    const VtValue shutter = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityShutterSetting));
+
+    if (!shutter.IsHolding<GfVec2d>() || !delegate.GetRenderSetting<bool>(TfToken(toggleKey), true)) {
+        return GfVec2d(0.);
+    }
+    const GfVec2d interval = shutter.UncheckedGet<GfVec2d>();
+
+    return (interval[1] > interval[0]) ? interval : GfVec2d(0.);
+}
+
 HdRenderSettingDescriptorList
 UtilityRenderDelegate::GetRenderSettingDescriptors() const
 {
@@ -585,6 +616,14 @@ UtilityRenderDelegate::GetRenderSettingDescriptors() const
         HdRenderSettingDescriptor { "Pixel Filter", TfToken(kUtilitySettingPixelFilter), VtValue(TfToken(kUtilityFilterBlackmanHarris)) },
         HdRenderSettingDescriptor { "Filter Width", TfToken(kUtilitySettingFilterWidth), VtValue(kUtilityDefaultFilterWidth) },
         HdRenderSettingDescriptor { "Seed", TfToken(kUtilitySettingSeed), VtValue(int(0)) },
+        HdRenderSettingDescriptor { "Override Shutter", TfToken(kUtilitySettingOverrideShutter), VtValue(false) },
+        HdRenderSettingDescriptor { "Shutter", TfToken(kUtilitySettingShutter), VtValue(kUtilityDefaultShutter) },
+        HdRenderSettingDescriptor { "Shutter Offset", TfToken(kUtilitySettingShutterOffset), VtValue(TfToken(kUtilityShutterCentred)) },
+        HdRenderSettingDescriptor { "Shutter Custom Offset", TfToken(kUtilitySettingShutterCustomOffset), VtValue(0.f) },
+        HdRenderSettingDescriptor { "Shutter Segments", TfToken(kUtilitySettingShutterSegments), VtValue(int(kUtilityDefaultShutterSegments)) },
+        HdRenderSettingDescriptor { "Camera Motion Blur", TfToken(kUtilitySettingCameraMotionBlur), VtValue(true) },
+        HdRenderSettingDescriptor { "Transform Motion Blur", TfToken(kUtilitySettingTransformMotionBlur), VtValue(true) },
+        HdRenderSettingDescriptor { "Deformation Motion Blur", TfToken(kUtilitySettingDeformationMotionBlur), VtValue(true) },
     };
 }
 
@@ -615,6 +654,20 @@ UtilityRenderDelegate::GetRenderStats() const
     _renderParam->sampleProgress(&samples, &samplesWanted);
     dictionary[kUtilityStatSamples] = VtValue(samples);
     dictionary[kUtilityStatSamplesWanted] = VtValue(samplesWanted);
+
+    const std::vector<double> buckets = _renderParam->bucketSeconds();
+
+    dictionary[kUtilityStatBucketSeconds] = VtValue(VtDoubleArray(buckets.begin(), buckets.end()));
+
+    std::string motionWarning;
+
+    for (const SdfPath& path : stats.topologyVaryingPaths) {
+        motionWarning += (motionWarning.empty() ? "" : ", ") + path.GetString();
+    }
+    if (!motionWarning.empty()) {
+        motionWarning = "The topology of " + motionWarning + " changes within the shutter, so they do not deform there.";
+    }
+    dictionary[kUtilityStatMotionWarning] = VtValue(motionWarning);
 
     return dictionary;
 }

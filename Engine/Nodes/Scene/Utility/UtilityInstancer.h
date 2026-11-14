@@ -32,9 +32,11 @@
 
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/quatd.h>
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/vt/types.h>
 #include <pxr/imaging/hd/instancer.h>
+#include <pxr/imaging/hd/timeSampleArray.h>
 
 #include "Global/Macros.h"
 
@@ -60,16 +62,48 @@ public:
      **/
     PXR_NS::VtMatrix4dArray computeInstanceTransforms(const PXR_NS::SdfPath& prototypeId);
 
+    /**
+     * @brief The frame-relative times, within the transform motion blur shutter and increasing, at
+     * which the placements of prototypeId (this instancer's and those above it) have samples, the
+     * shutter's ends included. Empty when they do not move within it.
+     **/
+    std::vector<float> motionTimes(const PXR_NS::SdfPath& prototypeId);
+
+    // As computeInstanceTransforms, at a frame-relative time within the shutter.
+    PXR_NS::VtMatrix4dArray computeInstanceTransformsAt(const PXR_NS::SdfPath& prototypeId,
+                                                        float time);
+
 private:
     void syncPrimvars(PXR_NS::HdSceneDelegate* delegate,
                       PXR_NS::HdDirtyBits dirtyBits);
+    void sampleMotion(PXR_NS::HdSceneDelegate* delegate);
+    PXR_NS::VtMatrix4dArray placements(const PXR_NS::SdfPath& prototypeId,
+                                       const float* time);
 
     bool _visible = true;
     std::vector<PXR_NS::GfVec3d> _translations;
     std::vector<PXR_NS::GfQuatd> _rotations;
     std::vector<PXR_NS::GfVec3d> _scales;
     std::vector<PXR_NS::GfMatrix4d> _transforms;
+    // Over the shutter, while transform motion blur is on; no samples otherwise.
+    PXR_NS::GfVec2d _shutter = PXR_NS::GfVec2d(0.);
+    PXR_NS::HdTimeSampleArray<PXR_NS::VtValue, 4> _translationSamples;
+    PXR_NS::HdTimeSampleArray<PXR_NS::VtValue, 4> _rotationSamples;
+    PXR_NS::HdTimeSampleArray<PXR_NS::VtValue, 4> _scaleSamples;
+    PXR_NS::HdTimeSampleArray<PXR_NS::VtValue, 4> _transformSamples;
+    PXR_NS::HdTimeSampleArray<PXR_NS::GfMatrix4d, 4> _instancerTransformSamples;
 };
+
+/**
+ * @brief times clamped to shutter, with its ends, sorted and without repeats: the times a prim
+ * moving by samples at times is evaluated at. Empty when times is or the shutter is closed.
+ **/
+std::vector<float> utilityMotionTimes(std::vector<float> times,
+                                      const PXR_NS::GfVec2d& shutter);
+
+// samples at time, rotations slerped between the samples around it and held beyond them.
+PXR_NS::GfMatrix4d utilityTransformAt(const PXR_NS::HdTimeSampleArray<PXR_NS::GfMatrix4d, 4>& samples,
+                                      float time);
 
 NATRON_NAMESPACE_EXIT
 

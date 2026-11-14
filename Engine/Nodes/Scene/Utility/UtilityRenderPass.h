@@ -76,6 +76,7 @@ private:
         PXR_NS::GfMatrix4d projection;
         WavefrontRect window;
         WavefrontSampling sampling;
+        WavefrontMotion motion;
         PXR_NS::HdRenderPassAovBindingVector bindings;
 
         bool operator==(const FrameKey& other) const;

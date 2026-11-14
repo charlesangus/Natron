@@ -22,6 +22,12 @@
                         "displayName": "Natron Utility implicit surfaces",
                         "loadWithRenderer": "Natron Utility",
                         "priority": 0
+                    },
+                    "HdNatronUtilityVelocityMotionSceneIndexPlugin": {
+                        "bases": ["HdSceneIndexPlugin"],
+                        "displayName": "Natron Utility velocity motion",
+                        "loadWithRenderer": "Natron Utility",
+                        "priority": 0
                     }
                 }
             },

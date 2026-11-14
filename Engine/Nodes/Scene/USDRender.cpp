@@ -25,9 +25,11 @@
 
 #include "USDRender.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <QMetaObject>
@@ -751,6 +753,35 @@ USDRender::prepareRender(double time,
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;
+    }
+    const PXR_NS::UsdGeomCamera camera(stage->GetPrimAtPath(cameraPath));
+    double shutterOpen = 0.;
+    double shutterClose = 0.;
+    (void)camera.GetShutterOpenAttr().Get(&shutterOpen, active.time);
+    (void)camera.GetShutterCloseAttr().Get(&shutterClose, active.time);
+    setup->request.shutterOpen = shutterOpen;
+    setup->request.shutterClose = shutterClose;
+    if (!active.time.IsDefault() && HydraRender::cameraMotionBlur(setup->request)) {
+        // Between these the delegate interpolates the camera, so a few follow a curved move closely.
+        const int kCameraMotionSamples = 9;
+        const PXR_NS::GfVec2d shutter = HydraRender::shutterInterval(setup->request);
+        for (int i = 0; i < kCameraMotionSamples; ++i) {
+            const double t = shutter[0] + (shutter[1] - shutter[0]) * i / (kCameraMotionSamples - 1);
+            PXR_NS::GfFrustum frustum;
+            if (!HydraRender::cameraFrustum(stage, cameraPath, PXR_NS::UsdTimeCode(active.time.GetValue() + t), aspect, fit, &frustum, error)) {
+                return false;
+            }
+            setup->request.cameraMotion.push_back(std::make_pair(t, frustum));
+        }
+        std::vector<std::pair<double, PXR_NS::GfFrustum>>& motion = setup->request.cameraMotion;
+        // The delegate moves the camera it is given by how these differ from the frame's, so the
+        // frame's is among them even when the shutter misses the frame.
+        if ((shutter[0] > 0.) || (shutter[1] < 0.)) {
+            motion.insert((shutter[0] > 0.) ? motion.begin() : motion.end(), std::make_pair(0., setup->request.frustum));
+        }
+        if (std::all_of(motion.begin(), motion.end(), [&motion](const std::pair<double, PXR_NS::GfFrustum>& s) { return s.second == motion.front().second; })) {
+            motion.clear();
+        }
     }
 
     return true;

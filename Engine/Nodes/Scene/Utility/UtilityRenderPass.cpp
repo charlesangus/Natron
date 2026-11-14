@@ -37,6 +37,7 @@
 #include <vector>
 
 #include <pxr/base/gf/rect2i.h>
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/vt/types.h>
 #include <pxr/base/vt/value.h>
@@ -278,6 +279,38 @@ samplingSettings(const HdRenderDelegate& delegate)
     return sampling;
 }
 
+WavefrontMotion
+motionSettings(const HdRenderDelegate& delegate)
+{
+    WavefrontMotion motion;
+    const VtValue shutter = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityShutterSetting));
+
+    if (!shutter.IsHolding<GfVec2d>() || !(shutter.UncheckedGet<GfVec2d>()[1] > shutter.UncheckedGet<GfVec2d>()[0])) {
+        return motion;
+    }
+    motion.open = shutter.UncheckedGet<GfVec2d>()[0];
+    motion.close = shutter.UncheckedGet<GfVec2d>()[1];
+    motion.segments = std::max(1, intSetting(delegate.GetRenderSetting(TfToken(kUtilitySettingShutterSegments)), kUtilityDefaultShutterSegments));
+
+    const VtValue times = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityCameraTimesSetting));
+    const VtValue views = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityCameraViewsSetting));
+    const VtValue projections = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityCameraProjectionsSetting));
+
+    if (times.IsHolding<VtDoubleArray>() && views.IsHolding<VtMatrix4dArray>() && projections.IsHolding<VtMatrix4dArray>()) {
+        const VtDoubleArray& t = times.UncheckedGet<VtDoubleArray>();
+        const VtMatrix4dArray& v = views.UncheckedGet<VtMatrix4dArray>();
+        const VtMatrix4dArray& p = projections.UncheckedGet<VtMatrix4dArray>();
+
+        if (t.size() > 1 && v.size() == t.size() && p.size() == t.size()) {
+            motion.cameraTimes.assign(t.begin(), t.end());
+            motion.cameraViews.assign(v.begin(), v.end());
+            motion.cameraProjections.assign(p.begin(), p.end());
+        }
+    }
+
+    return motion;
+}
+
 bool
 sameSampling(const WavefrontSampling& a,
              const WavefrontSampling& b)
@@ -315,7 +348,7 @@ bool
 UtilityRenderPass::FrameKey::operator==(const FrameKey& other) const
 {
     return device == other.device && version == other.version && worldToView == other.worldToView && projection == other.projection
-        && sameWindow(window, other.window) && sameSampling(sampling, other.sampling) && bindings == other.bindings;
+        && sameWindow(window, other.window) && sameSampling(sampling, other.sampling) && motion == other.motion && bindings == other.bindings;
 }
 
 bool
@@ -376,6 +409,8 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     frame.window = renderWindow(*renderPassState);
     frame.sampling = samplingSettings(*GetRenderIndex()->GetRenderDelegate());
 
+    const WavefrontMotion motion = motionSettings(*GetRenderIndex()->GetRenderDelegate());
+
     const bool hasCamera = renderPassState->GetCamera() != nullptr;
 
     if (hasCamera) {
@@ -391,6 +426,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     key.projection = frame.projection;
     key.window = frame.window;
     key.sampling = frame.sampling;
+    key.motion = motion;
     key.bindings = bindings;
 
     const bool sameFrame = _hasFrame && key == _frameKey;
@@ -448,27 +484,23 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     const int threads = std::max(1, appPTR->getNCPUsAvailableForEffect());
     const HdRenderPassAovBindingVector frameBindings = bindings;
 
-    (void)_renderParam->startFrame([this, snapshot, frame, frameBindings, threads, device, samplesWanted]() {
+    (void)_renderParam->startFrame([this, snapshot, frame, motion, frameBindings, threads, device, samplesWanted]() {
         const std::atomic<bool>& cancel = _renderParam->cancelFlag();
         bool finished = false;
         std::string failure;
 
         try {
             AovFilm film(frameBindings);
-            // One sample per pixel per call, so that each lands whole in the buffers before the next is drawn.
             const auto drawSamples = [&](WavefrontExecutor& executor) {
+                std::vector<double> bucketSeconds;
+
                 _renderParam->setSampleProgress(0, samplesWanted);
-                for (std::size_t sample = 0; sample < samplesWanted; ++sample) {
-                    WavefrontFrame pass = frame;
 
-                    pass.sampling.sampleIndex = static_cast<int>(sample);
-                    if (!executor.render(*snapshot, pass, film, cancel, threads)) {
-                        return false;
-                    }
-                    _renderParam->setSampleProgress(sample + 1, samplesWanted);
-                }
+                const bool drawn = wavefrontDrawSamples(executor, *snapshot, frame, motion, film, cancel, threads, [this, samplesWanted](std::size_t done) { _renderParam->setSampleProgress(done, samplesWanted); }, &bucketSeconds);
 
-                return true;
+                _renderParam->setBucketSeconds(bucketSeconds);
+
+                return drawn;
             };
             std::string renderedOn = "CPU";
             std::string warning;

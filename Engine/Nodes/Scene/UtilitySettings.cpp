@@ -90,6 +90,79 @@ make()
     seed.displayMaximum = 1000;
     c.settings.push_back(seed);
 
+    RenderSettingsKnobs::CuratedSetting overrideShutter;
+
+    overrideShutter.key = kUtilitySettingOverrideShutter;
+    overrideShutter.name = "overrideShutter";
+    overrideShutter.tooltip = "Off, the shutter is the camera's Shutter Open and Shutter Close. On, Shutter, Shutter Offset and Shutter Custom Offset set it instead.";
+    overrideShutter.defaultValue = VtValue(false);
+    c.settings.push_back(overrideShutter);
+
+    const RenderSettingsKnobs::EnabledBy byOverride = { kUtilitySettingOverrideShutter, false };
+    RenderSettingsKnobs::CuratedSetting shutter;
+
+    shutter.key = kUtilitySettingShutter;
+    shutter.name = "shutter";
+    shutter.tooltip = "How long the shutter stays open, in frames: 0.5 blurs over half a frame. 0 renders no motion blur.";
+    shutter.defaultValue = VtValue(kUtilityDefaultShutter);
+    shutter.hasRange = true;
+    shutter.minimum = 0.;
+    shutter.displayMaximum = 2.;
+    shutter.enabledBy = { byOverride };
+    c.settings.push_back(shutter);
+
+    RenderSettingsKnobs::CuratedSetting offset;
+
+    offset.key = kUtilitySettingShutterOffset;
+    offset.name = "shutterOffset";
+    offset.tooltip = "Where the shutter opens. Centred opens it half its length before the frame, Start at the frame, End so it closes at the frame, Custom Shutter Custom Offset frames from the frame.";
+    offset.defaultValue = VtValue(TfToken(kUtilityShutterCentred));
+    offset.choices = { { "centred", "Centred", VtValue(TfToken(kUtilityShutterCentred)) }, { "start", "Start", VtValue(TfToken(kUtilityShutterStart)) }, { "end", "End", VtValue(TfToken(kUtilityShutterEnd)) }, { "custom", "Custom", VtValue(TfToken(kUtilityShutterCustom)) } };
+    offset.enabledBy = { byOverride };
+    c.settings.push_back(offset);
+
+    RenderSettingsKnobs::CuratedSetting customOffset;
+
+    customOffset.key = kUtilitySettingShutterCustomOffset;
+    customOffset.name = "shutterCustomOffset";
+    customOffset.tooltip = "With Shutter Offset Custom, the frames from the frame at which the shutter opens; negative opens it before the frame.";
+    customOffset.defaultValue = VtValue(0.f);
+    customOffset.hasRange = true;
+    customOffset.minimum = -2.;
+    customOffset.displayMaximum = 2.;
+    customOffset.enabledBy = { byOverride };
+    c.settings.push_back(customOffset);
+
+    RenderSettingsKnobs::CuratedSetting segments;
+
+    segments.key = kUtilitySettingShutterSegments;
+    segments.name = "shutterSegments";
+    segments.tooltip = "How many times within the shutter the scene is traced at, each by its share of the pixel samples. More follow curved and fast motion more closely and take longer; there are never more than the pixel samples.";
+    segments.defaultValue = VtValue(int(kUtilityDefaultShutterSegments));
+    segments.hasRange = true;
+    segments.minimum = 1;
+    segments.displayMaximum = 16;
+    c.settings.push_back(segments);
+
+    const struct {
+        const char* key;
+        const char* name;
+        const char* tooltip;
+    } toggles[] = {
+        { kUtilitySettingCameraMotionBlur, "cameraMotionBlur", "Whether the camera's own motion within the shutter blurs the frame." },
+        { kUtilitySettingTransformMotionBlur, "transformMotionBlur", "Whether prims moved by their transforms, instances included, blur within the shutter." },
+        { kUtilitySettingDeformationMotionBlur, "deformationMotionBlur", "Whether meshes whose points move, by time samples or velocities, blur within the shutter. A mesh whose topology changes within the shutter does not, and the render warns naming it." },
+    };
+    for (const auto& toggle : toggles) {
+        RenderSettingsKnobs::CuratedSetting s;
+
+        s.key = toggle.key;
+        s.name = toggle.name;
+        s.tooltip = toggle.tooltip;
+        s.defaultValue = VtValue(true);
+        c.settings.push_back(s);
+    }
+
     return c;
 }
 } // anon namespace

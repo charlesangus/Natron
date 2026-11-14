@@ -67,6 +67,8 @@ protected:
 private:
     bool pullPoints(PXR_NS::HdSceneDelegate* sceneDelegate,
                     PXR_NS::HdDirtyBits dirtyBits);
+    void syncPointMotion(PXR_NS::HdSceneDelegate* sceneDelegate,
+                         UtilityScene* scene);
     bool filterTriangles();
     void syncColors(PXR_NS::HdSceneDelegate* sceneDelegate,
                     UtilityScene* scene);
@@ -77,6 +79,7 @@ private:
     PXR_NS::GfMatrix4d _transform = PXR_NS::GfMatrix4d(1.);
     PXR_NS::HdMeshTopology _topology;
     PXR_NS::VtVec3fArray _points;
+    bool _pointsComputed = false;
     // Everything the triangulation gave, then what is left for the scene and where each came from.
     PXR_NS::VtVec3iArray _allTriangles;
     PXR_NS::VtIntArray _allParams;

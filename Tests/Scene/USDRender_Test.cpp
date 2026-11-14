@@ -71,6 +71,7 @@
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -1123,6 +1124,87 @@ TEST_F(USDRenderRendererTest, AHandWrittenRenderSettingsPrimIsHonoured)
     PXR_NS::VtValue samples;
     ASSERT_TRUE(HydraRender::engineSetting(effect, "cycles:samples", &samples));
     EXPECT_EQ(PXR_NS::VtValue(3), samples);
+    HydraRender::releaseAllCpuEngines();
+}
+
+namespace {
+// A box seen by /World/Cam, whose shutter opens and closes at open and close; settings, attribute
+// lines for the RenderSettings prim, override it.
+std::string
+shutterScene(double open,
+             double close,
+             const std::string& settings)
+{
+    return std::string("#usda 1.0\n(\n    renderSettingsPrimPath = \"/Render/shot\"\n)\n\n"
+                       "def Xform \"World\"\n{\n    def Cube \"Box\"\n    {\n        double size = 2\n    }\n\n"
+                       "    def Camera \"Cam\"\n    {\n        double3 xformOp:translate = (0, 0, 10)\n"
+                       "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                       "        double shutter:open = ")
+        + std::to_string(open) + "\n        double shutter:close = " + std::to_string(close) + "\n    }\n}\n\n"
+        + "def Scope \"Render\"\n{\n    def RenderSettings \"shot\"\n    {\n        rel camera = </World/Cam>\n"
+          "        uniform int2 resolution = (32, 16)\n"
+        + settings + "    }\n}\n";
+}
+} // anon namespace
+
+TEST_F(USDRenderRendererTest, TheShutterReachesNatronUtilityAndTheHash)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string id = kRenderDelegateUtilityId;
+    const std::string overrides = std::string("        bool ") + RenderSettingsPrim::attributeName(id, kUtilitySettingOverrideShutter) + " = 1\n"
+        + "        float " + RenderSettingsPrim::attributeName(id, kUtilitySettingShutter) + " = 1\n"
+        + "        token " + RenderSettingsPrim::attributeName(id, kUtilitySettingShutterOffset) + " = \"" + kUtilityShutterStart + "\"\n";
+    const std::string noBlur = std::string("        bool ") + RenderSettingsPrim::attributeName(id, kUtilitySettingCameraMotionBlur) + " = 0\n"
+        + "        bool " + RenderSettingsPrim::attributeName(id, kUtilitySettingTransformMotionBlur) + " = 0\n"
+        + "        bool " + RenderSettingsPrim::attributeName(id, kUtilitySettingDeformationMotionBlur) + " = 0\n";
+    struct Case {
+        const char* name;
+        std::string text;
+        PXR_NS::GfVec2d interval;
+    };
+    const std::vector<Case> cases = {
+        { "centred", shutterScene(-0.25, 0.25, std::string()), PXR_NS::GfVec2d(-0.25, 0.25) },
+        { "opening", shutterScene(0., 0.5, std::string()), PXR_NS::GfVec2d(0., 0.5) },
+        { "overridden", shutterScene(0., 0.5, overrides), PXR_NS::GfVec2d(0., 1.) },
+        { "unblurred", shutterScene(0., 0.5, noBlur), PXR_NS::GfVec2d(0., 0.) },
+    };
+    std::vector<std::string> paths;
+    for (const Case& c : cases) {
+        const QString filePath = tmp.path() + QString::fromUtf8("/shutter-") + QString::fromUtf8(c.name) + QString::fromUtf8(".usda");
+        QFile file(filePath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ASSERT_GT(file.write(c.text.c_str()), 0);
+        paths.push_back(filePath.toStdString());
+    }
+    NodePtr reader = createReader(paths[0].c_str());
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(reader && node);
+    connectNodes(reader, node, 0, true);
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    effect->refreshSettingsPrimMenu();
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
+    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
+    ASSERT_TRUE(file);
+    HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
+
+    std::set<U64> hashes;
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        file->setValue(paths[i]);
+        EXPECT_TRUE(hashes.insert(node->getHashValue()).second) << cases[i].name << " left the hash of another shutter";
+        std::vector<RenderedPlane> planes;
+        std::list<ImageLayerDesc> rgba;
+        rgba.push_back(ImageLayerDesc::getRGBAComponents());
+        std::string error;
+        appPTR->clearAllCaches();
+        ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 32, 16), rgba, &planes, &error, false)) << cases[i].name << ": " << error;
+        PXR_NS::VtValue interval;
+        ASSERT_TRUE(HydraRender::engineSetting(effect, kRenderDelegateUtilityShutterSetting, &interval)) << cases[i].name;
+        ASSERT_TRUE(interval.IsHolding<PXR_NS::GfVec2d>()) << cases[i].name;
+        EXPECT_EQ(cases[i].interval, interval.UncheckedGet<PXR_NS::GfVec2d>()) << cases[i].name;
+    }
+    HydraRender::setRendererSettings(kRenderDelegateUtilityId, {});
     HydraRender::releaseAllCpuEngines();
 }
 

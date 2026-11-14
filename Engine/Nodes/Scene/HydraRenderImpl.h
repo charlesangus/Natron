@@ -35,11 +35,13 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/base/vt/value.h>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -162,7 +164,23 @@ struct Request {
     // defaults. The owner's engine is made again when they change: Cycles restarts a converged
     // render only for some of its settings.
     std::map<std::string, PXR_NS::VtValue> settings;
+    // The camera's shutter:open and shutter:close, in frames relative to time.
+    double shutterOpen = 0.;
+    double shutterClose = 0.;
+    // The camera's frustum at times within shutterInterval(*this), relative to time and increasing.
+    // Empty for a camera that does not blur: its frustum is frustum throughout.
+    std::vector<std::pair<double, PXR_NS::GfFrustum>> cameraMotion;
 };
+
+/**
+ * @brief The shutter request's delegate samples motion over, in frames relative to request.time: the
+ * camera's unless the delegate's settings override it. Closed, both equal, for a delegate other than
+ * Natron Utility, the one that blurs, and for a shutter of no length.
+ **/
+PXR_NS::GfVec2d shutterInterval(const Request& request) WARN_UNUSED_RETURN;
+
+// Whether request's delegate blurs the camera's motion within shutterInterval(request).
+bool cameraMotionBlur(const Request& request) WARN_UNUSED_RETURN;
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
 struct Result {

@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
@@ -36,6 +37,7 @@
 #include <pxr/imaging/hd/meshUtil.h>
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/sceneDelegate.h>
+#include <pxr/imaging/hd/timeSampleArray.h>
 #include <pxr/imaging/hd/tokens.h>
 
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
@@ -315,6 +317,7 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
         } else {
             scene->setPoints(_geometry, _points);
         }
+        syncPointMotion(sceneDelegate, scene);
     }
     if (topologyDirty || _points.size() != previousPointCount
         || HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayColor)
@@ -357,14 +360,52 @@ UtilityMesh::pullPoints(HdSceneDelegate* sceneDelegate,
                 const auto it = values.find(pv.name);
 
                 _points = it == values.end() ? VtVec3fArray() : it->second.GetWithDefault<VtVec3fArray>();
+                _pointsComputed = true;
 
                 return true;
             }
         }
     }
     _points = sceneDelegate->Get(id, HdTokens->points).GetWithDefault<VtVec3fArray>();
+    _pointsComputed = false;
 
     return true;
+}
+
+// Computed points (skinning and the like) give no samples over an interval, so they do not deform
+// within the shutter.
+void
+UtilityMesh::syncPointMotion(HdSceneDelegate* sceneDelegate,
+                             UtilityScene* scene)
+{
+    const SdfPath& id = GetId();
+    const GfVec2d shutter = utilityMotionShutter(*sceneDelegate->GetRenderIndex().GetRenderDelegate(), kUtilitySettingDeformationMotionBlur);
+    bool topologyVaries = false;
+    std::shared_ptr<UtilityScene::PointMotion> motion;
+
+    if (shutter[1] > shutter[0] && !_pointsComputed) {
+        HdTimeSampleArray<VtValue, 4> samples;
+
+        sceneDelegate->SamplePrimvar(id, HdTokens->points, static_cast<float>(shutter[0]), static_cast<float>(shutter[1]), &samples);
+        motion = std::make_shared<UtilityScene::PointMotion>();
+        for (std::size_t i = 0; i < samples.count; ++i) {
+            const VtVec3fArray points = samples.values[i].GetWithDefault<VtVec3fArray>();
+
+            if (points.size() != _points.size()) {
+                topologyVaries = true;
+                break;
+            }
+            motion->times.push_back(samples.times[i]);
+            motion->points.push_back(points);
+        }
+        const bool moves = !topologyVaries && std::any_of(motion->points.begin(), motion->points.end(), [&motion](const VtVec3fArray& points) { return points != motion->points.front(); });
+
+        if (!moves) {
+            motion.reset();
+        }
+    }
+    scene->setTopologyVaries(_geometry, topologyVaries);
+    scene->setPointMotion(_geometry, motion);
 }
 
 // A triangle with no area has no normal, and one NaN vertex would poison the bounds of whatever
@@ -467,18 +508,17 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
                            UtilityScene* scene)
 {
     const SdfPath& instancerId = GetInstancerId();
+    HdRenderIndex& renderIndex = sceneDelegate->GetRenderIndex();
+    UtilityInstancer* instancer = nullptr;
     std::vector<GfMatrix4d> transforms;
 
     if (instancerId.IsEmpty()) {
         transforms.push_back(_transform);
     } else {
-        HdRenderIndex& renderIndex = sceneDelegate->GetRenderIndex();
-
         HdInstancer::_SyncInstancerAndParents(renderIndex, instancerId);
-        HdInstancer* instancer = renderIndex.GetInstancer(instancerId);
-
+        instancer = static_cast<UtilityInstancer*>(renderIndex.GetInstancer(instancerId));
         if (TF_VERIFY(instancer)) {
-            const VtMatrix4dArray instances = static_cast<UtilityInstancer*>(instancer)->computeInstanceTransforms(GetId());
+            const VtMatrix4dArray instances = instancer->computeInstanceTransforms(GetId());
             transforms.reserve(instances.size());
             for (const GfMatrix4d& instance : instances) {
                 transforms.push_back(_transform * instance);
@@ -486,6 +526,52 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
         }
     }
     scene->setInstances(_geometry, transforms);
+
+    const GfVec2d shutter = utilityMotionShutter(*renderIndex.GetRenderDelegate(), kUtilitySettingTransformMotionBlur);
+    std::shared_ptr<UtilityScene::TransformMotion> motion;
+
+    if (shutter[1] > shutter[0] && !transforms.empty()) {
+        HdTimeSampleArray<GfMatrix4d, 4> own;
+        std::vector<float> times;
+
+        sceneDelegate->SampleTransform(GetId(), static_cast<float>(shutter[0]), static_cast<float>(shutter[1]), &own);
+        for (std::size_t i = 1; i < own.count; ++i) {
+            if (own.values[i] != own.values[0]) {
+                times.assign(own.times.begin(), own.times.begin() + own.count);
+                break;
+            }
+        }
+        if (instancer) {
+            const std::vector<float> placed = instancer->motionTimes(GetId());
+
+            times.insert(times.end(), placed.begin(), placed.end());
+        }
+        times = utilityMotionTimes(times, shutter);
+        if (!times.empty()) {
+            motion = std::make_shared<UtilityScene::TransformMotion>();
+        }
+        for (const float time : times) {
+            const GfMatrix4d transform = own.count > 0 ? utilityTransformAt(own, time) : _transform;
+            std::vector<GfMatrix4d> at;
+
+            if (instancer) {
+                const VtMatrix4dArray instances = instancer->computeInstanceTransformsAt(GetId(), time);
+                at.reserve(instances.size());
+                for (const GfMatrix4d& instance : instances) {
+                    at.push_back(transform * instance);
+                }
+            } else {
+                at.push_back(transform);
+            }
+            if (at.size() != transforms.size()) {
+                motion.reset();
+                break;
+            }
+            motion->times.push_back(time);
+            motion->transforms.push_back(at);
+        }
+    }
+    scene->setTransformMotion(_geometry, motion);
 }
 
 NATRON_NAMESPACE_EXIT

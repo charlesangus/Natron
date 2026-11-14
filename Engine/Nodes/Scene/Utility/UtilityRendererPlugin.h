@@ -68,6 +68,19 @@ protected:
                                                              const PXR_NS::HdContainerDataSourceHandle& inputArgs) OVERRIDE;
 };
 
+/**
+ * @brief Turns velocities, accelerations and angular velocities into time-sampled points and
+ * instance placements, which is the only motion the delegate samples.
+ **/
+class HdNatronUtilityVelocityMotionSceneIndexPlugin : public PXR_NS::HdSceneIndexPlugin {
+public:
+    HdNatronUtilityVelocityMotionSceneIndexPlugin();
+
+protected:
+    virtual PXR_NS::HdSceneIndexBaseRefPtr _AppendSceneIndex(const PXR_NS::HdSceneIndexBaseRefPtr& inputScene,
+                                                             const PXR_NS::HdContainerDataSourceHandle& inputArgs) OVERRIDE;
+};
+
 NATRON_NAMESPACE_ENTER
 
 /**

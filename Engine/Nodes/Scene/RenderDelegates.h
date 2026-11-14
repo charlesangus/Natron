@@ -42,6 +42,15 @@
 // it, Hydra is asked to sync every purpose, so the utility renderer holds every purpose's geometry and
 // showing or hiding one only changes what it draws.
 #define kRenderDelegateUtilityShownTagsSetting "natron:shownRenderTags"
+// The utility renderer's shutter, a GfVec2d of frames relative to the frame rendered, as the host
+// resolved it from the camera and the renderer's settings; closed (both equal) for no motion blur.
+#define kRenderDelegateUtilityShutterSetting "natron:shutterInterval"
+// The camera within that shutter, and at the frame: a VtDoubleArray of times relative to the frame,
+// increasing, and VtMatrix4dArrays of the view and projection matrices at each. Empty for a camera
+// that does not blur.
+#define kRenderDelegateUtilityCameraTimesSetting "natron:cameraMotionTimes"
+#define kRenderDelegateUtilityCameraViewsSetting "natron:cameraMotionViews"
+#define kRenderDelegateUtilityCameraProjectionsSetting "natron:cameraMotionProjections"
 
 // The id of a Renderer menu entry that renders with the renderer the active render settings prim
 // names (natron:renderer), Storm when it names none. No Hydra plug-in has it.

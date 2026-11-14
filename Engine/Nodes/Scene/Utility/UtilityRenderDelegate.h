@@ -34,7 +34,9 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <vector>
 
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 
 #include "Global/Macros.h"
@@ -57,6 +59,11 @@
 // The samples per pixel the running or last frame has drawn, and the number it draws in all.
 #define kUtilityStatSamples "utilitySamples"
 #define kUtilityStatSamplesWanted "utilitySamplesWanted"
+// The seconds each time bucket of the last frame took to trace, its scene's update included, summed
+// over its samples: a VtDoubleArray, one per bucket, the first opening the shutter.
+#define kUtilityStatBucketSeconds "utilityBucketSeconds"
+// Why some motion does not blur, naming the prims, as a std::string; empty when all of it does.
+#define kUtilityStatMotionWarning "utilityMotionWarning"
 
 // Which device draws: a TfToken, one of the three values below.
 #define kUtilitySettingDevice "device"
@@ -78,6 +85,26 @@
 #define kUtilityDefaultPixelSamples 3
 #define kUtilityDefaultFilterWidth 1.5f
 #define kUtilityMaxPixelSamples 64
+
+// The shutter. The camera's shutter:open and shutter:close are used unless Override Shutter, a bool,
+// is on; then Shutter, a float, is its length in frames, placed by Shutter Offset, a TfToken, one of
+// the four values below; custom opens it Shutter Custom Offset frames, a float, from the frame.
+// Shutter Segments, an int, is the number of times within it the scene is traced at. The three
+// toggles, bools, choose which motion blurs.
+#define kUtilitySettingOverrideShutter "overrideShutter"
+#define kUtilitySettingShutter "shutter"
+#define kUtilitySettingShutterOffset "shutterOffset"
+#define kUtilitySettingShutterCustomOffset "shutterCustomOffset"
+#define kUtilitySettingShutterSegments "shutterSegments"
+#define kUtilitySettingCameraMotionBlur "cameraMotionBlur"
+#define kUtilitySettingTransformMotionBlur "transformMotionBlur"
+#define kUtilitySettingDeformationMotionBlur "deformationMotionBlur"
+#define kUtilityShutterCentred "centred"
+#define kUtilityShutterStart "start"
+#define kUtilityShutterEnd "end"
+#define kUtilityShutterCustom "custom"
+#define kUtilityDefaultShutter 0.5f
+#define kUtilityDefaultShutterSegments 8
 
 // The renderer command that has the delegate give back what it keeps on the GPU, as Free GPU Memory asks.
 #define kUtilityCommandReleaseGpu "releaseGpu"
@@ -155,6 +182,9 @@ public:
                            std::size_t wanted);
     void sampleProgress(std::size_t* done,
                         std::size_t* wanted) const;
+    // What the stats report of the frame's time buckets. MT-safe.
+    void setBucketSeconds(const std::vector<double>& seconds);
+    std::vector<double> bucketSeconds() const;
 
     // What a running frame polls: set by stop() until restart(), and by cancelFrame() until the next
     // frame starts. MT-safe.
@@ -200,6 +230,7 @@ private:
     std::string _reportWarning;
     std::size_t _samplesDone = 0;
     std::size_t _samplesWanted = 0;
+    std::vector<double> _bucketSeconds;
     std::atomic<bool> _stop { false };
     std::atomic<bool> _cancel { false };
     std::atomic<bool> _frameRunning { false };
@@ -207,6 +238,14 @@ private:
     std::mutex _threadMutex;
     std::thread _thread;
 };
+
+/**
+ * @brief The shutter, frame-relative, over which delegate's prims sample the motion toggleKey, one
+ * of the motion blur toggles, enables: the host's (kRenderDelegateUtilityShutterSetting), closed
+ * (both equal) while that toggle is off or the host set none.
+ **/
+PXR_NS::GfVec2d utilityMotionShutter(const PXR_NS::HdRenderDelegate& delegate,
+                                     const char* toggleKey);
 
 /**
  * @brief The Natron Utility render delegate: meshes and instancers become a UtilityScene that its

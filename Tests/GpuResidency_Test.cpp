@@ -114,6 +114,8 @@
 #include "Engine/ViewIdx.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuDownscale.h"
+#include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
 
@@ -1166,8 +1168,19 @@ TEST_F(GpuResidencyTest, FinerDeviceEntryServesAHalfScaleRequestWithoutAHostRoun
     EXPECT_EQ(0, renderRoICallsOf(run, grades[1]));
     EXPECT_EQ(0, run.stats->getUploadCount()) << "the middle Grade went through the host";
     EXPECT_EQ(1, gpuRunsOf(run, grades.back()));
-    EXPECT_TRUE(bool(tier->find(halfKey))) << "the downscaled entry is not in the device tier";
+    const CacheDeviceEntryPtr downscaled = tier->find(halfKey);
+    ASSERT_TRUE(bool(downscaled)) << "the downscaled entry is not in the device tier";
     expectReleased(run);
+    // In-place readers and the RAM copy an eviction makes take their key from the image's layout, not the tier's.
+    const GpuDeviceImagePtr image = downscaled->image();
+    EXPECT_TRUE(image->layout().key == halfKey) << "the downscaled image carries the finer entry's key";
+    const ImagePtr evicted = image->evictToRam();
+    ASSERT_TRUE(bool(evicted));
+    EXPECT_TRUE(evicted->getKey() == halfKey);
+    EXPECT_EQ(1u, evicted->getMipmapLevel());
+    const ImagePtr downloaded = image->downloadToRam();
+    ASSERT_TRUE(bool(downloaded));
+    EXPECT_TRUE(downloaded->getKey() == halfKey);
     appPTR->clearAllCaches();
     expectMatchesCpu(grades.back(), run, halfWindow, 1);
 }
@@ -3120,6 +3133,111 @@ TEST_F(GpuResidencyTest, StripTransfersCopyOutOfWholeImageImports)
         EXPECT_NE(std::string::npos, lastRecord.find(field)) << field << " in " << lastRecord;
     }
     EXPECT_NE(std::string::npos, lastRecord.find("\"prepareWaitMs\":")) << lastRecord;
+}
+
+namespace {
+
+struct MipDownscaleCase {
+    RectI bounds;
+    RectI read;
+    unsigned int levels;
+};
+
+// The device's mip_downscale of case.read, held in a buffer of case.bounds, against the CPU's repeated halving of the
+// same pixels, over every pixel of the level the halving writes.
+void
+expectMipDownscaleMatchesCpu(gpu::GpuRuntime* rt,
+                             const MipDownscaleCase& test)
+{
+    const int nComps = 4;
+    const RectI& bounds = test.bounds;
+    const std::size_t srcFloats = (std::size_t)bounds.area() * nComps;
+    std::vector<float> host(srcFloats);
+    for (std::size_t i = 0; i < srcFloats; ++i) {
+        host[i] = (float)((i * 7919u) % 1009u) / 1009.f - 0.25f;
+    }
+    const RectD rod(bounds.x1, bounds.y1, bounds.x2, bounds.y2);
+    const ImagePtr source = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), rod, bounds, 0, 1., eImageBitDepthFloat, eImageFieldingOrderNone, false);
+    {
+        Image::WriteAccess access = source->getWriteRights();
+        for (int y = bounds.y1; y < bounds.y2; ++y) {
+            float* row = (float*)access.pixelAt(bounds.x1, y);
+            ASSERT_TRUE(row != nullptr);
+            std::memcpy(row, &host[(std::size_t)(y - bounds.y1) * bounds.width() * nComps], sizeof(float) * bounds.width() * nComps);
+        }
+    }
+    const RectI out = test.read.downscalePowerOfTwoSmallestEnclosing(test.levels);
+    const ImagePtr cpu = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), rod, out, test.levels, 1., eImageBitDepthFloat, eImageFieldingOrderNone, false);
+    source->downscaleMipmap(rod, test.read, 0, test.levels, false, cpu.get());
+
+    gpu::GpuBufferHandle srcHandle;
+    gpu::GpuBufferHandle dstHandle;
+    const std::size_t dstFloats = (std::size_t)out.area() * nComps;
+    ASSERT_TRUE(bool(rt->acquire(srcFloats * sizeof(float), srcHandle)));
+    ASSERT_TRUE(bool(rt->acquire(dstFloats * sizeof(float), dstHandle)));
+    gpu::TimelineValue up;
+    ASSERT_TRUE(bool(rt->upload({ host.data(), srcFloats * sizeof(float) }, srcHandle.buffer(), 0, up)));
+    ASSERT_TRUE(bool(rt->wait(up)));
+    gpu::GpuDownscaleView src;
+    src.buffer = &srcHandle.buffer();
+    src.strideFloats = (std::uint32_t)(bounds.width() * nComps);
+    src.offsetFloats = (std::uint64_t)(test.read.y1 - bounds.y1) * src.strideFloats + (std::uint64_t)(test.read.x1 - bounds.x1) * nComps;
+    src.bounds = { test.read.x1, test.read.y1, test.read.x2, test.read.y2 };
+    src.nComps = nComps;
+    gpu::GpuDownscaleView dst;
+    dst.buffer = &dstHandle.buffer();
+    dst.bounds = { out.x1, out.y1, out.x2, out.y2 };
+    dst.strideFloats = (std::uint32_t)(out.width() * nComps);
+    dst.nComps = nComps;
+    std::unique_ptr<gpu::GpuRecordContext> recorder;
+    ASSERT_TRUE(bool(rt->newRecordContext(recorder)));
+    ASSERT_TRUE(bool(gpu::recordMipDownscale(*recorder, src, dst, dst.bounds, test.levels)));
+    recorder->computeBarrier();
+    ASSERT_TRUE(bool(recorder->submitAndWait()));
+    std::vector<float> device(dstFloats, -1.f);
+    gpu::TimelineValue down;
+    ASSERT_TRUE(bool(rt->download(dstHandle.buffer(), 0, { device.data(), dstFloats * sizeof(float) }, down)));
+    ASSERT_TRUE(bool(rt->wait(down)));
+
+    const std::vector<float> expected = readRgba(cpu, out);
+    int mismatches = 0;
+    for (int y = out.y1; y < out.y2; ++y) {
+        for (int x = out.x1; x < out.x2; ++x) {
+            for (int c = 0; c < nComps; ++c) {
+                const std::size_t i = ((std::size_t)(y - out.y1) * out.width() + (x - out.x1)) * nComps + c;
+                if ((std::fabs(device[i] - expected[i]) > 1e-5f) && (++mismatches <= 8)) {
+                    ADD_FAILURE() << "levels " << test.levels << " read (" << test.read.x1 << "," << test.read.y1 << ")-(" << test.read.x2 << ","
+                                  << test.read.y2 << "): pixel (" << x << "," << y << ") channel " << c << ": GPU " << device[i] << ", CPU " << expected[i];
+                }
+            }
+        }
+    }
+}
+
+} // namespace
+
+// Odd origins, negative ones included, odd sizes, single rows and columns, and two and three levels, where repeated
+// halving weighs the pixels of a partial edge block unevenly.
+TEST_F(GpuResidencyTest, DeviceMipDownscaleMatchesTheCpuAtOddEdges)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    gpu::GpuRuntime* rt = runtime();
+    ASSERT_TRUE(rt != nullptr);
+    const MipDownscaleCase cases[] = {
+        { RectI(0, 0, 32, 16), RectI(0, 0, 32, 16), 1 },
+        { RectI(0, 0, 32, 16), RectI(0, 0, 32, 16), 3 },
+        { RectI(1, 3, 38, 24), RectI(1, 3, 38, 24), 1 },
+        { RectI(-3, -5, 30, 18), RectI(-3, -5, 30, 18), 2 },
+        { RectI(5, 7, 46, 36), RectI(5, 7, 46, 36), 3 },
+        { RectI(-7, 1, 26, 2), RectI(-7, 1, 26, 2), 2 },
+        { RectI(3, -9, 4, 20), RectI(3, -9, 4, 20), 3 },
+        { RectI(0, 0, 40, 40), RectI(3, 5, 37, 31), 2 },
+    };
+    for (const MipDownscaleCase& test : cases) {
+        expectMipDownscaleMatchesCpu(rt, test);
+    }
 }
 
 #endif // NATRON_HAVE_GPU

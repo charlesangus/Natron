@@ -53,6 +53,14 @@ struct ViewerInstanceTestAccess {
     {
         viewer->_imp->checkAndUpdateDisplayAge(textureIndex, renderAge);
     }
+
+    static void computeMipmapLevels(ViewerInstance* viewer,
+                                    double zoomFactor,
+                                    bool draftOn,
+                                    ViewerArgs* args)
+    {
+        viewer->computeMipmapLevels(zoomFactor, draftOn, args);
+    }
 };
 
 NATRON_NAMESPACE_EXIT

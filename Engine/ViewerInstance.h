@@ -573,7 +573,7 @@ public:
     static unsigned int autoProxyMipmapLevel(unsigned int withoutDraft, double zoomFactor, unsigned int autoProxyLevel) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Whether an update drafts, and at which level: draft is on, the edits call for it
+     * @brief Whether an update drafts, and at which level: auto-proxy and draft are on, the edits call for it
      * (AppInstance::draftAppliesToEdits()) and adaptive draft does not predict that the viewer's own level keeps up.
      **/
     static void resolveDraft(bool draftOn,
@@ -883,6 +883,7 @@ private:
                                  const AbortableRenderInfoPtr& abortInfo,
                                  GpuPlacementSnapshotBuilder* builder);
     void computeMipmapLevels(double zoomFactor, ViewerArgs* outArgs) const;
+    void computeMipmapLevels(double zoomFactor, bool draftOn, ViewerArgs* outArgs) const;
 
     /*******************************************
      ******OVERRIDDEN FROM EFFECT INSTANCE******

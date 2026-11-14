@@ -3431,8 +3431,8 @@ ViewerInstance::resolveDraft(bool draftOn,
                              unsigned int* withDraft)
 {
     // An update that does not draft renders as the release would, so the release finds it in the cache.
-    *draftModeEnabled = draftOn && editsDraft && adaptive.drafts();
-    *withDraft = (*draftModeEnabled && autoProxy) ? autoProxyMipmapLevel(withoutDraft, zoomFactor, autoProxyLevel) : withoutDraft;
+    *draftModeEnabled = autoProxy && draftOn && editsDraft && adaptive.drafts();
+    *withDraft = *draftModeEnabled ? autoProxyMipmapLevel(withoutDraft, zoomFactor, autoProxyLevel) : withoutDraft;
 }
 
 void
@@ -3459,9 +3459,16 @@ void
 ViewerInstance::computeMipmapLevels(double zoomFactor,
                                     ViewerArgs* outArgs) const
 {
+    computeMipmapLevels(zoomFactor, getApp()->isDraftRenderEnabled(), outArgs);
+}
+
+void
+ViewerInstance::computeMipmapLevels(double zoomFactor,
+                                    bool draftOn,
+                                    ViewerArgs* outArgs) const
+{
     outArgs->mipmapLevelWithoutDraft = getMipmapLevelWithoutDraft();
 
-    const bool draftOn = getApp()->isDraftRenderEnabled();
     AdaptiveDraft adaptive;
     {
         QMutexLocker k(&_imp->adaptiveDraftMutex);

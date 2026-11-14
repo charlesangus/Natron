@@ -38,11 +38,13 @@
 #include "ViewerInstanceTestAccess.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_USING
@@ -277,6 +279,37 @@ TEST_F(ViewerStaleStateTest, DraggingAPointOpRendersAtTheViewersOwnLevel)
     ViewerInstance::resolveDraft(false, true, true, adaptive, kOwnLevel, kFitZoom, kAutoProxyLevel, &drafts, &level);
     EXPECT_FALSE(drafts);
     EXPECT_EQ(kOwnLevel, level);
+}
+
+TEST_F(ViewerStaleStateTest, AutoProxyOffNeverDrafts)
+{
+    const NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(bool(transform));
+    // Full frame pins the viewer's own level at 0 without reading a viewport, which tests do not have.
+    viewer->setFullFrameProcessingEnabled(true);
+    const AppInstancePtr app = getApp();
+    app->clearDraftEdits();
+    app->noteDraftEdit(transform);
+
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    const bool wasEnabled = settings->isAutoProxyEnabled();
+    const unsigned int autoProxyLevel = settings->getAutoProxyMipmapLevel();
+    ASSERT_GT(autoProxyLevel, 0u);
+
+    ViewerArgs args;
+    settings->setAutoProxyEnabled(true);
+    ViewerInstanceTestAccess::computeMipmapLevels(viewer, 1., true, &args);
+    EXPECT_TRUE(args.draftModeEnabled);
+    EXPECT_EQ(0u, args.mipmapLevelWithoutDraft);
+    EXPECT_EQ(autoProxyLevel, args.mipmapLevelWithDraft);
+
+    settings->setAutoProxyEnabled(false);
+    ViewerInstanceTestAccess::computeMipmapLevels(viewer, 1., true, &args);
+    settings->setAutoProxyEnabled(wasEnabled);
+    app->clearDraftEdits();
+    EXPECT_FALSE(args.draftModeEnabled);
+    EXPECT_EQ(0u, args.mipmapLevelWithoutDraft);
+    EXPECT_EQ(0u, args.mipmapLevelWithDraft);
 }
 
 TEST(AdaptiveDraftTest, CheapEditsSwitchToFullResolution)

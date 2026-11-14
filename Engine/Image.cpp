@@ -1952,14 +1952,6 @@ Image::halveRoIForDepth(const RectI & roi,
             (getBitDepth() == eImageBitDepthShort && sizeof(PIX) == 2) ||
             (getBitDepth() == eImageBitDepthFloat && sizeof(PIX) == 4) );
 
-    ///handle case where there is only 1 column/row
-    if ( (roi.width() == 1) || (roi.height() == 1) ) {
-        assert( !(roi.width() == 1 && roi.height() == 1) ); /// can't be 1x1
-        halve1DImage(roi, output);
-
-        return;
-    }
-
     /// Take the lock for both bitmaps since we're about to read/write from them!
     QWriteLocker k1(&output->_entryLock);
     QReadLocker k2(&_entryLock);
@@ -1982,13 +1974,10 @@ Image::halveRoIForDepth(const RectI & roi,
     //           dstRoD.height()*2 <= roi.height());
     assert( getComponents() == output->getComponents() );
 
-    RectI dstRoI;
-    const RectI srcRoI = roi.intersect(srcBounds); // intersect RoI with the region of definition
-    dstRoI.x1 = (srcRoI.x1 + 1) / 2; // equivalent to ceil(srcRoI.x1/2.0)
-    dstRoI.y1 = (srcRoI.y1 + 1) / 2; // equivalent to ceil(srcRoI.y1/2.0)
-    dstRoI.x2 = srcRoI.x2 / 2; // equivalent to floor(srcRoI.x2/2.0)
-    dstRoI.y2 = srcRoI.y2 / 2; // equivalent to floor(srcRoI.y2/2.0)
-
+    // A block partly outside the RoI averages the pixels it holds, so that every pixel buildMipmapLevel() allocates
+    // is written, and the GPU's mip_downscale makes the same pixels.
+    const RectI srcRoI = roi.intersect(srcBounds);
+    const RectI dstRoI = srcRoI.downscalePowerOfTwoSmallestEnclosing(1).intersect(dstBounds);
 
     const PIX* const srcPixels      = (const PIX*)pixelAt(srcBounds.x1,   srcBounds.y1);
     const char* const srcBmPixels = _header->bitmap.getBitmapAt(srcBmBounds.x1, srcBmBounds.y1);
@@ -2014,8 +2003,8 @@ Image::halveRoIForDepth(const RectI & roi,
         // The current dst row, at y, covers the src rows y*2 (thisRow) and y*2+1 (nextRow).
         // Check that if are within srcBounds.
         int srcy = y * 2;
-        bool pickThisRow = srcBounds.y1 <= (srcy + 0) && (srcy + 0) < srcBounds.y2;
-        bool pickNextRow = srcBounds.y1 <= (srcy + 1) && (srcy + 1) < srcBounds.y2;
+        bool pickThisRow = srcRoI.y1 <= (srcy + 0) && (srcy + 0) < srcRoI.y2;
+        bool pickNextRow = srcRoI.y1 <= (srcy + 1) && (srcy + 1) < srcRoI.y2;
         int sumH = (int)pickNextRow + (int)pickThisRow;
         assert(sumH == 1 || sumH == 2);
 
@@ -2028,8 +2017,8 @@ Image::halveRoIForDepth(const RectI & roi,
             // The current dst col, at y, covers the src cols x*2 (thisCol) and x*2+1 (nextCol).
             // Check that if are within srcBounds.
             int srcx = x * 2;
-            bool pickThisCol = srcBounds.x1 <= (srcx + 0) && (srcx + 0) < srcBounds.x2;
-            bool pickNextCol = srcBounds.x1 <= (srcx + 1) && (srcx + 1) < srcBounds.x2;
+            bool pickThisCol = srcRoI.x1 <= (srcx + 0) && (srcx + 0) < srcRoI.x2;
+            bool pickNextCol = srcRoI.x1 <= (srcx + 1) && (srcx + 1) < srcRoI.x2;
             int sumW = (int)pickThisCol + (int)pickNextCol;
             assert(sumW == 1 || sumW == 2);
             const int sum = sumW * sumH;
@@ -2120,99 +2109,6 @@ Image::halveRoI(const RectI & roi,
         break;
     case eImageBitDepthFloat:
         halveRoIForDepth<float, 1>(roi, copyBitMap, output);
-        break;
-    case eImageBitDepthNone:
-        break;
-    }
-}
-
-// code proofread and fixed by @devernay on 8/8/2014
-template <typename PIX, int maxValue>
-void
-Image::halve1DImageForDepth(const RectI & roi,
-                            Image* output) const
-{
-    int width = roi.width();
-    int height = roi.height();
-
-    assert(width == 1 || height == 1); /// must be 1D
-    assert( output->getComponents() == getComponents() );
-    assert( _bounds.contains(roi) );
-
-    /// Take the lock for both bitmaps since we're about to read/write from them!
-    QWriteLocker k1(&output->_entryLock);
-    QReadLocker k2(&_entryLock);
-    const RectI & srcBounds = _bounds;
-    const RectI & dstBounds = output->_bounds;
-//    assert(dstBounds.x1 * 2 == roi.x1 &&
-//           dstBounds.y1 * 2 == roi.y1 &&
-//           (
-//               dstBounds.x2 * 2 == roi.x2 || // we halve in only 1 dimension
-//               dstBounds.y2 * 2 == roi.y2)
-//           );
-    int halfWidth = width / 2;
-    int halfHeight = height / 2;
-    if (height == 1) { //1 row
-        assert(width != 1); /// widthxheight can't be 1x1
-
-        const PIX* src = (const PIX*)pixelAt(roi.x1, roi.y1);
-        PIX* dst = (PIX*)output->pixelAt(dstBounds.x1, dstBounds.y1);
-        assert(src && dst);
-        for (int x = 0; x < halfWidth; ++x) {
-            for (int k = 0; k < _nbComponents; ++k) {
-#ifdef DEBUG_NAN
-                assert( !std::isnan(*src) ); // check for NaN
-                assert( !std::isnan(*(src + _nbComponents)) ); // check for NaN
-#endif
-                *dst = PIX( (float)( *src + *(src + _nbComponents) ) / 2. );
-#ifdef DEBUG_NAN
-                assert( !std::isnan(*dst) ); // check for NaN
-#endif
-                ++dst;
-                ++src;
-            }
-            src += _nbComponents;
-        }
-    } else if (width == 1) {
-        int rowSize = srcBounds.width() * _nbComponents;
-        const PIX* src = (const PIX*)pixelAt(roi.x1, roi.y1);
-        PIX* dst = (PIX*)output->pixelAt(dstBounds.x1, dstBounds.y1);
-        assert(src && dst);
-        for (int y = 0; y < halfHeight; ++y) {
-            for (int k = 0; k < _nbComponents; ++k) {
-#ifdef DEBUG_NAN
-                assert( !std::isnan(*src) ); // check for NaN
-                assert( !std::isnan(*(src + rowSize)) ); // check for NaN
-#endif
-                *dst = PIX( (float)( *src + (*src + rowSize) ) / 2. );
-#ifdef DEBUG_NAN
-                assert( !std::isnan(*dst) ); // check for NaN
-#endif
-                ++dst;
-                ++src;
-            }
-            src += rowSize;
-        }
-    }
-}
-
-// code proofread and fixed by @devernay on 8/8/2014
-void
-Image::halve1DImage(const RectI & roi,
-                    Image* output) const
-{
-    switch ( getBitDepth() ) {
-    case eImageBitDepthByte:
-        halve1DImageForDepth<unsigned char, 255>(roi, output);
-        break;
-    case eImageBitDepthShort:
-        halve1DImageForDepth<unsigned short, 65535>(roi, output);
-        break;
-    case eImageBitDepthHalf:
-        assert(false);
-        break;
-    case eImageBitDepthFloat:
-        halve1DImageForDepth<float, 1>(roi, output);
         break;
     case eImageBitDepthNone:
         break;

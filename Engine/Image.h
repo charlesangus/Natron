@@ -865,10 +865,10 @@ private:
     void buildMipmapLevel(const RectD& dstRoD, const RectI & roiCanonical, unsigned int level, bool copyBitMap,
                           Image* output) const;
 
-
     /**
      * @brief Halve the given roi of this image into output.
-     * If the RoI bounds are odd, the largest enclosing RoI with even bounds will be considered.
+     * If the RoI bounds are odd, the smallest enclosing RoI with even bounds is written: an output pixel whose 2x2
+     * block lies partly outside the RoI is the mean of the block's pixels inside it.
      **/
     void halveRoI(const RectI & roi, bool copyBitMap,
                   Image* output) const;
@@ -878,14 +878,6 @@ private:
     void halveRoIForDepth(const RectI & roi,
                           bool copyBitMap,
                           Image* output) const;
-
-    /**
-     * @brief Same as halveRoI but for 1D only (either width == 1 or height == 1)
-     **/
-    void halve1DImage(const RectI & roi, Image* output) const;
-
-    template <typename PIX, int maxValue>
-    void halve1DImageForDepth(const RectI & roi, Image* output) const;
 
     template <typename PIX, int maxValue>
     void upscaleMipmapForDepth(const RectI & roi, unsigned int fromLevel, unsigned int toLevel, Image* output) const;

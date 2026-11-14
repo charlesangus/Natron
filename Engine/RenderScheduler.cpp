@@ -1428,6 +1428,7 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
         GpuImageLayout layout = from;
         layout.bounds = task.renderedRoI;
         layout.mipmapLevel = level;
+        layout.key = exact;
         gpu::GpuBufferHandle handle;
         if (!runtime->acquire(layout.deviceBytes(), handle)) {
             return CacheDeviceEntryPtr();
@@ -1440,10 +1441,13 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
         if (!sourceBuffer) {
             continue;
         }
+        // The view holds only what the downscale reads, so that a partial edge block averages none of the entry's
+        // pixels beyond the RoD.
         gpu::GpuDownscaleView src;
         src.buffer = sourceBuffer;
-        src.bounds = { from.bounds.x1, from.bounds.y1, from.bounds.x2, from.bounds.y2 };
         src.strideFloats = (std::uint32_t)(from.bounds.width() * from.nComps());
+        src.offsetFloats = (std::uint64_t)(read.y1 - from.bounds.y1) * src.strideFloats + (std::uint64_t)(read.x1 - from.bounds.x1) * from.nComps();
+        src.bounds = { read.x1, read.y1, read.x2, read.y2 };
         src.nComps = (std::uint32_t)from.nComps();
         gpu::GpuDownscaleView dst;
         dst.buffer = &handle.buffer();

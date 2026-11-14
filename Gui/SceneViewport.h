@@ -285,6 +285,13 @@ public:
     void noteDrawRevealPresented();
 
     /**
+     * @brief Whether renders leave the stage out, drawing the background and overlays only, so that
+     * no frame shows prims before the policy that applies to them. Main thread.
+     **/
+    void setStageHeld(bool held);
+    bool isStageHeld() const;
+
+    /**
      * @brief How long a reveal still waits for the camera, in milliseconds: none goes out while the
      * user moves it, so the frames it asks for come at the scene's own cost. Main thread.
      **/
@@ -1090,6 +1097,32 @@ public:
      **/
     void restoreSceneView(const Serialization::SceneViewSerialization& serialization);
 
+    /**
+     * @brief Every draw state this viewer sets, effective or remembered, in path order, as the last
+     * edit left them. Any thread; never waits on an edit.
+     **/
+    std::vector<std::pair<std::string, SceneDrawStates::Stored>> getSetDrawStates() const;
+
+    // Puts states in place of every draw state this viewer sets, as one edit. Main thread.
+    void replaceSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states);
+
+    // Puts states in place of this viewer's at their paths, as one edit; the others stay. Main thread.
+    void mergeSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states);
+
+    // Clears this viewer's states at paths, as one edit; the others stay. Main thread.
+    void clearSetDrawStates(const std::vector<std::string>& paths);
+
+    // Whether this viewer sets any draw state, as the last edit left them. Any thread; never waits on an edit.
+    bool hasSetDrawStates() const;
+
+    /**
+     * @brief Runs edit, an edit of this viewer's draw states, once the worker has matched the graph
+     * policy of a sync requested from now on or of rules published from now on, or after a short
+     * while at most, so that a graph edit made now and edit show in one frame. Drawing goes on
+     * meanwhile with the states and policy the view has. Main thread.
+     **/
+    void editWithGraphPolicy(const std::function<void()>& edit);
+
 public Q_SLOTS:
     // Replaces the selection. A slot, so that scripts reach it through the meta object.
     void selectPaths(const QStringList& paths);
@@ -1231,11 +1264,15 @@ private:
     // A menu of the cameras at paths, under the pointer: the one picked is looked through, locked.
     void showLockCameraMenu(const std::vector<std::string>& paths);
 
-    // Queues payload for the worker; the error shown once it is synced.
-    void requestSync(const ScenePayload& payload, const QString& error);
+    // Queues payload for the worker; the error shown once it is synced. keepsFrame lets a frame
+    // rendering the stage go on, for a payload that likely leaves the stage as it is.
+    void requestSync(const ScenePayload& payload, const QString& error, bool keepsFrame = false);
 
-    // Main thread: the worker synced request serial, with error set on failure.
-    void onSynced(U64 serial, bool ok, const QString& error, const SceneViewportRenderer::FrameBounds& bounds);
+    /**
+     * @brief Main thread: the worker synced request serial, with error set on failure. Drawing
+     * waits for the worker's match awaitedMatch, if not 0, before it shows the stage.
+     **/
+    void onSynced(U64 serial, bool ok, const QString& error, const SceneViewportRenderer::FrameBounds& bounds, U64 awaitedMatch);
 
     // Puts a framing on the worker. selection is empty for the scene.
     void requestFraming(const std::vector<std::string>& selection);
@@ -1248,6 +1285,15 @@ private:
     void editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit, std::size_t rows = 0);
     void editDrawStateRows(const std::vector<SceneDrawRowEdit>& edits);
     void deliverDrawChange(const SceneDrawChange& change);
+    // Main thread: the graph policy the scene's draw rules, of the generation given, matched; matchId
+    // numbers the worker's matches and serial is the sync matched for, both 0 for one after loads.
+    void onDrawRulesMatched(U64 generation, U64 matchId, U64 serial, const SceneDrawStates::PolicyStates& policy);
+    // Main thread: frames leave the stage out until the worker's match matchId lands and its policy
+    // is in the draw states, for kPolicyHoldMs at most.
+    void holdStageUntilMatch(U64 matchId);
+    void runPolicyEdits();
+    void releasePolicyHoldIfDone();
+    void releasePolicyHold();
     void wakeLoadsAskedBeforeStage();
     // A restore's load set stops standing in for loads the stage has yet to take.
     void forgetRestoredLoads();

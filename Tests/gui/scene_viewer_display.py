@@ -91,6 +91,7 @@ try:
         return node
 
     usd = make("USDRead", 0, 0)
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     # A rect light shines down its -Z axis: from in front of the box, onto its front face.
     light = make("USDLight", 150, 0)

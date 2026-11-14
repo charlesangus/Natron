@@ -118,6 +118,7 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     camera = app.createNode("USDCamera")
     require(camera is not None, "create USDCamera", plugin_problem("USDCamera"))
@@ -676,15 +677,23 @@ try:
         beat = Heartbeat()
 
         # One batch only: reading the whole flat Scope here would measure the tree, not the inspector.
-        # Switching the Viewer away made the panel compose the pinned USDRead itself, so the tree is
-        # empty until that load ends.
-        ok = yield ("until", lambda: find(FLAT).isValid(), LOAD_TIMEOUT_S)
+        # Switching the Viewer away made the panel compose the pinned USDRead itself. Until that load
+        # ends the panel still lists the stage it is leaving, whose rows can no longer be read.
+        ok = yield ("until", lambda: not panel().property("natronSceneGraphSwitching") and find(FLAT).isValid(), LOAD_TIMEOUT_S)
         require(ok, "the tree lists the flat Scope (got %r)" % (top_paths(),))
-        flat = find(FLAT)
         m = model()
-        if m.canFetchMore(flat):
-            m.fetchMore(flat)
-        require(m.rowCount(flat) > 0, "the flat Scope's first rows are read")
+
+        def flat_rows_read():
+            flat = find(FLAT)
+            if not flat.isValid():
+                return False
+            if m.canFetchMore(flat):
+                m.fetchMore(flat)
+            return m.rowCount(flat) > 0 and path_of(m.index(0, 0, flat)).startswith(FLAT + "/")
+
+        ok = yield ("until", flat_rows_read, POLL_TIMEOUT_S)
+        require(ok, "the flat Scope's first rows are read")
+        flat = find(FLAT)
         # Selecting a row under a collapsed parent expands it, which is the tree's work, not the
         # inspector's, and a user selects a row they can already see.
         beat.start()

@@ -40,6 +40,7 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     camera = app.createNode("USDCamera")
     require(camera is not None, "create USDCamera", plugin_problem("USDCamera"))

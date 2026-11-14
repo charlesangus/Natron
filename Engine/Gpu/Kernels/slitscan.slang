@@ -4,6 +4,8 @@
 // the frames in the CPU's order. SlitScanGpuParams in Engine/Nodes/Time/SlitScan.cpp mirrors the
 // push block.
 
+import edgesample;
+
 StructuredBuffer<float> srcBuf;
 RWStructuredBuffer<float> dstBuf;
 StructuredBuffer<float> mapBuf;
@@ -34,7 +36,7 @@ struct SlitScanParams
     uint mapChannel;
     uint function;
     uint filter;
-    uint firstPass;
+    uint flags;
     float frame;
     float rampScale;
     int rampOrigin;
@@ -49,6 +51,9 @@ struct SlitScanParams
 static const uint kVerticalSlit = 1;
 static const uint kRetimeMap = 2;
 static const uint kLinear = 1;
+static const uint kFirstPass = 1;
+static const uint kSourceBlack = 2;
+static const uint kMapBlack = 4;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -64,9 +69,10 @@ void slitscan(uint3 tid : SV_DispatchThreadID)
     float v = 0.0;
     if (params.function == kRetimeMap)
     {
-        if (x >= params.mapX1 && x < params.mapX2 && y >= params.mapY1 && y < params.mapY2)
+        int2 m;
+        if (edgePixel(int2(x, y), int4(params.mapX1, params.mapY1, params.mapX2, params.mapY2), edgeModeFromFlags(params.flags, kMapBlack), m))
         {
-            v = mapBuf[params.mapOffset + uint(y - params.mapY1) * params.mapStride + uint(x - params.mapX1) * params.mapComps + params.mapChannel];
+            v = mapBuf[params.mapOffset + uint(m.y - params.mapY1) * params.mapStride + uint(m.x - params.mapX1) * params.mapComps + params.mapChannel];
         }
     }
     else
@@ -100,19 +106,21 @@ void slitscan(uint3 tid : SV_DispatchThreadID)
         precise float rounded = t + 0.5;
         weight = floor(rounded) == params.frame ? 1.0 : 0.0;
     }
-    if (params.firstPass == 0 && weight == 0.0)
+    const bool firstPass = (params.flags & kFirstPass) != 0;
+    if (!firstPass && weight == 0.0)
     {
         return;
     }
 
-    const bool inside = x >= params.srcX1 && x < params.srcX2 && y >= params.srcY1 && y < params.srcY2;
+    int2 at;
+    const bool inside = edgePixel(int2(x, y), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), edgeModeFromFlags(params.flags, kSourceBlack), at);
     const uint dst = params.dstOffset + tid.y * params.dstStride + tid.x * params.nComps;
-    const uint src = inside ? params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.srcComps : 0;
+    const uint src = inside ? params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * params.srcComps : 0;
     for (uint c = 0; c < params.nComps; ++c)
     {
         const float p = (inside && c < params.srcComps) ? srcBuf[src + c] : 0.0;
         precise float term = weight * p;
-        if (params.firstPass != 0)
+        if (firstPass)
         {
             dstBuf[dst + c] = weight == 0.0 ? 0.0 : term;
         }

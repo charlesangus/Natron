@@ -465,6 +465,22 @@ AppendClip::getFramesNeeded(double time,
     return frames;
 }
 
+std::vector<double>
+AppendClip::getInputReadTimes(int inputNb,
+                              double time,
+                              ViewIdx /*view*/) const
+{
+    const Blend blend = blendAt(time);
+    std::vector<double> times;
+    for (std::size_t i = 0; i < blend.inputs.size(); ++i) {
+        if (blend.inputs[i] == inputNb) {
+            times.push_back(blend.times[i]);
+        }
+    }
+
+    return times;
+}
+
 StatusEnum
 AppendClip::getRegionOfDefinition(U64 /*hash*/,
                                   double time,
@@ -546,14 +562,16 @@ AppendClip::renderOp(const RenderActionArgs& args,
         // All are fetched before any image is locked: fetching renders upstream. Black is a null
         // image, as is a clip with nothing there.
         std::vector<ImagePtr> images(weights.size());
+        std::vector<EdgeMode> edgeModes(weights.size(), EdgeMode::Black);
         for (std::size_t i = 0; i < blend.inputs.size(); ++i) {
             images[i] = fetchInputAt(blend.inputs[i], blend.times[i], args, &output.first);
+            edgeModes[i] = inputEdgeMode(blend.inputs[i], blend.times[i], args.view);
             if (!images[i] && !declaresInputTime(blend.inputs[i], args.time, args.view, blend.times[i])) {
                 // fetchInputAt() has posted why.
                 return eStatusFailed;
             }
         }
-        if (!TimeBlend::renderCpu(output.second, args.roi, images, weights)) {
+        if (!TimeBlend::renderCpu(output.second, args.roi, images, weights, edgeModes)) {
             return eStatusFailed;
         }
     }
@@ -636,20 +654,23 @@ AppendClip::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     std::vector<const GpuImageView*> views;
+    std::vector<EdgeMode> edgeModes;
     for (std::size_t i = 0; i < blend.inputs.size(); ++i) {
         const GpuImageView* view = args.inputAt(blend.inputs[i], blend.times[i]);
         if (!view) {
             return eStatusFailed;
         }
         views.push_back(view);
+        edgeModes.push_back(inputEdgeMode(blend.inputs[i], blend.times[i], args.query.view));
     }
     std::vector<double> weights = blend.weights;
     if (blend.black > 0.) {
         views.push_back(nullptr);
+        edgeModes.push_back(EdgeMode::Black);
         weights.push_back(blend.black);
     }
 
-    return TimeBlend::recordGpu(args, views, weights);
+    return TimeBlend::recordGpu(args, views, weights, edgeModes);
 }
 
 NATRON_NAMESPACE_EXIT

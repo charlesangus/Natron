@@ -8,7 +8,7 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| NeuralUpscale | AI model | `1e-4` in the test | the nearest-neighbour test models through the sRGB Model Colourspace, at full and proxy scale; the alpha filter within `1e-5` of `Resampler` cubic; the real models are checked only where installed (PSNR above cubic, highlights within 2%) |
+| NeuralUpscale | AI model | `1e-4` in the test | the nearest-neighbour test models through the sRGB Model Colourspace, at full and proxy scale; the alpha filter within `1e-5` of `Resampler` cubic under both edge modes; the real models are checked only where installed (PSNR above cubic, highlights within 2%) |
 
 1. **Into the model's space.** The RGB of the processed layer is converted by OpenColorIO from the
    project's working space into `modelColourspace`, the space the model was trained in.
@@ -20,8 +20,9 @@ Tolerance:
 3. **Back.** The model's RGB is converted from `modelColourspace` back to the working space.
 4. **Alpha filter.** Alpha, an unchecked R, G or B, and every channel of a one- or two-channel
    layer, are enlarged separably with `alphaFilter`: Natron's cubic filter (the one Transform's
-   Cubic uses, which never overshoots) or Lanczos-3 (sharper, rings a little past 0 and 1). Edges
-   repeat the Source's edge pixel.
+   Cubic uses, which never overshoots) or Lanczos-3 (sharper, rings a little past 0 and 1). Past
+   the Source the filter reads as `edgeMode` says: its edge pixels under Stretch, 0 under Black.
+   The model's tiles stay inside the Source, so `edgeMode` leaves the model's RGB alone.
 
 Nothing else is done to the values: no clamp and no automatic range handling. The models were
 trained on sRGB encoded values in [0, 1]. The default space, "sRGB Encoded Rec.709 (sRGB)",
@@ -36,6 +37,7 @@ several stops over 1 within the model's range.
 | `modelColourspace` | Project default, which follows the model | The OpenColorIO space the model runs in |
 | `alphaFilter` | Cubic | How alpha and unchecked channels are enlarged: Cubic or Lanczos |
 | `tileSize` | 0 | Tile size in Source pixels; 0 is the model's own size, or 512 |
+| `edgeMode` | Input | What the alpha filter reads past the Source: the Source's own mode (Input), 0 (Black) or its edge pixels (Stretch) |
 
 `scale` and `model` follow each other: picking a model sets `scale` to its factor, and changing
 `scale` selects the same package's model for the new factor (RealPLKSR 2x becomes RealPLKSR 4x),

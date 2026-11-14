@@ -1362,7 +1362,7 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
         return eStatusFailed;
     }
 
-    // The depth as the CPU reads it: 0, infinitely far, outside the input's image.
+    // The depth as the CPU reads it: past the input's image by the source's edge mode, 0 (infinitely far) under Black.
     const GpuLayerInput* depth = nullptr;
     for (const GpuLayerInput& layerInput : io.layerInputs) {
         if ((layerInput.inputNb == kZDefocusInputSource) && (layerInput.layer == depthLayer)) {
@@ -2187,7 +2187,7 @@ ZDefocus::renderOp(const RenderActionArgs& args,
         std::vector<unsigned char> chunkUsed(used.size(), 0);
         for (int r = first; r < end; ++r) {
             if (depth) {
-                PassExec::readChannelRow(depth.get(), access.get(), depthBounds, depthComps, depthChannel, cocRect.x1, cocRect.y1 + r, cocWidth, 0.f, row.data());
+                PassExec::readChannelRow(depth.get(), access.get(), depthBounds, depthComps, depthChannel, cocRect.x1, cocRect.y1 + r, cocWidth, full.edgeMode, row.data());
             }
             const std::size_t base = (std::size_t)r * cocWidth;
             for (int x = 0; x < cocWidth; ++x) {

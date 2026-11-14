@@ -44,6 +44,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -51,6 +52,8 @@
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IDefocus.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
+#include "Engine/Nodes/Filter/VectorBlur.h"
+#include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -424,6 +427,58 @@ TEST_F(NativeEdgeInputsGpuTest, SplineWarpTapsOutsideTheSource)
         }
         const bool ok = setKnobValues(node, kSplineWarpParamBoundaryBBox, { 0. }) && setKnobValue(node, kSplineWarpParamBBox, std::string(kSplineWarpBBoxUnion));
         return ok ? node : NodePtr(); }, ParityTolerance::resampling());
+}
+
+// The mix blends the Source under the warp where the union bounding box carries the output past
+// the Source, which reads it by the edge mode as the warp's taps do.
+TEST_F(NativeEdgeInputsGpuTest, SplineWarpMixPastTheSource)
+{
+    expectBothModesMatch("SplineWarp mix", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeOnSmall(PLUGINID_NATRON_SPLINEWARP, PLUGIN_MAJOR_NATRON_SPLINEWARP, edgeMode);
+        SplineWarpContextPtr ctx = node ? std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext()) : SplineWarpContextPtr();
+        if (!ctx) {
+            ADD_FAILURE() << "SplineWarp context";
+            return NodePtr();
+        }
+        BezierPtr from = makeQuad(ctx, 0., 0., 1.);
+        BezierPtr to = makeQuad(ctx, 2.75, -1.5, 0.8);
+        if (!from || !to || !ctx->linkWithAlignment(from, to, 0., false)) {
+            ADD_FAILURE() << "SplineWarp link";
+            return NodePtr();
+        }
+        const bool ok = setKnobValues(node, kSplineWarpParamBoundaryBBox, { 0. }) && setKnobValue(node, kSplineWarpParamBBox, std::string(kSplineWarpBBoxUnion)) && setKnobValues(node, "mix", { 0.5 });
+        return ok ? node : NodePtr(); }, ParityTolerance::resampling());
+}
+
+// The Depth channel is a layer of the small Source, read past its image by the Source's mode.
+TEST_F(NativeEdgeInputsGpuTest, ZDefocusDepthPastTheSource)
+{
+    expectBothModesMatch("ZDefocus Depth", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeOnSmall(PLUGINID_NATRON_ZDEFOCUS, PLUGIN_MAJOR_NATRON_ZDEFOCUS, edgeMode);
+        KnobChannelSelect* depth = node ? dynamic_cast<KnobChannelSelect*>(node->getKnobByName(kZDefocusParamDepth).get()) : NULL;
+        if (!depth) {
+            ADD_FAILURE() << "ZDefocus depth";
+            return NodePtr();
+        }
+        depth->set("rgba.R");
+        const bool ok = setKnobValues(node, kZDefocusParamFocalPlane, { 0.5 }) && setKnobValues(node, kZDefocusParamSize, { 9. }) && setKnobValues(node, kZDefocusParamMaxSize, { 16. });
+        return ok ? node : NodePtr(); }, ParityTolerance::make(1e-4, 1e-3));
+}
+
+// The UV layer is a layer of the small Source, read past its image by the Source's mode.
+TEST_F(NativeEdgeInputsGpuTest, VectorBlurUVPastTheSource)
+{
+    expectBothModesMatch("VectorBlur UV", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeOnSmall(PLUGINID_NATRON_VECTORBLUR, PLUGIN_MAJOR_NATRON_VECTORBLUR, edgeMode);
+        KnobLayerSelect* uv = node ? dynamic_cast<KnobLayerSelect*>(node->getKnobByName(kVectorBlurParamUV).get()) : NULL;
+        if (!uv) {
+            ADD_FAILURE() << "VectorBlur UV";
+            return NodePtr();
+        }
+        uv->setLayer(kNatronColorViewRGBA);
+        uv->setChannels({ "R", "G" });
+        const bool ok = setKnobValues(node, kVectorBlurParamScale, { 12. });
+        return ok ? node : NodePtr(); }, ParityTolerance::make(1e-5, 1e-4));
 }
 
 TEST_F(NativeEdgeInputsGpuTest, AutoStraightenTapsOutsideTheSource)

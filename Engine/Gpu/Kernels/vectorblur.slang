@@ -76,11 +76,14 @@ VectorBlur vectorBlurLoad(StructuredBuffer<uint> params)
     return b;
 }
 
+// View::component() of the UV layer: past its bounds by the Source's edge mode.
 float vectorBlurUV(VectorBlur b, int2 p, int c)
 {
-    if ((b.flags & kVectorBlurUV) == 0 || c < 0 || uint(c) >= b.uvComps || !wrapInside(p, b.uvX1, b.uvY1, b.uvX2, b.uvY2))
+    int2 at;
+    if ((b.flags & kVectorBlurUV) == 0 || c < 0 || uint(c) >= b.uvComps
+        || !edgePixel(p, int4(b.uvX1, b.uvY1, b.uvX2, b.uvY2), edgeModeFromFlags(b.flags, kVectorBlurEdgeBlack), at))
         return 0.0;
-    return uvBuf[b.uvOffset + uint(p.y - b.uvY1) * b.uvStride + uint(p.x - b.uvX1) * b.uvComps + uint(c)];
+    return uvBuf[b.uvOffset + uint(at.y - b.uvY1) * b.uvStride + uint(at.x - b.uvX1) * b.uvComps + uint(c)];
 }
 
 // Gather::vector(): the vector at p in pixels, shortened to maxLength, in xy, its length in z;
@@ -114,8 +117,10 @@ bool vectorBlurVector(VectorBlur b, int2 p, out float3 d)
 float vectorBlurDistance(VectorBlur b, int2 p, out bool far)
 {
     float z = 0.0;
-    if (b.depthComp >= 0 && uint(b.depthComp) < b.depthComps && wrapInside(p, b.depthX1, b.depthY1, b.depthX2, b.depthY2))
-        z = depthBuf[b.depthOffset + uint(p.y - b.depthY1) * b.depthStride + uint(p.x - b.depthX1) * b.depthComps + uint(b.depthComp)];
+    int2 at;
+    if (b.depthComp >= 0 && uint(b.depthComp) < b.depthComps
+        && edgePixel(p, int4(b.depthX1, b.depthY1, b.depthX2, b.depthY2), edgeModeFromFlags(b.flags, kVectorBlurEdgeBlack), at))
+        z = depthBuf[b.depthOffset + uint(at.y - b.depthY1) * b.depthStride + uint(at.x - b.depthX1) * b.depthComps + uint(b.depthComp)];
     far = !isfinite(z) || !(z > 0.0);
     if (far)
         return 0.0;

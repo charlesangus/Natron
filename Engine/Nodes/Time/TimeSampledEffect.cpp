@@ -222,6 +222,19 @@ TimeSampledEffect::getFramesNeeded(double time,
     return frames;
 }
 
+std::vector<double>
+TimeSampledEffect::getInputReadTimes(int inputNb,
+                                     double time,
+                                     ViewIdx view) const
+{
+    const Sample s = sample(time, view);
+    if ((inputNb != 0) || (s.kind != Sample::eBlend)) {
+        return StagedImageEffect::getInputReadTimes(inputNb, time, view);
+    }
+
+    return s.times;
+}
+
 StatusEnum
 TimeSampledEffect::getRegionOfDefinition(U64 /*hash*/,
                                          double time,
@@ -278,14 +291,16 @@ TimeSampledEffect::renderOp(const RenderActionArgs& args,
         // All are fetched before any image is locked: fetching renders upstream. A null image
         // at a declared time is an input with nothing there, which reads as black.
         std::vector<ImagePtr> images(s.times.size());
+        std::vector<EdgeMode> edgeModes(s.times.size());
         for (std::size_t i = 0; i < s.times.size(); ++i) {
             images[i] = fetchInputAt(0, s.times[i], args, &output.first);
+            edgeModes[i] = inputEdgeMode(0, s.times[i], args.view);
             if (!images[i] && !declaresInputTime(0, args.time, args.view, s.times[i])) {
                 // fetchInputAt() has posted why.
                 return eStatusFailed;
             }
         }
-        if (!TimeBlend::renderCpu(output.second, args.roi, images, s.weights)) {
+        if (!TimeBlend::renderCpu(output.second, args.roi, images, s.weights, edgeModes)) {
             return eStatusFailed;
         }
     }
@@ -354,11 +369,13 @@ TimeSampledEffect::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     std::vector<const GpuImageView*> views;
+    std::vector<EdgeMode> edgeModes;
     for (double t : s.times) {
         views.push_back(args.inputAt(0, t));
+        edgeModes.push_back(inputEdgeMode(0, t, args.query.view));
     }
 
-    return TimeBlend::recordGpu(args, views, s.weights);
+    return TimeBlend::recordGpu(args, views, s.weights, edgeModes);
 }
 
 NATRON_NAMESPACE_EXIT

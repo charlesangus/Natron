@@ -9,6 +9,8 @@ Samples are read at fractional times, so a NoTimeBlur upstream collapses them to
 The blend is the shared time-sampled render (TimeWarp's and Retime's): the `timeblend` kernel on
 the colour plane, with up to 8 frames besides the output's own. Fractional sample times render on
 the CPU, because a region holds only whole-frame edges. The output frame range is the input's.
+Past its own region each sample reads as the input's edge mode at that time says: zero under
+Black, its edge pixels under Stretch.
 
 | Parameter | Default | Meaning |
 |---|---|---|

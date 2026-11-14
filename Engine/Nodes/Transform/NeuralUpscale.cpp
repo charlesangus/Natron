@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Settings.h"
+#include "Global/EdgeMode.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -134,7 +135,8 @@ sourcePixelRoD(EffectInstance& effect,
     return !rod->isNull();
 }
 
-// The source pixels output pixel x reads, clamped into [lo, hi), and their weights.
+// The source pixels output pixel x reads, clamped into [lo, hi), and their weights. Under Black a
+// tap past [lo, hi) keeps its clamped index with no weight, so it reads zero.
 struct Taps {
     static constexpr int kMax = 6;
     int index[kMax];
@@ -146,6 +148,7 @@ Taps
 tapsFor(int x,
         int factor,
         NeuralUpscale::AlphaFilterEnum filter,
+        EdgeMode edgeMode,
         int lo,
         int hi)
 {
@@ -161,8 +164,9 @@ tapsFor(int x,
         Resampler::filterWeights(Resampler::eFilterCubic, d, w);
         taps.count = 4;
         for (int k = 0; k < 4; ++k) {
-            taps.index[k] = std::min(std::max(base - 1 + k, lo), hi - 1);
-            taps.weight[k] = (float)w[k];
+            const int i = base - 1 + k;
+            taps.index[k] = std::min(std::max(i, lo), hi - 1);
+            taps.weight[k] = ((edgeMode == EdgeMode::Black) && (i != taps.index[k])) ? 0.f : (float)w[k];
         }
     } else {
         double w[Taps::kMax];
@@ -173,8 +177,9 @@ tapsFor(int x,
         }
         taps.count = Taps::kMax;
         for (int k = 0; k < Taps::kMax; ++k) {
-            taps.index[k] = std::min(std::max(base - 2 + k, lo), hi - 1);
-            taps.weight[k] = (float)(w[k] / sum);
+            const int i = base - 2 + k;
+            taps.index[k] = std::min(std::max(i, lo), hi - 1);
+            taps.weight[k] = ((edgeMode == EdgeMode::Black) && (i != taps.index[k])) ? 0.f : (float)(w[k] / sum);
         }
     }
 
@@ -182,8 +187,8 @@ tapsFor(int x,
 }
 
 // Enlarges channels of the image whose rows readRow() reads (nComps floats per pixel over
-// frame.x1 to frame.x2) into the rows dstRow() gives over window, separably, the edges clamped
-// to frame. Returns false when aborted.
+// frame.x1 to frame.x2) into the rows dstRow() gives over window, separably, reading past frame
+// by edgeMode. Returns false when aborted.
 template <typename ReadRow, typename DstRow, typename Aborted>
 bool
 resampleChannels(const ReadRow& readRow,
@@ -194,6 +199,7 @@ resampleChannels(const ReadRow& readRow,
                  const RectI& window,
                  int factor,
                  NeuralUpscale::AlphaFilterEnum filter,
+                 EdgeMode edgeMode,
                  const std::vector<int>& channels)
 {
     const int width = window.width();
@@ -204,7 +210,7 @@ resampleChannels(const ReadRow& readRow,
     }
     std::vector<Taps> columns(width);
     for (int i = 0; i < width; ++i) {
-        columns[i] = tapsFor(window.x1 + i, factor, filter, frame.x1, frame.x2);
+        columns[i] = tapsFor(window.x1 + i, factor, filter, edgeMode, frame.x1, frame.x2);
     }
     std::vector<float> source((std::size_t)frame.width() * nComps);
     // Output rows per band, so the horizontally filtered source rows held at once stay within
@@ -219,7 +225,7 @@ resampleChannels(const ReadRow& readRow,
         int firstRow = frame.y2;
         int endRow = frame.y1;
         for (int j = 0; j < nRows; ++j) {
-            rows[j] = tapsFor(window.y1 + j0 + j, factor, filter, frame.y1, frame.y2);
+            rows[j] = tapsFor(window.y1 + j0 + j, factor, filter, edgeMode, frame.y1, frame.y2);
             for (int k = 0; k < rows[j].count; ++k) {
                 firstRow = std::min(firstRow, rows[j].index[k]);
                 endRow = std::max(endRow, rows[j].index[k] + 1);
@@ -845,7 +851,7 @@ NeuralUpscale::renderOp(const RenderActionArgs& args,
         const auto readRow = [&](int y, float* row) {
             PassExec::readSourceRow(src.get(), &srcAccess, srcBounds, srcNComps, frame.x1, y, frame.width(), nComps, row);
         };
-        if (!resampleChannels(readRow, dstRow, isAborted, frame, nComps, window, f, filter, filtered)) {
+        if (!resampleChannels(readRow, dstRow, isAborted, frame, nComps, window, f, filter, plan.edgeMode, filtered)) {
             return eStatusFailed;
         }
         if (!anyModel) {

@@ -5,7 +5,8 @@ Gives each output pixel its own time and reads the Source at that time. The time
 comes from `retimeFunction`: a vertical ramp from 0 at the centre of the Source's bottom row to 1
 at the centre of its top row (Horizontal Slit), the same ramp across the columns (Vertical Slit),
 or `retimeMapChannel` of the Retime Map input (Retime Map; 0 when the input is disconnected or
-lacks the channel). Nearest reads the frame nearest the time; Linear blends the two frames around
+lacks the channel; past the map's region, 0 under its Black edge mode and its edge values under
+Stretch). Nearest reads the frame nearest the time; Linear blends the two frames around
 it.
 
 The frames read form a window, declared in `getFramesNeeded`: with a slit,
@@ -15,7 +16,9 @@ pixel's time is clamped to the window. The window holds at most 64 frames: a wid
 end nearest the unscaled time and the node shows a warning. A window of one frame, or a constant
 time (zero gain, or the map function without a map), routes to the Source at that frame.
 
-The output is the sum over the window of `weight * frame`, oldest first. On the GPU the `slitscan`
+The output is the sum over the window of `weight * frame`, oldest first. Past its own region
+each frame reads as the Source's edge mode at that frame says: zero under Black, its edge pixels
+under Stretch. On the GPU the `slitscan`
 kernel adds one frame per dispatch on the colour plane when every frame of the window is resident
 (at most 8 frames other than the current one; the default 11-frame window renders on the CPU).
 

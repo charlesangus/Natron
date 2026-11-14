@@ -18,7 +18,8 @@ Smears each pixel of the Source along its own motion vector, read from a layer o
   `u = (i + 0.5) / n`. Offset 0.5 centres the streak on the pixel, 0 smears it back along the
   vector (the pixel gathers from ahead of it), 1 forward. Taps are bilinear; past the
   Source's image they read as Edge Mode says, black or its edge pixels. The UV and depth layers
-  read black there.
+  are layers of the Source and read past it the same way: no motion and no depth under Black,
+  their edge values under Stretch.
 - **Minimum Samples.** `n = min(Max Samples, max(Minimum Samples, ceil(length)))`: at least Minimum Samples, about one per
   pixel of length, never more than Max Samples (128 by default, never below Minimum Samples).
 - **Filter.** Box weighs every sample alike; Triangle weighs them by a tent peaking at the

@@ -222,12 +222,12 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
         return passListSourceRoI(outputRect, opPasses(time, view, scale));
     }
     if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
-        return stretchGpuInputRoI(*this, inputEdgeMode(inputNb, time, view), inputNb, time, view, opPassesInputRoI(inputNb, time, view, outputRect, scale), scale);
+        return stretchGpuInputRoI(*this, inputNb, getInputReadTimes(inputNb, time, view), [&](double t) { return inputEdgeMode(inputNb, t, view); }, view, opPassesInputRoI(inputNb, time, view, outputRect, scale), scale);
     }
     if ((inputNb == getMaskInput()) && (kind == OpKind::Passes)) {
         const PassList list = opPasses(time, view, scale);
         if (list.opMask) {
-            return stretchGpuInputRoI(*this, inputEdgeMode(inputNb, time, view), inputNb, time, view, passListSourceRoI(outputRect, list), scale);
+            return stretchGpuInputRoI(*this, inputNb, getInputReadTimes(inputNb, time, view), [&](double t) { return inputEdgeMode(inputNb, t, view); }, view, passListSourceRoI(outputRect, list), scale);
         }
     }
     RectI roi;
@@ -239,7 +239,7 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
         roi = NativeEffectBase::getGpuInputRoI(inputNb, time, view, outputRect, scale);
     }
 
-    return stretchGpuInputRoI(*this, inputEdgeMode(inputNb, time, view), inputNb, time, view, roi, scale);
+    return stretchGpuInputRoI(*this, inputNb, getInputReadTimes(inputNb, time, view), [&](double t) { return inputEdgeMode(inputNb, t, view); }, view, roi, scale);
 }
 
 bool
@@ -662,7 +662,15 @@ StagedImageEffect::adjustInputRegionsOfInterest(double time,
                                                 const InputMatrixMap* transforms,
                                                 RoIMap* ret)
 {
-    clampStretchRegionsOfInterest(*this, time, scale, view, transforms, [&](int inputNb) { return inputEdgeMode(inputNb, time, view); }, ret);
+    clampStretchRegionsOfInterest(*this, scale, view, transforms, [&](int inputNb) { return getInputReadTimes(inputNb, time, view); }, [&](int inputNb, double t) { return inputEdgeMode(inputNb, t, view); }, ret);
+}
+
+std::vector<double>
+StagedImageEffect::getInputReadTimes(int /*inputNb*/,
+                                     double time,
+                                     ViewIdx /*view*/) const
+{
+    return std::vector<double>(1, time);
 }
 
 EdgeMode

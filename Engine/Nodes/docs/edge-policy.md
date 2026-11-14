@@ -54,11 +54,11 @@ Terms used below:
 | STMap | `resampleRowFromCoords`, `STMap.cpp:762` | `stmap.slang:243` | Knob, only when Wrap U/V is None (`Resampler.h:345`); Clamp/Repeat/Mirror fold the coordinate first | `black_outside` (on), `STMap.cpp:274-279`; Wrap U/V `STMap.cpp:210, 219` | M136.P4.T4 (UV input: P4.T12) |
 | LensDistortion | `resampleRowFromCoords`, `LensDistortion.cpp:1128` | `lensdistortion.slang:73` | Knob; adds 1 px margin when on, `LensDistortion.cpp:925` | `black_outside` (on), `LensDistortion.cpp:420-425` | M136.P4.T4 |
 | LensCorrect | `LensCorrect.cpp:1473-1478` source, `resampleRowFromCoords` | `lenscorrect.slang:521` | Knob; an edge fade (`:1073`), an outside shortcut (`:1091`), and a source-region bound that counts footprints only where they overlap the Source (`:1219-1304`) | was `black_outside` (on); now the Edge Mode stage, `edgeMode` (Input). The fade, the outside shortcut and the source-region bound key off the resolved mode | M136.P4.T13 |
-| SplineWarp | `SplineWarp.cpp:1934-1941`; `cropRowToFormat` sends positions outside the format outside every image, or onto the format's edge pixels when not black (`:140-156`) | `splinewarp.slang:172` | Knob | was `black_outside` (on); now the Edge Mode stage, `edgeMode` (Input), on the Warp page; `cropToFormat` clamps onto the format's edge under Stretch. The mask/mix reference of a concatenated plane is resampled under the same mode | M136.P4.T13 |
+| SplineWarp | `SplineWarp.cpp:1934-1941`; `cropRowToFormat` sends positions outside the format outside every image, or onto the format's edge pixels when not black (`:140-156`) | `splinewarp.slang:172` | Knob | was `black_outside` (on); now the Edge Mode stage, `edgeMode` (Input), on the Warp page; `cropToFormat` clamps onto the format's edge under Stretch. The mask/mix reference of a concatenated plane is resampled under the same mode; that of a plane that is not concatenated reads past the Source by the same mode (`readSourceRow` with `settings.edgeMode`; on the GPU the wrap's source through `StagePlan::blendSourceFollowsEdgeMode`) | M136.P4.T13, M136.P4.T18 |
 | AutoStraighten | ResampleExecutor to Resampler, `AutoStraighten.cpp:543, 570` | `resample.slang` | Knob | was `black_outside` (on); now the Edge Mode stage, `edgeMode` (Input), which also sets the output bit in its own `getPreferredMetadataAt` | M136.P4.T13 |
 | Mirror | ResampleExecutor, impulse filter | `resample.slang` | Hard-wired `blackOutside = true`, `Mirror.cpp:83`. Whole-pixel flips of the RoD: no output pixel inside the RoD reads outside the source. | none | M136.P4.T4 (drops the flag, forwards the bit) |
 | Position | ResampleExecutor offset | copy | Whole-pixel shift of the RoD: no outside reads | none | none: forwards the bit |
-| NeuralUpscale | separable resample whose taps clamp into the source frame, `NeuralUpscale.cpp:137-190` | n/a | Nearest, hard-wired; reads only the source frame's own taps past its border | none | **none yet** (reported to the pm) |
+| NeuralUpscale | separable resample whose taps clamp into the source frame, `NeuralUpscale.cpp:137-190` | n/a | Nearest, hard-wired; reads only the source frame's own taps past its border | none | the Edge Mode stage, `edgeMode` (Input). The alpha filter's taps past the frame (`tapsFor`) keep their clamped pixel under Stretch and lose their weight under Black, so they read 0. The model's tiles stay inside the Source and are left alone. CPU only | M136.P4.T19 |
 
 ### 1.3 Filters
 
@@ -82,8 +82,8 @@ A node that sets no `list.boundary` gets the `PassList` default, Zero.
 | Bilateral | `fillBuffer`, Zero (`Bilateral.cpp:951`); sums run over the samples inside the buffer, clipped to the RoD (`:210, 270, 474`), so the Zero fill is never read | n/a | `bilateral.slang` | Window clamp at the RoD edge (shrinking window), fixed | none | M136.P4.T15 |
 | Defocus | `fillBuffer`, default Zero (`Defocus.cpp:782, 834`) | n/a | `defocus.slang:85` (source "0 outside the source") | Zero, fixed ("black outside the image", `Defocus.cpp:80`). The Kernel input is read over its own RoD, not at the output position: not an edge read. | was Zero; now the Edge Mode stage, `edgeMode` (Input). The pass list fills its buffer by the resolved mode; the kernel takes it as flag 4 | M136.P4.T16 |
 | IDefocus | `fillBuffer`, default Zero (`IDefocus.cpp:497`; weights count the black outside, `:341-343`) | n/a | `idefocus.slang` | Zero, fixed (`IDefocus.cpp:87`). Kernel as Defocus; Map input is in 1.4a. | was Zero; now the Edge Mode stage, `edgeMode` (Input), as Defocus (kernel flag 2). The Map input is T18 | M136.P4.T16 |
-| ZDefocus | `fillBuffer`, default Zero (`ZDefocus.cpp:564, 611`) | n/a | `zdefocus.slang` | Zero, fixed. Kernel as Defocus; Depth input is in 1.4a. | was Zero; now the Edge Mode stage, `edgeMode` (Input), as Defocus (kernel flag 64). The Depth input is T18 | M136.P4.T16 |
-| VectorBlur | the gather's `tap()` reads the source whole and bilinear, black outside its bounds (`VectorBlur.cpp:104-117`; source rows `:1017-1022`) | n/a | `vectorblur.slang:139` ("bilinear, black outside the Source") | Zero, fixed. UV and Depth inputs are in 1.4a. | was Zero; now the Edge Mode stage, `edgeMode` (Input). `Gather::corner()` and `vectorBlurCorner()` read past the Source by the resolved mode (kernel flag 16). The UV and Depth layers are T18 | M136.P4.T16 |
+| ZDefocus | `fillBuffer`, default Zero (`ZDefocus.cpp:564, 611`) | n/a | `zdefocus.slang` | Zero, fixed. Kernel as Defocus; Depth input is in 1.4a. | was Zero; now the Edge Mode stage, `edgeMode` (Input), as Defocus (kernel flag 64). The Depth channel, a layer of the Source, reads past it by the same mode (`readChannelRow` with `full.edgeMode`; `rawDepth` in `zdefocus.slang`) | M136.P4.T16, M136.P4.T18 |
+| VectorBlur | the gather's `tap()` reads the source whole and bilinear, black outside its bounds (`VectorBlur.cpp:104-117`; source rows `:1017-1022`) | n/a | `vectorblur.slang:139` ("bilinear, black outside the Source") | Zero, fixed. UV and Depth inputs are in 1.4a. | was Zero; now the Edge Mode stage, `edgeMode` (Input). `Gather::corner()` and `vectorBlurCorner()` read past the Source by the resolved mode (kernel flag 16). The UV and Depth layers of the Source read past it by the same mode (`View::component()`; `vectorBlurUV` and `vectorBlurDistance` in `vectorblur.slang`) | M136.P4.T16, M136.P4.T18 |
 | DenoiseProfiled | `fillBuffer`, Zero (`DenoiseProfiled.cpp:1022`) over the node's own RoD, so the Zero fill is never read; the algorithm's own border rules are fixed: wavelet taps clamp to the image (`DenoiseProfiledWavelets.cpp:89, 99`), the non-local-means column sums are zero past it (`DenoiseProfiledNlm.cpp:140-145`) | n/a | `denoiseprofile_*.slang` | Image-internal border rules, fixed | none | M136.P4.T17 (see 1.5) |
 | AdjustBBox | `list.boundary = Nearest` (`AdjustBBox.cpp:206`) over the source grown by the box; a choice knob picks what fills the border added around the input | n/a | `adjustbbox.slang:30-48` (the nearest kernel; Black takes the plain path) | **Knob, not fixed**: was the Boundary choice, Black (default) or Nearest | was `boundary` (Black); now the Edge Mode stage, `edgeMode` (Input). Under Black the pass list is empty and the executor reads zero; under Stretch the halo pass and the nearest GPU kernel run | M136.P4.T15 |
 
@@ -148,18 +148,29 @@ as a band on both CPU and GPU (2.4); under Black it reads as a black pixel does.
 | IDistort UV | `IDistort.cpp` `coordRow` (`readChannelRow` with the mode) | `stmap.slang` `idistort_main`, `uvAt` (`kWarpGpuUVEdgeBlack`, set in `WarpGpu.h`) | Stretch: the nearest UV pixel. Black: 0 |
 | STMap UV and UV alpha | `STMap.cpp` `UVPlane` | `stmap.slang` `stmap_main`, `uvAt`, `uvReadable` (`kWarpGpuUVEdgeBlack`) | Stretch: the nearest UV pixel, the alpha gate included. Black: `outside` |
 
-| Site | CPU | GPU | Zero rule today |
-|---|---|---|---|
-| ZDefocus Depth | `ZDefocus.cpp:2185` | `zdefocus.slang:124` | 0 outside the depth image |
-| VectorBlur UV and Depth | `VectorBlur.cpp:989, 1000` | `vectorblur.slang:79, 115` | 0 outside |
+**Depth and UV layers.** These are layers of the node's Source input, not inputs of their own,
+so they follow the Source's resolved mode (the Edge Mode knob against the Source's bit), as the
+node's source reads do.
 
-**Time reads.** Frames of the same input at other times, read at the same pixel.
-
-| Site | CPU | GPU | Zero rule today |
+| Site | CPU | GPU | Outside rule |
 |---|---|---|---|
-| FrameBlend | `FrameBlend.cpp:431` (`pixelAt` null reads 0) | `timeblend.slang` | 0 outside a frame's image; the output RoD is the union over times |
-| TimeBlur and the time-sampled effects | `TimeBlend.cpp:96`, through `TimeSampledEffect.cpp:288` | `timeblend.slang`, `TimeSampledEffect.cpp:361` | as FrameBlend |
-| SlitScan | frames `SlitScan.cpp:617`, map `:540` | `slitscan.slang:108-113` | 0 outside |
+| ZDefocus Depth | `ZDefocus.cpp` `renderOp`, `readChannelRow` with `full.edgeMode` | `zdefocus.slang` `rawDepth`, `edgePixel` (kernel flag 64) | Stretch: the nearest depth pixel. Black: 0, infinitely far |
+| VectorBlur UV and Depth | `VectorBlur.cpp` `View::component()`, mode set from the Source's | `vectorblur.slang` `vectorBlurUV`, `vectorBlurDistance`, `edgePixel` (kernel flag 16) | Stretch: the nearest pixel. Black: 0, no motion and no depth |
+
+**Time reads.** Frames of the same input at other times, read at the same pixel. Each frame
+follows the input's bit at its own time (`inputEdgeMode(inputNb, t, view)`). Natron 2's RoI is
+one rectangle per input for every time, so a time node lists the times it reads in
+`StagedImageEffect::getInputReadTimes()`, and the Stretch RoI band (2.4) is the union, over
+those times, of each Stretch frame's band and each Black frame's RoI inside its RoD, on the CPU
+(`clampStretchRegionsOfInterest`) and the GPU (`stretchGpuInputRoI`).
+
+| Site | CPU | GPU | Outside rule |
+|---|---|---|---|
+| FrameBlend | `FrameBlend.cpp` `renderOp`, `EdgeSample::pixel` per frame | `TimeBlend::recordFoldGpu`, a mode per view (`GpuWrapView::edgeMode`), `compositestep.slang` | Stretch: the frame's nearest pixel. Black: 0. The output RoD is the union over times |
+| TimeBlur and the time-sampled effects | `TimeBlend::renderCpu`, a mode per image, through `TimeSampledEffect.cpp` | `TimeBlend::recordGpu`, `timeblend.slang` | as FrameBlend. A lone frame that does not cover the output under Stretch is copied by one Max step with a factor of 1, which reads its edge |
+| AppendClip | `TimeBlend::renderCpu` with each input's mode | `TimeBlend::recordGpu` | as FrameBlend, per input; the black stand-in of a missing input reads 0 |
+| SlitScan frames | `SlitScan.cpp` `renderOp`, `EdgeSample::pixel` per frame | `slitscan.slang`, `edgePixel` (`kSourceBlack` per dispatch) | as FrameBlend |
+| SlitScan Retime Map | `SlitScan.cpp` `renderOp`, `EdgeSample::pixel` with the map's own bit | `slitscan.slang`, `edgePixel` (`kMapBlack`) | Stretch: the nearest map pixel. Black: 0 |
 
 ### 1.5 Not covered by this milestone
 
@@ -387,6 +398,6 @@ Approved by the user on 2026-11-13.
 | Defocus, IDefocus, ZDefocus, VectorBlur (source reads) | M136.P4.T16 |
 | DenoiseProfiled; ToneEqualizer and ColorEqualizer (no stage: 1.5) | M136.P4.T17 |
 | Position | none: forwards the bit |
-| ZDefocus Depth, VectorBlur UV and Depth, FrameBlend, TimeBlur, SlitScan same-position reads | **none yet** |
-| NeuralUpscale | **none yet** |
+| ZDefocus Depth, VectorBlur UV and Depth, FrameBlend, TimeBlur, SlitScan, AppendClip same-position reads; SplineWarp's unconcatenated mix reference | M136.P4.T18 |
+| NeuralUpscale | M136.P4.T19 |
 | Per-node matrix, GUI check | M136.P5.T1, M136.P5.T2 |

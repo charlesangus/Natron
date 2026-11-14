@@ -33,6 +33,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
@@ -310,6 +311,13 @@ protected:
                                               ViewIdx view,
                                               const InputMatrixMap* transforms,
                                               RoIMap* ret) OVERRIDE;
+
+    /**
+     * @brief The times a render at time and view reads input inputNb at, each read past its image
+     * by inputEdgeMode() at that time; the regions of interest of a Stretch input hold the edge
+     * band of its region at every one of them. time alone by default.
+     **/
+    virtual std::vector<double> getInputReadTimes(int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The edge mode the node reads inputNb under at time and view: for the source with the

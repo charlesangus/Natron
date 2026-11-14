@@ -177,6 +177,10 @@ public:
     virtual FramesNeededMap getFramesNeeded(double time,
                                             ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual std::vector<double> getInputReadTimes(int inputNb,
+                                                  double time,
+                                                  ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     // The union of the Source's regions over the window.
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,

@@ -41,6 +41,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/RectD.h"
@@ -427,6 +428,23 @@ SlitScan::getFramesNeeded(double time,
     return frames;
 }
 
+std::vector<double>
+SlitScan::getInputReadTimes(int inputNb,
+                            double time,
+                            ViewIdx view) const
+{
+    if (inputNb != kSlitScanInputSource) {
+        return StagedImageEffect::getInputReadTimes(inputNb, time, view);
+    }
+    const SlitScanTime::Window w = SlitScanTime::window(settingsAt(time, view), time);
+    std::vector<double> times;
+    for (int f = w.first; f <= w.last; ++f) {
+        times.push_back(f);
+    }
+
+    return times;
+}
+
 StatusEnum
 SlitScan::getRegionOfDefinition(U64 /*hash*/,
                                 double time,
@@ -529,6 +547,8 @@ SlitScan::renderOp(const RenderActionArgs& args,
                 return eStatusFailed;
             }
         }
+        const RectI mapBounds = mapImage ? mapImage->getBounds() : RectI();
+        const EdgeMode mapEdgeMode = inputEdgeMode(kSlitScanInputRetimeMap, args.time, args.view);
         std::optional<Image::ReadAccess> mapAccess;
         if (mapImage) {
             mapAccess.emplace(mapImage.get());
@@ -537,7 +557,9 @@ SlitScan::renderOp(const RenderActionArgs& args,
             for (int x = roi.x1; x < roi.x2; ++x) {
                 float v = 0.f;
                 if (useMap) {
-                    const float* p = mapAccess ? (const float*)mapAccess->pixelAt(x, y) : nullptr;
+                    int mx = 0;
+                    int my = 0;
+                    const float* p = (mapAccess && EdgeSample::pixel(x, y, mapBounds, mapEdgeMode, &mx, &my)) ? (const float*)mapAccess->pixelAt(mx, my) : nullptr;
                     v = p ? p[plan.mapChannel] : 0.f;
                 } else if (!w.constant) {
                     v = (float)((vertical ? x : y) - plan.rampOrigin) * plan.rampScale;
@@ -605,6 +627,8 @@ SlitScan::renderOp(const RenderActionArgs& args,
                 }
                 const int comps = std::min(nComps, (int)image->getComponentsCount());
                 const float f = (float)frames[i];
+                const RectI bounds = image->getBounds();
+                const EdgeMode edgeMode = inputEdgeMode(kSlitScanInputSource, frames[i], args.view);
                 Image::ReadAccess access(image.get());
                 for (int y = roi.y1; y < roi.y2; ++y) {
                     float* row = (float*)dstAccess.pixelAt(roi.x1, y);
@@ -614,7 +638,12 @@ SlitScan::renderOp(const RenderActionArgs& args,
                         if (weight == 0.f) {
                             continue;
                         }
-                        const float* p = (const float*)access.pixelAt(roi.x1 + (int)x, y);
+                        int sx = 0;
+                        int sy = 0;
+                        if (!EdgeSample::pixel(roi.x1 + (int)x, y, bounds, edgeMode, &sx, &sy)) {
+                            continue;
+                        }
+                        const float* p = (const float*)access.pixelAt(sx, sy);
                         if (!p) {
                             continue;
                         }
@@ -659,7 +688,8 @@ struct SlitScanGpuParams {
     uint32_t mapChannel;
     uint32_t function;
     uint32_t filter;
-    uint32_t firstPass;
+    // kSlitScanGpuFirstPass, kSlitScanGpuSourceBlack and kSlitScanGpuMapBlack.
+    uint32_t flags;
     float frame;
     float rampScale;
     int32_t rampOrigin;
@@ -669,6 +699,10 @@ struct SlitScanGpuParams {
     float last;
 };
 static_assert(sizeof(SlitScanGpuParams) <= gpu::GpuKernel::kMaxPushConstantBytes);
+
+const uint32_t kSlitScanGpuFirstPass = 1;
+const uint32_t kSlitScanGpuSourceBlack = 2;
+const uint32_t kSlitScanGpuMapBlack = 4;
 
 // The float index of pixel (x, y) of v, false when the view does not fit the kernel's 32-bit
 // indices.
@@ -817,6 +851,7 @@ SlitScan::renderOpGpu(const GpuRenderArgs& args)
         }
     }
 
+    const uint32_t mapFlags = (inputEdgeMode(kSlitScanInputRetimeMap, query.time, query.view) == EdgeMode::Black) ? kSlitScanGpuMapBlack : 0u;
     gpu::GpuRecordContext& ctx = args.context;
     for (int f = w.first; f <= w.last; ++f) {
         const GpuImageView* frame = args.inputAt(kSlitScanInputSource, f);
@@ -829,7 +864,8 @@ SlitScan::renderOpGpu(const GpuRenderArgs& args)
         params.srcX2 = frame->bounds.x2;
         params.srcY2 = frame->bounds.y2;
         params.srcComps = (uint32_t)frame->nComps;
-        params.firstPass = (f == w.first) ? 1u : 0u;
+        params.flags = mapFlags | ((f == w.first) ? kSlitScanGpuFirstPass : 0u)
+            | ((inputEdgeMode(kSlitScanInputSource, f, query.view) == EdgeMode::Black) ? kSlitScanGpuSourceBlack : 0u);
         params.frame = (float)f;
         // The kernel reads no map pixel when it has empty bounds, so the frame stands in for it.
         const gpu::GpuStatus status = ctx.dispatch(gpu::GpuKernelId::slitscan, { frame->buffer, args.output.buffer, mapBuffer ? mapBuffer : frame->buffer }, params,

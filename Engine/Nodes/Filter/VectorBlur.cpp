@@ -103,11 +103,12 @@ struct VectorBlurGpuParams {
 };
 static_assert(sizeof(VectorBlurGpuParams) == 24 * 4, "vectorblur.slang reads 24 words");
 
-// A float image held whole, read as zero outside its bounds.
+// A float image held whole: at() is null outside its bounds, component() reads past them by edgeMode.
 struct View {
     const float* pixels = nullptr;
     RectI bounds;
     int nComps = 0;
+    EdgeMode edgeMode = EdgeMode::Black;
 
     const float* at(int x,
                     int y) const
@@ -123,12 +124,13 @@ struct View {
                     int y,
                     int c) const
     {
-        if ((c < 0) || (c >= nComps)) {
+        int sx = 0;
+        int sy = 0;
+        if ((c < 0) || (c >= nComps) || !pixels || !EdgeSample::pixel(x, y, bounds, edgeMode, &sx, &sy)) {
             return 0.f;
         }
-        const float* p = at(x, y);
 
-        return p ? p[c] : 0.f;
+        return at(sx, sy)[c];
     }
 };
 
@@ -1046,7 +1048,9 @@ VectorBlur::renderOp(const RenderActionArgs& args,
         }
         g.src.nComps = nComps;
         g.uv = uvView;
+        g.uv.edgeMode = sourceEdgeMode;
         g.depth = depthView;
+        g.depth.edgeMode = sourceEdgeMode;
         g.nComps = nComps;
         g.uComp = layers.uComp;
         g.vComp = layers.vComp;

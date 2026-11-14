@@ -31,6 +31,8 @@
 #include <span>
 #include <vector>
 
+#include "Global/EdgeMode.h"
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/RectI.h"
@@ -42,7 +44,8 @@ NATRON_NAMESPACE_ENTER
  * mean: the result starts as the first image and the k-th folds in as
  * result = (image - result) * blend[k] + result, blend[k] being its weight over the sum of the
  * weights up to it. The CPU and the GPU (the timeblend kernel) fold in the same order with the
- * same float arithmetic, so they match exactly. Pixels outside an image read zero.
+ * same float arithmetic, so they match exactly. Pixels outside an image read past it by that
+ * image's edge mode (EdgeSample::pixel()), Stretch repeating its nearest pixel and Black reading zero.
  **/
 namespace TimeBlend {
 /**
@@ -53,16 +56,18 @@ std::vector<float> stepBlends(std::span<const double> weights);
 
 /**
  * @brief dst over roi, of dst's component count, the weighted mean of images, which must be
- * float; an image may be null, reading zero. False when dst is not float or an image is not.
+ * float, image k read past its bounds by edgeModes[k]; an image may be null, reading zero. False
+ * when dst is not float, an image is not, or edgeModes does not have one mode per image.
  **/
-bool renderCpu(const ImagePtr& dst, const RectI& roi, std::span<const ImagePtr> images, std::span<const double> weights);
+bool renderCpu(const ImagePtr& dst, const RectI& roi, std::span<const ImagePtr> images, std::span<const double> weights, std::span<const EdgeMode> edgeModes);
 
 /**
  * @brief args.output over args.outputRect, the weighted mean of views, which have the output's
  * component count, with no mask and every channel written; a view may be null, reading zero, as
- * a null image does in renderCpu(). Needs NATRON_HAVE_GPU; fails without it.
+ * a null image does in renderCpu(), view k read past its bounds by edgeModes[k]. Needs
+ * NATRON_HAVE_GPU; fails without it.
  **/
-StatusEnum recordGpu(const GpuRenderArgs& args, std::span<const GpuImageView* const> views, std::span<const double> weights);
+StatusEnum recordGpu(const GpuRenderArgs& args, std::span<const GpuImageView* const> views, std::span<const double> weights, std::span<const EdgeMode> edgeModes);
 
 // How a fold combines images. Integer values are the option indices of FrameBlend's Operation knob.
 enum Operation {
@@ -131,14 +136,15 @@ foldPixel(Operation op,
  * factor and blends[k - 1] taking in views[k], into a scratch view of the output's component
  * count, set in *result. With one view *result is that view and nothing is recorded. The steps are
  * ordered before any later work by a compute barrier. Views have the output's component count and
- * read zero outside their bounds; a null view reads zero everywhere, but a fold of one view needs
- * it. Needs NATRON_HAVE_GPU; fails without it.
+ * view k reads past its bounds by edgeModes[k]; a null view reads zero everywhere, but a fold of
+ * one view needs it. Needs NATRON_HAVE_GPU; fails without it.
  **/
 StatusEnum recordFoldGpu(const GpuRenderArgs& args,
                          std::span<const GpuImageView* const> views,
                          Operation op,
                          float factor,
                          std::span<const float> blends,
+                         std::span<const EdgeMode> edgeModes,
                          GpuImageView* result);
 } // namespace TimeBlend
 

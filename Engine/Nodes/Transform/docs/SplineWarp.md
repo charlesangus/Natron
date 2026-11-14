@@ -91,7 +91,8 @@ curves. Field Resolution is the spacing of the grid the warp is evaluated on; pi
 are interpolated. These, the filter and the motion blur settings are on the Render page. Filter and Clamp set how the Source is resampled, and Edge Mode (`edgeMode`, on the Warp page) what it reads past its edge, and past its format when Crop To Format is on: its own mode under Input, its edge pixels under Stretch, 0 under Black. BBox keeps the
 Source's region of definition or grows it by where the warp moves the Source's edges and by the
 destination curves. A transform above the Source is folded into the same resample. The host mask
-and mix apply as for every staged node.
+and mix apply as for every staged node; where the output reaches past the Source, the Source they
+blend with reads past it by Edge Mode too.
 
 **Viewing:** the viewer's top bar holds two settings that are never saved. Show picks the source
 curves, the destination curves, or both, joined by dashed lines between the paired points; hidden

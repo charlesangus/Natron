@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -61,7 +62,8 @@ protected:
     // on the GPU when onGpu, on the CPU otherwise. False when the device is missing.
     bool expectParity(const std::vector<NodePtr>& graph,
                       double time,
-                      bool onGpu)
+                      bool onGpu,
+                      std::vector<float>* cpuFrame = nullptr)
     {
         const NodePtr& node = graph.back();
         const EndToEndResult result = renderEndToEnd(graph, node, NativeTimeNodes::kWindow, time);
@@ -80,6 +82,9 @@ protected:
         } else {
             EXPECT_FALSE(ranOnGpu) << "the node rendered on the GPU";
         }
+        if (cpuFrame) {
+            *cpuFrame = result.cpu;
+        }
         EXPECT_EQ(result.cpu.size(), result.gpu.size());
         if (result.cpu.size() == result.gpu.size()) {
             const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::make(1e-5, 0.));
@@ -87,6 +92,29 @@ protected:
         }
 
         return true;
+    }
+
+    // Renders the graph build makes under Black, then Stretch: each matches the CPU on the GPU,
+    // and the two frames differ, so the edge mode of the frames read is exercised.
+    void expectBothEdgeModes(const std::function<std::vector<NodePtr>(const char* edgeMode)>& build,
+                             double time)
+    {
+        std::vector<float> frames[2];
+        const char* modes[2] = { "black", "stretch" };
+        for (int m = 0; m < 2; ++m) {
+            SCOPED_TRACE(modes[m]);
+            const std::vector<NodePtr> graph = build(modes[m]);
+            ASSERT_FALSE(graph.empty());
+            if (!expectParity(graph, time, true, &frames[m])) {
+                return;
+            }
+        }
+        ASSERT_EQ(frames[0].size(), frames[1].size());
+        std::size_t nDiffer = 0;
+        for (std::size_t i = 0; i < frames[0].size(); ++i) {
+            nDiffer += (frames[0][i] != frames[1][i]) ? 1 : 0;
+        }
+        EXPECT_GT(nDiffer, 0u) << "Black and Stretch rendered the same frame";
     }
 };
 
@@ -171,4 +199,33 @@ TEST_F(NativeFrameBlendGpuTest, TimeBlurWholeFramesMatchTheCpu)
     setKnob<KnobInt>(blur, kTimeBlurParamDivisions, 3);
     setKnob<KnobDouble>(blur, kTimeBlurParamShutter, 3.);
     expectParity(std::vector<NodePtr>({ source, blur }), 10., true);
+}
+
+// Frames whose regions differ, each read past its own region by its edge mode, CPU and GPU alike.
+TEST_F(NativeFrameBlendGpuTest, FramesOfDifferentRegionsFollowTheirEdgeMode)
+{
+    expectBothEdgeModes([this](const char* edgeMode) -> std::vector<NodePtr> {
+        NodePtr source = createKeyedSource();
+        NodePtr crop = source ? createChangingCrop(source, 1, 40, edgeMode) : NodePtr();
+        NodePtr blend = crop ? createOver(PLUGINID_NATRON_FRAMEBLEND, PLUGIN_MAJOR_NATRON_FRAMEBLEND, crop) : NodePtr();
+        if (!blend) {
+            return std::vector<NodePtr>();
+        }
+        setKnob<KnobInt>(blend, kFrameBlendParamStartFrame, -3);
+        setKnob<KnobInt>(blend, kFrameBlendParamEndFrame, 0);
+        return std::vector<NodePtr>({ source, crop, blend }); }, 10.);
+}
+
+TEST_F(NativeFrameBlendGpuTest, TimeBlurFramesOfDifferentRegionsFollowTheirEdgeMode)
+{
+    expectBothEdgeModes([this](const char* edgeMode) -> std::vector<NodePtr> {
+        NodePtr source = createKeyedSource();
+        NodePtr crop = source ? createChangingCrop(source, 1, 40, edgeMode) : NodePtr();
+        NodePtr blur = crop ? createOver(PLUGINID_NATRON_TIMEBLUR, PLUGIN_MAJOR_NATRON_TIMEBLUR, crop) : NodePtr();
+        if (!blur) {
+            return std::vector<NodePtr>();
+        }
+        setKnob<KnobInt>(blur, kTimeBlurParamDivisions, 3);
+        setKnob<KnobDouble>(blur, kTimeBlurParamShutter, 3.);
+        return std::vector<NodePtr>({ source, crop, blur }); }, 10.);
 }

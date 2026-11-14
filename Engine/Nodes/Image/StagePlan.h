@@ -146,6 +146,9 @@ struct StagePlan {
     bool compositeResultIsAlpha = false;
     ImageLayerDesc plane;
     EdgeMode edgeMode = EdgeMode::Stretch;
+    // Whether an op that is not a Composite reads the source it blends under the mask and mix
+    // past the image by edgeMode, for an op whose output reaches past its source; zero otherwise.
+    bool blendSourceFollowsEdgeMode = false;
 };
 
 /**
@@ -251,6 +254,21 @@ void clampStretchRegionsOfInterest(const EffectInstance& effect,
                                    RoIMap* rois);
 
 /**
+ * @brief clampStretchRegionsOfInterest() for inputs read at several times: input inputNb is read
+ * at every time inputTimes(inputNb) lists, under inputEdgeMode(inputNb, time). Where any read of
+ * a fetched effect is Stretch, its region becomes the bounding box of what each read needs: the
+ * band of stretchRegionOfInterest() against the region of definition at that time for a Stretch
+ * read, the region clipped to it for a Black one. Effects read only under Black are left alone.
+ **/
+void clampStretchRegionsOfInterest(const EffectInstance& effect,
+                                   const RenderScale& scale,
+                                   ViewIdx view,
+                                   const InputMatrixMap* transforms,
+                                   const std::function<std::vector<double>(int inputNb)>& inputTimes,
+                                   const std::function<EdgeMode(int inputNb, double time)>& inputEdgeMode,
+                                   RoIMap* rois);
+
+/**
  * @brief rect, in pixels at scale, when mode is Stretch and rect misses the region of definition
  * of input inputNb of effect, replaced by the one-pixel band of that region nearest to it
  * (stretchRegionOfInterest() in pixels), so a GPU read past the edge has the edge to repeat.
@@ -260,6 +278,19 @@ RectI stretchGpuInputRoI(const EffectInstance& effect,
                          EdgeMode mode,
                          int inputNb,
                          double time,
+                         ViewIdx view,
+                         const RectI& rect,
+                         const RenderScale& scale) WARN_UNUSED_RETURN;
+
+/**
+ * @brief stretchGpuInputRoI() for an input read at every time of times, under modeAt(time): rect
+ * when no read is Stretch, else the bounding box of the band each Stretch read needs and of rect
+ * clipped to the input's region at the time of each Black read.
+ **/
+RectI stretchGpuInputRoI(const EffectInstance& effect,
+                         int inputNb,
+                         const std::vector<double>& times,
+                         const std::function<EdgeMode(double time)>& modeAt,
                          ViewIdx view,
                          const RectI& rect,
                          const RenderScale& scale) WARN_UNUSED_RETURN;

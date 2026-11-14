@@ -124,16 +124,18 @@ float inverseOf(float distance)
     return isinf(distance) ? 0.0 : 1.0 / distance;
 }
 
-// The raw depth at pixel (x, y), 0 outside the depth image, as readChannelRow() fills it.
+// The raw depth at pixel (x, y), read past the depth image by the source's edge mode, as
+// readChannelRow() reads it.
 float rawDepth(int x, int y)
 {
     if ((params.flags & kHasDepth) == 0u)
         return 0.0;
     const int x1 = int(metaBuf[kMetaDepthX1]);
     const int y1 = int(metaBuf[kMetaDepthY1]);
-    if (x < x1 || y < y1 || x >= int(metaBuf[kMetaDepthX2]) || y >= int(metaBuf[kMetaDepthY2]))
+    int2 at;
+    if (!edgePixel(int2(x, y), int4(x1, y1, int(metaBuf[kMetaDepthX2]), int(metaBuf[kMetaDepthY2])), edgeModeFromFlags(params.flags, kEdgeBlackFlag), at))
         return 0.0;
-    return asfloat(depthBuf[params.depthOffset + uint(y - y1) * params.depthStride + uint(x - x1) * params.depthComps + params.depthComponent]);
+    return asfloat(depthBuf[params.depthOffset + uint(at.y - y1) * params.depthStride + uint(at.x - x1) * params.depthComps + params.depthComponent]);
 }
 
 // DepthOfField::coc(): the signed circle of confusion, in canonical pixels, of a raw depth.

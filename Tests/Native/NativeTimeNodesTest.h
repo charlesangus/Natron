@@ -38,6 +38,7 @@
 #include <QString>
 
 #include "Tests/BaseTest.h"
+#include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
 
 #include "Engine/EffectInstance.h"
@@ -46,8 +47,10 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -114,6 +117,33 @@ protected:
         }
 
         return node;
+    }
+
+    // A Crop of input to a box inside kWindow whose size changes with each whole frame of
+    // [first, last], so the frames a time node reads cover different regions, each read past by
+    // edgeMode.
+    NodePtr createChangingCrop(const NodePtr& input,
+                               int first,
+                               int last,
+                               const char* edgeMode)
+    {
+        NodePtr crop = createOver(PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP, input);
+        if (!crop) {
+            return NodePtr();
+        }
+        const bool ok = setKnobValue(crop, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize) && setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 1., 2. }) && setKnobValues(crop, kCropParamReformat, { 0. }) && setKnobValue(crop, kEdgeModeParam, std::string(edgeMode));
+        EXPECT_TRUE(ok) << edgeMode;
+        KnobDoubleBase* size = dynamic_cast<KnobDoubleBase*>(crop->getKnobByName(kNativeGeneratorParamSize).get());
+        EXPECT_TRUE(size != NULL);
+        if (!ok || !size) {
+            return NodePtr();
+        }
+        for (int frame = first; frame <= last; ++frame) {
+            size->setValueAtTime(frame, 2. + (frame % 4), ViewSpec::all(), 0);
+            size->setValueAtTime(frame, 2. + (frame % 3), ViewSpec::all(), 1);
+        }
+
+        return crop;
     }
 
     template <typename K, typename V>

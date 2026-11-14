@@ -2046,7 +2046,8 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                 Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, &referenceRow[0], nComps);
             } else {
-                PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);
+                PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps,
+                                        settings.edgeMode, &referenceRow[0]);
             }
             if (doMask) {
                 PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, maskSource.edgeMode, &maskRow[0]);
@@ -2196,7 +2197,9 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     // The Source cropped to its region of definition, as the CPU fetches it, is blended under the
     // mask and mix; the image sampled is that Source inside the format when cropping, or, for the
     // outputMask plane, the cookie mask.
-    const StagePlan plan = resolveGpuPlan(query);
+    StagePlan plan = resolveGpuPlan(query);
+    // The output reaches past the Source, where the blend reads it as the CPU does.
+    plan.blendSourceFollowsEdgeMode = true;
     GpuRenderArgs cropped = args;
     const int sourceInput = plan.sourceInput;
     GpuImageView sampleView;

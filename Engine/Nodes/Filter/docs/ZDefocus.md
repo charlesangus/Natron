@@ -32,7 +32,9 @@ Defocus's (see `Defocus.md`); the kernel library is `BokehKernel`.
    to front, the farthest first, each normalised by its coverage, so a sharp foreground does not
    bleed into a blurred background, and a blurred foreground still spreads over the background
    behind it. Beyond its image the
-   source reads as Edge Mode says: black, or its edge pixels extended outwards.
+   source reads as Edge Mode says: black, or its edge pixels extended outwards. The depth
+   channel is a layer of the source, so it reads past the image the same way: 0 (infinitely far)
+   under Black, its edge values under Stretch.
 
 `output` Focal Plane shows the source with its colour half red in front of the focus, green in it
 and blue behind it, at full size whatever the render scale, whose in-focus limit is a diameter of

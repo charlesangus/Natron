@@ -131,6 +131,10 @@ public:
     virtual FramesNeededMap getFramesNeeded(double time,
                                             ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual std::vector<double> getInputReadTimes(int inputNb,
+                                                  double time,
+                                                  ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     /**
      * @brief The union of the Source's regions at the frames read, and at the current frame when
      * the stages blend against it.

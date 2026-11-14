@@ -467,7 +467,7 @@ future core work has solid ground to build on.
 | M341 | Per-Placement Geometry Projection | done | M234 | bosley-native-nodes | E9 | F9 | | [M341-per-placement-geometry-projection.md](PLAN/MILESTONES/M341-per-placement-geometry-projection.md) |
 | M342 | Sticky Projections On Deforming Geometry | done | M234 | bosley-native-nodes | E9 | F9 | | [M342-sticky-projections-deforming-geometry.md](PLAN/MILESTONES/M342-sticky-projections-deforming-geometry.md) |
 | M343 | Live Textures In Delegates | done | M233, M251, M252, M254 | | E9 | F9 | | [M343-live-textures-in-delegates.md](PLAN/MILESTONES/M343-live-textures-in-delegates.md) |
-| M344 | Camera Projection In Delegates | doing | M234, M325, M343 | bosley-native-nodes | E9 | F9 | | [M344-camera-projection-in-delegates.md](PLAN/MILESTONES/M344-camera-projection-in-delegates.md) |
+| M344 | Camera Projection In Delegates | done | M234, M325, M343 | bosley-native-nodes | E9 | F9 | | [M344-camera-projection-in-delegates.md](PLAN/MILESTONES/M344-camera-projection-in-delegates.md) |
 | M345 | VDB Rendering Fixes | todo | M251, M252, M325 |  | E9 | F1 | | [M345-vdb-rendering-fixes.md](PLAN/MILESTONES/M345-vdb-rendering-fixes.md) |
 | M346 | USDVolume Node | todo | M227, M345 |  | E9 | F1 | | [M346-usdvolume-node.md](PLAN/MILESTONES/M346-usdvolume-node.md) |
 | M347 | Volume Material Node | todo | M236, M345, M346 |  | E9 | F1 | | [M347-volume-material-node.md](PLAN/MILESTONES/M347-volume-material-node.md) |
@@ -536,7 +536,7 @@ future core work has solid ground to build on.
 | F6 | Unified Tiered Cache | open |  |  | feature/f6-unified-tiered-cache | Reuse unchanged upstream work across RAM, disk and VRAM so a downstream edit reaches the viewer within budget, and show truthfully what is rendering. |
 | F7 | Natron Utility Core | open |  |  | feature/f7-natron-utility-core | A usable Nucleon Utility renderer on CPU and GPU, with materials, lights, sampling, reflection, subdivision and projection modes. Ships only after F9 - Delegate Projection lands, for M364 - Delegate Cancel Responsiveness. |
 | F8 | Motion Vectors | open |  |  | feature/f8-motion-vectors | Generate dense motion vectors classically, on the GPU and with a neural model, and move Roto and SplineWarp curves along them. |
-| F9 | Delegate Projection | open |  |  | feature/f9-delegate-projection | Live textures and camera projection in Cycles and MoonRay, with per-placement and deforming-geometry projection. |
+| F9 | Delegate Projection | shipping | bosley-native-nodes |  | feature/f9-delegate-projection | Live textures and camera projection in Cycles and MoonRay, with per-placement and deforming-geometry projection. |
 | F10 | Viewer Polish | landed | bosley-native-nodes |  | feature/f10-viewer-polish | Ship a batch of small viewer and properties-panel fixes on one build and one UAT. |
 | F11 | Texture Painting | open |  |  | feature/f11-texture-painting | Paint directly on meshes in the 3D view with UDIM textures, layering over existing materials, baking and paint-through inputs. |
 | F12 | Expression Speed | open |  |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |

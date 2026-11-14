@@ -955,9 +955,47 @@ namespace {
 
     void startMatchSearch(Gui* gui, const NodePtr& node, const std::string& expression, const QString& label);
 
+    bool
+    isPolicySettled(SceneViewport* viewport)
+    {
+        return !viewport->isDrawPolicyPending() && !viewport->getRenderer().hasOutstandingStageLoads();
+    }
+
+    /**
+     * Runs run once the viewer has no load outstanding and no graph policy match pending, unless a
+     * newer search starts first. The search copies the viewer's load rules, and a policy still to
+     * match or a Full + Load rule matching again after each batch may yet add loads to them.
+     **/
+    void
+    whenPolicySettled(SceneViewport* viewport,
+                      int generation,
+                      const std::function<void()>& run)
+    {
+        if (isPolicySettled(viewport)) {
+            run();
+
+            return;
+        }
+        QObject* waiter = new QObject(viewport);
+        QObject::connect(viewport, &SceneViewport::drawPolicySettled, waiter, [viewport, generation, run, waiter]() {
+            if (generation != g_matchSearchGeneration) {
+                waiter->deleteLater();
+
+                return;
+            }
+            if (!isPolicySettled(viewport)) {
+                return;
+            }
+            // run may lead the viewer to emit again before the deferred delete.
+            QObject::disconnect(viewport, nullptr, waiter, nullptr);
+            waiter->deleteLater();
+            run();
+        });
+    }
+
     // Loads paths in the viewer as the Scene Graph panel's Load does, and searches again once the
-    // viewer has taken the batch in: sceneSynced and stageLoadsChanged both say the stage changed.
-    // A payload that fails to load ends it with a report.
+    // viewer has taken the batches in, the graph policy's own among them. A payload that fails to
+    // load ends it with a report.
     void
     loadAndSearch(Gui* gui,
                   const NodePtr& node,
@@ -972,21 +1010,10 @@ namespace {
             return;
         }
         const int generation = ++g_matchSearchGeneration;
-        QObject* waiter = new QObject(gui);
-        const std::function<void()> check = [gui, node, paths, expression, label, generation, viewport, waiter]() {
-            if ((generation != g_matchSearchGeneration) || !viewport) {
-                waiter->deleteLater();
-
-                return;
-            }
-            SceneViewportRenderer& renderer = viewport->getRenderer();
-            // Pending alone goes false as soon as the load thread takes the batch, before its
-            // load rules are published, so a search then would still see the payloads unloaded.
-            if (renderer.hasOutstandingStageLoads()) {
-                return;
-            }
-            waiter->deleteLater();
-            for (const std::pair<std::string, std::string>& failure : renderer.getStageLoadFailures()) {
+        viewport->requestLoad(paths, true);
+        showHint(gui, tr("Select Matches: loading %1 unloaded branches.").arg(paths.size()));
+        whenPolicySettled(viewport.data(), generation, [gui, node, paths, expression, label, viewport]() {
+            for (const std::pair<std::string, std::string>& failure : viewport->getRenderer().getStageLoadFailures()) {
                 if (underPath(failure.first, paths)) {
                     showHint(gui, tr("Select Matches: %1 did not load: %2").arg(QString::fromStdString(failure.first), QString::fromStdString(failure.second)));
 
@@ -994,14 +1021,7 @@ namespace {
                 }
             }
             startMatchSearch(gui, node, expression, label);
-        };
-        QObject::connect(viewport.data(), &SceneViewport::sceneSynced, waiter, check);
-        QObject::connect(viewport.data(), &SceneViewport::stageLoadsChanged, waiter, check);
-        viewport->requestLoad(paths, true);
-        showHint(gui, tr("Select Matches: loading %1 unloaded branches.").arg(paths.size()));
-        if (!viewport->getRenderer().hasOutstandingStageLoads()) {
-            check();
-        }
+        });
     }
 
     void
@@ -1185,33 +1205,25 @@ namespace {
         timer->start();
     }
 
+    // Opens the node's input with the load rules the search's viewer has now, and walks it.
     void
-    startMatchSearch(Gui* gui,
-                     const NodePtr& node,
-                     const std::string& expression,
-                     const QString& label)
+    readMatchSearch(Gui* gui,
+                    const NodePtr& node,
+                    const std::shared_ptr<MatchSearch>& search,
+                    const std::string& expression,
+                    const QString& label,
+                    int generation)
     {
-        dropLoadOffer();
-        const NodePtr input = node ? node->getInput(0) : NodePtr();
+        const NodePtr input = node->getInput(0);
         if (!input) {
             showHint(gui, tr("Select Matches: the node has no scene on its input."));
 
             return;
         }
-        std::shared_ptr<MatchSearch> search(new MatchSearch);
-        QString parseError;
-        if (!search->walk.setExpression(QString::fromStdString(expression), &parseError)) {
-            showHint(gui, tr("Select Matches: %1").arg(parseError));
-
-            return;
-        }
-        search->viewport = loadRulesViewport(gui, node);
-        search->offerLoad = !search->viewport.isNull();
         SceneLoadRules rules;
         if (search->viewport) {
             search->viewport->getRenderer().getStageLoadRules(&rules);
         }
-        const int generation = ++g_matchSearchGeneration;
         const std::weak_ptr<MatchSearch> weak(search);
         QPointer<Gui> guard(gui);
         search->source = std::make_shared<SceneNodeStageSource>(input, gui, [guard, node, weak, rules, expression, label, generation](bool ok, const QString& error) {
@@ -1241,6 +1253,42 @@ namespace {
         const GuiAppInstancePtr app = gui->getApp();
         search->source->request(app ? app->getTimeLine()->currentFrame() : 0.);
         showHint(gui, tr("Select Matches: reading the scene of %1...").arg(QString::fromStdString(input->getLabel())));
+    }
+
+    void
+    startMatchSearch(Gui* gui,
+                     const NodePtr& node,
+                     const std::string& expression,
+                     const QString& label)
+    {
+        dropLoadOffer();
+        const NodePtr input = node ? node->getInput(0) : NodePtr();
+        if (!input) {
+            showHint(gui, tr("Select Matches: the node has no scene on its input."));
+
+            return;
+        }
+        std::shared_ptr<MatchSearch> search(new MatchSearch);
+        QString parseError;
+        if (!search->walk.setExpression(QString::fromStdString(expression), &parseError)) {
+            showHint(gui, tr("Select Matches: %1").arg(parseError));
+
+            return;
+        }
+        search->viewport = loadRulesViewport(gui, node);
+        search->offerLoad = !search->viewport.isNull();
+        const int generation = ++g_matchSearchGeneration;
+        if (search->viewport) {
+            if (!isPolicySettled(search->viewport.data())) {
+                showHint(gui, tr("Select Matches: waiting for the viewer's loads..."));
+            }
+            whenPolicySettled(search->viewport.data(), generation, [gui, node, search, expression, label, generation]() {
+                readMatchSearch(gui, node, search, expression, label, generation);
+            });
+
+            return;
+        }
+        readMatchSearch(gui, node, search, expression, label, generation);
     }
 } // anonymous namespace
 

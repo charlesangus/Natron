@@ -21,6 +21,10 @@ Checks:
   - on a payload scene with nothing loaded, Select Matches selects only the loaded matches and reports the
     unloaded branches not searched while no payload loads; its "Load and select" button loads the payloads and
     selects the matches inside them.
+  - behind a USDExpandHierarchy whose Full + Load rule on //Trigger loads each Trigger's own payload once a load
+    shows the Trigger: Select Matches started right after a load leaves the Trigger's payload to that follow-up
+    batch waits for it and selects the Geo inside it; Load and select, whose load the rule follows with another
+    batch, selects the matches of both and leaves nothing to offer.
 
 Shot: scene-knob-tools-matches.png (after Select Matches).
 
@@ -67,9 +71,40 @@ def write_city(directory):
     return path
 
 
+C0 = "/World/Block0/C0"
+C1 = "/World/Block1/C1"
+STATE_LOADALL = 3
+
+
+def write_trigger_city(directory):
+    """Writes a stage with payload prims C0 and C1, each holding a Trigger with a payload of its own."""
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, "trigger.usda"), "w") as f:
+        f.write('#usda 1.0\n(\n    defaultPrim = "Inner"\n)\n'
+                'def Xform "Inner"\n{\n    def Cube "Geo"\n    {\n        double size = 0.25\n    }\n}\n')
+    with open(os.path.join(directory, "building.usda"), "w") as f:
+        f.write('#usda 1.0\n(\n    defaultPrim = "Building"\n)\n'
+                'def Xform "Building"\n{\n'
+                '    def Xform "Floor"\n    {\n'
+                '        def Cube "Geo"\n        {\n            double size = 1\n        }\n'
+                '    }\n'
+                '    def Xform "Trigger" (\n        prepend payload = @./trigger.usda@\n    )\n    {\n    }\n'
+                '}\n')
+    path = os.path.join(directory, "trigger_city.usda")
+    with open(path, "w") as f:
+        f.write('#usda 1.0\n(\n    defaultPrim = "World"\n    upAxis = "Y"\n)\ndef Xform "World"\n{\n'
+                '    def Xform "Block0"\n    {\n'
+                '        def Xform "C0" (\n            prepend payload = @./building.usda@\n        )\n        {\n        }\n'
+                '    }\n'
+                '    def Xform "Block1"\n    {\n'
+                '        def Xform "C1" (\n            prepend payload = @./building.usda@\n        )\n        {\n        }\n'
+                '    }\n}\n')
+    return path
+
+
 try:
     import NatronEngine
-    from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
+    from PySide6.QtCore import Q_ARG, QItemSelectionModel, QMetaObject, QModelIndex, Qt
     from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMenu, QPushButton, QTreeView
 
     from guitest import (FIXTURES, OUT, any_panel_open, check, class_name, close_all_panels, finish, menu_of,
@@ -348,6 +383,49 @@ try:
               "(got %r)" % (viewer_selection(),))
         check(offer_widget("knobPrimSelectMatchesLoad", QPushButton) is None,
               "the search of the input uses the viewer's loads, so nothing is left to offer")
+
+        # A Full + Load rule on //Trigger matches again after each load and loads the payload of each Trigger
+        # a load shows, in a batch of its own after the one that showed it.
+        trigger_city = write_trigger_city(os.path.join(OUT, "scene_knob_tools_trigger_city"))
+        usd3 = app.createNode("USDRead")
+        require(usd3 is not None, "create the third USDRead", plugin_problem("USDRead"))
+        usd3.getParam("filename").setValue(trigger_city)
+        usd3.setPosition(900, 0)
+        expand = app.createNode("USDExpandHierarchy")
+        require(expand is not None, "create USDExpandHierarchy", plugin_problem("USDExpandHierarchy"))
+        expand.setPosition(900, 50)
+        require(expand.connectInput(0, usd3), "connect the USDExpandHierarchy to the trigger scene")
+        expand.getParam("pattern0").setValue("//Trigger")
+        expand.getParam("draw0").setValue(STATE_LOADALL)
+        pattern.setValue(CAM)
+        prune.disconnectInput(0)
+        require(prune.connectInput(0, expand), "connect the USDPrune to the USDExpandHierarchy")
+        ok = yield ("until", lambda: panel_tree() is not None and find_path(panel_tree(), C1).isValid()
+                    and find_path(panel_tree(), C0).isValid(), POLL_TIMEOUT_S)
+        require(ok, "the Scene Graph panel lists the trigger scene")
+        check(int(find_path(panel_tree(), C1).data(Qt.UserRole + 3)) == STATE_UNLOADED,
+              "the viewer lists C1 with its payload unloaded")
+        c1_geos = sorted([C1 + "/Building/Floor/Geo", C1 + "/Building/Trigger/Inner/Geo"])
+        pattern.setValue("/World/Block1//Geo")
+        # C1's own payload only: its Trigger's payload is left to the rule's batch after this one.
+        QMetaObject.invokeMethod(view(), "requestLoad", Q_ARG("QStringList", [C1]), Q_ARG(bool, False))
+        trigger(menu, "knobPrimSelectMatches")
+        ok = yield ("until", lambda: viewer_selection() == c1_geos, POLL_TIMEOUT_S)
+        check(ok, "Select Matches started during a load waits for the rule's follow-up batch and selects the Geo "
+                  "inside the Trigger's payload (got %r)" % (viewer_selection(),))
+
+        c0_geos = sorted([C0 + "/Building/Floor/Geo", C0 + "/Building/Trigger/Inner/Geo"])
+        pattern.setValue("/World/Block0//Geo")
+        trigger(menu, "knobPrimSelectMatches")
+        ok = yield ("until", lambda: offer_widget("knobPrimSelectMatchesLoad", QPushButton) is not None, POLL_TIMEOUT_S)
+        require(ok, "Select Matches offers to load C0")
+        offer_widget("knobPrimSelectMatchesLoad", QPushButton).click()
+        ok = yield ("until", lambda: viewer_selection() == c0_geos, POLL_TIMEOUT_S)
+        check(ok, "Load and select, followed by the rule's batch, selects the matches of both (got %r)"
+              % (viewer_selection(),))
+        yield ("sleep", SETTLE_MS)
+        check(offer_widget("knobPrimSelectMatchesLoad", QPushButton) is None,
+              "Load and select reports nothing left to load once the rule's batches are in")
         pattern.setValue(CAM)
         prune.disconnectInput(0)
         require(prune.connectInput(0, usd), "connect the USDPrune back to the first scene")

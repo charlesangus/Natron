@@ -669,7 +669,7 @@ EdgeBlur::recordGpu(const PassGpuIO& io,
     }
     blurIO.inputs[kIBlurInputMap] = edgeView;
 
-    return IBlur::recordPassesGpu(blurIO, blurParams(params), getPassContext(time, view, scale), true, hasEdge ? edgeComp : -1);
+    return IBlur::recordPassesGpu(blurIO, blurParams(params), getPassContext(time, view, scale), true, hasEdge ? edgeComp : -1, EdgeMode::Black);
 #else
     Q_UNUSED(io);
     Q_UNUSED(time);

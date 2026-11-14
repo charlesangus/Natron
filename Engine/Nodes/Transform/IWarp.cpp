@@ -72,6 +72,7 @@ const uint32_t kIWarpGpuMapConnected = 16;
 const uint32_t kIWarpGpuMapRead = 32;
 const uint32_t kIWarpGpuMapInvert = 64;
 const uint32_t kIWarpGpuMapSmooth = 128;
+const uint32_t kIWarpGpuMapEdgeBlack = 256;
 
 bool
 rectIsEmpty(const RectD& r)
@@ -1160,6 +1161,9 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
     int32_t mapComponent = -1;
     if (getInput(kIWarpInputMap)) {
         flags |= kIWarpGpuMapConnected;
+        if (stageInputEdgeMode(*this, kIWarpInputMap, args.query.time, args.query.view) == EdgeMode::Black) {
+            flags |= kIWarpGpuMapEdgeBlack;
+        }
         if (mapView.buffer && (mapChannel >= 0) && (mapChannel < mapLayer.getNumComponents())) {
             const int component = stageGpuMaskViewComponent(mapLayer, mapChannel, mapView.nComps);
             if ((component >= 0) && (component < mapView.nComps)) {

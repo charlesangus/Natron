@@ -1,3 +1,4 @@
+import edgesample;
 import mapremap;
 
 // IDefocus's gather, after the workers of Engine/Nodes/Filter/IDefocus.cpp. The work buffer covers
@@ -57,6 +58,7 @@ static const uint kMapConnected = 1;
 static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
 static const uint kMapSmooth = 8;
+static const uint kMapEdgeBlack = 16;
 
 static const uint kMapFlags = 0;
 static const uint kMapChannel = 1;
@@ -91,10 +93,11 @@ uint mapLevel(int x, int y)
     if ((flags & kMapConnected) == 0u)
         return count;
     float raw = 0.0;
-    if ((flags & kMapRead) != 0u && x >= int(tableBuf[kMapX1]) && x < int(tableBuf[kMapX2]) && y >= int(tableBuf[kMapY1])
-        && y < int(tableBuf[kMapY2])) {
-        const uint at = tableBuf[kMapOffset] + uint(y - int(tableBuf[kMapY1])) * tableBuf[kMapStride]
-            + uint(x - int(tableBuf[kMapX1])) * tableBuf[kMapChannels] + tableBuf[kMapChannel];
+    const int4 bounds = int4(int(tableBuf[kMapX1]), int(tableBuf[kMapY1]), int(tableBuf[kMapX2]), int(tableBuf[kMapY2]));
+    int2 p;
+    if ((flags & kMapRead) != 0u && edgePixel(int2(x, y), bounds, edgeModeFromFlags(flags, kMapEdgeBlack), p)) {
+        const uint at = tableBuf[kMapOffset] + uint(p.y - bounds.y) * tableBuf[kMapStride] + uint(p.x - bounds.x) * tableBuf[kMapChannels]
+            + tableBuf[kMapChannel];
         raw = asfloat(mapBuf[at]);
     }
     const float m = mapRemap(raw, (flags & kMapInvert) != 0u, (flags & kMapSmooth) != 0u, asfloat(tableBuf[kExponent]));

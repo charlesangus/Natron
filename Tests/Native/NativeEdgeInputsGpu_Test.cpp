@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -39,18 +40,29 @@
 #include "Tests/NativeParity.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/Bezier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/Defocus.h"
+#include "Engine/Nodes/Filter/IBlur.h"
+#include "Engine/Nodes/Filter/IDefocus.h"
+#include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/KeyMix.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Transform/AutoStraighten.h"
 #include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/IDistort.h"
+#include "Engine/Nodes/Transform/LensCorrect.h"
+#include "Engine/Nodes/Transform/STMap.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 
@@ -59,6 +71,44 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const double kTime = 1.;
+
+#ifdef NATRON_HAVE_GPU
+// A closed Bezier through points, keyed at kTime.
+BezierPtr
+makeCurve(const SplineWarpContextPtr& ctx,
+          const std::vector<std::pair<double, double>>& points)
+{
+    BezierPtr bezier = ctx->makeBezier(points[0].first, points[0].second, kRotoBezierBaseName, kTime, false);
+    if (!bezier) {
+        return bezier;
+    }
+    for (std::size_t i = 1; i < points.size(); ++i) {
+        bezier->addControlPoint(points[i].first, points[i].second, kTime);
+    }
+    bezier->setCurveFinished(true);
+
+    return bezier;
+}
+
+// A quadrilateral over the small box of makeSmall(), moved by (dx, dy) and scaled by s about its
+// centre, so a link between two of them bends the box and pulls taps from outside it.
+BezierPtr
+makeQuad(const SplineWarpContextPtr& ctx,
+         double dx,
+         double dy,
+         double s)
+{
+    const double base[4][2] = { { 18., 12. }, { 38., 12. }, { 40., 28. }, { 17., 27. } };
+    const double cx = 28.;
+    const double cy = 20.;
+    std::vector<std::pair<double, double>> points;
+    for (int i = 0; i < 4; ++i) {
+        points.push_back(std::make_pair(cx + s * (base[i][0] - cx) + dx, cy + s * (base[i][1] - cy) + dy));
+    }
+
+    return makeCurve(ctx, points);
+}
+#endif
 
 } // namespace
 
@@ -130,6 +180,63 @@ protected:
         maskChannel->set("rgba.A");
 
         return setKnobValues(node, "enableMask_Mask", { 1. });
+    }
+
+    // A filter of a full-frame source whose Map input is the small box, its outside under edgeMode.
+    NodePtr makeMapped(const char* pluginId,
+                       int major,
+                       int sourceInput,
+                       int mapInput,
+                       const char* edgeMode)
+    {
+        NodePtr source = makeSource(3, 5);
+        NodePtr map = makeSmall(edgeMode);
+        NodePtr node = createNode(QString::fromUtf8(pluginId), major);
+        if (!source || !map || !node) {
+            ADD_FAILURE() << pluginId << " graph";
+            return NodePtr();
+        }
+        connectNodes(source, node, sourceInput, true);
+        connectNodes(map, node, mapInput, true);
+
+        return node;
+    }
+
+    // A warp whose UV input is the small box, its outside under edgeMode, over a full-frame source.
+    NodePtr makeUVWarp(const char* pluginId,
+                       int major,
+                       int sourceInput,
+                       int uvInput,
+                       const char* edgeMode)
+    {
+        NodePtr source = makeSource(3, 5);
+        NodePtr uv = makeSmall(edgeMode);
+        NodePtr node = createNode(QString::fromUtf8(pluginId), major);
+        if (!source || !uv || !node) {
+            ADD_FAILURE() << pluginId << " graph";
+            return NodePtr();
+        }
+        connectNodes(source, node, sourceInput, true);
+        connectNodes(uv, node, uvInput, true);
+
+        return node;
+    }
+
+    // A node whose only image input is the small box, its outside under edgeMode, so its own Edge
+    // Mode, left at Input, follows that bit.
+    NodePtr makeOnSmall(const char* pluginId,
+                        int major,
+                        const char* edgeMode)
+    {
+        NodePtr source = makeSmall(edgeMode);
+        NodePtr node = createNode(QString::fromUtf8(pluginId), major);
+        if (!source || !node) {
+            ADD_FAILURE() << pluginId << " graph";
+            return NodePtr();
+        }
+        connectNodes(source, node, 0, true);
+
+        return node;
     }
 
     // Builds the graph for an edge mode and returns the node under test, or null on failure.
@@ -252,6 +359,79 @@ TEST_F(NativeEdgeInputsGpuTest, DissolveSmallerInput)
         connectNodes(first, node, dissolveSourceInput(0), true);
         connectNodes(second, node, dissolveSourceInput(1), true);
         return setKnobValues(node, kDissolveParamWhich, { 0.5 }) ? node : NodePtr(); }, ParityTolerance::arithmetic());
+}
+
+TEST_F(NativeEdgeInputsGpuTest, IBlurMapSmallerThanTheSource)
+{
+    expectBothModesMatch("IBlur Map", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeMapped(PLUGINID_NATRON_IBLUR, PLUGIN_MAJOR_NATRON_IBLUR, kIBlurInputSource, kIBlurInputMap, edgeMode);
+        return (node && setKnobValues(node, kIBlurParamSize, { 6., 6. })) ? node : NodePtr(); }, ParityTolerance::make(0., 1e-4));
+}
+
+TEST_F(NativeEdgeInputsGpuTest, IErodeDilateMapSmallerThanTheSource)
+{
+    expectBothModesMatch("IErodeDilate Map", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeMapped(PLUGINID_NATRON_IERODEDILATE, PLUGIN_MAJOR_NATRON_IERODEDILATE, kIErodeDilateInputSource, kIErodeDilateInputMap, edgeMode);
+        return (node && setKnobValues(node, kIErodeDilateParamSize, { 4., 3. })) ? node : NodePtr(); }, ParityTolerance::exact());
+}
+
+TEST_F(NativeEdgeInputsGpuTest, IDefocusMapSmallerThanTheSource)
+{
+    expectBothModesMatch("IDefocus Map", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeMapped(PLUGINID_NATRON_IDEFOCUS, PLUGIN_MAJOR_NATRON_IDEFOCUS, kIDefocusInputSource, kIDefocusInputMap, edgeMode);
+        return (node && setKnobValues(node, kDefocusParamSize, { 8. })) ? node : NodePtr(); }, ParityTolerance::make(1e-5, 1e-4));
+}
+
+TEST_F(NativeEdgeInputsGpuTest, IDistortUVSmallerThanTheSource)
+{
+    expectBothModesMatch("IDistort UV", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeUVWarp(PLUGINID_NATRON_IDISTORT, PLUGIN_MAJOR_NATRON_IDISTORT, kIDistortInputSource, kIDistortInputUV, edgeMode);
+        return (node && setKnobValues(node, kIDistortParamUVScale, { 5., 4. })) ? node : NodePtr(); }, ParityTolerance::resampling());
+}
+
+TEST_F(NativeEdgeInputsGpuTest, STMapUVSmallerThanTheSource)
+{
+    expectBothModesMatch("STMap UV", [this](const char* edgeMode) -> NodePtr { return makeUVWarp(PLUGINID_NATRON_STMAP, PLUGIN_MAJOR_NATRON_STMAP, kSTMapInputSource, kSTMapInputUV, edgeMode); }, ParityTolerance::resampling());
+}
+
+TEST_F(NativeEdgeInputsGpuTest, LensCorrectTapsOutsideTheSource)
+{
+    expectBothModesMatch("LensCorrect", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeOnSmall(PLUGINID_NATRON_LENSCORRECT, PLUGIN_MAJOR_NATRON_LENSCORRECT, edgeMode);
+        const bool ok = node && setKnobValue(node, kLensCorrectParamCamera, std::string("Canon EOS 5D Mark III"))
+            && setKnobValue(node, kLensCorrectParamLens, std::string("Canon EF 70-200mm f/2.8L IS II USM"))
+            && setKnobValues(node, kLensCorrectParamFocalLength, { 100. }) && setKnobValues(node, kLensCorrectParamAperture, { 2.8 })
+            && setKnobValue(node, kLensCorrectParamMode, std::string(kLensCorrectModeDistort))
+            && setKnobValue(node, kLensCorrectParamTargetGeometry, std::string(kLensCorrectGeometryLens))
+            && setKnobValues(node, kLensCorrectParamAutoScale, { 0. }) && setKnobValues(node, kLensCorrectParamScale, { 0.7 });
+        return ok ? node : NodePtr(); }, ParityTolerance::make(2e-4, 1e-4));
+}
+
+TEST_F(NativeEdgeInputsGpuTest, SplineWarpTapsOutsideTheSource)
+{
+    expectBothModesMatch("SplineWarp", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeOnSmall(PLUGINID_NATRON_SPLINEWARP, PLUGIN_MAJOR_NATRON_SPLINEWARP, edgeMode);
+        SplineWarpContextPtr ctx = node ? std::dynamic_pointer_cast<SplineWarpContext>(node->getCurveContext()) : SplineWarpContextPtr();
+        if (!ctx) {
+            ADD_FAILURE() << "SplineWarp context";
+            return NodePtr();
+        }
+        BezierPtr from = makeQuad(ctx, 0., 0., 1.);
+        BezierPtr to = makeQuad(ctx, 2.75, -1.5, 0.8);
+        if (!from || !to || !ctx->linkWithAlignment(from, to, 0., false)) {
+            ADD_FAILURE() << "SplineWarp link";
+            return NodePtr();
+        }
+        const bool ok = setKnobValues(node, kSplineWarpParamBoundaryBBox, { 0. }) && setKnobValue(node, kSplineWarpParamBBox, std::string(kSplineWarpBBoxUnion));
+        return ok ? node : NodePtr(); }, ParityTolerance::resampling());
+}
+
+TEST_F(NativeEdgeInputsGpuTest, AutoStraightenTapsOutsideTheSource)
+{
+    expectBothModesMatch("AutoStraighten", [this](const char* edgeMode) -> NodePtr {
+        NodePtr node = makeOnSmall(PLUGINID_NATRON_AUTOSTRAIGHTEN, PLUGIN_MAJOR_NATRON_AUTOSTRAIGHTEN, edgeMode);
+        const bool ok = node && setKnobValues(node, kAutoStraightenParamRotation, { 7. }) && setKnobValue(node, kAutoStraightenParamAutoCrop, std::string("off"));
+        return ok ? node : NodePtr(); }, ParityTolerance::make(1e-5, 1e-4));
 }
 
 #endif // NATRON_HAVE_GPU

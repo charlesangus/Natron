@@ -77,7 +77,7 @@ inline constexpr uint32_t kSplineWarpGpuSubFrameWords = 11;
 
 // Set only for the filters Resampler::filterHonoursClamp() names.
 inline constexpr uint32_t kSplineWarpGpuClamp = 1;
-inline constexpr uint32_t kSplineWarpGpuBlackOutside = 2;
+inline constexpr uint32_t kSplineWarpGpuEdgeBlack = 2;
 inline constexpr uint32_t kSplineWarpGpuJacobian = 4;
 // The Source is bound; without it every pixel is black.
 inline constexpr uint32_t kSplineWarpGpuSample = 8;

@@ -11,7 +11,8 @@ CPU helper and one GPU sampler driven by that mode. Every input of a node follow
 its own bit, not only the source (Q1).
 
 Paths are relative to the repository root. Line numbers are as of `main` at
-b59ff3fdf.
+b59ff3fdf. Section 1 records the code before the change, so "today" there means before
+M136 Phase 2, except where a row or table states the rule that now holds.
 
 ## 1. Survey
 
@@ -52,9 +53,9 @@ Terms used below:
 | IDistort | `resampleRowFromCoords`, `IDistort.cpp:663, 679` | `coordmap.slang` via `WarpGpu` (`:126-131`) | Knob | `black_outside` (off), `IDistort.cpp:196-201` | M136.P4.T4 (UV input: P4.T12) |
 | STMap | `resampleRowFromCoords`, `STMap.cpp:762` | `stmap.slang:243` | Knob, only when Wrap U/V is None (`Resampler.h:345`); Clamp/Repeat/Mirror fold the coordinate first | `black_outside` (on), `STMap.cpp:274-279`; Wrap U/V `STMap.cpp:210, 219` | M136.P4.T4 (UV input: P4.T12) |
 | LensDistortion | `resampleRowFromCoords`, `LensDistortion.cpp:1128` | `lensdistortion.slang:73` | Knob; adds 1 px margin when on, `LensDistortion.cpp:925` | `black_outside` (on), `LensDistortion.cpp:420-425` | M136.P4.T4 |
-| LensCorrect | `LensCorrect.cpp:1473-1478` source, `resampleRowFromCoords` | `lenscorrect.slang:521` | Knob; an edge fade (`:1073`), an outside shortcut (`:1091`), and a source-region bound that counts footprints only where they overlap the Source (`:1219-1304`) | `black_outside` (on), `LensCorrect.cpp:483-488` | M136.P4.T13 |
-| SplineWarp | `SplineWarp.cpp:1934-1941`; `cropRowToFormat` sends positions outside the format outside every image, or onto the format's edge pixels when not black (`:140-156`) | `splinewarp.slang:172` | Knob | `black_outside` (on), `SplineWarp.cpp:507-512` | M136.P4.T13 |
-| AutoStraighten | ResampleExecutor to Resampler, `AutoStraighten.cpp:543, 570` | `resample.slang` | Knob | `black_outside` (on), `AutoStraighten.cpp:878-883` | M136.P4.T13 |
+| LensCorrect | `LensCorrect.cpp:1473-1478` source, `resampleRowFromCoords` | `lenscorrect.slang:521` | Knob; an edge fade (`:1073`), an outside shortcut (`:1091`), and a source-region bound that counts footprints only where they overlap the Source (`:1219-1304`) | was `black_outside` (on); now the Edge Mode stage, `edgeMode` (Input). The fade, the outside shortcut and the source-region bound key off the resolved mode | M136.P4.T13 |
+| SplineWarp | `SplineWarp.cpp:1934-1941`; `cropRowToFormat` sends positions outside the format outside every image, or onto the format's edge pixels when not black (`:140-156`) | `splinewarp.slang:172` | Knob | was `black_outside` (on); now the Edge Mode stage, `edgeMode` (Input), on the Warp page; `cropToFormat` clamps onto the format's edge under Stretch | M136.P4.T13 |
+| AutoStraighten | ResampleExecutor to Resampler, `AutoStraighten.cpp:543, 570` | `resample.slang` | Knob | was `black_outside` (on); now the Edge Mode stage, `edgeMode` (Input), which also sets the output bit in its own `getPreferredMetadataAt` | M136.P4.T13 |
 | Mirror | ResampleExecutor, impulse filter | `resample.slang` | Hard-wired `blackOutside = true`, `Mirror.cpp:83`. Whole-pixel flips of the RoD: no output pixel inside the RoD reads outside the source. | none | M136.P4.T4 (drops the flag, forwards the bit) |
 | Position | ResampleExecutor offset | copy | Whole-pixel shift of the RoD: no outside reads | none | none: forwards the bit |
 | NeuralUpscale | separable resample whose taps clamp into the source frame, `NeuralUpscale.cpp:137-190` | n/a | Nearest, hard-wired; reads only the source frame's own taps past its border | none | **none yet** (reported to the pm) |
@@ -135,15 +136,20 @@ below each table is what it becomes.
 | Channel copy | `ChannelCopy.cpp:84-92` (`copyRow`; an input with no pixel at x, y writes 0) | n/a | 0 outside the routed input's image |
 | Channel route | `ChannelCopy.cpp:145-152` (`routeRow`), `applyChannelRoute` at `:426` | `channelroute.slang:64-78`; valid rect `ChannelCopy.cpp:757-760` | 0 outside |
 
-**Map and UV inputs.**
+**Map and UV inputs.** These follow their input's own bit: under Stretch a pixel outside the
+input's image reads the image's nearest edge pixel, and the input's RoI is clamped into its RoD
+as a band on both CPU and GPU (2.4); under Black it reads as a black pixel does.
+
+| Site | CPU | GPU | Outside rule |
+|---|---|---|---|
+| IBlur, IErodeDilate, IDefocus, IWarp Map | `MapPlane` (`MapInput.cpp`: `at`, `tileRange`, `fill`), mode from `MapInput::read` | `iblur.slang`, `ierodedilate.slang`, `idefocus.slang` (`kMapEdgeBlack`), `iwarp.slang` (`kIWarpMapEdgeBlack`), each through `edgePixel` | Stretch: the nearest Map pixel, remapped. Black: `remap(0)`, as a black pixel inside it |
+| STMap, IDistort Map | as IWarp's Map | `stmap.slang` `warpMap` (`kWarpMapEdgeBlack`) | as above |
+| EdgeBlur Map | the edges of the matte over EdgeDetect's RoD, `EdgeBlur.cpp` | IBlur's kernel with the flag set | Black always: the Map is derived inside the node and has no edge of its own to repeat |
+| IDistort UV | `IDistort.cpp` `coordRow` (`readChannelRow` with the mode) | `stmap.slang` `idistort_main`, `uvAt` (`kWarpGpuUVEdgeBlack`, set in `WarpGpu.h`) | Stretch: the nearest UV pixel. Black: 0 |
+| STMap UV and UV alpha | `STMap.cpp` `UVPlane` | `stmap.slang` `stmap_main`, `uvAt`, `uvReadable` (`kWarpGpuUVEdgeBlack`) | Stretch: the nearest UV pixel, the alpha gate included. Black: `outside` |
 
 | Site | CPU | GPU | Zero rule today |
 |---|---|---|---|
-| IBlur, IErodeDilate Map | `MapPlane`, `MapInput.cpp:155-195` (`outside()`, `tileRange`), read at `:413` | `iblur.slang:46-52, 365`; `ierodedilate.slang:34-35, 243` | A pixel outside the Map's image reads `remap(0)`, as a black pixel inside it does |
-| IDefocus Map | `IDefocus.cpp:1312` (`MapPlane`) | `idefocus.slang` | as IBlur |
-| EdgeBlur Map | the matte over EdgeDetect's RoD, `EdgeBlur.cpp:619-620` | as IBlur | as IBlur |
-| IDistort UV | `IDistort.cpp:597` (`readChannelRow`) | `coordmap.slang` | 0 outside the UV image |
-| STMap UV | `STMap.cpp:86-106` (`UVPlane`, `outside` fill) | `stmap.slang:114-121, 217` (`uvInside`) | `outside` outside the UV image |
 | ZDefocus Depth | `ZDefocus.cpp:2185` | `zdefocus.slang:124` | 0 outside the depth image |
 | VectorBlur UV and Depth | `VectorBlur.cpp:989, 1000` | `vectorblur.slang:79, 115` | 0 outside |
 
@@ -214,8 +220,9 @@ A pipeline stage, `Stage::EdgeMode` (most affected nodes are `StagedImageEffect`
 choice knob with script name `edgeMode` and label "Edge Mode", with options Input (default),
 Black and Stretch. It resolves the choice against the primary input's bit and hands the mode
 to the pass list, the resampler and the warps. Nodes that are not on the staged pipeline use
-the same helper directly. It replaces `kResamplerParamFilterBlackOutside*`, Crop's
-`blackOutside` and CornerPin's `blackOutside`.
+the same helper directly. It replaces the `black_outside` knobs built from
+`kResamplerParamFilterBlackOutside*` (Transform, Reformat, IDistort, STMap, LensDistortion,
+LensCorrect, SplineWarp, AutoStraighten), Crop's `blackOutside` and CornerPin's `blackOutside`.
 
 **The rule (Q3).** Under Input the node follows the primary input's bit, and the output bit is
 that bit. A forced Black or Stretch overrides the input's bit for the whole output of the node,
@@ -288,8 +295,10 @@ coordinate rule and one mode constant. These import it:
   `bloom.slang`, `glow.slang`, `morphology.slang:114` (`paddedAt`), `iblur.slang`,
   `ierodedilate.slang`, `defocus.slang:85`, `vectorblur.slang:139` and `zdefocus.slang`;
 - the same-position reads: `pixelwrap.slang` (`wrapReadSource`, `wrapMaskValue`),
-  `compositestep.slang`, `compositealpha.slang`, `channelroute.slang`, `mapremap.slang`,
-  `stmap.slang` (`uvInside`), `timeblend.slang` and `slitscan.slang`.
+  `compositestep.slang`, `compositealpha.slang`, `channelroute.slang`, the Map reads of
+  `iblur.slang`, `ierodedilate.slang`, `idefocus.slang`, `iwarp.slang` and `stmap.slang`
+  (`warpMap`), the UV reads of `stmap.slang` (`uvAt`, `uvReadable`), `timeblend.slang` and
+  `slitscan.slang`. Each Map and UV input carries its own Black flag in the kernel's flags.
 
 The fifteen `BlackOutside` flag copies of 1.1 collapse into the one constant.
 

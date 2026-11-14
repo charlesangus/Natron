@@ -83,8 +83,8 @@ inputRegion(const EffectInstancePtr& input,
     return input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, rod, &isProjectFormat) != eStatusFailed;
 }
 
-// One channel of the UV input, locked on the calling thread; with no image, and outside its
-// bounds, it reads outside.
+// One channel of the UV input, locked on the calling thread. With no image it reads outside;
+// outside its bounds it reads outside under EdgeMode::Black and its nearest pixel under Stretch.
 struct UVPlane {
     ImagePtr image;
     int channel = -1;
@@ -92,6 +92,7 @@ struct UVPlane {
     RectI bounds;
     std::shared_ptr<Image::ReadAccess> access;
     float outside = 0.f;
+    EdgeMode edgeMode = EdgeMode::Black;
 
     void readRow(int x0,
                  int y,
@@ -100,6 +101,11 @@ struct UVPlane {
     {
         if (!access) {
             std::fill(row, row + width, outside);
+
+            return;
+        }
+        if ((edgeMode == EdgeMode::Stretch) && !bounds.isNull()) {
+            PassExec::readChannelRow(image.get(), access.get(), bounds, nComps, channel, x0, y, width, EdgeMode::Stretch, row);
 
             return;
         }
@@ -240,8 +246,9 @@ STMap::initializeKnobs()
     uvAlpha->setName(kSTMapParamUVAlpha);
     uvAlpha->setDefaultValue(true);
     uvAlpha->setHintToolTip(tr("When checked, the alpha of the layer U Channel reads from marks where the map holds a "
-                               "position: output pixels where it is 0 or less are black. A layer without alpha, or a "
-                               "pixel outside the UV input's region of definition, counts as opaque."));
+                               "position: output pixels where it is 0 or less are black. A layer without alpha counts as "
+                               "opaque. Outside the UV input's region of definition the alpha counts as opaque when the "
+                               "UV input is black outside, and holds its nearest edge pixel when it stretches."));
     page->addKnob(uvAlpha);
     _uvAlpha = uvAlpha;
 
@@ -618,6 +625,7 @@ STMap::renderOp(const RenderActionArgs& args,
         UVChannel uvChannels[2];
         resolveUVChannels(args.time, args.view, &uvChannels[0], &uvChannels[1]);
         ImagePtr uvImages[2];
+        const EdgeMode uvEdgeMode = stageInputEdgeMode(*this, kSTMapInputUV, args.time, args.view);
         for (int i = 0; i < 2; ++i) {
             if (!uvChannels[i].valid) {
                 continue;
@@ -639,6 +647,7 @@ STMap::renderOp(const RenderActionArgs& args,
             uvPlanes[i].channel = uvChannels[i].channel;
             uvPlanes[i].nComps = (int)uvImages[i]->getComponentsCount();
             uvPlanes[i].bounds = uvImages[i]->getBounds();
+            uvPlanes[i].edgeMode = uvEdgeMode;
             uvPlanes[i].access = std::make_shared<Image::ReadAccess>(uvImages[i].get());
         }
         if (settings.uvAlpha) {

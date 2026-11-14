@@ -19,6 +19,7 @@ static const uint kIWarpMapConnected = 16;
 static const uint kIWarpMapRead = 32;
 static const uint kIWarpMapInvert = 64;
 static const uint kIWarpMapSmooth = 128;
+static const uint kIWarpMapEdgeBlack = 256;
 
 // The words before the curve, and the floats of one knot: its matrix's high floats, its matrix's
 // low floats, then its derivative in m.
@@ -59,15 +60,18 @@ IWarp iwarpLoad(StructuredBuffer<uint> params)
     return w;
 }
 
-// The remapped Map value at (x, y): 1 with no Map, and a black pixel, remapped and inverted like
-// any other, off the Map's pixels or when its channel is not read, as MapInput::fill() gives it.
+// The remapped Map value at (x, y), as MapInput::fill() gives it: 1 with no Map, and a black pixel,
+// remapped and inverted like any other, when its channel is not read. Off the Map's pixels it reads
+// black under the Map's Black edge mode and its nearest pixel under Stretch.
 float iwarpMap(IWarp w, int x, int y)
 {
     if ((w.flags & kIWarpMapConnected) == 0)
         return 1.0;
     float raw = 0.0;
-    if ((w.flags & kIWarpMapRead) != 0 && w.mapComponent >= 0 && wrapInside(int2(x, y), w.mapX1, w.mapY1, w.mapX2, w.mapY2))
-        raw = mapBuf[w.mapOffset + uint(y - w.mapY1) * w.mapStride + uint(x - w.mapX1) * w.mapComps + uint(w.mapComponent)];
+    int2 p;
+    if ((w.flags & kIWarpMapRead) != 0 && w.mapComponent >= 0
+        && edgePixel(int2(x, y), int4(w.mapX1, w.mapY1, w.mapX2, w.mapY2), edgeModeFromFlags(w.flags, kIWarpMapEdgeBlack), p))
+        raw = mapBuf[w.mapOffset + uint(p.y - w.mapY1) * w.mapStride + uint(p.x - w.mapX1) * w.mapComps + uint(w.mapComponent)];
     return mapRemap(raw, (w.flags & kIWarpMapInvert) != 0, (w.flags & kIWarpMapSmooth) != 0, w.exponent);
 }
 

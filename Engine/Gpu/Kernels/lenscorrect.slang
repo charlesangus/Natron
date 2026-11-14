@@ -9,7 +9,7 @@ import edgesample;
 // LensCorrectGpuParams in Engine/Nodes/Transform/LensCorrect.cpp mirrors the block's words.
 
 static const uint kLensCorrectClamp = 1;
-static const uint kLensCorrectBlackOutside = 2;
+static const uint kLensCorrectEdgeBlack = 2;
 static const uint kLensCorrectJacobian = 4;
 static const uint kLensCorrectSample = 8;
 static const uint kLensCorrectReverse = 16;
@@ -519,7 +519,7 @@ ResampleSource lensCorrectSource(LensCorrect d)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.edgeMode = edgeModeFromFlags(d.flags, kLensCorrectBlackOutside);
+    src.edgeMode = edgeModeFromFlags(d.flags, kLensCorrectEdgeBlack);
     return src;
 }
 

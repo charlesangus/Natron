@@ -90,6 +90,7 @@ static const uint kMapConnected = 1;
 static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
 static const uint kMapSmooth = 8;
+static const uint kMapEdgeBlack = 16;
 
 // IErodeDilateKernels' reduce(), in the same argument order.
 float reduce(float a, float b, bool takeMax)
@@ -245,8 +246,9 @@ void ierodedilate_filter(uint3 tid : SV_DispatchThreadID)
     }
     const MorphConstants k = constBuf[0];
     float m = k.outside;
-    if ((k.mapFlags & kMapRead) != 0u && ax >= k.mapX1 && ax < k.mapX2 && ay >= k.mapY1 && ay < k.mapY2)
-        m = remapMap(k, asfloat(mapBuf[k.mapOffset + uint(ay - k.mapY1) * k.mapStride + uint(ax - k.mapX1) * k.mapChannels + k.mapChannel]));
+    int2 at;
+    if ((k.mapFlags & kMapRead) != 0u && edgePixel(int2(ax, ay), int4(k.mapX1, k.mapY1, k.mapX2, k.mapY2), edgeModeFromFlags(k.mapFlags, kMapEdgeBlack), at))
+        m = remapMap(k, asfloat(mapBuf[k.mapOffset + uint(at.y - k.mapY1) * k.mapStride + uint(at.x - k.mapX1) * k.mapChannels + k.mapChannel]));
     float rxf;
     float ryf;
     stageRadii(params.flags >> kStageShift, axisAt(k.blackRx, k.whiteRx, m), axisAt(k.blackRy, k.whiteRy, m), rxf, ryf);

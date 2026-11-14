@@ -76,7 +76,7 @@ constexpr NodeSpec kIDefocusNodeSpec = {
                    "Where the Map is white the bokeh has the Size, where it is black the Size At Black (0 by default, which leaves those pixels unchanged "
                    "unless a larger neighbour spreads over them), and in between a size in between. Map Channel picks the Map's channel in any of its layers, "
                    "Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to "
-                   "Size. Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the bokeh has the Size everywhere.\n"
+                   "Size. Outside the Map image, the Map reads black before Invert Map and the remap when the Map input is black outside, and its nearest edge pixel when it stretches. With no Map connected, the bokeh has the Size everywhere.\n"
                    "\n"
                    "Each output pixel sums the bokeh of every pixel that reaches it and divides by the sum of their weights, so a sharp pixel beside an "
                    "out-of-focus highlight receives the highlight's bloom, where IBlur would leave it sharp.\n"
@@ -529,6 +529,7 @@ const uint32_t kGpuMapConnected = 1;
 const uint32_t kGpuMapRead = 2;
 const uint32_t kGpuMapInvert = 4;
 const uint32_t kGpuMapSmooth = 8;
+const uint32_t kGpuMapEdgeBlack = 16;
 
 // Mirrors IDefocusParams in Kernels/idefocus.slang, which has no padding between members.
 struct IDefocusGpuParams {
@@ -643,7 +644,8 @@ recordIDefocusGpu(const PassGpuIO& io,
                   int haloX,
                   int haloY,
                   bool mapConnected,
-                  int mapChannel)
+                  int mapChannel,
+                  EdgeMode mapEdgeMode)
 {
     gpu::GpuRecordContext& ctx = io.context;
     const int nComps = io.nComps;
@@ -658,7 +660,8 @@ recordIDefocusGpu(const PassGpuIO& io,
     }
 
     IDefocusGpuHeader header {};
-    header.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
+    header.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u)
+        | ((mapEdgeMode == EdgeMode::Black) ? kGpuMapEdgeBlack : 0u);
     header.exponent = params.map.exponent;
     header.count = (uint32_t)count;
 
@@ -1095,7 +1098,7 @@ IDefocus::recordGpu(const PassGpuIO& io,
         levels = store.gpuTable;
     }
 
-    return recordIDefocusGpu(io, params, *levels, count, haloX, haloY, connected, channel);
+    return recordIDefocusGpu(io, params, *levels, count, haloX, haloY, connected, channel, inputEdgeMode(kIDefocusInputMap, time, view));
 #else
     Q_UNUSED(io);
     Q_UNUSED(time);

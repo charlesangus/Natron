@@ -222,7 +222,7 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
         return passListSourceRoI(outputRect, opPasses(time, view, scale));
     }
     if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
-        return opPassesInputRoI(inputNb, time, view, outputRect, scale);
+        return stretchGpuInputRoI(*this, inputEdgeMode(inputNb, time, view), inputNb, time, view, opPassesInputRoI(inputNb, time, view, outputRect, scale), scale);
     }
     if ((inputNb == getMaskInput()) && (kind == OpKind::Passes)) {
         const PassList list = opPasses(time, view, scale);

@@ -58,6 +58,7 @@
 #include "Engine/Nodes/Generator/Noise.h"
 #include "Engine/Nodes/Generator/NoiseCore.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Metadata/MetadataModify.h"
@@ -637,7 +638,7 @@ TEST_F(NativeLensCorrectTest, EveryControlHasAKnob)
         kResamplerParamBicubicB,
         kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
-        kResamplerParamFilterBlackOutside,
+        kEdgeModeParam,
     };
     for (const char* name : names) {
         EXPECT_TRUE(bool(node->getKnobByName(name))) << name;
@@ -815,7 +816,7 @@ TEST_F(NativeLensCorrectTest, HugePositionsRenderFinite)
     setManualScale(node, kLensCorrectModeCorrect, 0.1);
     const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     for (double blackOutside : { 1., 0. }) {
-        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string((blackOutside != 0.) ? "black" : "stretch")));
         RenderedPlane out;
         ASSERT_TRUE(renderRGBA(node, window, &out));
         EXPECT_EQ(0u, nonFinitePixels(out)) << "black outside " << blackOutside;
@@ -1031,10 +1032,10 @@ TEST_F(NativeLensCorrectTest, RegionOfDefinitionFollowsThePixels)
     const RectD inside = regionOf(node);
     EXPECT_GT(inside.x1, sourceRoD.x1 + 8.);
     EXPECT_LT(inside.x2, sourceRoD.x2 - 8.);
-    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
     EXPECT_DOUBLE_EQ(sourceRoD.x1, regionOf(node).x1);
     EXPECT_DOUBLE_EQ(sourceRoD.x2, regionOf(node).x2);
-    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
     EXPECT_DOUBLE_EQ(sourceRoD.x1, regionOf(node).x1);
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 1. }));
@@ -1230,7 +1231,7 @@ TEST_F(NativeLensCorrectTest, TilesAreBitIdenticalToTheWholeFrame)
     const RectI window = regionOf(node).toPixelEnclosing(0u, 1.);
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(Resampler::filterOptions()[(std::size_t)Resampler::eFilterLanczos3].id)));
     expectTilesMatchTheWhole(node, window, "fisheye to rectilinear, lanczos3");
-    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
     expectTilesMatchTheWhole(node, window, "fisheye to rectilinear, lanczos3, edges clamped");
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(Resampler::filterOptions()[(std::size_t)Resampler::eFilterImpulse].id)));
     expectTilesMatchTheWhole(node, window, "fisheye to rectilinear, impulse, edges clamped");
@@ -1238,7 +1239,7 @@ TEST_F(NativeLensCorrectTest, TilesAreBitIdenticalToTheWholeFrame)
     NodePtr scaled = makeLensCorrect(source);
     ASSERT_TRUE(bool(scaled));
     configure(scaled, kLensCases[3]);
-    ASSERT_TRUE(setKnobValues(scaled, kResamplerParamFilterBlackOutside, { 0. }));
+    ASSERT_TRUE(setKnobValue(scaled, kEdgeModeParam, std::string("stretch")));
     expectTilesMatchTheWhole(scaled, regionOf(scaled, 1).toPixelEnclosing(1u, 1.), "ptlens distort scale 0.7, edges clamped", 1);
 }
 
@@ -1276,7 +1277,7 @@ TEST_F(NativeLensCorrectTest, RegionOfInterestHoldsEveryRead)
         const LensCorrectProfile::Profile profile = LensCorrectProfile::build(*found.lens, r);
 
         for (const bool blackOutside : { true, false }) {
-            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
             for (unsigned mip : { 0u, 3u }) {
                 const double scale = 1. / (1 << mip);
                 const int width = (int)(kLargeWidth * scale);
@@ -1460,9 +1461,9 @@ TEST_F(NativeLensCorrectNoiseTilesTest, MatchTheWholeFrame)
         ASSERT_TRUE(bool(node)) << c.what;
         configure(node, c);
         for (unsigned mip : { 0u, 1u, 2u }) {
-            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
             expectTilesMatchTheWhole(node, tileTestWindow(node, mip, 1., width, height), c.what, mip);
-            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
             expectTilesMatchTheWhole(node, tileTestWindow(node, mip, 1., width, height), std::string(c.what) + ", edges clamped", mip);
         }
     }
@@ -1495,9 +1496,9 @@ TEST_F(NativeLensCorrectNoiseProjectionTilesTest, MatchTheWholeFrame)
             configure(node, c);
             const std::string what = std::string("fisheye to ") + geometry + " " + mode;
             for (unsigned mip : { 0u, 1u }) {
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
                 expectTilesMatchTheWhole(node, tileTestWindow(node, mip, 1., width, height), what, mip);
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
                 expectTilesMatchTheWhole(node, tileTestWindow(node, mip, 1., width, height), what + ", edges clamped", mip);
             }
         }
@@ -1531,9 +1532,9 @@ TEST_F(NativeLensCorrectNoiseAspectTilesTest, MatchTheWholeFrame)
             configure(node, c);
             const std::string what = std::string(s.what) + ", " + c.what;
             for (unsigned mip : { 0u, 1u }) {
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
                 expectTilesMatchTheWhole(node, tileTestWindow(node, mip, s.par, s.width, s.height), what, mip);
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
                 expectTilesMatchTheWhole(node, tileTestWindow(node, mip, s.par, s.width, s.height), what + ", edges clamped", mip);
             }
         }

@@ -958,7 +958,7 @@ struct IErodeDilateSpec {
                        "Where the Map is white the element has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
                        "and in between a size in between; a fractional size blends the results of the sizes either side of it, so the result changes smoothly with the Map. "
                        "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. "
-                       "Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the element has the Size everywhere.\n"
+                       "Outside the Map image, the Map reads black before Invert Map and the remap when the Map input is black outside, and its nearest edge pixel when it stretches. With no Map connected, the element has the Size everywhere.\n"
                        "\n"
                        "The element is a rectangle of 2*|size|+1 pixels, as ErodeDilate's, or a disc (an ellipse when the two sizes differ). Where the X and Y sizes have opposite signs, "
                        "X is filtered before Y, each by a line. At a whole Size where the Map is white, the rectangle gives ErodeDilate's result. The Mask and Mix limit the result as usual.\n"
@@ -1272,6 +1272,7 @@ const uint32_t kGpuMapConnected = 1;
 const uint32_t kGpuMapRead = 2;
 const uint32_t kGpuMapInvert = 4;
 const uint32_t kGpuMapSmooth = 8;
+const uint32_t kGpuMapEdgeBlack = 16;
 
 // Mirrors MorphParams in Kernels/ierodedilate.slang, which has no padding between members.
 struct IErodeDilateGpuParams {
@@ -1382,7 +1383,8 @@ recordIErodeDilateGpu(const PassGpuIO& io,
                       const IErodeDilateParams& params,
                       const RenderScale& scale,
                       bool mapConnected,
-                      int mapChannel)
+                      int mapChannel,
+                      EdgeMode mapEdgeMode)
 {
     namespace K = IErodeDilateKernels;
     gpu::GpuRecordContext& ctx = io.context;
@@ -1420,7 +1422,8 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     }
 
     IErodeDilateGpuConstants k {};
-    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
+    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u)
+        | ((mapEdgeMode == EdgeMode::Black) ? kGpuMapEdgeBlack : 0u);
     k.exponent = params.map.exponent;
     k.outside = mapConnected ? params.map.remap(0.f) : 1.f;
     k.blackRx = axisX.black;
@@ -1906,7 +1909,7 @@ IErodeDilate::recordGpu(const PassGpuIO& io,
         channel = -1;
     }
 
-    return recordIErodeDilateGpu(io, params, scale, connected, channel);
+    return recordIErodeDilateGpu(io, params, scale, connected, channel, inputEdgeMode(kIErodeDilateInputMap, time, view));
 #else
     Q_UNUSED(io);
     Q_UNUSED(time);

@@ -113,7 +113,7 @@ inline constexpr NodeSpec kLensCorrectNodeSpec = {
 };
 
 inline constexpr ImagePipelineSpec kLensCorrectPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Custom,
 };
@@ -187,7 +187,7 @@ private:
         bool showVignetteMask = false;
         Resampler::FilterSpec filter;
         bool clamp = false;
-        bool blackOutside = true;
+        EdgeMode edgeMode = EdgeMode::Stretch;
     };
 
     // Everything a render evaluates, built on the calling thread and only read by the bands.
@@ -306,7 +306,6 @@ private:
     KnobStringWPtr _info;
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
-    KnobBoolWPtr _blackOutside;
     Resampler::FilterKnobs _filterKnobs;
 
     // Database queries by (maker, model, lens), which are slow and run for every tile otherwise.

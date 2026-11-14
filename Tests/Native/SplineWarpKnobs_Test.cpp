@@ -36,6 +36,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
@@ -93,7 +94,6 @@ auditRows()
         { kSplineWarpParamSmoothness, "Smoothness", kRender, { 0. } },
         { kSplineWarpParamFieldResolution, "Field Resolution", kRender, { 8. } },
         { kResamplerParamFilterClamp, "Clamp", kRender, { 0. } },
-        { kResamplerParamFilterBlackOutside, kResamplerParamFilterBlackOutsideLabel, kRender, { 1. } },
         { kSplineWarpParamBBox, "BBox", kRender, { 0. } },
         { kSplineWarpParamMotionBlur, "Motion Blur", kRender, { 0. } },
         { kSplineWarpParamShutter, "Shutter", kRender, { 0.5 } },
@@ -169,6 +169,9 @@ TEST_F(SplineWarpKnobsTest, EveryAuditedKnobHasItsNameLabelDefaultAndPage)
             EXPECT_DOUBLE_EQ(expected, value) << row.name << "[" << d << "]";
         }
     }
+
+    EXPECT_FALSE(bool(node->getKnobByName(kResamplerParamFilterBlackOutside)));
+    EXPECT_TRUE(bool(node->getKnobByName(kEdgeModeParam)));
 
     KnobDoublePtr center = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName("center"));
     ASSERT_TRUE(bool(center));

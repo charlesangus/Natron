@@ -137,11 +137,11 @@ mergePoint(RectD* r,
     }
 }
 
-// Sends Source positions outside the format outside every image, or onto the format's edge pixels
-// when the Source is not black outside, as the cropped Source a resample reads would.
+// Sends Source positions outside the format outside every image under EdgeMode::Black, or onto the
+// format's edge pixels under Stretch, as the cropped Source a resample reads would.
 void
 cropRowToFormat(const RectI& format,
-                bool blackOutside,
+                EdgeMode edgeMode,
                 int n,
                 float* sx,
                 float* sy)
@@ -150,7 +150,7 @@ cropRowToFormat(const RectI& format,
         if ((sx[i] >= format.x1) && (sx[i] <= format.x2) && (sy[i] >= format.y1) && (sy[i] <= format.y2)) {
             continue;
         }
-        if (blackOutside || format.isNull()) {
+        if ((edgeMode == EdgeMode::Black) || format.isNull()) {
             sx[i] = kOutsideCoord;
             sy[i] = kOutsideCoord;
         } else {
@@ -503,13 +503,6 @@ SplineWarp::initializeKnobs()
     clamp->setSpacingBetweenItems(1);
     renderPage->addKnob(clamp);
     _clamp = clamp;
-
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(true);
-    renderPage->addKnob(blackOutside);
-    _blackOutside = blackOutside;
 
     _filterKnobs.create(this, renderPage, filter, clamp);
 
@@ -1207,10 +1200,7 @@ SplineWarp::readSettings(double time,
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
     }
-    KnobBoolPtr blackOutside = _blackOutside.lock();
-    if (blackOutside) {
-        settings->blackOutside = blackOutside->getValueAtTime(time, 0, view);
-    }
+    settings->edgeMode = resolvedEdgeMode(time, view);
     KnobChoicePtr bbox = _bbox.lock();
     if (bbox) {
         settings->bboxUnion = bbox->getValueAtTime(time, 0, view) == 1;
@@ -1982,11 +1972,11 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             field.getRow(y, roi.x1, roi.x2, sx.data(), sy.data(), jac);
             if (plane.concatenated) {
                 if (crop) {
-                    cropRowToFormat(formatPixels, settings.blackOutside, width, sx.data(), sy.data());
+                    cropRowToFormat(formatPixels, settings.edgeMode, width, sx.data(), sy.data());
                 }
                 mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
             }
-            Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
+            Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
                                              Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
             if (plane.concatenated) {
                 return;
@@ -2180,7 +2170,7 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kSplineWarpGpuClamp : 0u) | (settings.blackOutside ? kSplineWarpGpuBlackOutside : 0u)
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kSplineWarpGpuClamp : 0u) | ((settings.edgeMode == EdgeMode::Black) ? kSplineWarpGpuEdgeBlack : 0u)
         | ((settings.filter.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
 
     gpu::GpuRecordContext& ctx = args.context;

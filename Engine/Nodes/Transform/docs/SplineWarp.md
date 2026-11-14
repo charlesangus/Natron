@@ -10,12 +10,12 @@ The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic 
 The settings panel has three pages:
 
 - **Warp:** what applies to the whole warp: `amount`, `invert`, `layerAmount`, `linkAmount`, `boundaryBBox`, `cropToFormat`,
-  `outputMask`, and the mask and mix every staged node has.
+  `outputMask`, `edgeMode`, and the mask and mix every staged node has.
 - **Transform:** what transforms the items selected in the curve list: the selected curve's or layer's `translate`, `rotate`, `scale` with `uniform`, `skewx`, `skewy`,
   `skewOrder`, `center` and `extraMatrix`. Whether dragging the transform handle updates the
   viewer while it moves is the "Refresh viewer only when editing is finished" preference.
 - **Render:** `solver`, `smoothness`, `curveResolution`, `boundaryCurveResolution`,
-  `fieldResolution`, `previewResolution`, `filter`, `clamp`, `black_outside`, `bbox`, and the
+  `fieldResolution`, `previewResolution`, `filter`, `clamp`, `bbox`, and the
   motion blur settings `motionBlur`, `shutter`, `shutterOffset` and `shutterCustomOffset`.
 
 Each curve has a role, shown in the panel's Role column:
@@ -88,7 +88,7 @@ or Mesh, a triangle mesh through the curve samples that keeps the warp local to 
 Smoothness lets the solve stray from the curves, which tames folds where curves pull against each
 other. Curve Resolution is the distance, in full-resolution pixels, between samples along the
 curves. Field Resolution is the spacing of the grid the warp is evaluated on; pixels in between
-are interpolated. These, the filter and the motion blur settings are on the Render page. Filter, Clamp and Black Outside set how the Source is resampled. BBox keeps the
+are interpolated. These, the filter and the motion blur settings are on the Render page. Filter and Clamp set how the Source is resampled, and Edge Mode (`edgeMode`, on the Warp page) what it reads past its edge, and past its format when Crop To Format is on: its own mode under Input, its edge pixels under Stretch, 0 under Black. BBox keeps the
 Source's region of definition or grows it by where the warp moves the Source's edges and by the
 destination curves. A transform above the Source is folded into the same resample. The host mask
 and mix apply as for every staged node.

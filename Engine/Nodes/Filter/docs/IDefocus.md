@@ -11,7 +11,7 @@ I-variant registry (`IDefocus.reg.inc`); every knob they share has the same name
 `BokehKernel` (disc, blades or the Kernel input's image) with the same highlight boost.
 
 - **Map.** The Map input, from `MapInput` (`MapInput.h`), as IBlur reads it: Map Channel, Invert Map, Map Gamma and
-  Map Response give a value in [0, 1], black outside the Map's image, and the size at a pixel is
+  Map Response give a value in [0, 1], outside the Map's image its nearest edge pixel when the Map's edge mode is Stretch and black when it is Black, and the size at a pixel is
   `lerp(sizeAtBlack, size, map)`. Size At Black is 1-D, as Size is, and both stop at 500.
 - **No Map.** With the Map disconnected the node defocuses at Size everywhere, as Defocus does, and shows a warning
   badge. An Image kernel with no Kernel input leaves the image unchanged and warns about the Kernel instead.

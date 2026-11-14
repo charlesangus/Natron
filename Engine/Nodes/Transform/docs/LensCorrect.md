@@ -36,8 +36,10 @@ when correcting (darktable applies it to the input) and at the output pixel when
 Differences from darktable: the embedded lens corrections that darktable reads from raw makernotes
 are not available, and so are not its fine-tune knobs; `camera` and `lens` are typed, not picked
 from menus; the manual vignette is evaluated exactly rather than from a lookup table; negative
-values are not clamped; pixels outside the Source are black when `blackOutside` is on, where
-darktable repeats the edge.
+values are not clamped; what the Source reads past its edge follows the Edge Mode knob (`edgeMode`):
+Input takes the Source's own mode, Stretch repeats the edge, as darktable always does, and Black reads
+0. Under Black a filter fades the image out over one more Source pixel, and the region of definition
+covers only where the image lands; under Stretch it also covers the Source's own area.
 
 Tolerance:
 

@@ -480,13 +480,6 @@ LensCorrect::initializeKnobs()
     page->addKnob(clamp);
     _clamp = clamp;
 
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(true);
-    page->addKnob(blackOutside);
-    _blackOutside = blackOutside;
-
     _filterKnobs.create(this, page, filter, clamp);
 
     KnobStringPtr info = createKnob<KnobString>(tr("Info"));
@@ -527,7 +520,6 @@ LensCorrect::updateVisibility()
         _tcaBlue.lock(),
         _filter.lock(),
         _clamp.lock(),
-        _blackOutside.lock(),
     };
     for (const KnobIPtr& knob : lensfunKnobs) {
         setSecretAndDisabled(knob, !lensfun);
@@ -938,9 +930,7 @@ LensCorrect::readSettings(double time,
     if (KnobBoolPtr k = _clamp.lock()) {
         s->clamp = k->getValueAtTime(time, 0, view);
     }
-    if (KnobBoolPtr k = _blackOutside.lock()) {
-        s->blackOutside = k->getValueAtTime(time, 0, view);
-    }
+    s->edgeMode = resolvedEdgeMode(time, view);
 } // LensCorrect::readSettings
 
 LensCorrect::Model
@@ -1070,7 +1060,7 @@ LensCorrect::getRegionOfDefinition(U64 hash,
     // Everything below is in full-resolution pixels, whatever the render scale: the model covers the
     // format at scale 1, and a region of definition is canonical. See PixelMapper for the lensfun
     // coordinates. A filter fades black in over one more Source pixel past the edge.
-    const double fade = settings.blackOutside ? 1. : 0.;
+    const double fade = (settings.edgeMode == EdgeMode::Black) ? 1. : 0.;
     const double originX = model.format.x1 + 0.5;
     const double originY = model.format.y2 - 0.5;
     const LensCorrectProfile::MappedBox lensfunBox = LensCorrectProfile::outputBox(*model.lens, model.request,
@@ -1088,7 +1078,7 @@ LensCorrect::getRegionOfDefinition(U64 hash,
     }
     // Clamped edge pixels fill the Source's own area however far inside it the image lands, and a
     // mask or a partial mix shows the Source itself.
-    if (!settings.blackOutside || isMaskApplied() || (getMixValue(time, view) != 1.)) {
+    if ((settings.edgeMode != EdgeMode::Black) || isMaskApplied() || (getMixValue(time, view) != 1.)) {
         box.merge(sourceRoD);
     }
     *rod = box;
@@ -1215,16 +1205,16 @@ sourcePixelSpan(const RectD& rod,
  * render passes on, so each footprint is built from the very values the render samples with. Around
  * each finite red, green and blue position the footprint holds every tap of the knob's filter
  * widened by kernelScale(), a box's integration rectangle, and the nearest pixel a draft render's
- * impulse reads. Non-finite positions read nothing, as in resampleRowFromCoords(). With
- * blackOutside, taps past the Source read 0, so a footprint counts only where it overlaps the
- * Source; otherwise the Resampler clamps taps onto the Source's edge, so the footprint is moved onto
- * it. An unbounded side of the Source neither clips nor moves anything.
+ * impulse reads. Non-finite positions read nothing, as in resampleRowFromCoords(). Under
+ * EdgeMode::Black, taps past the Source read 0, so a footprint counts only where it overlaps the
+ * Source; under Stretch the Resampler clamps taps onto the Source's edge, so the footprint is moved
+ * onto it. An unbounded side of the Source neither clips nor moves anything.
  */
 bool
 sourceReads(const PixelMapper& mapper,
             const RectI& window,
             const Resampler::FilterSpec& filter,
-            bool blackOutside,
+            EdgeMode edgeMode,
             const PixelSpan& sourceSpan,
             RectI* reads)
 {
@@ -1301,7 +1291,7 @@ sourceReads(const PixelMapper& mapper,
                     double x2 = std::floor(fx + reachX + slack) + 1.;
                     double y1 = std::floor(fy - 0.5 - reachY - slack);
                     double y2 = std::floor(fy + reachY + slack) + 1.;
-                    if (blackOutside) {
+                    if (edgeMode == EdgeMode::Black) {
                         x1 = std::max(x1, sourceSpan.x1);
                         x2 = std::min(x2, sourceSpan.x2);
                         y1 = std::max(y1, sourceSpan.y1);
@@ -1399,7 +1389,7 @@ LensCorrect::getRegionsOfInterest(double time,
     PixelSpan sourceSpan;
     RectI reads;
     // A draft render's impulse reads the nearest pixel, which every footprint holds.
-    if (!checkedPixelEnclosing(renderWindow, scale, metadata->getPixelAspectRatio(-1), &windowPixels) || !sourcePixelSpan(sourceRoD, scale, sourcePar, &sourceSpan) || !sourceReads(mapper, windowPixels, settings.filter, settings.blackOutside, sourceSpan, &reads)) {
+    if (!checkedPixelEnclosing(renderWindow, scale, metadata->getPixelAspectRatio(-1), &windowPixels) || !sourcePixelSpan(sourceRoD, scale, sourcePar, &sourceSpan) || !sourceReads(mapper, windowPixels, settings.filter, settings.edgeMode, sourceSpan, &reads)) {
         (*ret)[source] = wholeSource;
 
         return;
@@ -1525,13 +1515,13 @@ LensCorrect::renderOp(const RenderActionArgs& args,
                 const float* J = jacobian.empty() ? 0 : &jacobian[0];
                 // Green's positions carry alpha and, without TCA, every channel.
                 std::vector<float> green((std::size_t)n * io.nComps);
-                Resampler::resampleRowFromCoords(source, &sxc[1][1], &syc[1][1], J, n, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
+                Resampler::resampleRowFromCoords(source, &sxc[1][1], &syc[1][1], J, n, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, &green[0], io.nComps);
                 out = green;
                 if (tca && colourChannels) {
                     std::vector<float> other((std::size_t)n * io.nComps);
                     for (int c = 0; c < 3; c += 2) {
-                        Resampler::resampleRowFromCoords(source, &sxc[c][1], &syc[c][1], J, n, settings.filter, settings.clamp, (settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch),
+                        Resampler::resampleRowFromCoords(source, &sxc[c][1], &syc[c][1], J, n, settings.filter, settings.clamp, settings.edgeMode,
                                                          Resampler::eWrapNone, Resampler::eWrapNone, &other[0], io.nComps);
                         for (int i = 0; i < n; ++i) {
                             out[(std::size_t)i * io.nComps + c] = other[(std::size_t)i * io.nComps + c];
@@ -1636,7 +1626,7 @@ static_assert(offsetof(LensCorrectGpuParams, lobes) == 60 * 4, "lenscorrect.slan
 static_assert(sizeof(LensCorrectGpuParams) == 63 * 4, "lenscorrect.slang reads 63 words");
 
 const uint32_t kLensCorrectGpuClamp = 1;
-const uint32_t kLensCorrectGpuBlackOutside = 2;
+const uint32_t kLensCorrectGpuEdgeBlack = 2;
 const uint32_t kLensCorrectGpuJacobian = 4;
 const uint32_t kLensCorrectGpuSample = 8;
 const uint32_t kLensCorrectGpuReverse = 16;
@@ -1714,7 +1704,7 @@ LensCorrect::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kLensCorrectGpuClamp : 0u) | (settings.blackOutside ? kLensCorrectGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse && profile.movesPixels()) ? kLensCorrectGpuJacobian : 0u) | (settings.reverse ? kLensCorrectGpuReverse : 0u) | ((model.vignetteStrength > 0.f || model.showVignetteMask) ? kLensCorrectGpuManualVignette : 0u) | (model.showVignetteMask ? kLensCorrectGpuVignetteMask : 0u);
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kLensCorrectGpuClamp : 0u) | ((settings.edgeMode == EdgeMode::Black) ? kLensCorrectGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse && profile.movesPixels()) ? kLensCorrectGpuJacobian : 0u) | (settings.reverse ? kLensCorrectGpuReverse : 0u) | ((model.vignetteStrength > 0.f || model.showVignetteMask) ? kLensCorrectGpuManualVignette : 0u) | (model.showVignetteMask ? kLensCorrectGpuVignetteMask : 0u);
     if (!model.format.isNull()) {
         params.flags |= kLensCorrectGpuSample;
     }

@@ -33,6 +33,8 @@
 
 #include <QtCore/QtGlobal>
 
+#include "Global/EdgeMode.h"
+
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/NodeSpec.h"
@@ -120,14 +122,20 @@ struct MapRange {
 };
 
 /**
- * @brief The Map values of a pixel window. A pixel outside the window reads outside(), the value
- * the Map has beyond its image.
+ * @brief The Map values of a pixel window. Under EdgeMode::Black a pixel outside the window reads
+ * outside(), the value the Map has beyond its image; under EdgeMode::Stretch it reads the nearest
+ * pixel of the window, which holds the Map's own edge clamped outwards.
  **/
 class MapPlane {
 public:
     MapPlane() = default;
 
-    void reset(const RectI& window, float fill);
+    void reset(const RectI& window, float fill, EdgeMode mode = EdgeMode::Black);
+
+    EdgeMode edgeMode() const
+    {
+        return _edgeMode;
+    }
 
     const RectI& window() const
     {
@@ -146,14 +154,16 @@ public:
     const float* row(int y) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The smallest and largest Map value in rect. The part of rect outside the window
-     * counts as outside(); an empty rect gives outside() for both.
+     * @brief The smallest and largest Map value in rect. Under EdgeMode::Black the part of rect
+     * outside the window counts as outside(); under EdgeMode::Stretch rect is clamped onto the
+     * window. An empty rect, or an empty window, gives outside() for both.
      **/
     MapRange tileRange(const RectI& rect) const WARN_UNUSED_RETURN;
 
 private:
     RectI _window;
     float _outside = 0.f;
+    EdgeMode _edgeMode = EdgeMode::Black;
     std::vector<float> _values;
 };
 
@@ -211,9 +221,10 @@ public:
 
     /**
      * @brief The Map values over window. A disconnected Map reads 1 everywhere, so the node runs
-     * at its full size. A connected one reads a black pixel, remapped and inverted like any
-     * other, outside its image, and everywhere when the channel does not resolve. Fails on a Map
-     * image that is not float.
+     * at its full size. Outside its image a connected one follows the Map input's own edge mode:
+     * under Black it reads a black pixel, remapped and inverted like any other, under Stretch the
+     * image's nearest edge pixel. It reads black everywhere when the channel does not resolve.
+     * Fails on a Map image that is not float.
      * Runs on the calling thread, which must not be a pool thread: it fetches and locks the image.
      **/
     StatusEnum read(EffectInstance* effect,
@@ -232,14 +243,16 @@ public:
     static double clampSignedSize(double size) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Fills plane over window with channel of a float image, remapped by params; a null
-     * image, or a pixel outside its bounds, reads params.remap(0), as a black pixel inside it does.
+     * @brief Fills plane over window with channel of a float image, remapped by params. A null
+     * image reads params.remap(0), as a black pixel does; a pixel outside its bounds reads that
+     * under EdgeMode::Black and the nearest pixel of the image under EdgeMode::Stretch.
      **/
     static void fill(const Image* image,
                      int channel,
                      const MapInputParams& params,
                      const RectI& window,
-                     MapPlane* plane);
+                     MapPlane* plane,
+                     EdgeMode mode = EdgeMode::Black);
 
 private:
     KnobChannelSelectWPtr _channel;

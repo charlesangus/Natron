@@ -53,6 +53,7 @@
 #include "Engine/GpuWeight.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -334,7 +335,7 @@ renderGpu(GpuParityRuntime& runtime,
     params.bicubicB = (float)c.filter.B;
     params.bicubicC = (float)c.filter.C;
     params.flags = kSplineWarpGpuSample | ((c.clamp && Resampler::filterHonoursClamp(c.filter.filter)) ? kSplineWarpGpuClamp : 0u)
-        | (c.blackOutside ? kSplineWarpGpuBlackOutside : 0u) | ((c.filter.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
+        | (c.blackOutside ? kSplineWarpGpuEdgeBlack : 0u) | ((c.filter.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
     std::vector<uint32_t> words;
     SplineWarpFieldGpuLayout layout;
     if (c.subFrames.empty()) {
@@ -896,7 +897,7 @@ TEST_F(NativeSplineWarpGpuTest, MeshFrameMatchesTheCpu)
     NodePtr warp = makeWarp(source, true);
     ASSERT_TRUE(source && warp);
     for (bool blackOutside : { true, false }) {
-        ASSERT_TRUE(setKnobValues(warp, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValue(warp, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
         expectWarpRunsOnTheGpu(source, warp, blackOutside ? "mesh, black outside" : "mesh");
     }
 }
@@ -1028,7 +1029,7 @@ TEST_F(NativeSplineWarpGpuTest, CropToFormatFrameMatchesTheCpu)
     for (bool crop : { true, false }) {
         ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCropToFormat, { crop ? 1. : 0. }));
         for (bool blackOutside : { true, false }) {
-            ASSERT_TRUE(setKnobValues(warp, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValue(warp, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
             std::ostringstream what;
             what << "crop " << crop << " black outside " << blackOutside;
             expectWarpRunsOnTheGpu(source, warp, what.str());

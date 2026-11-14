@@ -53,7 +53,7 @@ larger shift.
 
 ## Crop
 
-`autoCrop` Off keeps the whole corrected image, with black corners. Largest Area crops to the
+`autoCrop` Off keeps the whole corrected image, corners included. Largest Area crops to the
 largest rectangle inside the corrected image. Original Format crops to the largest rectangle of the
 source's aspect ratio. The output format is the cropped size, at the source's pixel aspect ratio,
 with its bottom-left corner at the source format's. darktable lets you drag the crop rectangle
@@ -62,8 +62,9 @@ around in the image. That interaction belongs to the viewer work of M165. Here t
 When the knobs leave the image unchanged, or when the result would be less than 4 pixels across,
 the node passes its input through untouched, as darktable does.
 
-The image is resampled by the shared resampler: `filter`, `clamp` and `black_outside`.
-`black_outside` defaults to on, matching darktable's black corners. The GPU path uses the same
+The image is resampled by the shared resampler: `filter` and `clamp`, with the Edge Mode knob
+(`edgeMode`) setting what the source reads past its edge: its own mode under Input, its edge pixels
+under Stretch, and 0 under Black, which gives darktable's black corners. The GPU path uses the same
 matrix. Fitting is an action and always runs on the CPU.
 
 ## Parity

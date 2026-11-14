@@ -70,7 +70,7 @@ constexpr NodeSpec kIBlurNodeSpec = {
                    "\n"
                    "Where the Map is white the blur has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
                    "and in between a size in between. Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma "
-                   "and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the blur has the Size everywhere.\n"
+                   "and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. Outside the Map image, the Map reads black before Invert Map and the remap when the Map input is black outside, and its nearest edge pixel when it stretches. With no Map connected, the blur has the Size everywhere.\n"
                    "\n"
                    "The blur is a box of the pixel's size applied three times, an approximation of the Gaussian of standard deviation size/2.4 that Blur uses "
                    "(within about 2% at a constant size), whose cost does not depend on the size. Outside the image it reads by the Edge Mode: Stretch repeats the edge pixels, Black darkens the blur towards the edges. "
@@ -265,6 +265,7 @@ const uint32_t kGpuMapConnected = 1;
 const uint32_t kGpuMapRead = 2;
 const uint32_t kGpuMapInvert = 4;
 const uint32_t kGpuMapSmooth = 8;
+const uint32_t kGpuMapEdgeBlack = 16;
 
 // Mirrors IBlurParams in Kernels/iblur.slang, which has no padding between members.
 struct IBlurGpuParams {
@@ -386,7 +387,8 @@ recordIBlurGpu(const PassGpuIO& io,
                const IBlurParams& params,
                const PassContext& context,
                bool mapConnected,
-               int mapChannel)
+               int mapChannel,
+               EdgeMode mapEdgeMode)
 {
     gpu::GpuRecordContext& ctx = io.context;
     const RectI& domain = io.domain;
@@ -415,7 +417,8 @@ recordIBlurGpu(const PassGpuIO& io,
     const BoxRadii white = radiiAt(params, context, 1.f);
     const BoxRadii black = radiiAt(params, context, 0.f);
     const BoxRadii outside = radiiAt(params, context, params.map.remap(0.f));
-    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
+    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u)
+        | ((mapEdgeMode == EdgeMode::Black) ? kGpuMapEdgeBlack : 0u);
     k.exponent = params.map.exponent;
     k.sizeAtBlackX = (float)params.map.sizeAtBlack[0];
     k.sizeAtBlackY = (float)params.map.sizeAtBlack[1];
@@ -757,16 +760,18 @@ IBlur::recordPassesGpu(const PassGpuIO& io,
                        const IBlurParams& params,
                        const PassContext& context,
                        bool mapConnected,
-                       int mapChannel)
+                       int mapChannel,
+                       EdgeMode mapEdgeMode)
 {
 #ifdef NATRON_HAVE_GPU
-    return recordIBlurGpu(io, params, context, mapConnected, mapChannel);
+    return recordIBlurGpu(io, params, context, mapConnected, mapChannel, mapEdgeMode);
 #else
     Q_UNUSED(io);
     Q_UNUSED(params);
     Q_UNUSED(context);
     Q_UNUSED(mapConnected);
     Q_UNUSED(mapChannel);
+    Q_UNUSED(mapEdgeMode);
 
     return eStatusFailed;
 #endif
@@ -787,7 +792,7 @@ IBlur::recordGpu(const PassGpuIO& io,
         channel = -1;
     }
 
-    return recordPassesGpu(io, params, context, connected, channel);
+    return recordPassesGpu(io, params, context, connected, channel, inputEdgeMode(kIBlurInputMap, time, view));
 #else
     Q_UNUSED(io);
     Q_UNUSED(time);

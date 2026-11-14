@@ -10,7 +10,7 @@ The variable-size ErodeDilate, `IErodeDilate`, ErodeDilate's I-variant in the I-
 share has the same name.
 
 - **Map.** As IBlur's ([IBlur.md](IBlur.md)): an aux Map input from `MapInput`, its channel (alpha by default)
-  inverted, clamped to [0, 1] and remapped by Map Gamma and Map Response, a black pixel outside the Map's image (inverted and remapped like any other), the standard Mask and Mix
+  inverted, clamped to [0, 1] and remapped by Map Gamma and Map Response, outside the Map's image its nearest edge pixel when the Map's edge mode is Stretch and a black pixel (inverted and remapped like any other) when it is Black, the standard Mask and Mix
   still limiting the result. The signed radius of an axis at a pixel is `lerp(sizeAtBlack, size, map)`, computed in
   float and clamped between the two, so it is monotonic in the Map and may cross 0 where Size and Size At Black have
   opposite signs, switching that pixel from eroding to dilating. A disconnected Map filters at Size everywhere and

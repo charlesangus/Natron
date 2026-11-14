@@ -16,7 +16,7 @@ import edgesample;
 [[vk::binding(5, 0)]] StructuredBuffer<float> sampleBuf;
 
 static const uint kSplineWarpClamp = 1;
-static const uint kSplineWarpBlackOutside = 2;
+static const uint kSplineWarpEdgeBlack = 2;
 static const uint kSplineWarpJacobian = 4;
 static const uint kSplineWarpSample = 8;
 static const uint kSplineWarpField = 16;
@@ -170,7 +170,7 @@ ResampleSource splineWarpSource(SplineWarpParams s)
     src.y2 = s.sampleY2;
     src.nComps = s.sampleNComps;
     src.valid = (s.flags & kSplineWarpSample) != 0 && s.sampleX2 > s.sampleX1 && s.sampleY2 > s.sampleY1;
-    src.edgeMode = edgeModeFromFlags(s.flags, kSplineWarpBlackOutside);
+    src.edgeMode = edgeModeFromFlags(s.flags, kSplineWarpEdgeBlack);
     return src;
 }
 

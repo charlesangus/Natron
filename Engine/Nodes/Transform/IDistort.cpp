@@ -581,11 +581,12 @@ IDistort::renderOp(const RenderActionArgs& args,
     const int gridX0 = roi.x1 - 1;
     const int gridWidth = width + 2;
     const UVChannel* const uvChannel = uvChannels;
+    const EdgeMode uvEdgeMode = stageInputEdgeMode(*this, kIDistortInputUV, args.time, args.view);
     const auto coordRow = [&](int y, float* uRow, float* vRow, float* sx, float* sy) {
         float* const values[2] = { uRow, vRow };
         for (int i = 0; i < 2; ++i) {
             if (uvChannel[i].valid && uvImages[i]) {
-                PassExec::readChannelRow(uvImages[i].get(), uvAccess[i].get(), uvBounds[i], uvNComps[i], uvChannel[i].channel, gridX0, y, gridWidth, 0.f, values[i]);
+                PassExec::readChannelRow(uvImages[i].get(), uvAccess[i].get(), uvBounds[i], uvNComps[i], uvChannel[i].channel, gridX0, y, gridWidth, uvEdgeMode, values[i]);
             } else {
                 std::fill(values[i], values[i] + gridWidth, 0.f);
             }

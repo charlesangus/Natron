@@ -20,6 +20,8 @@ static const uint kWarpMapConnected = 16;
 static const uint kWarpMapRead = 32;
 static const uint kWarpMapInvert = 64;
 static const uint kWarpMapSmooth = 128;
+static const uint kWarpUVEdgeBlack = 256;
+static const uint kWarpMapEdgeBlack = 512;
 
 struct WarpUV
 {
@@ -116,11 +118,20 @@ bool uvInside(WarpUV uv, int component, int x, int y)
     return component >= 0 && wrapInside(int2(x, y), uv.x1, uv.y1, uv.x2, uv.y2);
 }
 
-float uvAt(WarpUV uv, int component, int x, int y)
+// Whether (x, y) reads a pixel of component: inside the UV bounds, or anywhere on a UV input that
+// stretches, whose nearest pixel it then reads.
+bool uvReadable(WarpUV uv, uint flags, int component, int x, int y, out int2 sampled)
 {
-    if (!uvInside(uv, component, x, y))
+    sampled = int2(x, y);
+    return component >= 0 && edgePixel(int2(x, y), int4(uv.x1, uv.y1, uv.x2, uv.y2), edgeModeFromFlags(flags, kWarpUVEdgeBlack), sampled);
+}
+
+float uvAt(WarpUV uv, uint flags, int component, int x, int y)
+{
+    int2 p;
+    if (!uvReadable(uv, flags, component, x, y, p))
         return 0.0;
-    return uvBuf[uv.offset + uint(y - uv.y1) * uv.stride + uint(x - uv.x1) * uv.comps + uint(component)];
+    return uvBuf[uv.offset + uint(p.y - uv.y1) * uv.stride + uint(p.x - uv.x1) * uv.comps + uint(component)];
 }
 
 bool warpMapped(Warp w)
@@ -129,15 +140,18 @@ bool warpMapped(Warp w)
 }
 
 // The remapped Map value at (x, y), as MapInput::read() and MapInputParams::remap() give it: 1
-// with no Map, and a black pixel, remapped and inverted like any other, off the Map's pixels or
-// when its channel is not read.
+// with no Map, and a black pixel, remapped and inverted like any other, when its channel is not
+// read. Off the Map's pixels it reads black under the Map's Black edge mode and its nearest pixel
+// under Stretch.
 float warpMap(Warp w, int x, int y)
 {
     if (!warpMapped(w))
         return 1.0;
     float raw = 0.0;
-    if ((w.flags & kWarpMapRead) != 0 && w.map.component >= 0 && wrapInside(int2(x, y), w.map.x1, w.map.y1, w.map.x2, w.map.y2))
-        raw = mapBuf[w.map.offset + uint(y - w.map.y1) * w.map.stride + uint(x - w.map.x1) * w.map.comps + uint(w.map.component)];
+    int2 p;
+    if ((w.flags & kWarpMapRead) != 0 && w.map.component >= 0
+        && edgePixel(int2(x, y), int4(w.map.x1, w.map.y1, w.map.x2, w.map.y2), edgeModeFromFlags(w.flags, kWarpMapEdgeBlack), p))
+        raw = mapBuf[w.map.offset + uint(p.y - w.map.y1) * w.map.stride + uint(p.x - w.map.x1) * w.map.comps + uint(w.map.component)];
     return mapRemap(raw, (w.flags & kWarpMapInvert) != 0, (w.flags & kWarpMapSmooth) != 0, w.map.exponent);
 }
 
@@ -154,8 +168,8 @@ float finiteOrFloat(FF v, float fallback)
 // c + (s - c) * m, c itself at 0.
 float2 stmapCoord(Warp w, int x, int y)
 {
-    const float mapU = uvAt(w.uv, w.uv.u, x, y);
-    const float mapV = uvAt(w.uv, w.uv.v, x, y);
+    const float mapU = uvAt(w.uv, w.flags, w.uv.u, x, y);
+    const float mapV = uvAt(w.uv, w.flags, w.uv.v, x, y);
     const FF u = ffMul(ffAdd(ffMake(mapU, 0.0), ffNeg(w.uOffset)), w.uScale);
     const FF v = ffMul(ffAdd(ffMake(mapV, 0.0), ffNeg(w.vOffset)), w.vScale);
     const float m = warpMap(w, x, y);
@@ -179,8 +193,8 @@ float2 stmapCoord(Warp w, int x, int y)
 // A Map value m scales the displacement, the pixel's centre itself at 0.
 float2 idistortCoord(Warp w, int x, int y)
 {
-    const float mapU = uvAt(w.uv, w.uv.u, x, y);
-    const float mapV = uvAt(w.uv, w.uv.v, x, y);
+    const float mapU = uvAt(w.uv, w.flags, w.uv.u, x, y);
+    const float mapV = uvAt(w.uv, w.flags, w.uv.v, x, y);
     const FF u = ffMul(ffAdd(ffMake(mapU, 0.0), ffNeg(w.uOffset)), w.uScale);
     const FF v = ffMul(ffAdd(ffMake(mapV, 0.0), ffNeg(w.vOffset)), w.vScale);
     if (warpMapped(w))
@@ -257,7 +271,9 @@ float4 warpSample(Warp w, int2 p, bool idistort)
         return wrapReadSource(p);
     // Off the UV view, as with no alpha channel at all, every position is valid; where the Map is
     // 0 the pixel keeps its own, so the gate does not apply.
-    if (!idistort && uvInside(w.uv, w.uv.alpha, p.x, p.y) && !(uvAt(w.uv, w.uv.alpha, p.x, p.y) > 0.0) && warpMap(w, p.x, p.y) > 0.0)
+    int2 alphaAt;
+    if (!idistort && uvReadable(w.uv, w.flags, w.uv.alpha, p.x, p.y, alphaAt) && !(uvAt(w.uv, w.flags, w.uv.alpha, p.x, p.y) > 0.0)
+        && warpMap(w, p.x, p.y) > 0.0)
         return zero;
     const float2 s = idistort ? idistortCoord(w, p.x, p.y) : stmapCoord(w, p.x, p.y);
     float4 J = zero;

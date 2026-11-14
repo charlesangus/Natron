@@ -540,7 +540,6 @@ AutoStraightenOp::bake(const KnobReader& reader) const
     p.crop = (Ashift::CropModeEnum)reader.value(autoCrop);
     p.filter = filterKnobs.read(reader);
     p.clamp = reader.value(clamp);
-    p.blackOutside = reader.value(blackOutside);
 
     return p;
 }
@@ -567,7 +566,6 @@ AutoStraightenOp::settings(const Params& params,
 
     s.filter = params.filter;
     s.clamp = params.clamp;
-    s.edgeMode = params.blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
     s.invert = false;
     s.transformIsIdentity = isIdentity(params, context);
 
@@ -874,13 +872,6 @@ AutoStraighten::initializeKnobs()
     clamp->setSpacingBetweenItems(1);
     page->addKnob(clamp);
     op().clamp = clamp;
-
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(true);
-    page->addKnob(blackOutside);
-    op().blackOutside = blackOutside;
 
     op().filterKnobs.create(this, page, filter, clamp);
 
@@ -1606,6 +1597,7 @@ AutoStraighten::getPreferredMetadataAt(double time,
     const Geometry g = computeGeometry(source, par, getModel(time, view), crop);
 
     metadata.setOutputFormat(g.output);
+    metadata.setEdgeMode(resolvedEdgeMode(time, view));
 
     return eStatusOK;
 }

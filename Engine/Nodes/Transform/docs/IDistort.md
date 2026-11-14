@@ -29,8 +29,10 @@ the UV is not finite; where m is 1 the displacement is the unmapped one. With no
 whole displacement applies and the output is bit for bit the node's without the input.
 
 - The Map is sampled in output space, at the pixel being written, as the UV is, not where that
-  pixel comes from in the Source. Outside its image the Map reads as a black pixel, inverted and remapped
-  like any other (no displacement unless Invert Map is on).
+  pixel comes from in the Source. Outside its image the Map follows its own edge mode: under Stretch it
+  repeats its nearest edge pixel, under Black it reads as a black pixel, inverted and remapped like any other
+  (no displacement unless Invert Map is on). The UV input follows its own edge mode the same way, its edge
+  values under Stretch and 0 under Black.
 - The Jacobian takes the Map's gradient with the UV's, from the same neighbouring coordinates, so
   the Map is read one pixel past the render window. A hard Map edge between black and white tears
   the image along it when the displacement is large; soften the Map to bend the image instead.

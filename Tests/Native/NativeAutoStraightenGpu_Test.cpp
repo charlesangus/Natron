@@ -49,6 +49,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -484,7 +485,7 @@ TEST_P(NativeAutoStraightenGpuFilterTest, ResamplingMatchesTheCpuRender)
                 ASSERT_TRUE(setCase(node, *c));
                 ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filters[f].id)));
                 ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
                 std::ostringstream base;
                 base << filters[f].id << " " << c->name << (clamp ? " clamp" : "") << (blackOutside ? " black-outside" : "");
                 expectGpuMatchesCpu(*runtime, source, node, base.str(), &nCompared);

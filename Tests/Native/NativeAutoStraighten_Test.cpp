@@ -48,6 +48,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/Nodes/Transform/AshiftFit.h"
@@ -207,7 +208,7 @@ protected:
             && setKnobValues(node, kAutoStraightenParamLensDependence, { c.lensDependence })
             && setKnobValues(node, kAutoStraightenParamAspectAdjust, { c.aspectAdjust })
             && setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")) && setKnobValues(node, kResamplerParamFilterClamp, { 0. })
-            && setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. });
+            && setKnobValue(node, kEdgeModeParam, std::string("black"));
     }
 
     static RenderedPlane render(const NodePtr& node,

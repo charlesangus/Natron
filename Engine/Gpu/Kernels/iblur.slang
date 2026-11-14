@@ -107,6 +107,7 @@ static const uint kMapConnected = 1;
 static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
 static const uint kMapSmooth = 8;
+static const uint kMapEdgeBlack = 16;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Two-float arithmetic: a value is hi + lo with |lo| at most half an ulp of hi.
@@ -371,8 +372,9 @@ void iblur_radii(uint3 tid : SV_DispatchThreadID)
         ry = k.outsideRy;
         const int x = params.domX1 + int(tid.x);
         const int y = params.domY1 + int(tid.y);
-        if ((k.mapFlags & kMapRead) != 0u && x >= k.mapX1 && x < k.mapX2 && y >= k.mapY1 && y < k.mapY2) {
-            const float raw = asfloat(mapBuf[k.mapOffset + uint(y - k.mapY1) * k.mapStride + uint(x - k.mapX1) * k.mapChannels + k.mapChannel]);
+        int2 at;
+        if ((k.mapFlags & kMapRead) != 0u && edgePixel(int2(x, y), int4(k.mapX1, k.mapY1, k.mapX2, k.mapY2), edgeModeFromFlags(k.mapFlags, kMapEdgeBlack), at)) {
+            const float raw = asfloat(mapBuf[k.mapOffset + uint(at.y - k.mapY1) * k.mapStride + uint(at.x - k.mapX1) * k.mapChannels + k.mapChannel]);
             const float m = remapMap(k, raw);
             if (m == 0.0) {
                 rx = k.blackRx;

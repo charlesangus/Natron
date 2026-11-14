@@ -163,7 +163,8 @@ try:
             typed = float(boxes[0].text())
         except ValueError:
             typed = None
-        current = round(item.getParam("opacity").getValue(0), DIGITS)
+        # A shape's knob has no holder, so getValue reads frame 0; the panel shows the edit frame.
+        current = round(item.getParam("opacity").getValueAtTime(EDIT_FRAME, 0), DIGITS)
         check(typed is not None and abs(typed - current) < PANEL_TOL,
               "%s: the panel shows %s's opacity %g (box %r)" % (what, item.getScriptName(), current,
                                                                boxes[0].text()))

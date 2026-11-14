@@ -1412,6 +1412,44 @@ rawNumber(const KnobI* knob,
     return 0.;
 }
 
+template <typename T>
+bool
+shownNumberAs(KnobI* knob,
+              int dimension,
+              double* value)
+{
+    Knob<T>* k = dynamic_cast<Knob<T>*>(knob);
+
+    if (!k) {
+        return false;
+    }
+    if (!k->getExpression(dimension).empty() || k->hasDrivers()) {
+        *value = rawNumber(knob, dimension);
+    } else {
+        *value = (double)k->getValue(dimension, ViewSpec::current(), false);
+    }
+
+    return true;
+}
+
+/*
+ * The static value the main thread sees. While its node renders, a write to the proxy is queued:
+ * the main thread reads the new value at once, but the raw value only changes once the render ends.
+ * Comparing raw values would then forward nothing until the render is over.
+ */
+double
+shownNumber(KnobI* knob,
+            int dimension)
+{
+    double value = 0.;
+
+    if (!shownNumberAs<double>(knob, dimension, &value) && !shownNumberAs<int>(knob, dimension, &value)) {
+        ignore_result(shownNumberAs<bool>(knob, dimension, &value));
+    }
+
+    return value;
+}
+
 std::string
 rawString(const KnobI* knob,
           int dimension)
@@ -1440,7 +1478,9 @@ writeNumberAs(KnobI* target,
     // An item knob has no holder to auto-key it, and keying a knob that cannot animate trips
     // over its missing curve.
     if (atTime && target->canAnimate() && target->isAnimationEnabled()) {
-        ignore_result(k->setValueAtTime(time, fromKeyValue<T>(value), ViewSpec::all(), dimension, reason, NULL));
+        // setValueAtTime writes the new key through this pointer unchecked.
+        KeyFrame newKey;
+        ignore_result(k->setValueAtTime(time, fromKeyValue<T>(value), ViewSpec::all(), dimension, reason, &newKey));
     } else {
         ignore_result(k->setValue(fromKeyValue<T>(value), ViewSpec::all(), dimension, reason, NULL));
     }
@@ -1599,7 +1639,7 @@ RotoCurveContext::snapshotProxy(const KnobIPtr& proxy)
         if (curve) {
             baseline.curves[d]->clone(*curve);
         }
-        baseline.numbers[d] = rawNumber(proxy.get(), d);
+        baseline.numbers[d] = shownNumber(proxy.get(), d);
         baseline.strings[d] = rawString(proxy.get(), d);
     }
 }
@@ -1748,7 +1788,7 @@ RotoCurveContext::forwardDimensionEdit(const KnobIPtr& proxy,
         return;
     }
 
-    const double value = rawNumber(proxy.get(), dimension);
+    const double value = shownNumber(proxy.get(), dimension);
     if (!wasAnimated && !isAnimated) {
         if (value == baseline.numbers[dimension]) {
             return;

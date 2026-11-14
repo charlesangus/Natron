@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdio>
 #include <memory>
 #include <string>
 
@@ -46,6 +47,7 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
+#include "Engine/TimeLine.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/ViewIdx.h"
@@ -80,6 +82,7 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         getApp()->getProject()->reset(false, true);
+        getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
         BaseTest::TearDown();
     }
 
@@ -259,4 +262,49 @@ TEST_F(PyRotoCreateTest, LayerChildrenHaveTheirOwnTypes)
     std::string error, output;
     EXPECT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error << "\n"
                                                                                                            << script;
+}
+
+// A shape's parameter read from Python without a frame answers at its node's current frame, as a
+// node's own parameter does, whether or not the shape is selected.
+TEST_F(PyRotoCreateTest, AShapeParameterReadsAtTheNodesCurrentFrame)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(node));
+    RotoContextPtr ctx = node->getRotoContext();
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr selected = ctx->makeSquare(0., 0., 10., ctx->getTimelineCurrentTime());
+    BezierPtr unselected = ctx->makeSquare(30., 0., 10., ctx->getTimelineCurrentTime());
+    ASSERT_TRUE(selected && unselected);
+    ASSERT_TRUE(selected->setScriptName("selectedShape"));
+    ASSERT_TRUE(unselected->setScriptName("unselectedShape"));
+    selected->getOpacityKnob()->setValueAtTime(1., 0.2, ViewSpec::all(), 0);
+    selected->getOpacityKnob()->setValueAtTime(20., 0.8, ViewSpec::all(), 0);
+    unselected->getOpacityKnob()->setValueAtTime(1., 0.6, ViewSpec::all(), 0);
+    unselected->getOpacityKnob()->setValueAtTime(20., 0.1, ViewSpec::all(), 0);
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    ctx->select(selected, RotoItem::eSelectionReasonOther);
+    const double frame = 12.;
+    getApp()->getTimeLine()->seekFrame((int)frame, false, NULL, eTimelineChangeReasonOtherSeek);
+    ASSERT_DOUBLE_EQ(frame, node->getEffectInstance()->getCurrentTime());
+
+    const double selectedAtFrame = selected->getOpacityKnob()->getValueAtTime(frame, 0);
+    const double unselectedAtFrame = unselected->getOpacityKnob()->getValueAtTime(frame, 0);
+    ASSERT_NE(selected->getOpacityKnob()->getValueAtTime(0., 0), selectedAtFrame);
+    ASSERT_NE(unselected->getOpacityKnob()->getValueAtTime(0., 0), unselectedAtFrame);
+    char expected[128];
+    std::snprintf(expected, sizeof(expected), "expected = {\"selectedShape\": %.17g, \"unselectedShape\": %.17g}\n",
+                  selectedAtFrame, unselectedAtFrame);
+
+    const std::string script = std::string("r = ") + pythonName(node) + ".getRotoContext()\n"
+        + expected
+        + "for name, want in expected.items():\n"
+          "    p = r.getItemByName(name).getParam(\"opacity\")\n"
+          "    assert p.getCurrentTime() == 12, (name, p.getCurrentTime())\n"
+          "    assert abs(p.get() - want) < 1e-9, (name, p.get(), want)\n"
+          "    assert abs(p.getValue() - want) < 1e-9, (name, p.getValue(), want)\n"
+          "    assert abs(p.getValue(0) - want) < 1e-9, (name, p.getValue(0), want)\n";
+    std::string error, output;
+    EXPECT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error << "\n"
+                                                                                                           << script;
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
 }

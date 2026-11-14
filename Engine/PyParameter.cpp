@@ -99,6 +99,38 @@ checkTangentDerivative(double derivative,
     return false;
 }
 
+// A roto item's knob has no holder, so the knob alone reads frame 0; a Param fetched through the
+// item reads at its node's time, as a node's own Param does.
+double
+currentTime(const KnobIPtr& knob,
+            const NodeWPtr& itemNode)
+{
+    double time;
+    if (KnobHelper::getExpressionEvaluationTime(&time)) {
+        return time;
+    }
+    NodePtr node = itemNode.lock();
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+    if (effect && !knob->getHolder()) {
+        return effect->getCurrentTime();
+    }
+
+    return knob->getCurrentTime();
+}
+
+template <typename KnobPtr>
+auto
+currentValue(const KnobPtr& knob,
+             const NodeWPtr& itemNode,
+             int dimension)
+{
+    if (itemNode.expired()) {
+        return knob->getValue(dimension);
+    }
+
+    return knob->getValueAtTime(currentTime(knob, itemNode), dimension);
+}
+
 } // anonymous namespace
 
 bool
@@ -847,7 +879,7 @@ AnimatedParam::getCurrentTime() const
     if (!knob) {
         return 0;
     }
-    return knob->getCurrentTime();
+    return currentTime(knob, _itemNode);
 }
 
 bool
@@ -1115,7 +1147,7 @@ AnimatedParam::getDriverStart(int dimension) const
 {
     KnobIPtr knob = _knob.lock();
 
-    return knob ? getDriverStartAtTime(knob->getCurrentTime(), dimension) : 0.;
+    return knob ? getDriverStartAtTime(currentTime(knob, _itemNode), dimension) : 0.;
 }
 
 double
@@ -1123,7 +1155,7 @@ AnimatedParam::getDriverEnd(int dimension) const
 {
     KnobIPtr knob = _knob.lock();
 
-    return knob ? getDriverEndAtTime(knob->getCurrentTime(), dimension) : 0.;
+    return knob ? getDriverEndAtTime(currentTime(knob, _itemNode), dimension) : 0.;
 }
 
 double
@@ -1188,7 +1220,7 @@ IntParam::get() const
         return 0;
     }
 
-    return knob->getValue();
+    return currentValue(knob, _itemNode, 0);
 }
 
 Int2DTuple
@@ -1200,8 +1232,8 @@ Int2DParam::get() const
         return ret;
     }
 
-    ret.x = knob->getValue(0);
-    ret.y = knob->getValue(1);
+    ret.x = currentValue(knob, _itemNode, 0);
+    ret.y = currentValue(knob, _itemNode, 1);
 
     return ret;
 }
@@ -1215,9 +1247,9 @@ Int3DParam::get() const
         return ret;
     }
 
-    ret.x = knob->getValue(0);
-    ret.y = knob->getValue(1);
-    ret.z = knob->getValue(2);
+    ret.x = currentValue(knob, _itemNode, 0);
+    ret.y = currentValue(knob, _itemNode, 1);
+    ret.z = currentValue(knob, _itemNode, 2);
 
     return ret;
 }
@@ -1384,7 +1416,7 @@ IntParam::getValue(int dimension) const
     if (!knob) {
         return 0;
     }
-    return knob->getValue(dimension);
+    return currentValue(knob, _itemNode, dimension);
 }
 
 void
@@ -1602,7 +1634,7 @@ DoubleParam::get() const
     if (!knob) {
         return 0.;
     }
-    return knob->getValue(0);
+    return currentValue(knob, _itemNode, 0);
 }
 
 Double2DTuple
@@ -1614,8 +1646,8 @@ Double2DParam::get() const
         return ret;
     }
 
-    ret.x = knob->getValue(0);
-    ret.y = knob->getValue(1);
+    ret.x = currentValue(knob, _itemNode, 0);
+    ret.y = currentValue(knob, _itemNode, 1);
 
     return ret;
 }
@@ -1629,9 +1661,9 @@ Double3DParam::get() const
         return ret;
     }
 
-    ret.x = knob->getValue(0);
-    ret.y = knob->getValue(1);
-    ret.z = knob->getValue(2);
+    ret.x = currentValue(knob, _itemNode, 0);
+    ret.y = currentValue(knob, _itemNode, 1);
+    ret.z = currentValue(knob, _itemNode, 2);
 
     return ret;
 }
@@ -1821,7 +1853,7 @@ DoubleParam::getValue(int dimension) const
     if (!knob) {
         return 0.;
     }
-    return knob->getValue(dimension);
+    return currentValue(knob, _itemNode, dimension);
 }
 
 void
@@ -2040,10 +2072,10 @@ ColorParam::get() const
     if (!knob) {
         return ret;
     }
-    ret.r = knob->getValue(0);
-    ret.g = knob->getValue(1);
-    ret.b = knob->getValue(2);
-    ret.a = knob->getDimension() == 4 ? knob->getValue(3) : 1.;
+    ret.r = currentValue(knob, _itemNode, 0);
+    ret.g = currentValue(knob, _itemNode, 1);
+    ret.b = currentValue(knob, _itemNode, 2);
+    ret.a = knob->getDimension() == 4 ? currentValue(knob, _itemNode, 3) : 1.;
 
     return ret;
 }
@@ -2125,7 +2157,7 @@ ColorParam::getValue(int dimension) const
     if (!knob) {
         return 0.;
     }
-    return knob->getValue(dimension);
+    return currentValue(knob, _itemNode, dimension);
 }
 
 void
@@ -2342,7 +2374,7 @@ ChoiceParam::get() const
     if (!knob) {
         return 0;
     }
-    return knob->getValue(0);
+    return currentValue(knob, _itemNode, 0);
 }
 
 int
@@ -2413,7 +2445,7 @@ ChoiceParam::getValue() const
     if (!knob) {
         return 0;
     }
-    return knob->getValue(0);
+    return currentValue(knob, _itemNode, 0);
 }
 
 void
@@ -2637,7 +2669,7 @@ BooleanParam::get() const
         return false;
     }
 
-    return knob->getValue(0);
+    return currentValue(knob, _itemNode, 0);
 }
 
 bool
@@ -2694,7 +2726,7 @@ BooleanParam::getValue() const
         return false;
     }
 
-    return knob->getValue(0);
+    return currentValue(knob, _itemNode, 0);
 }
 
 void
@@ -2821,7 +2853,7 @@ StringParamBase::get() const
         return QString();
     }
 
-    return QString::fromUtf8( knob->getValue(0).c_str() );
+    return QString::fromUtf8(currentValue(knob, _itemNode, 0).c_str());
 }
 
 QString
@@ -2878,7 +2910,7 @@ StringParamBase::getValue() const
         return QString();
     }
 
-    return QString::fromUtf8( knob->getValue(0).c_str() );
+    return QString::fromUtf8(currentValue(knob, _itemNode, 0).c_str());
 }
 
 void

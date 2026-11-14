@@ -45,6 +45,7 @@ enum class AiModelTask {
     eDenoiseLinear,
     eUpscale2x,
     eUpscale4x,
+    eOpticalFlow,
 };
 
 // The manifest's spelling: "mask-object", "denoise", "denoise-raw-bayer", ...

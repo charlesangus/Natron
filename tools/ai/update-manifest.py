@@ -16,6 +16,11 @@ BSRGAN at 2x and 4x, RawNIND's Bayer and linear variants). Natron lists each
 model as its own entry, naming the package it comes from and the files in it
 it uses, so a node picks a model by task. VARIANTS below is that list.
 
+Models darktable-ai does not ship are hosted on Natron's own releases and
+listed in NATRON_MODELS, which carries each one's entry as is; they follow the
+darktable-ai models in the manifest. tools/ai/export-flow-model.py writes the
+optical-flow package and prints the sha256 and size recorded there.
+
 An entry whose weight licence is not on the GPL-3-compatible allow-list is
 refused, as darktable-ai's selection criteria require.
 
@@ -83,6 +88,29 @@ VARIANTS = [
      "upscale-bsrgan", ["model_x2.onnx"], False),
     ("upscale-bsrgan-x4", "upscale-4x", "BSRGAN 4x",
      "upscale-bsrgan", ["model_x4.onnx"], False),
+]
+
+NATRON_RELEASES = "https://github.com/charlesangus/Natron/releases/download/ai-models-1/"
+
+NATRON_MODELS = [
+    {
+        "id": "optical-flow-searaft-m",
+        "task": "optical-flow",
+        "name": "SEA-RAFT M (Spring)",
+        "package": "optical-flow-searaft-m",
+        "files": ["model.onnx"],
+        "url": NATRON_RELEASES + "optical-flow-searaft-m.dtmodel",
+        "sha256": "9518b14a1ddef48e874201f00cb0945f7fc58a8afe49216ebf877ecd08e50f13",
+        "size": 74374782,
+        "weightsLicence": "BSD-3-Clause",
+        "trainingDataLicence": (
+            "TartanAir: CC BY 4.0; Spring: CC BY 4.0; FlyingChairs: research use only, no commercial use; "
+            "FlyingThings3D: research use (terms unconfirmed); MPI Sintel: research use (MPI PS:License 1.0, unconfirmed); "
+            "KITTI 2015: CC BY-NC-SA 3.0; HD1K: terms unconfirmed"),
+        "osaid": "Open Source AI",
+        "cardUrl": "https://github.com/princeton-vl/SEA-RAFT/blob/9137517ba24e628442aec097d3afe71d03503b75/README.md",
+        "default": True,
+    },
 ]
 
 
@@ -212,6 +240,12 @@ def build(tag):
             "cardUrl": p["cardUrl"],
             "default": default,
         })
+
+    for entry in NATRON_MODELS:
+        if entry["weightsLicence"] not in WEIGHTS_LICENCE_ALLOW_LIST:
+            sys.exit("%s: weight licence %r is not on the GPL-3-compatible allow-list"
+                     % (entry["id"], entry["weightsLicence"]))
+        models.append(dict(entry))
 
     manifest = {
         "schema": SCHEMA,

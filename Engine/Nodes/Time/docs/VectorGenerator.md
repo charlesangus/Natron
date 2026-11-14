@@ -51,6 +51,30 @@ do not swamp the gradients in the shadows. Output vectors and passes are not aff
 or below 0, and non-finite values, match as 0; the curve then rises steeply from black, with 1 mapping
 to 1, and values above 1 keep rising more slowly. The curve has no control.
 
+## Neural method
+
+`method` Neural runs an optical-flow neural network instead of a classical solve. It follows large and
+thin motion the other methods lose. The model is the one installed for the `optical-flow` task, picked
+by `model` and downloaded with `downloadModel` (or in Preferences > AI Models); both are shown only for
+Neural. It runs on the CPU, so the node ends a GPU region, and each frame pair costs two model runs
+(forward and backward), and temporal smoothing multiplies the pairs. Large frames are run downscaled to fit the model and the vectors scaled back to full size.
+
+`modelColourspace` is the OpenColorIO colourspace the Source is converted to before the model, as on the
+other neural nodes; it defaults to the one the model was trained in (sRGB) and is shown only for Neural.
+The frames go to the model as they are, without the matching curve below.
+
+`quality` sets the model's refinement iterations: 2 at Fast, 4 at Medium (what the model was trained
+with) and 8 at Fine. Most of a run is the model's feature extraction, which every quality pays, so
+Fast saves less time than it does for DIS or TV-L1 and is rougher on fine motion. `flowChannels` does
+not apply to Neural and is greyed out: the model always reads the three colour channels. The
+confidence layer, Matte, `temporalSmoothing` and `outputs` work as for the other methods. With a Matte, the foreground and
+background runs show the model the frame multiplied by the matte and by its inverse, rather than
+weighting a data term.
+
+A missing model, or AI turned off in Preferences, is an error on the node saying why and pointing to the
+model manager. The node never falls back to another method, and a project keeps `method` Neural.
+Aborting a render stops the model run.
+
 ## Matte
 
 An optional Matte separates a foreground from its background: the two are estimated apart, each with
@@ -83,9 +107,11 @@ matched on its first alone, which RGB frames cannot be compared with.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `method` | DIS | The estimator: DIS or TV-L1. |
-| `quality` | Medium | The method's preset: Fast, Medium or Fine. |
-| `flowChannels` | Luminance | What is matched: Luminance or RGB. |
+| `method` | DIS | The estimator: DIS, TV-L1 or Neural. |
+| `quality` | Medium | The method's preset: Fast, Medium or Fine. For Neural, 2, 4 or 8 refinement iterations. |
+| `flowChannels` | Luminance | What is matched: Luminance or RGB. Not used by Neural. |
+| `model` | optical-flow default | The optical-flow model; Neural only. |
+| `modelColourspace` | the model's | The colourspace the Source is converted to before the model; Neural only. |
 | `matteChannel` | RGBA.A | The channel of the Matte input that separates foreground from background. |
 | `temporalSmoothing` | off | Blends vectors with those of the frames around, by confidence. |
 | `smoothingStrength` | 0.5 | How much those frames count; only with `temporalSmoothing`. |

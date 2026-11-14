@@ -276,18 +276,6 @@ SceneStage::hasPreviewTransforms() const
     return !_preview.empty();
 }
 
-const std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>>&
-SceneStage::getPreviewDeltas() const
-{
-    return _previewDeltas;
-}
-
-double
-SceneStage::getPreviewTimeCode() const
-{
-    return _previewTimeCode;
-}
-
 SceneStageSnapshot
 SceneStage::getSnapshot() const
 {

@@ -130,9 +130,10 @@ struct Request {
     // The render delegate's plug-in id. One that is not installed or cannot render here fails the
     // render with an error naming it, before any engine is made: there is no fallback.
     std::string renderer = kRenderDelegateStormId;
-    // Polled on the calling thread while any delegate renders; true cancels the render, Storm's
-    // between its passes, the others' at once. A request without one renders until its delegate
-    // converges, however long that takes.
+    // Polled on the calling thread while any delegate renders; true cancels the render: Storm's
+    // between its passes, a path tracer's once the Render() call under way returns, when its
+    // engine is dropped. A request without one renders until its delegate converges, however
+    // long that takes.
     std::function<bool()> aborted;
     // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
     // calling task; any count when 0. Cycles and MoonRay take it when an engine is made. Every
@@ -342,9 +343,10 @@ std::string contextDescription(std::string* error);
  * preview) and the edit count under the lock given at construction, the one that guards the
  * stage's edits, and then syncs its stage to the snapshot and renders it without that lock. A
  * sync of a large scene or a long Render() so never holds up the caller, and the engine,
- * subscribed to the worker's stage alone, can be dropped without it. The lock is taken before
- * the class's own, never while holding one of them but the one the destructor waits on for a
- * call into the caller.
+ * subscribed to the worker's stage alone, can be dropped without it. The worker takes the
+ * caller's lock only to snapshot, by polling rather than blocking on it, and holds none of the
+ * class's locks meanwhile except the one the destructor takes to detach it; under the caller's
+ * lock it takes the lock guarding its requests, never the other way round.
  *
  * The worker's stage shares the caller's layers read from files, which a layer reload edits in
  * place: the worker is a SceneWriteBarrier participant whose quiesce waits for the delegate call
@@ -503,10 +505,11 @@ public:
     static bool waitForDetachedWorkers(int timeoutMs);
 
     /**
-     * @brief For tests: hook is called on every worker after it took its snapshot and before it
-     * syncs its stage to it, where that sync runs, without the stage lock. Empty for none.
+     * @brief For tests: hook is called on every worker in each pass, after it synced its stage to
+     * the snapshot and before the delegate renders, under the lock the sync and the render hold
+     * (never the stage lock). Empty for none.
      **/
-    static void setBeforeSyncHook(const std::function<void()>& hook);
+    static void setPassHook(const std::function<void()>& hook);
 
     struct Implementation;
 

@@ -115,10 +115,6 @@ public:
 
     bool hasPreviewTransforms() const;
 
-    // The deltas and time code of the preview in force, as setPreviewTransforms() was last given them.
-    const std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>>& getPreviewDeltas() const;
-    double getPreviewTimeCode() const;
-
     SceneStageSnapshot getSnapshot() const;
 
     /**

@@ -236,7 +236,7 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         _watchdog.setPhase("teardown");
-        ProgressiveRender::setBeforeSyncHook(std::function<void()>());
+        ProgressiveRender::setPassHook(std::function<void()>());
         hold(false);
         _render.reset();
         // A worker still ending would hold a Cycles session of its thread count into the next test.
@@ -420,19 +420,30 @@ protected:
     }
 
     // Sets settings, which makes the engine again, and returns once its first pass over the heavy
-    // scene has been under way for a while. False, with a failure, if no such pass began.
+    // scene has been under way for a while and has published nothing yet. False, with a failure,
+    // if no such pass began or it ended first.
     bool heavyPass(const std::map<std::string, PXR_NS::VtValue>& settings)
     {
         std::shared_ptr<std::atomic<std::uint64_t>> seen = std::make_shared<std::atomic<std::uint64_t>>(0);
         const std::uint64_t builds = HydraRender::getEngineBuildCount();
-        ProgressiveRender::setBeforeSyncHook([seen]() { *seen = HydraRender::getEngineBuildCount(); });
+        ProgressiveRender::setPassHook([seen]() { *seen = HydraRender::getEngineBuildCount(); });
         _render->setSettings(settings);
         const bool began = waitUntil([seen, builds]() { return seen->load() > builds; }, "a pass of a new engine");
-        ProgressiveRender::setBeforeSyncHook(std::function<void()>());
+        ProgressiveRender::setPassHook(std::function<void()>());
+        if (!began) {
+            return false;
+        }
+        // The new engine publishes only once its Render() returns, which the hook precedes.
+        const std::size_t mark = publishedCount();
         // Into the delegate's sync of the heavy scene, past the hook.
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (publishedCount() != mark) {
+            ADD_FAILURE() << "the new engine's pass over the heavy scene ended before the change it was meant to interrupt";
 
-        return began;
+            return false;
+        }
+
+        return true;
     }
 
     // A settings change, a change of renderer to other and the render's destruction, each made
@@ -467,6 +478,8 @@ protected:
         asked = std::chrono::steady_clock::now();
         _render->setRenderer(other);
         EXPECT_LT(millisecondsSince(asked), kReturnMs) << "a renderer change waited for the pass";
+        std::printf("[          ] the renderer change mid-pass went to %s\n",
+                    other.empty() ? "no renderer (the render goes idle; no second delegate is installed)" : other.c_str());
         if (other.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             const ProgressiveRender::Status status = _render->getStatus();
@@ -928,12 +941,13 @@ TEST_F(ProgressiveRenderTest, ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverT
 }
 
 namespace {
-// A worker's sync made slow on purpose, once armed, and what the test saw of the stage lock
-// meanwhile.
+// The next worker pass, once armed, held up for sleepMs inside the worker's engine lock as a slow
+// delegate call would be, and whether it still is.
 struct SlowSync {
     std::atomic<bool> armed { false };
     std::atomic<bool> entered { false };
     std::atomic<bool> inside { false };
+    std::atomic<int> sleepMs { 0 };
 };
 
 // Takes and drops the stage lock every couple of milliseconds until stopped, recording the
@@ -991,56 +1005,94 @@ private:
 };
 } // anon namespace
 
-// The worker holds the stage lock only to take its snapshot: through a slow sync of its own stage,
-// and the passes that follow, the stage lock is free within 50 ms whenever it is asked for, and a
-// holder of it does not keep the sync from ending. The edit still reaches the frames.
+// The worker holds the stage lock only to take its snapshot. Through a new engine's first sync and
+// render of a heavy scene the stage lock is free within 50 ms whenever it is asked for. A pass held
+// up inside the worker's engine lock, as a slow delegate call would be, ends while the test thread
+// holds the stage lock. The edit still reaches the frames.
 TEST_F(ProgressiveRenderTest, TheStageLockIsFreeWhileTheWorkerSyncsAndRenders)
 {
     if (!cyclesOrSkip()) {
         return;
     }
-    const std::chrono::milliseconds kSlow(800);
     const double kPromptMs = 50.;
-    ASSERT_TRUE(start());
+    // The fixed sampling without its samples, which would override the test's.
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["cycles:samples"] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings));
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
     ASSERT_TRUE(collectUntilDone(0, &frames));
 
     std::shared_ptr<SlowSync> slow = std::make_shared<SlowSync>();
-    ProgressiveRender::setBeforeSyncHook([slow, kSlow]() {
+    ProgressiveRender::setPassHook([slow]() {
         if (!slow->armed.exchange(false)) {
             return;
         }
         slow->inside = true;
         slow->entered = true;
-        std::this_thread::sleep_for(kSlow);
+        const std::chrono::milliseconds wait(slow->sleepMs.load());
+        if (wait.count() > 0) {
+            std::this_thread::sleep_for(wait);
+        }
         slow->inside = false;
     });
-    const std::size_t mark = publishedCount();
-    const double kBack = 4.;
-    slow->armed = true;
-    sync(movedNear(_base, kBack, 0x5104ULL));
-    ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's sync"));
+    // payload and new settings in one edit, so the pass that brings them is a new engine's first
+    // sync of the whole scene. Returns the published count from before it.
+    const auto edit = [this, &settings, &slow](const ScenePayload& payload,
+                                               int samples,
+                                               int sleepMs) {
+        settings["cycles:samples"] = PXR_NS::VtValue(samples);
+        slow->sleepMs = sleepMs;
+        slow->entered = false;
+        slow->armed = true;
+        const std::size_t mark = publishedCount();
+        std::lock_guard<std::mutex> lock(_stageLock);
+        if (_stage->sync(payload)) {
+            _render->invalidate();
+        }
+        _render->setSettings(settings);
 
+        return mark;
+    };
+
+    const ScenePayload heavy = heavyScene(_base, 24, 160);
+    std::size_t mark = edit(heavy, 3, 0);
+    ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's pass over the heavy scene"));
+    {
+        const std::chrono::steady_clock::time_point entered = std::chrono::steady_clock::now();
+        LockProbe probe(&_stageLock);
+        const bool framed = waitUntil([this, mark]() { return _published.size() > mark; }, "a frame of the heavy scene");
+        const long long passMs = millisecondsSince(entered);
+        probe.stop();
+        ASSERT_TRUE(framed);
+        std::printf("[          ] a new engine's first pass over the heavy scene took %lld ms; the stage lock was taken %d times meanwhile, after %.2f ms at most\n",
+                    passMs, probe.taken(), probe.longest());
+        EXPECT_GT(probe.taken(), 0);
+        EXPECT_LT(probe.longest(), kPromptMs) << "the worker's sync or render of the heavy scene holds the stage lock";
+        EXPECT_GT(passMs, (long long)(2 * kPromptMs)) << "the heavy pass was too quick to show the stage lock free through it";
+    }
+
+    const double kBack = 4.;
+    // Without the heavy layer: its grids sit inside /World/Near, and would show once it moved back.
+    mark = edit(movedNear(_base, kBack, 0x5104ULL), 4, 800);
+    ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's held-up pass"));
     {
         const std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
         std::unique_lock<std::mutex> held(_stageLock);
         const double waited = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - asked).count();
-        EXPECT_LT(waited, kPromptMs) << "the worker's sync holds the stage lock";
-        // Held from here for the length of the sync: the sync ends all the same.
+        EXPECT_LT(waited, kPromptMs) << "the worker holds the stage lock inside its engine lock";
+        // Held from here for the rest of the held-up call: it ends all the same.
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (slow->inside && (std::chrono::steady_clock::now() < end)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        EXPECT_FALSE(slow->inside.load()) << "the worker's sync waits for the stage lock";
+        EXPECT_FALSE(slow->inside.load()) << "the worker's held-up pass waits for the stage lock";
     }
 
-    LockProbe probe(&_stageLock);
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
-    const bool finished = collectUntilDone(mark, &after);
-    probe.stop();
-    ASSERT_TRUE(finished);
-    EXPECT_GT(probe.taken(), 0);
-    EXPECT_LT(probe.longest(), kPromptMs) << "a pass holds the stage lock";
+    ASSERT_TRUE(collectUntilDone(mark, &after));
     ASSERT_FALSE(after.empty());
     EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.back()), 1e-4f);
 }

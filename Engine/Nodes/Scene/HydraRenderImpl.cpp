@@ -2345,8 +2345,8 @@ namespace {
     // The niceness of the worker, which the threads the delegate starts from it inherit.
     const int kRefineNice = 10;
 
-    std::mutex gBeforeSyncHookMutex;
-    std::function<void()> gBeforeSyncHook;
+    std::mutex gPassHookMutex;
+    std::function<void()> gPassHook;
 
     // The workers alive and the ProgressiveRenders alive: the workers beyond those are the
     // detached ones still ending. Never destroyed, as a worker may end during static destruction.
@@ -2826,13 +2826,23 @@ struct ProgressiveRender::Implementation {
                       std::uint64_t* passGeneration,
                       std::uint64_t* restartIndex)
     {
-        std::lock_guard<std::mutex> caller(callerMutex);
-        if (detached) {
-            return false;
-        }
+        std::unique_lock<std::mutex> caller(callerMutex);
         // The caller edits its stage and bumps the generation under stageLock, so the generation
-        // read with the snapshot is the one it was taken under.
-        std::lock_guard<std::mutex> stageGuard(*stageLock);
+        // read with the snapshot is the one it was taken under. The caller may hold stageLock
+        // through a long sync of its own: blocking on it with callerMutex held would make the
+        // destructor, which takes callerMutex, wait out that sync.
+        std::unique_lock<std::mutex> stageGuard(*stageLock, std::defer_lock);
+        for (;;) {
+            if (detached) {
+                return false;
+            }
+            if (stageGuard.try_lock()) {
+                break;
+            }
+            caller.unlock();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            caller.lock();
+        }
         *hasStage = snapshotOf(snapshot);
         std::lock_guard<std::mutex> l(mutex);
         *v = view;
@@ -3143,22 +3153,22 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         std::string sessionFailure;
         std::shared_ptr<Frame> read;
         if (hasStage) {
-            {
-                std::function<void()> hook;
-                {
-                    std::lock_guard<std::mutex> l(gBeforeSyncHookMutex);
-                    hook = gBeforeSyncHook;
-                }
-                if (hook) {
-                    hook();
-                }
-            }
             std::lock_guard<std::mutex> l(engineMutex);
             if (!workerStage) {
                 workerStage.reset(new SceneStage);
             }
             const LiveTextureStore::ExportAbortScope exportAbort([this]() { return quitting.load(); });
             (void)workerStage->syncTo(snapshot);
+            {
+                std::function<void()> hook;
+                {
+                    std::lock_guard<std::mutex> hookLock(gPassHookMutex);
+                    hook = gPassHook;
+                }
+                if (hook) {
+                    hook();
+                }
+            }
             const UsdStageRefPtr stage = workerStage->getStage();
             if (stage && engine) {
                 if (rendererStopped) {
@@ -3576,11 +3586,11 @@ ProgressiveRender::waitForDetachedWorkers(int timeoutMs)
 }
 
 void
-ProgressiveRender::setBeforeSyncHook(const std::function<void()>& hook)
+ProgressiveRender::setPassHook(const std::function<void()>& hook)
 {
-    std::lock_guard<std::mutex> l(gBeforeSyncHookMutex);
+    std::lock_guard<std::mutex> l(gPassHookMutex);
 
-    gBeforeSyncHook = hook;
+    gPassHook = hook;
 }
 } // namespace HydraRender
 

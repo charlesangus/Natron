@@ -1825,10 +1825,13 @@ SceneViewportRenderer::SceneViewportRenderer()
     : _imp(new Implementation)
 {
     // A layer reload edits layers the stage composes: it waits until no paint, pick or sync is
-    // reading the stage, and keeps them out until it is done.
+    // reading the stage, and keeps them out until it is done. Quiesced last: the progressive
+    // worker's quiesce waits out a delegate call that can take seconds, and holding stageMutex
+    // through that wait would stall every paint on the GUI thread.
     std::mutex* stageMutex = &_imp->stageMutex;
     _imp->participant = SceneWriteBarrier::registerParticipant([stageMutex]() { stageMutex->lock(); },
-                                                               [stageMutex]() { stageMutex->unlock(); });
+                                                               [stageMutex]() { stageMutex->unlock(); },
+                                                               SceneWriteBarrier::eQuiesceOrderLast);
     Implementation* imp = _imp.get();
     const auto snapshot = [imp](SceneStageSnapshot* into) {
         if (!imp->shown || !imp->sceneStage) {
@@ -5099,6 +5102,9 @@ SceneViewport::paintGL()
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
+    const bool stormPaint = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
+    const qlonglong paintStartMs = QDateTime::currentMSecsSinceEpoch();
+    const std::chrono::steady_clock::time_point paintStart = std::chrono::steady_clock::now();
     refreshTransformHandles();
     {
         // The free camera this paint draws with, for scripts: pivot x, y, z, distance, azimuth,
@@ -5111,21 +5117,21 @@ SceneViewport::paintGL()
         setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
     }
     _imp->renderer.setRecordDrawnGuides(property("natronSceneRecordGuides").toBool());
-    if (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId) {
+    const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
+    if (stormPaint && (status != SceneViewportRenderer::eRenderStatusBusy)) {
         // Storm draws on the GUI thread, for most of a second a frame on software GL, so scripts
-        // need its start to tell a stall before the frame from the frame itself.
-        const qlonglong startMs = QDateTime::currentMSecsSinceEpoch();
-        setProperty("natronSceneStormPaintStartMs", QVariant::fromValue<qlonglong>(startMs));
-        // Several frames can begin between two polls; the list lets a poller find the first.
-        QVariantList starts = property("natronSceneStormPaintStarts").toList();
-        starts.append(QVariant::fromValue<qlonglong>(startMs));
-        while (starts.size() > 16) {
-            starts.removeFirst();
+        // need each frame's start and cost to tell a stall around the frame from the frame itself.
+        // A busy paint drew nothing and is left out, or it would hide the cost of the next one.
+        const double paintMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count();
+        // Several frames can begin between two polls; the list lets a poller find each of them.
+        QVariantList frames = property("natronSceneStormFrames").toList();
+        frames.append(QVariant(QVariantList { QVariant::fromValue<qlonglong>(paintStartMs), paintMs }));
+        while (frames.size() > 16) {
+            frames.removeFirst();
         }
-        setProperty("natronSceneStormPaintStarts", starts);
+        setProperty("natronSceneStormFrames", frames);
         setProperty("natronSceneStormPaints", QVariant::fromValue<qulonglong>(property("natronSceneStormPaints").toULongLong() + 1));
     }
-    const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
         // The worker is syncing; it asks for a repaint when it is done. A background render
         // passing holds the lock too, and asks for one only once it has a frame: this paint's

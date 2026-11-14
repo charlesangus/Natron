@@ -60,45 +60,129 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeGraphDeleteLinks.h"
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
+#include "Gui/TabWidget.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
 #include "Global/QtCompat.h"
 
 NATRON_NAMESPACE_ENTER
-ViewerTab*
-NodeGraph::getViewerForInputKeys()
+namespace {
+bool
+paneHoldsTab(TabWidget* pane,
+             PanelWidget* tab)
 {
-    ViewerTab* lastUsedViewer = getLastSelectedViewer();
-
-    if (lastUsedViewer) {
-        NodeCollectionPtr collection = lastUsedViewer->getInternalNode()->getNode()->getGroup();
-        if ( collection && (collection->getNodeGraph() != this) ) {
-            //somehow the group doesn't belong to this nodegraph , pick another one
-            const std::list<ViewerTab*>& tabs = getGui()->getViewersList();
-            lastUsedViewer = 0;
-            for (std::list<ViewerTab*>::const_iterator it = tabs.begin(); it != tabs.end(); ++it) {
-                NodeCollectionPtr otherCollection = (*it)->getInternalNode()->getNode()->getGroup();
-                if ( otherCollection && (otherCollection->getNodeGraph() == this) ) {
-                    lastUsedViewer = *it;
-                    break;
-                }
-            }
+    if (!pane) {
+        return false;
+    }
+    for (int i = 0; i < pane->count(); ++i) {
+        if (pane->tabAt(i) == tab) {
+            return true;
         }
     }
 
-    return lastUsedViewer;
+    return false;
+}
+} // anon namespace
+
+bool
+NodeGraph::isUsableViewerTab(ViewerTab* tab) const
+{
+    if (!tab) {
+        return false;
+    }
+    ViewerInstance* viewer = tab->getInternalNode();
+    NodePtr node = viewer ? viewer->getNode() : NodePtr();
+    if (!node || !node->isActivated()) {
+        return false;
+    }
+    NodeCollectionPtr collection = node->getGroup();
+
+    return collection && collection->getNodeGraph() == this;
+}
+
+ViewerTab*
+NodeGraph::mostRecentlyFocusedViewer(const ViewerTab* excluded) const
+{
+    Gui* gui = getGui();
+    if (!gui) {
+        return 0;
+    }
+    const std::list<ViewerTab*> viewers = gui->getViewersByRecentFocus();
+    for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
+        if ((*it != excluded) && isUsableViewerTab(*it)) {
+            return *it;
+        }
+    }
+
+    return 0;
+}
+
+InspectorNodePtr
+NodeGraph::findViewerInGroup()
+{
+    Gui* gui = getGui();
+    ViewerTab* found = 0;
+    if (isUsableViewerTab(getLastSelectedViewer())) {
+        found = getLastSelectedViewer();
+    } else if (isUsableViewerTab(gui->getActiveViewer())) {
+        found = gui->getActiveViewer();
+    } else {
+        found = mostRecentlyFocusedViewer(0);
+    }
+
+    InspectorNodePtr viewerNode;
+    if (found) {
+        viewerNode = std::dynamic_pointer_cast<InspectorNode>(found->getInternalNode()->getNode());
+    } else {
+        NodeCollectionPtr group = getGroup();
+        const NodesList nodes = group ? group->getNodes() : NodesList();
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            ViewerInstance* isViewer = (*it)->isEffectViewer();
+            if (!isViewer || !(*it)->isActivated()) {
+                continue;
+            }
+            viewerNode = std::dynamic_pointer_cast<InspectorNode>(*it);
+            if (viewerNode) {
+                found = gui->getViewerTabForInstance(isViewer);
+                break;
+            }
+        }
+    }
+    if (!viewerNode) {
+        return viewerNode;
+    }
+
+    if (found) {
+        // A tab taken out of its pane keeps that pane as its Qt parent, so the parent alone
+        // does not say whether the tab is still shown there.
+        TabWidget* pane = found->getParentPane();
+        if (paneHoldsTab(pane, found)) {
+            pane->setCurrentWidget(found);
+        } else {
+            gui->activateViewerTab(found->getInternalNode());
+        }
+        setLastSelectedViewer(found);
+    }
+
+    return viewerNode;
+} // findViewerInGroup
+
+ViewerTab*
+NodeGraph::getViewerForInputKeys()
+{
+    InspectorNodePtr viewerNode = findViewerInGroup();
+    ViewerInstance* viewer = viewerNode ? viewerNode->isEffectViewer() : 0;
+
+    return viewer ? getGui()->getViewerTabForInstance(viewer) : 0;
 }
 
 NodeGuiPtr
 NodeGraph::getOrCreateViewerForInputKeys()
 {
-    ViewerTab* lastUsedViewer = getViewerForInputKeys();
-    NodePtr viewerNode;
+    NodePtr viewerNode = findViewerInGroup();
 
-    if (lastUsedViewer) {
-        viewerNode = lastUsedViewer->getInternalNode()->getNode();
-    } else {
+    if (!viewerNode) {
         CreateNodeArgs args( PLUGINID_NATRON_VIEWER,
                              getGroup() );
         // The key decides which input the selection goes to, not the preferred input.
@@ -253,7 +337,6 @@ NodeGraph::enterEvent(QEnterEvent* e)
 {
     enterEventBase();
     QGraphicsView::enterEvent(e);
-    _imp->_nodeCreationShortcutEnabled = true;
 }
 
 void
@@ -261,8 +344,6 @@ NodeGraph::leaveEvent(QEvent* e)
 {
     leaveEventBase();
     QGraphicsView::leaveEvent(e);
-
-    _imp->_nodeCreationShortcutEnabled = false;
     // setFocus();
 }
 
@@ -635,6 +716,9 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
 
         return;
     }
+    if (rebuildGrid) {
+        nodesBoundsDirty = true;
+    }
     if (navigatorBatchDepth > 0) {
         navigatorBatchPending = true;
         navigatorDeferredRebuildsGrid = navigatorDeferredRebuildsGrid || rebuildGrid;
@@ -643,8 +727,11 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
     }
     rebuildGrid = rebuildGrid || navigatorDeferredRebuildsGrid;
     navigatorDeferredRebuildsGrid = false;
-    navigatorDeferredByDrag = false;
-    nodesBoundsDirty = true;
+    if (navigatorDeferredByDrag) {
+        // The drag only grew the bounds, as endNavigatorDragDeferral() knows.
+        navigatorDeferredByDrag = false;
+        nodesBoundsDirty = true;
+    }
     if (rebuildGrid) {
         itemGridDirty = true;
     }

@@ -31,6 +31,8 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 // Qt includes
 #include <QDebug>
@@ -161,9 +163,9 @@ public:
     ~DopeSheetPrivate();
 
     /* functions */
-    Node * getNearestTimeFromOutputs_recursive(Node *node, std::list<Node*>& markedNodes) const;
-    Node * getNearestReaderFromInputs_recursive(Node *node, std::list<Node*>& markedNodes) const;
-    void getInputsConnected_recursive(Node *node, std::vector<DSNodePtr> *result) const;
+    Node* getNearestTimeFromOutputs(Node* node) const;
+    Node* getNearestReaderFromInputs(Node* node) const;
+    void getInputsConnected_recursive(Node* node, std::unordered_set<Node*>* visited, std::vector<DSNodePtr>* result) const;
 
     void pushUndoCommand(QUndoCommand* cmd, const UndoScope& scope);
 
@@ -318,62 +320,83 @@ scopeForNode(const NodePtr& node)
 }
 } // anon namespace
 
-Node*
-DopeSheetPrivate::getNearestTimeFromOutputs_recursive(Node *node,
-                                                      std::list<Node*>& markedNodes) const
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+bool
+isTimeNodePluginID(const std::string& pluginID)
 {
-    const NodesWList &outputs = node->getGuiOutputs();
+    return (pluginID == PLUGINID_NATRON_RETIME)
+        || (pluginID == PLUGINID_NATRON_TIMEOFFSET)
+        || (pluginID == PLUGINID_NATRON_FRAMERANGE)
+        || (pluginID == PLUGINID_NATRON_APPENDCLIP);
+}
 
-    if ( std::find(markedNodes.begin(), markedNodes.end(), node) != markedNodes.end() ) {
-        return 0;
-    }
-    markedNodes.push_back(node);
-    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
-        NodePtr output = it->lock();
-        std::string pluginID = output->getPluginID();
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
-        if ((pluginID == PLUGINID_NATRON_RETIME)
-            || (pluginID == PLUGINID_NATRON_TIMEOFFSET)
-            || (pluginID == PLUGINID_NATRON_FRAMERANGE)
-            || (pluginID == PLUGINID_NATRON_APPENDCLIP)) {
+// Iterative, so that a long chain cannot overflow the stack; the visit order is the depth-first
+// order of the outputs, and the first time node reached wins.
+Node*
+DopeSheetPrivate::getNearestTimeFromOutputs(Node* start) const
+{
+    struct Frame {
+        NodesWList::const_iterator it, end;
+    };
+
+    std::unordered_set<Node*> visited;
+    std::vector<Frame> stack;
+    visited.insert(start);
+    const NodesWList& startOutputs = start->getGuiOutputs();
+    stack.push_back(Frame { startOutputs.begin(), startOutputs.end() });
+    while (!stack.empty()) {
+        Frame& frame = stack.back();
+        if (frame.it == frame.end) {
+            stack.pop_back();
+            continue;
+        }
+        NodePtr output = (frame.it++)->lock();
+        if (!output) {
+            continue;
+        }
+        if (isTimeNodePluginID(output->getPluginID())) {
             return output.get();
-        } else {
-            Node* ret =  getNearestTimeFromOutputs_recursive(output.get(), markedNodes);
-            if (ret) {
-                return ret;
-            }
+        }
+        if (visited.insert(output.get()).second) {
+            const NodesWList& outputs = output->getGuiOutputs();
+            stack.push_back(Frame { outputs.begin(), outputs.end() });
         }
     }
 
     return 0;
 }
 
-Node *
-DopeSheetPrivate::getNearestReaderFromInputs_recursive(Node *node,
-                                                       std::list<Node*>& markedNodes) const
+Node*
+DopeSheetPrivate::getNearestReaderFromInputs(Node* start) const
 {
-    const std::vector<NodeWPtr> &inputs = node->getGuiInputs();
+    struct Frame {
+        Node* node;
+        std::size_t next;
+    };
 
-    if ( std::find(markedNodes.begin(), markedNodes.end(), node) != markedNodes.end() ) {
-        return 0;
-    }
-    markedNodes.push_back(node);
-    for (std::vector<NodeWPtr>::const_iterator it = inputs.begin(); it != inputs.end(); ++it) {
-        NodePtr input = it->lock();
-
+    std::unordered_set<Node*> visited;
+    std::vector<Frame> stack;
+    visited.insert(start);
+    stack.push_back(Frame { start, 0 });
+    while (!stack.empty()) {
+        Frame& frame = stack.back();
+        const std::vector<NodeWPtr>& inputs = frame.node->getGuiInputs();
+        if (frame.next >= inputs.size()) {
+            stack.pop_back();
+            continue;
+        }
+        NodePtr input = inputs[frame.next++].lock();
         if (!input) {
             continue;
         }
-
-        std::string pluginID = input->getPluginID();
-        if (pluginID == PLUGINID_NATRON_READ) {
-
+        if (input->getPluginID() == PLUGINID_NATRON_READ) {
             return input.get();
-        } else {
-            Node* ret = getNearestReaderFromInputs_recursive(input.get(), markedNodes);
-            if (ret) {
-                return ret;
-            }
+        }
+        if (visited.insert(input.get()).second) {
+            stack.push_back(Frame { input.get(), 0 });
         }
     }
 
@@ -381,15 +404,16 @@ DopeSheetPrivate::getNearestReaderFromInputs_recursive(Node *node,
 }
 
 void
-DopeSheetPrivate::getInputsConnected_recursive(Node *node,
-                                               std::vector<DSNodePtr> *result) const
+DopeSheetPrivate::getInputsConnected_recursive(Node* node,
+                                               std::unordered_set<Node*>* visited,
+                                               std::vector<DSNodePtr>* result) const
 {
     const std::vector<NodeWPtr> &inputs = node->getGuiInputs();
 
     for (std::vector<NodeWPtr>::const_iterator it = inputs.begin(); it != inputs.end(); ++it) {
         NodePtr input = it->lock();
 
-        if (!input) {
+        if (!input || !visited->insert(input.get()).second) {
             continue;
         }
 
@@ -399,7 +423,7 @@ DopeSheetPrivate::getInputsConnected_recursive(Node *node,
             result->push_back(dsNode);
         }
 
-        getInputsConnected_recursive(input.get(), result);
+        getInputsConnected_recursive(input.get(), visited, result);
     }
 }
 
@@ -692,7 +716,9 @@ std::vector<DSNodePtr> DopeSheet::getImportantNodes(DSNode *dsNode) const
             }
         }
     } else if ( dsNode->isTimeNode() ) {
-        _imp->getInputsConnected_recursive(dsNode->getInternalNode().get(), &ret);
+        std::unordered_set<Node*> visited;
+        visited.insert(dsNode->getInternalNode().get());
+        _imp->getInputsConnected_recursive(dsNode->getInternalNode().get(), &visited, &ret);
     }
 
 
@@ -706,8 +732,7 @@ std::vector<DSNodePtr> DopeSheet::getImportantNodes(DSNode *dsNode) const
  */
 DSNodePtr DopeSheet::getNearestTimeNodeFromOutputs(DSNode *dsNode) const
 {
-    std::list<Node*> markedNodes;
-    Node *timeNode = _imp->getNearestTimeFromOutputs_recursive(dsNode->getInternalNode().get(), markedNodes);
+    Node* timeNode = _imp->getNearestTimeFromOutputs(dsNode->getInternalNode().get());
 
     return findDSNode(timeNode);
 }
@@ -716,8 +741,7 @@ Node *
 DopeSheet::getNearestReader(DSNode *timeNode) const
 {
     assert( timeNode->isTimeNode() );
-    std::list<Node*> markedNodes;
-    Node *nearestReader = _imp->getNearestReaderFromInputs_recursive(timeNode->getInternalNode().get(), markedNodes);
+    Node* nearestReader = _imp->getNearestReaderFromInputs(timeNode->getInternalNode().get());
 
     return nearestReader;
 }

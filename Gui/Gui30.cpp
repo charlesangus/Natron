@@ -39,6 +39,7 @@
 #include <QAction>
 #include <QApplication> // qApp
 #include <QCheckBox>
+#include <QCursor>
 #include <QGridLayout>
 #include <QLabel>
 #include <QTextEdit>
@@ -410,9 +411,11 @@ Gui::onDoDialog(int type,
         setQMessageBoxThemedIcon(&ques);
         ques.setDefaultButton(QtEnumConvert::toQtStandardButton((StandardButtonEnum)defaultB));
         ques.setWindowFlags(ques.windowFlags() | Qt::WindowStaysOnTopHint);
-        if ( ques.exec() ) {
-            _imp->_lastQuestionDialogAnswer = QtEnumConvert::fromQtStandardButton( ques.standardButton( ques.clickedButton() ) );
-        }
+        ignore_result(ques.exec());
+        // A box closed without a click, such as one a termination signal dismissed, answers Escape rather than
+        // leaving the previous question's answer in place.
+        QAbstractButton* clicked = ques.clickedButton();
+        _imp->_lastQuestionDialogAnswer = clicked ? QtEnumConvert::fromQtStandardButton(ques.standardButton(clicked)) : eStandardButtonEscape;
     }
 
     {
@@ -549,12 +552,31 @@ void
 Gui::connectInput(int inputNb,
                   bool isASide)
 {
-    NodeGraph* graph = 0;
+    NodeGraph* graph = _imp->_lastFocusedGraph ? _imp->_lastFocusedGraph : _imp->_nodeGraphArea;
 
-    if (_imp->_lastFocusedGraph) {
-        graph = _imp->_lastFocusedGraph;
-    } else {
-        graph = _imp->_nodeGraphArea;
+    // Clicking a node does not always move focus to its graph (another widget may keep it), so
+    // the focused graph can be one with nothing selected while the user's selection is elsewhere.
+    if (graph->getSelectedNodes().empty()) {
+        std::list<NodeGraph*> candidates(1, _imp->_nodeGraphArea);
+        candidates.insert(candidates.end(), _imp->_groups.begin(), _imp->_groups.end());
+        NodeGraph* withSelection = 0;
+        for (std::list<NodeGraph*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
+            NodeGraph* candidate = *it;
+            if (!candidate || !candidate->isVisible() || candidate->getSelectedNodes().empty()) {
+                continue;
+            }
+            QWidget* viewport = candidate->viewport();
+            if (viewport->rect().contains(viewport->mapFromGlobal(QCursor::pos()))) {
+                withSelection = candidate;
+                break;
+            }
+            if (!withSelection) {
+                withSelection = candidate;
+            }
+        }
+        if (withSelection) {
+            graph = withSelection;
+        }
     }
     ViewerTab* viewer = graph->getViewerForInputKeys();
     if (viewer) {

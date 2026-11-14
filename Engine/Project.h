@@ -370,6 +370,13 @@ public:
      **/
     void queueLayersKnobRefresh();
 
+    /**
+     * @brief Recounts node's references in the layers table's "Used by" column, for a node whose
+     * layer selections, activation or place in the graph changed. Answers whether the table
+     * needs a refresh.
+     **/
+    bool updateLayerUsersOf(const NodePtr& node);
+
     void setOrAddProjectFormat(const Format & frmt, bool skipAdd = false);
 
     bool isAutoSetProjectFormatEnabled() const;
@@ -848,6 +855,15 @@ private:
     void refreshFilePathKnobsUsingBuiltinPaths();
 
     std::string encodeLayersKnobTable() const;
+
+    // Whether node is one of the nodes getNodes_recursive(nodes, true) returns.
+    bool countsAsLayerUser(const NodePtr& node) const;
+
+    // The next read of the "Used by" counts walks every node again.
+    void invalidateLayerUsers() const;
+
+    // Drops a node leaving the graph from the "Used by" counts.
+    void forgetLayerUser(const Node* node);
 
     /*Returns the index of the format*/
     int tryAddProjectFormat(const Format & f, bool* existed);

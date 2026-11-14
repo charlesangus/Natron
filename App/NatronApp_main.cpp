@@ -144,19 +144,16 @@ int main(int argc, char *argv[])
         return error.value();
     }
 
+    int rc;
     if ( args.isBackgroundMode() ) {
         AppManager manager;
 
         // coverity[tainted_data]
 #ifdef Q_OS_WIN
-        if ( !manager.loadW(argc, argv, args) ) {
+        rc = manager.loadW(argc, argv, args) ? 0 : 1;
 #else
-        if ( !manager.load(argc, argv, args) ) {
+        rc = manager.load(argc, argv, args) ? 0 : 1;
 #endif
-            return 1;
-        } else {
-            return 0;
-        }
     } else {
         GuiApplicationManager manager;
 
@@ -166,13 +163,10 @@ int main(int argc, char *argv[])
 #else
         const bool loaded = manager.load(argc, argv, args);
 #endif
-        if (manager.hasRefusedGLContext()) {
-            return 1;
-        }
-
-        return loaded;
         //exec() is called within the GuiApplicationManager
+        rc = manager.hasRefusedGLContext() ? 1 : (int)loaded;
     }
+    AppManager::exitWithoutLibraryDestructors(rc);
 } // main
 #ifdef Q_OS_WIN
 } // extern "C"

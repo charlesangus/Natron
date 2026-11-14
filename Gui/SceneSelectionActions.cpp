@@ -791,7 +791,9 @@ namespace {
                 return;
             }
             SceneViewportRenderer& renderer = viewport->getRenderer();
-            if (renderer.hasPendingStageLoads()) {
+            // Pending alone goes false as soon as the load thread takes the batch, before its
+            // load rules are published, so a search then would still see the payloads unloaded.
+            if (renderer.hasOutstandingStageLoads()) {
                 return;
             }
             waiter->deleteLater();
@@ -808,7 +810,7 @@ namespace {
         QObject::connect(viewport.data(), &SceneViewport::stageLoadsChanged, waiter, check);
         viewport->requestLoad(paths, true);
         showHint(gui, tr("Select Matches: loading %1 unloaded branches.").arg(paths.size()));
-        if (!viewport->getRenderer().hasPendingStageLoads()) {
+        if (!viewport->getRenderer().hasOutstandingStageLoads()) {
             check();
         }
     }

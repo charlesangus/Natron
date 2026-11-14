@@ -1,1 +1,5 @@
 ## Pending
+
+### 2026-11-14T18:30:00+00:00 — change-request
+- refs: M53
+- Rename the `TexturePaint` node to `USDTexturePaint` within M53 - Projected Texture Painting, before F11 - Texture Painting's UAT (user, 2026-11-14, /cat-discuss grill of M427 - Native Geometry Texture Painting). Texture painting splits SOP/LOP-style into `USDTexturePaint` (this node) and a later `GeoTexturePaint` for native geometry (M427 - Native Geometry Texture Painting), so the scene-side node takes the `USD*` prefix like `USDMaterial` and `USDProject3D`. Rename the class and files (`Engine/Nodes/Scene/TexturePaint*` → `USDTexturePaint*`, `TexturePaintView`, `TexturePaintBaker`, `TexturePaintCache`, `TexturePaintUndo`, `TexturePaintInteract` as fits), the plug-in ID and label, the node doc, the gtests, `Tests/gui/m53_texture_paint.py`, shortcut and property names that carry the node name (e.g. `natronTexturePaintBaked`), and the default bake paths. There's no backward compatibility to keep. Mechanical; add it as one task before the gate re-runs and record it under `## Decisions`. Design: `PLAN/DECISIONS/2026-11-14-native-geometry-texture-painting.md`.

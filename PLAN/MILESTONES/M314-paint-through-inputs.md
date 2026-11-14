@@ -10,3 +10,4 @@ Acceptance sketch:
 - A TexturePaint node exposes extra 2D inputs, each with a Screen/Camera mode.
 - In Screen mode the input can be moved, scaled and rotated in the 3D view; in Camera mode it projects through the chosen scene camera on every frame.
 - The Reveal/Paint Through brush paints the input's pixels into the current layer.
+- Built on `USDTexturePaint` (M53 - Projected Texture Painting's `TexturePaint`, renamed). If it lands after M427 - Native Geometry Texture Painting, it lives in the shared texture-paint base and works on `GeoTexturePaint` too (user, 2026-11-14).

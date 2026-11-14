@@ -4375,9 +4375,15 @@ SceneViewport::setRendererId(const QString& id)
 {
     _imp->renderer.setRendererId(id.toStdString());
     publishState();
-    update();
     _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
+    const QSize before = size();
     Q_EMIT rendererChanged(id);
+    // The render row shown or hidden lays the view out at once, and QOpenGLWidget paints in its
+    // resize: a repaint asked for as well would draw the frame twice, a whole Storm frame on
+    // software GL.
+    if (!isVisible() || (size() == before)) {
+        update();
+    }
 }
 
 void

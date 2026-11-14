@@ -18,7 +18,10 @@ draws on the GUI thread, and on software GL one frame of this scene takes most o
 little was edited since. The frames are checked instead: the first one after the switch may cost at
 most a steady Storm frame plus 100 ms, so catch-up work inside that paint still counts. The steady
 frame is the costliest of three synchronous repaints after the switch, with the heartbeat stopped.
-The screenshot is taken after the heartbeat stops. Steps:
+The Renderer entry's trigger, which switches the renderer and lays the view out on the GUI thread,
+is timed on its own too and must cost under 100 ms, the Storm frames it draws aside, so a switch's
+own cost is told apart from the menu work around it. The screenshot is taken after the heartbeat
+stops. Steps:
   - picks Cycles in the view's Renderer submenu and, as soon as the view reports Cycles and while
     Cycles has published no frame (the first sync), sets the settings node's cyclesSamples;
   - picks Storm and waits for its frame, which must come from the Storm engine of the first draw
@@ -297,7 +300,15 @@ try:
         sub = yield from open_renderer_submenu(state)
         found = [a for a in entries(sub) if a.text().replace("&", "").startswith(label_start)] if sub is not None else []
         if found:
+            since = time.time() * 1000.0
+            before = sched()
+            start = time.perf_counter()
             found[0].trigger()
+            wall = (time.perf_counter() - start) * 1000.0
+            after = sched()
+            drawn = sum(ms for begin, ms in storm_frames() if begin >= since)
+            ran = (after[0] - before[0]) if (before is not None and after is not None) else -1.0
+            beat["switch"][beat["phase"]] = (wall, max(0.0, wall - drawn), ran)
         yield from finish_menu(state)
         return bool(found)
 
@@ -307,7 +318,7 @@ try:
     # the GUI thread was busy, starved by the render's threads, or waiting on something.
     beat = {"last": None, "last_wall_ms": None, "storm_paints": 0, "sched": None, "phase": "idle",
             "max": {}, "raw_max": {}, "split": {}, "view": None, "picked": None, "first_frame": None,
-            "upload_ms": 0.0, "paints_in_gap": 0, "phase_wall_ms": 0.0}
+            "upload_ms": 0.0, "paints_in_gap": 0, "phase_wall_ms": 0.0, "switch": {}}
     timer = QTimer()
     timer.setInterval(HEARTBEAT_MS)
     schedstat = "/proc/self/task/%d/schedstat" % threading.get_native_id()
@@ -468,6 +479,13 @@ try:
               % (worst("switch to Storm"), STALL_LIMIT_MS))
         for name in ("back to Cycles", "change setting again"):
             check(worst(name) < STALL_LIMIT_MS, "%s does not stall the GUI (%.1f ms, limit %.1f ms)" % (name, worst(name), STALL_LIMIT_MS))
+        report("NOTE the Renderer entry's trigger on the GUI thread per phase, as (wall, wall without Storm frames, ran) ms: %r"
+               % ({k: tuple(round(x, 1) for x in v) for k, v in beat["switch"].items()},))
+        for name in ("start Cycles", "switch to Storm", "back to Cycles"):
+            cost = beat["switch"].get(name)
+            check(cost is not None and cost[1] < STALL_LIMIT_MS,
+                  "%s: the switch itself costs the GUI thread under %.0f ms, its Storm frames aside (%r ms)"
+                  % (name, STALL_LIMIT_MS, None if cost is None else round(cost[1], 1)))
 
         section("viewer disconnect")
         phase("disconnect viewer")

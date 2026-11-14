@@ -417,6 +417,8 @@ SceneReparentNode::getSceneInputContext(int inputNb,
 
 void
 SceneReparentNode::mapSceneInputReach(int inputNb,
+                                      double time,
+                                      ViewIdx view,
                                       const std::vector<std::string>& in,
                                       std::vector<std::string>* out) const
 {
@@ -424,7 +426,7 @@ SceneReparentNode::mapSceneInputReach(int inputNb,
     std::string destination;
     std::string moved;
     bool autoRename = false;
-    if ((inputNb < 0) || (inputNb >= kSceneReparentInputCount) || !getPlacement(&wrapping, &destination, &moved, &autoRename)) {
+    if ((inputNb < 0) || (inputNb >= kSceneReparentInputCount) || !getPlacement(time, view, &wrapping, &destination, &moved, &autoRename)) {
         *out = in;
 
         return;

@@ -28,8 +28,13 @@
 
 #include <exception>
 #include <functional>
+#include <limits>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -84,6 +89,49 @@ setSceneError(std::string* errorMessage,
         *errorMessage = message;
     }
 }
+
+/**
+ * The id evaluateScene() gives a scene input it maps onto another load set, by the id of the
+ * context mapped from, the node (its main instance) and the input number. An entry lives as long
+ * as both the context id it was mapped from and its node: it is erased when the id's owner
+ * retires it (EffectInstance::retireSceneContextId()) or the node is destroyed, and the id it
+ * handed out is retired with it. Never destroyed: a node may be destroyed during static teardown.
+ **/
+struct SceneInputContextIds {
+    typedef std::tuple<U64, const EffectInstance*, int> Key;
+
+    std::mutex lock;
+    std::map<Key, U64> ids;
+    std::map<const EffectInstance*, std::set<Key>> byNode;
+
+    static SceneInputContextIds& instance()
+    {
+        static SceneInputContextIds* ids = new SceneInputContextIds;
+
+        return *ids;
+    }
+
+    // Erases the entries mapped from the ids in retired, and from the ids those handed out. Call with lock held.
+    void retire(std::vector<U64> retired)
+    {
+        while (!retired.empty()) {
+            const U64 id = retired.back();
+            retired.pop_back();
+            std::map<Key, U64>::iterator it = ids.lower_bound(Key(id, nullptr, std::numeric_limits<int>::min()));
+            while ((it != ids.end()) && (std::get<0>(it->first) == id)) {
+                retired.push_back(it->second);
+                std::map<const EffectInstance*, std::set<Key>>::iterator node = byNode.find(std::get<1>(it->first));
+                if (node != byNode.end()) {
+                    node->second.erase(it->first);
+                    if (node->second.empty()) {
+                        byNode.erase(node);
+                    }
+                }
+                it = ids.erase(it);
+            }
+        }
+    }
+};
 } // anonymous namespace
 
 bool
@@ -219,7 +267,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
             }
             std::vector<std::string> mapped;
             try {
-                mapSceneInputReach(inputReach.first, prefixes, &mapped);
+                mapSceneInputReach(inputReach.first, args.time, args.view, prefixes, &mapped);
             } catch (...) {
                 // Unmapped, a load anywhere has to re-evaluate the node.
                 mapped.assign(1, std::string("/"));
@@ -268,7 +316,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         if (inputContext.hasSameLoadSet(args.context) && (inputContext.reach == args.context.reach)) {
             inputCode = input->evaluateScene(args, &inputScene, errorMessage);
         } else {
-            inputContext.id = getSceneInputContextId(args.context.id, i);
+            inputContext.id = getSceneInputContextId(args.context.id, i, true);
             inputContext.reach.reset();
             if (args.context.reach) {
                 inputContext.reach = std::make_shared<SceneLoadReach>();
@@ -327,29 +375,78 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
 
 U64
 EffectInstance::getSceneInputContextId(U64 ctxId,
-                                       int inputNb) const
+                                       int inputNb,
+                                       bool registerMiss) const
 {
-    static const std::size_t kSceneInputContextIdsMax = 256;
     const EffectInstance* owner = _imp->mainInstance ? _imp->mainInstance : this;
-    EffectInstance::Implementation& imp = *owner->_imp;
-    const EffectInstance::Implementation::SceneInputContextKey key(ctxId, inputNb);
-    QMutexLocker locker(&imp.sceneInputContextIdsMutex);
+    const SceneInputContextIds::Key key(ctxId, owner, inputNb);
+    SceneInputContextIds& registry = SceneInputContextIds::instance();
+    std::lock_guard<std::mutex> locker(registry.lock);
 
-    std::map<EffectInstance::Implementation::SceneInputContextKey, EffectInstance::Implementation::SceneInputContextIdsEntry>::iterator found = imp.sceneInputContextIds.find(key);
-    if (found != imp.sceneInputContextIds.end()) {
-        imp.sceneInputContextIdUses.splice(imp.sceneInputContextIdUses.begin(), imp.sceneInputContextIdUses, found->second.use);
-
-        return found->second.id;
+    std::map<SceneInputContextIds::Key, U64>::const_iterator found = registry.ids.find(key);
+    if (found != registry.ids.end()) {
+        return found->second;
     }
-    if (imp.sceneInputContextIds.size() >= kSceneInputContextIdsMax) {
-        imp.sceneInputContextIds.erase(imp.sceneInputContextIdUses.back());
-        imp.sceneInputContextIdUses.pop_back();
-    }
-    imp.sceneInputContextIdUses.push_front(key);
     const U64 id = SceneEvaluationContext::makeId();
-    imp.sceneInputContextIds[key] = EffectInstance::Implementation::SceneInputContextIdsEntry { id, imp.sceneInputContextIdUses.begin() };
+    if (registerMiss) {
+        registry.ids[key] = id;
+        registry.byNode[owner].insert(key);
+    }
 
     return id;
+}
+
+void
+EffectInstance::retireSceneContextId(U64 id)
+{
+    SceneInputContextIds& registry = SceneInputContextIds::instance();
+    std::lock_guard<std::mutex> locker(registry.lock);
+
+    registry.retire(std::vector<U64>(1, id));
+}
+
+void
+EffectInstance::retireSceneInputContextIds()
+{
+    if (_imp->mainInstance) {
+        return;
+    }
+    SceneInputContextIds& registry = SceneInputContextIds::instance();
+    std::lock_guard<std::mutex> locker(registry.lock);
+
+    std::map<const EffectInstance*, std::set<SceneInputContextIds::Key>>::iterator node = registry.byNode.find(this);
+    if (node == registry.byNode.end()) {
+        return;
+    }
+    std::vector<U64> retired;
+    for (const SceneInputContextIds::Key& key : node->second) {
+        std::map<SceneInputContextIds::Key, U64>::iterator it = registry.ids.find(key);
+        if (it != registry.ids.end()) {
+            retired.push_back(it->second);
+            registry.ids.erase(it);
+        }
+    }
+    registry.byNode.erase(node);
+    registry.retire(retired);
+}
+
+bool
+EffectInstance::getSceneIdentity(double time,
+                                 ViewIdx view,
+                                 double* identityTime,
+                                 ViewIdx* identityView,
+                                 int* identityInputNb) const
+{
+    const EffectInstance* owner = _imp->mainInstance ? _imp->mainInstance : this;
+    *identityTime = time;
+    *identityView = view;
+    *identityInputNb = -1;
+    try {
+        return const_cast<EffectInstance*>(owner)->isIdentity_public(true, owner->getHash(), time, RenderScale(), RectI(), view, identityTime, identityView, identityInputNb);
+    } catch (...) {
+        // evaluateScene() fails on it, which maps nothing either way.
+        return false;
+    }
 }
 
 SceneEvaluationContext
@@ -358,6 +455,17 @@ EffectInstance::getEvaluatedSceneInputContext(int inputNb,
                                               double time,
                                               ViewIdx view) const
 {
+    double identityTime = time;
+    ViewIdx identityView = view;
+    int identityInputNb = -1;
+    if (getSceneIdentity(time, view, &identityTime, &identityView, &identityInputNb)) {
+        // evaluateScene() hands ctx itself to what it passes through.
+        if ((identityInputNb == -2) && (identityTime != time)) {
+            return getEvaluatedSceneInputContext(inputNb, ctx, identityTime, identityView);
+        }
+
+        return ctx;
+    }
     // evaluateScene() always has a reach to compare, so one stands in when ctx has none.
     SceneEvaluationContext asked = ctx;
     if (!asked.reach) {
@@ -367,7 +475,8 @@ EffectInstance::getEvaluatedSceneInputContext(int inputNb,
     if (mapped.hasSameLoadSet(asked) && (mapped.reach == asked.reach)) {
         return ctx;
     }
-    mapped.id = getSceneInputContextId(ctx.id, inputNb);
+    // Only an evaluation registers an id: one not yet made is not one anything is stored under.
+    mapped.id = getSceneInputContextId(ctx.id, inputNb, false);
     mapped.reach.reset();
 
     return mapped;

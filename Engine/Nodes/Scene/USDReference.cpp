@@ -339,6 +339,8 @@ USDReference::getSceneInputContext(int inputNb,
 
 void
 USDReference::mapSceneInputReach(int inputNb,
+                                 double time,
+                                 ViewIdx view,
                                  const std::vector<std::string>& in,
                                  std::vector<std::string>* out) const
 {
@@ -350,7 +352,7 @@ USDReference::mapSceneInputReach(int inputNb,
     out->clear();
     std::string targetPath;
     std::string sourcePath;
-    if ((getSource() == eSourceFile) || !getArcPaths(&targetPath, &sourcePath)) {
+    if ((getSource() == eSourceFile) || !getArcPaths(time, view, &targetPath, &sourcePath)) {
         return;
     }
     SceneOps::mapReferenceReach(targetPath, sourcePath, in, out);

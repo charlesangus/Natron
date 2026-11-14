@@ -309,39 +309,75 @@ void mapSharedMaterialReach(SceneGraftMemo* memo,
 /**
  * @brief Sets *mapped to the context target evaluates on when consumer evaluates on ctx: ctx is
  * mapped through each node between them by getSceneInputContext(), and the sets of several routes
- * are united. Its id is the one target's evaluation on the first route stores its result under,
- * so a set that differs from that route's is not to be evaluated on with it. False, leaving
- * *mapped alone, when no scene input chain leads from consumer to target.
+ * are united. Its id is the one target's evaluation on the first route stores its result under.
+ * *ownSet, when given, is set to whether the united set differs from that route's, in which case
+ * an evaluation on it needs an id of its own. False, leaving *mapped alone, when no scene input
+ * chain leads from consumer to target.
  **/
 bool mapContextDownToNode(const EffectInstance* consumer,
                           const EffectInstance* target,
                           const SceneEvaluationContext& ctx,
                           double time,
                           ViewIdx view,
-                          SceneEvaluationContext* mapped);
+                          SceneEvaluationContext* mapped,
+                          bool* ownSet = nullptr);
 
 /**
  * @brief The context of the viewer showing effect, for work on effect's scene done outside an
  * evaluation, mapped down to effect's own paths: of the viewers whose scene input reaches effect,
  * the most recently active, else the first. *viewerContext, when given, is set to that viewer's
- * own context, unmapped. False, leaving both alone, when no viewer's scene input reaches effect.
- * Main thread.
+ * own context, unmapped, and *ownSet to mapContextDownToNode()'s. False, leaving them alone, when
+ * no viewer's scene input reaches effect. Main thread.
  **/
 bool getShowingViewerContext(EffectInstance* effect,
                              SceneEvaluationContext* context,
-                             SceneEvaluationContext* viewerContext = nullptr);
+                             SceneEvaluationContext* viewerContext = nullptr,
+                             bool* ownSet = nullptr);
 
 /**
  * @brief Evaluates input at time on context into *scene for a menu refresh running as job, and
  * borrows its stage into *lease with context's load set. False when job is cancelled, input is
- * null or the scene is empty or does not compose.
+ * gone or the scene is empty or does not compose. Off the main thread, the reference to input
+ * it takes is released on the main thread (releaseOnMainThread()).
  **/
-bool borrowMenuScene(const EffectInstancePtr& input,
+bool borrowMenuScene(const EffectInstanceWPtr& input,
                      double time,
                      const SceneEvaluationContext& context,
                      const SceneMenuJob& job,
                      ScenePayload* scene,
                      SceneQueryPool::Lease* lease);
+
+/**
+ * @brief Releases *effect, on the main thread when called off it: a worker that dropped an
+ * effect's last reference would destroy its node there.
+ **/
+void releaseOnMainThread(std::shared_ptr<const EffectInstance>* effect);
+
+// Holds an effect for a scope that may end on a worker, and releases it with releaseOnMainThread().
+class EffectReleasedOnMainThread {
+public:
+    explicit EffectReleasedOnMainThread(EffectInstancePtr effect)
+        : _effect(std::move(effect))
+    {
+    }
+
+    ~EffectReleasedOnMainThread()
+    {
+        std::shared_ptr<const EffectInstance> effect = std::move(_effect);
+        releaseOnMainThread(&effect);
+    }
+
+    EffectReleasedOnMainThread(const EffectReleasedOnMainThread&) = delete;
+    EffectReleasedOnMainThread& operator=(const EffectReleasedOnMainThread&) = delete;
+
+    const EffectInstancePtr& get() const
+    {
+        return _effect;
+    }
+
+private:
+    EffectInstancePtr _effect;
+};
 
 /**
  * @brief How many unloaded payloads a menu listing what the whole of stage holds did not search:

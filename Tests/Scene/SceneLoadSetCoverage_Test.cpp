@@ -29,12 +29,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -1265,9 +1267,31 @@ primIdKeyOf(const std::string& path)
 
     return key;
 }
+
+// The region of definition effect gives the main thread at time once the settings worker stored
+// expected, polled for up to ten seconds; the last one given when it never does.
+RectD
+mainThreadRodOnceRead(EffectInstance* effect,
+                      U64 hash,
+                      double time,
+                      const RectD& expected)
+{
+    RectD rod;
+    for (int i = 0; i < 1000; ++i) {
+        QCoreApplication::processEvents();
+        EXPECT_EQ(eStatusOK, effect->getRegionOfDefinition(hash, time, RenderScale::identity, ViewIdx(0), &rod));
+        if (rod == expected) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    QCoreApplication::processEvents();
+
+    return rod;
+}
 } // anonymous namespace
 
-TEST_F(SceneLoadSetCoverageTest, AUSDRenderReadsItsResolutionOpeningOnlyTheCamerasBuilding)
+TEST_F(SceneLoadSetCoverageTest, AUSDRenderReadsItsResolutionOpeningNoBuilding)
 {
     CarCity city(2, 2);
     const std::string wrapper = writeRenderSettingsWrapper(city);
@@ -1276,22 +1300,23 @@ TEST_F(SceneLoadSetCoverageTest, AUSDRenderReadsItsResolutionOpeningOnlyTheCamer
     ASSERT_TRUE(source && render);
     ASSERT_TRUE(render->connectInput(source, 0));
 
-    // The main thread reads the prim with nothing loaded; the worker it starts, like any reader
-    // off the main thread, opens the camera's building and no other.
-    RectD rod;
-    ASSERT_EQ(eStatusOK, render->getEffectInstance()->getRegionOfDefinition(render->getHashValue(), 1., RenderScale::identity, ViewIdx(0), &rod));
-    EXPECT_EQ(RectD(0., 0., 320., 200.), rod);
-    EXPECT_LE(city.openedBuildings(), 1);
-
+    // The main thread evaluates nothing: it is given a provisional format while the worker it
+    // starts reads the settings prim, which, like any reader off the main thread, opens no building.
     EffectInstance* effect = render->getEffectInstance().get();
     const U64 hash = render->getHashValue();
+    RectD rod;
+    ASSERT_EQ(eStatusOK, effect->getRegionOfDefinition(hash, 1., RenderScale::identity, ViewIdx(0), &rod));
+    EXPECT_EQ(0, city.openedBuildings());
+    EXPECT_EQ(RectD(0., 0., 320., 200.), mainThreadRodOnceRead(effect, hash, 1., RectD(0., 0., 320., 200.)));
+    EXPECT_EQ(0, city.openedBuildings());
+
     const RectD offMain = std::async(std::launch::async, [effect, hash]() {
         RectD r;
         EXPECT_EQ(eStatusOK, effect->getRegionOfDefinition(hash, 2., RenderScale::identity, ViewIdx(0), &r));
 
         return r; }).get();
     EXPECT_EQ(RectD(0., 0., 320., 200.), offMain);
-    EXPECT_LE(city.openedBuildings(), 1);
+    EXPECT_EQ(0, city.openedBuildings());
 }
 
 TEST_F(SceneLoadSetCoverageTest, AUSDRendersOutputMetadataOpensNoBuildingOnTheMainThreadAndArrivesWhole)
@@ -1305,15 +1330,16 @@ TEST_F(SceneLoadSetCoverageTest, AUSDRendersOutputMetadataOpensNoBuildingOnTheMa
     NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(render->getEffectInstance().get());
     ASSERT_TRUE(effect != nullptr);
 
-    // The table names every drawable prim, the buildings' included, which the main thread never opens.
-    // The output format reads the settings prim's camera, which lives in the first building, so that
-    // one building may be open: no other is.
+    // The table names every drawable prim, the buildings' included, which the main thread never
+    // opens; nor does the output format, which the settings worker reads off the settings prim alone.
     const ImageMetadata provisional = effect->getOutputMetadata(1., ViewIdx(0));
-    EXPECT_LE(city.openedBuildings(), 1);
+    EXPECT_EQ(0, city.openedBuildings());
     EXPECT_TRUE(provisional.empty());
-    // Not cached: asking again still opens nothing more.
+    // Not cached: asking again still opens nothing.
     EXPECT_TRUE(effect->getOutputMetadata(1., ViewIdx(0)).empty());
-    EXPECT_LE(city.openedBuildings(), 1);
+    EXPECT_EQ(0, city.openedBuildings());
+    EXPECT_EQ(RectD(0., 0., 320., 200.), mainThreadRodOnceRead(effect, render->getHashValue(), 1., RectD(0., 0., 320., 200.)));
+    EXPECT_EQ(0, city.openedBuildings());
 
     const U64 revision = render->getMetadataRevision();
     const ImageMetadata whole = std::async(std::launch::async, [effect]() { return effect->getOutputMetadata(1., ViewIdx(0)); }).get();

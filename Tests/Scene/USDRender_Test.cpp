@@ -509,11 +509,11 @@ protected:
         return node ? dynamic_cast<USDRender*>(node->getEffectInstance().get()) : nullptr;
     }
 
-    // The renderer node renders frame 1 with, empty with *error set if it cannot tell.
+    // The renderer node renders frame 1 with, empty with *error set if it cannot tell. Asked off
+    // the main thread, which is given a provisional answer until a worker read the settings.
     static std::string activeRendererOf(const NodePtr& node,
                                         std::string* error)
     {
-        std::string id;
         USDRender* render = renderOf(node);
         if (!render) {
             *error = "not a USDRender";
@@ -521,7 +521,10 @@ protected:
             return std::string();
         }
 
-        return render->activeRenderer(1., ViewIdx(0), &id, error) ? id : std::string();
+        return std::async(std::launch::async, [render, error]() {
+            std::string id;
+
+            return render->activeRenderer(1., ViewIdx(0), &id, error) ? id : std::string(); }).get();
     }
 
     // Refreshes effect's Settings Prim menu and waits for its entries.
@@ -533,14 +536,20 @@ protected:
         EXPECT_TRUE(effect->applySettingsPrimMenu(job));
     }
 
-    // The node's output format as its region of definition at frame 1.
+    // The node's output format as its region of definition at frame 1, asked off the main thread
+    // as activeRendererOf() is.
     static RectD rodOf(const NodePtr& node)
     {
         RectD rod;
         USDRender* render = renderOf(node);
         EXPECT_TRUE(render != nullptr);
         if (render) {
-            EXPECT_EQ(eStatusOK, render->getRegionOfDefinition(node->getHashValue(), 1., RenderScale::identity, ViewIdx(0), &rod));
+            const U64 hash = node->getHashValue();
+            rod = std::async(std::launch::async, [render, hash]() {
+                RectD r;
+                EXPECT_EQ(eStatusOK, render->getRegionOfDefinition(hash, 1., RenderScale::identity, ViewIdx(0), &r));
+
+                return r; }).get();
         }
 
         return rod;

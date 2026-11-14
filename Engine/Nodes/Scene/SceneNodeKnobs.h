@@ -163,8 +163,9 @@ bool isSceneUnsearchedOption(const std::string& id);
 /**
  * @brief One thread that runs a node's scene jobs one at a time, started on the first post().
  * It holds the running job and at most one waiting: a post() replaces the waiting one, which is
- * then dropped. stop() drops the waiting job and joins the thread once the running one returns,
- * so the owner cancels that one first.
+ * then dropped. stop() drops the waiting job and lets the thread end once the running one
+ * returns, without waiting for it: the owner cancels that one first, and its jobs reach the owner
+ * through weak references only. joinAll() waits for every such thread at application shutdown.
  **/
 class SceneWorker {
 public:
@@ -186,12 +187,20 @@ public:
     void post(const Task& run,
               const Task& dropped);
 
-    // Main thread or the owner's destruction. Idempotent.
+    // Never blocks. Idempotent.
     void stop();
 
-private:
+    /**
+     * @brief Stops every worker and waits, with the Python GIL released, up to timeoutMs for
+     * their threads to end. After it, post() drops its job at once. Called at application
+     * shutdown, before the statics the jobs read are torn down. False if a thread still runs.
+     **/
+    static bool joinAll(int timeoutMs);
+
     struct Implementation;
-    // Shared with the thread, which may outlive the worker when the worker is stopped from it.
+
+private:
+    // Shared with the thread, which outlives the worker once stopped.
     std::shared_ptr<Implementation> _imp;
 };
 

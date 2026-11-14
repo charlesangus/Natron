@@ -245,14 +245,18 @@ private:
 
     /**
      * @brief The summary at time and view under the node's hash, read with the settings prim's
-     * payloads open. The main thread never opens one: it is given the stored summary, else one
-     * read with nothing loaded while a worker reads the whole one, which, when it differs,
-     * invalidates the output metadata so that its readers ask again.
+     * payloads open. The main thread never evaluates the input: it is given the stored summary,
+     * else, marked provisional (markOutputMetadataProvisional()), the last one stored for any
+     * hash, time and view, or the project's format before any, while a worker reads the whole
+     * one; when that differs, the output metadata is invalidated so that its readers ask again.
      **/
     SettingsSummary getSettingsSummary(double time, ViewIdx view) const;
 
     // Stores summary under hash, and tells the readers given another one for it to ask again.
     void storeSettingsSummary(U64 hash, double time, ViewIdx view, const SettingsSummary& summary) const;
+
+    // On the worker: reads every summary the main thread was given a provisional one for under the node's hash.
+    void readGivenSettingsSummaries() const;
 
     // The render of time, view and level as the node's settings and input scene make it. False with
     // *error set to the message the node shows if it cannot render.
@@ -283,13 +287,21 @@ private:
     // Each read of the settings evaluates the input on its own load set, under its own id.
     const U64 _settingsNothingContextId;
     const U64 _settingsPrimContextId;
-    const U64 _settingsCameraContextId;
+    // A provisional summary the main thread was given, under the hash it was given for.
+    struct GivenSettingsSummary {
+        U64 hash = 0;
+        SettingsSummary summary;
+    };
     mutable std::mutex _settingsSummariesMutex;
-    // Under _settingsSummariesMutex: the summaries of the node's hash _settingsSummariesHash, and
-    // the provisional ones the main thread was given while a worker reads them.
+    // Under _settingsSummariesMutex: the summaries of the node's hash _settingsSummariesHash, the
+    // provisional ones the main thread was given while the worker reads them, the last one stored,
+    // and whether a readGivenSettingsSummaries() is posted and not yet started.
     mutable U64 _settingsSummariesHash;
     mutable std::map<std::pair<double, int>, SettingsSummary> _settingsSummaries;
-    mutable std::map<std::pair<double, int>, SettingsSummary> _settingsSummariesGiven;
+    mutable std::map<std::pair<double, int>, GivenSettingsSummary> _settingsSummariesGiven;
+    mutable bool _hasLastSettingsSummary;
+    mutable SettingsSummary _lastSettingsSummary;
+    mutable bool _settingsSummariesPosted;
     std::mutex _primIdTablesMutex;
     // Under _primIdTablesMutex: the tables of the node's hash _primIdTablesHash, and the frames
     // whose readers were given none.

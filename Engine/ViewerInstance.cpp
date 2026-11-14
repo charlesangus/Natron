@@ -385,6 +385,7 @@ ViewerInstance::~ViewerInstance()
         QMutexLocker l(&liveViewersMutex);
         liveViewers.erase(this);
     }
+    EffectInstance::retireSceneContextId(_imp->sceneContextId);
 
     // A plan reads this viewer until its thread has stopped.
     _imp->gpuPlacementPlanner->quitThread(false);

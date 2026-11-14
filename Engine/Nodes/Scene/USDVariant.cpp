@@ -241,8 +241,8 @@ USDVariant::refreshVariantMenus()
     const std::string pattern = _primPattern.getExpression();
     const EffectInstancePtr input = getInput(0);
     const double time = getCurrentTime();
-    SceneMenuRefresh::WorkFunc work = [input, pattern, setName, time, context](const SceneMenuJob& job,
-                                                                               SceneMenuJob::Result* result) {
+    SceneMenuRefresh::WorkFunc work = [weakInput = EffectInstanceWPtr(input), pattern, setName, time, context](const SceneMenuJob& job,
+                                                                                                               SceneMenuJob::Result* result) {
         result->lists.resize(2);
         std::string error;
         if (PrimSelector::isBlank(pattern) || !PrimSelector::validate(pattern, &error)) {
@@ -250,7 +250,7 @@ USDVariant::refreshVariantMenus()
         }
         ScenePayload scene;
         SceneQueryPool::Lease lease;
-        if (!SceneNodeAuthoring::borrowMenuScene(input, time, context, job, &scene, &lease)) {
+        if (!SceneNodeAuthoring::borrowMenuScene(weakInput, time, context, job, &scene, &lease)) {
             return;
         }
         // Not the node's cache: a menu's search must not evict what an evaluation remembers.

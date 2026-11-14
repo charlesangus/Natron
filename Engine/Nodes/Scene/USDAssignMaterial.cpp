@@ -254,14 +254,6 @@ USDAssignMaterial::onInputChanged(int inputNo)
     refreshMaterialPathEnabled();
 }
 
-std::string
-USDAssignMaterial::getMaterialsScope() const
-{
-    AppInstancePtr app = getApp();
-
-    return app ? app->getProject()->getProjectMaterialsScope() : std::string();
-}
-
 SceneEvaluationContext
 USDAssignMaterial::getSceneInputContext(int inputNb,
                                         const SceneEvaluationContext& ctx,
@@ -278,6 +270,8 @@ USDAssignMaterial::getSceneInputContext(int inputNb,
 
 void
 USDAssignMaterial::mapSceneInputReach(int inputNb,
+                                      double time,
+                                      ViewIdx view,
                                       const std::vector<std::string>& in,
                                       std::vector<std::string>* out) const
 {
@@ -286,7 +280,9 @@ USDAssignMaterial::mapSceneInputReach(int inputNb,
 
         return;
     }
-    SceneNodeAuthoring::mapSharedMaterialReach(&_graftMemo, getMaterialsScope(), in, out);
+    AppInstancePtr app = getApp();
+
+    SceneNodeAuthoring::mapSharedMaterialReach(&_graftMemo, app ? app->getProject()->getProjectMaterialsScope(time, view) : std::string(), in, out);
 }
 
 void

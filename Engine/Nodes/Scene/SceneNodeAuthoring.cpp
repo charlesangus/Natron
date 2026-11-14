@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <list>
@@ -37,6 +38,7 @@
 
 #include <QCoreApplication>
 #include <QMetaObject>
+#include <QThread>
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
@@ -374,34 +376,59 @@ struct SceneWorker::Implementation {
     std::mutex lock;
     std::condition_variable wake;
     bool stopping = false;
+    bool started = false;
     bool pending = false;
     Task pendingRun;
     Task pendingDropped;
-    std::thread thread;
 
-    void loop()
-    {
-        for (;;) {
-            Task run;
-            {
-                std::unique_lock<std::mutex> l(lock);
-                wake.wait(l, [this]() { return stopping || pending; });
-                if (stopping) {
-                    return;
-                }
-                run.swap(pendingRun);
-                pendingDropped = Task();
-                pending = false;
-            }
-            try {
-                run();
-            } catch (...) {
-            }
-        }
-    }
+    void loop();
 };
 
 namespace {
+// The threads of every worker, for joinAll(). Never destroyed: a thread joinAll() gave up on may
+// still reach it while the process exits.
+struct SceneWorkerThreads {
+    std::mutex lock;
+    std::condition_variable ended;
+    std::size_t running = 0;
+    bool shutDown = false;
+    std::vector<std::weak_ptr<SceneWorker::Implementation>> workers;
+};
+
+SceneWorkerThreads&
+sceneWorkerThreads()
+{
+    static SceneWorkerThreads* threads = new SceneWorkerThreads;
+
+    return *threads;
+}
+
+// Releases the Python GIL while the calling thread waits, if it holds it: a job may need the GIL
+// (expressions) to finish.
+class PythonUnlockedWhileJoining {
+public:
+    PythonUnlockedWhileJoining()
+        : _state(nullptr)
+    {
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            _state = PyEval_SaveThread();
+        }
+    }
+
+    ~PythonUnlockedWhileJoining()
+    {
+        if (_state) {
+            PyEval_RestoreThread(_state);
+        }
+    }
+
+    PythonUnlockedWhileJoining(const PythonUnlockedWhileJoining&) = delete;
+    PythonUnlockedWhileJoining& operator=(const PythonUnlockedWhileJoining&) = delete;
+
+private:
+    PyThreadState* _state;
+};
+
 void
 callDropped(const SceneWorker::Task& dropped)
 {
@@ -413,7 +440,54 @@ callDropped(const SceneWorker::Task& dropped)
     } catch (...) {
     }
 }
+
+// Sets imp stopping and returns its waiting job's dropped callback, for the caller to call unlocked.
+SceneWorker::Task
+stopWorker(SceneWorker::Implementation* imp)
+{
+    SceneWorker::Task dropped;
+    {
+        std::lock_guard<std::mutex> l(imp->lock);
+        imp->stopping = true;
+        if (imp->pending) {
+            dropped.swap(imp->pendingDropped);
+            imp->pendingRun = SceneWorker::Task();
+            imp->pending = false;
+        }
+    }
+    imp->wake.notify_one();
+
+    return dropped;
+}
 } // anonymous namespace
+
+void
+SceneWorker::Implementation::loop()
+{
+    for (;;) {
+        Task run;
+        {
+            std::unique_lock<std::mutex> l(lock);
+            wake.wait(l, [this]() { return stopping || pending; });
+            if (stopping) {
+                break;
+            }
+            run.swap(pendingRun);
+            pendingDropped = Task();
+            pending = false;
+        }
+        try {
+            run();
+        } catch (...) {
+        }
+    }
+    SceneWorkerThreads& threads = sceneWorkerThreads();
+    {
+        std::lock_guard<std::mutex> l(threads.lock);
+        --threads.running;
+    }
+    threads.ended.notify_all();
+}
 
 SceneWorker::SceneWorker()
     : _imp(std::make_shared<Implementation>())
@@ -430,6 +504,7 @@ SceneWorker::post(const Task& run,
                   const Task& dropped)
 {
     Task replaced;
+    bool start = false;
     {
         std::lock_guard<std::mutex> l(_imp->lock);
         if (_imp->stopping) {
@@ -441,10 +516,27 @@ SceneWorker::post(const Task& run,
             _imp->pendingRun = run;
             _imp->pendingDropped = dropped;
             _imp->pending = true;
-            if (!_imp->thread.joinable()) {
-                std::shared_ptr<Implementation> imp = _imp;
-                _imp->thread = std::thread([imp]() { imp->loop(); });
+            start = !_imp->started;
+            _imp->started = true;
+        }
+    }
+    if (start) {
+        SceneWorkerThreads& threads = sceneWorkerThreads();
+        bool refused = false;
+        {
+            std::lock_guard<std::mutex> l(threads.lock);
+            refused = threads.shutDown;
+            if (!refused) {
+                ++threads.running;
+                threads.workers.erase(std::remove_if(threads.workers.begin(), threads.workers.end(), [](const std::weak_ptr<Implementation>& worker) { return worker.expired(); }), threads.workers.end());
+                threads.workers.push_back(_imp);
             }
+        }
+        if (refused) {
+            callDropped(stopWorker(_imp.get()));
+        } else {
+            std::shared_ptr<Implementation> imp = _imp;
+            std::thread([imp]() { imp->loop(); }).detach();
         }
     }
     _imp->wake.notify_one();
@@ -454,29 +546,32 @@ SceneWorker::post(const Task& run,
 void
 SceneWorker::stop()
 {
-    Task dropped;
-    std::thread thread;
+    callDropped(stopWorker(_imp.get()));
+}
+
+bool
+SceneWorker::joinAll(int timeoutMs)
+{
+    SceneWorkerThreads& threads = sceneWorkerThreads();
+    std::vector<std::shared_ptr<Implementation>> workers;
     {
-        std::lock_guard<std::mutex> l(_imp->lock);
-        _imp->stopping = true;
-        if (_imp->pending) {
-            dropped.swap(_imp->pendingDropped);
-            _imp->pendingRun = Task();
-            _imp->pending = false;
+        std::lock_guard<std::mutex> l(threads.lock);
+        threads.shutDown = true;
+        for (const std::weak_ptr<Implementation>& weak : threads.workers) {
+            if (const std::shared_ptr<Implementation> worker = weak.lock()) {
+                workers.push_back(worker);
+            }
         }
-        thread.swap(_imp->thread);
+        threads.workers.clear();
     }
-    _imp->wake.notify_one();
-    callDropped(dropped);
-    if (!thread.joinable()) {
-        return;
+    for (const std::shared_ptr<Implementation>& worker : workers) {
+        callDropped(stopWorker(worker.get()));
     }
-    // A job whose captures held the owner's last reference stops it from the worker itself.
-    if (thread.get_id() == std::this_thread::get_id()) {
-        thread.detach();
-    } else {
-        thread.join();
-    }
+    workers.clear();
+    PythonUnlockedWhileJoining unlocked;
+    std::unique_lock<std::mutex> l(threads.lock);
+
+    return threads.ended.wait_for(l, std::chrono::milliseconds(timeoutMs), [&threads]() { return threads.running == 0; });
 }
 
 struct SceneMenuRefresh::State {
@@ -496,6 +591,12 @@ struct SceneMenuRefresh::State {
     std::shared_ptr<SceneMenuJob> latest;
     // Set while followLoadChanges() reruns the refresh.
     bool followingLoad = false;
+
+    ~State()
+    {
+        EffectInstance::retireSceneContextId(noViewerId);
+        EffectInstance::retireSceneContextId(mappedId);
+    }
 };
 
 namespace {
@@ -558,10 +659,11 @@ SceneMenuRefresh::getContext(EffectInstance* effect,
     SceneEvaluationContext context;
     SceneEvaluationContext viewerContext;
 
-    *noViewer = !SceneNodeAuthoring::getShowingViewerContext(effect, &context, &viewerContext);
+    bool ownSet = false;
+    *noViewer = !SceneNodeAuthoring::getShowingViewerContext(effect, &context, &viewerContext, &ownSet);
     if (*noViewer) {
         context = SceneEvaluationContext(_state->noViewerId, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
-    } else if (!context.hasSameLoadSet(viewerContext)) {
+    } else if (ownSet || !context.hasSameLoadSet(viewerContext)) {
         // A set mapped through the graph must not share the memos the viewer's own id keys.
         context.id = _state->mappedId;
     }
@@ -1337,14 +1439,35 @@ namespace {
                      std::map<const EffectInstance*, bool>* memo,
                      bool* hasRoute,
                      SceneLoadSetPtr* united,
-                     U64* firstRouteId)
+                     U64* firstRouteId,
+                     SceneEvaluationContext* firstRoute)
     {
         if (consumer == target) {
             if (!*hasRoute) {
                 *firstRouteId = ctx.id;
+                *firstRoute = ctx;
             }
             *united = *hasRoute ? SceneLoadSet::unite(*united, ctx.loadSet) : ctx.loadSet;
             *hasRoute = true;
+
+            return;
+        }
+        // As evaluateScene() does, a node passing a scene through evaluates only that one, on ctx.
+        double identityTime = time;
+        ViewIdx identityView = view;
+        int identityInputNb = -1;
+        if (consumer->getSceneIdentity(time, view, &identityTime, &identityView, &identityInputNb)) {
+            if (identityInputNb == -2) {
+                if (identityTime != time) {
+                    mapThroughRoutes(consumer, target, ctx, identityTime, identityView, memo, hasRoute, united, firstRouteId, firstRoute);
+                }
+
+                return;
+            }
+            const EffectInstancePtr source = consumer->getIdentitySource(identityInputNb);
+            if (source && source->producesSceneData() && reachesTarget(source.get(), target, memo)) {
+                mapThroughRoutes(source.get(), target, ctx, identityTime, identityView, memo, hasRoute, united, firstRouteId, firstRoute);
+            }
 
             return;
         }
@@ -1361,7 +1484,7 @@ namespace {
                 // A mapping that fails is one nothing is known about, which is every payload.
                 inputContext = SceneEvaluationContext(ctx.id, SceneLoadSetPtr());
             }
-            mapThroughRoutes(input.get(), target, inputContext, time, view, memo, hasRoute, united, firstRouteId);
+            mapThroughRoutes(input.get(), target, inputContext, time, view, memo, hasRoute, united, firstRouteId, firstRoute);
         }
     }
 } // anonymous namespace
@@ -1372,7 +1495,8 @@ mapContextDownToNode(const EffectInstance* consumer,
                      const SceneEvaluationContext& ctx,
                      double time,
                      ViewIdx view,
-                     SceneEvaluationContext* mapped)
+                     SceneEvaluationContext* mapped,
+                     bool* ownSet)
 {
     std::map<const EffectInstance*, bool> memo;
     if (!consumer || !target || !reachesTarget(consumer, target, &memo)) {
@@ -1381,8 +1505,12 @@ mapContextDownToNode(const EffectInstance* consumer,
     bool hasRoute = false;
     SceneLoadSetPtr united;
     U64 firstRouteId = ctx.id;
-    mapThroughRoutes(consumer, target, ctx, time, view, &memo, &hasRoute, &united, &firstRouteId);
+    SceneEvaluationContext firstRoute;
+    mapThroughRoutes(consumer, target, ctx, time, view, &memo, &hasRoute, &united, &firstRouteId, &firstRoute);
     *mapped = SceneEvaluationContext(firstRouteId, united);
+    if (ownSet) {
+        *ownSet = hasRoute && !mapped->hasSameLoadSet(firstRoute);
+    }
 
     return hasRoute;
 }
@@ -1390,7 +1518,8 @@ mapContextDownToNode(const EffectInstance* consumer,
 bool
 getShowingViewerContext(EffectInstance* effect,
                         SceneEvaluationContext* context,
-                        SceneEvaluationContext* viewerContext)
+                        SceneEvaluationContext* viewerContext,
+                        bool* ownSet)
 {
     const NodePtr node = effect ? effect->getNode() : NodePtr();
     if (!node) {
@@ -1419,7 +1548,7 @@ getShowingViewerContext(EffectInstance* effect,
     const double time = effect->getCurrentTime();
     for (ViewerInstance* viewer : candidates) {
         const SceneEvaluationContext shown = viewer->getSceneEvaluationContext();
-        if (mapContextDownToNode(viewer, effect, shown, time, ViewIdx(0), context)) {
+        if (mapContextDownToNode(viewer, effect, shown, time, ViewIdx(0), context, ownSet)) {
             if (viewerContext) {
                 *viewerContext = shown;
             }
@@ -1432,23 +1561,44 @@ getShowingViewerContext(EffectInstance* effect,
 }
 
 bool
-borrowMenuScene(const EffectInstancePtr& input,
+borrowMenuScene(const EffectInstanceWPtr& input,
                 double time,
                 const SceneEvaluationContext& context,
                 const SceneMenuJob& job,
                 ScenePayload* scene,
                 SceneQueryPool::Lease* lease)
 {
-    if (!input || job.isCancelled()) {
+    if (job.isCancelled()) {
+        return false;
+    }
+    EffectInstancePtr effect = input.lock();
+    if (!effect) {
         return false;
     }
     std::string error;
-    if ((input->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0), context, job.getAbortInfo()), scene, &error) != EffectInstance::eRenderRoIRetCodeOk) || scene->isEmpty() || job.isCancelled()) {
+    const EffectInstance::RenderRoIRetCode code = effect->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0), context, job.getAbortInfo()), scene, &error);
+    std::shared_ptr<const EffectInstance> held = std::move(effect);
+    releaseOnMainThread(&held);
+    if ((code != EffectInstance::eRenderRoIRetCodeOk) || scene->isEmpty() || job.isCancelled()) {
         return false;
     }
     *lease = SceneQueryPool::instance().borrow(*scene, context.loadSet, &error);
 
     return lease->isValid();
+}
+
+void
+releaseOnMainThread(std::shared_ptr<const EffectInstance>* effect)
+{
+    QCoreApplication* app = QCoreApplication::instance();
+    if (!*effect || !app || (QThread::currentThread() == app->thread())) {
+        effect->reset();
+
+        return;
+    }
+    // A copy left on this thread would drop the last reference here, off the main thread.
+    auto release = [held = std::move(*effect)]() mutable { held.reset(); };
+    QMetaObject::invokeMethod(app, std::move(release), Qt::QueuedConnection);
 }
 
 std::size_t

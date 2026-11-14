@@ -166,6 +166,8 @@ private:
                                                         ViewIdx view) const OVERRIDE FINAL;
 
     virtual void mapSceneInputReach(int inputNb,
+                                    double time,
+                                    ViewIdx view,
                                     const std::vector<std::string>& in,
                                     std::vector<std::string>* out) const OVERRIDE FINAL;
 

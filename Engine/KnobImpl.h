@@ -1185,6 +1185,9 @@ Knob<T>::setValue(const T & v,
     if (IsolatedJob::refusesValueWrite(this, reason)) {
         return eValueChangedReturnCodeNothingChanged;
     }
+    if (refusesValue(v, dimension)) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
 
     KnobHelper::ValueChangedReturnCodeEnum ret = eValueChangedReturnCodeNoKeyframeAdded;
     KnobHolder* holder =  getHolder();

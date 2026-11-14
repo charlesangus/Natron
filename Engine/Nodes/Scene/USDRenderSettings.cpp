@@ -289,8 +289,8 @@ USDRenderSettings::refreshCameraMenu()
     const SceneEvaluationContext context = _cameraMenuRefresh.getContext(this, &noViewer);
     const EffectInstancePtr input = getInput(0);
     const double time = getCurrentTime();
-    SceneMenuRefresh::WorkFunc work = [input, time, context](const SceneMenuJob& job,
-                                                             SceneMenuJob::Result* result) {
+    SceneMenuRefresh::WorkFunc work = [weakInput = EffectInstanceWPtr(input), time, context](const SceneMenuJob& job,
+                                                                                             SceneMenuJob::Result* result) {
         result->lists.resize(1);
         // The menu lists what the whole stage holds.
         if (context.reach) {
@@ -298,7 +298,7 @@ USDRenderSettings::refreshCameraMenu()
         }
         ScenePayload scene;
         SceneQueryPool::Lease lease;
-        if (!SceneNodeAuthoring::borrowMenuScene(input, time, context, job, &scene, &lease)) {
+        if (!SceneNodeAuthoring::borrowMenuScene(weakInput, time, context, job, &scene, &lease)) {
             return;
         }
         for (const PXR_NS::UsdPrim& prim : lease.getStage()->Traverse()) {

@@ -799,7 +799,8 @@ KnobChoice::onInternalValueChanged(int dimension,
 
             return;
         }
-        // A disabled row names nothing to choose, so the entry chosen before it stays saved.
+        // setValue() refuses a disabled row, which names nothing to choose; this one may still be
+        // reached through an expression, a link or a keyframe, and the entry chosen before it stays saved.
         if ((index < 0) || (index >= (int)_entries.size()) || _entries[index].disabled || sameChoiceOption(_currentEntry, _entries[index])) {
             return;
         }
@@ -1235,6 +1236,15 @@ KnobChoice::getHintToolTipFull() const
     return ss.str();
 } // KnobChoice::getHintToolTipFull
 
+bool
+KnobChoice::refusesValue(const int& v,
+                         int /*dimension*/) const
+{
+    QMutexLocker k(&_entriesMutex);
+
+    return (v >= 0) && (v < (int)_entries.size()) && _entries[v].disabled;
+}
+
 KnobHelper::ValueChangedReturnCodeEnum
 KnobChoice::setValueFromID(const std::string & value,
                               int dimension,
@@ -1248,6 +1258,8 @@ KnobChoice::setValueFromID(const std::string & value,
         i = matchEntry(value, _entries, &_currentEntry);
         if (_currentEntry.disabled) {
             _currentEntry = previous;
+
+            return eValueChangedReturnCodeNothingChanged;
         }
         entryChanged = !sameChoiceOption(previous, _currentEntry);
     }

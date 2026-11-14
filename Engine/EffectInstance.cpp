@@ -208,6 +208,7 @@ EffectInstance::~EffectInstance()
     if (qApp && (QThread::currentThread() == qApp->thread())) {
         closeOverlayEditStepOf(this);
     }
+    retireSceneInputContextIds();
 }
 
 void

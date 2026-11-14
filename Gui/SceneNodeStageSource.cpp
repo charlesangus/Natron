@@ -119,6 +119,7 @@ SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
 SceneNodeStageSource::~SceneNodeStageSource()
 {
     stop();
+    EffectInstance::retireSceneContextId(_contextId);
     SceneWriteBarrier::ReadScope readScope;
     std::lock_guard<std::mutex> lock(_stageMutex);
     _stage.reset();

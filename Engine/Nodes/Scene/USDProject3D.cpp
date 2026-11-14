@@ -323,8 +323,8 @@ USDProject3D::refreshCameraMenu()
         }
         context.reach = std::make_shared<SceneLoadReach>();
     }
-    SceneMenuRefresh::WorkFunc work = [input, time, context](const SceneMenuJob& job,
-                                                             SceneMenuJob::Result* result) {
+    SceneMenuRefresh::WorkFunc work = [weakInput = EffectInstanceWPtr(input), time, context](const SceneMenuJob& job,
+                                                                                             SceneMenuJob::Result* result) {
         result->lists.resize(1);
         // The menu lists what the whole stage holds.
         if (context.reach) {
@@ -332,7 +332,7 @@ USDProject3D::refreshCameraMenu()
         }
         ScenePayload scene;
         SceneQueryPool::Lease lease;
-        if (!SceneNodeAuthoring::borrowMenuScene(input, time, context, job, &scene, &lease)) {
+        if (!SceneNodeAuthoring::borrowMenuScene(weakInput, time, context, job, &scene, &lease)) {
             return;
         }
         for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
@@ -388,6 +388,8 @@ USDProject3D::getSceneInputContext(int inputNb,
 
 void
 USDProject3D::mapSceneInputReach(int inputNb,
+                                 double /*time*/,
+                                 ViewIdx /*view*/,
                                  const std::vector<std::string>& in,
                                  std::vector<std::string>* out) const
 {

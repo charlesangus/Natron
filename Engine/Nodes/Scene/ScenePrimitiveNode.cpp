@@ -237,6 +237,8 @@ ScenePrimitiveNode::getSceneInputContext(int /*inputNb*/,
 
 void
 ScenePrimitiveNode::mapSceneInputReach(int /*inputNb*/,
+                                       double /*time*/,
+                                       ViewIdx /*view*/,
                                        const std::vector<std::string>& in,
                                        std::vector<std::string>* out) const
 {

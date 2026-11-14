@@ -354,9 +354,6 @@ USDEditTransform::transformsPrim(const std::string& primPath,
         std::lock_guard<std::mutex> l(_imp->lock);
         const Implementation::Result* result = _imp->find(context.id);
         if (!result) {
-            result = _imp->latest();
-        }
-        if (!result) {
             return false;
         }
         if (result->matchesValid && (result->matchedPattern == pattern)) {

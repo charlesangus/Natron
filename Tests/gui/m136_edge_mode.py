@@ -5,6 +5,7 @@ pixels past the source's edge must show the edge repeated under Stretch and blac
 
 Run through Tests/gui/run-gui-test.sh under Xvfb at 1920x1080.
 """
+import math
 import os
 import re
 import sys
@@ -168,6 +169,28 @@ try:
         c = image.pixelColor(g.x(), g.y())
         return (c.red(), c.green(), c.blue())
 
+    def brightest_red_in_pixel(px, y):
+        """The largest red of the screen pixels wholly inside image pixel column px at canonical y,
+        or None. The viewer outlines the region of definition with a grey dashed line, which can run
+        through the middle of the column; the brightest screen pixel is one the line misses."""
+        m = mapping()
+        widget = visible_viewer()
+        if m is None or widget is None:
+            return None
+        QApplication.processEvents()
+        a, b = sorted((m[0] + m[2] * px, m[0] + m[2] * (px + 1)))
+        columns = list(range(int(math.ceil(a)), int(math.floor(b))))
+        if not columns:
+            columns = [int(round(0.5 * (a + b)))]
+        row = int(round(m[1] + m[3] * y))
+        image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
+        reds = []
+        for column in columns:
+            g = widget.mapToGlobal(QPoint(column, row))
+            if 0 <= g.x() < image.width() and 0 <= g.y() < image.height():
+                reds.append(image.pixelColor(g.x(), g.y()).red())
+        return max(reds) if reds else None
+
     def is_red(c):
         return c is not None and c[0] > BRIGHT_MIN and c[1] < DARK_MAX and c[2] < DARK_MAX
 
@@ -253,24 +276,21 @@ try:
         frame_all()
         yield ("sleep", SETTLE_MS)
         left, bottom, width, height = SOURCE_BOX
-        edge = (left + 0.5, bottom + height / 2.0 + 0.5)
-        inside = (left + width / 2.0 + 0.5, bottom + height / 2.0 + 0.5)
+        row = bottom + height / 2.0 + 0.5
+        edge = (left, row)
+        inside = (left + width // 2, row)
 
         def pixels_for(mode):
-            def red_at(point):
-                c = sample(*point)
-                return None if c is None else c[0]
-
             def ok():
-                e, i = red_at(edge), red_at(inside)
+                e, i = brightest_red_in_pixel(*edge), brightest_red_in_pixel(*inside)
                 if e is None or i is None or i <= BRIGHT_MIN:
                     return False
                 return (abs(i - e) <= EDGE_MATCH_MAX) if mode == "stretch" else (i - e >= EDGE_DIMMING_MIN)
 
             def describe():
-                return ("the first column is %s (edge %r, inside %r)"
+                return ("the first column is %s (edge red %r, inside red %r, edge %r)"
                         % ("as bright as the inside" if mode == "stretch" else "dimmed by the black outside",
-                           sample(*edge), sample(*inside)))
+                           brightest_red_in_pixel(*edge), brightest_red_in_pixel(*inside), sample(left + 0.5, row)))
 
             return ok, describe
 

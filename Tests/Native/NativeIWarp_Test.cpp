@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <iostream>
 #include <list>
 #include <string>
@@ -54,6 +55,7 @@
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IVariantRegistry.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Transform/CornerPin.h"
@@ -115,6 +117,54 @@ maxDifference(const NodePtr& a,
     }
 
     return worst;
+}
+
+// The largest difference between the renders of a and b over the pixels of b's region of
+// definition inside the window, -1 when either fails.
+double
+maxDifferenceInsideRoD(const NodePtr& a,
+                       const NodePtr& b)
+{
+    EffectInstancePtr effect = b->getEffectInstance();
+    RectD rod;
+    bool isProjectFormat = false;
+
+    if (effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat) == eStatusFailed) {
+        return -1.;
+    }
+    const RectI inside = rod.toPixelEnclosing(0u, 1.).intersect(kWindow);
+    RenderedPlane pa, pb;
+    if (inside.isNull() || !renderRGBA(a, kWindow, &pa) || !renderRGBA(b, kWindow, &pb) || (pa.pixels.size() != pb.pixels.size())) {
+        return -1.;
+    }
+    const int width = kWindow.width();
+    double worst = 0.;
+    for (int y = inside.y1; y < inside.y2; ++y) {
+        for (int x = inside.x1; x < inside.x2; ++x) {
+            const std::size_t i = ((std::size_t)(y - kWindow.y1) * width + (x - kWindow.x1)) * 4;
+            for (int c = 0; c < 4; ++c) {
+                worst = std::max(worst, std::fabs((double)pa.pixels[i + c] - (double)pb.pixels[i + c]));
+            }
+        }
+    }
+
+    return worst;
+}
+
+// Every node reads past its source in black. The sources stretch their edge, and under a Map an
+// I-node's region holds every amount of the warp, the source's own region included, where the
+// base node's holds only the full warp: under Stretch the I-node shows stretched pixels where the
+// base node has none.
+bool
+forceBlackEdge(const std::initializer_list<NodePtr>& nodes)
+{
+    bool ok = true;
+
+    for (const NodePtr& node : nodes) {
+        ok = node && setKnobValue(node, kEdgeModeParam, std::string("black")) && ok;
+    }
+
+    return ok;
 }
 
 // The root mean square difference between the renders of a and b, -1 when either fails.
@@ -389,6 +439,7 @@ TEST_F(NativeIWarpTest, InvertedMapOutsideItsImageIsTheWholeWarp)
     NodePtr itransform = makeITransform(source, map);
     NodePtr icornerpin = makeICornerPin(source, map);
     ASSERT_TRUE(bool(source) && bool(map) && bool(transform) && bool(cornerPin) && bool(itransform) && bool(icornerpin));
+    ASSERT_TRUE(forceBlackEdge({ transform, cornerPin, itransform, icornerpin }));
     ASSERT_TRUE(setKnobValues(itransform, kMapInputParamInvert, { 1. }));
     ASSERT_TRUE(setKnobValues(icornerpin, kMapInputParamInvert, { 1. }));
 
@@ -436,11 +487,13 @@ TEST_F(NativeIWarpTest, MapOneMatchesTheBaseNode)
 
     NodePtr transform = makeTransform(source, 1.);
     NodePtr cornerPin = makeCornerPin(source, 1.);
+    ASSERT_TRUE(forceBlackEdge({ transform, cornerPin }));
     const NodePtr maps[2] = { white, NodePtr() };
     for (const NodePtr& map : maps) {
         NodePtr itransform = makeITransform(source, map);
         NodePtr icornerpin = makeICornerPin(source, map);
         ASSERT_TRUE(bool(transform) && bool(cornerPin) && bool(itransform) && bool(icornerpin));
+        ASSERT_TRUE(forceBlackEdge({ itransform, icornerpin }));
 
         const double dt = maxDifference(itransform, transform);
         const double dc = maxDifference(icornerpin, cornerPin);
@@ -450,6 +503,26 @@ TEST_F(NativeIWarpTest, MapOneMatchesTheBaseNode)
         EXPECT_GE(dc, 0.);
         EXPECT_LE(dc, kWarpTolerance);
     }
+}
+
+// Under the sources' own Stretch edge a white Map renders as the base node wherever the base node
+// has pixels.
+TEST_F(NativeIWarpTest, MapOneMatchesTheBaseNodeInsideItsRegionUnderStretch)
+{
+    NodePtr source = makeParitySource();
+    NodePtr white = makeConstant(RectI(-64, -64, 128, 112), { 1., 1., 1., 1. });
+    NodePtr transform = makeTransform(source, 1.);
+    NodePtr cornerPin = makeCornerPin(source, 1.);
+    NodePtr itransform = makeITransform(source, white);
+    NodePtr icornerpin = makeICornerPin(source, white);
+    ASSERT_TRUE(bool(source) && bool(white) && bool(transform) && bool(cornerPin) && bool(itransform) && bool(icornerpin));
+
+    const double dt = maxDifferenceInsideRoD(itransform, transform);
+    const double dc = maxDifferenceInsideRoD(icornerpin, cornerPin);
+    EXPECT_GE(dt, 0.);
+    EXPECT_LE(dt, kWarpTolerance);
+    EXPECT_GE(dc, 0.);
+    EXPECT_LE(dc, kWarpTolerance);
 }
 
 // A Map of 0.5 everywhere renders as the base node at an amount of 0.5.
@@ -464,6 +537,7 @@ TEST_F(NativeIWarpTest, ConstantHalfMatchesHalfAmount)
     NodePtr icornerpin = makeICornerPin(source, half);
     NodePtr cornerPin = makeCornerPin(source, 0.5);
     ASSERT_TRUE(bool(itransform) && bool(transform) && bool(icornerpin) && bool(cornerPin));
+    ASSERT_TRUE(forceBlackEdge({ itransform, transform, icornerpin, cornerPin }));
 
     const double dt = maxDifference(itransform, transform);
     const double dc = maxDifference(icornerpin, cornerPin);
@@ -489,6 +563,8 @@ TEST_F(NativeIWarpTest, MapRampHasASingleEdge)
 
     NodePtr itransform = makeNode(PLUGINID_NATRON_ITRANSFORM, PLUGIN_MAJOR_NATRON_ITRANSFORM, stripe, ramp);
     ASSERT_TRUE(bool(itransform));
+    // The stripe, a source, stretches its edge across every row unless the warp reads black past it.
+    ASSERT_TRUE(forceBlackEdge({ itransform }));
     EXPECT_TRUE(setKnobValues(itransform, kTransformNodeParamTranslate, { 30., 0. }));
 
     RenderedPlane plane;

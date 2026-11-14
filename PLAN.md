@@ -451,10 +451,10 @@ future core work has solid ground to build on.
 | M314 | Paint-Through Inputs | todo | M53, M234 |  | E9 | F11 | | [M314-paint-through-inputs.md](PLAN/MILESTONES/M314-paint-through-inputs.md) |
 | M315 | Direct Texel Painting | todo | M53 |  | E9 | F11 | | [M315-direct-texel-painting.md](PLAN/MILESTONES/M315-direct-texel-painting.md) |
 | M316 | Delegate UV Baking | todo | M313, M251 |  | E9 | | | [M316-delegate-uv-baking.md](PLAN/MILESTONES/M316-delegate-uv-baking.md) |
-| M427 | Native Geometry Texture Painting | todo | M53, M358, M376, M428 |  | E9 |  | | [M427-native-geometry-texture-painting.md](PLAN/MILESTONES/M427-native-geometry-texture-painting.md) |
-| M428 | Native UV Operators | todo | M359 |  | E9 |  | | [M428-native-uv-operators.md](PLAN/MILESTONES/M428-native-uv-operators.md) |
-| M429 | GeoAttribPaint Node | todo | M53, M359, M376 |  | E9 |  | | [M429-geoattribpaint-node.md](PLAN/MILESTONES/M429-geoattribpaint-node.md) |
-| M430 | Viewer 2D/3D Switch | todo | M53, M376 |  | E9 |  | | [M430-viewer-2d-3d-switch.md](PLAN/MILESTONES/M430-viewer-2d-3d-switch.md) |
+| M427 | Native Geometry Texture Painting | todo | M53, M358, M376, M428 |  | E9 | F11 | | [M427-native-geometry-texture-painting.md](PLAN/MILESTONES/M427-native-geometry-texture-painting.md) |
+| M428 | Native UV Operators | todo | M359 |  | E9 | F11 | | [M428-native-uv-operators.md](PLAN/MILESTONES/M428-native-uv-operators.md) |
+| M429 | GeoAttribPaint Node | todo | M53, M359, M376 |  | E9 | F11 | | [M429-geoattribpaint-node.md](PLAN/MILESTONES/M429-geoattribpaint-node.md) |
+| M430 | Viewer 2D/3D Switch | todo | M53, M376 |  | E9 | F11 | | [M430-viewer-2d-3d-switch.md](PLAN/MILESTONES/M430-viewer-2d-3d-switch.md) |
 | M317 | Traditional Keyer | todo | M95 |  | E3 | | | [M317-traditional-keyer.md](PLAN/MILESTONES/M317-traditional-keyer.md) |
 | M318 | LensCorrect Bounded Input Region | done | M160 | bosley-native-nodes | E3 | | | [M318-lenscorrect-bounded-input-region.md](PLAN/MILESTONES/M318-lenscorrect-bounded-input-region.md) |
 | M319 | Group Node Direct Render | done | - | bosley-native-nodes | E14 | | | [M319-group-node-direct-render.md](PLAN/MILESTONES/M319-group-node-direct-render.md) |
@@ -542,7 +542,7 @@ future core work has solid ground to build on.
 | F8 | Motion Vectors | open |  |  | feature/f8-motion-vectors | Generate dense motion vectors classically, on the GPU and with a neural model, and move Roto and SplineWarp curves along them. |
 | F9 | Delegate Projection | shipping | bosley-native-nodes |  | feature/f9-delegate-projection | Live textures and camera projection in Cycles and MoonRay, with per-placement and deforming-geometry projection. |
 | F10 | Viewer Polish | landed | bosley-native-nodes |  | feature/f10-viewer-polish | Ship a batch of small viewer and properties-panel fixes on one build and one UAT. |
-| F11 | Texture Painting | open |  |  | feature/f11-texture-painting | Paint directly on meshes in the 3D view with UDIM textures, layering over existing materials, baking and paint-through inputs. |
+| F11 | Texture Painting | open |  |  | feature/f11-texture-painting | Paint directly on meshes in the 3D view with UDIM textures, layering over existing materials, baking and paint-through inputs, including painting native geometry with its own UV operators, attribute painting, and a Viewer 2D/3D switch. |
 | F12 | Expression Speed | open |  |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |
 | F13 | ZDefocus Rework | open |  |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, and revisit its engine from the results. |
 | F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |

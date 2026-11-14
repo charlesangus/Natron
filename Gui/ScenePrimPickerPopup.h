@@ -41,7 +41,8 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief Picks prims from a node's input scene for a prim path or pattern knob: a tree over the
  * scene, single-select for a path and multi-select for a pattern, or the 3D view's selection.
- * Non-modal; primsPicked() fires once when the user confirms.
+ * Non-modal; primsPicked() fires once when the user confirms, and not at all when the knob held an
+ * expression and the user changed none of the picks.
  **/
 class ScenePrimPickerPopup
     : public QDialog {
@@ -51,13 +52,14 @@ class ScenePrimPickerPopup
 
 public:
     /**
-     * @param sceneNode the node whose scene is listed, or null for none.
-     * @param current the knob's paths, selected in the tree once the scene is read.
+     * @param node the node the knob is on; the scene of its first input is listed, unloaded.
+     * @param expression the knob's text. The prims it matches are selected once the scene is
+     * read, and their ancestors opened; paths it names that the scene lacks are listed apart.
      **/
     ScenePrimPickerPopup(Gui* gui,
-                         const NodePtr& sceneNode,
+                         const NodePtr& node,
                          bool multiple,
-                         const QStringList& current,
+                         const QString& expression,
                          double time,
                          QWidget* parent);
 
@@ -67,6 +69,9 @@ public:
     // SceneSelectionActions::keepSelectionOrder()); the knob's own paths keep the knob's order.
     QStringList getTreeSelection() const;
 
+    // The tree's selection followed by the checked rows of the list apart from the tree.
+    QStringList getPickedPaths() const;
+
 Q_SIGNALS:
 
     void primsPicked(const QStringList& paths);
@@ -75,10 +80,13 @@ private Q_SLOTS:
 
     void onAccepted();
     void onUseViewerSelection();
+    void onSearchUnloaded();
+    void pollSearch();
     void updateButtons();
 
 private:
     void onSynced(bool ok, const QString& error);
+    void onMatchesRead(const QStringList& matched, const QStringList& absent, const QStringList& unloaded, const QString& error);
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

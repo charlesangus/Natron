@@ -47,13 +47,13 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/Singleton.h"
 
-#include "Gui/CurveSelection.h"
-#include "Gui/KnobGui.h"
 #include "Gui/AnimatedCheckBox.h"
+#include "Gui/CurveSelection.h"
+#include "Gui/GuiFwd.h"
+#include "Gui/KnobGui.h"
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
-#include "Gui/GuiFwd.h"
-
+#include "Gui/SceneSelectionActions.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -194,6 +194,17 @@ public:
     // Sets the knob to the dropped prims as its prim path hint says, in one undo step.
     void dropPrimPaths(const QStringList& paths);
 
+    // Writes the viewer's selected prims into the knob as edit says, in one undo step.
+    void editPrimPaths(SceneSelectionActions::PrimEditEnum edit);
+
+    // Arms the viewer pick for this knob; Enter there writes the selection as dropPrimPaths() does.
+    void armPrimPick();
+
+private:
+    // Sets the knob to newText in one undo step when it differs.
+    void writePrimText(const std::string& newText);
+
+public:
 public Q_SLOTS:
 
     ///if the knob is not multiline
@@ -218,6 +229,12 @@ public Q_SLOTS:
 
     // Opens the prim picker over the node's input scene.
     void onPickPrimsClicked();
+
+    // Opens the menu of selection actions.
+    void onPrimToolsClicked();
+
+    // Selects the prims the knob's value matches in the viewer and the Scene Graph panel.
+    void onSelectMatches();
 
     void updateFontColorIcon(const QColor & color);
 
@@ -272,6 +289,8 @@ private:
 private:
     KnobLineEdit *_lineEdit; //< if single line
     Button* _pickPrimsButton; //< if single line with a prim path hint
+    Button* _primToolsButton; //< if single line with a prim path hint
+    QMenu* _primToolsMenu;
     Label* _label; // if label and the actual label is an icon
     QWidget* _container; //< only used when multiline is on
     QVBoxLayout* _mainLayout; //< only used when multiline is on

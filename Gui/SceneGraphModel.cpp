@@ -32,6 +32,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <QtCore/QElapsedTimer>
@@ -41,6 +42,7 @@
 #include <QtGui/QIcon>
 
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -48,6 +50,8 @@
 #define NATRON_SCENEGRAPHMODEL_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/usd/sdf/pathExpressionEval.h>
+#include <pxr/usd/usd/collectionPredicateLibrary.h>
 #include <pxr/usd/usdGeom/modelAPI.h>
 #ifdef NATRON_SCENEGRAPHMODEL_RESTORE_EMIT
 #undef NATRON_SCENEGRAPHMODEL_RESTORE_EMIT
@@ -1955,11 +1959,66 @@ SceneChangedHereModel::supportedDragActions() const
     return Qt::CopyAction;
 }
 
+namespace {
+
+// What the filter's expression is evaluated on. The walk visits prims only, so every path is a prim's.
+struct WalkPrimOfPath {
+    UsdStageWeakPtr stage;
+
+    UsdObject operator()(const SdfPath& path) const
+    {
+        return stage ? UsdObject(stage->GetPrimAtPath(path)) : UsdObject();
+    }
+};
+
+typedef UsdObjectCollectionExpressionEvaluator::PathExprEval WalkExpressionEval;
+typedef WalkExpressionEval::IncrementalSearcher<WalkPrimOfPath> WalkSearcher;
+
+// USD's collection predicates, which UsdObjectCollectionExpressionEvaluator links with, and the
+// load and active states the scene graph shows, which they lack.
+const UsdObjectPredicateLibrary&
+filterPredicateLibrary()
+{
+    static const UsdObjectPredicateLibrary library = []() {
+        UsdObjectPredicateLibrary result = UsdGetCollectionPredicateLibrary();
+        // USD reports an inactive prim as not loaded, but it has no payload to load; only an
+        // active prim's own unloaded payload makes it unloaded.
+        auto isLoaded = [](const UsdObject& object, bool loaded) {
+            const UsdPrim prim = object.GetPrim();
+
+            if (!prim || !prim.IsActive()) {
+                return false;
+            }
+
+            return loaded ? prim.IsLoaded() : (prim.HasAuthoredPayloads() && !prim.IsLoaded());
+        };
+        auto isActive = [](const UsdObject& object, bool active) {
+            const UsdPrim prim = object.GetPrim();
+
+            return prim && (prim.IsActive() == active);
+        };
+        result.Define("loaded", std::move(isLoaded), { { "loaded", true } });
+        result.Define("active", std::move(isActive), { { "active", true } });
+
+        return result;
+    }();
+
+    return library;
+}
+
+} // anonymous namespace
+
 struct SceneGraphPrimWalk::Implementation {
     int primsPerClockRead = kPrimsPerClockRead;
     SdfPath next;
     const SceneStage* stage = nullptr;
     U64 editCount = 0;
+    int unloadedBranches = 0;
+    QStringList unloadedPaths;
+    bool hasExpression = false;
+    WalkExpressionEval eval;
+    // Valid from the walk's start on stage; it holds where the depth-first search is.
+    WalkSearcher searcher;
 };
 
 SceneGraphPrimWalk::SceneGraphPrimWalk(int primsPerClockRead)
@@ -1977,6 +2036,8 @@ SceneGraphPrimWalk::start()
 {
     _imp->next = SdfPath::AbsoluteRootPath();
     _imp->stage = nullptr;
+    _imp->unloadedBranches = 0;
+    _imp->unloadedPaths.clear();
 }
 
 void
@@ -1990,6 +2051,63 @@ bool
 SceneGraphPrimWalk::isOver() const
 {
     return _imp->next.IsEmpty();
+}
+
+bool
+SceneGraphPrimWalk::setExpression(const QString& text,
+                                  QString* errorMessage)
+{
+    _imp->stage = nullptr;
+    _imp->searcher = WalkSearcher();
+    _imp->eval = WalkExpressionEval();
+    _imp->hasExpression = !text.trimmed().isEmpty();
+    if (!_imp->hasExpression) {
+        return true;
+    }
+    SdfPathExpression parsed;
+    std::string error;
+    if (!SceneOps::parsePrimExpression(text.toStdString(), &parsed, &error)) {
+        *errorMessage = QString::fromStdString(error);
+
+        return false;
+    }
+    {
+        TfErrorMark mark;
+        _imp->eval = SdfMakePathExpressionEval(parsed, filterPredicateLibrary());
+        for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
+            if (!error.empty()) {
+                error += "; ";
+            }
+            error += it->GetCommentary();
+        }
+        mark.Clear();
+    }
+    if (!error.empty() || _imp->eval.IsEmpty()) {
+        _imp->eval = WalkExpressionEval();
+        *errorMessage = QString::fromUtf8("\"%1\" can't be evaluated: %2").arg(text, error.empty() ? QString::fromUtf8("a predicate is unknown or takes other arguments") : QString::fromStdString(error));
+
+        return false;
+    }
+
+    return true;
+}
+
+bool
+SceneGraphPrimWalk::hasExpression() const
+{
+    return _imp->hasExpression;
+}
+
+int
+SceneGraphPrimWalk::getUnloadedBranchCount() const
+{
+    return _imp->unloadedBranches;
+}
+
+QStringList
+SceneGraphPrimWalk::getUnloadedBranchPaths() const
+{
+    return _imp->unloadedPaths;
 }
 
 void
@@ -2017,8 +2135,19 @@ SceneGraphPrimWalk::step(const SceneStage* stage,
         prim = usdStage->GetPseudoRoot();
         _imp->stage = stage;
         _imp->editCount = stage->getEditCount();
+        _imp->unloadedBranches = 0;
+        _imp->unloadedPaths.clear();
+        if (_imp->hasExpression) {
+            _imp->searcher = _imp->eval.MakeIncrementalSearcher(WalkPrimOfPath { UsdStageWeakPtr(usdStage) });
+        }
     }
 
+    const bool byExpression = _imp->hasExpression;
+    if (byExpression && _imp->eval.IsEmpty()) {
+        stop();
+
+        return;
+    }
     const Usd_PrimFlagsPredicate predicate = childPredicate();
     QElapsedTimer timer;
     timer.start();
@@ -2026,14 +2155,29 @@ SceneGraphPrimWalk::step(const SceneStage* stage,
     while (prim) {
         const bool isRoot = prim.IsPseudoRoot();
         const bool listed = isRoot || predicate(prim);
-        // Not checked after adding a path: "more" must mean that a listed prim is left.
-        if (listed && (found->size() >= cap)) {
+        const bool candidate = !isRoot && (listed || (byExpression && prim.IsDefined() && !prim.IsAbstract() && !prim.IsActive()));
+        // Not checked after adding a path: "more" must mean that a prim to match is left.
+        if (candidate && (found->size() >= cap)) {
             break;
         }
-        if (listed && !isRoot && matches(QString::fromStdString(prim.GetName().GetString()))) {
-            *found << QString::fromStdString(prim.GetPath().GetString());
+        bool descend = listed;
+        if (candidate) {
+            if (byExpression) {
+                const SdfPredicateFunctionResult result = _imp->searcher.Next(prim.GetPath());
+                if (result.GetValue()) {
+                    *found << QString::fromStdString(prim.GetPath().GetString());
+                } else if (result.IsConstant()) {
+                    descend = false;
+                }
+            } else if (matches(QString::fromStdString(prim.GetName().GetString()))) {
+                *found << QString::fromStdString(prim.GetPath().GetString());
+            }
+            if (descend && prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+                ++_imp->unloadedBranches;
+                _imp->unloadedPaths << QString::fromStdString(prim.GetPath().GetString());
+            }
         }
-        prim = nextPrimOfWalk(prim, listed);
+        prim = nextPrimOfWalk(prim, descend);
         if (((++visited % _imp->primsPerClockRead) == 0) && (timer.elapsed() >= budgetMs)) {
             break;
         }

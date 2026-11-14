@@ -31,6 +31,7 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+#include <functional>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -74,6 +75,45 @@ QStringList keepSelectionOrder(const QStringList& order, const QStringList& sele
  **/
 std::string primPathsText(KnobString::PrimPathHintEnum hint, const QStringList& paths);
 
+enum PrimEditEnum {
+    ePrimEditReplace,
+    ePrimEditAdd,
+    ePrimEditRemove
+};
+
+/**
+ * @brief The text a prim knob with hint holds after edit applies paths to current. Replace is
+ * primPathsText(). For a pattern knob, Add appends the paths that are not entries yet, and Remove
+ * takes out the entries that are exactly one of the paths; current is parsed as a path expression
+ * (PrimSelector::getReach()) to tell a union of plain paths from anything else. Entries are only
+ * removed from a union of whitespace-separated entries without operators; a path that can't be
+ * removed that way is taken away with a difference, as in "(/a - /b) - /c". Adding to an
+ * expression with operators parenthesizes it first. Text that would not change is returned as
+ * current. A path knob only ever replaces.
+ **/
+std::string editPrimPathsText(KnobString::PrimPathHintEnum hint,
+                              PrimEditEnum edit,
+                              const std::string& current,
+                              const QStringList& paths);
+
+/**
+ * @brief The prims selected now: the selection viewer's, else the Scene Graph panel's.
+ **/
+QStringList currentSelection(Gui* gui);
+
+/**
+ * @brief Selects in the viewer the prims the value of knob matches in the scene of its node's
+ * first input, opened with the load rules of the viewer showing a scene that reaches the node, or
+ * with nothing loaded if there is none. The search walks that scene in short slices between UI
+ * events; the selection is set when it ends, and the status bar says what it found or why it did
+ * not. Unloaded branches it could not search are reported with a "Load and select" button in the
+ * status bar: it loads those payloads in the viewer, as the Scene Graph panel's Load does, and
+ * searches again when the viewer has taken the loads in, or reports a payload that fails to load.
+ * Nothing is loaded otherwise.
+ **/
+void selectMatches(Gui* gui,
+                   const KnobStringPtr& knob);
+
 /**
  * @brief Why paths can't be set on the current node now, or empty when they can.
  **/
@@ -85,6 +125,18 @@ QString setOnNodeBlocker(Gui* gui, const QStringList& paths);
  * When it can't, shows why in the status bar and returns false.
  **/
 bool setOnCurrentNode(Gui* gui, const QStringList& paths);
+
+/**
+ * @brief Why an expression can't be applied to the current node now, or empty when it can: the
+ * node needs a prim pattern knob that can be edited.
+ **/
+QString applyPatternBlocker(Gui* gui);
+
+/**
+ * @brief Writes expression, as it is, into the first prim pattern knob of currentNode(gui) as one
+ * undo step. When it can't, shows why in the status bar and returns false.
+ **/
+bool applyPatternToCurrentNode(Gui* gui, const std::string& expression);
 
 /**
  * @brief Why a node can't be created after viewed now, or empty when it can.
@@ -100,6 +152,24 @@ QString createBlocker(Gui* gui, const NodePtr& viewed);
  * unless paths is empty.
  **/
 void createFromSelection(Gui* gui, const NodePtr& viewed, const QStringList& paths);
+
+/**
+ * @brief Puts the selection viewer and the Scene Graph panels into the armed state for knob: the
+ * viewer overlay and the panels say which knob the pick is for, and natronSceneArmedPick on both
+ * holds "node.knob". Enter, with the focus in the viewer or a panel, calls commit with the prims
+ * selected and ends the mode; Esc ends it with nothing written. Only one knob is armed: arming
+ * another ends the first. The mode ends by itself when the node's settings panel closes, the node
+ * goes, or the selection viewer changes. False, with the reason in the status bar, when there is
+ * no viewer to select in.
+ **/
+bool armPick(Gui* gui,
+             const KnobStringPtr& knob,
+             const std::function<void(const QStringList& paths)>& commit);
+
+/**
+ * @brief Ends the armed pick, if any, writing nothing.
+ **/
+void cancelArmedPick();
 
 /**
  * @brief Why viewer's draw states can't be baked into a node now, or empty when they can.

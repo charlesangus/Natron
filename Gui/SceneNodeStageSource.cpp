@@ -284,6 +284,35 @@ SceneNodeStageSource::requestUnload(const QStringList& paths)
 }
 
 void
+SceneNodeStageSource::requestLoadRules(const SceneLoadRules& rules)
+{
+    std::vector<LoadRequest> requests;
+
+    for (const SceneDrawLoadRequest& draw : sceneLoadRequestsFor(rules)) {
+        LoadRequest load;
+        load.paths << QString::fromStdString(draw.path);
+        load.withDescendants = draw.withDescendants;
+        requests.push_back(load);
+        if (!draw.excluded.empty()) {
+            LoadRequest unload;
+            unload.load = false;
+            for (const std::string& path : draw.excluded) {
+                unload.paths << QString::fromStdString(path);
+            }
+            requests.push_back(unload);
+        }
+    }
+    if (requests.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        _loadRequests.insert(_loadRequests.end(), requests.begin(), requests.end());
+    }
+    _queueChanged.notify_one();
+}
+
+void
 SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
 {
     // Only this worker creates the stage, so reading the pointer needs no lock.
@@ -330,7 +359,9 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
             _editCount = _stage->getEditCount();
         };
     };
-    if (!_stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare) || _stopRequested) {
+    const bool serviced = _stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare);
+    // A batch that asked for nothing loadable is still answered, so that whoever asked is not left waiting.
+    if (_stopRequested || (!serviced && requests.empty())) {
         return;
     }
     std::weak_ptr<SceneNodeStageSource> self = weak_from_this();

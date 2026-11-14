@@ -72,6 +72,10 @@ private:
                     UtilityScene* scene);
     void syncInstances(PXR_NS::HdSceneDelegate* sceneDelegate,
                        UtilityScene* scene);
+    // The material binding, and the texture coordinates of the primvar the material reads.
+    void syncMaterial(PXR_NS::HdSceneDelegate* sceneDelegate,
+                      UtilityScene* scene,
+                      bool bindingDirty);
 
     UtilityScene::GeometryId _geometry = 0;
     PXR_NS::GfMatrix4d _transform = PXR_NS::GfMatrix4d(1.);

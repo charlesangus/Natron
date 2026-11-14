@@ -43,7 +43,7 @@ struct RayGenGlobals {
     const NATRON_NAMESPACE::KernelRayGenParams* params;
 };
 
-struct ShadeFlatGlobals {
+struct ShadeSurfaceGlobals {
     KernelBuffer rays;
     KernelBuffer hitSurface;
     KernelBuffer hitIds;
@@ -55,6 +55,14 @@ struct ShadeFlatGlobals {
     KernelBuffer depthOut;
     KernelBuffer primIdOut;
     KernelBuffer instanceIdOut;
+    KernelBuffer materials;
+    KernelBuffer textureBindings;
+    KernelBuffer images;
+    KernelBuffer texels;
+    KernelBuffer projections;
+    KernelBuffer points;
+    KernelBuffer instanceTransforms;
+    KernelBuffer sts;
     const NATRON_NAMESPACE::KernelShadeParams* params;
 };
 
@@ -69,7 +77,7 @@ varyingFor(std::size_t count)
 } // anon namespace
 
 extern "C" void utilityRayGen(KernelVarying*, void* entryPointParams, void* globalParams);
-extern "C" void utilityShadeFlat(KernelVarying*, void* entryPointParams, void* globalParams);
+extern "C" void utilityShadeSurface(KernelVarying*, void* entryPointParams, void* globalParams);
 
 NATRON_NAMESPACE_ENTER
 
@@ -89,8 +97,8 @@ runRayGenKernel(const KernelRayGenParams& params,
 }
 
 void
-runShadeFlatKernel(const KernelShadeParams& params,
-                   const KernelShadeBuffers& buffers)
+runShadeSurfaceKernel(const KernelShadeParams& params,
+                      const KernelShadeBuffers& buffers)
 {
     const std::size_t count = params.count;
 
@@ -98,7 +106,7 @@ runShadeFlatKernel(const KernelShadeParams& params,
         return;
     }
     KernelVarying varying = varyingFor(count);
-    ShadeFlatGlobals globals {
+    ShadeSurfaceGlobals globals {
         { buffers.rays, count * 8 },
         { buffers.hitSurface, count * 3 },
         { buffers.hitIds, count * 3 },
@@ -110,10 +118,18 @@ runShadeFlatKernel(const KernelShadeParams& params,
         { buffers.depthOut, count },
         { buffers.primIdOut, count },
         { buffers.instanceIdOut, count },
+        { buffers.materials, buffers.materialCount },
+        { buffers.textureBindings, buffers.textureBindingCount },
+        { buffers.images, buffers.imageCount },
+        { buffers.texels, buffers.texelCount },
+        { buffers.projections, buffers.projectionCount },
+        { buffers.points, buffers.pointCount },
+        { buffers.instanceTransforms, buffers.instanceTransformRowCount },
+        { buffers.sts, buffers.stCount },
         &params,
     };
 
-    utilityShadeFlat(&varying, nullptr, &globals);
+    utilityShadeSurface(&varying, nullptr, &globals);
 }
 
 NATRON_NAMESPACE_EXIT

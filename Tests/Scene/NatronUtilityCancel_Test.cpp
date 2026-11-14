@@ -43,6 +43,9 @@
 #include <pxr/usd/usd/timeCode.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdShade/material.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
+#include <pxr/usd/usdShade/shader.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #include <pxr/usdImaging/usdImagingGL/renderParams.h>
 
@@ -81,6 +84,31 @@ const int kManyGridSize = 100;
 const int kLatencyWindow = 4096;
 const int kViewWindow = 1024;
 const double kCameraZ = 30.;
+
+// A material emitting the display colour, which the scenes here show without lights.
+UsdShadeMaterial
+emitDisplayColor(const UsdStageRefPtr& stage)
+{
+    const SdfPath path("/EmitDisplayColor");
+    UsdShadeMaterial material = UsdShadeMaterial::Get(stage, path);
+
+    if (material) {
+        return material;
+    }
+    material = UsdShadeMaterial::Define(stage, path);
+
+    UsdShadeShader reader = UsdShadeShader::Define(stage, path.AppendChild(TfToken("Reader")));
+    UsdShadeShader surface = UsdShadeShader::Define(stage, path.AppendChild(TfToken("Surface")));
+
+    reader.CreateIdAttr(VtValue(TfToken("UsdPrimvarReader_float3")));
+    reader.CreateInput(TfToken("varname"), SdfValueTypeNames->Token).Set(TfToken("displayColor"));
+    surface.CreateIdAttr(VtValue(TfToken("UsdPreviewSurface")));
+    surface.CreateInput(TfToken("emissiveColor"), SdfValueTypeNames->Color3f).ConnectToSource(reader.ConnectableAPI(), TfToken("result"));
+    surface.CreateInput(TfToken("diffuseColor"), SdfValueTypeNames->Color3f).Set(GfVec3f(0.f));
+    material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), TfToken("surface"));
+
+    return material;
+}
 
 // An n by n grid of quads, width units wide and facing the camera, n * n * 2 triangles.
 void
@@ -121,6 +149,7 @@ defineGrid(const UsdStageRefPtr& stage,
     mesh.CreateFaceVertexCountsAttr(VtValue(counts));
     mesh.CreateFaceVertexIndicesAttr(VtValue(indices));
     mesh.CreateDisplayColorAttr(VtValue(VtVec3fArray(1, color)));
+    UsdShadeMaterialBindingAPI::Apply(mesh.GetPrim()).Bind(emitDisplayColor(stage));
 }
 
 UsdStageRefPtr

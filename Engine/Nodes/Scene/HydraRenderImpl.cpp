@@ -1735,6 +1735,10 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
                 entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + fallback->second.UncheckedGet<std::string>();
             }
+            const VtDictionary::const_iterator scene = utilityStats.find(kUtilityStatSceneWarning);
+            if ((scene != utilityStats.end()) && scene->second.IsHolding<std::string>() && !scene->second.UncheckedGet<std::string>().empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + scene->second.UncheckedGet<std::string>();
+            }
         }
         if (log) {
             const std::vector<MoonRayAovs::Notice> notices = log->notices();

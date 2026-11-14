@@ -31,15 +31,18 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec4f.h>
 
 #include "Global/Macros.h"
 
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/UtilityTextures.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -142,9 +145,10 @@ KernelShadeParams makeShadeParams(const WavefrontFrame& frame,
                                   std::uint32_t count);
 
 /**
- * @brief The scene's shading data as the flat tables ShadeFlat binds. A geometry's position in the
- * tables is its position in the snapshot, the index Tracer reports. Colours and triangles are only
- * recopied when a geometry's colours or topology changed.
+ * @brief The scene's shading data as the flat tables ShadeSurface binds. A geometry's position in the
+ * tables is its position in the snapshot, the index Tracer reports. Per-geometry arrays are only
+ * recopied when a geometry's colours, coordinates, points or topology changed, and texels only when
+ * the set of textures read changed. Material 0 is what geometry without a usable material shades as.
  **/
 class WavefrontShadeTables {
 public:
@@ -154,17 +158,22 @@ public:
 
     // The tables as the kernel's buffers; the caller fills in what is per-tile.
     KernelShadeBuffers buffers() const;
+    // Changes whenever the texels do, so a device copy of them can be kept otherwise.
+    std::uint64_t texelVersion() const;
 
 private:
     struct SourceVersion {
         UtilityScene::GeometryId id;
         std::uint64_t colorVersion;
         std::uint64_t topologyVersion;
+        std::uint64_t pointsVersion;
+        std::uint64_t stVersion;
         std::size_t pointCount;
 
         bool operator==(const SourceVersion& other) const
         {
-            return id == other.id && colorVersion == other.colorVersion && topologyVersion == other.topologyVersion && pointCount == other.pointCount;
+            return id == other.id && colorVersion == other.colorVersion && topologyVersion == other.topologyVersion
+                && pointsVersion == other.pointsVersion && stVersion == other.stVersion && pointCount == other.pointCount;
         }
     };
 
@@ -172,7 +181,21 @@ private:
     std::vector<PXR_NS::GfVec4f> _colors;
     std::vector<std::int32_t> _triangles;
     std::vector<std::int32_t> _instanceIds;
+    std::vector<KernelMaterialRecord> _materials;
+    std::vector<KernelTextureBinding> _textureBindings;
+    std::vector<KernelProjectionRecord> _projections;
+    std::vector<std::uint32_t> _images;
+    std::vector<PXR_NS::GfVec4f> _texels;
+    std::vector<UtilityTextureAssetConstPtr> _textureAssets;
+    std::uint64_t _texelVersion = 0;
+    std::vector<PXR_NS::GfVec4f> _points;
+    std::vector<PXR_NS::GfVec4f> _instanceTransforms;
+    std::vector<PXR_NS::GfVec2f> _sts;
     std::vector<SourceVersion> _sources;
+    // Material paths in the order of _materials from index 1.
+    std::map<PXR_NS::SdfPath, std::uint32_t> _materialIndices;
+
+    void updateMaterials(const UtilityScene::Snapshot& snapshot);
     std::uint64_t _version = 0;
     bool _synced = false;
 };

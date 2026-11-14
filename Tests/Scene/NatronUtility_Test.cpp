@@ -47,6 +47,7 @@
 #include <pxr/imaging/hd/types.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hf/pluginDesc.h>
+#include <pxr/imaging/hio/image.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/stage.h>
@@ -58,9 +59,11 @@
 #include "Global/Macros.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -68,6 +71,8 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+
+#include <QTemporaryDir>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
@@ -110,13 +115,60 @@ const double kCameraZ = 30.;
 // only to within about a thousandth.
 const double kDistanceTolerance = 5e-3;
 
-const char* const kRedColor = "    color3f[] primvars:displayColor = [(1, 0, 0)] (interpolation = \"constant\")\n";
+// Every stage the harness renders holds /EmitDisplayColor: with no light in the scene, a prim shows its
+// display colour only through a material that emits it.
+const char* const kEmitDisplayColorMaterial = R"(
+def Material "EmitDisplayColor" {
+    token outputs:surface.connect = </EmitDisplayColor/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0, 0, 0)
+        color3f inputs:emissiveColor.connect = </EmitDisplayColor/Color.outputs:result>
+        float inputs:opacity.connect = </EmitDisplayColor/Opacity.outputs:result>
+        token outputs:surface
+    }
+    def Shader "Color" {
+        uniform token info:id = "UsdPrimvarReader_float3"
+        string inputs:varname = "displayColor"
+        float3 outputs:result
+    }
+    def Shader "Opacity" {
+        uniform token info:id = "UsdPrimvarReader_float"
+        string inputs:varname = "displayOpacity"
+        float outputs:result
+    }
+}
+)";
+
+const std::string kRedColor = "    color3f[] primvars:displayColor = [(1, 0, 0)] (interpolation = \"constant\")\n"
+                              "    rel material:binding = </EmitDisplayColor>\n";
 
 std::string
 cubeAt(const char* name,
        const std::string& attributes)
 {
-    return std::string("def Mesh \"") + name + "\" {" + kCubeGeometry + attributes + "}\n";
+    return std::string("def Mesh \"") + name + "\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {" + kCubeGeometry + attributes + "}\n";
+}
+
+std::string
+boundTo(const char* material)
+{
+    return std::string("    rel material:binding = <") + material + ">\n";
+}
+
+// A UsdPreviewSurface material at /name with the given inputs, one per line.
+std::string
+previewSurface(const char* name,
+               const std::string& inputs)
+{
+    return std::string("def Material \"") + name + "\" {\n"
+        + "    token outputs:surface.connect = </" + name + "/Surface.outputs:surface>\n"
+        + "    def Shader \"Surface\" {\n"
+          "        uniform token info:id = \"UsdPreviewSurface\"\n"
+        + inputs
+        + "        token outputs:surface\n"
+          "    }\n"
+          "}\n";
 }
 
 std::string
@@ -135,7 +187,7 @@ public:
     {
         RenderDelegates::list();
         _layer = SdfLayer::CreateAnonymous(".usda");
-        EXPECT_TRUE(_layer->ImportFromString(usda));
+        EXPECT_TRUE(_layer->ImportFromString(usda + kEmitDisplayColorMaterial));
         stage = UsdStage::Open(_layer);
 
         UsdImagingGLEngine::Parameters parameters;
@@ -325,6 +377,108 @@ private:
     SdfLayerRefPtr _layer;
     std::unique_ptr<UsdImagingGLEngine> _engine;
 };
+// A 4x4 texture whose texel in column x of row y, counted from the top of the file, is
+// (80 x, 80 y, 20 (x + y) + 60, 255).
+const int kTextureSize = 4;
+
+GfVec3f
+writtenTexel(int x,
+             int rowFromTop)
+{
+    return GfVec3f(80.f * x, 80.f * rowFromTop, 20.f * (x + rowFromTop) + 60.f) / 255.f;
+}
+
+bool
+writeTexture(const std::string& path)
+{
+    std::vector<unsigned char> bytes;
+
+    for (int y = 0; y < kTextureSize; ++y) {
+        for (int x = 0; x < kTextureSize; ++x) {
+            const GfVec3f texel = writtenTexel(x, y) * 255.f;
+
+            bytes.push_back((unsigned char)std::lround(texel[0]));
+            bytes.push_back((unsigned char)std::lround(texel[1]));
+            bytes.push_back((unsigned char)std::lround(texel[2]));
+            bytes.push_back(255);
+        }
+    }
+
+    HioImage::StorageSpec spec;
+
+    spec.width = kTextureSize;
+    spec.height = kTextureSize;
+    spec.depth = 1;
+    spec.format = HioFormatUNorm8Vec4;
+    spec.flipped = false;
+    spec.data = bytes.data();
+
+    const HioImageSharedPtr image = HioImage::OpenForWriting(path);
+
+    return image && image->Write(spec);
+}
+
+// A quad filling the frame at z = 0 that emits the texture at path. Its texture coordinates put the
+// centres of pixels 2, 6, 10 and 14 on the centres of the texels, both ways.
+std::string
+texturedQuad(const std::string& path)
+{
+    const double h = kCameraZ * std::tan(22.5 * M_PI / 180.);
+    const std::string lo = std::to_string(-h);
+    const std::string hi = std::to_string(h);
+    const std::string a = std::to_string(-1. / 32.);
+    const std::string b = std::to_string(31. / 32.);
+
+    return "def Material \"Tex\" {\n"
+           "    token outputs:surface.connect = </Tex/Surface.outputs:surface>\n"
+           "    def Shader \"Surface\" {\n"
+           "        uniform token info:id = \"UsdPreviewSurface\"\n"
+           "        color3f inputs:diffuseColor = (0, 0, 0)\n"
+           "        color3f inputs:emissiveColor.connect = </Tex/Image.outputs:rgb>\n"
+           "        token outputs:surface\n"
+           "    }\n"
+           "    def Shader \"Image\" {\n"
+           "        uniform token info:id = \"UsdUVTexture\"\n"
+           "        asset inputs:file = @"
+        + path + "@\n"
+                 "        token inputs:sourceColorSpace = \"raw\"\n"
+                 "        token inputs:wrapS = \"clamp\"\n"
+                 "        token inputs:wrapT = \"clamp\"\n"
+                 "        float2 inputs:st.connect = </Tex/St.outputs:result>\n"
+                 "        float3 outputs:rgb\n"
+                 "    }\n"
+                 "    def Shader \"St\" {\n"
+                 "        uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+                 "        string inputs:varname = \"st\"\n"
+                 "        float2 outputs:result\n"
+                 "    }\n"
+                 "}\n"
+                 "def Mesh \"Quad\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {\n"
+                 "    int[] faceVertexCounts = [4]\n"
+                 "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                 "    point3f[] points = [("
+        + lo + ", " + lo + ", 0), (" + hi + ", " + lo + ", 0), (" + hi + ", " + hi + ", 0), (" + lo + ", " + hi + ", 0)]\n"
+                                                                                                                  "    texCoord2f[] primvars:st = [("
+        + a + ", " + a + "), (" + b + ", " + a + "), (" + b + ", " + b + "), (" + a + ", " + b + ")] (interpolation = \"vertex\")\n"
+                                                                                                 "    rel material:binding = </Tex>\n"
+                                                                                                 "}\n";
+}
+
+void
+expectTexelCentres(const std::function<GfVec4f(int, int)>& colorAt)
+{
+    for (int y = 0; y < kTextureSize; ++y) {
+        for (int x = 0; x < kTextureSize; ++x) {
+            const GfVec4f color = colorAt(4 * x + 2, 4 * y + 2);
+            const GfVec3f expected = writtenTexel(x, kTextureSize - 1 - y);
+
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_NEAR(expected[c], color[c], 1e-3) << "texel " << x << ", " << y << " channel " << c;
+            }
+            EXPECT_FLOAT_EQ(1.f, color[3]) << "texel " << x << ", " << y;
+        }
+    }
+}
 } // anon namespace
 
 TEST(NatronUtility, IsListedAsAvailable)
@@ -688,19 +842,67 @@ TEST(NatronUtilityRender, ImageRowsRunUpwardFromTheBottom)
     EXPECT_FLOAT_EQ(0.f, render.colorAt(8, 3)[3]);
 }
 
-TEST(NatronUtilityRender, AMeshWithoutColorIsOpaqueNeutral)
+TEST(NatronUtilityRender, AMeshWithoutAMaterialInALightlessSceneIsOpaqueBlack)
 {
-    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", ""));
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor.substr(0, kRedColor.find('\n') + 1)));
+
+    render.render();
+
+    EXPECT_EQ(GfVec4f(0.f, 0.f, 0.f, 1.f), render.colorAt(8, 8));
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatSceneWarning));
+}
+
+TEST(NatronUtilityRender, AnEmissiveMaterialShowsItsEmission)
+{
+    UtilityRender render(std::string("#usda 1.0\n")
+                         + previewSurface("Glow", "        color3f inputs:emissiveColor = (0.25, 0.5, 1)\n")
+                         + cubeAt("Cube", boundTo("/Glow")));
 
     render.render();
 
     const GfVec4f color = render.colorAt(8, 8);
 
-    EXPECT_GT(color[0], 0.f);
-    EXPECT_LT(color[0], 1.f);
-    EXPECT_FLOAT_EQ(color[0], color[1]);
-    EXPECT_FLOAT_EQ(color[0], color[2]);
+    EXPECT_FLOAT_EQ(0.25f, color[0]);
+    EXPECT_FLOAT_EQ(0.5f, color[1]);
+    EXPECT_FLOAT_EQ(1.f, color[2]);
     EXPECT_FLOAT_EQ(1.f, color[3]);
+}
+
+TEST(NatronUtilityRender, ANonEmissiveMaterialInALightlessSceneIsBlack)
+{
+    UtilityRender render(std::string("#usda 1.0\n")
+                         + previewSurface("White", "        color3f inputs:diffuseColor = (1, 1, 1)\n"
+                                                   "        float inputs:metallic = 0.5\n")
+                         + cubeAt("Cube", boundTo("/White")));
+
+    render.render();
+
+    EXPECT_EQ(GfVec4f(0.f, 0.f, 0.f, 1.f), render.colorAt(8, 8));
+}
+
+TEST(NatronUtilityRender, AMaterialXMaterialIsMagentaAndTheWarningNamesIt)
+{
+    UtilityRender render(std::string("#usda 1.0\n")
+                         + "def Material \"Standard\" {\n"
+                           "    token outputs:surface.connect = </Standard/Surface.outputs:surface>\n"
+                           "    def Shader \"Surface\" {\n"
+                           "        uniform token info:id = \"ND_standard_surface_surfaceshader\"\n"
+                           "        token outputs:surface\n"
+                           "    }\n"
+                           "}\n"
+                         + cubeAt("Left", boundTo("/Standard") + translated(-6., 0.))
+                         + cubeAt("Right", kRedColor + translated(6., 0.)));
+
+    render.render();
+
+    EXPECT_EQ(GfVec4f(1.f, 0.f, 1.f, 1.f), render.colorAt(3, 8));
+    EXPECT_EQ(GfVec4f(1.f, 0.f, 0.f, 1.f), render.colorAt(12, 8));
+
+    const std::string warning = render.textStat(kUtilityStatSceneWarning);
+
+    EXPECT_NE(std::string::npos, warning.find("/Standard")) << warning;
+    EXPECT_EQ(std::string::npos, warning.find("/EmitDisplayColor")) << warning;
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
 }
 
 TEST(NatronUtilityRender, ColorIsPremultipliedByOpacity)
@@ -714,6 +916,82 @@ TEST(NatronUtilityRender, ColorIsPremultipliedByOpacity)
     EXPECT_FLOAT_EQ(0.5f, color[0]);
     EXPECT_FLOAT_EQ(0.f, color[1]);
     EXPECT_FLOAT_EQ(0.5f, color[3]);
+}
+
+TEST(NatronUtilityRender, ATextureSamplesItsTexelsAtTheirCentres)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("grid.png")).toStdString();
+    ASSERT_TRUE(writeTexture(path));
+
+    UtilityRender render(std::string("#usda 1.0\n") + texturedQuad(path));
+
+    render.render();
+    expectTexelCentres([&render](int x, int y) { return render.colorAt(x, y); });
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatSceneWarning));
+}
+
+TEST(NatronUtilityRender, AMissingTextureReadsItsFallbackAndTheWarningNamesIt)
+{
+    UtilityRender render(std::string("#usda 1.0\n")
+                         + "def Material \"Tex\" {\n"
+                           "    token outputs:surface.connect = </Tex/Surface.outputs:surface>\n"
+                           "    def Shader \"Surface\" {\n"
+                           "        uniform token info:id = \"UsdPreviewSurface\"\n"
+                           "        color3f inputs:emissiveColor.connect = </Tex/Image.outputs:rgb>\n"
+                           "        token outputs:surface\n"
+                           "    }\n"
+                           "    def Shader \"Image\" {\n"
+                           "        uniform token info:id = \"UsdUVTexture\"\n"
+                           "        asset inputs:file = @/nonexistent/m281/missing.png@\n"
+                           "        float4 inputs:fallback = (0.5, 0.25, 0.125, 1)\n"
+                           "        float2 inputs:st.connect = </Tex/St.outputs:result>\n"
+                           "        float3 outputs:rgb\n"
+                           "    }\n"
+                           "    def Shader \"St\" {\n"
+                           "        uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+                           "        string inputs:varname = \"st\"\n"
+                           "        float2 outputs:result\n"
+                           "    }\n"
+                           "}\n"
+                         + cubeAt("Cube", boundTo("/Tex") + "    texCoord2f[] primvars:st = [(0.5, 0.5)] (interpolation = \"constant\")\n"));
+
+    render.render();
+
+    const GfVec4f color = render.colorAt(8, 8);
+
+    EXPECT_FLOAT_EQ(0.5f, color[0]);
+    EXPECT_FLOAT_EQ(0.25f, color[1]);
+    EXPECT_FLOAT_EQ(0.125f, color[2]);
+    EXPECT_FLOAT_EQ(1.f, color[3]);
+
+    const std::string warning = render.textStat(kUtilityStatSceneWarning);
+
+    EXPECT_NE(std::string::npos, warning.find("/nonexistent/m281/missing.png")) << warning;
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
+}
+
+TEST(NatronUtilityRender, ATexturedPrimWithoutTextureCoordinatesReadsTheFallbackAndIsNamed)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("grid.png")).toStdString();
+    ASSERT_TRUE(writeTexture(path));
+
+    std::string usda = texturedQuad(path);
+    const std::size_t st = usda.find("    texCoord2f[] primvars:st");
+    ASSERT_NE(std::string::npos, st);
+    usda.erase(st, usda.find('\n', st) + 1 - st);
+
+    UtilityRender render(std::string("#usda 1.0\n") + usda);
+
+    render.render();
+    EXPECT_EQ(GfVec4f(0.f, 0.f, 0.f, 1.f), render.colorAt(8, 8));
+
+    const std::string warning = render.textStat(kUtilityStatSceneWarning);
+
+    EXPECT_NE(std::string::npos, warning.find("/Quad")) << warning;
 }
 
 TEST(NatronUtilityRender, TwoMeshesHaveDifferentPrimIds)
@@ -943,6 +1221,92 @@ TEST(NatronUtilityRender, GpuDrawsTheRedCubeAsTheCpuDoes)
         }
     }
     EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[0]);
+}
+
+TEST(NatronUtilityRender, GpuShadesMaterialsAndTexturesAsTheCpuDoes)
+{
+    UtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("grid.png")).toStdString();
+    ASSERT_TRUE(writeTexture(path));
+
+    UtilityRender render(std::string("#usda 1.0\n")
+                         + texturedQuad(path)
+                         + "def Material \"Standard\" {\n"
+                           "    token outputs:surface.connect = </Standard/Surface.outputs:surface>\n"
+                           "    def Shader \"Surface\" {\n"
+                           "        uniform token info:id = \"ND_standard_surface_surfaceshader\"\n"
+                           "        token outputs:surface\n"
+                           "    }\n"
+                           "}\n"
+                         + previewSurface("Glow", "        color3f inputs:emissiveColor = (0.25, 0.5, 1)\n        float inputs:opacity = 0.5\n")
+                         + cubeAt("Left", boundTo("/Standard") + translated(-6., 0.))
+                         + cubeAt("Right", boundTo("/Glow") + translated(6., 6.)));
+    std::vector<GfVec4f> cpuColor;
+
+    render.setDevice(kUtilityDeviceCpu);
+    render.render();
+    EXPECT_EQ("CPU", render.textStat(kUtilityStatDevice));
+    for (int y = 0; y < kRenderSize; ++y) {
+        for (int x = 0; x < kRenderSize; ++x) {
+            cpuColor.push_back(render.colorAt(x, y));
+        }
+    }
+
+    render.setDevice(kUtilityDeviceGpu);
+    render.render();
+    EXPECT_EQ(0u, render.textStat(kUtilityStatDevice).rfind("GPU", 0)) << render.textStat(kUtilityStatDevice);
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
+
+    std::size_t index = 0;
+
+    for (int y = 0; y < kRenderSize; ++y) {
+        for (int x = 0; x < kRenderSize; ++x, ++index) {
+            const GfVec4f color = render.colorAt(x, y);
+
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_NEAR(cpuColor[index][c], color[c], 1e-5) << "pixel " << x << ", " << y;
+            }
+        }
+    }
+    EXPECT_EQ(GfVec4f(1.f, 0.f, 1.f, 1.f), render.colorAt(3, 8));
+    EXPECT_NEAR(0.125f, render.colorAt(11, 11)[0], 1e-6);
+    EXPECT_NEAR(0.5f, render.colorAt(11, 11)[3], 1e-6);
+}
+
+TEST(NatronUtilityRender, GpuSamplesTexelsAtTheirCentres)
+{
+    UtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("grid.png")).toStdString();
+    ASSERT_TRUE(writeTexture(path));
+
+    UtilityRender render(std::string("#usda 1.0\n") + texturedQuad(path));
+
+    render.setDevice(kUtilityDeviceGpu);
+    render.render();
+    EXPECT_EQ(0u, render.textStat(kUtilityStatDevice).rfind("GPU", 0)) << render.textStat(kUtilityStatDevice);
+    expectTexelCentres([&render](int x, int y) { return render.colorAt(x, y); });
 }
 
 TEST(NatronUtilityRender, ForcedGpuWithoutRayQueryFailsNamingTheExtension)

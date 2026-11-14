@@ -51,13 +51,14 @@ struct KernelRayGenParams {
     std::int32_t tileHeight;
 };
 
-// Mirrors ShadeParams in Kernels/ShadeFlat.slang.
+// Mirrors ShadeParams in Kernels/ShadeSurface.slang.
 struct KernelShadeParams {
     float projection[4];
     float viewZAtNear;
     float viewZAtFar;
     std::uint32_t count;
     std::uint32_t padding;
+    float pixelFootprint[4];
 };
 
 // Mirrors GeometryRecord in Kernels/UtilityTypes.slang.
@@ -66,9 +67,52 @@ struct KernelGeometryRecord {
     std::uint32_t colorBinding;
     std::int32_t primId;
     std::uint32_t triangleOffset;
+    std::uint32_t materialIndex;
+    std::uint32_t stOffset;
+    std::uint32_t stBinding;
+    std::uint32_t pointOffset;
 };
 
-// The buffers ShadeFlat reads and writes, with the layouts its bindings declare.
+const std::uint32_t kKernelStBindingNone = 0xffffffffu;
+// The flags of MaterialRecord::kind.z in Kernels/UtilityTypes.slang.
+const std::uint32_t kKernelMaterialDiffuseFromDisplayColor = 1u;
+const std::uint32_t kKernelMaterialOpacityFromDisplayOpacity = 2u;
+const std::uint32_t kKernelMaterialEmissiveFromDisplayColor = 4u;
+
+// Mirrors MaterialRecord in Kernels/UtilityTypes.slang.
+struct KernelMaterialRecord {
+    float diffuseColor[4];
+    float emissiveColor[4];
+    float specularColor[4];
+    float surface[4];
+    float coverage[4];
+    std::uint32_t kind[4];
+    std::int32_t textures[12];
+};
+
+// Mirrors TextureBinding in Kernels/UtilityTypes.slang.
+struct KernelTextureBinding {
+    float scale[4];
+    float bias[4];
+    float fallback[4];
+    float uvTransform[4];
+    float uvRotation[4];
+    std::int32_t image[4];
+    std::uint32_t channels[4];
+};
+
+// Mirrors ProjectionRecord in Kernels/UtilityTypes.slang.
+struct KernelProjectionRecord {
+    float worldToProjector[16];
+    float geometryFrame[16];
+    float geometryFrameInverse[16];
+    float plateTransform[4];
+    float projectorOrigin[4];
+    std::int32_t settings[4];
+    std::int32_t plate[4];
+};
+
+// The buffers ShadeSurface reads and writes, with the layouts its bindings declare.
 struct KernelShadeBuffers {
     const float* rays = nullptr;
     const float* hitSurface = nullptr;
@@ -85,6 +129,22 @@ struct KernelShadeBuffers {
     float* depthOut = nullptr;
     std::int32_t* primIdOut = nullptr;
     std::int32_t* instanceIdOut = nullptr;
+    const KernelMaterialRecord* materials = nullptr;
+    std::size_t materialCount = 0;
+    const KernelTextureBinding* textureBindings = nullptr;
+    std::size_t textureBindingCount = 0;
+    const std::uint32_t* images = nullptr; // four per image: width, height, levels, first texel
+    std::size_t imageCount = 0;
+    const float* texels = nullptr; // four per texel
+    std::size_t texelCount = 0;
+    const KernelProjectionRecord* projections = nullptr;
+    std::size_t projectionCount = 0;
+    const float* points = nullptr; // four per point
+    std::size_t pointCount = 0;
+    const float* instanceTransforms = nullptr; // eight rows of four per instance
+    std::size_t instanceTransformRowCount = 0;
+    const float* sts = nullptr; // two per value
+    std::size_t stCount = 0;
 };
 
 /**
@@ -95,10 +155,10 @@ void runRayGenKernel(const KernelRayGenParams& params,
                      float* rays);
 
 /**
- * @brief Runs the C++ build of ShadeFlat.slang over params.count hits. MT-safe.
+ * @brief Runs the C++ build of ShadeSurface.slang over params.count hits. MT-safe.
  **/
-void runShadeFlatKernel(const KernelShadeParams& params,
-                        const KernelShadeBuffers& buffers);
+void runShadeSurfaceKernel(const KernelShadeParams& params,
+                           const KernelShadeBuffers& buffers);
 
 NATRON_NAMESPACE_EXIT
 

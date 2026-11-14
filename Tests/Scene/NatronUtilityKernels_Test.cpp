@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -46,6 +47,7 @@
 
 #include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
 
@@ -145,7 +147,7 @@ struct ShadeOne {
         buffers.depthOut = &depth;
         buffers.primIdOut = &primId;
         buffers.instanceIdOut = &instanceId;
-        runShadeFlatKernel(makeShadeParams(frameOf(frustum, 1, 1), 1), buffers);
+        runShadeSurfaceKernel(makeShadeParams(frameOf(frustum, 1, 1), 1), buffers);
     }
 
     float color[4] = { -1.f, -1.f, -1.f, -1.f };
@@ -166,6 +168,18 @@ addTriangle(UtilityScene& scene,
     scene.setInstances(id, { GfMatrix4d(1.) });
 
     return id;
+}
+
+// Binds a material that emits the display colour, so a lightless shade shows it.
+void
+emitDisplayColor(UtilityScene& scene,
+                 UtilityScene::GeometryId id)
+{
+    UtilityMaterialDesc material = UtilityMaterialDesc::fallback();
+
+    material.emissiveFromDisplayColor = true;
+    scene.setMaterial(SdfPath("/EmitDisplayColor"), std::make_shared<const UtilityMaterialDesc>(material));
+    scene.setMaterialId(id, SdfPath("/EmitDisplayColor"));
 }
 } // anon namespace
 
@@ -266,12 +280,14 @@ TEST(NatronUtilityKernels, RayGenFollowsAnOrthographicCamera)
     EXPECT_NEAR(49.f, corner.tMax, 1e-4f);
 }
 
-TEST(NatronUtilityKernels, ShadeFlatPremultipliesAConstantColor)
+TEST(NatronUtilityKernels, ShadeSurfacePremultipliesAnEmittedConstantColor)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addTriangle(scene);
 
     scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 0.5f, 0.25f, 0.5f) });
+
+    emitDisplayColor(scene, id);
 
     const ShadeOne shade(scene);
 
@@ -283,13 +299,15 @@ TEST(NatronUtilityKernels, ShadeFlatPremultipliesAConstantColor)
     EXPECT_EQ(0, shade.instanceId);
 }
 
-TEST(NatronUtilityKernels, ShadeFlatReadsCornerColorsByBarycentrics)
+TEST(NatronUtilityKernels, ShadeSurfaceReadsCornerColorsByBarycentrics)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addTriangle(scene);
 
     scene.setColors(id, UtilityScene::eColorBindingCorner,
                     VtVec4fArray { GfVec4f(1.f, 0.f, 0.f, 1.f), GfVec4f(0.f, 1.f, 0.f, 1.f), GfVec4f(0.f, 0.f, 1.f, 1.f) });
+
+    emitDisplayColor(scene, id);
 
     const ShadeOne shade(scene, 0, 0.25f, 0.5f);
 
@@ -299,13 +317,15 @@ TEST(NatronUtilityKernels, ShadeFlatReadsCornerColorsByBarycentrics)
 }
 
 // The triangle lists its vertices as 2, 0, 1, so vertex colours must go through its indices.
-TEST(NatronUtilityKernels, ShadeFlatReadsVertexColorsThroughTheTriangle)
+TEST(NatronUtilityKernels, ShadeSurfaceReadsVertexColorsThroughTheTriangle)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addTriangle(scene);
 
     scene.setColors(id, UtilityScene::eColorBindingVertex,
                     VtVec4fArray { GfVec4f(1.f, 0.f, 0.f, 1.f), GfVec4f(0.f, 1.f, 0.f, 1.f), GfVec4f(0.f, 0.f, 1.f, 1.f) });
+
+    emitDisplayColor(scene, id);
 
     const ShadeOne shade(scene, 0, 1.f, 0.f);
 
@@ -314,7 +334,7 @@ TEST(NatronUtilityKernels, ShadeFlatReadsVertexColorsThroughTheTriangle)
     EXPECT_FLOAT_EQ(0.f, shade.color[2]);
 }
 
-TEST(NatronUtilityKernels, ShadeFlatReadsTriangleColorsByPrimitive)
+TEST(NatronUtilityKernels, ShadeSurfaceReadsTriangleColorsByPrimitive)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/two"), 1);
@@ -325,6 +345,8 @@ TEST(NatronUtilityKernels, ShadeFlatReadsTriangleColorsByPrimitive)
     scene.setInstances(id, { GfMatrix4d(1.) });
     scene.setColors(id, UtilityScene::eColorBindingTriangle,
                     VtVec4fArray { GfVec4f(1.f, 0.f, 0.f, 1.f), GfVec4f(0.f, 1.f, 0.f, 1.f) });
+
+    emitDisplayColor(scene, id);
 
     const ShadeOne shade(scene, 1);
 
@@ -339,6 +361,7 @@ TEST(NatronUtilityKernels, ShadeTablesFallBackToGreyWhenColorsDoNotFit)
     const UtilityScene::GeometryId id = addTriangle(scene);
 
     scene.setColors(id, UtilityScene::eColorBindingCorner, VtVec4fArray { GfVec4f(1.f, 0.f, 0.f, 1.f) });
+    emitDisplayColor(scene, id);
 
     const ShadeOne shade(scene);
 
@@ -348,8 +371,44 @@ TEST(NatronUtilityKernels, ShadeTablesFallBackToGreyWhenColorsDoNotFit)
     EXPECT_FLOAT_EQ(1.f, shade.color[3]);
 }
 
+// No light reaches a scene without lights, so a surface that emits nothing shows black at full coverage.
+TEST(NatronUtilityKernels, ShadeSurfaceWithoutLightOrEmissionIsOpaqueBlack)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addTriangle(scene);
+
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 0.5f, 0.25f, 1.f) });
+
+    const ShadeOne shade(scene);
+
+    EXPECT_EQ(0.f, shade.color[0]);
+    EXPECT_EQ(0.f, shade.color[1]);
+    EXPECT_EQ(0.f, shade.color[2]);
+    EXPECT_EQ(1.f, shade.color[3]);
+    EXPECT_EQ(5, shade.primId);
+}
+
+TEST(NatronUtilityKernels, ShadeSurfaceDrawsAnUnsupportedMaterialMagenta)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addTriangle(scene);
+    UtilityMaterialDesc material;
+
+    material.kind = UtilityMaterialDesc::eKindUnsupported;
+    material.unsupportedReason = "ND_standard_surface_surfaceshader";
+    scene.setMaterial(SdfPath("/X"), std::make_shared<const UtilityMaterialDesc>(material));
+    scene.setMaterialId(id, SdfPath("/X"));
+
+    const ShadeOne shade(scene);
+
+    EXPECT_EQ(1.f, shade.color[0]);
+    EXPECT_EQ(0.f, shade.color[1]);
+    EXPECT_EQ(1.f, shade.color[2]);
+    EXPECT_EQ(1.f, shade.color[3]);
+}
+
 // Near and far are 1 and 100, and the shaded ray runs 10 long from near to far.
-TEST(NatronUtilityKernels, ShadeFlatDepthIsWindowDepth)
+TEST(NatronUtilityKernels, ShadeSurfaceDepthIsWindowDepth)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addTriangle(scene);
@@ -367,7 +426,7 @@ TEST(NatronUtilityKernels, ShadeFlatDepthIsWindowDepth)
     EXPECT_NEAR(expected, ShadeOne(scene, 0, 0.f, 0.f, 5.f).depth, 1e-5);
 }
 
-TEST(NatronUtilityKernels, ShadeFlatLeavesMissesUntouched)
+TEST(NatronUtilityKernels, ShadeSurfaceLeavesMissesUntouched)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addTriangle(scene);
@@ -395,7 +454,7 @@ TEST(NatronUtilityKernels, ShadeFlatLeavesMissesUntouched)
     buffers.depthOut = &depth;
     buffers.primIdOut = &primId;
     buffers.instanceIdOut = &instanceId;
-    runShadeFlatKernel(makeShadeParams(frameOf(frustum, 1, 1), 1), buffers);
+    runShadeSurfaceKernel(makeShadeParams(frameOf(frustum, 1, 1), 1), buffers);
 
     EXPECT_EQ(9.f, color[0]);
     EXPECT_EQ(9.f, depth);

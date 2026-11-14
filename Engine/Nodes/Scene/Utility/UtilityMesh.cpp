@@ -28,6 +28,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <pxr/base/gf/vec2d.h>
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/imaging/hd/changeTracker.h>
@@ -39,6 +41,7 @@
 #include <pxr/imaging/hd/tokens.h>
 
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -97,6 +100,19 @@ convertChannel(const VtValue& value,
                VtFloatArray* out)
 {
     return convertChannelValue<float>(value, out) || convertChannelValue<double>(value, out);
+}
+
+bool
+convertChannel(const VtValue& value,
+               VtVec2fArray* out)
+{
+    return convertChannelValue<GfVec2f>(value, out) || convertChannelValue<GfVec2d>(value, out);
+}
+
+HdType
+channelType(const VtVec2fArray&)
+{
+    return HdTypeFloatVec2;
 }
 
 HdType
@@ -239,7 +255,8 @@ UtilityMesh::GetInitialDirtyBitsMask() const
         | HdChangeTracker::DirtyVisibility
         | HdChangeTracker::DirtyPrimvar
         | HdChangeTracker::DirtyInstancer
-        | HdChangeTracker::DirtyInstanceIndex;
+        | HdChangeTracker::DirtyInstanceIndex
+        | HdChangeTracker::DirtyMaterialId;
 }
 
 HdDirtyBits
@@ -320,6 +337,9 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
         || HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayColor)
         || HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayOpacity)) {
         syncColors(sceneDelegate, scene);
+    }
+    if (topologyDirty || _points.size() != previousPointCount || (bits & (HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyPrimvar))) {
+        syncMaterial(sceneDelegate, scene, bits & HdChangeTracker::DirtyMaterialId);
     }
     if (HdChangeTracker::IsTransformDirty(bits, id)) {
         _transform = sceneDelegate->GetTransform(id);
@@ -486,6 +506,65 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
         }
     }
     scene->setInstances(_geometry, transforms);
+}
+
+void
+UtilityMesh::syncMaterial(HdSceneDelegate* sceneDelegate,
+                          UtilityScene* scene,
+                          bool bindingDirty)
+{
+    const SdfPath& id = GetId();
+
+    if (bindingDirty) {
+        SetMaterialId(sceneDelegate->GetMaterialId(id));
+        scene->setMaterialId(_geometry, GetMaterialId());
+    }
+
+    const HdSprim* material = GetMaterialId().IsEmpty() ? nullptr : sceneDelegate->GetRenderIndex().GetSprim(HdPrimTypeTokens->material, GetMaterialId());
+    const TfToken name(material ? static_cast<const UtilityMaterial*>(material)->stPrimvar() : std::string("st"));
+    bool found = false;
+
+    for (int i = 0; i < HdInterpolationCount && !found; ++i) {
+        for (const HdPrimvarDescriptor& pv : sceneDelegate->GetPrimvarDescriptors(id, static_cast<HdInterpolation>(i))) {
+            found = found || pv.name == name;
+        }
+    }
+    if (!found) {
+        scene->setSt(_geometry, false, UtilityScene::eColorBindingConstant, VtVec2fArray());
+
+        return;
+    }
+
+    const Channel<GfVec2f> st = pullChannel<GfVec2f>(sceneDelegate, id, name, _topology, _points.size(), _allTriangles.size(), GfVec2f(0.f));
+    VtVec2fArray values;
+    UtilityScene::ColorBinding binding = UtilityScene::eColorBindingConstant;
+
+    switch (st.rate) {
+    case eChannelRateConstant:
+        values = VtVec2fArray(1, st.values.cdata()[0]);
+        break;
+    case eChannelRateUniform:
+        binding = UtilityScene::eColorBindingTriangle;
+        values.resize(_kept.size());
+        for (std::size_t t = 0; t < _kept.size(); ++t) {
+            values[t] = sampleCorner(st, _kept[t], 0, HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(_allParams.cdata()[_kept[t]]), 0);
+        }
+        break;
+    case eChannelRateVertex:
+        binding = UtilityScene::eColorBindingVertex;
+        values = st.values;
+        break;
+    case eChannelRateCorner:
+        binding = UtilityScene::eColorBindingCorner;
+        values.resize(_kept.size() * 3);
+        for (std::size_t t = 0; t < _kept.size(); ++t) {
+            for (int corner = 0; corner < 3; ++corner) {
+                values[t * 3 + corner] = sampleCorner(st, _kept[t], corner, 0, 0);
+            }
+        }
+        break;
+    }
+    scene->setSt(_geometry, true, binding, values);
 }
 
 NATRON_NAMESPACE_EXIT

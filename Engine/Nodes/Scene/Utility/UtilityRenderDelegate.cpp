@@ -28,6 +28,7 @@
 #include <atomic>
 
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/stringUtils.h>
 #include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/bprim.h>
 #include <pxr/imaging/hd/camera.h>
@@ -36,6 +37,7 @@
 #include <pxr/imaging/hd/tokens.h>
 
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMesh.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderPass.h"
@@ -366,7 +368,7 @@ UtilityRenderDelegate::GetSupportedRprimTypes() const
 const TfTokenVector&
 UtilityRenderDelegate::GetSupportedSprimTypes() const
 {
-    static const TfTokenVector types = { HdPrimTypeTokens->camera, HdPrimTypeTokens->extComputation };
+    static const TfTokenVector types = { HdPrimTypeTokens->camera, HdPrimTypeTokens->extComputation, HdPrimTypeTokens->material };
 
     return types;
 }
@@ -432,6 +434,9 @@ UtilityRenderDelegate::CreateSprim(const TfToken& typeId,
     }
     if (typeId == HdPrimTypeTokens->extComputation) {
         return new HdExtComputation(sprimId);
+    }
+    if (typeId == HdPrimTypeTokens->material) {
+        return new UtilityMaterial(sprimId);
     }
     TF_CODING_ERROR("Unknown Sprim type %s", typeId.GetText());
 
@@ -582,8 +587,16 @@ UtilityRenderDelegate::GetRenderStats() const
     _renderParam->frameReport(&device, &warning);
     dictionary[kUtilityStatDevice] = VtValue(device);
     dictionary[kUtilityStatWarning] = VtValue(warning);
+    dictionary[kUtilityStatSceneWarning] = VtValue(TfStringJoin(_scene->warnings(), "\n"));
 
     return dictionary;
+}
+
+// Sdr finds natronProject3D.glslfx's node only for a delegate that takes glslfx sources.
+TfTokenVector
+UtilityRenderDelegate::GetShaderSourceTypes() const
+{
+    return { TfToken("glslfx") };
 }
 
 NATRON_NAMESPACE_EXIT

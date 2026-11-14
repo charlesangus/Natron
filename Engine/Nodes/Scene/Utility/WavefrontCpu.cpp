@@ -106,7 +106,7 @@ renderTile(const WavefrontFrame& frame,
     buffers.depthOut = depth.data();
     buffers.primIdOut = primId.data();
     buffers.instanceIdOut = instanceId.data();
-    runShadeFlatKernel(makeShadeParams(frame, static_cast<std::uint32_t>(count)), buffers);
+    runShadeSurfaceKernel(makeShadeParams(frame, static_cast<std::uint32_t>(count)), buffers);
 
     WavefrontTile tile;
 

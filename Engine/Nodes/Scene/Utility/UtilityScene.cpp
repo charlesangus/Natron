@@ -26,14 +26,20 @@
 #include "UtilityScene.h"
 
 #include <algorithm>
+#include <set>
 
 #include <pxr/base/tf/diagnostic.h>
+#include <pxr/base/tf/stringUtils.h>
+
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
+#include "Engine/Nodes/Scene/Utility/UtilityTextures.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
 
 UtilityScene::UtilityScene()
+    : _textures(std::make_shared<UtilityTexturePool>())
 {
 }
 
@@ -153,6 +159,63 @@ UtilityScene::setInstances(GeometryId id,
 }
 
 void
+UtilityScene::setMaterialId(GeometryId id,
+                            const SdfPath& materialId)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (TF_VERIFY(it != _records.end()) && it->second.geometry.materialId != materialId) {
+        it->second.geometry.materialId = materialId;
+        ++_version;
+    }
+}
+
+void
+UtilityScene::setSt(GeometryId id,
+                    bool hasSt,
+                    ColorBinding binding,
+                    const VtVec2fArray& st)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (!TF_VERIFY(it != _records.end())) {
+        return;
+    }
+    Geometry& geometry = it->second.geometry;
+
+    if (geometry.hasSt == hasSt && geometry.stBinding == binding && geometry.st == st) {
+        return;
+    }
+    geometry.hasSt = hasSt;
+    geometry.stBinding = binding;
+    geometry.st = st;
+    ++geometry.stVersion;
+    ++_version;
+}
+
+void
+UtilityScene::setMaterial(const SdfPath& path,
+                          const std::shared_ptr<const UtilityMaterialDesc>& material)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+
+    _materials[path] = material;
+    ++_version;
+}
+
+void
+UtilityScene::removeMaterial(const SdfPath& path)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+
+    if (_materials.erase(path)) {
+        ++_version;
+    }
+}
+
+void
 UtilityScene::setRenderTag(GeometryId id,
                            const TfToken& tag)
 {
@@ -218,6 +281,8 @@ UtilityScene::snapshot() const
     Snapshot snapshot;
 
     snapshot.version = _version;
+    snapshot.materials = _materials;
+    snapshot.textures = _textures;
     for (const auto& entry : _records) {
         snapshot.geometries.emplace_hint(snapshot.geometries.end(), entry.first, entry.second.geometry);
         if (!isIncluded(entry.second)) {
@@ -234,6 +299,57 @@ UtilityScene::snapshot() const
     }
 
     return snapshot;
+}
+
+const std::shared_ptr<UtilityTexturePool>&
+UtilityScene::textures() const
+{
+    return _textures;
+}
+
+std::vector<std::string>
+UtilityScene::warnings() const
+{
+    std::set<std::string> unsupported;
+    std::set<std::string> withoutSt;
+
+    {
+        std::lock_guard<std::mutex> l(_mutex);
+
+        for (const auto& entry : _records) {
+            const Geometry& geometry = entry.second.geometry;
+
+            if (entry.second.transforms.empty() || !isIncluded(entry.second) || geometry.materialId.IsEmpty()) {
+                continue;
+            }
+            const auto material = _materials.find(geometry.materialId);
+
+            if (material == _materials.end() || !material->second) {
+                continue;
+            }
+            if (material->second->kind == UtilityMaterialDesc::eKindUnsupported) {
+                unsupported.insert(geometry.materialId.GetString());
+            } else if (material->second->readsTextureCoordinates() && !geometry.hasSt) {
+                withoutSt.insert(geometry.path.GetString());
+            }
+        }
+    }
+
+    std::vector<std::string> lines;
+
+    if (!unsupported.empty()) {
+        lines.push_back("Natron Utility cannot shade these materials and draws them magenta: "
+                        + TfStringJoin(std::vector<std::string>(unsupported.begin(), unsupported.end()), ", ") + ".");
+    }
+    if (!withoutSt.empty()) {
+        lines.push_back("These prims are textured but have no texture coordinates, so their textures read their fallbacks: "
+                        + TfStringJoin(std::vector<std::string>(withoutSt.begin(), withoutSt.end()), ", ") + ".");
+    }
+    for (const std::string& failure : _textures->failures()) {
+        lines.push_back(failure);
+    }
+
+    return lines;
 }
 
 NATRON_NAMESPACE_EXIT

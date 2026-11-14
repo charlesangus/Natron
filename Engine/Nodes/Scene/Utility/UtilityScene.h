@@ -31,20 +31,27 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec3i.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
+#include <pxr/base/vt/types.h>
 #include <pxr/usd/sdf/path.h>
 
 #include "Global/Macros.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct UtilityMaterialDesc;
+class UtilityTexturePool;
 
 /**
  * @brief What the utility renderer draws, in plain arrays: one geometry record per mesh and one
@@ -71,10 +78,18 @@ public:
         // Straight RGBA: displayColor with displayOpacity in alpha.
         PXR_NS::VtVec4fArray colors;
         ColorBinding colorBinding = eColorBindingConstant;
+        // Empty when no material is bound.
+        PXR_NS::SdfPath materialId;
+        // The bound material's texture coordinates, bound like the colours; hasSt is false when the
+        // mesh has none of that name.
+        PXR_NS::VtVec2fArray st;
+        ColorBinding stBinding = eColorBindingConstant;
+        bool hasSt = false;
         // Each counts the changes to that part, so a render can tell a refit from a rebuild.
         std::uint64_t topologyVersion = 0;
         std::uint64_t pointsVersion = 0;
         std::uint64_t colorVersion = 0;
+        std::uint64_t stVersion = 0;
     };
 
     struct Instance {
@@ -97,6 +112,8 @@ public:
         std::uint64_t version = 0;
         std::map<GeometryId, Geometry> geometries;
         std::vector<Instance> instances;
+        std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityMaterialDesc>> materials;
+        std::shared_ptr<UtilityTexturePool> textures;
     };
 
     UtilityScene();
@@ -118,6 +135,15 @@ public:
     // One instance per transform, replacing the geometry's previous ones.
     void setInstances(GeometryId id,
                       const std::vector<PXR_NS::GfMatrix4d>& transforms);
+    void setMaterialId(GeometryId id,
+                       const PXR_NS::SdfPath& materialId);
+    void setSt(GeometryId id,
+               bool hasSt,
+               ColorBinding binding,
+               const PXR_NS::VtVec2fArray& st);
+    void setMaterial(const PXR_NS::SdfPath& path,
+                     const std::shared_ptr<const UtilityMaterialDesc>& material);
+    void removeMaterial(const PXR_NS::SdfPath& path);
     void setRenderTag(GeometryId id,
                       const PXR_NS::TfToken& tag);
     // The render tags whose geometries contribute instances to snapshots and stats, all of them when
@@ -128,6 +154,14 @@ public:
     std::uint64_t version() const;
     Stats stats() const;
     Snapshot snapshot() const;
+    // The textures every snapshot's materials read from.
+    const std::shared_ptr<UtilityTexturePool>& textures() const;
+    /**
+     * @brief What the scene draws other than as authored, one line per problem: the unsupported
+     * materials bound to visible geometry, textured geometry without texture coordinates, and
+     * textures that could not be read.
+     **/
+    std::vector<std::string> warnings() const;
 
 private:
     struct Record {
@@ -142,6 +176,8 @@ private:
     GeometryId _nextId = 1;
     std::map<GeometryId, Record> _records;
     PXR_NS::TfTokenVector _renderTags;
+    std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityMaterialDesc>> _materials;
+    std::shared_ptr<UtilityTexturePool> _textures;
     std::uint64_t _version = 0;
     std::size_t _topologyBuilds = 0;
     std::size_t _pointUpdates = 0;

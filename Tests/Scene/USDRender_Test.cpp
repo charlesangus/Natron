@@ -1190,9 +1190,10 @@ TEST_F(USDRenderSingleSampleTest, NatronUtilityMatchesStorm)
             ++ballPixels;
         } else if (sameBits(utility[2].pixels[i], boxId)) {
             ++boxPixels;
-            EXPECT_NEAR(0.8f, utility[0].pixels[i * 4], 1e-5);
-            EXPECT_NEAR(0.2f, utility[0].pixels[i * 4 + 1], 1e-5);
-            EXPECT_NEAR(0.1f, utility[0].pixels[i * 4 + 2], 1e-5);
+            // The box has no material and the scene no light, which leaves it unlit.
+            EXPECT_EQ(0.f, utility[0].pixels[i * 4]);
+            EXPECT_EQ(0.f, utility[0].pixels[i * 4 + 1]);
+            EXPECT_EQ(0.f, utility[0].pixels[i * 4 + 2]);
             EXPECT_EQ(1.f, utility[0].pixels[i * 4 + 3]);
         }
     }

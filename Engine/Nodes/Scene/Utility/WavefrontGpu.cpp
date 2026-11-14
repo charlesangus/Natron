@@ -53,7 +53,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 
 #include "utility_raygen_spirv.h"
-#include "utility_shade_flat_spirv.h"
+#include "utility_shade_surface_spirv.h"
 
 #endif // NATRON_HAVE_GPU
 
@@ -121,9 +121,10 @@ utilityGpuBudget()
 
 namespace {
 static_assert(sizeof(KernelRayGenParams) == utility_raygen_push_bytes);
-static_assert(sizeof(KernelShadeParams) == utility_shade_flat_push_bytes);
-static_assert(utility_raygen_storage_buffers == 1 && utility_shade_flat_storage_buffers == 11);
-static_assert(sizeof(KernelGeometryRecord) == 16);
+static_assert(sizeof(KernelShadeParams) == utility_shade_surface_push_bytes);
+static_assert(utility_raygen_storage_buffers == 1 && utility_shade_surface_storage_buffers == 19);
+static_assert(sizeof(KernelGeometryRecord) == 32);
+static_assert(sizeof(KernelMaterialRecord) == 144 && sizeof(KernelTextureBinding) == 112 && sizeof(KernelProjectionRecord) == 256);
 
 const std::size_t kRayArrays = kUtilityRayArrays;
 const std::size_t kHitArrays = kUtilityHitArrays;
@@ -151,10 +152,10 @@ rayGenDesc()
 }
 
 gpu::GpuKernelDesc
-shadeFlatDesc()
+shadeSurfaceDesc()
 {
     return gpu::GpuKernelDesc {
-        utility_shade_flat_spirv, utility_shade_flat_spirv_words, utility_shade_flat_entry, utility_shade_flat_storage_buffers, utility_shade_flat_push_bytes, { utility_shade_flat_group_size[0], utility_shade_flat_group_size[1], utility_shade_flat_group_size[2] }
+        utility_shade_surface_spirv, utility_shade_surface_spirv_words, utility_shade_surface_entry, utility_shade_surface_storage_buffers, utility_shade_surface_push_bytes, { utility_shade_surface_group_size[0], utility_shade_surface_group_size[1], utility_shade_surface_group_size[2] }
     };
 }
 
@@ -177,6 +178,16 @@ struct ShadeTableBuffers {
     gpu::GpuBufferHandle colors;
     gpu::GpuBufferHandle triangles;
     gpu::GpuBufferHandle instanceIds;
+    gpu::GpuBufferHandle materials;
+    gpu::GpuBufferHandle textureBindings;
+    gpu::GpuBufferHandle images;
+    gpu::GpuBufferHandle projections;
+    gpu::GpuBufferHandle points;
+    gpu::GpuBufferHandle instanceTransforms;
+    gpu::GpuBufferHandle sts;
+    // Uploaded only when the images change, not with the rest.
+    std::uint64_t texelVersion = 0;
+    gpu::GpuBufferHandle texels;
 };
 
 bool
@@ -293,6 +304,12 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
     if (tables.valid && tables.version == version) {
         return true;
     }
+    const std::uint64_t texelVersion = shadeTables.texelVersion();
+    gpu::GpuBufferHandle keptTexels;
+
+    if (tables.texels && tables.texelVersion == texelVersion) {
+        keptTexels = std::move(tables.texels);
+    }
     tables = ShadeTableBuffers();
 
     const KernelShadeBuffers source = shadeTables.buffers();
@@ -305,9 +322,22 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
     if (!upload(*ctx, source.geometries, source.geometryCount * sizeof(KernelGeometryRecord), "geometry records", next.geometries)
         || !upload(*ctx, source.colors, source.colorCount * 4 * sizeof(float), "colours", next.colors)
         || !upload(*ctx, source.triangles, source.triangleIndexCount * sizeof(std::int32_t), "triangle indices", next.triangles)
-        || !upload(*ctx, source.instanceIds, source.instanceCount * sizeof(std::int32_t), "instance ids", next.instanceIds)) {
+        || !upload(*ctx, source.instanceIds, source.instanceCount * sizeof(std::int32_t), "instance ids", next.instanceIds)
+        || !upload(*ctx, source.materials, source.materialCount * sizeof(KernelMaterialRecord), "material records", next.materials)
+        || !upload(*ctx, source.textureBindings, source.textureBindingCount * sizeof(KernelTextureBinding), "texture bindings", next.textureBindings)
+        || !upload(*ctx, source.images, source.imageCount * 4 * sizeof(std::uint32_t), "image records", next.images)
+        || !upload(*ctx, source.projections, source.projectionCount * sizeof(KernelProjectionRecord), "projection records", next.projections)
+        || !upload(*ctx, source.points, source.pointCount * 4 * sizeof(float), "points", next.points)
+        || !upload(*ctx, source.instanceTransforms, source.instanceTransformRowCount * 4 * sizeof(float), "instance transforms", next.instanceTransforms)
+        || !upload(*ctx, source.sts, source.stCount * 2 * sizeof(float), "texture coordinates", next.sts)) {
         return false;
     }
+    if (keptTexels) {
+        next.texels = std::move(keptTexels);
+    } else if (!upload(*ctx, source.texels, source.texelCount * 4 * sizeof(float), "texels", next.texels)) {
+        return false;
+    }
+    next.texelVersion = texelVersion;
     if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
         return fail("WavefrontGpu could not upload its shading tables", s);
     }
@@ -426,7 +456,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     ctx.computeBarrier();
 
     const KernelShadeParams shadeParams = makeShadeParams(frame, static_cast<std::uint32_t>(count));
-    const std::array<gpu::GpuBinding, 11> shadeBindings = {
+    const std::array<gpu::GpuBinding, 19> shadeBindings = {
         gpu::GpuBinding::storage(0, *rays),
         gpu::GpuBinding::storage(1, *hitValues),
         gpu::GpuBinding::storage(2, *hitIds),
@@ -438,6 +468,14 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         gpu::GpuBinding::storage(8, *depth),
         gpu::GpuBinding::storage(9, *primId),
         gpu::GpuBinding::storage(10, *instanceId),
+        gpu::GpuBinding::storage(11, tables.materials.buffer()),
+        gpu::GpuBinding::storage(12, tables.textureBindings.buffer()),
+        gpu::GpuBinding::storage(13, tables.images.buffer()),
+        gpu::GpuBinding::storage(14, tables.texels.buffer()),
+        gpu::GpuBinding::storage(15, tables.projections.buffer()),
+        gpu::GpuBinding::storage(16, tables.points.buffer()),
+        gpu::GpuBinding::storage(17, tables.instanceTransforms.buffer()),
+        gpu::GpuBinding::storage(18, tables.sts.buffer()),
     };
 
     if (gpu::GpuStatus s = ctx.dispatchBindings(shadeKernel, shadeBindings, std::as_bytes(std::span(&shadeParams, 1)), threads); !s) {
@@ -513,7 +551,7 @@ WavefrontGpu::WavefrontGpu(gpu::GpuKernelRegistry& registry,
         return;
     }
     imp.rayGenKernel = std::move(kernel);
-    if (gpu::GpuStatus s = gpu::GpuKernel::create(imp.device, shadeFlatDesc(), kernel); !s) {
+    if (gpu::GpuStatus s = gpu::GpuKernel::create(imp.device, shadeSurfaceDesc(), kernel); !s) {
         imp.unusable = Tracer::Outcome { Tracer::Status::Unsupported, "WavefrontGpu could not create its shading kernel: " + s.message };
 
         return;

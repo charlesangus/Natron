@@ -2,6 +2,7 @@ import pixelwrap;
 import coordmap;
 import resamplecore;
 import lensmodels;
+import edgesample;
 
 // LensDistortion::renderOp per pixel. The wrap's push block carries the Source, which is both the
 // image sampled and the image blended under the mask and mix, the destination and the mask; the
@@ -70,7 +71,7 @@ ResampleSource lensDistortionSource(LensDistortion d)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.blackOutside = (d.flags & kLensDistortionBlackOutside) != 0;
+    src.edgeMode = edgeModeFromFlags(d.flags, kLensDistortionBlackOutside);
     return src;
 }
 

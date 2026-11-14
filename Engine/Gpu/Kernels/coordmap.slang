@@ -1,4 +1,5 @@
 import resamplecore;
+import edgesample;
 
 // Resampler::resampleRowFromCoords for one pixel: sampling at a per-pixel source coordinate, wrapped
 // per axis, with resamplecore.slang's interpolateSuper, on the Jacobian when the caller has one.
@@ -125,7 +126,7 @@ float4 sampleAt(ResampleSource src, float sx, float sy, float4 J, bool hasJacobi
     float Jyy = useJacobian ? finiteOrZero(J.w) : 0.0;
     bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
     bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
-    if (src.blackOutside && !(xinside && yinside))
+    if (src.edgeMode == kEdgeBlack && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;

@@ -2,11 +2,15 @@
 
 #include "GpuBlur.h"
 
+#include "Global/EdgeMode.h"
+
 #include <array>
 #include <cstdint>
 #include <vector>
 
 namespace gpu {
+
+using NATRON_NAMESPACE::EdgeMode;
 
 class GpuRecordContext;
 
@@ -97,7 +101,7 @@ struct GpuResample {
     double B = 1. / 3.;
     double C = 1. / 3.;
     bool clamp = false;
-    bool blackOutside = true;
+    EdgeMode edgeMode = EdgeMode::Black;
     std::vector<GpuResampleMatrix> matrices;
     GpuResampleBlur blur;
 };

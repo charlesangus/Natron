@@ -88,7 +88,8 @@ struct WarpGpuParams {
 static_assert(sizeof(WarpGpuParams) == 46 * 4, "stmap.slang reads 46 words");
 
 inline constexpr uint32_t kWarpGpuClamp = 1;
-inline constexpr uint32_t kWarpGpuBlackOutside = 2;
+// kFlagEdgeBlack in Engine/Gpu/Kernels/edgesample.slang.
+inline constexpr uint32_t kWarpGpuEdgeBlack = 2;
 inline constexpr uint32_t kWarpGpuJacobian = 4;
 inline constexpr uint32_t kWarpGpuSample = 8;
 inline constexpr uint32_t kWarpGpuMapConnected = 16;

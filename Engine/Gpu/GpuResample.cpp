@@ -15,7 +15,8 @@ namespace gpu {
 namespace {
 
     constexpr uint32_t kFlagClamp = 1;
-    constexpr uint32_t kFlagBlackOutside = 2;
+    // kFlagEdgeBlack in Kernels/edgesample.slang.
+    constexpr uint32_t kFlagEdgeBlack = 2;
     constexpr uint32_t kFlagSrcValid = 4;
     constexpr uint32_t kFlagExactRowX = 8;
     constexpr uint32_t kFlagExactRowY = 16;
@@ -278,7 +279,7 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     p.lobes = r.lobes;
     p.B = static_cast<float>(r.B);
     p.C = static_cast<float>(r.C);
-    p.flags = (r.clamp ? kFlagClamp : 0u) | (r.blackOutside ? kFlagBlackOutside : 0u);
+    p.flags = (r.clamp ? kFlagClamp : 0u) | (r.edgeMode == EdgeMode::Black ? kFlagEdgeBlack : 0u);
 
     const bool srcValid = r.src.buffer && !r.src.bounds.empty();
     if (srcValid) {

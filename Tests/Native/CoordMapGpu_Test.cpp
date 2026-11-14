@@ -223,7 +223,7 @@ transfer(gpu::GpuRuntime& runtime,
 
 // Mirrors the bits coordmap_test_main reads from ResampleParams::flags and ::states.
 const uint32_t kFlagClamp = 1;
-const uint32_t kFlagBlackOutside = 2;
+const uint32_t kFlagEdgeBlack = 2;
 const uint32_t kFlagSrcValid = 4;
 const uint32_t kStateJacobian = 16;
 
@@ -270,7 +270,7 @@ renderGpu(GpuParityRuntime& runtime,
     p.lobes = c.lobes;
     p.B = (float)c.bicubicB;
     p.C = (float)c.bicubicC;
-    p.flags = kFlagSrcValid | ((c.clamp && Resampler::filterHonoursClamp(c.filter)) ? kFlagClamp : 0u) | (c.blackOutside ? kFlagBlackOutside : 0u);
+    p.flags = kFlagSrcValid | ((c.clamp && Resampler::filterHonoursClamp(c.filter)) ? kFlagClamp : 0u) | (c.blackOutside ? kFlagEdgeBlack : 0u);
     p.states = (uint32_t)c.wrapU | ((uint32_t)c.wrapV << 2) | (c.hasJacobian ? kStateJacobian : 0u);
 
     std::unique_ptr<gpu::GpuRecordContext> context;

@@ -2,6 +2,7 @@ import pixelwrap;
 import coordmap;
 import resamplecore;
 import mapremap;
+import edgesample;
 
 // STMap::renderOp and IDistort::renderOp per pixel. The wrap's push block carries the Source,
 // which is both the image sampled and the image blended under the mask and mix, the destination
@@ -13,7 +14,6 @@ import mapremap;
 [[vk::binding(5, 0)]] StructuredBuffer<float> mapBuf;
 
 static const uint kWarpClamp = 1;
-static const uint kWarpBlackOutside = 2;
 static const uint kWarpJacobian = 4;
 static const uint kWarpSample = 8;
 static const uint kWarpMapConnected = 16;
@@ -240,7 +240,7 @@ ResampleSource warpSource(Warp w)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = (w.flags & kWarpSample) != 0 && wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.blackOutside = (w.flags & kWarpBlackOutside) != 0;
+    src.edgeMode = edgeModeFromFlags(w.flags, kFlagEdgeBlack);
     return src;
 }
 

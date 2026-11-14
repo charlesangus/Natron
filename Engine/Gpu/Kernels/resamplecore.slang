@@ -1,3 +1,5 @@
+import edgesample;
+
 // Resampler's filter weights, tap footprints and box integration with the source passed in, so that
 // kernels with their own bindings (resample.slang, and coordmap.slang's callers under pixelwrap.slang)
 // share them. Sample positions are carried in two floats, so that the filter taps and the integer
@@ -32,7 +34,6 @@ struct FilterSpec
 
 // kFlagClamp is only set for the filters Resampler::filterHonoursClamp names.
 static const uint kFlagClamp = 1;
-static const uint kFlagBlackOutside = 2;
 static const uint kFlagSrcValid = 4;
 // The exact entries' matrix rows whose float evaluation Engine/Gpu/GpuResample.cpp found exact
 // over the whole window; the blurred entry has them per matrix.
@@ -220,7 +221,7 @@ bool posAbove(Pos p, int n)
 }
 
 // The source: `offset` addresses (x1, y1) in `buf`, rows `stride` floats apart. `valid` false reads
-// zero everywhere.
+// zero everywhere. `edgeMode` is kEdgeStretch or kEdgeBlack.
 struct ResampleSource
 {
     StructuredBuffer<float> buf;
@@ -232,7 +233,7 @@ struct ResampleSource
     int y2;
     uint nComps;
     bool valid;
-    bool blackOutside;
+    uint edgeMode;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -262,11 +263,6 @@ float4 pixel(ResampleSource src, int x, int y, inout bool any)
     return srcAt(src, x, y);
 }
 
-int clampCoord(int v, int lo, int hiExclusive)
-{
-    return max(lo, min(v, hiExclusive - 1));
-}
-
 
 ///////////////////////////////////////////////////////////////////////////////
 // Impulse and box: the source pixel `cell`, the floor of the position; false (and zero) when it is
@@ -276,16 +272,10 @@ bool cellPixel(ResampleSource src, int2 cell, out float4 result)
     result = float4(0.0, 0.0, 0.0, 0.0);
     if (!src.valid)
         return false;
-    int mx = cell.x;
-    int my = cell.y;
-    if (!src.blackOutside)
-    {
-        mx = clampCoord(mx, src.x1, src.x2);
-        my = clampCoord(my, src.y1, src.y2);
-    }
-    if (!insideSrc(src, mx, my))
+    int2 sampled;
+    if (!edgePixel(cell, int4(src.x1, src.y1, src.x2, src.y2), src.edgeMode, sampled))
         return false;
-    result = srcAt(src, mx, my);
+    result = srcAt(src, sampled.x, sampled.y);
     return true;
 }
 
@@ -669,18 +659,13 @@ struct AxisTaps
 };
 
 // Relative to `lo`, -1 for a read that is black.
-int readOffset(int v, int lo, int hiExclusive, bool blackOutside)
+int readOffset(int v, int lo, int hiExclusive, uint edgeMode)
 {
-    if (v < lo || v >= hiExclusive)
-    {
-        if (blackOutside)
-            return -1;
-        v = clampCoord(v, lo, hiExclusive);
-    }
-    return v - lo;
+    int sampled;
+    return edgeCoord(v, lo, hiExclusive, edgeMode, sampled) ? sampled - lo : -1;
 }
 
-void buildAxisTaps(FilterSpec spec, TapAxis a, int lo, int hiExclusive, bool blackOutside, out AxisTaps t)
+void buildAxisTaps(FilterSpec spec, TapAxis a, int lo, int hiExclusive, uint edgeMode, out AxisTaps t)
 {
     t.count = a.count;
     t.any = false;
@@ -711,8 +696,8 @@ void buildAxisTaps(FilterSpec spec, TapAxis a, int lo, int hiExclusive, bool bla
         t.frac[i] = frac;
         t.weight[i] = w;
         sum = ffAddF(sum, w);
-        t.nearRead[i] = readOffset(low, lo, hiExclusive, blackOutside);
-        t.farRead[i] = frac != 0.0 ? readOffset(low + 1, lo, hiExclusive, blackOutside) : -1;
+        t.nearRead[i] = readOffset(low, lo, hiExclusive, edgeMode);
+        t.farRead[i] = frac != 0.0 ? readOffset(low + 1, lo, hiExclusive, edgeMode) : -1;
         t.any = t.any || t.nearRead[i] >= 0 || t.farRead[i] >= 0;
     }
     const float total = sum.hi + sum.lo;
@@ -742,8 +727,8 @@ bool kernelSample(ResampleSource src, FilterSpec spec, bool clampOn, TapAxis ax,
         return false;
     AxisTaps tx;
     AxisTaps ty;
-    buildAxisTaps(spec, ax, src.x1, src.x2, src.blackOutside, tx);
-    buildAxisTaps(spec, ay, src.y1, src.y2, src.blackOutside, ty);
+    buildAxisTaps(spec, ax, src.x1, src.x2, src.edgeMode, tx);
+    buildAxisTaps(spec, ay, src.y1, src.y2, src.edgeMode, ty);
     if (!tx.any || !ty.any)
         return false;
 
@@ -850,7 +835,7 @@ float4 boxIntegrate(ResampleSource src, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF
     const Pos px2 = toPos(ffAddF(x2, -float(src.x1)));
     const Pos py1 = toPos(ffAddF(y1, -float(src.y1)));
     const Pos py2 = toPos(ffAddF(y2, -float(src.y1)));
-    v = integrate2d(src, px1, py1, px2, py2, src.blackOutside);
+    v = integrate2d(src, px1, py1, px2, py2, src.edgeMode == kEdgeBlack);
     const FF wx = ffAdd(x2, ffNeg(x1));
     const FF wy = ffAdd(y2, ffNeg(y1));
     precise float s = (wx.hi + wx.lo) * (wy.hi + wy.lo);

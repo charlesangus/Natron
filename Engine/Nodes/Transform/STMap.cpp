@@ -943,7 +943,7 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
     params.wrapU = (uint32_t)settings.wrapU;
     params.wrapV = (uint32_t)settings.wrapV;
     if (hasDomain) {

@@ -1,3 +1,4 @@
+import edgesample;
 // Resampler::resampleRow for affine and projective inverse matrices: the filters of
 // Resampler::FilterSpec through resamplecore.slang's tap footprints, and the box integration, reading
 // the source from a storage buffer. resample_main samples one matrix; resample_blur_main averages
@@ -89,7 +90,7 @@ ResampleSource paramsSource()
     s.y2 = rp.srcY2;
     s.nComps = rp.nComps;
     s.valid = (rp.flags & kFlagSrcValid) != 0;
-    s.blackOutside = (rp.flags & kFlagBlackOutside) != 0;
+    s.edgeMode = edgeModeFromFlags(rp.flags, kFlagEdgeBlack);
     return s;
 }
 
@@ -513,7 +514,7 @@ float4 samplePixel(Matrix m, int x, int y)
     // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
     bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
     bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
-    if (src.blackOutside && !(xinside && yinside))
+    if (src.edgeMode == kEdgeBlack && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;
@@ -609,7 +610,7 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
     // x1 <= x + 0.5 && x - 0.5 < x2, and likewise for y.
     bool xinside = dblFloor(dblAdd(dx, half)) >= rp.srcX1 && dblFloor(bx) < rp.srcX2;
     bool yinside = dblFloor(dblAdd(dy, half)) >= rp.srcY1 && dblFloor(by) < rp.srcY2;
-    if (paramsSource().blackOutside && !(xinside && yinside))
+    if (paramsSource().edgeMode == kEdgeBlack && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;
@@ -671,7 +672,7 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
     const Dbl rx2 = dblSub(x2, ox);
     const Dbl ry1 = dblSub(y1, oy);
     const Dbl ry2 = dblSub(y2, oy);
-    float4 v = integrate2d(paramsSource(), dblToPos(rx1), dblToPos(ry1), dblToPos(rx2), dblToPos(ry2), paramsSource().blackOutside);
+    float4 v = integrate2d(paramsSource(), dblToPos(rx1), dblToPos(ry1), dblToPos(rx2), dblToPos(ry2), paramsSource().edgeMode == kEdgeBlack);
     precise float s = dblToFloat(dblSub(rx2, rx1)) * dblToFloat(dblSub(ry2, ry1));
     if (s != 0.0)
         v /= s;
@@ -768,7 +769,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
         return false;
     bool xinside = ax.i >= rp.srcX1 && bx.i < rp.srcX2;
     bool yinside = ay.i >= rp.srcY1 && by.i < rp.srcY2;
-    if (paramsSource().blackOutside && !(xinside && yinside))
+    if (paramsSource().edgeMode == kEdgeBlack && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;
@@ -838,7 +839,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
     if (floorGeAmbiguous(px1, ex, awidth) || floorGeAmbiguous(px2, ex, 0) || floorGeAmbiguous(py1, ey, aheight)
         || floorGeAmbiguous(py2, ey, 0))
         return false;
-    float4 v = integrate2d(paramsSource(), px1, py1, px2, py2, paramsSource().blackOutside);
+    float4 v = integrate2d(paramsSource(), px1, py1, px2, py2, paramsSource().edgeMode == kEdgeBlack);
     const FF wx = ffAdd(rx2, ffNeg(rx1));
     const FF wy = ffAdd(ry2, ffNeg(ry1));
     precise float s = (wx.hi + wx.lo) * (wy.hi + wy.lo);

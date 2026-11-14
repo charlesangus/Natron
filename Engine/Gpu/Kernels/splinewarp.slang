@@ -1,6 +1,7 @@
 import pixelwrap;
 import coordmap;
 import resamplecore;
+import edgesample;
 
 // SplineWarp::renderOp per pixel, SplineWarpField::getRow() included. The wrap's push block
 // carries the Source, the image blended under the mask and mix, the destination and the mask;
@@ -169,7 +170,7 @@ ResampleSource splineWarpSource(SplineWarpParams s)
     src.y2 = s.sampleY2;
     src.nComps = s.sampleNComps;
     src.valid = (s.flags & kSplineWarpSample) != 0 && s.sampleX2 > s.sampleX1 && s.sampleY2 > s.sampleY1;
-    src.blackOutside = (s.flags & kSplineWarpBlackOutside) != 0;
+    src.edgeMode = edgeModeFromFlags(s.flags, kSplineWarpBlackOutside);
     return src;
 }
 

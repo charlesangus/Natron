@@ -1,5 +1,6 @@
 import pixelwrap;
 import resamplecore;
+import edgesample;
 
 // DirBlur::renderOp per pixel: the sum, or with Max the maximum, over the samples in the CPU's
 // order of each sample's factors times the source resampled through its matrix, as
@@ -47,12 +48,12 @@ ResampleSource dirblurSource(uint flags)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = (flags & kDirBlurSourceValid) != 0 && wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.blackOutside = (flags & kDirBlurBlackOutside) != 0;
+    src.edgeMode = edgeModeFromFlags(flags, kDirBlurBlackOutside);
     return src;
 }
 
 // Resampler's samplePixel for an affine matrix: z is 1, the Jacobian is the matrix's linear part,
-// zeroed along each axis the sample falls outside the source on, and along both with blackOutside.
+// zeroed along each axis the sample falls outside the source on, and along both under Black.
 float4 dirblurSample(ResampleSource src, FilterSpec spec, bool clampOn, uint base, int2 p)
 {
     const FF h00 = dirblurFF(base);
@@ -72,7 +73,7 @@ float4 dirblurSample(ResampleSource src, FilterSpec spec, bool clampOn, uint bas
     // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
     bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
     bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
-    if (src.blackOutside && !(xinside && yinside))
+    if (src.edgeMode == kEdgeBlack && !(xinside && yinside))
     {
         xinside = false;
         yinside = false;

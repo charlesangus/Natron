@@ -2,6 +2,7 @@ import pixelwrap;
 import coordmap;
 import resamplecore;
 import mapremap;
+import edgesample;
 
 // IWarp::renderOp per pixel without motion blur, for ITransform and ICornerPin. The wrap's push
 // block carries the Source, which is both the image sampled and the image blended under the mask
@@ -221,7 +222,7 @@ float4 iwarpSample(IWarp w, int2 p)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.blackOutside = (w.flags & kIWarpBlackOutside) != 0;
+    src.edgeMode = edgeModeFromFlags(w.flags, kIWarpBlackOutside);
     const float4 v = sampleAt(src, sx, sy, J, jacobian, w.spec, (w.flags & kIWarpClamp) != 0, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
     if (wrap.nComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);

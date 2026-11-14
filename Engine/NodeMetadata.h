@@ -31,17 +31,10 @@
 #include <memory>
 
 #include "Engine/ImageLayerDesc.h"
+#include "Global/EdgeMode.h"
 #include "Global/GlobalDefines.h"
 
 NATRON_NAMESPACE_ENTER
-
-/**
- * @brief What a node's output returns for pixels outside its region of definition.
- **/
-enum class EdgeMode : unsigned char {
-    Stretch,
-    Black
-};
 
 /**
  * @brief These meta-data are represents what's flowing through a node. They change

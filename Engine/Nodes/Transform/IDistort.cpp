@@ -866,7 +866,7 @@ IDistort::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
     setWarpGpuDouble(settings.uOffset, params.uOffset);
     setWarpGpuDouble(settings.vOffset, params.vOffset);
     setWarpGpuDouble(productOrInfinity(settings.uScale, s.x), params.uScale);

@@ -388,7 +388,7 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
     resample.B = filter.B;
     resample.C = filter.C;
     resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter.filter);
-    resample.blackOutside = settings.blackOutside;
+    resample.edgeMode = settings.blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
     resample.matrices.resize(transforms.invTransforms.size());
     for (std::size_t i = 0; i < transforms.invTransforms.size(); ++i) {
         const Mat3& H = transforms.invTransforms[i];

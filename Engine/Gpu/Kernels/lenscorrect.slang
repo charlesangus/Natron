@@ -1,6 +1,7 @@
 import pixelwrap;
 import coordmap;
 import resamplecore;
+import edgesample;
 
 // LensCorrect::renderOp per pixel, with LensCorrectProfile's map() and vignettingGain() in float. The
 // wrap's push block carries the Source, which is both sampled and blended under the mask and mix,
@@ -518,7 +519,7 @@ ResampleSource lensCorrectSource(LensCorrect d)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.blackOutside = (d.flags & kLensCorrectBlackOutside) != 0;
+    src.edgeMode = edgeModeFromFlags(d.flags, kLensCorrectBlackOutside);
     return src;
 }
 

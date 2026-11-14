@@ -3083,6 +3083,16 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 
         const View v = view;
         const int cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
+        if (engine && CyclesAovs::isCycles(engineRenderer) && !samplesKey.IsEmpty() && (cap > 0) && (appliedCap > 0) && (cap != appliedCap) && (lastSamples >= cap) && !lastConverged) {
+            // Cycles told mid-render to stop at or below the samples it already holds resets to no
+            // sample and renders none again, with its AOVs cleared: a new engine starts under the
+            // cap, and the frame shown stays until it draws.
+            lock.unlock();
+            dropEngine();
+            lock.lock();
+            keepFrame = true;
+            continue;
+        }
         const std::uint64_t passGeneration = generation;
         const std::uint64_t restartIndex = status.restarts;
         const std::uint64_t passDrawEdits = drawEdits;

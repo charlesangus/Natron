@@ -994,6 +994,29 @@ TEST_F(ProgressiveRenderTest, ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverT
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
 }
 
+// A cap lowered mid-render to samples Cycles already has still ends the render at the cap, with a
+// frame whose prims can be picked.
+TEST_F(ProgressiveRenderTest, ACapLoweredBelowTheSamplesRenderedEndsAtIt)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    // Held at its first frame while Cycles samples on, so that it has more than the cap below.
+    hold(true);
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "the first frame"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const std::size_t mark = publishedCount();
+    _render->setMaxSamples(1);
+    hold(false);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(1, frames.back()->samples);
+    const std::set<std::string> picked = pickedPrims(*frames.back());
+    EXPECT_TRUE(anyUnder(picked, "/World/Near"));
+}
+
 // A prim the draw rules hide leaves the frame, and what they leave stays.
 TEST_F(ProgressiveRenderTest, ThePrimsTheDrawRulesHideLeaveTheFrame)
 {

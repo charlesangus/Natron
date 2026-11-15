@@ -33,6 +33,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -41,6 +42,7 @@
 #include <QtCore/QStringList>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/SceneLoadSet.h"
 #include "Gui/SceneGraphModel.h"
 
@@ -103,6 +105,14 @@ public:
 
     void requestUnload(const QStringList& paths);
 
+    /**
+     * @brief Loads what a viewer's load rules load, as one batch: one setLoadsChanged() call
+     * follows it, or none if the rules load nothing. A subtree a rule leaves out of its load
+     * starts unloaded. A rule below another's path is loaded once the payloads above it are, as
+     * the prim it names may only exist inside them.
+     **/
+    void requestLoadRules(const SceneLoadRules& rules);
+
     // Stops sources on a thread of their own, so that whoever lets them go waits for no worker.
     static void reap(const std::vector<std::shared_ptr<SceneNodeStageSource>>& sources);
 
@@ -114,6 +124,8 @@ private:
         QStringList paths;
         bool load = true;
         bool withDescendants = false;
+        // The subtrees a descendant load leaves unloaded.
+        std::vector<std::string> excluded;
     };
 
     void run();

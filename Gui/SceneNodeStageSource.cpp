@@ -25,7 +25,10 @@
 
 #include "SceneNodeStageSource.h"
 
+#include <algorithm>
 #include <deque>
+#include <map>
+#include <set>
 #include <string>
 
 #include "Engine/AbortableRenderInfo.h"
@@ -284,25 +287,69 @@ SceneNodeStageSource::requestUnload(const QStringList& paths)
 }
 
 void
+SceneNodeStageSource::requestLoadRules(const SceneLoadRules& rules)
+{
+    std::vector<LoadRequest> requests;
+
+    for (const SceneDrawLoadRequest& draw : sceneLoadRequestsFor(rules)) {
+        LoadRequest load;
+        load.paths << QString::fromStdString(draw.path);
+        load.withDescendants = draw.withDescendants;
+        load.excluded = draw.excluded;
+        requests.push_back(load);
+    }
+    if (requests.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        _loadRequests.insert(_loadRequests.end(), requests.begin(), requests.end());
+    }
+    _queueChanged.notify_one();
+}
+
+void
 SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
 {
     // Only this worker creates the stage, so reading the pointer needs no lock.
     if (!_stage || (requests.empty() && !_stage->hasPendingLoads())) {
         return;
     }
-    for (const LoadRequest& request : requests) {
+    const auto toSdfPaths = [](const QStringList& strings) {
         PXR_NS::SdfPathVector paths;
-        for (const QString& path : request.paths) {
+        for (const QString& path : strings) {
             const std::string pathString = path.toStdString();
             if (PXR_NS::SdfPath::IsValidPathString(pathString)) {
                 paths.push_back(PXR_NS::SdfPath(pathString));
             }
         }
+
+        return paths;
+    };
+    // A batch skips a path whose prim the stage does not compose yet, as one inside a payload the
+    // same batch loads: each request waits for a pass after those of the loads above it.
+    std::set<PXR_NS::SdfPath> loadPaths;
+    for (const LoadRequest& request : requests) {
         if (request.load) {
-            _stage->requestLoad(paths, request.withDescendants);
-        } else {
-            _stage->requestUnload(paths);
+            for (const PXR_NS::SdfPath& path : toSdfPaths(request.paths)) {
+                loadPaths.insert(path);
+            }
         }
+    }
+    std::map<std::size_t, std::vector<std::size_t>> passes;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        std::size_t depth = 0;
+        for (const PXR_NS::SdfPath& path : toSdfPaths(requests[i].paths)) {
+            std::size_t above = 0;
+            for (PXR_NS::SdfPath ancestor = path.GetParentPath(); !ancestor.IsEmpty(); ancestor = ancestor.GetParentPath()) {
+                above += loadPaths.count(ancestor);
+            }
+            depth = std::max(depth, above);
+        }
+        passes[depth].push_back(i);
+    }
+    if (passes.empty()) {
+        passes.emplace(0, std::vector<std::size_t>());
     }
     const SceneStage::LockedSection locked = [this](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope readScope;
@@ -330,7 +377,32 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
             _editCount = _stage->getEditCount();
         };
     };
-    if (!_stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare) || _stopRequested) {
+    bool serviced = false;
+    for (const std::pair<const std::size_t, std::vector<std::size_t>>& pass : passes) {
+        for (std::size_t i : pass.second) {
+            const LoadRequest& request = requests[i];
+            const PXR_NS::SdfPathVector paths = toSdfPaths(request.paths);
+            if (request.load) {
+                PXR_NS::SdfPathVector excluded;
+                for (const std::string& path : request.excluded) {
+                    if (PXR_NS::SdfPath::IsValidPathString(path)) {
+                        excluded.push_back(PXR_NS::SdfPath(path));
+                    }
+                }
+                _stage->requestLoad(paths, request.withDescendants, excluded);
+            } else {
+                _stage->requestUnload(paths);
+            }
+        }
+        if (_stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare)) {
+            serviced = true;
+        }
+        if (_stopRequested) {
+            return;
+        }
+    }
+    // A batch that asked for nothing loadable is still answered, so that whoever asked is not left waiting.
+    if (_stopRequested || (!serviced && requests.empty())) {
         return;
     }
     std::weak_ptr<SceneNodeStageSource> self = weak_from_this();

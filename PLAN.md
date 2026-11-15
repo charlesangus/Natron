@@ -628,3 +628,5 @@ future core work has solid ground to build on.
 
 - **F9 - Delegate Projection post-merge checks (PM, 2026-11-15, landed f74a781e2 / #282):** the UAT was approved before the main merge and the Cycles restart-detection rework (fork reset counters, cancel before a pass keeps the engine). On main, please re-check: a file reload during a Cycles progressive render shows the reloaded scene; editing a Cycles scene that has finished refines in place without a pause; MoonRay edits restart promptly; cancelling during a render stays fast.
 
+
+- **F8 - Motion Vectors ship (PM, 2026-11-15):** all members done; main merged in (c22092d9a). RotoCurveContext conflict with M272 resolved by the M219 user decision (transforms per shape or layer, never shared): the Transform page follows the single linked item via M272's mechanism and stays disabled for multi-shape selections; other knobs forward as in M272. Gate (ctest + 9 GUI scripts) running; then Feature PR, review, UAT (model download with licences, screenshots, follow progress window, GPU-host flow timings).

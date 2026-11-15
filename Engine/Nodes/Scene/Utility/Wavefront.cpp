@@ -49,6 +49,9 @@ namespace {
 const double kNdcNear = -1.;
 const double kNdcFar = 1.;
 const float kFallbackGrey = 0.18f;
+// How many triangles or points the shading tables copy between stop checks: one mesh can hold
+// millions, which would otherwise copy for hundreds of milliseconds before a stop lands.
+const std::size_t kCopyChunk = std::size_t(1) << 16;
 // The dome's importance table is a box-filtered copy of the texture no larger than this, which keeps
 // its build and its binary searches cheap without losing the bright spots a sun or window makes.
 const int kDomeCdfMaxWidth = 512;
@@ -649,10 +652,27 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
     _synced = false;
     updateMaterials(snapshot);
     if (recopy) {
+        std::size_t colorTotal = 0;
+        std::size_t triangleTotal = 0;
+        std::size_t pointTotal = 0;
+        std::size_t stTotal = 0;
+
+        for (const auto& entry : snapshot.geometries) {
+            const UtilityScene::Geometry& geometry = entry.second;
+
+            colorTotal += std::max<std::size_t>(1, geometry.colors.size());
+            triangleTotal += geometry.triangles.size() * 3;
+            pointTotal += geometry.points.size();
+            stTotal += geometry.st.size();
+        }
         _colors.clear();
         _triangles.clear();
         _points.clear();
         _sts.clear();
+        _colors.reserve(colorTotal);
+        _triangles.reserve(triangleTotal);
+        _points.reserve(pointTotal);
+        _sts.reserve(stTotal);
     }
     _geometries.clear();
     _geometries.reserve(snapshot.geometries.size());
@@ -695,11 +715,32 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
             } else {
                 _colors.push_back(GfVec4f(kFallbackGrey, kFallbackGrey, kFallbackGrey, 1.f));
             }
-            for (const GfVec3i& triangle : geometry.triangles) {
-                _triangles.insert(_triangles.end(), { triangle[0], triangle[1], triangle[2] });
+            const GfVec3i* triangles = geometry.triangles.cdata();
+
+            for (std::size_t first = 0; first < geometry.triangles.size(); first += kCopyChunk) {
+                if (stop && stop->load(std::memory_order_relaxed)) {
+                    return false;
+                }
+
+                const std::size_t last = std::min(first + kCopyChunk, geometry.triangles.size());
+
+                for (std::size_t t = first; t < last; ++t) {
+                    _triangles.insert(_triangles.end(), { triangles[t][0], triangles[t][1], triangles[t][2] });
+                }
             }
-            for (const GfVec3f& point : geometry.points) {
-                _points.push_back(GfVec4f(point[0], point[1], point[2], 1.f));
+
+            const GfVec3f* points = geometry.points.cdata();
+
+            for (std::size_t first = 0; first < geometry.points.size(); first += kCopyChunk) {
+                if (stop && stop->load(std::memory_order_relaxed)) {
+                    return false;
+                }
+
+                const std::size_t last = std::min(first + kCopyChunk, geometry.points.size());
+
+                for (std::size_t p = first; p < last; ++p) {
+                    _points.push_back(GfVec4f(points[p][0], points[p][1], points[p][2], 1.f));
+                }
             }
             if (stFits) {
                 _sts.insert(_sts.end(), geometry.st.cbegin(), geometry.st.cend());

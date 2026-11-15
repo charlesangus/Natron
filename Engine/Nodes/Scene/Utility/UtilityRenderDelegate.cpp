@@ -577,7 +577,10 @@ UtilityRenderDelegate::InvokeCommand(const TfToken& command,
 HdRenderSettingDescriptorList
 UtilityRenderDelegate::GetRenderSettingDescriptors() const
 {
-    return { HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) } };
+    return {
+        HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) },
+        HdRenderSettingDescriptor { "Max Cutouts", TfToken(kUtilitySettingMaxCutouts), VtValue(static_cast<int>(kWavefrontDefaultMaxCutouts)) },
+    };
 }
 
 VtDictionary

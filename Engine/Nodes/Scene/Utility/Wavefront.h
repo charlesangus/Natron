@@ -58,11 +58,17 @@ struct WavefrontRect {
     int height = 0;
 };
 
+// The default for WavefrontFrame::maxCutouts.
+const std::uint32_t kWavefrontDefaultMaxCutouts = 16;
+
 // What one render draws.
 struct WavefrontFrame {
     PXR_NS::GfMatrix4d worldToView = PXR_NS::GfMatrix4d(1.);
     PXR_NS::GfMatrix4d projection = PXR_NS::GfMatrix4d(1.);
     WavefrontRect window;
+    // The most holes a ray goes on through, in surfaces under their opacityThreshold, Project3D discards
+    // and casters a shadow ray's light ignores; past them the ray ends as a miss.
+    std::uint32_t maxCutouts = kWavefrontDefaultMaxCutouts;
 };
 
 // The outputs a film takes in tiles. An executor may leave the arrays of the others null.
@@ -137,10 +143,6 @@ public:
                         int threads)
         = 0;
 };
-
-// The most holes a ray goes on through, in surfaces under their opacityThreshold, Project3D discards
-// and casters a shadow ray's light ignores; past them the ray ends as a miss.
-const std::uint32_t kWavefrontMaxHoles = 16;
 
 /**
  * @brief Whether the frame's camera can make rays at all: its matrices invert to a finite frustum.

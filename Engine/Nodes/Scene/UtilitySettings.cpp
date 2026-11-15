@@ -26,6 +26,7 @@
 #include "UtilitySettings.h"
 
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/Wavefront.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -45,6 +46,17 @@ make()
     device.defaultValue = VtValue(TfToken(kUtilityDeviceAuto));
     device.choices = { { "auto", "Auto", VtValue(TfToken(kUtilityDeviceAuto)) }, { "gpu", "GPU", VtValue(TfToken(kUtilityDeviceGpu)) }, { "cpu", "CPU", VtValue(TfToken(kUtilityDeviceCpu)) } };
     c.settings.push_back(device);
+
+    RenderSettingsKnobs::CuratedSetting maxCutouts;
+
+    maxCutouts.key = kUtilitySettingMaxCutouts;
+    maxCutouts.name = "maxCutouts";
+    maxCutouts.tooltip = "How many cutout or projection-discard surfaces a ray passes through before it is treated as a miss. Camera rays then show the background and shadow rays reach the light. Higher shows more layers of cutouts stacked up and takes longer on scenes with them.";
+    maxCutouts.defaultValue = VtValue(static_cast<int>(kWavefrontDefaultMaxCutouts));
+    maxCutouts.hasRange = true;
+    maxCutouts.minimum = 1;
+    maxCutouts.displayMaximum = 32;
+    c.settings.push_back(maxCutouts);
 
     return c;
 }

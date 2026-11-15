@@ -63,6 +63,9 @@
 #define kUtilityDeviceGpu "gpu"
 #define kUtilityDeviceCpu "cpu"
 
+// The most cutout or projection-discard surfaces a ray goes through before it is a miss: an int.
+#define kUtilitySettingMaxCutouts "maxCutouts"
+
 // The renderer command that has the delegate give back what it keeps on the GPU, as Free GPU Memory asks.
 #define kUtilityCommandReleaseGpu "releaseGpu"
 // The renderer command that has the delegate drop what it keeps on a lost GPU, so that the device can recover.

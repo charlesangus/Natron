@@ -99,7 +99,7 @@ hitBatchOf(float* surface,
 
 /**
  * @brief Takes count rays' hits on to the surfaces the rays really meet, tracing again from past each
- * hole up to kWavefrontMaxHoles times. Only the rays still going on are traced again, gathered into a
+ * hole up to maxCutouts times. Only the rays still going on are traced again, gathered into a
  * batch of their own. Returns false when stop ended it.
  **/
 bool
@@ -108,6 +108,7 @@ resolveHits(const Tracer& tracer,
             KernelResolveParams params,
             KernelResolveBuffers buffers,
             std::size_t count,
+            std::uint32_t maxCutouts,
             const std::atomic<bool>& stop)
 {
     std::vector<float> retrace(count * 8);
@@ -124,9 +125,9 @@ resolveHits(const Tracer& tracer,
     buffers.retrace = retrace.data();
     params.count = static_cast<std::uint32_t>(count);
     for (std::uint32_t pass = 0;; ++pass) {
-        params.flags = flags | (pass > 0 ? kKernelResolveMerge : 0u) | (pass == kWavefrontMaxHoles ? kKernelResolveLast : 0u);
+        params.flags = flags | (pass > 0 ? kKernelResolveMerge : 0u) | (pass == maxCutouts ? kKernelResolveLast : 0u);
         runResolveHitsKernel(params, tables, buffers);
-        if (pass == kWavefrontMaxHoles) {
+        if (pass == maxCutouts) {
             return true;
         }
 
@@ -203,7 +204,7 @@ renderTile(const WavefrontFrame& frame,
         primary.rays = rays.data();
         primary.hitSurface = hitSurface.data();
         primary.hitIds = hitIds.data();
-        if (!resolveHits(tracer, buffers, resolveParams, primary, count, stop)) {
+        if (!resolveHits(tracer, buffers, resolveParams, primary, count, frame.maxCutouts, stop)) {
             return;
         }
     }
@@ -261,7 +262,7 @@ renderTile(const WavefrontFrame& frame,
             shadowBuffers.blocked = blockedWords.data();
             shadowBuffers.rayLights = shadowLights.data();
             tracer.intersect(shadows, hitBatchOf(shadowSurface.data(), shadowIds.data(), shadowCount));
-            if (!resolveHits(tracer, buffers, shadowParams, shadowBuffers, shadowCount, stop)) {
+            if (!resolveHits(tracer, buffers, shadowParams, shadowBuffers, shadowCount, frame.maxCutouts, stop)) {
                 return;
             }
         } else {

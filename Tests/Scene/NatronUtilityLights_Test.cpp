@@ -179,6 +179,11 @@ public:
         _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(device)));
     }
 
+    void setMaxCutouts(int limit)
+    {
+        _engine->SetRendererSetting(TfToken(kUtilitySettingMaxCutouts), VtValue(limit));
+    }
+
     // The first GPU frame in a process compiles the wavefront kernels, which on a loaded software
     // Vulkan device has taken longer than 30 s.
     void render()
@@ -426,14 +431,15 @@ def Material "Red" {
 
 // A card at height z facing +Z, wider than the frame, whose half at x < 0 is cut out.
 std::string
-cutoutCard(double z)
+cutoutCard(double z,
+           const std::string& name = "Cutout")
 {
     const std::string h = std::to_string(z);
 
-    return "def Mesh \"Cutout\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {\n"
-           "    int[] faceVertexCounts = [4, 4]\n"
-           "    int[] faceVertexIndices = [0, 1, 2, 3, 1, 4, 5, 2]\n"
-           "    point3f[] points = [(-20, -20, "
+    return "def Mesh \"" + name + "\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {\n"
+                                  "    int[] faceVertexCounts = [4, 4]\n"
+                                  "    int[] faceVertexIndices = [0, 1, 2, 3, 1, 4, 5, 2]\n"
+                                  "    point3f[] points = [(-20, -20, "
         + h + "), (0, -20, " + h + "), (0, 20, " + h + "), (-20, 20, " + h + "), (20, -20, " + h + "), (20, 20, " + h + ")]\n"
         + "    float[] primvars:displayOpacity = [0, 1] (interpolation = \"uniform\")\n"
         + "    rel material:binding = </Cutout>\n}\n";
@@ -452,6 +458,19 @@ cutoutOverRed()
     return usda;
 }
 
+// Three cutout cards, one over another, over the red card.
+std::string
+cutoutStackOverRed()
+{
+    std::string usda = ground() + cutoutCard(5., "CutoutA") + cutoutCard(6., "CutoutB") + cutoutCard(7., "CutoutC") + distantLight(M_PI, 0.) + kCutoutMaterial;
+    const std::string sun = "def DistantLight \"Sun\" {\n";
+
+    usda.replace(usda.find(sun), sun.size(), "def DistantLight \"Sun\" (prepend apiSchemas = [\"ShadowAPI\"]) {\n    bool inputs:shadow:enable = 0\n");
+    usda.replace(usda.find(kBoundWhite), std::strlen(kBoundWhite), "    rel material:binding = </Red>\n");
+
+    return usda;
+}
+
 void
 expectCutoutShowsRed(const LitRender& render)
 {
@@ -462,6 +481,23 @@ expectCutoutShowsRed(const LitRender& render)
             }
 
             const GfVec4f expected = x < kRenderSize / 2 ? GfVec4f(1.f, 0.f, 0.f, 1.f) : GfVec4f(0.f, 0.f, 1.f, 1.f);
+            const GfVec4f color = render.colorAt(x, y);
+
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_NEAR(expected[c], color[c], 1e-3f) << pixelName(x, y) << " channel " << c;
+            }
+        }
+    }
+}
+
+// The stack's holes at x < 0 over red when the limit reaches the red card, and a miss when it does not.
+void
+expectStackHolesOver(const LitRender& render,
+                     bool reachesRed)
+{
+    for (int y = 0; y < kRenderSize; ++y) {
+        for (int x = 0; x < kRenderSize / 2 - 1; ++x) {
+            const GfVec4f expected = reachesRed ? GfVec4f(1.f, 0.f, 0.f, 1.f) : GfVec4f(0.f);
             const GfVec4f color = render.colorAt(x, y);
 
             for (int c = 0; c < 4; ++c) {
@@ -911,6 +947,24 @@ TEST(NatronUtilityLights, ACutoutCardShowsTheCardBehindItThroughItsHole)
     expectCutoutShowsRed(render);
 }
 
+TEST(NatronUtilityLights, MaxCutoutsBelowTheStackMakesTheRayAMissAndRaisingItRevealsTheCardBehind)
+{
+    LitRender render(cutoutStackOverRed());
+
+    render.setMaxCutouts(2);
+    render.render();
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
+    expectStackHolesOver(render, false);
+
+    render.setMaxCutouts(3);
+    render.render();
+    expectStackHolesOver(render, true);
+
+    render.setMaxCutouts(1);
+    render.render();
+    expectStackHolesOver(render, false);
+}
+
 TEST(NatronUtilityLights, ACutoutCardsShadowIsLitUnderItsHole)
 {
     LitRender render(cutoutOverhead());
@@ -1099,6 +1153,30 @@ TEST(NatronUtilityLights, GpuSeesAndLightsThroughCutoutsAsTheCpuDoes)
                 EXPECT_NEAR(cpu[i][c], gpu[i][c], 1e-4f) << "scene " << scene << " " << pixelName(static_cast<int>(i) % kRenderSize, static_cast<int>(i) / kRenderSize);
             }
         }
+    }
+}
+
+TEST(NatronUtilityLights, GpuMaxCutoutsLimitsTheStackAsTheCpuDoes)
+{
+    LightsGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    LitRender render(cutoutStackOverRed());
+
+    render.setDevice(kUtilityDeviceGpu);
+    for (int limit : { 2, 3 }) {
+        render.setMaxCutouts(limit);
+        render.render();
+        EXPECT_EQ(0u, render.textStat(kUtilityStatDevice).rfind("GPU", 0)) << render.textStat(kUtilityStatDevice);
+        EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
+        expectStackHolesOver(render, limit == 3);
     }
 }
 #endif // NATRON_HAVE_GPU

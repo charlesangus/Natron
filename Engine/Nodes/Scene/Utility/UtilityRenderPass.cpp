@@ -202,6 +202,18 @@ clearBuffers(const HdRenderPassAovBindingVector& bindings)
     }
 }
 
+std::uint32_t
+maxCutoutsSetting(const VtValue& value)
+{
+    const VtValue asInt = VtValue::Cast<int>(value);
+
+    if (asInt.IsEmpty()) {
+        return kWavefrontDefaultMaxCutouts;
+    }
+
+    return static_cast<std::uint32_t>(std::max(1, asInt.UncheckedGet<int>()));
+}
+
 std::string
 deviceSettingText(const VtValue& value)
 {
@@ -253,7 +265,7 @@ UtilityRenderPass::~UtilityRenderPass()
 bool
 UtilityRenderPass::FrameKey::operator==(const FrameKey& other) const
 {
-    return device == other.device && version == other.version && worldToView == other.worldToView && projection == other.projection
+    return device == other.device && maxCutouts == other.maxCutouts && version == other.version && worldToView == other.worldToView && projection == other.projection
         && sameWindow(window, other.window) && bindings == other.bindings;
 }
 
@@ -312,6 +324,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
     WavefrontFrame frame;
 
+    frame.maxCutouts = maxCutoutsSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingMaxCutouts)));
     frame.window = renderWindow(*renderPassState);
 
     const bool hasCamera = renderPassState->GetCamera() != nullptr;
@@ -329,6 +342,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     key.worldToView = frame.worldToView;
     key.projection = frame.projection;
     key.window = frame.window;
+    key.maxCutouts = frame.maxCutouts;
     key.bindings = bindings;
 
     const bool sameFrame = _hasFrame && key == _frameKey;

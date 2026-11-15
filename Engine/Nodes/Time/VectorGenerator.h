@@ -32,13 +32,17 @@
 #include <cmath>
 #include <list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 
+#include "Engine/Ai/InferenceSession.h"
+#include "Engine/Ai/ModelKnob.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Flow/FlowEstimate.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/OCIO/ModelColourspace.h"
 
 #define PLUGINID_NATRON_VECTORGENERATOR "VectorGenerator"
 #define PLUGIN_MAJOR_NATRON_VECTORGENERATOR 1
@@ -55,6 +59,7 @@
 
 #define kVectorGeneratorMethodDIS "dis"
 #define kVectorGeneratorMethodTVL1 "tvl1"
+#define kVectorGeneratorMethodNeural "neural"
 
 #define kVectorGeneratorQualityFast "fast"
 #define kVectorGeneratorQualityMedium "medium"
@@ -91,7 +96,8 @@ inline constexpr NodeSpec kVectorGeneratorNodeSpec = {
                    "motion layers, in pixels at the render scale, with the agreement of the two directions in the "
                    "vectorConfidence layer. RGBA and every other layer pass through unchanged. An optional Matte "
                    "keeps the motion of a foreground from bleeding into its background. Each frame reads the whole "
-                   "Source at its neighbouring frames, so it costs whole-frame work however small the render window.",
+                   "Source at its neighbouring frames, so it costs whole-frame work however small the render window. "
+                   "The Neural method runs an optical-flow model on the CPU.",
     .grouping = PLUGIN_GROUP_TIME,
     .majorVersion = PLUGIN_MAJOR_NATRON_VECTORGENERATOR,
     .minorVersion = 0,
@@ -151,6 +157,14 @@ public:
     explicit VectorGenerator(NodePtr node);
 
     virtual ~VectorGenerator();
+
+    // Replaces the downloader whose registry the Neural method looks its model up in; null restores the process's.
+    static ModelDownloader*& downloaderForTesting();
+
+    ModelKnob* modelKnob() const
+    {
+        return _model.get();
+    }
 
     /// The two-channel confidence layer: Forward then Backward, each 0..1.
     static const ImageLayerDesc& confidenceLayer() WARN_UNUSED_RETURN;
@@ -239,6 +253,13 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void onEffectCreated(bool mayCreateFileDialog,
+                                 const CreateNodeArgs& args) OVERRIDE FINAL;
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+
+    virtual void purgeCaches() OVERRIDE FINAL;
+
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,
@@ -308,6 +329,14 @@ private:
 
     void refreshSmoothingEnabled();
 
+    // The model, colourspace and flow-channels controls follow whether the method is Neural.
+    void refreshMethodKnobs();
+
+    // The session of the model at path, kept while the path and the Preferences' session options stay the same. Null with message set
+    // when it cannot be opened.
+    std::shared_ptr<InferenceSession> neuralSession(const std::string& path,
+                                                    std::string* message);
+
     KnobChoiceWPtr _method;
     KnobChoiceWPtr _quality;
     KnobChoiceWPtr _flowChannels;
@@ -317,6 +346,13 @@ private:
     KnobBoolWPtr _showLowConfidence;
     KnobDoubleWPtr _confidenceThreshold;
     KnobChoiceWPtr _outputs;
+    ModelDownloader* _downloader = nullptr;
+    std::unique_ptr<ModelKnob> _model;
+    ModelColourspaceKnobs _colourspace;
+    std::mutex _sessionMutex;
+    std::shared_ptr<InferenceSession> _session;
+    std::string _sessionPath;
+    AiSessionOptions _sessionOptions;
     std::mutex _formatMessageMutex;
     std::string _postedFormatMessage;
 };

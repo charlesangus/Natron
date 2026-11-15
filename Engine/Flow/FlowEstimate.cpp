@@ -39,9 +39,12 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-/// A frame's pyramid, and its data weights when its matte separates anything.
+/// A frame's pyramid, and its data weights when its matte separates anything. The neural method
+/// has no pyramid: it keeps the frame's planes, and its matte weights are one full-size plane that
+/// scales the planes before the model.
 struct PreparedFrame {
     FlowPyramid pyramid;
+    OpticalFlowFrame neural;
     bool separates = false;
     std::vector<FlowPlane> matte;
     std::vector<FlowPlane> inverseMatte;
@@ -71,7 +74,11 @@ prepareMatte(const FlowFrame& frame,
     if (context.isAborted()) {
         return false;
     }
-    prepared.matte = flowBuildPlanePyramid(std::move(base), depth, context);
+    if (depth <= 0) {
+        prepared.matte.push_back(std::move(base));
+    } else {
+        prepared.matte = flowBuildPlanePyramid(std::move(base), depth, context);
+    }
     prepared.inverseMatte = prepared.matte;
     for (FlowPlane& level : prepared.inverseMatte) {
         for (float& value : level.data) {
@@ -82,12 +89,61 @@ prepareMatte(const FlowFrame& frame,
     return true;
 }
 
+void
+prepareNeuralFrame(const FlowImageView& image,
+                   const FlowContext& context,
+                   OpticalFlowFrame& out)
+{
+    const int width = image.width;
+    const int height = image.height;
+    for (FlowPlane& plane : out.channel) {
+        plane = FlowPlane(width, height);
+    }
+    context.parallel(height, [&](int y) {
+        const float* src = image.pixels + static_cast<std::ptrdiff_t>(y) * image.rowElements;
+        float* dst[3] = { out.channel[0].row(y), out.channel[1].row(y), out.channel[2].row(y) };
+        for (int x = 0; x < width; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const float value = src[c < image.nComps ? c : 0];
+                dst[c][x] = std::isfinite(value) ? value : 0.f;
+            }
+            src += image.nComps;
+        }
+    });
+}
+
+OpticalFlowFrame
+weightedNeuralFrame(const OpticalFlowFrame& frame,
+                    const FlowPlane& weight,
+                    const FlowContext& context)
+{
+    OpticalFlowFrame out;
+    for (int c = 0; c < 3; ++c) {
+        out.channel[c] = FlowPlane(frame.width(), frame.height());
+    }
+    context.parallel(frame.height(), [&](int y) {
+        const float* w = weight.row(y);
+        for (int c = 0; c < 3; ++c) {
+            const float* src = frame.channel[c].row(y);
+            float* dst = out.channel[c].row(y);
+            for (int x = 0; x < frame.width(); ++x) {
+                dst[x] = src[x] * w[x];
+            }
+        }
+    });
+    return out;
+}
+
 bool
 prepareFrame(const FlowFrame& frame,
              const FlowEstimateParams& params,
              const FlowContext& context,
              PreparedFrame& prepared)
 {
+    if (params.method == eFlowMethodNeural) {
+        prepareNeuralFrame(frame.image, context, prepared.neural);
+        return !context.isAborted() && (!frame.matte || prepareMatte(frame, 0, context, prepared));
+    }
     if (!prepared.pyramid.build(frame.image, params.channels, 0, context)) {
         return false;
     }
@@ -108,6 +164,31 @@ solve(const FlowPyramid& from,
     return computeDisFlow(from, to, disParamsForQuality(params.quality), weights, context, flow);
 }
 
+/// Both directions of the model. A weight scales the frame's planes, so the model sees the part of
+/// the picture the weight keeps and black elsewhere. Throws AiError, AiAborted included.
+void
+solveNeuralBothWays(const PreparedFrame& a,
+                    const PreparedFrame& b,
+                    const std::vector<FlowPlane>* weightsA,
+                    const std::vector<FlowPlane>* weightsB,
+                    const FlowEstimateParams& params,
+                    const FlowContext& context,
+                    FlowField& aToB,
+                    FlowField& bToA)
+{
+    if (!params.neural || !params.neural->session) {
+        throw AiError("No optical-flow model is loaded.");
+    }
+    const OpticalFlowFrame weightedA = weightsA ? weightedNeuralFrame(a.neural, weightsA->front(), context) : OpticalFlowFrame();
+    const OpticalFlowFrame weightedB = weightsB ? weightedNeuralFrame(b.neural, weightsB->front(), context) : OpticalFlowFrame();
+    const AiAbortPredicate abort = [&context]() { return context.isAborted(); };
+    OpticalFlowSpec spec = params.neural->spec;
+    spec.iterations = neuralIterationsForQuality(params.quality);
+    OpticalFlowPair pair = estimateOpticalFlowPair(params.neural->session, weightsA ? weightedA : a.neural, weightsB ? weightedB : b.neural, spec, abort);
+    aToB = std::move(pair.forward);
+    bToA = std::move(pair.backward);
+}
+
 bool
 solveBothWays(const PreparedFrame& a,
               const PreparedFrame& b,
@@ -118,7 +199,9 @@ solveBothWays(const PreparedFrame& a,
               FlowField& aToB,
               FlowField& bToA)
 {
-    if (!solve(a.pyramid, b.pyramid, weightsA, params, context, aToB) || !solve(b.pyramid, a.pyramid, weightsB, params, context, bToA)) {
+    if (params.method == eFlowMethodNeural) {
+        solveNeuralBothWays(a, b, weightsA, weightsB, params, context, aToB, bToA);
+    } else if (!solve(a.pyramid, b.pyramid, weightsA, params, context, aToB) || !solve(b.pyramid, a.pyramid, weightsB, params, context, bToA)) {
         return false;
     }
     flowComputeConfidence(bToA, params.confidenceSigma, context, aToB);
@@ -176,27 +259,47 @@ solvePair(const PreparedFrame& a,
 bool
 canBeMatched(const FlowFrame& a,
              const FlowFrame& b,
-             FlowChannels channels)
+             const FlowEstimateParams& params)
 {
+    if (params.method == eFlowMethodNeural) {
+        return a.image.width == b.image.width && a.image.height == b.image.height;
+    }
     return a.image.width == b.image.width && a.image.height == b.image.height
-        && flowMatchedChannelCount(a.image.nComps, channels) == flowMatchedChannelCount(b.image.nComps, channels);
+        && flowMatchedChannelCount(a.image.nComps, params.channels) == flowMatchedChannelCount(b.image.nComps, params.channels);
 }
 } // anonymous namespace
 
+int
+neuralIterationsForQuality(FlowQuality quality)
+{
+    // SEA-RAFT M is trained at 4 iterations; Fine runs past it, where its updates still converge.
+    switch (quality) {
+    case eFlowQualityFast:
+        return 2;
+    case eFlowQualityMedium:
+        return 4;
+    case eFlowQualityFine:
+        return 8;
+    }
+
+    return 4;
+}
+
+namespace {
 FlowEstimateStatus
-estimateFlow(const FlowFrame* previous,
-             const FlowFrame& current,
-             const FlowFrame* next,
-             const FlowEstimateParams& params,
-             const FlowContext& context,
-             FlowEstimateResult& result)
+estimateFlowImpl(const FlowFrame* previous,
+                 const FlowFrame& current,
+                 const FlowFrame* next,
+                 const FlowEstimateParams& params,
+                 const FlowContext& context,
+                 FlowEstimateResult& result)
 {
     result.mismatchOffset = 0;
-    if (previous && !canBeMatched(*previous, current, params.channels)) {
+    if (previous && !canBeMatched(*previous, current, params)) {
         result.mismatchOffset = -1;
         return eFlowEstimateFormatMismatch;
     }
-    if (next && !canBeMatched(*next, current, params.channels)) {
+    if (next && !canBeMatched(*next, current, params)) {
         result.mismatchOffset = 1;
         return eFlowEstimateFormatMismatch;
     }
@@ -223,17 +326,17 @@ estimateFlow(const FlowFrame* previous,
 }
 
 FlowEstimateStatus
-estimateFlowSmoothed(const FlowFrame* const frames[5],
-                     float smoothingStrength,
-                     const FlowEstimateParams& params,
-                     const FlowContext& context,
-                     FlowEstimateResult& result,
-                     const std::function<void(int)>& releaseFrame)
+estimateFlowSmoothedImpl(const FlowFrame* const frames[5],
+                         float smoothingStrength,
+                         const FlowEstimateParams& params,
+                         const FlowContext& context,
+                         FlowEstimateResult& result,
+                         const std::function<void(int)>& releaseFrame)
 {
     const FlowFrame& current = *frames[2];
     result.mismatchOffset = 0;
     for (int i = 0; i < 5; ++i) {
-        if (frames[i] && !canBeMatched(*frames[i], current, params.channels)) {
+        if (frames[i] && !canBeMatched(*frames[i], current, params)) {
             result.mismatchOffset = i - 2;
             return eFlowEstimateFormatMismatch;
         }
@@ -295,6 +398,48 @@ estimateFlowSmoothed(const FlowFrame* const frames[5],
         flowSmoothTemporal(behind[1], neighbours.data(), static_cast<int>(neighbours.size()), smoothingStrength, context, result.backward);
     }
     return eFlowEstimateOK;
+}
+
+template <typename Solve>
+FlowEstimateStatus
+guardModelErrors(const Solve& solve,
+                 FlowEstimateResult& result)
+{
+    try {
+        return solve();
+    } catch (const AiAborted&) {
+        return eFlowEstimateAborted;
+    } catch (const AiError& e) {
+        result.error = e.what();
+        return eFlowEstimateModelError;
+    }
+}
+} // anonymous namespace
+
+FlowEstimateStatus
+estimateFlow(const FlowFrame* previous,
+             const FlowFrame& current,
+             const FlowFrame* next,
+             const FlowEstimateParams& params,
+             const FlowContext& context,
+             FlowEstimateResult& result)
+{
+    result.error.clear();
+
+    return guardModelErrors([&]() { return estimateFlowImpl(previous, current, next, params, context, result); }, result);
+}
+
+FlowEstimateStatus
+estimateFlowSmoothed(const FlowFrame* const frames[5],
+                     float smoothingStrength,
+                     const FlowEstimateParams& params,
+                     const FlowContext& context,
+                     FlowEstimateResult& result,
+                     const std::function<void(int)>& releaseFrame)
+{
+    result.error.clear();
+
+    return guardModelErrors([&]() { return estimateFlowSmoothedImpl(frames, smoothingStrength, params, context, result, releaseFrame); }, result);
 }
 
 NATRON_NAMESPACE_EXIT

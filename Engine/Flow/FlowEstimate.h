@@ -30,7 +30,11 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
+#include <string>
 
+#include "Engine/Ai/InferenceSession.h"
+#include "Engine/Ai/OpticalFlow.h"
 #include "Engine/Flow/FlowField.h"
 #include "Engine/Flow/FlowPyramid.h"
 
@@ -38,7 +42,16 @@ NATRON_NAMESPACE_ENTER
 
 enum FlowMethod {
     eFlowMethodDIS = 0,
-    eFlowMethodTVL1
+    eFlowMethodTVL1,
+    eFlowMethodNeural
+};
+
+/**
+ * @brief The optical-flow model eFlowMethodNeural runs: an open session and how frames are fed to it.
+ **/
+struct FlowNeuralModel {
+    std::shared_ptr<InferenceSession> session;
+    OpticalFlowSpec spec;
 };
 
 /**
@@ -59,6 +72,10 @@ struct FlowEstimateParams {
     FlowChannels channels = eFlowChannelsLuminance;
     /// The round-trip error, in pixels, at which the confidence falls to 1/e.
     float confidenceSigma = 2.f;
+    /// Required by eFlowMethodNeural. The frames' values are handed to it as they are: they must
+    /// already be in the colour space the model wants. channels does not apply to it, and quality
+    /// sets its iterations (neuralIterationsForQuality()).
+    std::shared_ptr<const FlowNeuralModel> neural;
 };
 
 enum FlowEstimateStatus {
@@ -66,7 +83,9 @@ enum FlowEstimateStatus {
     eFlowEstimateAborted,
     /// A neighbour's size or matched-channel count differs from the current frame's: see
     /// FlowEstimateResult::mismatchOffset. The solvers can only compare frames that agree on both.
-    eFlowEstimateFormatMismatch
+    eFlowEstimateFormatMismatch,
+    /// The neural model failed: see FlowEstimateResult::error.
+    eFlowEstimateModelError
 };
 
 /**
@@ -80,7 +99,12 @@ struct FlowEstimateResult {
     FlowField backward;
     /// The frame, relative to the current one, that caused eFlowEstimateFormatMismatch.
     int mismatchOffset = 0;
+    /// Why eFlowEstimateModelError.
+    std::string error;
 };
+
+/// The refinement iterations eFlowMethodNeural runs at each quality.
+int neuralIterationsForQuality(FlowQuality quality);
 
 /**
  * @brief Estimates the current frame's forward and backward flow, as the single entry point over the

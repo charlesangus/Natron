@@ -147,6 +147,7 @@ set(Tests_SOURCES
     Ai/ModelKnob_Test.cpp
     Ai/Segmentation_Test.cpp
     Ai/MaskTrace_Test.cpp
+    Ai/OpticalFlow_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp

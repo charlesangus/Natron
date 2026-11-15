@@ -383,8 +383,9 @@ bool interpolate(const FilterSpec& filter, bool clamp, double fx, double fy, con
  * @brief Samples src at (fx, fy) for a destination pixel whose back-transform has the given
  * Jacobian. The kernel widens per source axis by kernelScale() of the Jacobian's row, so
  * magnification, 1:1, pure rotation and a zeroed row use the plain kernel. Past
- * kFilterMaxTapsPerAxis taps, that many spread evenly over the whole footprint with bilinear
- * reads. A zero Jacobian samples like interpolate(), and so does impulse with any Jacobian. The
+ * kFilterMaxTapsPerAxis taps, that many spread evenly with bilinear reads over the part of the
+ * footprint where the source varies, and each part beyond the source, where every read is the
+ * edge pixel or black, is one read weighted by the kernel's integral over it. A zero Jacobian samples like interpolate(), and so does impulse with any Jacobian. The
  * box filter instead integrates src over the bounding box of the back-transformed pixel.
  **/
 void interpolateSuper(const FilterSpec& filter, bool clamp, double fx, double fy, double Jxx, double Jxy, double Jyx, double Jyy, const SourceImage& src, EdgeMode edgeMode, float* out);

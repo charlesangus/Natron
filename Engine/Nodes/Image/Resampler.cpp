@@ -367,18 +367,50 @@ namespace {
         }
     }
 
+    // The spread taps, plus one edge run on each side of them.
+    const int kAxisTapsMax = kFilterMaxTapsPerAxis + 2;
+
     struct AxisTaps {
         int count;
-        int lo[kFilterMaxTapsPerAxis];
+        int lo[kAxisTapsMax];
         // Share of pixel lo + 1 in a bilinear read; 0 reads pixel lo alone.
-        float frac[kFilterMaxTapsPerAxis];
-        float weight[kFilterMaxTapsPerAxis];
+        float frac[kAxisTapsMax];
+        float weight[kAxisTapsMax];
     };
+
+    /*
+     * The unscaled kernel's integral over [u0, u1]. Three-point Gauss-Legendre on each unit
+     * piece is exact for the piecewise cubic kernels, whose pieces join at integers, and close
+     * for the smooth ones. resamplecore.slang's kernelIntegral matches it.
+     */
+    double
+    kernelIntegral(const FilterSpec& filter,
+                   double u0,
+                   double u1)
+    {
+        const double node = 0.7745966692414834;
+        double sum = 0.;
+
+        for (double k = std::floor(u0); k < u1; k += 1.) {
+            const double a = (std::max)(u0, k);
+            const double b = (std::min)(u1, k + 1.);
+            if (!(a < b)) {
+                continue;
+            }
+            const double mid = 0.5 * (a + b);
+            const double half = 0.5 * (b - a);
+            sum += half * (5. * filter.weight(mid - node * half) + 8. * filter.weight(mid) + 5. * filter.weight(mid + node * half)) / 9.;
+        }
+        return sum;
+    }
 
     void
     buildAxisTaps(const FilterSpec& filter,
                   double coord,
                   double scale,
+                  int lo,
+                  int hiExclusive,
+                  EdgeMode edgeMode,
                   AxisTaps* taps)
     {
         const double centre = (coord > kCoordLimit ? kCoordLimit : (coord >= -kCoordLimit ? coord : -kCoordLimit)) - 0.5;
@@ -387,7 +419,7 @@ namespace {
         // read that contributes nothing.
         const double first = std::floor(centre - reach) + 1.;
         const double exactCount = std::ceil(centre + reach) - first;
-        double weights[kFilterMaxTapsPerAxis];
+        double weights[kAxisTapsMax];
         double sum = 0.;
 
         if (exactCount <= kFilterMaxTapsPerAxis) {
@@ -400,16 +432,48 @@ namespace {
                 sum += weights[i];
             }
         } else {
-            taps->count = kFilterMaxTapsPerAxis;
-            const double step = 2. * reach / kFilterMaxTapsPerAxis;
-            for (int i = 0; i < taps->count; ++i) {
-                const double offset = (i + 0.5) * step - reach;
-                const double position = centre + offset;
-                taps->lo[i] = floorToInt(position);
-                taps->frac[i] = (float)(position - std::floor(position));
-                weights[i] = filter.weight(offset / scale);
-                sum += weights[i];
+            /*
+             * Every read before runStart, or past runEnd, is the same edge pixel under Stretch
+             * and black under Black, so each such run is one tap weighted by the kernel's
+             * integral over it, and the spread taps sample only what lies between. Spread taps
+             * over the whole footprint would land in a small source or miss it by chance, a
+             * result that jumps with the last bits of a far position.
+             */
+            const bool black = (edgeMode == EdgeMode::Black);
+            const double runStart = (black ? lo - 1. : (double)lo) - centre;
+            const double runEnd = (black ? (double)hiExclusive : hiExclusive - 1.) - centre;
+            const bool before = (-reach < runStart);
+            const bool after = (runEnd < reach);
+            const double from = before ? (std::min)(runStart, reach) : -reach;
+            const double to = after ? (std::max)(runEnd, -reach) : reach;
+            const double step = (before || after) ? (to - from) / kFilterMaxTapsPerAxis : 2. * reach / kFilterMaxTapsPerAxis;
+            const double unit = (before || after) ? step : 1.;
+            int n = 0;
+            if (before) {
+                taps->lo[n] = lo - 1;
+                taps->frac[n] = 0.f;
+                weights[n] = scale * kernelIntegral(filter, -filter.radius(), from / scale);
+                sum += weights[n];
+                ++n;
             }
+            if (from < to) {
+                for (int i = 0; i < kFilterMaxTapsPerAxis; ++i, ++n) {
+                    const double offset = (i + 0.5) * step + from;
+                    const double position = centre + offset;
+                    taps->lo[n] = floorToInt(position);
+                    taps->frac[n] = (float)(position - std::floor(position));
+                    weights[n] = filter.weight(offset / scale) * unit;
+                    sum += weights[n];
+                }
+            }
+            if (after) {
+                taps->lo[n] = hiExclusive;
+                taps->frac[n] = 0.f;
+                weights[n] = scale * kernelIntegral(filter, to / scale, filter.radius());
+                sum += weights[n];
+                ++n;
+            }
+            taps->count = n;
         }
         for (int i = 0; i < taps->count; ++i) {
             taps->weight[i] = (sum != 0.) ? (float)(weights[i] / sum) : 0.f;
@@ -492,14 +556,14 @@ namespace {
     {
         AxisTaps tx;
         AxisTaps ty;
-        std::ptrdiff_t xNear[kFilterMaxTapsPerAxis];
-        std::ptrdiff_t xFar[kFilterMaxTapsPerAxis];
-        std::ptrdiff_t yNear[kFilterMaxTapsPerAxis];
-        std::ptrdiff_t yFar[kFilterMaxTapsPerAxis];
+        std::ptrdiff_t xNear[kAxisTapsMax];
+        std::ptrdiff_t xFar[kAxisTapsMax];
+        std::ptrdiff_t yNear[kAxisTapsMax];
+        std::ptrdiff_t yFar[kAxisTapsMax];
         const RectI& b = src.bounds;
 
-        buildAxisTaps(filter, fx, scaleX, &tx);
-        buildAxisTaps(filter, fy, scaleY, &ty);
+        buildAxisTaps(filter, fx, scaleX, b.x1, b.x2, edgeMode, &tx);
+        buildAxisTaps(filter, fy, scaleY, b.y1, b.y2, edgeMode, &ty);
         const bool anyX = resolveReads(tx, b.x1, b.x2, edgeMode, (std::ptrdiff_t)src.nComps, xNear, xFar);
         const bool anyY = resolveReads(ty, b.y1, b.y2, edgeMode, (std::ptrdiff_t)src.rowStride, yNear, yFar);
         if (!anyX || !anyY) {

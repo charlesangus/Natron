@@ -769,6 +769,9 @@ passBufferRect(const RectI& window,
         if (!isEmptyRect(opMaskRoD)) {
             clip.merge(grownRect(opMaskRoD, 1, 1));
         }
+        if (list.stretchLinesEndAtRegion && !isEmptyRect(rod)) {
+            clip.merge(rod);
+        }
         clip.merge(window);
     } else {
         return full;

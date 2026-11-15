@@ -487,7 +487,7 @@ float vignettingGain(LensCorrect d, float2 p)
     const float r4 = r2 * r2;
     const float c = 1.0 + term(kVignettingTermsBase) * r2 + term(kVignettingTermsBase + 1) * r4 +
                     term(kVignettingTermsBase + 2) * r4 * r2;
-    if (isnan(c) || isinf(c))
+    if (!isFiniteF(c))
         return 1.0;
     if (d.vignetting == kDevignette)
         return c >= kDevignetteFloor ? 1.0 / c : 1.0;

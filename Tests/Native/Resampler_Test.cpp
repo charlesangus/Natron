@@ -1251,29 +1251,51 @@ TEST(Resampler, WideMinificationStaysWithinTheTapBudget)
 
     renderRows(scaling(scale), spec, false, true, src, 8, destX, destX + 1, &row);
 
-    // The x taps spread over [centre - R, centre + R] at (i + 0.5) * 2R / 81 with bilinear reads;
-    // y lies wholly inside the source.
+    // Past the source x reads black, so the result is the kernel-weighted share of the footprint
+    // the source covers, with bilinear reads across its last pixel; y lies wholly inside it.
     const double centre = (destX + 0.5) * scale - 0.5;
     const double reach = spec.radius() * scale;
-    const int taps = kFilterMaxTapsPerAxis;
+    const int steps = 1 << 18;
+    const double ds = 2. * reach / steps;
     double sum = 0.;
     double inside = 0.;
-    for (int i = 0; i < taps; ++i) {
-        const double offset = (i + 0.5) * 2. * reach / taps - reach;
+    for (int i = 0; i < steps; ++i) {
+        const double offset = (i + 0.5) * ds - reach;
         const double position = centre + offset;
         const double w = spec.weight(offset / scale);
-        const double lo = std::floor(position);
-        const double frac = position - lo;
-        auto in = [&](double k) {
-            return (k >= 0. && k < 742.) ? 1. : 0.;
-        };
+        const double coverage = (std::max)(0., (std::min)(1., 742. - position));
         sum += w;
-        inside += w * (in(lo) * (1. - frac) + in(lo + 1.) * frac);
+        inside += w * coverage;
     }
     const double expected = inside / sum;
 
     EXPECT_NEAR(row[0], expected, 1e-3);
     EXPECT_GT(std::fabs(expected - 1.), 0.01);
+}
+
+// A footprint thousands of times the source's size: past it, Stretch repeats the edge, so the
+// result moves smoothly with position instead of with which spread taps happen to land inside.
+TEST(Resampler, FarStretchedFootprintIsSmoothInPosition)
+{
+    const RectI bounds(0, 0, 64, 48);
+    std::vector<float> data = makeImage(bounds, [](int x, int y) {
+        return (float)(x + 2 * y) / 160.f;
+    });
+    const SourceImage src(&data.front(), bounds, 1);
+    const double J = 1e6;
+    float previous = 0.f;
+
+    for (int k = 0; k <= 400; ++k) {
+        const double fx = 1e5 + 0.37 * k;
+        float v = -1.f;
+        interpolateSuper(eFilterCubic, false, fx, 30.5, J, 0., 0., J, src, EdgeMode::Stretch, &v);
+        EXPECT_GE(v, 0.f) << "x " << fx;
+        EXPECT_LE(v, 1.f) << "x " << fx;
+        if (k > 0) {
+            EXPECT_NEAR(v, previous, 1e-5f) << "x " << fx;
+        }
+        previous = v;
+    }
 }
 
 TEST(Resampler, KernelScalePerSourceAxis)

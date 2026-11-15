@@ -675,15 +675,52 @@ TapAxis tapAxis(FilterSpec spec, FF coord, FF scale)
     return makeTapAxis(centre, reach, scale, toPos(ffAdd(centre, ffNeg(reach))).i, posCeil(toPos(ffAdd(centre, reach))));
 }
 
+// The spread taps, plus one edge run on each side of them.
+static const int kMaxAxisTaps = kMaxTapsPerAxis + 2;
+
 struct AxisTaps
 {
     int count;
     bool any;
-    int nearRead[kMaxTapsPerAxis];
-    int farRead[kMaxTapsPerAxis];
-    float frac[kMaxTapsPerAxis];
-    float weight[kMaxTapsPerAxis];
+    int nearRead[kMaxAxisTaps];
+    int farRead[kMaxAxisTaps];
+    float frac[kMaxAxisTaps];
+    float weight[kMaxAxisTaps];
 };
+
+// Resampler.cpp's kernelIntegral: the unscaled kernel's integral over [u0, u1], three-point
+// Gauss-Legendre on each unit piece.
+float kernelIntegral(FilterSpec spec, float u0, float u1)
+{
+    const float node = 0.7745966692414834;
+    const FF one = ffMake(1.0, 0.0);
+    float sum = 0.0;
+    [loop]
+    for (float k = floor(u0); k < u1; k += 1.0)
+    {
+        const float a = max(u0, k);
+        const float b = min(u1, k + 1.0);
+        if (!(a < b))
+            continue;
+        const float mid = 0.5 * (a + b);
+        const float half = 0.5 * (b - a);
+        const float w = 5.0 * tapWeight(spec, ffMake(mid - node * half, 0.0), one) + 8.0 * tapWeight(spec, ffMake(mid, 0.0), one) +
+                        5.0 * tapWeight(spec, ffMake(mid + node * half, 0.0), one);
+        sum += half * w / 9.0;
+    }
+    return sum;
+}
+
+void addRunTap(inout AxisTaps t, int pixel, float w, int lo, int hiExclusive, uint edgeMode)
+{
+    const int n = t.count;
+    t.frac[n] = 0.0;
+    t.weight[n] = w;
+    t.nearRead[n] = readOffset(pixel, lo, hiExclusive, edgeMode);
+    t.farRead[n] = -1;
+    t.any = t.any || t.nearRead[n] >= 0;
+    t.count = n + 1;
+}
 
 // Relative to `lo`, -1 for a read that is black.
 int readOffset(int v, int lo, int hiExclusive, uint edgeMode)
@@ -694,21 +731,54 @@ int readOffset(int v, int lo, int hiExclusive, uint edgeMode)
 
 void buildAxisTaps(FilterSpec spec, TapAxis a, int lo, int hiExclusive, uint edgeMode, out AxisTaps t)
 {
-    t.count = a.count;
+    t.count = 0;
     t.any = false;
+    // Resampler.cpp's buildAxisTaps: past runStart and runEnd every read is the edge pixel or
+    // black, so each side is one run weighted by the kernel's integral over it.
+    const bool black = edgeMode == kEdgeBlack;
+    const FF lowReach = ffNeg(a.reach);
+    const FF runStart = ffAddF(ffNeg(a.centre), float(black ? lo - 1 : lo));
+    const FF runEnd = ffAddF(ffNeg(a.centre), float(black ? hiExclusive : hiExclusive - 1));
+    const bool before = a.spread && ffLess(lowReach, runStart);
+    const bool after = a.spread && ffLess(runEnd, a.reach);
+    const bool runs = before || after;
+    const FF from = before ? ffMin(runStart, a.reach) : lowReach;
+    const FF to = after ? ffMax(runEnd, lowReach) : a.reach;
+    const float scale = a.scale.hi + a.scale.lo;
+    float runBefore = 0.0;
+    float runAfter = 0.0;
+    if (before)
+    {
+        const FF u = ffDiv(from, a.scale);
+        runBefore = scale * kernelIntegral(spec, -filterRadius(spec), u.hi + u.lo);
+    }
+    if (after)
+    {
+        const FF u = ffDiv(to, a.scale);
+        runAfter = scale * kernelIntegral(spec, u.hi + u.lo, filterRadius(spec));
+    }
     FF sum = ffMake(0.0, 0.0);
+    if (before)
+    {
+        addRunTap(t, lo - 1, runBefore, lo, hiExclusive, edgeMode);
+        sum = ffAddF(sum, runBefore);
+    }
     // Spread taps need no double positions of their own: bilinear reads are continuous across the
     // pixel a tap falls in, and the clamp range counts that interpolated read.
-    const FF step = a.spread ? ffDivF(ffMulF(a.reach, 2.0), float(kMaxTapsPerAxis)) : ffMake(0.0, 0.0);
+    const FF step = !a.spread ? ffMake(0.0, 0.0)
+                    : runs   ? ffDivF(ffAdd(to, ffNeg(from)), float(kMaxTapsPerAxis))
+                             : ffDivF(ffMulF(a.reach, 2.0), float(kMaxTapsPerAxis));
+    const float unit = runs ? step.hi + step.lo : 1.0;
+    const int count = (!a.spread || ffLess(from, to)) ? a.count : 0;
     [loop]
-    for (int i = 0; i < a.count; ++i)
+    for (int i = 0; i < count; ++i)
     {
         FF offset;
         int low;
         float frac;
         if (a.spread)
         {
-            offset = ffAdd(ffMulF(step, float(i) + 0.5), ffNeg(a.reach));
+            offset = ffAdd(ffMulF(step, float(i) + 0.5), from);
             const Pos p = toPos(ffAdd(a.centre, offset));
             low = p.i;
             frac = p.f;
@@ -719,17 +789,24 @@ void buildAxisTaps(FilterSpec spec, TapAxis a, int lo, int hiExclusive, uint edg
             offset = ffAddF(ffNeg(a.centre), float(low));
             frac = 0.0;
         }
-        const float w = tapWeight(spec, offset, a.scale);
-        t.frac[i] = frac;
-        t.weight[i] = w;
+        const float w = tapWeight(spec, offset, a.scale) * unit;
+        const int n = t.count;
+        t.frac[n] = frac;
+        t.weight[n] = w;
         sum = ffAddF(sum, w);
-        t.nearRead[i] = readOffset(low, lo, hiExclusive, edgeMode);
-        t.farRead[i] = frac != 0.0 ? readOffset(low + 1, lo, hiExclusive, edgeMode) : -1;
-        t.any = t.any || t.nearRead[i] >= 0 || t.farRead[i] >= 0;
+        t.nearRead[n] = readOffset(low, lo, hiExclusive, edgeMode);
+        t.farRead[n] = frac != 0.0 ? readOffset(low + 1, lo, hiExclusive, edgeMode) : -1;
+        t.any = t.any || t.nearRead[n] >= 0 || t.farRead[n] >= 0;
+        t.count = n + 1;
+    }
+    if (after)
+    {
+        addRunTap(t, hiExclusive, runAfter, lo, hiExclusive, edgeMode);
+        sum = ffAddF(sum, runAfter);
     }
     const float total = sum.hi + sum.lo;
     [loop]
-    for (int i = 0; i < a.count; ++i)
+    for (int i = 0; i < t.count; ++i)
         t.weight[i] = total != 0.0 ? t.weight[i] / total : 0.0;
 }
 

@@ -485,6 +485,10 @@ EdgeBlur::edgeRects(const EdgeBlurParams& params,
         return false;
     }
     RectI clip(matteRoD->x1 - edges.stretchReachX, matteRoD->y1 - edges.stretchReachY, matteRoD->x2 + edges.stretchReachX, matteRoD->y2 + edges.stretchReachY);
+    // The Gaussian's derivative recursions, as CImg's, skip a line's last sample and zero its
+    // first, so a line's edges depend on where it ends even past the matte. Lines end at the
+    // edges' region whatever output is, so that a tile's edges are the whole image's.
+    clip.merge(*edgeRoD);
     clip.merge(inside);
 
     return PassExec::intersectRects(passListSourceRoI(inside, edges), clip, buffer);

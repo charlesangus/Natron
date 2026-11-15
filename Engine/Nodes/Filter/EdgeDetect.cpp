@@ -958,6 +958,7 @@ edgeDetectPasses(const EdgeDetectParams& params,
 
     PassList list;
     list.edgeMode = edgeMode;
+    list.stretchLinesEndAtRegion = isGaussianFamily(filter);
     list.scratchSlots = 3;
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<EdgeDetectGpuPlan> gpuPlan = std::make_shared<EdgeDetectGpuPlan>();

@@ -501,6 +501,10 @@ struct PassList {
     // there as it does over the source, and up to one pixel past it, where an input read under
     // Black turns to black.
     RectI stretchVaries = RectI(0, 0, 0, 0);
+    // Under Stretch with a reach, whether the passes include recursive filters, whose results near
+    // the end of a line depend on where it ends: the scratch then covers the region of definition
+    // whatever the window, so that a tile's line ends are the whole image's.
+    bool stretchLinesEndAtRegion = false;
     PassGpuRecorder gpu;
     // When set, gpu records the list only for the queries it accepts, as a frame within the
     // device's scratch.

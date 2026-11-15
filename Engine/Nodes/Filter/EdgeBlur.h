@@ -217,8 +217,9 @@ private:
      * @brief The rect EdgeDetect's buffer covers for output: output grown by the edge passes'
      * reach, clipped to the matte's region of definition grown by it and cropped to the matte's
      * format, which *edgeRoD receives. Under Stretch, the part of output in *edgeRoD grown by that
-     * reach, clipped instead to the matte's region grown by the passes' Stretch reach. False when
-     * the matte has no region of definition, or output misses *edgeRoD under Stretch.
+     * reach, clipped instead to *edgeRoD merged with the matte's region grown by the passes'
+     * Stretch reach. False when the matte has no region of definition, or output misses *edgeRoD
+     * under Stretch.
      **/
     bool edgeRects(const EdgeBlurParams& params,
                    const PassList& edges,

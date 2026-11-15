@@ -634,8 +634,9 @@ specialValue(int x,
 
 // renderGpu() on NaNs, signed zeros, denormals and infinities against ErodeDilateKernels::filterLine
 // run as render() runs it, compared bit for bit: render()'s buffer over the source region of
-// interest clipped to the region of definition, zero outside the source, the passes in render()'s
-// order, then the window read back unchanged.
+// interest clipped, under Black, to the region of definition and the source with a one-pixel
+// border and to the window, zero outside the source, the passes in render()'s order, then the
+// window read back unchanged.
 TEST_F(NativeErodeDilateGpuTest, SpecialValuesMatchFilterLineBitForBit)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -677,7 +678,12 @@ TEST_F(NativeErodeDilateGpuTest, SpecialValuesMatchFilterLineBitForBit)
                 image.layout.padFloats = 2;
                 image.layout.rowPadFloats = 4;
 
-                const RectI buffer = inputRoI.intersect(rod);
+                // Past that border every pass reads zero, which a window clamped to it reads too.
+                RectI clip = rod;
+                clip.merge(sourceWindow);
+                clip = RectI(clip.x1 - 1, clip.y1 - 1, clip.x2 + 1, clip.y2 + 1);
+                clip.merge(roi);
+                const RectI buffer = inputRoI.intersect(clip);
                 ASSERT_FALSE(buffer.isNull()) << what;
                 const int bw = buffer.width();
                 const int bh = buffer.height();

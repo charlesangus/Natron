@@ -1374,7 +1374,8 @@ runPassesCpu(EffectInstance& effect,
         layout.bufferRect = bufferRect;
         layout.buffer = buffer ? scratch.buffers[list.resultSlot] : NULL;
         layout.mix = (float)plan.mix;
-        layout.sourceEdgeMode = list.edgeMode;
+        // At mix 0 the node is an identity, whose output is its input as rendered: zero past it.
+        layout.sourceEdgeMode = processing ? list.edgeMode : EdgeMode::Black;
         writeWindow(job, planes, maskSource, layout, nThreads, cancel);
         if (cancel.check()) {
             return eStatusOK;
@@ -1487,10 +1488,11 @@ recordPassesGpu(EffectInstance& effect,
         }
     }
     // The finish passes the source through and blends with it past the image as runPassesCpu()
-    // writes its window: by the list's edge mode.
+    // writes its window: by the list's edge mode, or as zero at mix 0, where the node is an
+    // identity.
     StagePlan finishPlan = plan;
     finishPlan.edgeMode = list.edgeMode;
-    finishPlan.blendSourceFollowsEdgeMode = true;
+    finishPlan.blendSourceFollowsEdgeMode = (plan.mix != 0.);
     if (!filtering) {
         return recordStagesGpuFinish(finishPlan, wrapArgs, source);
     }

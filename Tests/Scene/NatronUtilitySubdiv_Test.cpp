@@ -44,6 +44,8 @@
 #include <pxr/imaging/pxOsd/tokens.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/usd/prim.h>
+#include <pxr/usd/usd/relationship.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/tokens.h>
@@ -72,6 +74,16 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/AppManager.h"
+#include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/GpuContext.h"
+#include "Gpu/GpuTestDevice.h"
+#include "Gpu/GpuTestSelector.h"
+#endif
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -116,6 +128,24 @@ refine(const PxOsdMeshTopology& topology,
 
     return refinement;
 }
+
+const std::size_t kDefaultCacheBudget = std::size_t(1) << 30;
+// Room for the large grids below, whose refiners alone run to about a gigabyte.
+const std::size_t kRoomyCacheBudget = std::size_t(16) << 30;
+
+// Holds the refinement cache to a budget while it lives.
+class CacheBudget {
+public:
+    explicit CacheBudget(std::size_t bytes)
+    {
+        UtilitySubdivRefinement::setCacheBudget(bytes);
+    }
+
+    ~CacheBudget()
+    {
+        UtilitySubdivRefinement::setCacheBudget(kDefaultCacheBudget);
+    }
+};
 
 bool
 near(const GfVec3f& a,
@@ -162,9 +192,16 @@ public:
         _engine->SetRendererSetting(TfToken(key), VtValue(value));
     }
 
+    void setDevice(const char* device)
+    {
+        _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(device)));
+    }
+
+    // The first GPU frame in a process compiles the wavefront kernels, which on a loaded software
+    // Vulkan device has taken longer than 30 s.
     void render()
     {
-        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(180);
 
         renderOnce();
         while (!_engine->IsConverged() && std::chrono::steady_clock::now() < end) {
@@ -198,6 +235,24 @@ public:
     std::string warning() const
     {
         return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatWarning, VtDefault = std::string());
+    }
+
+    std::string device() const
+    {
+        return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatDevice, VtDefault = std::string());
+    }
+
+    std::vector<GfVec4f> pixels() const
+    {
+        std::vector<GfVec4f> all;
+
+        for (int y = 0; y < _size; ++y) {
+            for (int x = 0; x < _size; ++x) {
+                all.push_back(colorAt(x, y));
+            }
+        }
+
+        return all;
     }
 
     GfVec4f colorAt(int x,
@@ -444,6 +499,141 @@ rampSeamCage(const std::string& path,
                              "    rel material:binding = </Tex>\n"
                              "}\n";
 }
+
+// Pure diffuse white under a distant light of intensity pi along -Z, so that a pixel's value is the
+// cosine between its shading normal and the view axis.
+const char* const kLitWhite = R"(
+def Material "White" {
+    token outputs:surface.connect = </White/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (1, 1, 1)
+        int inputs:useSpecularWorkflow = 1
+        color3f inputs:specularColor = (0, 0, 0)
+        token outputs:surface
+    }
+}
+def DistantLight "Sun" {
+    float inputs:angle = 0
+    float inputs:intensity = 3.14159265
+}
+)";
+
+void
+bindWhite(const UsdStageRefPtr& stage,
+          const char* path)
+{
+    UsdPrim prim = stage->GetPrimAtPath(SdfPath(path));
+
+    prim.AddAppliedSchema(TfToken("MaterialBindingAPI"));
+    prim.CreateRelationship(TfToken("material:binding")).SetTargets({ SdfPath("/White") });
+}
+
+const int kShadedSize = 64;
+
+// The largest red step between horizontal or vertical neighbours, both fully covered and within
+// fraction of the frame's half-width of its centre.
+float
+largestStep(const std::vector<GfVec4f>& pixels,
+            double fraction)
+{
+    const double reach = fraction * kShadedSize / 2.;
+    float largest = 0.f;
+
+    for (int y = 0; y < kShadedSize; ++y) {
+        for (int x = 0; x < kShadedSize; ++x) {
+            const GfVec4f& here = pixels[y * kShadedSize + x];
+            const double dx = x + 0.5 - kShadedSize / 2.;
+            const double dy = y + 0.5 - kShadedSize / 2.;
+
+            if (here[3] < 0.999f || std::sqrt(dx * dx + dy * dy) > reach) {
+                continue;
+            }
+            for (int step = 0; step < 2; ++step) {
+                const int nx = x + (step == 0 ? 1 : 0);
+                const int ny = y + (step == 1 ? 1 : 0);
+
+                if (nx >= kShadedSize || ny >= kShadedSize) {
+                    continue;
+                }
+
+                const GfVec4f& next = pixels[ny * kShadedSize + nx];
+
+                if (next[3] >= 0.999f) {
+                    largest = std::max(largest, std::fabs(here[0] - next[0]));
+                }
+            }
+        }
+    }
+
+    return largest;
+}
+
+// A cube of side 16 facing the camera, each corner's normal pointing out along its diagonal through a
+// face-varying primvar, as a cage would carry them to look rounded.
+std::string
+cornerNormalCube(const char* scheme)
+{
+    return std::string("#usda 1.0\n") + kLitWhite
+        + "def Mesh \"Cube\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {\n"
+          "    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]\n"
+          "    int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]\n"
+          "    point3f[] points = [(-8, -8, 8), (8, -8, 8), (-8, 8, 8), (8, 8, 8), (-8, 8, -8), (8, 8, -8), (-8, -8, -8), (8, -8, -8)]\n"
+          "    normal3f[] primvars:normals = [(-1, -1, 1), (1, -1, 1), (-1, 1, 1), (1, 1, 1), (-1, 1, -1), (1, 1, -1), (-1, -1, -1), (1, -1, -1)] "
+          "(interpolation = \"faceVarying\")\n"
+          "    int[] primvars:normals:indices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]\n"
+          "    uniform token subdivisionScheme = \""
+        + scheme + "\"\n"
+                   "    rel material:binding = </White>\n"
+                   "}\n";
+}
+
+#ifdef NATRON_HAVE_GPU
+// Puts a GPU context of the test's own in the application's place while it lives, able to pick a
+// CPU-type device. Must outlive every SubdivRender of the test.
+class SubdivGpuRuntime {
+public:
+    SubdivGpuRuntime()
+    {
+        GpuContextOptions options;
+        std::shared_ptr<std::string> logged = std::make_shared<std::string>();
+
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        options.infoLog = [logged](const std::string& line) {
+            *logged = line;
+        };
+
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            unavailable = logged->empty() ? std::string("the GPU context did not come up") : *logged;
+
+            return;
+        }
+        _saved = appPTR->swapGpuContextForTests(std::move(own));
+        _swapped = true;
+    }
+
+    ~SubdivGpuRuntime()
+    {
+        if (_swapped) {
+            appPTR->swapGpuContextForTests(std::move(_saved));
+        }
+    }
+
+    std::string missingSupport() const
+    {
+        return WavefrontGpu::missingSupport(*appPTR->getGpuContext()->runtime());
+    }
+
+    std::string unavailable;
+
+private:
+    std::unique_ptr<GpuContext> _saved;
+    bool _swapped = false;
+};
+#endif // NATRON_HAVE_GPU
 } // anon namespace
 
 // The cube's level-1 points by the Catmull-Clark rules: each corner moves to 5/9 of itself, an edge
@@ -581,20 +771,68 @@ TEST(NatronUtilitySubdiv, AnEvictedRefinementLivesOnWhileHeld)
     const UtilitySubdivRefinementPtr held = refine(cube(PxOsdOpenSubdivTokens->catmullClark), 4);
 
     ASSERT_TRUE(held != nullptr);
-    UtilitySubdivRefinement::setCacheBudget(0);
-    EXPECT_LE(UtilitySubdivRefinement::stats().cachedEntries, 1u);
+    {
+        const CacheBudget none(0);
 
-    const std::size_t builds = UtilitySubdivRefinement::stats().refinerBuilds;
-    const UtilitySubdivRefinementPtr other = refine(cube(PxOsdOpenSubdivTokens->catmullClark), 1);
+        EXPECT_EQ(0u, UtilitySubdivRefinement::stats().cachedEntries);
+        EXPECT_EQ(0u, UtilitySubdivRefinement::stats().cachedBytes);
 
-    EXPECT_EQ(builds + 1, UtilitySubdivRefinement::stats().refinerBuilds);
-    EXPECT_EQ(1u, UtilitySubdivRefinement::stats().cachedEntries);
-    UtilitySubdivRefinement::setCacheBudget(std::size_t(1) << 30);
+        const std::size_t builds = UtilitySubdivRefinement::stats().refinerBuilds;
+        const UtilitySubdivRefinementPtr other = refine(cube(PxOsdOpenSubdivTokens->catmullClark), 1);
+
+        EXPECT_TRUE(other != nullptr);
+        EXPECT_EQ(builds + 1, UtilitySubdivRefinement::stats().refinerBuilds);
+        EXPECT_EQ(0u, UtilitySubdivRefinement::stats().cachedEntries);
+    }
 
     VtVec3fArray refined;
 
     held->refine(kCubePoints, &refined);
     EXPECT_EQ(held->refinedPointCount(), refined.size());
+}
+
+TEST(NatronUtilitySubdiv, ARefinementOverTheBudgetIsReturnedButNotCached)
+{
+    UtilitySubdivRefinement::clearCache();
+
+    const UtilitySubdivRefinementPtr first = refine(cube(PxOsdOpenSubdivTokens->catmullClark), 2);
+
+    ASSERT_TRUE(first != nullptr);
+    EXPECT_EQ(1u, UtilitySubdivRefinement::stats().cachedEntries);
+
+    const CacheBudget tooSmall(first->memoryBytes() - 1);
+
+    EXPECT_EQ(0u, UtilitySubdivRefinement::stats().cachedEntries);
+
+    const std::size_t builds = UtilitySubdivRefinement::stats().refinerBuilds;
+    const UtilitySubdivRefinementPtr second = refine(cube(PxOsdOpenSubdivTokens->catmullClark), 2);
+
+    ASSERT_TRUE(second != nullptr);
+    EXPECT_EQ(first->triangles(), second->triangles());
+    EXPECT_EQ(0u, UtilitySubdivRefinement::stats().cachedEntries);
+    EXPECT_EQ(0u, UtilitySubdivRefinement::stats().cachedBytes);
+
+    const UtilitySubdivRefinementPtr third = refine(cube(PxOsdOpenSubdivTokens->catmullClark), 2);
+
+    EXPECT_EQ(builds + 2, UtilitySubdivRefinement::stats().refinerBuilds);
+}
+
+// What a refinement counts covers what it keeps: its triangles and coarse topology, and more for a
+// face-varying channel, whose indices, stencils and corners it also keeps.
+TEST(NatronUtilitySubdiv, TheCountedBytesCoverWhatTheRefinementKeeps)
+{
+    const PxOsdMeshTopology topology = cube(PxOsdOpenSubdivTokens->catmullClark);
+    const UtilitySubdivRefinementPtr plain = refine(topology, 3);
+    const UtilitySubdivRefinementPtr channel = refine(topology, 3, { kCubeIndices });
+
+    ASSERT_TRUE(plain != nullptr);
+    ASSERT_TRUE(channel != nullptr);
+
+    const std::size_t kept = plain->triangles().size() * (sizeof(GfVec3i) + sizeof(int))
+        + (kCubeCounts.size() + kCubeIndices.size()) * sizeof(int);
+
+    EXPECT_GT(plain->memoryBytes(), kept);
+    EXPECT_GT(channel->memoryBytes(), plain->memoryBytes() + plain->triangles().size() * sizeof(GfVec3i));
 }
 
 TEST(NatronUtilitySubdiv, TheEstimateMatchesTheRefinementAndTheBudgetLowersTheLevel)
@@ -714,6 +952,7 @@ TEST(NatronUtilitySubdiv, AStoppedCallerLeavesASharedRefinementToTheOthers)
     const int level = 4;
     const PxOsdMeshTopology topology = gridTopology(grid);
     const std::chrono::milliseconds bound(500);
+    const CacheBudget roomy(kRoomyCacheBudget);
 
     UtilitySubdivRefinement::clearCache();
 
@@ -764,12 +1003,46 @@ TEST(NatronUtilitySubdiv, AStoppedCallerLeavesASharedRefinementToTheOthers)
     EXPECT_EQ(1u, after.cachedEntries);
 }
 
+// With no one else waiting, the refinement a stopped caller leaves behind is dropped once it ends,
+// not kept for a join that cannot come.
+TEST(NatronUtilitySubdiv, ALoneStoppedCallerLeavesNoBuildingJob)
+{
+    typedef UtilitySubdivRefinement::Outcome Outcome;
+    const PxOsdMeshTopology topology = gridTopology(96);
+    const CacheBudget roomy(kRoomyCacheBudget);
+
+    UtilitySubdivRefinement::clearCache();
+
+    std::atomic<bool> stop { false };
+    Outcome outcome = Outcome::Done;
+    std::thread caller([&]() {
+        std::string error;
+
+        UtilitySubdivRefinement::get(topology, 4, std::vector<VtIntArray>(), [&]() { return stop.load(); }, &outcome, &error);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    stop.store(true);
+    caller.join();
+    EXPECT_EQ(Outcome::Stopped, outcome);
+
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+
+    while (UtilitySubdivRefinement::stats().buildingJobs != 0 && std::chrono::steady_clock::now() < end) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(0u, UtilitySubdivRefinement::stats().buildingJobs);
+}
+
 TEST(NatronUtilitySubdivRender, MeshesRefineToTheSettingsLevel)
 {
     SubdivRender render(std::string("#usda 1.0\n") + cubeAt("Cube", ""));
 
     render.render();
-    EXPECT_EQ(cubeTriangles(UtilitySubdivRefinement::kDefaultLevel), render.stat(kUtilityStatTriangleCount));
+    EXPECT_EQ(cubeTriangles(0), render.stat(kUtilityStatTriangleCount));
+    render.setSetting(kUtilitySettingSubdivLevel, 2);
+    render.render();
+    EXPECT_EQ(cubeTriangles(2), render.stat(kUtilityStatTriangleCount));
     render.setSetting(kUtilitySettingSubdivLevel, 0);
     render.render();
     EXPECT_EQ(cubeTriangles(0), render.stat(kUtilityStatTriangleCount));
@@ -782,6 +1055,7 @@ TEST(NatronUtilitySubdivRender, EditingACagePointReRunsTheStencilsWithoutANewRef
 {
     SubdivRender render(std::string("#usda 1.0\n") + cubeAt("Cube", ""));
 
+    render.setSetting(kUtilitySettingSubdivLevel, 2);
     render.render();
     const UtilitySubdivRefinement::Stats before = UtilitySubdivRefinement::stats();
     const std::size_t topologyBuilds = render.stat(kUtilityStatTopologyBuilds);
@@ -838,6 +1112,7 @@ TEST(NatronUtilitySubdivRender, TopologyOpenSubdivRejectsRendersTheCageAndWarns)
 {
     SubdivRender render(std::string("#usda 1.0\n") + cubeAt("Cube", "    uniform token subdivisionScheme = \"loop\"\n"));
 
+    render.setSetting(kUtilitySettingSubdivLevel, 2);
     render.render();
     EXPECT_EQ(cubeTriangles(0), render.stat(kUtilityStatTriangleCount));
     EXPECT_NE(std::string::npos, render.warning().find("/Cube")) << render.warning();
@@ -879,6 +1154,126 @@ TEST(NatronUtilitySubdivRender, ACatmullClarkSphereCageMatchesTheSphereSilhouett
     EXPECT_LT(worst, 0.5);
 }
 
+// Limit normals carry the lighting smoothly across the level-1 facets of a coarse sphere cage, while
+// the bilinear cage, which has none, shades each facet flat and steps at its edges.
+TEST(NatronUtilitySubdivRender, ASubdividedSphereShadesSmoothlyAndTheFlatCageDoesNot)
+{
+    SubdivRender render(std::string("#usda 1.0\n") + kLitWhite, kShadedSize);
+
+    defineSphereCage(render.stage, 8., 8, 6);
+    bindWhite(render.stage, "/Sphere");
+    render.setSetting(kUtilitySettingPixelSamples, 1);
+    render.setSetting(kUtilitySettingSubdivLevel, 1);
+    render.render();
+
+    const float smooth = largestStep(render.pixels(), 0.5);
+
+    EXPECT_GT(render.colorAt(kShadedSize / 2, kShadedSize / 2)[0], 0.9f);
+    EXPECT_LT(smooth, 0.1f);
+
+    UsdGeomMesh(render.stage->GetPrimAtPath(SdfPath("/Sphere"))).GetSubdivisionSchemeAttr().Set(UsdGeomTokens->bilinear);
+    render.render();
+
+    const float flat = largestStep(render.pixels(), 0.5);
+
+    EXPECT_GT(flat, 0.15f);
+    EXPECT_GT(flat, 2.f * smooth);
+}
+
+// Authored corner normals shade the cage itself: the face toward the camera is brightest at its
+// centre and falls off smoothly toward its corners, with or without a subdivision scheme.
+TEST(NatronUtilitySubdivRender, AuthoredCornerNormalsShadeTheCageSmoothlyAtLevelZero)
+{
+    for (const char* scheme : { "catmullClark", "none" }) {
+        SubdivRender render(cornerNormalCube(scheme), kShadedSize);
+
+        render.setSetting(kUtilitySettingPixelSamples, 1);
+        render.render();
+        ASSERT_EQ(12u, render.stat(kUtilityStatTriangleCount)) << scheme;
+
+        const float centre = render.colorAt(kShadedSize / 2, kShadedSize / 2)[0];
+        const float nearCorner = render.colorAt(kShadedSize / 2 + 20, kShadedSize / 2 + 20)[0];
+
+        EXPECT_GT(centre, 0.95f) << scheme;
+        EXPECT_LT(nearCorner, centre - 0.2f) << scheme;
+        EXPECT_LT(largestStep(render.pixels(), 1.), 0.08f) << scheme;
+    }
+}
+
+#ifdef NATRON_HAVE_GPU
+TEST(NatronUtilitySubdivRender, GpuShadesTheSubdividedSphereAsTheCpuDoes)
+{
+    SubdivGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    SubdivRender render(std::string("#usda 1.0\n") + kLitWhite, kShadedSize);
+
+    defineSphereCage(render.stage, 8., 8, 6);
+    bindWhite(render.stage, "/Sphere");
+    render.setSetting(kUtilitySettingPixelSamples, 1);
+    render.setSetting(kUtilitySettingSubdivLevel, 1);
+    render.setDevice(kUtilityDeviceCpu);
+    render.render();
+    EXPECT_EQ("CPU", render.device());
+
+    const std::vector<GfVec4f> cpu = render.pixels();
+
+    render.setDevice(kUtilityDeviceGpu);
+    render.render();
+    EXPECT_EQ(0u, render.device().rfind("GPU", 0)) << render.device();
+    EXPECT_EQ(std::string(), render.warning());
+
+    const std::vector<GfVec4f> gpu = render.pixels();
+
+    EXPECT_LT(largestStep(gpu, 0.5), 0.1f);
+    for (std::size_t i = 0; i < cpu.size(); ++i) {
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(cpu[i][c], gpu[i][c], 1e-4f) << "pixel " << i % kShadedSize << ", " << i / kShadedSize;
+        }
+    }
+}
+
+TEST(NatronUtilitySubdivRender, GpuShadesAuthoredCornerNormalsAsTheCpuDoes)
+{
+    SubdivGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    SubdivRender render(cornerNormalCube("none"), kShadedSize);
+
+    render.setSetting(kUtilitySettingPixelSamples, 1);
+    render.setDevice(kUtilityDeviceCpu);
+    render.render();
+
+    const std::vector<GfVec4f> cpu = render.pixels();
+
+    render.setDevice(kUtilityDeviceGpu);
+    render.render();
+    EXPECT_EQ(0u, render.device().rfind("GPU", 0)) << render.device();
+
+    const std::vector<GfVec4f> gpu = render.pixels();
+
+    for (std::size_t i = 0; i < cpu.size(); ++i) {
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(cpu[i][c], gpu[i][c], 1e-4f) << "pixel " << i % kShadedSize << ", " << i / kShadedSize;
+        }
+    }
+}
+#endif // NATRON_HAVE_GPU
+
 // The grid refines for seconds: a stop well into it must end the render within the bound, cache
 // nothing, and leave the mesh to refine in full once the delegate restarts.
 TEST(NatronUtilitySubdivRender, AStopDuringARefinementReturnsWithinTheBoundAndCachesNothing)
@@ -888,6 +1283,7 @@ TEST(NatronUtilitySubdivRender, AStopDuringARefinementReturnsWithinTheBoundAndCa
     const int level = 4;
     const std::chrono::milliseconds stopAfter(100);
     const std::chrono::milliseconds bound(500);
+    const CacheBudget roomy(kRoomyCacheBudget);
 
     UtilitySubdivRefinement::clearCache();
 

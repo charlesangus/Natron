@@ -76,6 +76,8 @@ public:
     struct PointMotion {
         std::vector<double> times;
         std::vector<PXR_NS::VtVec3fArray> points; // one per time, each as many as the geometry's points
+        // Empty, or one per time, each as many as the geometry's normals; they move with the points.
+        std::vector<PXR_NS::VtVec3fArray> normals;
     };
 
     struct TransformMotion {
@@ -88,8 +90,9 @@ public:
         int primId = -1;
         PXR_NS::VtVec3fArray points;
         PXR_NS::VtVec3iArray triangles;
-        // One unit normal per point, or none for faceted shading.
+        // The shading normals, bound like the colours; none for faceted shading.
         PXR_NS::VtVec3fArray normals;
+        ColorBinding normalBinding = eColorBindingVertex;
         // Straight RGBA: displayColor with displayOpacity in alpha.
         PXR_NS::VtVec4fArray colors;
         ColorBinding colorBinding = eColorBindingConstant;
@@ -111,6 +114,7 @@ public:
         std::uint64_t pointsVersion = 0;
         std::uint64_t colorVersion = 0;
         std::uint64_t stVersion = 0;
+        std::uint64_t normalsVersion = 0;
         // Null for a geometry that does not deform within the shutter; points are at the frame.
         std::shared_ptr<const PointMotion> pointMotion;
     };
@@ -163,6 +167,7 @@ public:
     void setPoints(GeometryId id,
                    const PXR_NS::VtVec3fArray& points);
     void setNormals(GeometryId id,
+                    ColorBinding binding,
                     const PXR_NS::VtVec3fArray& normals);
     // Replaces the geometry's warning; empty clears it.
     void setWarning(GeometryId id,
@@ -226,10 +231,10 @@ public:
 
     /**
      * @brief The snapshot as it stands at time, relative to the frame: each moving instance's
-     * transform and each deforming geometry's points interpolated between their samples, held at
-     * the first or last outside them, and none of it moving. Its version, and each deforming
-     * geometry's pointsVersion, differ from every scene snapshot's, so a tracer handed it refits
-     * what deforms and moves what moves.
+     * transform and each deforming geometry's points and normals interpolated between their
+     * samples, held at the first or last outside them, and none of it moving. Its version, and each
+     * deforming geometry's pointsVersion and normalsVersion, differ from every scene snapshot's, so a
+     * tracer handed it refits what deforms and moves what moves.
      **/
     static Snapshot evaluateAt(const Snapshot& snapshot,
                                double time);

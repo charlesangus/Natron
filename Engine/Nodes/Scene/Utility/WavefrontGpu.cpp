@@ -132,10 +132,10 @@ static_assert(sizeof(KernelRayGenParams) == utility_raygen_push_bytes);
 static_assert(sizeof(KernelShadeParams) == utility_shade_surface_push_bytes);
 static_assert(sizeof(KernelShadeLightsParams) == utility_shade_lights_push_bytes);
 static_assert(sizeof(KernelResolveParams) == utility_resolve_hits_push_bytes);
-static_assert(utility_raygen_storage_buffers == 2 && utility_shade_surface_storage_buffers == 25 && utility_shade_lights_storage_buffers == 3);
+static_assert(utility_raygen_storage_buffers == 2 && utility_shade_surface_storage_buffers == 26 && utility_shade_lights_storage_buffers == 3);
 static_assert(utility_resolve_hits_storage_buffers == 20);
 static_assert(sizeof(KernelLightRecord) == 144);
-static_assert(sizeof(KernelGeometryRecord) == 32);
+static_assert(sizeof(KernelGeometryRecord) == 40);
 static_assert(sizeof(KernelMaterialRecord) == 144 && sizeof(KernelTextureBinding) == 112 && sizeof(KernelProjectionRecord) == 256);
 
 const std::size_t kRayArrays = kUtilityRayArrays;
@@ -221,6 +221,7 @@ struct ShadeTableBuffers {
     gpu::GpuBufferHandle points;
     gpu::GpuBufferHandle instanceTransforms;
     gpu::GpuBufferHandle sts;
+    gpu::GpuBufferHandle normals;
     gpu::GpuBufferHandle lights;
     gpu::GpuBufferHandle lightData;
     gpu::GpuBufferHandle linkMasks;
@@ -572,6 +573,7 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
         || !upload(*ctx, source.points, source.pointCount * 4 * sizeof(float), "points", next.points)
         || !upload(*ctx, source.instanceTransforms, source.instanceTransformRowCount * 4 * sizeof(float), "instance transforms", next.instanceTransforms)
         || !upload(*ctx, source.sts, source.stCount * 2 * sizeof(float), "texture coordinates", next.sts)
+        || !upload(*ctx, source.normals, source.normalCount * 4 * sizeof(float), "normals", next.normals)
         || !upload(*ctx, source.lights, source.lightCount * sizeof(KernelLightRecord), "light records", next.lights)
         || !upload(*ctx, source.lightData, source.lightDataCount * sizeof(float), "light tables", next.lightData)
         || !upload(*ctx, source.linkMasks, source.linkMaskCount * sizeof(std::uint32_t), "light-link masks", next.linkMasks)) {
@@ -915,7 +917,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     shadeParams.pixels[1] = static_cast<std::uint32_t>(rect.y);
     shadeParams.pixels[2] = static_cast<std::uint32_t>(rect.width);
 
-    const std::array<gpu::GpuBinding, 25> shadeBindings = {
+    const std::array<gpu::GpuBinding, 26> shadeBindings = {
         gpu::GpuBinding::storage(0, *rays),
         gpu::GpuBinding::storage(1, *hitValues),
         gpu::GpuBinding::storage(2, *hitIds),
@@ -941,6 +943,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         gpu::GpuBinding::storage(22, *shadowRays),
         gpu::GpuBinding::storage(23, *contributions),
         gpu::GpuBinding::storage(24, *shadowLights),
+        gpu::GpuBinding::storage(25, tables.normals.buffer()),
     };
     const std::array<gpu::GpuBinding, 3> lightsBindings = {
         gpu::GpuBinding::storage(0, *color),

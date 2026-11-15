@@ -71,7 +71,9 @@ private:
     bool pullPoints(PXR_NS::HdSceneDelegate* sceneDelegate,
                     PXR_NS::HdDirtyBits dirtyBits);
     std::shared_ptr<UtilityScene::PointMotion> samplePointMotion(PXR_NS::HdSceneDelegate* sceneDelegate);
-    bool filterTriangles();
+    // False when stopped; *changed tells whether the surviving list differs from the last one.
+    bool filterTriangles(const UtilitySubdivRefinement::StopCheck& stopped,
+                         bool* changed);
     int subdivLevel(PXR_NS::HdSceneDelegate* sceneDelegate) const;
     // Stopped leaves the mesh without a refinement, for its sync to be run again.
     enum class SubdivSync {
@@ -85,15 +87,21 @@ private:
                                   bool topologyChanged,
                                   const UtilitySubdivRefinement::StopCheck& stopped);
     const PXR_NS::VtVec3fArray& scenePoints() const;
-    void syncColors(PXR_NS::HdSceneDelegate* sceneDelegate,
-                    UtilityScene* scene);
+    // These three return false when stopped, having changed nothing in the scene.
+    bool syncColors(PXR_NS::HdSceneDelegate* sceneDelegate,
+                    UtilityScene* scene,
+                    const UtilitySubdivRefinement::StopCheck& stopped);
+    bool syncNormals(PXR_NS::HdSceneDelegate* sceneDelegate,
+                     UtilityScene* scene,
+                     const UtilitySubdivRefinement::StopCheck& stopped);
     void syncInstances(PXR_NS::HdSceneDelegate* sceneDelegate,
                        UtilityScene* scene);
     // The primvar the bound material reads its texture coordinates from.
     PXR_NS::TfToken stPrimvarName(PXR_NS::HdSceneDelegate* sceneDelegate) const;
     // The texture coordinates of that primvar.
-    void syncMaterial(PXR_NS::HdSceneDelegate* sceneDelegate,
-                      UtilityScene* scene);
+    bool syncMaterial(PXR_NS::HdSceneDelegate* sceneDelegate,
+                      UtilityScene* scene,
+                      const UtilitySubdivRefinement::StopCheck& stopped);
 
     UtilityScene::GeometryId _geometry = 0;
     PXR_NS::GfMatrix4d _transform = PXR_NS::GfMatrix4d(1.);
@@ -114,7 +122,10 @@ private:
     int _subdivLevel = -1;
     PXR_NS::TfTokenVector _faceVaryingNames;
     std::vector<PXR_NS::VtIntArray> _faceVaryingIndices;
+    // The primvars _subdiv carries a channel for: _faceVaryingNames, or none when it was refined without them.
+    PXR_NS::TfTokenVector _channelNames;
     PXR_NS::VtVec3fArray _refinedPoints;
+    // The limit normals of _refinedPoints, empty without a smooth refinement.
     PXR_NS::VtVec3fArray _normals;
 };
 

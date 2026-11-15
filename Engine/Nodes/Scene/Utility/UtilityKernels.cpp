@@ -72,6 +72,7 @@ struct ShadeSurfaceGlobals {
     KernelBuffer shadowRays;
     KernelBuffer shadowContributions;
     KernelBuffer shadowLights;
+    KernelBuffer normals;
     const NATRON_NAMESPACE::KernelShadeParams* params;
 };
 
@@ -183,6 +184,7 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
         { buffers.shadowRays, shadowCount * 8 },
         { buffers.shadowContributions, shadowCount },
         { buffers.shadowLights, shadowCount },
+        { buffers.normals, buffers.normalCount },
         &params,
     };
 

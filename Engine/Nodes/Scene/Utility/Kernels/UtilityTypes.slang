@@ -35,8 +35,11 @@ public static const uint kColorNoDisplayOpacity = 0x200u;
 
 // A geometry without texture coordinates.
 public static const uint kStBindingNone = 0xffffffffu;
+// A geometry without shading normals, shaded faceted.
+public static const uint kNormalBindingNone = 0xffffffffu;
 
-// KernelGeometryRecord in UtilityKernels.h mirrors this. stBinding is a colour binding or kStBindingNone.
+// KernelGeometryRecord in UtilityKernels.h mirrors this. stBinding is a colour binding or kStBindingNone,
+// normalBinding one or kNormalBindingNone.
 public struct GeometryRecord
 {
     public uint colorOffset;
@@ -47,6 +50,8 @@ public struct GeometryRecord
     public uint stOffset;
     public uint stBinding;
     public uint pointOffset;
+    public uint normalOffset;
+    public uint normalBinding;
 };
 
 // UtilityMaterialDesc::Kind

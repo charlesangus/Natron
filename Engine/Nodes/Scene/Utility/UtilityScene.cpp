@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <set>
 
 #include <pxr/base/gf/matrix3d.h>
@@ -166,6 +167,7 @@ UtilityScene::setPoints(GeometryId id,
 
 void
 UtilityScene::setNormals(GeometryId id,
+                         ColorBinding binding,
                          const VtVec3fArray& normals)
 {
     std::lock_guard<std::mutex> l(_mutex);
@@ -174,10 +176,17 @@ UtilityScene::setNormals(GeometryId id,
     if (!TF_VERIFY(it != _records.end())) {
         return;
     }
-    if (it->second.geometry.normals.empty() && normals.empty()) {
+    Geometry& geometry = it->second.geometry;
+
+    if (geometry.normals.empty() && normals.empty()) {
         return;
     }
-    it->second.geometry.normals = normals;
+    if (geometry.normalBinding == binding && geometry.normals == normals) {
+        return;
+    }
+    geometry.normalBinding = binding;
+    geometry.normals = normals;
+    ++geometry.normalsVersion;
     ++_version;
 }
 
@@ -600,6 +609,27 @@ UtilityScene::evaluateAt(const Snapshot& snapshot,
         }
         geometry.points = points;
         geometry.pointsVersion = out.version;
+        if (motion.normals.size() != motion.times.size() || geometry.normalBinding != eColorBindingVertex) {
+            continue;
+        }
+
+        const VtVec3fArray& na = motion.normals[index];
+        const VtVec3fArray& nb = motion.normals[std::min(index + 1, motion.normals.size() - 1)];
+
+        if (na.size() != geometry.normals.size() || nb.size() != geometry.normals.size()) {
+            continue;
+        }
+        VtVec3fArray normals(na.size());
+        GfVec3f* blended = normals.data();
+
+        for (std::size_t i = 0; i < na.size(); ++i) {
+            const GfVec3f n = na.cdata()[i] + (nb.cdata()[i] - na.cdata()[i]) * weight;
+            const float length = n.GetLength();
+
+            blended[i] = length > 0.f && std::isfinite(length) ? n / length : GfVec3f(0.f);
+        }
+        geometry.normals = normals;
+        geometry.normalsVersion = out.version;
     }
     for (Instance& instance : out.instances) {
         if (!instance.motion) {

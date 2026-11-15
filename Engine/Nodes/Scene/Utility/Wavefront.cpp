@@ -644,7 +644,7 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
     for (const auto& entry : snapshot.geometries) {
         const UtilityScene::Geometry& geometry = entry.second;
 
-        sources.push_back(SourceVersion { entry.first, geometry.colorVersion, geometry.topologyVersion, geometry.pointsVersion, geometry.stVersion, geometry.points.size() });
+        sources.push_back(SourceVersion { entry.first, geometry.colorVersion, geometry.topologyVersion, geometry.pointsVersion, geometry.stVersion, geometry.normalsVersion, geometry.points.size() });
     }
 
     const bool recopy = !_synced || sources != _sources;
@@ -656,6 +656,7 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
         std::size_t triangleTotal = 0;
         std::size_t pointTotal = 0;
         std::size_t stTotal = 0;
+        std::size_t normalTotal = 0;
 
         for (const auto& entry : snapshot.geometries) {
             const UtilityScene::Geometry& geometry = entry.second;
@@ -664,15 +665,18 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
             triangleTotal += geometry.triangles.size() * 3;
             pointTotal += geometry.points.size();
             stTotal += geometry.st.size();
+            normalTotal += geometry.normals.size();
         }
         _colors.clear();
         _triangles.clear();
         _points.clear();
         _sts.clear();
+        _normals.clear();
         _colors.reserve(colorTotal);
         _triangles.reserve(triangleTotal);
         _points.reserve(pointTotal);
         _sts.reserve(stTotal);
+        _normals.reserve(normalTotal);
     }
     _geometries.clear();
     _geometries.reserve(snapshot.geometries.size());
@@ -681,6 +685,7 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
     std::uint32_t triangleOffset = 0;
     std::uint32_t pointOffset = 0;
     std::uint32_t stOffset = 0;
+    std::uint32_t normalOffset = 0;
 
     for (const auto& entry : snapshot.geometries) {
         if (stop && stop->load(std::memory_order_relaxed)) {
@@ -692,6 +697,8 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
         const bool stFits = geometry.hasSt && valuesFitBinding(geometry.stBinding, geometry.st.size(), geometry.triangles);
         const std::uint32_t colorCount = fits ? static_cast<std::uint32_t>(geometry.colors.size()) : 1;
         const std::uint32_t stCount = stFits ? static_cast<std::uint32_t>(geometry.st.size()) : 0;
+        const bool normalsFit = !geometry.normals.empty() && valuesFitBinding(geometry.normalBinding, geometry.normals.size(), geometry.triangles);
+        const std::uint32_t normalCount = normalsFit ? static_cast<std::uint32_t>(geometry.normals.size()) : 0;
         const std::uint32_t triangleCount = static_cast<std::uint32_t>(geometry.triangles.size());
         const std::uint32_t pointCount = static_cast<std::uint32_t>(geometry.points.size());
         const auto material = geometry.materialId.IsEmpty() ? _materialIndices.end() : _materialIndices.find(geometry.materialId);
@@ -706,6 +713,8 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
             stOffset,
             stFits ? static_cast<std::uint32_t>(geometry.stBinding) : kKernelStBindingNone,
             pointOffset,
+            normalOffset,
+            normalsFit ? static_cast<std::uint32_t>(geometry.normalBinding) : kKernelNormalBindingNone,
         };
 
         _geometries.push_back(record);
@@ -745,11 +754,26 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
             if (stFits) {
                 _sts.insert(_sts.end(), geometry.st.cbegin(), geometry.st.cend());
             }
+
+            const GfVec3f* normals = normalsFit ? geometry.normals.cdata() : nullptr;
+
+            for (std::size_t first = 0; first < normalCount; first += kCopyChunk) {
+                if (stop && stop->load(std::memory_order_relaxed)) {
+                    return false;
+                }
+
+                const std::size_t last = std::min<std::size_t>(first + kCopyChunk, normalCount);
+
+                for (std::size_t n = first; n < last; ++n) {
+                    _normals.push_back(GfVec4f(normals[n][0], normals[n][1], normals[n][2], 0.f));
+                }
+            }
         }
         colorOffset += colorCount;
         triangleOffset += triangleCount * 3;
         pointOffset += pointCount;
         stOffset += stCount;
+        normalOffset += normalCount;
     }
 
     _instanceIds.clear();
@@ -821,6 +845,8 @@ WavefrontShadeTables::buffers() const
     buffers.instanceTransformRowCount = _instanceTransforms.size();
     buffers.sts = reinterpret_cast<const float*>(_sts.data());
     buffers.stCount = _sts.size();
+    buffers.normals = reinterpret_cast<const float*>(_normals.data());
+    buffers.normalCount = _normals.size();
     buffers.lights = _lights.data();
     buffers.lightCount = _lights.size();
     buffers.lightData = _lightData.data();

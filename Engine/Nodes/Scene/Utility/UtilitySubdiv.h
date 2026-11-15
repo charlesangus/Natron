@@ -55,7 +55,7 @@ NATRON_NAMESPACE_ENTER
  **/
 class UtilitySubdivRefinement {
 public:
-    static const int kDefaultLevel = 2;
+    static const int kDefaultLevel = 0;
     static const int kMaxLevel = 6;
     static const std::size_t kDefaultMaxTriangles = 50000000;
 
@@ -66,6 +66,8 @@ public:
         std::size_t evaluations = 0;
         std::size_t cachedEntries = 0;
         std::size_t cachedBytes = 0;
+        // Shared refinements still held for callers that may join them.
+        std::size_t buildingJobs = 0;
     };
 
     // Polled while refining or evaluating, from any thread: true asks the work to end. Must be MT-safe.
@@ -104,6 +106,9 @@ public:
                                                               Outcome* outcome,
                                                               std::string* error);
 
+    // Whether indices gives a face-varying channel a value for every face-vertex of topology.
+    static bool faceVaryingChannelFits(const PXR_NS::PxOsdMeshTopology& topology,
+                                       const PXR_NS::VtIntArray& indices);
     // Triangles uniform refinement to level gives, holes excluded, without refining.
     static std::size_t estimateTriangles(const PXR_NS::PxOsdMeshTopology& topology,
                                          int level);

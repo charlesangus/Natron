@@ -50,6 +50,8 @@ struct ShadeParams
 // What each shadow ray's light adds to its pixel when the ray is not blocked, premultiplied.
 [[vk::binding(23, 0)]] RWStructuredBuffer<float4> shadowContributions;
 [[vk::binding(24, 0)]] RWStructuredBuffer<uint> shadowLights;
+// GeometryRecord::normalBinding indexes these; w is unused.
+[[vk::binding(25, 0)]] StructuredBuffer<float4> normals;
 [[vk::push_constant]] ConstantBuffer<ShadeParams> params;
 
 static const float4 kUnsupportedColor = float4(1.0, 0.0, 1.0, 1.0);
@@ -287,11 +289,11 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
         }
 
         const float3 geometric = dot(outward, direction) > 0.0 ? -outward : outward;
-        float3 normal = geometric;
+        const float3 smooth = shadingNormal(surfaceNormal(normals, triangles, geometry, primitive, u, v),
+                                            instanceTransforms[row + 4], instanceTransforms[row + 5], instanceTransforms[row + 6], geometric);
         const float3 normalConstant = float3(material.diffuseColor.w, material.emissiveColor.w, material.coverage.w);
         const float3 tangentNormal = colorInput(material, kSlotNormal, normalConstant, hasSt, st, footprint);
-
-        normal = applyNormalMap(geometric, tangentNormal, p1 - p0, p2 - p0, st1 - st0, st2 - st0);
+        const float3 normal = applyNormalMap(smooth, tangentNormal, p1 - p0, p2 - p0, st1 - st0, st2 - st0);
 
         PreviewSurfaceSample surface;
         surface.diffuseColor = colorInput(material, kSlotDiffuseColor, diffuseConstant, hasSt, st, footprint);

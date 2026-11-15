@@ -100,8 +100,50 @@ stencilBytes(const Far::StencilTable* table)
         return 0;
     }
 
-    return table->GetSizes().size() * sizeof(int) + table->GetOffsets().size() * sizeof(Far::Index)
-        + table->GetControlIndices().size() * sizeof(Far::Index) + table->GetWeights().size() * sizeof(float);
+    return sizeof(Far::StencilTable) + table->GetSizes().capacity() * sizeof(int) + table->GetOffsets().capacity() * sizeof(Far::Index)
+        + table->GetControlIndices().capacity() * sizeof(Far::Index) + table->GetWeights().capacity() * sizeof(float);
+}
+
+template <class T>
+std::size_t
+arrayBytes(const VtArray<T>& array)
+{
+    return array.capacity() * sizeof(T);
+}
+
+std::size_t
+topologyBytes(const PxOsdMeshTopology& topology)
+{
+    const PxOsdSubdivTags& tags = topology.GetSubdivTags();
+
+    return arrayBytes(topology.GetFaceVertexCounts()) + arrayBytes(topology.GetFaceVertexIndices()) + arrayBytes(topology.GetHoleIndices())
+        + arrayBytes(tags.GetCreaseIndices()) + arrayBytes(tags.GetCreaseLengths()) + arrayBytes(tags.GetCreaseWeights())
+        + arrayBytes(tags.GetCornerIndices()) + arrayBytes(tags.GetCornerWeights());
+}
+
+// OpenSubdiv does not report its storage, so this over-counts what its levels hold: every face, edge
+// and vertex relation with its counts, offsets, local indices, sharpness and tags, the maps between
+// one level and the next, and each face-varying channel's values.
+std::size_t
+refinerBytes(const Far::TopologyRefiner& refiner)
+{
+    std::size_t indices = 0;
+
+    for (int l = 0; l <= refiner.GetMaxLevel(); ++l) {
+        const Far::TopologyLevel& level = refiner.GetLevel(l);
+        const std::size_t faces = static_cast<std::size_t>(level.GetNumFaces());
+        const std::size_t edges = static_cast<std::size_t>(level.GetNumEdges());
+        const std::size_t vertices = static_cast<std::size_t>(level.GetNumVertices());
+        const std::size_t faceVertices = static_cast<std::size_t>(level.GetNumFaceVertices());
+
+        indices += 6 * faceVertices + 4 * faces + 10 * edges + 8 * vertices;
+        indices += 4 * (faces + edges + vertices);
+        for (int channel = 0; channel < refiner.GetNumFVarChannels(); ++channel) {
+            indices += 2 * faceVertices + 4 * static_cast<std::size_t>(level.GetNumFVarValues(channel));
+        }
+    }
+
+    return sizeof(Far::TopologyRefiner) + indices * sizeof(Far::Index);
 }
 
 typedef UtilitySubdivRefinement::StopCheck StopCheck;
@@ -401,7 +443,7 @@ struct Cache {
 
     void evict()
     {
-        while (bytes > budget && entries.size() > 1) {
+        while (bytes > budget && !entries.empty()) {
             const CacheEntry& last = entries.back();
             auto range = byKey.equal_range(last.key);
 
@@ -471,10 +513,8 @@ prepare(const PxOsdMeshTopology& topology,
 
         return nullptr;
     }
-    const std::size_t faceVertexCount = topology.GetFaceVertexIndices().size();
-
     for (const VtIntArray& indices : faceVaryingIndices) {
-        if (indices.size() != faceVertexCount || std::any_of(indices.begin(), indices.end(), [](int i) { return i < 0; })) {
+        if (!UtilitySubdivRefinement::faceVaryingChannelFits(topology, indices)) {
             *error = "a face-varying channel does not index every face-vertex";
 
             return nullptr;
@@ -492,6 +532,28 @@ prepare(const PxOsdMeshTopology& topology,
     }
 
     return imp;
+}
+
+std::size_t
+ownedBytes(const UtilitySubdivRefinement::Impl& imp)
+{
+    std::size_t bytes = sizeof(UtilitySubdivRefinement) + sizeof(UtilitySubdivRefinement::Impl) + topologyBytes(imp.topology)
+        + imp.faceVaryingIndices.capacity() * sizeof(VtIntArray) + imp.coarseFaceVaryingCounts.capacity() * sizeof(std::size_t)
+        + (imp.refiner ? refinerBytes(*imp.refiner) : 0) + stencilBytes(imp.vertex.get()) + stencilBytes(imp.varying.get())
+        + imp.faceVarying.capacity() * sizeof(void*) + arrayBytes(imp.triangles) + arrayBytes(imp.coarseFaces)
+        + imp.faceVaryingTriangles.capacity() * sizeof(VtVec3iArray);
+
+    for (const VtIntArray& indices : imp.faceVaryingIndices) {
+        bytes += arrayBytes(indices);
+    }
+    for (const std::unique_ptr<const Far::StencilTable>& table : imp.faceVarying) {
+        bytes += stencilBytes(table.get());
+    }
+    for (const VtVec3iArray& corners : imp.faceVaryingTriangles) {
+        bytes += arrayBytes(corners);
+    }
+
+    return bytes;
 }
 
 // Fills what prepare() left of imp, checking halt between OpenSubdiv's calls and through the loops.
@@ -606,13 +668,7 @@ refineInto(UtilitySubdivRefinement::Impl* imp,
         imp->faceVaryingTriangles.emplace_back(values.begin(), values.end());
     }
 
-    imp->bytes = stencilBytes(imp->vertex.get()) + stencilBytes(imp->varying.get())
-        + imp->triangles.size() * (sizeof(GfVec3i) * (1 + channels) + sizeof(int))
-        // The refiner's own levels: a rough count of its per-vertex and per-face records.
-        + static_cast<std::size_t>(last.GetNumVertices() + last.GetNumFaces()) * 64;
-    for (const std::unique_ptr<const Far::StencilTable>& table : imp->faceVarying) {
-        imp->bytes += stencilBytes(table.get());
-    }
+    imp->bytes = ownedBytes(*imp);
 
     return halt() ? Outcome::Stopped : Outcome::Done;
 }
@@ -716,6 +772,9 @@ UtilitySubdivRefinement::get(const PxOsdMeshTopology& topology,
         if (UtilitySubdivRefinementPtr found = find()) {
             return found;
         }
+        if (made->memoryBytes() > c.budget) {
+            return made;
+        }
         c.entries.push_front(CacheEntry { key, made });
         c.byKey.emplace(key, c.entries.begin());
         c.bytes += made->memoryBytes();
@@ -806,7 +865,17 @@ UtilitySubdivRefinement::get(const PxOsdMeshTopology& topology,
         }
         if (started) {
             try {
-                std::thread([job]() { runJob(job, [job]() { return job->waiters.load() == 0; }); }).detach();
+                std::thread([job]() {
+                    runJob(job, [job]() { return job->waiters.load() == 0; });
+
+                    // Callers join under the cache's mutex, so none can arrive once it is held and none waits.
+                    Cache& building = cache();
+                    const std::lock_guard<std::mutex> l(building.mutex);
+
+                    if (job->waiters.load() == 0) {
+                        building.building.remove(job);
+                    }
+                }).detach();
             } catch (const std::system_error&) {
                 runJob(job, stopped ? stopped : StopCheck(never));
             }
@@ -852,6 +921,13 @@ UtilitySubdivRefinement::get(const PxOsdMeshTopology& topology,
 
         return job->made;
     }
+}
+
+bool
+UtilitySubdivRefinement::faceVaryingChannelFits(const PxOsdMeshTopology& topology,
+                                                const VtIntArray& indices)
+{
+    return indices.size() == topology.GetFaceVertexIndices().size() && std::none_of(indices.begin(), indices.end(), [](int i) { return i < 0; });
 }
 
 std::size_t
@@ -909,6 +985,7 @@ UtilitySubdivRefinement::stats()
 
     stats.cachedEntries = c.entries.size();
     stats.cachedBytes = c.bytes;
+    stats.buildingJobs = c.building.size();
 
     return stats;
 }

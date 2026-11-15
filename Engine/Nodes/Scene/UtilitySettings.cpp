@@ -26,6 +26,7 @@
 #include "UtilitySettings.h"
 
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -153,6 +154,30 @@ make()
     segments.minimum = 1;
     segments.displayMaximum = 16;
     c.settings.push_back(segments);
+
+    RenderSettingsKnobs::CuratedSetting subdivLevel;
+
+    subdivLevel.key = kUtilitySettingSubdivLevel;
+    subdivLevel.name = "subdivLevel";
+    subdivLevel.tooltip = "How many times subdivision-surface meshes are refined before they render. 0, the default, renders each mesh's cage as authored. Each level splits every face into four and shades with the limit surface's smooth normals. A mesh's natron:subdivLevel primvar overrides this, and so does the viewer's refine level when it is above 0. Meshes with the subdivision scheme none are never refined.";
+    subdivLevel.defaultValue = VtValue(int(UtilitySubdivRefinement::kDefaultLevel));
+    subdivLevel.hasRange = true;
+    subdivLevel.minimum = 0;
+    subdivLevel.displayMaximum = UtilitySubdivRefinement::kMaxLevel;
+    subdivLevel.maximum = UtilitySubdivRefinement::kMaxLevel;
+    subdivLevel.hasMaximum = true;
+    c.settings.push_back(subdivLevel);
+
+    RenderSettingsKnobs::CuratedSetting maxSubdivTriangles;
+
+    maxSubdivTriangles.key = kUtilitySettingMaxSubdivTriangles;
+    maxSubdivTriangles.name = "maxSubdivTriangles";
+    maxSubdivTriangles.tooltip = "The most triangles one mesh may refine to. A mesh whose level would exceed this renders at the highest level within it, or as its cage, and the render warns naming it.";
+    maxSubdivTriangles.defaultValue = VtValue(static_cast<int>(UtilitySubdivRefinement::kDefaultMaxTriangles));
+    maxSubdivTriangles.hasRange = true;
+    maxSubdivTriangles.minimum = 0;
+    maxSubdivTriangles.displayMaximum = 200000000;
+    c.settings.push_back(maxSubdivTriangles);
 
     const struct {
         const char* key;

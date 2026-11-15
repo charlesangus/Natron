@@ -284,18 +284,32 @@ try:
         row = bottom + height / 2.0 + 0.5
         edge = (left, row)
         inside = (left + width // 2, row)
+        # Well clear of the dashed region outline: left, right, above and diagonally below-left of the region.
+        past = [(left - 30.5, row), (left + width + 40.5, row), (left + width // 2 + 0.5, bottom + height + 20.5),
+                (left - 30.5, bottom - 30.5)]
 
         def pixels_for(mode):
-            def ok():
+            stretch = mode == "stretch"
+
+            def first_column_ok():
                 e, i = brightest_red_in_pixel(*edge), brightest_red_in_pixel(*inside)
                 if e is None or i is None or i <= BRIGHT_MIN:
                     return False
-                return (abs(i - e) <= EDGE_MATCH_MAX) if mode == "stretch" else (i - e >= EDGE_DIMMING_MIN)
+                return (abs(i - e) <= EDGE_MATCH_MAX) if stretch else (i - e >= EDGE_DIMMING_MIN)
+
+            def past_ok():
+                test = is_red if stretch else is_dark
+                return all(test(sample(x, y)) for x, y in past)
+
+            def ok():
+                return first_column_ok() and past_ok()
 
             def describe():
-                return ("the first column is %s (edge red %r, inside red %r, edge %r)"
-                        % ("as bright as the inside" if mode == "stretch" else "dimmed by the black outside",
-                           brightest_red_in_pixel(*edge), brightest_red_in_pixel(*inside), sample(left + 0.5, row)))
+                return ("the first column is %s (edge red %r, inside red %r, edge %r), and past the region the "
+                        "viewer shows %s (%r)"
+                        % ("as bright as the inside" if stretch else "dimmed by the black outside",
+                           brightest_red_in_pixel(*edge), brightest_red_in_pixel(*inside), sample(left + 0.5, row),
+                           "the edge repeated, red" if stretch else "black", [sample(x, y) for x, y in past]))
 
             return ok, describe
 

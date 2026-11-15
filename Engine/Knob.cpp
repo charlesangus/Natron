@@ -1925,14 +1925,20 @@ KnobHelper::clearExpressionsResultsIfNeeded(std::map<int, ValueChangedReasonEnum
 void
 KnobHelper::cloneInternalCurvesIfNeeded(std::map<int, ValueChangedReasonEnum>& modifiedDimensions)
 {
-    QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
-
-    for (int i = 0; i < getDimension(); ++i) {
-        if (_imp->mustCloneInternalCurves[i]) {
-            guiCurveCloneInternalCurve(eCurveChangeReasonInternal, ViewIdx(0), i, eValueChangedReasonNatronInternalEdited);
-            _imp->mustCloneInternalCurves[i] = false;
-            modifiedDimensions.insert( std::make_pair(i, eValueChangedReasonNatronInternalEdited) );
+    std::vector<int> dimensions;
+    {
+        QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
+        for (int i = 0; i < getDimension(); ++i) {
+            if (_imp->mustCloneInternalCurves[i]) {
+                _imp->mustCloneInternalCurves[i] = false;
+                dimensions.push_back(i);
+            }
         }
+    }
+    // Unlocked: the clone emits redrawGuiCurve, whose slots may read this knob's clone flags.
+    for (std::vector<int>::const_iterator it = dimensions.begin(); it != dimensions.end(); ++it) {
+        guiCurveCloneInternalCurve(eCurveChangeReasonInternal, ViewIdx(0), *it, eValueChangedReasonNatronInternalEdited);
+        modifiedDimensions.insert(std::make_pair(*it, eValueChangedReasonNatronInternalEdited));
     }
 }
 
@@ -2047,6 +2053,26 @@ KnobHelper::hasGuiCurveChanged(ViewSpec /*view*/,
     QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
 
     return _imp->mustCloneGuiCurves[dimension];
+}
+
+void
+KnobHelper::discardGuiCurveChanges()
+{
+    std::vector<int> dimensions;
+    {
+        QMutexLocker k(&_imp->mustCloneGuiCurvesMutex);
+        for (int i = 0; i < getDimension(); ++i) {
+            if (_imp->mustCloneGuiCurves[i]) {
+                _imp->mustCloneGuiCurves[i] = false;
+                _imp->guiCurveChangedOutsideLink[i] = false;
+                dimensions.push_back(i);
+            }
+        }
+    }
+    // Unlocked: the clone emits redrawGuiCurve, whose slots may read this knob's clone flags.
+    for (std::vector<int>::const_iterator it = dimensions.begin(); it != dimensions.end(); ++it) {
+        guiCurveCloneInternalCurve(eCurveChangeReasonInternal, ViewIdx(0), *it, eValueChangedReasonNatronInternalEdited);
+    }
 }
 
 CurvePtr KnobHelper::getCurve(ViewSpec view,

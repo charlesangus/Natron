@@ -501,6 +501,7 @@ RemoveMultipleNodesCommand::redo()
             }
 
             node->getNode()->deactivate(outputsToRestore, false, _nodes.size() == 1, true, false);
+            node->getNode()->notifyOutputsOfDeletion();
 
             if (_nodes.size() == 1) {
                 /// If we're deleting a single node and there's a viewer in output,reconnect the viewer to another connected input it has

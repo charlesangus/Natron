@@ -813,8 +813,9 @@ protected:
     virtual void onAllPluginsLoaded();
     virtual void clearLastRenderedTextures() {}
 
-    // Has every viewer's scene view destroy its Storm engine and redraw; the GUI does it.
-    virtual void releaseSceneViewEngines() { }
+    // Has every viewer's scene view destroy its Storm engine and redraw, or with keptOnly only the
+    // views on another delegate, which keep their Storm engine for a switch back; the GUI does it.
+    virtual void releaseSceneViewEngines(bool /*keptOnly*/) { }
 
     virtual void initBuiltinPythonModules();
 

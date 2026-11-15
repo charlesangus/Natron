@@ -173,16 +173,17 @@ samplesOf(const VtDictionary& stats,
     return -1;
 }
 
-// The seconds since the delegate's render began, -1 if it reports none.
-double
-clockOf(const VtDictionary& stats)
+// A count the delegate reports, -1 if it reports none.
+std::int64_t
+countOf(const VtDictionary& stats,
+        const char* key)
 {
-    const VtDictionary::const_iterator clock = stats.find("totalClockTime");
-    if ((clock != stats.end()) && clock->second.IsHolding<double>()) {
-        return clock->second.UncheckedGet<double>();
+    const VtDictionary::const_iterator count = stats.find(key);
+    if ((count != stats.end()) && count->second.IsHolding<std::uint64_t>()) {
+        return (std::int64_t)count->second.UncheckedGet<std::uint64_t>();
     }
 
-    return -1.;
+    return -1;
 }
 
 // Whether a layer the stage composes authors time samples, splines or value clips. Read from the
@@ -210,15 +211,16 @@ mayVaryInTime(const UsdStageRefPtr& stage)
 }
 
 /**
- * Whether a delegate whose render restarted has shown since, in its progress, that it began
- * rendering again. Until it does its buffers may hold the pixels of before, and its word that it
- * converged means nothing: Cycles resets its session on its own thread, after the pass that edits
- * it, and marks its buffers converged when a reset cuts a render short.
+ * Whether a delegate whose render restarted has shown since that its buffers hold the new render.
+ * Until they do they may hold the pixels of before, and its word that it converged means nothing:
+ * Cycles resets its session on its own thread, after the pass that edits it, and a render a reset
+ * cuts short may still write its buffers and mark them converged.
  *
- * Cycles' progress shows a restart only while it is under way: a small render can begin and
- * finish between two reads, its sample count back where it was. What does not go back is its
- * clock: it stops when the session has no more work, and starts over when the session takes a
- * reset.
+ * Its progress cannot tell: a small render can begin and finish between two reads, its samples and
+ * clock where they were, and a session woken while it holds its scene, as its cache eviction does,
+ * takes the change the pass synced without a reset, its buffers keeping the render of before.
+ * What tells is the count of resets the session was asked for, and the reset the render that last
+ * wrote its buffers began with: a reset asked for after the pass synced renders that pass's scene.
  **/
 class RestartWatch {
 public:
@@ -226,75 +228,45 @@ public:
     // not rendered has no pixels from before, and a delegate that is not watched is trusted.
     void restart(bool seen)
     {
+        _trusted = seen;
         _seen = seen;
-        _samplesAtRestart = -1;
-        _clockAtRestart = -1.;
+        _converged = seen;
+        _requestsAtRestart = -1;
         _capAtRestart = 0;
         _idleAtRestart = false;
-        _moved = false;
+        _inFlight = false;
         _busy = false;
-        _clockFallen = false;
-        _samplesAtClockFall = -1;
-        _previousClock = -1.;
+        _overCap = false;
     }
 
     // The delegate's progress just before the first pass after the restart.
     void before(const VtDictionary& stats,
                 int cap)
     {
-        _samplesAtRestart = samplesOf(stats, cap);
-        _clockAtRestart = clockOf(stats);
+        _requestsAtRestart = countOf(stats, "resetsRequested");
         _capAtRestart = cap;
         _idleAtRestart = idle(stats);
     }
 
-    // Reads the delegate's progress after a pass; returns seen().
-    bool after(int samples,
-               double clock,
-               bool idleNow)
+    // Reads the delegate's progress after a pass; returns seen(). A later pass may ask for another
+    // reset, which the buffers must then show in turn.
+    bool after(const VtDictionary& stats,
+               int samples)
     {
-        if (_seen) {
+        if (_trusted) {
             return true;
         }
-        if ((_capAtRestart > 0) && (samples > _capAtRestart)) {
-            // More samples than the cap the restart set are the render of before: Cycles applies a
-            // sample count without a reset, waking an idle session only to stop it again, which
-            // moves its clock and status though its buffers still hold the old render.
-            return false;
-        }
-        const bool samplesFell = (samples >= 0) && (_samplesAtRestart >= 0) && (samples < _samplesAtRestart);
-        const bool blind = (samples < 0) && (clock < 0.);
-        if (_idleAtRestart) {
-            // An idle session's clock is not still: its cache eviction wakes it a while after it
-            // finished and stops its clock again later, with no reset. Nor is its status proof of
-            // a reset: a session woken while it holds its scene updates the scene the pass synced
-            // without resetting its buffers, which then keep the render of before, and the pass
-            // finds no reset left to take. Only a reset makes its clock or its samples fall, and
-            // only once it has updated the scene, which it may spend long on: while it is busy it
-            // is taken as restarting. A reset that began and finished unseen, its clock past the
-            // old one, stays unseen and falls back on making the engine again, as does a change
-            // the session took without a reset. The fall is trusted from the next pass on.
-            const bool fellBefore = _moved;
-            const bool clockFell = (clock >= 0.) && (_clockAtRestart >= 0.) && (clock < _clockAtRestart);
-            _moved = _moved || samplesFell || clockFell;
-            _busy = !idleNow;
-            _seen = fellBefore || blind;
-
-            return _seen;
-        }
-        if (!_clockFallen && (clock >= 0.) && (_clockAtRestart >= 0.) && (clock < _clockAtRestart)) {
-            // Cycles starts its clock over when its session resets, before it renders a sample of
-            // the new render: until its sample count moves after that, the count it reports and
-            // the pixels it holds are still the render's of before.
-            _clockFallen = true;
-            _samplesAtClockFall = samples;
-        }
-        // A clock that fell and then held still between two reads was stopped by the new render
-        // finishing, which may have reached the old sample count before the count was read.
-        const bool finishedSinceFall = _clockFallen && (clock >= 0.) && (clock == _previousClock);
-        const bool clockFell = _clockFallen && ((samples < 0) || (samples != _samplesAtClockFall) || finishedSinceFall);
-        _previousClock = clock;
-        _seen = samplesFell || clockFell || blind;
+        const std::int64_t requested = countOf(stats, "resetsRequested");
+        const bool asked = (_requestsAtRestart >= 0) && (requested > _requestsAtRestart);
+        // More samples than the cap the restart set are the render of before: Cycles takes a lower
+        // sample count only from a session it makes, and renders on to the count it had.
+        _overCap = (_capAtRestart > 0) && (samples > _capAtRestart);
+        _inFlight = asked && (countOf(stats, "resetsWritten") < requested);
+        // A session idle at the restart that wakes without being asked for a reset is updating the
+        // scene the pass synced, which it may spend long on.
+        _busy = _idleAtRestart && !idle(stats);
+        _seen = asked && !_inFlight && !_overCap;
+        _converged = _seen && (countOf(stats, "resetsConverged") >= requested);
 
         return _seen;
     }
@@ -304,17 +276,24 @@ public:
         return _seen;
     }
 
-    // Whether the delegate's session took the restart or may be taking it: it may spend long
-    // syncing a heavy stage before its first sample, and making it again would only begin that
-    // sync over.
-    bool restarting() const
+    // Whether the render the buffers hold finished: until then the delegate's word that it
+    // converged may be the word of a render a reset cut short.
+    bool converged() const
     {
-        return _clockFallen || _moved || _busy;
+        return _converged;
     }
 
-    // Whether a delegate's progress is known to show its restarts: Cycles' samples and clock start
-    // over. MoonRay's progress carries no sample count, and a watch waiting on a clock that does
-    // not fall would make its engine again for nothing.
+    // Whether the delegate's session took the restart or may be taking it: it may spend long
+    // syncing a heavy stage before its first sample, and making it again would only begin that
+    // sync over. One that took the change without a reset, or renders past the cap, never shows
+    // it.
+    bool restarting() const
+    {
+        return !_overCap && (_inFlight || _busy);
+    }
+
+    // Whether a delegate's progress is known to show its restarts: Cycles counts its resets.
+    // MoonRay reports none, and a watch waiting on one would make its engine again for nothing.
     static bool watches(const std::string& renderer)
     {
         return CyclesAovs::isCycles(renderer);
@@ -329,16 +308,15 @@ public:
     }
 
 private:
+    bool _trusted = true;
     bool _seen = true;
-    int _samplesAtRestart = -1;
-    double _clockAtRestart = -1.;
+    bool _converged = true;
+    std::int64_t _requestsAtRestart = -1;
     int _capAtRestart = 0;
     bool _idleAtRestart = false;
-    bool _moved = false;
+    bool _inFlight = false;
     bool _busy = false;
-    bool _clockFallen = false;
-    int _samplesAtClockFall = -1;
-    double _previousClock = -1.;
+    bool _overCap = false;
 };
 
 // The GPU memory the engines may hold together by default.
@@ -1614,8 +1592,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // synced a texture it gave up on as missing, which the engine would keep: even
             // converged, it goes.
             const VtDictionary stats = engine->GetRenderStats();
-            const bool restartSeen = restartWatch.after(samplesOf(stats, 0), clockOf(stats), RestartWatch::idle(stats));
-            if (restartSeen && engine->IsConverged() && !(cancel && cancel->load())) {
+            const bool restartSeen = restartWatch.after(stats, samplesOf(stats, 0));
+            if (restartSeen && restartWatch.converged() && engine->IsConverged() && !(cancel && cancel->load())) {
                 break;
             }
             // A MoonRay session that could not start or broke never converges.
@@ -3591,7 +3569,6 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
         }
         const int samples = samplesOf(stats, cap);
-        const double clock = clockOf(stats);
         lock.lock();
         if (quit) {
             break;
@@ -3637,7 +3614,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             restartWatch.before(before, cap);
         }
         const Clock::time_point now = Clock::now();
-        const bool restartSeen = restartWatch.after(samples, clock, RestartWatch::idle(stats));
+        const bool restartSeen = restartWatch.after(stats, samples);
         if (!restartSeen) {
             if (!restartWatch.restarting() && (now - restartTime >= kRestartUnseen)) {
                 // A new engine has no pixels from before to mistake for the restart's.
@@ -3660,7 +3637,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         // stopped short of the cap, once it converged and held still. A delegate's word alone is
         // not enough: Cycles marks its buffers converged when a reset cuts a render short.
         const bool atCap = (cap > 0) && (samples >= cap);
-        const bool finished = restartSeen && converged && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
+        const bool finished = restartSeen && converged && restartWatch.converged() && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
         bool publish = restartSeen && (samples != 0) && (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex));
         if (publish && parkPoint(lock)) {
             // What the pass rendered may be of the layers before the write.

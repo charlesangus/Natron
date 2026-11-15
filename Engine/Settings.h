@@ -372,7 +372,6 @@ public:
     int getViewerTilesPowerOf2() const;
     int getCheckerboardTileSize() const;
 
-    int getViewerStaleBorderDelayMs() const;
     void getCheckerboardColor1(double* r, double* g, double* b, double* a) const;
     void getCheckerboardColor2(double* r, double* g, double* b, double* a) const;
     bool isAutoProxyEnabled() const;
@@ -698,7 +697,6 @@ private:
     KnobChoicePtr _texturesMode;
     KnobIntPtr _powerOf2Tiling;
     KnobIntPtr _checkerboardTileSize;
-    KnobIntPtr _viewerStaleBorderDelayMs;
     KnobColorPtr _checkerboardColor1;
     KnobColorPtr _checkerboardColor2;
     KnobBoolPtr _autoProxyWhenScrubbingTimeline;

@@ -485,10 +485,6 @@ public Q_SLOTS:
 
     void onSetDownPlaybackButtonsTimeout();
 
-    void onViewerStaleChanged(bool stale);
-    void onStaleBorderTimeout();
-    void refreshStaleBorder();
-
     void refreshViewerRenderingState();
 
     void setTurboButtonDown(bool down);

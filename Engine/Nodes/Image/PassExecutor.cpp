@@ -753,9 +753,16 @@ passBufferRect(const RectI& window,
         }
         clip.merge(window);
     } else if ((list.stretchReachX >= 0) && (list.stretchReachY >= 0)) {
-        clip = RectI(0, 0, 0, 0);
+        RectI varies(0, 0, 0, 0);
         if (!isEmptyRect(sourceRoD)) {
-            clip = grownRect(sourceRoD, list.stretchReachX, list.stretchReachY);
+            varies = sourceRoD;
+        }
+        if (!isEmptyRect(list.stretchVaries)) {
+            varies.merge(grownRect(list.stretchVaries, 1, 1));
+        }
+        clip = RectI(0, 0, 0, 0);
+        if (!isEmptyRect(varies)) {
+            clip = grownRect(varies, list.stretchReachX, list.stretchReachY);
         }
         // The mask multiplies what the passes read, so they vary wherever it does, and under Black
         // it reads zero only from a pixel past its region on.
@@ -1150,6 +1157,16 @@ passScratchRect(EffectInstance& effect,
     *rect = passBufferRect(window, list, dstRoDPixel, srcRoDPixel, maskRoDPixel);
 
     return true;
+}
+
+RectI
+passInputRoDPixels(EffectInstance& effect,
+                   int inputNb,
+                   double time,
+                   const RenderScale& scale,
+                   ViewIdx view)
+{
+    return sourceRoDPixels(effect, inputNb, time, scale, view);
 }
 
 StatusEnum

@@ -616,3 +616,87 @@ TEST_F(NativeIBlurTest, Golden)
     }));
     runGoldenCases(getApp(), spec, v);
 }
+
+// Under Stretch a blur far wider than the image, its size varying with a Map smaller than the
+// image, reads only the source and the earlier boxes' reach past it, and matches the same blur
+// under Black over a source and a Map whose edges are laid out explicitly past every pixel the
+// blur reaches.
+TEST_F(NativeIBlurTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
+{
+    const int pad = 300;
+    const RectI padded(kWindow.x1 - pad, kWindow.y1 - pad, kWindow.x2 + pad, kWindow.y2 + pad);
+    const RectI box(20, 14, 44, 34);
+    // `left` of base colour, the columns of `right` within it of a second colour, and box over both.
+    const auto makeTwoTone = [&](const RectI& left, const RectI& right, const std::vector<double>& a, const std::vector<double>& b, bool withBox) -> NodePtr {
+        NodePtr base = makeConstant(left, a);
+        NodePtr half = makeConstant(right, b);
+        NodePtr under = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(bool(base) && bool(half) && bool(under));
+        if (!base || !half || !under) {
+            return NodePtr();
+        }
+        setBlackOutside(half, true);
+        EXPECT_TRUE(setKnobValue(under, kNativeMergeParamOperation, std::string("over")));
+        connectNodes(base, under, 0, true);
+        connectNodes(half, under, 1, true);
+        if (!withBox) {
+            return under;
+        }
+        NodePtr inside = makeConstant(box, { 4., 2., 1., 1. });
+        NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(bool(inside) && bool(over));
+        if (!inside || !over) {
+            return NodePtr();
+        }
+        setBlackOutside(inside, true);
+        EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
+        connectNodes(under, over, 0, true);
+        connectNodes(inside, over, 1, true);
+
+        return over;
+    };
+    const std::vector<double> baseColor = { 0.2, 0.4, 0.6, 1. }, halfColor = { 0.9, 0.1, 0.3, 1. };
+    const std::vector<double> mapLow = { 0.3, 0.3, 0.3, 0.3 }, mapHigh = { 0.9, 0.9, 0.9, 0.9 };
+    const RectI mapRect(8, 6, 40, 36);
+    NodePtr source = makeTwoTone(kWindow, RectI(32, kWindow.y1, kWindow.x2, kWindow.y2), baseColor, halfColor, true);
+    NodePtr laidOut = makeTwoTone(padded, RectI(32, padded.y1, padded.x2, padded.y2), baseColor, halfColor, true);
+    NodePtr map = makeTwoTone(mapRect, RectI(24, mapRect.y1, mapRect.x2, mapRect.y2), mapLow, mapHigh, false);
+    NodePtr laidOutMap = makeTwoTone(padded, RectI(24, padded.y1, padded.x2, padded.y2), mapLow, mapHigh, false);
+    ASSERT_TRUE(bool(source) && bool(laidOut) && bool(map) && bool(laidOutMap));
+
+    for (bool withMap : { false, true }) {
+        NodePtr stretched = makeIBlur(source, withMap ? map : NodePtr(), 100.);
+        NodePtr reference = makeIBlur(laidOut, withMap ? laidOutMap : NodePtr(), 100.);
+        ASSERT_TRUE(bool(stretched) && bool(reference));
+        if (withMap) {
+            for (const NodePtr& node : { stretched, reference }) {
+                ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 20., 40. }));
+            }
+        }
+        ASSERT_TRUE(setKnobValue(stretched, kEdgeModeParam, std::string("stretch")));
+        ASSERT_TRUE(setKnobValue(reference, kEdgeModeParam, std::string("black")));
+
+        RenderedPlane whole, part, expected;
+        const RectI tile(5, 30, 27, 48);
+        ASSERT_TRUE(renderRGBA(stretched, kWindow, &whole)) << withMap;
+        ASSERT_TRUE(renderRGBA(stretched, tile, &part)) << withMap;
+        ASSERT_TRUE(renderRGBA(reference, kWindow, &expected)) << withMap;
+        ASSERT_EQ((std::size_t)kWindow.width() * kWindow.height() * 4, whole.pixels.size());
+        ASSERT_EQ((std::size_t)kWindow.width() * kWindow.height() * 4, expected.pixels.size());
+        ASSERT_EQ((std::size_t)tile.width() * tile.height() * 4, part.pixels.size());
+        for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+            for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const std::size_t at = ((std::size_t)(y - kWindow.y1) * kWindow.width() + (x - kWindow.x1)) * 4 + c;
+                    const float v = whole.pixels[at];
+                    ASSERT_TRUE(std::isfinite(v)) << withMap;
+                    ASSERT_NEAR(expected.pixels[at], v, 1e-5 * std::max(1.f, std::fabs(v))) << "map " << withMap << " at (" << x << "," << y << "," << c << ")";
+                    if (tile.contains(x, y)) {
+                        const std::size_t inTile = ((std::size_t)(y - tile.y1) * tile.width() + (x - tile.x1)) * 4 + c;
+                        ASSERT_NEAR(v, part.pixels[inTile], 1e-5 * std::max(1.f, std::fabs(v))) << "map " << withMap << " tile at (" << x << "," << y << "," << c << ")";
+                    }
+                }
+            }
+        }
+    }
+}

@@ -284,19 +284,36 @@ struct LevelStore {
     }
 };
 
+/**
+ * @brief The levels of the sources within gridRect, held over levelRect within it: a source
+ * outside levelRect has the level of the nearest one inside, the Map repeating past it as far
+ * as gridRect reaches.
+ **/
 struct IDefocusState {
     std::vector<std::shared_ptr<const LevelKernel>> kernels;
     std::vector<uint16_t> grid;
     RectI gridRect;
+    RectI levelRect;
     std::vector<int> rowHaloY;
     int haloX = 0;
     int haloY = 0;
     BokehHighlight highlight;
     RectI window;
+    EdgeMode edgeMode = EdgeMode::Black;
+
+    int levelRow(int y) const
+    {
+        return std::min(std::max(y, levelRect.y1), levelRect.y2 - 1) - levelRect.y1;
+    }
+
+    int levelColumn(int x) const
+    {
+        return std::min(std::max(x, levelRect.x1), levelRect.x2 - 1) - levelRect.x1;
+    }
 
     const LevelKernel& levelAt(int x, int y) const
     {
-        const std::size_t i = (std::size_t)(y - gridRect.y1) * (std::size_t)gridRect.width() + (std::size_t)(x - gridRect.x1);
+        const std::size_t i = (std::size_t)levelRow(y) * (std::size_t)levelRect.width() + (std::size_t)levelColumn(x);
 
         return *kernels[grid[i]];
     }
@@ -338,8 +355,10 @@ struct GatherRow {
 /**
  * @brief Slot `to` over the render window, a row of every plane per line: each source pixel of
  * slot `from` within the halo adds its kernel's row at the line's offset, weighted, to the row's
- * sums, which are then divided by the weights. A source outside the scratch rect is black but
- * still adds its weight, as Defocus's fixed weights count the black outside the image. A pixel
+ * sums, which are then divided by the weights. A source outside the scratch rect is black under
+ * Black but still adds its weight, as Defocus's fixed weights count the black outside the image;
+ * under Stretch it has the value of the nearest pixel of the scratch, which the scratch's own
+ * stretch of the source has there. A pixel
  * nothing reaches, only a kernel's faint tails reach, or only itself with the single tap reaches,
  * keeps slot 0's value.
  **/
@@ -386,7 +405,8 @@ gatherWorker(const IDefocusStatePtr& state,
             std::fill(row->direct.begin(), row->direct.end(), 0.);
 
             const RectI& g = s->gridRect;
-            const int gridWidth = g.width();
+            const int levelWidth = s->levelRect.width();
+            const bool stretch = (s->edgeMode == EdgeMode::Stretch);
             const int sy1 = std::max(y - s->haloY, g.y1);
             const int sy2 = std::min(y + s->haloY + 1, g.y2);
             const int sx1 = std::max(wx1 - s->haloX, g.x1);
@@ -394,20 +414,23 @@ gatherWorker(const IDefocusStatePtr& state,
             for (int sy = sy1; sy < sy2; ++sy) {
                 const int dy = y - sy;
                 const int ady = std::abs(dy);
-                if (s->rowHaloY[(std::size_t)(sy - g.y1)] < ady) {
+                const int levelY = s->levelRow(sy);
+                if (s->rowHaloY[(std::size_t)levelY] < ady) {
                     continue;
                 }
                 const bool rowInside = (sy >= rect.y1) && (sy < rect.y2);
-                const uint16_t* const levels = &s->grid[(std::size_t)(sy - g.y1) * gridWidth];
+                const int readY = std::min(std::max(sy, rect.y1), rect.y2 - 1);
+                const uint16_t* const levels = &s->grid[(std::size_t)levelY * levelWidth];
                 for (int sx = sx1; sx < sx2; ++sx) {
-                    const LevelKernel& k = *s->kernels[levels[sx - g.x1]];
+                    const LevelKernel& k = *s->kernels[levels[s->levelColumn(sx)]];
                     if ((k.haloY < ady) || (sx + k.haloX < wx1) || (sx - k.haloX >= wx2)) {
                         continue;
                     }
-                    const bool inside = rowInside && (sx >= rect.x1) && (sx < rect.x2);
+                    const bool inside = stretch || (rowInside && (sx >= rect.x1) && (sx < rect.x2));
                     bool bright = false;
                     if (inside) {
-                        const std::size_t at = (std::size_t)(sy - rect.y1) * width + (std::size_t)(sx - rect.x1);
+                        const int readX = std::min(std::max(sx, rect.x1), rect.x2 - 1);
+                        const std::size_t at = (std::size_t)(readY - rect.y1) * width + (std::size_t)(readX - rect.x1);
                         for (int p = 0; p < nPlanes; ++p) {
                             const float v = buffers->plane(from, p)[at];
                             values[p] = std::isfinite(v) ? v : 0.f;
@@ -1052,6 +1075,10 @@ IDefocus::opPasses(double time,
     levelRangeHalo(params, context, lo, count, count, &haloX, &haloY);
     PassList list = makePasses(params.defocus.highlight, haloX, haloY, IDefocusStatePtr());
     list.edgeMode = context.edgeMode;
+    // One gather of the source, boosted pixel by pixel, whose reads past the scratch repeat its
+    // edge rows and columns; the Map only picks each source's kernel.
+    list.stretchReachX = 0;
+    list.stretchReachY = 0;
 
 #ifdef NATRON_HAVE_GPU
     if (!list.empty() && !image && (haloX <= kGpuMaxHalo) && (haloY <= kGpuMaxHalo)) {
@@ -1285,6 +1312,24 @@ IDefocus::readKernelImage(double time,
     return eStatusOK;
 } // IDefocus::readKernelImage
 
+RectI
+IDefocus::mapVaries(double time,
+                    ViewIdx view,
+                    const RenderScale& scale,
+                    const RectI& window)
+{
+    RectI varies = window;
+    if (getInput(kIDefocusInputMap)) {
+        const RectI rod = passInputRoDPixels(*this, kIDefocusInputMap, time, scale, view);
+        // A pixel past a Map read under Black reads black from the first one on.
+        if (!PassExec::isEmptyRect(rod)) {
+            varies.merge(RectI(rod.x1 - 1, rod.y1 - 1, rod.x2 + 1, rod.y2 + 1));
+        }
+    }
+
+    return varies;
+}
+
 StatusEnum
 IDefocus::renderOp(const RenderActionArgs& args,
                    const StagePlan& plan)
@@ -1312,8 +1357,14 @@ IDefocus::renderOp(const RenderActionArgs& args,
     }
 
     // The Map over every pixel the passes may read; the tile's sources reach no further, their
-    // halo being at most the full one.
-    const RectI window = passListSourceRoI(args.roi, full);
+    // halo being at most the full one. Under Stretch, over that within the Map's region and the
+    // window: past them the Map repeats its nearest pixel there, so the range is the whole halo's.
+    const bool stretch = (full.edgeMode == EdgeMode::Stretch);
+    const RectI varies = stretch ? mapVaries(args.time, args.view, args.mappedScale, args.roi) : RectI(0, 0, 0, 0);
+    RectI window = passListSourceRoI(args.roi, full);
+    if (stretch) {
+        window = window.intersect(varies);
+    }
     std::shared_ptr<MapPlane> map = std::make_shared<MapPlane>();
     StatusEnum status = _map.read(this, kIDefocusInputMap, params.map, args.time, args.view, args.mappedScale, window, map.get());
     if (status != eStatusOK) {
@@ -1333,8 +1384,10 @@ IDefocus::renderOp(const RenderActionArgs& args,
     state->haloY = haloY;
     state->highlight = params.defocus.highlight;
     state->window = args.roi;
+    state->edgeMode = full.edgeMode;
     state->gridRect = RectI(args.roi.x1 - haloX, args.roi.y1 - haloY, args.roi.x2 + haloX, args.roi.y2 + haloY);
-    const RectI& g = state->gridRect;
+    state->levelRect = stretch ? state->gridRect.intersect(varies) : state->gridRect;
+    const RectI& g = state->levelRect;
     const int gridWidth = g.width();
     const int gridHeight = g.height();
     state->grid.resize((std::size_t)gridWidth * gridHeight);
@@ -1376,6 +1429,8 @@ IDefocus::renderOp(const RenderActionArgs& args,
 
     PassList list = makePasses(params.defocus.highlight, haloX, haloY, state);
     list.edgeMode = context.edgeMode;
+    list.stretchReachX = full.stretchReachX;
+    list.stretchReachY = full.stretchReachY;
 
     return runPassesCpu(*this, plan, args, list);
 } // IDefocus::renderOp

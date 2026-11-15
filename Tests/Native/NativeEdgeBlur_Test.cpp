@@ -75,6 +75,7 @@ const int kEdgeReach = 8;
 
 bool
 renderRGBA(const NodePtr& node,
+           const RectI& window,
            RenderedPlane* plane)
 {
     std::list<ImageLayerDesc> layers;
@@ -82,7 +83,7 @@ renderRGBA(const NodePtr& node,
     std::string error;
 
     layers.push_back(ImageLayerDesc::getRGBAComponents());
-    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, kWindow, layers, &planes, &error);
+    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error);
     EXPECT_TRUE(ok) << error;
     if (!ok || (planes.size() != 1) || (planes[0].channels.size() != 4)) {
         return false;
@@ -90,6 +91,13 @@ renderRGBA(const NodePtr& node,
     *plane = planes[0];
 
     return true;
+}
+
+bool
+renderRGBA(const NodePtr& node,
+           RenderedPlane* plane)
+{
+    return renderRGBA(node, kWindow, plane);
 }
 
 // Whether (x, y) is further than kEdgeReach from the border of kBox.
@@ -454,4 +462,85 @@ TEST_F(NativeEdgeBlurTest, Golden)
         return sized(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });
     }));
     runGoldenCases(getApp(), spec, v);
+}
+
+// Under Stretch a blur far wider than the image, along the edges of an external Matte or of the
+// source's own alpha, reads only the source and the earlier boxes' reach past it, and matches the
+// same blur under Black over a source whose edge is laid out explicitly past every pixel the blur
+// reaches.
+TEST_F(NativeEdgeBlurTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
+{
+    const int pad = 300;
+    const RectI padded(kWindow.x1 - pad, kWindow.y1 - pad, kWindow.x2 + pad, kWindow.y2 + pad);
+    const RectI box(20, 14, 44, 34);
+    const auto makeSource = [&](const RectI& left, const RectI& right) -> NodePtr {
+        NodePtr base = makeConstant(left, { 0.2, 0.4, 0.6, 0.3 });
+        NodePtr half = makeConstant(right, { 0.9, 0.1, 0.3, 1. });
+        NodePtr inside = makeConstant(box, { 2., 1., 0.5, 1. });
+        NodePtr under = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(bool(base) && bool(half) && bool(inside) && bool(under) && bool(over));
+        if (!base || !half || !inside || !under || !over) {
+            return NodePtr();
+        }
+        setBlackOutside(half, true);
+        setBlackOutside(inside, true);
+        EXPECT_TRUE(setKnobValue(under, kNativeMergeParamOperation, std::string("over")));
+        EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
+        connectNodes(base, under, 0, true);
+        connectNodes(half, under, 1, true);
+        connectNodes(under, over, 0, true);
+        connectNodes(inside, over, 1, true);
+
+        return over;
+    };
+    NodePtr source = makeSource(kWindow, RectI(32, kWindow.y1, kWindow.x2, kWindow.y2));
+    NodePtr laidOut = makeSource(padded, RectI(32, padded.y1, padded.x2, padded.y2));
+    NodePtr matte = makeRectOverBlack(RectI(2, 14, 30, 34));
+    ASSERT_TRUE(bool(source) && bool(laidOut) && bool(matte));
+
+    for (bool external : { true, false }) {
+        NodePtr stretched = makeEdgeBlur(source, external ? matte : NodePtr());
+        NodePtr reference = makeEdgeBlur(laidOut, external ? matte : NodePtr());
+        ASSERT_TRUE(bool(stretched) && bool(reference));
+        for (const NodePtr& node : { stretched, reference }) {
+            ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamExternalMatte, { external ? 1. : 0. }));
+            ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamSize, { 100. }));
+            ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamEdgeMult, { 4. }));
+        }
+        ASSERT_TRUE(setKnobValue(stretched, kEdgeModeParam, std::string("stretch")));
+        ASSERT_TRUE(setKnobValue(reference, kEdgeModeParam, std::string("black")));
+
+        RenderedPlane whole, part, expected;
+        const RectI tile(5, 30, 27, 48);
+        ASSERT_TRUE(renderRGBA(stretched, kWindow, &whole)) << external;
+        ASSERT_TRUE(renderRGBA(stretched, tile, &part)) << external;
+        ASSERT_TRUE(renderRGBA(reference, kWindow, &expected)) << external;
+        ASSERT_EQ((std::size_t)kWindow.width() * kWindow.height() * 4, whole.pixels.size());
+        ASSERT_EQ((std::size_t)kWindow.width() * kWindow.height() * 4, expected.pixels.size());
+        ASSERT_EQ((std::size_t)tile.width() * tile.height() * 4, part.pixels.size());
+        std::size_t blurred = 0;
+        for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+            for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const std::size_t at = ((std::size_t)(y - kWindow.y1) * kWindow.width() + (x - kWindow.x1)) * 4 + c;
+                    const float v = whole.pixels[at];
+                    ASSERT_TRUE(std::isfinite(v)) << external;
+                    ASSERT_NEAR(expected.pixels[at], v, 1e-5 * std::max(1.f, std::fabs(v))) << "external " << external << " at (" << x << "," << y << "," << c << ")";
+                    if (tile.contains(x, y)) {
+                        const std::size_t inTile = ((std::size_t)(y - tile.y1) * tile.width() + (x - tile.x1)) * 4 + c;
+                        ASSERT_NEAR(v, part.pixels[inTile], 1e-5 * std::max(1.f, std::fabs(v))) << "external " << external << " tile at (" << x << "," << y << "," << c << ")";
+                    }
+                }
+            }
+        }
+        RenderedPlane unblurred;
+        ASSERT_TRUE(renderRGBA(source, kWindow, &unblurred));
+        for (std::size_t i = 0; i < whole.pixels.size(); ++i) {
+            if (std::fabs(whole.pixels[i] - unblurred.pixels[i]) > 1e-3f) {
+                ++blurred;
+            }
+        }
+        EXPECT_GT(blurred, 0u) << "external " << external;
+    }
 }

@@ -409,6 +409,7 @@ EdgeBlur::opPasses(double time,
     }
     const PassList edges = edgePasses(params, context);
     PassList list = blur;
+    list.stretchVaries = edgeVaries(params, edges, time, view, scale);
     if (!params.externalMatte) {
         list.passes.insert(list.passes.begin(), edgeReachPass(edges));
     }
@@ -426,15 +427,13 @@ EdgeBlur::opPasses(double time,
 }
 
 bool
-EdgeBlur::edgeRects(const EdgeBlurParams& params,
-                    const PassList& edges,
-                    double time,
-                    ViewIdx view,
-                    const RenderScale& scale,
-                    const RectI& output,
-                    RectI* matteRoD,
-                    RectI* edgeRoD,
-                    RectI* buffer) const
+EdgeBlur::edgeRegions(const EdgeBlurParams& params,
+                      const PassList& edges,
+                      double time,
+                      ViewIdx view,
+                      const RenderScale& scale,
+                      RectI* matteRoD,
+                      RectI* edgeRoD) const
 {
     const int input = matteInput(params);
     EffectInstancePtr matte = getInput(input);
@@ -454,7 +453,37 @@ EdgeBlur::edgeRects(const EdgeBlurParams& params,
     *edgeRoD = passListRoD(*matteRoD, edges);
     cropToFormatBorders(formatOf(getApp(), matte, time, view), scale, *matteRoD, edgeRoD);
 
-    return PassExec::intersectRects(passListSourceRoI(output, edges), *edgeRoD, buffer);
+    return true;
+}
+
+bool
+EdgeBlur::edgeRects(const EdgeBlurParams& params,
+                    const PassList& edges,
+                    double time,
+                    ViewIdx view,
+                    const RenderScale& scale,
+                    const RectI& output,
+                    RectI* matteRoD,
+                    RectI* edgeRoD,
+                    RectI* buffer) const
+{
+    return edgeRegions(params, edges, time, view, scale, matteRoD, edgeRoD) && PassExec::intersectRects(passListSourceRoI(output, edges), *edgeRoD, buffer);
+}
+
+RectI
+EdgeBlur::edgeVaries(const EdgeBlurParams& params,
+                     const PassList& edges,
+                     double time,
+                     ViewIdx view,
+                     const RenderScale& scale) const
+{
+    RectI matteRoD;
+    RectI edgeRoD;
+    if (!edgeRegions(params, edges, time, view, scale, &matteRoD, &edgeRoD)) {
+        return RectI(0, 0, 0, 0);
+    }
+
+    return edgeRoD;
 }
 
 StatusEnum
@@ -569,8 +598,14 @@ EdgeBlur::renderOp(const RenderActionArgs& args,
     const PassContext context = getPassContext(args.time, args.view, args.mappedScale);
     const PassList edges = edgePasses(params, context);
     // The weight over every pixel IBlur's passes read; the radii beyond it, over the reach the
-    // first pass carries, are 0 and reach no pixel of args.roi.
-    const RectI window = passListSourceRoI(args.roi, blurPasses(params, context));
+    // first pass carries, are 0 and reach no pixel of args.roi. Under Stretch that is the blur's
+    // scratch, onto which every pixel of the halo past it clamps, onto a pixel of the same weight.
+    PassList blur = blurPasses(params, context);
+    blur.stretchVaries = full.stretchVaries;
+    RectI window = passListSourceRoI(args.roi, blur);
+    if ((blur.edgeMode == EdgeMode::Stretch) && !passScratchRect(*this, plan, blur, args.roi, args.time, args.mappedScale, args.view, &window)) {
+        return eStatusFailed;
+    }
     std::shared_ptr<MapPlane> weight = std::make_shared<MapPlane>();
     const StatusEnum status = computeEdges(args, params, edges, window, weight.get());
     if (status != eStatusOK) {
@@ -581,6 +616,7 @@ EdgeBlur::renderOp(const RenderActionArgs& args,
         // No edge over the window: the image as it is.
         return runPassesCpu(*this, plan, args, list);
     }
+    list.stretchVaries = full.stretchVaries;
     if (!params.externalMatte) {
         list.passes.insert(list.passes.begin(), edgeReachPass(edges));
     }

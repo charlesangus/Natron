@@ -1733,7 +1733,8 @@ IErodeDilate::passes(const IErodeDilateParams& params,
                      const MapRange& range,
                      const std::shared_ptr<const MapPlane>& map,
                      const RectI& roi,
-                     EdgeMode edgeMode)
+                     EdgeMode edgeMode,
+                     const RectI& bound)
 {
     namespace K = IErodeDilateKernels;
     PassList list;
@@ -1748,6 +1749,14 @@ IErodeDilate::passes(const IErodeDilateParams& params,
 
     if (count == 0) {
         return list;
+    }
+    // Each stage reads past the scratch by repeating its edge, so only the stages before the
+    // last need what they computed past the source materialised.
+    list.stretchReachX = 0;
+    list.stretchReachY = 0;
+    for (int i = 0; i + 1 < count; ++i) {
+        list.stretchReachX += haloX[stages[i]];
+        list.stretchReachY += haloY[stages[i]];
     }
     // Slot 0 keeps the source; the stages alternate between slots 1 and 2.
     list.scratchSlots = (count > 1) ? 3 : 2;
@@ -1782,7 +1791,10 @@ IErodeDilate::passes(const IErodeDilateParams& params,
             growX += haloX[stages[later]];
             growY += haloY[stages[later]];
         }
-        const RectI window(roi.x1 - growX, roi.y1 - growY, roi.x2 + growX, roi.y2 + growY);
+        RectI window(roi.x1 - growX, roi.y1 - growY, roi.x2 + growX, roi.y2 + growY);
+        if (!PassExec::isEmptyRect(bound)) {
+            window = window.intersect(bound);
+        }
         const int x1 = window.x1;
         const int y1 = window.y1;
         const int width = window.width();
@@ -1877,6 +1889,9 @@ IErodeDilate::opPasses(double time,
 {
     const IErodeDilateParams params = getParams(time, view);
     PassList list = passes(params, scale, fullMapRange(), std::shared_ptr<const MapPlane>(), RectI(), resolvedEdgeMode(time, view));
+    if (getInput(kIErodeDilateInputMap)) {
+        list.stretchVaries = passInputRoDPixels(*const_cast<IErodeDilate*>(this), kIErodeDilateInputMap, time, scale, view);
+    }
 
 #ifdef NATRON_HAVE_GPU
     bool capped = false;
@@ -1985,17 +2000,40 @@ IErodeDilate::renderOp(const RenderActionArgs& args,
         return runPassesCpu(*this, plan, args, full);
     }
     const IErodeDilateParams params = getParams(args.time, args.view);
+    const EdgeMode edgeMode = resolvedEdgeMode(args.time, args.view);
     // The Map over every pixel whose radii a stage needs, as getRegionsOfInterest() asked for it;
-    // the tile's halos are those of its radii there.
-    const RectI window = mapWindow(params, args.mappedScale, fullMapRange(), args.roi);
+    // the tile's halos are those of its radii there. Under Stretch no stage computes a pixel past
+    // the full list's scratch, and every pixel of the halo past it clamps onto it, onto a pixel
+    // of the same Map value, so the range is the whole halo's.
+    RectI window = mapWindow(params, args.mappedScale, fullMapRange(), args.roi);
+    RectI scratch(0, 0, 0, 0);
+    if (edgeMode == EdgeMode::Stretch) {
+        if (!passScratchRect(*this, plan, full, args.roi, args.time, args.mappedScale, args.view, &scratch)) {
+            return eStatusFailed;
+        }
+        window = window.intersect(scratch);
+    }
     std::shared_ptr<MapPlane> map = std::make_shared<MapPlane>();
     const StatusEnum status = _map.read(this, kIErodeDilateInputMap, params.map, args.time, args.view, args.mappedScale, window, map.get());
     if (status != eStatusOK) {
         return status;
     }
     const MapRange range = map->tileRange(window);
+    RectI bound(0, 0, 0, 0);
+    if (edgeMode == EdgeMode::Stretch) {
+        PassList shape = passes(params, args.mappedScale, range, std::shared_ptr<const MapPlane>(), args.roi, edgeMode);
+        shape.stretchVaries = full.stretchVaries;
+        if (shape.empty()) {
+            return runPassesCpu(*this, plan, args, shape);
+        }
+        if (!passScratchRect(*this, plan, shape, args.roi, args.time, args.mappedScale, args.view, &bound)) {
+            return eStatusFailed;
+        }
+    }
+    PassList list = passes(params, args.mappedScale, range, map, args.roi, edgeMode, bound);
+    list.stretchVaries = full.stretchVaries;
 
-    return runPassesCpu(*this, plan, args, passes(params, args.mappedScale, range, map, args.roi, resolvedEdgeMode(args.time, args.view)));
+    return runPassesCpu(*this, plan, args, list);
 }
 
 bool

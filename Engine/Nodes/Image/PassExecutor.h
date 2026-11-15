@@ -493,6 +493,11 @@ struct PassList {
     // pass that reads in a frame other than the scratch's axes reads that frame's edge instead.
     int stretchReachX = -1;
     int stretchReachY = -1;
+    // Under Stretch with a reach, the region of definition of an input other than the source that
+    // the passes read per pixel, such as a Map, in this effect's pixels: what they compute varies
+    // there as it does over the source, and up to one pixel past it, where an input read under
+    // Black turns to black.
+    RectI stretchVaries = RectI(0, 0, 0, 0);
     PassGpuRecorder gpu;
     // When set, gpu records the list only for the queries it accepts, as a frame within the
     // device's scratch.
@@ -608,6 +613,16 @@ bool passScratchRect(EffectInstance& effect,
                      const RenderScale& scale,
                      ViewIdx view,
                      RectI* rect) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The region of definition of effect's input inputNb in pixels at scale, by that input's
+ * pixel aspect ratio; empty when it is disconnected or has none.
+ **/
+RectI passInputRoDPixels(EffectInstance& effect,
+                         int inputNb,
+                         double time,
+                         const RenderScale& scale,
+                         ViewIdx view) WARN_UNUSED_RETURN;
 
 /**
  * @brief Runs the passes of list in order over scratch, each over whole lines split between

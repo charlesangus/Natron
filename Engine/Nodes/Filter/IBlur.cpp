@@ -680,6 +680,10 @@ IBlur::passes(const IBlurParams& params,
 
     list.scratchSlots = 2;
     list.resultSlot = (kBoxIterations % 2) ? 1 : 0;
+    // Each box reads past the scratch by repeating its edge, so only the boxes before the last
+    // need what they computed past the source materialised.
+    list.stretchReachX = (kBoxIterations - 1) * haloX;
+    list.stretchReachY = (kBoxIterations - 1) * haloY;
 
     Pass radii = Pass::point(false, state ? radiusWorker(state) : std::function<PassRowFn(const PassScratch&)>());
     list.passes.push_back(radii);
@@ -724,6 +728,9 @@ IBlur::opPasses(double time,
     const IBlurParams params = getParams(time, view);
     const PassContext context = getPassContext(time, view, scale);
     PassList list = passes(params, context, range, std::shared_ptr<const MapPlane>());
+    if (getInput(kIBlurInputMap)) {
+        list.stretchVaries = passInputRoDPixels(*const_cast<IBlur*>(this), kIBlurInputMap, time, scale, view);
+    }
 
 #ifdef NATRON_HAVE_GPU
     if (!list.empty() && fitsGpu(list)) {
@@ -878,16 +885,23 @@ IBlur::renderOp(const RenderActionArgs& args,
     }
     const IBlurParams params = getParams(args.time, args.view);
     // The Map over every pixel the passes may read; the tile's passes read no further, their halo
-    // being at most the full one.
-    const RectI window = passListSourceRoI(args.roi, full);
+    // being at most the full one. Under Stretch that is the full list's scratch: every pixel of
+    // the halo past it clamps onto it, onto a pixel of the same Map value, so the range is the
+    // whole halo's.
+    RectI window = passListSourceRoI(args.roi, full);
+    if ((full.edgeMode == EdgeMode::Stretch) && !passScratchRect(*this, plan, full, args.roi, args.time, args.mappedScale, args.view, &window)) {
+        return eStatusFailed;
+    }
     std::shared_ptr<MapPlane> map = std::make_shared<MapPlane>();
     const StatusEnum status = _map.read(this, kIBlurInputMap, params.map, args.time, args.view, args.mappedScale, window, map.get());
     if (status != eStatusOK) {
         return status;
     }
     const MapRange range = map->tileRange(window);
+    PassList list = passes(params, getPassContext(args.time, args.view, args.mappedScale), range, map);
+    list.stretchVaries = full.stretchVaries;
 
-    return runPassesCpu(*this, plan, args, passes(params, getPassContext(args.time, args.view, args.mappedScale), range, map));
+    return runPassesCpu(*this, plan, args, list);
 }
 
 void

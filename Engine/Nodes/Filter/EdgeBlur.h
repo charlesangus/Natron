@@ -194,6 +194,26 @@ private:
     int matteInput(const EdgeBlurParams& params) const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The matte's region of definition, and EdgeDetect's: the matte's grown by the edge
+     * passes' reach and cropped to the matte's format, outside which the edge weight is 0. False
+     * when the matte has no region of definition.
+     **/
+    bool edgeRegions(const EdgeBlurParams& params,
+                     const PassList& edges,
+                     double time,
+                     ViewIdx view,
+                     const RenderScale& scale,
+                     RectI* matteRoD,
+                     RectI* edgeRoD) const WARN_UNUSED_RETURN;
+
+    // EdgeDetect's region of definition, past which the blur's weight is 0; empty without a matte.
+    RectI edgeVaries(const EdgeBlurParams& params,
+                     const PassList& edges,
+                     double time,
+                     ViewIdx view,
+                     const RenderScale& scale) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief The rect EdgeDetect's buffer covers for output: output grown by the edge passes'
      * reach, clipped to the matte's region of definition grown by it and cropped to the matte's
      * format, which *edgeRoD receives. False when the matte has no region of definition.

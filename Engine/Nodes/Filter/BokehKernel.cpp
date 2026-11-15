@@ -751,6 +751,7 @@ bokehGatherRow(const double* tables,
                int y,
                int x1,
                int x2,
+               EdgeMode edgeMode,
                double* acc,
                float* dst)
 {
@@ -760,10 +761,14 @@ bokehGatherRow(const double* tables,
     }
     std::fill(acc, acc + n, 0.);
     const std::size_t stride = (std::size_t)width + 1;
+    const bool stretch = (edgeMode == EdgeMode::Stretch) && (width > 0) && (height > 0);
     for (const BokehRun& run : runs) {
-        const int yy = y - run.dy;
+        int yy = y - run.dy;
         if ((yy < 0) || (yy >= height)) {
-            continue;
+            if (!stretch) {
+                continue;
+            }
+            yy = std::min(std::max(yy, 0), height - 1);
         }
         const double* table = tables + (std::size_t)yy * stride;
         const double weight = run.weight;
@@ -776,6 +781,26 @@ bokehGatherRow(const double* tables,
             const int b = std::min(width, std::max(0, x - hi));
             if (a < b) {
                 acc[i] += weight * (table[b] - table[a]);
+            }
+        }
+        if (!stretch) {
+            continue;
+        }
+        // The table's own differences, so that a value that is not finite counts as 0 here too.
+        const double first = table[1] - table[0];
+        const double last = table[width] - table[width - 1];
+        for (int i = 0; i < n; ++i) {
+            const int start = x1 + i - lo;
+            const int end = x1 + i - hi;
+            double edges = 0.;
+            if (start < 0) {
+                edges += (double)(std::min(end, 0) - start) * first;
+            }
+            if (end > width) {
+                edges += (double)(end - std::max(start, width)) * last;
+            }
+            if (edges != 0.) {
+                acc[i] += weight * edges;
             }
         }
     }

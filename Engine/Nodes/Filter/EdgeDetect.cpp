@@ -448,9 +448,10 @@ combineWorker(const Normalization& n,
 // Non-maxima suppression along the gradient direction, with the parabolic peak value at the
 // maxima; the buffer's border is cleared.
 std::function<PassRowFn(const PassScratch&)>
-suppressionWorker(EdgeDetectMultiChannelEnum multiChannel)
+suppressionWorker(EdgeDetectMultiChannelEnum multiChannel,
+                  EdgeMode edgeMode)
 {
-    return [multiChannel](const PassScratch& scratch) -> PassRowFn {
+    return [multiChannel, edgeMode](const PassScratch& scratch) -> PassRowFn {
         const int bufferWidth = scratch.width;
         const int bufferHeight = scratch.height;
         const int nPlanes = scratch.nPlanes;
@@ -461,11 +462,15 @@ suppressionWorker(EdgeDetectMultiChannelEnum multiChannel)
         const float* const gx = scratch.buffers[kSlotGx];
         const float* const gy = scratch.buffers[kSlotGy];
         float* const out = scratch.buffers[kSlotSuppressed];
+        // Under Stretch the scratch can end at the window, where a border pixel reads past it by
+        // repeating its edge as the stretched input would.
+        const bool stretch = (edgeMode == EdgeMode::Stretch);
 
         return [=](int y) {
             for (int x = 0; x < bufferWidth; ++x) {
                 const std::size_t o = (std::size_t)y * bufferWidth + x;
-                if ((x == 0) || (x == bufferWidth - 1) || (y == 0) || (y == bufferHeight - 1)) {
+                const bool border = (x == 0) || (x == bufferWidth - 1) || (y == 0) || (y == bufferHeight - 1);
+                if (border && !stretch) {
                     for (int p = 0; p < nPlanes; ++p) {
                         out[(std::size_t)p * planeSize + o] = 0.f;
                     }
@@ -479,9 +484,11 @@ suppressionWorker(EdgeDetectMultiChannelEnum multiChannel)
                     float grady = gy[base + o];
                     if ((gradx != 0.f) || (grady != 0.f)) {
                         const bool horiz = std::abs(gradx) >= std::abs(grady);
-                        const std::size_t rowP = (std::size_t)(y - 1) * bufferWidth;
+                        const std::size_t rowP = (std::size_t)std::max(y - 1, 0) * bufferWidth;
                         const std::size_t rowC = (std::size_t)y * bufferWidth;
-                        const std::size_t rowN = (std::size_t)(y + 1) * bufferWidth;
+                        const std::size_t rowN = (std::size_t)std::min(y + 1, bufferHeight - 1) * bufferWidth;
+                        const int xP = std::max(x - 1, 0);
+                        const int xN = std::min(x + 1, bufferWidth - 1);
                         float Ipp;
                         float Ipc;
                         float Ipn;
@@ -489,20 +496,20 @@ suppressionWorker(EdgeDetectMultiChannelEnum multiChannel)
                         float Inc;
                         float Inn;
                         if (horiz) {
-                            Ipp = mag[rowP + x - 1];
-                            Ipc = mag[rowC + x - 1];
-                            Ipn = mag[rowN + x - 1];
-                            Inp = mag[rowP + x + 1];
-                            Inc = mag[rowC + x + 1];
-                            Inn = mag[rowN + x + 1];
+                            Ipp = mag[rowP + xP];
+                            Ipc = mag[rowC + xP];
+                            Ipn = mag[rowN + xP];
+                            Inp = mag[rowP + xN];
+                            Inc = mag[rowC + xN];
+                            Inn = mag[rowN + xN];
                         } else {
                             std::swap(gradx, grady);
-                            Ipp = mag[rowP + x - 1];
+                            Ipp = mag[rowP + xP];
                             Ipc = mag[rowP + x];
-                            Ipn = mag[rowP + x + 1];
-                            Inp = mag[rowN + x - 1];
+                            Ipn = mag[rowP + xN];
+                            Inp = mag[rowN + xP];
                             Inc = mag[rowN + x];
-                            Inn = mag[rowN + x + 1];
+                            Inn = mag[rowN + xN];
                         }
                         const double alpha = grady / gradx;
                         const double Ip = parabola(Ipp, Ipc, Ipn, -alpha);
@@ -901,6 +908,7 @@ edgeDetectGpuRecorder(const std::shared_ptr<const EdgeDetectGpuPlan>& plan)
         }
 
         EdgeDetectGpuParams suppression = base;
+        suppression.edgeMode = gpu::gpuEdgeMode(io.edgeMode);
         suppression.mode = separate ? 1u : 0u;
         suppression.flags = separate ? 0u : (uint32_t)std::max(0, firstProcessed);
         if (!setGpuOutput(filtered, io.output, nComps, &suppression)) {
@@ -1047,11 +1055,30 @@ edgeDetectPasses(const EdgeDetectParams& params,
     }
 
     if (params.nms) {
-        Pass suppression = Pass::gather(1, 1, false, suppressionWorker(params.multiChannel));
+        Pass suppression = Pass::gather(1, 1, false, suppressionWorker(params.multiChannel, edgeMode));
         suppression.growX = suppression.growY = 0;
         list.passes.push_back(suppression);
         list.scratchSlots = 4;
         list.resultSlot = kSlotSuppressed;
+    }
+
+    // How far past the source each pass's input varies along the axis it reads: the derivative
+    // blurs and the pre-blur read the source, the stencil the pre-blur, the erosion the gradient
+    // and the suppression the eroded magnitude, read past the scratch by repeating its edge.
+    const bool finite = isFiniteDifference(params.filter);
+    const bool erodes = (params.erodeSize != 0.);
+    if (params.nms) {
+        list.stretchReachX = haloX + erodeX;
+        list.stretchReachY = haloY + erodeY;
+    } else if (erodes) {
+        list.stretchReachX = haloX;
+        list.stretchReachY = haloY;
+    } else if (finite) {
+        list.stretchReachX = haloX - 1;
+        list.stretchReachY = haloY - 1;
+    } else {
+        list.stretchReachX = 0;
+        list.stretchReachY = 0;
     }
 
 #ifdef NATRON_HAVE_GPU

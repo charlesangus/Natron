@@ -626,3 +626,68 @@ TEST_F(NativeDefocusTest, EdgeModeDecidesTheBorder)
     EXPECT_LT(pixelAt(black, kWindow.x1, kWindow.y1, 3), 0.9f);
     EXPECT_NEAR(color[3], pixelAt(black, kWindow.x1 + kWindow.width() / 2, kWindow.y1 + kWindow.height() / 2, 3), 1e-5);
 }
+
+// Under Stretch a bokeh far larger than the image reads only the source and the window, adding
+// the repeated edge analytically, and matches the same bokeh under Black over a source whose edge
+// is laid out explicitly past every pixel the bokeh reaches.
+TEST_F(NativeDefocusTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
+{
+    const int pad = 300;
+    const RectI padded(kWindow.x1 - pad, kWindow.y1 - pad, kWindow.x2 + pad, kWindow.y2 + pad);
+    const RectI box(20, 14, 44, 34);
+    const auto makeSource = [&](const RectI& left, const RectI& right) -> NodePtr {
+        NodePtr base = makeConstant(left, { 0.2, 0.4, 0.6, 1. });
+        NodePtr half = makeConstant(right, { 0.9, 0.1, 0.3, 1. });
+        NodePtr inside = makeConstant(box, { 4., 2., 1., 1. });
+        NodePtr under = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(bool(base) && bool(half) && bool(inside) && bool(under) && bool(over));
+        if (!base || !half || !inside || !under || !over) {
+            return NodePtr();
+        }
+        setBlackOutside(half, true);
+        setBlackOutside(inside, true);
+        EXPECT_TRUE(setKnobValue(under, kNativeMergeParamOperation, std::string("over")));
+        EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
+        connectNodes(base, under, 0, true);
+        connectNodes(half, under, 1, true);
+        connectNodes(under, over, 0, true);
+        connectNodes(inside, over, 1, true);
+
+        return over;
+    };
+    NodePtr source = makeSource(kWindow, RectI(32, kWindow.y1, kWindow.x2, kWindow.y2));
+    NodePtr laidOut = makeSource(padded, RectI(32, padded.y1, padded.x2, padded.y2));
+    ASSERT_TRUE(bool(source) && bool(laidOut));
+
+    for (const char* type : { kDefocusParamKernelTypeDisc, kDefocusParamKernelTypeBlades }) {
+        NodePtr stretched = makeDefocus(source, NodePtr(), 1000.);
+        NodePtr reference = makeDefocus(laidOut, NodePtr(), 1000.);
+        ASSERT_TRUE(bool(stretched) && bool(reference));
+        for (const NodePtr& node : { stretched, reference }) {
+            ASSERT_TRUE(setKnobValue(node, kDefocusParamKernelType, std::string(type)));
+            ASSERT_TRUE(setKnobValues(node, kDefocusParamHighlightGain, { 2. }));
+            ASSERT_TRUE(setKnobValues(node, kDefocusParamHighlightThreshold, { 1. }));
+        }
+        ASSERT_TRUE(setKnobValue(stretched, kEdgeModeParam, std::string("stretch")));
+        ASSERT_TRUE(setKnobValue(reference, kEdgeModeParam, std::string("black")));
+
+        RenderedPlane whole, part, expected;
+        const RectI tile(5, 30, 27, 48);
+        ASSERT_TRUE(renderRGBA(stretched, kWindow, &whole)) << type;
+        ASSERT_TRUE(renderRGBA(stretched, tile, &part)) << type;
+        ASSERT_TRUE(renderRGBA(reference, kWindow, &expected)) << type;
+        for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+            for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const float v = pixelAt(whole, x, y, c);
+                    ASSERT_TRUE(std::isfinite(v)) << type;
+                    ASSERT_NEAR(pixelAt(expected, x, y, c), v, 1e-5 * std::max(1.f, std::fabs(v))) << type << " at (" << x << "," << y << "," << c << ")";
+                    if (tile.contains(x, y)) {
+                        ASSERT_NEAR(v, pixelAt(part, x, y, c), 1e-5 * std::max(1.f, std::fabs(v))) << type << " tile at (" << x << "," << y << "," << c << ")";
+                    }
+                }
+            }
+        }
+    }
+}

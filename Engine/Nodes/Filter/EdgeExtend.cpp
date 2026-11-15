@@ -519,6 +519,15 @@ edgeExtendPasses(const EdgeExtendParams& params,
     list.scratchSlots = 3;
     list.resultSlot = kSlotResult;
 
+    // Each slice blurs the running result, which past the source varies as far as the earlier
+    // slices reached: the scratch holds that much, and the last slice's line ends repeat its edge.
+    list.stretchReachX = 0;
+    list.stretchReachY = 0;
+    for (std::size_t i = 0; i + 1 < slices.size(); ++i) {
+        list.stretchReachX += slices[i].radiusX;
+        list.stretchReachY += slices[i].radiusY;
+    }
+
     list.passes.push_back(Pass::point(false, prepareWorker(extend, params.sourcePremultiplied, threshold)));
     for (const Slice& slice : slices) {
         const LineFilterPtr filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::firGaussian(slice.sigmaX, 0, edgeMode));

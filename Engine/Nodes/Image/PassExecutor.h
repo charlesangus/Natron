@@ -597,6 +597,19 @@ StatusEnum runPassesCpu(EffectInstance& effect,
                         const PassList& list) WARN_UNUSED_RETURN;
 
 /**
+ * @brief The scratch rect runPassesCpu() runs list over for window, for an op that sizes its own
+ * per-pixel state to it. False when effect's region of definition is unavailable.
+ **/
+bool passScratchRect(EffectInstance& effect,
+                     const StagePlan& plan,
+                     const PassList& list,
+                     const RectI& window,
+                     double time,
+                     const RenderScale& scale,
+                     ViewIdx view,
+                     RectI* rect) WARN_UNUSED_RETURN;
+
+/**
  * @brief Runs the passes of list in order over scratch, each over whole lines split between
  * threads, as runPassesCpu() runs them after filling slot 0: for an op that runs another node's
  * passes on a buffer of its own. The caller sizes every slot and fills slot 0; the list must be

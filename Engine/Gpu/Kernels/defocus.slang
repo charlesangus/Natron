@@ -157,23 +157,37 @@ void gatherRuns(uint first, uint count, uint mask, int x, int y, inout float acc
     const uint n = params.channels;
     const int w = int(params.domWidth);
     const int h = int(params.domHeight);
+    const bool stretch = (params.flags & kEdgeBlackFlag) == 0u && w > 0 && h > 0;
     for (uint r = 0; r < count; ++r) {
         const uint run = first + 4 * r;
         const int dy = int(runBuf[run]);
         const int dx0 = int(runBuf[run + 1]);
         const int length = int(runBuf[run + 2]);
         const float weight = asfloat(runBuf[run + 3]);
-        const int sy = y - dy;
-        if (sy < 0 || sy >= h)
-            continue;
+        int sy = y - dy;
+        if (sy < 0 || sy >= h) {
+            if (!stretch)
+                continue;
+            sy = clamp(sy, 0, h - 1);
+        }
         // Pixel x sums the source over [x - dx0 - length + 1, x - dx0 + 1).
-        const int a = clamp(x - dx0 - length + 1, 0, w);
-        const int b = clamp(x - dx0 + 1, 0, w);
-        if (a >= b)
-            continue;
+        const int start = x - dx0 - length + 1;
+        const int end = x - dx0 + 1;
+        const int a = clamp(start, 0, w);
+        const int b = clamp(end, 0, w);
+        // Under Stretch a run's part past either end of the row adds that end's pixel per column,
+        // read as the block prefixes give it so that a value that is not finite counts as 0.
+        const float before = (stretch && start < 0) ? float(min(end, 0) - start) : 0.0;
+        const float after = (stretch && end > w) ? float(end - max(start, w)) : 0.0;
         for (uint c = 0; c < n && c < 4; ++c) {
-            if ((mask & (1u << c)) != 0u)
+            if ((mask & (1u << c)) == 0u)
+                continue;
+            if (a < b)
                 acc[c] += weight * rangeSum(c, uint(sy), uint(a), uint(b));
+            if (before > 0.0)
+                acc[c] += weight * (before * rangeSum(c, uint(sy), 0u, 1u));
+            if (after > 0.0)
+                acc[c] += weight * (after * rangeSum(c, uint(sy), uint(w - 1), uint(w)));
         }
     }
 }

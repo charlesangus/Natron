@@ -109,6 +109,7 @@ struct DefocusState {
     std::vector<BokehRun> runs;
     BokehHighlight highlight;
     RectI window;
+    EdgeMode edgeMode = EdgeMode::Black;
 
     std::mutex mutex;
     std::unique_ptr<double[]> tables;
@@ -205,7 +206,7 @@ gatherWorker(const DefocusStatePtr& state)
                 return;
             }
             float* const dst = buffers->plane(1, p) + (std::size_t)y * width + x1;
-            bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, s->runs, y, x1, x2, acc->data(), dst);
+            bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, s->runs, y, x1, x2, s->edgeMode, acc->data(), dst);
         };
     };
 }
@@ -311,7 +312,7 @@ lensGatherWorker(const DefocusLensStatePtr& state,
                 float* const dst = buffers->plane(1, p) + (std::size_t)y * width;
                 s->lens.forEachSegment(buffers->rect.x1 + x1, buffers->rect.x1 + x2, [&](int xa, int xb, int i) {
                     const int a = xa - buffers->rect.x1;
-                    bokehGatherRow(planeTables, width, height, s->band.at(b, group, i, j), y, a, xb - buffers->rect.x1, acc->data(), dst + a);
+                    bokehGatherRow(planeTables, width, height, s->band.at(b, group, i, j), y, a, xb - buffers->rect.x1, s->base->edgeMode, acc->data(), dst + a);
                 });
             }
         };
@@ -785,6 +786,9 @@ Defocus::passes(const DefocusParams& params,
 {
     PassList list;
     list.edgeMode = context.edgeMode;
+    // One gather of the source, whose reads past the scratch repeat its edge rows and columns.
+    list.stretchReachX = 0;
+    list.stretchReachY = 0;
     double rx = 0.;
     double ry = 0.;
     radii(params, context, params.lens.maxScale(), &rx, &ry);
@@ -800,6 +804,7 @@ Defocus::passes(const DefocusParams& params,
         state->runs = kernel->runs();
         state->highlight = params.highlight;
         state->window = window;
+        state->edgeMode = context.edgeMode;
     }
     using Worker = std::function<PassRowFn(const PassScratch&)>;
 
@@ -838,6 +843,9 @@ Defocus::lensPasses(const DefocusParams& params,
 {
     PassList list;
     list.edgeMode = context.edgeMode;
+    // One gather of the source, whose reads past the scratch repeat its edge rows and columns.
+    list.stretchReachX = 0;
+    list.stretchReachY = 0;
     double rx = 0.;
     double ry = 0.;
     radii(params, context, params.lens.maxScale(), &rx, &ry);
@@ -851,6 +859,7 @@ Defocus::lensPasses(const DefocusParams& params,
     DefocusStatePtr base = std::make_shared<DefocusState>();
     base->highlight = params.highlight;
     base->window = window;
+    base->edgeMode = context.edgeMode;
     DefocusLensStatePtr state = std::make_shared<DefocusLensState>(lens);
     state->base = base;
     state->kernel = kernel;

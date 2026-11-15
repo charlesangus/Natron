@@ -51,7 +51,7 @@ struct EdgeParams
     // The rotation-invariant kernel's weights, as the CPU rounds them.
     float ra;
     float rb;
-    // fill and stencil: how reads past the source and the buffer land, kEdgeStretch or kEdgeBlack.
+    // fill, stencil and nms: how reads past the source and the buffer land, kEdgeStretch or kEdgeBlack.
     uint edgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<EdgeParams> params;
@@ -469,6 +469,10 @@ void edgedetect_combine(uint3 tid : SV_DispatchThreadID)
 
 float magnitudeAt(int x, int y, uint c)
 {
+    if (params.edgeMode == kEdgeStretch) {
+        x = clamp(x, params.bufX1, params.bufX1 + int(params.bufWidth) - 1);
+        y = clamp(y, params.bufY1, params.bufY1 + int(params.bufHeight) - 1);
+    }
     return asfloat(inBuf[bufIndex(x, y) + c]);
 }
 
@@ -533,7 +537,8 @@ float suppressed(int x, int y, uint c, uint dirC)
     return 0.0;
 }
 
-// suppressionWorker() over the output rect: the buffer's border, and pixels outside it, are zero.
+// suppressionWorker() over the output rect: pixels outside the buffer are zero, and under Black so
+// is its border, while under Stretch the border reads past the buffer by repeating its edge.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void edgedetect_nms(uint3 tid : SV_DispatchThreadID)
@@ -545,7 +550,8 @@ void edgedetect_nms(uint3 tid : SV_DispatchThreadID)
     const int y = params.outY1 + int(tid.y);
     const int x2 = params.bufX1 + int(params.bufWidth);
     const int y2 = params.bufY1 + int(params.bufHeight);
-    if (!inBuffer(x, y) || x == params.bufX1 || y == params.bufY1 || x == x2 - 1 || y == y2 - 1)
+    const bool border = x == params.bufX1 || y == params.bufY1 || x == x2 - 1 || y == y2 - 1;
+    if (!inBuffer(x, y) || (border && params.edgeMode != kEdgeStretch))
     {
         writeZero(dst);
         return;

@@ -600,3 +600,67 @@ TEST_F(NativeEdgeExtendTest, SameBothWays)
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
     expectSame("premultiplied-2-slices-mask-mix");
 }
+
+// Under Stretch the cascade holds the source grown by the slices before the last, whose line ends
+// repeat the edge: the result matches the same cascade under Black over a source whose edge is
+// laid out explicitly past every pixel it reaches, and a single slice far larger than the image
+// stays finite with a tile matching the whole.
+TEST_F(NativeEdgeExtendTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
+{
+    const RectI format(0, 0, kWidth, kHeight);
+    const int pad = 400;
+    const RectI tile(5, 30, 27, 48);
+    const auto makeSource = [&](int grow) -> NodePtr {
+        const RectI strip(-grow, -grow, 12, kHeight + grow);
+        const RectI corner(54, 40, kWidth + grow, kHeight + grow);
+        NodePtr base = makeConstant({ 0., 0., 0., 0. }, NULL);
+        NodePtr left = makeOver(base, makeConstant({ 0.9, 0.2, 0.1, 1. }, &strip));
+        NodePtr box = makeOver(left, makeConstant({ kColour[0], kColour[1], kColour[2], 1. }, &kBox));
+
+        return makeOver(box, makeConstant({ 0.1, 0.3, 0.9, 1. }, &corner));
+    };
+    const auto expectMatches = [&](const RenderedPlane& got, const RenderedPlane& want, const RectI& over, double tolerance, const std::string& what) {
+        for (int y = over.y1; y < over.y2; ++y) {
+            for (int x = over.x1; x < over.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const float v = at(got, x, y, c);
+                    ASSERT_TRUE(std::isfinite(v)) << what;
+                    ASSERT_NEAR(at(want, x, y, c), v, tolerance * std::max(1.f, std::fabs(v))) << what << " at (" << x << "," << y << "," << c << ")";
+                }
+            }
+        }
+    };
+
+    for (double slices : { 1., 3. }) {
+        resetProject();
+        const std::string what = std::to_string((int)slices) + " slices";
+        NodePtr stretched = makeEdgeExtend(makeSource(0));
+        NodePtr reference = makeEdgeExtend(makeSource(pad));
+        ASSERT_TRUE(bool(stretched) && bool(reference));
+        for (const NodePtr& node : { stretched, reference }) {
+            ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSize, { 40. }));
+            ASSERT_TRUE(setKnobValues(node, kEdgeExtendParamSlices, { slices }));
+        }
+        ASSERT_TRUE(setKnobValue(stretched, kEdgeModeParam, std::string("stretch")));
+        ASSERT_TRUE(setKnobValue(reference, kEdgeModeParam, std::string("black")));
+        RenderedPlane whole, part, expected;
+        ASSERT_TRUE(renderRGBA(stretched, format, &whole)) << what;
+        ASSERT_TRUE(renderRGBA(stretched, tile, &part)) << what;
+        ASSERT_TRUE(renderRGBA(reference, format, &expected)) << what;
+        ASSERT_NO_FATAL_FAILURE(expectMatches(whole, expected, format, 1e-5, what));
+        ASSERT_NO_FATAL_FAILURE(expectMatches(part, whole, tile, 1e-5, what + ", tile"));
+    }
+
+    // One slice reads only the source, so a blur far larger than the image costs no more memory
+    // than the image.
+    resetProject();
+    NodePtr huge = makeEdgeExtend(makeSource(0));
+    ASSERT_TRUE(bool(huge));
+    ASSERT_TRUE(setKnobValues(huge, kEdgeExtendParamSize, { 5000. }));
+    ASSERT_TRUE(setKnobValues(huge, kEdgeExtendParamSlices, { 1. }));
+    ASSERT_TRUE(setKnobValue(huge, kEdgeModeParam, std::string("stretch")));
+    RenderedPlane whole, part;
+    ASSERT_TRUE(renderRGBA(huge, format, &whole));
+    ASSERT_TRUE(renderRGBA(huge, tile, &part));
+    ASSERT_NO_FATAL_FAILURE(expectMatches(part, whole, tile, 1e-5, "one huge slice"));
+}

@@ -1125,6 +1125,33 @@ runPassListOnScratch(const PassList& list,
     }
 }
 
+bool
+passScratchRect(EffectInstance& effect,
+                const StagePlan& plan,
+                const PassList& list,
+                const RectI& window,
+                double time,
+                const RenderScale& scale,
+                ViewIdx view,
+                RectI* rect)
+{
+    RectI dstRoDPixel;
+    if (!effectRoDPixels(effect, time, scale, view, &dstRoDPixel)) {
+        return false;
+    }
+    StagePlan maskPlan = plan;
+    if (list.opMask) {
+        resolveStageOpMask(effect, &maskPlan);
+    } else {
+        maskPlan.applyMask = false;
+    }
+    const RectI srcRoDPixel = sourceRoDPixels(effect, plan.sourceInput, time, scale, view);
+    const RectI maskRoDPixel = opMaskRoDPixels(effect, list, maskPlan, time, scale, view);
+    *rect = passBufferRect(window, list, dstRoDPixel, srcRoDPixel, maskRoDPixel);
+
+    return true;
+}
+
 StatusEnum
 runPassesCpu(EffectInstance& effect,
              const StagePlan& plan,
@@ -1234,14 +1261,8 @@ runPassesCpu(EffectInstance& effect,
     const bool processing = !isEmptyRect(processWindow);
 
     RectI bufferRect(0, 0, 0, 0);
-    if (processing) {
-        RectI dstRoDPixel;
-        if (!effectRoDPixels(effect, args.time, args.mappedScale, args.view, &dstRoDPixel)) {
-            return eStatusFailed;
-        }
-        const RectI srcRoDPixel = sourceRoDPixels(effect, sourceInput, args.time, args.mappedScale, args.view);
-        const RectI maskRoDPixel = opMaskRoDPixels(effect, list, opMaskPlan, args.time, args.mappedScale, args.view);
-        bufferRect = passBufferRect(processWindow, list, dstRoDPixel, srcRoDPixel, maskRoDPixel);
+    if (processing && !passScratchRect(effect, plan, list, processWindow, args.time, args.mappedScale, args.view, &bufferRect)) {
+        return eStatusFailed;
     }
     const int bufferWidth = std::max(0, bufferRect.width());
     const int bufferHeight = std::max(0, bufferRect.height());

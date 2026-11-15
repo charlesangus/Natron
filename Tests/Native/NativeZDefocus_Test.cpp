@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Filter/Defocus.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
@@ -633,4 +634,57 @@ TEST_F(NativeZDefocusTest, Golden)
         return depth(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });
     }));
     runGoldenCases(getApp(), spec, v);
+}
+
+// Under Stretch bokeh far larger than the image read only the source and the window, the slice
+// planes covering that much, and match the same bokeh under Black over a source whose edge is
+// laid out explicitly past every pixel they reach.
+TEST_F(NativeZDefocusTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
+{
+    const int pad = 300;
+    const RectI padded(kWindow.x1 - pad, kWindow.y1 - pad, kWindow.x2 + pad, kWindow.y2 + pad);
+    // Half opaque at the left, in front of the focus, opaque and in focus at the right and in
+    // the box.
+    const auto makeSource = [&](const RectI& left, const RectI& right) -> NodePtr {
+        return makeBoxOver(makeBoxOver(makeConstant(left, { 0.2, 0.4, 0.6, 0.5 }), right, { 0.9, 0.1, 0.3, 1. }), RectI(20, 14, 44, 34), { 4., 2., 1., 1. });
+    };
+    NodePtr source = makeSource(kWindow, RectI(32, kWindow.y1, kWindow.x2, kWindow.y2));
+    NodePtr laidOut = makeSource(padded, RectI(32, padded.y1, padded.x2, padded.y2));
+    ASSERT_TRUE(bool(source) && bool(laidOut));
+    RenderedPlane input;
+    ASSERT_TRUE(renderRGBA(source, kWindow, &input));
+
+    for (const char* type : { kZDefocusParamKernelTypeDisc, kZDefocusParamKernelTypeBlades }) {
+        NodePtr stretched = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".A", 1., 1000.);
+        NodePtr reference = makeZDefocus(laidOut, std::string(kNatronColorViewRGBA) + ".A", 1., 1000.);
+        ASSERT_TRUE(bool(stretched) && bool(reference));
+        for (const NodePtr& node : { stretched, reference }) {
+            ASSERT_TRUE(setKnobValues(node, kZDefocusParamMaxSize, { 1000. }));
+            ASSERT_TRUE(setKnobValues(node, kZDefocusParamLayers, { 6. }));
+            ASSERT_TRUE(setKnobValue(node, kZDefocusParamKernelType, std::string(type)));
+        }
+        ASSERT_TRUE(setKnobValue(stretched, kEdgeModeParam, std::string("stretch")));
+        ASSERT_TRUE(setKnobValue(reference, kEdgeModeParam, std::string("black")));
+
+        RenderedPlane whole, part, expected;
+        const RectI tile(5, 30, 27, 48);
+        ASSERT_TRUE(renderRGBA(stretched, kWindow, &whole)) << type;
+        ASSERT_TRUE(renderRGBA(stretched, tile, &part)) << type;
+        ASSERT_TRUE(renderRGBA(reference, kWindow, &expected)) << type;
+        double change = 0.;
+        for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+            for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const float v = pixelAt(whole, x, y, c);
+                    ASSERT_TRUE(std::isfinite(v)) << type;
+                    change = std::max(change, std::fabs((double)v - pixelAt(input, x, y, c)));
+                    ASSERT_NEAR(pixelAt(expected, x, y, c), v, 1e-5 * std::max(1.f, std::fabs(v))) << type << " at (" << x << "," << y << "," << c << ")";
+                    if (tile.contains(x, y)) {
+                        ASSERT_NEAR(v, pixelAt(part, x, y, c), 1e-5 * std::max(1.f, std::fabs(v))) << type << " tile at (" << x << "," << y << "," << c << ")";
+                    }
+                }
+            }
+        }
+        EXPECT_GT(change, 1e-2) << type << ": the bokeh changes the image";
+    }
 }

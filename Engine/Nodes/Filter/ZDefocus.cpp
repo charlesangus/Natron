@@ -153,6 +153,7 @@ struct ZDefocusState {
     std::vector<ZDefocusLayer> layers;
     BokehHighlight highlight;
     RectI window;
+    EdgeMode edgeMode = EdgeMode::Black;
 
     // With lens aberrations: whether slice k leaves channel group g sharp, groupSharp[k][g]; the runs
     // of slice k's kernel for a group and a cell's clip; those of the band being composited; and a
@@ -340,7 +341,7 @@ compositeWorker(const ZDefocusStatePtr& state,
                 s->weightRow(*buffers, k, y, w);
                 std::copy(w + x1, w + x2, a);
             } else {
-                bokehGatherRow(tables + (std::size_t)nPlanes * planeSize, width, height, layer.runs, y, x1, x2, acc->data(), a);
+                bokehGatherRow(tables + (std::size_t)nPlanes * planeSize, width, height, layer.runs, y, x1, x2, s->edgeMode, acc->data(), a);
             }
             float* const cov = coverage + row + x1;
             for (int p = 0; p < nPlanes; ++p) {
@@ -350,7 +351,7 @@ compositeWorker(const ZDefocusStatePtr& state,
                         c[i] = (a[i] > 0.f && std::isfinite(src[i])) ? a[i] * src[i] : 0.f;
                     }
                 } else {
-                    bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, layer.runs, y, x1, x2, acc->data(), c);
+                    bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, layer.runs, y, x1, x2, s->edgeMode, acc->data(), c);
                 }
                 float* const dst = buffers->plane(2, p) + row + x1;
                 for (int i = 0; i < x2 - x1; ++i) {
@@ -489,7 +490,7 @@ lensCompositeWorker(const ZDefocusStatePtr& state,
                         continue;
                     }
                     lens.forEachSegment(rx1 + x1, rx1 + x2, [&](int xa, int xb, int i) {
-                        bokehGatherRow(tables + (std::size_t)nPlanes * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, acc->data(), a + (xa - rx1 - x1));
+                        bokehGatherRow(tables + (std::size_t)nPlanes * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, s->edgeMode, acc->data(), a + (xa - rx1 - x1));
                     });
                 }
                 for (int p = 0; p < nPlanes; ++p) {
@@ -502,7 +503,7 @@ lensCompositeWorker(const ZDefocusStatePtr& state,
                         }
                     } else {
                         lens.forEachSegment(rx1 + x1, rx1 + x2, [&](int xa, int xb, int i) {
-                            bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, acc->data(), c + (xa - rx1 - x1));
+                            bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, s->edgeMode, acc->data(), c + (xa - rx1 - x1));
                         });
                     }
                     float* const dst = buffers->plane(2, p) + row + x1;
@@ -1748,6 +1749,10 @@ ZDefocus::opPasses(double time,
     const std::size_t taps = (std::size_t)(2 * (2 * haloY + 1)) * sliceList.size();
     PassList list = resultPasses(haloX, haloY, taps, ZDefocusStatePtr(), std::vector<unsigned char>());
     list.edgeMode = context.edgeMode;
+    // The depth is a layer of the source, so one gather of both reads past the scratch by
+    // repeating its edge rows and columns.
+    list.stretchReachX = 0;
+    list.stretchReachY = 0;
 
 #ifdef NATRON_HAVE_GPU
     ImageLayerDesc depthLayer;
@@ -2113,6 +2118,7 @@ ZDefocus::renderOp(const RenderActionArgs& args,
         state->cocRect = passListSourceRoI(args.roi, full);
         state->highlight = params.highlight;
         state->window = args.roi;
+        state->edgeMode = full.edgeMode;
     } else {
         sliceList = slices(params, context);
         std::vector<std::shared_ptr<const BokehKernel>> kernels;
@@ -2140,6 +2146,12 @@ ZDefocus::renderOp(const RenderActionArgs& args,
         state->cocRect = passListSourceRoI(args.roi, full);
         state->highlight = params.highlight;
         state->window = args.roi;
+        state->edgeMode = full.edgeMode;
+    }
+    // The slice planes cover the scratch the result passes run over, which under Stretch holds
+    // the source and the window rather than the whole halo.
+    if (!params.focalPlaneOutput && (full.edgeMode == EdgeMode::Stretch) && !passScratchRect(*this, plan, full, args.roi, args.time, args.mappedScale, args.view, &state->cocRect)) {
+        return eStatusFailed;
     }
     if (PassExec::isEmptyRect(state->cocRect)) {
         return runPassesCpu(*this, plan, args, PassList());
@@ -2235,6 +2247,8 @@ ZDefocus::renderOp(const RenderActionArgs& args,
 
     PassList list = resultPasses(extent.haloX, extent.haloY, first.tapsPerSample, state, used);
     list.edgeMode = full.edgeMode;
+    list.stretchReachX = full.stretchReachX;
+    list.stretchReachY = full.stretchReachY;
 
     return runPassesCpu(*this, plan, args, list);
 } // ZDefocus::renderOp

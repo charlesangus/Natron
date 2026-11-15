@@ -24,7 +24,7 @@ and releasing Ctrl snaps it back to its normal size. The user finds it pointless
 
 ## Phase 374.1: Remove the feature
 
-- [ ] M374.P1.T1 — Delete ctrl-scroll node magnification from the node graph
+- [x] M374.P1.T1 — Delete ctrl-scroll node magnification from the node graph
   - files: Gui/NodeGraph30.cpp (wheelEventInternal ~172, keyReleaseEvent ~205, deselectNode ~374, selection update ~413), Gui/NodeGraph13.cpp (~101), Gui/NodeGraph10.cpp (~313, `_magnifiedNode = selectedNode`), Gui/NodeGraph.cpp (~285, `_magnifiedNode.reset()`), Gui/NodeGraphPrivate.h (~162-164), Gui/NodeGraphPrivate.cpp (~57-59), Gui/NodeGraph.h and Gui/NodeGraph20.cpp if `wheelEventInternal`'s `ctrlDown` parameter is dropped
   - approach: Remove the `if (ctrlDown && _imp->_magnifiedNode) {...} else` branch so the accumulate-and-scale zoom path always runs. Delete the three `_imp` members, their initialisers, and every block that restores the scale on Ctrl release, on deselect, on selection change and on clear-selection; in keyReleaseEvent keep the bend-point hiding. Drop the now-unused `ctrlDown` parameter from `wheelEventInternal` and update its two callers (NodeGraph30.cpp wheelEvent, NodeGraph20.cpp zoom-area drag); check `grep -rn wheelEventInternal Gui` for any other caller. Afterwards `grep -rn "magnif" Gui` must return nothing.
   - verify: Build compiles; `grep -rn "_magnif\|nodeSelectedScaleBeforeMagnif" Gui` is empty; a GUI script under Xvfb (recipe in build/deeprepro/run-gui.sh, fixtures under build/) creates a node, selects it, sends a Ctrl+wheel QWheelEvent to the NodeGraph viewport, and checks the node's `scale()` is still 1.0 and the view transform's zoom changed — the same zoom as an unmodified wheel event of the same delta.
@@ -35,3 +35,4 @@ and releasing Ctrl snaps it back to its normal size. The user finds it pointless
 ## Decisions
 
 - 2026-11-15 — Shared lane with M397 - Label Resize Keeps Node Top-Centre and M374 - Remove Node Magnify On Ctrl-Scroll (user): both ship on `milestone/m397-m374-node-graph-fixes` as one PR, one build, one GUI bench run and one UAT; the PR closes both rows.
+- 2026-11-15 — M374.P1.T1 landed (code: c6764af23); build and GUI script verify batched into the shared M397/M374 gate. The script checks node scale through `getSize()` (scene not reachable from Python); confirm it reflects `NodeGui::scale()` when it runs.

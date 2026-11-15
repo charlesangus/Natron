@@ -191,20 +191,21 @@ Pos toPos(FF a)
         p.f = 0.0;
         return p;
     }
-    float fl = floor(a.hi);
+    // Past 2^24 the low half can exceed 1 and floats no longer step by 1, so the carry is taken
+    // in ints.
+    const float fl = floor(a.hi);
     precise float f = (a.hi - fl) + a.lo;
-    if (f < 0.0)
+    const float carry = floor(f);
+    precise float frac = f - carry;
+    const int i = int(fl) + int(carry);
+    if (i > int(kPosLimit) || i < -int(kPosLimit))
     {
-        fl -= 1.0;
-        f += 1.0;
+        p.i = i > 0 ? int(kPosLimit) : -int(kPosLimit);
+        p.f = 0.0;
+        return p;
     }
-    else if (f >= 1.0)
-    {
-        fl += 1.0;
-        f -= 1.0;
-    }
-    p.i = int(fl);
-    p.f = f;
+    p.i = i;
+    p.f = frac;
     return p;
 }
 
@@ -795,7 +796,9 @@ void buildAxisTaps(FilterSpec spec, TapAxis a, int lo, int hiExclusive, uint edg
         else
         {
             low = a.first + tap;
-            offset = ffAddF(ffNeg(a.centre), float(low));
+            // A pixel past 2^24 rounds to a float, so the remainder joins as a second term.
+            const float lowHi = float(low);
+            offset = ffAddF(ffAddF(ffNeg(a.centre), lowHi), float(low - int(lowHi)));
         }
         const float tw = tapWeight(spec, offset, isNode ? one : a.scale);
         if (isNode)

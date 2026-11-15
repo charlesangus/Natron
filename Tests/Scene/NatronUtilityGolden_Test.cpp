@@ -105,6 +105,19 @@ sameDepth(float reference,
     return std::fabs(z - (double)rendered) <= tolerance;
 }
 
+// Texture filtering on a subdivided mesh is not bit reproducible from run to run; colour values in
+// [0, 4] move by a few ulps, so the textured subdivision colour is accepted within 1e-5.
+bool
+sameColour(float reference,
+           float rendered)
+{
+    if (!std::isfinite(reference) || !std::isfinite(rendered)) {
+        return (reference == rendered) || (std::isnan(reference) && std::isnan(rendered));
+    }
+
+    return std::fabs((double)reference - (double)rendered) <= 1e-5;
+}
+
 const int kTextureSize = 8;
 
 // A checker whose two colours shade the other way along each axis, so that any shift, flip or
@@ -297,6 +310,7 @@ protected:
         GoldenPlaneAcceptance acceptance;
 
         acceptance["depth"] = sameDepth;
+        acceptance["uk.co.thefoundry.OfxImagePlaneColour"] = sameColour;
         EXPECT_TRUE(checkGolden(render, kGroup, caseName, 0, 1., acceptance));
         HydraRender::releaseAll();
     }

@@ -72,6 +72,21 @@ struct KernelShadeLightsParams {
     std::uint32_t padding[2];
 };
 
+// Mirrors ResolveParams in Kernels/ResolveHits.slang.
+struct KernelResolveParams {
+    float pixelFootprint[4];
+    std::uint32_t count;
+    std::uint32_t flags;
+    std::uint32_t linkWords;
+    std::uint32_t padding;
+};
+
+// ResolveParams::flags in Kernels/ResolveHits.slang.
+const std::uint32_t kKernelResolveMerge = 1u;
+const std::uint32_t kKernelResolveLast = 2u;
+const std::uint32_t kKernelResolveShadow = 4u;
+const std::uint32_t kKernelResolveShadowLinked = 8u;
+
 // LightRecord::kind.y bits in Kernels/UtilityTypes.slang.
 const std::uint32_t kKernelLightCastsShadows = 1u;
 const std::uint32_t kKernelLightIes = 2u;
@@ -189,6 +204,19 @@ struct KernelShadeBuffers {
     std::uint32_t* shadowLights = nullptr;
 };
 
+// The per-batch buffers ResolveHits reads and writes besides the scene's tables, count rays each.
+struct KernelResolveBuffers {
+    const float* rays = nullptr; // eight arrays
+    float* hitSurface = nullptr; // three arrays
+    std::uint32_t* hitIds = nullptr; // three arrays
+    const float* nextHitSurface = nullptr;
+    const std::uint32_t* nextHitIds = nullptr;
+    float* retrace = nullptr; // eight arrays
+    // Shadow rays only: the verdict, and the light of each ray.
+    std::uint32_t* blocked = nullptr;
+    const std::uint32_t* rayLights = nullptr;
+};
+
 /**
  * @brief Runs the C++ build of RayGen.slang for one tile, writing tileWidth * tileHeight rays in the
  * eight-array layout of Kernels/UtilityTypes.slang. MT-safe.
@@ -201,6 +229,14 @@ void runRayGenKernel(const KernelRayGenParams& params,
  **/
 void runShadeSurfaceKernel(const KernelShadeParams& params,
                            const KernelShadeBuffers& buffers);
+
+/**
+ * @brief Runs the C++ build of ResolveHits.slang over params.count rays, reading the scene from the
+ * tables of buffers. MT-safe.
+ **/
+void runResolveHitsKernel(const KernelResolveParams& params,
+                          const KernelShadeBuffers& tables,
+                          const KernelResolveBuffers& buffers);
 
 /**
  * @brief Runs the C++ build of ShadeLights.slang: adds to colorOut the contributions of the

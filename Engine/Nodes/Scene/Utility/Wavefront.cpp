@@ -474,6 +474,7 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
     _textureBindings.clear();
     _projections.clear();
     _materialIndices.clear();
+    _holes = false;
 
     const auto addBinding = [&](const UtilityTextureRef& ref) {
         UtilityTextureAssetConstPtr asset;
@@ -541,6 +542,8 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
             record.kind[1] = static_cast<std::uint32_t>(_projections.size());
             _projections.push_back(projection);
         }
+        _holes = _holes || desc.kind == UtilityMaterialDesc::eKindProject3D
+            || (desc.kind == UtilityMaterialDesc::eKindPreviewSurface && desc.opacityThreshold > 0.f);
         _materials.push_back(record);
     };
 
@@ -907,6 +910,12 @@ bool
 WavefrontShadeTables::hasBackground() const
 {
     return _background;
+}
+
+bool
+WavefrontShadeTables::hasHoles() const
+{
+    return _holes;
 }
 
 std::uint32_t

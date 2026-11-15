@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -76,10 +77,12 @@
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
+#include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -287,6 +290,41 @@ skipWithoutGL()
 
     return true;
 }
+// Keeps each pixel's colour and primId, -1 where the ray met nothing.
+class PixelFilm : public WavefrontFilm {
+public:
+    PixelFilm(int width,
+              int height)
+        : _width(width)
+        , colors(width * height, GfVec4f(0.f))
+        , primIds(width * height, -1)
+    {
+    }
+
+    virtual void writeTile(const WavefrontTile& tile) OVERRIDE
+    {
+        std::size_t index = 0;
+
+        for (int row = 0; row < tile.rect.height; ++row) {
+            for (int column = 0; column < tile.rect.width; ++column, ++index) {
+                const std::size_t pixel = (tile.rect.y + row) * _width + tile.rect.x + column;
+
+                if (tile.hitGeometry[index] == Tracer::kNoHit) {
+                    continue;
+                }
+                colors[pixel] = GfVec4f(tile.color + 4 * index);
+                primIds[pixel] = tile.primId[index];
+            }
+        }
+    }
+
+private:
+    int _width;
+
+public:
+    std::vector<GfVec4f> colors;
+    std::vector<std::int32_t> primIds;
+};
 } // anon namespace
 
 TEST(NatronUtilityProject3D, APlateProjectedFromTheRenderCameraReproducesThePlate)
@@ -338,6 +376,64 @@ TEST(NatronUtilityProject3D, CropShowsNothingOutsideTheFrame)
     EXPECT_EQ(GfVec4f(0.f), outside.color);
     EXPECT_EQ(-1, outside.primId);
     EXPECT_EQ(7, card.shade(wide, 0.5, 0.5).primId);
+}
+
+// Rays leave the cropped projection outside its frame and go on to the card behind it.
+TEST(NatronUtilityProject3D, WhereCropDiscardsTheSurfaceBehindShows)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("plate.png")).toStdString();
+    ASSERT_TRUE(writePlate(path));
+
+    const GfFrustum camera = renderCamera();
+    GfFrustum wide = camera;
+
+    wide.SetPerspective(80., 1., 0.5, 100.);
+
+    UtilityProjection projection;
+
+    projection.worldToProjector = worldToFrame(camera);
+    projection.projectorOrigin = GfVec4f(0.3f, -0.2f, 6.f, 1.f);
+
+    ProjectedCard card(projection, path);
+    UtilityMaterialDesc green;
+
+    green.diffuseColor = GfVec3f(0.f);
+    green.emissiveColor = GfVec3f(0.f, 1.f, 0.f);
+
+    const UtilityScene::GeometryId back = card.scene.addGeometry(SdfPath("/Back"), 9);
+
+    card.scene.setTopology(back,
+                           VtVec3fArray { GfVec3f(-20.f, -20.f, -1.f), GfVec3f(20.f, -20.f, -1.f), GfVec3f(20.f, 20.f, -1.f), GfVec3f(-20.f, 20.f, -1.f) },
+                           VtVec3iArray { GfVec3i(0, 1, 2), GfVec3i(0, 2, 3) });
+    card.scene.setInstances(back, { GfMatrix4d(1.) });
+    card.scene.setMaterial(SdfPath("/Green"), std::make_shared<const UtilityMaterialDesc>(green));
+    card.scene.setMaterialId(back, SdfPath("/Green"));
+
+    const int size = 8;
+    WavefrontFrame frame;
+
+    frame.worldToView = wide.ComputeViewMatrix();
+    frame.projection = wide.ComputeProjectionMatrix();
+    frame.window.width = size;
+    frame.window.height = size;
+
+    WavefrontCpu executor;
+    PixelFilm film(size, size);
+    const std::atomic<bool> stop(false);
+
+    ASSERT_TRUE(executor.render(card.scene.snapshot(), frame, film, stop, 2));
+
+    const int row = size / 2;
+
+    EXPECT_EQ(7, film.primIds[row * size + size / 2]);
+    for (int x : { 0, size - 1 }) {
+        const std::size_t pixel = row * size + x;
+
+        EXPECT_EQ(9, film.primIds[pixel]) << "pixel " << x;
+        expectNear(GfVec4f(0.f, 1.f, 0.f, 1.f), film.colors[pixel], 1e-4f, "pixel " + std::to_string(x));
+    }
 }
 
 // The card faces the projector, so projecting on back faces only leaves it to the outside mode.

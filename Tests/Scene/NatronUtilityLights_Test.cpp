@@ -48,6 +48,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -389,6 +390,103 @@ expectCubeShadow(const LitRender& render)
     for (int x = 11; x < kRenderSize; ++x) {
         for (int y = 0; y < kRenderSize; ++y) {
             expectGrey(lit, render.colorAt(x, y), "lit " + pixelName(x, y));
+        }
+    }
+}
+// Blue where displayOpacity is 1 and nothing at all where it is 0, under an opacityThreshold of a half.
+const char* const kCutoutMaterial = R"(
+def Material "Cutout" {
+    token outputs:surface.connect = </Cutout/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0, 0, 1)
+        int inputs:useSpecularWorkflow = 1
+        color3f inputs:specularColor = (0, 0, 0)
+        float inputs:opacity.connect = </Cutout/Opacity.outputs:result>
+        float inputs:opacityThreshold = 0.5
+        token outputs:surface
+    }
+    def Shader "Opacity" {
+        uniform token info:id = "UsdPrimvarReader_float"
+        string inputs:varname = "displayOpacity"
+        float outputs:result
+    }
+}
+def Material "Red" {
+    token outputs:surface.connect = </Red/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (1, 0, 0)
+        int inputs:useSpecularWorkflow = 1
+        color3f inputs:specularColor = (0, 0, 0)
+        token outputs:surface
+    }
+}
+)";
+
+// A card at height z facing +Z, wider than the frame, whose half at x < 0 is cut out.
+std::string
+cutoutCard(double z)
+{
+    const std::string h = std::to_string(z);
+
+    return "def Mesh \"Cutout\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {\n"
+           "    int[] faceVertexCounts = [4, 4]\n"
+           "    int[] faceVertexIndices = [0, 1, 2, 3, 1, 4, 5, 2]\n"
+           "    point3f[] points = [(-20, -20, "
+        + h + "), (0, -20, " + h + "), (0, 20, " + h + "), (-20, 20, " + h + "), (20, -20, " + h + "), (20, 20, " + h + ")]\n"
+        + "    float[] primvars:displayOpacity = [0, 1] (interpolation = \"uniform\")\n"
+        + "    rel material:binding = </Cutout>\n}\n";
+}
+
+// The cutout card over a red card at z = 0, under a sun straight down that casts no shadows.
+std::string
+cutoutOverRed()
+{
+    std::string usda = ground() + cutoutCard(5.) + distantLight(M_PI, 0.) + kCutoutMaterial;
+    const std::string sun = "def DistantLight \"Sun\" {\n";
+
+    usda.replace(usda.find(sun), sun.size(), "def DistantLight \"Sun\" (prepend apiSchemas = [\"ShadowAPI\"]) {\n    bool inputs:shadow:enable = 0\n");
+    usda.replace(usda.find(kBoundWhite), std::strlen(kBoundWhite), "    rel material:binding = </Red>\n");
+
+    return usda;
+}
+
+void
+expectCutoutShowsRed(const LitRender& render)
+{
+    for (int y = 0; y < kRenderSize; ++y) {
+        for (int x = 0; x < kRenderSize; ++x) {
+            if ((x == kRenderSize / 2 - 1) || (x == kRenderSize / 2)) {
+                continue;
+            }
+
+            const GfVec4f expected = x < kRenderSize / 2 ? GfVec4f(1.f, 0.f, 0.f, 1.f) : GfVec4f(0.f, 0.f, 1.f, 1.f);
+            const GfVec4f color = render.colorAt(x, y);
+
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_NEAR(expected[c], color[c], 1e-3f) << pixelName(x, y) << " channel " << c;
+            }
+        }
+    }
+}
+
+// The cutout card above the camera, out of its sight, shading the ground under a sun straight down.
+std::string
+cutoutOverhead()
+{
+    return ground() + cutoutCard(40.) + distantLight(M_PI, 0.) + kCutoutMaterial;
+}
+
+void
+expectCutoutShadow(const LitRender& render)
+{
+    for (int y = 0; y < kRenderSize; ++y) {
+        for (int x = 0; x < kRenderSize; ++x) {
+            if ((x == kRenderSize / 2 - 1) || (x == kRenderSize / 2)) {
+                continue;
+            }
+            expectGrey(x < kRenderSize / 2 ? 1.f : 0.f, render.colorAt(x, y), pixelName(x, y));
         }
     }
 }
@@ -804,6 +902,24 @@ TEST(NatronUtilityLights, RaysThatMissShowTheDomeBesideGeometry)
     EXPECT_FLOAT_EQ(1.f, ball[3]);
 }
 
+TEST(NatronUtilityLights, ACutoutCardShowsTheCardBehindItThroughItsHole)
+{
+    LitRender render(cutoutOverRed());
+
+    render.render();
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
+    expectCutoutShowsRed(render);
+}
+
+TEST(NatronUtilityLights, ACutoutCardsShadowIsLitUnderItsHole)
+{
+    LitRender render(cutoutOverhead());
+
+    render.render();
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
+    expectCutoutShadow(render);
+}
+
 TEST(NatronUtilityLights, ALightLinkedToOneNativeInstanceLightsOnlyThatInstance)
 {
     LitRender render(std::string("class Xform \"Ball\" {\n"
@@ -944,5 +1060,45 @@ TEST(NatronUtilityLights, GpuLightsMaterialsFocusAndTheDomeAsTheCpuDoes)
     EXPECT_NEAR(0.4f, sky[1], 1e-5f);
     EXPECT_NEAR(0.6f, sky[2], 1e-5f);
     EXPECT_FLOAT_EQ(1.f, sky[3]);
+}
+
+TEST(NatronUtilityLights, GpuSeesAndLightsThroughCutoutsAsTheCpuDoes)
+{
+    LightsGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    for (int scene = 0; scene < 2; ++scene) {
+        LitRender render(scene == 0 ? cutoutOverRed() : cutoutOverhead());
+
+        render.setDevice(kUtilityDeviceCpu);
+        render.render();
+
+        const std::vector<GfVec4f> cpu = render.colors();
+
+        render.setDevice(kUtilityDeviceGpu);
+        render.render();
+        EXPECT_EQ(0u, render.textStat(kUtilityStatDevice).rfind("GPU", 0)) << render.textStat(kUtilityStatDevice);
+        EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
+        if (scene == 0) {
+            expectCutoutShowsRed(render);
+        } else {
+            expectCutoutShadow(render);
+        }
+
+        const std::vector<GfVec4f> gpu = render.colors();
+
+        for (std::size_t i = 0; i < cpu.size(); ++i) {
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_NEAR(cpu[i][c], gpu[i][c], 1e-4f) << "scene " << scene << " " << pixelName(static_cast<int>(i) % kRenderSize, static_cast<int>(i) / kRenderSize);
+            }
+        }
+    }
 }
 #endif // NATRON_HAVE_GPU

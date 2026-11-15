@@ -38,6 +38,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <span>
 #include <vector>
 
@@ -53,6 +54,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 
 #include "utility_raygen_spirv.h"
+#include "utility_resolve_hits_spirv.h"
 #include "utility_shade_lights_spirv.h"
 #include "utility_shade_surface_spirv.h"
 
@@ -124,7 +126,9 @@ namespace {
 static_assert(sizeof(KernelRayGenParams) == utility_raygen_push_bytes);
 static_assert(sizeof(KernelShadeParams) == utility_shade_surface_push_bytes);
 static_assert(sizeof(KernelShadeLightsParams) == utility_shade_lights_push_bytes);
+static_assert(sizeof(KernelResolveParams) == utility_resolve_hits_push_bytes);
 static_assert(utility_raygen_storage_buffers == 1 && utility_shade_surface_storage_buffers == 25 && utility_shade_lights_storage_buffers == 3);
+static_assert(utility_resolve_hits_storage_buffers == 20);
 static_assert(sizeof(KernelLightRecord) == 144);
 static_assert(sizeof(KernelGeometryRecord) == 32);
 static_assert(sizeof(KernelMaterialRecord) == 144 && sizeof(KernelTextureBinding) == 112 && sizeof(KernelProjectionRecord) == 256);
@@ -170,6 +174,14 @@ shadeLightsDesc()
 {
     return gpu::GpuKernelDesc {
         utility_shade_lights_spirv, utility_shade_lights_spirv_words, utility_shade_lights_entry, utility_shade_lights_storage_buffers, utility_shade_lights_push_bytes, { utility_shade_lights_group_size[0], utility_shade_lights_group_size[1], utility_shade_lights_group_size[2] }
+    };
+}
+
+gpu::GpuKernelDesc
+resolveHitsDesc()
+{
+    return gpu::GpuKernelDesc {
+        utility_resolve_hits_spirv, utility_resolve_hits_spirv_words, utility_resolve_hits_entry, utility_resolve_hits_storage_buffers, utility_resolve_hits_push_bytes, { utility_resolve_hits_group_size[0], utility_resolve_hits_group_size[1], utility_resolve_hits_group_size[2] }
     };
 }
 
@@ -286,6 +298,24 @@ struct WavefrontGpu::Implementation {
     bool uploadTables(std::uint64_t version);
     bool reserveReadback(std::size_t rays,
                          const WavefrontAovs& aovs);
+    struct ResolveScratch {
+        gpu::GpuBuffer* retrace = nullptr;
+        gpu::GpuBuffer* nextHitValues = nullptr;
+        gpu::GpuBuffer* nextHitIds = nullptr;
+    };
+
+    bool reserveResolve(gpu::GpuRecordContext& ctx,
+                        std::size_t count,
+                        ResolveScratch& out);
+    bool recordResolve(gpu::GpuRecordContext& ctx,
+                       const ResolveScratch& scratch,
+                       KernelResolveParams params,
+                       std::size_t count,
+                       const gpu::GpuBuffer& rays,
+                       const gpu::GpuBuffer& hitValues,
+                       const gpu::GpuBuffer& hitIds,
+                       const gpu::GpuBuffer& blocked,
+                       const gpu::GpuBuffer& rayLights);
     bool renderBatch(const WavefrontFrame& frame,
                      const WavefrontRect& rect,
                      gpu::GpuRecordContext& ctx,
@@ -303,6 +333,7 @@ struct WavefrontGpu::Implementation {
     std::shared_ptr<gpu::GpuKernel> rayGenKernel;
     std::shared_ptr<gpu::GpuKernel> shadeKernel;
     std::shared_ptr<gpu::GpuKernel> shadeLightsKernel;
+    std::shared_ptr<gpu::GpuKernel> resolveKernel;
     const std::shared_ptr<void> runtimeHold;
     std::shared_ptr<const UtilityFilmKernels> filmKernels;
     bool filmKernelsTried = false;
@@ -428,6 +459,90 @@ WavefrontGpu::Implementation::deviceColorOf(const WavefrontFilm& film)
 }
 
 bool
+WavefrontGpu::Implementation::reserveResolve(gpu::GpuRecordContext& ctx,
+                                             std::size_t count,
+                                             ResolveScratch& out)
+{
+    const std::string rayCount = std::to_string(count) + " rays";
+
+    if (gpu::GpuStatus s = ctx.scratch(kRayArrays * count * sizeof(float), out.retrace); !s) {
+        return fail("WavefrontGpu could not hold the rays going on through holes of " + rayCount, s);
+    }
+    if (gpu::GpuStatus s = ctx.scratch(kHitArrays * count * sizeof(float), out.nextHitValues); !s) {
+        return fail("WavefrontGpu could not hold the hits past holes of " + rayCount, s);
+    }
+    if (gpu::GpuStatus s = ctx.scratch(kHitArrays * count * sizeof(std::uint32_t), out.nextHitIds); !s) {
+        return fail("WavefrontGpu could not hold the hit ids past holes of " + rayCount, s);
+    }
+
+    return true;
+}
+
+/**
+ * @brief Records the passes that take count rays' hits on through holes: every pass resolves the whole
+ * batch and traces it again, the rays already on a surface skipped by the tracer, as a pass cannot ask
+ * the host how many rays are still going on without waiting for the batch. ResolveHits.slang tells
+ * what each pass does.
+ **/
+bool
+WavefrontGpu::Implementation::recordResolve(gpu::GpuRecordContext& ctx,
+                                            const ResolveScratch& scratch,
+                                            KernelResolveParams params,
+                                            std::size_t count,
+                                            const gpu::GpuBuffer& rays,
+                                            const gpu::GpuBuffer& hitValues,
+                                            const gpu::GpuBuffer& hitIds,
+                                            const gpu::GpuBuffer& blocked,
+                                            const gpu::GpuBuffer& rayLights)
+{
+    gpu::GpuBuffer& retrace = *scratch.retrace;
+    gpu::GpuBuffer& nextHitValues = *scratch.nextHitValues;
+    gpu::GpuBuffer& nextHitIds = *scratch.nextHitIds;
+    const std::array<gpu::GpuBinding, 20> bindings = {
+        gpu::GpuBinding::storage(0, rays),
+        gpu::GpuBinding::storage(1, hitValues),
+        gpu::GpuBinding::storage(2, hitIds),
+        gpu::GpuBinding::storage(3, nextHitValues),
+        gpu::GpuBinding::storage(4, nextHitIds),
+        gpu::GpuBinding::storage(5, retrace),
+        gpu::GpuBinding::storage(6, blocked),
+        gpu::GpuBinding::storage(7, rayLights),
+        gpu::GpuBinding::storage(8, tables.geometries.buffer()),
+        gpu::GpuBinding::storage(9, tables.colors.buffer()),
+        gpu::GpuBinding::storage(10, tables.triangles.buffer()),
+        gpu::GpuBinding::storage(11, tables.materials.buffer()),
+        gpu::GpuBinding::storage(12, tables.textureBindings.buffer()),
+        gpu::GpuBinding::storage(13, tables.images.buffer()),
+        gpu::GpuBinding::storage(14, tables.texels.buffer()),
+        gpu::GpuBinding::storage(15, tables.projections.buffer()),
+        gpu::GpuBinding::storage(16, tables.points.buffer()),
+        gpu::GpuBinding::storage(17, tables.instanceTransforms.buffer()),
+        gpu::GpuBinding::storage(18, tables.sts.buffer()),
+        gpu::GpuBinding::storage(19, tables.linkMasks.buffer()),
+    };
+    const std::array<std::uint32_t, 3> threads = { static_cast<std::uint32_t>(count), 1, 1 };
+    const std::uint32_t flags = params.flags;
+
+    params.count = static_cast<std::uint32_t>(count);
+    for (std::uint32_t pass = 0; pass <= kWavefrontMaxHoles; ++pass) {
+        params.flags = flags | (pass > 0 ? kKernelResolveMerge : 0u) | (pass == kWavefrontMaxHoles ? kKernelResolveLast : 0u);
+        if (gpu::GpuStatus s = ctx.dispatchBindings(resolveKernel, bindings, std::as_bytes(std::span(&params, 1)), threads); !s) {
+            return fail("WavefrontGpu could not resolve the hits on holes", s);
+        }
+        ctx.computeBarrier();
+        if (pass == kWavefrontMaxHoles) {
+            break;
+        }
+        if (gpu::GpuStatus s = tracer.recordIntersect(ctx, retrace, static_cast<std::uint32_t>(count), nextHitValues, nextHitIds); !s) {
+            return fail("WavefrontGpu could not trace past holes", s);
+        }
+        ctx.computeBarrier();
+    }
+
+    return true;
+}
+
+bool
 WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
                                           const WavefrontRect& rect,
                                           gpu::GpuRecordContext& ctx,
@@ -488,6 +603,21 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     }
     ctx.computeBarrier();
 
+    KernelShadeParams shadeParams = makeShadeParams(frame, static_cast<std::uint32_t>(count));
+    const bool holes = shadeTables.hasHoles();
+    KernelResolveParams resolveParams {};
+
+    if (holes) {
+        std::copy(std::begin(shadeParams.pixelFootprint), std::end(shadeParams.pixelFootprint), std::begin(resolveParams.pixelFootprint));
+        resolveParams.linkWords = shadeTables.linkWords();
+
+        ResolveScratch scratch;
+
+        if (!reserveResolve(ctx, count, scratch) || !recordResolve(ctx, scratch, resolveParams, count, *rays, *hitValues, *hitIds, *rays, *rays)) {
+            return false;
+        }
+    }
+
     const std::uint32_t lightCount = shadeTables.lightCount();
     const std::uint64_t bindable = std::min(ctx.maxScratchBytes(), ctx.maxStorageBufferBytes()) / (kRayArrays * sizeof(float));
     const std::uint32_t batch = static_cast<std::uint32_t>(std::min<std::uint64_t>({ lightCount, kLightBatch, std::max<std::uint64_t>(1, bindable / count) }));
@@ -496,6 +626,9 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     gpu::GpuBuffer* contributions = rays;
     gpu::GpuBuffer* shadowLights = rays;
     gpu::GpuBuffer* blocked = rays;
+    gpu::GpuBuffer* shadowHitValues = rays;
+    gpu::GpuBuffer* shadowHitIds = rays;
+    ResolveScratch shadowScratch;
 
     if (batch > 0) {
         const std::string shadowRayCount = std::to_string(shadowCount) + " shadow rays";
@@ -512,9 +645,18 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         if (gpu::GpuStatus s = ctx.scratch(shadowCount * sizeof(std::uint32_t), blocked); !s) {
             return fail("WavefrontGpu could not hold the occlusion of " + shadowRayCount, s);
         }
+        if (holes) {
+            if (gpu::GpuStatus s = ctx.scratch(kHitArrays * shadowCount * sizeof(float), shadowHitValues); !s) {
+                return fail("WavefrontGpu could not hold the hits of " + shadowRayCount, s);
+            }
+            if (gpu::GpuStatus s = ctx.scratch(kHitArrays * shadowCount * sizeof(std::uint32_t), shadowHitIds); !s) {
+                return fail("WavefrontGpu could not hold the hit ids of " + shadowRayCount, s);
+            }
+            if (!reserveResolve(ctx, shadowCount, shadowScratch)) {
+                return false;
+            }
+        }
     }
-
-    KernelShadeParams shadeParams = makeShadeParams(frame, static_cast<std::uint32_t>(count));
 
     shadeParams.lighting[1] = batch;
     shadeParams.lighting[2] = shadeTables.linkWords();
@@ -571,14 +713,29 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         ctx.computeBarrier();
 
         const std::uint32_t shadows = static_cast<std::uint32_t>(shadowCount);
-        const gpu::GpuStatus traced = shadowLinked
-            ? tracer.recordOccludedFiltered(ctx, *shadowRays, shadows, *blocked, *shadowLights, tables.linkMasks.buffer(), 2 * linkWords, linkWords)
-            : tracer.recordOccluded(ctx, *shadowRays, shadows, *blocked);
 
-        if (!traced) {
-            return fail("WavefrontGpu could not trace shadow rays", traced);
+        if (holes) {
+            // A closest hit rather than any hit, so that a hole lets the ray go on to what is behind it.
+            KernelResolveParams shadowParams = resolveParams;
+
+            shadowParams.flags = kKernelResolveShadow | (shadowLinked ? kKernelResolveShadowLinked : 0u);
+            if (gpu::GpuStatus s = tracer.recordIntersect(ctx, *shadowRays, shadows, *shadowHitValues, *shadowHitIds); !s) {
+                return fail("WavefrontGpu could not trace shadow rays", s);
+            }
+            ctx.computeBarrier();
+            if (!recordResolve(ctx, shadowScratch, shadowParams, shadowCount, *shadowRays, *shadowHitValues, *shadowHitIds, *blocked, *shadowLights)) {
+                return false;
+            }
+        } else {
+            const gpu::GpuStatus traced = shadowLinked
+                ? tracer.recordOccludedFiltered(ctx, *shadowRays, shadows, *blocked, *shadowLights, tables.linkMasks.buffer(), 2 * linkWords, linkWords)
+                : tracer.recordOccluded(ctx, *shadowRays, shadows, *blocked);
+
+            if (!traced) {
+                return fail("WavefrontGpu could not trace shadow rays", traced);
+            }
+            ctx.computeBarrier();
         }
-        ctx.computeBarrier();
         if (gpu::GpuStatus s = ctx.dispatchBindings(shadeLightsKernel, lightsBindings, std::as_bytes(std::span(&lightsParams, 1)), threads); !s) {
             return fail("WavefrontGpu could not add the lights", s);
         }
@@ -668,6 +825,12 @@ WavefrontGpu::WavefrontGpu(gpu::GpuKernelRegistry& registry,
         return;
     }
     imp.shadeLightsKernel = std::move(kernel);
+    if (gpu::GpuStatus s = gpu::GpuKernel::create(imp.device, resolveHitsDesc(), kernel); !s) {
+        imp.unusable = Tracer::Outcome { Tracer::Status::Unsupported, "WavefrontGpu could not create its hole resolving kernel: " + s.message };
+
+        return;
+    }
+    imp.resolveKernel = std::move(kernel);
     imp.usable = true;
 }
 

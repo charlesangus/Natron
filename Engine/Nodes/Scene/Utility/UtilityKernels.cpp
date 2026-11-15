@@ -72,6 +72,30 @@ struct ShadeSurfaceGlobals {
     const NATRON_NAMESPACE::KernelShadeParams* params;
 };
 
+struct ResolveHitsGlobals {
+    KernelBuffer rays;
+    KernelBuffer hitSurface;
+    KernelBuffer hitIds;
+    KernelBuffer nextHitSurface;
+    KernelBuffer nextHitIds;
+    KernelBuffer retrace;
+    KernelBuffer blocked;
+    KernelBuffer rayLights;
+    KernelBuffer geometries;
+    KernelBuffer colors;
+    KernelBuffer triangles;
+    KernelBuffer materials;
+    KernelBuffer textureBindings;
+    KernelBuffer images;
+    KernelBuffer texels;
+    KernelBuffer projections;
+    KernelBuffer points;
+    KernelBuffer instanceTransforms;
+    KernelBuffer sts;
+    KernelBuffer linkMasks;
+    const NATRON_NAMESPACE::KernelResolveParams* params;
+};
+
 struct ShadeLightsGlobals {
     KernelBuffer colorOut;
     KernelBuffer shadowContributions;
@@ -91,6 +115,7 @@ varyingFor(std::size_t count)
 
 extern "C" void utilityRayGen(KernelVarying*, void* entryPointParams, void* globalParams);
 extern "C" void utilityShadeSurface(KernelVarying*, void* entryPointParams, void* globalParams);
+extern "C" void utilityResolveHits(KernelVarying*, void* entryPointParams, void* globalParams);
 extern "C" void utilityShadeLights(KernelVarying*, void* entryPointParams, void* globalParams);
 
 NATRON_NAMESPACE_ENTER
@@ -151,6 +176,45 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
     };
 
     utilityShadeSurface(&varying, nullptr, &globals);
+}
+
+void
+runResolveHitsKernel(const KernelResolveParams& params,
+                     const KernelShadeBuffers& tables,
+                     const KernelResolveBuffers& buffers)
+{
+    const std::size_t count = params.count;
+
+    if (count == 0) {
+        return;
+    }
+    KernelVarying varying = varyingFor(count);
+    const bool shadow = (params.flags & kKernelResolveShadow) != 0;
+    ResolveHitsGlobals globals {
+        { buffers.rays, count * 8 },
+        { buffers.hitSurface, count * 3 },
+        { buffers.hitIds, count * 3 },
+        { buffers.nextHitSurface, count * 3 },
+        { buffers.nextHitIds, count * 3 },
+        { buffers.retrace, count * 8 },
+        { buffers.blocked, shadow ? count : 0 },
+        { buffers.rayLights, shadow ? count : 0 },
+        { tables.geometries, tables.geometryCount },
+        { tables.colors, tables.colorCount },
+        { tables.triangles, tables.triangleIndexCount },
+        { tables.materials, tables.materialCount },
+        { tables.textureBindings, tables.textureBindingCount },
+        { tables.images, tables.imageCount },
+        { tables.texels, tables.texelCount },
+        { tables.projections, tables.projectionCount },
+        { tables.points, tables.pointCount },
+        { tables.instanceTransforms, tables.instanceTransformRowCount },
+        { tables.sts, tables.stCount },
+        { tables.linkMasks, tables.linkMaskCount },
+        &params,
+    };
+
+    utilityResolveHits(&varying, nullptr, &globals);
 }
 
 void

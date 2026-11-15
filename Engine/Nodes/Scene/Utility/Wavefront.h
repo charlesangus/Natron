@@ -138,6 +138,10 @@ public:
         = 0;
 };
 
+// The most holes a ray goes on through, in surfaces under their opacityThreshold, Project3D discards
+// and casters a shadow ray's light ignores; past them the ray ends as a miss.
+const std::uint32_t kWavefrontMaxHoles = 16;
+
 /**
  * @brief Whether the frame's camera can make rays at all: its matrices invert to a finite frustum.
  **/
@@ -173,6 +177,9 @@ public:
     const std::vector<std::string>& texelWarnings() const;
     // Whether a dome light shows where camera rays miss.
     bool hasBackground() const;
+    // Whether any material can leave holes in its surface, which rays then need ResolveHits to go
+    // through.
+    bool hasHoles() const;
     // The 32-bit words of each light-link and shadow-link mask.
     std::uint32_t linkWords() const;
     // What lets an occlusion query skip the casters a shadow ray's light is not shadow-linked to;
@@ -225,6 +232,7 @@ private:
     // Whether any light's shadows fall from only some of the scene, which needs filtered occlusion.
     bool _shadowLinked = false;
     bool _background = false;
+    bool _holes = false;
     std::vector<std::uint32_t> _linkMasks;
     // Material paths in the order of _materials from index 1.
     std::map<PXR_NS::SdfPath, std::uint32_t> _materialIndices;

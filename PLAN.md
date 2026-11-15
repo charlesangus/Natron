@@ -517,6 +517,9 @@ future core work has solid ground to build on.
 | M445 | USDOpenPBR Node | todo | M442, M443, M447 |  | E9 | F26 | | [M445-usdopenpbr-node.md](PLAN/MILESTONES/M445-usdopenpbr-node.md) |
 | M446 | MaterialX Builder Nodes | todo | M352, M440, M442, M443, M444 |  | E9 |  | | [M446-materialx-builder-nodes.md](PLAN/MILESTONES/M446-materialx-builder-nodes.md) |
 | M447 | USDPreviewSurface Rename | todo | - |  | E9 |  | | [M447-usdpreviewsurface-rename.md](PLAN/MILESTONES/M447-usdpreviewsurface-rename.md) |
+| M448 | USD Layer Break | todo | - |  | E9 | F27 | | [M448-usd-layer-break.md](PLAN/MILESTONES/M448-usd-layer-break.md) |
+| M449 | USD Layer Save Paths | todo | M448 |  | E9 | F27 | | [M449-usd-layer-save-paths.md](PLAN/MILESTONES/M449-usd-layer-save-paths.md) |
+| M450 | USDWrite Export Preview | todo | M448, M449 |  | E9 | F27 | | [M450-usdwrite-export-preview.md](PLAN/MILESTONES/M450-usdwrite-export-preview.md) |
 
 # Epics
 
@@ -576,6 +579,7 @@ future core work has solid ground to build on.
 | F24 | Deep Rendering | open |  |  | feature/f24-deep-rendering | Render true deep images in process from Nucleon Utility, Cycles and MoonRay through one host-side deep render buffer, with DeepCompact. |
 | F25 | Overlay Flow | open |  |  | feature/f25-overlay-flow | Overlays deform through every warp and onto projected geometry, with CardProject25D's 2.5D projection carrying them through. |
 | F26 | MaterialX Rendering | open |  |  | feature/f26-materialx-rendering | Render MaterialX materials in Cycles and MoonRay through native translation, with .mtlx input and a USDOpenPBR lookdev node. |
+| F27 | USD Layer Authoring | open |  |  | feature/f27-usd-layer-authoring | Control which USD layers an export writes: layer breaks for delta-only files, named and nested layer files from one USDWrite, and a live preview of what will be written. |
 
 # Open questions
 

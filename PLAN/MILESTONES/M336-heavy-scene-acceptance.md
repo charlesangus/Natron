@@ -33,7 +33,7 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
   - verify: every budget passes; any failure becomes a task here with its numbers.
   - size: M
 
-- [ ] M336.P1.T2 — Bench follows M330's Initial Draw and waits for deferred edits
+- [x] M336.P1.T2 — Bench follows M330's Initial Draw and waits for deferred edits
   - files: `tools/bench/heavy_scene_bench.py`
   - approach: open_file sets USDRead `initialDraw` to Full (Full + Load for load_state all), as the GUI tests do since M330 - Graph Draw Policy; the presented-change check waits (bounded) for the viewer's posted count, since queued edits post later; populate() records the draw-state stage timing for the first presented change.
   - verify: the flat workflow runs to its end under Xvfb without "the draw state changed something"; the GPU-host acceptance rerun (user) completes every scenario on every fixture.
@@ -53,3 +53,4 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 - 2026-11-15 — ProgressiveRenderTest.ACapLoweredAboveTheSamplesLastReadEndsAtIt (added by M335) was a deterministic setup failure on fast runners (the 32×32 scene reached all 256 samples in its first pass); fixed on F4 (%h) by rendering under a 1,000,000 cap. Product assertions unchanged; confirmed at the F4 ship gate.
 - 2026-11-15 — GPU-host acceptance run (user, maxsettings RX 7900 XTX; build/bench-gpu/maxsettings-20261115T175545Z/heavy): **fails.** All four workflow runs and the reveal_wide/reveal_load_all runs aborted (exit 1, log ends at "Viewer hand-off rung: zerocopy"; "bbox … the draw state changed something" on every scene), so save/reopen/draw-state budgets were never measured. City and Lobby populate/load passed; Island populate_full stall 301.6 ms (>100) and first frame 4.76 s (>2 s), load_all stall 286.9 ms. Being diagnosed; fixes become tasks here.
 - 2026-11-15 — Diagnosis: no product crash. The bench's require on a presented draw-state change failed because USDRead's Initial Draw (BBox since M330) was never set, so boxing a row under a boxed top-level prim changed nothing → os._exit(1). Island's numbers are for a BBox first draw and no stage breakdown was recorded; rerun after P1.T2.
+- 2026-11-15 — P1.T2 done (bf31c48e1): Initial Draw Full / Full + Load, bounded wait for late-posted edits, populate records sync_to_first_paint_ms and the first change's stage breakdown. Local Xvfb check: the flat workflow runs every step (budgets fail on llvmpipe as expected). GPU-host rerun requested (`BENCHES=heavy .local/bench/run-maxsettings-benches.sh`).

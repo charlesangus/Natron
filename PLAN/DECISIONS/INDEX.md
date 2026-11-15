@@ -136,3 +136,4 @@
 - 2026-11-14 — f9-uat-accepted: F9 - Delegate Projection accepted at UAT; MoonRay as-authored warning is a follow-up → DECISIONS/2026-11-14-f9-uat-accepted.md
 - 2026-11-14 — ai-models-repo: Natron-hosted AI models are release assets on charlesangus/natron-models; user-downloaded models may carry research-only training data → DECISIONS/2026-11-14-ai-models-repo.md
 - 2026-11-15 — materialx-via-native-translation: MaterialX reopened; Cycles and MoonRay render it through a Hydra filter translating to native nodes, no OSL; materialx_shaders for MoonRay, exact procedurals as Cycles SVM nodes (user) → DECISIONS/2026-11-15-materialx-via-native-translation.md
+- 2026-11-15 — cycles-reset-counters: Cycles restart detection reads fork reset counters, not samples/clock → DECISIONS/2026-11-15-cycles-reset-counters.md

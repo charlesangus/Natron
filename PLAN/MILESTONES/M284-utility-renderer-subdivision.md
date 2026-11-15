@@ -45,7 +45,7 @@ motion blur cheap.
   - verify: gtest — a Catmull-Clark sphere cage renders silhouette error below 0.5 px at level 3 against an analytic sphere; editing a cage point re-runs stencils without a new refiner (counter); the primvar override beats the setting; the budget lowers the level and warns.
   - size: L
 
-- [ ] M284.P1.T3 — Face-varying UVs and render check
+- [x] M284.P1.T3 — Face-varying UVs and render check
   - files: `Engine/Nodes/Scene/Utility/UtilitySubdiv.cpp`, `Tests/Scene/NatronUtilitySubdiv_Test.cpp`, `Tests/fixtures/native-golden/NatronUtility/`
   - approach: refine face-varying `st` with its own channel honouring `faceVaryingLinearInterpolation`; record a golden of a textured subdiv model.
   - verify: gtest — a UV seam stays continuous across refinement per the interpolation rule; the golden matches on both backends.
@@ -61,3 +61,4 @@ motion blur cheap.
 - 2026-11-14 — Cancellable refinement committed (9416d79ae). Refinement checks for a stop between OpenSubdiv calls, levels and every 16k faces; long refinements (about 131k triangles or more) run as a shared job that joining callers wait on, so a frame that syncs straight after a stop resumes rather than restarts. A stopped refinement is never cached; a completed one is cached only by a caller that waited. OpenSubdiv's limit-surface evaluation can't be stopped mid-call and finishes detached. Building with tests (P1.T3's golden still waits on M281 - Utility Materials And Lights).
 - 2026-11-14 — Build on 9416d79ae: everything passed except NatronUtilityGoldenTest.ReferenceScene and USDRenderSingleSampleTest.NatronUtilityMatchesStorm, which weren't pinned to the cage (default level 2). Both fixtures now set the subdivision level to 0 through `setRendererSettings` and clear it on teardown (a3a7eea74). Rebuilding.
 - 2026-11-15 — F7 (with M281) merged in (bdf6fed3d): refined meshes carry materials, st (face-varying), display colour/opacity with found flags, categories and motion samples through the stencils; settings list both sides. P1.T3 (cb53915a3): Hydra subdivision tags reach the mesh; textures read refined face-varying st; seam test; goldens subdiv_textured_cpu/gpu recorded at this gate. PM: the motion-blurred screenshot comes from a USDRender at F7's UAT (the 3D viewer applies no shutter). Gating with --record-goldens.
+- 2026-11-15 — Gate on cb53915a3 (run 43729241801): ctest both legs green, goldens recorded and committed (5956f1590); the GUI large-render stall check needed its grid mesh authored scheme none (8fa9ab3b5), GUI rerun 106/106. PR #293 into F7; Codex review running. Open with the user: default Subdivision Level 2 subdivides every USD mesh left at the catmullClark default.

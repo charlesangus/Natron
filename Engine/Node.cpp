@@ -5074,7 +5074,20 @@ Node::setEffect(const EffectInstancePtr& effect)
     ////Only called by the main-thread
     assert( QThread::currentThread() == qApp->thread() );
     _imp->effect = effect;
+    _imp->hostedEffect.store(effect.get(), std::memory_order_release);
     _imp->effect->initializeData();
+}
+
+bool
+Node::hostsEffect(const EffectInstance* effect) const
+{
+    return effect && (_imp->hostedEffect.load(std::memory_order_acquire) == effect);
+}
+
+bool
+Node::hasEffectAttached() const
+{
+    return _imp->hostedEffect.load(std::memory_order_acquire) != nullptr;
 }
 
 EffectInstancePtr
@@ -5568,17 +5581,14 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
             NodePtr node;
         };
         const auto outsideReader = [this, isParentGroup](const KnobIPtr& listener) -> OutsideReader {
-            KnobHolder* holder = listener->getHolder();
-            if (!holder || (holder == _imp->effect.get()) || (holder == isParentGroup)) {
-                return OutsideReader();
-            }
+            KnobHolder* holder = 0;
             OutsideReader reader;
-            reader.effect = EffectInstance::lockLiveEffect(holder);
-            if (!reader.effect) {
+            reader.effect = EffectInstance::lockHolder(*listener, &holder);
+            if (!reader.effect || (holder == _imp->effect.get()) || (holder == isParentGroup)) {
                 return OutsideReader();
             }
             reader.node = reader.effect->getNode();
-            if (!reader.node || !reader.node->getEffectInstance()) {
+            if (!reader.node || !reader.node->hostsEffect(reader.effect.get())) {
                 return OutsideReader();
             }
             {

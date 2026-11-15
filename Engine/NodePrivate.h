@@ -181,6 +181,7 @@ public:
         , inputs()
         , guiInputs()
         , effect()
+        , hostedEffect(nullptr)
         , inputsComponents()
         , outputComponents()
         , inputsLabelsMutex()
@@ -622,6 +623,9 @@ public:
     // Held by the blocking quit/abort while they use the effect, which may run on any watcher thread
     // listing this node, and while the effect is detached: the effect cannot be freed under them.
     QMutex effectTeardownMutex;
+    // effect's pointer, for threads that only compare it: they must not read the shared_ptr that
+    // teardown swaps out, and taking effectTeardownMutex could wait on a render they are part of.
+    std::atomic<const EffectInstance*> hostedEffect;
     /*
        Used to block render emitions while modifying nodes links
        MT-safe: only accessed/used on main thread

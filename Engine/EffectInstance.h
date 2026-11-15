@@ -336,11 +336,12 @@ public:
     virtual ~EffectInstance();
 
     /**
-     * @brief The effect whose knob holder is at holder, held, or null when holder is no effect or one being
-     * destroyed. A knob's holder is a raw pointer an effect freed on another thread leaves dangling: holder
-     * is never dereferenced unless an effect still lives there.
+     * @brief Sets holder to knob's holder and returns it held when it is an effect. An effect being
+     * destroyed sets holder to null. Any other kind of holder is set but not held: the caller's context
+     * keeps it alive. An effect's last owner may be a render thread, so a knob's holder read
+     * on its own may already be freed by the time it is dereferenced.
      **/
-    static EffectInstancePtr lockLiveEffect(const KnobHolder* holder);
+    static EffectInstancePtr lockHolder(const KnobI& knob, KnobHolder** holder);
 
     virtual bool canHandleEvaluateOnChangeInOtherThread() const OVERRIDE
     {

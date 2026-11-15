@@ -306,6 +306,13 @@ public:
     EffectInstancePtr getEffectInstance() const;
 
     /**
+     * @brief Whether effect is this node's effect, or whether it still has one, without racing the
+     * teardown that detaches it. A node kept alive past its teardown no longer has one.
+     **/
+    bool hostsEffect(const EffectInstance* effect) const;
+    bool hasEffectAttached() const;
+
+    /**
      * @brief Returns true if the node is a multi-instance node, that is, holding several other nodes.
      * e.g: the Tracker node.
      **/

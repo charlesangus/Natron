@@ -1920,10 +1920,11 @@ Knob<T>::unSlaveInternal(int dimension,
                          ValueChangedReasonEnum reason,
                          bool copyState)
 {
-    if ( !isSlave(dimension) ) {
+    // One read, which keeps the master alive: a second could find it expired after the first did not.
+    std::pair<int, KnobIPtr> master = getMaster(dimension);
+    if (!master.second) {
         return;
     }
-    std::pair<int, KnobIPtr> master = getMaster(dimension);
     KnobHelperPtr masterHelper = std::dynamic_pointer_cast<KnobHelper>(master.second);
 
     if (masterHelper->getSignalSlotHandler() && _signalSlotHandler) {

@@ -744,6 +744,20 @@ struct KnobHelperPrivate
 
     std::string declarePythonVariables(bool addTab, int dimension, const std::string& expression);
 
+    // The holder, and when it is an effect the reference that keeps it alive.
+    struct HeldHolder {
+        KnobHolder* holder = 0;
+        EffectInstancePtr effect;
+    };
+
+    HeldHolder lockHolder() const
+    {
+        HeldHolder held;
+        held.effect = EffectInstance::lockHolder(*publicInterface, &held.holder);
+
+        return held;
+    }
+
     bool shouldUseGuiCurve() const
     {
         KnobHolder* h = holder.load(std::memory_order_acquire);
@@ -937,7 +951,9 @@ KnobHelper::deleteKnob()
     // A master lists this knob as a listener until it is unslaved, as clearing the expressions below
     // does for their sources.
     for (int i = 0; i < getDimension(); ++i) {
-        if (getMaster(i).second) {
+        // Held until unSlave() returns: the master may otherwise expire while it is being detached.
+        const std::pair<int, KnobIPtr> master = getMaster(i);
+        if (master.second) {
             unSlave(i, false);
         }
     }
@@ -2077,18 +2093,18 @@ KnobHelper::getDimension() const
 void
 KnobHelper::beginChanges()
 {
-    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
-    if (holder) {
-        holder->beginChanges();
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    if (held.holder) {
+        held.holder->beginChanges();
     }
 }
 
 void
 KnobHelper::endChanges()
 {
-    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
-    if (holder) {
-        holder->endChanges();
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    if (held.holder) {
+        held.holder->endChanges();
     }
 }
 
@@ -2148,8 +2164,10 @@ KnobHelper::evaluateValueChangeInternal(int dimension,
                                         ValueChangedReasonEnum originalReason)
 {
     AppInstancePtr app;
-    // Loaded once so the begin/end bracket below stays on one holder.
-    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
+    // Once, so the begin/end bracket below stays on one holder, which it keeps alive: a render thread
+    // setting a value reaches this.
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    KnobHolder* holder = held.holder;
 
     if (holder) {
         app = holder->getApp();
@@ -3066,7 +3084,9 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
                                           int dim,
                                           const std::string& expression)
 {
-    KnobHolder* holder = this->holder.load(std::memory_order_acquire);
+    // Compiling an expression, as a loop's stop condition does, runs on render threads.
+    const HeldHolder held = lockHolder();
+    KnobHolder* holder = held.holder;
     if (!holder) {
         throw std::runtime_error("This parameter cannot have an expression");
     }
@@ -3859,10 +3879,11 @@ KnobHelper::checkInvalidExpressions()
 {
     // A destroyed node's effect can outlive it while a render thread or a script still holds it.
     // Its knobs have no node to declare in an expression's scope and nothing will run them again.
-    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder.load(std::memory_order_acquire));
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    const EffectInstance* holderEffect = held.effect.get();
     if (holderEffect) {
         const NodePtr holderNode = holderEffect->getNode();
-        if (!holderNode || (holderNode->getEffectInstance().get() != holderEffect)) {
+        if (!holderNode || !holderNode->hostsEffect(holderEffect)) {
             return true;
         }
     }
@@ -4030,8 +4051,9 @@ KnobHelper::setExpressionInvalid(int dimension,
         _imp->expressions[dimension].exprInvalid = error;
     }
     invalidateContentHash();
-    KnobHolder* holder = getHolder();
-    const AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    // A failing expression read lands here on a render thread.
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    const AppInstancePtr app = held.holder ? held.holder->getApp() : AppInstancePtr();
     if (app) {
         if (wasValid && !valid) {
             app->addInvalidExpressionKnob(std::const_pointer_cast<KnobI>(shared_from_this()));
@@ -5774,8 +5796,9 @@ KnobHelper::checkAnimationLevel(ViewSpec view,
                                 int dimension)
 {
     bool changed = false;
-    KnobHolder* holder = getHolder();
-    const AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    // Edits made from a render thread, and endChanges() there, reach this.
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    const AppInstancePtr app = held.holder ? held.holder->getApp() : AppInstancePtr();
 
     for (int i = 0; i < _imp->dimension; ++i) {
         if ( (i == dimension) || (dimension == -1) ) {
@@ -9205,6 +9228,12 @@ KnobHolder::KnobHolder(const KnobHolder& other)
 
 KnobHolder::~KnobHolder()
 {
+    detachKnobs();
+}
+
+void
+KnobHolder::detachKnobs()
+{
     for (U32 i = 0; i < _imp->knobs.size(); ++i) {
         KnobHelper* helper = dynamic_cast<KnobHelper*>( _imp->knobs[i].get() );
         assert(helper);
@@ -10125,6 +10154,26 @@ KnobHolder::endChanges(bool discardRendering)
         return true;
     }
 
+    // A caller holding the effect, or its node, may outlive the node's teardown. The effect's
+    // callbacks and evaluation assume a node that still has it, so the bracket only closes.
+    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
+    const NodePtr effectNode = isEffect ? isEffect->getNode() : NodePtr();
+    if (isEffect && (!effectNode || !effectNode->hasEffectAttached())) {
+        QMutexLocker l(&_imp->evaluationBlockedMutex);
+        _imp->knobChanged.clear();
+        if (_imp->evaluationBlocked > 0) {
+            --_imp->evaluationBlocked;
+        }
+        if (_imp->evaluationBlocked == 0) {
+            _imp->abortAtEndOfChanges = false;
+            _imp->nbSignificantChangesDuringEvaluationBlock = 0;
+            _imp->nbChangesDuringEvaluationBlock = 0;
+            _imp->nbChangesRequiringMetadataRefresh = 0;
+        }
+
+        return false;
+    }
+
     // Every holder the change reaches through its listeners ends its changes inside this one.
     Node::ValueChangeCascade cascade;
 
@@ -10169,16 +10218,7 @@ KnobHolder::endChanges(bool discardRendering)
     // If the node is currently modifying its input, do not ask for a render
     // because at then end of the inputChanged handler, it will ask for a refresh
     // and a rebuild of the inputs tree.
-    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
-    bool duringInputChangeAction = false;
-    if (isEffect) {
-        // Null once the effect's node is gone, which a caller holding only the effect may outlive.
-        NodePtr node = isEffect->getNode();
-        if (isMT && node && node->duringInputChangedAction()) {
-            duringInputChangeAction = true;
-        }
-    }
-
+    const bool duringInputChangeAction = isMT && effectNode && effectNode->duringInputChangedAction();
 
     // Increment hash only if significant
     if (thisChangeSignificant && thisBracketHadChange && !isLoadingProject && !duringInputChangeAction && !isChangeDueToTimeChange) {

@@ -239,8 +239,11 @@ EffectInstance::closeOverlayEditStepIfOwner() const
 EffectInstance::~EffectInstance()
 {
     {
+        // Together, so that under the mutex a knob's holder is either a registered effect or no
+        // effect at all: lockHolder() can then tell a dying effect from another kind of holder.
         QMutexLocker k(&liveEffectsMutex());
         liveEffects().erase(this);
+        detachKnobs();
     }
     if (qApp && (QThread::currentThread() == qApp->thread())) {
         closeOverlayEditStepOf(this);
@@ -248,14 +251,24 @@ EffectInstance::~EffectInstance()
 }
 
 EffectInstancePtr
-EffectInstance::lockLiveEffect(const KnobHolder* holder)
+EffectInstance::lockHolder(const KnobI& knob,
+                           KnobHolder** holder)
 {
     QMutexLocker k(&liveEffectsMutex());
-    std::unordered_map<const KnobHolder*, EffectInstance*>::const_iterator found = liveEffects().find(holder);
+    KnobHolder* loaded = knob.getHolder();
+    std::unordered_map<const KnobHolder*, EffectInstance*>::const_iterator found = liveEffects().find(loaded);
 
+    if (found == liveEffects().end()) {
+        *holder = loaded;
+
+        return EffectInstancePtr();
+    }
     // Unregistering waits on the mutex, so a registered effect is not freed yet. One whose last owner is
     // gone already fails to lock.
-    return (found == liveEffects().end()) ? EffectInstancePtr() : found->second->weak_from_this().lock();
+    EffectInstancePtr effect = found->second->weak_from_this().lock();
+    *holder = effect ? loaded : 0;
+
+    return effect;
 }
 
 void

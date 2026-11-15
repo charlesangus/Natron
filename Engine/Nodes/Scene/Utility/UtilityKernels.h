@@ -136,6 +136,10 @@ struct KernelGeometryRecord {
 };
 
 const std::uint32_t kKernelStBindingNone = 0xffffffffu;
+// The flags above the binding in GeometryRecord::colorBinding in Kernels/UtilityTypes.slang.
+const std::uint32_t kKernelColorBindingMask = 0xffu;
+const std::uint32_t kKernelColorNoDisplayColor = 0x100u;
+const std::uint32_t kKernelColorNoDisplayOpacity = 0x200u;
 // The flags of MaterialRecord::kind.z in Kernels/UtilityTypes.slang.
 const std::uint32_t kKernelMaterialDiffuseFromDisplayColor = 1u;
 const std::uint32_t kKernelMaterialOpacityFromDisplayOpacity = 2u;

@@ -28,6 +28,10 @@ public static const uint kColorBindingConstant = 0;
 public static const uint kColorBindingTriangle = 1;
 public static const uint kColorBindingVertex = 2;
 public static const uint kColorBindingCorner = 3;
+// GeometryRecord::colorBinding holds the binding in its low byte and these flags above it.
+public static const uint kColorBindingMask = 0xffu;
+public static const uint kColorNoDisplayColor = 0x100u;
+public static const uint kColorNoDisplayOpacity = 0x200u;
 
 // A geometry without texture coordinates.
 public static const uint kStBindingNone = 0xffffffffu;

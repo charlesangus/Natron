@@ -28,9 +28,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <numeric>
 #include <set>
 #include <string>
+#include <utility>
 
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3i.h>
@@ -194,42 +196,58 @@ splitAxis(const GfVec3d& v,
     return static_cast<float>(length);
 }
 
+} // anon namespace
+
 /**
  * @brief Appends to data the dome's importance table for image: a conditional CDF per row, then the
  * CDF over rows, each texel weighted by its luminance and by the solid angle its row covers. Returns
  * false, appending nothing, when the image has no light in it.
+ *
+ * The bins split the image's uv square evenly, as the kernel maps a bin back to uv, so a bin of an
+ * image its size does not divide covers a fractional run of texels: it weighs the mean of every
+ * texel it overlaps, and every texel, the last row and column too, lands in some bin.
  **/
 bool
-appendDomeCdf(const UtilityTextureImage& image,
-              std::vector<float>* data,
-              std::uint32_t* width,
-              std::uint32_t* height)
+wavefrontAppendDomeCdf(const UtilityTextureImage& image,
+                       std::vector<float>* data,
+                       std::uint32_t* width,
+                       std::uint32_t* height)
 {
     if (image.width <= 0 || image.height <= 0 || image.texels.size() < static_cast<std::size_t>(image.width) * image.height) {
         return false;
     }
 
     const int step = std::max({ 1, (image.width + kDomeCdfMaxWidth - 1) / kDomeCdfMaxWidth, (image.height + kDomeCdfMaxHeight - 1) / kDomeCdfMaxHeight });
-    const int w = std::max(1, image.width / step);
-    const int h = std::max(1, image.height / step);
+    const int w = (image.width + step - 1) / step;
+    const int h = (image.height + step - 1) / step;
+    // The texels [first, last) bin i of n overlaps along an axis of size texels.
+    const auto span = [](int i, int n, int size) {
+        const std::int64_t first = static_cast<std::int64_t>(i) * size / n;
+        const std::int64_t last = (static_cast<std::int64_t>(i + 1) * size + n - 1) / n;
+
+        return std::make_pair(static_cast<int>(first), static_cast<int>(std::min<std::int64_t>(last, size)));
+    };
     std::vector<double> rows(h, 0.);
     std::vector<float> table(static_cast<std::size_t>(w) * h + h);
 
     for (int y = 0; y < h; ++y) {
         const double cosLat = std::cos(((y + 0.5) / h - 0.5) * M_PI);
+        const std::pair<int, int> texelRows = span(y, h, image.height);
         double sum = 0.;
         float* conditional = table.data() + static_cast<std::size_t>(y) * w;
 
         for (int x = 0; x < w; ++x) {
+            const std::pair<int, int> texelColumns = span(x, w, image.width);
             double luminance = 0.;
 
-            for (int dy = 0; dy < step; ++dy) {
-                for (int dx = 0; dx < step; ++dx) {
-                    const GfVec4f& t = image.texels[static_cast<std::size_t>(y * step + dy) * image.width + x * step + dx];
+            for (int ty = texelRows.first; ty < texelRows.second; ++ty) {
+                for (int tx = texelColumns.first; tx < texelColumns.second; ++tx) {
+                    const GfVec4f& t = image.texels[static_cast<std::size_t>(ty) * image.width + tx];
 
                     luminance += 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2];
                 }
             }
+            luminance /= static_cast<double>(texelRows.second - texelRows.first) * (texelColumns.second - texelColumns.first);
             sum += std::max(0., luminance) * cosLat;
             conditional[x] = static_cast<float>(sum);
         }
@@ -264,6 +282,7 @@ appendDomeCdf(const UtilityTextureImage& image,
     return true;
 }
 
+namespace {
 /**
  * @brief The light in world space as the kernel reads it, its emission divided by its size when it
  * normalizes. Appends its IES table to data.
@@ -585,7 +604,7 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
 
             if (asset && !asset->udim && !asset->tiles.empty() && asset->tiles[0]) {
                 record.data[0] = static_cast<std::uint32_t>(_lightData.size());
-                if (appendDomeCdf(*asset->tiles[0], &_lightData, &record.data[1], &record.data[2])) {
+                if (wavefrontAppendDomeCdf(*asset->tiles[0], &_lightData, &record.data[1], &record.data[2])) {
                     record.kind[1] |= kKernelLightDomeImportance;
                 }
             }
@@ -658,7 +677,9 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
         const auto material = geometry.materialId.IsEmpty() ? _materialIndices.end() : _materialIndices.find(geometry.materialId);
         const KernelGeometryRecord record {
             colorOffset,
-            static_cast<std::uint32_t>(fits ? geometry.colorBinding : UtilityScene::eColorBindingConstant),
+            static_cast<std::uint32_t>(fits ? geometry.colorBinding : UtilityScene::eColorBindingConstant)
+                | (geometry.hasDisplayColor ? 0u : kKernelColorNoDisplayColor)
+                | (geometry.hasDisplayOpacity ? 0u : kKernelColorNoDisplayOpacity),
             geometry.primId,
             triangleOffset,
             material == _materialIndices.end() ? 0u : material->second,

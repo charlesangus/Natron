@@ -62,6 +62,8 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/UtilityTextures.h"
+#include "Engine/Nodes/Scene/Utility/Wavefront.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -605,6 +607,92 @@ TEST(NatronUtilityLights, AnIesFileThatIsNotAProfileIsRefusedWithAReason)
     error.clear();
     EXPECT_EQ(nullptr, utilityParseIes("TILT=NONE\n1 -1 1 3 1 3 2 0 0 0\n1 1 0\n0 45 90\n0\n1 1 1\n", &error));
     EXPECT_NE(std::string::npos, error.find("type")) << error;
+}
+
+namespace {
+// A black image of width by height texels, but for one of the given luminance at (x, y).
+UtilityTextureImage
+imageLitAt(int width,
+           int height,
+           int x,
+           int y)
+{
+    UtilityTextureImage image;
+
+    image.width = width;
+    image.height = height;
+    image.levels = 1;
+    image.texels.assign(static_cast<std::size_t>(width) * height, GfVec4f(0.f, 0.f, 0.f, 1.f));
+    image.texels[static_cast<std::size_t>(y) * width + x] = GfVec4f(1.f, 1.f, 1.f, 1.f);
+
+    return image;
+}
+
+// Asserts the dome CDF of image has the expected bins, and that only its last bin each way holds light.
+void
+expectLightInTheLastBin(const UtilityTextureImage& image,
+                        std::uint32_t expectedWidth,
+                        std::uint32_t expectedHeight)
+{
+    std::vector<float> data;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+
+    ASSERT_TRUE(wavefrontAppendDomeCdf(image, &data, &width, &height));
+    ASSERT_EQ(expectedWidth, width);
+    ASSERT_EQ(expectedHeight, height);
+    ASSERT_EQ(static_cast<std::size_t>(width) * height + height, data.size());
+
+    const float* marginal = data.data() + static_cast<std::size_t>(width) * height;
+    const float* lastRow = data.data() + static_cast<std::size_t>(width) * (height - 1);
+
+    if (height > 1) {
+        EXPECT_EQ(0.f, marginal[height - 2]);
+    }
+    EXPECT_EQ(1.f, marginal[height - 1]);
+    if (width > 1) {
+        EXPECT_EQ(0.f, lastRow[width - 2]);
+    }
+    EXPECT_EQ(1.f, lastRow[width - 1]);
+}
+} // anon namespace
+
+// The bins cover the whole image, so a lit texel past the last whole bin, or a dome thinner than one
+// bin, is still sampled.
+TEST(NatronUtilityLights, TheDomeCdfCoversTexelsPastTheLastWholeBin)
+{
+    expectLightInTheLastBin(imageLitAt(1025, 3, 1024, 2), 342, 1);
+    expectLightInTheLastBin(imageLitAt(2000, 1, 1999, 0), 500, 1);
+    expectLightInTheLastBin(imageLitAt(1, 1000, 0, 999), 1, 250);
+
+    std::vector<float> data;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    UtilityTextureImage dark = imageLitAt(7, 5, 0, 0);
+
+    dark.texels[0] = GfVec4f(0.f, 0.f, 0.f, 1.f);
+    EXPECT_FALSE(wavefrontAppendDomeCdf(dark, &data, &width, &height));
+    EXPECT_TRUE(data.empty());
+}
+
+TEST(NatronUtilityLights, AnIesProfileThatDependsOnTiltIsRefusedRatherThanLitUntilted)
+{
+    std::string included(kIesProfile);
+    const std::string none("TILT=NONE\n");
+
+    included.replace(included.find(none), none.size(), "TILT=INCLUDE\n1\n2\n0 90\n1 0.5\n");
+
+    std::string error;
+
+    EXPECT_EQ(nullptr, utilityParseIes(included, &error));
+    EXPECT_NE(std::string::npos, error.find("TILT=INCLUDE")) << error;
+
+    std::string fromFile(kIesProfile);
+
+    fromFile.replace(fromFile.find(none), none.size(), "TILT=lamp.tlt\n");
+    error.clear();
+    EXPECT_EQ(nullptr, utilityParseIes(fromFile, &error));
+    EXPECT_NE(std::string::npos, error.find("lamp.tlt")) << error;
 }
 
 TEST(NatronUtilityLights, AnIesProfileScalesIntensityByItsTable)

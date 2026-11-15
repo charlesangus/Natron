@@ -68,6 +68,8 @@ template <class T>
 struct Channel {
     ChannelRate rate = eChannelRateConstant;
     VtArray<T> values;
+    // False when values holds only the fallback, the primvar missing or unusable.
+    bool found = false;
 };
 
 template <class In, class Out>
@@ -172,12 +174,14 @@ pullChannel(HdSceneDelegate* sceneDelegate,
             if (!values.empty()) {
                 channel.rate = eChannelRateConstant;
                 channel.values = values;
+                channel.found = true;
             }
             break;
         case HdInterpolationUniform:
             if (values.size() == static_cast<std::size_t>(topology.GetNumFaces())) {
                 channel.rate = eChannelRateUniform;
                 channel.values = values;
+                channel.found = true;
             }
             break;
         case HdInterpolationVertex:
@@ -185,6 +189,7 @@ pullChannel(HdSceneDelegate* sceneDelegate,
             if (values.size() == pointCount) {
                 channel.rate = eChannelRateVertex;
                 channel.values = values;
+                channel.found = true;
             }
             break;
         case HdInterpolationFaceVarying:
@@ -200,6 +205,7 @@ pullChannel(HdSceneDelegate* sceneDelegate,
                     && triangulated.UncheckedGet<VtArray<T>>().size() == triangleCount * 3) {
                     channel.rate = eChannelRateCorner;
                     channel.values = triangulated.UncheckedGet<VtArray<T>>();
+                    channel.found = true;
                 }
             }
             break;
@@ -605,7 +611,7 @@ UtilityMesh::syncColors(HdSceneDelegate* sceneDelegate,
             }
         }
     }
-    scene->setColors(_geometry, binding, colors);
+    scene->setColors(_geometry, binding, colors, color.found, opacity.found);
 }
 
 void

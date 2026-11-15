@@ -433,6 +433,101 @@ TEST(NatronUtilityMaterial, DisplayColorReadersFlagTheirInputs)
     EXPECT_TRUE(desc.emissiveFromDisplayColor);
     EXPECT_FALSE(desc.diffuseFromDisplayColor);
     EXPECT_TRUE(desc.opacityFromDisplayOpacity);
+    EXPECT_EQ(GfVec3f(0.f), desc.emissiveColor);
+    EXPECT_FLOAT_EQ(0.f, desc.opacity);
+}
+
+namespace {
+// The colour shaded straight on to a triangle bound to desc, whose constant colours are colors.
+GfVec4f
+shadeTriangle(const UtilityMaterialDesc& desc,
+              const GfVec4f& colors,
+              bool hasDisplayColor,
+              bool hasDisplayOpacity)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/Mesh"), 1);
+
+    scene.setTopology(id, VtVec3fArray { GfVec3f(0.f), GfVec3f(1.f, 0.f, 0.f), GfVec3f(0.f, 1.f, 0.f) }, VtVec3iArray { GfVec3i(0, 1, 2) });
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { colors }, hasDisplayColor, hasDisplayOpacity);
+    scene.setMaterial(SdfPath("/Material"), std::make_shared<const UtilityMaterialDesc>(desc));
+    scene.setMaterialId(id, SdfPath("/Material"));
+
+    WavefrontShadeTables tables;
+
+    tables.update(scene.snapshot());
+
+    GfFrustum frustum;
+
+    frustum.SetPerspective(45., 1., 1., 100.);
+
+    const std::vector<float> rays = { 0.f, 0.f, 1.f, 0.f, 0.f, -1.f, 0.f, 10.f };
+    const std::vector<float> hitSurface = { 1.f, 0.25f, 0.25f };
+    const std::vector<std::uint32_t> hitIds = { 0u, 0u, 0u };
+    float color[4] = { -1.f, -1.f, -1.f, -1.f };
+    float depth = -1.f;
+    std::int32_t primId = -1;
+    std::int32_t instanceId = -1;
+    KernelShadeBuffers buffers = tables.buffers();
+
+    buffers.rays = rays.data();
+    buffers.hitSurface = hitSurface.data();
+    buffers.hitIds = hitIds.data();
+    buffers.colorOut = color;
+    buffers.depthOut = &depth;
+    buffers.primIdOut = &primId;
+    buffers.instanceIdOut = &instanceId;
+
+    WavefrontFrame frame;
+
+    frame.worldToView = frustum.ComputeViewMatrix();
+    frame.projection = frustum.ComputeProjectionMatrix();
+    frame.window.width = 64;
+    frame.window.height = 64;
+    runShadeSurfaceKernel(makeShadeParams(frame, 1), buffers);
+
+    return GfVec4f(color[0], color[1], color[2], color[3]);
+}
+} // anon namespace
+
+TEST(NatronUtilityMaterial, DisplayColorReadersShadeTheirFallbackWhereThePrimvarIsMissing)
+{
+    HdMaterialNetwork2 network = networkOf(TfToken("UsdPreviewSurface"));
+    const SdfPath color("/Material/Color");
+    const SdfPath opacity("/Material/Opacity");
+
+    network.nodes[color].nodeTypeId = TfToken("UsdPrimvarReader_float3");
+    network.nodes[opacity].nodeTypeId = TfToken("UsdPrimvarReader_float");
+    set(network, color, "varname", VtValue(TfToken("displayColor")));
+    set(network, color, "fallback", VtValue(GfVec3f(0.25f, 0.5f, 0.75f)));
+    set(network, opacity, "varname", VtValue(TfToken("displayOpacity")));
+    set(network, opacity, "fallback", VtValue(1.f));
+    set(network, kSurface, "diffuseColor", VtValue(GfVec3f(0.f)));
+    connect(network, kSurface, "emissiveColor", color, "result");
+    connect(network, kSurface, "opacity", opacity, "result");
+
+    const UtilityMaterialDesc desc = utilityMaterialFromNetwork(network);
+
+    ASSERT_EQ(UtilityMaterialDesc::eKindPreviewSurface, desc.kind) << desc.unsupportedReason;
+    EXPECT_TRUE(desc.emissiveFromDisplayColor);
+    EXPECT_EQ(GfVec3f(0.25f, 0.5f, 0.75f), desc.emissiveColor);
+    EXPECT_FLOAT_EQ(1.f, desc.opacity);
+
+    const GfVec4f red(1.f, 0.f, 0.f, 0.f);
+    const GfVec4f missing = shadeTriangle(desc, red, false, false);
+
+    EXPECT_NEAR(0.25f, missing[0], 1e-6f);
+    EXPECT_NEAR(0.5f, missing[1], 1e-6f);
+    EXPECT_NEAR(0.75f, missing[2], 1e-6f);
+    EXPECT_NEAR(1.f, missing[3], 1e-6f);
+
+    const GfVec4f present = shadeTriangle(desc, red, true, false);
+
+    EXPECT_NEAR(1.f, present[0], 1e-6f);
+    EXPECT_NEAR(0.f, present[1], 1e-6f);
+    EXPECT_NEAR(0.f, present[2], 1e-6f);
+    EXPECT_NEAR(1.f, present[3], 1e-6f);
 }
 
 TEST(NatronUtilityMaterial, AReaderOfAnyOtherPrimvarMakesTheMaterialUnsupported)

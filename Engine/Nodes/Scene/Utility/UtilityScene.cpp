@@ -167,7 +167,9 @@ UtilityScene::setPoints(GeometryId id,
 void
 UtilityScene::setColors(GeometryId id,
                         ColorBinding binding,
-                        const VtVec4fArray& colors)
+                        const VtVec4fArray& colors,
+                        bool hasDisplayColor,
+                        bool hasDisplayOpacity)
 {
     std::lock_guard<std::mutex> l(_mutex);
     const auto it = _records.find(id);
@@ -177,11 +179,14 @@ UtilityScene::setColors(GeometryId id,
     }
     Geometry& geometry = it->second.geometry;
 
-    if (geometry.colorBinding == binding && geometry.colors == colors) {
+    if (geometry.colorBinding == binding && geometry.colors == colors && geometry.hasDisplayColor == hasDisplayColor
+        && geometry.hasDisplayOpacity == hasDisplayOpacity) {
         return;
     }
     geometry.colorBinding = binding;
     geometry.colors = colors;
+    geometry.hasDisplayColor = hasDisplayColor;
+    geometry.hasDisplayOpacity = hasDisplayOpacity;
     ++geometry.colorVersion;
     ++_colorUpdates;
     ++_version;

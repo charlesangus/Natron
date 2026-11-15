@@ -234,6 +234,16 @@ bool wavefrontDrawSamples(WavefrontExecutor& executor,
                           std::vector<double>* bucketSeconds);
 
 /**
+ * @brief Appends to data the importance table of a lat-long dome image, sized width by height bins over
+ * the whole image: a conditional CDF per row, then the CDF over rows. Returns false, appending nothing,
+ * when the image has no light in it.
+ **/
+bool wavefrontAppendDomeCdf(const UtilityTextureImage& image,
+                            std::vector<float>* data,
+                            std::uint32_t* width,
+                            std::uint32_t* height);
+
+/**
  * @brief Whether the frame's camera can make rays at all: its matrices invert to a finite frustum.
  **/
 bool wavefrontCameraIsUsable(const WavefrontFrame& frame);

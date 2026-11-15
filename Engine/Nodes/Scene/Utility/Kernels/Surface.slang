@@ -18,14 +18,26 @@ public uint3 cornerIndices(StructuredBuffer<int> triangles, GeometryRecord geome
 public float4 surfaceColor(StructuredBuffer<float4> colors, StructuredBuffer<int> triangles, GeometryRecord geometry, uint primitive, float u, float v)
 {
     const uint offset = geometry.colorOffset;
+    const uint binding = geometry.colorBinding & kColorBindingMask;
 
-    if (geometry.colorBinding == kColorBindingConstant)
+    if (binding == kColorBindingConstant)
         return colors[offset];
-    if (geometry.colorBinding == kColorBindingTriangle)
+    if (binding == kColorBindingTriangle)
         return colors[offset + primitive];
 
-    const uint3 corners = cornerIndices(triangles, geometry, offset, geometry.colorBinding, primitive);
+    const uint3 corners = cornerIndices(triangles, geometry, offset, binding, primitive);
     return (1.0 - u - v) * colors[corners.x] + u * colors[corners.y] + v * colors[corners.z];
+}
+
+// Whether the geometry has the displayColor, or the displayOpacity, primvar that surfaceColor() returns.
+public bool hasDisplayColor(GeometryRecord geometry)
+{
+    return (geometry.colorBinding & kColorNoDisplayColor) == 0;
+}
+
+public bool hasDisplayOpacity(GeometryRecord geometry)
+{
+    return (geometry.colorBinding & kColorNoDisplayOpacity) == 0;
 }
 
 public void cornerSts(StructuredBuffer<float2> sts, StructuredBuffer<int> triangles, GeometryRecord geometry, uint primitive, out float2 st0, out float2 st1, out float2 st2)
@@ -93,11 +105,13 @@ public float stFootprint(float width, float3 dp1, float3 dp2, float2 dst1, float
     return log2(width) + 0.5 * log2(stArea / worldArea) - log2(max(cosine, 1e-3));
 }
 
-// A PreviewSurface's opacity at a hit, before its opacityThreshold.
+// A PreviewSurface's opacity at a hit, before its opacityThreshold. An input reading displayOpacity keeps
+// its reader's fallback in its constant, for geometry without the primvar.
 public float surfaceOpacity(StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, StructuredBuffer<float4> texels,
-                            MaterialRecord material, float4 display, bool hasSt, float2 st, float footprint)
+                            MaterialRecord material, GeometryRecord geometry, float4 display, bool hasSt, float2 st, float footprint)
 {
-    const float constant = (material.kind.z & kMaterialOpacityFromDisplayOpacity) != 0 ? display.w : material.coverage.x;
+    const bool fromDisplay = (material.kind.z & kMaterialOpacityFromDisplayOpacity) != 0 && hasDisplayOpacity(geometry);
+    const float constant = fromDisplay ? display.w : material.coverage.x;
     const int binding = textureOf(material, kSlotOpacity);
 
     return binding == kNoTexture ? constant : readTexture(bindings, images, texels, binding, hasSt, st, footprint).x;
@@ -165,5 +179,5 @@ public bool surfaceAbsent(StructuredBuffer<float4> colors,
     const float footprint = stFootprint(width, p1 - p0, p2 - p0, st1 - st0, st2 - st0, abs(dot(outward, direction)));
     const float4 display = surfaceColor(colors, triangles, geometry, primitive, u, v);
 
-    return surfaceOpacity(bindings, images, texels, material, display, hasSt, st, footprint) < material.coverage.y;
+    return surfaceOpacity(bindings, images, texels, material, geometry, display, hasSt, st, footprint) < material.coverage.y;
 }

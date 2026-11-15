@@ -243,6 +243,9 @@ renderTile(const WavefrontFrame& frame,
     std::uint32_t first = 0;
 
     do {
+        if (stop.load(std::memory_order_relaxed)) {
+            return;
+        }
         params.lighting[0] = first;
         runShadeSurfaceKernel(params, buffers);
         if (batch == 0) {

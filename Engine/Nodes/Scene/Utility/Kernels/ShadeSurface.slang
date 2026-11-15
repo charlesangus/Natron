@@ -270,8 +270,10 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
 
         const float4 display = surfaceColor(colors, triangles, geometry, primitive, u, v);
         const uint flags = material.kind.z;
-        const float3 diffuseConstant = (flags & kMaterialDiffuseFromDisplayColor) != 0 ? display.xyz : material.diffuseColor.xyz;
-        float opacity = surfaceOpacity(textureBindings, images, texels, material, display, hasSt, st, footprint);
+        // An input reading displayColor keeps its reader's fallback in its constant, for geometry without the primvar.
+        const bool displayColor = hasDisplayColor(geometry);
+        const float3 diffuseConstant = (flags & kMaterialDiffuseFromDisplayColor) != 0 && displayColor ? display.xyz : material.diffuseColor.xyz;
+        float opacity = surfaceOpacity(textureBindings, images, texels, material, geometry, display, hasSt, st, footprint);
         const float threshold = material.coverage.y;
 
         if (threshold > 0.0) {
@@ -294,7 +296,7 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
         PreviewSurfaceSample surface;
         surface.diffuseColor = colorInput(material, kSlotDiffuseColor, diffuseConstant, hasSt, st, footprint);
         surface.specularColor = colorInput(material, kSlotSpecularColor, material.specularColor.xyz, hasSt, st, footprint);
-        const float3 emissiveConstant = (flags & kMaterialEmissiveFromDisplayColor) != 0 ? display.xyz : material.emissiveColor.xyz;
+        const float3 emissiveConstant = (flags & kMaterialEmissiveFromDisplayColor) != 0 && displayColor ? display.xyz : material.emissiveColor.xyz;
         surface.emissiveColor = colorInput(material, kSlotEmissiveColor, emissiveConstant, hasSt, st, footprint);
         surface.normal = normal;
         surface.metallic = floatInput(material, kSlotMetallic, material.surface.x, hasSt, st, footprint);

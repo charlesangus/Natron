@@ -434,13 +434,22 @@ private:
         if (id == TfToken("UsdPrimvarReader_float3") || id == TfToken("UsdPrimvarReader_float")) {
             const VtValue* varname = parameter(*upstream, "varname");
             const std::string name = varname ? readString(*varname) : std::string();
+            const VtValue* authored = parameter(*upstream, "fallback");
+            // The reader's own default when no fallback is authored, as UsdPrimvarReader declares it.
+            GfVec3f fallback(0.f);
 
+            if (authored) {
+                readVec3(*authored, &fallback);
+            }
             if (slot == UtilityMaterialDesc::eSlotDiffuseColor && name == "displayColor") {
                 _desc.diffuseFromDisplayColor = true;
+                _desc.diffuseColor = fallback;
             } else if (slot == UtilityMaterialDesc::eSlotEmissiveColor && name == "displayColor") {
                 _desc.emissiveFromDisplayColor = true;
+                _desc.emissiveColor = fallback;
             } else if (slot == UtilityMaterialDesc::eSlotOpacity && name == "displayOpacity") {
                 _desc.opacityFromDisplayOpacity = true;
+                _desc.opacity = fallback[0];
             } else {
                 // Only the display primvars reach the kernels; shading any other primvar with its
                 // fallback would look plausible and be wrong.

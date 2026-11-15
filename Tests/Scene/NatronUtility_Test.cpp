@@ -116,7 +116,8 @@ const double kCameraZ = 30.;
 const double kDistanceTolerance = 5e-3;
 
 // Every stage the harness renders holds /EmitDisplayColor: with no light in the scene, a prim shows its
-// display colour only through a material that emits it.
+// display colour only through a material that emits it. The opacity reader's fallback keeps a prim without
+// displayOpacity opaque.
 const char* const kEmitDisplayColorMaterial = R"(
 def Material "EmitDisplayColor" {
     token outputs:surface.connect = </EmitDisplayColor/Surface.outputs:surface>
@@ -135,6 +136,7 @@ def Material "EmitDisplayColor" {
     def Shader "Opacity" {
         uniform token info:id = "UsdPrimvarReader_float"
         string inputs:varname = "displayOpacity"
+        float inputs:fallback = 1
         float outputs:result
     }
 }

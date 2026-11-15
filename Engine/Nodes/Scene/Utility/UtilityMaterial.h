@@ -136,7 +136,8 @@ struct UtilityMaterialDesc {
     float ior = 1.5f;
     // Tangent space, in [-1, 1].
     PXR_NS::GfVec3f normal = PXR_NS::GfVec3f(0.f, 0.f, 1.f);
-    // Inputs read from the displayColor and displayOpacity primvars, as for geometry with no material.
+    // Inputs read from the displayColor and displayOpacity primvars, as for geometry with no material. The
+    // input's constant then holds what it reads on geometry without that primvar: the reader's fallback.
     bool diffuseFromDisplayColor = false;
     bool emissiveFromDisplayColor = false;
     bool opacityFromDisplayOpacity = false;

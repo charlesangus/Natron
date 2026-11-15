@@ -295,6 +295,7 @@ utilityParseIes(const std::string& text,
         if (start != std::string::npos && line.compare(start, 5, "TILT=") == 0) {
             tilt = line.substr(start + 5);
             tilt.erase(tilt.find_last_not_of(" \t\r") + 1);
+            tilt.erase(0, tilt.find_first_not_of(" \t"));
             tiltFound = true;
             break;
         }
@@ -303,26 +304,20 @@ utilityParseIes(const std::string& text,
         return fail("it has no TILT= line");
     }
 
+    // A tilt table scales the whole profile by the luminaire's tilt from the vertical it was measured at,
+    // which needs the stage's up axis and the lamp's mounting geometry; shading without it would be wrong.
+    if (tilt == "INCLUDE") {
+        return fail("its candela values depend on the lamp's tilt (TILT=INCLUDE), which is not read; only TILT=NONE profiles are");
+    }
+    if (tilt != "NONE") {
+        return fail("its candela values depend on the lamp's tilt, from the file " + tilt + ", which is not read; only TILT=NONE profiles are");
+    }
+
     std::stringstream rest;
 
     rest << lines.rdbuf();
 
     IesNumbers numbers(rest.str());
-
-    if (tilt == "INCLUDE") {
-        int geometry = 0;
-        int tiltCount = 0;
-        double ignored = 0.;
-
-        if (!numbers.next(&geometry) || !numbers.next(&tiltCount) || tiltCount < 0) {
-            return fail("its tilt table is truncated");
-        }
-        for (int i = 0; i < 2 * tiltCount; ++i) {
-            if (!numbers.next(&ignored)) {
-                return fail("its tilt table is truncated");
-            }
-        }
-    }
 
     int lamps = 0;
     double lumens = 0.;

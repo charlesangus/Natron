@@ -91,6 +91,10 @@ public:
         // Straight RGBA: displayColor with displayOpacity in alpha.
         PXR_NS::VtVec4fArray colors;
         ColorBinding colorBinding = eColorBindingConstant;
+        // Whether the prim has each primvar; colors holds a stand-in for one it lacks, and a material's
+        // primvar reader reads its own fallback there instead.
+        bool hasDisplayColor = false;
+        bool hasDisplayOpacity = false;
         // Empty when no material is bound.
         PXR_NS::SdfPath materialId;
         // The bound material's texture coordinates, bound like the colours; hasSt is false when the
@@ -156,7 +160,9 @@ public:
                    const PXR_NS::VtVec3fArray& points);
     void setColors(GeometryId id,
                    ColorBinding binding,
-                   const PXR_NS::VtVec4fArray& colors);
+                   const PXR_NS::VtVec4fArray& colors,
+                   bool hasDisplayColor = true,
+                   bool hasDisplayOpacity = true);
     // One instance per transform, replacing the geometry's previous ones. categories, when not
     // empty, holds each instance's own link categories.
     void setInstances(GeometryId id,

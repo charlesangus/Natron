@@ -81,6 +81,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -384,6 +385,7 @@ ViewerInstance::~ViewerInstance()
         QMutexLocker l(&liveViewersMutex);
         liveViewers.erase(this);
     }
+    EffectInstance::retireSceneContextId(_imp->sceneContextId);
 
     // A plan reads this viewer until its thread has stopped.
     _imp->gpuPlacementPlanner->quitThread(false);
@@ -1002,6 +1004,11 @@ ViewerInstance::initializeKnobs()
     maxSamples->setDisplayMinimum(0);
     maxSamples->setDisplayMaximum(4096);
     k.maxSamples = maxSamples;
+
+    KnobBoolPtr renderEverything = createViewerKnob<KnobBool>(this, page, tr("Render Everything"), kViewerParamRenderEverything,
+                                                              tr("Renders the whole scene, ignoring the draw states, and loads every payload. "
+                                                                 "Turning it off brings the draw states back and unloads nothing."));
+    k.renderEverything = renderEverything;
 
     KnobBoolPtr refinementPaused = createViewerKnob<KnobBool>(this, page, tr("Refinement Paused"), kViewerParamRefinementPaused,
                                                               tr("Holds a progressive renderer's refinement of the 3D view at its "
@@ -6391,8 +6398,15 @@ ViewerInstance::getLastEvaluatedScene(int textureIndex,
 void
 ViewerInstance::setSceneLoadSet(const SceneLoadSetPtr& loadSet)
 {
-    std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
-    _imp->sceneLoadSet = loadSet;
+    bool changed;
+    {
+        std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
+        changed = _imp->sceneLoadSet ? (!loadSet || (*_imp->sceneLoadSet != *loadSet)) : bool(loadSet);
+        _imp->sceneLoadSet = loadSet;
+    }
+    if (changed) {
+        SceneMenuRefresh::scheduleFollowLoadChanges();
+    }
 }
 
 SceneLoadSetPtr
@@ -6401,6 +6415,12 @@ ViewerInstance::getSceneLoadSet() const
     std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
 
     return _imp->sceneLoadSet;
+}
+
+SceneEvaluationContext
+ViewerInstance::getSceneEvaluationContext() const
+{
+    return SceneEvaluationContext(_imp->sceneContextId, getSceneLoadSet());
 }
 
 bool

@@ -138,6 +138,7 @@
 #define emit
 #endif
 
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Gui/ActionShortcuts.h"
 #include "Gui/GLContextLoss.h"
 #include "Gui/GuiApplicationManager.h"
@@ -145,7 +146,6 @@
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
 #include "Gui/SceneDrawBoxes.h"
-#include "Gui/SceneDrawFilter.h"
 #include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneDrawTiming.h"
 #include "Gui/SceneGizmo.h"
@@ -820,6 +820,8 @@ struct SceneViewportRenderer::Implementation {
     std::vector<bool> boxHighlighted;
     bool recordDrawnBoxes = false;
     std::vector<DrawnBox> drawnBoxes;
+    // Whether the box worker was last given no rules for Render Everything, not drawRules.
+    bool boxesBlanked = false;
     // Bumped with each change of drawRules, so the guides follow them.
     U64 drawRulesVersion = 0;
     GLuint boxProgram = 0;
@@ -1004,6 +1006,7 @@ struct SceneViewportRenderer::Implementation {
     mutable std::mutex refineListenerMutex;
     std::function<void()> refineListener;
     std::atomic<int> maxSamples { 0 };
+    std::atomic<bool> renderEverything { false };
     // The delegate the refinement was last given; needs stageMutex held exclusively. A release
     // from the main thread, which holds no lock, asks the next render to forget it.
     std::string refineRenderer;
@@ -1165,6 +1168,11 @@ struct SceneViewportRenderer::Implementation {
         // refining.
         progressive->setRenderer(std::string());
         refineRenderer.clear();
+        // The worker is sent draw changes only while a delegate other than Storm renders, so it
+        // takes the rules Storm drew by when one starts.
+        if (renderer != kRenderDelegateStormId) {
+            progressive->setDrawRules(drawRules);
+        }
     }
 
     std::shared_ptr<const StageSummary> getStageSummary() const
@@ -1599,13 +1607,15 @@ struct SceneViewportRenderer::Implementation {
         // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(rendererId);
+        std::string filterInstanceId;
         try {
             SceneDrawFilter::registerForAllRenderers();
-            (void)SceneDrawFilter::takeAppendedInstanceId();
             CyclesAovs::registerSceneIndices();
             {
                 TfErrorMark mark;
+                const SceneDrawFilter::EngineScope scope;
                 engine.reset(new UsdImagingGLEngine(parameters));
+                filterInstanceId = scope.getInstanceId();
                 ++engineCount;
                 ++engineConstructionCount;
                 if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
@@ -1638,7 +1648,7 @@ struct SceneViewportRenderer::Implementation {
 
             return false;
         }
-        drawFilter = SceneDrawFilter::find(SceneDrawFilter::takeAppendedInstanceId());
+        drawFilter = SceneDrawFilter::find(filterInstanceId);
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
             filter->seedRules(drawRules);
         }
@@ -1819,8 +1829,19 @@ struct SceneViewportRenderer::Implementation {
         if (!queued.empty()) {
             ++drawRulesVersion;
         }
-        if (!queued.empty() && boxes) {
-            boxes->setRules(drawRules);
+        // A delegate rendering everything draws every row, so no box stands in for one.
+        const bool boxesBlank = renderEverything && (rendererId != kRenderDelegateStormId);
+        if (boxes && (!queued.empty() || (boxesBlank != boxesBlanked))) {
+            boxes->setRules(boxesBlank ? SceneDrawFilter::Rules() : drawRules);
+            boxesBlanked = boxesBlank;
+        }
+        if (!queued.empty() && progressive && (rendererId != kRenderDelegateStormId)) {
+            std::vector<SceneDrawDelta> forwarded;
+            forwarded.reserve(queued.size());
+            for (const QueuedDrawDelta& entry : queued) {
+                forwarded.push_back(entry.delta);
+            }
+            progressive->applyDrawDeltas(forwarded);
         }
         if (!queued.empty()) {
             if (filter) {
@@ -3134,11 +3155,13 @@ SceneViewportRenderer::applyPendingDrawDeltas()
     SceneWriteBarrier::ReadScope read;
     {
         std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
-        // Without an engine the queue waits for the frame that makes one.
         if (_imp->engine) {
             StormGLStateGuard guard;
             StormGLSection section;
             section.collectWith(_imp->engine->GetHgi());
+            _imp->serviceDrawFilter(false);
+        } else if (_imp->rendererId != kRenderDelegateStormId) {
+            // No Storm engine to notify: the rules, the boxes and the worker still follow.
             _imp->serviceDrawFilter(false);
         }
     }
@@ -4737,6 +4760,13 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     if (_imp->getRendererErrorCopy().empty()) {
         _imp->setRendererErrorCopy(RenderDelegates::unavailableMessage(_imp->rendererId));
     }
+    if (_imp->engine) {
+        StormGLSection section;
+        section.collectWith(_imp->engine->GetHgi());
+        _imp->serviceDrawFilter(false);
+    } else {
+        _imp->serviceDrawFilter(false);
+    }
     const UsdStageRefPtr stage = _imp->currentStage();
     if (!_imp->getRendererErrorCopy().empty() || !stage) {
         progressive.setRenderer(std::string());
@@ -5167,6 +5197,18 @@ int
 SceneViewportRenderer::getMaxSamples() const
 {
     return _imp->progressive->getMaxSamples();
+}
+
+void
+SceneViewportRenderer::setRenderEverything(bool on)
+{
+    if (_imp->renderEverything.exchange(on) == on) {
+        return;
+    }
+    if (on) {
+        requestStageLoad(std::vector<std::string>(1, "/"), true);
+    }
+    _imp->progressive->setRenderEverything(on);
 }
 
 void
@@ -5773,6 +5815,7 @@ struct SceneViewport::Implementation {
     // Whether navigating through a stage camera moves its node, and why the last try could not.
     bool lockView = false;
     QString lockMessage;
+    QString armedPick;
 
     // A move of the locked camera under way. Its node's ops are taken to be the outermost of the
     // prim's, with the camera at world = inner * local * parentToWorld (row vectors), local being
@@ -5879,6 +5922,14 @@ struct SceneViewport::Implementation {
     U64 appliedMatch = 0;
     U64 heldMatch = 0;
     QTimer* policyHoldTimer = nullptr;
+    // Main thread: the last of the worker's matches cancelled before handing over a policy, and the
+    // first request whose draw rules or stack may call for a match, 0 for none.
+    U64 droppedMatch = 0;
+    U64 policyRequestSerial = 0;
+    // The load thread's rounds, each a batch and the match after it, taken and handed over to the
+    // main thread: the stage counts no loads outstanding during that match, which may ask for more.
+    std::atomic<U64> loadRoundsTaken { 0 };
+    U64 loadRoundsServiced = 0;
     // Main thread: the node the last setScene() showed, and the first request made for a node newly
     // viewed while no sync of it has come back, 0 for none.
     NodeWPtr sceneNode;
@@ -5939,6 +5990,10 @@ struct SceneViewport::Implementation {
             }
         });
         if (!matched) {
+            if (matchId != 0) {
+                QMetaObject::invokeMethod(view, [view, matchId]() { view->onDrawRulesMatchDropped(matchId); }, Qt::QueuedConnection);
+            }
+
             return false;
         }
         SceneDrawStates::PolicyStates policy;
@@ -6248,6 +6303,7 @@ SceneViewport::SceneViewport(QWidget* parent)
     setObjectName(QString::fromUtf8("SceneViewport"));
     // The selected prims, the current one last, for scripts.
     setProperty("natronSceneSelection", QStringList());
+    setProperty("natronSceneArmedPick", QString());
     // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
     // framebuffer's content between paints; not checked against Qt's source.
@@ -6333,6 +6389,7 @@ SceneViewport::SceneViewport(QWidget* parent)
                     return;
                 }
             }
+            const U64 loadRound = ++imp->loadRoundsTaken;
             imp->renderer.serviceStageLoads([imp]() { return imp->loadQuit.load(); });
             if (imp->loadQuit) {
                 return;
@@ -6362,7 +6419,7 @@ SceneViewport::SceneViewport(QWidget* parent)
             const U64 loadEditCount = imp->renderer.getStageLoadEditCount();
             const SceneViewportRenderer::FrameBounds bounds = imp->renderer.isFramed() ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
             // Dropped by Qt if the widget is gone by then.
-            QMetaObject::invokeMethod(this, [this, bounds, loadEditCount]() { onStageLoadsServiced(bounds, loadEditCount); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(this, [this, bounds, loadEditCount, loadRound]() { onStageLoadsServiced(bounds, loadEditCount, loadRound); }, Qt::QueuedConnection);
         }
     });
     _imp->worker = std::thread([this, imp]() {
@@ -6509,6 +6566,8 @@ SceneViewport::requestSync(const ScenePayload& payload,
                            bool keepsFrame)
 {
     _imp->requestedError = error;
+    const SceneDrawRules& rules = payload.getDrawRules();
+    const bool mayMatch = (rules != _imp->requestedPayload.getDrawRules()) || (!payload.isSameStack(_imp->requestedPayload) && SceneOps::drawRulesNeedStage(rules));
     _imp->requestedPayload = payload;
     LiveTextureSourceList liveTextures = SceneOps::getLiveTextures(payload);
     _imp->requestedLiveTextures = !liveTextures.empty();
@@ -6523,6 +6582,9 @@ SceneViewport::requestSync(const ScenePayload& payload,
         _imp->pendingFrame = _imp->frame;
         _imp->pendingFramesPerSecond = _imp->framesPerSecond;
         _imp->pendingSerial = ++_imp->requestedSerial;
+        if (mayMatch) {
+            _imp->policyRequestSerial = _imp->requestedSerial;
+        }
         _imp->pendingLoadSet = payload.isEmpty() ? SceneLoadSetPtr() : _imp->requestedLoadSet;
         _imp->pendingReach = payload.isEmpty() ? SceneLoadReachPtr() : _imp->requestedReach;
     }
@@ -6578,6 +6640,7 @@ SceneViewport::onSynced(U64 serial,
         if (ok) {
             update();
         }
+        noteDrawPolicySettled();
 
         return;
     }
@@ -6597,6 +6660,7 @@ SceneViewport::onSynced(U64 serial,
     publishState();
     update();
     Q_EMIT sceneSynced();
+    noteDrawPolicySettled();
 }
 
 void
@@ -6690,9 +6754,11 @@ SceneViewport::onBackgroundFrameDone()
 
 void
 SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds,
-                                    U64 loadEditCount)
+                                    U64 loadEditCount,
+                                    U64 loadRound)
 {
     _imp->takenLoadEditCount = std::max(_imp->takenLoadEditCount, loadEditCount);
+    _imp->loadRoundsServiced = std::max(_imp->loadRoundsServiced, loadRound);
     if (!_imp->renderer.hasPendingStageLoads()) {
         forgetRestoredLoads();
     }
@@ -6705,6 +6771,7 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
     publishState();
     update();
     Q_EMIT stageLoadsChanged();
+    noteDrawPolicySettled();
 }
 void
 SceneViewport::serviceDeferredInput()
@@ -6928,6 +6995,33 @@ SceneViewport::onDrawRulesMatched(U64 generation,
         runPolicyEdits();
     }
     releasePolicyHoldIfDone();
+    noteDrawPolicySettled();
+}
+
+void
+SceneViewport::onDrawRulesMatchDropped(U64 matchId)
+{
+    _imp->droppedMatch = std::max(_imp->droppedMatch, matchId);
+    noteDrawPolicySettled();
+}
+
+bool
+SceneViewport::isDrawPolicyPending() const
+{
+    const Implementation& imp = *_imp;
+
+    return imp.policyHeld() || (imp.newNodeSerial != 0) || (imp.syncedSerial < imp.policyRequestSerial)
+        || (std::max(imp.appliedMatch, imp.droppedMatch) < imp.matchesIssued.load())
+        || (imp.loadRoundsServiced < imp.loadRoundsTaken.load())
+        || (imp.drawStates && (imp.drawStates->getOutstandingCount() > 0)) || !imp.policyEdits.empty();
+}
+
+void
+SceneViewport::noteDrawPolicySettled()
+{
+    if (!isDrawPolicyPending() && !_imp->renderer.hasOutstandingStageLoads()) {
+        Q_EMIT drawPolicySettled();
+    }
 }
 
 void
@@ -6966,6 +7060,7 @@ SceneViewport::runPolicyEdits()
     for (const std::function<void()>& edit : edits) {
         edit();
     }
+    noteDrawPolicySettled();
 }
 
 void
@@ -6985,6 +7080,7 @@ SceneViewport::releasePolicyHold()
     startBackgroundFrame();
     publishState();
     update();
+    noteDrawPolicySettled();
 }
 
 void
@@ -7008,6 +7104,7 @@ SceneViewport::deliverDrawChange(const SceneDrawChange& change)
         Q_EMIT stageLoadsChanged();
     }
     Q_EMIT drawStatesChanged();
+    noteDrawPolicySettled();
 }
 
 namespace {
@@ -7374,6 +7471,7 @@ SceneViewport::cancelPendingLoads()
     _imp->renderer.cancelStageLoads();
     publishState();
     Q_EMIT stageLoadsChanged();
+    noteDrawPolicySettled();
 }
 
 void
@@ -7691,6 +7789,21 @@ SceneViewport::setMaxSamples(int samples)
 {
     _imp->renderer.setMaxSamples(samples);
     publishRefineState();
+    update();
+}
+
+void
+SceneViewport::setRenderEverything(bool on)
+{
+    _imp->renderer.setRenderEverything(on);
+    if (on) {
+        // Taking the mutex keeps the wake-up from falling between the thread's check and its wait.
+        {
+            std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+        }
+        _imp->loadWake.notify_one();
+        publishState();
+    }
     update();
 }
 
@@ -8069,6 +8182,14 @@ void
 SceneViewport::setSelectionActions(const SelectionActions& actions)
 {
     _imp->selectionActions = actions;
+}
+
+void
+SceneViewport::setArmedPick(const QString& label)
+{
+    _imp->armedPick = label;
+    setProperty("natronSceneArmedPick", label);
+    update();
 }
 
 void
@@ -8744,6 +8865,10 @@ SceneViewport::paintGL()
             painter.setPen(QColor(230, 160, 80));
             painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignBottom, _imp->lockMessage);
         }
+    }
+    if (!_imp->armedPick.isEmpty()) {
+        painter.setPen(QColor(240, 170, 80));
+        painter.drawText(rect().adjusted(8, 6, -8, -28), Qt::AlignHCenter | Qt::AlignBottom, tr("Pick for %1: select prims, Enter writes them, Esc cancels").arg(_imp->armedPick));
     }
     if (_imp->dragging && (_imp->dragRole == Implementation::eDragRoleMarquee)) {
         painter.setPen(QPen(QColor(230, 230, 230), 1., Qt::DashLine));

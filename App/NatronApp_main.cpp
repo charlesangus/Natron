@@ -47,6 +47,7 @@
 #endif
 
 #include "Engine/CLArgs.h"
+#include "Global/ThirdPartyTelemetry.h"
 
 NATRON_NAMESPACE_USING
 
@@ -63,6 +64,7 @@ int wmain(int argc, wchar_t** argv)
 int main(int argc, char *argv[])
 #endif
 {
+    disableThirdPartyTelemetry();
 #ifdef DEBUG
     boost_adaptbx::floating_point::exception_trapping trap(boost_adaptbx::floating_point::exception_trapping::division_by_zero |
                                                            boost_adaptbx::floating_point::exception_trapping::invalid |

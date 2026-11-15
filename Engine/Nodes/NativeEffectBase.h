@@ -82,6 +82,12 @@ class RenderCancellation {
 public:
     explicit RenderCancellation(const EffectInstance* effect);
 
+    /**
+     * @brief The cancellation of work that runs outside a render, such as a WholeFrameCache job:
+     * cancelled is asked in place of the effect, on the thread that built this.
+     **/
+    explicit RenderCancellation(std::function<bool()> cancelled);
+
     RenderCancellation(const RenderCancellation&) = delete;
     RenderCancellation& operator=(const RenderCancellation&) = delete;
 
@@ -93,6 +99,7 @@ public:
 
 private:
     const EffectInstance* _effect;
+    std::function<bool()> _asked;
     std::thread::id _owner;
     std::atomic<bool> _cancelled;
 };
@@ -438,6 +445,14 @@ protected:
      * of an earlier state again.
      **/
     void invalidateOutputMetadata();
+
+    /**
+     * @brief Called from deriveOutputMetadata() when its answer is incomplete for now: neither it
+     * nor the answers of the nodes downstream derived from it in the same call are cached, so they
+     * are derived again when next asked. The node calls invalidateOutputMetadata() once the
+     * complete answer is available, so that the readers that were given the incomplete one ask again.
+     **/
+    void markOutputMetadataProvisional();
 
     /**
      * @brief Sets the text getSublabel() returns and shows it in the node graph.

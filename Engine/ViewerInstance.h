@@ -84,6 +84,7 @@
 #define kViewerParamEnableDownscale "enableDownscale"
 #define kViewerParamDownscaleLevel "downscaleLevel"
 #define kViewerParamMaxSamples "maxSamples"
+#define kViewerParamRenderEverything "renderEverything"
 #define kViewerParamRefinementPaused "refinementPaused"
 
 NATRON_NAMESPACE_ENTER
@@ -677,11 +678,19 @@ public:
 
     /**
      * @brief The payloads the viewer's scene evaluations include, which follow what its 3D view's
-     * stage loads: pattern nodes match only those. None until set. MT-safe.
+     * stage loads: pattern nodes match only those. None until set. A change queues the knob
+     * menus filled from the scene to follow it (SceneMenuRefresh::followLoadChanges()). MT-safe.
      **/
     void setSceneLoadSet(const SceneLoadSetPtr& loadSet);
 
     SceneLoadSetPtr getSceneLoadSet() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Who the viewer's scene evaluations are for: its id, which keeps the nodes' memoized
+     * layers and matches for it apart from other evaluators', and its current load set. Without
+     * a reach. MT-safe.
+     **/
+    SceneEvaluationContext getSceneEvaluationContext() const WARN_UNUSED_RETURN;
 
     /**
      * @brief Evaluates the scene of the A input as the viewer would with loadSet in its place, for

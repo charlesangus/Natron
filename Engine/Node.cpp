@@ -1117,8 +1117,15 @@ Node::getKnobsContentDigest(bool* hasExpression) const
 {
     // Read before any knob: an edit made meanwhile invalidates after it lands, so it moves the
     // generation past the one stored here and the next call rebuilds.
-    const U64 generation = _imp->effect->getKnobsContentGeneration();
-    const KnobHolder* holder = _imp->effect.get();
+    // destroyNode() takes the effect away while a scene worker's job may still hash the node.
+    const EffectInstance* effect = _imp->effect.get();
+    if (!effect) {
+        *hasExpression = false;
+
+        return 0;
+    }
+    const U64 generation = effect->getKnobsContentGeneration();
+    const KnobHolder* holder = effect;
 
     QMutexLocker l(&_imp->knobsDigestMutex);
     if (!_imp->knobsDigestValid || (_imp->knobsDigestGeneration != generation)) {
@@ -1127,7 +1134,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         bool anyExpression = false;
         bool anyLive = false;
         // Hashes are recomputed on render threads too, while the main thread may add or remove knobs.
-        const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+        const KnobsVec knobs = effect->getKnobs_mt_safe();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
             const KnobIPtr& knob = *it;
             if (!knob || !knob->isRenderHashed()) {
@@ -1256,7 +1263,9 @@ Node::computeContentHash(U64 projectDigest,
 
     bool hasExpression = false;
     h.appendU64(getKnobsContentDigest(&hasExpression));
-    _imp->effect->appendNodeContentHash(h);
+    if (const EffectInstance* effect = _imp->effect.get()) {
+        effect->appendNodeContentHash(h);
+    }
 
     // Expressions resolve thisNode/thisGroup and other nodes by name, so the same expression
     // under another name can evaluate differently.
@@ -3780,6 +3789,14 @@ Node::isActivated() const
     return _imp->activated;
 }
 
+bool
+Node::isBeingDestroyed() const
+{
+    QMutexLocker l(&_imp->isBeingDestroyedMutex);
+
+    return _imp->isBeingDestroyed;
+}
+
 std::string
 Node::makeCacheInfo() const
 {
@@ -5727,6 +5744,16 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         }
         if (dc) {
             int inputNb = output->getInputIndex(this);
+            if (inputNb == -1) {
+                // A connection queued behind a render is in the GUI inputs only.
+                const std::vector<NodeWPtr>& guiInputs = output->getGuiInputs();
+                for (std::size_t i = 0; i < guiInputs.size(); ++i) {
+                    if (guiInputs[i].lock().get() == this) {
+                        inputNb = (int)i;
+                        break;
+                    }
+                }
+            }
             if (inputNb != -1) {
                 _imp->deactivatedState.insert( make_pair(*it, inputNb) );
 
@@ -5736,6 +5763,23 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                 } else {
                     ignore_result( output->disconnectInputInternal(this, false) );
                 }
+            }
+        }
+    }
+
+    // An output whose disconnect from this node is queued behind its render has left the GUI
+    // outputs but still reads this node through its real input, which would outlive the effect.
+    if (disconnectAll) {
+        NodesWList remaining;
+        {
+            QMutexLocker l(&_imp->outputsMutex);
+            remaining = _imp->outputs;
+            remaining.insert(remaining.end(), _imp->guiOutputs.begin(), _imp->guiOutputs.end());
+        }
+        for (NodesWList::iterator it = remaining.begin(); it != remaining.end(); ++it) {
+            NodePtr output = it->lock();
+            if (output && output->dropInputsFromDeactivated(this)) {
+                disconnectOutput(false, output.get());
             }
         }
     }
@@ -6991,6 +7035,11 @@ Node::postPersistentMessage(MessageTypeEnum type,
                             U64 renderSequence,
                             const AbortableRenderInfo* render)
 {
+    // Late messages from detached jobs would otherwise reach a node whose GUI is already gone.
+    if (isBeingDestroyed()) {
+        return;
+    }
+
     if (!_imp->nodeCreated && _imp->wasCreatedSilently) {
         std::cerr << getScriptName_mt_safe() << " message: " << content << std::endl;
         return;

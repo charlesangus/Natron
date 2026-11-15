@@ -26,9 +26,14 @@
 #include "USDEditTransform.h"
 
 #include <algorithm>
+#include <list>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
+
+#include <QCoreApplication>
+#include <QMetaObject>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -41,6 +46,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+#include <pxr/usd/usdGeom/modelAPI.h>
 
 NATRON_NAMESPACE_ENTER
 
@@ -131,47 +137,59 @@ getAppendBaseOrder(const PXR_NS::UsdPrim& prim)
 
     return result;
 } // getAppendBaseOrder
+} // anonymous namespace
 
-// The prims of stage that pattern selects and that can hold a transform, in stage order.
-bool
-selectXformables(const PXR_NS::UsdStageRefPtr& stage,
-                 const std::string& pattern,
-                 std::vector<PXR_NS::UsdPrim>* prims,
-                 std::string* errorMessage)
-{
-    prims->clear();
-    std::vector<PXR_NS::SdfPath> found;
-    if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
-        return false;
-    }
-    for (const PXR_NS::SdfPath& path : found) {
-        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
-        if (prim.IsA<PXR_NS::UsdGeomXformable>()) {
-            prims->push_back(prim);
-        }
-    }
-
-    return true;
-}
+namespace {
+// Evaluation contexts a result is kept for at once.
+const std::size_t kContextResults = 4;
 } // anonymous namespace
 
 struct USDEditTransform::Implementation {
+    // What the last evaluation in one context found, for the handles, the centre pivot button
+    // and the viewers asking which prims the node transforms.
+    struct Result {
+        U64 context = 0;
+        ScenePayload upstream;
+        // The matches of matchedPattern on the stack whose hash is matchedStack, the op name each
+        // gets (from matchedOpName) and the op order an Append-mode op goes after on each, kept so
+        // that an evaluation that changes none of them does not read the stage again.
+        bool matchesValid = false;
+        U64 matchedStack = 0;
+        std::string matchedPattern;
+        std::string matchedOpName;
+        std::vector<PXR_NS::SdfPath> matches;
+        std::vector<PXR_NS::TfToken> opNames;
+        std::vector<PXR_NS::VtTokenArray> baseOrders;
+        std::string handlePrim;
+        std::string handleOp;
+    };
+
     mutable std::mutex lock;
-    // The matches of matchedPattern on the stack whose hash is matchedStack, the op name each gets
-    // (from matchedOpName) and the op order an Append-mode op goes after on each, kept so that an
-    // evaluation that changes none of them does not read the stage again.
-    bool matchesValid = false;
-    U64 matchedStack = 0;
-    std::string matchedPattern;
-    std::string matchedOpName;
-    std::vector<PXR_NS::SdfPath> matches;
-    std::vector<PXR_NS::TfToken> opNames;
-    std::vector<PXR_NS::VtTokenArray> baseOrders;
+    // Most recently evaluated first.
+    std::list<Result> results;
+    U64 opReadCount = 0;
     PrimPatternCache patternMatches;
-    // From the last evaluation, for the handles and the centre pivot button.
-    ScenePayload lastUpstream;
-    std::string handlePrim;
-    std::string handleOp;
+    // The request whose result the button applies. Under lock.
+    std::shared_ptr<CentrePivotJob> pivotJob;
+    SceneWorker pivotWorker;
+
+    // The result of context, or null. Call with lock held.
+    const Result* find(U64 context) const
+    {
+        for (const Result& result : results) {
+            if (result.context == context) {
+                return &result;
+            }
+        }
+
+        return nullptr;
+    }
+
+    // The result of the latest evaluation in any context, or null. Call with lock held.
+    const Result* latest() const
+    {
+        return results.empty() ? nullptr : &results.front();
+    }
 };
 
 USDEditTransform::USDEditTransform(NodePtr node)
@@ -182,6 +200,13 @@ USDEditTransform::USDEditTransform(NodePtr node)
 
 USDEditTransform::~USDEditTransform()
 {
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (_imp->pivotJob) {
+            _imp->pivotJob->cancel();
+        }
+    }
+    _imp->pivotWorker.stop();
 }
 
 const NodeSpec*
@@ -286,9 +311,11 @@ USDEditTransform::knobChanged(KnobI* k,
     if (!button || (k != button.get())) {
         return false;
     }
-    std::string error;
-    if (!centrePivot(&error)) {
-        message(eMessageTypeWarning, error);
+    SceneEvaluationContext context;
+    if (SceneNodeAuthoring::getShowingViewerContext(this, &context)) {
+        startCentrePivot(&context);
+    } else {
+        startCentrePivot(nullptr);
     }
 
     return true;
@@ -302,21 +329,35 @@ USDEditTransform::getMatchedPrims(std::vector<std::string>* primPaths,
 
     primPaths->clear();
     opNames->clear();
-    for (std::size_t i = 0; (i < _imp->matches.size()) && (i < _imp->opNames.size()); ++i) {
-        primPaths->push_back(_imp->matches[i].GetString());
-        opNames->push_back(_imp->opNames[i].GetString());
+    const Implementation::Result* result = _imp->latest();
+    for (std::size_t i = 0; result && (i < result->matches.size()) && (i < result->opNames.size()); ++i) {
+        primPaths->push_back(result->matches[i].GetString());
+        opNames->push_back(result->opNames[i].GetString());
     }
 }
 
+U64
+USDEditTransform::getStageReadCount() const
+{
+    std::lock_guard<std::mutex> l(_imp->lock);
+
+    return _imp->patternMatches.getQueryCount() + _imp->opReadCount;
+}
+
 bool
-USDEditTransform::transformsPrim(const std::string& primPath) const
+USDEditTransform::transformsPrim(const std::string& primPath,
+                                 const SceneEvaluationContext& context) const
 {
     const std::string pattern = _primPattern.getExpression();
     ScenePayload upstream;
     {
         std::lock_guard<std::mutex> l(_imp->lock);
-        if (_imp->matchesValid && (_imp->matchedPattern == pattern)) {
-            for (const PXR_NS::SdfPath& path : _imp->matches) {
+        const Implementation::Result* result = _imp->find(context.id);
+        if (!result) {
+            return false;
+        }
+        if (result->matchesValid && (result->matchedPattern == pattern)) {
+            for (const PXR_NS::SdfPath& path : result->matches) {
                 if (path.GetString() == primPath) {
                     return true;
                 }
@@ -324,20 +365,25 @@ USDEditTransform::transformsPrim(const std::string& primPath) const
 
             return false;
         }
-        upstream = _imp->lastUpstream;
+        upstream = result->upstream;
     }
     if (upstream.isEmpty() || PrimSelector::isBlank(pattern)) {
         return false;
     }
     std::string error;
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, &error);
-    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-    std::vector<PXR_NS::UsdPrim> found;
-    if (!stage || !selectXformables(stage, pattern, &found, &error)) {
+    SceneQueryPool::Lease lease;
+    SceneNodeAuthoring::PatternMatches found;
+    const SceneNodeAuthoring::PatternFilter xformable = [](const PXR_NS::UsdPrim& prim) {
+        return prim.IsA<PXR_NS::UsdGeomXformable>();
+    };
+    // The pattern cache is the one renderScene() fills, so a pattern already matched in this
+    // context on this load set is taken without a query.
+    SceneEvaluationContext asking(context.id, context.loadSet);
+    if (!SceneNodeAuthoring::matchPattern(&_imp->patternMatches, upstream, pattern, asking, 0, xformable, &lease, &found, &error)) {
         return false;
     }
-    for (const PXR_NS::UsdPrim& prim : found) {
-        if (prim.GetPath().GetString() == primPath) {
+    for (const PXR_NS::SdfPath& path : found.paths) {
+        if (path.GetString() == primPath) {
             return true;
         }
     }
@@ -351,58 +397,271 @@ USDEditTransform::getHandleTarget(std::string* primPath,
 {
     std::lock_guard<std::mutex> l(_imp->lock);
 
-    if (_imp->handlePrim.empty()) {
+    const Implementation::Result* result = _imp->latest();
+    if (!result || result->handlePrim.empty()) {
         return false;
     }
-    *primPath = _imp->handlePrim;
-    *opName = _imp->handleOp;
+    *primPath = result->handlePrim;
+    *opName = result->handleOp;
 
     return true;
 }
 
-bool
-USDEditTransform::centrePivot(std::string* errorMessage)
+CentrePivotJob::StateEnum
+CentrePivotJob::wait() const
 {
+    std::unique_lock<std::mutex> l(_lock);
+
+    _done.wait(l, [this]() { return _state != eStateRunning; });
+
+    return _state;
+}
+
+CentrePivotJob::StateEnum
+CentrePivotJob::getState() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _state;
+}
+
+void
+CentrePivotJob::getCentre(double* x,
+                          double* y,
+                          double* z) const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    *x = _centre[0];
+    *y = _centre[1];
+    *z = _centre[2];
+}
+
+std::string
+CentrePivotJob::getError() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _error;
+}
+
+void
+CentrePivotJob::finish(StateEnum state,
+                       const double* centre,
+                       const std::string& error)
+{
+    {
+        std::lock_guard<std::mutex> l(_lock);
+        _state = state;
+        if (centre) {
+            std::copy(centre, centre + 3, _centre);
+        }
+        _error = error;
+    }
+    _done.notify_all();
+}
+
+namespace {
+struct CentreSnapshot {
     ScenePayload upstream;
     std::vector<PXR_NS::SdfPath> matches;
-    {
-        std::lock_guard<std::mutex> l(_imp->lock);
-        upstream = _imp->lastUpstream;
-        if (_imp->matchesValid) {
-            matches = _imp->matches;
+    SceneLoadSetPtr loadSet;
+    double timeCode = 0.;
+    std::string failure;
+};
+
+// Adds to range the extentsHint of every prim at or under prim whose payload stage left
+// unloaded, in prim's local space; counts the ones with no hint in *unmeasured.
+void
+addUnloadedHints(const PXR_NS::UsdPrim& prim,
+                 const PXR_NS::UsdTimeCode time,
+                 const CentrePivotJob& job,
+                 PXR_NS::GfRange3d* range,
+                 int* unmeasured)
+{
+    PXR_NS::UsdGeomXformCache xforms(time);
+    // The default predicate leaves unloaded prims out, and they are the ones wanted.
+    const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
+    PXR_NS::UsdPrimRange prims(prim, predicate);
+    for (PXR_NS::UsdPrimRange::iterator it = prims.begin(); it != prims.end(); ++it) {
+        if (job.isCancelled()) {
+            return;
+        }
+        const PXR_NS::UsdPrim& at = *it;
+        if (!at.HasPayload() || at.IsLoaded()) {
+            continue;
+        }
+        it.PruneChildren();
+        PXR_NS::VtVec3fArray hint;
+        const PXR_NS::UsdAttribute attribute = PXR_NS::UsdGeomModelAPI(at).GetExtentsHintAttr();
+        // Pairs of min and max, one per purpose: default, render, proxy, guide.
+        if (!attribute || !attribute.Get(&hint, time) || (hint.size() < 2)) {
+            ++*unmeasured;
+            continue;
+        }
+        bool resets = false;
+        const PXR_NS::GfMatrix4d toPrim = (at.GetPath() == prim.GetPath()) ? PXR_NS::GfMatrix4d(1.) : xforms.ComputeRelativeTransform(at, prim, &resets);
+        for (std::size_t i = 0; (i + 1 < hint.size()) && (i < 6); i += 2) {
+            const PXR_NS::GfRange3d box(PXR_NS::GfVec3d(hint[i]), PXR_NS::GfVec3d(hint[i + 1]));
+            range->UnionWith(PXR_NS::GfBBox3d(box, toPrim).ComputeAlignedRange());
         }
     }
-    KnobDoublePtr pivot = _pivot.lock();
-    std::string borrowError;
-    SceneQueryPool::Lease lease;
-    if (!upstream.isEmpty() && !matches.empty()) {
-        lease = SceneQueryPool::instance().borrow(upstream, &borrowError);
-    }
-    PXR_NS::UsdStageRefPtr stage = lease.getStage();
-    if (!pivot || !stage || matches.empty()) {
-        *errorMessage = tr("The pattern matches no prim to centre the pivot on.").toStdString();
+}
 
-        return false;
+void
+computeCentre(const CentreSnapshot& snapshot,
+              CentrePivotJob* job,
+              bool noViewer)
+{
+    const std::string note = noViewer ? QCoreApplication::translate("USDEditTransform", "No viewer shows this node, so its unloaded branches were not searched.").toStdString() : std::string();
+    const auto fail = [&](const std::string& message) {
+        job->finish(CentrePivotJob::eStateFailed, nullptr, note.empty() ? message : (message + " " + note));
+    };
+    if (!snapshot.failure.empty()) {
+        fail(snapshot.failure);
+
+        return;
     }
-    AppInstancePtr app = getApp();
-    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
-    const double timeCode = SceneOps::frameToTimeCode(upstream, getCurrentTime(), fps);
-    PXR_NS::UsdGeomBBoxCache bboxes(PXR_NS::UsdTimeCode(timeCode), { PXR_NS::UsdGeomTokens->default_, PXR_NS::UsdGeomTokens->render, PXR_NS::UsdGeomTokens->proxy }, true);
+    std::string borrowError;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(snapshot.upstream, snapshot.loadSet, &borrowError);
+    PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    if (!stage) {
+        fail(borrowError);
+
+        return;
+    }
+    const PXR_NS::UsdTimeCode time(snapshot.timeCode);
+    PXR_NS::UsdGeomBBoxCache bboxes(time, { PXR_NS::UsdGeomTokens->default_, PXR_NS::UsdGeomTokens->render, PXR_NS::UsdGeomTokens->proxy }, true);
     PXR_NS::GfRange3d range;
-    for (const PXR_NS::SdfPath& path : matches) {
+    int unmeasured = 0;
+    // Several matches can sit under one unloaded payload; its hint is counted once.
+    std::set<PXR_NS::SdfPath> hintedAncestors;
+    for (const PXR_NS::SdfPath& path : snapshot.matches) {
+        if (job->isCancelled()) {
+            job->finish(CentrePivotJob::eStateFailed, nullptr, std::string());
+
+            return;
+        }
+        // A match inside a payload the load set leaves unloaded is not on the stage.
         const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
-        if (prim) {
+        if (!prim) {
+            PXR_NS::UsdPrim ancestor;
+            for (PXR_NS::SdfPath at = path.GetParentPath(); !at.IsEmpty() && !ancestor; at = at.GetParentPath()) {
+                ancestor = stage->GetPrimAtPath(at);
+            }
+            // The payload holding the match bounds it; nothing nearer is on the stage.
+            if (!ancestor || !ancestor.HasPayload() || ancestor.IsLoaded()) {
+                ++unmeasured;
+            } else if (hintedAncestors.insert(ancestor.GetPath()).second) {
+                addUnloadedHints(ancestor, time, *job, &range, &unmeasured);
+            }
+            continue;
+        }
+        if (!prim.HasPayload() || prim.IsLoaded()) {
             range.UnionWith(bboxes.ComputeUntransformedBound(prim).ComputeAlignedRange());
         }
+        addUnloadedHints(prim, time, *job, &range, &unmeasured);
     }
-    // Given back before the knobs change: setting them may evaluate the graph on this thread.
+    if (job->isCancelled()) {
+        job->finish(CentrePivotJob::eStateFailed, nullptr, std::string());
+
+        return;
+    }
+    // Given back before the job ends: the pool must not hold a stage for a result nobody uses.
     lease.release();
     if (range.IsEmpty()) {
-        *errorMessage = tr("The matched prims have no bounds to centre the pivot on.").toStdString();
+        std::string message = QCoreApplication::translate("USDEditTransform", "The matched prims have no bounds to centre the pivot on.").toStdString();
+        if (unmeasured > 0) {
+            message += " " + QCoreApplication::translate("USDEditTransform", "%1 matches could not be measured: they are unloaded and author no extentsHint.").arg(unmeasured).toStdString();
+        }
+        fail(message);
+
+        return;
+    }
+    const PXR_NS::GfVec3d centre = range.GetMidpoint();
+    const double values[3] = { centre[0], centre[1], centre[2] };
+    job->finish(CentrePivotJob::eStateDone, values, std::string());
+}
+} // anonymous namespace
+
+std::shared_ptr<CentrePivotJob>
+USDEditTransform::startCentrePivot(const SceneEvaluationContext* context)
+{
+    std::shared_ptr<CentrePivotJob> job = std::make_shared<CentrePivotJob>();
+    auto snapshot = std::make_shared<CentreSnapshot>();
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (_imp->pivotJob) {
+            _imp->pivotJob->cancel();
+        }
+        _imp->pivotJob = job;
+        // The viewer's result when it evaluated the node, else the latest: the matches are
+        // what the load set was searched for, and the same stage serves any context.
+        const Implementation::Result* result = context ? _imp->find(context->id) : nullptr;
+        if (!result) {
+            result = _imp->latest();
+        }
+        if (result) {
+            snapshot->upstream = result->upstream;
+            if (result->matchesValid) {
+                snapshot->matches = result->matches;
+            }
+        }
+    }
+    if (context) {
+        snapshot->loadSet = context->loadSet;
+    } else {
+        snapshot->loadSet = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
+    }
+    if (snapshot->upstream.isEmpty() || snapshot->matches.empty()) {
+        snapshot->failure = tr("The pattern matches no prim to centre the pivot on.").toStdString();
+    } else {
+        AppInstancePtr app = getApp();
+        const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+        snapshot->timeCode = SceneOps::frameToTimeCode(snapshot->upstream, getCurrentTime(), fps);
+    }
+
+    const bool noViewer = !context;
+    NodeWPtr weakNode = getNode();
+    _imp->pivotWorker.post([job, snapshot, noViewer, weakNode]() {
+        try {
+            computeCentre(*snapshot, job.get(), noViewer);
+        } catch (...) {
+            job->finish(CentrePivotJob::eStateFailed, nullptr, std::string());
+        }
+        if (QCoreApplication::instance()) {
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [job, weakNode]() {
+                NodePtr node = weakNode.lock();
+                USDEditTransform* effect = node ? dynamic_cast<USDEditTransform*>(node->getEffectInstance().get()) : nullptr;
+                if (effect) {
+                    effect->applyCentrePivot(job);
+                } }, Qt::QueuedConnection);
+        } }, [job]() { job->finish(CentrePivotJob::eStateFailed, nullptr, std::string()); });
+
+    return job;
+}
+
+bool
+USDEditTransform::applyCentrePivot(const std::shared_ptr<CentrePivotJob>& job)
+{
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (job->isCancelled() || (_imp->pivotJob != job)) {
+            return false;
+        }
+        _imp->pivotJob.reset();
+    }
+    KnobDoublePtr pivot = _pivot.lock();
+    if (!pivot || (job->getState() == CentrePivotJob::eStateRunning)) {
+        return false;
+    }
+    if (job->getState() == CentrePivotJob::eStateFailed) {
+        message(eMessageTypeWarning, job->getError());
 
         return false;
     }
-    const PXR_NS::GfVec3d centre = range.GetMidpoint();
+    double centre[3];
+    job->getCentre(&centre[0], &centre[1], &centre[2]);
     // One undoable edit for the three values.
     setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
     for (int d = 0; d < 3; ++d) {
@@ -411,7 +670,7 @@ USDEditTransform::centrePivot(std::string* errorMessage)
     setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
 
     return true;
-} // USDEditTransform::centrePivot
+}
 
 StatusEnum
 USDEditTransform::renderScene(const SceneRenderActionArgs& args,
@@ -450,9 +709,10 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
         {
             std::lock_guard<std::mutex> l(_imp->lock);
             // The same prims of the same stack hold the same ops whatever else is loaded.
-            if (_imp->matchesValid && (_imp->matchedStack == upstream.getStackHash()) && (_imp->matchedOpName == baseOpName) && (_imp->matches == matches)) {
-                opNames = _imp->opNames;
-                baseOrders = _imp->baseOrders;
+            const Implementation::Result* previous = _imp->find(args.context.id);
+            if (previous && previous->matchesValid && (previous->matchedStack == upstream.getStackHash()) && (previous->matchedOpName == baseOpName) && (previous->matches == matches)) {
+                opNames = previous->opNames;
+                baseOrders = previous->baseOrders;
                 cached = true;
             }
         }
@@ -461,6 +721,10 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
                 lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);
             }
             PXR_NS::UsdStageRefPtr stage = lease.getStage();
+            {
+                std::lock_guard<std::mutex> l(_imp->lock);
+                ++_imp->opReadCount;
+            }
             if (!stage) {
                 if (errorMessage->empty()) {
                     *errorMessage = tr("USD could not compose the input scene.").toStdString();
@@ -479,16 +743,28 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
 
     {
         std::lock_guard<std::mutex> l(_imp->lock);
-        _imp->lastUpstream = upstream;
-        _imp->matchesValid = !upstream.isEmpty() && !PrimSelector::isBlank(pattern);
-        _imp->matchedStack = upstream.getStackHash();
-        _imp->matchedPattern = pattern;
-        _imp->matchedOpName = baseOpName;
-        _imp->matches = matches;
-        _imp->opNames = opNames;
-        _imp->baseOrders = baseOrders;
-        _imp->handlePrim = matches.empty() ? std::string() : matches.front().GetString();
-        _imp->handleOp = opNames.empty() ? std::string() : opNames.front().GetString();
+        Implementation::Result result;
+        result.context = args.context.id;
+        result.upstream = upstream;
+        result.matchesValid = !upstream.isEmpty() && !PrimSelector::isBlank(pattern);
+        result.matchedStack = upstream.getStackHash();
+        result.matchedPattern = pattern;
+        result.matchedOpName = baseOpName;
+        result.matches = matches;
+        result.opNames = opNames;
+        result.baseOrders = baseOrders;
+        result.handlePrim = matches.empty() ? std::string() : matches.front().GetString();
+        result.handleOp = opNames.empty() ? std::string() : opNames.front().GetString();
+        for (std::list<Implementation::Result>::iterator it = _imp->results.begin(); it != _imp->results.end(); ++it) {
+            if (it->context == result.context) {
+                _imp->results.erase(it);
+                break;
+            }
+        }
+        _imp->results.push_front(std::move(result));
+        while (_imp->results.size() > kContextResults) {
+            _imp->results.pop_back();
+        }
     }
 
     if (matches.empty()) {

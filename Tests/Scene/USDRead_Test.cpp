@@ -219,7 +219,7 @@ protected:
     static SceneQueryPool::Lease borrow(const ScenePayload& payload)
     {
         std::string error;
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
 
         EXPECT_TRUE(lease.isValid()) << error;
 
@@ -541,7 +541,7 @@ TEST_F(USDReadTest, RenderThreadsComposeThroughTwentyReloads)
             bool intact = true;
             {
                 std::string borrowError;
-                SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(before, &borrowError);
+                SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(before, SceneLoadSet::everything(), &borrowError);
                 intact = lease.isValid() && consistent(lease.getStage());
             }
             {

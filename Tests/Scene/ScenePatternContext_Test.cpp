@@ -45,6 +45,7 @@
 #include <pxr/base/tf/weakPtr.h>
 
 #include "BaseTest.h"
+#include "SceneTestAuthoring.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
@@ -63,75 +64,6 @@
 NATRON_NAMESPACE_USING
 
 namespace {
-// /World/Block_<b>/B_<n>, each building a payload holding /Geo and /car_0.
-class CarCity {
-public:
-    CarCity(int blocks,
-            int buildingsPerBlock)
-    {
-        static std::atomic<int> counter(0);
-
-        _dir = std::filesystem::temp_directory_path() / ("scene_pattern_city_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
-        std::filesystem::create_directories(_dir / "buildings");
-        _dir = std::filesystem::canonical(_dir);
-        std::ofstream root(rootPath());
-        root << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n    metersPerUnit = 1\n)\ndef Xform \"World\"\n{\n";
-        for (int b = 0; b < blocks; ++b) {
-            root << "    def Xform \"Block_" << b << "\"\n    {\n";
-            for (int n = 0; n < buildingsPerBlock; ++n) {
-                const std::string name = "b" + std::to_string(b) + "_" + std::to_string(n) + ".usda";
-                std::ofstream building((_dir / "buildings" / name).string());
-                building << "#usda 1.0\n(\n    defaultPrim = \"Building\"\n)\ndef Xform \"Building\"\n{\n"
-                         << "    def Cube \"Geo\"\n    {\n    }\n    def Xform \"car_0\"\n    {\n    }\n}\n";
-                root << "        def Xform \"B_" << n << "\" (\n            prepend payload = @./buildings/" << name << "@\n        )\n        {\n        }\n";
-            }
-            root << "    }\n";
-        }
-        root << "}\n";
-    }
-
-    ~CarCity()
-    {
-        std::error_code ignored;
-        std::filesystem::remove_all(_dir, ignored);
-    }
-
-    std::string rootPath() const
-    {
-        return (_dir / "root.usda").string();
-    }
-
-private:
-    std::filesystem::path _dir;
-};
-
-std::string
-car(int block,
-    int index)
-{
-    return "/World/Block_" + std::to_string(block) + "/B_" + std::to_string(index) + "/car_0";
-}
-
-// Loads nothing but the subtrees of paths.
-SceneLoadSetPtr
-loading(const std::vector<std::string>& paths)
-{
-    std::vector<SceneLoadSet::Entry> entries;
-    SceneLoadSet::Entry none;
-
-    none.path = "/";
-    none.rule = SceneLoadSet::eRuleNone;
-    entries.push_back(none);
-    for (const std::string& path : paths) {
-        SceneLoadSet::Entry all;
-        all.path = path;
-        all.rule = SceneLoadSet::eRuleAll;
-        entries.push_back(all);
-    }
-
-    return std::make_shared<const SceneLoadSet>(entries);
-}
-
 QString
 getMessage(const NodePtr& node,
            int* type)
@@ -296,20 +228,20 @@ TEST_F(ScenePatternContextTest, AViewerMatchesOnlyInsideWhatItLoads)
     const U64 viewer = SceneEvaluationContext::makeId();
 
     ScenePayload loaded;
-    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loading({ "/World/Block_0" })), &loaded));
-    EXPECT_FALSE(activeWhenLoaded(loaded, car(0, 0)));
-    EXPECT_FALSE(activeWhenLoaded(loaded, car(0, 1)));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loadingOnly({ "/World/Block_0" })), &loaded));
+    EXPECT_FALSE(activeWhenLoaded(loaded, carPath(0, 0)));
+    EXPECT_FALSE(activeWhenLoaded(loaded, carPath(0, 1)));
 
     ScenePayload unloaded;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, std::make_shared<const SceneLoadSet>(SceneLoadSet::none())), &unloaded));
-    EXPECT_TRUE(activeWhenLoaded(unloaded, car(0, 0)));
+    EXPECT_TRUE(activeWhenLoaded(unloaded, carPath(0, 0)));
 
     // A render loads everything, and matches everything.
     ScenePayload rendered;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(), &rendered));
-    EXPECT_FALSE(activeWhenLoaded(rendered, car(0, 0)));
-    EXPECT_FALSE(activeWhenLoaded(rendered, car(0, 1)));
-    EXPECT_TRUE(activeWhenLoaded(rendered, car(1, 0)));
+    EXPECT_FALSE(activeWhenLoaded(rendered, carPath(0, 0)));
+    EXPECT_FALSE(activeWhenLoaded(rendered, carPath(0, 1)));
+    EXPECT_TRUE(activeWhenLoaded(rendered, carPath(1, 0)));
 }
 
 TEST_F(ScenePatternContextTest, LoadingWhereThePatternCannotReachDoesNotQueryAgain)
@@ -321,19 +253,19 @@ TEST_F(ScenePatternContextTest, LoadingWhereThePatternCannotReachDoesNotQueryAga
     const U64 viewer = SceneEvaluationContext::makeId();
 
     ScenePayload payload;
-    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loading({ "/World/Block_0" })), &payload));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loadingOnly({ "/World/Block_0" })), &payload));
     const U64 before = queries(node);
     EXPECT_GE(before, (U64)1);
 
-    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loading({ "/World/Block_0", "/World/Block_1" })), &payload));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loadingOnly({ "/World/Block_0", "/World/Block_1" })), &payload));
     EXPECT_EQ(before, queries(node));
-    EXPECT_FALSE(activeWhenLoaded(payload, car(0, 0)));
+    EXPECT_FALSE(activeWhenLoaded(payload, carPath(0, 0)));
 
     // Unloading inside the pattern's reach does query again.
-    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loading({ "/World/Block_0/B_1" })), &payload));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loadingOnly({ "/World/Block_0/B_1" })), &payload));
     EXPECT_EQ(before + 1, queries(node));
-    EXPECT_TRUE(activeWhenLoaded(payload, car(0, 0)));
-    EXPECT_FALSE(activeWhenLoaded(payload, car(0, 1)));
+    EXPECT_TRUE(activeWhenLoaded(payload, carPath(0, 0)));
+    EXPECT_FALSE(activeWhenLoaded(payload, carPath(0, 1)));
 }
 
 TEST_F(ScenePatternContextTest, ALoadOrUnloadReEvaluatesOnlyWhereAPatternReaches)
@@ -342,10 +274,10 @@ TEST_F(ScenePatternContextTest, ALoadOrUnloadReEvaluatesOnlyWhereAPatternReaches
     NodePtr source = reader(city);
     ASSERT_TRUE(bool(source));
     const U64 viewer = SceneEvaluationContext::makeId();
-    const SceneLoadSetPtr nothing = loading({});
-    const SceneLoadSetPtr building = loading({ "/World/Block_0/B_0" });
-    const SceneLoadSetPtr otherBlock = loading({ "/World/Block_1/B_0" });
-    const SceneLoadSetPtr both = loading({ "/World/Block_0/B_0", "/World/Block_1/B_0" });
+    const SceneLoadSetPtr nothing = loadingOnly({});
+    const SceneLoadSetPtr building = loadingOnly({ "/World/Block_0/B_0" });
+    const SceneLoadSetPtr otherBlock = loadingOnly({ "/World/Block_1/B_0" });
+    const SceneLoadSetPtr both = loadingOnly({ "/World/Block_0/B_0", "/World/Block_1/B_0" });
 
     // No pattern: neither a load nor an unload asks for the scene again.
     ScenePayload payload;
@@ -360,7 +292,7 @@ TEST_F(ScenePatternContextTest, ALoadOrUnloadReEvaluatesOnlyWhereAPatternReaches
     reach = std::make_shared<SceneLoadReach>();
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, nothing, reach), &payload));
     EXPECT_EQ(reach->getPrefixes(), std::vector<std::string>({ "/World/Block_0" }));
-    EXPECT_TRUE(activeWhenLoaded(payload, car(0, 0)));
+    EXPECT_TRUE(activeWhenLoaded(payload, carPath(0, 0)));
     const U64 before = queries(node);
 
     // A pattern that cannot reach the payload: still nothing to evaluate.
@@ -372,26 +304,26 @@ TEST_F(ScenePatternContextTest, ALoadOrUnloadReEvaluatesOnlyWhereAPatternReaches
     reach = std::make_shared<SceneLoadReach>();
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, building, reach), &payload));
     EXPECT_EQ(before + 1, queries(node));
-    EXPECT_FALSE(activeWhenLoaded(payload, car(0, 0)));
-    EXPECT_TRUE(activeWhenLoaded(payload, car(0, 1)));
+    EXPECT_FALSE(activeWhenLoaded(payload, carPath(0, 0)));
+    EXPECT_TRUE(activeWhenLoaded(payload, carPath(0, 1)));
 
     // Its unload reaches it as well, and the match goes with it.
     ASSERT_TRUE(SceneOps::loadChangeReaches(building.get(), nothing.get(), reach->getPrefixes()));
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, nothing, reach), &payload));
-    EXPECT_TRUE(activeWhenLoaded(payload, car(0, 0)));
+    EXPECT_TRUE(activeWhenLoaded(payload, carPath(0, 0)));
 }
 
 TEST_F(ScenePatternContextTest, PlainPathsMatchInsideUnloadedPayloads)
 {
     CarCity city(1, 2);
     NodePtr source = reader(city);
-    NodePtr node = prune(source, car(0, 1));
+    NodePtr node = prune(source, carPath(0, 1));
     ASSERT_TRUE(source && node);
 
     ScenePayload payload;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none())), &payload));
-    EXPECT_FALSE(activeWhenLoaded(payload, car(0, 1)));
-    EXPECT_TRUE(activeWhenLoaded(payload, car(0, 0)));
+    EXPECT_FALSE(activeWhenLoaded(payload, carPath(0, 1)));
+    EXPECT_TRUE(activeWhenLoaded(payload, carPath(0, 0)));
     int type = 0;
     getMessage(node, &type);
     EXPECT_NE((int)eMessageTypeWarning, type);
@@ -415,7 +347,7 @@ TEST_F(ScenePatternContextTest, NoMatchSaysHowManyUnloadedBranchesWereNotSearche
     // Everything loaded and still no match: the plain warning.
     NodePtr none = prune(source, "/World//truck*");
     ASSERT_TRUE(bool(none));
-    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(none, SceneEvaluationContext(viewer, loading({ "/World" })), &payload));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(none, SceneEvaluationContext(viewer, loadingOnly({ "/World" })), &payload));
     message = getMessage(none, &type);
     EXPECT_EQ((int)eMessageTypeWarning, type);
     EXPECT_TRUE(message.contains(QString::fromUtf8("matches no prim"))) << message.toStdString();
@@ -443,9 +375,9 @@ TEST_F(ScenePatternContextTest, APrunedPrimInsideAPayloadNeverShowsDuringItsLoad
     ASSERT_TRUE(source && node);
     const U64 viewer = SceneEvaluationContext::makeId();
     const PXR_NS::SdfPath building("/World/Block_0/B_0");
-    const PXR_NS::SdfPath pruned(car(0, 0));
+    const PXR_NS::SdfPath pruned(carPath(0, 0));
     ScenePayload shown;
-    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loading({})), &shown));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loadingOnly({})), &shown));
 
     // Loaded without the scene the load makes the pattern match, the car shows: the watch can see it.
     {
@@ -500,7 +432,7 @@ TEST_F(ScenePatternContextTest, AnUnloadedSearchFindsMatchesInsidePayloadsWithou
     ASSERT_TRUE(bool(search));
     ASSERT_TRUE(search->wait(60000.));
     EXPECT_EQ(SceneOps::UnloadedSearch::eStatusDone, search->getStatus()) << search->getError();
-    EXPECT_EQ(search->getMatches(), std::vector<std::string>({ car(0, 0), car(0, 1), car(1, 0), car(1, 1) }));
+    EXPECT_EQ(search->getMatches(), std::vector<std::string>({ carPath(0, 0), carPath(0, 1), carPath(1, 0), carPath(1, 1) }));
 
     ASSERT_TRUE(viewerLoads && viewerStage.getLoadSet());
     EXPECT_EQ(*viewerLoads, *viewerStage.getLoadSet());
@@ -510,10 +442,10 @@ TEST_F(ScenePatternContextTest, AnUnloadedSearchFindsMatchesInsidePayloadsWithou
     NodePtr node = prune(source, "/World/Block_0//car*");
     ASSERT_TRUE(bool(node));
     const U64 viewer = SceneEvaluationContext::makeId();
-    const SceneLoadSetPtr otherBlock = loading({ "/World/Block_1" });
+    const SceneLoadSetPtr otherBlock = loadingOnly({ "/World/Block_1" });
     ScenePayload shown;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, otherBlock), &shown));
-    EXPECT_TRUE(activeWhenLoaded(shown, car(0, 0)));
+    EXPECT_TRUE(activeWhenLoaded(shown, carPath(0, 0)));
     SceneStage shownStage(PXR_NS::UsdStage::LoadNone);
     ASSERT_TRUE(shownStage.sync(shown));
     shownStage.applyLoadSet(otherBlock);
@@ -526,7 +458,7 @@ TEST_F(ScenePatternContextTest, AnUnloadedSearchFindsMatchesInsidePayloadsWithou
     ASSERT_TRUE(bool(inputSearch));
     ASSERT_TRUE(inputSearch->wait(60000.));
     EXPECT_EQ(SceneOps::UnloadedSearch::eStatusDone, inputSearch->getStatus()) << inputSearch->getError();
-    EXPECT_EQ(inputSearch->getMatches(), std::vector<std::string>({ car(0, 0), car(0, 1) }));
+    EXPECT_EQ(inputSearch->getMatches(), std::vector<std::string>({ carPath(0, 0), carPath(0, 1) }));
 
     ASSERT_TRUE(shownLoads && shownStage.getLoadSet());
     EXPECT_EQ(*shownLoads, *shownStage.getLoadSet());
@@ -538,7 +470,7 @@ TEST_F(ScenePatternContextTest, AnUnloadedSearchFindsMatchesInsidePayloadsWithou
     ScenePayload again;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, otherBlock), &again));
     EXPECT_EQ(queriesBefore, queries(node));
-    EXPECT_TRUE(activeWhenLoaded(again, car(0, 0)));
+    EXPECT_TRUE(activeWhenLoaded(again, carPath(0, 0)));
 }
 
 TEST_F(ScenePatternContextTest, AnUnloadedSearchStopsWhenAsked)

@@ -1100,6 +1100,12 @@ private:
 
     int disconnectInputInternal(Node* input, bool queueWhileRendering);
 
+    /**
+     * @brief Forgets input wherever it is a real or GUI input, at once even while rendering, so no
+     * slot names it once its effect is destroyed. False when none did.
+     **/
+    bool dropInputsFromDeactivated(const Node* input);
+
     bool isSettingsPanelVisibleInternal(std::set<const Node*>& recursionList) const;
 
 public:
@@ -1350,6 +1356,11 @@ public:
      **/
     bool isActivated() const;
 
+    /**
+     * @brief Whether destroyNode() started on the node, after which its effect may be gone while
+     * work that holds the node, such as a scene worker's job, still runs. MT-safe
+     **/
+    bool isBeingDestroyed() const;
 
     /**
      * @brief Use this function to post a transient message to the user. It will be displayed using
@@ -1565,7 +1576,10 @@ public:
 
     void beginInputEdition();
 
-    void endInputEdition(bool triggerRender);
+    /**
+     * @brief Closes one input edition level. True when it was the outermost and inputs had changed.
+     **/
+    bool endInputEdition(bool triggerRender);
 
     void onInputChanged(int inputNb, bool isInputA = true);
 

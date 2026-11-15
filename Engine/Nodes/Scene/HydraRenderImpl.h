@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 #include <pxr/base/vt/value.h>
@@ -388,6 +389,8 @@ public:
         // is made again when the delegate does not show it restarted within a bound, as a loaded
         // machine may not.
         std::uint64_t engines = 0;
+        // Of those, the ones made again for that bound alone, which no edit asked for.
+        std::uint64_t unseenRemakes = 0;
         std::uint64_t frames = 0;
         // Why the delegate cannot render, empty if it can.
         std::string error;
@@ -460,6 +463,21 @@ public:
 
     // The cap in force: the one set, or the delegate's default once its engine is made, else 0.
     int getMaxSamples() const;
+
+    /**
+     * @brief The viewer's draw rules, which the engine draws by from its next restart: what they
+     * hide leaves the frame. An engine made later starts from them. Different rules restart, the
+     * same ones change nothing.
+     **/
+    void setDrawRules(const SceneDrawFilter::Rules& rules);
+
+    void applyDrawDeltas(const std::vector<SceneDrawDelta>& deltas);
+
+    /**
+     * @brief Draws everything regardless of the draw rules while on, keeping them for when it is
+     * off again. Neither way makes the engine again.
+     **/
+    void setRenderEverything(bool on);
 
     // Pauses the delegate where it is, keeping its samples; resume() continues from them.
     void stop();

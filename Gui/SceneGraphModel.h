@@ -115,10 +115,37 @@ public:
     bool isOver() const;
 
     /**
-     * @brief Adds to found the paths of the prims whose names satisfy matches, until budgetMs is
-     * spent, or found holds cap paths with another listed prim next, or no prim is left. At least
-     * one prim is looked at. Called with stage's lock held; a null stage ends the walk. Clears found
-     * and starts over when the stage is another one, has been edited, or has lost the next prim.
+     * @brief Makes step() match prims with text, a USD path expression as a prim pattern knob takes
+     * it (SceneOps::parsePrimExpression()), rather than by name; empty text goes back to names. The
+     * expression's predicates are USD's collection predicates and two more, {loaded} and {active},
+     * each taking false as in {loaded:false}. Inactive prims are matched too, so that
+     * {active:false} can find them; the walk never goes below one. The search is incremental: a
+     * prim under which the expression can't match has its children skipped. Returns false with
+     * *errorMessage set, matching nothing, when text doesn't parse or names a predicate the library
+     * lacks. The next step() starts over.
+     **/
+    bool setExpression(const QString& text, QString* errorMessage);
+
+    bool hasExpression() const;
+
+    /**
+     * @brief How many prims with an unloaded payload the walk has passed since it last started over,
+     * under which it could not look although it might have matched there.
+     **/
+    int getUnloadedBranchCount() const;
+
+    /**
+     * @brief The paths of the branches getUnloadedBranchCount() counts, in the order the walk
+     * passed them.
+     **/
+    QStringList getUnloadedBranchPaths() const;
+
+    /**
+     * @brief Adds to found the paths of the prims the expression matches, or without one those
+     * whose names satisfy matches, until budgetMs is spent, or found holds cap paths with another
+     * prim to match next, or no prim is left. At least one prim is looked at. Called with stage's
+     * lock held; a null stage ends the walk. Clears found and starts over when the stage is another
+     * one, has been edited, or has lost the next prim.
      **/
     void step(const SceneStage* stage,
               int budgetMs,

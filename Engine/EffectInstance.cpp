@@ -208,6 +208,7 @@ EffectInstance::~EffectInstance()
     if (qApp && (QThread::currentThread() == qApp->thread())) {
         closeOverlayEditStepOf(this);
     }
+    retireSceneInputContextIds();
 }
 
 void
@@ -562,7 +563,7 @@ EffectInstance::getHash() const
 {
     NodePtr n = _node.lock();
 
-    return n->getHashValue();
+    return n ? n->getHashValue() : 0;
 }
 
 namespace {
@@ -808,6 +809,29 @@ EffectInstance::aborted() const
 } // EffectInstance::aborted
 
 bool
+EffectInstance::abortIfSuperseded() const
+{
+    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
+    bool isRenderUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    if (!isAbortableThread || !isAbortableThread->getAbortInfo(&isRenderUserInteraction, &abortInfo, &treeRoot)) {
+        EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+        if (!tls || tls->frameArgs.empty()) {
+            return false;
+        }
+        abortInfo = tls->frameArgs.back()->abortInfo.lock();
+    }
+    if (!abortInfo || !abortInfo->canAbort() || !abortInfo->isSuperseded()) {
+        return false;
+    }
+    abortInfo->setAborted();
+
+    return true;
+}
+
+bool
 EffectInstance::shouldCacheOutput(bool isFrameVaryingOrAnimated,
                                   double time,
                                   ViewIdx view,
@@ -851,7 +875,9 @@ EffectInstance::hasOutputConnected() const
 EffectInstancePtr
 EffectInstance::getInput(int n) const
 {
-    NodePtr inputNode = getNode()->getInput(n);
+    // No node once it is destroyed while a scene worker's job still holds this effect.
+    const NodePtr node = getNode();
+    NodePtr inputNode = node ? node->getInput(n) : NodePtr();
 
     if (inputNode) {
         return inputNode->getEffectInstance();
@@ -3850,8 +3876,8 @@ EffectInstance::setPersistentMessage(MessageTypeEnum type,
     if (isCheckingIdentityForMetadata(this)) {
         return;
     }
+    // No node once it is destroyed while a scene worker's job still evaluates this effect.
     NodePtr node = getNode();
-    assert(node);
     if (node) {
         node->setPersistentMessage(type, content);
     }
@@ -3861,7 +3887,6 @@ bool
 EffectInstance::hasPersistentMessage()
 {
     NodePtr node = getNode();
-    assert(node);
     return node ? node->hasPersistentMessage() : false;
 }
 
@@ -3869,11 +3894,10 @@ void
 EffectInstance::clearPersistentMessage(bool recurse)
 {
     NodePtr node = getNode();
-    assert(node);
     if (node) {
         node->clearPersistentMessage(recurse);
+        assert(!node->hasPersistentMessage());
     }
-    assert( !hasPersistentMessage() );
 }
 
 int
@@ -5025,6 +5049,26 @@ EffectInstance::hasComponentsNeededInCache(U64 hash,
                                            ViewIdx view) const
 {
     return (bool)_imp->actionsCache->getComponentsNeededResults(hash, time, view);
+}
+
+bool
+EffectInstance::isRegionOfDefinitionInfinite(double time,
+                                             ViewIdx view)
+{
+    if (!isEffectCreated()) {
+        return false;
+    }
+    if (getNode()->isNodeDisabled(time)) {
+        NodePtr preferredInput = getNode()->getPreferredInputNode();
+
+        return preferredInput && preferredInput->getEffectInstance()->isRegionOfDefinitionInfinite(time, view);
+    }
+
+    RECURSIVE_ACTION();
+    RectD rod;
+    const StatusEnum stat = getRegionOfDefinition(getRenderHash(), time, RenderScale::identity, view, &rod);
+
+    return ((stat == eStatusOK) || (stat == eStatusReplyDefault)) && rod.isInfinite();
 }
 
 StatusEnum

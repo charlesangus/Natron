@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/UndoRecorder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -606,6 +607,7 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
                      double frameOffset,
                      bool matchUpAxis,
                      bool matchUnits,
+                     const SceneLoadSetPtr& loadSet,
                      std::string* errorMessage)
 {
     // One layer per file, shared with every other consumer through USD's layer registry, and
@@ -663,7 +665,7 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
         correction.correctUnits = matchUnits;
         correction.sourceToLayer = offset;
         if ((SceneOps::getMetricsCorrectionAngle(correction) != 0.) || (SceneOps::getMetricsCorrectionScale(correction) != 1.)) {
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(_imp->getCorrectionSource(fileLayer, timeCodesPerSecond), errorMessage);
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(_imp->getCorrectionSource(fileLayer, timeCodesPerSecond), loadSet, errorMessage);
             if (!lease.isValid()) {
                 return false;
             }
@@ -680,7 +682,7 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
 } // USDRead::authorLayer
 
 StatusEnum
-USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
+USDRead::renderScene(const SceneRenderActionArgs& args,
                      ScenePayload* outputScene,
                      std::string* errorMessage)
 {
@@ -716,7 +718,22 @@ USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
     SceneLayerReads reads;
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadNothing;
     reads.frameRange = false;
-    if (!emitSceneLayer(ScenePayload(), reads, [this, path, frameOffset, matchUpAxis, matchUnits](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, path, frameOffset, matchUpAxis, matchUnits, error); }, outputScene, errorMessage)) {
+    // The correction reads the prims the evaluation loads, wherever they are, so the layer is
+    // authored per load set and any load change reaches it.
+    const SceneLoadSetPtr loadSet = args.context.loadSet;
+    if (matchUpAxis || matchUnits) {
+        ContentHasher loadHash;
+        loadHash.appendBool(args.context.includesEverything());
+        if (!args.context.includesEverything()) {
+            loadHash.appendU64(loadSet->getHash());
+        }
+        reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
+        reads.factsDigest = loadHash.finalize();
+        if (args.context.reach) {
+            args.context.reach->add(std::vector<std::string>(1, "/"));
+        }
+    }
+    if (!emitSceneLayer(ScenePayload(), reads, [this, path, frameOffset, matchUpAxis, matchUnits, loadSet](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, path, frameOffset, matchUpAxis, matchUnits, loadSet, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

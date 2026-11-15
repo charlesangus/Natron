@@ -57,6 +57,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -73,6 +74,8 @@
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
+#include "Tests/Scene/CyclesTestUtils.h"
+#include "Tests/Scene/LiveViewerRender.h"
 
 #include <OpenImageIO/imageio.h>
 
@@ -1354,6 +1357,55 @@ TEST_F(USDWriteTest, ExportsCarryNoNatronCustomData)
             EXPECT_FALSE(file.second.contains("natron:")) << file.first.toStdString();
         }
     }
+}
+
+// A viewer's Cycles render alive in the same process, its draw rules hiding the box and boxing the
+// card, leaves what USDWrite writes, in either mode, byte for byte as it is with no viewer: draw
+// states never reach a write.
+TEST_F(USDWriteTest, AViewersDrawRulesLeaveTheWriteAsItIs)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr merge = createGraph(kReferenceScene, 0.);
+    ASSERT_TRUE(bool(merge));
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/scene.usda");
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    std::map<QString, QByteArray> alone[2];
+    for (int m = 0; m < 2; ++m) {
+        ASSERT_TRUE(QDir(outDir).removeRecursively());
+        NodePtr writer = createWriter(merge, path, modes[m], 1, 24);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 24, ViewIdx(0)));
+        alone[m] = fileContents(outDir);
+        ASSERT_FALSE(alone[m].empty());
+    }
+
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, CyclesTestUtils::fixedSampling(16));
+    {
+        LiveViewerRender viewer;
+        SceneDrawFilter::Rules rules;
+        rules[PXR_NS::SdfPath("/Transform1/World/Box")] = SceneDrawFilter::eRuleHidden;
+        rules[PXR_NS::SdfPath("/Transform2")] = SceneDrawFilter::eRuleHide;
+        ScenePayload payload;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, merge->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error)) << error;
+        ASSERT_TRUE(viewer.start(payload, "/Transform1/World/Cam", 32, rules));
+        ASSERT_TRUE(viewer.waitUntilDone());
+        for (int m = 0; m < 2; ++m) {
+            ASSERT_TRUE(QDir(outDir).removeRecursively());
+            NodePtr writer = createWriter(merge, path, modes[m], 1, 24);
+            ASSERT_TRUE(writer && getWriter(writer));
+            ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 24, ViewIdx(0)));
+            EXPECT_TRUE(viewer.render().getStatus().active);
+            const std::map<QString, QByteArray> beside = fileContents(outDir);
+            EXPECT_TRUE(alone[m] == beside) << "the " << ((m == 0) ? "layered" : "flattened") << " write differs with a viewer alive";
+        }
+    }
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, std::map<std::string, PXR_NS::VtValue>());
 }
 
 namespace {

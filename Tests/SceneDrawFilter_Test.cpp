@@ -27,20 +27,25 @@
 
 #include <algorithm>
 #include <chrono>
+#include <latch>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
-#include "Gui/SceneDrawFilter.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 
 #ifdef emit
 #define NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #undef emit
 #endif
 #include <pxr/imaging/hd/changeTracker.h>
+#include <pxr/imaging/hd/filteringSceneIndex.h>
 #include <pxr/imaging/hd/instancerTopologySchema.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/renderIndex.h>
@@ -48,10 +53,12 @@
 #include <pxr/imaging/hd/retainedSceneIndex.h>
 #include <pxr/imaging/hd/rprim.h>
 #include <pxr/imaging/hd/sceneIndexObserver.h>
+#include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
 #include <pxr/imaging/hd/sprim.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/unitTestNullRenderDelegate.h>
 #include <pxr/imaging/hd/visibilitySchema.h>
+#include <pxr/usdImaging/usdImagingGL/engine.h>
 #ifdef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #undef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #define emit
@@ -1131,6 +1138,99 @@ TEST_F(SceneDrawFilterTest, TheFilteredSceneFollowsTheRulesThroughBatchedChanges
     EXPECT_TRUE(drawn("/World/a/m1"));
 }
 
+namespace {
+SceneDrawFilter::Rules
+mixedRules(SceneDrawStates& states)
+{
+    SceneDrawFilter::Rules rules;
+    SceneDrawFilter::applyToRules(states.setState("/World/a", eSceneDrawStateBBox), &rules);
+    SceneDrawFilter::applyToRules(states.setState("/World/a/deep", eSceneDrawStateHidden), &rules);
+    SceneDrawFilter::applyToRules(states.setState("/World/b", eSceneDrawStateChildren), &rules);
+    SceneDrawFilter::applyToRules(states.setState("/World/c", eSceneDrawStateHidden), &rules);
+
+    return rules;
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, ReplacingRulesWithTheCurrentRulesSendsNothing)
+{
+    const SceneDrawFilter::Rules rules = mixedRules(states);
+    filter->seedRules(rules);
+
+    filter->replaceRules(rules);
+
+    EXPECT_TRUE(recorder.empty());
+    EXPECT_EQ(0u, filter->getHiddenSentCount() + filter->getShownSentCount());
+}
+
+TEST_F(SceneDrawFilterTest, ReplacingRulesGoingToNoneAndBackSendsOnlyWhatChanged)
+{
+    const SceneDrawFilter::Rules rules = mixedRules(states);
+    filter->seedRules(rules);
+    const PathSet before = drawnGeometry();
+    ASSERT_NE(kAllGeometry, before);
+
+    filter->replaceRules(SceneDrawFilter::Rules());
+
+    PathSet changed;
+    for (const std::string& path : kAllGeometry) {
+        if (before.count(path) == 0) {
+            changed.insert(path);
+        }
+    }
+    EXPECT_EQ(changed, recorder.shows);
+    EXPECT_TRUE(recorder.hides.empty());
+    EXPECT_TRUE(filter->getRules().empty());
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+
+    recorder.reset();
+    filter->replaceRules(rules);
+
+    EXPECT_EQ(changed, recorder.hides);
+    EXPECT_TRUE(recorder.shows.empty());
+    EXPECT_EQ(before, drawnGeometry());
+    EXPECT_EQ((PathSet { "/World/c" }), recorder.leftHydra);
+    PathSet boxed = changed;
+    boxed.erase("/World/c");
+    EXPECT_EQ(boxed, recorder.invisible);
+
+    // A fresh filter's boxed prims were never in Hydra, so they are out of it, where this filter's
+    // were shown a moment ago and are held invisible: both draw the same, and Hidden rows match.
+    TfRefPtr<SceneDrawFilter> fresh = SceneDrawFilter::New(scene);
+    fresh->seedRules(rules);
+    for (const std::string& path : kAllGeometry) {
+        const HdSceneIndexPrim a = filter->GetPrim(SdfPath(path));
+        const HdSceneIndexPrim b = fresh->GetPrim(SdfPath(path));
+        EXPECT_EQ(!b.primType.IsEmpty() && visible(b), !a.primType.IsEmpty() && visible(a)) << path;
+        if (boxed.count(path) != 0) {
+            EXPECT_FALSE(a.primType.IsEmpty()) << path;
+            EXPECT_FALSE(visible(a)) << path;
+            EXPECT_TRUE(b.primType.IsEmpty()) << path;
+        } else {
+            EXPECT_EQ(b.primType, a.primType) << path;
+            EXPECT_EQ(visible(b), visible(a)) << path;
+        }
+    }
+    EXPECT_EQ(fresh->getRules(), filter->getRules());
+}
+
+TEST_F(SceneDrawFilterTest, ReplacingRulesChangesOnlyTheRowsThatDiffer)
+{
+    SceneDrawFilter::Rules from = mixedRules(states);
+    filter->seedRules(from);
+    SceneDrawFilter::Rules to = from;
+    to[SdfPath("/World/a")] = SceneDrawFilter::eRuleShow;
+
+    filter->replaceRules(to);
+
+    EXPECT_TRUE(recorder.hides.empty());
+    EXPECT_TRUE(recorder.shows.count("/World/a/m1") == 1);
+    for (const std::string& path : recorder.shows) {
+        EXPECT_EQ(0u, path.find("/World/a/")) << path;
+    }
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+}
+
 TEST_F(SceneDrawFilterTest, ASubtreeRemovedAndAddedAgainFollowsTheRules)
 {
     filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
@@ -1210,8 +1310,148 @@ TEST_F(SceneDrawFilterTest, RegisteringTwiceIsHarmless)
     SceneDrawFilter::registerForAllRenderers();
     SceneDrawFilter::registerForAllRenderers();
 
-    EXPECT_TRUE(SceneDrawFilter::takeAppendedInstanceId().empty());
     EXPECT_FALSE(get_pointer(SceneDrawFilter::find("no such engine")));
+}
+
+namespace {
+std::unique_ptr<UsdImagingGLEngine>
+makeCyclesEngine()
+{
+    UsdImagingGLEngine::Parameters parameters;
+    parameters.rendererPluginId = TfToken(kRenderDelegateCyclesId);
+    parameters.gpuEnabled = false;
+    CyclesAovs::registerSceneIndices();
+    std::unique_ptr<UsdImagingGLEngine> engine;
+    CyclesAovs::withThreadBudget(2, [&]() { engine.reset(new UsdImagingGLEngine(parameters)); });
+
+    return engine;
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, ACyclesEngineBuiltUnderAScopeHasAFilterFindCanLocate)
+{
+    if (!RenderDelegates::unavailableMessage(kRenderDelegateCyclesId).empty()) {
+        return;
+    }
+    SceneDrawFilter::registerForAllRenderers();
+    std::string id;
+    std::unique_ptr<UsdImagingGLEngine> engine;
+    {
+        const SceneDrawFilter::EngineScope scope;
+        engine = makeCyclesEngine();
+        id = scope.getInstanceId();
+    }
+    ASSERT_TRUE(engine != nullptr);
+    ASSERT_EQ(TfToken(kRenderDelegateCyclesId), engine->GetCurrentRendererId());
+
+    EXPECT_FALSE(id.empty());
+    EXPECT_TRUE(get_pointer(SceneDrawFilter::find(id)) != nullptr);
+}
+
+namespace {
+std::set<std::string>
+liveFilterIds()
+{
+    const std::vector<std::string> ids = SceneDrawFilter::getInstanceIds();
+
+    return std::set<std::string>(ids.begin(), ids.end());
+}
+
+bool
+chainHasDrawFilter(const HdSceneIndexBaseRefPtr& scene)
+{
+    HdSceneIndexBase* const base = get_pointer(scene);
+    if (dynamic_cast<SceneDrawFilter*>(base)) {
+        return true;
+    }
+    const HdFilteringSceneIndexBase* const filtering = dynamic_cast<const HdFilteringSceneIndexBase*>(base);
+    if (!filtering) {
+        return false;
+    }
+    for (const HdSceneIndexBaseRefPtr& input : filtering->GetInputScenes()) {
+        if (chainHasDrawFilter(input)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+const char* const kChainRenderer = "NatronDrawFilterTestRenderer";
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, ACyclesEngineBuiltOnAnotherThreadWhileAScopeLivesHasNoFilter)
+{
+    if (!RenderDelegates::unavailableMessage(kRenderDelegateCyclesId).empty()) {
+        return;
+    }
+    SceneDrawFilter::registerForAllRenderers();
+    const std::set<std::string> before = liveFilterIds();
+    std::unique_ptr<UsdImagingGLEngine> unscoped;
+    std::unique_ptr<UsdImagingGLEngine> scoped;
+    std::string id;
+    {
+        const SceneDrawFilter::EngineScope scope;
+        std::thread other([&]() { unscoped = makeCyclesEngine(); });
+        other.join();
+        ASSERT_TRUE(unscoped != nullptr);
+        ASSERT_EQ(TfToken(kRenderDelegateCyclesId), unscoped->GetCurrentRendererId());
+
+        EXPECT_EQ(before, liveFilterIds());
+        EXPECT_TRUE(scope.getInstanceId().empty());
+
+        scoped = makeCyclesEngine();
+        id = scope.getInstanceId();
+    }
+    ASSERT_TRUE(scoped != nullptr);
+
+    std::set<std::string> expected = before;
+    expected.insert(id);
+    EXPECT_FALSE(id.empty());
+    EXPECT_EQ(expected, liveFilterIds());
+}
+
+TEST_F(SceneDrawFilterTest, ConcurrentChainsGetAFilterOnlyWhereAScopeAskedForIt)
+{
+    SceneDrawFilter::registerForAllRenderers();
+    HdSceneIndexPluginRegistry& registry = HdSceneIndexPluginRegistry::GetInstance();
+    EXPECT_FALSE(chainHasDrawFilter(registry.AppendSceneIndicesForRenderer(kChainRenderer, HdRetainedSceneIndex::New(), "warm-up")));
+
+    const int kThreads = 8;
+    for (int round = 0; round < 20; ++round) {
+        std::vector<HdSceneIndexBaseRefPtr> chains(kThreads);
+        std::vector<std::string> scopeIds(kThreads);
+        std::latch start(kThreads);
+        std::vector<std::thread> threads;
+        for (int i = 0; i < kThreads; ++i) {
+            threads.emplace_back([&, i]() {
+                const std::string instanceId = "chain-" + std::to_string(round) + "-" + std::to_string(i);
+                start.arrive_and_wait();
+                if (i % 2 == 0) {
+                    const SceneDrawFilter::EngineScope scope;
+                    chains[i] = registry.AppendSceneIndicesForRenderer(kChainRenderer, HdRetainedSceneIndex::New(), instanceId);
+                    scopeIds[i] = scope.getInstanceId();
+                } else {
+                    chains[i] = registry.AppendSceneIndicesForRenderer(kChainRenderer, HdRetainedSceneIndex::New(), instanceId);
+                }
+            });
+        }
+        for (std::thread& thread : threads) {
+            thread.join();
+        }
+
+        for (int i = 0; i < kThreads; ++i) {
+            const std::string instanceId = "chain-" + std::to_string(round) + "-" + std::to_string(i);
+            if (i % 2 == 0) {
+                EXPECT_TRUE(chainHasDrawFilter(chains[i])) << instanceId;
+                EXPECT_EQ(instanceId, scopeIds[i]);
+                EXPECT_TRUE(get_pointer(SceneDrawFilter::find(instanceId)) != nullptr) << instanceId;
+            } else {
+                EXPECT_FALSE(chainHasDrawFilter(chains[i])) << instanceId;
+                EXPECT_FALSE(get_pointer(SceneDrawFilter::find(instanceId))) << instanceId;
+            }
+        }
+    }
 }
 
 TEST_F(SceneDrawFilterTest, ABoxedRowMasksTheNativeInstancesBelowItAndKeepsTheirInstancer)

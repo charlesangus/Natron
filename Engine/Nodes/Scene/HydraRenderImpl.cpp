@@ -232,6 +232,7 @@ public:
         _capAtRestart = 0;
         _idleAtRestart = false;
         _moved = false;
+        _busy = false;
         _clockFallen = false;
         _samplesAtClockFall = -1;
         _previousClock = -1.;
@@ -265,16 +266,19 @@ public:
         const bool blind = (samples < 0) && (clock < 0.);
         if (_idleAtRestart) {
             // An idle session's clock is not still: its cache eviction wakes it a while after it
-            // finished and stops its clock again later, with no reset and its status unchanged.
-            // Only a reset makes its clock fall, its samples fall or its status leave done; a
-            // reset that began and finished unseen, its clock past the old one, stays unseen and
-            // falls back on making the engine again. The pass may have missed the reset, for the
-            // session holds its scene while it wakes from idle: the change is trusted from the
-            // next pass on, which then takes it.
-            const bool movedBefore = _moved;
+            // finished and stops its clock again later, with no reset. Nor is its status proof of
+            // a reset: a session woken while it holds its scene updates the scene the pass synced
+            // without resetting its buffers, which then keep the render of before, and the pass
+            // finds no reset left to take. Only a reset makes its clock or its samples fall, and
+            // only once it has updated the scene, which it may spend long on: while it is busy it
+            // is taken as restarting. A reset that began and finished unseen, its clock past the
+            // old one, stays unseen and falls back on making the engine again, as does a change
+            // the session took without a reset. The fall is trusted from the next pass on.
+            const bool fellBefore = _moved;
             const bool clockFell = (clock >= 0.) && (_clockAtRestart >= 0.) && (clock < _clockAtRestart);
-            _moved = _moved || samplesFell || !idleNow || clockFell;
-            _seen = movedBefore || blind;
+            _moved = _moved || samplesFell || clockFell;
+            _busy = !idleNow;
+            _seen = fellBefore || blind;
 
             return _seen;
         }
@@ -300,11 +304,12 @@ public:
         return _seen;
     }
 
-    // Whether the delegate's session took the restart: it may spend long syncing a heavy stage
-    // before its first sample, and making it again would only begin that sync over.
+    // Whether the delegate's session took the restart or may be taking it: it may spend long
+    // syncing a heavy stage before its first sample, and making it again would only begin that
+    // sync over.
     bool restarting() const
     {
-        return _clockFallen || _moved;
+        return _clockFallen || _moved || _busy;
     }
 
     // Whether a delegate's progress is known to show its restarts: Cycles' samples and clock start
@@ -330,6 +335,7 @@ private:
     int _capAtRestart = 0;
     bool _idleAtRestart = false;
     bool _moved = false;
+    bool _busy = false;
     bool _clockFallen = false;
     int _samplesAtClockFall = -1;
     double _previousClock = -1.;
@@ -1593,6 +1599,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         if (watchRestart) {
             VtDictionary stats = engine->GetRenderStats();
             while (!RestartWatch::idle(stats) && engine->IsConverged() && !(cancel && cancel->load()) && (std::chrono::steady_clock::now() - restarted < kIdleSettle)) {
+                yieldToBarrier();
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 stats = engine->GetRenderStats();
             }

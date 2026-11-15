@@ -594,3 +594,5 @@ future core work has solid ground to build on.
 
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
 - **M166 - Non-Float Plane Model:** the user wants to rethink the model before it is planned: Read emitting EXR half/uint32 layers natively, and possibly a bit depth per layer. Settle the framing in `/cat-discuss`, then elaborate.
+
+- **F9 - Delegate Projection UAT note (user, 2026-11-14):** MoonRay warned it could not render the cards as authored when a frame-held projection was applied to two cards through USDAssignMaterial, though the render looked correct. User: "Could probably be fixed in a follow-up." Cause being traced; /cat-plan to file the follow-up milestone.

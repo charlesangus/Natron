@@ -996,20 +996,32 @@ AnimatedParam::setExpression(const QString& expr,
     if (!checkIsEditable()) {
         return false;
     }
-    if (!recordPythonKnobEdit(getInternalKnob())) {
-        return false;
-    }
     KnobIPtr thisKnob = _knob.lock();
     if (!thisKnob) {
         return false;
     }
-    try {
-        thisKnob->setExpression(dimension, expr.toStdString(), hasRetVariable, true);
-    } catch (...) {
+    const std::string previous = thisKnob->getExpression(dimension);
+    const std::string newExpression = expr.toStdString();
+    std::string validityError;
+    const bool unchanged = (previous == newExpression) && (newExpression.empty() || ((thisKnob->isExpressionUsingRetVariable(dimension) == hasRetVariable) && thisKnob->isExpressionValid(dimension, &validityError)));
+    if (unchanged) {
+        return true;
+    }
+    if (!recordPythonKnobEdit(getInternalKnob())) {
         return false;
     }
+    bool ok = true;
+    try {
+        thisKnob->setExpression(dimension, newExpression, hasRetVariable, true);
+    } catch (...) {
+        ok = false;
+    }
+    // A rejected expression has already cleared the previous one, so the knob changed anyway.
+    if (ok || (thisKnob->getExpression(dimension) != previous)) {
+        thisKnob->evaluateValueChange(dimension, thisKnob->getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
+    }
 
-    return true;
+    return ok;
 }
 
 QString

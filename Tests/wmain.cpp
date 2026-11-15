@@ -15,6 +15,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Global/ThirdPartyTelemetry.h"
 
 #include "Ai/AiModelTestEffect.h"
 #include "CacheDiskTierWorker.h"
@@ -257,6 +258,10 @@ GTEST_API_ int wmain(int argc, wchar_t **argv)
 GTEST_API_ int main(int argc, char **argv)
 #endif
 {
+    // Ai/OrtTelemetry_Test.cpp sets this to show what the opt-out prevents.
+    if (!std::getenv("NATRON_TEST_ORT_KEEP_TELEMETRY")) {
+        disableThirdPartyTelemetry();
+    }
     printf("Running main() from wmain.cpp\n");
     ::testing::InitGoogleTest(&argc, argv);
     // No test may fill the developer's home directory; one that wants a tier opens its own.

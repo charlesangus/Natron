@@ -198,7 +198,7 @@ TEST_F(ProjectResetListenersTest, ReaderDestroyedInsideTheDriversTeardownEdit)
     NodePtr driver = createIn(app, app->getProject(), PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
     ASSERT_TRUE(reader && driver);
     const KnobIPtr readerWhite = reader->getKnobByName(kGradeParamWhite);
-    const KnobDoublePtr readerGamma = std::dynamic_pointer_cast<KnobDouble>(reader->getKnobByName(kGradeParamGamma));
+    const KnobColorPtr readerGamma = std::dynamic_pointer_cast<KnobColor>(reader->getKnobByName(kGradeParamGamma));
     const KnobIPtr driverWhite = driver->getKnobByName(kGradeParamWhite);
     ASSERT_TRUE(readerWhite && readerGamma && driverWhite);
     ASSERT_NO_THROW(readerWhite->setExpression(0, readExpression(driver, kGradeParamWhite), false, true));

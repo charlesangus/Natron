@@ -81,6 +81,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -384,6 +385,7 @@ ViewerInstance::~ViewerInstance()
         QMutexLocker l(&liveViewersMutex);
         liveViewers.erase(this);
     }
+    EffectInstance::retireSceneContextId(_imp->sceneContextId);
 
     // A plan reads this viewer until its thread has stopped.
     _imp->gpuPlacementPlanner->quitThread(false);
@@ -6391,8 +6393,15 @@ ViewerInstance::getLastEvaluatedScene(int textureIndex,
 void
 ViewerInstance::setSceneLoadSet(const SceneLoadSetPtr& loadSet)
 {
-    std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
-    _imp->sceneLoadSet = loadSet;
+    bool changed;
+    {
+        std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
+        changed = _imp->sceneLoadSet ? (!loadSet || (*_imp->sceneLoadSet != *loadSet)) : bool(loadSet);
+        _imp->sceneLoadSet = loadSet;
+    }
+    if (changed) {
+        SceneMenuRefresh::scheduleFollowLoadChanges();
+    }
 }
 
 SceneLoadSetPtr
@@ -6401,6 +6410,12 @@ ViewerInstance::getSceneLoadSet() const
     std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
 
     return _imp->sceneLoadSet;
+}
+
+SceneEvaluationContext
+ViewerInstance::getSceneEvaluationContext() const
+{
+    return SceneEvaluationContext(_imp->sceneContextId, getSceneLoadSet());
 }
 
 bool

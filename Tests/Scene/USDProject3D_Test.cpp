@@ -572,13 +572,21 @@ TEST_F(USDProject3DTest, TheCameraMenuPicksTheCameraPath)
     KnobString* path = getKnob<KnobString>(projector, kUSDProject3DParamCameraPath);
     ASSERT_TRUE(menu && path);
     EXPECT_FALSE(menu->getIsPersistent());
-    effect->refreshCameraMenu();
+    {
+        const std::shared_ptr<SceneMenuJob> job = effect->refreshCameraMenu();
+        job->wait();
+        EXPECT_TRUE(effect->applyCameraMenu(job));
+    }
     std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
     ASSERT_EQ((std::size_t)1, entries.size());
     EXPECT_EQ(getNodePath(camera).GetString(), entries[0].id);
 
     path->setValue("/Later");
-    effect->refreshCameraMenu();
+    {
+        const std::shared_ptr<SceneMenuJob> job = effect->refreshCameraMenu();
+        job->wait();
+        EXPECT_TRUE(effect->applyCameraMenu(job));
+    }
     entries = menu->getEntries_mt_safe();
     ASSERT_EQ((std::size_t)2, entries.size());
     EXPECT_EQ(std::string("/Later"), entries[1].id);
@@ -587,7 +595,11 @@ TEST_F(USDProject3DTest, TheCameraMenuPicksTheCameraPath)
 
     menu->onValueChanged(0, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
     EXPECT_EQ(getNodePath(camera).GetString(), path->getValue());
-    effect->refreshCameraMenu();
+    {
+        const std::shared_ptr<SceneMenuJob> job = effect->refreshCameraMenu();
+        job->wait();
+        EXPECT_TRUE(effect->applyCameraMenu(job));
+    }
     EXPECT_EQ((std::size_t)1, menu->getEntries_mt_safe().size());
     EXPECT_EQ(0, menu->getValue());
 }

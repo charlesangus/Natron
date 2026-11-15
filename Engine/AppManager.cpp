@@ -162,6 +162,7 @@
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -802,6 +803,11 @@ AppManager::~AppManager()
             appsEmpty = _imp->_appInstances.empty();
         }
     }
+
+    // The nodes are gone, so every scene job is cancelled; they read the caches, Python and the
+    // QApplication torn down below. Bounded: a job stuck past it is left to the process exit.
+    setTeardownStage("waiting for the scene workers");
+    SceneWorker::joinAll(5000);
 
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {

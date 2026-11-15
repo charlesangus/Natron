@@ -1296,6 +1296,26 @@ GuiAppInstance::getLastViewerUsingTimeline() const
     return _imp->lastTimelineViewer->isEffectViewer();
 }
 
+std::list<NodePtr>
+GuiAppInstance::getViewerNodesByRecentActivity() const
+{
+    std::list<NodePtr> viewers;
+    const NodePtr active = getActiveViewerNode();
+    if (active) {
+        viewers.push_back(active);
+    }
+    const std::list<ViewerTab*> focused = _imp->_gui ? _imp->_gui->getViewersByRecentFocus() : std::list<ViewerTab*>();
+    for (ViewerTab* tab : focused) {
+        ViewerInstance* viewer = tab ? tab->getInternalNode() : 0;
+        const NodePtr node = viewer ? viewer->getNode() : NodePtr();
+        if (node && (std::find(viewers.begin(), viewers.end(), node) == viewers.end())) {
+            viewers.push_back(node);
+        }
+    }
+
+    return viewers;
+}
+
 NodePtr
 GuiAppInstance::getActiveViewerNode() const
 {

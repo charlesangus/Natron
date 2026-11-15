@@ -1356,6 +1356,11 @@ public:
      **/
     bool isActivated() const;
 
+    /**
+     * @brief Whether destroyNode() started on the node, after which its effect may be gone while
+     * work that holds the node, such as a scene worker's job, still runs. MT-safe
+     **/
+    bool isBeingDestroyed() const;
 
     /**
      * @brief Use this function to post a transient message to the user. It will be displayed using

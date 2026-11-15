@@ -510,6 +510,12 @@ public:
      **/
     virtual NodePtr getActiveViewerNode() const;
 
+    /**
+     * @brief The viewers the user has worked in, the most recently active first. Without a GUI,
+     * just getActiveViewerNode(). Main thread.
+     **/
+    virtual std::list<NodePtr> getViewerNodesByRecentActivity() const;
+
     bool loadPythonScript(const QFileInfo& file);
     virtual void queueRedrawForAllViewers() {}
 

@@ -27,8 +27,16 @@
 #include "EffectInstancePrivate.h"
 
 #include <exception>
+#include <functional>
+#include <limits>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -42,6 +50,14 @@ EffectInstance::SceneRenderActionArgs::getInputScene(int inputNb) const
     std::map<int, ScenePayload>::const_iterator found = inputScenes.find(inputNb);
 
     return (found == inputScenes.end()) ? ScenePayload() : found->second;
+}
+
+const SceneEvaluationContext&
+EffectInstance::SceneRenderActionArgs::getInputContext(int inputNb) const
+{
+    std::map<int, SceneEvaluationContext>::const_iterator found = inputContexts.find(inputNb);
+
+    return (found == inputContexts.end()) ? context : found->second;
 }
 
 namespace {
@@ -73,6 +89,49 @@ setSceneError(std::string* errorMessage,
         *errorMessage = message;
     }
 }
+
+/**
+ * The id evaluateScene() gives a scene input it maps onto another load set, by the id of the
+ * context mapped from, the node (its main instance) and the input number. An entry lives as long
+ * as both the context id it was mapped from and its node: it is erased when the id's owner
+ * retires it (EffectInstance::retireSceneContextId()) or the node is destroyed, and the id it
+ * handed out is retired with it. Never destroyed: a node may be destroyed during static teardown.
+ **/
+struct SceneInputContextIds {
+    typedef std::tuple<U64, const EffectInstance*, int> Key;
+
+    std::mutex lock;
+    std::map<Key, U64> ids;
+    std::map<const EffectInstance*, std::set<Key>> byNode;
+
+    static SceneInputContextIds& instance()
+    {
+        static SceneInputContextIds* ids = new SceneInputContextIds;
+
+        return *ids;
+    }
+
+    // Erases the entries mapped from the ids in retired, and from the ids those handed out. Call with lock held.
+    void retire(std::vector<U64> retired)
+    {
+        while (!retired.empty()) {
+            const U64 id = retired.back();
+            retired.pop_back();
+            std::map<Key, U64>::iterator it = ids.lower_bound(Key(id, nullptr, std::numeric_limits<int>::min()));
+            while ((it != ids.end()) && (std::get<0>(it->first) == id)) {
+                retired.push_back(it->second);
+                std::map<const EffectInstance*, std::set<Key>>::iterator node = byNode.find(std::get<1>(it->first));
+                if (node != byNode.end()) {
+                    node->second.erase(it->first);
+                    if (node->second.empty()) {
+                        byNode.erase(node);
+                    }
+                }
+                it = ids.erase(it);
+            }
+        }
+    }
+};
 } // anonymous namespace
 
 bool
@@ -110,6 +169,14 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return _imp->mainInstance->evaluateScene(args, outputScene, errorMessage);
     }
 
+    // A scene worker's job outlives the destruction of the nodes it evaluates, which leaves their
+    // effects without a node, or a node whose effect destroyNode() takes away; held, the node
+    // stays valid until this evaluation ends.
+    const NodePtr node = getNode();
+    if (!node || node->isBeingDestroyed()) {
+        return eRenderRoIRetCodeAborted;
+    }
+
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
     ParallelRenderArgsPtr frameArgs;
@@ -120,7 +187,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         frameArgs = std::make_shared<ParallelRenderArgs>();
         {
             NodesWList outputs;
-            getNode()->getOutputs_mt_safe(outputs);
+            node->getOutputs_mt_safe(outputs);
             frameArgs->visitsCount = (int)outputs.size();
         }
         frameArgs->time = args.time;
@@ -196,6 +263,39 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     actionArgs.isRenderResponseToUserInteraction = frameArgs->isRenderResponseToUserInteraction;
     actionArgs.context = args.context;
 
+    // The reach each input evaluated on a load set of its own gathered, on that input's paths.
+    std::vector<std::pair<int, SceneLoadReachPtr>> inputReaches;
+    const auto addInputReaches = [this, &args, &inputReaches]() {
+        SceneEvaluationContext::Scope contextScope(args.context);
+
+        for (const std::pair<int, SceneLoadReachPtr>& inputReach : inputReaches) {
+            const std::vector<std::string> prefixes = inputReach.second->getPrefixes();
+            if (prefixes.empty()) {
+                continue;
+            }
+            std::vector<std::string> mapped;
+            try {
+                mapSceneInputReach(inputReach.first, args.time, args.view, prefixes, &mapped);
+            } catch (...) {
+                // Unmapped, a load anywhere has to re-evaluate the node.
+                mapped.assign(1, std::string("/"));
+            }
+            args.context.reach->add(mapped);
+        }
+    };
+    // Whatever way the evaluation ends, a load in what its inputs read has to re-evaluate it.
+    struct InputReachesGuard {
+        const std::function<void()> add;
+
+        ~InputReachesGuard()
+        {
+            try {
+                add();
+            } catch (...) {
+            }
+        }
+    } inputReachesGuard { addInputReaches };
+
     // The inputs' draw rules in input order, kept from the action: what it sets on its output
     // are its own rules, and a payload it passes on from an input would otherwise bring that
     // input's rules twice.
@@ -208,10 +308,35 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
             continue;
         }
 
-        NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), i);
+        NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(node.get(), i);
+
+        SceneEvaluationContext inputContext;
+        try {
+            inputContext = getSceneInputContext(i, args.context, args.time, args.view);
+        } catch (const std::exception& e) {
+            setSceneError(errorMessage, getScriptName_mt_safe() + ": " + e.what());
+
+            return eRenderRoIRetCodeFailed;
+        } catch (...) {
+            setSceneError(errorMessage, getScriptName_mt_safe() + ": could not tell which payloads input " + std::to_string(i) + " needs");
+
+            return eRenderRoIRetCodeFailed;
+        }
 
         ScenePayload inputScene;
-        RenderRoIRetCode inputCode = input->evaluateScene(args, &inputScene, errorMessage);
+        RenderRoIRetCode inputCode;
+        if (inputContext.hasSameLoadSet(args.context) && (inputContext.reach == args.context.reach)) {
+            inputCode = input->evaluateScene(args, &inputScene, errorMessage);
+        } else {
+            inputContext.id = getSceneInputContextId(args.context.id, i, true);
+            inputContext.reach.reset();
+            if (args.context.reach) {
+                inputContext.reach = std::make_shared<SceneLoadReach>();
+                inputReaches.push_back(std::make_pair(i, inputContext.reach));
+            }
+            actionArgs.inputContexts[i] = inputContext;
+            inputCode = input->evaluateScene(EvaluateSceneArgs(args.time, args.view, inputContext, args.abortInfo), &inputScene, errorMessage);
+        }
         if (inputCode != eRenderRoIRetCodeOk) {
             return inputCode;
         }
@@ -265,5 +390,114 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::evaluateScene
+
+U64
+EffectInstance::getSceneInputContextId(U64 ctxId,
+                                       int inputNb,
+                                       bool registerMiss) const
+{
+    const EffectInstance* owner = _imp->mainInstance ? _imp->mainInstance : this;
+    const SceneInputContextIds::Key key(ctxId, owner, inputNb);
+    SceneInputContextIds& registry = SceneInputContextIds::instance();
+    std::lock_guard<std::mutex> locker(registry.lock);
+
+    std::map<SceneInputContextIds::Key, U64>::const_iterator found = registry.ids.find(key);
+    if (found != registry.ids.end()) {
+        return found->second;
+    }
+    const U64 id = SceneEvaluationContext::makeId();
+    if (registerMiss) {
+        registry.ids[key] = id;
+        registry.byNode[owner].insert(key);
+    }
+
+    return id;
+}
+
+void
+EffectInstance::retireSceneContextId(U64 id)
+{
+    SceneInputContextIds& registry = SceneInputContextIds::instance();
+    std::lock_guard<std::mutex> locker(registry.lock);
+
+    registry.retire(std::vector<U64>(1, id));
+}
+
+void
+EffectInstance::retireSceneInputContextIds()
+{
+    if (_imp->mainInstance) {
+        return;
+    }
+    SceneInputContextIds& registry = SceneInputContextIds::instance();
+    std::lock_guard<std::mutex> locker(registry.lock);
+
+    std::map<const EffectInstance*, std::set<SceneInputContextIds::Key>>::iterator node = registry.byNode.find(this);
+    if (node == registry.byNode.end()) {
+        return;
+    }
+    std::vector<U64> retired;
+    for (const SceneInputContextIds::Key& key : node->second) {
+        std::map<SceneInputContextIds::Key, U64>::iterator it = registry.ids.find(key);
+        if (it != registry.ids.end()) {
+            retired.push_back(it->second);
+            registry.ids.erase(it);
+        }
+    }
+    registry.byNode.erase(node);
+    registry.retire(retired);
+}
+
+bool
+EffectInstance::getSceneIdentity(double time,
+                                 ViewIdx view,
+                                 double* identityTime,
+                                 ViewIdx* identityView,
+                                 int* identityInputNb) const
+{
+    const EffectInstance* owner = _imp->mainInstance ? _imp->mainInstance : this;
+    *identityTime = time;
+    *identityView = view;
+    *identityInputNb = -1;
+    try {
+        return const_cast<EffectInstance*>(owner)->isIdentity_public(true, owner->getHash(), time, RenderScale(), RectI(), view, identityTime, identityView, identityInputNb);
+    } catch (...) {
+        // evaluateScene() fails on it, which maps nothing either way.
+        return false;
+    }
+}
+
+SceneEvaluationContext
+EffectInstance::getEvaluatedSceneInputContext(int inputNb,
+                                              const SceneEvaluationContext& ctx,
+                                              double time,
+                                              ViewIdx view) const
+{
+    double identityTime = time;
+    ViewIdx identityView = view;
+    int identityInputNb = -1;
+    if (getSceneIdentity(time, view, &identityTime, &identityView, &identityInputNb)) {
+        // evaluateScene() hands ctx itself to what it passes through.
+        if ((identityInputNb == -2) && (identityTime != time)) {
+            return getEvaluatedSceneInputContext(inputNb, ctx, identityTime, identityView);
+        }
+
+        return ctx;
+    }
+    // evaluateScene() always has a reach to compare, so one stands in when ctx has none.
+    SceneEvaluationContext asked = ctx;
+    if (!asked.reach) {
+        asked.reach = std::make_shared<SceneLoadReach>();
+    }
+    SceneEvaluationContext mapped = getSceneInputContext(inputNb, asked, time, view);
+    if (mapped.hasSameLoadSet(asked) && (mapped.reach == asked.reach)) {
+        return ctx;
+    }
+    // Only an evaluation registers an id: one not yet made is not one anything is stored under.
+    mapped.id = getSceneInputContextId(ctx.id, inputNb, false);
+    mapped.reach.reset();
+
+    return mapped;
+}
 
 NATRON_NAMESPACE_EXIT

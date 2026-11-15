@@ -1516,6 +1516,9 @@ ViewerTab::onActiveInputDataKindChanged()
             context.viewedNode = [this]() -> NodePtr {
                 return getSceneViewedNode();
             };
+            context.evaluationContext = [this]() -> SceneEvaluationContext {
+                return _imp->viewerNode->getSceneEvaluationContext();
+            };
             context.openEditNode = openEditNode;
             context.undoHistory = [this]() -> UndoHistory* {
                 Gui* gui = getGui();

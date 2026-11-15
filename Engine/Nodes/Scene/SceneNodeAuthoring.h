@@ -179,6 +179,13 @@ bool getPrimPath(const KnobStringPtr& knob,
                  PXR_NS::SdfPath* path,
                  std::string* errorMessage);
 
+// getPrimPath() with the knob read at time and view.
+bool getPrimPath(const KnobStringPtr& knob,
+                 double time,
+                 ViewIdx view,
+                 PXR_NS::SdfPath* path,
+                 std::string* errorMessage);
+
 // Whether any dimension of knob has keyframes or an expression.
 bool isAnimated(const KnobIPtr& knob);
 
@@ -223,15 +230,28 @@ authorValue(const PXR_NS::UsdAttribute& attribute,
  * primPath and its missing ancestors typeless: the geometry's own layer, stacked on
  * graft->payload, gives them their types and binds the prim with authorMaterialBinding().
  * graft->materialPath is the grafted path of material's first UsdShadeMaterial, depth first.
+ * materialContext is the context material was evaluated on (getMaterialInputContext()).
  * Returns false with *errorMessage set when primPath is not an absolute prim path, a root of
  * material is at primPath itself, or authoring fails.
  **/
 bool graftMaterialInput(const ScenePayload& material,
+                        const SceneEvaluationContext& materialContext,
                         const std::string& primPath,
                         const std::string& layerTag,
                         SceneGraftMemo* memo,
                         SceneMaterialGraft* graft,
                         std::string* errorMessage);
+
+/**
+ * @brief The context the material input of graftMaterialInput() is evaluated on, for an output
+ * evaluated on ctx, and the reach that input gathers as output paths, for the geometry at primPath.
+ **/
+SceneEvaluationContext getMaterialInputContext(const SceneEvaluationContext& ctx,
+                                               const std::string& primPath);
+void mapMaterialInputReach(SceneGraftMemo* memo,
+                           const std::string& primPath,
+                           const std::vector<std::string>& in,
+                           std::vector<std::string>* out);
 
 /**
  * @brief Whether shader is a USDProject3D projection: its glslfx source is the projection shader.
@@ -263,15 +283,125 @@ bool authorMaterialBinding(const PXR_NS::UsdPrim& prim,
  * @brief For a node assigning one shared material: grafts every root prim of material under the
  * scope root /<scope> (typed Scope) through SceneOps::reparentRoots, memoized in memo, a root named
  * like the scope passed through rather than nested. graft->materialPath is the grafted path of
- * material's first UsdShadeMaterial, depth first. Returns false with *errorMessage set when scope
- * is empty or authoring fails.
+ * material's first UsdShadeMaterial, depth first. materialContext is the context material was
+ * evaluated on (getSharedMaterialContext()). Returns false with *errorMessage set when scope is
+ * empty or authoring fails.
  **/
 bool graftSharedMaterial(const ScenePayload& material,
+                         const SceneEvaluationContext& materialContext,
                          const std::string& scope,
                          const std::string& layerTag,
                          SceneGraftMemo* memo,
                          SceneMaterialGraft* graft,
                          std::string* errorMessage);
+
+/**
+ * @brief The context the material input of graftSharedMaterial() is evaluated on, for an output
+ * evaluated on ctx, and the reach that input gathers as output paths, for scope.
+ **/
+SceneEvaluationContext getSharedMaterialContext(const SceneEvaluationContext& ctx,
+                                                const std::string& scope);
+void mapSharedMaterialReach(SceneGraftMemo* memo,
+                            const std::string& scope,
+                            const std::vector<std::string>& in,
+                            std::vector<std::string>* out);
+
+/**
+ * @brief Sets *mapped to the context target evaluates on when consumer evaluates on ctx: ctx is
+ * mapped through each node between them by getSceneInputContext(), and the sets of several routes
+ * are united. Its id is the one target's evaluation on the first route stores its result under.
+ * *ownSet, when given, is set to whether the united set differs from that route's, in which case
+ * an evaluation on it needs an id of its own. False, leaving *mapped alone, when no scene input
+ * chain leads from consumer to target.
+ **/
+bool mapContextDownToNode(const EffectInstance* consumer,
+                          const EffectInstance* target,
+                          const SceneEvaluationContext& ctx,
+                          double time,
+                          ViewIdx view,
+                          SceneEvaluationContext* mapped,
+                          bool* ownSet = nullptr);
+
+/**
+ * @brief The context of the viewer showing effect, for work on effect's scene done outside an
+ * evaluation, mapped down to effect's own paths: of the viewers whose scene input reaches effect,
+ * the most recently active, else the first. *viewerContext, when given, is set to that viewer's
+ * own context, unmapped, and *ownSet to mapContextDownToNode()'s. False, leaving them alone, when
+ * no viewer's scene input reaches effect. Main thread.
+ **/
+bool getShowingViewerContext(EffectInstance* effect,
+                             SceneEvaluationContext* context,
+                             SceneEvaluationContext* viewerContext = nullptr,
+                             bool* ownSet = nullptr);
+
+/**
+ * @brief Evaluates input at time on context into *scene for a menu refresh running as job, and
+ * borrows its stage into *lease with context's load set. False when job is cancelled, input is
+ * gone or the scene is empty or does not compose. Off the main thread, the reference to input
+ * it takes is released on the main thread (releaseOnMainThread()).
+ **/
+bool borrowMenuScene(const EffectInstanceWPtr& input,
+                     double time,
+                     const SceneEvaluationContext& context,
+                     const SceneMenuJob& job,
+                     ScenePayload* scene,
+                     SceneQueryPool::Lease* lease);
+
+/**
+ * @brief Releases *effect, on the main thread when called off it: a worker that dropped an
+ * effect's last reference would destroy its node there.
+ **/
+void releaseOnMainThread(std::shared_ptr<const EffectInstance>* effect);
+
+// Holds an effect for a scope that may end on a worker, and releases it with releaseOnMainThread().
+class EffectReleasedOnMainThread {
+public:
+    explicit EffectReleasedOnMainThread(EffectInstancePtr effect)
+        : _effect(std::move(effect))
+    {
+    }
+
+    ~EffectReleasedOnMainThread()
+    {
+        std::shared_ptr<const EffectInstance> effect = std::move(_effect);
+        releaseOnMainThread(&effect);
+    }
+
+    EffectReleasedOnMainThread(const EffectReleasedOnMainThread&) = delete;
+    EffectReleasedOnMainThread& operator=(const EffectReleasedOnMainThread&) = delete;
+
+    const EffectInstancePtr& get() const
+    {
+        return _effect;
+    }
+
+private:
+    EffectInstancePtr _effect;
+};
+
+/**
+ * @brief How many unloaded payloads a menu listing what the whole of stage holds did not search:
+ * 0 when context loads everything.
+ **/
+std::size_t countMenuUnsearched(const PXR_NS::UsdStageRefPtr& stage,
+                                const SceneEvaluationContext& context);
+
+/**
+ * @brief The context a camera input that is read but not composed into the output is evaluated
+ * on: only the payloads on the way to cameraPath, whatever ctx loads, so that no load of the
+ * output reaches it. ctx itself when cameraPath is not an absolute prim path, as when the first
+ * camera of the input is looked for.
+ **/
+SceneEvaluationContext getCameraInputContext(const SceneEvaluationContext& ctx,
+                                             const std::string& cameraPath);
+
+/**
+ * @brief The context a camera menu searches a camera input on: what the viewer's ctx loads,
+ * so the cameras the viewer loaded are listed, and the payloads on the way to cameraPath, so
+ * the chosen camera is. ctx itself when cameraPath is not an absolute prim path.
+ **/
+SceneEvaluationContext getCameraMenuContext(const SceneEvaluationContext& ctx,
+                                            const std::string& cameraPath);
 
 /**
  * @brief One collection-based material binding authorCollectionBinding() writes on a root prim.

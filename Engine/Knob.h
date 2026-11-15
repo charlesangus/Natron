@@ -2983,6 +2983,13 @@ protected:
 
     virtual void resetExtraToDefaultValue(int /*dimension*/) {}
 
+    // Whether setValue() must leave dimension alone rather than take v.
+    virtual bool refusesValue(const T& /*v*/,
+                              int /*dimension*/) const
+    {
+        return false;
+    }
+
     virtual void appendValueContentHash(ContentHasher& h, int dimension, bool withStaticValue) const OVERRIDE FINAL;
 
 private:

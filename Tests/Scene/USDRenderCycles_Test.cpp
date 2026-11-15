@@ -366,7 +366,7 @@ protected:
 
             return false;
         }
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(request->scene, &error);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(request->scene, SceneLoadSet::everything(), &error);
         if (!lease.getStage()) {
             ADD_FAILURE() << error;
 

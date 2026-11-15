@@ -1763,6 +1763,9 @@ public:
         std::map<int, ScenePayload> inputScenes;
         bool isRenderResponseToUserInteraction;
         SceneEvaluationContext context;
+        // The context of each input evaluated on another load set than context's, by input
+        // number (see getSceneInputContext()).
+        std::map<int, SceneEvaluationContext> inputContexts;
 
         SceneRenderActionArgs()
             : time(0)
@@ -1770,6 +1773,7 @@ public:
             , inputScenes()
             , isRenderResponseToUserInteraction(false)
             , context()
+            , inputContexts()
         {
         }
 
@@ -1778,6 +1782,13 @@ public:
          * not produce a scene.
          **/
         ScenePayload getInputScene(int inputNb) const;
+
+        /**
+         * @brief The context inputNb was evaluated on, which a node reading that input's scene
+         * borrows its stage with and adds the reach of its matches to: context unless the input
+         * evaluated on a load set of its own.
+         **/
+        const SceneEvaluationContext& getInputContext(int inputNb) const;
     };
 
 protected:
@@ -1827,6 +1838,44 @@ protected:
         return eStatusReplyDefault;
     }
 
+    /**
+     * @brief The context scene input inputNb evaluates on when this node evaluates on ctx: ctx
+     * itself by default. Load sets are on the paths of the node's output, so a node showing an
+     * input's prims at other paths (a graft, a wrap, a reference) maps ctx's set onto the
+     * input's paths, erring towards loading more, null when it cannot tell.
+     *
+     * Only the load set of the result counts, and whether its reach is ctx's: a node whose input
+     * paths differ from its output's returns another reach (null will do), so that the input's
+     * reach is mapped even where the two sets happen to include the same payloads. When the set or
+     * the reach differs from ctx's, evaluateScene() gives the input an id kept for this node,
+     * inputNb and ctx's id, so that a node reached both through the mapping and directly memoizes
+     * each apart, and a reach of its own that mapSceneInputReach() brings back to ctx.
+     **/
+    virtual SceneEvaluationContext getSceneInputContext(int /*inputNb*/,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double /*time*/,
+                                                        ViewIdx /*view*/) const
+    {
+        return ctx;
+    }
+
+    /**
+     * @brief Sets *out to the reach in, gathered on input inputNb's paths when the node evaluated
+     * at time and view, as paths of this node's output; *out starts empty. Called by evaluateScene() for an input that evaluated on a load
+     * set of its own, after renderScene() and with the node's own context current
+     * (SceneEvaluationContext::current()), so that it may map through what renderScene() memoized
+     * for that context. A path it cannot map should become a prefix above every place the input's
+     * prims can land, "/" at worst. The default copies in.
+     **/
+    virtual void mapSceneInputReach(int /*inputNb*/,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const
+    {
+        *out = in;
+    }
+
     virtual StatusEnum getTransform(double /*time*/,
                                     const RenderScale & /*renderScale*/,
                                     bool /*draftRender*/,
@@ -1848,6 +1897,55 @@ public:
                                    EffectInstancePtr* inputToTransform,
                                    Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
 
+    // getSceneInputContext() for a caller that maps a context through this node outside evaluateScene().
+    SceneEvaluationContext getSceneInputContext_public(int inputNb,
+                                                       const SceneEvaluationContext& ctx,
+                                                       double time,
+                                                       ViewIdx view) const
+    {
+        return getSceneInputContext(inputNb, ctx, time, view);
+    }
+
+    /**
+     * @brief The context input inputNb evaluates on when this node evaluates on ctx, with the id
+     * evaluateScene() gives it, so that a caller outside an evaluation finds what that evaluation
+     * stored for the input. Its reach is ctx's when the input shares ctx's, else null.
+     **/
+    SceneEvaluationContext getEvaluatedSceneInputContext(int inputNb,
+                                                         const SceneEvaluationContext& ctx,
+                                                         double time,
+                                                         ViewIdx view) const;
+
+    /**
+     * @brief Whether evaluateScene() at time and view passes a scene through instead of rendering
+     * one, as isIdentity_public() tells it: *identityInputNb, *identityTime and *identityView are
+     * then what it evaluates instead, on the same context. False when it cannot tell.
+     **/
+    bool getSceneIdentity(double time,
+                          ViewIdx view,
+                          double* identityTime,
+                          ViewIdx* identityView,
+                          int* identityInputNb) const;
+
+    /**
+     * @brief Called by the owner of a context id when it stops evaluating with it: the ids every
+     * node gave its inputs for it, and those mapped from them in turn, are forgotten.
+     **/
+    static void retireSceneContextId(U64 id);
+
+private:
+    /**
+     * @brief The id evaluateScene() gives input inputNb when it maps ctxId's context onto another
+     * load set. A miss makes a new id, kept for later calls only with registerMiss.
+     **/
+    U64 getSceneInputContextId(U64 ctxId,
+                               int inputNb,
+                               bool registerMiss) const;
+
+    // Forgets the ids this node gave its inputs, on its destruction.
+    void retireSceneInputContextIds();
+
+public:
 protected:
 /**
  * @brief Can be overloaded to indicates whether the effect is an identity, i.e it doesn't produce

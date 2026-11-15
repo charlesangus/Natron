@@ -1034,6 +1034,10 @@ public:
 
     void setSelectionActions(const SelectionActions& actions);
 
+    // Shows, and publishes as natronSceneArmedPick, the knob an armed pick writes to, "node.knob";
+    // empty when none is armed.
+    void setArmedPick(const QString& label);
+
     // The Camera node that made the camera prim at a path of the shown scene, null for none.
     void setCameraNodeProvider(const std::function<NodePtr(const std::string&)>& provider);
 
@@ -1123,6 +1127,14 @@ public:
      **/
     void editWithGraphPolicy(const std::function<void()>& edit);
 
+    /**
+     * @brief Whether the graph policy of the scene shown may still change the draw states, and so the
+     * loads they ask for: a sync whose rules are new has not come back, a match or a load batch with
+     * the match after it is under way, its policy has not reached the draw states, or the first
+     * frames of a newly viewed node leave the stage out for it. Main thread.
+     **/
+    bool isDrawPolicyPending() const;
+
 public Q_SLOTS:
     // Replaces the selection. A slot, so that scripts reach it through the meta object.
     void selectPaths(const QStringList& paths);
@@ -1187,6 +1199,10 @@ Q_SIGNALS:
 
     // A draw state edit has reached the renderer (main thread).
     void drawStatesChanged();
+
+    // Neither isDrawPolicyPending() nor the stage's outstanding loads hold any longer (main thread).
+    // May come again while nothing changed.
+    void drawPolicySettled();
 
     // First thing in the destructor, with the renderer still whole (main thread).
     void closing();
@@ -1288,6 +1304,9 @@ private:
     // Main thread: the graph policy the scene's draw rules, of the generation given, matched; matchId
     // numbers the worker's matches and serial is the sync matched for, both 0 for one after loads.
     void onDrawRulesMatched(U64 generation, U64 matchId, U64 serial, const SceneDrawStates::PolicyStates& policy);
+    // Main thread: the worker's match matchId was cancelled and hands over no policy.
+    void onDrawRulesMatchDropped(U64 matchId);
+    void noteDrawPolicySettled();
     // Main thread: frames leave the stage out until the worker's match matchId lands and its policy
     // is in the draw states, for kPolicyHoldMs at most.
     void holdStageUntilMatch(U64 matchId);
@@ -1304,8 +1323,9 @@ private:
     // Main thread: the render thread has switched to the renderer id for the switch numbered serial.
     void onRendererSwitched(const QString& id, U64 serial);
 
-    // Main thread: a batch of payload loads was committed, leaving the stage at loadEditCount.
-    void onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds, U64 loadEditCount);
+    // Main thread: the load thread's round loadRound committed its batch, leaving the stage at
+    // loadEditCount, and matched the rules after it.
+    void onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds, U64 loadEditCount, U64 loadRound);
     // Whether a pick has to wait for a background frame, which this starts if it is due.
     bool pickMustWait();
 

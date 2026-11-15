@@ -1024,6 +1024,9 @@ TEST_F(ProgressiveRenderTest, ACapLoweredAboveTheSamplesLastReadEndsAtIt)
     if (!cyclesOrSkip()) {
         return;
     }
+    // A cap no pass reaches, so the first frame is partial however fast the runner is.
+    const int kHighCap = 1000000;
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixedSampling(kHighCap));
     ASSERT_TRUE(start());
     hold(true);
     ASSERT_TRUE(waitUntil([this]() { return _held; }, "the first frame"));
@@ -1031,7 +1034,7 @@ TEST_F(ProgressiveRenderTest, ACapLoweredAboveTheSamplesLastReadEndsAtIt)
     const std::shared_ptr<const ProgressiveRender::Frame> first = _render->getFrame();
     ASSERT_TRUE(first != nullptr);
     const int cap = std::max(1, first->samples) + 1;
-    ASSERT_LT(cap, kSamples);
+    ASSERT_LT(cap, kHighCap);
     const std::size_t mark = publishedCount();
     _render->setMaxSamples(cap);
     hold(false);

@@ -747,8 +747,9 @@ public:
      * @brief Finds entries as get() does without counting as a use of them: the replacement order and the eviction
      * score stay as they were, no signal is emitted and an entry held on disk is not opened, so its data may turn out
      * to be unreadable later. An entry only in the disk tier comes back as an unallocated stub made from its verified
-     * header, which claims all of its pixels if the file holds them all and none otherwise. An image entry only in a
-     * device tier comes back as an unallocated stub with a copy of the device entry's header, in GL texture storage mode.
+     * header, which claims all of its pixels if the file holds them all and none otherwise. An image entry not in RAM but
+     * held by a device tier comes back as an unallocated stub with a copy of the device entry's header, in GL texture
+     * storage mode, ahead of any disk stubs of the same key, so that the caller can weigh the two.
      *
      * Skips _getLock, which getOrCreate() holds while it evicts and allocates; a miss on an entry being created at that
      * moment only means the caller doesn't count on it.
@@ -794,24 +795,22 @@ public:
             }
         }
 
+        if constexpr (std::is_same_v<PayloadType, Image>) {
+            // After the cache lock is released: the tier takes the image's mutex, which comes before the tier's lock.
+            for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+                const ImagePtr stub = tier->peekStub(key, this);
+                if (stub) {
+                    returnValue->push_back(stub);
+                    break;
+                }
+            }
+        }
+
         if constexpr (requires(PayloadType& payload) { payload.diskPrepareStub(true); }) {
             if (_diskTier) {
                 std::vector<CacheDiskFileInfo> candidates;
                 if (_diskTier->probe(PayloadType::diskIdentityOfKey(key), NULL, &candidates)) {
                     appendStubs<PayloadType>(key, candidates, returnValue);
-                }
-            }
-        }
-
-        if constexpr (std::is_same_v<PayloadType, Image>) {
-            // After the cache lock is released: the tier takes the image's mutex, which comes before the tier's lock.
-            if (returnValue->empty()) {
-                for (const CacheDeviceTierPtr& tier : deviceTiers()) {
-                    const ImagePtr stub = tier->peekStub(key, this);
-                    if (stub) {
-                        returnValue->push_back(stub);
-                        break;
-                    }
                 }
             }
         }

@@ -3240,6 +3240,28 @@ TEST_F(GpuResidencyTest, DeviceMipDownscaleMatchesTheCpuAtOddEdges)
     }
 }
 
+// More levels than one kernel pass takes run as several, through intermediate levels whose partial edge blocks must
+// weigh their pixels as the CPU's halving does.
+TEST_F(GpuResidencyTest, DeviceMipDownscaleOfMoreThanOnePassMatchesTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    gpu::GpuRuntime* rt = runtime();
+    ASSERT_TRUE(rt != nullptr);
+    const MipDownscaleCase cases[] = {
+        { RectI(0, 0, 32, 16), RectI(0, 0, 32, 16), 17 },
+        { RectI(-3, -5, 30, 18), RectI(-3, -5, 30, 18), 17 },
+        { RectI(5, 7, 46, 36), RectI(5, 7, 46, 36), 18 },
+        { RectI(0, 0, 40, 40), RectI(3, 5, 37, 31), 20 },
+        { RectI(-70001, 0, 70003, 3), RectI(-70001, 0, 70003, 3), 17 },
+        { RectI(-70001, -1, 70003, 2), RectI(-70001, -1, 70003, 2), 30 },
+    };
+    for (const MipDownscaleCase& test : cases) {
+        expectMipDownscaleMatchesCpu(rt, test);
+    }
+}
+
 #endif // NATRON_HAVE_GPU
 
 namespace {

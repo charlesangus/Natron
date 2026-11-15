@@ -38,6 +38,8 @@
 
 #include <gtest/gtest.h>
 
+#include <QTemporaryDir>
+
 #include "BaseTest.h"
 
 #include "Gpu/GpuTestSelector.h"
@@ -45,9 +47,11 @@
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
 #include "Engine/CacheDeviceTier.h"
+#include "Engine/CacheDiskTier.h"
 #include "Engine/CacheEntry.h"
 #include "Engine/CacheEntryHolder.h"
 #include "Engine/CacheRetention.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/GpuContext.h"
 #include "Engine/GpuTransferModel.h"
 #include "Engine/Image.h"
@@ -617,6 +621,110 @@ TEST_F(CacheDeviceTierTest, PeekStubAllocatesNothing)
     EXPECT_EQ(before, cache.getMemoryCacheSize()) << "the stub's destruction was charged to the cache";
     EXPECT_EQ(entry, tier->find(key));
     EXPECT_EQ(entry->size(), tier->used());
+}
+
+CacheDiskTierPtr
+openDiskTier(const QString& root)
+{
+    CacheDiskTier::Config config;
+    config.root = root.toStdString();
+    config.buildId = "test-build";
+    config.sizeBytes = 64ULL * 1024 * 1024;
+
+    return CacheDiskTier::open(config);
+}
+
+// A file of key written by another session's disk tier sharing root, holding rendered of kBounds.
+bool
+publishFromAnotherSession(const CacheDiskTierPtr& publisher,
+                          Cache<Image>& owner,
+                          const ImageKey& key,
+                          const RectI& rendered)
+{
+    const RectD rod(kBounds.x1, kBounds.y1, kBounds.x2, kBounds.y2);
+    const ImageParamsPtr params = Image::makeParams(rod, kBounds, 1., 0, false, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat,
+                                                    eImageFieldingOrderNone, eStorageModeRAM);
+    ImagePtr image = std::make_shared<Image>(key, params, &owner);
+    image->allocateMemory();
+    image->markForRendered(rendered);
+    image->getEntryHeader()->recomputeCostNs.store(kExpensiveNs);
+    image->getEntryHeader()->lastUse.store(CacheEviction::nowNs());
+    if (!publisher->offerDemotion(image)) {
+        return false;
+    }
+    image.reset();
+
+    return publisher->waitIdle(30000);
+}
+
+// A device entry resident before another session publishes a file of its key is still what a probe counts on, unless
+// the file holds more of the region.
+TEST_F(CacheDeviceTierTest, AFilePublishedLaterDoesNotHideTheDeviceEntry)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::shared_ptr<void> hold = appPTR->getGpuContext()->holdRuntime();
+    gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const CacheDiskTierPtr diskTier = openDiskTier(dir.path());
+    const CacheDiskTierPtr publisher = openDiskTier(dir.path());
+    ASSERT_TRUE(diskTier != nullptr);
+    ASSERT_TRUE(publisher != nullptr);
+    const CacheDeviceTierPtr tier = std::make_shared<CacheDeviceTier>(runtime);
+    Cache<Image> cache("CacheDeviceTierTest_FileAfterDevice", 1, 64ULL * 1024 * 1024, 1.);
+    cache.setDiskTier(diskTier);
+    cache.addDeviceTier(tier);
+    Cache<Image> otherSession("CacheDeviceTierTest_FileAfterDeviceOther", 1, 64ULL * 1024 * 1024, 1.);
+    otherSession.setDiskTier(publisher);
+    Cache<Image> owner("CacheDeviceTierTest_FileAfterDeviceOwner", 1, 64ULL * 1024 * 1024, 1.);
+    const RectD rod(kBounds.x1, kBounds.y1, kBounds.x2, kBounds.y2);
+    const RectI someRows(kBounds.x1, kBounds.y1, kBounds.x2, kBounds.y1 + 4);
+
+    struct Case {
+        const char* name;
+        U64 hash;
+        bool deviceComplete;
+        bool fileComplete;
+        StorageModeEnum expected;
+    };
+    const Case cases[] = {
+        { "complete device, complete file", 101, true, true, eStorageModeGLTex },
+        { "complete device, partial file", 102, true, false, eStorageModeGLTex },
+        { "partial device, complete file", 103, false, true, eStorageModeRAM },
+    };
+    for (const Case& c : cases) {
+        const ImageKey key = deviceEntryKey(c.hash);
+        CacheEntryHeaderPtr header = renderedHeader(kExpensiveNs);
+        if (!c.deviceComplete) {
+            header->bitmap.initialize(kBounds);
+            header->bitmap.markForRendered(someRows);
+        }
+        const GpuDeviceImagePtr image = uploadedImage(*runtime, pixelsFor(c.hash));
+        ASSERT_TRUE(bool(image)) << c.name;
+        const CacheDeviceEntryPtr entry = tier->insert(key, image, header);
+        ASSERT_TRUE(bool(entry)) << c.name;
+        ASSERT_TRUE(publishFromAnotherSession(publisher, owner, key, c.fileComplete ? kBounds : someRows)) << c.name;
+        diskTier->forgetProbes();
+
+        std::list<ImagePtr> peeked;
+        ASSERT_TRUE(cache.peek(key, &peeked)) << c.name;
+        bool sawDevice = false;
+        bool sawFile = false;
+        for (const ImagePtr& found : peeked) {
+            sawDevice = sawDevice || (found->getStorageMode() == eStorageModeGLTex);
+            sawFile = sawFile || ((found->getStorageMode() == eStorageModeRAM) && !found->isAllocated());
+        }
+        ASSERT_TRUE(sawDevice) << c.name << ": the file hid the device entry";
+        ASSERT_TRUE(sawFile) << c.name << ": the other session's file was not found";
+
+        const ImagePtr chosen = EffectInstance::mostCompleteCacheEntry(peeked, 0, kBounds, rod, 1.);
+        ASSERT_TRUE(bool(chosen)) << c.name;
+        EXPECT_EQ(c.expected, chosen->getStorageMode()) << c.name;
+        EXPECT_EQ(entry, tier->find(key)) << c.name << ": the peek moved the device entry";
+    }
 }
 
 // Two frames served the same entry both hold it: the second finds the entry the first swapped in, and both get their

@@ -66,7 +66,11 @@ before `placeRenderGraph` (`Engine/ViewerInstance.cpp`, `Engine/OutputSchedulerT
    needed still reads it after that consumer's own probe.
 2. Probe each needed task once, through `EffectInstance::probeOutputInCache`: every layer at the exact key `renderRoI`
    computes (`outputCacheKey`), and the draft key too on a draft frame. Each entry answers through the same trimap
-   bitmap `renderRoI` reads, so pixels marked as being rendered elsewhere count as missing.
+   bitmap `renderRoI` reads, so pixels marked as being rendered elsewhere count as missing. When a key has entries in
+   several tiers, such as a device entry and a file another session published later, the probe counts on the one
+   leaving the least of the region to render, preferring the device, then RAM, then disk when they leave as much
+   (`EffectInstance::mostCompleteCacheEntry`). A RAM hit is returned alone by `Cache::peek`, so it never competes with
+   the device.
 3. A task whose region is all there is *covered*: it keeps its node and loses its dependencies. It still runs, as a
    `hit`, and the consumer reads its image from the frame store as usual.
 4. A task with part of its region there keeps the dependencies its effect names for the missing part, asked through

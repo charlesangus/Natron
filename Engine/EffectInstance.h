@@ -1955,6 +1955,18 @@ public:
     };
 
     /**
+     * @brief Of entries a cache lookup returned for one key, the one leaving the least of atLevel, in pixels at level,
+     * still to render. An entry another render is working on loses to any other. Between entries leaving as much, a
+     * device entry comes first, as it is read in place, then a RAM entry, then a disk stub, whose file is only read once
+     * promoted. Null for no entries.
+     **/
+    static ImagePtr mostCompleteCacheEntry(const std::list<ImagePtr>& entries,
+                                           unsigned int level,
+                                           const RectI& atLevel,
+                                           const RectD& rod,
+                                           double par);
+
+    /**
      * @brief What the cache holds of this effect's output for region, in pixels at mipmapLevel, asking what renderRoI's
      * lookup would: the same keys in the same order and the same bitmap and being-rendered state. Nothing is counted as a
      * use, so a plan can ask without changing the eviction order.

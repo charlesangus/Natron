@@ -878,6 +878,66 @@ EffectInstance::outputCacheKey(U64 nodeHash,
     return ImageKey(getNode().get(), nodeHash, isFrameVaryingOrAnimated, time, view, 1., draft, renderMappedMipmapLevel == 0 && !pullsInputsAtScaleOne());
 }
 
+namespace {
+
+// False while another render is working on any of atLevel, in pixels at level: renderRoI would wait for that render's
+// marker, and renders the region itself if that render aborts, so the task's inputs are still needed.
+bool
+settledRestAt(const ImagePtr& entry,
+              unsigned int level,
+              const RectI& atLevel,
+              const RectD& rod,
+              double par,
+              std::list<RectI>* rest)
+{
+    RectI at = atLevel;
+    if (entry->getMipmapLevel() < level) {
+        at = at.upscalePowerOfTwo(level - entry->getMipmapLevel()).intersect(rod.toPixelEnclosing(entry->getMipmapLevel(), par));
+    }
+#if NATRON_ENABLE_TRIMAP
+    bool beingRendered = false;
+    entry->getRestToRender_trimap(at, *rest, &beingRendered);
+
+    return !beingRendered;
+#else
+    entry->getRestToRender(at, *rest);
+
+    return true;
+#endif
+}
+
+} // anonymous namespace
+
+ImagePtr
+EffectInstance::mostCompleteCacheEntry(const std::list<ImagePtr>& entries,
+                                       unsigned int level,
+                                       const RectI& atLevel,
+                                       const RectD& rod,
+                                       double par)
+{
+    ImagePtr best;
+    double bestMissing = 0.;
+    int bestRank = 0;
+    for (const ImagePtr& entry : entries) {
+        std::list<RectI> rest;
+        double missingPixels = std::numeric_limits<double>::infinity();
+        if (settledRestAt(entry, level, atLevel, rod, par, &rest)) {
+            missingPixels = 0.;
+            for (const RectI& rect : rest) {
+                missingPixels += (double)rect.area();
+            }
+        }
+        const int rank = (entry->getStorageMode() == eStorageModeGLTex) ? 0 : (entry->isAllocated() ? 1 : 2);
+        if (!best || (missingPixels < bestMissing) || ((missingPixels == bestMissing) && (rank < bestRank))) {
+            best = entry;
+            bestMissing = missingPixels;
+            bestRank = rank;
+        }
+    }
+
+    return best;
+}
+
 EffectInstance::OutputCacheCoverage
 EffectInstance::probeOutputInCache(U64 nodeHash,
                                    bool isFrameVaryingOrAnimated,
@@ -930,7 +990,13 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
     const ImageKey draftKey = outputCacheKey(nodeHash, isFrameVaryingOrAnimated, time, view, true, renderLevel);
     const bool pinsOutput = dynamic_cast<DiskCacheNode*>(this) != nullptr;
 
-    const auto peekEntry = [&](const ImageKey& key, unsigned int level, const ImageLayerDesc& layer) -> ImagePtr {
+    const auto coversInFull = [&](const ImagePtr& entry, unsigned int level, const RectI& atLevel) -> bool {
+        std::list<RectI> rest;
+
+        return settledRestAt(entry, level, atLevel, rod, par, &rest) && rest.empty();
+    };
+
+    const auto peekEntry = [&](const ImageKey& key, unsigned int level, const ImageLayerDesc& layer, const RectI& atLevel) -> ImagePtr {
         ImagePtr entry;
         key.forEachServingKey(level, 0, layer, bitdepth, [&](const ImageKey& candidate) {
             std::list<ImagePtr> images;
@@ -939,6 +1005,7 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
             } else {
                 appPTR->peekImage(candidate, &images);
             }
+            std::list<ImagePtr> usable;
             for (const ImagePtr& image : images) {
                 if (image->getParams()->isRodProjectFormat()) {
                     Format projectFormat;
@@ -956,46 +1023,22 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
                     continue;
                 }
                 // A finer device entry serves too: the scheduler downscales it on the device.
-                entry = image;
-
-                return true;
+                usable.push_back(image);
             }
+            entry = mostCompleteCacheEntry(usable, level, atLevel, rod, par);
 
-            return false;
+            return (bool)entry;
         });
 
         return entry;
     };
-    const auto findEntry = [&](unsigned int level, const ImageLayerDesc& layer) -> ImagePtr {
-        ImagePtr entry = peekEntry(nonDraftKey, level, layer);
+    const auto findEntry = [&](unsigned int level, const ImageLayerDesc& layer, const RectI& atLevel) -> ImagePtr {
+        ImagePtr entry = peekEntry(nonDraftKey, level, layer, atLevel);
         if (!entry && probesDraft) {
-            entry = peekEntry(draftKey, level, layer);
+            entry = peekEntry(draftKey, level, layer, atLevel);
         }
 
         return entry;
-    };
-    // False while another render is working on any of the region: renderRoI would wait for that render's marker, and
-    // renders the region itself if that render aborts, so the task's inputs are still needed.
-    const auto settledRest = [](const ImagePtr& entry, const RectI& at, std::list<RectI>* rest) -> bool {
-#if NATRON_ENABLE_TRIMAP
-        bool beingRendered = false;
-        entry->getRestToRender_trimap(at, *rest, &beingRendered);
-
-        return !beingRendered;
-#else
-        entry->getRestToRender(at, *rest);
-
-        return true;
-#endif
-    };
-    const auto coversInFull = [&](const ImagePtr& entry, unsigned int level, const RectI& atLevel) -> bool {
-        RectI at = atLevel;
-        if (entry->getMipmapLevel() < level) {
-            at = at.upscalePowerOfTwo(level - entry->getMipmapLevel()).intersect(rod.toPixelEnclosing(entry->getMipmapLevel(), par));
-        }
-        std::list<RectI> rest;
-
-        return settledRest(entry, at, &rest) && rest.empty();
     };
 
     const RectI renderRegion = rendersFullScale ? region.toCanonical(mipmapLevel, par, rod).toPixelEnclosing(0, par).intersect(rod.toPixelEnclosing(0, par)) : region;
@@ -1006,13 +1049,13 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
             return OutputCacheCoverage::None;
         }
         if (rendersFullScale) {
-            const ImagePtr atRequestedLevel = findEntry(mipmapLevel, *cachedLayer);
+            const ImagePtr atRequestedLevel = findEntry(mipmapLevel, *cachedLayer, region);
             if (atRequestedLevel && coversInFull(atRequestedLevel, mipmapLevel, region)) {
                 noteTier(atRequestedLevel);
                 continue;
             }
         }
-        const ImagePtr entry = findEntry(renderLevel, *cachedLayer);
+        const ImagePtr entry = findEntry(renderLevel, *cachedLayer, renderRegion);
         if (!entry) {
             return OutputCacheCoverage::None;
         }
@@ -1026,7 +1069,7 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
         }
         noteTier(entry);
         std::list<RectI> rest;
-        if (!settledRest(entry, renderRegion, &rest)) {
+        if (!settledRestAt(entry, renderLevel, renderRegion, rod, par, &rest)) {
             return OutputCacheCoverage::None;
         }
         if (!rest.empty() && !acceptsPartial) {

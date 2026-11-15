@@ -49,7 +49,9 @@ static_assert(sizeof(GpuMipDownscalePush) <= GpuKernel::kMaxPushConstantBytes);
 // Records the box downscale of `source`, a level-0 image, into the `rect` pixels of `dest`, an image `levels` levels
 // coarser: what the CPU's repeated halving of `source` makes, in which each halving averages the pixels of a 2x2 block
 // that lie inside the previous level, so a partial edge block averages what it holds and an output pixel whose square
-// misses `source` is 0. Source and destination have the same nComps. No barrier is recorded after the dispatch.
+// misses `source` is 0. Source and destination have the same nComps. Any number of levels is recorded: more than one
+// pass's worth runs as several passes, through scratch buffers of ctx's pool holding only what the next pass reads, with
+// a barrier between passes. No barrier is recorded after the last dispatch.
 GpuStatus recordMipDownscale(GpuRecordContext& ctx, const GpuDownscaleView& source, const GpuDownscaleView& dest,
                              const GpuDownscaleRect& rect, unsigned int levels);
 

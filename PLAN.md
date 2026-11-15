@@ -389,7 +389,7 @@ future core work has solid ground to build on.
 | M218 | VectorGenerator GPU | done | M217, M124 | | E18 | F8 | | [M218-vectorgenerator-gpu.md](PLAN/MILESTONES/M218-vectorgenerator-gpu.md) |
 | M219 | Curves Follow Vectors | done | M217, M146 | | E18 | F8 | | [M219-curves-follow-vectors.md](PLAN/MILESTONES/M219-curves-follow-vectors.md) |
 | M220 | SplineWarp Follow Vectors | done | M219, M148 | bosley-native-nodes | E18 | F8 | | [M220-splinewarp-follow-vectors.md](PLAN/MILESTONES/M220-splinewarp-follow-vectors.md) |
-| M221 | Neural Optical Flow | doing | M217, M203, M204 | bosley-native-nodes | E16 | F8 | response | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
+| M221 | Neural Optical Flow | doing | M217, M203, M204 | bosley-native-nodes | E16 | F8 | response | |
 | M222 | User Control Of GPU Placement | todo | M132 |  | E5 | | | [M222-user-control-of-gpu-placement.md](PLAN/MILESTONES/M222-user-control-of-gpu-placement.md) |
 | M223 | Read And Write Knob Cleanup | done | M167 | bosley-native-nodes | E3 | | | [M223-read-and-write-knob-cleanup.md](PLAN/MILESTONES/M223-read-and-write-knob-cleanup.md) |
 | M224 | Fluid Roto And RotoPaint Interaction | done | M146, M117 | misty-marten | E6 | | | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
@@ -572,10 +572,8 @@ future core work has solid ground to build on.
 - **Storm primId on projected cards (2026-11-14, found in M281 - Utility Materials And Lights):** `natronProject3D.glslfx` is tagged translucent, and Storm's transparency passes write colour only, so USDRender's primId (and picking) misses every card carrying a projection under Storm. Fix options: make the projection material opaque when its plate and outside mode are opaque, or write ids in Storm's OIT passes. Add a follow-up milestone?
 
 
-- **M221 - Neural Optical Flow (2026-11-14):** the exported SEA-RAFT M model (74.4 MB) needs a home. The manifest points at a GitHub release `ai-models-1` on charlesangus/Natron; may I create that release and upload the package? Also, its training data includes FlyingChairs (research-only) and KITTI 2015 (CC BY-NC-SA 3.0); FlyingThings3D, Sintel and HD1K are unconfirmed, and the entry is marked `osaid: Open Source AI`. Is shipping it as a downloadable, licence-shown-before-download model acceptable?
 
 - **M272 - Script Writes To Selected Roto Shapes (2026-11-14):** (1) Should Python get `Roto.selectItems()` / `getSelectedItems()`? PM default: no, out of scope. (2) With several shapes selected, should an expression set on the node knob be copied to each selected shape (PM default, as cloning does today) or stay on the node knob only? Work proceeds on the defaults.
-- **M221 - Neural Optical Flow (PM, 2026-11-12; weights supplied by the user 2026-11-14):** confirm the training-data licence strings for the manifest (TartanAir CC BY 4.0 confirmed; KITTI, FlyingThings3D/Chairs, Sintel, HD1K, Spring being re-checked under P1.T1). The exported archive will need uploading to a fork release by you.
 - **Nucleon 1.0 must-land list (user, 2026-11-10: "I'll decide later"):** which Features and milestones must be on `main` before 1.0. M396 - Release 1.0 Cut is held, not eligible for pickup, until the user names them; they are then added to its `Deps`.
 - **Site repo setup for E21 - Nucleon 1.0 Release (user action, after the `opennucleon` org exists):** in `opennucleon/opennucleon.github.io`, enable Pages from the `gh-pages` branch, add a deploy key with write access, and store its private half as the OpenNucleon secret `SITE_DEPLOY_KEY`. M392 - Docs Publishing needs this. Once M388 - Docs Site Scaffold merges, add its `Docs` job to `main`'s required checks.
 - **M382 - Nucleon Logo And Artwork (PM, 2026-11-10):** pick one of the four logo concepts (nucleus, orbital, N monogram, node graph), sent as one PNG per concept and background, with notes for the first refinement round.

@@ -1,0 +1,3 @@
+# Downloadable AI models live in a separate models repo
+
+Answers the M221 - Neural Optical Flow questions on model hosting and licence (user, 2026-11-14). The licence mix (BSD-3-Clause weights; training data including research-only and CC BY-NC-SA sets) is acceptable because, as in darktable, the user downloads and adds the model themselves, with the licences shown before download. Natron-hosted models are release assets on the separate repo charlesangus/natron-models (opennucleon/... after the flag day), not on the app repo: model versions stay out of app releases and manifest URLs never move with app tags. First release: `ai-models-1`, holding optical-flow-searaft-m.dtmodel (sha256 9518b14a…0f13, verified by download).

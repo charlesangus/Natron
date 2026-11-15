@@ -134,3 +134,4 @@
 - 2026-11-13 — infinite-rod-is-an-error: an infinite RoD on a whole-frame input fails the render with an error instead of clamping → DECISIONS/2026-11-13-infinite-rod-is-an-error.md
 - 2026-11-14 — native-geometry-texture-painting: texture painting splits into USDTexturePaint (M53, renamed) and GeoTexturePaint over a shared base, no GeoToUSD hop; GeoAttribPaint, native UV operators and a Viewer 2D/3D switch added → DECISIONS/2026-11-14-native-geometry-texture-painting.md
 - 2026-11-14 — f9-uat-accepted: F9 - Delegate Projection accepted at UAT; MoonRay as-authored warning is a follow-up → DECISIONS/2026-11-14-f9-uat-accepted.md
+- 2026-11-14 — ai-models-repo: Natron-hosted AI models are release assets on charlesangus/natron-models; user-downloaded models may carry research-only training data → DECISIONS/2026-11-14-ai-models-repo.md

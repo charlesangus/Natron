@@ -1566,6 +1566,49 @@ Node::disconnectInput(Node* input)
     return disconnectInputInternal(input, true);
 } // Node::disconnectInput
 
+bool
+Node::dropInputsFromDeactivated(const Node* input)
+{
+    assert(input);
+    std::vector<int> realChanged;
+    std::vector<int> guiChanged;
+    {
+        bool rendering;
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
+        QMutexLocker l(&_imp->inputsMutex);
+        for (std::size_t i = 0; i < _imp->inputs.size(); ++i) {
+            if (_imp->inputs[i].lock().get() == input) {
+                _imp->inputs[i].reset();
+                realChanged.push_back((int)i);
+            }
+            if (_imp->guiInputs[i].lock().get() == input) {
+                _imp->guiInputs[i].reset();
+                guiChanged.push_back((int)i);
+            }
+        }
+        if (realChanged.empty() && guiChanged.empty()) {
+            return false;
+        }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
+    }
+    for (std::size_t i = 0; i < guiChanged.size(); ++i) {
+        Q_EMIT inputChanged(guiChanged[i]);
+    }
+    if (!realChanged.empty()) {
+        beginInputEdition();
+        for (std::size_t i = 0; i < realChanged.size(); ++i) {
+            if (std::find(guiChanged.begin(), guiChanged.end(), realChanged[i]) == guiChanged.end()) {
+                Q_EMIT inputChanged(realChanged[i]);
+            }
+            onInputChanged(realChanged[i]);
+        }
+        endInputEdition(true);
+    }
+
+    return true;
+} // Node::dropInputsFromDeactivated
+
 int
 Node::disconnectOutput(bool useGuiValues,
                        const Node* output)
@@ -1885,9 +1928,10 @@ Node::beginInputEdition()
     ++_imp->inputModifiedRecursion;
 }
 
-void
+bool
 Node::endInputEdition(bool triggerRender)
 {
+    bool inputsChanged = false;
     assert( QThread::currentThread() == qApp->thread() );
     if (_imp->inputModifiedRecursion > 0) {
         --_imp->inputModifiedRecursion;
@@ -1895,6 +1939,7 @@ Node::endInputEdition(bool triggerRender)
 
     if (!_imp->inputModifiedRecursion) {
         bool hasChanged = !_imp->inputsModified.empty();
+        inputsChanged = hasChanged;
         _imp->inputsModified.clear();
 
         if (hasChanged) {
@@ -1916,6 +1961,8 @@ Node::endInputEdition(bool triggerRender)
             }
         }
     }
+
+    return inputsChanged;
 }
 
 void

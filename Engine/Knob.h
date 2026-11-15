@@ -3552,6 +3552,11 @@ public:
     // Returns true if at least 1 knob changed handler was called
     bool endChanges(bool discardEverything = false);
 
+    /**
+     * @brief Counts an input edit as a significant change of the open begin/endChanges block, so the
+     * outermost endChanges evaluates once for it together with any knob edits.
+     **/
+    void notifyInputsChangedDuringBlock();
 
     /**
      * @brief The virtual portion of notifyProjectBeginValuesChanged(). This is called by the project

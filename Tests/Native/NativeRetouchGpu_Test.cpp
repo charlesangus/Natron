@@ -36,6 +36,7 @@
 #include "Native/NativeGpuParity.h"
 #include "Native/RetouchTestSupport.h"
 #include "NativeParity.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -275,3 +276,50 @@ TEST_F(NativeRetouchGpuTest, FillMatchesTheCpu)
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
     expectParity(node, "mix 0.5");
 }
+
+namespace {
+
+class RetouchGpuRegionTest
+    : public RegionIndependenceTest {
+protected:
+    // A Retouch of source with 3 scales and the two region shapes of algorithm.
+    NodePtr makeRetouch(const NodePtr& source,
+                        RetouchCore::AlgorithmEnum algorithm)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_RETOUCH, source);
+
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValues(node, kRetouchParamScales, { 3. }));
+        for (const RetouchTest::ShapeSpec& spec : RetouchTest::regionShapeSpecs(algorithm)) {
+            EXPECT_TRUE(bool(RetouchTest::makeShape(node, spec, kTime)));
+        }
+
+        return node;
+    }
+};
+
+#ifdef NATRON_HAVE_GPU
+// The GPU frame is the same from tile to tile without pinning the heal's iterations.
+TEST_F(RetouchGpuRegionTest, RegionIndependentGpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    for (RetouchCore::AlgorithmEnum algorithm : { RetouchCore::eAlgorithmClone, RetouchCore::eAlgorithmHeal, RetouchCore::eAlgorithmBlur,
+                                                  RetouchCore::eAlgorithmFill }) {
+        SCOPED_TRACE((int)algorithm);
+        RegionIndependenceOptions options;
+        options.gpu = runtime.get();
+        options.gpuTolerance = (algorithm == RetouchCore::eAlgorithmHeal) ? kRetouchHealTolerance : kRetouchTolerance;
+        expectRegionIndependent([this, algorithm](const NodePtr& source) {
+            return makeRetouch(source, algorithm);
+        },
+                                options);
+    }
+}
+#endif
+
+} // namespace

@@ -31,3 +31,7 @@ and releasing Ctrl snaps it back to its normal size. The user finds it pointless
   - size: M
 
 **Verification gate:** build and ctest green; the Xvfb GUI check above passes (Ctrl+wheel over a selected node zooms the graph and leaves the node's scale at 1.0); bend points still appear while Ctrl is held and hide on release.
+
+## Decisions
+
+- 2026-11-15 — Shared lane with M397 - Label Resize Keeps Node Top-Centre and M374 - Remove Node Magnify On Ctrl-Scroll (user): both ship on `milestone/m397-m374-node-graph-fixes` as one PR, one build, one GUI bench run and one UAT; the PR closes both rows.

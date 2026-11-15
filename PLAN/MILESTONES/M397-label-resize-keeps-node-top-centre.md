@@ -77,3 +77,4 @@ the node stays in its column and its top doesn't move) is accepted by the user.
 
 - 2026-11-10 — Anchor at top-centre (user): the node keeps its top edge and horizontal
   centre and grows downward, so a taller label pushes only the bottom edge down.
+- 2026-11-15 — Shared lane with M397 - Label Resize Keeps Node Top-Centre and M374 - Remove Node Magnify On Ctrl-Scroll (user): both ship on `milestone/m397-m374-node-graph-fixes` as one PR, one build, one GUI bench run and one UAT; the PR closes both rows.

@@ -104,6 +104,8 @@ Scouted 2026-11-14 on `origin/main`:
   - verify: the gtest passes.
   - size: M
 
+Note: M435 - Overlays Deform Through Warps benchmarks how the chain is applied to overlay geometry (per vertex, a composed grid, or on the GPU) before building its pipeline. Keep `OverlayMapChain` able to sample itself onto a grid (a `sampleGrid(region, step)` helper is cheap to add in P1.T2), so that spike can use it.
+
 **Verification gate:** `OverlayPointMap_Test` and the nodes' existing test suites pass, and the full ctest suite is green on a remote release build. This milestone needs no UAT, since nothing user-visible changes: it ships inside F25 - Overlay Flow.
 
 ## Decisions

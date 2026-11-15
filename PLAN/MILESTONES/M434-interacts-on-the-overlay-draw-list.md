@@ -22,6 +22,8 @@ Scouted 2026-11-14 on `origin/main`:
 - Curves (Béziers, SplineWarp curves, feather) emitted as canonical polylines from the curve evaluation. Each primitive carries a "deformable" flag (geometry) versus "anchored" (screen glyph).
 - Roto/RotoPaint, Tracker, SplineWarp and the four `HostOverlay` interacts draw only through the list.
 - A per-interact Xvfb screenshot test against a captured before image.
+- A per-node draw-list cache. A node's list is rebuilt only when its content, selection, hover, time or zoom bucket changes, and the GPU buffer is kept while the list is unchanged.
+- An overlay draw-cost benchmark, recorded on main before any port. The ports must stay within 10% of it.
 
 **Out:**
 - Mapping anything through warps: M435 - Overlays Deform Through Warps.
@@ -33,6 +35,8 @@ Scouted 2026-11-14 on `origin/main`:
 - RotoPaint brush cursor and stroke preview: emitted as strokes and anchored circles, keeping today's size in canonical units.
 - Very dense shapes (hundreds of Béziers, M224 - Fluid Roto And RotoPaint Interaction scale): emission must not regress the GUI bench. Build the list once per redraw, and reuse curve tessellation already cached for rendering where it exists.
 - Selection rectangles and text labels: anchored (text) or viewport geometry (the rubber band, which is drawn in viewport space and never deformed).
+
+- Hover and pen-motion redraws that change only the hovered or dragged item: the cache invalidates by content version, so a drag rebuilds only the dragged node's list, never every open overlay's.
 
 **Assumptions:**
 - Unconfirmed: every raw-GL call in these interacts has a draw-list equivalent once the additions above land. P1.T1's audit is the check, and anything left over is reported before porting.
@@ -54,6 +58,27 @@ Scouted 2026-11-14 on `origin/main`:
     - Add `layer` ordering and a `deformable` flag (true for geometry primitives, false for handles, points, text and anchored shapes).
     - The drawer renders the new types.
   - verify: gtest on list building (ranges, flags, ordering); an Xvfb screenshot of a test node drawing one of each new primitive, shared with the user.
+  - size: M
+
+- [ ] M434.P1.T3 — Overlay draw-cost benchmark, baseline on main
+  - files: `tools/bench/gui/roto_bench.py` (new ops), `tools/bench/gui/README.md`, `tools/bench/gui/baselines/` (new baseline record)
+  - approach:
+    - Add an `overlay_draw` op: the main-thread time of `ViewerTab::drawOverlays` per redraw, read through a timing probe (an env-gated `NATRON_OVERLAY_DRAW_LOG` like the existing latency probe). It runs during a hover pass and during a point drag.
+    - Shape counts include 500 as well as the defaults 1, 30 and 100, each shape with feather and one shape selected so tangents draw.
+    - Add a Tracker topology with 50 tracks, measured the same way.
+    - Record median and p95.
+    - Run it on unported main under `--xvfb` and commit the baseline.
+  - verify: `tools/bench/gui/run.sh --xvfb --driver roto` produces `overlay_draw` records for every shape count and the Tracker topology, and `compare.py` reads them.
+  - size: M
+
+- [ ] M434.P1.T4 — Draw-list cache and persistent GPU buffer
+  - files: `Engine/EffectInstance.{h,cpp}` (`buildOverlay_public`, a list version), `Engine/OverlayDrawList.{h,cpp}`, `Gui/NodeOverlayRenderer.{h,cpp}`, `Tests/OverlayDrawList_Test.cpp`
+  - approach:
+    - Nodes declare an overlay content version: a counter bumped on any change that alters what they draw, plus time, view and a zoom bucket.
+    - `buildOverlay_public` returns the cached list when the key is unchanged.
+    - `NodeOverlayRenderer` keeps one renderer per node and skips triangle conversion and the buffer upload when the list version is unchanged.
+    - Hover state is drawn as a small separate list, so hovering doesn't invalidate the main one.
+  - verify: gtest — building twice with an unchanged key returns the same list without calling `buildOverlay`, and a version bump rebuilds; an Xvfb run of the M165 test node shows a second redraw doing no upload (a counter exposed for tests).
   - size: M
 
 ## Phase 434.2: Ports
@@ -91,4 +116,8 @@ Scouted 2026-11-14 on `origin/main`:
   - verify: the four host-interact parity scenes pass; existing Transform/CornerPin GUI tests pass.
   - size: L
 
-**Verification gate:** `OverlayDrawList_Test`, `m434_interact_parity.py` and every existing Roto, Tracker, SplineWarp and Transform GUI test pass on a remote release build with `--gui`. The GUI bench (`tools/bench/gui/run.sh --xvfb` + `compare.py`) shows no regression, and the result is recorded in `## Decisions`. Screenshots of each ported interact go to the user before sign-off. The UAT is collected at F25 - Overlay Flow's landing.
+**Verification gate:** `overlay_draw` p95 for every shape count and the Tracker topology is within 10% of the P1.T3 baseline, or better (`compare.py`), and the result is recorded in `## Decisions`. `OverlayDrawList_Test`, `m434_interact_parity.py` and every existing Roto, Tracker, SplineWarp and Transform GUI test pass on a remote release build with `--gui`. The GUI bench (`tools/bench/gui/run.sh --xvfb` + `compare.py`) shows no regression, and the result is recorded in `## Decisions`. Screenshots of each ported interact go to the user before sign-off. The UAT is collected at F25 - Overlay Flow's landing.
+
+## Decisions
+
+- 2026-11-14 — The ports must keep overlay draw cost within 10% of today's raw-GL drawing, measured by a dedicated benchmark recorded before any port, and the draw list is cached between redraws (user): raw GL is cheap to issue, so the draw list's per-redraw rebuild and upload must not cost more than it saves.

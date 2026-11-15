@@ -7,6 +7,8 @@ Overlays follow the image through every warp between the overlay node and the vi
 
 OFX overlays, which draw raw GL, get a fallback: they are rendered to an offscreen texture and that texture is warped.
 
+**Performance comes first.** Phase 435.0 benchmarks the candidate ways of doing the warp before the deformation pipeline is built. The approach is chosen on measured cost across the hardware range, both modest machines and many-core ones, not on the planned design by default.
+
 ## Scope
 
 **In:**
@@ -32,6 +34,23 @@ OFX overlays, which draw raw GL, get a fallback: they are rendered to an offscre
 **Assumptions:**
 - Unconfirmed: a 4 px viewport tolerance for polyline subdivision looks smooth. P2.T3's screenshots settle it with the user.
 
+## Phase 435.0: Warp approach spike
+
+- [ ] M435.P0.T1 — Benchmark the ways of warping overlay geometry
+  - files: new `Tests/bench/OverlayWarpBench.cpp` (or a gtest-driven bench under `Tests/`, following the existing bench layout), throwaway prototypes in the same file or a spike branch, a write-up at `PLAN/DESIGN/2026-11-14-overlay-warp-approaches.md` (plan worktree)
+  - approach:
+    - Prototype and time, on synthetic chains (a LensDistortion, a SplineWarp, an STMap and all three chained) with M434's 500-shape Roto list:
+      - (a) CPU per-vertex `OverlayMapChain::mapPolyline` with adaptive subdivision, as M433 - Overlay Point Maps builds it;
+      - (b) a composed displacement grid: sample the whole chain once per (chain hash, time, view) on a coarse grid over the visible region, refined where it bends, then map each vertex by bilinear lookup. That is O(1) per vertex, and the grid is reused across redraws and drags;
+      - (c) GPU vertex mapping: upload the grid from (b), or lens-model parameters as uniforms, and displace vertices in a vertex shader. CPU cost is unchanged by the warp;
+      - (d) multithreaded (a) over the thread pool.
+    - Report for each the per-redraw cost at 1, 100 and 500 shapes, the cost when the chain changes (a knob drag on the LensDistortion), and accuracy against exact mapping in viewport pixels. Measure on the dev host and through the remote runner, so a 4-core figure and a many-core figure are both recorded.
+    - Also cover pen inverse-mapping: per-event Newton through the chain against an inverse grid.
+    - Recommend one approach, or a combination such as grid-by-default with exact mapping for handles.
+    - If the recommendation departs from the planned CPU per-vertex pipeline, put it to the user before P1 starts.
+  - verify: the write-up gives timings and accuracy for (a)–(d) at each shape count, and the recommendation is recorded in `## Decisions` (with the user's choice when it departs from the plan).
+  - size: L
+
 ## Phase 435.1: Resolver and drawing
 
 - [ ] M435.P1.T1 — Resolver returns map chains
@@ -47,6 +66,7 @@ OFX overlays, which draw raw GL, get a fallback: they are rendered to an offscre
 - [ ] M435.P1.T2 — Deform draw-list primitives
   - files: the viewport draw-list drawer (`Gui/ViewerGL*.cpp`, `drawOverlayDrawList`), `Gui/ViewerTab20.cpp` (`drawOverlays`), `Engine/OverlayDrawList.{h,cpp}` (mapped-copy helper)
   - approach:
+    - Use the approach chosen in P0.T1. The steps below describe the CPU per-vertex baseline; adapt them to the chosen approach.
     - With a chain, produce a mapped copy of the list: deformable geometry goes through `mapPolyline` at 4 px tolerance (viewport scale from the GL projection), and anchors go through `mapPoint`.
     - Draw it with an identity modelview.
     - Cache by (list version, chain hash, time, zoom bucket).
@@ -94,8 +114,9 @@ OFX overlays, which draw raw GL, get a fallback: they are rendered to an offscre
   - verify: the docs build.
   - size: S
 
-**Verification gate:** `OverlayPath_Test`, `OverlayPointMap_Test` and `m435_overlays_through_warps.py` pass on a remote release build with `--gui`. The GUI bench shows no regression, and the result is recorded in `## Decisions`. Screenshots go to the user for approval. The UAT happens at F25 - Overlay Flow's landing.
+**Verification gate:** M434's `overlay_draw` bench, extended with the P0.T1 chains, holds the budget recorded in `## Decisions` from P0.T1. With an all-matrix path it stays within 10% of M434's numbers. `OverlayPath_Test`, `OverlayPointMap_Test` and `m435_overlays_through_warps.py` pass on a remote release build with `--gui`. The GUI bench shows no regression, and the result is recorded in `## Decisions`. Screenshots go to the user for approval. The UAT happens at F25 - Overlay Flow's landing.
 
 ## Decisions
 
 - 2026-11-14 — Native interacts deform per vertex through the draw list, and OFX overlays fall back to a warped texture (user, grill: "Both"): crisp, exactly hit-tested handles where we own the code, and coverage for third-party overlays.
+- 2026-11-14 — The warp approach is benchmarked before it is built (CPU per-vertex, composed displacement grid, GPU vertex shader, multithreaded CPU), and chosen on measured cost across the hardware range (user).

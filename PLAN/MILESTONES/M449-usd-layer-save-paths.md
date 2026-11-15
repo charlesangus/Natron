@@ -10,6 +10,7 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
 - `USDConfigureLayer`, which has knobs `appliesTo` ("Applies To": Preceding Layers | Following Layers, default Preceding Layers) and `savePath` ("Save Path"). Behind `AuthoredKnobSet` toggles it also has `defaultPrim`, `comment`, `startTime`, `endTime`, `timeCodesPerSecond`, `framesPerSecond`, `upAxis`, `metersPerUnit`, `colorConfiguration`, `colorManagementSystem` and `renderSettingsPrimPath`, plus custom-data rows of name, type and value. The types are String, String Array, Token, Token Array, Float, Integer and Boolean.
 - `USDLayerBegin` and `USDLayerEnd`, bare markers with no knobs.
 - USDWrite writes each region to its file, nested by sublayers. It resolves relative save paths against its own output directory, with M245 - Write Path Variables applying. It gains `saveCollisions` ("Save Path Collisions": Error | Merge Into One File, default Error).
+- A third USDWrite Export Mode, `Flatten Layers` (between Layered and Flattened). It writes the whole layer stack into the one output file, read files included, with no sublayers and no side files. References, payloads and variants stay live.
 - Node docs, the USDWrite doc update, ctest coverage and one Xvfb GUI script.
 
 **Out:**
@@ -30,7 +31,12 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
 - A relative Save Path resolves against USDWrite's output directory. An absolute one stays absolute. References between written files follow USDWrite's existing `pathMode`.
 - Region files are named by the user, so the stale-sidecar sweep (`removeStaleSidecars`) never deletes them. Unnamed runs keep today's `_layerN` sidecar names.
 
+- Flatten Layers ignores regions and save paths: everything goes into the output file, and region metadata follows the rule for blank-path regions. Breaks (M448 - USD Layer Break) are still honoured.
+- Flatten Layers with a USDReference to a file on disk: the reference stays an external reference. Only USDRead's sublayered files are flattened in.
+- Flatten Layers with a USDReference to another branch of the graph (an anonymous stack): that stack is flattened into the output under a `class` root prim, `/_references/stack<N>`, and the arc becomes an internal reference to it. No side file is written.
+
 **Assumptions:**
+- Unconfirmed: inlined referenced stacks live under `/_references/stack<N>` as `class` prims. A `class` composes no visible prims of its own, so the stage looks the same; check the name at UAT.
 - Unconfirmed: a USDConfigureLayer with a blank Save Path and metadata set applies that metadata to the file that receives its region (the parent's file, or the root).
 - Unconfirmed: Up Axis, Meters Per Unit, the time range and the other stage-level fields set on a region that lands in the root file override USDWrite's root metadata (`authorStageMetadata`). On any other region they apply only to that region's file.
 - Region entries are contiguous in the flattened stack by construction: Following regions are appended in one run, merges close them, and Preceding claims a run. USDWrite asserts this and fails with a clear message if it is ever false.
@@ -114,7 +120,19 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
   - verify: the script passes in the remote `--gui` gate.
   - size: M
 
-**Verification gate:** CI green, including the region, ConfigureLayer and USDWrite tests and `m449_layer_save_paths.py` under `--gui`. A single USDWrite produces the nested file set of M449.P2.T1, and recomposing it gives the graph's stage. Collisions error by default and merge on request. User-facing checks (building a real shot/lighting/key layer set) are collected at F27 - USD Layer Authoring's UAT.
+- [ ] M449.P2.T6 — `Flatten Layers` export mode
+  - files: `Engine/Nodes/Scene/USDWrite.h`/`.cpp` (`initializeKnobs` exportMode entries, `writeFrameRange`, `appendLayerStack`), `Engine/Nodes/Scene/docs/USDWrite.md`, `Tests/Scene/USDWrite_Test.cpp`
+  - approach: add `flattenLayers` ("Flatten Layers") as the middle `exportMode` entry, with a tooltip contrasting it with Layered (a thin file sublayering read files) and Flattened (composition baked in). For the root stack, collect items as Layered does, after context skipping, but treat external items (read files) like anonymous ones. Flatten the whole run with `flattenRun` / `UsdUtilsFlattenLayerStack` into the output layer, so no sublayers remain. Regions are ignored. Asset paths inside flattened read files resolve through the existing `UsdUtilsFlattenLayerStackResolveAssetPath` callback, then `pathMode` applies. Referenced anonymous stacks still go to side files until P2.T7. Stage metadata as Layered.
+  - verify: test `FlattenLayersWritesOneFileKeepingArcs`. Read the M52 layer-stack fixture → USDVariant → edit → USDWrite in Flatten Layers mode. The output has no sublayers. It holds the fixture's prims and the edit, and the variant set with both variants and the authored selection. A USDReference to `m52-referenced.usda` on disk stays a reference to that file. Recomposing it gives the graph's stage.
+  - size: M
+
+- [ ] M449.P2.T7 — Inline referenced stacks in `Flatten Layers`
+  - files: `Engine/Nodes/Scene/USDWrite.cpp` (`anonymousArcs`, the `stackOfLayer` and arc-rewrite step of `writeFrameRange`), `Tests/Scene/USDWrite_Test.cpp`
+  - approach: in Flatten Layers mode, flatten each anonymous referenced stack (`stacks[i]`, i > 0) as P2.T6 does. Then copy its root prims under `/_references/stack<N>` in the output layer, where N follows today's side-file numbering, with that root prim specified as `class` (`SdfCopySpec`). Rewrite each arc to an internal reference (empty asset path) to the copied prim: the arc's prim path, or the stack's default prim, re-rooted under `stack<N>`, keeping the layer offset (`scaleArcOffsets` applies as today). Relationship and connection targets inside copied prims are re-rooted with the same path mapping. Nested referenced stacks go in recursively. A stack referenced twice is copied once.
+  - verify: test `FlattenLayersInlinesReferencedStacks`. A USDReference whose source is a second Read → edit branch, plus a USDXformPrim graft, writes one file and no side files. Recomposing it gives the graph's composed stage, prim for prim and attribute for attribute at two frames. A material binding inside the referenced stack still resolves.
+  - size: L
+
+**Verification gate:** CI green, including the region, ConfigureLayer and USDWrite tests and `m449_layer_save_paths.py` under `--gui`. A single USDWrite produces the nested file set of M449.P2.T1, and recomposing it gives the graph's stage. Collisions error by default and merge on request. Flatten Layers writes one self-contained file whose composed stage matches the graph's, with references and variants live. User-facing checks (building a real shot/lighting/key layer set) are collected at F27 - USD Layer Authoring's UAT.
 
 ## Decisions
 
@@ -125,3 +143,4 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
 - 2026-11-15 — Full layer metadata set including custom data rows, each behind an authored toggle (user, grill).
 - 2026-11-15 — Relative save paths resolve against USDWrite's output directory (user, grill): one graph writes a whole layer set to any shot directory.
 - 2026-11-15 — Save-path collisions are configurable on USDWrite: Error by default, Merge Into One File on request (user, grill).
+- 2026-11-15 — USDWrite gains a third Export Mode, Flatten Layers: one self-contained file with every layer (read files included) flattened in but composition arcs kept (user, after the grill: "choose whether to write everything into the output file or a thin file referencing external files"). Layered stays the thin option. Referenced graph stacks are inlined as internal references so no side files remain (planner); file references stay external.

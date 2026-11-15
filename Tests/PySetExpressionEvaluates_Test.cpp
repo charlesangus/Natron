@@ -340,34 +340,3 @@ TEST_F(PySetExpressionEvaluatesTest, AnExpressionOnTheRotoNodeReachesTheSelected
     EXPECT_GE(renderRequests, 1);
     context->clearSelection(RotoItem::eSelectionReasonOther);
 }
-
-TEST_F(PySetExpressionEvaluatesTest, AnExpressionOnAShapeKnobRendersTheRotoNode)
-{
-    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
-    ASSERT_TRUE(roto != nullptr);
-    RotoContextPtr context = roto->getRotoContext();
-    ASSERT_TRUE(bool(context));
-    BezierPtr shape = context->makeSquare(0., 0., 10., context->getTimelineCurrentTime());
-    ASSERT_TRUE(bool(shape));
-    ASSERT_TRUE(shape->setScriptName("expressionShape"));
-    context->clearSelection(RotoItem::eSelectionReasonOther);
-
-    int renderRequests = 0;
-    QObject receiver;
-    RenderEnginePtr engine = countRenderRequests(roto, &receiver, &renderRequests);
-    ASSERT_TRUE(engine != nullptr);
-
-    run("p = " + py(roto) + ".getRotoContext().getItemByName('expressionShape').getParam('opacity')\n");
-    renderRequests = 0;
-    run("assert p.setExpression('0.5', False, 0)\n");
-    EXPECT_EQ(std::string("0.5"), shape->getOpacityKnob()->getExpression(0));
-    EXPECT_GE(renderRequests, 1);
-
-    renderRequests = 0;
-    run("assert p.setExpression('0.5', False, 0)\n");
-    EXPECT_EQ(0, renderRequests);
-
-    run("assert p.setExpression('', False, 0)\n");
-    EXPECT_TRUE(shape->getOpacityKnob()->getExpression(0).empty());
-    EXPECT_GE(renderRequests, 1);
-}

@@ -52,7 +52,6 @@
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
-#include "Engine/RotoContext.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -1058,12 +1057,6 @@ AnimatedParam::setExpression(const QString& expr,
     // A rejected expression has already cleared the previous one, so the knob changed anyway.
     if (ok || (thisKnob->getExpression(dimension) != previous)) {
         thisKnob->evaluateValueChange(dimension, currentTime(thisKnob, _itemNode), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
-        // A roto item's knob has no holder to request the render, so its node's context does.
-        NodePtr itemNode = _itemNode.lock();
-        RotoContextPtr rotoContext = (itemNode && !thisKnob->getHolder()) ? itemNode->getRotoContext() : RotoContextPtr();
-        if (rotoContext) {
-            rotoContext->evaluateChange();
-        }
     }
 
     return ok;

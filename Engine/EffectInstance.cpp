@@ -27,6 +27,7 @@
 #include "EffectInstancePrivate.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <bitset>
 #include <cassert>
 #include <cmath>
@@ -6882,13 +6883,23 @@ EffectInstance::onNodeHashChanged(U64 hash)
     }
 }
 
+namespace {
+std::atomic<bool> s_queuesWritesDuringBackgroundRenders(false);
+}
+
+void
+EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(bool queues)
+{
+    s_queuesWritesDuringBackgroundRenders = queues;
+}
+
 bool
 EffectInstance::canSetValue() const
 {
     // A render can keep the effect alive after its node is destroyed; nothing renders the node then.
     NodePtr node = getNode();
 
-    return !node || !node->isNodeRendering() || appPTR->isBackground();
+    return !node || !node->isNodeRendering() || (appPTR->isBackground() && !s_queuesWritesDuringBackgroundRenders);
 }
 
 void

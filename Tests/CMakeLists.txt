@@ -104,6 +104,7 @@ set(Tests_SOURCES
     GenericSchedulerAbortWait_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    RotoSelectionProxy_Test.cpp
     PyRotoCreate_Test.cpp
     CurveTrackLink_Test.cpp
     CurveClipboard_Test.cpp

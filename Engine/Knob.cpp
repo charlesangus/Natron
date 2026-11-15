@@ -4476,7 +4476,9 @@ KnobHelper::removeExpressionDependencies(int dimension,
              it != dependencies.end(); ++it) {
             KnobIPtr otherKnob = it->first.lock();
             KnobHelper* other = dynamic_cast<KnobHelper*>( otherKnob.get() );
-            assert(other);
+            // A driver destroyed first, as when a project reset or group teardown frees nodes in any
+            // order, leaves an expired entry here: its listener record died with it, so there is
+            // nothing left to unregister.
             if (!other) {
                 continue;
             }
@@ -10045,6 +10047,15 @@ KnobHolder::onDoEndChangesOnMainThreadTriggered()
 {
     assert( QThread::currentThread() == qApp->thread() );
     endChanges();
+}
+
+void
+KnobHolder::notifyInputsChangedDuringBlock()
+{
+    QMutexLocker l(&_imp->evaluationBlockedMutex);
+
+    ++_imp->nbSignificantChangesDuringEvaluationBlock;
+    ++_imp->nbChangesDuringEvaluationBlock;
 }
 
 bool

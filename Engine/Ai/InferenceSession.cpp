@@ -34,18 +34,15 @@
 #include <cstdlib>
 #include <filesystem>
 #include <future>
-#include <iostream>
 #include <mutex>
 #include <set>
 #include <system_error>
 #include <thread>
 #include <tuple>
 
-#include <QDateTime>
-#include <QString>
-
 #include <onnxruntime_c_api.h>
 
+#include "Engine/Ai/AiLog.h"
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppManager.h"
 #include "Engine/Settings.h"
@@ -597,11 +594,7 @@ InferenceSession::providerOrder(AiDeviceEnum requested,
 void
 InferenceSession::logWarning(const std::string& message)
 {
-    if (appPTR) {
-        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("AI"), QDateTime::currentDateTime(), QString::fromStdString(message));
-    } else {
-        std::cerr << "AI: " << message << std::endl;
-    }
+    AiLog::warning(message);
 }
 
 bool

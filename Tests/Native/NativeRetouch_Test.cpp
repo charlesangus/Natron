@@ -44,6 +44,7 @@
 #include "Native/RetouchTestSupport.h"
 #include "NativeParity.h"
 #include "RawReferenceSupport.h"
+#include "RegionIndependenceSupport.h"
 #include "RenderBothWays.h"
 #include "Serialization/ProjectBundleTestHelpers.h"
 
@@ -2110,3 +2111,52 @@ TEST_F(NativeRetouchTest, BrushLifetimeMatchesARotoPaintStroke)
         }
     }
 }
+
+namespace {
+class RetouchRegionTest
+    : public RegionIndependenceTest {
+protected:
+    // A Retouch of source with 3 scales and the two region shapes of algorithm.
+    NodePtr makeRetouch(const NodePtr& source,
+                        RC::AlgorithmEnum algorithm)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_RETOUCH, source);
+
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValues(node, kRetouchParamScales, { 3. }));
+        for (const RetouchTest::ShapeSpec& spec : RetouchTest::regionShapeSpecs(algorithm)) {
+            EXPECT_TRUE(bool(RetouchTest::makeShape(node, spec, kTime)));
+        }
+
+        return node;
+    }
+
+    static std::vector<RC::AlgorithmEnum> algorithms()
+    {
+        return { RC::eAlgorithmClone, RC::eAlgorithmHeal, RC::eAlgorithmBlur, RC::eAlgorithmFill };
+    }
+};
+
+TEST_F(RetouchRegionTest, RegionIndependentCpu)
+{
+    for (RC::AlgorithmEnum algorithm : algorithms()) {
+        SCOPED_TRACE((int)algorithm);
+        expectRegionIndependent([this, algorithm](const NodePtr& source) {
+            return makeRetouch(source, algorithm);
+        });
+    }
+}
+
+TEST_F(RetouchRegionTest, InfiniteSourceFails)
+{
+    for (RC::AlgorithmEnum algorithm : algorithms()) {
+        SCOPED_TRACE((int)algorithm);
+        expectInfiniteRoDFails([this, algorithm](const NodePtr& source) {
+            return makeRetouch(source, algorithm);
+        });
+    }
+}
+
+} // namespace

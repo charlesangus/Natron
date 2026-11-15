@@ -315,3 +315,4 @@ Acceptance sketch:
 - 2026-11-15 — Viewer edge display (d73bd2f18): NodeMetadata's edge mode reaches ViewerGL via UpdateViewerParams; under Stretch the draw's outer ring (already clamped to edge-pixel centres) extends to the visible area (clipped to format / user RoI when on), per wipe side; the picker clamps reads to the repeated pixels. RoD, rendered region, overlays and info line unchanged. Known: nothing to stretch when the viewport misses the RoD entirely; partial-update rects keep the last full frame's edge. Stale confirming gate cancelled; re-gating with m136_edge_mode.
 
 - 2026-11-15: viewer edge-display gate green (d73bd2f18, m136_edge_mode 143/143); screenshots sent for sign-off. main merged (a11392d23), regate running.
+- 2026-11-15 (user): screenshots approved — the viewer shows the viewed output's own edge mode past its RoD; no viewer-side edge setting.

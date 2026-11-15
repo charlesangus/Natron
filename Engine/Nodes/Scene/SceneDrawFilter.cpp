@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "Gui/SceneDrawFilter.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 
 #include <algorithm>
 #include <iterator>
@@ -59,21 +59,24 @@ std::unordered_map<std::string, SceneDrawFilter::WeakPtr> filters;
 // "UsdImagingGLEngine_%s_%p" in libusd_usdImagingGL.so, whose %p appears to be the engine, known
 // only once the constructor has returned, and HdUtils::RenderInstanceTracker's register-first
 // protocol (pxr/imaging/hd/utils.h) needs it earlier. So the id is learned here, which relies on
-// UsdImagingGLEngine's constructor building its render index synchronously on the calling thread.
+// UsdImagingGLEngine's constructor building its render index synchronously, on its own thread.
 // hd/utils.h only says the callback "currently" runs during render index construction.
-thread_local std::string appendedInstanceId;
+thread_local SceneDrawFilter::EngineScope* activeScope = nullptr;
 
 HdSceneIndexBaseRefPtr
 appendFilter(const std::string& renderInstanceId,
              const HdSceneIndexBaseRefPtr& input,
              const HdContainerDataSourceHandle& /*inputArgs*/)
 {
+    if (!activeScope) {
+        return input;
+    }
     TfRefPtr<SceneDrawFilter> filter = SceneDrawFilter::New(input);
     {
         std::lock_guard<std::mutex> lock(filtersMutex);
         filters[renderInstanceId] = SceneDrawFilter::WeakPtr(filter);
     }
-    appendedInstanceId = renderInstanceId;
+    activeScope->setInstanceId(renderInstanceId);
 
     return filter;
 }
@@ -269,13 +272,40 @@ SceneDrawFilter::registerForAllRenderers()
     });
 }
 
-std::string
-SceneDrawFilter::takeAppendedInstanceId()
+SceneDrawFilter::EngineScope::EngineScope()
+    : _previous(activeScope)
 {
-    std::string id;
-    id.swap(appendedInstanceId);
+    activeScope = this;
+}
 
-    return id;
+SceneDrawFilter::EngineScope::~EngineScope()
+{
+    activeScope = _previous;
+}
+
+std::string
+SceneDrawFilter::EngineScope::getInstanceId() const
+{
+    return _instanceId;
+}
+
+void
+SceneDrawFilter::EngineScope::setInstanceId(const std::string& renderInstanceId)
+{
+    _instanceId = renderInstanceId;
+}
+
+std::vector<std::string>
+SceneDrawFilter::getInstanceIds()
+{
+    std::lock_guard<std::mutex> lock(filtersMutex);
+    std::vector<std::string> ids;
+    ids.reserve(filters.size());
+    for (const auto& entry : filters) {
+        ids.push_back(entry.first);
+    }
+
+    return ids;
 }
 
 SceneDrawFilter::WeakPtr
@@ -589,6 +619,26 @@ SceneDrawFilter::hidesLights() const
     };
 
     return std::any_of(_lights.begin(), _lights.end(), held);
+}
+
+bool
+SceneDrawFilter::hidesEveryLight(const LightPredicate& counts) const
+{
+    if (!hidesLights()) {
+        return false;
+    }
+    bool any = false;
+    for (const Node* light : _lights) {
+        if (counts && !counts(*light->path)) {
+            continue;
+        }
+        if (light->output == eOutputShown) {
+            return false;
+        }
+        any = true;
+    }
+
+    return any;
 }
 
 HdSceneIndexPrim
@@ -908,6 +958,43 @@ SceneDrawFilter::applyDelta(const SceneDrawDelta& delta,
                             std::size_t revealBatch)
 {
     applyDeltas(std::vector<const SceneDrawDelta*> { &delta }, revealBatch);
+}
+
+void
+SceneDrawFilter::replaceRules(const Rules& rules)
+{
+    if (rules == _rules) {
+        return;
+    }
+    SceneDrawDelta delta;
+    for (const Rules::value_type& rule : _rules) {
+        if (rules.find(rule.first) == rules.end()) {
+            delta.cleared.push_back(rule.first.GetString());
+        }
+    }
+    for (const Rules::value_type& rule : rules) {
+        const Rules::const_iterator current = _rules.find(rule.first);
+        if ((current != _rules.end()) && (current->second == rule.second)) {
+            continue;
+        }
+        std::vector<std::string>* list = nullptr;
+        switch (rule.second) {
+        case eRuleShow:
+            list = &delta.drawn;
+            break;
+        case eRuleExpand:
+            list = &delta.expanded;
+            break;
+        case eRuleHide:
+            list = &delta.boxed;
+            break;
+        case eRuleHidden:
+            list = &delta.hidden;
+            break;
+        }
+        list->push_back(rule.first.GetString());
+    }
+    applyDelta(delta);
 }
 
 void

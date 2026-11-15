@@ -94,6 +94,7 @@ struct ViewerTabPrivate
     QHBoxLayout* sceneRenderRowLayout;
     SpinBox* maxSamplesBox;
     Button* refinementPausedButton;
+    Button* renderEverythingButton;
     Label* refineSamplesLabel;
 
     /*1st row*/

@@ -34,11 +34,15 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -49,7 +53,10 @@
 #include "BaseTest.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Tests/Scene/CyclesTestUtils.h"
@@ -135,6 +142,126 @@ centreDepth(const ProgressiveRender::Frame& frame)
 {
     return frame.depth[(std::size_t)(frame.height / 2) * (std::size_t)frame.width + (std::size_t)(frame.width / 2)];
 }
+
+bool
+anyUnder(const std::set<std::string>& paths,
+         const std::string& root)
+{
+    for (const std::string& path : paths) {
+        if ((path == root) || (path.compare(0, root.size() + 1, root + "/") == 0)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+SceneDrawDelta
+hiding(const std::string& path)
+{
+    SceneDrawDelta delta;
+    delta.hidden.push_back(path);
+
+    return delta;
+}
+
+const char* const kKey = "/World/Key";
+
+// base with a red distant light, /World/Key, shining down the view axis: its colour tells its
+// light apart from the white headlight and from a renderer's own default light.
+ScenePayload
+withKey(const ScenePayload& base)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("ProgressiveRenderTestKey");
+    PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath(kKey));
+    prim->SetSpecifier(PXR_NS::SdfSpecifierDef);
+    prim->SetTypeName("DistantLight");
+    PXR_NS::SdfAttributeSpecHandle intensity = PXR_NS::SdfAttributeSpec::New(prim, "inputs:intensity", PXR_NS::SdfValueTypeNames->Float);
+    intensity->SetDefaultValue(PXR_NS::VtValue(3.f));
+    PXR_NS::SdfAttributeSpecHandle color = PXR_NS::SdfAttributeSpec::New(prim, "inputs:color", PXR_NS::SdfValueTypeNames->Color3f);
+    color->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3f(1.f, 0.f, 0.f)));
+    // hdMoonray reads an unnormalized distant light's intensity as the radiance of its half-degree
+    // disk, which leaves the cube all but black; hdCycles reads it as irradiance either way.
+    PXR_NS::SdfAttributeSpecHandle normalize = PXR_NS::SdfAttributeSpec::New(prim, "inputs:normalize", PXR_NS::SdfValueTypeNames->Bool);
+    normalize->SetDefaultValue(PXR_NS::VtValue(true));
+
+    return SceneOps::appendLayer(base, layer, 0x6b65790aULL);
+}
+
+float
+linearOf(unsigned char encoded)
+{
+    const float c = encoded / 255.f;
+
+    return (c <= 0.04045f) ? (c / 12.92f) : std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+// The mean linear value of channel, or of all three if channel is -1, over the pixels of frame
+// in columns [x0, x1) and rows [y0, y1) that keep(x, y) accepts; -1 if it accepts none.
+float
+meanOver(const ProgressiveRender::Frame& frame,
+         int x0,
+         int x1,
+         int y0,
+         int y1,
+         int channel,
+         const std::function<bool(int, int)>& keep)
+{
+    double sum = 0.;
+    int count = 0;
+    for (int y = std::max(0, y0); y < std::min(frame.height, y1); ++y) {
+        for (int x = std::max(0, x0); x < std::min(frame.width, x1); ++x) {
+            if (keep && !keep(x, y)) {
+                continue;
+            }
+            const unsigned char* px = &frame.rgba[((std::size_t)y * frame.width + x) * 4];
+            sum += (channel < 0) ? (linearOf(px[0]) + linearOf(px[1]) + linearOf(px[2])) / 3.f : linearOf(px[channel]);
+            ++count;
+        }
+    }
+
+    return count ? (float)(sum / count) : -1.f;
+}
+
+// The mean difference, in 8-bit levels, between two frames' colour channels.
+double
+meanLevelDifference(const ProgressiveRender::Frame& a,
+                    const ProgressiveRender::Frame& b)
+{
+    if ((a.width != b.width) || (a.height != b.height) || a.rgba.empty() || (a.rgba.size() != b.rgba.size())) {
+        return 255.;
+    }
+    double sum = 0.;
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < a.rgba.size(); ++i) {
+        if ((i % 4) != 3) {
+            sum += std::abs((int)a.rgba[i] - (int)b.rgba[i]);
+            ++count;
+        }
+    }
+
+    return sum / count;
+}
+
+// The MoonRay delegate comes from the build image and AppManager registers it only on a CPU that
+// runs it; NATRON_TEST_REQUIRE_MOONRAY=1 turns the skip into a failure where MoonRay can run.
+bool
+moonRayOrSkip()
+{
+    if (PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hd_moonray")) {
+        return true;
+    }
+    const char* reason = "OpenUSD has no hd_moonray plug-in registered; this build image predates the "
+                         "MoonRay render delegate (tools/ci/local/build-moonray.sh), or the CPU lacks an instruction set MoonRay needs (MoonRayRuntime::cpuRunsMoonRay)";
+    const char* require = std::getenv("NATRON_TEST_REQUIRE_MOONRAY");
+    if (require && (std::strcmp(require, "1") == 0) && MoonRayRuntime::cpuRunsMoonRay()) {
+        ADD_FAILURE() << "NATRON_TEST_REQUIRE_MOONRAY=1 but " << reason;
+    } else {
+        std::printf("[  SKIPPED ] %s\n", reason);
+    }
+
+    return false;
+}
 } // anon namespace
 
 class ProgressiveRenderTest
@@ -196,7 +323,8 @@ protected:
 
     // Starts a Cycles render of the fixture through its camera, kSize pixels square, with a render
     // settings prim's settings.
-    bool start(const std::map<std::string, PXR_NS::VtValue>& settings = std::map<std::string, PXR_NS::VtValue>())
+    bool start(const std::map<std::string, PXR_NS::VtValue>& settings = std::map<std::string, PXR_NS::VtValue>(),
+               const char* renderer = kRenderDelegateCyclesId)
     {
         if (!_stage->isValid()) {
             ADD_FAILURE() << "OpenUSD could not open a stage";
@@ -217,7 +345,7 @@ protected:
         _view.time = PXR_NS::UsdTimeCode::Default();
         newRender();
         _render->setSettings(settings);
-        _render->setRenderer(kRenderDelegateCyclesId);
+        _render->setRenderer(renderer);
         _render->setThreads([]() { return 2; });
         _render->setView(_view);
 
@@ -319,6 +447,125 @@ protected:
         }
 
         return finished;
+    }
+
+    // The prims frame's pixels show, from the engine's primId AOV.
+    std::set<std::string> pickedPrims(const ProgressiveRender::Frame& frame)
+    {
+        std::set<std::string> paths;
+        for (int y = 0; y < frame.height; ++y) {
+            for (int x = 0; x < frame.width; ++x) {
+                const std::string path = _render->pick(frame, x, y);
+                if (!path.empty()) {
+                    paths.insert(path);
+                }
+            }
+        }
+
+        return paths;
+    }
+
+    // Waits for the render to finish from the mark-th frame on, and gives its last frame.
+    std::shared_ptr<const ProgressiveRender::Frame> lastWhenDone(std::size_t mark)
+    {
+        std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+        if (!collectUntilDone(mark, &frames) || frames.empty()) {
+            return std::shared_ptr<const ProgressiveRender::Frame>();
+        }
+
+        return frames.back();
+    }
+
+    /**
+     * With the key light the only one and its row Hidden, renderer lights the near cube from the
+     * camera as Storm's viewer would: lit, white, and brightest where it faces the camera however
+     * the camera turns, which a renderer's own uniform default light is not. Showing the key again,
+     * or Render Everything, takes the headlight away without rebuilding the engine.
+     **/
+    void checkHeadlight(const char* renderer)
+    {
+        ASSERT_TRUE(start(std::map<std::string, PXR_NS::VtValue>(), renderer));
+        if (std::string(renderer) != kRenderDelegateCyclesId) {
+            _render->setMaxSamples(64);
+        }
+        SceneDrawFilter::Rules rules;
+        rules[PXR_NS::SdfPath("/World/Far")] = SceneDrawFilter::eRuleHidden;
+        _render->setDrawRules(rules);
+        sync(withKey(_base));
+        const std::shared_ptr<const ProgressiveRender::Frame> keyOnly = lastWhenDone(0);
+        ASSERT_TRUE(bool(keyOnly));
+        const int c = kSize / 2;
+        const auto onNear = [this](const ProgressiveRender::Frame& frame) {
+            return [this, &frame](int x, int y) { return _render->pick(frame, x, y).compare(0, 11, "/World/Near") == 0; };
+        };
+        const float keyRed = meanOver(*keyOnly, c - 3, c + 3, c - 3, c + 3, 0, onNear(*keyOnly));
+        const float keyGreen = meanOver(*keyOnly, c - 3, c + 3, c - 3, c + 3, 1, onNear(*keyOnly));
+        ASSERT_GT(keyRed, 0.02f) << "the key light does not light the near cube";
+        ASSERT_LT(keyGreen, 0.1f * keyRed) << "something other than the red key lights the near cube";
+        const U64 builds = HydraRender::getEngineBuildCount();
+        const U64 remakesBefore = _render->getStatus().unseenRemakes;
+
+        rules[PXR_NS::SdfPath(kKey)] = SceneDrawFilter::eRuleHidden;
+        _render->setDrawRules(rules);
+        const std::shared_ptr<const ProgressiveRender::Frame> facing = lastWhenDone(publishedCount());
+        ASSERT_TRUE(bool(facing));
+        const float front = meanOver(*facing, c - 3, c + 3, c - 3, c + 3, -1, onNear(*facing));
+        EXPECT_GT(front, 0.02f) << "nothing lights the near cube with every light hidden";
+        EXPECT_GT(meanOver(*facing, c - 3, c + 3, c - 3, c + 3, 1, onNear(*facing)), 0.01f) << "the light on the near cube is not white";
+        // A renderer's own default light, such as hdMoonray's dome, would show in the background.
+        EXPECT_NEAR(meanOver(*keyOnly, 0, 4, 0, 4, -1, std::function<bool(int, int)>()),
+                    meanOver(*facing, 0, 4, 0, 4, -1, std::function<bool(int, int)>()), 0.01f);
+
+        // Turned 45 degrees about the cube, the camera sees two faces at the same angle to it.
+        ProgressiveRender::View turned = _view;
+        const double radius = _view.frustum.GetPosition().GetLength();
+        const double s45 = std::sqrt(0.5);
+        PXR_NS::GfMatrix4d cameraToWorld;
+        cameraToWorld.SetTransform(PXR_NS::GfRotation(PXR_NS::GfVec3d(0., 1., 0.), 45.), PXR_NS::GfVec3d(radius * s45, 0., radius * s45));
+        turned.frustum.SetPositionAndRotationFromMatrix(cameraToWorld);
+        _render->setView(turned);
+        const std::shared_ptr<const ProgressiveRender::Frame> corner = lastWhenDone(publishedCount());
+        ASSERT_TRUE(bool(corner));
+        const float left = meanOver(*corner, 0, c - 1, c - 3, c + 3, -1, onNear(*corner));
+        const float right = meanOver(*corner, c + 1, kSize, c - 3, c + 3, -1, onNear(*corner));
+        ASSERT_GT(left, 0.f) << "the turned view shows one face of the near cube";
+        ASSERT_GT(right, 0.f) << "the turned view shows one face of the near cube";
+        EXPECT_NEAR(left, right, 0.15f * front) << "the headlight does not turn with the camera";
+        EXPECT_GT(front, 1.15f * std::max(left, right)) << "the near cube is lit evenly, not from the camera";
+
+        _render->setView(_view);
+        rules.erase(PXR_NS::SdfPath(kKey));
+        _render->setDrawRules(rules);
+        const std::shared_ptr<const ProgressiveRender::Frame> keyAgain = lastWhenDone(publishedCount());
+        ASSERT_TRUE(bool(keyAgain));
+        EXPECT_LT(meanLevelDifference(*keyOnly, *keyAgain), 1.) << "the headlight stays with the key light shown";
+        EXPECT_NEAR(keyGreen, meanOver(*keyAgain, c - 3, c + 3, c - 3, c + 3, 1, onNear(*keyAgain)), 0.01f);
+
+        rules[PXR_NS::SdfPath(kKey)] = SceneDrawFilter::eRuleHidden;
+        _render->setDrawRules(rules);
+        ASSERT_TRUE(bool(lastWhenDone(publishedCount())));
+        _render->setRenderEverything(true);
+        const std::shared_ptr<const ProgressiveRender::Frame> everything = lastWhenDone(publishedCount());
+        ASSERT_TRUE(bool(everything));
+        const float everythingRed = meanOver(*everything, c - 3, c + 3, c - 3, c + 3, 0, onNear(*everything));
+        EXPECT_GT(everythingRed, 0.02f);
+        EXPECT_LT(meanOver(*everything, c - 3, c + 3, c - 3, c + 3, 1, onNear(*everything)), 0.1f * everythingRed)
+            << "the headlight stays with Render Everything on";
+        // Less the engines the worker makes again when a delegate is slow to show a restart.
+        EXPECT_EQ(builds + (_render->getStatus().unseenRemakes - remakesBefore), HydraRender::getEngineBuildCount());
+    }
+
+    // Waits for the render to finish from the mark-th frame on, and gives its last frame's prims.
+    bool pickedWhenDone(std::size_t mark,
+                        std::set<std::string>* paths)
+    {
+        std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+        if (!collectUntilDone(mark, &frames) || frames.empty()) {
+            return false;
+        }
+        *paths = pickedPrims(*frames.back());
+
+        return true;
     }
 
     std::mutex _stageLock;
@@ -745,4 +992,174 @@ TEST_F(ProgressiveRenderTest, ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverT
     EXPECT_EQ(7, _render->getMaxSamples());
     EXPECT_EQ(7, frames.back()->samples);
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
+}
+
+// A cap lowered mid-render to samples Cycles already has still ends the render at the cap, with a
+// frame whose prims can be picked.
+TEST_F(ProgressiveRenderTest, ACapLoweredBelowTheSamplesRenderedEndsAtIt)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    // Held at its first frame while Cycles samples on, so that it has more than the cap below.
+    hold(true);
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "the first frame"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const std::size_t mark = publishedCount();
+    _render->setMaxSamples(1);
+    hold(false);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(1, frames.back()->samples);
+    const std::set<std::string> picked = pickedPrims(*frames.back());
+    EXPECT_TRUE(anyUnder(picked, "/World/Near"));
+}
+
+// A cap above the samples of the frame last read, but below those Cycles has rendered since, ends the
+// render at the cap all the same: Cycles samples on while the worker waits between passes.
+TEST_F(ProgressiveRenderTest, ACapLoweredAboveTheSamplesLastReadEndsAtIt)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    hold(true);
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "the first frame"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const std::shared_ptr<const ProgressiveRender::Frame> first = _render->getFrame();
+    ASSERT_TRUE(first != nullptr);
+    const int cap = std::max(1, first->samples) + 1;
+    ASSERT_LT(cap, kSamples);
+    const std::size_t mark = publishedCount();
+    _render->setMaxSamples(cap);
+    hold(false);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(cap, frames.back()->samples);
+    const std::set<std::string> picked = pickedPrims(*frames.back());
+    EXPECT_TRUE(anyUnder(picked, "/World/Near"));
+}
+
+// A prim the draw rules hide leaves the frame, and what they leave stays.
+TEST_F(ProgressiveRenderTest, ThePrimsTheDrawRulesHideLeaveTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::set<std::string> shown;
+    ASSERT_TRUE(pickedWhenDone(0, &shown));
+    ASSERT_TRUE(anyUnder(shown, "/World/Near"));
+    ASSERT_TRUE(anyUnder(shown, "/World/Far"));
+
+    const std::size_t mark = publishedCount();
+    SceneDrawFilter::Rules rules;
+    rules[PXR_NS::SdfPath("/World/Near")] = SceneDrawFilter::eRuleHidden;
+    _render->setDrawRules(rules);
+    std::set<std::string> hidden;
+    ASSERT_TRUE(pickedWhenDone(mark, &hidden));
+    EXPECT_FALSE(anyUnder(hidden, "/World/Near"));
+    EXPECT_TRUE(anyUnder(hidden, "/World/Far"));
+    // Nothing else is behind the near cube at the centre.
+    EXPECT_NEAR(1.f, centreDepth(*_render->getFrame()), 1e-4f);
+}
+
+// Five draw changes in a burst restart the render once, and its frames follow the last of them.
+// The render is held in its listener while they come, so that it cannot restart between them.
+TEST_F(ProgressiveRenderTest, CoalescesDrawChangesIntoOneRestart)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    const U64 builds = HydraRender::getEngineBuildCount();
+    const U64 remakesBefore = _render->getStatus().unseenRemakes;
+    hold(true);
+    const std::size_t mark = publishedCount();
+    SceneDrawDelta boxFar;
+    boxFar.boxed.push_back("/World/Far");
+    _render->applyDrawDeltas(std::vector<SceneDrawDelta> { boxFar });
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "a frame with the far cube boxed"));
+    const ProgressiveRender::Status refining = _render->getStatus();
+
+    SceneDrawDelta clearFar;
+    clearFar.cleared.push_back("/World/Far");
+    SceneDrawDelta boxNear;
+    boxNear.boxed.push_back("/World/Near");
+    SceneDrawDelta clearNear;
+    clearNear.cleared.push_back("/World/Near");
+    const std::vector<SceneDrawDelta> burst { clearFar, boxNear, clearNear, hiding("/World/Far"), hiding("/World/Near") };
+    const std::chrono::steady_clock::time_point burstStart = std::chrono::steady_clock::now();
+    for (const SceneDrawDelta& delta : burst) {
+        _render->applyDrawDeltas(std::vector<SceneDrawDelta> { delta });
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - burstStart, std::chrono::milliseconds(20));
+    hold(false);
+    std::set<std::string> after;
+    ASSERT_TRUE(pickedWhenDone(mark, &after));
+    const ProgressiveRender::Status end = _render->getStatus();
+    // The worker makes its engine again when Cycles is slow to show a restart, a restart and an
+    // engine of its own that no draw change caused.
+    const U64 remade = end.unseenRemakes - refining.unseenRemakes;
+    EXPECT_EQ(refining.restarts + 1 + remade, end.restarts) << remade << " engine(s) made after the draw changes";
+    EXPECT_FALSE(anyUnder(after, "/World/Near"));
+    EXPECT_FALSE(anyUnder(after, "/World/Far"));
+    EXPECT_EQ(builds + (end.unseenRemakes - remakesBefore), HydraRender::getEngineBuildCount());
+}
+
+// Render Everything draws what the rules hide, and off again draws by them as before, all with
+// the one engine.
+TEST_F(ProgressiveRenderTest, RenderEverythingIgnoresTheDrawRulesUntilOff)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    std::size_t mark = publishedCount();
+    _render->applyDrawDeltas(std::vector<SceneDrawDelta> { hiding("/World/Near") });
+    std::set<std::string> ruled;
+    ASSERT_TRUE(pickedWhenDone(mark, &ruled));
+    ASSERT_FALSE(anyUnder(ruled, "/World/Near"));
+    ASSERT_FALSE(ruled.empty());
+    const U64 builds = HydraRender::getEngineBuildCount();
+    const U64 remakesBefore = _render->getStatus().unseenRemakes;
+
+    mark = publishedCount();
+    _render->setRenderEverything(true);
+    std::set<std::string> everything;
+    ASSERT_TRUE(pickedWhenDone(mark, &everything));
+    EXPECT_TRUE(anyUnder(everything, "/World/Near"));
+    EXPECT_TRUE(anyUnder(everything, "/World/Far"));
+
+    mark = publishedCount();
+    _render->setRenderEverything(false);
+    std::set<std::string> restored;
+    ASSERT_TRUE(pickedWhenDone(mark, &restored));
+    EXPECT_EQ(ruled, restored);
+    // Less the engines the worker makes again when Cycles is slow to show a restart.
+    EXPECT_EQ(builds + (_render->getStatus().unseenRemakes - remakesBefore), HydraRender::getEngineBuildCount());
+}
+
+TEST_F(ProgressiveRenderTest, AHeadlightStandsInForHiddenLightsOnCycles)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    checkHeadlight(kRenderDelegateCyclesId);
+}
+
+// hdMoonray lights a scene with no light by a white dome of its own, which the headlight keeps off.
+TEST_F(ProgressiveRenderTest, AHeadlightStandsInForHiddenLightsOnMoonRay)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    checkHeadlight(kMoonRayRendererId);
 }

@@ -270,8 +270,7 @@ protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
-        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) },
-                                                                     { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) } });
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) } });
     }
 
     virtual void TearDown() OVERRIDE

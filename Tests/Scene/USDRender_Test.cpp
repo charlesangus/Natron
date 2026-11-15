@@ -1233,8 +1233,7 @@ protected:
         USDRenderRendererTest::SetUp();
         // Natron Utility too traces one ray through each pixel's centre, and Storm renders the cage,
         // which a level above 0 would refine on the Utility side.
-        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) },
-                                                                     { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) } });
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) } });
         const char* samples = std::getenv("HDX_MSAA_SAMPLE_COUNT");
         ASSERT_TRUE(samples && (std::strcmp(samples, "1") == 0)) << "run this suite alone with HDX_MSAA_SAMPLE_COUNT=1, as ctest does";
     }

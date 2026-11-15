@@ -75,8 +75,8 @@
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
-#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
 

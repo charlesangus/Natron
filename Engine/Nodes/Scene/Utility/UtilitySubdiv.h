@@ -55,8 +55,8 @@ NATRON_NAMESPACE_ENTER
  **/
 class UtilitySubdivRefinement {
 public:
-    static const int kDefaultLevel = 0;
-    static const int kMaxLevel = 6;
+    static constexpr int kDefaultLevel = 0;
+    static constexpr int kMaxLevel = 6;
     static const std::size_t kDefaultMaxTriangles = 50000000;
 
     struct Stats {

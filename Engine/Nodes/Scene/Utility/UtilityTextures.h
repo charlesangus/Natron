@@ -65,7 +65,7 @@ typedef std::shared_ptr<const UtilityTextureImage> UtilityTextureImageConstPtr;
  * null where the tile has no file.
  **/
 struct UtilityTextureAsset {
-    static const int kUdimTileCount = 100;
+    static constexpr int kUdimTileCount = 100;
 
     bool udim = false;
     std::vector<UtilityTextureImageConstPtr> tiles;

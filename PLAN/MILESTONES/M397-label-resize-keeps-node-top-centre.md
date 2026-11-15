@@ -37,7 +37,7 @@ left and right.
 
 ## Phase 397.1: Top-Centre Anchoring
 
-- [ ] M397.P1.T1 — Keep the top edge and horizontal centre fixed on content-driven resizes
+- [x] M397.P1.T1 — Keep the top edge and horizontal centre fixed on content-driven resizes
   - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`
   - approach: Route the content-driven callers (the `resize(..., adjustToTextSize)` at the
     end of `setNameItemHtml()` and `refreshSize()`) through one helper, e.g.
@@ -52,7 +52,7 @@ left and right.
   - verify: builds; P1.T2's GUI script passes against the change.
   - size: M
 
-- [ ] M397.P1.T2 — GUI script test for top-centre anchoring
+- [x] M397.P1.T2 — GUI script test for top-centre anchoring
   - files: `Tests/gui/m397_label_resize_anchor.py` (new), registered beside the existing
     `Tests/gui/` scripts the way `Tests/gui/m55_node_graph.py` is
   - approach: Under Xvfb (the `build/deeprepro/run-gui.sh` recipe locally, or
@@ -78,3 +78,4 @@ the node stays in its column and its top doesn't move) is accepted by the user.
 - 2026-11-10 — Anchor at top-centre (user): the node keeps its top edge and horizontal
   centre and grows downward, so a taller label pushes only the bottom edge down.
 - 2026-11-15 — Shared lane with M397 - Label Resize Keeps Node Top-Centre and M374 - Remove Node Magnify On Ctrl-Scroll (user): both ship on `milestone/m397-m374-node-graph-fixes` as one PR, one build, one GUI bench run and one UAT; the PR closes both rows.
+- 2026-11-15 — P1.T1 (code: ab0a8e0b4) and P1.T2 (code: 9229ee2e8) landed; `resizeToContent` takes a `hadContentLayout` flag so a new node's first name layout never shifts it (it already has a placeholder width). Shared remote gate (fast, --tests, GUI m397/m374/m55) running.

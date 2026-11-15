@@ -129,6 +129,7 @@ ORBIT_BUDGET_FPS = 30.0
 HEARTBEAT_MS = 10
 SWITCH_NODES = int(os.environ.get("BENCH_SWITCH_NODES", "4"))
 TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
+EDIT_POST_WAIT_S = 10.0
 SCENARIO_LIMIT_S = int(os.environ.get("BENCH_SCENARIO_LIMIT_S", "300"))
 OPEN_LIMIT_S = int(os.environ.get("BENCH_OPEN_LIMIT_S", "1800"))
 PICK_LIMIT_S = int(os.environ.get("BENCH_PICK_LIMIT_S", "900"))
@@ -332,6 +333,8 @@ try:
     def open_file(m, connected=False):
         t0 = time.time()
         t0_ms = int(t0 * 1000.0)
+        # Full or Full + Load; the default boxes the top-level prims, which would leave later box edits nothing to change.
+        usd.getParam("initialDraw").setValue(4 if load_state == "all" else 3)
         usd.getParam("filename").setValue(path)
         if not connected:
             require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
@@ -654,21 +657,32 @@ try:
             parts["trace_skipped"] = True
         return parts
 
-    def presented_after_call(v, label, method, *args, judged=True, row_tag=None):
+    def presented_after_call(v, label, method, *args, judged=True, row_tag=None, may_be_noop=False):
         """Calls method and waits for the image that shows it; returns its timings, empty if nothing changed."""
         posted_before = int(draw_stats().get("posted", 0))
         started = time.perf_counter()
         draw_call(v, method, *args)
-        stats = dict(v.property("natronSceneDrawStats") or {})
-        posted = int(stats.get("posted", 0))
+        posted = int(draw_stats().get("posted", 0))
         current["record"] = None
-        if posted == posted_before:
+        current["post_wait_ms"] = None
+        wait_ms = 0.0
+        if posted == posted_before and may_be_noop:
             return {}
+        if posted == posted_before:
+            # An edit queued behind another, or on a large scene, runs on a worker and posts later.
+            ok = yield ("until", lambda: int(draw_stats().get("posted", 0)) > posted_before, EDIT_POST_WAIT_S)
+            wait_ms = (time.perf_counter() - started) * 1000.0
+            posted = int(draw_stats().get("posted", 0))
+            if not ok or posted == posted_before:
+                current["post_wait_ms"] = round(wait_ms, 1)
+                return {}
         ok = yield ("until", lambda: int(v.property("natronSceneDrawPresented") or 0) >= posted, TIMEOUT_S)
         check(ok, "%s: reached the screen" % label)
         total = (time.perf_counter() - started) * 1000.0
         apply_ms = float(draw_stats().get("lastApplyMs", 0.0))
         timings = {"apply_ms": round(apply_ms, 2), "frame_ms": round(max(total - apply_ms, 0.0), 2), "total_ms": round(total, 2)}
+        if wait_ms > 0.0:
+            timings["post_wait_ms"] = round(wait_ms, 1)
         record = timing_record(v, posted) if DRAW_TIMING else None
         current["record"] = record
         if record is not None:
@@ -687,7 +701,8 @@ try:
         require(v is not None, "%s %s: a scene view is visible" % (state, row))
         timings = yield from presented_after_call(v, "%s %s" % (state, row), "setDrawState", Q_ARG("QString", row), Q_ARG("QString", state),
                                                   row_tag=row_tag)
-        require(bool(timings), "%s %s: the draw state changed something" % (state, row))
+        require(bool(timings), "%s %s: the draw state changed something (no change posted within %.0f s; waited %s ms)"
+                % (state, row, EDIT_POST_WAIT_S, current.get("post_wait_ms")))
         return timings
 
     def clear_draw_state(row, row_tag=None):
@@ -701,7 +716,7 @@ try:
         v = view()
         require(v is not None, "a scene view is visible")
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
-        yield from presented_after_call(v, "clear all", "clearDrawStates", judged=False)
+        yield from presented_after_call(v, "clear all", "clearDrawStates", judged=False, may_be_noop=True)
 
     def populate(m, hidden_root):
         require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
@@ -725,6 +740,18 @@ try:
         m.values["prims_added_ms"] = round(added_at - t0_ms, 1) if added_at else None
         m.values["rule_count"] = stats.get("ruleCount")
         m.values["hidden_sent"] = stats.get("hiddenSent")
+        if DRAW_TIMING:
+            posted = int(stats.get("posted", 0))
+            if posted:
+                yield ("until", lambda: int(v_presented()) >= posted, TIMEOUT_S)
+                record = timing_record(view(), posted)
+                m.values["first_change_timing"] = critical_path(record) if record is not None else None
+        m.values["sync_to_first_paint_ms"] = (
+            round(prop("natronSceneLastPaintMs", 0) - prop("natronSceneSyncedAtMs", 0), 1) if prop("natronSceneSyncedAtMs", 0) else None)
+
+    def v_presented():
+        v = view()
+        return (v.property("natronSceneDrawPresented") or 0) if v is not None else 0
 
     def action_populate_pruned(m):
         yield from populate(m, True)

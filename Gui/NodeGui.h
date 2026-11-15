@@ -674,6 +674,12 @@ public Q_SLOTS:
 
     void refreshSize();
 
+    /**
+     * @brief resize() for a size the node's own content dictates: the top edge and the horizontal
+     * centre stay put, so the node keeps lining up with its neighbours as its text grows or shrinks.
+     **/
+    void resizeToContent(int width, int height, bool adjustToTextSize, bool hadContentLayout);
+
     /*Updates the preview image, only if the project is in auto-preview mode*/
     void updatePreviewImage(double time);
 

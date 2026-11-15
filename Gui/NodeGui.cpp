@@ -1359,7 +1359,38 @@ NodeGui::refreshSize()
     const QRectF bbox = bodyRect();
 
     QString& label = _nodeLabel;
-    resize( bbox.width(), bbox.height(), false, !label.isEmpty() );
+    resizeToContent(bbox.width(), bbox.height(), !label.isEmpty(), _nameItemInputsSet);
+}
+
+void
+NodeGui::resizeToContent(int width,
+                         int height,
+                         bool adjustToTextSize,
+                         bool hadContentLayout)
+{
+    const int oldWidth = getSize().width();
+    const QPointF oldPos = pos();
+
+    resize(width, height, false, adjustToTextSize);
+
+    // Before the first name layout the width is a placeholder, and a project load or node-tree
+    // creation restores positions that were saved against the final size.
+    if (!hadContentLayout || oldWidth <= 0 || mustFrameName()) {
+        return;
+    }
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    AppInstancePtr app = node->getApp();
+    if (!app || app->isCreatingNodeTree() || (app->getProject() && app->getProject()->isLoadingProject())) {
+        return;
+    }
+    const int newWidth = getSize().width();
+    if (newWidth == oldWidth) {
+        return;
+    }
+    refreshPosition(oldPos.x() - (newWidth - oldWidth) / 2.0, oldPos.y(), true);
 }
 
 int
@@ -4475,6 +4506,7 @@ NodeGui::setNameItemHtmlNow(const QString& name,
     const bool hasFontTag = finalText.indexOf(QString::fromUtf8(kFontSizeTag)) != -1;
 
     inputs.userFontColor = userFontColor;
+    const bool hadContentLayout = _nameItemInputsSet;
     _nameItemInputs = inputs;
     _nameItemInputsSet = true;
 
@@ -4498,7 +4530,7 @@ NodeGui::setNameItemHtmlNow(const QString& name,
     _nameItem->adjustSize();
 
     const QRectF bbox = bodyRect();
-    resize( bbox.width(), bbox.height(), false, !label.isEmpty() );
+    resizeToContent(bbox.width(), bbox.height(), !label.isEmpty(), hadContentLayout);
 } // setNameItemHtml
 
 void

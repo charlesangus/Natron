@@ -936,6 +936,14 @@ KnobHelper::deleteKnob()
         }
     }
 
+    // A master lists this knob as a listener until it is unslaved, as clearing the expressions below
+    // does for their sources.
+    for (int i = 0; i < getDimension(); ++i) {
+        if (getMaster(i).second) {
+            unSlave(i, false);
+        }
+    }
+
     KnobHolder* holder = getHolder();
     if ( holder && holder->getApp() ) {
         std::set<std::string> names;
@@ -4461,7 +4469,8 @@ KnobHelper::removeExpressionDependencies(int dimension,
     {
         std::list<std::pair<KnobIWPtr, int> > dependencies;
         {
-            QWriteLocker kk(&_imp->mastersMutex);
+            // The mutex addListener() and every reader of the list take.
+            QMutexLocker kk(&_imp->expressionMutex);
             std::list<std::pair<KnobIWPtr, int>>& all = _imp->expressions[dimension].dependencies;
             for (std::list<std::pair<KnobIWPtr, int>>::iterator it = all.begin(); it != all.end();) {
                 if (!dependency || (it->first.lock().get() == dependency)) {
@@ -6456,7 +6465,7 @@ KnobHelper::removeListener(KnobI* listener,
 
             bool hasDimensionListening = false;
             for (std::size_t i = 0; i < it->second.size(); ++i) {
-                if (it->second[listenerDimension].isListening) {
+                if (it->second[i].isListening) {
                     hasDimensionListening = true;
                     break;
                 }
@@ -9245,6 +9254,10 @@ KnobHolder::addKnob(const KnobIPtr& k)
         }
     }
     _imp->knobs.push_back(k);
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(k.get());
+    if (helper && !helper->_imp->holder) {
+        helper->_imp->holder = this;
+    }
     _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
@@ -9273,6 +9286,10 @@ KnobHolder::insertKnob(int index,
         std::advance(it, index);
         _imp->knobs.insert(it, k);
     }
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(k.get());
+    if (helper && !helper->_imp->holder) {
+        helper->_imp->holder = this;
+    }
     _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
@@ -9294,6 +9311,12 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
             KnobHelper::moveHashedMetadataSourcesGeneration();
             if (knob->isUserKnob() && GraphEditRecorder::isActive()) {
                 GraphEditRecorder::onKnobListChanged(this);
+            }
+            // ~KnobHolder only clears the knobs it still lists, and another owner may keep this one
+            // alive past it; insertKnob() and addKnob() attach it again.
+            const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knob);
+            if (helper && (helper->_imp->holder == this)) {
+                helper->_imp->holder = 0;
             }
 
             return;
@@ -9422,6 +9445,13 @@ KnobHolder::deleteKnob(KnobI* knob,
 
     if (alsoDeleteGui && _imp->settingsPanel) {
         _imp->settingsPanel->deleteKnobGui(sharedKnob);
+    }
+
+    // ~KnobHolder only clears the knobs it still lists, and another owner may keep this one alive
+    // past it.
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(sharedKnob.get());
+    if (helper && (helper->_imp->holder == this)) {
+        helper->_imp->holder = 0;
     }
 }
 

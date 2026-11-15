@@ -5562,22 +5562,33 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         NodeGroup* isParentGroup = dynamic_cast<NodeGroup*>( parentCol.get() );
         // The effect holding a knob that reads this node from outside it and its enclosing group,
         // or null.
-        const auto outsideReader = [this, isParentGroup](const KnobIPtr& listener) -> EffectInstance* {
+        const auto outsideReader = [this, isParentGroup](const KnobIPtr& listener) -> EffectInstancePtr {
             KnobHolder* holder = listener->getHolder();
             if (!holder || (holder == _imp->effect.get()) || (holder == isParentGroup)) {
-                return 0;
+                return EffectInstancePtr();
             }
-            EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
+            // Held through the edit: the reader's last owner may be a render thread.
+            EffectInstancePtr isEffect = EffectInstance::lockLiveEffect(holder);
             if (!isEffect) {
-                return 0;
+                return EffectInstancePtr();
             }
-            NodeCollectionPtr effectParent = isEffect->getNode()->getGroup();
+            NodePtr readerNode = isEffect->getNode();
+            if (!readerNode || !readerNode->getEffectInstance()) {
+                return EffectInstancePtr();
+            }
+            {
+                QMutexLocker k(&readerNode->_imp->isBeingDestroyedMutex);
+                if (readerNode->_imp->isBeingDestroyed) {
+                    return EffectInstancePtr();
+                }
+            }
+            NodeCollectionPtr effectParent = readerNode->getGroup();
             if (!effectParent) {
-                return 0;
+                return EffectInstancePtr();
             }
             NodeGroup* isEffectParentGroup = dynamic_cast<NodeGroup*>(effectParent.get());
             if (isEffectParentGroup && (isEffectParentGroup == _imp->effect.get())) {
-                return 0;
+                return EffectInstancePtr();
             }
 
             return isEffect;
@@ -5606,7 +5617,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                 if (!listener) {
                     continue;
                 }
-                EffectInstance* isEffect = outsideReader(listener);
+                EffectInstancePtr isEffect = outsideReader(listener);
                 if (!isEffect) {
                     continue;
                 }
@@ -5631,7 +5642,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         std::list<std::pair<KnobIPtr, int>> metadataReaders;
         getMetadataReaders(&metadataReaders);
         for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = metadataReaders.begin(); it != metadataReaders.end(); ++it) {
-            EffectInstance* isEffect = outsideReader(it->first);
+            EffectInstancePtr isEffect = outsideReader(it->first);
             if (!isEffect || it->first->getExpression(it->second).empty()) {
                 continue;
             }

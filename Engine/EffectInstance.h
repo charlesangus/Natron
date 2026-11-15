@@ -335,6 +335,12 @@ public:
     // dtor
     virtual ~EffectInstance();
 
+    /**
+     * @brief The effect whose knob holder is at holder, held, or null when holder is no effect or one being
+     * destroyed. A knob's holder is a raw pointer an effect freed on another thread leaves dangling: holder
+     * is never dereferenced unless an effect still lives there.
+     **/
+    static EffectInstancePtr lockLiveEffect(const KnobHolder* holder);
 
     virtual bool canHandleEvaluateOnChangeInOtherThread() const OVERRIDE
     {

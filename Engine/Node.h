@@ -1571,7 +1571,10 @@ public:
 
     void beginInputEdition();
 
-    void endInputEdition(bool triggerRender);
+    /**
+     * @brief Closes one input edition level. True when it was the outermost and inputs had changed.
+     **/
+    bool endInputEdition(bool triggerRender);
 
     void onInputChanged(int inputNb, bool isInputA = true);
 

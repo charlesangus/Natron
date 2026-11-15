@@ -104,6 +104,7 @@ set(Tests_SOURCES
     GenericSchedulerAbortWait_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    RotoSelectionProxy_Test.cpp
     PyRotoCreate_Test.cpp
     CurveTrackLink_Test.cpp
     CurveClipboard_Test.cpp
@@ -132,6 +133,7 @@ set(Tests_SOURCES
     Gpu/RawAmazeGpu_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp
+    Ai/OrtTelemetry_Test.cpp
     Ai/InferenceSession_Test.cpp
     Ai/TiledInference_Test.cpp
     Ai/ModelRegistry_Test.cpp
@@ -166,6 +168,7 @@ set(Tests_SOURCES
     PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
+    PySetExpressionEvaluates_Test.cpp
     PythonUndo_Test.cpp
     RFV_Test.cpp
     RFVExpression_Test.cpp
@@ -248,6 +251,9 @@ target_link_libraries(Tests
         ${NATRON_USD_ENGINE_LIBRARIES}
 )
 natron_link_embedded_python(Tests)
+# Ai/OrtTelemetry_Test.cpp defines these to watch the dlopen()ed ONNX Runtime's network calls; an
+# executable only exports what a linked library happens to reference unless told to.
+target_link_options(Tests PRIVATE "LINKER:--export-dynamic-symbol=getaddrinfo,--export-dynamic-symbol=connect")
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)

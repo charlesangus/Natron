@@ -39,11 +39,13 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/Bezier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
+#include "Engine/RotoContext.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
@@ -93,7 +95,13 @@ public:
                         const UndoTouched& touched) OVERRIDE FINAL
     {
         commands.push_back(command);
-        touchedNodes.push_back(touched.nodes.empty() ? NodePtr() : touched.nodes.front());
+        NodePtr node = touched.nodes.empty() ? NodePtr() : touched.nodes.front();
+        if (!node && !touched.knobs.empty()) {
+            // A knob-only record is attributed to its holder's node, as the real recorder's scope does.
+            EffectInstance* effect = dynamic_cast<EffectInstance*>(touched.knobs.front()->getHolder());
+            node = effect ? effect->getNode() : NodePtr();
+        }
+        touchedNodes.push_back(node);
     }
 
     int depth;
@@ -476,4 +484,126 @@ TEST_F(PythonUndo, NothingIsRecordedOutsideAStepUnderSuppressionOrWhileCreatingA
         ASSERT_TRUE(run(script));
     }
     EXPECT_TRUE(recorder->commands.empty());
+}
+
+// A Python write to a shape's own parameter is recorded in its step for the shape's node, on a
+// selected and an unselected shape alike, and undoing the step gives the shape its value back.
+TEST_F(PythonUndo, AShapeParameterWriteUndoesInOneStep)
+{
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr selected = context->makeSquare(0., 0., 10., context->getTimelineCurrentTime());
+    BezierPtr unselected = context->makeSquare(30., 0., 10., context->getTimelineCurrentTime());
+    ASSERT_TRUE(selected && unselected);
+    ASSERT_TRUE(selected->setScriptName("selectedShape"));
+    ASSERT_TRUE(unselected->setScriptName("unselectedShape"));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(selected, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = std::dynamic_pointer_cast<KnobDouble>(roto->getKnobByName("opacity"));
+    ASSERT_TRUE(bool(shown));
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+    const std::string shapes = "r = " + py(roto) + ".getRotoContext()\n";
+
+    ASSERT_TRUE(runStep(shapes + "r.getItemByName(\"selectedShape\").getParam(\"opacity\").set(0.25)\n"));
+    EXPECT_DOUBLE_EQ(0.25, selected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(1., unselected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, shown->getValue());
+    ASSERT_EQ(1u, recorder->commands.size());
+    EXPECT_EQ(roto, recorder->touchedNodes.front());
+    undoAll();
+    EXPECT_DOUBLE_EQ(1., selected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(1., shown->getValue());
+    redoAll();
+    EXPECT_DOUBLE_EQ(0.25, selected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(1., unselected->getOpacityKnob()->getValue());
+
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+    ASSERT_TRUE(runStep(shapes + "r.getItemByName(\"unselectedShape\").getParam(\"opacity\").set(0.5)\n"));
+    EXPECT_DOUBLE_EQ(0.5, unselected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, selected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, shown->getValue());
+    ASSERT_EQ(1u, recorder->commands.size());
+    EXPECT_EQ(roto, recorder->touchedNodes.front());
+    undoAll();
+    EXPECT_DOUBLE_EQ(1., unselected->getOpacityKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, selected->getOpacityKnob()->getValue());
+    redoAll();
+    EXPECT_DOUBLE_EQ(0.5, unselected->getOpacityKnob()->getValue());
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// A write through a shape's own accessor is one undo step on the roto node, as one through
+// getParam() is.
+TEST_F(PythonUndo, AShapeAccessorWriteUndoesInOneStep)
+{
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr shape = context->makeSquare(0., 0., 10., context->getTimelineCurrentTime());
+    ASSERT_TRUE(bool(shape));
+    ASSERT_TRUE(shape->setScriptName("accessedShape"));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    const double feather = shape->getFeatherKnob()->getValue();
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+    const std::string item = "b = " + py(roto) + ".getRotoContext().getItemByName(\"accessedShape\")\n";
+
+    ASSERT_TRUE(runStep(item + "b.getOpacityParam().set(0.25)\n"));
+    EXPECT_DOUBLE_EQ(0.25, shape->getOpacityKnob()->getValue());
+    ASSERT_EQ(1u, recorder->commands.size());
+    ASSERT_EQ(1u, recorder->touchedNodes.size());
+    EXPECT_EQ(roto, recorder->touchedNodes.front());
+    undoAll();
+    EXPECT_DOUBLE_EQ(1., shape->getOpacityKnob()->getValue());
+    redoAll();
+    EXPECT_DOUBLE_EQ(0.25, shape->getOpacityKnob()->getValue());
+
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+    ASSERT_NE(7.5, feather);
+    ASSERT_TRUE(runStep(item + "b.getFeatherDistanceParam().set(7.5)\n"));
+    EXPECT_DOUBLE_EQ(7.5, shape->getFeatherKnob()->getValue());
+    ASSERT_EQ(1u, recorder->commands.size());
+    undoAll();
+    EXPECT_DOUBLE_EQ(feather, shape->getFeatherKnob()->getValue());
+    EXPECT_DOUBLE_EQ(0.25, shape->getOpacityKnob()->getValue());
+}
+
+// A rejected expression clears the Roto node's previous one, and undoing the step gives it back whole.
+TEST_F(PythonUndo, UndoingARejectedRotoNodeExpressionRestoresThePreviousOne)
+{
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr shape = context->makeSquare(0., 0., 10., context->getTimelineCurrentTime());
+    ASSERT_TRUE(bool(shape));
+    context->select(shape, RotoItem::eSelectionReasonOther);
+    const std::string param = py(roto) + ".getParam('opacity')";
+    KnobIPtr nodeKnob = roto->getKnobByName("opacity");
+    ASSERT_TRUE(bool(nodeKnob));
+
+    ASSERT_TRUE(runStep("assert " + param + ".setExpression('0.5', False, 0)\n"));
+    ASSERT_EQ(std::string("0.5"), nodeKnob->getExpression(0));
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+
+    const std::uint64_t serialBefore = recorder->serial;
+    ASSERT_TRUE(runStep("assert not " + param + ".setExpression('this is not python', False, 0)\n"));
+    ASSERT_NE(std::string("0.5"), nodeKnob->getExpression(0));
+    // One undo step holds a command per knob changed: the node's and the selected shape's.
+    EXPECT_EQ(serialBefore + 1, recorder->serial);
+    ASSERT_EQ(2u, recorder->commands.size());
+    EXPECT_EQ(roto, recorder->touchedNodes.front());
+    EXPECT_EQ(roto, recorder->touchedNodes.back());
+
+    undoAll();
+    EXPECT_EQ(std::string("0.5"), nodeKnob->getExpression(0));
+    EXPECT_EQ(std::string("0.5"), shape->getOpacityKnob()->getExpression(0));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
 }

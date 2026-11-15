@@ -25,7 +25,9 @@
 
 #include "Global/Macros.h"
 
+#include <future>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -183,6 +185,67 @@ TEST_F(ProjectResetListenersTest, UnslavingOneDimensionKeepsTheOthersListening)
     g.readerWhite->unSlave(0, false);
     EXPECT_TRUE(g.readerWhite->getMaster(0).second == nullptr);
     EXPECT_TRUE(listens(g.driverWhite, g.readerWhite, 1));
+}
+
+// A render thread holds a reader while the driver's teardown edits it. Inside that edit the reader
+// node is destroyed and every other owner lets go of it, so the edit is all that keeps the node alive
+// when endChanges() reaches it.
+TEST_F(ProjectResetListenersTest, ReaderDestroyedInsideTheDriversTeardownEdit)
+{
+    const AppInstancePtr app = getApp();
+    NodePtr reader = createIn(app, app->getProject(), PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    NodePtr driver = createIn(app, app->getProject(), PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(reader && driver);
+    const KnobIPtr readerWhite = reader->getKnobByName(kGradeParamWhite);
+    const KnobIPtr driverWhite = driver->getKnobByName(kGradeParamWhite);
+    ASSERT_TRUE(readerWhite && driverWhite);
+    ASSERT_NO_THROW(readerWhite->setExpression(0, readExpression(driver, kGradeParamWhite), false, true));
+    ASSERT_TRUE(listens(driverWhite, readerWhite, 0));
+
+    const EffectInstancePtr readerEffect = reader->getEffectInstance();
+    const NodeWPtr readerWeak = reader;
+    std::promise<void> release;
+    std::promise<void> released;
+    std::thread render([held = reader, heldEffect = readerEffect, go = release.get_future(), done = &released]() mutable {
+        go.wait();
+        held.reset();
+        heldEffect.reset();
+        done->set_value();
+    });
+
+    bool armed = true;
+    bool hookRan = false;
+    bool nodeHeldByTheEdit = false;
+    bool evaluationBlockedInside = false;
+    const KnobSignalSlotHandlerPtr handler = readerWhite->getSignalSlotHandler();
+    ASSERT_TRUE(handler != nullptr);
+    const QMetaObject::Connection connection = QObject::connect(handler.get(), &KnobSignalSlotHandler::expressionChanged, [&](int) {
+        if (!armed) {
+            return;
+        }
+        armed = false;
+        hookRan = true;
+        evaluationBlockedInside = readerEffect->isEvaluationBlocked();
+        reader->destroyNode(true, false);
+        release.set_value();
+        released.get_future().wait();
+        reader.reset();
+        nodeHeldByTheEdit = !readerWeak.expired();
+    });
+
+    driver->destroyNode(true, false);
+    QObject::disconnect(connection);
+    if (armed) {
+        release.set_value();
+    }
+    render.join();
+
+    EXPECT_TRUE(hookRan);
+    EXPECT_TRUE(evaluationBlockedInside);
+    EXPECT_TRUE(nodeHeldByTheEdit);
+    EXPECT_FALSE(readerEffect->isEvaluationBlocked());
+    EXPECT_TRUE(readerWeak.expired());
+    EXPECT_TRUE(holderIsLive(readerWhite));
 }
 
 // Cross-node expressions, a frame expression and a link, rendered then reset many times while the

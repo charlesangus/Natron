@@ -1,1 +1,5 @@
 ## Pending
+
+### 2026-11-15T23:30:00-05:00 — change-request
+- refs: none
+- New milestone (E10, no Feature; Deps: F6 - Unified Tiered Cache landed), suggested name "Viewer Stale Cue Experiments". User, 2026-11-15, from F6 UAT: the viewer's amber "stale image/rendering" outline (M302 - Viewer Render State Cues) is flickery and too distracting, so it was extracted from F6 before landing; the engine stale state (`ViewerInstance::staleChanged`, `Tests/ViewerStaleState_Test.cpp`) remains on main. Experiment with several approaches and let the user pick from screenshots/an AppImage: a stronger debounce (longer delay before showing, and a minimum on-time so it doesn't flicker between quick renders), a less obvious treatment, a small dot in a viewer corner instead of an outline, or a line on one side only instead of all four. Likely shape: implement two or three variants behind a temporary preference, UAT them, keep the chosen one and delete the rest. The removed implementation is in M302's merge (65889b6cd on feature/f6-unified-tiered-cache) for reference.

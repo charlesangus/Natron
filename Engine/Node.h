@@ -1307,6 +1307,13 @@ public:
      **/
     void destroyNode(bool blockingDestroy, bool autoReconnect);
 
+    /**
+     * @brief Tells the outputs deactivate() just disconnected from this node that it was deleted,
+     * through EffectInstance::onInputSourceDeleted(). Deactivating is not deleting: undoing a node's
+     * creation or moving it into a group deactivate it too, so the caller says which this is.
+     **/
+    void notifyOutputsOfDeletion();
+
 private:
 
     void doDestroyNodeInternalEnd(bool autoReconnect);

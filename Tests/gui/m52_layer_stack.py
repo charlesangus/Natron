@@ -49,6 +49,8 @@ try:
     from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QPlainTextEdit, QTabBar, QTextEdit
     from pxr import Sdf, Usd
 
+    import NatronEngine
+
     from guitest import FIXTURES, OUT, check, class_name, close_all_panels, finish, plugin_problem, report, require, run, shot, widgets_of
 
     layer_path = os.path.join(FIXTURES, "m52-layer-stack.usda")
@@ -76,6 +78,11 @@ try:
                 p.setValue(i)
                 return True
         return False
+
+    # The fixture has no light, and the default Scene Lights mode shows its lit cube black, hiding the
+    # displayColor the checks below read.
+    lighting = NatronEngine.natron.getSettings().getParam("viewer3DLighting")
+    require(lighting is not None and set_choice(lighting, "headlight"), "the Viewer 3D Lighting preference offers Headlight")
 
     # The Viewer first; every node and writer below is held in a variable for the whole run, since PySide
     # child wrappers die with temporary parents.
@@ -448,6 +455,8 @@ try:
             handle.write(contents.replace('"Marker"', '"Renamed"'))
         require(param(reference, "reload") is not None, "USDReference has a Reload button")
         param(reference, "reload").trigger()
+        ok = yield ("until", lambda: app.waitForReloads(0), POLL_TIMEOUT_S)
+        check(ok, "the reload ended")
         ok = yield ("until", lambda: "/World/Ext/Renamed" in prim_paths(flattened(reference)), POLL_TIMEOUT_S)
         paths = prim_paths(flattened(reference))
         check(ok and "/World/Ext/Marker" not in paths, "Reload picks up the rewritten file (%r)" % (paths,))

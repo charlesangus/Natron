@@ -177,7 +177,7 @@ future core work has solid ground to build on.
 | M331 | Deferred Pattern Matching | done | M52, M327, M328 | bosley-native-nodes | E9 | F4 | | [M331-deferred-pattern-matching.md](PLAN/MILESTONES/M331-deferred-pattern-matching.md) |
 | M332 | Scene Graph Points | done | M328 | bosley-native-nodes | E9 | F4 | | [M332-scene-graph-points.md](PLAN/MILESTONES/M332-scene-graph-points.md) |
 | M333 | Prim Inspector | done | M232 | misty-marten | E9 | F4 | | [M333-prim-inspector.md](PLAN/MILESTONES/M333-prim-inspector.md) |
-| M334 | Knob Prim Tools | doing | M52, M232, M331 | bosley-native-nodes | E9 | F4 | | [M334-knob-prim-tools.md](PLAN/MILESTONES/M334-knob-prim-tools.md) |
+| M334 | Knob Prim Tools | done | M52, M232, M331 | bosley-native-nodes | E9 | F4 | | [M334-knob-prim-tools.md](PLAN/MILESTONES/M334-knob-prim-tools.md) |
 | M335 | Viewer Render Draw States | doing | M254, M329 | bosley-native-nodes | E9 | F4 | | [M335-viewer-render-draw-states.md](PLAN/MILESTONES/M335-viewer-render-draw-states.md) |
 | M336 | Heavy Scene Acceptance | doing | M329, M330, M331, M332 | bosley-native-nodes | E9 | F4 | | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |
 | M401 | 3D Viewer Breadcrumbs | done | M231, M232, M328, M332 | bosley-native-nodes | E9 | F4 | | [M401-3d-viewer-breadcrumbs.md](PLAN/MILESTONES/M401-3d-viewer-breadcrumbs.md) |
@@ -414,13 +414,13 @@ future core work has solid ground to build on.
 | M300 | Unified Tiered Cache | done | M276 | bosley-native-nodes | E6 | F6 | | [M300-unified-tiered-cache.md](PLAN/MILESTONES/M300-unified-tiered-cache.md) |
 | M301 | GPU Cache Tier | done | M300 | bosley-native-nodes | E6 | F6 | | [M301-gpu-cache-tier.md](PLAN/MILESTONES/M301-gpu-cache-tier.md) |
 | M302 | Viewer Render State Cues | done | - | bosley-native-nodes | E6 | F6 | | [M302-viewer-render-state-cues.md](PLAN/MILESTONES/M302-viewer-render-state-cues.md) |
-| M303 | Interactive Edit Latency | doing | M301 | bosley-native-nodes | E6 | F6 | | [M303-interactive-edit-latency.md](PLAN/MILESTONES/M303-interactive-edit-latency.md) |
+| M303 | Interactive Edit Latency | done | M301 | bosley-native-nodes | E6 | F6 | | [M303-interactive-edit-latency.md](PLAN/MILESTONES/M303-interactive-edit-latency.md) |
 | M277 | Graph Creation And Insert | done | M192, M193 | bosley-native-nodes | E10 | | | [M277-graph-creation-and-insert.md](PLAN/MILESTONES/M277-graph-creation-and-insert.md) |
 | M278 | Translucent Selection Highlight | todo | M234 |  | E9 | | | [M278-translucent-selection-highlight.md](PLAN/MILESTONES/M278-translucent-selection-highlight.md) |
 | M279 | Utility Renderer Foundation | done | M248 | bosley-native-nodes | E19 | F7 | | [M279-utility-renderer-foundation.md](PLAN/MILESTONES/M279-utility-renderer-foundation.md) |
 | M280 | Utility Renderer GPU Path | done | M279, M253 | bosley-native-nodes | E19 | F7 | | [M280-utility-renderer-gpu-path.md](PLAN/MILESTONES/M280-utility-renderer-gpu-path.md) |
 | M281 | Utility Materials And Lights | doing | M280, M233, M234 | bosley-native-nodes | E19 | F7 | | [M281-utility-materials-and-lights.md](PLAN/MILESTONES/M281-utility-materials-and-lights.md) |
-| M283 | Utility Sampling And Motion Blur | doing | M280, M253 | bosley-native-nodes | E19 | F7 | | [M283-utility-sampling-and-motion-blur.md](PLAN/MILESTONES/M283-utility-sampling-and-motion-blur.md) |
+| M283 | Utility Sampling And Motion Blur | done | M280, M253 | bosley-native-nodes | E19 | F7 | | [M283-utility-sampling-and-motion-blur.md](PLAN/MILESTONES/M283-utility-sampling-and-motion-blur.md) |
 | M282 | Utility Reflection And Refraction | todo | M281, M283 |  | E19 | F7 | | [M282-utility-reflection-and-refraction.md](PLAN/MILESTONES/M282-utility-reflection-and-refraction.md) |
 | M284 | Utility Renderer Subdivision | doing | M280 | bosley-native-nodes | E19 | F7 | | [M284-utility-renderer-subdivision.md](PLAN/MILESTONES/M284-utility-renderer-subdivision.md) |
 | M285 | Utility Renderer AOVs | todo | M256, M282, M283 |  | E19 | | | [M285-utility-renderer-aovs.md](PLAN/MILESTONES/M285-utility-renderer-aovs.md) |
@@ -546,7 +546,7 @@ future core work has solid ground to build on.
 | F3 | Cycles And MoonRay Delegates | landed | misty-marten |  | feature/f3-cycles-and-moonray-delegates | Bundle Cycles and MoonRay and render through them in USDRender and the viewer, with full render settings, tested on one AppImage. |
 | F4 | Heavy Scene Viewer | open |  |  | feature/f4-heavy-scene-viewer | Open and inspect production-sized USD scenes without blocking, with deferred loading, draw states and full prim inspection. |
 | F5 | Live Sessions V1 | open |  |  | feature/f5-live-sessions-v1 | Let several artists edit one graph live, with presence, per-user undo and viewer following. |
-| F6 | Unified Tiered Cache | open |  |  | feature/f6-unified-tiered-cache | Reuse unchanged upstream work across RAM, disk and VRAM so a downstream edit reaches the viewer within budget, and show truthfully what is rendering. |
+| F6 | Unified Tiered Cache | shipping | bosley-native-nodes |  | feature/f6-unified-tiered-cache | Reuse unchanged upstream work across RAM, disk and VRAM so a downstream edit reaches the viewer within budget, and show truthfully what is rendering. |
 | F7 | Natron Utility Core | open |  |  | feature/f7-natron-utility-core | A usable Nucleon Utility renderer on CPU and GPU, with materials, lights, sampling, reflection, subdivision and projection modes. Ships only after F9 - Delegate Projection lands, for M364 - Delegate Cancel Responsiveness. |
 | F8 | Motion Vectors | open |  |  | feature/f8-motion-vectors | Generate dense motion vectors classically, on the GPU and with a neural model, and move Roto and SplineWarp curves along them. |
 | F9 | Delegate Projection | shipping | bosley-native-nodes |  | feature/f9-delegate-projection | Live textures and camera projection in Cycles and MoonRay, with per-placement and deforming-geometry projection. |

@@ -71,6 +71,10 @@ std::uint64_t utilityGpuBudget();
  * and shading back to back, then one submission. Rays, hit surfaces and the shading tables stay on the
  * device; only the AOVs the film binds on the host, and the hit ids that tell its misses, are read back.
  *
+ * Before its first frame the executor has the driver compile every kernel it dispatches, without the time
+ * limit the frame's submissions have; a render stopped meanwhile returns at once and the next one waits for
+ * the rest. Destroying the executor waits for the kernel being compiled.
+ *
  * A device failure never throws: render() returns false and status() says why. The registry and the
  * pool must outlive the executor.
  **/

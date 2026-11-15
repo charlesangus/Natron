@@ -46,6 +46,7 @@ class GpuBuffer;
 class GpuBufferHandle;
 class GpuBufferPool;
 class GpuDevice;
+class GpuKernel;
 class GpuKernelRegistry;
 class GpuRecordContext;
 struct GpuStatus;
@@ -61,6 +62,9 @@ struct UtilityFilmKernels;
 // The kernels a device film runs, made once per device. Null with *status set when the device cannot make them.
 std::shared_ptr<const UtilityFilmKernels> makeUtilityFilmKernels(gpu::GpuDevice& device,
                                                                  gpu::GpuStatus* status);
+
+// Every pipeline of `kernels`.
+std::vector<std::shared_ptr<gpu::GpuKernel>> utilityFilmKernelList(const UtilityFilmKernels& kernels);
 
 /**
  * @brief Releases every device film whose device is lost, wherever it is held, so that none keeps the runtime from

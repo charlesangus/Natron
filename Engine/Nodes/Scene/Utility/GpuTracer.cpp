@@ -543,6 +543,16 @@ GpuTracer::~GpuTracer()
 {
 }
 
+std::vector<std::shared_ptr<gpu::GpuKernel>>
+GpuTracer::kernels() const
+{
+    if (!_imp->usable) {
+        return {};
+    }
+
+    return { _imp->intersectKernel, _imp->occludedKernel };
+}
+
 std::string
 GpuTracer::missingRayQuerySupport(const gpu::GpuDevice& device)
 {

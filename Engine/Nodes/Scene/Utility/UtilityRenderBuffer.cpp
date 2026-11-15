@@ -464,6 +464,12 @@ makeUtilityFilmKernels(gpu::GpuDevice& device,
     return status->ok() ? kernels : std::shared_ptr<const UtilityFilmKernels>();
 }
 
+std::vector<std::shared_ptr<gpu::GpuKernel>>
+utilityFilmKernelList(const UtilityFilmKernels& kernels)
+{
+    return { kernels.clear, kernels.scatter, kernels.pack };
+}
+
 UtilityDeviceResource::UtilityDeviceResource()
 {
 }

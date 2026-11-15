@@ -35,11 +35,16 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <limits>
+#include <mutex>
 #include <span>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 #include "Engine/Gpu/GpuBuffer.h"
@@ -225,6 +230,69 @@ sameAovs(const WavefrontAovs& a,
 {
     return a.color == b.color && a.depth == b.depth && a.primId == b.primId && a.instanceId == b.instanceId;
 }
+
+// How often a render waiting for the kernels to compile looks at its stop flag.
+const std::chrono::milliseconds kWarmUpPoll(20);
+
+struct WarmUp {
+    std::mutex mutex;
+    std::condition_variable cond;
+    bool finished = false;
+    gpu::GpuStatus status;
+    // Set when the executor goes away, so that the kernels not yet compiled are skipped.
+    std::atomic<bool> abandon { false };
+};
+
+/**
+ * @brief Runs one group of each kernel, one submission each, so that the driver has compiled every pipeline
+ * before a frame's batches run under submitAndWait()'s time limit: a software device compiles a pipeline at its
+ * first dispatch, which on a loaded machine has taken longer than that limit. Every Utility kernel returns at
+ * once for a thread past the count its zeroed push constants give, so the dispatches touch no buffer. Runs on
+ * a thread of its own because a record context must be destroyed on the thread that made it, and a render
+ * stopped meanwhile must not wait for it.
+ **/
+void
+warmKernels(gpu::GpuKernelRegistry& registry,
+            const std::vector<std::shared_ptr<gpu::GpuKernel>>& kernels,
+            const std::shared_ptr<WarmUp>& state)
+{
+    gpu::GpuBuffer dummy;
+    gpu::GpuStatus status = gpu::GpuBuffer::createDeviceLocal(registry.device(), kMinTableBytes, gpu::kGpuBufferDefaultUsage, dummy);
+
+    for (const std::shared_ptr<gpu::GpuKernel>& kernel : kernels) {
+        if (!status || state->abandon.load(std::memory_order_relaxed)) {
+            break;
+        }
+
+        std::unique_ptr<gpu::GpuRecordContext> ctx;
+
+        status = gpu::GpuRecordContext::create(registry, ctx);
+        if (!status) {
+            break;
+        }
+
+        std::vector<gpu::GpuBinding> bindings;
+
+        for (const gpu::GpuKernelBinding& binding : kernel->bindings()) {
+            bindings.push_back(gpu::GpuBinding::storage(binding.binding, dummy));
+        }
+
+        const std::vector<std::byte> push(kernel->desc().pushConstantBytes, std::byte(0));
+
+        status = ctx->dispatchBindings(kernel, bindings, push, { 1, 1, 1 });
+        if (status) {
+            // The work is one empty group per kernel, so only the compilation can make it long, never a hang.
+            status = ctx->submitAndWait(std::numeric_limits<std::uint64_t>::max());
+        }
+    }
+    {
+        const std::lock_guard<std::mutex> l(state->mutex);
+
+        state->status = status;
+        state->finished = true;
+    }
+    state->cond.notify_all();
+}
 } // anon namespace
 
 struct WavefrontGpu::Implementation {
@@ -237,6 +305,14 @@ struct WavefrontGpu::Implementation {
         , tracer(registry, pool)
         , runtimeHold(runtimeHold)
     {
+    }
+
+    ~Implementation()
+    {
+        if (warmUpThread.joinable()) {
+            warmUp->abandon.store(true, std::memory_order_relaxed);
+            warmUpThread.join();
+        }
     }
 
     bool fail(const std::string& what,
@@ -295,6 +371,7 @@ struct WavefrontGpu::Implementation {
         return true;
     }
 
+    bool warm(const std::atomic<bool>& stop);
     bool uploadTables(std::uint64_t version);
     bool reserveReadback(std::size_t rays,
                          const WavefrontAovs& aovs);
@@ -338,6 +415,9 @@ struct WavefrontGpu::Implementation {
     const std::shared_ptr<void> runtimeHold;
     std::shared_ptr<const UtilityFilmKernels> filmKernels;
     bool filmKernelsTried = false;
+    std::shared_ptr<WarmUp> warmUp;
+    std::thread warmUpThread;
+    bool warmed = false;
     bool usable = false;
     // Set while unusable.
     Outcome unusable;
@@ -347,6 +427,70 @@ struct WavefrontGpu::Implementation {
     ShadeTableBuffers tables;
     BatchReadback readback;
 };
+
+/**
+ * @brief Compiles every pipeline the executor dispatches, once, before its first frame: warmKernels() tells
+ * why. A stop returns at once and leaves the compilation running, for the next render() to wait for.
+ **/
+bool
+WavefrontGpu::Implementation::warm(const std::atomic<bool>& stop)
+{
+    if (warmed) {
+        return true;
+    }
+    if (!warmUp) {
+        std::vector<std::shared_ptr<gpu::GpuKernel>> kernels = tracer.kernels();
+
+        kernels.insert(kernels.end(), { rayGenKernel, shadeKernel, shadeLightsKernel, resolveKernel });
+        // Made here rather than with the first film on the device, so that the film's kernels compile too.
+        if (!filmKernelsTried) {
+            filmKernelsTried = true;
+
+            gpu::GpuStatus status;
+
+            filmKernels = makeUtilityFilmKernels(device, &status);
+        }
+        if (filmKernels) {
+            const std::vector<std::shared_ptr<gpu::GpuKernel>> film = utilityFilmKernelList(*filmKernels);
+
+            kernels.insert(kernels.end(), film.begin(), film.end());
+        }
+
+        std::shared_ptr<WarmUp> state = std::make_shared<WarmUp>();
+
+        try {
+            warmUpThread = std::thread(warmKernels, std::ref(registry), std::move(kernels), state);
+        } catch (const std::system_error& e) {
+            outcome = Outcome { Status::Failed, std::string("WavefrontGpu could not start compiling its kernels: ") + e.what() };
+
+            return false;
+        }
+        warmUp = std::move(state);
+    }
+
+    gpu::GpuStatus status;
+
+    {
+        std::unique_lock<std::mutex> l(warmUp->mutex);
+
+        while (!warmUp->finished) {
+            if (stop.load(std::memory_order_relaxed)) {
+                return stopped();
+            }
+            warmUp->cond.wait_for(l, kWarmUpPoll);
+        }
+        status = warmUp->status;
+    }
+    if (warmUpThread.joinable()) {
+        warmUpThread.join();
+    }
+    if (!status) {
+        return fail("WavefrontGpu could not compile its kernels", status);
+    }
+    warmed = true;
+
+    return true;
+}
 
 bool
 WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
@@ -860,6 +1004,9 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     if (!imp.usable) {
         imp.outcome = imp.unusable;
 
+        return false;
+    }
+    if (!imp.warm(stop)) {
         return false;
     }
     if (!imp.tracer.update(snapshot, threads, &stop)) {

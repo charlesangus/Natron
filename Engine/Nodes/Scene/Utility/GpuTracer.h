@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Global/Macros.h"
 
@@ -42,6 +43,7 @@
 namespace gpu {
 class GpuBuffer;
 class GpuBufferPool;
+class GpuKernel;
 class GpuKernelRegistry;
 class GpuRecordContext;
 }
@@ -111,6 +113,9 @@ public:
                                           const gpu::GpuBuffer& casterMasks,
                                           std::uint32_t maskStride,
                                           std::uint32_t maskOffset) const;
+
+    // The kernels the record functions dispatch; empty when the tracer cannot run.
+    std::vector<std::shared_ptr<gpu::GpuKernel>> kernels() const;
 
 private:
     struct Implementation;

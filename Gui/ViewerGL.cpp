@@ -3481,7 +3481,6 @@ void
 ViewerGL::setDisplayedEdgeMode(int textureIndex,
                                EdgeMode mode)
 {
-    // always running in the main thread
     assert(qApp && qApp->thread() == QThread::currentThread());
     assert(textureIndex == 0 || textureIndex == 1);
     _imp->displayTextures[textureIndex].edgeMode = mode;

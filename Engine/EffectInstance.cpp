@@ -7727,6 +7727,16 @@ EffectInstance::applyIdentityRule(U64 hash,
     }
     std::shared_ptr<NodeMetadata> metadata = std::make_shared<NodeMetadata>(*own);
     copyOutputMetadata(*inputMetadata, defaults, metadata.get());
+    // An OpenFX effect resets the edge mode (getDefaultMetadataFromInputs()) even where the
+    // plug-in passes its input through; only the host's bypass of an inactive node forwards it.
+    if (isOpenFX()) {
+        const NodePtr node = getNode();
+        const RotoDrawableItemPtr rotoItem = node ? node->getAttachedRotoItem() : RotoDrawableItemPtr();
+        const bool bypassed = node && (node->isNodeDisabled(time) || (rotoItem && !rotoItem->isActivated(time)));
+        if (!bypassed) {
+            metadata->setEdgeMode(own->getEdgeMode());
+        }
+    }
 
     return metadata;
 }

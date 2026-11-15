@@ -1197,6 +1197,40 @@ TEST_F(PerFrameMetadataTest, OpenFXEffectResetsEdgeModeToStretch)
     EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(rgbPoint));
 }
 
+// The plug-in passing its input through still answers for its output, which resets the edge mode;
+// the host passing a disabled node's input through forwards it.
+TEST_F(PerFrameMetadataTest, OpenFXIdentityResetsEdgeModeButDisabledForwardsIt)
+{
+    NodePtr black = createSource(4);
+    ASSERT_TRUE(bool(black));
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    NodePtr rgbPoint = createNode(QString::fromUtf8(kNatronTestRGBPointPluginID), kNatronTestRGBPointMajor);
+    if (!rgbPoint) {
+        return;
+    }
+    connectNodes(black, rgbPoint, 0, true);
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(rgbPoint->getKnobByName(kNatronTestPointMatrixParamMix));
+    ASSERT_TRUE(bool(mix));
+    mix->setValue(0., ViewSpec::all(), 0);
+
+    double inputTime = 0.;
+    ViewIdx inputView(0);
+    int inputNb = -1;
+    const NodeMetadataConstPtr own = rgbPoint->getEffectInstance()->getTimeInvariantMetadata();
+    ASSERT_TRUE(bool(own));
+    ASSERT_TRUE(rgbPoint->getEffectInstance()->isIdentity_public(false, rgbPoint->getEffectInstance()->getRenderHash(), 1., RenderScale::identity, own->getOutputFormat(), ViewIdx(0), &inputTime, &inputView, &inputNb));
+    EXPECT_EQ(0, inputNb);
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(rgbPoint));
+
+    KnobBoolPtr disable = std::dynamic_pointer_cast<KnobBool>(rgbPoint->getKnobByName(kDisableNodeKnobName));
+    ASSERT_TRUE(bool(disable));
+    disable->setValue(true);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(rgbPoint));
+
+    disable->setValue(false);
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(rgbPoint));
+}
+
 TEST_F(PerFrameMetadataTest, InfoReadoutShowsEachInputAndTheOutputEdgeMode)
 {
     const std::string blackLine = "Edge Mode:</b> <font color=#c8c8c8>Black</font>";

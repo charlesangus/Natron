@@ -819,13 +819,16 @@ clampStretchRegionsOfInterest(const EffectInstance& effect,
         RectD clamped;
         bool any = false;
         for (const std::pair<double, EdgeMode>& read : entry.second) {
+            RectD needed;
             RectD rod;
             bool isProjectFormat = false;
-            if (fetched->getRegionOfDefinition_public(fetched->getRenderHash(), read.first, fetchedScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+            // An infinite input has no edge, so there is nothing to clamp; getRegionOfDefinition_public()
+            // would report the project format in its place and clamp to a false edge.
+            if ((read.second == EdgeMode::Stretch) && fetched->isRegionOfDefinitionInfinite(read.first, view)) {
+                needed = roi;
+            } else if (fetched->getRegionOfDefinition_public(fetched->getRenderHash(), read.first, fetchedScale, view, &rod, &isProjectFormat) == eStatusFailed) {
                 continue;
-            }
-            RectD needed;
-            if (read.second == EdgeMode::Stretch) {
+            } else if (read.second == EdgeMode::Stretch) {
                 const NodeMetadataConstPtr metadata = fetched->getRenderMetadata(read.first, view);
                 // A full-scale pixel encloses at least one pixel at every mipmap level.
                 needed = stretchRegionOfInterest(roi, rod, metadata ? metadata->getPixelAspectRatio(-1) : 1., 1.);
@@ -887,19 +890,24 @@ stretchGpuInputRoI(const EffectInstance& effect,
     RectI result;
     bool any = false;
     for (std::size_t k = 0; k < times.size(); ++k) {
+        RectI needed;
         RectD rod;
         bool isProjectFormat = false;
-        if (input->getRegionOfDefinition_public(input->getRenderHash(), times[k], inputScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+        // An infinite input has no edge, so there is nothing to clamp; getRegionOfDefinition_public()
+        // would report the project format in its place and clamp to a false edge.
+        if ((modes[k] == EdgeMode::Stretch) && input->isRegionOfDefinitionInfinite(times[k], view)) {
+            needed = rect;
+        } else if (input->getRegionOfDefinition_public(input->getRenderHash(), times[k], inputScale, view, &rod, &isProjectFormat) == eStatusFailed) {
             continue;
-        }
-        const NodeMetadataConstPtr metadata = input->getRenderMetadata(times[k], view);
-        const RectI rodPixel = PassExec::toPixelEnclosing(rod, scale, metadata ? metadata->getPixelAspectRatio(-1) : 1.);
-        RectI needed;
-        if (modes[k] == EdgeMode::Stretch) {
-            const RectD band = stretchRegionOfInterest(RectD(rect.x1, rect.y1, rect.x2, rect.y2), RectD(rodPixel.x1, rodPixel.y1, rodPixel.x2, rodPixel.y2), 1., 1.);
-            needed = RectI((int)band.x1, (int)band.y1, (int)band.x2, (int)band.y2);
         } else {
-            needed = rect.intersect(rodPixel);
+            const NodeMetadataConstPtr metadata = input->getRenderMetadata(times[k], view);
+            const RectI rodPixel = PassExec::toPixelEnclosing(rod, scale, metadata ? metadata->getPixelAspectRatio(-1) : 1.);
+            if (modes[k] == EdgeMode::Stretch) {
+                const RectD band = stretchRegionOfInterest(RectD(rect.x1, rect.y1, rect.x2, rect.y2), RectD(rodPixel.x1, rodPixel.y1, rodPixel.x2, rodPixel.y2), 1., 1.);
+                needed = RectI((int)band.x1, (int)band.y1, (int)band.x2, (int)band.y2);
+            } else {
+                needed = rect.intersect(rodPixel);
+            }
         }
         if (needed.isNull()) {
             continue;

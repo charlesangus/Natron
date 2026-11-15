@@ -615,6 +615,17 @@ namespace {
                 const bool zeroOutside,
                 float* v)
     {
+        // A footprint wholly past one end would otherwise keep that end's sample at full weight.
+        if ((nsamples <= x1) || (x2 <= 0.)) {
+            if (!zeroOutside) {
+                const size_t i = (nsamples <= x1) ? nsamples - 1 : 0;
+                for (size_t j = 0; j < depth; ++j) {
+                    v[j] += l[i * stride + j] * (float)(x2 - x1);
+                }
+            }
+            return;
+        }
+
         size_t ifirst, ilast;
         double fracfirst, fraclast;
 
@@ -680,6 +691,20 @@ namespace {
                 float* p,
                 float* v)
     {
+        if ((aheight <= y1) || (y2 <= 0.)) {
+            if (!zeroOutside) {
+                const size_t row = (aheight <= y1) ? aheight - 1 : 0;
+                for (size_t j = 0; j < depth; ++j) {
+                    p[j] = 0.;
+                }
+                integrate1d(&a[row * aystride], awidth, axstride, depth, x1, x2, zeroOutside, p);
+                for (size_t j = 0; j < depth; ++j) {
+                    v[j] += p[j] * (float)(y2 - y1);
+                }
+            }
+            return;
+        }
+
         size_t ifirst, ilast;
         double fracfirst, fraclast;
 

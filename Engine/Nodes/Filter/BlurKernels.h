@@ -167,6 +167,14 @@ public:
     /// True when apply() leaves every line unchanged.
     bool isIdentity() const { return _kind == eKindIdentity; }
 
+    /**
+     * @brief For the recursive filters (Deriche, Van Vliet), the offset past which the impulse
+     * response's remaining mass falls below 2^-24 of its whole: a line cut that far from a
+     * sample changes it by no more than float resolution of the line's magnitude. Independent of
+     * the line ends. 0 for the other kinds, whose finite support their callers' halos cover.
+     **/
+    int recursiveReach() const;
+
     /// Filters one line in place. n <= 0 is a no-op.
     void apply(float* data, int n, std::ptrdiff_t stride, LineScratch& scratch) const;
 

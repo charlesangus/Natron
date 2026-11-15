@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuBlur.h"
@@ -322,6 +323,44 @@ LineFilter::apply(float* data,
     LineScratch scratch;
 
     apply(data, n, stride, scratch);
+}
+
+int
+LineFilter::recursiveReach() const
+{
+    if ((_kind != eKindDeriche) && (_kind != eKindVanVliet)) {
+        return 0;
+    }
+    const double eps = std::ldexp(1., -24);
+    LineFilter dirichlet(*this);
+    dirichlet._neumann = false;
+    LineScratch scratch;
+    std::vector<float> line;
+    // The impulse response on a line long enough that its own ends leave the measured tail
+    // untouched: the line is lengthened until the reach found is within its inner half.
+    for (int half = 32; half < (std::numeric_limits<int>::max() / 4); half *= 2) {
+        line.assign((std::size_t)(2 * half + 1), 0.f);
+        line[half] = 1.f;
+        dirichlet.apply(line.data(), (int)line.size(), 1, scratch);
+        double total = 0.;
+        for (float v : line) {
+            total += std::fabs((double)v);
+        }
+        double tail = 0.;
+        int reach = half;
+        for (; reach > 0; --reach) {
+            const double next = tail + std::fabs((double)line[half - reach]) + std::fabs((double)line[half + reach]);
+            if (next >= eps * total) {
+                break;
+            }
+            tail = next;
+        }
+        if (reach <= half / 2) {
+            return reach;
+        }
+    }
+
+    return std::numeric_limits<int>::max() / 4;
 }
 
 void

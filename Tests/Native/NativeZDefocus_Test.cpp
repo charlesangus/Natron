@@ -643,8 +643,8 @@ TEST_F(NativeZDefocusTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
 {
     const int pad = 300;
     const RectI padded(kWindow.x1 - pad, kWindow.y1 - pad, kWindow.x2 + pad, kWindow.y2 + pad);
-    // Half opaque at the left, in front of the focus, opaque and in focus at the right and in
-    // the box.
+    // Half opaque and in focus at the left, opaque and in front of the focus at the right and
+    // in the box, whose bokeh, of radius 250, stays inside the laid-out pad.
     const auto makeSource = [&](const RectI& left, const RectI& right) -> NodePtr {
         return makeBoxOver(makeBoxOver(makeConstant(left, { 0.2, 0.4, 0.6, 0.5 }), right, { 0.9, 0.1, 0.3, 1. }), RectI(20, 14, 44, 34), { 4., 2., 1., 1. });
     };
@@ -655,8 +655,8 @@ TEST_F(NativeZDefocusTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
     ASSERT_TRUE(renderRGBA(source, kWindow, &input));
 
     for (const char* type : { kZDefocusParamKernelTypeDisc, kZDefocusParamKernelTypeBlades }) {
-        NodePtr stretched = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".A", 1., 1000.);
-        NodePtr reference = makeZDefocus(laidOut, std::string(kNatronColorViewRGBA) + ".A", 1., 1000.);
+        NodePtr stretched = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".A", 0.5, 500.);
+        NodePtr reference = makeZDefocus(laidOut, std::string(kNatronColorViewRGBA) + ".A", 0.5, 500.);
         ASSERT_TRUE(bool(stretched) && bool(reference));
         for (const NodePtr& node : { stretched, reference }) {
             ASSERT_TRUE(setKnobValues(node, kZDefocusParamMaxSize, { 1000. }));

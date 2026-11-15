@@ -349,7 +349,8 @@ TEST_F(NativeEdgeBlurTest, BlurIsConfinedToTheEdges)
 
 // A Matte edge two pixels from the left border blurs the source past it: a constant source keeps
 // its value there under Stretch, which Input resolves to for a Constant, and darkens under Black,
-// while the Matte's own border never reads as an edge.
+// while the Matte's own border never reads as an edge. The edge filter is finite, as a recursive
+// Gaussian's tail leaves a weight above 0 at every pixel, which Black darkens at the border.
 TEST_F(NativeEdgeBlurTest, EdgeModeDecidesTheBorderOfAConstant)
 {
     const double v = 0.7;
@@ -361,6 +362,7 @@ TEST_F(NativeEdgeBlurTest, EdgeModeDecidesTheBorderOfAConstant)
         ASSERT_TRUE(bool(node));
         ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamExternalMatte, { 1. }));
         ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamSize, { 10. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeBlurParamFilter, std::string(kEdgeDetectParamFilterBox)));
         ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeMode)));
         RenderedPlane actual;
         ASSERT_TRUE(renderRGBA(node, &actual));

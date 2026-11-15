@@ -66,6 +66,8 @@ static const float kEpsilon = 1.0e-10;
 static const float kThobyK1 = 1.47;
 static const float kThobyK2 = 0.713;
 static const float kHuge = 1.6e16;
+// kHuge and what normUnScale makes of it; LensCorrectProfile.cpp holds the same value.
+static const float kNoAnswer = 1e9;
 
 struct LensCorrect
 {
@@ -419,6 +421,15 @@ struct Mapped
     float2 b;
 }
 
+// NaN where the model has no solution, so that the pixel is black whatever the edge mode, as
+// LensCorrectProfile::answered() makes it on the CPU.
+float2 answeredOrNaN(float2 lf)
+{
+    if (isFiniteF(lf.x) && isFiniteF(lf.y) && abs(lf.x) < kNoAnswer && abs(lf.y) < kNoAnswer)
+        return lf;
+    return float2(nanValue(), nanValue());
+}
+
 Mapped lensCorrectMap(LensCorrect d, float2 u)
 {
     Mapped m;
@@ -461,9 +472,9 @@ Mapped lensCorrectMap(LensCorrect d, float2 u)
         m.b = tcaAcmChannel(t + 1, p);
     }
     const float2 c = float2(d.centerX, d.centerY);
-    m.r = (m.r + c) * d.normUnScale;
-    m.g = (m.g + c) * d.normUnScale;
-    m.b = (m.b + c) * d.normUnScale;
+    m.r = answeredOrNaN((m.r + c) * d.normUnScale);
+    m.g = answeredOrNaN((m.g + c) * d.normUnScale);
+    m.b = answeredOrNaN((m.b + c) * d.normUnScale);
     return m;
 }
 

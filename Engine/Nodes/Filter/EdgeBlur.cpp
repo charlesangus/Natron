@@ -467,7 +467,23 @@ EdgeBlur::edgeRects(const EdgeBlurParams& params,
                     RectI* edgeRoD,
                     RectI* buffer) const
 {
-    return edgeRegions(params, edges, time, view, scale, matteRoD, edgeRoD) && PassExec::intersectRects(passListSourceRoI(output, edges), *edgeRoD, buffer);
+    if (!edgeRegions(params, edges, time, view, scale, matteRoD, edgeRoD)) {
+        return false;
+    }
+    if ((edges.edgeMode != EdgeMode::Stretch) || (edges.stretchReachX < 0) || (edges.stretchReachY < 0)) {
+        return PassExec::intersectRects(passListSourceRoI(output, edges), *edgeRoD, buffer);
+    }
+    // A pass past the first reads what the earlier ones computed past the matte, which differs
+    // from the matte's edge repeated: a buffer cut at the matte, whose passes then repeat that
+    // edge, would lose the gradient there.
+    RectI inside;
+    if (!PassExec::intersectRects(output, *edgeRoD, &inside)) {
+        return false;
+    }
+    RectI clip(matteRoD->x1 - edges.stretchReachX, matteRoD->y1 - edges.stretchReachY, matteRoD->x2 + edges.stretchReachX, matteRoD->y2 + edges.stretchReachY);
+    clip.merge(inside);
+
+    return PassExec::intersectRects(passListSourceRoI(inside, edges), clip, buffer);
 }
 
 RectI
@@ -571,7 +587,7 @@ EdgeBlur::computeEdges(const RenderActionArgs& args,
     // The weight IBlur's radii read, remapped as its Map is.
     const IBlurParams blur = blurParams(params);
     RectI inside;
-    if (PassExec::intersectRects(window, buffer, &inside)) {
+    if (PassExec::intersectRects(window, buffer, &inside) && PassExec::intersectRects(inside, edgeRoD, &inside)) {
         const float* result = storage[(std::size_t)edges.resultSlot].data();
         for (int y = inside.y1; y < inside.y2; ++y) {
             const float* from = result + (std::size_t)(y - buffer.y1) * width + (inside.x1 - buffer.x1);

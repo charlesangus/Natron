@@ -289,8 +289,28 @@ float4 srcRel(ResampleSource src, int ix, int iy)
     return srcAt(src, src.x1 + ix, src.y1 + iy);
 }
 
+// p <= 0.
+bool posAtMostZero(Pos p)
+{
+    return p.i < 0 || (p.i == 0 && p.f == 0.0);
+}
+
+// x2 - x1.
+float posSpan(Pos x1, Pos x2)
+{
+    precise float w = float(x2.i - x1.i) + (x2.f - x1.f);
+    return w;
+}
+
 void integrate1d(ResampleSource src, int row, int n, Pos x1, Pos x2, bool zeroOutside, inout float4 v)
 {
+    // A footprint wholly past one end would otherwise keep that end's sample at full weight.
+    if (x1.i >= n || posAtMostZero(x2))
+    {
+        if (!zeroOutside)
+            v += srcRel(src, x1.i >= n ? n - 1 : 0, row) * posSpan(x1, x2);
+        return;
+    }
     int ifirst;
     float fracfirst;
     if (x1.i < 0)
@@ -344,6 +364,13 @@ float4 integrate2d(ResampleSource src, Pos x1, Pos y1, Pos x2, Pos y2, bool zero
 {
     const int awidth = src.x2 - src.x1;
     const int aheight = src.y2 - src.y1;
+    if (y1.i >= aheight || posAtMostZero(y2))
+    {
+        float4 edge = float4(0.0, 0.0, 0.0, 0.0);
+        if (!zeroOutside)
+            integrate1d(src, y1.i >= aheight ? aheight - 1 : 0, awidth, x1, x2, zeroOutside, edge);
+        return edge * posSpan(y1, y2);
+    }
     int ifirst;
     float fracfirst;
     if (y1.i < 0)

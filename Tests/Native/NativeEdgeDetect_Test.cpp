@@ -50,6 +50,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Filter/BlurKernels.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
@@ -206,12 +207,16 @@ TEST_F(NativeEdgeDetectTest, SourceRegionOfInterestAddsErosionAndSuppression)
     EXPECT_EQ(10 - 4, roi.x1);
     EXPECT_EQ(40 + 4, roi.y2);
 
-    // The finite-difference schemes use the Gaussian pre-blur's halo.
+    // The finite-difference schemes use the Gaussian pre-blur's halo, at least the recursion's
+    // reach, which is longer than CImg's 1.5 times the size.
     params.filter = eEdgeDetectFilterSobel;
     params.sizeX = params.sizeY = 10.;
+    const float sigma = (float)(10. / 2.4);
+    const int preBlurReach = BlurKernels::LineFilter::vanVliet(sigma, 0, EdgeMode::Black).recursiveReach();
+    EXPECT_GT(preBlurReach, 15);
     roi = EdgeDetect::getSourceRoI(rect, RenderScale::identity, params);
-    EXPECT_EQ(10 - 15 - 1, roi.x1);
-    EXPECT_EQ(30 + 15 + 1, roi.x2);
+    EXPECT_EQ(10 - preBlurReach - 1, roi.x1);
+    EXPECT_EQ(30 + preBlurReach + 1, roi.x2);
 
     // Quadratic: 3 * (floor((10 - 1) / 2) + 1) = 15, plus one for the derivative.
     params.filter = eEdgeDetectFilterQuadratic;
@@ -222,9 +227,12 @@ TEST_F(NativeEdgeDetectTest, SourceRegionOfInterestAddsErosionAndSuppression)
     params.filter = eEdgeDetectFilterGaussian;
     params.erodeSize = -2.;
     params.nms = true;
+    const int derivativeReach = std::max(BlurKernels::LineFilter::vanVliet(sigma, 0, EdgeMode::Black).recursiveReach(),
+                                         BlurKernels::LineFilter::vanVliet(sigma, 1, EdgeMode::Black).recursiveReach());
+    EXPECT_GT(derivativeReach, 15 + 1);
     roi = EdgeDetect::getSourceRoI(rect, RenderScale::identity, params);
-    EXPECT_EQ(10 - 15 - 1 - 2 - 1, roi.x1);
-    EXPECT_EQ(40 + 15 + 1 + 2 + 1, roi.y2);
+    EXPECT_EQ(10 - derivativeReach - 2 - 1, roi.x1);
+    EXPECT_EQ(40 + derivativeReach + 2 + 1, roi.y2);
 
     // At half scale the erosion radius is floor(2 * 0.5) = 1.
     int rx = 0;

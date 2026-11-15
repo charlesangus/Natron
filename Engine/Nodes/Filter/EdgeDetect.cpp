@@ -923,8 +923,10 @@ edgeDetectGpuRecorder(const std::shared_ptr<const EdgeDetectGpuPlan>& plan)
 /// The passes of one render at scale; params carries sizeX already divided by the pixel aspect
 /// ratio. The halo and the region of definition's spread are CImgBlurPlugin::getRoI() and
 /// getRegionOfDefinition() with first-order derivatives on both axes, which are never an
-/// identity, plus the erosion radius and the suppression's pixel in the halo only. The source's
-/// fill and the derivative blurs' line ends follow edgeMode.
+/// identity, plus the erosion radius and the suppression's pixel in the halo only. A recursive
+/// blur's halo is at least its recursiveReach(), as its infinite support makes a buffer cut inside
+/// the image change the pixels a tile shares with the whole frame. The source's fill and the
+/// derivative blurs' line ends follow edgeMode.
 PassList
 edgeDetectPasses(const EdgeDetectParams& params,
                  const RenderScale& scale,
@@ -973,6 +975,8 @@ edgeDetectPasses(const EdgeDetectParams& params,
             preBlurX = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, edgeMode));
             preBlurY = makeFilter(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, edgeMode));
         }
+        haloX = std::max(haloX - 1, preBlurX->recursiveReach()) + 1;
+        haloY = std::max(haloY - 1, preBlurY->recursiveReach()) + 1;
         list.passes.push_back(Pass::lineX(haloX - 1, std::max(0, growX - 1), lineWorker(preBlurX)));
         list.passes.push_back(Pass::lineY(haloY - 1, std::max(0, growY - 1), lineWorker(preBlurY)));
         Pass stencil = Pass::gather(1, 1, true, stencilWorker(params.filter, edgeMode));
@@ -1008,6 +1012,8 @@ edgeDetectPasses(const EdgeDetectParams& params,
             gyRows = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(sx), 0, edgeMode));
             gyColumns = makeFilter(BlurKernels::LineFilter::forFilter(filter, knobValueAsFloat(boxY), 1, edgeMode));
         }
+        haloX = std::max({ haloX, gxRows->recursiveReach(), gyRows->recursiveReach() });
+        haloY = std::max({ haloY, gxColumns->recursiveReach(), gyColumns->recursiveReach() });
         list.passes.push_back(Pass::point(true, copyWorker()));
         list.passes.push_back(atSlot(Pass::lineX(haloX, growX, lineWorker(gxRows)), kSlotGx));
         list.passes.push_back(atSlot(Pass::lineY(haloY, growY, lineWorker(gxColumns)), kSlotGx));

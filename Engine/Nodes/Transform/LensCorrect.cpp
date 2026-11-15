@@ -1106,7 +1106,8 @@ struct PixelMapper {
     }
 
     // Per channel (red, green, blue) the lensfun source position (lf) and the Source pixel
-    // coordinates at the render scale (s), both as x, y pairs.
+    // coordinates at the render scale (s), both as x, y pairs, NaN where the model has no
+    // solution: such a pixel is black whatever the edge mode, as in LensDistortion.
     void map(int px,
              int py,
              float lf[6],
@@ -1116,6 +1117,11 @@ struct PixelMapper {
         lensfunAt(px, py, &xu, &yu);
         profile->map(xu, yu, lf);
         for (int c = 0; c < 3; ++c) {
+            if (!LensCorrectProfile::answered(lf[2 * c], lf[2 * c + 1])) {
+                lf[2 * c] = lf[2 * c + 1] = std::numeric_limits<float>::quiet_NaN();
+                s[2 * c] = s[2 * c + 1] = std::numeric_limits<float>::quiet_NaN();
+                continue;
+            }
             s[2 * c] = (float)((lf[2 * c] + x1 + 0.5) * scaleX);
             s[2 * c + 1] = (float)((y2 - 0.5 - lf[2 * c + 1]) * scaleY);
         }

@@ -170,9 +170,12 @@ try:
         return (c.red(), c.green(), c.blue())
 
     def brightest_red_in_pixel(px, y):
-        """The largest red of the screen pixels wholly inside image pixel column px at canonical y,
-        or None. The viewer outlines the region of definition with a grey dashed line, which can run
-        through the middle of the column; the brightest screen pixel is one the line misses."""
+        """The largest red of the screen pixels wholly inside image pixel column px, over the image
+        rows from y - 1.5 to y + 1.5, or None. The viewer outlines the region of definition with a
+        grey dashed line, which can cover every whole screen column of the image column when the
+        viewer shows fewer than two screen pixels per image pixel; the rows span more than one dash
+        and gap, so one of them misses the line. The callers sample where the image is constant
+        vertically."""
         m = mapping()
         widget = visible_viewer()
         if m is None or widget is None:
@@ -182,13 +185,15 @@ try:
         columns = list(range(int(math.ceil(a)), int(math.floor(b))))
         if not columns:
             columns = [int(round(0.5 * (a + b)))]
-        row = int(round(m[1] + m[3] * y))
+        c, d = sorted((m[1] + m[3] * (y - 1.5), m[1] + m[3] * (y + 1.5)))
+        rows = list(range(int(math.ceil(c)), int(math.floor(d)) + 1))
         image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
         reds = []
         for column in columns:
-            g = widget.mapToGlobal(QPoint(column, row))
-            if 0 <= g.x() < image.width() and 0 <= g.y() < image.height():
-                reds.append(image.pixelColor(g.x(), g.y()).red())
+            for row in rows:
+                g = widget.mapToGlobal(QPoint(column, row))
+                if 0 <= g.x() < image.width() and 0 <= g.y() < image.height():
+                    reds.append(image.pixelColor(g.x(), g.y()).red())
         return max(reds) if reds else None
 
     def is_red(c):

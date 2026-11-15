@@ -674,12 +674,6 @@ bool nearInteger(Pos p, float e)
     return e > 0.0 && (p.f <= e || p.f >= 1.0 - e);
 }
 
-// Whether floor(v) >= n may differ from p.i >= n for a value v within e of p.
-bool floorGeAmbiguous(Pos p, float e, int n)
-{
-    return e > 0.0 && ((p.f <= e && p.i == n) || (p.f >= 1.0 - e && p.i + 1 == n));
-}
-
 // The footprint from a two-float position, false where a floor of its edges may differ from the
 // doubles'. ePos is 0 when the position is exact; a reach that is one float is then exact too, and
 // the sum of two floats is exact in two. Otherwise the reach adds its own rounding to the position's
@@ -785,13 +779,6 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
     const Pos px2 = toPos(rx2);
     const Pos py1 = toPos(ry1);
     const Pos py2 = toPos(ry2);
-    // integrate1d keeps the edge pixel's full weight once a footprint starts at or past the far
-    // edge or ends before the near one, so those two floors switch it; elsewhere they are continuous.
-    const int awidth = rp.srcX2 - rp.srcX1;
-    const int aheight = rp.srcY2 - rp.srcY1;
-    if (floorGeAmbiguous(px1, ex, awidth) || floorGeAmbiguous(px2, ex, 0) || floorGeAmbiguous(py1, ey, aheight)
-        || floorGeAmbiguous(py2, ey, 0))
-        return false;
     float4 v = integrate2d(paramsSource(), px1, py1, px2, py2, paramsSource().edgeMode == kEdgeBlack);
     const FF wx = ffAdd(rx2, ffNeg(rx1));
     const FF wy = ffAdd(ry2, ffNeg(ry1));

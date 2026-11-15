@@ -1290,6 +1290,11 @@ TEST_F(NativeLensCorrectTest, RegionOfInterestHoldsEveryRead)
                     float lf[6];
                     profile.map(xu, yu, lf);
                     for (int k = 0; k < 3; ++k) {
+                        // Where the model has no solution the pixel is black, reading nothing.
+                        if (!LensCorrectProfile::answered(lf[2 * k], lf[2 * k + 1])) {
+                            s[2 * k] = s[2 * k + 1] = std::numeric_limits<float>::quiet_NaN();
+                            continue;
+                        }
                         s[2 * k] = (float)((lf[2 * k] + 0.5) * scale);
                         s[2 * k + 1] = (float)((kLargeHeight - 0.5 - lf[2 * k + 1]) * scale);
                     }

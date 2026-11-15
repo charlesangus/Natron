@@ -26,12 +26,18 @@
 #include "NodeGraphPrivate.h"
 #include "NodeGraph.h"
 
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
+
+#include <QApplication>
+#include <QFontMetrics>
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/Settings.h"
 
 #include "Gui/Edge.h"
 #include "Gui/Gui.h"
@@ -60,20 +66,19 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _nodesMutex()
     , _nodes()
     , _nodesTrash()
-    , _nodeCreationShortcutEnabled(false)
     , _root(NULL)
     , _nodeRoot(NULL)
     , _loopBlocks(NULL)
+    , _gpuRegions(NULL)
+    , lowDetailEdgeLayer(NULL)
+    , lowDetailNodeLayer(NULL)
     , _cacheSizeText(NULL)
     , cacheSizeHidden(true)
     , _refreshCacheTextTimer()
     , _navigator(NULL)
     , _menu(NULL)
-    , _tL(NULL)
-    , _tR(NULL)
-    , _bR(NULL)
-    , _bL(NULL)
-    , _refreshOverlays(false)
+    , overlayRefreshTimer()
+    , overlayRefreshSuspended(false)
     , _hintInputEdge(NULL)
     , _hintOutputEdge(NULL)
     , _backdropResized()
@@ -87,9 +92,33 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _detailsVisible(false)
     , _deltaSinceMousePress(0, 0)
     , _hasMovedOnce(false)
-    , lastSelectedViewer(0)
+    , lastSelectedViewer()
     , isDoingPreviewRender(false)
     , autoScrollTimer()
+    , refreshRenderStateTimer()
+    , navigatorContent()
+    , navigatorContentRect()
+    , navigatorContentDirty(true)
+    , navigatorRenderTimer()
+    , nodesBounds()
+    , nodesBoundsDirty(true)
+    , navigatorDeferredByDrag(false)
+    , navigatorBatchDepth(0)
+    , navigatorBatchPending(false)
+    , navigatorDeferredRebuildsGrid(false)
+    , itemGrid()
+    , itemGridDirty(true)
+    , itemGridStale()
+    , antiAliasing(appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled())
+    , lowDetail(false)
+    , lowDetailFontHeight(QFontMetrics(QApplication::font()).height())
+    , stackingBatchDepth(0)
+    , loadStackingBatchOpen(false)
+    , frameDependentNodes()
+    , timelineConnected(false)
+    , stackingPending()
+    , stackingPendingSet()
+    , renderStateDirty()
 {
     appPTR->getIcon(NATRON_PIXMAP_LOCKED, &unlockIcon);
     ThemedIcon::connectThemeChanged(_publicInterface, [this]() {
@@ -106,34 +135,83 @@ NodeGraphPrivate::getPyPlugUnlockPos() const
 void
 NodeGraphPrivate::resetSelection()
 {
+    beginNavigatorBatch();
     for (NodesGuiList::iterator it = _selection.begin(); it != _selection.end(); ++it) {
         (*it)->setUserSelected(false);
     }
 
     _selection.clear();
+    endNavigatorBatch();
+}
+
+void
+NodeGraphPrivate::beginNavigatorBatch()
+{
+    ++navigatorBatchDepth;
+}
+
+void
+NodeGraphPrivate::endNavigatorBatch()
+{
+    assert(navigatorBatchDepth > 0);
+    if (--navigatorBatchDepth > 0) {
+        return;
+    }
+    if (navigatorBatchPending) {
+        navigatorBatchPending = false;
+        invalidateNavigator(false);
+    }
+}
+
+void
+NodeGraphPrivate::replaceSelection(const NodesGuiList& nodes)
+{
+    // A node that stays selected is not deselected first: that would refresh it twice to the same state.
+    std::unordered_set<NodeGui*> kept;
+    kept.reserve(nodes.size());
+    for (NodesGuiList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        kept.insert(it->get());
+    }
+    beginNavigatorBatch();
+    for (NodesGuiList::iterator it = _selection.begin(); it != _selection.end(); ++it) {
+        if (kept.find(it->get()) == kept.end()) {
+            (*it)->setUserSelected(false);
+        }
+    }
+    _selection.clear();
+    for (NodesGuiList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (_selection.push_back(*it)) {
+            (*it)->setUserSelected(true);
+        }
+    }
+    endNavigatorBatch();
 }
 
 void
 NodeGraphPrivate::editSelectionFromSelectionRectangle(bool addToSelection)
 {
-    if (!addToSelection) {
-        resetSelection();
-    }
-
     const QRectF& selection = _selectionRect;
+    NodesGuiList inside;
 
     for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
         QRectF bbox = (*it)->mapToScene((*it)->outlineBoundingRect()).boundingRect();
         if ( selection.contains(bbox) ) {
-            NodesGuiList::iterator foundInSel = std::find(_selection.begin(), _selection.end(), *it);
-            if ( foundInSel != _selection.end() ) {
-                continue;
-            }
+            inside.push_back(*it);
+        }
+    }
 
-            _selection.push_back(*it);
+    if (!addToSelection) {
+        replaceSelection(inside);
+
+        return;
+    }
+    beginNavigatorBatch();
+    for (NodesGuiList::iterator it = inside.begin(); it != inside.end(); ++it) {
+        if (_selection.push_back(*it)) {
             (*it)->setUserSelected(true);
         }
     }
+    endNavigatorBatch();
 }
 
 bool
@@ -172,16 +250,155 @@ NodeGraphPrivate::setNodesBendPointsVisible(bool visible)
 QRectF
 NodeGraphPrivate::calcNodesBoundingRect()
 {
-    QRectF ret;
-    QMutexLocker l(&_nodesMutex);
+    if (!nodesBoundsDirty) {
+        applyPendingNodesBounds();
+    }
+    if (nodesBoundsDirty) {
+        QRectF ret;
+        nodesBoundsParts.clear();
+        nodesBoundsPending.clear();
+        {
+            QMutexLocker l(&_nodesMutex);
 
-    for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        if ( (*it)->isVisible() ) {
-            ret = ret.united( (*it)->boundingRectWithEdges() );
+            nodesBoundsParts.reserve(_nodes.size());
+            for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+                if ((*it)->isVisible()) {
+                    const QRectF part = (*it)->boundingRectWithEdges();
+                    nodesBoundsParts[it->get()] = part;
+                    ret = ret.united(part);
+                }
+            }
         }
+        nodesBounds = ret;
+        nodesBoundsDirty = false;
     }
 
-    return ret;
+    return nodesBounds;
+}
+
+void
+NodeGraphPrivate::applyPendingNodesBounds()
+{
+    if (nodesBoundsPending.empty()) {
+        return;
+    }
+    QRectF grown = nodesBounds;
+    QMutexLocker l(&_nodesMutex);
+    for (std::unordered_set<NodeGui*>::const_iterator it = nodesBoundsPending.begin(); it != nodesBoundsPending.end(); ++it) {
+        NodeGui* node = *it;
+        const bool inGraph = _nodes.contains(node);
+        const QRectF part = (inGraph && node->isVisible()) ? node->boundingRectWithEdges() : QRectF();
+        std::unordered_map<const NodeGui*, QRectF>::iterator found = nodesBoundsParts.find(node);
+        const QRectF previous = (found != nodesBoundsParts.end()) ? found->second : QRectF();
+        // A drag only grows the bounds, and its end recomputes them from every node.
+        if (!navigatorDeferredByDrag && !previous.isNull()) {
+            const bool gone = part.isNull();
+            bool mayShrink = (previous.left() <= nodesBounds.left()) && (gone || (part.left() > previous.left()));
+            mayShrink = mayShrink || ((previous.top() <= nodesBounds.top()) && (gone || (part.top() > previous.top())));
+            mayShrink = mayShrink || ((previous.right() >= nodesBounds.right()) && (gone || (part.right() < previous.right())));
+            mayShrink = mayShrink || ((previous.bottom() >= nodesBounds.bottom()) && (gone || (part.bottom() < previous.bottom())));
+            if (mayShrink) {
+                nodesBoundsDirty = true;
+                nodesBoundsPending.clear();
+
+                return;
+            }
+        }
+        if (part.isNull()) {
+            if (found != nodesBoundsParts.end()) {
+                nodesBoundsParts.erase(found);
+            }
+            continue;
+        }
+        nodesBoundsParts[node] = part;
+        grown = grown.united(part);
+    }
+    nodesBoundsPending.clear();
+    nodesBounds = grown;
+}
+
+void
+NodeGraphPrivate::growNodesBoundsForDrag(const std::set<NodeGuiPtr>& moved)
+{
+    if (nodesBoundsDirty) {
+        // The next calcNodesBoundingRect() walks every node anyway.
+        return;
+    }
+    for (std::set<NodeGuiPtr>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
+        nodesBoundsPending.insert(it->get());
+    }
+    const QRectF before = nodesBounds;
+    applyPendingNodesBounds();
+    if (nodesBounds != before) {
+        _publicInterface->scheduleOverlayRefresh();
+    }
+}
+
+void
+NodeGraphPrivate::endNavigatorDragDeferral()
+{
+    if (!navigatorDeferredByDrag) {
+        return;
+    }
+    navigatorDeferredByDrag = false;
+    nodesBoundsDirty = true;
+    invalidateNavigator(false);
+}
+
+void
+NodeGraphPrivate::getNavigatorMapping(QRectF* sceneRect,
+                                      double* scale,
+                                      QPointF* offset) const
+{
+    NodeGraphPrivate* self = const_cast<NodeGraphPrivate*>(this);
+    QRectF sceneR = self->calcNodesBoundingRect().united(_publicInterface->visibleSceneRect());
+    int navWidth = std::ceil(_publicInterface->width() * NATRON_NAVIGATOR_BASE_WIDTH);
+    int navHeight = std::ceil(_publicInterface->height() * NATRON_NAVIGATOR_BASE_HEIGHT);
+    double xScale = navWidth / sceneR.width();
+    double yScale = navHeight / sceneR.height();
+    double scaleFactor = std::max(0.001, std::min(xScale, yScale));
+    int renderW = std::floor(sceneR.width() * scaleFactor);
+    int renderH = std::floor(sceneR.height() * scaleFactor);
+
+    *sceneRect = sceneR;
+    *scale = scaleFactor;
+    *offset = QPointF((navWidth - renderW) / 2, (navHeight - renderH) / 2);
+}
+
+void
+NodeGraphPrivate::renderNavigatorContent()
+{
+    // The low-detail layers do not refile the grid while they paint.
+    if (lowDetail) {
+        refreshItemGrid();
+    }
+    QRectF nodesScene = calcNodesBoundingRect();
+
+    navigatorContentDirty = false;
+    if (nodesScene.isEmpty()) {
+        navigatorContent = QImage();
+        navigatorContentRect = QRectF();
+
+        return;
+    }
+
+    // Rendered at the navigator's own size: panning or zooming out only ever shrinks the nodes
+    // inside the navigator, so the thumbnail never needs more pixels than this.
+    int navWidth = std::ceil(_publicInterface->width() * NATRON_NAVIGATOR_BASE_WIDTH);
+    int navHeight = std::ceil(_publicInterface->height() * NATRON_NAVIGATOR_BASE_HEIGHT);
+    double scaleFactor = std::min(navWidth / nodesScene.width(), navHeight / nodesScene.height());
+    int w = std::max(1, (int)std::floor(nodesScene.width() * scaleFactor));
+    int h = std::max(1, (int)std::floor(nodesScene.height() * scaleFactor));
+
+    navigatorContent = QImage(w, h, QImage::Format_ARGB32_Premultiplied);
+    navigatorContent.fill(QColor(71, 71, 71, 255));
+    {
+        QPainter painter(&navigatorContent);
+        isDoingPreviewRender = true;
+        _publicInterface->scene()->render(&painter, navigatorContent.rect(), nodesScene, Qt::KeepAspectRatio);
+        isDoingPreviewRender = false;
+    }
+    navigatorContentRect = nodesScene;
 }
 
 void

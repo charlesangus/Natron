@@ -78,12 +78,15 @@ connectSerializedInputs(const NodeCollectionPtr& group,
         const int index = node->getInputNumberFromLabel(it->first);
         if (index == -1) {
             problem = NodeCollection::tr("the node has no such input; left disconnected");
-        } else if (!group->getNodeByName(it->second)) {
-            problem = NodeCollection::tr("node not found; input left disconnected");
-        } else if (!group->connectNodes(index, it->second, node)) {
-            problem = NodeCollection::tr("the connection was refused; input left disconnected");
         } else {
-            continue;
+            const NodePtr target = group->getNodeByName(it->second);
+            if (!target) {
+                problem = NodeCollection::tr("node not found; input left disconnected");
+            } else if (!group->connectNodes(index, target, node)) {
+                problem = NodeCollection::tr("the connection was refused; input left disconnected");
+            } else {
+                continue;
+            }
         }
         if (!report) {
             qDebug() << nodeName << inputLabel << targetName << problem;
@@ -140,6 +143,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         return !mustShowErrorsLog;
     }
     appInst->updateProjectLoadStatus( tr("Creating nodes in group: %1").arg(groupName) );
+    const NamingBatch namingBatch(group);
 
     ///If a parent of a multi-instance node doesn't exist anymore but the children do, we must recreate the parent.
     ///Problem: we have lost the nodes connections. To do so we restore them using the serialization of a child.

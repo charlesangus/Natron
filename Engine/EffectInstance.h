@@ -335,6 +335,13 @@ public:
     // dtor
     virtual ~EffectInstance();
 
+    /**
+     * @brief Sets holder to knob's holder and returns it held when it is an effect. An effect being
+     * destroyed sets holder to null. Any other kind of holder is set but not held: the caller's context
+     * keeps it alive. An effect's last owner may be a render thread, so a knob's holder read
+     * on its own may already be freed by the time it is dereferenced.
+     **/
+    static EffectInstancePtr lockHolder(const KnobI& knob, KnobHolder** holder);
 
     virtual bool canHandleEvaluateOnChangeInOtherThread() const OVERRIDE
     {
@@ -454,6 +461,15 @@ public:
     }
 
     /**
+     * @brief Appends nodes whose hashes fold in what feeds this one, though nothing folds in
+     * theirs but their metadata readers: marking this node marks them and those readers only,
+     * whether or not they are dirty already, and the walk goes no further below them.
+     **/
+    virtual void appendHashLeafDependents(std::vector<NodePtr>* /*leaves*/) const
+    {
+    }
+
+    /**
      * @brief Appends nodes whose context reads this node's read-set folds in, besides its inputs
      * and the nodes its expressions read, each with the variables it sets on that node.
      **/
@@ -480,6 +496,30 @@ public:
      * MT-Safe
      **/
     EffectInstancePtr getInput(int n) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The input number isIdentity() answers for an effect that is an identity of
+     * getInternalIdentitySource() rather than of one of its inputs. Only host-side effects answer
+     * it; it is never passed to an OpenFX plug-in. Distinct from -1 (no input), -2 (itself) and
+     * FrameViewRequest::TaskEdge::kContextRequestInputNb, which task edges carry beside it.
+     **/
+    static constexpr int kIdentityInternalSource = -4;
+
+    /**
+     * @brief The effect an identity answer of identityInputNb passes through: getInput() for an
+     * input, getInternalIdentitySource() for kIdentityInternalSource, null otherwise.
+     **/
+    EffectInstancePtr getIdentitySource(int identityInputNb) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The effect, not one of this effect's inputs, whose output this effect passes through
+     * when it answers kIdentityInternalSource, such as what feeds a group's Output. The render
+     * walks it as it walks inputs. Null by default.
+     **/
+    virtual EffectInstancePtr getInternalIdentitySource() const WARN_UNUSED_RETURN
+    {
+        return EffectInstancePtr();
+    }
 
     /**
      * @brief Forwarded to the node holding the effect
@@ -1504,6 +1544,12 @@ public:
     virtual bool tryLock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual void unlock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual bool canSetValue() const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Makes a background application queue the knob writes made while a node renders, as an
+     * interactive one does, so that tests can reproduce what an edit during a render does.
+     **/
+    static void setQueuesWritesDuringBackgroundRendersForTesting(bool queues);
     virtual void abortViewerRendersForEdit() OVERRIDE FINAL;
     virtual void abortAllRendersReadingThis() OVERRIDE FINAL;
     virtual void notifyValueQueued() OVERRIDE FINAL;
@@ -1849,6 +1895,13 @@ public:
        in the engine function.*/
     bool aborted() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief When the render running on this thread can be aborted and a newer request has
+     * replaced it (AbortableRenderInfo::isSuperseded()), aborts it and returns true. For a wait
+     * the render would spend on a result that the newer request asks for itself: the render
+     * then leaves its thread to that request instead of finishing for feedback.
+     **/
+    bool abortIfSuperseded() const WARN_UNUSED_RETURN;
 
     /** @brief Returns the image computed by the input 'inputNb' at the given time and scale for the given view.
      * @param dontUpscale If the image is retrieved is downscaled but the plug-in doesn't support the user of
@@ -1870,7 +1923,6 @@ public:
                       const ImageBitDepthEnum* textureDepth,
                       RectI* roiPixel,
                       Transform::Matrix3x3Ptr* transform = 0) WARN_UNUSED_RETURN;
-    virtual void aboutToRestoreDefaultValues() OVERRIDE FINAL;
     virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
     /**
@@ -1943,6 +1995,13 @@ public:
                                             ViewIdx view,
                                             RectD* rod,
                                             bool* isProjectFormat) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether this effect's region of definition at identity scale is infinite as the
+     * effect answers it, before getRegionOfDefinition_public() clips an infinite region to its
+     * inputs and the format. A disabled effect answers for its preferred input. Not cached.
+     **/
+    bool isRegionOfDefinitionInfinite(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
     StatusEnum getRegionOfDefinitionFromCache(U64 hash,
                                               double time,
@@ -2316,6 +2375,15 @@ public:
      * @brief Called everytimes an input connection is changed
      **/
     virtual void onInputChanged(int inputNo);
+
+    /**
+     * @brief Called when deleting the node named sourceName left input inputNo empty. Disconnecting
+     * the input, and deleting a node whose input takes its place, do not call it.
+     **/
+    virtual void onInputSourceDeleted(int /*inputNo*/,
+                                      const std::string& /*sourceName*/)
+    {
+    }
 
     /**
      * @brief If the plug-in calls timelineGoTo and we're during a render/instance changed action,

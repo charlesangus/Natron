@@ -33,6 +33,7 @@
 #include <limits>
 #include <list>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -454,6 +455,28 @@ public:
     void removeInvalidExpressionKnob(const KnobI* knob);
     void recheckInvalidExpressions();
 
+    /**
+     * @brief Rechecks only the invalid expressions that mention one of the given node or
+     * parameter script names, and those whose names cannot be read from their text.
+     **/
+    void recheckInvalidExpressionsReferencing(const std::set<std::string>& names);
+
+    /**
+     * @brief Between these, recheckInvalidExpressionsReferencing() on the main thread only collects
+     * the names, and the last end rechecks once for all of them.
+     **/
+    void beginInvalidExpressionRecheckBatch();
+    void endInvalidExpressionRecheckBatch();
+
+    /**
+     * @brief For tests: how many knobs the rechecks above have rechecked.
+     **/
+    U64 getInvalidExpressionRechecksCount() const;
+
+private:
+    void recheckInvalidExpressionsInternal(const std::set<std::string>* names);
+
+public:
     virtual void clearViewersLastRenderedTexture() {}
 
     virtual void toggleAutoHideGraphInputs() {}
@@ -601,8 +624,16 @@ public:
     const ProjectBeingLoadedInfo& getProjectBeingLoadedInfo() const;
     void setProjectBeingLoadedInfo(const ProjectBeingLoadedInfo& info);
 
+    /**
+     * @brief True once quit() or quitNow() has been called on this instance. Main thread only.
+     **/
+    bool isQuitRequested() const;
+
 public Q_SLOTS:
 
+    /**
+     * @brief Stops the renders and closes this instance once they end. Ignored after the first call.
+     **/
     void quit();
 
     void quitNow();

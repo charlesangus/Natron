@@ -151,6 +151,25 @@ public:
 
     virtual ~AppManager();
 
+    /**
+     * @brief Ends the process with rc once the manager is gone: flushes the profile sink, the log and the standard
+     * streams, then calls _exit(), so neither atexit handlers nor library destructors run. A termination signal that
+     * was accepted overrides rc with 128 + signal.
+     **/
+    [[noreturn]] static void exitWithoutLibraryDestructors(int rc);
+
+    /**
+     * @brief True once teardown has begun: the event loop returned or the manager is being destroyed. A termination
+     * request delivered after that is ignored.
+     **/
+    static bool isTearingDown();
+
+    /**
+     * @brief Main thread only: quits every project without asking to save, in answer to a termination signal.
+     * Repeated requests are ignored.
+     **/
+    virtual void requestTermination();
+
     static AppManager* instance()
     {
         return _instance;
@@ -746,6 +765,10 @@ Q_SIGNALS:
     void s_requestOFXDialogOnMainThread(OfxImageEffectInstance* instance, void* instanceData);
 
 protected:
+    /**
+     * @brief Marks teardown as begun, for a derived destructor that runs before ~AppManager.
+     **/
+    static void markTeardownStarted(const char* stage);
 
     virtual bool initGui(const CLArgs& cl);
     virtual void loadBuiltinNodePlugins();
@@ -790,8 +813,9 @@ protected:
     virtual void onAllPluginsLoaded();
     virtual void clearLastRenderedTextures() {}
 
-    // Has every viewer's scene view destroy its Storm engine and redraw; the GUI does it.
-    virtual void releaseSceneViewEngines() { }
+    // Has every viewer's scene view destroy its Storm engine and redraw, or with keptOnly only the
+    // views on another delegate, which keep their Storm engine for a switch back; the GUI does it.
+    virtual void releaseSceneViewEngines(bool /*keptOnly*/) { }
 
     virtual void initBuiltinPythonModules();
 
@@ -896,6 +920,10 @@ PyObject* getMainModule();
  **/
 bool interpretPythonScript(const std::string& script, std::string* error, std::string* output);
 
+/**
+ * @brief For tests: how many scripts interpretPythonScript() has run.
+ **/
+U64 getInterpretedScriptsCount();
 
 //void compilePyScript(const std::string& script,PyObject** code);
 

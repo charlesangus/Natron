@@ -36,6 +36,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QList>
 #include <QPointF>
 #include <QSize>
+#include <QVariant>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -131,6 +132,11 @@ public:
     void centerOn_tripleSync(SequenceTime left, SequenceTime right);
 
     void getVisibleRange(SequenceTime* left, SequenceTime* right) const;
+
+    /**
+     * @brief The frames that show a keyframe marker, in ascending order, for GUI checks.
+     **/
+    Q_INVOKABLE QVariantList keyframeMarkerTimes() const;
 
 public Q_SLOTS:
 

@@ -39,6 +39,7 @@
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 #include "Global/Enums.h"
+#include "Gui/EdgeLabelMetrics.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphTextItem.h"
@@ -73,6 +74,7 @@ struct EdgePrivate
     int inputNb;
     double angle;
     NodeGraphSimpleTextItem* label;
+    EdgeLabelMetrics labelMetrics;
     QPolygonF arrowHead;
     NodeGuiWPtr dest;
     NodeGuiWPtr source;
@@ -153,6 +155,7 @@ EdgePrivate::initLabel()
 
     if ( (inputNb != -1) && dst ) {
         label = new NodeGraphSimpleTextItem(dst->getDagGui(), _publicInterface, false);
+        label->setHiddenAtLowDetail(true);
         label->setText( QString::fromUtf8( dst->getNode()->getInputLabel(inputNb).c_str() ) );
         QColor txt;
         double r, g, b;
@@ -198,6 +201,51 @@ Edge::setSource(const NodeGuiPtr & src)
     _imp->source = src;
     initLine();
     refreshState();
+    invalidateGraphNavigator();
+}
+
+// Edges the graph draws for itself have neither end and are not in its hit-test grid.
+static void
+reportGeometryToGraph(Edge* edge)
+{
+    const bool isOutput = edge->isOutputEdge();
+    NodeGuiPtr owner = isOutput ? edge->getSource() : edge->getDest();
+    NodeGraph* graph = owner ? owner->getDagGui() : NULL;
+    if (graph) {
+        graph->noteEdgeGeometryChanged(owner.get(), isOutput ? -1 : edge->getInputNumber(), edge);
+    }
+}
+
+// A faded edge drops its own update() requests; its owner's graph repaints it from the
+// low-detail layer instead.
+void
+Edge::appearanceChanged()
+{
+    update();
+    reportGeometryToGraph(this);
+}
+
+QVariant
+Edge::itemChange(GraphicsItemChange change,
+                 const QVariant& value)
+{
+    if (change == QGraphicsItem::ItemVisibleHasChanged) {
+        reportGeometryToGraph(this);
+    }
+
+    return QGraphicsLineItem::itemChange(change, value);
+}
+
+void
+Edge::invalidateGraphNavigator()
+{
+    // An input without a source widens the nodes' bounds the navigator frames.
+    NodeGuiPtr dst = _imp->dest.lock();
+    NodeGraph* graph = dst ? dst->getDagGui() : NULL;
+    if (graph) {
+        reportGeometryToGraph(this);
+        graph->invalidateNavigatorImage();
+    }
 }
 
 int
@@ -246,14 +294,14 @@ void
 Edge::turnOnRenderingColor()
 {
     _imp->useRenderingColor = true;
-    update();
+    appearanceChanged();
 }
 
 void
 Edge::turnOffRenderingColor()
 {
     _imp->useRenderingColor = false;
-    update();
+    appearanceChanged();
 }
 
 bool
@@ -275,7 +323,7 @@ void
 Edge::setIsSpliceHint(bool hint)
 {
     _imp->isSpliceHint = hint;
-    update();
+    appearanceChanged();
 }
 
 bool
@@ -311,6 +359,7 @@ Edge::setSourceAndDestination(const NodeGuiPtr & src,
     }
     refreshState();
     initLine();
+    invalidateGraphNavigator();
 }
 
 bool
@@ -324,6 +373,11 @@ Edge::computeVisibility() const
     }
 
     if (!effect) {
+        return false;
+    }
+
+    // A deactivated node keeps its edges in the scene, hidden until the node is shown again.
+    if (!dst->isVisibleTo(dst->parentItem())) {
         return false;
     }
 
@@ -374,21 +428,28 @@ Edge::setOptional(bool optional)
 void
 Edge::setDashed(bool dashed)
 {
+    if (_imp->paintWithDash == dashed) {
+        return;
+    }
     _imp->paintWithDash = dashed;
+    appearanceChanged();
 }
 
 void
 Edge::setUseHighlight(bool highlight)
 {
     _imp->useHighlight = highlight;
-    update();
+    appearanceChanged();
 }
 
 void
 Edge::setUseSelected(bool val)
 {
+    if (_imp->useSelected == val) {
+        return;
+    }
     _imp->useSelected = val;
-    update();
+    appearanceChanged();
 }
 
 static void
@@ -421,7 +482,18 @@ makeEdges(const QRectF & bbox,
 void
 Edge::initLine()
 {
-    refreshDataKindPen();
+    NodeGuiPtr owner = _imp->isOutputEdge ? _imp->source.lock() : _imp->dest.lock();
+    NodeGraph* graph = owner ? owner->getDagGui() : NULL;
+    if (graph && graph->deferNodeRefresh(owner.get(), NodeGraph::eDeferredRefreshEdgeLines)) {
+        return;
+    }
+    initLineNow();
+}
+
+void
+Edge::initLineNow()
+{
+    refreshDataKindPenNow();
 
     NodeGuiPtr source = _imp->source.lock();
     NodeGuiPtr dest = _imp->dest.lock();
@@ -523,9 +595,9 @@ Edge::initLine()
                 QPointF pos( _imp->middlePoint + QPointF(-5, -10) );
                 //qDebug() << pos;
                 _imp->label->setPos(pos);
-                QFontMetrics fm( _imp->label->font() );
-                int fontHeight = fm.height();
-                double txtWidth = fm.horizontalAdvance( _imp->label->text() );
+                _imp->labelMetrics.update(_imp->label->text(), _imp->label->font());
+                int fontHeight = _imp->labelMetrics.height();
+                double txtWidth = _imp->labelMetrics.width();
 
                 if ( (visibleLength < fontHeight * 2) || (visibleLength < txtWidth) ) {
                     _imp->label->hide();
@@ -562,11 +634,11 @@ Edge::initLine()
             setLine( dst.x(), dst.y(), srcpt.x(), srcpt.y() );
 
             if (_imp->label) {
-                QFontMetrics fm(_imp->label->font(), 0);
+                _imp->labelMetrics.update(_imp->label->text(), _imp->label->font());
                 double cosinus = std::cos(_imp->angle);
                 int yOffset = 0;
                 if (cosinus < 0) {
-                    yOffset = -fm.horizontalAdvance( _imp->label->text() );
+                    yOffset = -_imp->labelMetrics.width();
                 } else if ( (cosinus >= -0.01) && (cosinus <= 0.01) ) {
                     yOffset = +5;
                 } else {
@@ -618,15 +690,25 @@ Edge::initLine()
     prepareGeometryChange();
     _imp->arrowHead.clear();
     _imp->arrowHead << arrowIntersect << arrowP1 << arrowP2;
+    reportGeometryToGraph(this);
 } // initLine
+
+// The line's rect grown by the pen width, which holds the line stroked with any cap or join. Item
+// lookups and painting ask for this on every edge, so it cannot afford the path stroking that
+// QGraphicsLineItem::boundingRect() does on each call.
+static QRectF
+strokedLineBounds(const QLineF& line,
+                  qreal penWidth)
+{
+    return QRectF(line.p1(), line.p2()).normalized().adjusted(-penWidth, -penWidth, penWidth, penWidth);
+}
 
 QRectF
 Edge::boundingRect() const
 {
-    // QGraphicsLineItem::boundingRect() covers the line stroked with the item's pen, but the
-    // arrow head is painted (and stroked with that same pen) outside the line's own rect,
-    // exactly as shape() below already accounts for.
-    QRectF rect = QGraphicsLineItem::boundingRect();
+    // The arrow head is painted, stroked with the same pen, outside the line's own rect, exactly
+    // as shape() below already accounts for.
+    QRectF rect = strokedLineBounds(line(), pen().widthF());
     QRectF headRect = _imp->arrowHead.boundingRect();
 
     if (!headRect.isNull()) {
@@ -744,6 +826,7 @@ Edge::dragSource(const QPointF & src)
         //qDebug() << pos;
         _imp->label->setPos(pos);
     }
+    reportGeometryToGraph(this);
 }
 
 void
@@ -769,6 +852,7 @@ Edge::dragDest(const QPointF & dst)
         QPointF pos(((dst.x() + line().p2().x()) / 2.) - 5, ((dst.y() + line().p2().y()) / 2.) - 5);
         _imp->label->setPos(pos);
     }
+    reportGeometryToGraph(this);
 }
 
 void
@@ -797,8 +881,8 @@ Edge::isNearbyBendPoint(const QPointF & scenePoint)
 // Colour is the only data-kind channel on edges, so it does not need a second (e.g. width)
 // channel to stay legible. The dash pattern below is unrelated: it signals edge activity (mask /
 // hidden input), an orthogonal, simultaneously-possible state. The actual colours are user-facing
-// Preferences knobs (Settings::getEdgeKindColor), defaulting to an Okabe-Ito palette that stays
-// distinguishable under the common forms of colour-vision deficiency.
+// Preferences knobs (Settings::getEdgeKindColor), defaulting to colours that stay
+// distinguishable from each other under the common forms of colour-vision deficiency.
 static bool
 kindTintColor(DataKindEnum kind,
               QColor* color)
@@ -815,6 +899,17 @@ kindTintColor(DataKindEnum kind,
 
 void
 Edge::refreshDataKindPen(bool force)
+{
+    NodeGuiPtr owner = _imp->isOutputEdge ? _imp->source.lock() : _imp->dest.lock();
+    NodeGraph* graph = owner ? owner->getDagGui() : NULL;
+    if (graph && graph->deferNodeRefresh(owner.get(), force ? NodeGraph::eDeferredRefreshDataKindPenForced : NodeGraph::eDeferredRefreshDataKindPen)) {
+        return;
+    }
+    refreshDataKindPenNow(force);
+}
+
+void
+Edge::refreshDataKindPenNow(bool force)
 {
     NodeGuiPtr src = _imp->source.lock();
     DataKindEnum kind = eDataKindPolymorphic;
@@ -841,28 +936,13 @@ Edge::refreshDataKindPen(bool force)
     _imp->dataKind = kind;
     // Cached rather than read in paint() so the colour only follows saved Preferences.
     _imp->hasKindTint = kindTintColor(kind, &_imp->kindTint);
-    update();
+    appearanceChanged();
 }
 
-void
-Edge::paint(QPainter *painter,
-            const QStyleOptionGraphicsItem * /*options*/,
-            QWidget * /*parent*/)
+QPen
+Edge::getDrawnPen() const
 {
-    bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
-
-    if (!antialias) {
-        painter->setRenderHint(QPainter::Antialiasing, false);
-    }
-
     QPen myPen = pen();
-    NodeGuiPtr dst = _imp->dest.lock();
-    if (dst) {
-        if ( dst->getDagGui()->isDoingNavigatorRender() ) {
-            return;
-        }
-    }
-
     if (_imp->paintWithDash) {
         QVector<qreal> dashStyle;
         qreal space = 4;
@@ -872,25 +952,55 @@ Edge::paint(QPainter *painter,
         myPen.setStyle(Qt::SolidLine);
     }
 
-    QColor color, arrowColor;
+    QColor color;
     // A highlight marks a pipe an edit in progress will change, which matters more than the
     // selection of its node.
     if (_imp->isSpliceHint) {
-        color = arrowColor = selectionColorWithAlpha(100);
+        color = selectionColorWithAlpha(100);
     } else if (_imp->useHighlight) {
-        color = arrowColor = selectionColorWithAlpha();
+        color = selectionColorWithAlpha();
     } else if (_imp->useSelected) {
-        color = arrowColor = Qt::white;
+        color = Qt::white;
     } else if (_imp->useRenderingColor) {
-        color = arrowColor = _imp->renderingColor;
+        color = _imp->renderingColor;
     } else {
-        color = arrowColor = _imp->hasKindTint ? _imp->kindTint : _imp->defaultColor;
+        color = _imp->hasKindTint ? _imp->kindTint : _imp->defaultColor;
     }
     myPen.setColor(color);
+
+    return myPen;
+}
+
+void
+Edge::paint(QPainter* painter,
+            const QStyleOptionGraphicsItem* /*options*/,
+            QWidget* /*parent*/)
+{
+    NodeGuiPtr dst = _imp->dest.lock();
+    NodeGraph* graph = dst ? dst->getDagGui() : NULL;
+    if (graph && graph->isDoingNavigatorRender()) {
+        return;
+    }
+    if (!graph) {
+        NodeGuiPtr src = _imp->source.lock();
+        graph = src ? src->getDagGui() : NULL;
+    }
+
+    bool antialias = graph ? graph->isAntiAliasingEnabled() : appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
+    if (!antialias) {
+        painter->setRenderHint(QPainter::Antialiasing, false);
+    }
+
+    QPen myPen = getDrawnPen();
+    const QColor color = myPen.color();
     painter->setPen(myPen);
 
 
     painter->drawLine( line() );
+
+    if (graph && graph->isLowDetail()) {
+        return;
+    }
 
     myPen.setStyle(Qt::SolidLine);
     painter->setPen(myPen);
@@ -898,7 +1008,6 @@ Edge::paint(QPainter *painter,
     QPainterPath headPath;
     headPath.addPolygon(_imp->arrowHead);
     headPath.closeSubpath();
-    myPen.setColor(arrowColor);
     myPen.setJoinStyle(Qt::MiterJoin);
     painter->fillPath(headPath, color);
     painter->strokePath(headPath, myPen); // also draw the outline, or arrows are too small
@@ -1055,12 +1164,23 @@ LinkArrow::refreshPosition()
     _arrowHead << middle << arrowP1 << arrowP2;
 } // refreshPosition
 
+QRectF
+LinkArrow::boundingRect() const
+{
+    return strokedLineBounds(line(), std::max<qreal>(pen().widthF(), _lineWidth));
+}
+
 void
 LinkArrow::paint(QPainter *painter,
                  const QStyleOptionGraphicsItem* /*options*/,
                  QWidget* /*parent*/)
 {
-    bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
+    NodeGuiPtr node = _master.lock();
+    if (!node) {
+        node = _slave.lock();
+    }
+    NodeGraph* graph = node ? node->getDagGui() : NULL;
+    bool antialias = graph ? graph->isAntiAliasingEnabled() : appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
 
     if (!antialias) {
         painter->setRenderHint(QPainter::Antialiasing, false);

@@ -94,12 +94,38 @@ build" for why). The `.ccache` dir and `HOME` volume survive that.
 `tools/ci/local/build-moonray.sh` builds DreamWorks' MoonRay and its Hydra
 render delegate, hdMoonray, CPU only, against the image's own USD, TBB, Boost,
 Embree, OpenVDB, OpenImageIO, OpenEXR and OpenImageDenoise, and installs them
-into `/opt/moonray`. The openmoonray tag is pinned to its commit
-(`NATRON_MOONRAY_VERSION` / `NATRON_MOONRAY_COMMIT` in the `Dockerfile`), and
-that commit pins every submodule; the ISPC compiler is a checksummed release
-binary used for the build only. It is one of the image's two slowest layers and
-sits right after the Cycles layer, which changes less often, so a MoonRay change
-leaves the Cycles layer cached.
+into `/opt/moonray`. The build applies no patches: it clones the forked
+super-repo `NATRON_MOONRAY_REPO` (default
+`https://github.com/charlesangus/openmoonray.git`) at the full commit
+`NATRON_MOONRAY_COMMIT` (both `ARG`s in the `Dockerfile`) and fetches each
+submodule from its full `.gitmodules` URL, which must be under
+`github.com/charlesangus` or `github.com/dreamworksanimation`. The ISPC
+compiler is a checksummed release binary used for the build only. The image's
+`SOURCE` file lists every repo's URL and commit. It is one of the image's two
+slowest layers and sits right after the Cycles layer, which changes less often,
+so a MoonRay change leaves the Cycles layer cached.
+
+The Natron changes live in forks, all on branch `natron/v2026.29.1`:
+
+- `charlesangus/openmoonray`, the super-repo: drops six unused subdirectories
+  and the unpublished `materialx_shaders` submodule, and points its submodules
+  at the forks below.
+- `charlesangus/arras4_core`, `charlesangus/moonray` and
+  `charlesangus/mcrt_dataio`: the build fixes Natron needs.
+- `charlesangus/hdMoonray`: the same, and it also reads the `moonray` material
+  render context.
+
+To move the pin, commit on the fork's `natron/v2026.29.1` branch and push it.
+For a submodule fork, push it before the super-repo, so the super-repo never
+references a commit that is not published. Then, in `charlesangus/openmoonray`,
+bump the submodule's gitlink, commit and push that branch, and set
+`NATRON_MOONRAY_COMMIT` in the `Dockerfile` to the new super-repo SHA (a full
+40-character SHA).
+
+Never force-push or rebase the forks' `natron/...` branches. The build pins
+commits that are reachable only through those branches, so rewriting one can
+leave a pin pointing at nothing. A new change goes on top as a new commit, and
+the pin moves to that commit.
 
 The prefix is relocatable and is never put on the loader path: MoonRay's
 libraries carry `$ORIGIN` RUNPATHs and link the image's `/usr/local/lib`

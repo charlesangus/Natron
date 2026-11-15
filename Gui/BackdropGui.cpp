@@ -181,8 +181,7 @@ BackdropGuiPrivate::refreshLabelText(int nameHeight,
 
     label->setHtml(textLabel);
 
-
-    QRectF bbox = _publicInterface->boundingRect();
+    QRectF bbox = _publicInterface->bodyRect();
 
     //label->adjustSize();
     int w = std::max( bbox.width(), label->textWidth() * 1.2 );

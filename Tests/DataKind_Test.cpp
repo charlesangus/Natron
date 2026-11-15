@@ -602,3 +602,62 @@ TEST_F(BaseTest, ProjectLoadReportsRawIntoImageConflict)
     ASSERT_TRUE(bool(source2));
     EXPECT_FALSE(source2->hasPersistentMessage());
 }
+
+// A connect re-resolves the pass-throughs below the edited node, but the invalidation stops at a
+// node of concrete kind: nothing past one can have changed, so a large graph cut into concrete
+// nodes walks only the stretch around the edit.
+TEST_F(BaseTest, ConnectUpdatesDownstreamKindsWithoutWalkingPastAConcreteNode)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr farDot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+    NodePtr nearDot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr newDot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr tailDot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+
+    ASSERT_TRUE(generator && farDot && imageSink && nearDot && newDot && tailDot);
+
+    connectNodes(generator, farDot, 0, true);
+    connectNodes(farDot, imageSink, 0, true);
+    connectNodes(imageSink, nearDot, 0, true);
+    connectNodes(newDot, tailDot, 0, true);
+
+    ASSERT_EQ(eDataKindImage, farDot->getEffectiveOutputDataKind());
+    ASSERT_EQ(eDataKindImage, nearDot->getEffectiveOutputDataKind());
+    ASSERT_EQ(eDataKindPolymorphic, tailDot->getEffectiveOutputDataKind());
+
+    int farEmitted = 0;
+    int tailEmitted = 0;
+    const QMetaObject::Connection farConnection = QObject::connect(farDot.get(), &Node::dataKindChanged, farDot.get(), [&farEmitted]() { ++farEmitted; }, Qt::DirectConnection);
+    const QMetaObject::Connection tailConnection = QObject::connect(tailDot.get(), &Node::dataKindChanged, tailDot.get(), [&tailEmitted]() { ++tailEmitted; }, Qt::DirectConnection);
+
+    connectNodes(nearDot, newDot, 0, true);
+
+    EXPECT_EQ(eDataKindImage, newDot->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindImage, tailDot->getEffectiveOutputDataKind());
+    EXPECT_GE(tailEmitted, 1);
+    EXPECT_EQ(0, farEmitted);
+    EXPECT_EQ(eDataKindImage, farDot->getEffectiveOutputDataKind());
+
+    QObject::disconnect(farConnection);
+    QObject::disconnect(tailConnection);
+}
+
+// The other direction of the same scoping: a consumer connected below a chain of pass-throughs
+// still re-resolves every one of them up to the first node of concrete kind.
+TEST_F(BaseTest, ConnectUpdatesUpstreamPassThroughsFromTheirNewConsumer)
+{
+    NodePtr upperDot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr lowerDot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(upperDot && lowerDot && deepSink);
+
+    connectNodes(upperDot, lowerDot, 0, true);
+    ASSERT_EQ(eDataKindPolymorphic, upperDot->getEffectiveOutputDataKind());
+
+    connectNodes(lowerDot, deepSink, 0, true);
+
+    EXPECT_EQ(eDataKindDeep, lowerDot->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindDeep, upperDot->getEffectiveOutputDataKind());
+}

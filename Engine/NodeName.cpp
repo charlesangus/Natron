@@ -35,6 +35,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupOutput.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Project.h"
@@ -42,19 +43,6 @@
 #include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
-
-// Trim underscore followed by digits at the end of baseName (see #732).
-static
-void trimNumber(std::string &baseName)
-{
-    std::size_t found_underscore = baseName.rfind('_');
-    if (found_underscore != std::string::npos && found_underscore != (baseName.size() - 1)) {
-        std::size_t found_nondigit = baseName.find_last_not_of("0123456789");
-        if (found_nondigit == found_underscore) {
-            baseName.erase(found_underscore);
-        }
-    }
-}
 
 void
 Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, const QString& fixedName)
@@ -73,20 +61,8 @@ Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, 
         std::string name = fixedName.toStdString();
         // If the script name is available, use it as is (else we get issue #755).
         // Else look for a similar name by adding a (different) number suffix.
-        if ( group && group->checkIfNodeNameExists(name, this) ) {
-            std::string baseName = name;
-            trimNumber(baseName);
-            int no = 1;
-            do {
-                name = baseName;
-                if (no > 1) {
-                    name += '_';
-                    std::stringstream ss;
-                    ss << no;
-                    name += ss.str();
-                }
-                ++no;
-            } while ( group && group->checkIfNodeNameExists(name, this) );
+        if (group) {
+            name = group->findAvailableNodeName(name, false, this);
         }
         //This version of setScriptName will not error if the name is invalid or already taken
         setScriptName_no_error_check(name);
@@ -96,20 +72,8 @@ Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, 
         std::string name = serialization->scriptName;
         // If the serialized script name is available, use it as is (else we get issue #755).
         // Else look for a similar name by adding a (different) number suffix.
-        if ( group && group->checkIfNodeNameExists(name, this) ) {
-            std::string baseName = name;
-            trimNumber(baseName);
-            int no = 1;
-            do {
-                name = baseName;
-                if (no > 1) {
-                    name += '_';
-                    std::stringstream ss;
-                    ss << no;
-                    name += ss.str();
-                }
-                ++no;
-            } while ( group->checkIfNodeNameExists(name, this) );
+        if (group) {
+            name = group->findAvailableNodeName(name, false, this);
         }
 
         //This version of setScriptName will not error if the name is invalid or already taken
@@ -263,11 +227,13 @@ Node::setLabel(const std::string& label)
 {
     assert( QThread::currentThread() == qApp->thread() );
 
+    std::string oldLabel;
     {
         QMutexLocker k(&_imp->nameMutex);
         if (label == _imp->label) {
             return;
         }
+        oldLabel = _imp->label;
         _imp->label = label;
     }
     if (GraphEditRecorder::isActive()) {
@@ -275,6 +241,7 @@ Node::setLabel(const std::string& label)
     }
     NodeCollectionPtr collection = getGroup();
     if (collection) {
+        collection->notifyNodeNamesChanged(shared_from_this(), getScriptName_mt_safe(), oldLabel);
         collection->notifyNodeNameChanged( shared_from_this() );
     }
     Q_EMIT labelChanged( QString::fromUtf8( label.c_str() ) );
@@ -457,9 +424,11 @@ Node::setNameInternal(const std::string& name,
         }
     }
 
+    std::string oldLabel;
     {
         QMutexLocker l(&_imp->nameMutex);
         _imp->scriptName = newName;
+        oldLabel = _imp->label;
         ///Set the label at the same time if the label is empty
         if ( _imp->label.empty() ) {
             _imp->label = newName;
@@ -469,8 +438,14 @@ Node::setNameInternal(const std::string& name,
         GraphEditRecorder::onNodeRenamed(this);
     }
     // A loop lists its LoopBegins by script name.
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    absorbGraphChangeOfOwnSources(upstreamStampGeneration, false);
     std::string fullySpecifiedName = getFullyQualifiedName();
+
+    if (collection) {
+        collection->notifyNodeNamesChanged(shared_from_this(), oldName, oldLabel);
+    }
 
     if (collection) {
         if ( !oldName.empty() ) {
@@ -481,7 +456,8 @@ Node::setNameInternal(const std::string& name,
                     qDebug() << e.what();
                 }
             }
-        } else { //if (!oldName.empty()) {
+        } else if (!deferPythonDeclarationToBatch()) {
+            NodeCreationStageLog::Scope stage("pythonCallbacks");
             declareNodeVariableToPython(fullySpecifiedName);
         }
 
@@ -514,6 +490,13 @@ Node::setNameInternal(const std::string& name,
             if (!oldName.empty()) {
                 // An expression naming the new name was invalid until now.
                 getApp()->recheckInvalidExpressions();
+            }
+            AppInstancePtr app = getApp();
+            if (app && !app->getProject()->isLoadingProject()) {
+                std::set<std::string> names;
+                names.insert(oldName);
+                names.insert(newName);
+                app->recheckInvalidExpressionsReferencing(names);
             }
         }
     }

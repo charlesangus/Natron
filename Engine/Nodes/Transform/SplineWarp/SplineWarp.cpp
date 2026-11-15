@@ -910,13 +910,14 @@ SplineWarp::writeTransformKnobs()
     if (!context) {
         return;
     }
-    // The page edits one transform only; a tied curve takes the edit through its slaved knobs.
+    // The page edits one transform only; the curve context forwards the edit to a tied curve's own knobs.
     const RotoItemPtr layer = editedLayer(transformTargets(*context));
     if (!layer) {
         return;
     }
+    const std::list<KnobIPtr> pageKnobs = transformValueKnobs(context->getTransformKnobs());
     SplineWarpTransform transform;
-    transform.readKnobs(transformValueKnobs(context->getTransformKnobs()));
+    transform.readKnobs(pageKnobs);
     context->setOwnTransform(layer, transform);
 }
 

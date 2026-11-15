@@ -38,6 +38,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
 #include "Engine/LibraryBinary.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -54,6 +55,7 @@
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TrackerContext.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -113,6 +115,7 @@ Node::load(const CreateNodeArgs& args)
          */
         _imp->effect.reset( func.second(thisShared) );
         assert(_imp->effect);
+        _imp->hostedEffect.store(_imp->effect.get(), std::memory_order_release);
 
         initNodeScriptName(serialization.get(), QString::fromUtf8(argFixedName.c_str()));
 
@@ -135,6 +138,7 @@ Node::load(const CreateNodeArgs& args)
         // ofx plugin
         _imp->effect = appPTR->createOFXEffect(thisShared, args);
         assert(_imp->effect);
+        _imp->hostedEffect.store(_imp->effect.get(), std::memory_order_release);
     }
 
     _imp->effect->initializeOverlayInteract();
@@ -152,6 +156,9 @@ Node::load(const CreateNodeArgs& args)
         }
         if (layout.hasOverlayColor) {
             setOverlayColor(layout.overlayR, layout.overlayG, layout.overlayB);
+        }
+        if (ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(_imp->effect.get())) {
+            viewer->refreshLockDecoration();
         }
     }
 
@@ -214,7 +221,22 @@ Node::load(const CreateNodeArgs& args)
     // After the knobs are loaded, so a pasted or duplicated node's saved config does not win.
     getApp()->getProject()->pushOCIOConfigToNode(thisShared);
 
-    _imp->runOnNodeCreatedCB(!serialization && !isLoadingPyPlug);
+    if (finishCreationInPythonDeclarationBatch(!serialization && !isLoadingPyPlug)) {
+        return;
+    }
+
+    {
+        NodeCreationStageLog::Scope stage("pythonCallbacks");
+        _imp->runOnNodeCreatedCB(!serialization && !isLoadingPyPlug);
+    }
+
+    // Expressions written before this node existed may name it. A loading project rechecks
+    // them all once it is loaded.
+    if (!getApp()->getProject()->isLoadingProject()) {
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        getApp()->recheckInvalidExpressionsReferencing(names);
+    }
 } // load
 
 
@@ -668,13 +690,19 @@ Node::restoreKnobsLinks(const NodesList & allNodes,
 void
 Node::doDestroyNodeInternalEnd(bool autoReconnect)
 {
+    // An inactive node was deleted by a command already, or never was: an undo stack dropping its
+    // command, or a create undone, must not count as a second deletion.
+    const bool wasActive = isActivated();
+
     ///Remove the node from the project
     deactivate(NodesList(),
                true,
                autoReconnect,
                true,
                false);
-
+    if (wasActive) {
+        notifyOutputsOfDeletion();
+    }
 
     {
         NodeGuiIPtr guiPtr = _imp->guiPointer.lock();
@@ -702,7 +730,9 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
 
     AppInstancePtr app = getApp();
     if (app) {
-        app->recheckInvalidExpressions();
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        app->recheckInvalidExpressionsReferencing(names);
     }
 
     ///Remove the Python node
@@ -724,6 +754,7 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
     EffectInstancePtr effect;
     {
         QMutexLocker k(&_imp->effectTeardownMutex);
+        _imp->hostedEffect.store(nullptr, std::memory_order_release);
         effect.swap(_imp->effect);
     }
     effect.reset();
@@ -798,8 +829,11 @@ Node::destroyNode(bool blockingDestroy, bool autoReconnect)
     }
 
     {
-        QMutexLocker k(&_imp->activatedMutex);
+        QMutexLocker k(&_imp->isBeingDestroyedMutex);
         _imp->isBeingDestroyed = true;
+    }
+    if (QThread::currentThread() == qApp->thread()) {
+        releaseStashedPythonObject();
     }
 
     bool allProcessingQuit = areAllProcessingThreadsQuit();

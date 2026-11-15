@@ -27,6 +27,7 @@
 
 #include <cmath>
 #include <string>
+#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -35,6 +36,7 @@
 #include "BaseTest.h"
 #include "NativePluginIdentity.h"
 #include "RawTestSource.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
@@ -87,16 +89,6 @@ whiteBalancedMetadata(const std::string& pattern)
 
     return metadata;
 }
-
-const RectI kTiles[] = {
-    RectI(0, 0, kWidth, kHeight),
-    RectI(10, 9, 31, 28),
-    RectI(0, 0, 7, 5),
-    RectI(kWidth - 9, kHeight - 4, kWidth, kHeight),
-    RectI(24, 20, 25, 21),
-    RectI(17, 13, 18, 14),
-    RectI(30, 0, 48, 13),
-};
 } // namespace
 
 class NativeRawHighlightsInpaintTest
@@ -109,7 +101,9 @@ protected:
     }
 
     NodePtr createChain(const std::string& pattern,
-                        int nComps = 1)
+                        int nComps = 1,
+                        NodePtr* sourceOut = nullptr,
+                        const RectI& rod = RectI(0, 0, kWidth, kHeight))
     {
         NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWHIGHLIGHTS));
@@ -120,15 +114,18 @@ protected:
         }
         const ImageMetadata metadata = whiteBalancedMetadata(pattern);
         const RawLayout layout = RawLayout::fromMetadata(metadata).value_or(RawLayout());
-        dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(RectI(0, 0, kWidth, kHeight), nComps, clippedScene(layout), metadata);
+        dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(rod, nComps, clippedScene(layout), metadata);
         connectNodes(source, node, 0, true);
         node->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode)->setValue((int)eRawHighlightsModeInpaint);
+        if (sourceOut) {
+            *sourceOut = source;
+        }
 
         return node;
     }
 };
 
-TEST_F(NativeRawHighlightsInpaintTest, TilesMatchTheFullFrameAndOnlyClippedPhotositesChange)
+TEST_F(NativeRawHighlightsInpaintTest, OnlyClippedPhotositesChange)
 {
     for (const char* pattern : { "RGGB", "GBRG", kXTransPattern }) {
         NodePtr node = createChain(pattern);
@@ -153,16 +150,23 @@ TEST_F(NativeRawHighlightsInpaintTest, TilesMatchTheFullFrameAndOnlyClippedPhoto
             }
         }
         EXPECT_GT(changed, 0) << pattern;
+    }
+}
 
-        for (const RectI& tile : kTiles) {
-            RenderedPlane plane;
-            ASSERT_TRUE(renderRawTestPlane(node, tile, &plane, &error)) << pattern << ": " << error;
-            for (int y = tile.y1; y < tile.y2; ++y) {
-                for (int x = tile.x1; x < tile.x2; ++x) {
-                    ASSERT_EQ(rawTestPlaneValue(full, x, y, 0), rawTestPlaneValue(plane, x, y, 0)) << pattern << " at " << x << "," << y << " in tile " << tile.x1 << "," << tile.y1 << "-" << tile.x2 << "," << tile.y2;
-                }
-            }
-        }
+// Every window of a frame at an offset origin and of odd size renders the pixels of the whole
+// frame.
+TEST_F(NativeRawHighlightsInpaintTest, RegionIndependentCpu)
+{
+    const RectI frame(-5, -3, kWidth + 2, kHeight + 4);
+
+    for (const char* pattern : { "RGGB", "GBRG", kXTransPattern }) {
+        RegionIndependenceTest::expectRawRegionIndependent([&]() {
+            NodePtr source;
+            NodePtr node = createChain(pattern, 1, &source, frame);
+
+            return std::make_pair(node, source);
+        },
+                                                           frame, pattern);
     }
 }
 

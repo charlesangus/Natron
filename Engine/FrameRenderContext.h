@@ -319,6 +319,23 @@ public:
         return _isolatedJob;
     }
 
+    /**
+     * @brief Makes noteNodeRendered() keep what it is told, for a consumer that shows which nodes computed the frame.
+     * Set before the frame is submitted.
+     **/
+    void setRecordsRenderedNodes(bool records);
+
+    /**
+     * @brief Records that node computed pixels of this frame, rather than taking them all from the cache or passing
+     * its input through. Thread safe.
+     **/
+    void noteNodeRendered(const Node* node) const;
+
+    /**
+     * @brief The nodes noteNodeRendered() recorded. Thread safe.
+     **/
+    std::unordered_set<const Node*> renderedNodes() const;
+
 #ifdef NATRON_HAVE_GPU
     /**
      * @brief Whether the consumer of the frame can take its root planes in device memory. Thread safe.
@@ -354,6 +371,9 @@ private:
     ViewIdx _view;
     mutable FrameStore _store;
     const IsolatedJob* _isolatedJob;
+    std::atomic<bool> _recordsRenderedNodes;
+    mutable std::mutex _renderedMutex;
+    mutable std::unordered_set<const Node*> _renderedNodes;
 #ifdef NATRON_HAVE_GPU
     std::atomic<bool> _wantsRootOnDevice;
     std::mutex _rootDeviceMutex;

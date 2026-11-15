@@ -73,7 +73,8 @@ bool getNodeImageWindow(const NodePtr& node,
  * rendered.
  *
  * Returns false in the cases sampleNodeColor() returns false. Returns true with a null image when the
- * region of definition misses window: it is then all transparent black.
+ * region of definition misses window: it is then all transparent black. abortInfo stops the render as
+ * for renderNodeImage().
  **/
 bool renderNodeImageOverWindow(const NodePtr& node,
                                double time,
@@ -81,7 +82,8 @@ bool renderNodeImageOverWindow(const NodePtr& node,
                                const ImageLayerDesc& layer,
                                const RectI& window,
                                ImagePtr* image,
-                               RectI* renderedRect);
+                               RectI* renderedRect,
+                               const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
 
 /**
  * @brief Renders node's output over pixelRect, in pixel coordinates at mipmapLevel, synchronously on

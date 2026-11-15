@@ -150,17 +150,14 @@ USDRead::initializeKnobs()
     filename->setName(kUSDReadParamFile);
     filename->setHintToolTip(tr("The USD file (.usd, .usda, .usdc, .usdz) or Alembic file (.abc) to read."));
     filename->setFileExtensions({ "usd", "usda", "usdc", "usdz", "abc" });
-    filename->setShowsReloadButton(false);
-    filename->setAddNewLine(false);
     page->addKnob(filename);
     _filename = filename;
 
-    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
-    reload->setName(kUSDReadParamReload);
-    reload->setHintToolTip(tr("Reads the file again, and every file it sublayers, references or loads as a "
-                              "payload, so files changed on disk are what the node outputs. Each changed file is "
-                              "read again in place: every scene using it, the viewer's included, shows the new "
-                              "content. Renders reading scenes are stopped or waited for first."));
+    KnobButtonPtr reload = filename->createReloadButton(kUSDReadParamReload,
+                                                        tr("Reads the file again, and every file it sublayers, references or loads as a "
+                                                           "payload, so files changed on disk are what the node outputs. Each changed file is "
+                                                           "read again in place: every scene using it, the viewer's included, shows the new "
+                                                           "content. Renders reading scenes are stopped or waited for first."));
     page->addKnob(reload);
     _reload = reload;
 
@@ -291,21 +288,30 @@ USDRead::knobChanged(KnobI* k,
     if (!reload || (k != reload.get())) {
         return false;
     }
-    std::vector<std::string> reloaded;
-    std::string error;
-    if (!_imp->source.reload(filename ? filename->getSingleFilePath() : std::string(), &error, &reloaded)) {
-        setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
-    } else {
-        clearPersistentMessage(false);
-    }
-    purgeCaches();
-    // Same as NativeRead: the Reload bracket hashed this node before purgeCaches() moved its
-    // hash inputs.
-    NodePtr node = getNode();
-    if (node) {
-        node->markHashDirty();
-    }
-    SceneFileSource::reloadOtherReaders(reloaded, filename ? filename->getResolvedPath() : std::string(), this);
+    // The node's hash moves once the layers hold the new content, which may be after this
+    // returns: a render keyed by the new hash must not read the old layers. inCall is set while
+    // this call runs: a reload that ends inside it leaves the render to the Reload bracket.
+    const std::shared_ptr<bool> inCall = std::make_shared<bool>(true);
+    _imp->source.reload(filename ? filename->getSingleFilePath() : std::string(), weak_from_this(), [this, inCall](bool ok, const std::string& error, const std::vector<std::string>& reloaded) {
+        KnobFilePtr file = _filename.lock();
+        if (!ok) {
+            setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
+        } else {
+            clearPersistentMessage(false);
+        }
+        purgeCaches();
+        // Same as NativeRead: the Reload bracket hashed this node before purgeCaches() moved its
+        // hash inputs.
+        NodePtr node = getNode();
+        if (node) {
+            node->markHashDirty();
+        }
+        SceneFileSource::reloadOtherReaders(reloaded, file ? file->getResolvedPath() : std::string(), this);
+        if (!*inCall) {
+            evaluate(true, true);
+        }
+    });
+    *inCall = false;
 
     return true;
 }

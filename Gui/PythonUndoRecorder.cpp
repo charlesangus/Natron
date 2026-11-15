@@ -136,6 +136,12 @@ PythonUndoRecorder::getCaptureSerial() const
     return _history ? _history->getCaptureSerial() : 0;
 }
 
+bool
+PythonUndoRecorder::isReplaying() const
+{
+    return _history && _history->isReplaying();
+}
+
 void
 PythonUndoRecorder::record(const UndoCommandPtr& command,
                            const UndoTouched& touched)

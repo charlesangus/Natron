@@ -306,6 +306,13 @@ public:
     EffectInstancePtr getEffectInstance() const;
 
     /**
+     * @brief Whether effect is this node's effect, or whether it still has one, without racing the
+     * teardown that detaches it. A node kept alive past its teardown no longer has one.
+     **/
+    bool hostsEffect(const EffectInstance* effect) const;
+    bool hasEffectAttached() const;
+
+    /**
      * @brief Returns true if the node is a multi-instance node, that is, holding several other nodes.
      * e.g: the Tracker node.
      **/
@@ -558,6 +565,18 @@ public:
     /*Returns in viewers the list of all the viewers connected to this node*/
     void hasViewersConnected(std::list<ViewerInstance* >* viewers) const;
 
+    /**
+     * @brief False when no walk downstream of this node can reach a viewer: it is not one, and no
+     * viewer of the process has an input.
+     **/
+    bool couldReachConnectedViewer() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The viewers hasViewersConnected() finds from any of the nodes, each once, in one walk
+     * of what is downstream of them all.
+     **/
+    static void getViewersDownstreamOf(const std::list<NodePtr>& nodes, std::list<ViewerInstance*>* viewers);
+
     void hasOutputNodesConnected(std::list<OutputEffectInstance* >* writers) const;
 
     /**
@@ -657,8 +676,18 @@ public:
      * both directions: consumers and inputs alike. Everything derived from the kinds of the nodes
      * it reaches is then brought back up to date: their data-kind diagnostic, and the
      * dataKindChanged() signal the GUI redraws its edges from.
+     *
+     * Inside an InputEditBatch on the main thread every cached kind is dropped at once instead,
+     * and the diagnostics and signals are brought up to date at the end of the outermost batch,
+     * once for each node reached from any node invalidated in it.
      **/
     void invalidateEffectiveOutputDataKindCache();
+
+    /**
+     * @brief The number of nodes the walks of invalidateEffectiveOutputDataKindCache() have visited
+     * since startup. For tests.
+     **/
+    static U64 getDataKindInvalidationVisitCount();
 
     /**
      * @brief Recomputes this node's data-kind diagnostic: an eMessageTypeError persistent message
@@ -838,6 +867,12 @@ public:
 
     bool hasInputConnected() const;
 
+    /**
+     * @brief Like hasInputConnected(), also counting an input queued to connect while the node
+     * renders. False before the inputs are initialized.
+     **/
+    bool hasInputOrQueuedInputConnected() const;
+
     bool hasOverlay() const;
 
     bool hasMandatoryInputDisconnected() const;
@@ -934,6 +969,19 @@ public:
      * @brief Same as getOutputsWithGroupRedirection(), appended to outputs.
      **/
     void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
+
+    /**
+     * @brief appendOutputsWithGroupRedirection() stopping after one redirection: a group appends
+     * the nodes its GroupInputs feed, a GroupOutput the outputs of its group, a precomp's output
+     * node those of the precomp; any other node its own outputs. The nodes appended may redirect
+     * again.
+     **/
+    void appendOutputsThroughOneRedirection(std::vector<NodePtr>* outputs) const;
+
+    /**
+     * @brief Whether this node is the output node of the precomp it is part of.
+     **/
+    bool isPrecompOutputNode() const;
 
     /**
      * @brief Walks the body of a loop running from begins up to tail, closed by end: the nodes the
@@ -1035,6 +1083,13 @@ public:
 
     bool isSettingsPanelVisible() const;
 
+    /**
+     * @brief Called by the node's GUI whenever its own settings panel is shown or hidden. An edit
+     * refreshes the dirty input-related data of the nodes registered visible, and of those whose
+     * panel visibility follows another node's, without walking the graph to find them.
+     **/
+    void noteSettingsPanelVisibility(bool visible);
+
     bool isSettingsPanelMinimized() const;
 
     void onOpenGLEnabledKnobChangedOnProject(bool activated);
@@ -1043,7 +1098,20 @@ private:
     // queueWhileRendering false applies the edit to the real inputs even while a render holds the node.
     bool replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhileRendering);
 
+    /**
+     * @brief Does what abortViewerRendersForEdit() does on the effect. Returns true with
+     * viewersDownstream holding what hasViewersConnected() would, found in the same walk, or false
+     * when that walk could not be shared and viewersDownstream is untouched.
+     **/
+    bool abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstream);
+
     int disconnectInputInternal(Node* input, bool queueWhileRendering);
+
+    /**
+     * @brief Forgets input wherever it is a real or GUI input, at once even while rendering, so no
+     * slot names it once its effect is destroyed. False when none did.
+     **/
+    bool dropInputsFromDeactivated(const Node* input);
 
     bool isSettingsPanelVisibleInternal(std::set<const Node*>& recursionList) const;
 
@@ -1245,6 +1313,13 @@ public:
      * @param autoReconnect If set to true, outputs connected to this node will try to connect to the input of this node automatically.
      **/
     void destroyNode(bool blockingDestroy, bool autoReconnect);
+
+    /**
+     * @brief Tells the outputs deactivate() just disconnected from this node that it was deleted,
+     * through EffectInstance::onInputSourceDeleted(). Deactivating is not deleting: undoing a node's
+     * creation or moving it into a group deactivate it too, so the caller says which this is.
+     **/
+    void notifyOutputsOfDeletion();
 
 private:
 
@@ -1517,7 +1592,10 @@ public:
 
     void beginInputEdition();
 
-    void endInputEdition(bool triggerRender);
+    /**
+     * @brief Closes one input edition level. True when it was the outermost and inputs had changed.
+     **/
+    bool endInputEdition(bool triggerRender);
 
     void onInputChanged(int inputNb, bool isInputA = true);
 
@@ -1550,15 +1628,15 @@ public:
     std::string getNodeExtraLabel() const;
 
     /**
-     * @brief Show keyframe markers on the timeline. The signal to refresh the timeline's gui
-     * will be emitted only if emitSignal is set to true.
+     * @brief Show keyframe markers on the timeline. The timeline's gui refreshes once on the next
+     * pass of the event loop however many nodes change, so emitSignal has no effect.
      * Calling this function without calling hideKeyframesFromTimeline() has no effect.
      **/
     void showKeyframesOnTimeline(bool emitSignal);
 
     /**
-     * @brief Hide keyframe markers on the timeline. The signal to refresh the timeline's gui
-     * will be emitted only if emitSignal is set to true.
+     * @brief Hide keyframe markers on the timeline. The timeline's gui refreshes once on the next
+     * pass of the event loop however many nodes change, so emitSignal has no effect.
      * Calling this function without calling showKeyframesOnTimeline() has no effect.
      **/
     void hideKeyframesFromTimeline(bool emitSignal);
@@ -2042,13 +2120,13 @@ public:
     void refreshInputRelatedDataAfterInputChange();
 
     /**
-     * @brief Marks the input-related data (produced layers, channel selectors, identity state,
+     * @brief Leaves the input-related data (produced layers, channel selectors, identity state,
      * the current-frame metadata hook) of every node downstream of this one dirty, reading no
-     * hash, so that a branch nothing shows is never rehashed for it. Renders read none of it but
-     * the draft flag, which is settled here for every node reached. The nodes whose settings panel
-     * is visible, or that show a missing-channel message, are refreshed now; the others when their
-     * panel is shown, except that a viewer reached has its layer menu relisted now. Main thread
-     * only.
+     * hash and visiting none of them: isInputRelatedDataDirty() finds the edit upstream. Renders
+     * read none of it but the draft flag, which is settled here for the nodes whose flag the edit
+     * changes. The nodes whose settings panel is visible, or that show a missing-channel message,
+     * are refreshed now if dirty; the others when their panel is shown, except that a viewer
+     * downstream has its layer menu relisted now. Main thread only.
      **/
     void refreshShownDownstreamInputRelatedData();
 
@@ -2085,6 +2163,108 @@ public:
     private:
         InputRelatedDataRefreshDeferral(const InputRelatedDataRefreshDeferral&);
         InputRelatedDataRefreshDeferral& operator=(const InputRelatedDataRefreshDeferral&);
+    };
+
+    /**
+     * @brief While one lives on the main thread, activating, deactivating and reconnecting nodes
+     * leaves invalid-expression rechecks, input-related refreshes and the project's layer table to
+     * the end of the outermost one, which does each once. An edit of many nodes would otherwise
+     * walk everything downstream of each, reading expressions that name nodes it has not restored
+     * yet.
+     **/
+    class InputEditBatch {
+    public:
+        explicit InputEditBatch(const AppInstancePtr& app);
+        ~InputEditBatch();
+
+        InputEditBatch(const InputEditBatch&) = delete;
+        InputEditBatch& operator=(const InputEditBatch&) = delete;
+
+    private:
+        AppInstancePtr _app;
+    };
+
+    /**
+     * @brief While one lives on the main thread, the walks downstream of the nodes a value change
+     * reaches (aborting viewer renders, refreshing the shown input-related data, rendering or
+     * redrawing the viewers and refreshing previews) wait for the end of the outermost one, which
+     * does each once from all of those nodes. A change with many expression dependents would
+     * otherwise walk everything below each dependent. KnobHolder::endChanges() opens one. Off the
+     * main thread it does nothing.
+     **/
+    class ValueChangeCascade {
+    public:
+        ValueChangeCascade();
+        ~ValueChangeCascade();
+
+        ValueChangeCascade(const ValueChangeCascade&) = delete;
+        ValueChangeCascade& operator=(const ValueChangeCascade&) = delete;
+
+    private:
+        bool _active;
+    };
+
+    /**
+     * @brief If a ValueChangeCascade lives on the calling thread, keeps the abort of the viewer
+     * renders reading `node` for its end and returns true.
+     **/
+    static bool deferViewerAbortToCascade(const NodePtr& node);
+
+    /**
+     * @brief If a ValueChangeCascade lives on the calling thread, keeps the render (`isSignificant`)
+     * or redraw of the viewers downstream of `node`, and the refresh of the previews downstream of
+     * it at `time` when significant, for its end and returns true.
+     **/
+    static bool deferEvaluationToCascade(const NodePtr& node, bool isSignificant, double time);
+
+    /**
+     * @brief The number of nodes visited by the walks downstream of an edit since startup. For
+     * tests.
+     **/
+    static U64 getDownstreamWalkVisitCount();
+
+    /**
+     * @brief The number of nodes the cycle checks of connections have walked since startup. For
+     * tests.
+     **/
+    static U64 getCycleCheckVisitCount();
+
+    /**
+     * @brief The number of nodes whose newest upstream input-edit stamp has been worked out rather
+     * than read from its memo, since startup. For tests.
+     **/
+    static U64 getUpstreamStampWalkVisitCount();
+
+    /**
+     * @brief While one lives on this thread, the walks finding the outputs whose renders to abort
+     * share what they visited, so deactivating many nodes walks what is downstream of them once.
+     * Open one only around removing nodes: connecting a node inside it would hide the new output.
+     **/
+    class RemovalBatch {
+    public:
+        RemovalBatch();
+        ~RemovalBatch();
+
+        RemovalBatch(const RemovalBatch&) = delete;
+        RemovalBatch& operator=(const RemovalBatch&) = delete;
+    };
+
+    /**
+     * @brief While one lives on the main thread, activate(), deactivate() and the creation of a
+     * node outside a PyPlug leave declaring or deleting the nodes' Python variables, restoring
+     * their expression functions and running their creation callbacks to the end of the outermost
+     * one. It runs one script declaring every
+     * activated node, one declaring all their parameters and one deleting every deactivated node,
+     * without echoing them per node in the Script Editor. Open it inside the InputEditBatch of the
+     * edit, whose rechecks and refreshes read the declarations.
+     **/
+    class PythonDeclarationBatch {
+    public:
+        PythonDeclarationBatch();
+        ~PythonDeclarationBatch();
+
+        PythonDeclarationBatch(const PythonDeclarationBatch&) = delete;
+        PythonDeclarationBatch& operator=(const PythonDeclarationBatch&) = delete;
     };
 
     void markAllInputRelatedDataDirty();
@@ -2285,10 +2465,18 @@ private:
     bool findDataKindConflictInsideGroup(int inputNb, const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
 
     /**
-     * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
-     * the internal nodes of a roto paint tree.
+     * @brief The nodes whose hash folds in this one's: outputs through group redirections, every
+     * group-redirect node passed through on the way, and the internal nodes of a roto paint tree.
+     * leaves receives the nodes that appendHashLeafDependents() adds, from this node's effect and
+     * from the group-redirect nodes passed through.
      **/
-    void getHashDependents(std::vector<NodePtr>* dependents) const;
+    void getHashDependents(std::vector<NodePtr>* dependents, std::vector<NodePtr>* leaves) const;
+
+    /**
+     * @brief What marking this node as a leaf marks too: its metadata readers, and in leaves what
+     * its effect appends through appendHashLeafDependents().
+     **/
+    void getHashLeafDependents(std::vector<NodePtr>* dependents, std::vector<NodePtr>* leaves) const;
 
     struct HashInputs {
         bool isViewer = false;
@@ -2415,8 +2603,51 @@ private:
     // Like refreshInputRelatedDataInternal(), except that a viewer only refreshes the inputs it
     // shows: its hash folds in only those, so the others are not read through it.
     bool refreshShownInputRelatedData(std::set<Node*>& visited);
+    static void refreshInputRelatedDataAfterInputChanges(const std::vector<NodePtr>& edited);
+    static void refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited);
 
+    // Drops the cached kinds of every node reached from starts both ways, without walking past a
+    // node of concrete declared kind, then refreshes their diagnostics and emits their
+    // dataKindChanged(), once each.
+    static void invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts);
+
+    // Returns whether the flag changed.
     bool refreshDraftFlagInternal(const std::vector<NodeWPtr>& inputs);
+
+    // The nodes whose draft flag reads this one's: its outputs, and those the downstream walks
+    // reach through a group, a GroupOutput or a precomp's output node.
+    void appendDraftFlagDependents(std::vector<NodePtr>* dependents) const;
+
+    // The nodes an edit of which reaches this one through appendOutputsWithGroupRedirection(), one
+    // step up: the inputs, the output node of an input that is a group or a precomp, and a
+    // GroupInput's container.
+    void appendInputEditSources(std::vector<NodePtr>* sources) const;
+
+    // The newest input-edit stamp of any node upstream of this one, memoized. Main thread only.
+    U64 getUpstreamInputEditStamp() const;
+
+    // The graph generation the memoized upstream stamps agree with, read just before a graph change
+    // for absorbGraphChangeOfOwnSources(); 0 when they have yet to take in an earlier change, or
+    // off the main thread.
+    static U64 getUpstreamInputEditStampGraphGeneration();
+
+    // Takes in the one graph change made since generation, which could change no node's sources
+    // but this one's, so that only the memos below this node are dropped. Without it, or when
+    // anything else changed the graph as well, the next read drops every memo.
+    void absorbGraphChangeOfOwnSources(U64 generation, bool sourcesChanged) const;
+
+    // Drops the memoized upstream stamp of this node and of every node it reaches downstream.
+    void invalidateUpstreamInputEditStampsFromHere() const;
+
+    // The viewers below the edit of this node's inputs being ended, found when it aborted their
+    // renders. False if the graph has changed since then, or if this is not that edit.
+    bool getDownstreamViewersOfOwnEdit(std::list<ViewerInstance*>* viewers) const;
+
+    // A multi-instance child, or a node with a link to another node's knob, shows its settings
+    // panel as visible when another node's is.
+    void refreshDerivedPanelVisibilityRegistration();
+
+    void markRotoPaintTreeInputRelatedDataDirty();
 
     void setNameInternal(const std::string& name, bool throwErrors);
 
@@ -2586,16 +2817,56 @@ private:
 
     void setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes);
 
-
     /**
-     * @brief If the node is an input of this node, set ok to true, otherwise
-     * calls this function recursively on all inputs.
+     * @brief Sets ok to whether this node's hash depends on input's, as hashDependsOn() with no
+     * knob does.
      **/
     void isNodeUpstream(const Node* input, bool* ok) const;
 
     void declareNodeVariableToPython(const std::string& nodeName);
     void setNodeVariableToPython(const std::string& oldName, const std::string& newName);
     void deleteNodeVariableToPython(const std::string& nodeName);
+
+    /**
+     * @brief The scripts the functions above run, empty when there is nothing to run.
+     **/
+    std::string makeNodeVariableDeclarationScript(const std::string& nodeName);
+    std::string makePythonFieldsScript();
+    std::string makeNodeVariableDeletionScript(const std::string& nodeName);
+
+    void restoreKnobsExpressionFunctions();
+
+    /**
+     * @brief Leaves deleting this node's Python variable to the end of the PythonDeclarationBatch.
+     **/
+    void queueNodeVariableDeletion();
+
+    /**
+     * @brief Keeps a reference to this node's Python object, about to be deleted from its parent,
+     * so that activate() can put it back with its parameters and expression functions.
+     **/
+    void stashPythonObject();
+
+    /**
+     * @brief Puts the stashed object back under this node's name unless the name has changed or
+     * something else holds it, then lets go of the stash.
+     **/
+    void restoreStashedPythonObject();
+    void releaseStashedPythonObject();
+
+    /**
+     * @brief While a PythonDeclarationBatch is open, leaves declaring the Python variable and
+     * parameters of this node being created to its end and returns true.
+     **/
+    bool deferPythonDeclarationToBatch();
+
+    /**
+     * @brief Leaves the creation callback and the recheck of expressions naming this node to the
+     * end of the batch when its declaration was left to it, returning whether it was.
+     **/
+    bool finishCreationInPythonDeclarationBatch(bool userEdited);
+
+    static void runPendingPythonDeclarations();
 
     std::unique_ptr<Implementation> _imp;
 };
@@ -2622,10 +2893,8 @@ public:
 
     virtual ~InspectorNode();
 
-
     /**
-     * @brief Same as connectInputBase but if another input is already connected to 'input' then
-     * it will disconnect it prior to connecting the input of the given number.
+     * @brief Same as connectInputBase but refuses a connection the input already has.
      **/
     virtual bool connectInput(const NodePtr& input, int inputNumber) OVERRIDE;
     virtual int getPreferredInputForConnection() const OVERRIDE FINAL;

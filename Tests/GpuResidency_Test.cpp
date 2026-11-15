@@ -634,7 +634,7 @@ protected:
         }
         const FrameRenderContextPtr context = run->context;
         PlacementInputs inputs;
-        inputs.canRenderOnGpu = [gpu, context](const FrameGraph::Task& task) {
+        inputs.canRenderOnGpu = [gpu, context](const FrameGraph::Task& task, GpuRefusal*) {
             if (!gpu.count(task.key.node.get())) {
                 return false;
             }

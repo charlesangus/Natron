@@ -152,9 +152,21 @@ ItemBase::getParam(const QString& name) const
     if (!knob) {
         return 0;
     }
-    Param* ret = Effect::createParamWrapperForKnob(knob);
+    return asItemParam(Effect::createParamWrapperForKnob(knob), _item);
+}
 
-    return ret;
+Param*
+ItemBase::asItemParam(Param* param,
+                      const RotoItemPtr& item)
+{
+    RotoDrawableItem* drawable = dynamic_cast<RotoDrawableItem*>(item.get());
+    RotoCurveContextPtr context = drawable ? drawable->getContext() : RotoCurveContextPtr();
+
+    if (param && context) {
+        param->_itemNode = context->getNode();
+    }
+
+    return param;
 }
 
 Layer::Layer(const RotoItemPtr& item)
@@ -201,6 +213,26 @@ Layer::removeItem(ItemBase* item)
     context->removeItem(internalItem);
 }
 
+namespace {
+// A wrapper of item's own type, so that Python sees its type's methods; strokes have no type of
+// their own.
+ItemBase*
+wrapItem(const RotoItemPtr& item)
+{
+    if (!item) {
+        return 0;
+    }
+    if (std::dynamic_pointer_cast<RotoLayer>(item)) {
+        return new Layer(item);
+    }
+    if (std::dynamic_pointer_cast<Bezier>(item)) {
+        return new BezierCurve(item);
+    }
+
+    return new ItemBase(item);
+}
+} // anonymous namespace
+
 std::list<ItemBase*>
 Layer::getChildren() const
 {
@@ -208,7 +240,7 @@ Layer::getChildren() const
     std::list<RotoItemPtr> items = _layer->getItems_mt_safe();
 
     for (std::list<RotoItemPtr>::iterator it = items.begin(); it != items.end(); ++it) {
-        ret.push_back( new ItemBase(*it) );
+        ret.push_back(wrapItem(*it));
     }
 
     return ret;
@@ -579,7 +611,7 @@ BezierCurve::getActivatedParam() const
     KnobBoolPtr ret = _bezier->getActivatedKnob();
 
     if (ret) {
-        return new BooleanParam(ret);
+        return static_cast<BooleanParam*>(asItemParam(new BooleanParam(ret), _bezier));
     }
 
     return 0;
@@ -591,7 +623,7 @@ BezierCurve::getOpacityParam() const
     KnobDoublePtr ret = _bezier->getOpacityKnob();
 
     if (ret) {
-        return new DoubleParam(ret);
+        return static_cast<DoubleParam*>(asItemParam(new DoubleParam(ret), _bezier));
     }
 
     return 0;
@@ -603,7 +635,7 @@ BezierCurve::getFeatherDistanceParam() const
     KnobDoublePtr ret = _bezier->getFeatherKnob();
 
     if (ret) {
-        return new DoubleParam(ret);
+        return static_cast<DoubleParam*>(asItemParam(new DoubleParam(ret), _bezier));
     }
 
     return 0;
@@ -615,7 +647,7 @@ BezierCurve::getFeatherFallOffParam() const
     KnobDoublePtr ret = _bezier->getFeatherFallOffKnob();
 
     if (ret) {
-        return new DoubleParam(ret);
+        return static_cast<DoubleParam*>(asItemParam(new DoubleParam(ret), _bezier));
     }
 
     return 0;
@@ -627,7 +659,7 @@ BezierCurve::getColorParam() const
     KnobColorPtr ret = _bezier->getColorKnob();
 
     if (ret) {
-        return new ColorParam(ret);
+        return static_cast<ColorParam*>(asItemParam(new ColorParam(ret), _bezier));
     }
 
     return 0;
@@ -639,7 +671,7 @@ BezierCurve::getCompositingOperatorParam() const
     KnobChoicePtr ret = _bezier->getOperatorKnob();
 
     if (ret) {
-        return new ChoiceParam(ret);
+        return static_cast<ChoiceParam*>(asItemParam(new ChoiceParam(ret), _bezier));
     }
 
     return 0;
@@ -669,25 +701,7 @@ Roto::getBaseLayer() const
 ItemBase*
 Roto::getItemByName(const QString& name) const
 {
-    RotoItemPtr item =  _ctx->getItemByName( name.toStdString() );
-
-    if (!item) {
-        return 0;
-    }
-    RotoLayer* isLayer = dynamic_cast<RotoLayer*>( item.get() );
-    if (isLayer) {
-        return new Layer(item);
-    }
-    Bezier* isBezier = dynamic_cast<Bezier*>( item.get() );
-    if (isBezier) {
-        return new BezierCurve(item);
-    }
-    RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>( item.get() );
-    if (isStroke) {
-        return new ItemBase(item);
-    }
-
-    return 0;
+    return wrapItem(_ctx->getItemByName(name.toStdString()));
 }
 
 Layer*

@@ -97,17 +97,39 @@ public:
     }
 
     /**
-     * @brief Whether the knob shows its own reload icon. Nodes with a Reload button of their own
-     * turn it off, so their panel has one reload.
+     * @brief Whether the knob shows its own reload icon: every file knob does until a Reload button
+     * takes over, so a panel never has both. The icon runs reloadFile(), which only suits a node
+     * that needs nothing more. A node whose reload does more, such as rereading USD layers, gets
+     * its button from createReloadButton(), never from a KnobButton of its own.
      **/
-    void setShowsReloadButton(bool shows)
-    {
-        _showsReloadButton = shows;
-    }
-
     bool showsReloadButton() const
     {
-        return _showsReloadButton;
+        return !_reloadButton.lock();
+    }
+
+    /**
+     * @brief Creates the node's Reload button on the knob's row, in place of the reload icon. The
+     * node adds it to a page and does its reload when the button reaches knobChanged().
+     **/
+    KnobButtonPtr createReloadButton(const std::string& scriptName,
+                                     const QString& hint);
+
+    /**
+     * @brief Hands this knob to a button another file knob's createReloadButton() made, for a node
+     * with one Reload over several files, or to the Reload button an OFX plugin declares on the
+     * knob's row.
+     **/
+    void setReloadButton(const KnobButtonPtr& button)
+    {
+        _reloadButton = button;
+    }
+
+    /**
+     * @brief The node's Reload button, null when the knob reloads through its icon.
+     **/
+    KnobButtonPtr getReloadButton() const
+    {
+        return _reloadButton.lock();
     }
 
     void open_file()
@@ -118,7 +140,8 @@ public:
     /**
      * @brief What a Reload does: stamps the file or sequence again, so the node re-keys when the
      * file on disk differs from its last stamp, and drops what the holder cached of it. A file is
-     * otherwise only looked at the first time it is hashed in a session.
+     * otherwise only looked at the first time it is hashed in a session. A node's Reload button
+     * may call it as part of its reload, so it never presses that button.
      **/
     void reloadFile();
 
@@ -183,7 +206,7 @@ private:
     virtual const std::string & typeName() const OVERRIDE FINAL;
     static const std::string _typeNameStr;
     int _isInputImage;
-    bool _showsReloadButton;
+    KnobButtonWPtr _reloadButton;
     std::vector<std::string> _fileExtensions;
 };
 

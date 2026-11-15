@@ -27,6 +27,7 @@
 #include "NodeGraphPrivate.h"
 
 #include <algorithm> // min, max
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <locale>
@@ -37,7 +38,10 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QPaintEvent>
 #include <QPolygonF>
+#include <QScrollBar>
+#include <QTimer>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -53,11 +57,13 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/BackdropGui.h"
 #include "Gui/DotGui.h"
 #include "Gui/Edge.h"
+#include "Gui/GpuOverlay.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/LoopBlockOverlay.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGui.h"
 #include "Gui/UndoHistory.h"
@@ -121,22 +127,36 @@ NodeGraph::NodeGraph(Gui* gui,
 
     QObject::connect( &_imp->autoScrollTimer, SIGNAL(timeout()), this, SLOT(onAutoScrollTimerTriggered()) );
 
+    _imp->overlayRefreshTimer.setSingleShot(true);
+    QObject::connect(&_imp->overlayRefreshTimer, &QTimer::timeout, this, [this]() {
+        refreshOverlays();
+    });
 
     setMouseTracking(true);
     setCacheMode(CacheBackground);
+    // Any mode but FullViewportUpdate lets a scroll blit the viewport and paint only the exposed
+    // strip; the pan relies on that.
     setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
     setRenderHint(QPainter::Antialiasing);
-    setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
-    //setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
-    //setResizeAnchor(QGraphicsView::AnchorUnderMouse);
+    // Not AnchorUnderMouse: hover moves skip QGraphicsView::mouseMoveEvent, so Qt's last mouse
+    // scene point goes stale; the wheel zoom pivots on the cursor by hand instead.
+    setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+    // Fixed, so that items never grow or shrink the scrollable area and panning is a scroll.
+    setSceneRect(QRectF(NATRON_SCENE_MIN, NATRON_SCENE_MIN, NATRON_SCENE_MAX - NATRON_SCENE_MIN, NATRON_SCENE_MAX - NATRON_SCENE_MIN));
+    // The same rect on the scene: without one, every added or moved item makes it rescan all
+    // items for their bounding rect.
+    if (scene) {
+        scene->setSceneRect(sceneRect());
+    }
     scale(0.8, 0.8);
 
     _imp->_root = new NodeGraphTextItem(this, 0, false);
     _imp->_nodeRoot = new NodeGraphTextItem(this, _imp->_root, false);
     scene->addItem(_imp->_root);
     _imp->_loopBlocks = new LoopBlockOverlay(this, _imp->_nodeRoot);
+    _imp->_gpuRegions = new GpuRegionOverlay(this, _imp->_nodeRoot);
 
-    _imp->_navigator = new Navigator(0);
+    _imp->_navigator = new Navigator(&_imp->isDoingPreviewRender);
     scene->addItem(_imp->_navigator);
     _imp->_navigator->setFlag(QGraphicsItem::ItemIgnoresTransformations);
     _imp->_navigator->hide();
@@ -148,8 +168,13 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_cacheSizeText->setBrush( QColor(200, 200, 200) );
     _imp->_cacheSizeText->setVisible(false);
 
-    QObject::connect( &_imp->refreshRenderStateTimer, SIGNAL(timeout()), this, SLOT(onRefreshNodesRenderStateTimerTimeout()) );
-    _imp->refreshRenderStateTimer.start(NATRON_NODES_RENDER_STATE_REFRESH_INTERVAL_MS);
+    _imp->navigatorRenderTimer.setSingleShot(true);
+    QObject::connect(&_imp->navigatorRenderTimer, &QTimer::timeout, this, [this]() {
+        onNavigatorRenderTimerTimeout();
+    });
+
+    _imp->refreshRenderStateTimer.setSingleShot(true);
+    QObject::connect(&_imp->refreshRenderStateTimer, SIGNAL(timeout()), this, SLOT(onRefreshNodesRenderStateTimerTimeout()));
 
     QObject::connect( &_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()) );
     _imp->_refreshCacheTextTimer.start(NATRON_CACHE_SIZE_TEXT_REFRESH_INTERVAL_MS);
@@ -171,26 +196,17 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_kissPreviewEdge->setZValue(16);
     _imp->_kissPreviewEdge->hide();
 
-    _imp->_tL = new NodeGraphTextItem(this, 0, false);
-    _imp->_tL->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-    scene->addItem(_imp->_tL);
+    // Created after the graph's own pipes, so that at equal z the nodes' pipes still draw above
+    // them, as they do when they draw themselves.
+    _imp->lowDetailEdgeLayer = new NodeGraphLowDetailLayer(_imp.get(), NodeGraphLowDetailLayer::ePassEdges, _imp->_nodeRoot);
+    _imp->lowDetailNodeLayer = new NodeGraphLowDetailLayer(_imp.get(), NodeGraphLowDetailLayer::ePassNodes, _imp->_nodeRoot);
+    // After the edge layer, so that at equal z the nodes' edges draw above the graph's own pipes
+    // and the layer, and the link arrows above the edges.
+    _imp->backdropLinkArrowLayer = new NodeGraphItemLayer(_imp->_nodeRoot, 5);
+    _imp->edgeLayer = new NodeGraphItemLayer(_imp->_nodeRoot, 15);
+    _imp->linkArrowLayer = new NodeGraphItemLayer(_imp->_nodeRoot, 15);
+    refreshDetailLevel();
 
-    _imp->_tR = new NodeGraphTextItem(this, 0, false);
-    _imp->_tR->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-    scene->addItem(_imp->_tR);
-
-    _imp->_bR = new NodeGraphTextItem(this, 0, false);
-    _imp->_bR->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-    scene->addItem(_imp->_bR);
-
-    _imp->_bL = new NodeGraphTextItem(this, 0, false);
-    _imp->_bL->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-    scene->addItem(_imp->_bL);
-
-    _imp->_tL->setPos( _imp->_tL->mapFromScene( QPointF(NATRON_SCENE_MIN, NATRON_SCENE_MAX) ) );
-    _imp->_tR->setPos( _imp->_tR->mapFromScene( QPointF(NATRON_SCENE_MAX, NATRON_SCENE_MAX) ) );
-    _imp->_bR->setPos( _imp->_bR->mapFromScene( QPointF(NATRON_SCENE_MAX, NATRON_SCENE_MIN) ) );
-    _imp->_bL->setPos( _imp->_bL->mapFromScene( QPointF(NATRON_SCENE_MIN, NATRON_SCENE_MIN) ) );
     centerOn(0, 0);
 
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -240,14 +256,14 @@ NodeGraph::~NodeGraph()
     delete _imp->_kissCommand;
     _imp->_kissCommand = nullptr;
 
-    QObject::disconnect( &_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()) );
-    _imp->_nodeCreationShortcutEnabled = false;
+    QObject::disconnect(&_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()));
 }
 
 void
 NodeGraph::onSettingsSaved()
 {
     // Recolouring on save rather than on settingChanged() keeps a discarded Preferences edit off the graph.
+    _imp->antiAliasing = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
     for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
         (*it)->refreshCategoryColor();
         (*it)->refreshEdgesDataKindPen(true);
@@ -258,6 +274,8 @@ NodeGraph::onSettingsSaved()
         (*it)->refreshEdgesDataKindPen(true);
         (*it)->refreshLinkLinesAppearance();
     }
+    // scene()->update() below repaints everything.
+    _imp->invalidateLowDetailLayers(false);
     if (scene()) {
         scene()->update();
     }
@@ -267,6 +285,18 @@ bool
 NodeGraph::isDoingNavigatorRender() const
 {
     return _imp->isDoingPreviewRender;
+}
+
+bool
+NodeGraph::isAntiAliasingEnabled() const
+{
+    return _imp->antiAliasing;
+}
+
+bool
+NodeGraph::isLowDetail() const
+{
+    return _imp->lowDetail;
 }
 
 const std::list<NodeGuiPtr> &
@@ -287,6 +317,18 @@ NodeGraph::getRootItem() const
     return _imp->_root;
 }
 
+QGraphicsItem*
+NodeGraph::getEdgeLayer() const
+{
+    return _imp->edgeLayer;
+}
+
+QGraphicsItem*
+NodeGraph::getLinkArrowLayer(bool fromBackdrop) const
+{
+    return fromBackdrop ? _imp->backdropLinkArrowLayer : _imp->linkArrowLayer;
+}
+
 void
 NodeGraph::scheduleLoopBlockRefresh(bool topology)
 {
@@ -294,6 +336,10 @@ NodeGraph::scheduleLoopBlockRefresh(bool topology)
         _imp->_loopBlocks->schedule(topology);
     }
     if (topology) {
+        // Moves and resizes reach the GPU overlay through the geometry notes, region by region.
+        if (_imp->_gpuRegions) {
+            _imp->_gpuRegions->schedule(true);
+        }
         Q_EMIT topologyChanged();
     }
 }
@@ -316,6 +362,7 @@ NodeGraph::onNodesCleared()
         _imp->_nodes.clear();
         _imp->_nodesTrash.clear();
     }
+    invalidateNavigatorContent();
 
     _imp->_selection.clear();
     _imp->_magnifiedNode.reset();
@@ -344,8 +391,82 @@ NodeGraph::addNodesToCreationOf(const NodePtr& created,
 void
 NodeGraph::resizeEvent(QResizeEvent* e)
 {
-    _imp->_refreshOverlays = true;
+    // The thumbnail is rendered at the navigator's size, which follows the view's. The grid is in
+    // scene coordinates and the low-detail caches drop themselves on a size change.
+    invalidateNavigatorImage();
     QGraphicsView::resizeEvent(e);
+    refreshOverlays();
+}
+
+void
+NodeGraph::scrollContentsBy(int dx,
+                            int dy)
+{
+    QGraphicsView::scrollContentsBy(dx, dy);
+    if (isDrawingLockedVeil()) {
+        // The unlock button is painted at a fixed place in the viewport, so a blit would move it.
+        viewport()->update();
+    }
+    if (!_imp->overlayRefreshSuspended) {
+        refreshOverlays();
+    }
+}
+
+void
+NodeGraph::panContentBy(const QPoint& delta)
+{
+    if (delta.isNull()) {
+        return;
+    }
+    _imp->overlayRefreshSuspended = true;
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+    verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+    _imp->overlayRefreshSuspended = false;
+    refreshOverlays();
+}
+
+void
+NodeGraph::scheduleOverlayRefresh()
+{
+    if (!_imp->overlayRefreshTimer.isActive()) {
+        _imp->overlayRefreshTimer.start(0);
+    }
+}
+
+void
+NodeGraph::refreshOverlays()
+{
+    // QGraphicsView scrolls while the constructor sets the view up, before the overlays exist.
+    if (!_imp->_navigator || !_imp->_cacheSizeText) {
+        return;
+    }
+    _imp->overlayRefreshTimer.stop();
+
+    QRectF visibleScene = visibleSceneRect();
+    QRect visibleWidget = visibleWidgetRect();
+
+    _imp->_cacheSizeText->setPos(visibleScene.topLeft());
+
+    double navWidth = NATRON_NAVIGATOR_BASE_WIDTH * width();
+    double navHeight = NATRON_NAVIGATOR_BASE_HEIGHT * height();
+    QPoint btmRightWidget = visibleWidget.bottomRight();
+    QPoint navTopLeftWidget = btmRightWidget - QPoint(navWidth, navHeight);
+    QPointF navTopLeftScene = mapToScene(navTopLeftWidget);
+
+    _imp->_navigator->refreshPosition(navTopLeftScene, navWidth, navHeight);
+    updateNavigator();
+}
+
+bool
+NodeGraph::isDrawingLockedVeil() const
+{
+    NodeCollectionPtr collection = getGroup();
+    NodeGroup* isGroup = dynamic_cast<NodeGroup*>( collection.get() );
+    if (!isGroup || !isGroup->getNode()->isPyPlug()) {
+        return false;
+    }
+
+    return !isGroup->isSubGraphEditable() || !isGroup->getNode()->hasPyPlugBeenEdited();
 }
 
 void
@@ -353,42 +474,22 @@ NodeGraph::paintEvent(QPaintEvent* e)
 {
     AppInstancePtr app;
 
-    if ( getGui() ) {
+    if (getGui()) {
         app = getGui()->getApp();
     }
-    if ( app && app->getProject()->isLoadingProjectInternal() ) {
+    if (app && app->getProject()->isLoadingProjectInternal()) {
         return;
     }
 
     NodeCollectionPtr collection = getGroup();
-    NodeGroup* isGroup = dynamic_cast<NodeGroup*>( collection.get() );
-    bool isGroupEditable = true;
-    bool groupEdited = true;
-    if (isGroup && isGroup->getNode()->isPyPlug()) {
-        isGroupEditable = isGroup->isSubGraphEditable();
-        groupEdited = isGroup->getNode()->hasPyPlugBeenEdited();
-    }
+    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(collection.get());
+    const bool drawLockedMode = isDrawingLockedVeil();
+    const bool isGroupEditable = !isGroup || !isGroup->getNode()->isPyPlug() || isGroup->isSubGraphEditable();
 
-    bool drawLockedMode = !isGroupEditable || !groupEdited;
+    // The zooms refresh it as they happen; this catches any other change to the transform.
+    refreshDetailLevel();
+    _imp->flushLowDetailUpdates(&e->region());
 
-    if (_imp->_refreshOverlays) {
-        ///The visible portion of the scene, in scene coordinates
-        QRectF visibleScene = visibleSceneRect();
-        QRect visibleWidget = visibleWidgetRect();
-
-        ///Set the cache size overlay to be in the top left corner of the view
-        _imp->_cacheSizeText->setPos( visibleScene.topLeft() );
-
-        double navWidth = NATRON_NAVIGATOR_BASE_WIDTH * width();
-        double navHeight = NATRON_NAVIGATOR_BASE_HEIGHT * height();
-        QPoint btmRightWidget = visibleWidget.bottomRight();
-        QPoint navTopLeftWidget = btmRightWidget - QPoint(navWidth, navHeight );
-        QPointF navTopLeftScene = mapToScene(navTopLeftWidget);
-
-        _imp->_navigator->refreshPosition(navTopLeftScene, navWidth, navHeight);
-        updateNavigator();
-        _imp->_refreshOverlays = false;
-    }
     QGraphicsView::paintEvent(e);
 
     if (drawLockedMode) {
@@ -436,11 +537,112 @@ NodeGraph::paintEvent(QPaintEvent* e)
         p.setPen(pen);
         QPolygonF line;
         for (std::size_t i = 0; i < _imp->_cutLine.size(); ++i) {
-            line << mapFromScene(_imp->_root->mapToScene(_imp->_cutLine[i]));
+            line << mapFromScene(_imp->_cutLine[i]);
         }
         p.drawPolyline(line);
     }
+
+    if (!_imp->panelBuildsPending.empty()) {
+        postPanelBuildFlush();
+    }
 } // NodeGraph::paintEvent
+
+void
+NodeGraph::schedulePanelBuild(const NodeGuiPtr& node)
+{
+    if (!node) {
+        return;
+    }
+    for (const std::vector<NodeGuiWPtr>* list : { &_imp->panelBuildsPending, &_imp->panelBuildsPosted }) {
+        for (const NodeGuiWPtr& queued : *list) {
+            if (queued.lock() == node) {
+                return;
+            }
+        }
+    }
+    _imp->panelBuildsPending.push_back(node);
+    if (_imp->panelBuildsPending.size() == 1) {
+        armPanelBuildWait();
+    }
+}
+
+bool
+NodeGraph::cancelPanelBuild(const NodeGuiPtr& node)
+{
+    if (!node) {
+        return false;
+    }
+    bool found = false;
+    for (std::vector<NodeGuiWPtr>* list : { &_imp->panelBuildsPending, &_imp->panelBuildsPosted }) {
+        for (std::vector<NodeGuiWPtr>::iterator it = list->begin(); it != list->end();) {
+            if (it->lock() == node) {
+                it = list->erase(it);
+                found = true;
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    return found;
+}
+
+static const int kPanelBuildPaintWaitMs = 250;
+
+void
+NodeGraph::armPanelBuildWait()
+{
+    if (!viewport()->isVisible()) {
+        postPanelBuildFlush();
+
+        return;
+    }
+    // A node created off-screen may never cause a paint. The wait starts once the creation has
+    // returned to the event loop, so that a long creation cannot use it up before its own paint.
+    const unsigned generation = ++_imp->panelBuildGeneration;
+    QTimer::singleShot(0, this, [this, generation]() {
+        QTimer::singleShot(kPanelBuildPaintWaitMs, this, [this, generation]() {
+            if (generation == _imp->panelBuildGeneration) {
+                postPanelBuildFlush();
+            }
+        });
+    });
+}
+
+void
+NodeGraph::postPanelBuildFlush()
+{
+    if (_imp->panelBuildFlushPosted || _imp->panelBuildsPending.empty()) {
+        return;
+    }
+    _imp->panelBuildFlushPosted = true;
+    ++_imp->panelBuildGeneration;
+    _imp->panelBuildsPosted.swap(_imp->panelBuildsPending);
+    // Two hops: a paint delivered outside the posted-event dispatch, from an expose say, would
+    // otherwise see its first hop run in the same event-loop pass, before the frame is shown.
+    QMetaObject::invokeMethod(this, [this]() { QMetaObject::invokeMethod(this, [this]() { flushPanelBuilds(); }, Qt::QueuedConnection); }, Qt::QueuedConnection);
+}
+
+void
+NodeGraph::flushPanelBuilds()
+{
+    _imp->panelBuildFlushPosted = false;
+    std::vector<NodeGuiWPtr> posted;
+    posted.swap(_imp->panelBuildsPosted);
+    GuiAppInstancePtr app = getGui() ? getGui()->getApp() : GuiAppInstancePtr();
+    if (app && !app->isClosing()) {
+        for (const NodeGuiWPtr& weak : posted) {
+            NodeGuiPtr node = weak.lock();
+            if (node) {
+                node->buildDeferredPanel();
+            }
+        }
+    }
+    // Created while this flush was queued: those wait for a paint of their own.
+    if (!_imp->panelBuildsPending.empty()) {
+        armPanelBuildWait();
+    }
+}
 
 QRectF
 NodeGraph::visibleSceneRect() const
@@ -483,7 +685,7 @@ NodeGraph::createNodeGUI(const NodePtr & node,
             ///make the backdrop large enough to contain the selected nodes and position it correctly
             QRectF bbox;
             for (NodesGuiList::iterator it = selectedNodes.begin(); it != selectedNodes.end(); ++it) {
-                QRectF nodeBbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
+                QRectF nodeBbox = (*it)->mapToScene((*it)->bodyRect()).boundingRect();
                 bbox = bbox.united(nodeBbox);
             }
 
@@ -502,6 +704,7 @@ NodeGraph::createNodeGUI(const NodePtr & node,
         QMutexLocker l(&_imp->_nodesMutex);
         _imp->_nodes.push_back(node_ui);
     }
+    noteNodeAdded(node_ui.get());
     scheduleLoopBlockRefresh(true);
 
     //NodeGroup* parentIsGroup = dynamic_cast<NodeGroup*>(node->getGroup().get());;
@@ -518,12 +721,21 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     bool isViewer = node->isEffectViewer() != 0;
     bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened) && !isDot && !isViewer;
     if ( !serialization && panelOpened && isTopLevelNodeBeingCreated ) {
-        node_ui->ensurePanelCreated();
+        if (args.getProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel)) {
+            schedulePanelBuild(node_ui);
+        } else {
+            node_ui->ensurePanelCreated();
+        }
     }
 
     bool addUndoRedo = args.getProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand);
     if (addUndoRedo) {
-        pushUndoCommand(new AddMultipleNodesCommand(this, node_ui), NodesGuiList(1, node_ui));
+        AddMultipleNodesCommand* command = new AddMultipleNodesCommand(this, node_ui);
+        // GuiAppInstance::createNode() triggers the autosave for such a node once it is set up.
+        if (!serialization && !isViewer) {
+            command->setCreationAutoSaves();
+        }
+        pushUndoCommand(command, NodesGuiList(1, node_ui));
     } else if ( !serialization && !isGrp ) {
         selectNode(node_ui, false);
     }

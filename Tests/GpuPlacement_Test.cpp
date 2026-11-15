@@ -84,7 +84,7 @@ gpuTasks(const FrameGraph& graph,
     PlacementInputs inputs;
     const FrameGraph::Task* first = graph.tasks.data();
 
-    inputs.canRenderOnGpu = [first, gpu](const FrameGraph::Task& task) {
+    inputs.canRenderOnGpu = [first, gpu](const FrameGraph::Task& task, GpuRefusal*) {
         return gpu.count((int)(&task - first)) != 0;
     };
 
@@ -339,11 +339,11 @@ TEST(GpuPlacement, CacheHitStaysOnCpu)
     inputs.isCached = [cached](const FrameGraph::Task& task) {
         return &task == cached;
     };
-    inputs.canRenderOnGpu = [&](const FrameGraph::Task& task) {
+    inputs.canRenderOnGpu = [&](const FrameGraph::Task& task, GpuRefusal* refusal) {
         ++capabilityCalls;
         EXPECT_NE(&task, cached);
 
-        return canRender(task);
+        return canRender(task, refusal);
     };
     placeGraph(graph, inputs);
 
@@ -353,6 +353,55 @@ TEST(GpuPlacement, CacheHitStaysOnCpu)
     ASSERT_EQ(graph.regions.size(), 2u);
     EXPECT_NE(graph.tasks[0].regionId, graph.tasks[2].regionId);
     EXPECT_EQ(graph.regions[graph.tasks[0].regionId].externalInputs, std::vector<int>({ 1 }));
+}
+
+// Every task can go to the GPU; the callback must not depend on task addresses, as the shadow graph is a copy.
+PlacementInputs
+allGpuTasks()
+{
+    PlacementInputs inputs;
+
+    inputs.canRenderOnGpu = [](const FrameGraph::Task&, GpuRefusal*) {
+        return true;
+    };
+
+    return inputs;
+}
+
+// root 0 <- 1 (cached) <- 2
+TEST(GpuPlacement, ShadowPlanPlacesACachedMemberOnTheGpu)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs = allGpuTasks();
+    inputs.isCached = [](const FrameGraph::Task& task) {
+        return task.estimatedBytes == kBytes * 2;
+    };
+
+    const ShadowPlacement shadow = placeGraphWithShadow(graph, inputs);
+
+    EXPECT_EQ(graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::Cached);
+    EXPECT_EQ(shadow.servedFromCache, std::vector<bool>({ false, true, false }));
+    ASSERT_EQ(shadow.graph.tasks.size(), 3u);
+    for (const FrameGraph::Task& task : shadow.graph.tasks) {
+        EXPECT_EQ(task.device, FrameGraph::Device::Gpu);
+    }
+    EXPECT_EQ(shadow.graph.regions.size(), 1u);
+    EXPECT_EQ(graph.regions.size(), 2u);
+}
+
+TEST(GpuPlacement, ShadowPlanWithNothingCachedMatchesTheRealOne)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    const PlacementInputs inputs = allGpuTasks();
+
+    const ShadowPlacement shadow = placeGraphWithShadow(graph, inputs);
+
+    EXPECT_EQ(shadow.servedFromCache, std::vector<bool>(3, false));
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(shadow.graph.tasks[i].device, graph.tasks[i].device);
+        EXPECT_EQ(shadow.graph.tasks[i].regionId, graph.tasks[i].regionId);
+    }
 }
 
 // root 0 (GPU) <- identity 1 <- 2 (GPU) <- identity 3 <- reader 4 (CPU)
@@ -537,6 +586,262 @@ TEST(GpuPlacement, ShrinkingNeverBreaksConvexity)
     EXPECT_EQ(graph.tasks[1].device, FrameGraph::Device::Cpu);
     EXPECT_TRUE(isConvex(graph, 0));
     EXPECT_TRUE(isContractionAcyclic(graph));
+
+    // The exit 3 -> 1 reads its reason from the consumer.
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::CostModel);
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::CostModel);
+    EXPECT_EQ(graph.tasks[3].placementReason, FrameGraph::PlacementReason::None);
+}
+
+// root 0 <- 1 <- 2, where only 1 is refused.
+TEST(GpuPlacement, ReasonRefusedTaskHasNoGpuPathAndItsDetail)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs;
+    const FrameGraph::Task* refused = &graph.tasks[1];
+
+    inputs.canRenderOnGpu = [refused](const FrameGraph::Task& task, GpuRefusal* refusal) {
+        if (&task != refused) {
+            return true;
+        }
+        refusal->detail = "5 channels";
+
+        return false;
+    };
+    placeGraph(graph, inputs);
+
+    EXPECT_EQ(graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::NoGpuPath);
+    EXPECT_EQ(graph.tasks[1].placementDetail, "5 channels");
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::None);
+    EXPECT_EQ(graph.tasks[0].placementDetail, "");
+    EXPECT_EQ(graph.tasks[2].placementReason, FrameGraph::PlacementReason::None);
+}
+
+TEST(GpuPlacement, ReasonNoCapabilityCallbackIsNoGpuPath)
+{
+    FrameGraph graph = makeGraph(2, { { 0, 1 } });
+
+    placeGraph(graph, PlacementInputs());
+
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::NoGpuPath);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::NoGpuPath);
+    EXPECT_EQ(graph.tasks[0].placementDetail, "");
+}
+
+TEST(GpuPlacement, ReasonCapabilityCallbackPicksDownscaleUnsupported)
+{
+    FrameGraph graph = makeGraph(1, {});
+    PlacementInputs inputs;
+
+    inputs.canRenderOnGpu = [](const FrameGraph::Task&, GpuRefusal* refusal) {
+        refusal->reason = FrameGraph::PlacementReason::DownscaleUnsupported;
+
+        return false;
+    };
+    placeGraph(graph, inputs);
+
+    EXPECT_EQ(graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::DownscaleUnsupported);
+}
+
+// An accepted task's refusal is not recorded, whatever the callback left in it.
+TEST(GpuPlacement, ReasonRefusalOfAnAcceptedTaskIsIgnored)
+{
+    FrameGraph graph = makeGraph(1, {});
+    PlacementInputs inputs;
+
+    inputs.canRenderOnGpu = [](const FrameGraph::Task&, GpuRefusal* refusal) {
+        refusal->reason = FrameGraph::PlacementReason::DownscaleUnsupported;
+        refusal->detail = "unused";
+
+        return true;
+    };
+    placeGraph(graph, inputs);
+
+    EXPECT_EQ(graph.tasks[0].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::None);
+    EXPECT_EQ(graph.tasks[0].placementDetail, "");
+}
+
+// root 0 <- 1 (cached) <- 2
+TEST(GpuPlacement, ReasonCachedTask)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 1, 2 });
+    const FrameGraph::Task* cached = &graph.tasks[1];
+
+    inputs.isCached = [cached](const FrameGraph::Task& task) {
+        return &task == cached;
+    };
+    placeGraph(graph, inputs);
+
+    EXPECT_EQ(graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::Cached);
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::None);
+}
+
+// root 0 <- identity 1 <- 2 (CPU), then the same with 2 on the GPU, which the identity follows.
+TEST(GpuPlacement, ReasonIdentityOnlyWhenItStaysOutOfARegion)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+
+    graph.tasks[1].isIdentity = true;
+    placeGraph(graph, gpuTasks(graph, { 0 }));
+    EXPECT_EQ(graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::Identity);
+
+    placeGraph(graph, gpuTasks(graph, { 0, 2 }));
+    EXPECT_EQ(graph.tasks[1].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::None);
+}
+
+// root 0 <- 1 <- 2, with 0 and 1 reading raw and 1 refused: 0 is dropped because of 1, and 2 is outside the run.
+TEST(GpuPlacement, ReasonRawRunDropsTheOthersAndKeepsTheCulpritsOwnReason)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 2 });
+    const FrameGraph::Task* first = graph.tasks.data();
+
+    inputs.readsRaw = [first](const FrameGraph::Task& task) {
+        return (&task - first) < 2;
+    };
+    placeGraph(graph, inputs);
+
+    EXPECT_EQ(graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::RawRunAllOrNothing);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::NoGpuPath);
+    EXPECT_EQ(graph.tasks[2].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(graph.tasks[2].placementReason, FrameGraph::PlacementReason::None);
+}
+
+// root 0 reads 2 (GPU) directly and through 1 (CPU), so 0 cannot join the region of 2.
+TEST(GpuPlacement, ReasonRefusedJoinWouldFormCycle)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 0, 2 }, { 1, 2 } });
+
+    placeGraph(graph, gpuTasks(graph, { 0, 2 }));
+
+    ASSERT_EQ(graph.regions.size(), 2u);
+    EXPECT_EQ(graph.tasks[0].device, FrameGraph::Device::Gpu);
+    EXPECT_NE(graph.tasks[0].regionId, graph.tasks[2].regionId);
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::WouldFormCycle);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::NoGpuPath);
+    EXPECT_EQ(graph.tasks[2].placementReason, FrameGraph::PlacementReason::None);
+}
+
+TEST(GpuPlacement, ReasonRejectedRegionIsCostModel)
+{
+    FrameGraph graph = makeGraph(3, { { 0, 1 }, { 1, 2 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 1, 2 });
+
+    inputs.regionGain = [](const FrameGraph&, const FrameGraph::Region&) {
+        return -1.;
+    };
+    placeGraph(graph, inputs);
+
+    for (const FrameGraph::Task& task : graph.tasks) {
+        EXPECT_EQ(task.placementReason, FrameGraph::PlacementReason::CostModel) << indexOf(graph, task);
+    }
+}
+
+// Past kMaxRegionShrinkSteps, what is left is given up with the same reason as what was dropped.
+TEST(GpuPlacement, ReasonShrinkLimitIsCostModel)
+{
+    const int nTasks = kMaxRegionShrinkSteps + 4;
+    std::vector<std::pair<int, int>> edges;
+
+    for (int i = 0; (i + 1) < nTasks; ++i) {
+        edges.push_back(std::make_pair(i, i + 1));
+    }
+    FrameGraph graph = makeGraph(nTasks, edges);
+    std::set<int> gpu;
+    for (int i = 0; i < nTasks; ++i) {
+        gpu.insert(i);
+    }
+    PlacementInputs inputs = gpuTasks(graph, gpu);
+    int judged = 0;
+
+    inputs.regionGain = [&judged](const FrameGraph&, const FrameGraph::Region&) {
+        ++judged;
+
+        return -1.;
+    };
+    placeGraph(graph, inputs);
+
+    EXPECT_GT(judged, 0);
+    EXPECT_TRUE(graph.regions.empty());
+    for (const FrameGraph::Task& task : graph.tasks) {
+        EXPECT_EQ(task.placementReason, FrameGraph::PlacementReason::CostModel) << indexOf(graph, task);
+    }
+}
+
+TEST(GpuPlacement, ReasonCyclicGraphIsInvalid)
+{
+    FrameGraph graph = makeGraph(2, { { 0, 1 }, { 1, 0 } });
+
+    placeGraph(graph, gpuTasks(graph, { 0, 1 }));
+
+    EXPECT_TRUE(graph.regions.empty());
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::InvalidGraph);
+    EXPECT_EQ(graph.tasks[1].placementReason, FrameGraph::PlacementReason::InvalidGraph);
+}
+
+TEST(GpuPlacement, ReasonPlacingAgainClearsTheLastReason)
+{
+    FrameGraph graph = makeGraph(1, {});
+    PlacementInputs refuses;
+
+    refuses.canRenderOnGpu = [](const FrameGraph::Task&, GpuRefusal* refusal) {
+        refusal->detail = "mask input";
+
+        return false;
+    };
+    placeGraph(graph, refuses);
+    ASSERT_EQ(graph.tasks[0].placementDetail, "mask input");
+
+    placeGraph(graph, gpuTasks(graph, { 0 }));
+
+    EXPECT_EQ(graph.tasks[0].placementReason, FrameGraph::PlacementReason::None);
+    EXPECT_EQ(graph.tasks[0].placementDetail, "");
+}
+
+// Every edge leaving a region has a reason to show, across each way a region ends.
+TEST(GpuPlacement, ReasonEveryRegionExitHasAReason)
+{
+    // 0 <- 1 <- 3 <- 4, with sink 2 reading 1, and 0 also reading 5 and 3 directly.
+    const std::vector<std::pair<int, int>> edges = { { 0, 1 }, { 1, 3 }, { 2, 1 }, { 3, 4 }, { 0, 5 }, { 0, 3 }, { 5, 3 } };
+    const int nTasks = 6;
+
+    for (int mask = 0; mask < (1 << nTasks); ++mask) {
+        for (int gainFloor : { 0, 1, 2 }) {
+            FrameGraph graph = makeGraph(nTasks, edges);
+            std::set<int> gpu;
+            for (int i = 0; i < nTasks; ++i) {
+                if (mask & (1 << i)) {
+                    gpu.insert(i);
+                }
+            }
+            PlacementInputs inputs = gpuTasks(graph, gpu);
+            inputs.regionGain = [gainFloor](const FrameGraph&, const FrameGraph::Region& region) {
+                return (double)region.members.size() - gainFloor;
+            };
+            placeGraph(graph, inputs);
+
+            for (int t = 0; t < nTasks; ++t) {
+                const int regionId = graph.tasks[t].regionId;
+                if (regionId < 0) {
+                    continue;
+                }
+                for (int c : graph.tasks[t].consumerTasks) {
+                    if (graph.tasks[c].regionId != regionId) {
+                        EXPECT_NE(graph.tasks[c].placementReason, FrameGraph::PlacementReason::None)
+                            << "mask " << mask << " floor " << gainFloor << " exit " << t << " -> " << c;
+                    }
+                }
+            }
+        }
+    }
 }
 
 namespace {
@@ -576,7 +881,7 @@ struct WeightFixture {
     {
         PlacementInputs inputs;
 
-        inputs.canRenderOnGpu = [this](const FrameGraph::Task& task) {
+        inputs.canRenderOnGpu = [this](const FrameGraph::Task& task, GpuRefusal*) {
             return weights.count(indexOf(graph, task)) != 0;
         };
         inputs.taskWeight = taskWeight();

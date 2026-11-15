@@ -68,9 +68,8 @@ transform, so skipping them in that mode is correct.
 
 - Lookup: `getViewerRoIAndTexture` (ViewerInstance.cpp:1269) calls `appPTR->getTexture` (:1384).
   With `forceRender`, cached entries are removed first (:1394-1397).
-- `getRoDAndLookupCache` (:1445) uses the cache only without a user RoI, auto-contrast, roto paint
-  or a partial update (:1452). The render side has the same condition at :1727. Auto-contrast is
-  the only source of a non-zero offset (:2353, :2416), and it bypasses the cache.
+- `getRoDAndLookupCache` (:1445) uses the cache only without a user RoI, roto paint
+  or a partial update (:1452). The render side has the same condition at :1727.
 - CPU stores: `getTextureOrCreate` (:2261-2279, AppManager.cpp:2609) after the upstream image is
   computed (abort checks :2035, :2047), and `setInternalImage` (:2311).
 - Device stores: `deviceCacheTiles` keys (:2081-2100), filled when the readback lands (:3370-3381).

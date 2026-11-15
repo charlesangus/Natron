@@ -44,10 +44,9 @@ script-name prefix so the Write can share it.
   the `ocioContext` group of `contextKey1`..`contextKey4` and
   `contextValue1`..`contextValue4`, and the hidden `ocioConfigFile`,
   `ocioWorkingSpace` and `availableViews`. `reload` (`kNatronReadParamReload`)
-  is a Reload button on the `filename` row. It is the panel's only reload: the
-  `filename` and `proxy` knobs are built with
-  `KnobFile::setShowsReloadButton(false)`, so they show no reload icon of their
-  own. The OCIO file nodes and USDRead do the same for their file knobs.
+  is a Reload button on the `filename` row, and reloads `proxy` as well. It is
+  the panel's only reload: `KnobFile` explains why a file knob with a Reload
+  button shows no reload icon.
 - **Reload.** The node hash folds in a stamp of the file or sequence
   (`FileStampRegistry`: path, modification time, size and inode of every
   file). A file is stamped once, the first time the node is hashed in a

@@ -3604,7 +3604,8 @@ RenderEngine::hasThreadsAlive() const
     }
     bool currentFrameSchedulerRunning = false;
     if (_imp->currentFrameScheduler) {
-        currentFrameSchedulerRunning = _imp->currentFrameScheduler->isRunning();
+        // The render itself may run on the backup thread after the scheduler thread has stopped.
+        currentFrameSchedulerRunning = _imp->currentFrameScheduler->isRunning() || _imp->currentFrameScheduler->isBackupThreadRunning();
     }
 
     return schedulerRunning || currentFrameSchedulerRunning;
@@ -4075,8 +4076,16 @@ ViewerCurrentFrameRequestScheduler::ViewerCurrentFrameRequestScheduler(ViewerIns
 
 ViewerCurrentFrameRequestScheduler::~ViewerCurrentFrameRequestScheduler()
 {
-    // Should've been stopped before anyway
+    // The viewer may already be destroyed, so only the backup thread is quit here: quitting this thread would call
+    // back into the viewer. Joining it before _imp goes keeps a render from outliving the scheduler.
     _imp->backupThread.quitThread(false);
+    _imp->backupThread.wait();
+}
+
+bool
+ViewerCurrentFrameRequestScheduler::isBackupThreadRunning() const
+{
+    return _imp->backupThread.isRunning();
 }
 
 GenericSchedulerThread::TaskQueueBehaviorEnum
@@ -4245,6 +4254,9 @@ ViewerCurrentFrameRequestScheduler::onAbortRequested(bool keepOldestRender)
 void
 ViewerCurrentFrameRequestScheduler::onQuitRequested(bool allowRestarts)
 {
+    // quitThread aborts only while this thread is active, but the render itself may be running on the backup thread
+    // after this one went idle; it must be told to stop or joining the backup waits for the whole render.
+    _imp->viewer->markAllOnGoingRendersAsAborted(false);
     _imp->backupThread.quitThread(allowRestarts);
 }
 
@@ -4481,6 +4493,9 @@ ViewerCurrentFrameRequestRendererBackup::ViewerCurrentFrameRequestRendererBackup
 
 ViewerCurrentFrameRequestRendererBackup::~ViewerCurrentFrameRequestRendererBackup()
 {
+    // Joined before ~GenericSchedulerThread, which would otherwise let run() call the pure tasksQueueBehaviour().
+    quitThread(false);
+    wait();
 }
 
 GenericSchedulerThread::ThreadStateEnum

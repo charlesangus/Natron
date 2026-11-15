@@ -43,6 +43,7 @@ set(Tests_SOURCES
     CurveHost_Test.cpp
     DataKind_Test.cpp
     DataKindGroup_Test.cpp
+    GroupDirectRender_Test.cpp
     DataKindProjectLoad_Test.cpp
     DeepChannelNodes_Test.cpp
     DeepExpressionEvaluator_Test.cpp
@@ -72,7 +73,9 @@ set(Tests_SOURCES
     GpuResidency_Test.cpp
     GpuWeight_Test.cpp
     GraphScaling_Test.cpp
+    GraphScalingConnect_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
+    GraphScalingGuiEdits_Test.cpp
     GraphScalingNaming_Test.cpp
     GraphScalingTLS_Test.cpp
     Hash64_Test.cpp
@@ -101,6 +104,7 @@ set(Tests_SOURCES
     GenericSchedulerAbortWait_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    RotoSelectionProxy_Test.cpp
     PyRotoCreate_Test.cpp
     CurveTrackLink_Test.cpp
     VectorSampler_Test.cpp
@@ -140,6 +144,7 @@ set(Tests_SOURCES
     Gpu/GpuSplitWork_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp
+    Ai/OrtTelemetry_Test.cpp
     Ai/InferenceSession_Test.cpp
     Ai/TiledInference_Test.cpp
     Ai/ModelRegistry_Test.cpp
@@ -162,6 +167,7 @@ set(Tests_SOURCES
     FpTrapGuard_Test.cpp
     PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
+    ProjectResetListeners_Test.cpp
     QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
     ViewerKnobs_Test.cpp
@@ -176,6 +182,7 @@ set(Tests_SOURCES
     PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
+    PySetExpressionEvaluates_Test.cpp
     PythonUndo_Test.cpp
     RFV_Test.cpp
     RFVExpression_Test.cpp
@@ -262,6 +269,9 @@ target_link_libraries(Tests
         ${NATRON_USD_ENGINE_LIBRARIES}
 )
 natron_link_embedded_python(Tests)
+# Ai/OrtTelemetry_Test.cpp defines these to watch the dlopen()ed ONNX Runtime's network calls; an
+# executable only exports what a linked library happens to reference unless told to.
+target_link_options(Tests PRIVATE "LINKER:--export-dynamic-symbol=getaddrinfo,--export-dynamic-symbol=connect")
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
@@ -339,6 +349,7 @@ set(GuiTests_SOURCES
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GlobalModeTargeting_Test.cpp
+    GpuOverlayMapping_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp
@@ -348,10 +359,13 @@ set(GuiTests_SOURCES
     LayerChannelRow_Test.cpp
     NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
+    NodeGraphDeleteLinks_Test.cpp
+    NodeGraphItemGrid_Test.cpp
     NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
+    NodeGraphStacking_Test.cpp
     OverlayImageRenderer_Test.cpp
     PythonUndoStep_Test.cpp
     RenderDialogRange_Test.cpp

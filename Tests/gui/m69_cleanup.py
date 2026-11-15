@@ -31,9 +31,7 @@ Positions that only the C++ side knows are derived instead of read:
     bisecting hover moves for the positions where the whole-pixel readout steps;
   - the curve widget's value axis follows CurveWidget::frameAll(), which fills the widget's height
     with the keys' range grown by a tenth each way; its time axis is read from where the orange
-    current-time line is drawn at two frames;
-  - a middle-button pan in the graph moves its root item, not the view, so node positions are
-    offset by the total pan from then on.
+    current-time line is drawn at two frames.
 
 A popup menu runs a nested event loop, so wherever one may open, a timer that records and closes
 any popup is armed first.
@@ -136,14 +134,10 @@ try:
         graphs = [w for w in gt.widgets_of("NodeGraph") if w.isVisible()]
         return graphs[0] if graphs else None
 
-    # A middle-button pan moves the graph's root item rather than the view, so node positions
-    # (relative to the root) are offset from scene coordinates by the total pan so far.
-    _root_offset = [0.0, 0.0]
-
     def box(effect):
         x, y = effect.getPosition()
         w, h = effect.getSize()
-        return x + _root_offset[0], y + _root_offset[1], w, h
+        return x, y, w, h
 
     def centre(effect):
         x, y, w, h = box(effect)
@@ -702,8 +696,6 @@ try:
         for i in range(1, 5):
             move(vp, held + (pan_to - held) * (i / 4.0), Qt.MiddleButton)
         release(vp, pan_to, Qt.MiddleButton)
-        _root_offset[0] += (pan_to.x() - held.x()) / zoom_of(graph)
-        _root_offset[1] += (pan_to.y() - held.y()) / zoom_of(graph)
         yield ("sleep", 100)
         hits = drawn_near(graph, pan_to)
         report("NOTE pick-up: %d drawn px at the cursor after the pan" % hits)

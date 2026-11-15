@@ -49,6 +49,7 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
@@ -90,14 +91,13 @@ sameDepth(float reference,
 class NatronUtilityGoldenTest
     : public BaseTest {
 protected:
+    // The goldens hold one ray through each pixel's centre, and are the cage, which a level above 0
+    // would refine.
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
-        // The goldens are the cage, which a level above 0 would refine.
-        std::map<std::string, PXR_NS::VtValue> settings;
-
-        settings[kUtilitySettingSubdivLevel] = PXR_NS::VtValue(0);
-        HydraRender::setRendererSettings(kRenderDelegateUtilityId, settings);
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) },
+                                                                     { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) } });
     }
 
     virtual void TearDown() OVERRIDE
@@ -123,13 +123,16 @@ protected:
         }
         KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
         KnobChoice* renderer = dynamic_cast<KnobChoice*>(render->getKnobByName(kUSDRenderParamRenderer).get());
+        KnobBool* headlight = dynamic_cast<KnobBool*>(render->getKnobByName(kUSDRenderParamHeadlight).get());
 
-        if (!file || !renderer) {
+        if (!file || !renderer || !headlight) {
             ADD_FAILURE() << "missing knobs";
 
             return NodePtr();
         }
         file->setValue(std::string(kFixture));
+        // The fixture has no lights, so only the headlight gives the colour golden lit shading.
+        headlight->setValue(true);
         if (!RenderSettingsTestUtils::configure(settings, "/World/Cam", kGoldenWidth, kGoldenHeight)) {
             return NodePtr();
         }

@@ -32,6 +32,9 @@
 #include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdsi/implicitSurfaceSceneIndex.h>
+#include <pxr/imaging/hdsi/lightLinkingSceneIndex.h>
+#include <pxr/imaging/hdsi/nodeIdentifierResolvingSceneIndex.h>
+#include <pxr/imaging/hdsi/velocityMotionResolvingSceneIndex.h>
 
 #include <embree4/rtcore.h>
 
@@ -42,6 +45,9 @@ PXR_NAMESPACE_USING_DIRECTIVE
 namespace {
 const char* const kDisplayName = "Natron Utility";
 const char* const kImplicitSurfacePluginId = "HdNatronUtilityImplicitSurfaceSceneIndexPlugin";
+const char* const kLightLinkingPluginId = "HdNatronUtilityLightLinkingSceneIndexPlugin";
+const char* const kNodeIdentifierPluginId = "HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin";
+const char* const kVelocityMotionPluginId = "HdNatronUtilityVelocityMotionSceneIndexPlugin";
 
 // Embree refuses a device on a CPU without the instruction sets it was built for. An empty string
 // means it can open one.
@@ -114,8 +120,8 @@ HdContainerDataSourceHandle
 HdNatronUtilityRendererPlugin::GetSceneIndexCreateArgs() const
 {
     static const HdContainerDataSourceHandle args = HdSceneIndexCreateArgsSchema::Builder()
-                                                        .SetMotionBlurSupport(HdRetainedTypedSampledDataSource<bool>::New(false))
-                                                        .SetCameraMotionBlurSupport(HdRetainedTypedSampledDataSource<bool>::New(false))
+                                                        .SetMotionBlurSupport(HdRetainedTypedSampledDataSource<bool>::New(true))
+                                                        .SetCameraMotionBlurSupport(HdRetainedTypedSampledDataSource<bool>::New(true))
                                                         .SetLegacyRenderDelegateInfo(HdRetainedTypedSampledDataSource<HdRenderDelegateInfo>::New(renderDelegateInfo()))
                                                         .Build();
 
@@ -141,6 +147,41 @@ HdNatronUtilityImplicitSurfaceSceneIndexPlugin::_AppendSceneIndex(const HdSceneI
     return HdsiImplicitSurfaceSceneIndex::New(inputScene, args);
 }
 
+HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin::HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin()
+{
+}
+
+HdSceneIndexBaseRefPtr
+HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin::_AppendSceneIndex(const HdSceneIndexBaseRefPtr& inputScene,
+                                                                          const HdContainerDataSourceHandle& /*inputArgs*/)
+{
+    return HdSiNodeIdentifierResolvingSceneIndex::New(inputScene, TfToken("glslfx"));
+}
+
+HdNatronUtilityLightLinkingSceneIndexPlugin::HdNatronUtilityLightLinkingSceneIndexPlugin()
+{
+}
+
+HdSceneIndexBaseRefPtr
+HdNatronUtilityLightLinkingSceneIndexPlugin::_AppendSceneIndex(const HdSceneIndexBaseRefPtr& inputScene,
+                                                               const HdContainerDataSourceHandle& /*inputArgs*/)
+{
+    // Null arguments take the scene index's own lists of light and geometry prim types, which cover
+    // every UsdLux light and the meshes the implicit-surface index leaves behind.
+    return HdsiLightLinkingSceneIndex::New(inputScene, nullptr);
+}
+
+HdNatronUtilityVelocityMotionSceneIndexPlugin::HdNatronUtilityVelocityMotionSceneIndexPlugin()
+{
+}
+
+HdSceneIndexBaseRefPtr
+HdNatronUtilityVelocityMotionSceneIndexPlugin::_AppendSceneIndex(const HdSceneIndexBaseRefPtr& inputScene,
+                                                                 const HdContainerDataSourceHandle& inputArgs)
+{
+    return HdsiVelocityMotionResolvingSceneIndex::New(inputScene, inputArgs);
+}
+
 NATRON_NAMESPACE_ENTER
 
 void
@@ -148,6 +189,9 @@ defineUtilityRendererTypes()
 {
     HdRendererPluginRegistry::Define<HdNatronUtilityRendererPlugin>();
     HdSceneIndexPluginRegistry::Define<HdNatronUtilityImplicitSurfaceSceneIndexPlugin>();
+    HdSceneIndexPluginRegistry::Define<HdNatronUtilityLightLinkingSceneIndexPlugin>();
+    HdSceneIndexPluginRegistry::Define<HdNatronUtilityNodeIdentifierResolvingSceneIndexPlugin>();
+    HdSceneIndexPluginRegistry::Define<HdNatronUtilityVelocityMotionSceneIndexPlugin>();
 }
 
 void
@@ -155,6 +199,21 @@ registerUtilitySceneIndexPlugins()
 {
     HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(kDisplayName,
                                                                             TfToken(kImplicitSurfacePluginId),
+                                                                            nullptr,
+                                                                            0,
+                                                                            HdSceneIndexPluginRegistry::InsertionOrderAtStart);
+    HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(kDisplayName,
+                                                                            TfToken(kNodeIdentifierPluginId),
+                                                                            nullptr,
+                                                                            0,
+                                                                            HdSceneIndexPluginRegistry::InsertionOrderAtStart);
+    HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(kDisplayName,
+                                                                            TfToken(kLightLinkingPluginId),
+                                                                            nullptr,
+                                                                            0,
+                                                                            HdSceneIndexPluginRegistry::InsertionOrderAtEnd);
+    HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(kDisplayName,
+                                                                            TfToken(kVelocityMotionPluginId),
                                                                             nullptr,
                                                                             0,
                                                                             HdSceneIndexPluginRegistry::InsertionOrderAtStart);

@@ -3198,6 +3198,8 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     view.showRender = _imp->showRender;
     view.showProxy = _imp->showProxy;
     view.showGuides = _imp->showGuidePurpose;
+    _imp->sceneLit = _imp->usesSceneLights();
+    view.headlight = !_imp->sceneLit;
     progressive.setMaxSamples(_imp->maxSamples);
     progressive.setView(view);
 

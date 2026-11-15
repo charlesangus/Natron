@@ -26,12 +26,15 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <pxr/base/gf/frustum.h>
+#include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/rect2i.h>
 #include <pxr/base/gf/vec2i.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
+#include <pxr/base/gf/vec3i.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/vt/array.h>
+#include <pxr/base/vt/types.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/renderBuffer.h>
@@ -43,16 +46,21 @@
 #include <pxr/usd/usd/timeCode.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdShade/material.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
+#include <pxr/usd/usdShade/shader.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #include <pxr/usdImaging/usdImagingGL/renderParams.h>
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -64,6 +72,11 @@
 #include "BaseTest.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/Utility/UtilityLight.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/Wavefront.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -81,6 +94,31 @@ const int kManyGridSize = 100;
 const int kLatencyWindow = 4096;
 const int kViewWindow = 1024;
 const double kCameraZ = 30.;
+
+// A material emitting the display colour, which the scenes here show without lights.
+UsdShadeMaterial
+emitDisplayColor(const UsdStageRefPtr& stage)
+{
+    const SdfPath path("/EmitDisplayColor");
+    UsdShadeMaterial material = UsdShadeMaterial::Get(stage, path);
+
+    if (material) {
+        return material;
+    }
+    material = UsdShadeMaterial::Define(stage, path);
+
+    UsdShadeShader reader = UsdShadeShader::Define(stage, path.AppendChild(TfToken("Reader")));
+    UsdShadeShader surface = UsdShadeShader::Define(stage, path.AppendChild(TfToken("Surface")));
+
+    reader.CreateIdAttr(VtValue(TfToken("UsdPrimvarReader_float3")));
+    reader.CreateInput(TfToken("varname"), SdfValueTypeNames->Token).Set(TfToken("displayColor"));
+    surface.CreateIdAttr(VtValue(TfToken("UsdPreviewSurface")));
+    surface.CreateInput(TfToken("emissiveColor"), SdfValueTypeNames->Color3f).ConnectToSource(reader.ConnectableAPI(), TfToken("result"));
+    surface.CreateInput(TfToken("diffuseColor"), SdfValueTypeNames->Color3f).Set(GfVec3f(0.f));
+    material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), TfToken("surface"));
+
+    return material;
+}
 
 // An n by n grid of quads, width units wide and facing the camera, n * n * 2 triangles.
 void
@@ -122,6 +160,7 @@ defineGrid(const UsdStageRefPtr& stage,
     mesh.CreateFaceVertexIndicesAttr(VtValue(indices));
     mesh.CreateSubdivisionSchemeAttr(VtValue(UsdGeomTokens->none));
     mesh.CreateDisplayColorAttr(VtValue(VtVec3fArray(1, color)));
+    UsdShadeMaterialBindingAPI::Apply(mesh.GetPrim()).Bind(emitDisplayColor(stage));
 }
 
 UsdStageRefPtr
@@ -179,6 +218,9 @@ public:
         parameters.gpuEnabled = false;
         _engine.reset(new UsdImagingGLEngine(parameters));
         _engine->SetEnablePresentation(false);
+        // The default grid of samples traces the 4096-pixel frame that many times over, which a debug
+        // build cannot finish within the suite's limit; one pass keeps the frame heavy but finishable.
+        _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(1));
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
     }
 
@@ -320,9 +362,17 @@ viewOf(bool showRender)
 class NatronUtilityCancelTest
     : public BaseTest {
 protected:
+    // One sample a pixel, so that every frame published is a finished one.
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
+    }
+
     virtual void TearDown() OVERRIDE
     {
         _render.reset();
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, std::map<std::string, PXR_NS::VtValue>());
         BaseTest::TearDown();
     }
 
@@ -399,6 +449,74 @@ TEST(NatronUtilityCancel, AStopCutsAHugeMeshsFrameShortWithinTheBound)
 TEST(NatronUtilityCancel, AStopCutsTheFrameOfManyMeshesShortWithinTheBound)
 {
     checkCancelLatency(manyMeshesStage(GfVec3f(1.f, 0.f, 0.f)), "many meshes");
+}
+
+namespace {
+class CountingFilm : public WavefrontFilm {
+public:
+    virtual void writeTile(const WavefrontTile&) OVERRIDE
+    {
+        ++tiles;
+    }
+
+    std::atomic<int> tiles { 0 };
+};
+} // anon namespace
+
+// One tile lit by so many lights that shading it alone takes far longer than the bound: a stop ends it
+// between batches of lights, and the tile never reaches the film.
+TEST(NatronUtilityCancel, AStopCutsATileShortBetweenItsLights)
+{
+    const int lightCount = 8192;
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/Card"), 1);
+
+    scene.setTopology(id,
+                      VtVec3fArray { GfVec3f(-50.f, -50.f, 0.f), GfVec3f(50.f, -50.f, 0.f), GfVec3f(50.f, 50.f, 0.f), GfVec3f(-50.f, 50.f, 0.f) },
+                      VtVec3iArray { GfVec3i(0, 1, 2), GfVec3i(0, 2, 3) });
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    for (int i = 0; i < lightCount; ++i) {
+        std::shared_ptr<UtilityLightDesc> light = std::make_shared<UtilityLightDesc>();
+
+        light->emission = GfVec3f(1.f / lightCount);
+        scene.setLight(SdfPath("/Light" + std::to_string(i)), light);
+    }
+
+    GfFrustum camera;
+
+    camera.SetOrthographic(-10., 10., -10., 10., 1., 100.);
+    camera.SetPosition(GfVec3d(0., 0., kCameraZ));
+
+    WavefrontFrame frame;
+
+    frame.worldToView = camera.ComputeViewMatrix();
+    frame.projection = camera.ComputeProjectionMatrix();
+    frame.window.width = 64;
+    frame.window.height = 64;
+    frame.sampling.samplesPerSide = 1;
+
+    const UtilityScene::Snapshot snapshot = scene.snapshot();
+    WavefrontCpu cpu;
+    CountingFilm film;
+    std::atomic<bool> stop(false);
+    Clock::time_point stopped;
+    std::thread stopper([&stop, &stopped]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        stopped = Clock::now();
+        stop = true;
+    });
+    const bool finished = cpu.render(snapshot, frame, film, stop, 1);
+    const Clock::time_point returned = Clock::now();
+
+    stopper.join();
+
+    const std::chrono::milliseconds took = std::chrono::duration_cast<std::chrono::milliseconds>(returned - stopped);
+
+    std::cout << "[   NOTE   ] a stop while shading " << lightCount << " lights took " << took.count() << " ms" << std::endl;
+    EXPECT_FALSE(finished);
+    EXPECT_LT(took.count(), kCancelBound.count());
+    EXPECT_EQ(0, film.tiles.load());
 }
 
 TEST_F(NatronUtilityCancelTest, AnEditDuringAFrameRestartsItAndTheOldFrameNeverLands)

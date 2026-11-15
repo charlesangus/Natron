@@ -25,9 +25,11 @@
 
 #include "UtilityRenderDelegate.h"
 
+#include <algorithm>
 #include <atomic>
 
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/stringUtils.h>
 #include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/bprim.h>
 #include <pxr/imaging/hd/camera.h>
@@ -35,7 +37,10 @@
 #include <pxr/imaging/hd/resourceRegistry.h>
 #include <pxr/imaging/hd/tokens.h>
 
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityLight.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMesh.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderPass.h"
@@ -228,6 +233,42 @@ UtilityRenderParam::frameReport(std::string* device,
     *warning = _reportWarning;
 }
 
+void
+UtilityRenderParam::setSampleProgress(std::size_t done,
+                                      std::size_t wanted)
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    _samplesDone = done;
+    _samplesWanted = wanted;
+}
+
+void
+UtilityRenderParam::setBucketSeconds(const std::vector<double>& seconds)
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    _bucketSeconds = seconds;
+}
+
+std::vector<double>
+UtilityRenderParam::bucketSeconds() const
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    return _bucketSeconds;
+}
+
+void
+UtilityRenderParam::sampleProgress(std::size_t* done,
+                                   std::size_t* wanted) const
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    *done = _samplesDone;
+    *wanted = _samplesWanted;
+}
+
 const std::atomic<bool>&
 UtilityRenderParam::cancelFlag() const
 {
@@ -386,7 +427,13 @@ UtilityRenderDelegate::GetSupportedRprimTypes() const
 const TfTokenVector&
 UtilityRenderDelegate::GetSupportedSprimTypes() const
 {
-    static const TfTokenVector types = { HdPrimTypeTokens->camera, HdPrimTypeTokens->extComputation };
+    static const TfTokenVector types = [] {
+        TfTokenVector all = { HdPrimTypeTokens->camera, HdPrimTypeTokens->extComputation, HdPrimTypeTokens->material };
+
+        all.insert(all.end(), UtilityLight::supportedTypes().begin(), UtilityLight::supportedTypes().end());
+
+        return all;
+    }();
 
     return types;
 }
@@ -452,6 +499,14 @@ UtilityRenderDelegate::CreateSprim(const TfToken& typeId,
     }
     if (typeId == HdPrimTypeTokens->extComputation) {
         return new HdExtComputation(sprimId);
+    }
+    if (typeId == HdPrimTypeTokens->material) {
+        return new UtilityMaterial(sprimId);
+    }
+    const TfTokenVector& lights = UtilityLight::supportedTypes();
+
+    if (std::find(lights.begin(), lights.end(), typeId) != lights.end()) {
+        return new UtilityLight(sprimId, typeId);
     }
     TF_CODING_ERROR("Unknown Sprim type %s", typeId.GetText());
 
@@ -576,12 +631,41 @@ UtilityRenderDelegate::InvokeCommand(const TfToken& command,
     return false;
 }
 
+GfVec2d
+utilityMotionShutter(const HdRenderDelegate& delegate,
+                     const char* toggleKey)
+{
+    const VtValue shutter = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityShutterSetting));
+
+    if (!shutter.IsHolding<GfVec2d>() || !delegate.GetRenderSetting<bool>(TfToken(toggleKey), true)) {
+        return GfVec2d(0.);
+    }
+    const GfVec2d interval = shutter.UncheckedGet<GfVec2d>();
+
+    return (interval[1] > interval[0]) ? interval : GfVec2d(0.);
+}
+
 HdRenderSettingDescriptorList
 UtilityRenderDelegate::GetRenderSettingDescriptors() const
 {
-    return { HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) },
-             HdRenderSettingDescriptor { "Subdivision Level", TfToken(kUtilitySettingSubdivLevel), VtValue(UtilitySubdivRefinement::kDefaultLevel) },
-             HdRenderSettingDescriptor { "Max Subdivided Triangles", TfToken(kUtilitySettingMaxSubdivTriangles), VtValue(static_cast<int>(UtilitySubdivRefinement::kDefaultMaxTriangles)) } };
+    return {
+        HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) },
+        HdRenderSettingDescriptor { "Pixel Samples", TfToken(kUtilitySettingPixelSamples), VtValue(int(kUtilityDefaultPixelSamples)) },
+        HdRenderSettingDescriptor { "Pixel Filter", TfToken(kUtilitySettingPixelFilter), VtValue(TfToken(kUtilityFilterBlackmanHarris)) },
+        HdRenderSettingDescriptor { "Filter Width", TfToken(kUtilitySettingFilterWidth), VtValue(kUtilityDefaultFilterWidth) },
+        HdRenderSettingDescriptor { "Seed", TfToken(kUtilitySettingSeed), VtValue(int(0)) },
+        HdRenderSettingDescriptor { "Max Cutouts", TfToken(kUtilitySettingMaxCutouts), VtValue(static_cast<int>(kWavefrontDefaultMaxCutouts)) },
+        HdRenderSettingDescriptor { "Override Shutter", TfToken(kUtilitySettingOverrideShutter), VtValue(false) },
+        HdRenderSettingDescriptor { "Shutter", TfToken(kUtilitySettingShutter), VtValue(kUtilityDefaultShutter) },
+        HdRenderSettingDescriptor { "Shutter Offset", TfToken(kUtilitySettingShutterOffset), VtValue(TfToken(kUtilityShutterCentred)) },
+        HdRenderSettingDescriptor { "Shutter Custom Offset", TfToken(kUtilitySettingShutterCustomOffset), VtValue(0.f) },
+        HdRenderSettingDescriptor { "Shutter Segments", TfToken(kUtilitySettingShutterSegments), VtValue(int(kUtilityDefaultShutterSegments)) },
+        HdRenderSettingDescriptor { "Camera Motion Blur", TfToken(kUtilitySettingCameraMotionBlur), VtValue(true) },
+        HdRenderSettingDescriptor { "Transform Motion Blur", TfToken(kUtilitySettingTransformMotionBlur), VtValue(true) },
+        HdRenderSettingDescriptor { "Deformation Motion Blur", TfToken(kUtilitySettingDeformationMotionBlur), VtValue(true) },
+        HdRenderSettingDescriptor { "Subdivision Level", TfToken(kUtilitySettingSubdivLevel), VtValue(UtilitySubdivRefinement::kDefaultLevel) },
+        HdRenderSettingDescriptor { "Max Subdivided Triangles", TfToken(kUtilitySettingMaxSubdivTriangles), VtValue(static_cast<int>(UtilitySubdivRefinement::kDefaultMaxTriangles)) },
+    };
 }
 
 VtDictionary
@@ -607,8 +691,37 @@ UtilityRenderDelegate::GetRenderStats() const
     }
     dictionary[kUtilityStatDevice] = VtValue(device);
     dictionary[kUtilityStatWarning] = VtValue(warning);
+    dictionary[kUtilityStatSceneWarning] = VtValue(TfStringJoin(_scene->warnings(), "\n"));
+
+    std::size_t samples = 0;
+    std::size_t samplesWanted = 0;
+
+    _renderParam->sampleProgress(&samples, &samplesWanted);
+    dictionary[kUtilityStatSamples] = VtValue(samples);
+    dictionary[kUtilityStatSamplesWanted] = VtValue(samplesWanted);
+
+    const std::vector<double> buckets = _renderParam->bucketSeconds();
+
+    dictionary[kUtilityStatBucketSeconds] = VtValue(VtDoubleArray(buckets.begin(), buckets.end()));
+
+    std::string motionWarning;
+
+    for (const SdfPath& path : stats.topologyVaryingPaths) {
+        motionWarning += (motionWarning.empty() ? "" : ", ") + path.GetString();
+    }
+    if (!motionWarning.empty()) {
+        motionWarning = "The topology of " + motionWarning + " changes within the shutter, so they do not deform there.";
+    }
+    dictionary[kUtilityStatMotionWarning] = VtValue(motionWarning);
 
     return dictionary;
+}
+
+// Sdr finds natronProject3D.glslfx's node only for a delegate that takes glslfx sources.
+TfTokenVector
+UtilityRenderDelegate::GetShaderSourceTypes() const
+{
+    return { TfToken("glslfx") };
 }
 
 NATRON_NAMESPACE_EXIT

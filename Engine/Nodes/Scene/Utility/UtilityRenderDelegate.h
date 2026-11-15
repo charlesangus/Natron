@@ -37,6 +37,7 @@
 #include <utility>
 #include <vector>
 
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/usd/sdf/path.h>
@@ -58,12 +59,58 @@
 #define kUtilityStatDevice "utilityDevice"
 // Why the last frame did not render on the device asked for, as a std::string; empty when it did.
 #define kUtilityStatWarning "utilityWarning"
+// What the scene draws other than as authored, as a std::string of lines; empty when nothing.
+#define kUtilityStatSceneWarning "utilitySceneWarning"
+// The samples per pixel the running or last frame has drawn, and the number it draws in all.
+#define kUtilityStatSamples "utilitySamples"
+#define kUtilityStatSamplesWanted "utilitySamplesWanted"
+// The seconds each time bucket of the last frame took to trace, its scene's update included, summed
+// over its samples: a VtDoubleArray, one per bucket, the first opening the shutter.
+#define kUtilityStatBucketSeconds "utilityBucketSeconds"
+// Why some motion does not blur, naming the prims, as a std::string; empty when all of it does.
+#define kUtilityStatMotionWarning "utilityMotionWarning"
 
 // Which device draws: a TfToken, one of the three values below.
 #define kUtilitySettingDevice "device"
 #define kUtilityDeviceAuto "auto"
 #define kUtilityDeviceGpu "gpu"
 #define kUtilityDeviceCpu "cpu"
+
+// The most cutout or projection-discard surfaces a ray goes through before it is a miss: an int.
+#define kUtilitySettingMaxCutouts "maxCutouts"
+// How pixels are sampled. Pixel Samples, an int, is the side of the grid of samples a pixel takes; it
+// is not named samples, which the progressive viewer would take for its sample cap. Pixel Filter is a
+// TfToken, one of the four values below. Filter Width, a float, is in pixels. Seed is an int.
+#define kUtilitySettingPixelSamples "pixelSamples"
+#define kUtilitySettingPixelFilter "pixelFilter"
+#define kUtilitySettingFilterWidth "filterWidth"
+#define kUtilitySettingSeed "seed"
+#define kUtilityFilterBox "box"
+#define kUtilityFilterTriangle "triangle"
+#define kUtilityFilterGaussian "gaussian"
+#define kUtilityFilterBlackmanHarris "blackmanHarris"
+#define kUtilityDefaultPixelSamples 3
+#define kUtilityDefaultFilterWidth 1.5f
+
+// The shutter. The camera's shutter:open and shutter:close are used unless Override Shutter, a bool,
+// is on; then Shutter, a float, is its length in frames, placed by Shutter Offset, a TfToken, one of
+// the four values below; custom opens it Shutter Custom Offset frames, a float, from the frame.
+// Shutter Segments, an int, is the number of times within it the scene is traced at. The three
+// toggles, bools, choose which motion blurs.
+#define kUtilitySettingOverrideShutter "overrideShutter"
+#define kUtilitySettingShutter "shutter"
+#define kUtilitySettingShutterOffset "shutterOffset"
+#define kUtilitySettingShutterCustomOffset "shutterCustomOffset"
+#define kUtilitySettingShutterSegments "shutterSegments"
+#define kUtilitySettingCameraMotionBlur "cameraMotionBlur"
+#define kUtilitySettingTransformMotionBlur "transformMotionBlur"
+#define kUtilitySettingDeformationMotionBlur "deformationMotionBlur"
+#define kUtilityShutterCentred "centred"
+#define kUtilityShutterStart "start"
+#define kUtilityShutterEnd "end"
+#define kUtilityShutterCustom "custom"
+#define kUtilityDefaultShutter 0.5f
+#define kUtilityDefaultShutterSegments 8
 
 // The renderer command that has the delegate give back what it keeps on the GPU, as Free GPU Memory asks.
 #define kUtilityCommandReleaseGpu "releaseGpu"
@@ -136,6 +183,14 @@ public:
                         const std::string& warning);
     void frameReport(std::string* device,
                      std::string* warning) const;
+    // What the stats report of the frame's samples per pixel. MT-safe.
+    void setSampleProgress(std::size_t done,
+                           std::size_t wanted);
+    void sampleProgress(std::size_t* done,
+                        std::size_t* wanted) const;
+    // What the stats report of the frame's time buckets. MT-safe.
+    void setBucketSeconds(const std::vector<double>& seconds);
+    std::vector<double> bucketSeconds() const;
 
     // What a running frame polls: set by stop() until restart(), and by cancelFrame() until the next
     // frame starts. MT-safe.
@@ -188,6 +243,9 @@ private:
     mutable std::mutex _reportMutex;
     std::string _reportDevice;
     std::string _reportWarning;
+    std::size_t _samplesDone = 0;
+    std::size_t _samplesWanted = 0;
+    std::vector<double> _bucketSeconds;
     std::atomic<bool> _stop { false };
     std::atomic<bool> _cancel { false };
     std::atomic<bool> _frameRunning { false };
@@ -197,6 +255,14 @@ private:
     std::mutex _threadMutex;
     std::thread _thread;
 };
+
+/**
+ * @brief The shutter, frame-relative, over which delegate's prims sample the motion toggleKey, one
+ * of the motion blur toggles, enables: the host's (kRenderDelegateUtilityShutterSetting), closed
+ * (both equal) while that toggle is off or the host set none.
+ **/
+PXR_NS::GfVec2d utilityMotionShutter(const PXR_NS::HdRenderDelegate& delegate,
+                                     const char* toggleKey);
 
 /**
  * @brief The Natron Utility render delegate: meshes and instancers become a UtilityScene that its
@@ -238,6 +304,7 @@ public:
     virtual PXR_NS::HdAovDescriptor GetDefaultAovDescriptor(const PXR_NS::TfToken& name) const OVERRIDE;
     virtual PXR_NS::HdRenderSettingDescriptorList GetRenderSettingDescriptors() const OVERRIDE;
     virtual PXR_NS::VtDictionary GetRenderStats() const OVERRIDE;
+    virtual PXR_NS::TfTokenVector GetShaderSourceTypes() const OVERRIDE;
     virtual bool IsStopSupported() const OVERRIDE;
     virtual bool IsStopped() const OVERRIDE;
     virtual bool Stop(bool blocking = true) OVERRIDE;

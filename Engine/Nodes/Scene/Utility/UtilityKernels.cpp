@@ -25,6 +25,8 @@
 
 #include "UtilityKernels.h"
 
+#include <vector>
+
 // The Slang prelude's global type names would collide in any file that also sees USD, so these mirror
 // its ComputeVaryingInput and StructuredBuffer.
 namespace {
@@ -40,10 +42,11 @@ struct KernelBuffer {
 
 struct RayGenGlobals {
     KernelBuffer rays;
+    KernelBuffer weights;
     const NATRON_NAMESPACE::KernelRayGenParams* params;
 };
 
-struct ShadeFlatGlobals {
+struct ShadeSurfaceGlobals {
     KernelBuffer rays;
     KernelBuffer hitSurface;
     KernelBuffer hitIds;
@@ -55,10 +58,55 @@ struct ShadeFlatGlobals {
     KernelBuffer depthOut;
     KernelBuffer primIdOut;
     KernelBuffer instanceIdOut;
+    KernelBuffer materials;
+    KernelBuffer textureBindings;
+    KernelBuffer images;
+    KernelBuffer texels;
+    KernelBuffer projections;
+    KernelBuffer points;
+    KernelBuffer instanceTransforms;
+    KernelBuffer sts;
+    KernelBuffer lights;
+    KernelBuffer lightData;
+    KernelBuffer linkMasks;
+    KernelBuffer shadowRays;
+    KernelBuffer shadowContributions;
+    KernelBuffer shadowLights;
     const NATRON_NAMESPACE::KernelShadeParams* params;
 };
 
-// numthreads in both kernels.
+struct ResolveHitsGlobals {
+    KernelBuffer rays;
+    KernelBuffer hitSurface;
+    KernelBuffer hitIds;
+    KernelBuffer nextHitSurface;
+    KernelBuffer nextHitIds;
+    KernelBuffer retrace;
+    KernelBuffer blocked;
+    KernelBuffer rayLights;
+    KernelBuffer geometries;
+    KernelBuffer colors;
+    KernelBuffer triangles;
+    KernelBuffer materials;
+    KernelBuffer textureBindings;
+    KernelBuffer images;
+    KernelBuffer texels;
+    KernelBuffer projections;
+    KernelBuffer points;
+    KernelBuffer instanceTransforms;
+    KernelBuffer sts;
+    KernelBuffer linkMasks;
+    const NATRON_NAMESPACE::KernelResolveParams* params;
+};
+
+struct ShadeLightsGlobals {
+    KernelBuffer colorOut;
+    KernelBuffer shadowContributions;
+    KernelBuffer blocked;
+    const NATRON_NAMESPACE::KernelShadeLightsParams* params;
+};
+
+// numthreads in every kernel.
 const std::uint32_t kGroupSize = 64;
 
 KernelVarying
@@ -69,28 +117,38 @@ varyingFor(std::size_t count)
 } // anon namespace
 
 extern "C" void utilityRayGen(KernelVarying*, void* entryPointParams, void* globalParams);
-extern "C" void utilityShadeFlat(KernelVarying*, void* entryPointParams, void* globalParams);
+extern "C" void utilityShadeSurface(KernelVarying*, void* entryPointParams, void* globalParams);
+extern "C" void utilityResolveHits(KernelVarying*, void* entryPointParams, void* globalParams);
+extern "C" void utilityShadeLights(KernelVarying*, void* entryPointParams, void* globalParams);
 
 NATRON_NAMESPACE_ENTER
 
 void
 runRayGenKernel(const KernelRayGenParams& params,
-                float* rays)
+                float* rays,
+                float* weights)
 {
     const std::size_t count = static_cast<std::size_t>(params.tileWidth) * params.tileHeight;
 
     if (count == 0) {
         return;
     }
+
+    std::vector<float> unwanted;
+
+    if (!weights) {
+        unwanted.resize(count);
+        weights = unwanted.data();
+    }
     KernelVarying varying = varyingFor(count);
-    RayGenGlobals globals { { rays, count * 8 }, &params };
+    RayGenGlobals globals { { rays, count * 8 }, { weights, count }, &params };
 
     utilityRayGen(&varying, nullptr, &globals);
 }
 
 void
-runShadeFlatKernel(const KernelShadeParams& params,
-                   const KernelShadeBuffers& buffers)
+runShadeSurfaceKernel(const KernelShadeParams& params,
+                      const KernelShadeBuffers& buffers)
 {
     const std::size_t count = params.count;
 
@@ -98,7 +156,8 @@ runShadeFlatKernel(const KernelShadeParams& params,
         return;
     }
     KernelVarying varying = varyingFor(count);
-    ShadeFlatGlobals globals {
+    const std::size_t shadowCount = count * params.lighting[1];
+    ShadeSurfaceGlobals globals {
         { buffers.rays, count * 8 },
         { buffers.hitSurface, count * 3 },
         { buffers.hitIds, count * 3 },
@@ -110,10 +169,87 @@ runShadeFlatKernel(const KernelShadeParams& params,
         { buffers.depthOut, count },
         { buffers.primIdOut, count },
         { buffers.instanceIdOut, count },
+        { buffers.materials, buffers.materialCount },
+        { buffers.textureBindings, buffers.textureBindingCount },
+        { buffers.images, buffers.imageCount },
+        { buffers.texels, buffers.texelCount },
+        { buffers.projections, buffers.projectionCount },
+        { buffers.points, buffers.pointCount },
+        { buffers.instanceTransforms, buffers.instanceTransformRowCount },
+        { buffers.sts, buffers.stCount },
+        { buffers.lights, buffers.lightCount },
+        { buffers.lightData, buffers.lightDataCount },
+        { buffers.linkMasks, buffers.linkMaskCount },
+        { buffers.shadowRays, shadowCount * 8 },
+        { buffers.shadowContributions, shadowCount },
+        { buffers.shadowLights, shadowCount },
         &params,
     };
 
-    utilityShadeFlat(&varying, nullptr, &globals);
+    utilityShadeSurface(&varying, nullptr, &globals);
+}
+
+void
+runResolveHitsKernel(const KernelResolveParams& params,
+                     const KernelShadeBuffers& tables,
+                     const KernelResolveBuffers& buffers)
+{
+    const std::size_t count = params.count;
+
+    if (count == 0) {
+        return;
+    }
+    KernelVarying varying = varyingFor(count);
+    const bool shadow = (params.flags & kKernelResolveShadow) != 0;
+    ResolveHitsGlobals globals {
+        { buffers.rays, count * 8 },
+        { buffers.hitSurface, count * 3 },
+        { buffers.hitIds, count * 3 },
+        { buffers.nextHitSurface, count * 3 },
+        { buffers.nextHitIds, count * 3 },
+        { buffers.retrace, count * 8 },
+        { buffers.blocked, shadow ? count : 0 },
+        { buffers.rayLights, shadow ? count : 0 },
+        { tables.geometries, tables.geometryCount },
+        { tables.colors, tables.colorCount },
+        { tables.triangles, tables.triangleIndexCount },
+        { tables.materials, tables.materialCount },
+        { tables.textureBindings, tables.textureBindingCount },
+        { tables.images, tables.imageCount },
+        { tables.texels, tables.texelCount },
+        { tables.projections, tables.projectionCount },
+        { tables.points, tables.pointCount },
+        { tables.instanceTransforms, tables.instanceTransformRowCount },
+        { tables.sts, tables.stCount },
+        { tables.linkMasks, tables.linkMaskCount },
+        &params,
+    };
+
+    utilityResolveHits(&varying, nullptr, &globals);
+}
+
+void
+runShadeLightsKernel(const KernelShadeLightsParams& params,
+                     float* colorOut,
+                     const float* shadowContributions,
+                     const std::uint32_t* blocked)
+{
+    const std::size_t count = params.count;
+
+    if (count == 0 || params.lightBatch == 0) {
+        return;
+    }
+
+    KernelVarying varying = varyingFor(count);
+    const std::size_t shadowCount = count * params.lightBatch;
+    ShadeLightsGlobals globals {
+        { colorOut, count },
+        { shadowContributions, shadowCount },
+        { blocked, shadowCount },
+        &params,
+    };
+
+    utilityShadeLights(&varying, nullptr, &globals);
 }
 
 NATRON_NAMESPACE_EXIT

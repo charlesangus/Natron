@@ -31,15 +31,21 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>
+#include <utility>
 #include <vector>
 
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec4f.h>
 
 #include "Global/Macros.h"
 
+#include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/UtilityTextures.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -53,11 +59,32 @@ struct WavefrontRect {
     int height = 0;
 };
 
+// The default for WavefrontFrame::maxCutouts.
+const std::uint32_t kWavefrontDefaultMaxCutouts = 16;
+// How a pixel is sampled: samplesPerSide squared samples over a filterWidth-pixel square, and which of
+// them a render draws. One sample per pixel goes through its centre with a weight of one.
+struct WavefrontSampling {
+    int samplesPerSide = 1;
+    KernelPixelFilter filter = eKernelPixelFilterBox;
+    float filterWidth = 1.f;
+    std::uint32_t seed = 0;
+    int sampleIndex = 0;
+
+    int samplesPerPixel() const
+    {
+        return samplesPerSide * samplesPerSide;
+    }
+};
+
 // What one render draws.
 struct WavefrontFrame {
     PXR_NS::GfMatrix4d worldToView = PXR_NS::GfMatrix4d(1.);
     PXR_NS::GfMatrix4d projection = PXR_NS::GfMatrix4d(1.);
     WavefrontRect window;
+    // The most holes a ray goes on through, in surfaces under their opacityThreshold, Project3D discards
+    // and casters a shadow ray's light ignores; past them the ray ends as a miss.
+    std::uint32_t maxCutouts = kWavefrontDefaultMaxCutouts;
+    WavefrontSampling sampling;
 };
 
 // The outputs a film takes in tiles. An executor may leave the arrays of the others null.
@@ -70,16 +97,21 @@ struct WavefrontAovs {
     bool any() const { return color || depth || primId || instanceId; }
 };
 
-// Shaded pixels of one tile, in rows from its bottom. Where hitGeometry is Tracer::kNoHit the other
-// arrays hold nothing.
+// One sample of each pixel of a tile, in rows from its bottom. Where hitGeometry is Tracer::kNoHit
+// the arrays other than weight hold nothing.
 struct WavefrontTile {
     WavefrontRect rect;
     const std::uint32_t* hitGeometry = nullptr;
+    // The filter weight of each pixel's sample, misses included.
+    const float* weight = nullptr;
     // Four per pixel; null when the colour went to the film's deviceColor() on the device.
     const float* color = nullptr;
     const float* depth = nullptr;
     const std::int32_t* primId = nullptr;
     const std::int32_t* instanceId = nullptr;
+    // Whether a miss's colour is the background a dome light shows rather than the film's clear
+    // colour; a miss's other AOVs stay clear either way.
+    bool background = false;
 };
 
 /**
@@ -106,6 +138,11 @@ public:
     {
         return WavefrontAovs();
     }
+
+    // Each time a sample pass was drawn in full, before the next one starts: readers may be shown it.
+    virtual void passDrawn()
+    {
+    }
 };
 
 /**
@@ -130,6 +167,82 @@ public:
         = 0;
 };
 
+// The shutter a frame is drawn over, in frames relative to it, and the camera within it.
+struct WavefrontMotion {
+    double open = 0.;
+    double close = 0.;
+    // How many times within the shutter the scene is traced at; at most the pixel's samples.
+    int segments = 1;
+    // The camera at increasing times, the frame's among them; empty for a camera that does not move.
+    std::vector<double> cameraTimes;
+    std::vector<PXR_NS::GfMatrix4d> cameraViews;
+    std::vector<PXR_NS::GfMatrix4d> cameraProjections;
+
+    bool isOpen() const
+    {
+        return close > open;
+    }
+
+    bool operator==(const WavefrontMotion& other) const
+    {
+        return open == other.open && close == other.close && segments == other.segments && cameraTimes == other.cameraTimes
+            && cameraViews == other.cameraViews && cameraProjections == other.cameraProjections;
+    }
+};
+
+/**
+ * @brief How many time buckets a frame of samplesPerPixel samples is drawn in: one when the shutter
+ * is closed or nothing within it moves, else the segments, at most one per sample.
+ **/
+int wavefrontBucketCount(const WavefrontMotion& motion,
+                         const UtilityScene::Snapshot& snapshot,
+                         int samplesPerPixel);
+
+// The frame-relative time bucket of buckets traces at: the middle of its share of the shutter, or
+// the frame for a single bucket.
+double wavefrontBucketTime(const WavefrontMotion& motion,
+                           int bucket,
+                           int buckets);
+
+/**
+ * @brief The sample indices of a pixel in the order they are drawn: buckets runs of consecutive
+ * entries, the first sampling the first bucket. Over more than one bucket each run takes cells
+ * spread across the pixel, so that where in the pixel a sample falls says nothing of its time.
+ **/
+std::vector<int> wavefrontSampleOrder(int samplesPerPixel,
+                                      int buckets);
+
+// The frame's camera moved by how the motion's camera at time differs from its camera at the frame.
+WavefrontFrame wavefrontFrameAt(const WavefrontFrame& frame,
+                                const WavefrontMotion& motion,
+                                double time);
+
+/**
+ * @brief Draws every sample of the frame, one per pixel per executor call, in time buckets: the
+ * snapshot, evaluated at each bucket's time, and the camera at it trace that bucket's samples.
+ * progress, when set, hears how many samples are done after each. bucketSeconds, when not null,
+ * receives how long each bucket took, its scene's evaluation included. Returns false when stop ended it.
+ **/
+bool wavefrontDrawSamples(WavefrontExecutor& executor,
+                          const UtilityScene::Snapshot& snapshot,
+                          const WavefrontFrame& frame,
+                          const WavefrontMotion& motion,
+                          WavefrontFilm& film,
+                          const std::atomic<bool>& stop,
+                          int threads,
+                          const std::function<void(std::size_t)>& progress,
+                          std::vector<double>* bucketSeconds);
+
+/**
+ * @brief Appends to data the importance table of a lat-long dome image, sized width by height bins over
+ * the whole image: a conditional CDF per row, then the CDF over rows. Returns false, appending nothing,
+ * when the image has no light in it.
+ **/
+bool wavefrontAppendDomeCdf(const UtilityTextureImage& image,
+                            std::vector<float>* data,
+                            std::uint32_t* width,
+                            std::uint32_t* height);
+
 /**
  * @brief Whether the frame's camera can make rays at all: its matrices invert to a finite frustum.
  **/
@@ -142,9 +255,10 @@ KernelShadeParams makeShadeParams(const WavefrontFrame& frame,
                                   std::uint32_t count);
 
 /**
- * @brief The scene's shading data as the flat tables ShadeFlat binds. A geometry's position in the
- * tables is its position in the snapshot, the index Tracer reports. Colours and triangles are only
- * recopied when a geometry's colours or topology changed.
+ * @brief The scene's shading data as the flat tables ShadeSurface binds. A geometry's position in the
+ * tables is its position in the snapshot, the index Tracer reports. Per-geometry arrays are only
+ * recopied when a geometry's colours, coordinates, points or topology changed, and texels only when
+ * the set of textures read changed. Material 0 is what geometry without a usable material shades as.
  **/
 class WavefrontShadeTables {
 public:
@@ -154,17 +268,40 @@ public:
 
     // The tables as the kernel's buffers; the caller fills in what is per-tile.
     KernelShadeBuffers buffers() const;
+    // Changes whenever the texels do, so a device copy of them can be kept otherwise.
+    std::uint64_t texelVersion() const;
+    std::uint32_t lightCount() const;
+    // Caps the texels at limitBytes, 0 for no cap, downsampling the largest textures to fit; returns
+    // false when they cannot fit even then.
+    bool fitTexels(std::uint64_t limitBytes);
+    // One line per texture fitTexels() downsampled.
+    const std::vector<std::string>& texelWarnings() const;
+    // Whether a dome light shows where camera rays miss.
+    bool hasBackground() const;
+    // Whether any material can leave holes in its surface, which rays then need ResolveHits to go
+    // through.
+    bool hasHoles() const;
+    // The 32-bit words of each light-link and shadow-link mask.
+    std::uint32_t linkWords() const;
+    // What lets an occlusion query skip the casters a shadow ray's light is not shadow-linked to;
+    // without casterMasks when every light is shadowed by everything.
+    OcclusionFilter occlusionFilter(const std::uint32_t* rayLights) const;
 
 private:
+    void buildTexels();
+
     struct SourceVersion {
         UtilityScene::GeometryId id;
         std::uint64_t colorVersion;
         std::uint64_t topologyVersion;
+        std::uint64_t pointsVersion;
+        std::uint64_t stVersion;
         std::size_t pointCount;
 
         bool operator==(const SourceVersion& other) const
         {
-            return id == other.id && colorVersion == other.colorVersion && topologyVersion == other.topologyVersion && pointCount == other.pointCount;
+            return id == other.id && colorVersion == other.colorVersion && topologyVersion == other.topologyVersion
+                && pointsVersion == other.pointsVersion && stVersion == other.stVersion && pointCount == other.pointCount;
         }
     };
 
@@ -172,7 +309,36 @@ private:
     std::vector<PXR_NS::GfVec4f> _colors;
     std::vector<std::int32_t> _triangles;
     std::vector<std::int32_t> _instanceIds;
+    std::vector<KernelMaterialRecord> _materials;
+    std::vector<KernelTextureBinding> _textureBindings;
+    std::vector<KernelProjectionRecord> _projections;
+    std::vector<std::uint32_t> _images;
+    std::vector<PXR_NS::GfVec4f> _texels;
+    std::vector<UtilityTextureAssetConstPtr> _textureAssets;
+    std::vector<std::string> _textureAssetNames;
+    std::uint64_t _texelVersion = 0;
+    std::uint64_t _texelLimit = 0;
+    bool _texelsFit = true;
+    std::vector<std::string> _texelWarnings;
+    std::vector<PXR_NS::GfVec4f> _points;
+    std::vector<PXR_NS::GfVec4f> _instanceTransforms;
+    std::vector<PXR_NS::GfVec2f> _sts;
     std::vector<SourceVersion> _sources;
+    std::vector<KernelLightRecord> _lights;
+    // The dome importance tables and IES tables the light records point into.
+    std::vector<float> _lightData;
+    // Each light's light-link and shadow-link category; empty for all of the scene.
+    std::vector<std::pair<PXR_NS::TfToken, PXR_NS::TfToken>> _lightLinks;
+    std::uint32_t _linkWords = 0;
+    // Whether any light's shadows fall from only some of the scene, which needs filtered occlusion.
+    bool _shadowLinked = false;
+    bool _background = false;
+    bool _holes = false;
+    std::vector<std::uint32_t> _linkMasks;
+    // Material paths in the order of _materials from index 1.
+    std::map<PXR_NS::SdfPath, std::uint32_t> _materialIndices;
+
+    void updateMaterials(const UtilityScene::Snapshot& snapshot);
     std::uint64_t _version = 0;
     bool _synced = false;
 };

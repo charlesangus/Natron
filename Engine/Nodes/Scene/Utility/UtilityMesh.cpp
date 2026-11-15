@@ -27,19 +27,30 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
+#include <pxr/base/gf/vec2d.h>
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/extComputationUtils.h>
 #include <pxr/imaging/hd/instancer.h>
+#include <pxr/imaging/hd/meshSchema.h>
+#include <pxr/imaging/hd/meshTopologySchema.h>
 #include <pxr/imaging/hd/meshUtil.h>
+#include <pxr/imaging/hd/primvarSchema.h>
+#include <pxr/imaging/hd/primvarsSchema.h>
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/sceneDelegate.h>
+#include <pxr/imaging/hd/sceneIndex.h>
+#include <pxr/imaging/hd/timeSampleArray.h>
 #include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/pxOsd/subdivTags.h>
 #include <pxr/imaging/pxOsd/tokens.h>
 
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -59,6 +70,8 @@ template <class T>
 struct Channel {
     ChannelRate rate = eChannelRateConstant;
     VtArray<T> values;
+    // False when values holds only the fallback, the primvar missing or unusable.
+    bool found = false;
 };
 
 template <class In, class Out>
@@ -98,6 +111,19 @@ convertChannel(const VtValue& value,
                VtFloatArray* out)
 {
     return convertChannelValue<float>(value, out) || convertChannelValue<double>(value, out);
+}
+
+bool
+convertChannel(const VtValue& value,
+               VtVec2fArray* out)
+{
+    return convertChannelValue<GfVec2f>(value, out) || convertChannelValue<GfVec2d>(value, out);
+}
+
+HdType
+channelType(const VtVec2fArray&)
+{
+    return HdTypeFloatVec2;
 }
 
 HdType
@@ -152,12 +178,14 @@ pullChannel(HdSceneDelegate* sceneDelegate,
             if (!values.empty()) {
                 channel.rate = eChannelRateConstant;
                 channel.values = values;
+                channel.found = true;
             }
             break;
         case HdInterpolationUniform:
             if (values.size() == static_cast<std::size_t>(topology.GetNumFaces())) {
                 channel.rate = eChannelRateUniform;
                 channel.values = values;
+                channel.found = true;
             }
             break;
         case HdInterpolationVertex:
@@ -168,6 +196,7 @@ pullChannel(HdSceneDelegate* sceneDelegate,
                 if (!refined.empty()) {
                     channel.rate = eChannelRateVertex;
                     channel.values = refined;
+                    channel.found = true;
                 }
             }
             break;
@@ -188,6 +217,7 @@ pullChannel(HdSceneDelegate* sceneDelegate,
                                 out[3 * t + corner] = refined.cdata()[corners.cdata()[t][corner]];
                             }
                         }
+                        channel.found = true;
                     }
                 }
             } else if (values.size() == static_cast<std::size_t>(topology.GetNumFaceVaryings())) {
@@ -202,6 +232,7 @@ pullChannel(HdSceneDelegate* sceneDelegate,
                     && triangulated.UncheckedGet<VtArray<T>>().size() == triangleCount * 3) {
                     channel.rate = eChannelRateCorner;
                     channel.values = triangulated.UncheckedGet<VtArray<T>>();
+                    channel.found = true;
                 }
             }
             break;
@@ -255,12 +286,13 @@ intValue(const VtValue& value,
 // The face-varying primvars a refinement carries a channel for, in channel order.
 TfTokenVector
 faceVaryingChannelNames(HdSceneDelegate* sceneDelegate,
-                        const SdfPath& id)
+                        const SdfPath& id,
+                        const TfToken& stName)
 {
     TfTokenVector names;
 
     for (const HdPrimvarDescriptor& pv : sceneDelegate->GetPrimvarDescriptors(id, HdInterpolationFaceVarying)) {
-        if (pv.name == HdTokens->displayColor || pv.name == HdTokens->displayOpacity) {
+        if (pv.name == HdTokens->displayColor || pv.name == HdTokens->displayOpacity || pv.name == stName) {
             names.push_back(pv.name);
         }
     }
@@ -268,11 +300,80 @@ faceVaryingChannelNames(HdSceneDelegate* sceneDelegate,
     return names;
 }
 
+// -1 for a primvar the refinement carries no channel for.
+int
+channelIndex(const TfTokenVector& names,
+             const TfToken& name)
+{
+    const auto it = std::find(names.begin(), names.end(), name);
+
+    return it == names.end() ? -1 : static_cast<int>(it - names.begin());
+}
+
+// Each channel's value per face-vertex; an unindexed primvar holds one value per face-vertex.
+std::vector<VtIntArray>
+faceVaryingChannelIndices(HdSceneDelegate* sceneDelegate,
+                          const SdfPath& id,
+                          const TfTokenVector& names)
+{
+    std::vector<VtIntArray> channels;
+
+    for (const TfToken& name : names) {
+        VtIntArray indices;
+        const VtValue values = sceneDelegate->GetIndexedPrimvar(id, name, &indices);
+
+        if (indices.empty()) {
+            const std::size_t count = values.IsArrayValued() ? values.GetArraySize() : 0;
+
+            indices.resize(count);
+            for (std::size_t i = 0; i < count; ++i) {
+                indices[i] = static_cast<int>(i);
+            }
+        }
+        channels.push_back(indices);
+    }
+
+    return channels;
+}
+
 GfVec4f
 straightRGBA(const GfVec3f& color,
              float opacity)
 {
     return GfVec4f(color[0], color[1], color[2], opacity);
+}
+// The scene delegate serves a mesh's topology at the frame only; its sampled sources in the
+// terminal scene index are what can be asked about other times within the shutter.
+HdContainerDataSourceHandle
+primSource(HdSceneDelegate* sceneDelegate,
+           const SdfPath& id)
+{
+    const HdSceneIndexBaseRefPtr index = sceneDelegate->GetRenderIndex().GetTerminalSceneIndex();
+
+    return index ? index->GetPrim(id).dataSource : HdContainerDataSourceHandle();
+}
+
+bool
+variesWithin(const HdIntArrayDataSourceHandle& source,
+             float open,
+             float close)
+{
+    std::vector<HdSampledDataSource::Time> times;
+
+    if (!source || !source->GetContributingSampleTimesForInterval(open, close, &times)) {
+        return false;
+    }
+    const VtIntArray atFrame = source->GetTypedValue(0.f);
+
+    return std::any_of(times.begin(), times.end(), [&source, &atFrame](HdSampledDataSource::Time t) { return source->GetTypedValue(t) != atFrame; });
+}
+
+VtIntArray
+valueAt(const HdIntArrayDataSourceHandle& source,
+        float time,
+        const VtIntArray& fallback)
+{
+    return source ? source->GetTypedValue(time) : fallback;
 }
 } // anon namespace
 
@@ -298,7 +399,9 @@ UtilityMesh::GetInitialDirtyBitsMask() const
         | HdChangeTracker::DirtyDisplayStyle
         | HdChangeTracker::DirtyPrimvar
         | HdChangeTracker::DirtyInstancer
-        | HdChangeTracker::DirtyInstanceIndex;
+        | HdChangeTracker::DirtyInstanceIndex
+        | HdChangeTracker::DirtyMaterialId
+        | HdChangeTracker::DirtyCategories;
 }
 
 HdDirtyBits
@@ -366,16 +469,29 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     const std::size_t previousPointCount = _points.size();
-    const bool pointsDirty = pullPoints(sceneDelegate, bits);
+    // A mid-shutter mesh replaced the frame's points and topology, which are needed again to tell
+    // whether the topology still varies.
+    const HdDirtyBits pulled = _midShutter ? (bits | HdChangeTracker::DirtyPoints | HdChangeTracker::DirtyTopology) : bits;
+    const bool pointsDirty = pullPoints(sceneDelegate, pulled);
     bool topologyDirty = false;
 
-    if (HdChangeTracker::IsTopologyDirty(bits, id)) {
+    if (HdChangeTracker::IsTopologyDirty(pulled, id)) {
         _topology = HdMeshTopology(GetMeshTopology(sceneDelegate), 0);
         topologyDirty = true;
     }
-    if (topologyDirty || HdChangeTracker::IsDisplayStyleDirty(bits, id)
-        || HdChangeTracker::IsPrimvarDirty(bits, id, TfToken(kUtilityPrimvarSubdivLevel))
-        || (_subdiv && (HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayColor) || HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayOpacity)))) {
+    if (bits & HdChangeTracker::DirtyMaterialId) {
+        SetMaterialId(sceneDelegate->GetMaterialId(id));
+        scene->setMaterialId(_geometry, GetMaterialId());
+    }
+    // A topology that changes within the shutter is replaced by the shutter's middle one, and that
+    // is the one to refine.
+    if (pointsDirty || topologyDirty) {
+        _coarseMotion = samplePointMotion(sceneDelegate);
+        topologyDirty = topologyDirty || _midShutter;
+    }
+    // The level primvar and the face-varying channels are primvars, and the material names the
+    // texture coordinates' one.
+    if (topologyDirty || HdChangeTracker::IsDisplayStyleDirty(bits, id) || (bits & (HdChangeTracker::DirtyPrimvar | HdChangeTracker::DirtyMaterialId))) {
         const SubdivSync subdiv = syncSubdivTopology(sceneDelegate, scene, topologyDirty, stopped);
 
         if (subdiv == SubdivSync::Stopped) {
@@ -392,6 +508,29 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
             return;
         }
 
+        std::shared_ptr<const UtilityScene::PointMotion> motion = _coarseMotion;
+
+        if (_subdiv && _coarseMotion) {
+            const std::shared_ptr<UtilityScene::PointMotion> refined = std::make_shared<UtilityScene::PointMotion>();
+
+            refined->times = _coarseMotion->times;
+            for (const VtVec3fArray& coarse : _coarseMotion->points) {
+                VtVec3fArray limit;
+                VtVec3fArray normals;
+
+                if (!_subdiv->evaluate(coarse, &limit, &normals, stopped)) {
+                    syncAgain();
+
+                    return;
+                }
+                refined->points.push_back(limit);
+            }
+            motion = refined;
+        }
+        if (topologyDirty) {
+            // The kept list indexes the triangulation, so the same list can name other triangles.
+            _kept.clear();
+        }
         const bool filterChanged = filterTriangles();
 
         if (topologyDirty || filterChanged) {
@@ -401,19 +540,39 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
             scene->setPoints(_geometry, scenePoints());
         }
         scene->setNormals(_geometry, _normals);
+        scene->setTopologyVaries(_geometry, _midShutter);
+        scene->setPointMotion(_geometry, motion);
     }
     if (topologyDirty || _points.size() != previousPointCount
         || HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayColor)
         || HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayOpacity)) {
         syncColors(sceneDelegate, scene);
     }
+    if (topologyDirty || _points.size() != previousPointCount || (bits & (HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyPrimvar))) {
+        syncMaterial(sceneDelegate, scene);
+    }
     if (HdChangeTracker::IsTransformDirty(bits, id)) {
         _transform = sceneDelegate->GetTransform(id);
     }
     if (HdChangeTracker::IsVisibilityDirty(bits, id) || HdChangeTracker::IsTransformDirty(bits, id)
-        || HdChangeTracker::IsInstancerDirty(bits, id) || HdChangeTracker::IsInstanceIndexDirty(bits, id)) {
+        || HdChangeTracker::IsInstancerDirty(bits, id) || HdChangeTracker::IsInstanceIndexDirty(bits, id)
+        || (bits & HdChangeTracker::DirtyCategories)) {
         _UpdateInstancer(sceneDelegate, dirtyBits);
         syncInstances(sceneDelegate, scene);
+    }
+    if ((bits & HdChangeTracker::DirtyCategories) || HdChangeTracker::IsInstancerDirty(bits, id)) {
+        // The light-linking scene index puts a prim's collections on it and an instance's on its
+        // instancer, so an instanced mesh answers to both.
+        const VtArray<TfToken> own = sceneDelegate->GetCategories(id);
+        TfTokenVector categories(own.begin(), own.end());
+        const SdfPath& instancerId = GetInstancerId();
+
+        if (!instancerId.IsEmpty()) {
+            const VtArray<TfToken> inherited = sceneDelegate->GetCategories(instancerId);
+
+            categories.insert(categories.end(), inherited.begin(), inherited.end());
+        }
+        scene->setCategories(_geometry, categories);
     }
     *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
 }
@@ -465,13 +624,15 @@ UtilityMesh::syncSubdivTopology(HdSceneDelegate* sceneDelegate,
     const SdfPath& id = GetId();
     const bool subdivides = _topology.GetScheme() != PxOsdOpenSubdivTokens->none;
     const int requested = subdivides ? subdivLevel(sceneDelegate) : 0;
-    const TfTokenVector faceVaryingNames = requested > 0 ? faceVaryingChannelNames(sceneDelegate, id) : TfTokenVector();
+    const TfTokenVector faceVaryingNames = requested > 0 ? faceVaryingChannelNames(sceneDelegate, id, stPrimvarName(sceneDelegate)) : TfTokenVector();
+    std::vector<VtIntArray> faceVaryingIndices = faceVaryingChannelIndices(sceneDelegate, id, faceVaryingNames);
 
-    if (!topologyChanged && requested == _subdivLevel && faceVaryingNames == _faceVaryingNames) {
+    if (!topologyChanged && requested == _subdivLevel && faceVaryingNames == _faceVaryingNames && faceVaryingIndices == _faceVaryingIndices) {
         return SubdivSync::Unchanged;
     }
     _subdivLevel = requested;
     _faceVaryingNames = faceVaryingNames;
+    _faceVaryingIndices = faceVaryingIndices;
     _subdiv.reset();
     _refinedPoints = VtVec3fArray();
     _normals = VtVec3fArray();
@@ -490,30 +651,13 @@ UtilityMesh::syncSubdivTopology(HdSceneDelegate* sceneDelegate,
         }
     }
     if (level > 0) {
-        std::vector<VtIntArray> faceVaryingIndices;
-
-        for (const TfToken& name : _faceVaryingNames) {
-            VtIntArray indices;
-            const VtValue values = sceneDelegate->GetIndexedPrimvar(id, name, &indices);
-
-            if (indices.empty()) {
-                const std::size_t count = values.IsArrayValued() ? values.GetArraySize() : 0;
-
-                indices.resize(count);
-                for (std::size_t i = 0; i < count; ++i) {
-                    indices[i] = static_cast<int>(i);
-                }
-            }
-            faceVaryingIndices.push_back(indices);
-        }
-
         std::string error;
         UtilitySubdivRefinement::Outcome outcome = UtilitySubdivRefinement::Outcome::Failed;
 
         _subdiv = UtilitySubdivRefinement::get(_topology.GetPxOsdMeshTopology(), level, faceVaryingIndices, stopped, &outcome, &error);
         if (outcome == UtilitySubdivRefinement::Outcome::Failed && !faceVaryingIndices.empty()) {
-            // A broken face-varying primvar should cost only its own channel, not the refinement.
-            _faceVaryingNames.clear();
+            // A broken face-varying primvar should cost the channels, not the refinement; the names
+            // stay so that an unchanged mesh is not refined again, and find no channel.
             _subdiv = UtilitySubdivRefinement::get(_topology.GetPxOsdMeshTopology(), level, std::vector<VtIntArray>(), stopped, &outcome, &error);
         }
         if (outcome == UtilitySubdivRefinement::Outcome::Stopped) {
@@ -535,7 +679,6 @@ UtilityMesh::syncSubdivTopology(HdSceneDelegate* sceneDelegate,
     } else {
         const HdMeshUtil util(&_topology, id);
 
-        _faceVaryingNames.clear();
         util.ComputeTriangleIndices(&_allTriangles, &_allParams);
     }
     scene->setWarning(_geometry, warning);
@@ -565,14 +708,82 @@ UtilityMesh::pullPoints(HdSceneDelegate* sceneDelegate,
                 const auto it = values.find(pv.name);
 
                 _points = it == values.end() ? VtVec3fArray() : it->second.GetWithDefault<VtVec3fArray>();
+                _pointsComputed = true;
 
                 return true;
             }
         }
     }
     _points = sceneDelegate->Get(id, HdTokens->points).GetWithDefault<VtVec3fArray>();
+    _pointsComputed = false;
 
     return true;
+}
+
+// Computed points (skinning and the like) give no samples over an interval, so they do not deform
+// within the shutter. A mesh whose topology changes within it cannot be interpolated, so it stays
+// still as it is at the shutter's middle, the time the rest of the scene is centred on.
+std::shared_ptr<UtilityScene::PointMotion>
+UtilityMesh::samplePointMotion(HdSceneDelegate* sceneDelegate)
+{
+    const SdfPath& id = GetId();
+    const GfVec2d shutter = utilityMotionShutter(*sceneDelegate->GetRenderIndex().GetRenderDelegate(), kUtilitySettingDeformationMotionBlur);
+
+    _midShutter = false;
+    if (!(shutter[1] > shutter[0]) || _pointsComputed) {
+        return nullptr;
+    }
+    const float open = static_cast<float>(shutter[0]);
+    const float close = static_cast<float>(shutter[1]);
+    HdTimeSampleArray<VtValue, 4> samples;
+    std::shared_ptr<UtilityScene::PointMotion> motion = std::make_shared<UtilityScene::PointMotion>();
+    bool topologyVaries = false;
+
+    sceneDelegate->SamplePrimvar(id, HdTokens->points, open, close, &samples);
+    for (std::size_t i = 0; i < samples.count; ++i) {
+        const VtVec3fArray points = samples.values[i].GetWithDefault<VtVec3fArray>();
+
+        if (points.size() != _points.size()) {
+            topologyVaries = true;
+            break;
+        }
+        motion->times.push_back(samples.times[i]);
+        motion->points.push_back(points);
+    }
+
+    const HdContainerDataSourceHandle prim = primSource(sceneDelegate, id);
+    const HdMeshTopologySchema topology = HdMeshSchema::GetFromParent(prim).GetTopology();
+    const HdIntArrayDataSourceHandle counts = topology.GetFaceVertexCounts();
+    const HdIntArrayDataSourceHandle indices = topology.GetFaceVertexIndices();
+
+    topologyVaries = topologyVaries || variesWithin(counts, open, close) || variesWithin(indices, open, close);
+    if (topologyVaries) {
+        const float middle = 0.5f * (open + close);
+        const HdSampledDataSourceHandle points = HdPrimvarsSchema::GetFromParent(prim).GetPrimvar(HdTokens->points).GetPrimvarValue();
+
+        if (points) {
+            _points = points->GetValue(middle).GetWithDefault<VtVec3fArray>();
+        }
+        const PxOsdSubdivTags& frameTags = _topology.GetSubdivTags();
+        // Creases and corners name the frame's vertices, which the middle topology need not share;
+        // the interpolation rules hold for any topology.
+        PxOsdSubdivTags rules;
+
+        rules.SetVertexInterpolationRule(frameTags.GetVertexInterpolationRule());
+        rules.SetFaceVaryingInterpolationRule(frameTags.GetFaceVaryingInterpolationRule());
+        rules.SetCreaseMethod(frameTags.GetCreaseMethod());
+        rules.SetTriangleSubdivision(frameTags.GetTriangleSubdivision());
+        _topology = HdMeshTopology(_topology.GetScheme(), _topology.GetOrientation(), valueAt(counts, middle, _topology.GetFaceVertexCounts()),
+                                   valueAt(indices, middle, _topology.GetFaceVertexIndices()),
+                                   valueAt(topology.GetHoleIndices(), middle, _topology.GetHoleIndices()), 0);
+        _topology.SetSubdivTags(rules);
+        _midShutter = true;
+
+        return nullptr;
+    }
+    const bool moves = std::any_of(motion->points.begin(), motion->points.end(), [&motion](const VtVec3fArray& points) { return points != motion->points.front(); });
+
+    return moves ? motion : nullptr;
 }
 
 // A triangle with no area has no normal, and one NaN vertex would poison the bounds of whatever
@@ -624,13 +835,8 @@ UtilityMesh::syncColors(HdSceneDelegate* sceneDelegate,
                         UtilityScene* scene)
 {
     const SdfPath& id = GetId();
-    const auto channelOf = [this](const TfToken& name) {
-        const auto it = std::find(_faceVaryingNames.begin(), _faceVaryingNames.end(), name);
-
-        return it == _faceVaryingNames.end() ? -1 : static_cast<int>(it - _faceVaryingNames.begin());
-    };
-    const Channel<GfVec3f> color = pullChannel<GfVec3f>(sceneDelegate, id, HdTokens->displayColor, _topology, _points.size(), _allTriangles.size(), GfVec3f(0.18f), _subdiv.get(), channelOf(HdTokens->displayColor));
-    const Channel<float> opacity = pullChannel<float>(sceneDelegate, id, HdTokens->displayOpacity, _topology, _points.size(), _allTriangles.size(), 1.f, _subdiv.get(), channelOf(HdTokens->displayOpacity));
+    const Channel<GfVec3f> color = pullChannel<GfVec3f>(sceneDelegate, id, HdTokens->displayColor, _topology, _points.size(), _allTriangles.size(), GfVec3f(0.18f), _subdiv.get(), channelIndex(_faceVaryingNames, HdTokens->displayColor));
+    const Channel<float> opacity = pullChannel<float>(sceneDelegate, id, HdTokens->displayOpacity, _topology, _points.size(), _allTriangles.size(), 1.f, _subdiv.get(), channelIndex(_faceVaryingNames, HdTokens->displayOpacity));
     const ChannelRate rate = std::max(color.rate, opacity.rate);
     const bool mixedFinerRates = (color.rate == eChannelRateUniform && opacity.rate == eChannelRateVertex)
         || (color.rate == eChannelRateVertex && opacity.rate == eChannelRateUniform);
@@ -673,7 +879,7 @@ UtilityMesh::syncColors(HdSceneDelegate* sceneDelegate,
             }
         }
     }
-    scene->setColors(_geometry, binding, colors);
+    scene->setColors(_geometry, binding, colors, color.found, opacity.found);
 }
 
 void
@@ -681,25 +887,134 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
                            UtilityScene* scene)
 {
     const SdfPath& instancerId = GetInstancerId();
+    HdRenderIndex& renderIndex = sceneDelegate->GetRenderIndex();
+    UtilityInstancer* instancer = nullptr;
     std::vector<GfMatrix4d> transforms;
+    std::vector<TfTokenVector> categories;
 
     if (instancerId.IsEmpty()) {
         transforms.push_back(_transform);
     } else {
-        HdRenderIndex& renderIndex = sceneDelegate->GetRenderIndex();
-
         HdInstancer::_SyncInstancerAndParents(renderIndex, instancerId);
-        HdInstancer* instancer = renderIndex.GetInstancer(instancerId);
-
+        instancer = static_cast<UtilityInstancer*>(renderIndex.GetInstancer(instancerId));
         if (TF_VERIFY(instancer)) {
-            const VtMatrix4dArray instances = static_cast<UtilityInstancer*>(instancer)->computeInstanceTransforms(GetId());
+            const VtMatrix4dArray instances = instancer->computeInstanceTransforms(GetId());
             transforms.reserve(instances.size());
             for (const GfMatrix4d& instance : instances) {
                 transforms.push_back(_transform * instance);
             }
+            categories = static_cast<UtilityInstancer*>(instancer)->computeInstanceCategories(GetId());
+            if (categories.size() != transforms.size()) {
+                categories.clear();
+            }
         }
     }
-    scene->setInstances(_geometry, transforms);
+    scene->setInstances(_geometry, transforms, categories);
+
+    const GfVec2d shutter = utilityMotionShutter(*renderIndex.GetRenderDelegate(), kUtilitySettingTransformMotionBlur);
+    std::shared_ptr<UtilityScene::TransformMotion> motion;
+
+    if (shutter[1] > shutter[0] && !transforms.empty()) {
+        HdTimeSampleArray<GfMatrix4d, 4> own;
+        std::vector<float> times;
+
+        sceneDelegate->SampleTransform(GetId(), static_cast<float>(shutter[0]), static_cast<float>(shutter[1]), &own);
+        for (std::size_t i = 1; i < own.count; ++i) {
+            if (own.values[i] != own.values[0]) {
+                times.assign(own.times.begin(), own.times.begin() + own.count);
+                break;
+            }
+        }
+        if (instancer) {
+            const std::vector<float> placed = instancer->motionTimes(GetId());
+
+            times.insert(times.end(), placed.begin(), placed.end());
+        }
+        times = utilityMotionTimes(times, shutter);
+        if (!times.empty()) {
+            motion = std::make_shared<UtilityScene::TransformMotion>();
+        }
+        for (const float time : times) {
+            const GfMatrix4d transform = own.count > 0 ? utilityTransformAt(own, time) : _transform;
+            std::vector<GfMatrix4d> at;
+
+            if (instancer) {
+                const VtMatrix4dArray instances = instancer->computeInstanceTransformsAt(GetId(), time);
+                at.reserve(instances.size());
+                for (const GfMatrix4d& instance : instances) {
+                    at.push_back(transform * instance);
+                }
+            } else {
+                at.push_back(transform);
+            }
+            if (at.size() != transforms.size()) {
+                motion.reset();
+                break;
+            }
+            motion->times.push_back(time);
+            motion->transforms.push_back(at);
+        }
+    }
+    scene->setTransformMotion(_geometry, motion);
+}
+
+TfToken
+UtilityMesh::stPrimvarName(HdSceneDelegate* sceneDelegate) const
+{
+    const HdSprim* material = GetMaterialId().IsEmpty() ? nullptr : sceneDelegate->GetRenderIndex().GetSprim(HdPrimTypeTokens->material, GetMaterialId());
+
+    return TfToken(material ? static_cast<const UtilityMaterial*>(material)->stPrimvar() : std::string("st"));
+}
+
+void
+UtilityMesh::syncMaterial(HdSceneDelegate* sceneDelegate,
+                          UtilityScene* scene)
+{
+    const SdfPath& id = GetId();
+    const TfToken name = stPrimvarName(sceneDelegate);
+    bool found = false;
+
+    for (int i = 0; i < HdInterpolationCount && !found; ++i) {
+        for (const HdPrimvarDescriptor& pv : sceneDelegate->GetPrimvarDescriptors(id, static_cast<HdInterpolation>(i))) {
+            found = found || pv.name == name;
+        }
+    }
+    if (!found) {
+        scene->setSt(_geometry, false, UtilityScene::eColorBindingConstant, VtVec2fArray());
+
+        return;
+    }
+
+    const Channel<GfVec2f> st = pullChannel<GfVec2f>(sceneDelegate, id, name, _topology, _points.size(), _allTriangles.size(), GfVec2f(0.f), _subdiv.get(), channelIndex(_faceVaryingNames, name));
+    VtVec2fArray values;
+    UtilityScene::ColorBinding binding = UtilityScene::eColorBindingConstant;
+
+    switch (st.rate) {
+    case eChannelRateConstant:
+        values = VtVec2fArray(1, st.values.cdata()[0]);
+        break;
+    case eChannelRateUniform:
+        binding = UtilityScene::eColorBindingTriangle;
+        values.resize(_kept.size());
+        for (std::size_t t = 0; t < _kept.size(); ++t) {
+            values[t] = sampleCorner(st, _kept[t], 0, HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(_allParams.cdata()[_kept[t]]), 0);
+        }
+        break;
+    case eChannelRateVertex:
+        binding = UtilityScene::eColorBindingVertex;
+        values = st.values;
+        break;
+    case eChannelRateCorner:
+        binding = UtilityScene::eColorBindingCorner;
+        values.resize(_kept.size() * 3);
+        for (std::size_t t = 0; t < _kept.size(); ++t) {
+            for (int corner = 0; corner < 3; ++corner) {
+                values[t * 3 + corner] = sampleCorner(st, _kept[t], corner, 0, 0);
+            }
+        }
+        break;
+    }
+    scene->setSt(_geometry, true, binding, values);
 }
 
 NATRON_NAMESPACE_EXIT

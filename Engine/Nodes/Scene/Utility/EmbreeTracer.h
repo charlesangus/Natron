@@ -50,7 +50,8 @@ public:
     virtual void intersect(const RayBatch& rays,
                            const HitBatch& hits) const OVERRIDE;
     virtual void occluded(const RayBatch& rays,
-                          std::uint8_t* blocked) const OVERRIDE;
+                          std::uint8_t* blocked,
+                          const OcclusionFilter* filter = nullptr) const OVERRIDE;
     virtual Stats stats() const OVERRIDE;
     virtual Outcome status() const OVERRIDE;
 

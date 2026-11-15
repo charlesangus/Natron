@@ -477,6 +477,8 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
 
     if (HdChangeTracker::IsTopologyDirty(pulled, id)) {
         _topology = HdMeshTopology(GetMeshTopology(sceneDelegate), 0);
+        // Hydra serves creases, corners and the interpolation rules apart from the topology.
+        _topology.SetSubdivTags(sceneDelegate->GetSubdivTags(id));
         topologyDirty = true;
     }
     if (bits & HdChangeTracker::DirtyMaterialId) {

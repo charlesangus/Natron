@@ -28,14 +28,22 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include <pxr/base/tf/token.h>
+#include <pxr/imaging/hio/image.h>
+
 #include <gtest/gtest.h>
+
+#include <QFile>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 #include "Engine/AppInstance.h"
@@ -54,6 +62,15 @@
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
 #include "ofxNatron.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/AppManager.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/GpuContext.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Gpu/GpuTestDevice.h"
+#include "Gpu/GpuTestSelector.h"
+#endif
 
 NATRON_NAMESPACE_USING
 
@@ -88,6 +105,150 @@ sameDepth(float reference,
     return std::fabs(z - (double)rendered) <= tolerance;
 }
 
+const int kTextureSize = 8;
+
+// A checker whose two colours shade the other way along each axis, so that any shift, flip or
+// stretch of the texture coordinates changes the picture.
+bool
+writeCheckerTexture(const std::string& path)
+{
+    std::vector<unsigned char> bytes;
+
+    for (int y = 0; y < kTextureSize; ++y) {
+        for (int x = 0; x < kTextureSize; ++x) {
+            const bool light = ((x + y) % 2) == 0;
+
+            bytes.push_back(light ? 230 : 30);
+            bytes.push_back((unsigned char)(light ? 60 + 20 * x : 50));
+            bytes.push_back((unsigned char)(light ? 40 : 70 + 20 * y));
+            bytes.push_back(255);
+        }
+    }
+
+    PXR_NS::HioImage::StorageSpec spec;
+
+    spec.width = kTextureSize;
+    spec.height = kTextureSize;
+    spec.depth = 1;
+    spec.format = PXR_NS::HioFormatUNorm8Vec4;
+    spec.flipped = false;
+    spec.data = bytes.data();
+
+    const PXR_NS::HioImageSharedPtr image = PXR_NS::HioImage::OpenForWriting(path);
+
+    return image && image->Write(spec);
+}
+
+// A cube cage turned to show three faces, each face carrying the whole texture through one indexed
+// face-varying st, so every cube edge is a UV seam. Refined, it is a rounded box.
+bool
+writeTexturedCubeScene(const std::string& scenePath,
+                       const std::string& texturePath)
+{
+    const std::string usda = std::string("#usda 1.0\n"
+                                         "(\n"
+                                         "    defaultPrim = \"World\"\n"
+                                         "    upAxis = \"Y\"\n"
+                                         ")\n"
+                                         "def Xform \"World\" {\n"
+                                         "    def Camera \"Cam\" {\n"
+                                         "        float focalLength = 35\n"
+                                         "        double3 xformOp:translate = (0, 0, 8)\n"
+                                         "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                                         "    }\n"
+                                         "    def Material \"Tex\" {\n"
+                                         "        token outputs:surface.connect = </World/Tex/Surface.outputs:surface>\n"
+                                         "        def Shader \"Surface\" {\n"
+                                         "            uniform token info:id = \"UsdPreviewSurface\"\n"
+                                         "            color3f inputs:diffuseColor.connect = </World/Tex/Image.outputs:rgb>\n"
+                                         "            token outputs:surface\n"
+                                         "        }\n"
+                                         "        def Shader \"Image\" {\n"
+                                         "            uniform token info:id = \"UsdUVTexture\"\n"
+                                         "            asset inputs:file = @")
+        + texturePath + "@\n"
+                        "            token inputs:sourceColorSpace = \"raw\"\n"
+                        "            token inputs:wrapS = \"clamp\"\n"
+                        "            token inputs:wrapT = \"clamp\"\n"
+                        "            float2 inputs:st.connect = </World/Tex/St.outputs:result>\n"
+                        "            float3 outputs:rgb\n"
+                        "        }\n"
+                        "        def Shader \"St\" {\n"
+                        "            uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+                        "            string inputs:varname = \"st\"\n"
+                        "            float2 outputs:result\n"
+                        "        }\n"
+                        "    }\n"
+                        "    def Mesh \"Box\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {\n"
+                        "        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]\n"
+                        "        int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]\n"
+                        "        point3f[] points = [(-1.2, -1.2, 1.2), (1.2, -1.2, 1.2), (-1.2, 1.2, 1.2), (1.2, 1.2, 1.2), "
+                        "(-1.2, 1.2, -1.2), (1.2, 1.2, -1.2), (-1.2, -1.2, -1.2), (1.2, -1.2, -1.2)]\n"
+                        "        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (interpolation = \"faceVarying\")\n"
+                        "        int[] primvars:st:indices = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]\n"
+                        "        rel material:binding = </World/Tex>\n"
+                        "        float3 xformOp:rotateXYZ = (30, 40, 0)\n"
+                        "        uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n"
+                        "    }\n"
+                        "}\n";
+    QFile file(QString::fromStdString(scenePath));
+
+    if (!file.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+
+    return file.write(usda.data(), (qint64)usda.size()) == (qint64)usda.size();
+}
+
+#ifdef NATRON_HAVE_GPU
+// Puts a GPU context of the test's own in the application's place while it lives, able to pick a
+// CPU-type device.
+class OwnGpuContext {
+public:
+    OwnGpuContext()
+    {
+        GpuContextOptions options;
+        std::shared_ptr<std::string> logged = std::make_shared<std::string>();
+
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        options.infoLog = [logged](const std::string& line) {
+            *logged = line;
+        };
+
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            unavailable = logged->empty() ? std::string("the GPU context did not come up") : *logged;
+
+            return;
+        }
+        _saved = appPTR->swapGpuContextForTests(std::move(own));
+        _swapped = true;
+    }
+
+    ~OwnGpuContext()
+    {
+        HydraRender::releaseAll();
+        appPTR->clearAllCaches();
+        if (_swapped) {
+            appPTR->swapGpuContextForTests(std::move(_saved));
+        }
+    }
+
+    gpu::GpuRuntime* runtime() const
+    {
+        return _swapped ? appPTR->getGpuContext()->runtime() : nullptr;
+    }
+
+    std::string unavailable;
+
+private:
+    std::unique_ptr<GpuContext> _saved;
+    bool _swapped = false;
+};
+#endif // NATRON_HAVE_GPU
+
 class NatronUtilityGoldenTest
     : public BaseTest {
 protected:
@@ -108,9 +269,41 @@ protected:
         BaseTest::TearDown();
     }
 
-    // USDRead of the reference scene, through a USDRenderSettings framing its camera at the golden
-    // window's size, into a Natron Utility USDRender.
-    NodePtr createRender()
+    // On device, one ray through each pixel's centre, meshes refined to level.
+    static void setUtilitySettings(const char* device,
+                                   int level)
+    {
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(level) }, { kUtilitySettingDevice, PXR_NS::VtValue(PXR_NS::TfToken(device)) } });
+        HydraRender::releaseAll();
+    }
+
+    // The textured cube, refined to level two, on device.
+    void checkTexturedSubdivision(const char* device,
+                                  const std::string& caseName)
+    {
+        QTemporaryDir dir;
+
+        ASSERT_TRUE(dir.isValid());
+        const std::string texture = dir.filePath(QString::fromUtf8("checker.png")).toStdString();
+        const std::string scene = dir.filePath(QString::fromUtf8("box.usda")).toStdString();
+
+        ASSERT_TRUE(writeCheckerTexture(texture));
+        ASSERT_TRUE(writeTexturedCubeScene(scene, texture));
+        setUtilitySettings(device, 2);
+
+        NodePtr render = createRender(scene);
+
+        ASSERT_TRUE(render != nullptr);
+        GoldenPlaneAcceptance acceptance;
+
+        acceptance["depth"] = sameDepth;
+        EXPECT_TRUE(checkGolden(render, kGroup, caseName, 0, 1., acceptance));
+        HydraRender::releaseAll();
+    }
+
+    // USDRead of scene, the reference scene by default, through a USDRenderSettings framing its
+    // camera at the golden window's size, into a Natron Utility USDRender.
+    NodePtr createRender(const std::string& scene = kFixture)
     {
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
         NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
@@ -130,8 +323,8 @@ protected:
 
             return NodePtr();
         }
-        file->setValue(std::string(kFixture));
-        // The fixture has no lights, so only the headlight gives the colour golden lit shading.
+        file->setValue(scene);
+        // The scenes have no lights, so only the headlight gives the colour goldens lit shading.
         headlight->setValue(true);
         if (!RenderSettingsTestUtils::configure(settings, "/World/Cam", kGoldenWidth, kGoldenHeight)) {
             return NodePtr();
@@ -170,3 +363,24 @@ TEST_F(NatronUtilityGoldenTest, ReferenceScene)
     EXPECT_TRUE(checkGolden(render, kGroup, "reference_f1", 0, 1., acceptance));
     EXPECT_TRUE(checkGolden(render, kGroup, "reference_f24", 0, 24., acceptance));
 }
+
+TEST_F(NatronUtilityGoldenTest, TexturedSubdivisionCpu)
+{
+    checkTexturedSubdivision(kUtilityDeviceCpu, "subdiv_textured_cpu");
+}
+
+#ifdef NATRON_HAVE_GPU
+TEST_F(NatronUtilityGoldenTest, TexturedSubdivisionGpu)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+    checkTexturedSubdivision(kUtilityDeviceGpu, "subdiv_textured_gpu");
+}
+#endif // NATRON_HAVE_GPU

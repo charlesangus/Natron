@@ -38,6 +38,7 @@
 #include <pxr/imaging/hd/renderBuffer.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdx/tokens.h>
+#include <pxr/imaging/hio/image.h>
 #include <pxr/imaging/pxOsd/meshTopology.h>
 #include <pxr/imaging/pxOsd/subdivTags.h>
 #include <pxr/imaging/pxOsd/tokens.h>
@@ -51,6 +52,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -63,6 +65,9 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+
+#include <QString>
+#include <QTemporaryDir>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
@@ -195,22 +200,28 @@ public:
         return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatWarning, VtDefault = std::string());
     }
 
-    float alphaAt(int x,
-                  int y) const
+    GfVec4f colorAt(int x,
+                    int y) const
     {
         HdRenderBuffer* buffer = _engine->GetAovRenderBuffer(HdAovTokens->color);
 
         if (!buffer) {
             ADD_FAILURE() << "no color buffer";
 
-            return 0.f;
+            return GfVec4f(0.f);
         }
         const GfVec4f* pixels = static_cast<const GfVec4f*>(buffer->Map());
-        const float alpha = pixels[y * _size + x][3];
+        const GfVec4f color = pixels[y * _size + x];
 
         buffer->Unmap();
 
-        return alpha;
+        return color;
+    }
+
+    float alphaAt(int x,
+                  int y) const
+    {
+        return colorAt(x, y)[3];
     }
 
     void movePoint(const char* path,
@@ -354,6 +365,84 @@ defineGridCage(const UsdStageRefPtr& stage,
     mesh.CreateFaceVertexCountsAttr(VtValue(topology.GetFaceVertexCounts()));
     mesh.CreateFaceVertexIndicesAttr(VtValue(topology.GetFaceVertexIndices()));
     mesh.CreateSubdivisionSchemeAttr(VtValue(UsdGeomTokens->catmullClark));
+}
+
+const int kRampWidth = 256;
+
+// Grey rising from 0 at the left edge to 1 at the right, as many rows as needed for a 2D texture.
+bool
+writeRampTexture(const std::string& path)
+{
+    const int height = 4;
+    std::vector<unsigned char> bytes;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < kRampWidth; ++x) {
+            const unsigned char value = static_cast<unsigned char>(x * 255 / (kRampWidth - 1));
+
+            bytes.push_back(value);
+            bytes.push_back(value);
+            bytes.push_back(value);
+            bytes.push_back(255);
+        }
+    }
+
+    HioImage::StorageSpec spec;
+
+    spec.width = kRampWidth;
+    spec.height = height;
+    spec.depth = 1;
+    spec.format = HioFormatUNorm8Vec4;
+    spec.flipped = false;
+    spec.data = bytes.data();
+
+    const HioImageSharedPtr image = HioImage::OpenForWriting(path);
+
+    return image && image->Write(spec);
+}
+
+// Two quads wider than the frame, side by side across its centre, emitting the ramp at path through
+// an unindexed face-varying st: two UV islands that meet at u = 0.5 along the shared edge, so the
+// edge is a UV seam with the same value on both sides of it.
+std::string
+rampSeamCage(const std::string& path,
+             const TfToken& rule)
+{
+    return std::string("#usda 1.0\n"
+                       "def Material \"Tex\" {\n"
+                       "    token outputs:surface.connect = </Tex/Surface.outputs:surface>\n"
+                       "    def Shader \"Surface\" {\n"
+                       "        uniform token info:id = \"UsdPreviewSurface\"\n"
+                       "        color3f inputs:diffuseColor = (0, 0, 0)\n"
+                       "        color3f inputs:emissiveColor.connect = </Tex/Image.outputs:rgb>\n"
+                       "        token outputs:surface\n"
+                       "    }\n"
+                       "    def Shader \"Image\" {\n"
+                       "        uniform token info:id = \"UsdUVTexture\"\n"
+                       "        asset inputs:file = @")
+        + path + "@\n"
+                 "        token inputs:sourceColorSpace = \"raw\"\n"
+                 "        token inputs:wrapS = \"clamp\"\n"
+                 "        token inputs:wrapT = \"clamp\"\n"
+                 "        float2 inputs:st.connect = </Tex/St.outputs:result>\n"
+                 "        float3 outputs:rgb\n"
+                 "    }\n"
+                 "    def Shader \"St\" {\n"
+                 "        uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+                 "        string inputs:varname = \"st\"\n"
+                 "        float2 outputs:result\n"
+                 "    }\n"
+                 "}\n"
+                 "def Mesh \"Seam\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {\n"
+                 "    int[] faceVertexCounts = [4, 4]\n"
+                 "    int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4]\n"
+                 "    point3f[] points = [(-14, -14, 0), (0, -14, 0), (14, -14, 0), (-14, 14, 0), (0, 14, 0), (14, 14, 0)]\n"
+                 "    uniform token faceVaryingLinearInterpolation = \""
+        + rule.GetString() + "\"\n"
+                             "    texCoord2f[] primvars:st = [(0, 0), (0.5, 0), (0.5, 1), (0, 1), (0.5, 0), (1, 0), (1, 1), (0.5, 1)] "
+                             "(interpolation = \"faceVarying\")\n"
+                             "    rel material:binding = </Tex>\n"
+                             "}\n";
 }
 } // anon namespace
 
@@ -841,4 +930,58 @@ TEST(NatronUtilitySubdivRender, AStopDuringARefinementReturnsWithinTheBoundAndCa
     render.render();
     EXPECT_EQ(1u, UtilitySubdivRefinement::stats().cachedEntries);
     EXPECT_EQ(static_cast<std::size_t>(grid) * grid * 2 * static_cast<std::size_t>(std::pow(4., level)), render.stat(kUtilityStatTriangleCount));
+}
+
+// The texture reads the refined face-varying st. With every UV linear, u runs on across the seam at
+// the image's centre as it does elsewhere. With none linear, each island's border is smoothed on its
+// own, pulling the two sides of the seam apart in u, so the ramp jumps there.
+TEST(NatronUtilitySubdivRender, ATexturedUvSeamStaysContinuousPerTheInterpolationRule)
+{
+    QTemporaryDir dir;
+
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("ramp.png")).toStdString();
+
+    ASSERT_TRUE(writeRampTexture(path));
+
+    const int size = 64;
+    const int row = size / 2;
+    const int seam = size / 2;
+    std::map<TfToken, float> rises;
+
+    for (const TfToken& rule : { PxOsdOpenSubdivTokens->all, PxOsdOpenSubdivTokens->none }) {
+        SCOPED_TRACE(rule.GetString());
+        SubdivRender render(rampSeamCage(path, rule), size);
+
+        render.setSetting(kUtilitySettingSubdivLevel, 3);
+        render.render();
+        EXPECT_EQ(std::string(), render.warning());
+
+        std::vector<float> grey(size);
+
+        for (int x = 0; x < size; ++x) {
+            grey[x] = render.colorAt(x, row)[0];
+        }
+        EXPECT_LT(grey[2], 0.25f);
+        EXPECT_GT(grey[size - 3], 0.75f);
+        for (int x = 2; x + 3 < size; ++x) {
+            EXPECT_GE(grey[x + 1], grey[x] - 0.004f) << "column " << x;
+        }
+        rises[rule] = grey[seam + 1] - grey[seam - 2];
+        if (rule == PxOsdOpenSubdivTokens->all) {
+            std::vector<float> steps;
+
+            for (int x = 8; x < seam - 6; ++x) {
+                steps.push_back(grey[x + 1] - grey[x]);
+                steps.push_back(grey[size - x] - grey[size - x - 1]);
+            }
+            std::nth_element(steps.begin(), steps.begin() + steps.size() / 2, steps.end());
+
+            const float typical = steps[steps.size() / 2];
+
+            EXPECT_GT(typical, 0.f);
+            EXPECT_LT(rises[rule], 3.f * typical + 0.012f) << "three steps across the seam, typically " << typical << " each";
+        }
+    }
+    EXPECT_GT(rises[PxOsdOpenSubdivTokens->none], rises[PxOsdOpenSubdivTokens->all] + 0.02f);
 }

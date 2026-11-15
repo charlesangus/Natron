@@ -4082,7 +4082,11 @@ EffectInstance::onKnobSlaved(const KnobIPtr& slave,
                              bool isSlave,
                              bool isExpression)
 {
-    getNode()->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
+    // Null once a destroyed node's effect outlives it: its links died with the node.
+    NodePtr node = getNode();
+    if (node) {
+        node->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
+    }
 }
 
 void

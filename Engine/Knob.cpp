@@ -3078,7 +3078,9 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
     NodeGroup* isParentGrp = nullptr;
     if (effect) {
         NodePtr node = effect->getNode();
-        assert(node);
+        if (!node) {
+            throw std::runtime_error("This parameter cannot have an expression");
+        }
 
         collection = node->getGroup();
         if (!collection) {
@@ -3855,6 +3857,15 @@ KnobHelper::validateExpressionInternal(const std::string& expression,
 bool
 KnobHelper::checkInvalidExpressions()
 {
+    // A destroyed node's effect can outlive it while a render thread or a script still holds it.
+    // Its knobs have no node to declare in an expression's scope and nothing will run them again.
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder.load(std::memory_order_acquire));
+    if (holderEffect) {
+        const NodePtr holderNode = holderEffect->getNode();
+        if (!holderNode || (holderNode->getEffectInstance().get() != holderEffect)) {
+            return true;
+        }
+    }
     int ndims = getDimension();
     std::vector<std::pair<std::string, bool> > exprToReapply(ndims);
     {

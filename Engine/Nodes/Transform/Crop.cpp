@@ -32,6 +32,7 @@
 
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER
@@ -456,6 +457,11 @@ Crop::getRegionsOfInterest(double time,
         roi.y1 += cropRect.y1;
         roi.x2 += cropRect.x1;
         roi.y2 += cropRect.y1;
+    }
+    // A window that misses the rectangle still repeats its nearest edge under Stretch, and the
+    // source is read only over the rectangle, so that edge band is what it needs.
+    if (resolvedEdgeMode(time, view) == EdgeMode::Stretch) {
+        roi = stretchRegionOfInterest(roi, cropRect, sourcePixelAspectRatio(*source, time, view), 1.);
     }
     ret->insert(std::make_pair(source, intersectRects(cropRect, roi)));
 }

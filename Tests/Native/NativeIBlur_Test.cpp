@@ -477,6 +477,7 @@ TEST_F(NativeIBlurTest, HalfBlackMapLeavesBlackHalfUntouched)
     const int half = kParitySourceWidth / 2;
     NodePtr source = makeParitySource();
     NodePtr map = makeConstant(RectI(half, 0, kParitySourceWidth, kParitySourceHeight), { 1., 1., 1., 1. });
+    setBlackOutside(map, true);
     NodePtr iblur = makeIBlur(source, map, 10.);
     ASSERT_TRUE(bool(source) && bool(map) && bool(iblur));
 

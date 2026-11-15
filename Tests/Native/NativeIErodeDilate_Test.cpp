@@ -762,6 +762,8 @@ TEST_F(NativeIErodeDilateTest, MapRampIsMonotonic)
         NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         NodePtr map = makeStepRamp(7);
         ASSERT_TRUE(bool(background) && bool(band) && bool(over) && bool(map));
+        // Under Stretch the band, Merge's A, would repeat its rows over the whole background.
+        setBlackOutside(band, true);
         EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
         connectNodes(background, over, 0, true);
         connectNodes(band, over, 1, true);
@@ -909,6 +911,8 @@ TEST_F(NativeIErodeDilateTest, MapRampCrossesZero)
     NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
     NodePtr map = makeStepRamp(8);
     ASSERT_TRUE(bool(background) && bool(band) && bool(over) && bool(map));
+    // Under Stretch the band, Merge's A, would repeat its rows over the whole background.
+    setBlackOutside(band, true);
     EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
     connectNodes(background, over, 0, true);
     connectNodes(band, over, 1, true);

@@ -508,6 +508,9 @@ TEST_F(NativeTransformTest, MaskedAfterATransformMixesWithItsImmediateInput)
     setParitySourceOrigin(maskSource, 10, 6);
     // The expected blend takes the mask as 0 past its region.
     setBlackOutside(maskSource, true);
+    // The plain Transform's render stops at its own region, where the masked one's region, grown to
+    // the source's by the blend, would hold the repeated edge of a Stretch source.
+    setBlackOutside(source, true);
     connectNodes(source, first, 0, true);
     connectNodes(first, masked, 0, true);
     connectNodes(maskSource, masked, 1, true);
@@ -619,6 +622,9 @@ TEST_F(NativeTransformTest, InvertedMaskKeepsTheInputWhereTheMaskIsOpaque)
     setParitySourceOrigin(maskSource, 10, 6);
     // The expected blend takes the mask as 0 past its region.
     setBlackOutside(maskSource, true);
+    // The plain Transform's render stops at its own region, where the masked one's region, grown to
+    // the source's by the blend, would hold the repeated edge of a Stretch source.
+    setBlackOutside(source, true);
     connectNodes(source, masked, 0, true);
     connectNodes(maskSource, masked, 1, true);
     connectNodes(source, plain, 0, true);

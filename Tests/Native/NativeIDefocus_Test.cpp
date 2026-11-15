@@ -575,6 +575,8 @@ TEST_F(NativeIDefocusTest, FaintTailedKernelStaysWithinTheSource)
     NodePtr kernel = makeBoxOver(RectI(0, 0, 17, 17), { 1e-12, 1e-12, 1e-12, 1e-12 }, RectI(11, 8, 12, 9), { 1., 1., 1., 1. });
     NodePtr island = makeConstant(RectI(30, 0, 50, kParitySourceHeight), { 1., 1., 1., 1. });
     ASSERT_TRUE(bool(source) && bool(kernel) && bool(island));
+    // Under Stretch the island would repeat its edge columns, leaving no Map edge at x = 30.
+    setBlackOutside(island, true);
 
     {
         RenderedPlane input;

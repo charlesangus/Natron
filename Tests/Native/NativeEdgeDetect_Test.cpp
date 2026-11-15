@@ -576,7 +576,11 @@ TEST_F(NativeEdgeDetectTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
         RenderedPlane whole, part, expected;
         ASSERT_TRUE(render(stretched, format, &whole)) << what;
         ASSERT_TRUE(render(stretched, tile, &part)) << what;
-        ASSERT_TRUE(render(reference, format, &expected)) << what;
+        // The recursive blurs' line ends under Black read zero past the buffer, a window plus the
+        // halo, so the reference renders far enough past the format that this truncation stays
+        // out of the compared pixels.
+        const int margin = pad / 2;
+        ASSERT_TRUE(render(reference, RectI(format.x1 - margin, format.y1 - margin, format.x2 + margin, format.y2 + margin), &expected)) << what;
         for (int y = format.y1; y < format.y2; ++y) {
             for (int x = format.x1; x < format.x2; ++x) {
                 for (int c = 0; c < 4; ++c) {

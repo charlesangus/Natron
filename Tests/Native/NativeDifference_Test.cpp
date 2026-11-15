@@ -315,8 +315,10 @@ protected:
         const RectI window = caseWindow();
         RenderedPlane plane;
         ASSERT_TRUE(renderRGBA(node, window, &plane));
-        const int x2 = std::max(kParitySourceWidth, kAOriginX + kParitySourceWidth);
-        const int y2 = std::max(kParitySourceHeight, kAOriginY + kParitySourceHeight);
+        // A mix of 0 makes the node an identity of B, whose own region then bounds the output.
+        const bool passesB = (mix == 0.);
+        const int x2 = passesB ? kParitySourceWidth : std::max(kParitySourceWidth, kAOriginX + kParitySourceWidth);
+        const int y2 = passesB ? kParitySourceHeight : std::max(kParitySourceHeight, kAOriginY + kParitySourceHeight);
         for (int y = window.y1; y < window.y2; ++y) {
             for (int x = window.x1; x < window.x2; ++x) {
                 // B's edge mode is Stretch, so a constant B reads its colour past its format too.

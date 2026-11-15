@@ -340,7 +340,9 @@ erodeDilatePasses(const ErodeDilateParams& params,
     const OfxPointD rs = scale.toOfxPointD();
     PassList list;
     list.edgeMode = edgeMode;
-    list.clipToRegion = true;
+    // A minimum or maximum over a window that shrinks at the region equals one over the edge
+    // repeated, so Stretch needs no fill; Black must still read its zero border.
+    list.clipToRegion = (edgeMode == EdgeMode::Stretch);
 #ifdef NATRON_HAVE_GPU
     std::vector<gpu::GpuMorphPass> gpuPasses;
     bool gpuFits = true;

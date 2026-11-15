@@ -191,10 +191,12 @@ protected:
         return makeRectOverBlack(kBox);
     }
 
-    // A transparent black image of the project format with a white, opaque rect over it.
-    NodePtr makeRectOverBlack(const RectI& rect)
+    // A transparent black image of `background`, the project format by default, with a white,
+    // opaque rect over it.
+    NodePtr makeRectOverBlack(const RectI& rect,
+                              const RectI& background = kWindow)
     {
-        NodePtr black = makeConstant(kWindow, { 0., 0., 0., 0. });
+        NodePtr black = makeConstant(background, { 0., 0., 0., 0. });
         NodePtr white = makeConstant(rect, { 1., 1., 1., 1. });
         setBlackOutside(white, true);
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
@@ -469,7 +471,9 @@ TEST_F(NativeEdgeBlurTest, Golden)
 // Under Stretch a blur far wider than the image, along the edges of an external Matte or of the
 // source's own alpha, reads only the source and the earlier boxes' reach past it, and matches the
 // same blur under Black over a source whose edge is laid out explicitly past every pixel the blur
-// reaches.
+// reaches. As Blur's, the Stretch blur's earlier boxes run past the format with the edge's own
+// weight whatever Crop To Format, so the reference's Matte is laid out past the format too, which
+// keeps its edge weight there.
 TEST_F(NativeEdgeBlurTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
 {
     const int pad = 300;
@@ -499,11 +503,12 @@ TEST_F(NativeEdgeBlurTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
     NodePtr source = makeSource(kWindow, RectI(32, kWindow.y1, kWindow.x2, kWindow.y2));
     NodePtr laidOut = makeSource(padded, RectI(32, padded.y1, padded.x2, padded.y2));
     NodePtr matte = makeRectOverBlack(RectI(2, 14, 30, 34));
-    ASSERT_TRUE(bool(source) && bool(laidOut) && bool(matte));
+    NodePtr laidOutMatte = makeRectOverBlack(RectI(2, 14, 30, 34), padded);
+    ASSERT_TRUE(bool(source) && bool(laidOut) && bool(matte) && bool(laidOutMatte));
 
     for (bool external : { true, false }) {
         NodePtr stretched = makeEdgeBlur(source, external ? matte : NodePtr());
-        NodePtr reference = makeEdgeBlur(laidOut, external ? matte : NodePtr());
+        NodePtr reference = makeEdgeBlur(laidOut, external ? laidOutMatte : NodePtr());
         ASSERT_TRUE(bool(stretched) && bool(reference));
         for (const NodePtr& node : { stretched, reference }) {
             ASSERT_TRUE(setKnobValues(node, kEdgeBlurParamExternalMatte, { external ? 1. : 0. }));

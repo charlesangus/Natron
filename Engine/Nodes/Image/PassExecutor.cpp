@@ -558,7 +558,7 @@ writeWindow(const PlaneJob& job,
                 const int left = fastX1 - roi.x1;
                 const int right = roi.x2 - fastX2;
                 if ((left > 0) || (right > 0) || !allProcessed) {
-                    readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
+                    readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, layout.sourceEdgeMode, &sourceRow[0]);
                 }
                 if (left > 0) {
                     std::copy(sourceRow.begin(), sourceRow.begin() + (std::size_t)left * nComps, dstPix);
@@ -586,7 +586,7 @@ writeWindow(const PlaneJob& job,
                 }
                 continue;
             }
-            readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
+            readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, layout.sourceEdgeMode, &sourceRow[0]);
             if (!rowProcessed) {
                 std::copy(sourceRow.begin(), sourceRow.end(), dstPix);
                 continue;
@@ -1374,6 +1374,7 @@ runPassesCpu(EffectInstance& effect,
         layout.bufferRect = bufferRect;
         layout.buffer = buffer ? scratch.buffers[list.resultSlot] : NULL;
         layout.mix = (float)plan.mix;
+        layout.sourceEdgeMode = list.edgeMode;
         writeWindow(job, planes, maskSource, layout, nThreads, cancel);
         if (cancel.check()) {
             return eStatusOK;
@@ -1485,8 +1486,13 @@ recordPassesGpu(EffectInstance& effect,
             intersectRects(dividedRect, valid, &sourceValid);
         }
     }
+    // The finish passes the source through and blends with it past the image as runPassesCpu()
+    // writes its window: by the list's edge mode.
+    StagePlan finishPlan = plan;
+    finishPlan.edgeMode = list.edgeMode;
+    finishPlan.blendSourceFollowsEdgeMode = true;
     if (!filtering) {
-        return recordStagesGpuFinish(plan, wrapArgs, source);
+        return recordStagesGpuFinish(finishPlan, wrapArgs, source);
     }
 
     GpuImageView filtered = dst;
@@ -1571,7 +1577,7 @@ recordPassesGpu(EffectInstance& effect,
     }
     ctx.computeBarrier();
 
-    return recordStagesGpuFinish(plan, wrapArgs, filtered);
+    return recordStagesGpuFinish(finishPlan, wrapArgs, filtered);
 #else
     Q_UNUSED(effect);
     Q_UNUSED(plan);

@@ -169,6 +169,19 @@ protected:
         }
     }
 
+    // The references' windows stop at the region of definition, over a source read black past
+    // it: an erosion's region is the source's, where a shrinking window is the edge repeated, and
+    // a dilation's grown region holds that black, past which a shrinking window reads nothing the
+    // black does not already give.
+    bool setSize(const ParityPair& pair,
+                 double sizeX,
+                 double sizeY)
+    {
+        const bool erodes = (sizeX > 0.) || (sizeY > 0.);
+
+        return setKnobOnBoth(pair, kErodeDilateParamSize, { sizeX, sizeY }) && setKnobValue(pair.native, kEdgeModeParam, std::string(erodes ? "stretch" : "black"));
+    }
+
     // The recorded cases, eroding at the sizes named, or dilating at them when `dilate` negates
     // them.
     void runSizes(bool dilate)
@@ -179,13 +192,13 @@ protected:
         const double sign = dilate ? -1. : 1.;
         const std::string mode = dilate ? "dilate-" : "erode-";
 
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { sign, sign }));
+        ASSERT_TRUE(setSize(pair, sign, sign));
         expectParity(pair, mode + "size-1x1", true);
 
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { sign * 5., 0. }));
+        ASSERT_TRUE(setSize(pair, sign * 5., 0.));
         expectParity(pair, mode + "size-5x0", true);
 
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { sign * -3., sign * -3. }));
+        ASSERT_TRUE(setSize(pair, sign * -3., sign * -3.));
         expectParity(pair, mode + "size-neg3x3", true);
     }
 

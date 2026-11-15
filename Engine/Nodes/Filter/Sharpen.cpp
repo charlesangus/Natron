@@ -477,10 +477,12 @@ sharpenPasses(const SharpenParams& params,
     if (blurIsIdentity(filter, s)) {
         filterX = filterY = std::make_shared<const BlurKernels::LineFilter>();
     } else if (isGaussianFamily(filter)) {
-        haloX = std::max(3, (int)std::ceil(s.x * 1.5));
-        haloY = std::max(3, (int)std::ceil(s.y * 1.5));
         filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, (float)(s.x / 2.4), 0, edgeMode));
         filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, (float)(s.y / 2.4), 0, edgeMode));
+        // The recursion's infinite support makes a buffer cut short of its reach change the pixels
+        // a tile shares with the whole frame.
+        haloX = std::max({ 3, (int)std::ceil(s.x * 1.5), filterX->recursiveReach() });
+        haloY = std::max({ 3, (int)std::ceil(s.y * 1.5), filterY->recursiveReach() });
     } else if (fir) {
         haloX = firRadius(s.x);
         haloY = firRadius(s.y);

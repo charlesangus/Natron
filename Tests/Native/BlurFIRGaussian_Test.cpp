@@ -440,7 +440,8 @@ protected:
     // to equal the matching crop of the first.
     void expectSubRectEqualsCrop(const NodePtr& blur,
                                  const RectI& sub,
-                                 const std::string& caseName)
+                                 const std::string& caseName,
+                                 double tolerance = 1e-6)
     {
         const RectI full = renderWindow(blur);
         RenderedPlane whole, part;
@@ -465,7 +466,7 @@ protected:
                 }
             }
         }
-        EXPECT_LE(worst, 1e-6) << caseName;
+        EXPECT_LE(worst, tolerance) << caseName;
     }
 
     NodePtr makeBlurOnSource()
@@ -738,6 +739,28 @@ TEST_F(BlurFIRGaussianTest, SubRectRenderEqualsCropOfFullRender)
     expectSubRectEqualsCrop(blur, RectI(0, 0, 20, 17), "size 30, black, bottom-left corner");
     expectSubRectEqualsCrop(blur, RectI(40, 30, 64, 48), "size 30, black, top-right corner");
     expectSubRectEqualsCrop(blur, RectI(25, 20, 50, 40), "size 30, black");
+}
+
+// The recursive filters' halo is their reach, so a tile differs from the full frame only by the
+// recursion's rounding where its lines start at a different pixel.
+TEST_F(BlurFIRGaussianTest, RecursiveSubRectRenderEqualsCropOfFullRender)
+{
+    resetProject();
+    NodePtr blur = makeBlurOnSource();
+    ASSERT_TRUE(bool(blur));
+
+    for (const char* filter : { kBlurParamFilterQuasiGaussian, kBlurParamFilterGaussian }) {
+        for (const char* mode : { "black", "stretch" }) {
+            ASSERT_TRUE(setKnobValue(blur, kBlurParamFilter, std::string(filter)));
+            ASSERT_TRUE(setKnobValue(blur, kEdgeModeParam, std::string(mode)));
+            ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 9., 4. }));
+            const std::string what = std::string(filter) + " " + mode;
+            expectSubRectEqualsCrop(blur, RectI(20, 10, 45, 30), what + ", size 9x4", 1e-5);
+            ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 30., 30. }));
+            expectSubRectEqualsCrop(blur, RectI(0, 0, 20, 17), what + ", size 30, bottom-left corner", 1e-5);
+            expectSubRectEqualsCrop(blur, RectI(25, 20, 50, 40), what + ", size 30", 1e-5);
+        }
+    }
 }
 
 TEST_F(BlurFIRGaussianTest, RegionOfInterestPaddingIsTheRadius)

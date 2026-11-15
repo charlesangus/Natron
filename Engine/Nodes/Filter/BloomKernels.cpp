@@ -612,8 +612,10 @@ makePlan(const Settings& settings,
         } else if (isGaussianFamily(s.filter)) {
             blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)(px / 2.4), 0, edgeMode));
             blur.filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)(py / 2.4), 0, edgeMode));
-            haloX = blur.filterX->isIdentity() ? 0 : std::max<int64_t>(3, (int64_t)std::ceil(px * 1.5));
-            haloY = blur.filterY->isIdentity() ? 0 : std::max<int64_t>(3, (int64_t)std::ceil(py * 1.5));
+            // The recursion's infinite support makes a buffer cut short of its reach change the
+            // pixels a tile shares with the whole frame.
+            haloX = blur.filterX->isIdentity() ? 0 : std::max<int64_t>({ 3, (int64_t)std::ceil(px * 1.5), (int64_t)blur.filterX->recursiveReach() });
+            haloY = blur.filterY->isIdentity() ? 0 : std::max<int64_t>({ 3, (int64_t)std::ceil(py * 1.5), (int64_t)blur.filterY->recursiveReach() });
         } else {
             const int iter = boxIterations(s.filter);
             blur.filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(s.filter, (float)px, 0, edgeMode));

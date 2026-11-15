@@ -283,13 +283,16 @@ struct WindowLayout {
     RectI bufferRect;
     const float* buffer;
     float mix;
+    // How the source the window blends with and passes through reads past its image.
+    EdgeMode sourceEdgeMode = EdgeMode::Black;
 };
 
 /**
  * @brief Writes job's window in row bands: each processed channel of the processed window is
  * the buffer value multiplied back by the divisor, then blended with the undivided
  * source by mask x mix; unprocessed channels and the pixels outside the processed window pass
- * through. A buffer value outside bufferRect reads as zero.
+ * through. The source reads past its image by layout.sourceEdgeMode, and a buffer value outside
+ * bufferRect as zero.
  **/
 void writeWindow(const PlaneJob& job,
                  const ProcessedPlanes& planes,

@@ -190,6 +190,7 @@ public:
     void applyColumns(float* data, int n, std::ptrdiff_t stride, int count, LineScratch& scratch) const;
 
 private:
+    int simulateRecursiveReach() const;
     void applyDeriche(float* data, int n, std::ptrdiff_t stride, LineScratch& scratch) const;
     void applyVanVliet(float* data, int n, std::ptrdiff_t stride) const;
     void applyBox(float* data, int n, std::ptrdiff_t stride, LineScratch& scratch) const;

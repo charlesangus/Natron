@@ -195,8 +195,8 @@ private:
 
     /**
      * @brief The matte's region of definition, and EdgeDetect's: the matte's grown by the edge
-     * passes' reach and cropped to the matte's format, outside which the edge weight is 0. False
-     * when the matte has no region of definition.
+     * passes' reach and, unless the source reads by Stretch, cropped to the matte's format,
+     * outside which the edge weight is 0. False when the matte has no region of definition.
      **/
     bool edgeRegions(const EdgeBlurParams& params,
                      const PassList& edges,

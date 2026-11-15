@@ -636,13 +636,16 @@ TEST_F(NativeGlowTest, ExpandRoDGrowsTheRegionOfDefinition)
     EXPECT_GT(at(out, -2, 20, 0), 0.f);
 }
 
-// A tile of the render equals the same pixels of the full render.
+// A tile of the render equals the same pixels of the full render. The recursive filters' tile
+// differs by the recursion's rounding where its lines start at a different pixel.
 TEST_F(NativeGlowTest, TileMatchesFullFrame)
 {
     resetProject(160, 48);
     NodePtr source = makeScene(0.05, RectI(90, 12, 120, 36), 20., 10., 5.);
     ASSERT_TRUE(bool(source));
-    for (const char* filter : { kBlurParamFilterFIRGaussian, kBlurParamFilterBox }) {
+    for (const char* filter : { kBlurParamFilterFIRGaussian, kBlurParamFilterBox, kBlurParamFilterQuasiGaussian, kBlurParamFilterGaussian }) {
+        const bool recursive = (std::string(filter) == kBlurParamFilterQuasiGaussian) || (std::string(filter) == kBlurParamFilterGaussian);
+        const float tolerance = recursive ? 1e-5f : 1e-6f;
         NodePtr node = makeGlow(source);
         ASSERT_TRUE(bool(node));
         ASSERT_TRUE(setKnobValue(node, kGlowParamFilter, std::string(filter)));
@@ -657,7 +660,7 @@ TEST_F(NativeGlowTest, TileMatchesFullFrame)
         for (int y = tile.y1; y < tile.y2; ++y) {
             for (int x = tile.x1; x < tile.x2; ++x) {
                 for (int c = 0; c < 4; ++c) {
-                    ASSERT_NEAR(at(whole, x, y, c), at(part, x, y, c), 1e-6 * std::max(1.f, std::fabs(at(whole, x, y, c)))) << filter << " at (" << x << "," << y << ")";
+                    ASSERT_NEAR(at(whole, x, y, c), at(part, x, y, c), tolerance * std::max(1.f, std::fabs(at(whole, x, y, c)))) << filter << " at (" << x << "," << y << ")";
                 }
             }
         }
@@ -1237,9 +1240,9 @@ channelNames(unsigned processed)
 } // namespace
 
 // The CPU render of the node over its region of definition against renderGpu() fed with the
-// noisy parity source over getGpuInputRoI(), over that region and over a tile inside it. A tile of
-// a recursive filter is compared with a CPU render of the same tile, as Bloom's is. Both edge
-// modes run, as the source's edges fall inside the glow.
+// noisy parity source over getGpuInputRoI(), over that region and over a tile inside it, which is
+// compared with the same pixels of the full-frame CPU render. Both edge modes run, as the source's
+// edges fall inside the glow.
 TEST_F(NativeGlowTest, GpuMatchesTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -1331,13 +1334,7 @@ TEST_F(NativeGlowTest, GpuMatchesTheCpuRender)
                 EXPECT_EQ(0u, run.writtenOutside) << what << ": floats outside the window were written";
                 ++nRenders;
 
-                const bool recursive = (c.filter == (int)BlurKernels::eFilterQuasiGaussian) || (c.filter == (int)BlurKernels::eFilterGaussian);
-                RenderedPlane cpuTile;
-                if (recursive && (roi != rod)) {
-                    ASSERT_TRUE(renderRGBA(node, roi, &cpuTile)) << what;
-                    ASSERT_EQ(roi, cpuTile.window) << what;
-                }
-                const std::vector<float> want = (recursive && (roi != rod)) ? pickChannels(cpuTile.pixels, roi, roi, channels) : pickChannels(cpu.pixels, rod, roi, channels);
+                const std::vector<float> want = pickChannels(cpu.pixels, rod, roi, channels);
                 ASSERT_EQ(want.size(), run.pixels.size()) << what;
                 const ImageDiff diff = compareImages(want, run.pixels, tolerance);
                 nCompared += diff.compared;

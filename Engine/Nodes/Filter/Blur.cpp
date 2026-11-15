@@ -211,9 +211,10 @@ lineGpuRecorder(const LineFilterPtr& filterX,
 }
 #endif // NATRON_HAVE_GPU
 
-/// The pass list of a blur of pixel sizes s: getSourceRoI()'s halo, the region of definition's
-/// spread, and the filters CImgBlurPlugin::blur() runs (sigma = size / 2.4 for the Gaussians, the
-/// box width the size), whose line ends follow edgeMode as the source's fill does.
+/// The pass list of a blur of pixel sizes s: getSourceRoI()'s halo, at least a recursive filter's
+/// reach, the region of definition's spread, and the filters CImgBlurPlugin::blur() runs (sigma =
+/// size / 2.4 for the Gaussians, the box width the size), whose line ends follow edgeMode as the
+/// source's fill does.
 PassList
 blurPasses(BlurKernels::Filter filter,
            const PixelSizes& s,
@@ -238,10 +239,14 @@ blurPasses(BlurKernels::Filter filter,
         if ((sigmax < 0.1) && (sigmay < 0.1)) {
             return list;
         }
-        haloX = growX = std::max(3, (int)std::ceil(s.x * 1.5));
-        haloY = growY = std::max(3, (int)std::ceil(s.y * 1.5));
+        growX = std::max(3, (int)std::ceil(s.x * 1.5));
+        growY = std::max(3, (int)std::ceil(s.y * 1.5));
         filterX = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, sigmax, 0, edgeMode));
         filterY = std::make_shared<const BlurKernels::LineFilter>(BlurKernels::LineFilter::forFilter(filter, sigmay, 0, edgeMode));
+        // The recursion's infinite support makes a buffer cut short of its reach change the pixels
+        // a tile shares with the whole frame.
+        haloX = std::max(growX, filterX->recursiveReach());
+        haloY = std::max(growY, filterY->recursiveReach());
     } else if (fir) {
         const int padX = firRadius(s.x);
         const int padY = firRadius(s.y);

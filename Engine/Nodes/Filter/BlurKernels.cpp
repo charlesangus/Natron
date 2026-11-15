@@ -27,9 +27,13 @@
 #include "BlurKernels.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <mutex>
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuBlur.h"
@@ -331,6 +335,39 @@ LineFilter::recursiveReach() const
     if ((_kind != eKindDeriche) && (_kind != eKindVanVliet)) {
         return 0;
     }
+    // The simulated line can reach a million floats; plans rebuild on every parameter change, so
+    // the result is kept per exact coefficient set. The line ends do not affect it.
+    using Key = std::array<std::uint64_t, 14>;
+    Key key;
+    {
+        const double values[12] = { _a0, _a1, _a2, _a3, _b1, _b2, _coefp, _coefn, _filter[0], _filter[1], _filter[2], _filter[3] };
+        for (int i = 0; i < 12; ++i) {
+            std::memcpy(&key[i], &values[i], sizeof(std::uint64_t));
+        }
+        key[12] = (std::uint64_t)_kind;
+        key[13] = (std::uint64_t)_order;
+    }
+    static std::mutex cacheMutex;
+    static std::map<Key, int> cache;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        const auto it = cache.find(key);
+        if (it != cache.end()) {
+            return it->second;
+        }
+    }
+    const int reach = simulateRecursiveReach();
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        cache.emplace(key, reach);
+    }
+
+    return reach;
+}
+
+int
+LineFilter::simulateRecursiveReach() const
+{
     const double eps = std::ldexp(1., -24);
     LineFilter dirichlet(*this);
     dirichlet._neumann = false;

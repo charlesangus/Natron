@@ -549,12 +549,29 @@ channelOf(const std::vector<float>& pixels,
     return out;
 }
 
+// The pixels of `window` in an RGBA plane over `bounds`.
+std::vector<float>
+cropRGBA(const std::vector<float>& pixels,
+         const RectI& bounds,
+         const RectI& window)
+{
+    std::vector<float> out;
+    out.reserve((std::size_t)window.width() * window.height() * 4);
+    for (int y = window.y1; y < window.y2; ++y) {
+        const std::size_t row = ((std::size_t)(y - bounds.y1) * bounds.width() + (std::size_t)(window.x1 - bounds.x1)) * 4;
+        out.insert(out.end(), pixels.begin() + row, pixels.begin() + row + (std::size_t)window.width() * 4);
+    }
+
+    return out;
+}
+
 } // namespace
 
-// The IIR Gaussians and the box, triangle and quadratic filters against the CPU render, at sizes
-// 3, 25 and 100, over the whole region of definition, and over an odd window at size 25, whose
-// lines the halo cuts short. Then each on a one-channel image: the alpha of the source, against the
-// alpha of the CPU's RGBA render, which filters each channel alone.
+// The IIR Gaussians and the box, triangle and quadratic filters against the CPU render over the
+// whole region of definition, at sizes 3, 25 and 100, over that region and over an odd window at
+// size 25, which is compared with the same pixels of the full-frame CPU render. Then each on a
+// one-channel image: the alpha of the source, against the alpha of the CPU's RGBA render, which
+// filters each channel alone.
 TEST_F(NativeBlurGpuTest, RecursiveAndBoxFiltersMatchTheCpuRender)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -585,12 +602,15 @@ TEST_F(NativeBlurGpuTest, RecursiveAndBoxFiltersMatchTheCpuRender)
                 if (size == 25.) {
                     rois.push_back(RectI(rod.x1 + 41, rod.y1 + 37, std::min(rod.x2 - 2, rod.x1 + 41 + 23), std::min(rod.y2 - 1, rod.y1 + 37 + 17)));
                 }
+                RenderedPlane full;
+                ASSERT_TRUE(renderColor(node, 0, rod, &full)) << filter << " size " << size << ", edge mode " << edgeMode;
+                ASSERT_EQ(4u, full.channels.size());
+                ASSERT_EQ(rod, full.window);
                 for (const RectI& roi : rois) {
                     std::ostringstream what;
                     what << filter << " size " << size << ", edge mode " << edgeMode << " roi (" << roi.x1 << "," << roi.y1 << ")-(" << roi.x2 << "," << roi.y2 << ")";
                     RenderedPlane cpu;
-                    ASSERT_TRUE(renderColor(node, 0, roi, &cpu)) << what.str();
-                    ASSERT_EQ(4u, cpu.channels.size()) << what.str();
+                    cpu.pixels = cropRGBA(full.pixels, rod, roi);
 
                     const RectI inputRoI = blur->getGpuInputRoI(0, blur->getCurrentTime(), blur->getCurrentView(), roi, RenderScale::identity);
                     RenderedPlane in;

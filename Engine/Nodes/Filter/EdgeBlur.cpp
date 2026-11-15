@@ -450,8 +450,12 @@ EdgeBlur::edgeRegions(const EdgeBlurParams& params,
         return false;
     }
     // EdgeDetect's own region of definition, cropped to the format as its Crop To Format does.
+    // Under Stretch the blur's earlier boxes run past the format, as Blur's do, so their weight
+    // there is the edge's own: a crop would change the pixels inside the format.
     *edgeRoD = passListRoD(*matteRoD, edges);
-    cropToFormatBorders(formatOf(getApp(), matte, time, view), scale, *matteRoD, edgeRoD);
+    if (getPassContext(time, view, scale).edgeMode != EdgeMode::Stretch) {
+        cropToFormatBorders(formatOf(getApp(), matte, time, view), scale, *matteRoD, edgeRoD);
+    }
 
     return true;
 }

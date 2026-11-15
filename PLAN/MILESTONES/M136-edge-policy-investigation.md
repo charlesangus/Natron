@@ -317,3 +317,4 @@ Acceptance sketch:
 - 2026-11-15: viewer edge-display gate green (d73bd2f18, m136_edge_mode 143/143); screenshots sent for sign-off. main merged (a11392d23), regate running.
 - 2026-11-15 (user): screenshots approved — the viewer shows the viewed output's own edge mode past its RoD; no viewer-side edge setting.
 - 2026-11-15 — Re-gate on a11392d23 green (run 43759369031). PR #294 into main opened; Codex review round 1 running.
+- 2026-11-15 — Review round 1 (Codex, 5 findings): infinite-RoD Stretch clamp, OpenFX identity edge reset and a narrating comment fixed (5d536345e) — an infinite Stretch input reads its requested region, not a render error (PM call: it has no edge to repeat); Median/Bilateral knobs declined (no reads past their region, per the 2026-11-13 survey). PR CI re-running.

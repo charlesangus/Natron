@@ -161,10 +161,18 @@ try:
         rect.getParam("size").setValue(height, 1)
         rect.getParam("softness").setValue(0.0)
         set_rgba(rect.getParam("color1"), INSIDE)
-        set_rgba(rect.getParam("color0"), OUTSIDE)
+        # The Rectangle's region is its box, so the other half comes from a Constant under it.
+        background = app.createNode("Constant")
+        require(background is not None, "create a Constant", gt.plugin_problem("Constant"))
+        set_rgba(background.getParam("color"), OUTSIDE)
+        frame = app.createNode("Merge")
+        require(frame is not None, "create a Merge", gt.plugin_problem("Merge"))
+        require(frame.connectInput(0, background), "the Constant is the Merge's B")
+        require(frame.connectInput(1, rect), "the Rectangle is the Merge's A")
+        gt.close_all_panels()
         if viewer.getInput(0) is not None:
             viewer.disconnectInput(0)
-        require(viewer.connectInput(0, rect), "the Viewer shows the Rectangle")
+        require(viewer.connectInput(0, frame), "the Viewer shows the Rectangle over the Constant")
         yield ("sleep", RENDER_MS)
 
         gl = visible_of("ViewerGL")[0] if visible_of("ViewerGL") else None
@@ -177,7 +185,7 @@ try:
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
         te = app.createNode("ToneEqualizer", -1, None, props)
         require(te is not None, "create a ToneEqualizer", gt.plugin_problem("ToneEqualizer"))
-        require(te.connectInput(0, rect), "ToneEqualizer takes the Rectangle")
+        require(te.connectInput(0, frame), "ToneEqualizer takes the Rectangle over the Constant")
         te.getParam("luminanceEstimator").setValue(2)
         te.getParam("preserveDetails").setValue(0)
         te.getParam("midtones").setValue(MIDTONES_GAIN)

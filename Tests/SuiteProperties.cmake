@@ -43,6 +43,8 @@ set(_natron_long_suite_timeouts
     NativeSplineWarpGpuTest 900
     NativeFilterSpecGpuTest 900
     StagedResampleTest 900
+    # Debug: about 234 s on a quiet runner, 28 to 38 s per case under load.
+    GraphScalingConnectTest 900
 )
 
 set(_natron_long_suites "")

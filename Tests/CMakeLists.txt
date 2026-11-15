@@ -155,6 +155,7 @@ set(Tests_SOURCES
     FpTrapGuard_Test.cpp
     PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
+    ProjectResetListeners_Test.cpp
     QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
     ViewerKnobs_Test.cpp

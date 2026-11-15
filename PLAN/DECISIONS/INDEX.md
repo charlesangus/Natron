@@ -135,3 +135,4 @@
 - 2026-11-14 — native-geometry-texture-painting: texture painting splits into USDTexturePaint (M53, renamed) and GeoTexturePaint over a shared base, no GeoToUSD hop; GeoAttribPaint, native UV operators and a Viewer 2D/3D switch added → DECISIONS/2026-11-14-native-geometry-texture-painting.md
 - 2026-11-14 — f9-uat-accepted: F9 - Delegate Projection accepted at UAT; MoonRay as-authored warning is a follow-up → DECISIONS/2026-11-14-f9-uat-accepted.md
 - 2026-11-14 — ai-models-repo: Natron-hosted AI models are release assets on charlesangus/natron-models; user-downloaded models may carry research-only training data → DECISIONS/2026-11-14-ai-models-repo.md
+- 2026-11-15 — materialx-via-native-translation: MaterialX reopened; Cycles and MoonRay render it through a Hydra filter translating to native nodes, no OSL; materialx_shaders for MoonRay, exact procedurals as Cycles SVM nodes (user) → DECISIONS/2026-11-15-materialx-via-native-translation.md

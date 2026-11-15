@@ -508,6 +508,15 @@ future core work has solid ground to build on.
 | M436 | Overlays On Projected Geometry | todo | M435 |  | E23 | F25 | | [M436-overlays-on-projected-geometry.md](PLAN/MILESTONES/M436-overlays-on-projected-geometry.md) |
 | M437 | CardProject25D | todo | M433, M434 |  | E9 | F25 | | [M437-cardproject25d.md](PLAN/MILESTONES/M437-cardproject25d.md) |
 | M438 | Lens Distortion In The USD Scene | todo | - |  | E9 |  | | [M438-lens-distortion-in-the-usd-scene.md](PLAN/MILESTONES/M438-lens-distortion-in-the-usd-scene.md) |
+| M439 | MaterialX Translation Spike | todo | - |  | E9 | F26 | | [M439-materialx-translation-spike.md](PLAN/MILESTONES/M439-materialx-translation-spike.md) |
+| M440 | MaterialX Translation Core | todo | M439 |  | E9 | F26 | | [M440-materialx-translation-core.md](PLAN/MILESTONES/M440-materialx-translation-core.md) |
+| M441 | MoonRay MaterialX Shaders Build | todo | - |  | E9 | F26 | | [M441-moonray-materialx-shaders-build.md](PLAN/MILESTONES/M441-moonray-materialx-shaders-build.md) |
+| M442 | MoonRay MaterialX Backend | todo | M440, M441 |  | E9 | F26 | | [M442-moonray-materialx-backend.md](PLAN/MILESTONES/M442-moonray-materialx-backend.md) |
+| M443 | Cycles MaterialX Backend | todo | M440 |  | E9 | F26 | | [M443-cycles-materialx-backend.md](PLAN/MILESTONES/M443-cycles-materialx-backend.md) |
+| M444 | Cycles MaterialX Procedurals | todo | M443 |  | E9 | F26 | | [M444-cycles-materialx-procedurals.md](PLAN/MILESTONES/M444-cycles-materialx-procedurals.md) |
+| M445 | USDOpenPBR Node | todo | M442, M443, M447 |  | E9 | F26 | | [M445-usdopenpbr-node.md](PLAN/MILESTONES/M445-usdopenpbr-node.md) |
+| M446 | MaterialX Builder Nodes | todo | M352, M440, M442, M443, M444 |  | E9 |  | | [M446-materialx-builder-nodes.md](PLAN/MILESTONES/M446-materialx-builder-nodes.md) |
+| M447 | USDPreviewSurface Rename | todo | - |  | E9 |  | | [M447-usdpreviewsurface-rename.md](PLAN/MILESTONES/M447-usdpreviewsurface-rename.md) |
 
 # Epics
 
@@ -566,6 +575,7 @@ future core work has solid ground to build on.
 | F23 | Deep Nodes | open |  |  | feature/f23-deep-nodes | Native deep filtering, transform, inspection and tier-2 nodes on the existing deep transport: OpenDCX DeepBlur and DeepTransform, DeepSample and a chosen DeepC-style set. |
 | F24 | Deep Rendering | open |  |  | feature/f24-deep-rendering | Render true deep images in process from Nucleon Utility, Cycles and MoonRay through one host-side deep render buffer, with DeepCompact. |
 | F25 | Overlay Flow | open |  |  | feature/f25-overlay-flow | Overlays deform through every warp and onto projected geometry, with CardProject25D's 2.5D projection carrying them through. |
+| F26 | MaterialX Rendering | open |  |  | feature/f26-materialx-rendering | Render MaterialX materials in Cycles and MoonRay through native translation, with .mtlx input and a USDOpenPBR lookdev node. |
 
 # Open questions
 

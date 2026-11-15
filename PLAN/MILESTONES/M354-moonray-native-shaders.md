@@ -17,7 +17,7 @@ Make builder networks render correctly in MoonRay, in both `USDRender` and the p
 - MoonRay's rejection of untiled files on disk: M252 - MoonRay Rendering's finding. This milestone doesn't change it. A failed open reports through the node warning.
 - MoonRay display filters: none, they aren't shaders.
 - Cycles: M353 - Cycles Native Shaders.
-- `materialx_shaders`: none, MaterialX is set aside.
+- `materialx_shaders`: M441 - MoonRay MaterialX Shaders Build builds it; M442 - MoonRay MaterialX Backend renders MaterialX through it.
 
 **Edge cases:**
 - Delegate fix needed: goes to the fork from M325 - MoonRay Fork.
@@ -78,3 +78,4 @@ Make builder networks render correctly in MoonRay, in both `USDRender` and the p
 - 2026-11-05 — **Native networks, full or nearly full (user):** the renderer's own shader set, not a translation.
 - 2026-11-13 — MoonRay source changes go in the pinned fork (inbox, from M325 - MoonRay Fork): MoonRay builds from the charlesangus forks pinned by commit (`NATRON_MOONRAY_COMMIT` in `tools/ci/local/Dockerfile`) with no build-time patches. Any MoonRay change this milestone needs, the render-context override included, goes on fork branch `natron/v2026.29.1`: push the submodule fork, bump its gitlink in charlesangus/openmoonray, then bump the pin. Never add a `sed`/patch step to `build-moonray.sh`.
 - 2026-11-13 — Deferred `build-moonray.sh` cleanups (inbox, from M325 - MoonRay Fork's review, PR #272): whichever of M345 - VDB Rendering Fixes or M354 - MoonRay Native Shaders next edits `tools/ci/local/build-moonray.sh` also drops the dead `-DBUILD_MATERIALX_SHADERS=OFF` (the fork removed the option), fixes the header's stale reason for not fetching materialx_shaders (~:12), rewords the SOURCE text so the six unpatched upstream submodules don't read as Natron forks (~:196), and deletes or justifies the `check_origin` comment (~:58). Any edit to that script forces a dev-image rebuild, which is why these wait.
+- 2026-11-15 — **Deferred `build-moonray.sh` cleanups revised (cat-plan, F26 - MaterialX Rendering):** the flag item is withdrawn. M441 - MoonRay MaterialX Shaders Build restores the `materialx_shaders` submodule and turns `-DBUILD_MATERIALX_SHADERS` on, so never drop the flag. The other three cleanups stay with whichever of M345 - VDB Rendering Fixes, M354 - MoonRay Native Shaders or M441 edits the script first.

@@ -10,7 +10,7 @@ Make `USDMaterialBuilder` author real materials. In the main graph it is one ord
 - `Material Path` behaves as on `USDMaterial`. One builder authors one material.
 - Inner Input nodes create the builder's Image arrows, as Group inputs do. An Input connects to an image shader's file input, which authors `natron://` with a linear colour space.
 - Promoting any inner knob to the builder's panel. One promoted knob can drive parameters in several renderers' networks through links added by hand.
-- New builder: the Output node plus the default renderer's main surface shader, wired.
+- New builder: the Output node only. Presets `USDCyclesPrincipledBSDFBuilder` (Principled BSDF on the Cycles surface terminal) and `USDMoonRayDwaBaseBuilder` (`DwaBaseMaterial` on the MoonRay surface terminal) create it with that starter network, as menu items like Merge's presets. MaterialX presets come with M446 - MaterialX Builder Nodes.
 - Node docs and icon.
 
 **Out:**
@@ -21,7 +21,6 @@ Make `USDMaterialBuilder` author real materials. In the main graph it is one ord
 - A `USDMaterial` replacement: none, it stays.
 
 **Edge cases:**
-- Storm is the active renderer when creating a builder: the starter uses Cycles.
 - No terminal wired: authors the material with no outputs and warns on the node.
 - Shader not reachable from any terminal: not authored.
 - `MissingPluginNode` in a network: its branch isn't authored and the node warns, naming it. The rest authors.
@@ -68,9 +67,9 @@ Make `USDMaterialBuilder` author real materials. In the main graph it is one ord
   - size: M
 
 - [ ] M352.P2.T3 — Start from a useful network
-  - files: `Engine/Nodes/Scene/USDMaterialBuilder.cpp`, `Engine/Nodes/Scene/docs/USDMaterialBuilder.md`, `Tests/Scene/USDMaterialBuilderStarter_Test.cpp`
-  - approach: on user creation only, not on load, add the Output and the default renderer's main surface shader, wired. Storm active means Cycles. Laid out left to right. Write docs and the icon.
-  - verify: gtest — a new builder has both nodes connected and authors a surface output for that renderer; a loaded project with them removed stays as saved.
+  - files: `Engine/Nodes/Scene/USDMaterialBuilder.cpp`, `Gui/Resources/PyPlugs/initGui.py`, `Engine/Nodes/Scene/docs/USDMaterialBuilder.md`, `Tests/Scene/USDMaterialBuilderStarter_Test.cpp`
+  - approach: on user creation only, not on load, a plain builder gets the Output node alone. Add the two native presets in Scope **In** as menu items in `Gui/Resources/PyPlugs/initGui.py` that create `USDMaterialBuilder` and add their surface shader wired to its terminal, laid out left to right, the way the Merge presets set `operation`. Projects only ever hold `USDMaterialBuilder`. Write docs and the icon.
+  - verify: gtest — a new plain builder holds only the Output; each preset holds its shader wired and authors that renderer's surface output; a loaded project with nodes removed stays as saved.
   - size: M
 
 ## Phase 352.3: Together
@@ -87,3 +86,4 @@ Make `USDMaterialBuilder` author real materials. In the main graph it is one ord
 
 - 2026-11-05 — **One builder holds all renderers (user):** plates and shared controls are wired once, and a mismatched material path can't happen. Separate builders still compose through `USDMerge`.
 - 2026-11-05 — **Starter is the active renderer's main surface shader (user):** common looks start one step from done. Storm being active picks Cycles (cat-plan).
+- 2026-11-15 — **Builder presets replace the starter rule (user, during F26 - MaterialX Rendering's planning):** a plain builder starts with the Output only; Cycles Principled BSDF and MoonRay DwaBaseMaterial presets here, MaterialX ones in M446 - MaterialX Builder Nodes.

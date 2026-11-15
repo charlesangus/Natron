@@ -16,7 +16,7 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
 - Port drawing, promote control and tab menu: M351 - Shader Graph Presentation.
 - Authoring USD: M352 - USDMaterialBuilder Node.
 - OSL script nodes: none (decision `2026-11-05-no-cycles-osl`).
-- MaterialX nodes: none, set aside by the user.
+- MaterialX nodes: M446 - MaterialX Builder Nodes, which extends this manifest.
 - RenderMan or other renderers: none. The manifest format doesn't preclude them.
 
 **Edge cases:**

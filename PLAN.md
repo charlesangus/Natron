@@ -501,6 +501,13 @@ future core work has solid ground to build on.
 | M400 | Pointer Direction Badges | todo | - |  | E10 |  | | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |
 | M425 | No ONNX Runtime Telemetry | done | - | bosley-native-nodes | E16 |  | | [M425-no-onnx-runtime-telemetry.md](PLAN/MILESTONES/M425-no-onnx-runtime-telemetry.md) |
 | M426 | UDIM Textures In Delegates | todo | M311, M343 |  | E9 |  | | [M426-udim-textures-in-delegates.md](PLAN/MILESTONES/M426-udim-textures-in-delegates.md) |
+| M432 | Overlays Off The Render Path | todo | - |  | E23 |  | | [M432-overlays-off-the-render-path.md](PLAN/MILESTONES/M432-overlays-off-the-render-path.md) |
+| M433 | Overlay Point Maps | todo | - |  | E23 | F25 | | [M433-overlay-point-maps.md](PLAN/MILESTONES/M433-overlay-point-maps.md) |
+| M434 | Interacts On The Overlay Draw List | todo | - |  | E23 | F25 | | [M434-interacts-on-the-overlay-draw-list.md](PLAN/MILESTONES/M434-interacts-on-the-overlay-draw-list.md) |
+| M435 | Overlays Deform Through Warps | todo | M432, M433, M434 |  | E23 | F25 | | [M435-overlays-deform-through-warps.md](PLAN/MILESTONES/M435-overlays-deform-through-warps.md) |
+| M436 | Overlays On Projected Geometry | todo | M435 |  | E23 | F25 | | [M436-overlays-on-projected-geometry.md](PLAN/MILESTONES/M436-overlays-on-projected-geometry.md) |
+| M437 | CardProject25D | todo | M433, M434 |  | E9 | F25 | | [M437-cardproject25d.md](PLAN/MILESTONES/M437-cardproject25d.md) |
+| M438 | Lens Distortion In The USD Scene | todo | - |  | E9 |  | | [M438-lens-distortion-in-the-usd-scene.md](PLAN/MILESTONES/M438-lens-distortion-in-the-usd-scene.md) |
 
 # Epics
 
@@ -528,6 +535,7 @@ future core work has solid ground to build on.
 | E20 | OpenNucleon Rebrand | Rename the project OpenNucleon and the app Nucleon throughout, with new logo, splash and icons. |
 | E21 | Nucleon 1.0 Release | Ship Nucleon 1.0 with a public landing site, versioned online and bundled reference docs, release notes and an honest versioning and beta channel. |
 | E22 | Simulation And Solvers | Loop, solve and simulate native geometry and images: For-Each and Solver blocks, a POP-style particle system, and 2D fluids. |
+| E23 | Overlay Flow | Show node overlays wherever their image goes: off the render path, deformed through warps, and on projected or textured geometry. |
 
 # Features
 
@@ -557,6 +565,7 @@ future core work has solid ground to build on.
 | F22 | Native VDB | open |  |  | feature/f22-native-vdb | An OpenVDB volume primitive in native geometry, bridged to USD, with conversion, SDF ops and a volume wrangle. |
 | F23 | Deep Nodes | open |  |  | feature/f23-deep-nodes | Native deep filtering, transform, inspection and tier-2 nodes on the existing deep transport: OpenDCX DeepBlur and DeepTransform, DeepSample and a chosen DeepC-style set. |
 | F24 | Deep Rendering | open |  |  | feature/f24-deep-rendering | Render true deep images in process from Nucleon Utility, Cycles and MoonRay through one host-side deep render buffer, with DeepCompact. |
+| F25 | Overlay Flow | open |  |  | feature/f25-overlay-flow | Overlays deform through every warp and onto projected geometry, with CardProject25D's 2.5D projection carrying them through. |
 
 # Open questions
 

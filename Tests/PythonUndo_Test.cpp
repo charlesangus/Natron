@@ -95,7 +95,13 @@ public:
                         const UndoTouched& touched) OVERRIDE FINAL
     {
         commands.push_back(command);
-        touchedNodes.push_back(touched.nodes.empty() ? NodePtr() : touched.nodes.front());
+        NodePtr node = touched.nodes.empty() ? NodePtr() : touched.nodes.front();
+        if (!node && !touched.knobs.empty()) {
+            // A knob-only record is attributed to its holder's node, as the real recorder's scope does.
+            EffectInstance* effect = dynamic_cast<EffectInstance*>(touched.knobs.front()->getHolder());
+            node = effect ? effect->getNode() : NodePtr();
+        }
+        touchedNodes.push_back(node);
     }
 
     int depth;

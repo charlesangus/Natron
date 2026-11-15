@@ -570,6 +570,267 @@ TEST(NatronUtilityLights, AShadowLinkExclusionRemovesOneSpheresShadowAndLeavesIt
     expectGrey(lit, render.colorAt(14, 2), "open ground");
 }
 
+// The UsdPreviewSurface inputs a probe material sets.
+struct Probe {
+    double diffuse[3];
+    bool specularWorkflow;
+    double specular[3];
+    double metallic;
+    double roughness;
+    double ior;
+    double clearcoat;
+    double clearcoatRoughness;
+};
+
+std::string
+probeMaterial(const Probe& p)
+{
+    const auto color = [](const double* c) {
+        return "(" + std::to_string(c[0]) + ", " + std::to_string(c[1]) + ", " + std::to_string(c[2]) + ")";
+    };
+
+    return "def Material \"Probe\" {\n"
+           "    token outputs:surface.connect = </Probe/Surface.outputs:surface>\n"
+           "    def Shader \"Surface\" {\n"
+           "        uniform token info:id = \"UsdPreviewSurface\"\n"
+           "        color3f inputs:diffuseColor = "
+        + color(p.diffuse) + "\n"
+        + "        int inputs:useSpecularWorkflow = " + (p.specularWorkflow ? "1" : "0") + "\n"
+        + "        color3f inputs:specularColor = " + color(p.specular) + "\n"
+        + "        float inputs:metallic = " + std::to_string(p.metallic) + "\n"
+        + "        float inputs:roughness = " + std::to_string(p.roughness) + "\n"
+        + "        float inputs:ior = " + std::to_string(p.ior) + "\n"
+        + "        float inputs:clearcoat = " + std::to_string(p.clearcoat) + "\n"
+        + "        float inputs:clearcoatRoughness = " + std::to_string(p.clearcoatRoughness) + "\n"
+        + "        token outputs:surface\n"
+          "    }\n"
+          "}\n"
+          "def Mesh \"ProbeGround\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {\n"
+          "    int[] faceVertexCounts = [4]\n"
+          "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+          "    point3f[] points = [(-20, -20, 0), (20, -20, 0), (20, 20, 0), (-20, 20, 0)]\n"
+          "    rel material:binding = </Probe>\n"
+          "}\n";
+}
+
+// Storm's previewSurface.glslfx direct lighting, written out independently of the kernels: the
+// radiance toward the eye along e of a surface of normal n lit by irradiance from direction l.
+GfVec3d
+stormRadiance(const Probe& p,
+              const GfVec3d& n,
+              const GfVec3d& l,
+              const GfVec3d& e,
+              double irradiance)
+{
+    const double epsilon = 0.001;
+    const GfVec3d h = (l + e).GetNormalized();
+    const double NdotL = std::max(0., GfDot(n, l));
+    const double NdotE = std::max(0., GfDot(n, e));
+    const double NdotH = std::max(0., GfDot(n, h));
+    const double EdotH = std::max(0., GfDot(e, h));
+    const double fresnel = std::pow(std::max(0., 1. - EdotH), 5.);
+    const auto mix = [](double a, double b, double t) { return a * (1. - t) + b * t; };
+    const auto specular = [&](double f0, double f90, double roughness) {
+        const double alpha = roughness * roughness;
+        const double alpha2 = alpha * alpha;
+        const double denominator = NdotH * NdotH * (alpha2 - 1.) + 1.;
+        const double D = (alpha2 + epsilon) / (denominator * denominator * M_PI);
+        const double k = alpha * 0.5;
+        const double G = NdotE / (NdotE * (1. - k) + k) * NdotL / (NdotL * (1. - k) + k);
+
+        return mix(f0, f90, fresnel) * G * D / (4. * NdotL * NdotE + epsilon);
+    };
+    const double R = (1. - p.ior) / (1. + p.ior);
+    GfVec3d radiance;
+
+    for (int c = 0; c < 3; ++c) {
+        double d = p.diffuse[c] / M_PI;
+        double f0 = p.specular[c];
+        double f90 = 1.;
+
+        if (!p.specularWorkflow) {
+            const double color = mix(1., p.diffuse[c], p.metallic);
+
+            f0 = mix(R * R * color, color, p.metallic);
+            f90 = color;
+            d *= 1. - p.metallic;
+        }
+
+        const double s1 = specular(f0, f90, std::max(0.001, p.roughness));
+
+        d *= 1. - mix(f0, f90, fresnel);
+
+        const double s2 = p.clearcoat > 0. ? p.clearcoat * specular(R * R, 1., std::max(0.001, p.clearcoatRoughness)) : 0.;
+
+        radiance[c] = NdotL * (d + s1 + s2) * irradiance;
+    }
+
+    return radiance;
+}
+
+void
+expectStormLighting(const Probe& probe,
+                    const char* what)
+{
+    const double degrees = 30.;
+    const double intensity = M_PI;
+    LitRender render(probeMaterial(probe) + distantLight(intensity, degrees));
+
+    render.render();
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatSceneWarning));
+
+    const double theta = degrees * M_PI / 180.;
+    const GfVec3d l(std::sin(theta), 0., std::cos(theta));
+
+    for (int y = 0; y < kRenderSize; ++y) {
+        for (int x = 0; x < kRenderSize; ++x) {
+            const GfVec3d e = (GfVec3d(0., 0., kCameraZ) - GfVec3d(groundAt(x), groundAt(y), 0.)).GetNormalized();
+            const GfVec3d expected = stormRadiance(probe, GfVec3d(0., 0., 1.), l, e, intensity);
+            const GfVec4f color = render.colorAt(x, y);
+
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_NEAR(expected[c], color[c], 1e-3 * std::max(1., expected[c])) << what << " " << pixelName(x, y) << " channel " << c;
+            }
+            EXPECT_FLOAT_EQ(1.f, color[3]) << what << " " << pixelName(x, y);
+        }
+    }
+}
+
+TEST(NatronUtilityLights, PartialMetallicLightsAsStormDoes)
+{
+    expectStormLighting(Probe { { 0.8, 0.4, 0.2 }, false, { 0., 0., 0. }, 0.5, 0.3, 1.5, 0., 0.01 }, "half metal");
+}
+
+TEST(NatronUtilityLights, AColouredMetalLightsAsStormDoes)
+{
+    expectStormLighting(Probe { { 0.9, 0.6, 0.2 }, false, { 0., 0., 0. }, 1., 0.25, 1.5, 0., 0.01 }, "gold");
+}
+
+TEST(NatronUtilityLights, ANonDefaultIorLightsAsStormDoes)
+{
+    expectStormLighting(Probe { { 0.3, 0.5, 0.7 }, false, { 0., 0., 0. }, 0., 0.2, 2., 0., 0.01 }, "ior 2");
+}
+
+TEST(NatronUtilityLights, AClearcoatLightsAsStormDoes)
+{
+    expectStormLighting(Probe { { 0.5, 0.2, 0.2 }, false, { 0., 0., 0. }, 0., 0.6, 1.5, 1., 0.1 }, "clearcoat");
+}
+
+TEST(NatronUtilityLights, TheSpecularWorkflowLightsAsStormDoes)
+{
+    expectStormLighting(Probe { { 0.4, 0.4, 0.6 }, true, { 0.2, 0.3, 0.1 }, 0., 0.35, 1.5, 0.5, 0.2 }, "specular workflow");
+}
+
+// A focused sphere light of the given orientation over the ground, uncut by its cone.
+std::string
+focusedLight(double intensity,
+             double height,
+             double focus,
+             double rotateX)
+{
+    return "def SphereLight \"Focused\" (prepend apiSchemas = [\"ShapingAPI\"]) {\n"
+           "    float inputs:radius = 0\n"
+           "    float inputs:intensity = "
+        + std::to_string(intensity) + "\n"
+        + "    float inputs:shaping:cone:angle = 180\n"
+        + "    float inputs:shaping:focus = " + std::to_string(focus) + "\n"
+        + "    double3 xformOp:translate = (0, 0, " + std::to_string(height) + ")\n"
+        + "    float xformOp:rotateX = " + std::to_string(rotateX) + "\n"
+        + "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateX\"]\n"
+        + "}\n";
+}
+
+TEST(NatronUtilityLights, FocusFallsOffByTheAbsoluteCosineOnBothSidesOfTheLight)
+{
+    const double height = 10.;
+    const double intensity = 1000.;
+    const double focus = 2.;
+
+    // Facing the ground and facing away, the ground sees the same falloff.
+    for (double rotateX : { 0., 180. }) {
+        LitRender render(ground() + focusedLight(intensity, height, focus, rotateX));
+
+        render.render();
+        for (int y = 0; y < kRenderSize; ++y) {
+            for (int x = 0; x < kRenderSize; ++x) {
+                double theta = 0.;
+                const double irradiance = pointIrradiance(intensity, height, groundAt(x), groundAt(y), &theta);
+                const double expected = irradiance * std::pow(std::cos(theta), focus) / M_PI;
+
+                expectGrey(static_cast<float>(expected), render.colorAt(x, y), "rotated " + std::to_string(rotateX) + " " + pixelName(x, y));
+            }
+        }
+    }
+}
+
+const char* const kBlueDome = "def DomeLight \"Sky\" {\n"
+                              "    color3f inputs:color = (0.2, 0.4, 0.6)\n"
+                              "    float inputs:intensity = 1\n"
+                              "}\n";
+
+TEST(NatronUtilityLights, ADomeAloneFillsTheFrameWithItsColour)
+{
+    LitRender render(kBlueDome);
+
+    render.render();
+    for (int y = 0; y < kRenderSize; ++y) {
+        for (int x = 0; x < kRenderSize; ++x) {
+            const GfVec4f color = render.colorAt(x, y);
+
+            EXPECT_NEAR(0.2f, color[0], 1e-5f) << pixelName(x, y);
+            EXPECT_NEAR(0.4f, color[1], 1e-5f) << pixelName(x, y);
+            EXPECT_NEAR(0.6f, color[2], 1e-5f) << pixelName(x, y);
+            EXPECT_FLOAT_EQ(1.f, color[3]) << pixelName(x, y);
+        }
+    }
+}
+
+TEST(NatronUtilityLights, RaysThatMissShowTheDomeBesideGeometry)
+{
+    LitRender render(whiteSphere("Ball", 0., 0., 0.) + kBlueDome);
+
+    render.render();
+
+    const GfVec4f corner = render.colorAt(0, 0);
+
+    EXPECT_NEAR(0.2f, corner[0], 1e-5f);
+    EXPECT_NEAR(0.4f, corner[1], 1e-5f);
+    EXPECT_NEAR(0.6f, corner[2], 1e-5f);
+    EXPECT_FLOAT_EQ(1.f, corner[3]);
+
+    const GfVec4f ball = render.colorAt(8, 8);
+
+    EXPECT_GT(ball[2], 0.f) << "the dome lights the ball";
+    EXPECT_FLOAT_EQ(1.f, ball[3]);
+}
+
+TEST(NatronUtilityLights, ALightLinkedToOneNativeInstanceLightsOnlyThatInstance)
+{
+    LitRender render(std::string("class Xform \"Ball\" {\n"
+                                 "    def Sphere \"Shape\" {\n"
+                                 "        double radius = 1\n"
+                                 "    }\n"
+                                 "}\n"
+                                 "def Xform \"A\" (instanceable = true\n"
+                                 "    prepend references = </Ball>) {\n")
+                     + translate(-4., 0., 0.) + "}\n"
+                     + "def Xform \"B\" (instanceable = true\n"
+                       "    prepend references = </Ball>) {\n"
+                     + translate(4., 0., 0.) + "}\n"
+                     + distantLight(M_PI, 0.,
+                                    "    rel collection:lightLink:includes = </A>\n"
+                                    "    uniform bool collection:lightLink:includeRoot = 0\n"));
+
+    render.render();
+
+    const GfVec4f a = render.colorAt(5, 8);
+    const GfVec4f b = render.colorAt(10, 8);
+
+    EXPECT_GT(a[0], 0.05f) << "A, which the light links";
+    EXPECT_FLOAT_EQ(1.f, a[3]);
+    expectGrey(0.f, b, "B, which the light does not link");
+}
+
 #ifdef NATRON_HAVE_GPU
 TEST(NatronUtilityLights, GpuShadowsAndLightsAsTheCpuDoes)
 {
@@ -638,5 +899,50 @@ TEST(NatronUtilityLights, GpuHonoursShadowLinksAsTheCpuDoes)
         }
     }
     expectGrey(0.f, render.colorAt(2, 8), "A's shadow");
+}
+TEST(NatronUtilityLights, GpuLightsMaterialsFocusAndTheDomeAsTheCpuDoes)
+{
+    LightsGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    LitRender render(probeMaterial(Probe { { 0.9, 0.6, 0.2 }, false, { 0., 0., 0. }, 0.5, 0.25, 2., 1., 0.1 })
+                     + focusedLight(1000., 10., 2., 180.) + distantLight(M_PI, 30.));
+
+    render.setDevice(kUtilityDeviceCpu);
+    render.render();
+
+    const std::vector<GfVec4f> cpu = render.colors();
+
+    render.setDevice(kUtilityDeviceGpu);
+    render.render();
+    EXPECT_EQ(0u, render.textStat(kUtilityStatDevice).rfind("GPU", 0)) << render.textStat(kUtilityStatDevice);
+
+    const std::vector<GfVec4f> gpu = render.colors();
+
+    for (std::size_t i = 0; i < cpu.size(); ++i) {
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(cpu[i][c], gpu[i][c], 1e-4f * std::max(1.f, std::abs(cpu[i][c]))) << pixelName(static_cast<int>(i) % kRenderSize, static_cast<int>(i) / kRenderSize);
+        }
+    }
+
+    LitRender dome(kBlueDome);
+
+    dome.setDevice(kUtilityDeviceGpu);
+    dome.render();
+    EXPECT_EQ(0u, dome.textStat(kUtilityStatDevice).rfind("GPU", 0)) << dome.textStat(kUtilityStatDevice);
+
+    const GfVec4f sky = dome.colorAt(3, 12);
+
+    EXPECT_NEAR(0.2f, sky[0], 1e-5f);
+    EXPECT_NEAR(0.4f, sky[1], 1e-5f);
+    EXPECT_NEAR(0.6f, sky[2], 1e-5f);
+    EXPECT_FLOAT_EQ(1.f, sky[3]);
 }
 #endif // NATRON_HAVE_GPU

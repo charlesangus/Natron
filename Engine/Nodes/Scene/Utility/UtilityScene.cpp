@@ -148,13 +148,15 @@ UtilityScene::setColors(GeometryId id,
 
 void
 UtilityScene::setInstances(GeometryId id,
-                           const std::vector<GfMatrix4d>& transforms)
+                           const std::vector<GfMatrix4d>& transforms,
+                           const std::vector<TfTokenVector>& categories)
 {
     std::lock_guard<std::mutex> l(_mutex);
     const auto it = _records.find(id);
 
-    if (TF_VERIFY(it != _records.end()) && it->second.transforms != transforms) {
+    if (TF_VERIFY(it != _records.end()) && (it->second.transforms != transforms || it->second.instanceCategories != categories)) {
         it->second.transforms = transforms;
+        it->second.instanceCategories = categories;
         ++_version;
     }
 }
@@ -355,6 +357,9 @@ UtilityScene::snapshot() const
             instance.geometry = entry.first;
             instance.instanceIndex = static_cast<int>(i);
             instance.transform = entry.second.transforms[i];
+            if (i < entry.second.instanceCategories.size()) {
+                instance.categories = entry.second.instanceCategories[i];
+            }
             snapshot.instances.push_back(instance);
         }
     }

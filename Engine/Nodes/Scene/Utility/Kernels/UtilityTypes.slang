@@ -76,6 +76,7 @@ public static const float kFinestLevel = -1.0e30;
 // per slot, or kNoTexture.
 public struct MaterialRecord
 {
+    // The w components of diffuseColor, emissiveColor and coverage hold the constant tangent-space normal.
     public float4 diffuseColor;
     public float4 emissiveColor;
     // w: useSpecularWorkflow.

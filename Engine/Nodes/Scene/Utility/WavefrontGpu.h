@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Global/Macros.h"
 
@@ -101,6 +102,9 @@ public:
     bool deviceLost() const;
 
     std::string deviceName() const;
+
+    // What the last render() changed to fit the device, such as textures it downsampled.
+    std::vector<std::string> warnings() const;
 
 private:
     struct Implementation;

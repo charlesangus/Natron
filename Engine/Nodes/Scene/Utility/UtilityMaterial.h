@@ -46,12 +46,14 @@ NATRON_NAMESPACE_ENTER
  * @brief One UsdUVTexture read, with the UsdTransform2d and UsdPrimvarReader_float2 before it.
  **/
 struct UtilityTextureRef {
-    // The values of Kernels/UtilityTypes.slang's kWrap constants.
+    // The values of Kernels/UtilityTypes.slang's kWrap constants, and useMetadata, which the loaded
+    // image resolves to one of them before a kernel sees it.
     enum Wrap {
         eWrapBlack,
         eWrapClamp,
         eWrapRepeat,
         eWrapMirror,
+        eWrapUseMetadata,
     };
 
     enum ColorSpace {
@@ -68,8 +70,8 @@ struct UtilityTextureRef {
     PXR_NS::GfVec2f uvScale = PXR_NS::GfVec2f(1.f);
     PXR_NS::GfVec2f uvTranslation = PXR_NS::GfVec2f(0.f);
     float uvRotationDegrees = 0.f;
-    Wrap wrapS = eWrapBlack;
-    Wrap wrapT = eWrapBlack;
+    Wrap wrapS = eWrapUseMetadata;
+    Wrap wrapT = eWrapUseMetadata;
     ColorSpace colorSpace = eColorSpaceAuto;
     // The channel the output starts at: 0 for r, rgb and rgba, 1 for g, and so on.
     int firstChannel = 0;
@@ -132,6 +134,8 @@ struct UtilityMaterialDesc {
     float opacity = 1.f;
     float opacityThreshold = 0.f;
     float ior = 1.5f;
+    // Tangent space, in [-1, 1].
+    PXR_NS::GfVec3f normal = PXR_NS::GfVec3f(0.f, 0.f, 1.f);
     // Inputs read from the displayColor and displayOpacity primvars, as for geometry with no material.
     bool diffuseFromDisplayColor = false;
     bool emissiveFromDisplayColor = false;

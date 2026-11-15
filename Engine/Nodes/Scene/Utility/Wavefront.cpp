@@ -28,9 +28,11 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <string>
 
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3i.h>
+#include <pxr/base/tf/stringUtils.h>
 
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
@@ -135,8 +137,27 @@ appendRows(const GfMatrix4d& m,
 KernelTextureBinding
 makeBinding(const UtilityTextureRef& ref,
             int image,
-            bool udim)
+            const UtilityTextureAsset* asset)
 {
+    const bool udim = asset && asset->udim;
+    const UtilityTextureImage* metadata = nullptr;
+
+    if (asset) {
+        for (const UtilityTextureImageConstPtr& tile : asset->tiles) {
+            if (tile) {
+                metadata = tile.get();
+                break;
+            }
+        }
+    }
+    const auto resolve = [metadata](UtilityTextureRef::Wrap wrap, int dimension) {
+        if (wrap != UtilityTextureRef::eWrapUseMetadata) {
+            return wrap;
+        }
+
+        return metadata ? metadata->metadataWrap[dimension] : UtilityTextureRef::eWrapBlack;
+    };
+
     KernelTextureBinding binding {};
     const double radians = ref.uvRotationDegrees * M_PI / 180.;
 
@@ -151,8 +172,8 @@ makeBinding(const UtilityTextureRef& ref,
     binding.uvRotation[1] = static_cast<float>(std::sin(radians));
     binding.image[0] = image;
     binding.image[1] = udim ? 1 : 0;
-    binding.image[2] = ref.wrapS;
-    binding.image[3] = ref.wrapT;
+    binding.image[2] = resolve(ref.wrapS, 0);
+    binding.image[3] = resolve(ref.wrapT, 1);
     binding.channels[0] = static_cast<std::uint32_t>(std::max(0, std::min(3, ref.firstChannel)));
 
     return binding;
@@ -444,6 +465,7 @@ void
 WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
 {
     std::vector<UtilityTextureAssetConstPtr> assets;
+    std::vector<std::string> assetNames;
     std::map<const UtilityTextureAsset*, int> firstImages;
     std::set<UtilityTexturePool::Key> keys;
     int imageCount = 0;
@@ -470,11 +492,12 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
                 firstImages[asset.get()] = image;
                 imageCount += static_cast<int>(asset->tiles.size());
                 assets.push_back(asset);
+                assetNames.push_back(ref.asset);
             } else {
                 image = found->second;
             }
         }
-        _textureBindings.push_back(makeBinding(ref, image, asset && asset->udim));
+        _textureBindings.push_back(makeBinding(ref, image, asset.get()));
 
         return asset;
     };
@@ -486,11 +509,11 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
             addBinding(ref);
         }
 
-        store(desc.diffuseColor, 0.f, record.diffuseColor);
-        store(desc.emissiveColor, 0.f, record.emissiveColor);
+        store(desc.diffuseColor, desc.normal[0], record.diffuseColor);
+        store(desc.emissiveColor, desc.normal[1], record.emissiveColor);
         store(desc.specularColor, desc.useSpecularWorkflow ? 1.f : 0.f, record.specularColor);
         store(GfVec4f(desc.metallic, desc.roughness, desc.clearcoat, desc.clearcoatRoughness), record.surface);
-        store(GfVec4f(desc.opacity, desc.opacityThreshold, desc.ior, 0.f), record.coverage);
+        store(GfVec4f(desc.opacity, desc.opacityThreshold, desc.ior, desc.normal[2]), record.coverage);
         record.kind[0] = static_cast<std::uint32_t>(desc.kind);
         record.kind[2] = (desc.diffuseFromDisplayColor ? kKernelMaterialDiffuseFromDisplayColor : 0u)
             | (desc.opacityFromDisplayOpacity ? kKernelMaterialOpacityFromDisplayOpacity : 0u)
@@ -533,6 +556,7 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
     _lightData.clear();
     _lightLinks.clear();
     _shadowLinked = false;
+    _background = false;
     for (const auto& entry : snapshot.lights) {
         if (!entry.second) {
             continue;
@@ -553,6 +577,7 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
                 }
             }
         }
+        _background = _background || desc.type == UtilityLightDesc::eTypeDome;
         _lights.push_back(record);
         _lightLinks.push_back(std::make_pair(desc.lightLink, desc.shadowLink));
         _shadowLinked = _shadowLinked || !desc.shadowLink.IsEmpty();
@@ -565,20 +590,9 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
         return;
     }
 
-    _images.clear();
-    _texels.clear();
-    for (const UtilityTextureAssetConstPtr& asset : assets) {
-        for (const UtilityTextureImageConstPtr& tile : asset->tiles) {
-            if (!tile) {
-                _images.insert(_images.end(), { 0u, 0u, 0u, 0u });
-                continue;
-            }
-            _images.insert(_images.end(), { static_cast<std::uint32_t>(tile->width), static_cast<std::uint32_t>(tile->height), static_cast<std::uint32_t>(tile->levels), static_cast<std::uint32_t>(_texels.size()) });
-            _texels.insert(_texels.end(), tile->texels.begin(), tile->texels.end());
-        }
-    }
     _textureAssets.swap(assets);
-    ++_texelVersion;
+    _textureAssetNames.swap(assetNames);
+    buildTexels();
 }
 
 bool
@@ -675,7 +689,8 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
         static const TfTokenVector noCategories;
         const TfTokenVector& categories = geometry == snapshot.geometries.end() ? noCategories : geometry->second.categories;
         const auto inCategory = [&](const TfToken& category) {
-            return category.IsEmpty() || std::find(categories.begin(), categories.end(), category) != categories.end();
+            return category.IsEmpty() || std::find(categories.begin(), categories.end(), category) != categories.end()
+                || std::find(instance.categories.begin(), instance.categories.end(), category) != instance.categories.end();
         };
         std::uint32_t* lightMask = _linkMasks.data() + i * 2 * _linkWords;
         std::uint32_t* shadowMask = lightMask + _linkWords;
@@ -751,6 +766,147 @@ std::uint32_t
 WavefrontShadeTables::lightCount() const
 {
     return static_cast<std::uint32_t>(_lights.size());
+}
+
+namespace {
+// The texels of a mip chain from level `first` on, and that level's size.
+std::size_t
+texelsFrom(const UtilityTextureImage& image,
+           int first,
+           std::size_t* offset,
+           int* width,
+           int* height)
+{
+    int w = image.width;
+    int h = image.height;
+
+    *offset = 0;
+    for (int level = 0; level < first; ++level) {
+        *offset += static_cast<std::size_t>(w) * h;
+        w = std::max(1, w / 2);
+        h = std::max(1, h / 2);
+    }
+    *width = w;
+    *height = h;
+
+    return image.texels.size() - *offset;
+}
+} // anon namespace
+
+bool
+WavefrontShadeTables::fitTexels(std::uint64_t limitBytes)
+{
+    if (limitBytes != _texelLimit) {
+        _texelLimit = limitBytes;
+        buildTexels();
+    }
+
+    return _texelsFit;
+}
+
+const std::vector<std::string>&
+WavefrontShadeTables::texelWarnings() const
+{
+    return _texelWarnings;
+}
+
+// The texels go to the device as one buffer, so past its limit the largest images give up their
+// finest levels, already in their mip chains, until the whole set fits.
+void
+WavefrontShadeTables::buildTexels()
+{
+    struct Tile {
+        const UtilityTextureImage* image;
+        std::size_t asset;
+        int dropped;
+    };
+    std::vector<Tile> tiles;
+    std::size_t total = 0;
+
+    for (std::size_t a = 0; a < _textureAssets.size(); ++a) {
+        for (const UtilityTextureImageConstPtr& tile : _textureAssets[a]->tiles) {
+            tiles.push_back(Tile { tile.get(), a, 0 });
+            total += tile ? tile->texels.size() : 0;
+        }
+    }
+
+    const std::uint64_t limitTexels = _texelLimit / sizeof(GfVec4f);
+    const auto finest = [](const Tile& t) -> std::size_t {
+        if (!t.image) {
+            return 0;
+        }
+        std::size_t offset = 0;
+        int width = 0;
+        int height = 0;
+
+        texelsFrom(*t.image, t.dropped, &offset, &width, &height);
+
+        return static_cast<std::size_t>(width) * height;
+    };
+    const auto less = [&](std::size_t a, std::size_t b) { return finest(tiles[a]) < finest(tiles[b]); };
+    std::vector<std::size_t> heap;
+
+    for (std::size_t t = 0; t < tiles.size(); ++t) {
+        if (tiles[t].image && tiles[t].image->levels > 1) {
+            heap.push_back(t);
+        }
+    }
+
+    std::make_heap(heap.begin(), heap.end(), less);
+    _texelsFit = true;
+    while (_texelLimit != 0 && total > limitTexels) {
+        if (heap.empty()) {
+            _texelsFit = false;
+            break;
+        }
+        std::pop_heap(heap.begin(), heap.end(), less);
+        Tile& tile = tiles[heap.back()];
+
+        total -= finest(tile);
+        ++tile.dropped;
+        if (tile.dropped + 1 < tile.image->levels) {
+            std::push_heap(heap.begin(), heap.end(), less);
+        } else {
+            heap.pop_back();
+        }
+    }
+
+    std::set<std::size_t> downsampled;
+
+    _images.clear();
+    _texels.clear();
+    _texelWarnings.clear();
+    if (_texelsFit) {
+        _texels.reserve(total);
+    }
+    for (const Tile& tile : tiles) {
+        if (!tile.image) {
+            _images.insert(_images.end(), { 0u, 0u, 0u, 0u });
+            continue;
+        }
+        std::size_t offset = 0;
+        int width = 0;
+        int height = 0;
+        const std::size_t count = texelsFrom(*tile.image, tile.dropped, &offset, &width, &height);
+
+        _images.insert(_images.end(), { static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), static_cast<std::uint32_t>(tile.image->levels - tile.dropped), static_cast<std::uint32_t>(_texels.size()) });
+        _texels.insert(_texels.end(), tile.image->texels.begin() + static_cast<std::ptrdiff_t>(offset), tile.image->texels.begin() + static_cast<std::ptrdiff_t>(offset + count));
+        if (tile.dropped > 0 && downsampled.insert(tile.asset).second) {
+            _texelWarnings.push_back(TfStringPrintf("Texture %s was downsampled from %dx%d to %dx%d to fit the GPU's largest storage buffer",
+                                                    _textureAssetNames[tile.asset].c_str(), tile.image->width, tile.image->height, width, height));
+        }
+    }
+    if (!_texelsFit) {
+        _texelWarnings.push_back(TfStringPrintf("The textures need %zu bytes even at one texel each, more than the GPU's largest storage buffer of %llu bytes",
+                                                static_cast<std::size_t>(total * sizeof(GfVec4f)), static_cast<unsigned long long>(_texelLimit)));
+    }
+    ++_texelVersion;
+}
+
+bool
+WavefrontShadeTables::hasBackground() const
+{
+    return _background;
 }
 
 std::uint32_t

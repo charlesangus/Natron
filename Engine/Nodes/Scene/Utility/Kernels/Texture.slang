@@ -107,6 +107,13 @@ float4 selectChannels(float4 v, uint first)
     return v;
 }
 
+// A UsdUVTexture's output from value, a texel or its fallback: scale and bias apply to both, as
+// UsdUVTexture's outputs are defined from whatever value it reads.
+float4 bindingOutput(TextureBinding binding, float4 value)
+{
+    return selectChannels(value * binding.scale + binding.bias, binding.channels.x);
+}
+
 // A UsdUVTexture's output at texture coordinates already through its UsdTransform2d. UDIM tiles are
 // found from the integer part of the coordinates, each tile covering one unit square.
 public float4 sampleBinding(StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, StructuredBuffer<float4> texels, int bindingIndex, float2 uv, float footprint)
@@ -119,23 +126,20 @@ public float4 sampleBinding(StructuredBuffer<TextureBinding> bindings, Structure
         const float2 tile = floor(uv);
 
         if (tile.x < 0.0 || tile.x > 9.0 || tile.y < 0.0 || tile.y > 9.0)
-            return selectChannels(binding.fallback, binding.channels.x);
+            return bindingOutput(binding, binding.fallback);
         image += int(tile.y) * 10 + int(tile.x);
         coordinates = uv - tile;
         if (images[uint(image)].z == 0)
-            return selectChannels(binding.fallback, binding.channels.x);
+            return bindingOutput(binding, binding.fallback);
     }
     if (image == kNoTexture)
-        return selectChannels(binding.fallback, binding.channels.x);
+        return bindingOutput(binding, binding.fallback);
 
-    const float4 texel = sampleImage(images, texels, uint(image), coordinates, footprint, binding.image.z, binding.image.w);
-
-    return selectChannels(texel * binding.scale + binding.bias, binding.channels.x);
+    return bindingOutput(binding, sampleImage(images, texels, uint(image), coordinates, footprint, binding.image.z, binding.image.w));
 }
 
 // What a UsdUVTexture reads where there is nothing to look it up with.
 public float4 bindingFallback(StructuredBuffer<TextureBinding> bindings, int bindingIndex)
 {
-    const TextureBinding binding = bindings[bindingIndex];
-    return selectChannels(binding.fallback, binding.channels.x);
+    return bindingOutput(bindings[bindingIndex], bindings[bindingIndex].fallback);
 }

@@ -9,6 +9,11 @@ Under Natron Utility it also measures the longest gap between ticks of a main-th
 USDXformPrim is edited repeatedly over a heavy mesh in a large view, once the mesh's first sync is done.
 That first sync reads the whole stage under the stage lock and cannot be cut short, so it is not measured.
 
+Last, under Natron Utility with the Scene Lights lighting, a second graph draws a card textured through a
+UsdPreviewSurface and UsdUVTexture beside a USDCard carrying a USDProject3D projection of a CheckerBoard,
+both lit by the stage's distant light: the texture's green, the checker's red and blue must show, and no
+magenta, which marks a material the delegate cannot shade. Its shot is natron-utility-materials-lights_view.png.
+
 Only geometry may reach the colour counts: the grid (Ctrl+G) is hidden, as its blue axis line counts as
 blue and its lines as grey, and the view uses the headlight, as the default Scene Lights leaves Storm's
 surfaces black on this stage, which has no light.
@@ -27,6 +32,7 @@ POLL_TIMEOUT_S = 30.0
 SETTLE_MS = 700
 STARTUP_TIMEOUT_S = 60.0
 CTRL_TUMBLE_NAVIGATION = 0
+SCENE_LIGHTS = 1
 HEADLIGHT = 2
 HUD_MARGIN = 28
 UTILITY_ID = "HdNatronUtilityRendererPlugin"
@@ -76,10 +82,71 @@ def Xform "World"
 }
 """
 
+# A card textured through UsdPreviewSurface, left of the USDCard at the origin, and the light both see.
+MATERIAL_STAGE = """#usda 1.0
+(
+    defaultPrim = "Lit"
+    upAxis = "Y"
+)
+
+def Xform "Lit"
+{
+    def Material "Textured"
+    {
+        token outputs:surface.connect = </Lit/Textured/Surface.outputs:surface>
+
+        def Shader "Surface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor.connect = </Lit/Textured/Image.outputs:rgb>
+            float inputs:roughness = 0.6
+            token outputs:surface
+        }
+
+        def Shader "Image"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @TEXTURE@
+            token inputs:sourceColorSpace = "sRGB"
+            float2 inputs:st.connect = </Lit/Textured/St.outputs:result>
+            float3 outputs:rgb
+        }
+
+        def Shader "St"
+        {
+            uniform token info:id = "UsdPrimvarReader_float2"
+            string inputs:varname = "st"
+            float2 outputs:result
+        }
+    }
+
+    def Mesh "TexturedCard" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        uniform bool doubleSided = 1
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-3.2, -1, 0), (-1.2, -1, 0), (-1.2, 1, 0), (-3.2, 1, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </Lit/Textured>
+    }
+
+    def DistantLight "Key"
+    {
+        float inputs:angle = 0
+        float inputs:intensity = 3
+    }
+}
+"""
+TEXTURE_SIZE = 64
+
 try:
     import NatronEngine
     from PySide6.QtCore import Qt, QTimer
-    from PySide6.QtGui import QContextMenuEvent, QGuiApplication
+    from PySide6.QtGui import QColor, QContextMenuEvent, QGuiApplication, QImage
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
@@ -533,6 +600,99 @@ try:
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         check(ok, "the view is back on the stage without the settings prim")
 
+    def greenish(c):
+        return c.green() > 60 and c.green() > c.red() + 40 and c.green() > c.blue() + 40
+
+    def reddish(c):
+        return c.red() > 60 and c.red() > 2 * c.green() and c.red() > 2 * c.blue()
+
+    def strongly_blue(c):
+        return c.blue() > 60 and c.blue() > 2 * c.green() and c.blue() > 2 * c.red()
+
+    def magenta(c):
+        return c.red() > 120 and c.blue() > 120 and c.green() < 60
+
+    def write_texture(path):
+        """Green and white quadrants, so the texture's green is told apart from the checker's colours."""
+        image = QImage(TEXTURE_SIZE, TEXTURE_SIZE, QImage.Format_RGB32)
+        half = TEXTURE_SIZE // 2
+        for y in range(TEXTURE_SIZE):
+            for x in range(TEXTURE_SIZE):
+                green = (x < half) == (y < half)
+                image.setPixelColor(x, y, QColor(20, 220, 30) if green else QColor(235, 235, 235))
+        return image.save(path)
+
+    def check_materials_and_lights(v):
+        texture_path = os.path.join(OUT, "natron-utility-materials-texture.png")
+        require(write_texture(texture_path), "write the card's texture")
+        stage_path = os.path.join(OUT, "natron-utility-materials.usda")
+        with open(stage_path, "w") as f:
+            f.write(MATERIAL_STAGE.replace("@TEXTURE@", "@" + texture_path + "@"))
+
+        textured = app.createNode("USDRead")
+        require(textured is not None, "create a USDRead for the textured card", plugin_problem("USDRead"))
+        textured.setPosition(300, 0)
+        textured.getParam("filename").setValue(stage_path)
+        checker = app.createNode("CheckerBoard")
+        require(checker is not None, "create CheckerBoard", plugin_problem("CheckerBoard"))
+        checker.setPosition(450, -150)
+        checker.getParam("boxSize").set(240.0, 240.0)
+        for name, colour in (("color0", (1.0, 0.0, 0.0, 1.0)), ("color1", (0.0, 0.0, 1.0, 1.0)),
+                             ("color2", (1.0, 0.0, 0.0, 1.0)), ("color3", (0.0, 0.0, 1.0, 1.0))):
+            checker.getParam(name).set(*colour)
+        checker.getParam("lineWidth").set(0.0)
+        camera = app.createNode("USDCamera")
+        require(camera is not None, "create USDCamera", plugin_problem("USDCamera"))
+        camera.setPosition(600, -150)
+        camera.getParam("translate").set(0.0, 0.0, 5.0)
+        project = app.createNode("USDProject3D")
+        require(project is not None, "create USDProject3D", plugin_problem("USDProject3D"))
+        project.setPosition(450, -75)
+        card = app.createNode("USDCard")
+        require(card is not None, "create USDCard", plugin_problem("USDCard"))
+        card.setPosition(450, 0)
+        merge = app.createNode("USDMerge")
+        require(merge is not None, "create USDMerge", plugin_problem("USDMerge"))
+        merge.setPosition(375, 75)
+        require(project.connectInput(0, checker), "connect the CheckerBoard to USDProject3D's Image input")
+        require(project.connectInput(1, camera), "connect the USDCamera to USDProject3D's Camera input")
+        require(card.connectInput(0, project), "connect USDProject3D to USDCard's Material input")
+        require(merge.connectInput(0, textured), "merge the textured card's stage")
+        require(merge.connectInput(1, card), "merge the projected USDCard")
+
+        lighting.setValue(SCENE_LIGHTS)
+        frames_before = prop("natronSceneRefineFrames") or 0
+        require(show_in_viewer(merge), "connect the Viewer to the USDMerge")
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view shows the textured card, the projected card and the light (%r)" % (prop("natronSceneError"),))
+        check(prop("natronSceneLighting") == "scene", "the view uses the scene's lights (%r)" % (prop("natronSceneLighting"),))
+        key(v, Qt.Key_A)
+        ok = yield ("until", lambda: bool(prop("natronSceneRendererError")) or (
+            (prop("natronSceneRefineFrames") or 0) > frames_before and bool(prop("natronSceneRefineConverged"))
+            and scene_drawn()), POLL_TIMEOUT_S)
+        check(ok and not prop("natronSceneRendererError"),
+              "Natron Utility finishes a frame of the materials and the light (%r)" % (prop("natronSceneRendererError"),))
+        check(prop("natronSceneRenderer") == UTILITY_ID, "the view renders with Natron Utility (%r)" % (prop("natronSceneRenderer"),))
+        yield settle()
+
+        image = save_view("natron-utility-materials-lights")
+        green = count(image, greenish)
+        red = count(image, reddish)
+        blue = count(image, strongly_blue)
+        pink = count(image, magenta)
+        report("NOTE materials and lights: %d green, %d red, %d blue, %d magenta" % (green, red, blue, pink))
+        check(green >= MIN_PIXELS, "the UsdPreviewSurface card shows its texture lit (%d green pixels)" % green)
+        check(red >= MIN_PIXELS and blue >= MIN_PIXELS,
+              "the USDCard shows the USDProject3D checker lit (%d red, %d blue pixels)" % (red, blue))
+        check(pink < MIN_PIXELS, "no material is drawn as unsupported (%d magenta pixels)" % pink)
+
+        require(show_in_viewer(usd), "connect the Viewer back to the USDRead")
+        for node in (merge, card, project, camera, checker, textured):
+            node.destroy()
+        lighting.setValue(HEADLIGHT)
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view is back on the first stage")
+
     def steps():
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -566,6 +726,9 @@ try:
 
         section("Natron Utility on the GPU: the view imports its frame wherever the GL hand-off builds")
         yield from check_gpu_frame()
+
+        section("Natron Utility: a textured UsdPreviewSurface, a USDProject3D projection and a light")
+        yield from check_materials_and_lights(v)
 
         navigation.setValue(original_navigation)
         lighting.setValue(original_lighting)

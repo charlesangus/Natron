@@ -996,6 +996,74 @@ TEST(NatronUtilityRender, ATexturedPrimWithoutTextureCoordinatesReadsTheFallback
     EXPECT_NE(std::string::npos, warning.find("/Quad")) << warning;
 }
 
+TEST(NatronUtilityRender, AMissingTextureAppliesScaleAndBiasToItsFallback)
+{
+    UtilityRender render(std::string("#usda 1.0\n")
+                         + "def Material \"Tex\" {\n"
+                           "    token outputs:surface.connect = </Tex/Surface.outputs:surface>\n"
+                           "    def Shader \"Surface\" {\n"
+                           "        uniform token info:id = \"UsdPreviewSurface\"\n"
+                           "        color3f inputs:emissiveColor.connect = </Tex/Image.outputs:rgb>\n"
+                           "        token outputs:surface\n"
+                           "    }\n"
+                           "    def Shader \"Image\" {\n"
+                           "        uniform token info:id = \"UsdUVTexture\"\n"
+                           "        asset inputs:file = @/nonexistent/m281/missing.png@\n"
+                           "        float4 inputs:fallback = (0.2, 0.1, 0.05, 1)\n"
+                           "        float4 inputs:scale = (2, 2, 2, 1)\n"
+                           "        float4 inputs:bias = (0.1, 0.1, 0.1, 0)\n"
+                           "        float2 inputs:st.connect = </Tex/St.outputs:result>\n"
+                           "        float3 outputs:rgb\n"
+                           "    }\n"
+                           "    def Shader \"St\" {\n"
+                           "        uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+                           "        string inputs:varname = \"st\"\n"
+                           "        float2 outputs:result\n"
+                           "    }\n"
+                           "}\n"
+                         + cubeAt("Cube", boundTo("/Tex") + "    texCoord2f[] primvars:st = [(0.5, 0.5)] (interpolation = \"constant\")\n"));
+
+    render.render();
+
+    const GfVec4f color = render.colorAt(8, 8);
+
+    EXPECT_NEAR(0.5f, color[0], 1e-6f);
+    EXPECT_NEAR(0.3f, color[1], 1e-6f);
+    EXPECT_NEAR(0.2f, color[2], 1e-6f);
+    EXPECT_FLOAT_EQ(1.f, color[3]);
+}
+
+TEST(NatronUtilityRender, AMissingStAppliesScaleAndBiasToTheFallback)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("grid.png")).toStdString();
+    ASSERT_TRUE(writeTexture(path));
+
+    std::string usda = texturedQuad(path);
+    const std::size_t st = usda.find("    texCoord2f[] primvars:st");
+    ASSERT_NE(std::string::npos, st);
+    usda.erase(st, usda.find('\n', st) + 1 - st);
+
+    const std::string id = "        uniform token info:id = \"UsdUVTexture\"\n";
+    const std::size_t image = usda.find(id);
+    ASSERT_NE(std::string::npos, image);
+    usda.insert(image + id.size(), "        float4 inputs:fallback = (0.1, 0.2, 0.3, 1)\n"
+                                   "        float4 inputs:scale = (2, 2, 2, 1)\n"
+                                   "        float4 inputs:bias = (0.25, 0.25, 0.25, 0)\n");
+
+    UtilityRender render(std::string("#usda 1.0\n") + usda);
+
+    render.render();
+
+    const GfVec4f color = render.colorAt(8, 8);
+
+    EXPECT_NEAR(0.45f, color[0], 1e-6f);
+    EXPECT_NEAR(0.65f, color[1], 1e-6f);
+    EXPECT_NEAR(0.85f, color[2], 1e-6f);
+    EXPECT_FLOAT_EQ(1.f, color[3]);
+}
+
 TEST(NatronUtilityRender, TwoMeshesHaveDifferentPrimIds)
 {
     UtilityRender render(std::string("#usda 1.0\n")

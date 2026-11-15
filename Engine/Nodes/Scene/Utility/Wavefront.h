@@ -85,6 +85,9 @@ struct WavefrontTile {
     const float* depth = nullptr;
     const std::int32_t* primId = nullptr;
     const std::int32_t* instanceId = nullptr;
+    // Whether a miss's colour is the background a dome light shows rather than the film's clear
+    // colour; a miss's other AOVs stay clear either way.
+    bool background = false;
 };
 
 /**
@@ -163,6 +166,13 @@ public:
     // Changes whenever the texels do, so a device copy of them can be kept otherwise.
     std::uint64_t texelVersion() const;
     std::uint32_t lightCount() const;
+    // Caps the texels at limitBytes, 0 for no cap, downsampling the largest textures to fit; returns
+    // false when they cannot fit even then.
+    bool fitTexels(std::uint64_t limitBytes);
+    // One line per texture fitTexels() downsampled.
+    const std::vector<std::string>& texelWarnings() const;
+    // Whether a dome light shows where camera rays miss.
+    bool hasBackground() const;
     // The 32-bit words of each light-link and shadow-link mask.
     std::uint32_t linkWords() const;
     // What lets an occlusion query skip the casters a shadow ray's light is not shadow-linked to;
@@ -170,6 +180,8 @@ public:
     OcclusionFilter occlusionFilter(const std::uint32_t* rayLights) const;
 
 private:
+    void buildTexels();
+
     struct SourceVersion {
         UtilityScene::GeometryId id;
         std::uint64_t colorVersion;
@@ -195,7 +207,11 @@ private:
     std::vector<std::uint32_t> _images;
     std::vector<PXR_NS::GfVec4f> _texels;
     std::vector<UtilityTextureAssetConstPtr> _textureAssets;
+    std::vector<std::string> _textureAssetNames;
     std::uint64_t _texelVersion = 0;
+    std::uint64_t _texelLimit = 0;
+    bool _texelsFit = true;
+    std::vector<std::string> _texelWarnings;
     std::vector<PXR_NS::GfVec4f> _points;
     std::vector<PXR_NS::GfVec4f> _instanceTransforms;
     std::vector<PXR_NS::GfVec2f> _sts;
@@ -208,6 +224,7 @@ private:
     std::uint32_t _linkWords = 0;
     // Whether any light's shadows fall from only some of the scene, which needs filtered occlusion.
     bool _shadowLinked = false;
+    bool _background = false;
     std::vector<std::uint32_t> _linkMasks;
     // Material paths in the order of _materials from index 1.
     std::map<PXR_NS::SdfPath, std::uint32_t> _materialIndices;

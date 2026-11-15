@@ -138,8 +138,10 @@ float3 shapingFactor(LightRecord light, StructuredBuffer<float> data, float3 emi
 
         const float focus = light.shaping.z;
 
+        // Focus falls off by the absolute cosine, so a sphere or cylinder light the cone does not cut
+        // emits behind itself as in front; only the cone cutoff is one-sided.
         if (focus > 0.0) {
-            const float f = pow(max(0.0, cosOff), focus);
+            const float f = pow(abs(cosOff), focus);
             factor *= (1.0 - f) * light.focusTint.xyz + f;
         }
     }
@@ -164,6 +166,18 @@ float3 domeRadiance(LightRecord light, StructuredBuffer<TextureBinding> bindings
     if (binding == kNoTexture)
         return light.radiance.xyz;
     return light.radiance.xyz * sampleBinding(bindings, images, texels, binding, uv, kFinestLevel).xyz;
+}
+
+// What a dome shows along a world direction, black for any other light.
+public float3 domeBackground(LightRecord light, StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, StructuredBuffer<float4> texels, float3 direction)
+{
+    if (light.kind.x != kLightDome)
+        return float3(0.0);
+
+    const float3 local = toLight(light, direction);
+    const float2 uv = float2(0.5 * (1.0 - atan2(local.x, local.z) / kPi), asin(clamp(local.y, -1.0, 1.0)) / kPi + 0.5);
+
+    return domeRadiance(light, bindings, images, texels, uv);
 }
 
 LightSample noLight()

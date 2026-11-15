@@ -99,6 +99,8 @@ public:
         GeometryId geometry = 0;
         int instanceIndex = 0;
         PXR_NS::GfMatrix4d transform = PXR_NS::GfMatrix4d(1.);
+        // The link categories of this placement alone; the geometry's own apply to every placement.
+        PXR_NS::TfTokenVector categories;
     };
 
     struct Stats {
@@ -136,9 +138,11 @@ public:
     void setColors(GeometryId id,
                    ColorBinding binding,
                    const PXR_NS::VtVec4fArray& colors);
-    // One instance per transform, replacing the geometry's previous ones.
+    // One instance per transform, replacing the geometry's previous ones. categories, when not
+    // empty, holds each instance's own link categories.
     void setInstances(GeometryId id,
-                      const std::vector<PXR_NS::GfMatrix4d>& transforms);
+                      const std::vector<PXR_NS::GfMatrix4d>& transforms,
+                      const std::vector<PXR_NS::TfTokenVector>& categories = std::vector<PXR_NS::TfTokenVector>());
     void setMaterialId(GeometryId id,
                        const PXR_NS::SdfPath& materialId);
     void setSt(GeometryId id,
@@ -178,6 +182,7 @@ private:
     struct Record {
         Geometry geometry;
         std::vector<PXR_NS::GfMatrix4d> transforms;
+        std::vector<PXR_NS::TfTokenVector> instanceCategories;
         PXR_NS::TfToken renderTag;
     };
 

@@ -151,6 +151,24 @@ buildMips(UtilityTextureImage* image)
         ++image->levels;
     }
 }
+UtilityTextureRef::Wrap
+wrapOfAddressMode(HioAddressMode mode)
+{
+    switch (mode) {
+    case HioAddressModeClampToEdge:
+        return UtilityTextureRef::eWrapClamp;
+    case HioAddressModeRepeat:
+        return UtilityTextureRef::eWrapRepeat;
+    case HioAddressModeMirrorClampToEdge:
+    case HioAddressModeMirrorRepeat:
+        return UtilityTextureRef::eWrapMirror;
+    case HioAddressModeClampToBorderColor:
+        break;
+    }
+
+    return UtilityTextureRef::eWrapBlack;
+}
+
 } // anon namespace
 
 bool
@@ -219,6 +237,13 @@ UtilityTexturePool::loadImage(const std::string& path,
 
     image->width = width;
     image->height = height;
+    for (int dimension = 0; dimension < 2; ++dimension) {
+        HioAddressMode mode = HioAddressModeClampToBorderColor;
+
+        if (reader->GetSamplerMetadata(dimension == 0 ? HioAddressDimensionU : HioAddressDimensionV, &mode)) {
+            image->metadataWrap[dimension] = wrapOfAddressMode(mode);
+        }
+    }
     image->texels.resize(pixelCount);
     for (std::size_t p = 0; p < pixelCount; ++p) {
         float c[4] = { 0.f, 0.f, 0.f, 1.f };

@@ -346,7 +346,8 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
         _transform = sceneDelegate->GetTransform(id);
     }
     if (HdChangeTracker::IsVisibilityDirty(bits, id) || HdChangeTracker::IsTransformDirty(bits, id)
-        || HdChangeTracker::IsInstancerDirty(bits, id) || HdChangeTracker::IsInstanceIndexDirty(bits, id)) {
+        || HdChangeTracker::IsInstancerDirty(bits, id) || HdChangeTracker::IsInstanceIndexDirty(bits, id)
+        || (bits & HdChangeTracker::DirtyCategories)) {
         _UpdateInstancer(sceneDelegate, dirtyBits);
         syncInstances(sceneDelegate, scene);
     }
@@ -503,6 +504,7 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
 {
     const SdfPath& instancerId = GetInstancerId();
     std::vector<GfMatrix4d> transforms;
+    std::vector<TfTokenVector> categories;
 
     if (instancerId.IsEmpty()) {
         transforms.push_back(_transform);
@@ -518,9 +520,13 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
             for (const GfMatrix4d& instance : instances) {
                 transforms.push_back(_transform * instance);
             }
+            categories = static_cast<UtilityInstancer*>(instancer)->computeInstanceCategories(GetId());
+            if (categories.size() != transforms.size()) {
+                categories.clear();
+            }
         }
     }
-    scene->setInstances(_geometry, transforms);
+    scene->setInstances(_geometry, transforms, categories);
 }
 
 void

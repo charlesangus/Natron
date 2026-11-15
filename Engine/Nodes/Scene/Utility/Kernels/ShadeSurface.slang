@@ -247,6 +247,27 @@ void writeNothing(uint index)
     instanceIdOut[index] = -1;
 }
 
+// A miss sees every dome light behind the scene, opaque as Storm's sky dome draws it.
+void writeBackground(uint index)
+{
+    const uint count = params.count;
+    const float3 direction = normalize(float3(rays[kRayDirectionX * count + index], rays[kRayDirectionY * count + index], rays[kRayDirectionZ * count + index]));
+    float3 radiance = float3(0.0);
+    bool dome = false;
+
+    for (uint l = 0; l < params.lighting.w; ++l) {
+        const LightRecord light = lights[l];
+
+        if (light.kind.x == kLightDome) {
+            dome = true;
+            radiance += domeBackground(light, textureBindings, images, texels, direction);
+        }
+    }
+    writeNothing(index);
+    if (dome)
+        colorOut[index] = float4(radiance, 1.0);
+}
+
 // Emission, premultiplied by coverage, and the shadow rays of the pass's lights, whose unblocked
 // contributions ShadeLights adds. Only the pass that samples the first light writes the AOVs, so the
 // later passes leave the lighting already added alone.
@@ -264,6 +285,8 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
 
     if (geometryIndex == kNoHit) {
         writeNoShadows(id.x);
+        if (writesAovs)
+            writeBackground(id.x);
         return;
     }
 
@@ -339,10 +362,10 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
 
         const float3 geometric = dot(outward, direction) > 0.0 ? -outward : outward;
         float3 normal = geometric;
-        const int normalTexture = textureOf(material, kSlotNormal);
+        const float3 normalConstant = float3(material.diffuseColor.w, material.emissiveColor.w, material.coverage.w);
+        const float3 tangentNormal = colorInput(material, kSlotNormal, normalConstant, hasSt, st, footprint);
 
-        if (normalTexture != kNoTexture && hasSt)
-            normal = applyNormalMap(geometric, readTexture(normalTexture, true, st, footprint).xyz, p1 - p0, p2 - p0, st1 - st0, st2 - st0);
+        normal = applyNormalMap(geometric, tangentNormal, p1 - p0, p2 - p0, st1 - st0, st2 - st0);
 
         PreviewSurfaceSample surface;
         surface.diffuseColor = colorInput(material, kSlotDiffuseColor, diffuseConstant, hasSt, st, footprint);

@@ -219,8 +219,9 @@ public:
 
     /**
      * @brief Records into context the writing of a batch's colours, for the rays of the width x
-     * height pixels from (x, y), to the pixels they hit. hitIds and color are laid out as the
-     * shading kernel reads and writes them. After beginDeviceFrame() only.
+     * height pixels from (x, y), to the pixels they hit, and with background to those they miss.
+     * hitIds and color are laid out as the shading kernel reads and writes them. After
+     * beginDeviceFrame() only.
      **/
     gpu::GpuStatus recordDeviceBatch(gpu::GpuRecordContext& context,
                                      const gpu::GpuBuffer& hitIds,
@@ -228,7 +229,8 @@ public:
                                      int x,
                                      int y,
                                      int width,
-                                     int height);
+                                     int height,
+                                     bool background = false);
 #endif
 
 private:

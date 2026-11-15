@@ -34,6 +34,8 @@
 #include <pxr/base/gf/vec4d.h>
 #include <pxr/base/tf/pathUtils.h>
 #include <pxr/base/tf/stringUtils.h>
+#include <pxr/imaging/hd/changeTracker.h>
+#include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/sceneDelegate.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/usd/sdf/assetPath.h>
@@ -189,8 +191,11 @@ wrapOf(const std::string& token)
     if (token == "mirror") {
         return UtilityTextureRef::eWrapMirror;
     }
+    if (token == "black") {
+        return UtilityTextureRef::eWrapBlack;
+    }
 
-    return UtilityTextureRef::eWrapBlack;
+    return UtilityTextureRef::eWrapUseMetadata;
 }
 
 struct InputSpec {
@@ -238,6 +243,19 @@ public:
             parseProject3D(*surface);
         } else {
             unsupported(surface->nodeTypeId);
+        }
+        if (_desc.kind == UtilityMaterialDesc::eKindPreviewSurface) {
+            std::set<std::string> primvars;
+
+            for (int t : _desc.textures) {
+                if (t >= 0) {
+                    primvars.insert(_desc.textureRefs[t].primvar);
+                }
+            }
+            // Meshes carry one texture coordinate set.
+            if (primvars.size() > 1) {
+                _unsupported.insert("textures reading several texture coordinate primvars (" + TfStringJoin(std::vector<std::string>(primvars.begin(), primvars.end()), ", ") + ")");
+            }
         }
         if (!_unsupported.empty()) {
             _desc.kind = UtilityMaterialDesc::eKindUnsupported;
@@ -423,8 +441,10 @@ private:
                 _desc.emissiveFromDisplayColor = true;
             } else if (slot == UtilityMaterialDesc::eSlotOpacity && name == "displayOpacity") {
                 _desc.opacityFromDisplayOpacity = true;
-            } else if (const VtValue* fallback = parameter(*upstream, "fallback")) {
-                setConstant(slot, *fallback);
+            } else {
+                // Only the display primvars reach the kernels; shading any other primvar with its
+                // fallback would look plausible and be wrong.
+                _unsupported.insert(id.GetString() + " reading " + (name.empty() ? std::string("no primvar") : name));
             }
 
             return;
@@ -462,6 +482,9 @@ private:
             break;
         case UtilityMaterialDesc::eSlotIor:
             readFloat(value, &_desc.ior);
+            break;
+        case UtilityMaterialDesc::eSlotNormal:
+            readVec3(value, &_desc.normal);
             break;
         default:
             break;
@@ -606,7 +629,14 @@ UtilityMaterial::Sync(HdSceneDelegate* sceneDelegate,
             desc->kind = UtilityMaterialDesc::eKindUnsupported;
             desc->unsupportedReason = "no surface shader";
         }
-        _stPrimvar = desc->stPrimvar();
+        const std::string stPrimvar = desc->stPrimvar();
+
+        // Meshes pull the coordinate primvar their material names; they are not dirtied when only
+        // the material changes, and Hydra keeps no record of which meshes bind it.
+        if (stPrimvar != _stPrimvar) {
+            sceneDelegate->GetRenderIndex().GetChangeTracker().MarkAllRprimsDirty(HdChangeTracker::DirtyMaterialId);
+        }
+        _stPrimvar = stPrimvar;
         static_cast<UtilityRenderParam*>(renderParam)->scene()->setMaterial(GetId(), desc);
     }
     *dirtyBits = HdMaterial::Clean;

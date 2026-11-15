@@ -54,6 +54,8 @@ struct UtilityTextureImage {
     int levels = 0;
     // Every level, the full-size one first.
     std::vector<PXR_NS::GfVec4f> texels;
+    // The file's own wrap modes for s and t, which a useMetadata wrap reads; black when it has none.
+    UtilityTextureRef::Wrap metadataWrap[2] = { UtilityTextureRef::eWrapBlack, UtilityTextureRef::eWrapBlack };
 };
 
 typedef std::shared_ptr<const UtilityTextureImage> UtilityTextureImageConstPtr;

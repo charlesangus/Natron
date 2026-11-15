@@ -33,6 +33,7 @@
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/quatd.h>
 #include <pxr/base/gf/vec3d.h>
+#include <pxr/base/tf/token.h>
 #include <pxr/base/vt/types.h>
 #include <pxr/imaging/hd/instancer.h>
 
@@ -59,6 +60,12 @@ public:
      * one above it is hidden.
      **/
     PXR_NS::VtMatrix4dArray computeInstanceTransforms(const PXR_NS::SdfPath& prototypeId);
+
+    /**
+     * @brief The light- and shadow-link categories of each placement, in computeInstanceTransforms'
+     * order: each instance's own, then those of the instances above it.
+     **/
+    std::vector<PXR_NS::TfTokenVector> computeInstanceCategories(const PXR_NS::SdfPath& prototypeId);
 
 private:
     void syncPrimvars(PXR_NS::HdSceneDelegate* delegate,

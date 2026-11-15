@@ -10,7 +10,8 @@ struct FilmScatterParams
     int y;
     uint width;
     uint count;
-    uint padding0;
+    // Whether misses take the batch's colour, the background a dome light shows.
+    uint background;
     uint padding1;
 };
 
@@ -20,12 +21,12 @@ struct FilmScatterParams
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint4> film;
 [[vk::push_constant]] ConstantBuffer<FilmScatterParams> params;
 
-// A miss leaves the film's clear value, as the host film does.
+// Without a background a miss leaves the film's clear value, as the host film does.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void utilityFilmScatter(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= params.count || hitIds[kHitGeometry * params.count + id.x] == kNoHit)
+    if (id.x >= params.count || (params.background == 0 && hitIds[kHitGeometry * params.count + id.x] == kNoHit))
         return;
 
     const int fx = params.x + int(id.x % params.width);

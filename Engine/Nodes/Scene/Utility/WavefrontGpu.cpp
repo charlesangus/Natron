@@ -322,6 +322,22 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
     if (tables.valid && tables.version == version) {
         return true;
     }
+
+    std::unique_ptr<gpu::GpuRecordContext> ctx;
+
+    if (gpu::GpuStatus s = gpu::GpuRecordContext::create(registry, ctx, &pool); !s) {
+        return fail("WavefrontGpu could not create a record context", s);
+    }
+    const std::uint64_t texelLimit = ctx->maxScratchBytes() ? ctx->maxScratchBytes() : ctx->maxStorageBufferBytes();
+
+    if (!shadeTables.fitTexels(texelLimit)) {
+        const std::vector<std::string>& warnings = shadeTables.texelWarnings();
+
+        outcome = Outcome { Status::OutOfMemory, "WavefrontGpu: " + (warnings.empty() ? std::string("the textures do not fit the GPU") : warnings.back()) };
+
+        return false;
+    }
+
     const std::uint64_t texelVersion = shadeTables.texelVersion();
     gpu::GpuBufferHandle keptTexels;
 
@@ -331,12 +347,8 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
     tables = ShadeTableBuffers();
 
     const KernelShadeBuffers source = shadeTables.buffers();
-    std::unique_ptr<gpu::GpuRecordContext> ctx;
     ShadeTableBuffers next;
 
-    if (gpu::GpuStatus s = gpu::GpuRecordContext::create(registry, ctx, &pool); !s) {
-        return fail("WavefrontGpu could not create a record context", s);
-    }
     if (!upload(*ctx, source.geometries, source.geometryCount * sizeof(KernelGeometryRecord), "geometry records", next.geometries)
         || !upload(*ctx, source.colors, source.colorCount * 4 * sizeof(float), "colours", next.colors)
         || !upload(*ctx, source.triangles, source.triangleIndexCount * sizeof(std::int32_t), "triangle indices", next.triangles)
@@ -574,7 +586,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         first += batch;
     } while (first < lightCount);
     if (deviceColor) {
-        if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(ctx, *hitIds, *color, rect.x, rect.y, rect.width, rect.height); !s) {
+        if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(ctx, *hitIds, *color, rect.x, rect.y, rect.width, rect.height, shadeTables.hasBackground()); !s) {
             return fail("WavefrontGpu could not write a batch's colours to the film", s);
         }
     }
@@ -616,6 +628,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     tile.depth = aovs.depth ? static_cast<const float*>(readback.depth.mapped()) : nullptr;
     tile.primId = aovs.primId ? static_cast<const std::int32_t*>(readback.primId.mapped()) : nullptr;
     tile.instanceId = aovs.instanceId ? static_cast<const std::int32_t*>(readback.instanceId.mapped()) : nullptr;
+    tile.background = shadeTables.hasBackground();
     film.writeTile(tile);
 
     return true;
@@ -752,6 +765,12 @@ Tracer::Outcome
 WavefrontGpu::status() const
 {
     return _imp->outcome.status == Tracer::Status::Ok && !_imp->usable ? _imp->unusable : _imp->outcome;
+}
+
+std::vector<std::string>
+WavefrontGpu::warnings() const
+{
+    return _imp->shadeTables.texelWarnings();
 }
 
 bool

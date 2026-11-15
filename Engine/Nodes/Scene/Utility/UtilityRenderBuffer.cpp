@@ -153,7 +153,7 @@ struct KernelFilmScatterParams {
     std::int32_t y;
     std::uint32_t width;
     std::uint32_t count;
-    std::uint32_t padding0;
+    std::uint32_t background;
     std::uint32_t padding1;
 };
 
@@ -947,7 +947,8 @@ UtilityRenderBuffer::recordDeviceBatch(gpu::GpuRecordContext& context,
                                        int x,
                                        int y,
                                        int width,
-                                       int height)
+                                       int height,
+                                       bool background)
 {
     std::shared_ptr<UtilityDeviceFilm> film;
 
@@ -968,7 +969,7 @@ UtilityRenderBuffer::recordDeviceBatch(gpu::GpuRecordContext& context,
     }
 
     const std::uint32_t count = static_cast<std::uint32_t>(width) * static_cast<std::uint32_t>(height);
-    const KernelFilmScatterParams params = { film->width, film->height, x, y, static_cast<std::uint32_t>(width), count, 0, 0 };
+    const KernelFilmScatterParams params = { film->width, film->height, x, y, static_cast<std::uint32_t>(width), count, background ? 1u : 0u, 0 };
     const std::array<gpu::GpuBinding, 3> bindings = {
         gpu::GpuBinding::storage(0, hitIds),
         gpu::GpuBinding::storage(1, color),

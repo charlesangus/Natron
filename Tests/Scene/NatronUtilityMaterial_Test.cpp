@@ -435,6 +435,119 @@ TEST(NatronUtilityMaterial, DisplayColorReadersFlagTheirInputs)
     EXPECT_TRUE(desc.opacityFromDisplayOpacity);
 }
 
+TEST(NatronUtilityMaterial, AReaderOfAnyOtherPrimvarMakesTheMaterialUnsupported)
+{
+    HdMaterialNetwork2 network = networkOf(TfToken("UsdPreviewSurface"));
+    const SdfPath tint("/Material/Tint");
+
+    network.nodes[tint].nodeTypeId = TfToken("UsdPrimvarReader_float3");
+    set(network, tint, "varname", VtValue(std::string("tint")));
+    connect(network, kSurface, "diffuseColor", tint, "result");
+
+    const UtilityMaterialDesc desc = utilityMaterialFromNetwork(network);
+
+    EXPECT_EQ(UtilityMaterialDesc::eKindUnsupported, desc.kind);
+    EXPECT_NE(std::string::npos, desc.unsupportedReason.find("tint")) << desc.unsupportedReason;
+}
+
+TEST(NatronUtilityMaterial, TexturesReadingTwoTextureCoordinateSetsAreUnsupported)
+{
+    HdMaterialNetwork2 network = texturedDiffuse("/textures/wood.png");
+    const SdfPath second("/Material/Second");
+    const SdfPath secondReader("/Material/SecondReader");
+
+    network.nodes[second].nodeTypeId = TfToken("UsdUVTexture");
+    network.nodes[secondReader].nodeTypeId = TfToken("UsdPrimvarReader_float2");
+    set(network, second, "file", VtValue(SdfAssetPath("/textures/glow.png", "/textures/glow.png")));
+    set(network, secondReader, "varname", VtValue(std::string("st1")));
+    connect(network, second, "st", secondReader, "result");
+    connect(network, kSurface, "emissiveColor", second, "rgb");
+
+    const UtilityMaterialDesc desc = utilityMaterialFromNetwork(network);
+
+    EXPECT_EQ(UtilityMaterialDesc::eKindUnsupported, desc.kind);
+    EXPECT_NE(std::string::npos, desc.unsupportedReason.find("st1")) << desc.unsupportedReason;
+    EXPECT_NE(std::string::npos, desc.unsupportedReason.find("uv")) << desc.unsupportedReason;
+}
+
+TEST(NatronUtilityMaterial, TwoTexturesReadingOneTextureCoordinateSetAreSupported)
+{
+    HdMaterialNetwork2 network = texturedDiffuse("/textures/wood.png");
+    const SdfPath second("/Material/Second");
+
+    network.nodes[second].nodeTypeId = TfToken("UsdUVTexture");
+    set(network, second, "file", VtValue(SdfAssetPath("/textures/glow.png", "/textures/glow.png")));
+    connect(network, second, "st", kReader, "result");
+    connect(network, kSurface, "emissiveColor", second, "rgb");
+
+    const UtilityMaterialDesc desc = utilityMaterialFromNetwork(network);
+
+    ASSERT_EQ(UtilityMaterialDesc::eKindPreviewSurface, desc.kind) << desc.unsupportedReason;
+    EXPECT_EQ(2u, desc.textureRefs.size());
+}
+
+TEST(NatronUtilityMaterial, AConstantNormalIsKeptAndPacked)
+{
+    HdMaterialNetwork2 network = networkOf(TfToken("UsdPreviewSurface"));
+
+    set(network, kSurface, "normal", VtValue(GfVec3f(0.6f, 0.f, 0.8f)));
+
+    const UtilityMaterialDesc desc = utilityMaterialFromNetwork(network);
+
+    ASSERT_EQ(UtilityMaterialDesc::eKindPreviewSurface, desc.kind) << desc.unsupportedReason;
+    EXPECT_EQ(GfVec3f(0.6f, 0.f, 0.8f), desc.normal);
+    EXPECT_EQ(GfVec3f(0.f, 0.f, 1.f), utilityMaterialFromNetwork(networkOf(TfToken("UsdPreviewSurface"))).normal);
+
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/Mesh"), 1);
+
+    scene.setTopology(id, VtVec3fArray { GfVec3f(0.f), GfVec3f(1.f, 0.f, 0.f), GfVec3f(0.f, 1.f, 0.f) }, VtVec3iArray { GfVec3i(0, 1, 2) });
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    scene.setMaterial(SdfPath("/Material"), std::make_shared<const UtilityMaterialDesc>(desc));
+    scene.setMaterialId(id, SdfPath("/Material"));
+
+    WavefrontShadeTables tables;
+
+    tables.update(scene.snapshot());
+
+    const KernelShadeBuffers buffers = tables.buffers();
+
+    ASSERT_EQ(2u, buffers.materialCount);
+
+    const KernelMaterialRecord& record = buffers.materials[1];
+
+    EXPECT_FLOAT_EQ(0.6f, record.diffuseColor[3]);
+    EXPECT_FLOAT_EQ(0.f, record.emissiveColor[3]);
+    EXPECT_FLOAT_EQ(0.8f, record.coverage[3]);
+}
+
+TEST(NatronUtilityMaterial, UnsetAndUseMetadataWrapsDeferToTheFile)
+{
+    HdMaterialNetwork2 network = texturedDiffuse("/textures/wood.png");
+
+    network.nodes[kImage].parameters.erase(TfToken("wrapS"));
+    set(network, kImage, "wrapT", VtValue(TfToken("useMetadata")));
+
+    const UtilityMaterialDesc desc = utilityMaterialFromNetwork(network);
+
+    ASSERT_EQ(UtilityMaterialDesc::eKindPreviewSurface, desc.kind) << desc.unsupportedReason;
+    ASSERT_EQ(1u, desc.textureRefs.size());
+    EXPECT_EQ(UtilityTextureRef::eWrapUseMetadata, desc.textureRefs[0].wrapS);
+    EXPECT_EQ(UtilityTextureRef::eWrapUseMetadata, desc.textureRefs[0].wrapT);
+}
+
+TEST(NatronUtilityMaterial, ABlackWrapStaysBlack)
+{
+    HdMaterialNetwork2 network = texturedDiffuse("/textures/wood.png");
+
+    set(network, kImage, "wrapS", VtValue(TfToken("black")));
+
+    const UtilityMaterialDesc desc = utilityMaterialFromNetwork(network);
+
+    ASSERT_EQ(1u, desc.textureRefs.size());
+    EXPECT_EQ(UtilityTextureRef::eWrapBlack, desc.textureRefs[0].wrapS);
+}
+
 TEST(NatronUtilityMaterial, APngLoadsBottomRowFirstWithBoxMips)
 {
     QTemporaryDir dir;
@@ -505,6 +618,49 @@ TEST(NatronUtilityMaterial, APixelWiderThanTheTextureReadsTheCoarsestMip)
         }
     }
     expectNear(mean, triangle.shade(0.25f, 0.25f, 1), 1e-5f, "coarsest mip");
+}
+
+TEST(NatronUtilityMaterial, TexelsOverTheDeviceLimitDropTheirFinestLevelWithAWarning)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("grid.png")).toStdString();
+    ASSERT_TRUE(writeTexture(path));
+
+    EmittedTexture triangle(path);
+
+    triangle.shade(0.5f, 0.5f);
+    ASSERT_TRUE(triangle.tables.fitTexels(0));
+    EXPECT_TRUE(triangle.tables.texelWarnings().empty());
+
+    // The 4x4, 2x2 and 1x1 levels hold 21 texels; six fit only once the 4x4 level is gone.
+    ASSERT_TRUE(triangle.tables.fitTexels(6 * sizeof(GfVec4f)));
+    ASSERT_EQ(1u, triangle.tables.texelWarnings().size());
+
+    const std::string& warning = triangle.tables.texelWarnings()[0];
+
+    EXPECT_NE(std::string::npos, warning.find(path)) << warning;
+    EXPECT_NE(std::string::npos, warning.find("4x4 to 2x2")) << warning;
+
+    const KernelShadeBuffers buffers = triangle.tables.buffers();
+
+    ASSERT_EQ(1u, buffers.imageCount);
+    EXPECT_EQ(2u, buffers.images[0]);
+    EXPECT_EQ(2u, buffers.images[1]);
+    EXPECT_EQ(2u, buffers.images[2]);
+    EXPECT_EQ(5u, buffers.texelCount);
+
+    GfVec4f quadrant(0.f);
+
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            quadrant += writtenTexel(x, kTextureSize - 1 - y) / 4.f;
+        }
+    }
+    expectNear(quadrant, triangle.shade(0.25f, 0.25f), 1e-5f, "downsampled texel");
+
+    // Not even one texel per tile fits, so the device cannot render the scene.
+    EXPECT_FALSE(triangle.tables.fitTexels(sizeof(GfVec4f) / 2));
 }
 
 TEST(NatronUtilityMaterial, AMissingFileReadsTheFallbackAndWarnsNamingIt)

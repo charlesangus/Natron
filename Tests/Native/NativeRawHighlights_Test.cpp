@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -43,6 +44,7 @@
 #include "BaseTest.h"
 #include "NativePluginIdentity.h"
 #include "RawTestSource.h"
+#include "RegionIndependenceSupport.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -105,16 +107,6 @@ whiteBalancedMetadata(const std::string& pattern)
     return metadata;
 }
 
-// Windows a tile render may ask for: inside, on the image's edges, and single pixels.
-const RectI kTiles[] = {
-    RectI(0, 0, kWidth, kHeight),
-    RectI(10, 9, 31, 28),
-    RectI(0, 0, 7, 5),
-    RectI(kWidth - 9, kHeight - 4, kWidth, kHeight),
-    RectI(24, 20, 25, 21),
-    RectI(17, 13, 18, 14),
-    RectI(30, 0, 48, 13),
-};
 bool
 readReferenceMosaic(const std::string& path,
                     std::vector<float>* pixels,
@@ -156,7 +148,8 @@ protected:
 
     NodePtr createChain(const std::string& pattern,
                         RawHighlightsModeEnum mode,
-                        NodePtr* sourceOut = nullptr)
+                        NodePtr* sourceOut = nullptr,
+                        const RectI& rod = RectI(0, 0, kWidth, kHeight))
     {
         NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWHIGHLIGHTS));
@@ -166,7 +159,7 @@ protected:
             return NodePtr();
         }
         const ImageMetadata metadata = whiteBalancedMetadata(pattern);
-        dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(RectI(0, 0, kWidth, kHeight), 1, clippedScene(*RawLayout::fromMetadata(metadata)), metadata);
+        dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(rod, 1, clippedScene(*RawLayout::fromMetadata(metadata)), metadata);
         connectNodes(source, node, 0, true);
         node->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode)->setValue((int)mode);
         if (sourceOut) {
@@ -174,24 +167,6 @@ protected:
         }
 
         return node;
-    }
-
-    // Every tile of kTiles renders the same pixels as the whole frame.
-    void expectTilesMatchTheFullFrame(const NodePtr& node,
-                                      const char* what)
-    {
-        RenderedPlane full;
-        std::string error;
-        ASSERT_TRUE(renderRawTestPlane(node, RectI(0, 0, kWidth, kHeight), &full, &error)) << what << ": " << error;
-        for (const RectI& tile : kTiles) {
-            RenderedPlane plane;
-            ASSERT_TRUE(renderRawTestPlane(node, tile, &plane, &error)) << what << ": " << error;
-            for (int y = tile.y1; y < tile.y2; ++y) {
-                for (int x = tile.x1; x < tile.x2; ++x) {
-                    ASSERT_EQ(rawTestPlaneValue(full, x, y, 0), rawTestPlaneValue(plane, x, y, 0)) << what << " at " << x << "," << y << " in tile " << tile.x1 << "," << tile.y1 << "-" << tile.x2 << "," << tile.y2;
-                }
-            }
-        }
     }
 };
 
@@ -244,7 +219,7 @@ TEST_F(NativeRawHighlightsTest, UnclippedLeavesTheData)
 }
 
 // Inpaint Opposed only ever raises a photosite at or above its colour's clipping level, and
-// leaves every other one alone; its chrominance is the whole image's, so tiles agree.
+// leaves every other one alone.
 TEST_F(NativeRawHighlightsTest, InpaintOpposedOnlyRaisesClippedPhotosites)
 {
     for (const char* pattern : { "RGGB", kXTransPattern }) {
@@ -271,11 +246,10 @@ TEST_F(NativeRawHighlightsTest, InpaintOpposedOnlyRaisesClippedPhotosites)
             }
         }
         EXPECT_GT(raised, 0) << pattern;
-        expectTilesMatchTheFullFrame(node, pattern);
     }
 }
 
-TEST_F(NativeRawHighlightsTest, LChTilesMatchTheFullFrame)
+TEST_F(NativeRawHighlightsTest, LChLeavesUnclippedAreas)
 {
     for (const char* pattern : { "GBRG", kXTransPattern }) {
         NodePtr node = createChain(pattern, eRawHighlightsModeLCh);
@@ -291,7 +265,25 @@ TEST_F(NativeRawHighlightsTest, LChTilesMatchTheFullFrame)
                 ASSERT_EQ(scene(x, y, 0), rawTestPlaneValue(plane, x, y, 0)) << pattern << " " << x << "," << y;
             }
         }
-        expectTilesMatchTheFullFrame(node, pattern);
+    }
+}
+
+// Every window of a frame at an offset origin and of odd size renders the pixels of the whole
+// frame: Inpaint Opposed's and LCh's chrominance is the whole frame's.
+TEST_F(NativeRawHighlightsTest, RegionIndependentCpu)
+{
+    const RectI frame(-5, -3, kWidth + 2, kHeight + 4);
+
+    for (RawHighlightsModeEnum mode : { eRawHighlightsModeClip, eRawHighlightsModeOpposed, eRawHighlightsModeLCh }) {
+        for (const char* pattern : { "RGGB", "GBRG", kXTransPattern }) {
+            RegionIndependenceTest::expectRawRegionIndependent([&]() {
+                NodePtr source;
+                NodePtr node = createChain(pattern, mode, &source, frame);
+
+                return std::make_pair(node, source);
+            },
+                                                               frame, std::string(pattern) + " mode " + std::to_string((int)mode));
+        }
     }
 }
 

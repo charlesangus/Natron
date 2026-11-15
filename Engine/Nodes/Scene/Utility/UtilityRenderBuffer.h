@@ -141,8 +141,10 @@ private:
 #endif // NATRON_HAVE_GPU
 
 /**
- * @brief An AOV image holding one sample per pixel, in host memory or, for the colour of a frame
- * rendered on the GPU, in device memory until Map() asks for it.
+ * @brief An AOV image built from samples, in host memory or, for the colour of a frame rendered on
+ * the GPU, in device memory until Map() asks for it. Its pixels are resolved as samples land, so a
+ * frame part way through its samples is a picture. Readers see a copy made between passes, never the
+ * pixels a running frame writes, so a read can overlap the next pass without blocking it.
  **/
 class UtilityRenderBuffer : public PXR_NS::HdRenderBuffer {
 public:
@@ -166,13 +168,14 @@ public:
     virtual unsigned int GetDepth() const OVERRIDE;
     virtual PXR_NS::HdFormat GetFormat() const OVERRIDE;
     virtual bool IsMultiSampled() const OVERRIDE;
+    // The pixels as of the last publishPass() or clear(); every Map() until the last Unmap() gets the same ones.
     virtual void* Map() OVERRIDE;
     virtual void Unmap() OVERRIDE;
     virtual bool IsMapped() const OVERRIDE;
     virtual void Resolve() OVERRIDE;
     virtual bool IsConverged() const OVERRIDE;
 
-    // A UtilityDeviceResource while the device holds the pixels, else empty.
+    // A UtilityDeviceResource while the device holds the last published pixels, else empty.
     virtual PXR_NS::VtValue GetResource(bool multiSampled) const OVERRIDE;
 
     /**
@@ -181,6 +184,12 @@ public:
      **/
     void clear(const PXR_NS::VtValue& value);
     void setConverged(bool converged);
+
+    /**
+     * @brief Hands readers the pixels as they are: for the thread drawing the frame, once a pass is
+     * complete and before the next one starts writing.
+     **/
+    void publishPass();
 
     /**
      * @brief Writes one pixel; one outside the buffer is ignored. Components the buffer's format does
@@ -194,6 +203,23 @@ public:
     void setPixel(unsigned int x,
                   unsigned int y,
                   std::int32_t value);
+
+    /**
+     * @brief Adds a sample of weight to a pixel; null components is a miss, which counts as the last
+     * clear() value. Filtered, the pixel is the weighted mean of its samples since that clear();
+     * otherwise it is the value of the heaviest of them, as a mean of depths or ids would be a value
+     * no surface has. One outside the buffer is ignored. MT-safe for distinct pixels.
+     **/
+    void addSample(unsigned int x,
+                   unsigned int y,
+                   const float* components,
+                   std::size_t count,
+                   float weight,
+                   bool filtered);
+    void addSample(unsigned int x,
+                   unsigned int y,
+                   const std::int32_t* value,
+                   float weight);
 
     // How many times Map() has copied a device frame to the host, over every buffer. MT-safe.
     static std::uint64_t deviceDownloadCount();
@@ -212,8 +238,10 @@ public:
     bool canRenderOnDevice() const;
 
     /**
-     * @brief Moves the pixels to the device for a frame: records into context the clear to the last
-     * clear() value. The host pixels are stale from here until Map() or clear().
+     * @brief Moves the pixels to the device for a frame's samples: the first call after clear()
+     * records into context the clear to its value; a later one has the samples add to those the film
+     * holds from the frame's earlier calls, and fails if the film is gone. The host pixels are stale
+     * from here until Map() or clear().
      **/
     gpu::GpuStatus beginDeviceFrame(gpu::GpuRecordContext& context,
                                     gpu::GpuKernelRegistry& registry,
@@ -222,14 +250,16 @@ public:
                                     const std::shared_ptr<void>& runtimeHold);
 
     /**
-     * @brief Records into context the writing of a batch's colours, for the rays of the width x
-     * height pixels from (x, y), to the pixels they hit, and with background to those they miss.
-     * hitIds and color are laid out as the shading kernel reads and writes them. After
-     * beginDeviceFrame() only.
+     * @brief Records into context the adding of a batch's colours, for the rays of the width x
+     * height pixels from (x, y), to their pixels with the rays' filter weights, as addSample() does;
+     * a miss adds the clear value or, with background, the batch's colour. hitIds and color are laid
+     * out as the shading kernel reads and writes them, weights as the ray generation writes them.
+     * After beginDeviceFrame() only.
      **/
     gpu::GpuStatus recordDeviceBatch(gpu::GpuRecordContext& context,
                                      const gpu::GpuBuffer& hitIds,
                                      const gpu::GpuBuffer& color,
+                                     const gpu::GpuBuffer& weights,
                                      int x,
                                      int y,
                                      int width,
@@ -240,6 +270,12 @@ public:
 private:
     // Fills the host pixels with the device film's, under _deviceMutex.
     void downloadLocked();
+    // Under _deviceMutex: the host pixels become what readers get.
+    void publishHostLocked();
+    // Under _deviceMutex: drops the readers' host copy, keeping its storage for the next one.
+    void retireFrontLocked();
+    // Under _deviceMutex: makes the readers' host copy from the published device pixels if it has none.
+    void frontToHostLocked();
 
     virtual void _Deallocate() OVERRIDE;
 
@@ -253,12 +289,27 @@ private:
 
     // The last clear() value as one encoded pixel, empty when that clear() gave none.
     std::vector<std::uint8_t> _clearPixel;
+    // The last clear() value's components, zero where it gave none.
+    std::vector<float> _clearComponents;
+    // Per pixel since the last clear(): the weighted sums of a filtered buffer's samples, and the sum
+    // of their weights or, unfiltered, the heaviest weight; negative before the first sample.
+    std::vector<float> _sampleSums;
+    std::vector<float> _sampleWeights;
+    bool _deviceRestart = true;
     mutable std::mutex _deviceMutex;
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<UtilityDeviceFilm> _film;
 #endif
     // Set while the film holds the frame and the host pixels are stale.
     bool _onDevice = false;
+    // What readers get, under _deviceMutex: a copy no frame writes to. _front is null while only
+    // _frontFilm holds it. _mapped is what the Map() calls not yet unmapped share.
+    std::shared_ptr<std::vector<std::uint8_t>> _front;
+    std::shared_ptr<std::vector<std::uint8_t>> _spare;
+    std::shared_ptr<std::vector<std::uint8_t>> _mapped;
+#ifdef NATRON_HAVE_GPU
+    std::shared_ptr<UtilityDeviceFilm> _frontFilm;
+#endif
 };
 
 NATRON_NAMESPACE_EXIT

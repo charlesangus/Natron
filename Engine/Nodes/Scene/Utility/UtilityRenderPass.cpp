@@ -27,8 +27,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -36,6 +38,7 @@
 #include <vector>
 
 #include <pxr/base/gf/rect2i.h>
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/vt/types.h>
@@ -116,6 +119,7 @@ public:
         }
     }
 
+    // Only the colour is filtered; the other AOVs take the heaviest sample's value.
     virtual void writeTile(const WavefrontTile& tile) OVERRIDE
     {
         std::size_t index = 0;
@@ -124,30 +128,24 @@ public:
             const unsigned int y = static_cast<unsigned int>(tile.rect.y + row);
 
             for (int column = 0; column < tile.rect.width; ++column, ++index) {
+                const bool hit = tile.hitGeometry[index] != Tracer::kNoHit;
+                const bool shown = hit || tile.background;
+                const float weight = tile.weight ? tile.weight[index] : 1.f;
                 const unsigned int x = static_cast<unsigned int>(tile.rect.x + column);
-
-                if (tile.hitGeometry[index] == Tracer::kNoHit) {
-                    if (tile.background && tile.color) {
-                        for (UtilityRenderBuffer* buffer : _color) {
-                            buffer->setPixel(x, y, tile.color + index * 4, 4);
-                        }
-                    }
-                    continue;
-                }
 
                 if (tile.color) {
                     for (UtilityRenderBuffer* buffer : _color) {
-                        buffer->setPixel(x, y, tile.color + index * 4, 4);
+                        buffer->addSample(x, y, shown ? tile.color + index * 4 : nullptr, 4, weight, true);
                     }
                 }
                 for (UtilityRenderBuffer* buffer : _depth) {
-                    buffer->setPixel(x, y, tile.depth + index, 1);
+                    buffer->addSample(x, y, hit ? tile.depth + index : nullptr, 1, weight, false);
                 }
                 for (UtilityRenderBuffer* buffer : _primId) {
-                    buffer->setPixel(x, y, tile.primId[index]);
+                    buffer->addSample(x, y, hit ? tile.primId + index : nullptr, weight);
                 }
                 for (UtilityRenderBuffer* buffer : _instanceId) {
-                    buffer->setPixel(x, y, tile.instanceId[index]);
+                    buffer->addSample(x, y, hit ? tile.instanceId + index : nullptr, weight);
                 }
             }
         }
@@ -156,6 +154,15 @@ public:
     virtual UtilityRenderBuffer* deviceColor() const OVERRIDE
     {
         return (_color.size() == 1) ? _color.front() : nullptr;
+    }
+
+    virtual void passDrawn() OVERRIDE
+    {
+        for (const std::vector<UtilityRenderBuffer*>* buffers : { &_color, &_depth, &_primId, &_instanceId }) {
+            for (UtilityRenderBuffer* buffer : *buffers) {
+                buffer->publishPass();
+            }
+        }
     }
 
     virtual WavefrontAovs aovs() const OVERRIDE
@@ -227,6 +234,140 @@ deviceSettingText(const VtValue& value)
     return value.IsEmpty() ? std::string(kUtilityDeviceAuto) : std::string();
 }
 
+int
+intSetting(const VtValue& value,
+           int fallback)
+{
+    if (value.IsHolding<int>()) {
+        return value.UncheckedGet<int>();
+    }
+    if (value.IsHolding<long>()) {
+        return static_cast<int>(value.UncheckedGet<long>());
+    }
+    if (value.IsHolding<double>()) {
+        return static_cast<int>(value.UncheckedGet<double>());
+    }
+    if (value.IsHolding<float>()) {
+        return static_cast<int>(value.UncheckedGet<float>());
+    }
+
+    return fallback;
+}
+
+float
+floatSetting(const VtValue& value,
+             float fallback)
+{
+    if (value.IsHolding<float>()) {
+        return value.UncheckedGet<float>();
+    }
+    if (value.IsHolding<double>()) {
+        return static_cast<float>(value.UncheckedGet<double>());
+    }
+    if (value.IsHolding<int>()) {
+        return static_cast<float>(value.UncheckedGet<int>());
+    }
+
+    return fallback;
+}
+
+// Read wide so that a side too large for a pixel's int sample count is refused rather than wrapped.
+int
+pixelSamplesSetting(const VtValue& value)
+{
+    double side = kUtilityDefaultPixelSamples;
+
+    if (value.IsHolding<int>()) {
+        side = value.UncheckedGet<int>();
+    } else if (value.IsHolding<long>()) {
+        side = static_cast<double>(value.UncheckedGet<long>());
+    } else if (value.IsHolding<double>()) {
+        side = value.UncheckedGet<double>();
+    } else if (value.IsHolding<float>()) {
+        side = value.UncheckedGet<float>();
+    }
+
+    const int largest = static_cast<int>(std::sqrt(static_cast<double>(std::numeric_limits<int>::max())));
+
+    if (!std::isfinite(side) || side >= largest + 1.) {
+        throw std::runtime_error("The Utility renderer's pixel samples must be at most " + std::to_string(largest) + ", not " + std::to_string(side));
+    }
+
+    return std::max(1, static_cast<int>(side));
+}
+
+WavefrontSampling
+samplingSettings(const HdRenderDelegate& delegate)
+{
+    WavefrontSampling sampling;
+
+    sampling.samplesPerSide = pixelSamplesSetting(delegate.GetRenderSetting(TfToken(kUtilitySettingPixelSamples)));
+
+    const float width = floatSetting(delegate.GetRenderSetting(TfToken(kUtilitySettingFilterWidth)), kUtilityDefaultFilterWidth);
+
+    if (!(width > 0.f) || !std::isfinite(width)) {
+        throw std::runtime_error("The Utility renderer's filter width must be a positive number of pixels, not " + std::to_string(width));
+    }
+    sampling.filterWidth = width;
+    sampling.seed = static_cast<std::uint32_t>(intSetting(delegate.GetRenderSetting(TfToken(kUtilitySettingSeed)), 0));
+
+    const VtValue filterValue = delegate.GetRenderSetting(TfToken(kUtilitySettingPixelFilter));
+    const std::string filter = filterValue.IsEmpty() ? std::string(kUtilityFilterBlackmanHarris) : deviceSettingText(filterValue);
+
+    if (filter == kUtilityFilterBox) {
+        sampling.filter = eKernelPixelFilterBox;
+    } else if (filter == kUtilityFilterTriangle) {
+        sampling.filter = eKernelPixelFilterTriangle;
+    } else if (filter == kUtilityFilterGaussian) {
+        sampling.filter = eKernelPixelFilterGaussian;
+    } else if (filter == kUtilityFilterBlackmanHarris) {
+        sampling.filter = eKernelPixelFilterBlackmanHarris;
+    } else {
+        throw std::runtime_error("The Utility renderer's pixel filter must be " kUtilityFilterBox ", " kUtilityFilterTriangle ", " kUtilityFilterGaussian " or " kUtilityFilterBlackmanHarris ", not \"" + filter + "\"");
+    }
+
+    return sampling;
+}
+
+WavefrontMotion
+motionSettings(const HdRenderDelegate& delegate)
+{
+    WavefrontMotion motion;
+    const VtValue shutter = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityShutterSetting));
+
+    if (!shutter.IsHolding<GfVec2d>() || !(shutter.UncheckedGet<GfVec2d>()[1] > shutter.UncheckedGet<GfVec2d>()[0])) {
+        return motion;
+    }
+    motion.open = shutter.UncheckedGet<GfVec2d>()[0];
+    motion.close = shutter.UncheckedGet<GfVec2d>()[1];
+    motion.segments = std::max(1, intSetting(delegate.GetRenderSetting(TfToken(kUtilitySettingShutterSegments)), kUtilityDefaultShutterSegments));
+
+    const VtValue times = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityCameraTimesSetting));
+    const VtValue views = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityCameraViewsSetting));
+    const VtValue projections = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityCameraProjectionsSetting));
+
+    if (times.IsHolding<VtDoubleArray>() && views.IsHolding<VtMatrix4dArray>() && projections.IsHolding<VtMatrix4dArray>()) {
+        const VtDoubleArray& t = times.UncheckedGet<VtDoubleArray>();
+        const VtMatrix4dArray& v = views.UncheckedGet<VtMatrix4dArray>();
+        const VtMatrix4dArray& p = projections.UncheckedGet<VtMatrix4dArray>();
+
+        if (t.size() > 1 && v.size() == t.size() && p.size() == t.size()) {
+            motion.cameraTimes.assign(t.begin(), t.end());
+            motion.cameraViews.assign(v.begin(), v.end());
+            motion.cameraProjections.assign(p.begin(), p.end());
+        }
+    }
+
+    return motion;
+}
+
+bool
+sameSampling(const WavefrontSampling& a,
+             const WavefrontSampling& b)
+{
+    return a.samplesPerSide == b.samplesPerSide && a.filter == b.filter && a.filterWidth == b.filterWidth && a.seed == b.seed;
+}
+
 bool
 buffersAreConverged(const HdRenderPassAovBindingVector& bindings)
 {
@@ -266,7 +407,7 @@ bool
 UtilityRenderPass::FrameKey::operator==(const FrameKey& other) const
 {
     return device == other.device && maxCutouts == other.maxCutouts && version == other.version && worldToView == other.worldToView && projection == other.projection
-        && sameWindow(window, other.window) && bindings == other.bindings;
+        && sameWindow(window, other.window) && sameSampling(sampling, other.sampling) && motion == other.motion && bindings == other.bindings;
 }
 
 bool
@@ -326,6 +467,9 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
     frame.maxCutouts = maxCutoutsSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingMaxCutouts)));
     frame.window = renderWindow(*renderPassState);
+    frame.sampling = samplingSettings(*GetRenderIndex()->GetRenderDelegate());
+
+    const WavefrontMotion motion = motionSettings(*GetRenderIndex()->GetRenderDelegate());
 
     const bool hasCamera = renderPassState->GetCamera() != nullptr;
 
@@ -343,6 +487,8 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     key.projection = frame.projection;
     key.window = frame.window;
     key.maxCutouts = frame.maxCutouts;
+    key.sampling = frame.sampling;
+    key.motion = motion;
     key.bindings = bindings;
 
     const bool sameFrame = _hasFrame && key == _frameKey;
@@ -375,6 +521,10 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     }
     clearBuffers(bindings);
 
+    const std::size_t samplesWanted = static_cast<std::size_t>(frame.sampling.samplesPerPixel());
+
+    _renderParam->setSampleProgress(0, samplesWanted);
+
     const std::shared_ptr<const UtilityScene::Snapshot> snapshot = std::make_shared<UtilityScene::Snapshot>(scene->snapshot());
 
     key.version = snapshot->version;
@@ -385,6 +535,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
         const std::lock_guard<std::mutex> l(_landingMutex);
 
         _frameFinished = true;
+        _renderParam->setSampleProgress(samplesWanted, samplesWanted);
         setBuffersConverged(bindings, true);
         _converged.store(true);
 
@@ -395,13 +546,24 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     const int threads = std::max(1, appPTR->getNCPUsAvailableForEffect());
     const HdRenderPassAovBindingVector frameBindings = bindings;
 
-    (void)_renderParam->startFrame([this, snapshot, frame, frameBindings, threads, device]() {
+    (void)_renderParam->startFrame([this, snapshot, frame, motion, frameBindings, threads, device, samplesWanted]() {
         const std::atomic<bool>& cancel = _renderParam->cancelFlag();
         bool finished = false;
         std::string failure;
 
         try {
             AovFilm film(frameBindings);
+            const auto drawSamples = [&](WavefrontExecutor& executor) {
+                std::vector<double> bucketSeconds;
+
+                _renderParam->setSampleProgress(0, samplesWanted);
+
+                const bool drawn = wavefrontDrawSamples(executor, *snapshot, frame, motion, film, cancel, threads, [this, samplesWanted](std::size_t done) { _renderParam->setSampleProgress(done, samplesWanted); }, &bucketSeconds);
+
+                _renderParam->setBucketSeconds(bucketSeconds);
+
+                return drawn;
+            };
             std::string renderedOn = "CPU";
             std::string warning;
             bool onCpu = device == Device::Cpu;
@@ -430,7 +592,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 #ifdef NATRON_HAVE_GPU
                 else {
                     renderedOn = "GPU (" + gpu->deviceName() + ")";
-                    finished = gpu->render(*snapshot, frame, film, cancel, threads);
+                    finished = drawSamples(*gpu);
 
                     const Tracer::Outcome outcome = finished ? Tracer::Outcome() : gpu->status();
                     const bool outOfMemory = outcome.status == Tracer::Status::OutOfMemory;
@@ -460,7 +622,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 #endif
             }
             if (onCpu) {
-                finished = _renderParam->executor()->render(*snapshot, frame, film, cancel, threads);
+                finished = drawSamples(*_renderParam->executor());
             }
             _renderParam->setFrameReport(renderedOn, warning);
         } catch (const std::exception& e) {

@@ -56,6 +56,7 @@
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -67,6 +68,7 @@
 #include "BaseTest.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -207,6 +209,9 @@ public:
         parameters.gpuEnabled = false;
         _engine.reset(new UsdImagingGLEngine(parameters));
         _engine->SetEnablePresentation(false);
+        // The default grid of samples traces the 4096-pixel frame that many times over, which a debug
+        // build cannot finish within the suite's limit; one pass keeps the frame heavy but finishable.
+        _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(1));
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
     }
 
@@ -348,9 +353,17 @@ viewOf(bool showRender)
 class NatronUtilityCancelTest
     : public BaseTest {
 protected:
+    // One sample a pixel, so that every frame published is a finished one.
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
+    }
+
     virtual void TearDown() OVERRIDE
     {
         _render.reset();
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, std::map<std::string, PXR_NS::VtValue>());
         BaseTest::TearDown();
     }
 

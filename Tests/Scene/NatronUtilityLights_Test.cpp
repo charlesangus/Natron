@@ -172,6 +172,8 @@ public:
         EXPECT_EQ(TfToken(kRenderDelegateUtilityId), _engine->GetCurrentRendererId());
         _engine->SetEnablePresentation(false);
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
+        // These tests read pixels as one ray through each centre draws them.
+        _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(int(1)));
     }
 
     void setDevice(const char* device)

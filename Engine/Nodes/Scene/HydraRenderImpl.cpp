@@ -157,6 +157,10 @@ const std::chrono::seconds kUnabortableRenderLimit(600);
 // again: until it shows one its buffers may hold the render of before, which is not read.
 const std::chrono::milliseconds kRestartUnseen(2000);
 
+// How long a render waits, before restarting a converged Cycles session, for it to say it is idle:
+// it marks its buffers converged a moment before, and its progress holds still only after.
+const std::chrono::milliseconds kIdleSettle(250);
+
 // The samples per pixel the delegate reports rendered, -1 if it reports none: Cycles' annotation
 // carries "Sample N/M", "Sample N" when uncapped.
 int
@@ -223,6 +227,11 @@ mayVaryInTime(const UsdStageRefPtr& stage)
  * rendering again. Until it does its buffers may hold the pixels of before, and its word that it
  * converged means nothing: Cycles resets its session on its own thread, after the pass that edits
  * it, and marks its buffers converged when a reset cuts a render short.
+ *
+ * Cycles' progress shows a restart only while it is under way: a small render can begin and
+ * finish between two reads, its sample count back where it was. What does not go back is its
+ * clock: it stops when the session has no more work, and starts over when the session takes a
+ * reset.
  **/
 class RestartWatch {
 public:
@@ -233,8 +242,12 @@ public:
         _seen = seen;
         _samplesAtRestart = -1;
         _clockAtRestart = -1.;
+        _capAtRestart = 0;
+        _idleAtRestart = false;
+        _moved = false;
         _clockFallen = false;
         _samplesAtClockFall = -1;
+        _previousClock = -1.;
     }
 
     // The delegate's progress just before the first pass after the restart.
@@ -243,16 +256,41 @@ public:
     {
         _samplesAtRestart = samplesOf(stats, cap);
         _clockAtRestart = clockOf(stats);
+        _capAtRestart = cap;
+        _idleAtRestart = idle(stats);
     }
 
     // Reads the delegate's progress after a pass; returns seen().
     bool after(int samples,
-               double clock)
+               double clock,
+               bool idleNow)
     {
         if (_seen) {
             return true;
         }
+        if ((_capAtRestart > 0) && (samples > _capAtRestart)) {
+            // More samples than the cap the restart set are the render of before: Cycles applies a
+            // sample count without a reset, waking an idle session only to stop it again, which
+            // moves its clock and status though its buffers still hold the old render.
+            return false;
+        }
         const bool samplesFell = (samples >= 0) && (_samplesAtRestart >= 0) && (samples < _samplesAtRestart);
+        const bool blind = (samples < 0) && (clock < 0.);
+        if (_idleAtRestart) {
+            // An idle session's clock is not still: its cache eviction wakes it a while after it
+            // finished and stops its clock again later, with no reset and its status unchanged.
+            // Only a reset makes its clock fall, its samples fall or its status leave done; a
+            // reset that began and finished unseen, its clock past the old one, stays unseen and
+            // falls back on making the engine again. The pass may have missed the reset, for the
+            // session holds its scene while it wakes from idle: the change is trusted from the
+            // next pass on, which then takes it.
+            const bool movedBefore = _moved;
+            const bool clockFell = (clock >= 0.) && (_clockAtRestart >= 0.) && (clock < _clockAtRestart);
+            _moved = _moved || samplesFell || !idleNow || clockFell;
+            _seen = movedBefore || blind;
+
+            return _seen;
+        }
         if (!_clockFallen && (clock >= 0.) && (_clockAtRestart >= 0.) && (clock < _clockAtRestart)) {
             // Cycles starts its clock over when its session resets, before it renders a sample of
             // the new render: until its sample count moves after that, the count it reports and
@@ -260,8 +298,11 @@ public:
             _clockFallen = true;
             _samplesAtClockFall = samples;
         }
-        const bool clockFell = _clockFallen && ((samples < 0) || (samples != _samplesAtClockFall));
-        const bool blind = (samples < 0) && (clock < 0.);
+        // A clock that fell and then held still between two reads was stopped by the new render
+        // finishing, which may have reached the old sample count before the count was read.
+        const bool finishedSinceFall = _clockFallen && (clock >= 0.) && (clock == _previousClock);
+        const bool clockFell = _clockFallen && ((samples < 0) || (samples != _samplesAtClockFall) || finishedSinceFall);
+        _previousClock = clock;
         _seen = samplesFell || clockFell || blind;
 
         return _seen;
@@ -272,12 +313,11 @@ public:
         return _seen;
     }
 
-    // Whether the delegate's clock fell since the restart: its session took the restart, and may
-    // spend long syncing a heavy stage before its first sample; making it again would only begin
-    // that sync over.
+    // Whether the delegate's session took the restart: it may spend long syncing a heavy stage
+    // before its first sample, and making it again would only begin that sync over.
     bool restarting() const
     {
-        return _clockFallen;
+        return _clockFallen || _moved;
     }
 
     // Whether a delegate's progress is known to show its restarts: Cycles' samples and clock start
@@ -288,12 +328,24 @@ public:
         return CyclesAovs::isCycles(renderer);
     }
 
+    // Whether Cycles says its session has no more work, its clock stopped.
+    static bool idle(const VtDictionary& stats)
+    {
+        const VtDictionary::const_iterator annotation = stats.find("renderProgressAnnotation");
+
+        return (annotation != stats.end()) && annotation->second.IsHolding<std::string>() && (annotation->second.UncheckedGet<std::string>().find("Rendering Done") != std::string::npos);
+    }
+
 private:
     bool _seen = true;
     int _samplesAtRestart = -1;
     double _clockAtRestart = -1.;
+    int _capAtRestart = 0;
+    bool _idleAtRestart = false;
+    bool _moved = false;
     bool _clockFallen = false;
     int _samplesAtClockFall = -1;
+    double _previousClock = -1.;
 };
 
 // The GPU memory the engines may hold together by default.
@@ -632,6 +684,7 @@ struct EngineEntry {
     bool showRender = false;
     bool showProxy = false;
     bool showGuides = false;
+    std::vector<std::pair<double, GfFrustum>> cameraMotion;
 
     // That render's primId plane and the paths of its hashes, decoded on the CPU when first asked for.
     bool idsDecoded = false;
@@ -1533,6 +1586,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     for (const std::pair<const std::string, VtValue>& setting : rendererSettings(renderer)) {
         settings[setting.first] = setting.second;
     }
+    // The shutter decides which motion samples the delegate syncs, so a new one makes the engine
+    // again, as its settings do; the camera's motion is only traced, so it is set on each render.
+    if (renderer == kRenderDelegateUtilityId) {
+        settings[kRenderDelegateUtilityShutterSetting] = VtValue(HydraRender::shutterInterval(request));
+    }
     const bool cycles = CyclesAovs::isCycles(renderer);
     if (cycles) {
         followCyclesThreads(request.threads);
@@ -1554,7 +1612,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
     const U64 writeCount = SceneWriteBarrier::getWriteCount();
     entry.lastUse = ++_useSerial;
-    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides)) {
+    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides) && (entry.cameraMotion == request.cameraMotion)) {
         return &entry;
     }
     // Cycles shows a restart in its progress only once a change reaches it: a request changing
@@ -1584,6 +1642,19 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     engine->SetRenderBufferSize(GfVec2i(width, height));
     engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
     engine->SetCameraState(view, projection);
+    if (renderer == kRenderDelegateUtilityId) {
+        VtDoubleArray times;
+        VtMatrix4dArray views;
+        VtMatrix4dArray projections;
+        for (const std::pair<double, GfFrustum>& sample : request.cameraMotion) {
+            times.push_back(sample.first);
+            views.push_back(sample.second.ComputeViewMatrix());
+            projections.push_back(sample.second.ComputeProjectionMatrix());
+        }
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraTimesSetting), VtValue(times));
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraViewsSetting), VtValue(views));
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraProjectionsSetting), VtValue(projections));
+    }
 
     UsdImagingGLRenderParams params;
     params.frame = request.time;
@@ -1625,7 +1696,12 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         RestartWatch restartWatch;
         restartWatch.restart(!watchRestart);
         if (watchRestart) {
-            restartWatch.before(engine->GetRenderStats(), 0);
+            VtDictionary stats = engine->GetRenderStats();
+            while (!RestartWatch::idle(stats) && engine->IsConverged() && (std::chrono::steady_clock::now() - started < kIdleSettle)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                stats = engine->GetRenderStats();
+            }
+            restartWatch.before(stats, 0);
         }
         std::string sessionFailure;
         bool timedOut = false;
@@ -1644,7 +1720,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 // The progress is read before the convergence: once it shows the new render, the
                 // delegate's word that it converged is about that render.
                 const VtDictionary stats = engine->GetRenderStats();
-                const bool restartSeen = restartWatch.after(samplesOf(stats, 0), clockOf(stats));
+                const bool restartSeen = restartWatch.after(samplesOf(stats, 0), clockOf(stats), RestartWatch::idle(stats));
                 if (restartSeen && engine->IsConverged()) {
                     break;
                 }
@@ -1735,9 +1811,17 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
                 entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + fallback->second.UncheckedGet<std::string>();
             }
+
             const VtDictionary::const_iterator scene = utilityStats.find(kUtilityStatSceneWarning);
+
             if ((scene != utilityStats.end()) && scene->second.IsHolding<std::string>() && !scene->second.UncheckedGet<std::string>().empty()) {
                 entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + scene->second.UncheckedGet<std::string>();
+            }
+
+            const VtDictionary::const_iterator motion = utilityStats.find(kUtilityStatMotionWarning);
+
+            if ((motion != utilityStats.end()) && motion->second.IsHolding<std::string>() && !motion->second.UncheckedGet<std::string>().empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + motion->second.UncheckedGet<std::string>();
             }
         }
         if (log) {
@@ -1771,6 +1855,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.showRender = request.showRender;
     entry.showProxy = request.showProxy;
     entry.showGuides = request.showGuides;
+    entry.cameraMotion = request.cameraMotion;
 
     if (!_gl) {
         // Host memory, which the GPU budget does not count.
@@ -2357,6 +2442,83 @@ setHydraGLContextFactory(const HydraGLContextFactory& factory)
 }
 
 namespace HydraRender {
+namespace {
+    RendererSettings
+    requestSettings(const Request& request)
+    {
+        RendererSettings settings = request.settings;
+
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(request.renderer)) {
+            settings[setting.first] = setting.second;
+        }
+
+        return settings;
+    }
+
+    template <typename T>
+    T
+    settingOr(const RendererSettings& settings,
+              const char* key,
+              const T& fallback)
+    {
+        RendererSettings::const_iterator found = settings.find(key);
+
+        if (found == settings.end()) {
+            return fallback;
+        }
+        if (found->second.IsHolding<T>()) {
+            return found->second.UncheckedGet<T>();
+        }
+        const VtValue cast = VtValue::Cast<T>(found->second);
+
+        return cast.IsHolding<T>() ? cast.UncheckedGet<T>() : fallback;
+    }
+
+    bool
+    utilityBlurs(const RendererSettings& settings)
+    {
+        return settingOr<bool>(settings, kUtilitySettingCameraMotionBlur, true) || settingOr<bool>(settings, kUtilitySettingTransformMotionBlur, true) || settingOr<bool>(settings, kUtilitySettingDeformationMotionBlur, true);
+    }
+} // anon namespace
+
+GfVec2d
+shutterInterval(const Request& request)
+{
+    if (request.renderer != kRenderDelegateUtilityId) {
+        return GfVec2d(0.);
+    }
+    const RendererSettings settings = requestSettings(request);
+    double open = request.shutterOpen;
+    double close = request.shutterClose;
+    if (settingOr<bool>(settings, kUtilitySettingOverrideShutter, false)) {
+        const double length = std::max(0., double(settingOr<float>(settings, kUtilitySettingShutter, kUtilityDefaultShutter)));
+        const TfToken offset = settingOr<TfToken>(settings, kUtilitySettingShutterOffset, TfToken(kUtilityShutterCentred));
+        if (offset == kUtilityShutterStart) {
+            open = 0.;
+        } else if (offset == kUtilityShutterEnd) {
+            open = -length;
+        } else if (offset == kUtilityShutterCustom) {
+            open = settingOr<float>(settings, kUtilitySettingShutterCustomOffset, 0.f);
+        } else {
+            open = -0.5 * length;
+        }
+        close = open + length;
+    }
+    if (!(close > open) || !utilityBlurs(settings)) {
+        return GfVec2d(0.);
+    }
+
+    return GfVec2d(open, close);
+}
+
+bool
+cameraMotionBlur(const Request& request)
+{
+    const GfVec2d shutter = shutterInterval(request);
+
+    return (shutter[1] > shutter[0]) && settingOr<bool>(requestSettings(request), kUtilitySettingCameraMotionBlur, true);
+}
+
 bool
 cameraFrustum(const UsdStageRefPtr& stage,
               const SdfPath& cameraPath,
@@ -2675,10 +2837,12 @@ namespace {
         bool showProxy = false;
         bool showGuides = false;
         RendererSettings settings;
+        GfVec2d shutter;
+        std::vector<std::pair<double, GfFrustum>> cameraMotion;
 
         bool operator==(const DeviceFrameKey& other) const
         {
-            return (renderer == other.renderer) && (stackHash == other.stackHash) && (metadata == other.metadata) && (writeCount == other.writeCount) && (time == other.time) && (view == other.view) && (projection == other.projection) && (width == other.width) && (height == other.height) && (headlight == other.headlight) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (settings == other.settings);
+            return (shutter == other.shutter) && (cameraMotion == other.cameraMotion) && (renderer == other.renderer) && (stackHash == other.stackHash) && (metadata == other.metadata) && (writeCount == other.writeCount) && (time == other.time) && (view == other.view) && (projection == other.projection) && (width == other.width) && (height == other.height) && (headlight == other.headlight) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (settings == other.settings);
         }
     };
 
@@ -2703,6 +2867,8 @@ namespace {
         for (const std::pair<const std::string, VtValue>& setting : rendererSettings(key.renderer)) {
             key.settings[setting.first] = setting.second;
         }
+        key.shutter = HydraRender::shutterInterval(request);
+        key.cameraMotion = request.cameraMotion;
 
         return key;
     }
@@ -3667,6 +3833,7 @@ void
 ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 {
     int lastSamples = -1;
+    std::size_t lastUtilitySamples = 0;
     RestartWatch restartWatch;
     bool lastConverged = false;
     bool firstPass = false;
@@ -3756,6 +3923,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             keepFrame = false;
             lastSamples = -1;
+            lastUtilitySamples = 0;
             lastConverged = false;
             engineFresh = true;
             needRestart = true;
@@ -3952,7 +4120,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             restartWatch.before(before, cap);
         }
         const Clock::time_point now = Clock::now();
-        const bool restartSeen = restartWatch.after(samples, clock);
+        const bool restartSeen = restartWatch.after(samples, clock, RestartWatch::idle(stats));
         if (!restartSeen) {
             if (!restartWatch.restarting() && (now - restartTime >= kRestartUnseen)) {
                 // A new engine has no pixels from before to mistake for the restart's.
@@ -3976,10 +4144,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         // not enough: Cycles marks its buffers converged when a reset cuts a render short.
         const bool atCap = (cap > 0) && (samples >= cap);
         const bool finished = restartSeen && converged && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
-        // Natron Utility's tiles land in no order and count no samples, so only its finished frame is
-        // a picture.
+        // Natron Utility's tiles land in no order and count no samples the viewer reads, so its frame is
+        // a picture once a whole sample per pixel has landed, and again as each later one lands.
         const bool wholeFrames = engineRenderer == kRenderDelegateUtilityId;
-        bool publish = restartSeen && (samples != 0) && (wholeFrames ? finished : (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex)));
+        const VtDictionary::const_iterator utilityStat = stats.find(kUtilityStatSamples);
+        const std::size_t utilitySamples = (utilityStat != stats.end() && utilityStat->second.IsHolding<std::size_t>()) ? utilityStat->second.UncheckedGet<std::size_t>() : 0;
+        const bool samplesLanded = (utilitySamples > 0) && (utilitySamples != lastUtilitySamples);
+        lastUtilitySamples = utilitySamples;
+        bool publish = restartSeen && (samples != 0) && (wholeFrames ? (finished || samplesLanded) : (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex)));
         if (publish) {
             lock.unlock();
             read.reset(new Frame);

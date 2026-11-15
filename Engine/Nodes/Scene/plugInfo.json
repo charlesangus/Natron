@@ -34,6 +34,12 @@
                         "displayName": "Natron Utility node identifier resolving",
                         "loadWithRenderer": "Natron Utility",
                         "priority": 0
+                    },
+                    "HdNatronUtilityVelocityMotionSceneIndexPlugin": {
+                        "bases": ["HdSceneIndexPlugin"],
+                        "displayName": "Natron Utility velocity motion",
+                        "loadWithRenderer": "Natron Utility",
+                        "priority": 0
                     }
                 }
             },

@@ -71,6 +71,18 @@ public:
         eColorBindingCorner, // three per triangle, in triangle order
     };
 
+    // A prim's motion within the shutter: its values at times relative to the frame, increasing,
+    // at least two of them.
+    struct PointMotion {
+        std::vector<double> times;
+        std::vector<PXR_NS::VtVec3fArray> points; // one per time, each as many as the geometry's points
+    };
+
+    struct TransformMotion {
+        std::vector<double> times;
+        std::vector<std::vector<PXR_NS::GfMatrix4d>> transforms; // one per time, each one per instance
+    };
+
     struct Geometry {
         PXR_NS::SdfPath path;
         int primId = -1;
@@ -93,6 +105,8 @@ public:
         std::uint64_t pointsVersion = 0;
         std::uint64_t colorVersion = 0;
         std::uint64_t stVersion = 0;
+        // Null for a geometry that does not deform within the shutter; points are at the frame.
+        std::shared_ptr<const PointMotion> pointMotion;
     };
 
     struct Instance {
@@ -101,6 +115,9 @@ public:
         PXR_NS::GfMatrix4d transform = PXR_NS::GfMatrix4d(1.);
         // The link categories of this placement alone; the geometry's own apply to every placement.
         PXR_NS::TfTokenVector categories;
+        // Null for an instance that does not move within the shutter; instanceIndex indexes its
+        // transforms, and transform is at the frame.
+        std::shared_ptr<const TransformMotion> motion;
     };
 
     struct Stats {
@@ -111,6 +128,8 @@ public:
         std::size_t pointUpdates = 0;
         std::size_t colorUpdates = 0;
         std::size_t version = 0;
+        // The geometries whose topology changes within the shutter, so they do not deform there.
+        std::vector<PXR_NS::SdfPath> topologyVaryingPaths;
     };
 
     struct Snapshot {
@@ -178,12 +197,41 @@ public:
      **/
     std::vector<std::string> warnings() const;
 
+    // Null for none. The transform motion has a transform per instance setInstances() gave.
+    void setPointMotion(GeometryId id,
+                        const std::shared_ptr<const PointMotion>& motion);
+    void setTransformMotion(GeometryId id,
+                            const std::shared_ptr<const TransformMotion>& motion);
+    // Whether the geometry's topology changes within the shutter, for stats to name it.
+    void setTopologyVaries(GeometryId id,
+                           bool varies);
+
+    // Whether any of the snapshot's instances or geometries moves within the shutter.
+    static bool moves(const Snapshot& snapshot);
+
+    /**
+     * @brief The snapshot as it stands at time, relative to the frame: each moving instance's
+     * transform and each deforming geometry's points interpolated between their samples, held at
+     * the first or last outside them, and none of it moving. Its version, and each deforming
+     * geometry's pointsVersion, differ from every scene snapshot's, so a tracer handed it refits
+     * what deforms and moves what moves.
+     **/
+    static Snapshot evaluateAt(const Snapshot& snapshot,
+                               double time);
+
+    // Between a and b by u in [0, 1]: translation and stretch linearly, rotation along the shortest arc.
+    static PXR_NS::GfMatrix4d interpolate(const PXR_NS::GfMatrix4d& a,
+                                          const PXR_NS::GfMatrix4d& b,
+                                          double u);
+
 private:
     struct Record {
         Geometry geometry;
         std::vector<PXR_NS::GfMatrix4d> transforms;
         std::vector<PXR_NS::TfTokenVector> instanceCategories;
+        std::shared_ptr<const TransformMotion> transformMotion;
         PXR_NS::TfToken renderTag;
+        bool topologyVaries = false;
     };
 
     bool isIncluded(const Record& record) const;

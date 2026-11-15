@@ -1,6 +1,6 @@
 # M423 - USDPrune Isolate Mode
 
-USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim Pattern selects and prunes the rest of the scene, by Deactivate or Hide as Mode says. The matches, their ancestors and their descendants survive. So do lights, cameras, materials and render settings, each behind its own Keep checkbox, all on by default. The node authors on the fewest prims: the highest prims that lie off every kept path. In a viewer evaluation an unloaded branch is pruned only when the pattern cannot reach it (`PrimSelector::getReach()`). Renders load everything, so they are exact. Built on the F4 - Heavy Scene Viewer branch, where M331 - Deferred Pattern Matching and M381 - Deferred Matching Coverage rewrote USDPrune's matching.
+USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim Pattern selects and prunes the rest of the scene, by Deactivate or Hide as Mode says. The matches, their ancestors and their descendants survive. So do lights, cameras, materials and render settings, each behind its own Keep checkbox, all on by default. The node authors on the fewest prims: the highest prims that lie off every kept path. In a viewer evaluation an unloaded branch is pruned only when the pattern cannot reach it (`PrimSelector::getReach()`). Renders load everything, so they are exact. Built on the default branch once F4 - Heavy Scene Viewer has landed, since M331 - Deferred Pattern Matching and M381 - Deferred Matching Coverage rewrote USDPrune's matching there.
 
 ## Scope
 
@@ -25,7 +25,7 @@ USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim
 - A load in the viewer changes what isolate prunes, so with Prune Unselected on the node's reach is "/" and every load re-evaluates it.
 
 **Assumptions:**
-- `matchPattern()`, `PrimSelector::getReach()` and the evaluation context's reach behave on the F4 branch as M381 - Deferred Matching Coverage's `## Decisions` describe.
+- `matchPattern()`, `PrimSelector::getReach()` and the evaluation context's reach behave on the default branch, after F4 - Heavy Scene Viewer lands, as M381 - Deferred Matching Coverage's `## Decisions` describe.
 - A light filter is a `UsdLuxLightFilter` in the pxr version the image ships (26.08).
 
 ## Phase 423.1: Engine
@@ -62,7 +62,7 @@ USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim
   - verify: passes under Xvfb (`build/deeprepro/run-gui.sh`, or remotely with `--gui`): the viewer draws one prim with the checkbox on and three with it off, after each toggle alone; the Keep knobs show enabled only with it on; the screenshot is shared with the user.
   - size: M
 
-**Verification gate:** release gate green with `--gui` including `scene_prune_isolate.py`; `USDMergePrune_Test` and `SceneLoadSetCoverage_Test` pass; PR CI into `feature/f4-heavy-scene-viewer` green or the PM's gate standing in; the panel screenshot shared and OK'd by the user before sign-off. User acceptance happens with F4 - Heavy Scene Viewer's UAT.
+**Verification gate:** release gate green with `--gui` including `scene_prune_isolate.py`; `USDMergePrune_Test` and `SceneLoadSetCoverage_Test` pass; PR CI into the default branch green or the PM's gate standing in; the panel screenshot shared and OK'd by the user before sign-off. User acceptance is its own UAT on its own AppImage.
 
 ## Decisions
 
@@ -71,3 +71,4 @@ USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim
 - 2026-11-13 — Unloaded branches (user): in a viewer evaluation an unloaded branch is kept when the pattern's reach can touch it and pruned otherwise. Rejected: pruning all of them (matches inside never show in the viewer); keeping all of them (heavy scenes keep every bounding box).
 - 2026-11-13 — Shipping (user): a member of F4 - Heavy Scene Viewer, since USDPrune's matching was rewritten there, and it shares F4's UAT.
 - 2026-11-13 — Planner: the Keep types are checked only on loaded prims. Otherwise the default-on Keep Lights would make every unloaded branch reachable and the viewer would never isolate a heavy scene.
+- 2026-11-14 — Shipping (user): standalone, not a member of F4 - Heavy Scene Viewer. It waits for F4 - Heavy Scene Viewer to land, then ships as its own PR and UAT. Supersedes the 2026-11-13 Shipping decision.

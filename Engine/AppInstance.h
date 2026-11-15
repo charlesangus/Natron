@@ -311,6 +311,14 @@ public:
     {
     }
 
+    /**
+     * @brief Called before a project reset or close destroys the nodes, while they are all still
+     * alive: work running off the main thread on them must have stopped when it returns.
+     **/
+    virtual void aboutToDestroyProjectNodes()
+    {
+    }
+
     virtual void setupViewersForViews(const std::vector<std::string>& /*viewNames*/)
     {
     }

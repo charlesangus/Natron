@@ -84,6 +84,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/ProgressPanel.h"
 #include "Gui/PythonUndoRecorder.h"
+#include "Gui/SceneGraphPanel.h"
 #include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/SplashScreen.h"
@@ -986,6 +987,19 @@ GuiAppInstance::onProjectNodesRestored()
         }
     }
     _imp->_gui->centerAllNodeGraphsWithTimer();
+}
+
+void
+GuiAppInstance::aboutToDestroyProjectNodes()
+{
+    if (_imp->_gui) {
+        const std::list<SceneGraphPanel*> panels = _imp->_gui->getSceneGraphPanels();
+        for (SceneGraphPanel* panel : panels) {
+            panel->releaseNodeStages();
+        }
+    }
+    SceneNodeStageSource::stopAll();
+    SceneNodeStageSource::joinReaped();
 }
 
 void

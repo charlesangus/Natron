@@ -30,8 +30,8 @@
         BENCH_REVEAL_BATCH   prims per frame in reveal (default 2000)
         BENCH_REVEAL_MAX_S   seconds reveal runs before it is cancelled (default 120)
         BENCH_BOXES      boxes orbit10k asks for (default 10000)
-        BENCH_BOX_DEPTH  path depth of the prims that get a box (default flat 2, city 4, or 3 with
-                         payloads unloaded)
+        BENCH_BOX_DEPTH  path depth of the prims orbit10k draws as boxes (default the depth whose count
+                         of geometry-holding prims is nearest BENCH_BOXES)
         BENCH_PAYLOAD_MARK  substring of a layer identifier that marks a payload file on flat and city
                          (default heavy_city_payloads)
         BENCH_ROWS_DIR   where a scene's picked rows are cached (default $NATRON_GUI_TEST_OUT/rows)
@@ -68,7 +68,9 @@ display can vouch for) or not_applicable. Actions are the ACTIONS table.
 
 Every record carries gl_renderer and gl_vendor, and the memory the process has used: peak_rss_mb and
 peak_rss_gb (its high-water mark) and mem_available_min_gb (the lowest MemAvailable during the
-scenario). result is pass or fail, or one of: skipped (with a reason; nothing ran, so its peak_rss_mb
+scenario). result is pass or fail, fail whenever a check of the scenario failed (failed_checks lists
+them), or one of: not_applicable (the action had nothing to measure in this process, with a reason;
+load_all after an open with Full + Load), skipped (with a reason; nothing ran, so its peak_rss_mb
 is the process's so far, or null when the watchdog wrote it), timed_out (past its wall-clock limit),
 out_of_memory (the memory guard ended the process), aborted (the process ended on its own during the
 scenario). heavy_scene_watchdog.sh writes those last three from outside Natron, so a hung run leaves
@@ -106,7 +108,8 @@ Budgets: main-thread stall under 100 ms; time from a draw state change to the im
 draw_budget's rows also judged apart); a paced reveal of the root with Load All (reveal_load_all,
 which also waits for the loads to land) and of the wide row (reveal_wide) completes with no gap over
 100 ms between painted frames; a paced reveal of the wide row boxed again shows at most the one batch
-under way (reveal_cancel_paced); first frame under 2 s on a scene with payloads; no payload
+under way (reveal_cancel_paced); first frame under 2 s on the payload city, the only scene the design
+gives it; no payload
 file opened that the action did not request; orbit at or above 30 fps; no stage edit or notice from a
 draw state; the draw filter on this viewer's engine; pixels changed on the control row.
 """
@@ -156,7 +159,15 @@ try:
     import NatronEngine
 
     from heavy_scene_frame import frame_coverage
-    from guitest import HOST_DISPLAY, OUT, check, finish, plugin_problem, report, require, run, shot, widgets_of
+    from guitest import HOST_DISPLAY, OUT, check as guitest_check, finish, plugin_problem, report, require, run, shot, widgets_of
+
+    # The failed checks of the scenario running, which fail its record whatever its budgets say.
+    scenario_checks = {"failed": None}
+
+    def check(ok, label):
+        if not ok and scenario_checks["failed"] is not None:
+            scenario_checks["failed"].append(label)
+        return guitest_check(ok, label)
 
     PATH_ROLE = Qt.UserRole + 1
     STATE_ROLE = Qt.UserRole + 3
@@ -216,10 +227,12 @@ try:
 
     def picked_rows():
         rows_dir = os.environ.get("BENCH_ROWS_DIR", os.path.join(OUT, "rows"))
-        cached = os.path.join(rows_dir, "%s-load-%s-boxes-%d.json" % (file_stem, load_state, box_count))
+        box_depth_override = os.environ.get("BENCH_BOX_DEPTH")
+        cached = os.path.join(rows_dir, "%s-load-%s-boxes-%d-depth-%s.json" % (file_stem, load_state, box_count, box_depth_override or "nearest"))
         if not os.path.isfile(cached) or os.path.getmtime(cached) < os.path.getmtime(path):
             picker = os.path.join(ROOT, "tools", "bench", "heavy_scene_rows.py")
-            done = subprocess.run(picker_command() + [picker, path, "--load", load_state, "--boxes", str(box_count), "--out", cached],
+            depth_args = ["--box-depth", box_depth_override] if box_depth_override else []
+            done = subprocess.run(picker_command() + [picker, path, "--load", load_state, "--boxes", str(box_count), "--out", cached] + depth_args,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=PICK_LIMIT_S)
             require(done.returncode == 0, "the scene's rows were picked", done.stderr.decode(errors="replace")[-2000:])
         with open(cached) as f:
@@ -242,6 +255,13 @@ try:
     if "BENCH_BOX_DEPTH" in os.environ:
         rows["box_depth"] = int(os.environ["BENCH_BOX_DEPTH"])
         rows["source"] += "+env"
+    requested_scenarios = [s.strip() for s in os.environ.get("BENCH_SCENARIOS", "open,orbit").split(",") if s.strip()]
+    if fixture != "scene" and "orbit10k" in requested_scenarios:
+        # The fixtures' other rows are fixed, but the prims above the box depth are too many to list by hand.
+        picked = picked_rows()
+        for key in ("box_depth", "box_depth_rows", "box_parents"):
+            rows[key] = picked.get(key)
+        rows["source"] += "+picked boxes"
     default_load = rows.get("load_block" if load_descendants else "load_building") or ""
     load_paths = [p.strip() for p in os.environ.get("BENCH_LOAD_PATHS", default_load).split(",") if p.strip()]
 
@@ -320,6 +340,9 @@ try:
             self.requested_files = []
             self.requested_layers = set()
             self.all_payloads_requested = False
+            self.failed_checks = []
+            # Set by an action that finds nothing to measure in this process, with the reason.
+            self.not_applicable = None
             # Times to picture of the changes judged: {"ms", "source", "row"}.
             self.pictures = []
             # The stall of a part of the action whose heartbeat was restarted after it.
@@ -335,6 +358,9 @@ try:
         t0_ms = int(t0 * 1000.0)
         # Full or Full + Load; the default boxes the top-level prims, which would leave later box edits nothing to change.
         usd.getParam("initialDraw").setValue(4 if load_state == "all" else 3)
+        if load_state == "all":
+            m.all_payloads_requested = True
+            project_state["loaded_at_open"] = True
         usd.getParam("filename").setValue(path)
         if not connected:
             require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
@@ -586,6 +612,10 @@ try:
         load_results(m, v, "load", edits_before)
 
     def action_load_all(m):
+        if project_state["loaded_at_open"]:
+            # The stage then has nothing left to load, so the load edit count waited on below never moves.
+            m.not_applicable = "the scene was opened with Full + Load, which loads every payload"
+            return
         require(view() is not None and shown(), "load_all: a scene view is visible and showing the scene")
         v = view()
         edits_before = int(v.property("natronSceneLoadEdits") or 0)
@@ -917,16 +947,39 @@ try:
     def boxes_drawn():
         return int(prop("natronSceneDrawBoxes", 0))
 
+    def draw_settled(v):
+        """Whether every posted draw-state change is on screen and no reveal is still adding prims."""
+        def settled():
+            stats = draw_stats()
+            return not stats.get("revealing") and int(v.property("natronSceneDrawPresented") or 0) >= int(stats.get("posted", 0))
+        return settled
+
     def action_orbit10k(m):
         yield from clear_draw_states()
-        # Children rather than BBox, which would draw the root as a single box.
-        yield from set_draw_state(rows["root"], "children")
+        v = view()
+        depth = rows.get("box_depth")
+        parents = list(rows.get("box_parents") or [])
+        require(bool(parents), "orbit10k: the scene has prims to box at depth %r" % (depth,))
         sent_ms = time.time() * 1000.0
-        ok = yield ("until", lambda: boxes_drawn() > 0, TIMEOUT_S)
-        check(ok, "orbit10k: boxes were drawn")
+        # Children on every prim above the box depth draws each prim at that depth as one box; BBox on the
+        # root would draw a single box.
+        timings = yield from presented_after_call(v, "orbit10k: Children above depth %r" % (depth,), "setDrawStateOnRows",
+                                                  Q_ARG("QStringList", parents), Q_ARG("QString", "children"), judged=False)
+        require(bool(timings), "orbit10k: the draw state changed something")
+        # A large change can post more than once; the orbit is only meaningful on the picture it asked for.
+        while True:
+            ok = yield ("until", draw_settled(v), TIMEOUT_S)
+            require(ok, "orbit10k: the draw-state change was presented")
+            yield ("sleep", 250)
+            if draw_settled(v)():
+                break
+        check(boxes_drawn() > 0, "orbit10k: boxes were drawn")
         m.values["boxes_requested"] = box_count
+        m.values["box_depth"] = depth
+        m.values["box_depth_rows"] = rows.get("box_depth_rows")
+        m.values["box_parents"] = len(parents)
         m.values["boxes_drawn"] = boxes_drawn()
-        m.values["boxes_first_drawn_ms"] = round(time.time() * 1000.0 - sent_ms, 1)
+        m.values["boxes_presented_ms"] = round(time.time() * 1000.0 - sent_ms, 1)
         heartbeat.start()
         yield from action_orbit(m)
 
@@ -1172,7 +1225,7 @@ try:
         m.values["cached_switch_composes"] = composes[-1]
         follow.setCurrentIndex(0)
 
-    project_state = {"reopened": False}
+    project_state = {"reopened": False, "loaded_at_open": False}
 
     def scene_has_payloads():
         return fixture == "city" or bool(rows.get("payload_rows"))
@@ -1361,7 +1414,7 @@ try:
                "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch,
                "workflow": action_workflow}
 
-    def verdict(value, limit, below_is_good, valid=True, applicable=True):
+    def verdict(value, limit, below_is_good, valid=True, applicable=True, reason=None):
         if not applicable:
             status = "not_applicable"
         elif value is None:
@@ -1370,7 +1423,13 @@ try:
             status = "not_valid"
         else:
             status = "pass" if ((value <= limit) if below_is_good else (value >= limit)) else "fail"
-        return {"value": value, "limit": limit, "status": status}
+        judged = {"value": value, "limit": limit, "status": status}
+        if not applicable and reason:
+            judged["reason"] = reason
+        return judged
+
+    first_frame_judged = fixture == "city"
+    first_frame_unjudged_reason = "the design sets the first-frame budget on the payload city alone"
 
     def skip_reason(name):
         if project_state["reopened"]:
@@ -1414,7 +1473,7 @@ try:
                 budgets["time_to_picture_%s_ms" % tag] = verdict(worst, PICTURE_BUDGET_MS, True, valid=gpu and viewer_timed)
         if "first_frame_ms" in m.values:
             budgets["first_frame_ms"] = verdict(m.values["first_frame_ms"], FIRST_FRAME_BUDGET_MS, True, valid=gpu,
-                                                applicable=(fixture == "city" or bool(rows.get("payload_rows"))))
+                                                applicable=first_frame_judged, reason=first_frame_unjudged_reason)
         if m.all_payloads_requested:
             budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_applicable"}
         elif new_layers is None:
@@ -1448,7 +1507,7 @@ try:
                                                                     applicable=applicable)
             elif step_name == "reopen":
                 budgets["reopen_first_frame_ms"] = verdict(step.get("first_frame_ms"), FIRST_FRAME_BUDGET_MS, True, valid=gpu,
-                                                           applicable=scene_has_payloads())
+                                                           applicable=first_frame_judged, reason=first_frame_unjudged_reason)
         if "stage_edits" in m.values:
             budgets["stage_edits"] = verdict(m.values["stage_edits"], 0, True)
         if "sibling_resynced_paths" in m.values:
@@ -1546,10 +1605,20 @@ try:
             mark_running(name, names[index + 1:], started, OPEN_LIMIT_S if name in LONG_SCENARIOS else SCENARIO_LIMIT_S)
             m = Measure()
             current["name"], current["m"] = name, m
+            scenario_checks["failed"] = m.failed_checks
             before = loaded_layers()
             heartbeat.start()
             yield from ACTIONS[name](m)
             current["name"], current["m"] = None, None
+            if m.not_applicable is not None:
+                heartbeat.stop()
+                scenario_checks["failed"] = None
+                record = dict(common_fields, scenario=name, result="not_applicable", reason=m.not_applicable,
+                              wall_s=round(time.time() - started, 1), time=time.strftime("%Y-%m-%dT%H:%M:%S"))
+                record.update(memory_fields(started))
+                write_record(record)
+                write_progress("idle\n")
+                continue
             if name in DRAW_SCENARIOS:
                 m.values["filter_bound"] = bool(draw_stats().get("filterBound"))
             yield ("sleep", 200)
@@ -1557,6 +1626,8 @@ try:
             after = loaded_layers()
             new_layers = None if before is None or after is None else after - before
             budgets = judge(m, stall_ms, new_layers)
+            scenario_checks["failed"] = None
+            failed = any(b["status"] == "fail" for b in budgets.values()) or bool(m.failed_checks)
             record = dict(common_fields)
             record.update(memory_fields(started))
             record.update({
@@ -1566,7 +1637,8 @@ try:
                 "layers_after": None if after is None else len(after),
                 "layers_loaded": None if new_layers is None else len(new_layers),
                 "budgets": budgets,
-                "result": "fail" if any(b["status"] == "fail" for b in budgets.values()) else "pass",
+                "result": "fail" if failed else "pass",
+                "failed_checks": list(m.failed_checks),
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
             record.update(m.values)

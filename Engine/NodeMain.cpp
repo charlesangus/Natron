@@ -746,6 +746,7 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
     EffectInstancePtr effect;
     {
         QMutexLocker k(&_imp->effectTeardownMutex);
+        QMutexLocker pointerLocker(&_imp->effectPointerMutex);
         effect.swap(_imp->effect);
     }
     effect.reset();

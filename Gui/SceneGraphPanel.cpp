@@ -2109,6 +2109,32 @@ SceneGraphPanel::pinNode(const NodePtr& node)
 }
 
 void
+SceneGraphPanel::releaseNodeStages()
+{
+    _imp->selectedNode.reset();
+    if (_imp->userPinned) {
+        _imp->userPinned = false;
+        {
+            const bool blocked = _imp->pinButton->blockSignals(true);
+            _imp->pinButton->setChecked(false);
+            _imp->pinButton->blockSignals(blocked);
+        }
+        {
+            const bool blocked = _imp->nodeChooser->blockSignals(true);
+            _imp->nodeChooser->populate(NodePtr());
+            _imp->nodeChooser->blockSignals(blocked);
+        }
+    }
+    showNodeScene(NodePtr());
+    for (const Implementation::CachedStage& cached : _imp->cachedStages) {
+        _imp->retireSource(cached.source);
+    }
+    _imp->cachedStages.clear();
+    _imp->followViewer();
+    _imp->publishState();
+}
+
+void
 SceneGraphPanel::showNodeScene(const NodePtr& node)
 {
     if (_imp->pinned && node && (_imp->pinned->getNode() == node)) {

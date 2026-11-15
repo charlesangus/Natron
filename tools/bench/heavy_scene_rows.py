@@ -1,6 +1,6 @@
 """Picks the rows heavy_scene_bench.py acts on from a scene's composed stage.
 
-  heavy_scene_rows.py <scene> [--load all|none] [--boxes 10000] [--out rows.json]
+  heavy_scene_rows.py <scene> [--load all|none] [--boxes 10000] [--box-depth N] [--out rows.json]
   heavy_scene_rows.py <scene> --bounds /World /World/Block0 [--load all|none] [--out bounds.json]
 
 With --bounds it picks nothing and prints the stage's up axis and the world bound ({"min", "max"}, or
@@ -24,8 +24,11 @@ holding geometry.
                  it has the most siblings the scene offers, and its change is the likeliest to show
                  in a screenshot
   reveal_branch  root
-  box_depth      the shallowest path depth with at least --boxes geometry-holding prims, otherwise
-                 the depth with the most of them
+  box_depth      the path depth whose count of geometry-holding prims is nearest --boxes, the
+                 shallower on a tie, or --box-depth
+  box_depth_rows how many geometry-holding prims are at box_depth
+  box_parents    the geometry-holding prims above box_depth with one of those below them: Children
+                 on each of them draws every prim at box_depth as one box
 
 The payload rows come from a second, LoadNone composition, so they are the same in either load state:
 
@@ -175,13 +178,21 @@ def bounds_of(scene, load, paths):
     return {"up_axis": str(UsdGeom.GetStageUpAxis(stage)), "bounds": bounds}
 
 
-def pick_box_depth(tally, boxes):
+def pick_box_depth(tally, boxes, depth=None):
     at_depth = collections.Counter(p.pathElementCount for p in tally.rows if tally.gprims(p) > 0)
     if not at_depth:
-        return None, 0
-    enough = sorted(d for d, n in at_depth.items() if n >= boxes)
-    depth = enough[0] if enough else min(at_depth, key=lambda d: (-at_depth[d], d))
-    return depth, at_depth[depth]
+        return None, 0, []
+    if depth is None:
+        depth = min(at_depth, key=lambda d: (abs(at_depth[d] - boxes), d))
+    parents = set()
+    for path in tally.rows:
+        if path.pathElementCount != depth or tally.gprims(path) <= 0:
+            continue
+        parent = path.GetParentPath()
+        while parent != Sdf.Path.absoluteRootPath and parent not in parents:
+            parents.add(parent)
+            parent = parent.GetParentPath()
+    return depth, at_depth.get(depth, 0), sorted(str(p) for p in parents)
 
 
 def payload_assets(prim):
@@ -225,7 +236,7 @@ def pick_payload_rows(scene, root):
             "payload_row_assets": row_assets}
 
 
-def pick(scene, load, boxes):
+def pick(scene, load, boxes, box_depth=None):
     started = time.time()
     stage = Usd.Stage.Open(scene, load=Usd.Stage.LoadAll if load == "all" else Usd.Stage.LoadNone)
     if stage is None:
@@ -236,13 +247,13 @@ def pick(scene, load, boxes):
             "prims": tally.prims(root) if root else 0, "gprims": tally.gprims(root) if root else 0,
             "instances": tally.instances, "prototypes": len(tally.prototypes),
             "branch": None, "branch_gprims": 0, "widest_row": None, "widest_children": 0, "sibling_row": None,
-            "sibling_kind": None, "reveal_branch": None, "box_depth": None, "box_depth_rows": 0}
+            "sibling_kind": None, "reveal_branch": None, "box_depth": None, "box_depth_rows": 0, "box_parents": []}
     if root is not None and tally.gprims(root) > 0:
         branch = pick_branch(tally, root)
         rows["branch"] = str(branch)
         rows["branch_gprims"] = tally.gprims(branch)
         rows["reveal_branch"] = str(root)
-        rows["box_depth"], rows["box_depth_rows"] = pick_box_depth(tally, boxes)
+        rows["box_depth"], rows["box_depth_rows"], rows["box_parents"] = pick_box_depth(tally, boxes, box_depth)
         widest = pick_widest(tally)
         if widest is not None:
             sibling = pick_sibling(stage, tally, widest)
@@ -260,10 +271,11 @@ def main():
     parser.add_argument("scene")
     parser.add_argument("--load", choices=("all", "none"), default="none")
     parser.add_argument("--boxes", type=int, default=10000)
+    parser.add_argument("--box-depth", type=int)
     parser.add_argument("--out")
     parser.add_argument("--bounds", nargs="+", metavar="PRIM")
     args = parser.parse_args()
-    rows = bounds_of(args.scene, args.load, args.bounds) if args.bounds else pick(args.scene, args.load, args.boxes)
+    rows = bounds_of(args.scene, args.load, args.bounds) if args.bounds else pick(args.scene, args.load, args.boxes, args.box_depth)
     text = json.dumps(rows, indent=1, sort_keys=True)
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

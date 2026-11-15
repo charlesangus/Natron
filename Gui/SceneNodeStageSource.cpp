@@ -102,6 +102,21 @@ reaper()
 
     return *instance;
 }
+
+struct LiveSources {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::set<SceneNodeStageSource*> sources;
+};
+
+// Never destroyed, as reaper().
+LiveSources&
+liveSources()
+{
+    static LiveSources* instance = new LiveSources;
+
+    return *instance;
+}
 } // namespace
 
 SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
@@ -116,12 +131,23 @@ SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
     , _contextId(SceneEvaluationContext::makeId())
     , _loadSet(loadPayloads ? SceneLoadSetPtr() : std::make_shared<const SceneLoadSet>(SceneLoadSet::none()))
 {
+    {
+        LiveSources& live = liveSources();
+        std::lock_guard<std::mutex> lock(live.mutex);
+        live.sources.insert(this);
+    }
     _worker = std::thread([this]() { run(); });
 }
 
 SceneNodeStageSource::~SceneNodeStageSource()
 {
     stop();
+    {
+        LiveSources& live = liveSources();
+        std::lock_guard<std::mutex> lock(live.mutex);
+        live.sources.erase(this);
+    }
+    liveSources().changed.notify_all();
     EffectInstance::retireSceneContextId(_contextId);
     SceneWriteBarrier::ReadScope readScope;
     std::lock_guard<std::mutex> lock(_stageMutex);
@@ -186,6 +212,26 @@ SceneNodeStageSource::joinReaped()
     std::unique_lock<std::mutex> lock(r.mutex);
 
     r.changed.wait(lock, [&r]() { return r.queue.empty() && !r.busy; });
+}
+
+void
+SceneNodeStageSource::stopAll()
+{
+    LiveSources& live = liveSources();
+    std::unique_lock<std::mutex> lock(live.mutex);
+
+    for (SceneNodeStageSource* source : live.sources) {
+        source->requestStop();
+    }
+    live.changed.wait(lock, [&live]() {
+        for (SceneNodeStageSource* source : live.sources) {
+            if (!source->isFinished()) {
+                return false;
+            }
+        }
+
+        return true;
+    });
 }
 
 void
@@ -427,6 +473,12 @@ SceneNodeStageSource::run()
             _queueChanged.wait(lock, [this]() { return _quit || _pending || !_loadRequests.empty(); });
             if (_quit) {
                 _finished = true;
+                lock.unlock();
+                // Taken so that stopAll(), which reads _finished under it, cannot miss the wake.
+                {
+                    std::lock_guard<std::mutex> liveLock(liveSources().mutex);
+                }
+                liveSources().changed.notify_all();
 
                 return;
             }

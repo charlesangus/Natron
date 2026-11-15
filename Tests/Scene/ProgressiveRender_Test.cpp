@@ -1397,6 +1397,40 @@ TEST_F(ProgressiveRenderTest, MoonRayReturnsAtOnceFromChangesMidPass)
     interruptsMidPass(kMoonRayRendererId, MoonRaySettings::samplesKey(), cycles ? std::string(kRenderDelegateCyclesId) : std::string());
 }
 
+// MoonRay reports no reset counts: an edit restarts its render in place, and its frames are
+// published without waiting out kRestartUnseen and making the engine again.
+TEST_F(ProgressiveRenderTest, AMoonRayEditRestartsInPlace)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings[MoonRaySettings::samplesKey()] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings, kMoonRayRendererId));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    const ProgressiveRender::Status before = _render->getStatus();
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+
+    const double kBack = 5.;
+    const std::size_t mark = publishedCount();
+    const std::chrono::steady_clock::time_point edited = std::chrono::steady_clock::now();
+    sync(movedNear(_base, kBack, 0x300e1ULL));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
+    ASSERT_TRUE(collectUntilDone(mark, &after));
+    ASSERT_FALSE(after.empty());
+    std::printf("[          ] the edit's render converged in %lld ms\n", millisecondsSince(edited));
+
+    const ProgressiveRender::Status end = _render->getStatus();
+    EXPECT_EQ(before.restarts + 1, end.restarts);
+    EXPECT_EQ(before.engines, end.engines) << "the engine was made again after the edit";
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    const float moved = windowDepth(_view.frustum, kNearDistance + kBack);
+    const float still = windowDepth(_view.frustum, kNearDistance);
+    const float depth = centreDepth(*after.back());
+    EXPECT_LT(std::fabs(moved - depth), std::fabs(still - depth)) << "the last frame is of the scene before the edit";
+}
+
 // A pass waiting on a texture export stops waiting when a change makes its engine again, and the
 // render goes on with a new engine, which asks for the texture afresh.
 TEST_F(ProgressiveRenderTest, AnEngineChangeCutsTheTextureExportThePassWaitsOn)

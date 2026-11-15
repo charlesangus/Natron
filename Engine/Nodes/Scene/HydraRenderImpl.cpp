@@ -173,7 +173,6 @@ samplesOf(const VtDictionary& stats,
     return -1;
 }
 
-// A count the delegate reports, -1 if it reports none.
 std::int64_t
 countOf(const VtDictionary& stats,
         const char* key)
@@ -239,11 +238,17 @@ public:
         _overCap = false;
     }
 
-    // The delegate's progress just before the first pass after the restart.
+    // A Cycles that counts no resets is trusted, as every delegate was before its counts were
+    // read: waiting on a count it never reports would make its engine again at every edit.
     void before(const VtDictionary& stats,
                 int cap)
     {
         _requestsAtRestart = countOf(stats, "resetsRequested");
+        if (_requestsAtRestart < 0) {
+            restart(true);
+
+            return;
+        }
         _capAtRestart = cap;
         _idleAtRestart = idle(stats);
     }
@@ -299,7 +304,6 @@ public:
         return CyclesAovs::isCycles(renderer);
     }
 
-    // Whether Cycles says its session has no more work, its clock stopped.
     static bool idle(const VtDictionary& stats)
     {
         const VtDictionary::const_iterator annotation = stats.find("renderProgressAnnotation");
@@ -1583,7 +1587,34 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             }
             restartWatch.before(stats, 0);
         }
+        const auto cancelled = [&]() {
+            *error = "The " + entry.rendererName + " render was cancelled.";
+            // Its threads would go on rendering the cancelled frame. Cycles has no stop: its
+            // render pass cancels the session and its session joins its thread as the engine
+            // goes. Nor has MoonRay: its Arras session ends its render process as the engine
+            // goes. The next render makes the engine again.
+            if (engine->IsStopRendererSupported()) {
+                (void)engine->StopRenderer();
+            }
+            entry.engine.reset();
+            entry.rendered = false;
+        };
+        bool passRan = false;
         for (;;) {
+            // A cancel during the idle settle or the poll must not cost a sync of the stage.
+            if (cancel && cancel->load()) {
+                if (passRan) {
+                    cancelled();
+                } else {
+                    // Edits cancel constantly: an engine no pass of this render reached keeps
+                    // its session, which would otherwise be made again at every one.
+                    *error = "The " + entry.rendererName + " render was cancelled.";
+                    entry.rendered = false;
+                }
+
+                return nullptr;
+            }
+            passRan = true;
             if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
                 break;
             }
@@ -1606,16 +1637,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 return nullptr;
             }
             if (cancel && cancel->load()) {
-                *error = "The " + entry.rendererName + " render was cancelled.";
-                // Its threads would go on rendering the cancelled frame. Cycles has no stop: its
-                // render pass cancels the session and its session joins its thread as the engine
-                // goes. Nor has MoonRay: its Arras session ends its render process as the engine
-                // goes. The next render makes the engine again.
-                if (engine->IsStopRendererSupported()) {
-                    (void)engine->StopRenderer();
-                }
-                entry.engine.reset();
-                entry.rendered = false;
+                cancelled();
 
                 return nullptr;
             }
@@ -1636,6 +1658,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 }
                 restartWatch.restart(true);
                 restarted = now;
+                passRan = false;
                 continue;
             }
             yieldToBarrier();
@@ -3469,7 +3492,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             restartTime = Clock::now();
             stallSince = restartTime;
             firstPass = true;
-            restartWatch.restart(engineFresh);
+            restartWatch.restart(engineFresh || !RestartWatch::watches(engineRenderer));
             engineFresh = false;
         }
         if (done) {

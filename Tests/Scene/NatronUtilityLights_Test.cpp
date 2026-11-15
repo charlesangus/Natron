@@ -432,7 +432,7 @@ def Material "Red" {
 // A card at height z facing +Z, wider than the frame, whose half at x < 0 is cut out.
 std::string
 cutoutCard(double z,
-           const std::string& name = "Cutout")
+           const std::string& name = "CutoutCard")
 {
     const std::string h = std::to_string(z);
 

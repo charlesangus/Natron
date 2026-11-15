@@ -426,7 +426,9 @@ TEST(NatronUtilityKernels, ShadeSurfaceDepthIsWindowDepth)
     EXPECT_NEAR(expected, ShadeOne(scene, 0, 0.f, 0.f, 5.f).depth, 1e-5);
 }
 
-TEST(NatronUtilityKernels, ShadeSurfaceLeavesMissesUntouched)
+// A miss's outputs take the film's clear values, but only on the pass that samples the first light:
+// later passes leave the outputs the first wrote alone.
+TEST(NatronUtilityKernels, ShadeSurfaceClearsMissesOnTheFirstLightPassOnly)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addTriangle(scene);
@@ -454,12 +456,26 @@ TEST(NatronUtilityKernels, ShadeSurfaceLeavesMissesUntouched)
     buffers.depthOut = &depth;
     buffers.primIdOut = &primId;
     buffers.instanceIdOut = &instanceId;
-    runShadeSurfaceKernel(makeShadeParams(frameOf(frustum, 1, 1), 1), buffers);
+    KernelShadeParams params = makeShadeParams(frameOf(frustum, 1, 1), 1);
+
+    params.lighting[0] = 1;
+    runShadeSurfaceKernel(params, buffers);
 
     EXPECT_EQ(9.f, color[0]);
     EXPECT_EQ(9.f, depth);
     EXPECT_EQ(9, primId);
     EXPECT_EQ(9, instanceId);
+
+    params.lighting[0] = 0;
+    runShadeSurfaceKernel(params, buffers);
+
+    EXPECT_EQ(0.f, color[0]);
+    EXPECT_EQ(0.f, color[1]);
+    EXPECT_EQ(0.f, color[2]);
+    EXPECT_EQ(0.f, color[3]);
+    EXPECT_EQ(1.f, depth);
+    EXPECT_EQ(-1, primId);
+    EXPECT_EQ(-1, instanceId);
 }
 
 TEST(NatronUtilityKernels, CameraUsability)

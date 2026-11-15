@@ -11,8 +11,9 @@ That first sync reads the whole stage under the stage lock and cannot be cut sho
 
 Last, under Natron Utility with the Scene Lights lighting, a second graph draws a card textured through a
 UsdPreviewSurface and UsdUVTexture beside a USDCard carrying a USDProject3D projection of a CheckerBoard,
-both lit by the stage's distant light: the texture's green, the checker's red and blue must show, and no
-magenta, which marks a material the delegate cannot shade. Its shot is natron-utility-materials-lights_view.png.
+both lit by the stage's distant light: the texture's green, the checker's red and cyan must show, and no
+magenta, which marks a material the delegate cannot shade. The checker pairs red with cyan rather than
+blue because its filtered edges then blend to grey; red and blue blend to magenta. Its shot is natron-utility-materials-lights_view.png.
 
 Only geometry may reach the colour counts: the grid (Ctrl+G) is hidden, as its blue axis line counts as
 blue and its lines as grey, and the view uses the headlight, as the default Scene Lights leaves Storm's
@@ -606,8 +607,8 @@ try:
     def reddish(c):
         return c.red() > 60 and c.red() > 2 * c.green() and c.red() > 2 * c.blue()
 
-    def strongly_blue(c):
-        return c.blue() > 60 and c.blue() > 2 * c.green() and c.blue() > 2 * c.red()
+    def cyanish(c):
+        return c.green() > 60 and c.blue() > 60 and c.green() > 2 * c.red() and c.blue() > 2 * c.red()
 
     def magenta(c):
         return c.red() > 120 and c.blue() > 120 and c.green() < 60
@@ -637,8 +638,8 @@ try:
         require(checker is not None, "create CheckerBoard", plugin_problem("CheckerBoard"))
         checker.setPosition(450, -150)
         checker.getParam("boxSize").set(240.0, 240.0)
-        for name, colour in (("color0", (1.0, 0.0, 0.0, 1.0)), ("color1", (0.0, 0.0, 1.0, 1.0)),
-                             ("color2", (1.0, 0.0, 0.0, 1.0)), ("color3", (0.0, 0.0, 1.0, 1.0))):
+        for name, colour in (("color0", (1.0, 0.0, 0.0, 1.0)), ("color1", (0.0, 1.0, 1.0, 1.0)),
+                             ("color2", (1.0, 0.0, 0.0, 1.0)), ("color3", (0.0, 1.0, 1.0, 1.0))):
             checker.getParam(name).set(*colour)
         checker.getParam("lineWidth").set(0.0)
         camera = app.createNode("USDCamera")
@@ -678,12 +679,12 @@ try:
         image = save_view("natron-utility-materials-lights")
         green = count(image, greenish)
         red = count(image, reddish)
-        blue = count(image, strongly_blue)
+        cyan = count(image, cyanish)
         pink = count(image, magenta)
-        report("NOTE materials and lights: %d green, %d red, %d blue, %d magenta" % (green, red, blue, pink))
+        report("NOTE materials and lights: %d green, %d red, %d cyan, %d magenta" % (green, red, cyan, pink))
         check(green >= MIN_PIXELS, "the UsdPreviewSurface card shows its texture lit (%d green pixels)" % green)
-        check(red >= MIN_PIXELS and blue >= MIN_PIXELS,
-              "the USDCard shows the USDProject3D checker lit (%d red, %d blue pixels)" % (red, blue))
+        check(red >= MIN_PIXELS and cyan >= MIN_PIXELS,
+              "the USDCard shows the USDProject3D checker lit (%d red, %d cyan pixels)" % (red, cyan))
         check(pink < MIN_PIXELS, "no material is drawn as unsupported (%d magenta pixels)" % pink)
 
         require(show_in_viewer(usd), "connect the Viewer back to the USDRead")

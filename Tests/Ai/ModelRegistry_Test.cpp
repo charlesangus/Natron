@@ -101,7 +101,7 @@ TEST(AiModelRegistry, BuiltinManifestParses)
     for (const AiModelEntry& entry : registry.models()) {
         SCOPED_TRACE(entry.id);
         const std::string origin = (entry.task == AiModelTask::eOpticalFlow)
-            ? "https://github.com/charlesangus/Natron/releases/download/ai-models-1/"
+            ? "https://github.com/charlesangus/natron-models/releases/download/ai-models-1/"
             : "https://github.com/darktable-org/darktable-ai/releases/download/release-5.6.0/";
         EXPECT_EQ(entry.url, origin + entry.package + ".dtmodel");
         EXPECT_EQ(entry.sha256.size(), 64u);

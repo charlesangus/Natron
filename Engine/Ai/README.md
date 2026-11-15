@@ -172,7 +172,7 @@ reproduces the committed file. It refuses a model whose weight licence is not GP
 
 darktable-ai ships no optical-flow model, so the `optical-flow` task's model, SEA-RAFT M
 (`optical-flow-searaft-m`, BSD-3-Clause), is a package of Natron's own, listed in the script's
-`NATRON_MODELS` and hosted on the fork's releases. `tools/ai/export-flow-model.py` builds it from the
+`NATRON_MODELS` and hosted on the charlesangus/natron-models releases. `tools/ai/export-flow-model.py` builds it from the
 published SEA-RAFT checkpoint and a SEA-RAFT checkout at the pinned commit: it exports the network
 to ONNX with the image size and the refinement iteration count as run-time inputs, packs it with
 fixed timestamps so a second run with the same torch and onnx gives the same sha256, and with

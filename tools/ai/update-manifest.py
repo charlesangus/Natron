@@ -90,7 +90,7 @@ VARIANTS = [
      "upscale-bsrgan", ["model_x4.onnx"], False),
 ]
 
-NATRON_RELEASES = "https://github.com/charlesangus/Natron/releases/download/ai-models-1/"
+NATRON_RELEASES = "https://github.com/charlesangus/natron-models/releases/download/ai-models-1/"
 
 NATRON_MODELS = [
     {

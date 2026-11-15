@@ -221,7 +221,7 @@
       "files": [
         "model.onnx"
       ],
-      "url": "https://github.com/charlesangus/Natron/releases/download/ai-models-1/optical-flow-searaft-m.dtmodel",
+      "url": "https://github.com/charlesangus/natron-models/releases/download/ai-models-1/optical-flow-searaft-m.dtmodel",
       "sha256": "9518b14a1ddef48e874201f00cb0945f7fc58a8afe49216ebf877ecd08e50f13",
       "size": 74374782,
       "weightsLicence": "BSD-3-Clause",

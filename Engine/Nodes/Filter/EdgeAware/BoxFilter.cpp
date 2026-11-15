@@ -330,12 +330,14 @@ boxMeanVariance(const float* in,
         }
     });
     if (finite != in) {
-        for (std::size_t k = 0; k < size; ++k) {
-            if (!std::isfinite(in[k])) {
-                mean[k] = in[k];
-                variance[k] = 0.f;
+        forBlocks(parallel, height, kRowBlock, [&](int begin, int end) {
+            for (std::size_t k = (std::size_t)begin * width; k < (std::size_t)end * width; ++k) {
+                if (!std::isfinite(in[k])) {
+                    mean[k] = in[k];
+                    variance[k] = 0.f;
+                }
             }
-        }
+        });
     }
 }
 } // namespace EdgeAware

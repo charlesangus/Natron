@@ -813,8 +813,13 @@ Effect::beginChanges()
 void
 Effect::endChanges()
 {
-    getInternalNode()->getEffectInstance()->endChanges();
-    getInternalNode()->endInputEdition(true);
+    // The input edition closes without rendering and the holder's final evaluation covers inputs and
+    // knobs together, so a mixed batch posts one render request, not two.
+    EffectInstancePtr effect = getInternalNode()->getEffectInstance();
+    if (getInternalNode()->endInputEdition(false)) {
+        effect->notifyInputsChangedDuringBlock();
+    }
+    effect->endChanges();
 }
 
 IntParam*

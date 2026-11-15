@@ -684,6 +684,7 @@ struct EngineEntry {
     bool showRender = false;
     bool showProxy = false;
     bool showGuides = false;
+    std::vector<std::pair<double, GfFrustum>> cameraMotion;
 
     // That render's primId plane and the paths of its hashes, decoded on the CPU when first asked for.
     bool idsDecoded = false;
@@ -1585,6 +1586,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     for (const std::pair<const std::string, VtValue>& setting : rendererSettings(renderer)) {
         settings[setting.first] = setting.second;
     }
+    // The shutter decides which motion samples the delegate syncs, so a new one makes the engine
+    // again, as its settings do; the camera's motion is only traced, so it is set on each render.
+    if (renderer == kRenderDelegateUtilityId) {
+        settings[kRenderDelegateUtilityShutterSetting] = VtValue(HydraRender::shutterInterval(request));
+    }
     const bool cycles = CyclesAovs::isCycles(renderer);
     if (cycles) {
         followCyclesThreads(request.threads);
@@ -1606,7 +1612,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
     const U64 writeCount = SceneWriteBarrier::getWriteCount();
     entry.lastUse = ++_useSerial;
-    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides)) {
+    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides) && (entry.cameraMotion == request.cameraMotion)) {
         return &entry;
     }
     // Cycles shows a restart in its progress only once a change reaches it: a request changing
@@ -1636,6 +1642,19 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     engine->SetRenderBufferSize(GfVec2i(width, height));
     engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
     engine->SetCameraState(view, projection);
+    if (renderer == kRenderDelegateUtilityId) {
+        VtDoubleArray times;
+        VtMatrix4dArray views;
+        VtMatrix4dArray projections;
+        for (const std::pair<double, GfFrustum>& sample : request.cameraMotion) {
+            times.push_back(sample.first);
+            views.push_back(sample.second.ComputeViewMatrix());
+            projections.push_back(sample.second.ComputeProjectionMatrix());
+        }
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraTimesSetting), VtValue(times));
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraViewsSetting), VtValue(views));
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraProjectionsSetting), VtValue(projections));
+    }
 
     UsdImagingGLRenderParams params;
     params.frame = request.time;
@@ -1792,6 +1811,12 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
                 entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + fallback->second.UncheckedGet<std::string>();
             }
+
+            const VtDictionary::const_iterator motion = utilityStats.find(kUtilityStatMotionWarning);
+
+            if ((motion != utilityStats.end()) && motion->second.IsHolding<std::string>() && !motion->second.UncheckedGet<std::string>().empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + motion->second.UncheckedGet<std::string>();
+            }
         }
         if (log) {
             const std::vector<MoonRayAovs::Notice> notices = log->notices();
@@ -1824,6 +1849,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.showRender = request.showRender;
     entry.showProxy = request.showProxy;
     entry.showGuides = request.showGuides;
+    entry.cameraMotion = request.cameraMotion;
 
     if (!_gl) {
         // Host memory, which the GPU budget does not count.
@@ -2410,6 +2436,83 @@ setHydraGLContextFactory(const HydraGLContextFactory& factory)
 }
 
 namespace HydraRender {
+namespace {
+    RendererSettings
+    requestSettings(const Request& request)
+    {
+        RendererSettings settings = request.settings;
+
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(request.renderer)) {
+            settings[setting.first] = setting.second;
+        }
+
+        return settings;
+    }
+
+    template <typename T>
+    T
+    settingOr(const RendererSettings& settings,
+              const char* key,
+              const T& fallback)
+    {
+        RendererSettings::const_iterator found = settings.find(key);
+
+        if (found == settings.end()) {
+            return fallback;
+        }
+        if (found->second.IsHolding<T>()) {
+            return found->second.UncheckedGet<T>();
+        }
+        const VtValue cast = VtValue::Cast<T>(found->second);
+
+        return cast.IsHolding<T>() ? cast.UncheckedGet<T>() : fallback;
+    }
+
+    bool
+    utilityBlurs(const RendererSettings& settings)
+    {
+        return settingOr<bool>(settings, kUtilitySettingCameraMotionBlur, true) || settingOr<bool>(settings, kUtilitySettingTransformMotionBlur, true) || settingOr<bool>(settings, kUtilitySettingDeformationMotionBlur, true);
+    }
+} // anon namespace
+
+GfVec2d
+shutterInterval(const Request& request)
+{
+    if (request.renderer != kRenderDelegateUtilityId) {
+        return GfVec2d(0.);
+    }
+    const RendererSettings settings = requestSettings(request);
+    double open = request.shutterOpen;
+    double close = request.shutterClose;
+    if (settingOr<bool>(settings, kUtilitySettingOverrideShutter, false)) {
+        const double length = std::max(0., double(settingOr<float>(settings, kUtilitySettingShutter, kUtilityDefaultShutter)));
+        const TfToken offset = settingOr<TfToken>(settings, kUtilitySettingShutterOffset, TfToken(kUtilityShutterCentred));
+        if (offset == kUtilityShutterStart) {
+            open = 0.;
+        } else if (offset == kUtilityShutterEnd) {
+            open = -length;
+        } else if (offset == kUtilityShutterCustom) {
+            open = settingOr<float>(settings, kUtilitySettingShutterCustomOffset, 0.f);
+        } else {
+            open = -0.5 * length;
+        }
+        close = open + length;
+    }
+    if (!(close > open) || !utilityBlurs(settings)) {
+        return GfVec2d(0.);
+    }
+
+    return GfVec2d(open, close);
+}
+
+bool
+cameraMotionBlur(const Request& request)
+{
+    const GfVec2d shutter = shutterInterval(request);
+
+    return (shutter[1] > shutter[0]) && settingOr<bool>(requestSettings(request), kUtilitySettingCameraMotionBlur, true);
+}
+
 bool
 cameraFrustum(const UsdStageRefPtr& stage,
               const SdfPath& cameraPath,
@@ -2728,10 +2831,12 @@ namespace {
         bool showProxy = false;
         bool showGuides = false;
         RendererSettings settings;
+        GfVec2d shutter;
+        std::vector<std::pair<double, GfFrustum>> cameraMotion;
 
         bool operator==(const DeviceFrameKey& other) const
         {
-            return (renderer == other.renderer) && (stackHash == other.stackHash) && (metadata == other.metadata) && (writeCount == other.writeCount) && (time == other.time) && (view == other.view) && (projection == other.projection) && (width == other.width) && (height == other.height) && (headlight == other.headlight) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (settings == other.settings);
+            return (shutter == other.shutter) && (cameraMotion == other.cameraMotion) && (renderer == other.renderer) && (stackHash == other.stackHash) && (metadata == other.metadata) && (writeCount == other.writeCount) && (time == other.time) && (view == other.view) && (projection == other.projection) && (width == other.width) && (height == other.height) && (headlight == other.headlight) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (settings == other.settings);
         }
     };
 
@@ -2756,6 +2861,8 @@ namespace {
         for (const std::pair<const std::string, VtValue>& setting : rendererSettings(key.renderer)) {
             key.settings[setting.first] = setting.second;
         }
+        key.shutter = HydraRender::shutterInterval(request);
+        key.cameraMotion = request.cameraMotion;
 
         return key;
     }
@@ -3718,6 +3825,7 @@ void
 ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 {
     int lastSamples = -1;
+    std::size_t lastUtilitySamples = 0;
     RestartWatch restartWatch;
     bool lastConverged = false;
     bool firstPass = false;
@@ -3807,6 +3915,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             keepFrame = false;
             lastSamples = -1;
+            lastUtilitySamples = 0;
             lastConverged = false;
             engineFresh = true;
             needRestart = true;
@@ -4022,10 +4131,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         // not enough: Cycles marks its buffers converged when a reset cuts a render short.
         const bool atCap = (cap > 0) && (samples >= cap);
         const bool finished = restartSeen && converged && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
-        // Natron Utility's tiles land in no order and count no samples, so only its finished frame is
-        // a picture.
+        // Natron Utility's tiles land in no order and count no samples the viewer reads, so its frame is
+        // a picture once a whole sample per pixel has landed, and again as each later one lands.
         const bool wholeFrames = engineRenderer == kRenderDelegateUtilityId;
-        bool publish = restartSeen && (samples != 0) && (wholeFrames ? finished : (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex)));
+        const VtDictionary::const_iterator utilityStat = stats.find(kUtilityStatSamples);
+        const std::size_t utilitySamples = (utilityStat != stats.end() && utilityStat->second.IsHolding<std::size_t>()) ? utilityStat->second.UncheckedGet<std::size_t>() : 0;
+        const bool samplesLanded = (utilitySamples > 0) && (utilitySamples != lastUtilitySamples);
+        lastUtilitySamples = utilitySamples;
+        bool publish = restartSeen && (samples != 0) && (wholeFrames ? (finished || samplesLanded) : (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex)));
         if (publish) {
             lock.unlock();
             read.reset(new Frame);

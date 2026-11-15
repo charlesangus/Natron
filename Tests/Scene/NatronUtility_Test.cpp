@@ -146,6 +146,8 @@ public:
         EXPECT_EQ(TfToken(kRenderDelegateUtilityId), _engine->GetCurrentRendererId());
         _engine->SetEnablePresentation(false);
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
+        // These tests read pixels as one ray through each centre draws them.
+        _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(int(1)));
     }
 
     // A frame draws on the delegate's thread, and Render() only starts it.
@@ -480,6 +482,55 @@ TEST(NatronUtility, RenderBufferHoldsFloatAndIntPixelsInHostMemory)
     buffer.setConverged(true);
     buffer.Resolve();
     EXPECT_TRUE(buffer.IsConverged());
+}
+
+TEST(NatronUtility, RenderBufferReadersSeeOnlyWholePasses)
+{
+    UtilityRenderBuffer buffer((SdfPath("/buffer")));
+    const float red[4] = { 1.f, 0.f, 0.f, 1.f };
+    const float blue[4] = { 0.f, 0.f, 1.f, 1.f };
+
+    ASSERT_TRUE(buffer.Allocate(GfVec3i(2, 1, 1), HdFormatFloat32Vec4, false));
+    buffer.clear(VtValue(GfVec4f(0.f, 0.f, 0.f, 0.f)));
+    buffer.addSample(0, 0, red, 4, 1.f, true);
+
+    const float* cleared = static_cast<const float*>(buffer.Map());
+
+    ASSERT_NE(nullptr, cleared);
+    EXPECT_EQ(0.f, cleared[0]) << "a pass still being drawn is not shown";
+    buffer.Unmap();
+
+    buffer.publishPass();
+
+    const float* first = static_cast<const float*>(buffer.Map());
+
+    ASSERT_NE(nullptr, first);
+    EXPECT_EQ(1.f, first[0]);
+
+    buffer.addSample(1, 0, blue, 4, 1.f, true);
+    buffer.publishPass();
+    EXPECT_EQ(0.f, first[1 * 4 + 2]) << "a mapped pass is not written by the next one";
+
+    const float* again = static_cast<const float*>(buffer.Map());
+
+    EXPECT_EQ(first, again) << "every Map() until the last Unmap() shares one pass";
+    buffer.Unmap();
+    buffer.Unmap();
+
+    const float* second = static_cast<const float*>(buffer.Map());
+
+    ASSERT_NE(nullptr, second);
+    EXPECT_EQ(1.f, second[0]);
+    EXPECT_EQ(1.f, second[1 * 4 + 2]);
+    buffer.Unmap();
+
+    buffer.clear(VtValue(GfVec4f(0.f, 0.f, 0.f, 0.f)));
+
+    const float* restarted = static_cast<const float*>(buffer.Map());
+
+    ASSERT_NE(nullptr, restarted);
+    EXPECT_EQ(0.f, restarted[0]) << "a clear is shown at once";
+    buffer.Unmap();
 }
 
 TEST(NatronUtility, SceneVersionBumpsOnChangesAndSnapshotListsEveryInstance)

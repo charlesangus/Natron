@@ -25,6 +25,8 @@
 
 #include "UtilityKernels.h"
 
+#include <vector>
+
 // The Slang prelude's global type names would collide in any file that also sees USD, so these mirror
 // its ComputeVaryingInput and StructuredBuffer.
 namespace {
@@ -40,6 +42,7 @@ struct KernelBuffer {
 
 struct RayGenGlobals {
     KernelBuffer rays;
+    KernelBuffer weights;
     const NATRON_NAMESPACE::KernelRayGenParams* params;
 };
 
@@ -75,15 +78,23 @@ NATRON_NAMESPACE_ENTER
 
 void
 runRayGenKernel(const KernelRayGenParams& params,
-                float* rays)
+                float* rays,
+                float* weights)
 {
     const std::size_t count = static_cast<std::size_t>(params.tileWidth) * params.tileHeight;
 
     if (count == 0) {
         return;
     }
+
+    std::vector<float> unwanted;
+
+    if (!weights) {
+        unwanted.resize(count);
+        weights = unwanted.data();
+    }
     KernelVarying varying = varyingFor(count);
-    RayGenGlobals globals { { rays, count * 8 }, &params };
+    RayGenGlobals globals { { rays, count * 8 }, { weights, count }, &params };
 
     utilityRayGen(&varying, nullptr, &globals);
 }

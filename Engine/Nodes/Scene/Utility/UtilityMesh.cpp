@@ -27,15 +27,22 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/extComputationUtils.h>
 #include <pxr/imaging/hd/instancer.h>
+#include <pxr/imaging/hd/meshSchema.h>
+#include <pxr/imaging/hd/meshTopologySchema.h>
 #include <pxr/imaging/hd/meshUtil.h>
+#include <pxr/imaging/hd/primvarSchema.h>
+#include <pxr/imaging/hd/primvarsSchema.h>
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/sceneDelegate.h>
+#include <pxr/imaging/hd/sceneIndex.h>
+#include <pxr/imaging/hd/timeSampleArray.h>
 #include <pxr/imaging/hd/tokens.h>
 
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
@@ -216,6 +223,39 @@ straightRGBA(const GfVec3f& color,
 {
     return GfVec4f(color[0], color[1], color[2], opacity);
 }
+// The scene delegate serves a mesh's topology at the frame only; its sampled sources in the
+// terminal scene index are what can be asked about other times within the shutter.
+HdContainerDataSourceHandle
+primSource(HdSceneDelegate* sceneDelegate,
+           const SdfPath& id)
+{
+    const HdSceneIndexBaseRefPtr index = sceneDelegate->GetRenderIndex().GetTerminalSceneIndex();
+
+    return index ? index->GetPrim(id).dataSource : HdContainerDataSourceHandle();
+}
+
+bool
+variesWithin(const HdIntArrayDataSourceHandle& source,
+             float open,
+             float close)
+{
+    std::vector<HdSampledDataSource::Time> times;
+
+    if (!source || !source->GetContributingSampleTimesForInterval(open, close, &times)) {
+        return false;
+    }
+    const VtIntArray atFrame = source->GetTypedValue(0.f);
+
+    return std::any_of(times.begin(), times.end(), [&source, &atFrame](HdSampledDataSource::Time t) { return source->GetTypedValue(t) != atFrame; });
+}
+
+VtIntArray
+valueAt(const HdIntArrayDataSourceHandle& source,
+        float time,
+        const VtIntArray& fallback)
+{
+    return source ? source->GetTypedValue(time) : fallback;
+}
 } // anon namespace
 
 UtilityMesh::UtilityMesh(const SdfPath& id)
@@ -296,17 +336,27 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
     }
 
     const std::size_t previousPointCount = _points.size();
-    const bool pointsDirty = pullPoints(sceneDelegate, bits);
+    // A mid-shutter mesh replaced the frame's points and topology, which are needed again to tell
+    // whether the topology still varies.
+    const HdDirtyBits pulled = _midShutter ? (bits | HdChangeTracker::DirtyPoints | HdChangeTracker::DirtyTopology) : bits;
+    const bool pointsDirty = pullPoints(sceneDelegate, pulled);
     bool topologyDirty = false;
 
-    if (HdChangeTracker::IsTopologyDirty(bits, id)) {
+    if (HdChangeTracker::IsTopologyDirty(pulled, id)) {
         _topology = HdMeshTopology(GetMeshTopology(sceneDelegate), 0);
-        const HdMeshUtil util(&_topology, id);
-
-        util.ComputeTriangleIndices(&_allTriangles, &_allParams);
         topologyDirty = true;
     }
     if (pointsDirty || topologyDirty) {
+        const std::shared_ptr<UtilityScene::PointMotion> motion = samplePointMotion(sceneDelegate);
+
+        topologyDirty = topologyDirty || _midShutter;
+        if (topologyDirty) {
+            const HdMeshUtil util(&_topology, id);
+
+            util.ComputeTriangleIndices(&_allTriangles, &_allParams);
+            // The kept list indexes the triangulation, so the same list can name other triangles.
+            _kept.clear();
+        }
         const bool filterChanged = filterTriangles();
 
         if (topologyDirty || filterChanged) {
@@ -315,6 +365,8 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
         } else {
             scene->setPoints(_geometry, _points);
         }
+        scene->setTopologyVaries(_geometry, _midShutter);
+        scene->setPointMotion(_geometry, motion);
     }
     if (topologyDirty || _points.size() != previousPointCount
         || HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayColor)
@@ -357,14 +409,72 @@ UtilityMesh::pullPoints(HdSceneDelegate* sceneDelegate,
                 const auto it = values.find(pv.name);
 
                 _points = it == values.end() ? VtVec3fArray() : it->second.GetWithDefault<VtVec3fArray>();
+                _pointsComputed = true;
 
                 return true;
             }
         }
     }
     _points = sceneDelegate->Get(id, HdTokens->points).GetWithDefault<VtVec3fArray>();
+    _pointsComputed = false;
 
     return true;
+}
+
+// Computed points (skinning and the like) give no samples over an interval, so they do not deform
+// within the shutter. A mesh whose topology changes within it cannot be interpolated, so it stays
+// still as it is at the shutter's middle, the time the rest of the scene is centred on.
+std::shared_ptr<UtilityScene::PointMotion>
+UtilityMesh::samplePointMotion(HdSceneDelegate* sceneDelegate)
+{
+    const SdfPath& id = GetId();
+    const GfVec2d shutter = utilityMotionShutter(*sceneDelegate->GetRenderIndex().GetRenderDelegate(), kUtilitySettingDeformationMotionBlur);
+
+    _midShutter = false;
+    if (!(shutter[1] > shutter[0]) || _pointsComputed) {
+        return nullptr;
+    }
+    const float open = static_cast<float>(shutter[0]);
+    const float close = static_cast<float>(shutter[1]);
+    HdTimeSampleArray<VtValue, 4> samples;
+    std::shared_ptr<UtilityScene::PointMotion> motion = std::make_shared<UtilityScene::PointMotion>();
+    bool topologyVaries = false;
+
+    sceneDelegate->SamplePrimvar(id, HdTokens->points, open, close, &samples);
+    for (std::size_t i = 0; i < samples.count; ++i) {
+        const VtVec3fArray points = samples.values[i].GetWithDefault<VtVec3fArray>();
+
+        if (points.size() != _points.size()) {
+            topologyVaries = true;
+            break;
+        }
+        motion->times.push_back(samples.times[i]);
+        motion->points.push_back(points);
+    }
+
+    const HdContainerDataSourceHandle prim = primSource(sceneDelegate, id);
+    const HdMeshTopologySchema topology = HdMeshSchema::GetFromParent(prim).GetTopology();
+    const HdIntArrayDataSourceHandle counts = topology.GetFaceVertexCounts();
+    const HdIntArrayDataSourceHandle indices = topology.GetFaceVertexIndices();
+
+    topologyVaries = topologyVaries || variesWithin(counts, open, close) || variesWithin(indices, open, close);
+    if (topologyVaries) {
+        const float middle = 0.5f * (open + close);
+        const HdSampledDataSourceHandle points = HdPrimvarsSchema::GetFromParent(prim).GetPrimvar(HdTokens->points).GetPrimvarValue();
+
+        if (points) {
+            _points = points->GetValue(middle).GetWithDefault<VtVec3fArray>();
+        }
+        _topology = HdMeshTopology(_topology.GetScheme(), _topology.GetOrientation(), valueAt(counts, middle, _topology.GetFaceVertexCounts()),
+                                   valueAt(indices, middle, _topology.GetFaceVertexIndices()),
+                                   valueAt(topology.GetHoleIndices(), middle, _topology.GetHoleIndices()), 0);
+        _midShutter = true;
+
+        return nullptr;
+    }
+    const bool moves = std::any_of(motion->points.begin(), motion->points.end(), [&motion](const VtVec3fArray& points) { return points != motion->points.front(); });
+
+    return moves ? motion : nullptr;
 }
 
 // A triangle with no area has no normal, and one NaN vertex would poison the bounds of whatever
@@ -467,18 +577,17 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
                            UtilityScene* scene)
 {
     const SdfPath& instancerId = GetInstancerId();
+    HdRenderIndex& renderIndex = sceneDelegate->GetRenderIndex();
+    UtilityInstancer* instancer = nullptr;
     std::vector<GfMatrix4d> transforms;
 
     if (instancerId.IsEmpty()) {
         transforms.push_back(_transform);
     } else {
-        HdRenderIndex& renderIndex = sceneDelegate->GetRenderIndex();
-
         HdInstancer::_SyncInstancerAndParents(renderIndex, instancerId);
-        HdInstancer* instancer = renderIndex.GetInstancer(instancerId);
-
+        instancer = static_cast<UtilityInstancer*>(renderIndex.GetInstancer(instancerId));
         if (TF_VERIFY(instancer)) {
-            const VtMatrix4dArray instances = static_cast<UtilityInstancer*>(instancer)->computeInstanceTransforms(GetId());
+            const VtMatrix4dArray instances = instancer->computeInstanceTransforms(GetId());
             transforms.reserve(instances.size());
             for (const GfMatrix4d& instance : instances) {
                 transforms.push_back(_transform * instance);
@@ -486,6 +595,52 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
         }
     }
     scene->setInstances(_geometry, transforms);
+
+    const GfVec2d shutter = utilityMotionShutter(*renderIndex.GetRenderDelegate(), kUtilitySettingTransformMotionBlur);
+    std::shared_ptr<UtilityScene::TransformMotion> motion;
+
+    if (shutter[1] > shutter[0] && !transforms.empty()) {
+        HdTimeSampleArray<GfMatrix4d, 4> own;
+        std::vector<float> times;
+
+        sceneDelegate->SampleTransform(GetId(), static_cast<float>(shutter[0]), static_cast<float>(shutter[1]), &own);
+        for (std::size_t i = 1; i < own.count; ++i) {
+            if (own.values[i] != own.values[0]) {
+                times.assign(own.times.begin(), own.times.begin() + own.count);
+                break;
+            }
+        }
+        if (instancer) {
+            const std::vector<float> placed = instancer->motionTimes(GetId());
+
+            times.insert(times.end(), placed.begin(), placed.end());
+        }
+        times = utilityMotionTimes(times, shutter);
+        if (!times.empty()) {
+            motion = std::make_shared<UtilityScene::TransformMotion>();
+        }
+        for (const float time : times) {
+            const GfMatrix4d transform = own.count > 0 ? utilityTransformAt(own, time) : _transform;
+            std::vector<GfMatrix4d> at;
+
+            if (instancer) {
+                const VtMatrix4dArray instances = instancer->computeInstanceTransformsAt(GetId(), time);
+                at.reserve(instances.size());
+                for (const GfMatrix4d& instance : instances) {
+                    at.push_back(transform * instance);
+                }
+            } else {
+                at.push_back(transform);
+            }
+            if (at.size() != transforms.size()) {
+                motion.reset();
+                break;
+            }
+            motion->times.push_back(time);
+            motion->transforms.push_back(at);
+        }
+    }
+    scene->setTransformMotion(_geometry, motion);
 }
 
 NATRON_NAMESPACE_EXIT

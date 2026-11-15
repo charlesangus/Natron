@@ -25,7 +25,10 @@
 
 #include "Wavefront.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <numeric>
 
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3i.h>
@@ -52,7 +55,6 @@ storePosition(const GfVec3d& v,
     destination[0] = static_cast<float>(v[0]);
     destination[1] = static_cast<float>(v[1]);
     destination[2] = static_cast<float>(v[2]);
-    destination[3] = 0.f;
 }
 
 // Whether a geometry's colours cover what its binding will index them with.
@@ -122,6 +124,13 @@ makeRayGenParams(const WavefrontFrame& frame,
     storePosition(farAtCentre, params.farAtCentre);
     storePosition(inverse.Transform(GfVec3d(1., 0., kNdcFar)) - farAtCentre, params.farPerX);
     storePosition(inverse.Transform(GfVec3d(0., 1., kNdcFar)) - farAtCentre, params.farPerY);
+    const WavefrontSampling& sampling = frame.sampling;
+    params.filterWidth = sampling.filterWidth;
+    params.sampleIndex = static_cast<std::uint32_t>(std::max(0, sampling.sampleIndex));
+    params.seed = sampling.seed;
+    params.samplesPerSide = static_cast<std::uint32_t>(std::max(1, sampling.samplesPerSide));
+    params.filter = sampling.filter;
+    params.padding = 0;
     params.windowX = frame.window.x;
     params.windowY = frame.window.y;
     params.windowWidth = frame.window.width;
@@ -241,6 +250,177 @@ WavefrontShadeTables::buffers() const
     buffers.instanceCount = _instanceIds.size();
 
     return buffers;
+}
+
+int
+wavefrontBucketCount(const WavefrontMotion& motion,
+                     const UtilityScene::Snapshot& snapshot,
+                     int samplesPerPixel)
+{
+    if (!motion.isOpen() || (motion.cameraTimes.empty() && !UtilityScene::moves(snapshot))) {
+        return 1;
+    }
+
+    return std::clamp(motion.segments, 1, std::max(1, samplesPerPixel));
+}
+
+double
+wavefrontBucketTime(const WavefrontMotion& motion,
+                    int bucket,
+                    int buckets)
+{
+    // One bucket draws the unblurred frame, which an offset shutter's middle would move.
+    if (!motion.isOpen() || buckets <= 1) {
+        return 0.;
+    }
+
+    return motion.open + (motion.close - motion.open) * (bucket + 0.5) / buckets;
+}
+
+std::vector<int>
+wavefrontSampleOrder(int samplesPerPixel,
+                     int buckets)
+{
+    const int count = std::max(1, samplesPerPixel);
+    std::vector<int> order(static_cast<std::size_t>(count));
+
+    if (buckets <= 1) {
+        std::iota(order.begin(), order.end(), 0);
+
+        return order;
+    }
+    // A stride coprime with the count visits every sample once. Index s is cell (s % side, s / side)
+    // of the pixel's grid, so a stride of rows * side + columns steps consecutive samples that many
+    // columns and rows on; golden fractions of the side for both spread a bucket over both axes.
+    const int side = static_cast<int>(std::lround(std::sqrt(static_cast<double>(count))));
+    int stride = 1;
+
+    if (side > 1 && side * side == count) {
+        int columns = std::max(1, static_cast<int>(std::lround(side * 0.6180339887)));
+
+        while (std::gcd(columns, side) != 1) {
+            ++columns;
+        }
+        stride = (static_cast<int>(std::lround(side * 0.3819660113)) * side + columns) % count;
+    } else {
+        stride = std::max(1, static_cast<int>(std::lround(count * 0.6180339887)));
+        while (std::gcd(stride, count) != 1) {
+            ++stride;
+        }
+    }
+    for (int i = 0; i < count; ++i) {
+        order[static_cast<std::size_t>(i)] = static_cast<int>((static_cast<long long>(i) * stride) % count);
+    }
+
+    return order;
+}
+
+namespace {
+void
+cameraAt(const WavefrontMotion& motion,
+         double time,
+         GfMatrix4d* view,
+         GfMatrix4d* projection)
+{
+    const std::vector<double>& times = motion.cameraTimes;
+    std::size_t next = 0;
+
+    while (next < times.size() && times[next] < time) {
+        ++next;
+    }
+    if (next == 0 || next == times.size()) {
+        const std::size_t at = (next == 0) ? 0 : times.size() - 1;
+
+        *view = motion.cameraViews[at];
+        *projection = motion.cameraProjections[at];
+
+        return;
+    }
+    const double span = times[next] - times[next - 1];
+    const double u = (span > 0.) ? (time - times[next - 1]) / span : 0.;
+
+    // The camera's own transform turns about its centre, which its inverse would not.
+    *view = UtilityScene::interpolate(motion.cameraViews[next - 1].GetInverse(), motion.cameraViews[next].GetInverse(), u).GetInverse();
+    *projection = motion.cameraProjections[next - 1] * (1. - u) + motion.cameraProjections[next] * u;
+}
+} // anon namespace
+
+WavefrontFrame
+wavefrontFrameAt(const WavefrontFrame& frame,
+                 const WavefrontMotion& motion,
+                 double time)
+{
+    WavefrontFrame out = frame;
+
+    if (motion.cameraTimes.empty() || motion.cameraViews.size() != motion.cameraTimes.size() || motion.cameraProjections.size() != motion.cameraTimes.size()) {
+        return out;
+    }
+    GfMatrix4d viewAtFrame;
+    GfMatrix4d projectionAtFrame;
+    GfMatrix4d view;
+    GfMatrix4d projection;
+
+    cameraAt(motion, 0., &viewAtFrame, &projectionAtFrame);
+    cameraAt(motion, time, &view, &projection);
+    // Row vectors: the host's framing applies after the projection, and anything ahead of the view before it.
+    out.worldToView = frame.worldToView * viewAtFrame.GetInverse() * view;
+    out.projection = projection * projectionAtFrame.GetInverse() * frame.projection;
+
+    return out;
+}
+
+bool
+wavefrontDrawSamples(WavefrontExecutor& executor,
+                     const UtilityScene::Snapshot& snapshot,
+                     const WavefrontFrame& frame,
+                     const WavefrontMotion& motion,
+                     WavefrontFilm& film,
+                     const std::atomic<bool>& stop,
+                     int threads,
+                     const std::function<void(std::size_t)>& progress,
+                     std::vector<double>* bucketSeconds)
+{
+    const int samples = std::max(1, frame.sampling.samplesPerPixel());
+    const int buckets = wavefrontBucketCount(motion, snapshot, samples);
+    const std::vector<int> order = wavefrontSampleOrder(samples, buckets);
+    std::size_t done = 0;
+
+    if (bucketSeconds) {
+        bucketSeconds->assign(static_cast<std::size_t>(buckets), 0.);
+    }
+    for (int bucket = 0; bucket < buckets; ++bucket) {
+        const auto start = std::chrono::steady_clock::now();
+        const int first = static_cast<int>(static_cast<long long>(bucket) * samples / buckets);
+        const int last = static_cast<int>(static_cast<long long>(bucket + 1) * samples / buckets);
+        const double time = wavefrontBucketTime(motion, bucket, buckets);
+        UtilityScene::Snapshot evaluated;
+        const bool evaluate = time != 0. && UtilityScene::moves(snapshot);
+
+        if (evaluate) {
+            evaluated = UtilityScene::evaluateAt(snapshot, time);
+        }
+        const UtilityScene::Snapshot& scene = evaluate ? evaluated : snapshot;
+        const WavefrontFrame atTime = (time != 0.) ? wavefrontFrameAt(frame, motion, time) : frame;
+
+        for (int i = first; i < last; ++i) {
+            WavefrontFrame pass = atTime;
+
+            pass.sampling.sampleIndex = order[static_cast<std::size_t>(i)];
+            if (!executor.render(scene, pass, film, stop, threads)) {
+                return false;
+            }
+            film.passDrawn();
+            ++done;
+            if (progress) {
+                progress(done);
+            }
+        }
+        if (bucketSeconds) {
+            (*bucketSeconds)[static_cast<std::size_t>(bucket)] = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        }
+    }
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

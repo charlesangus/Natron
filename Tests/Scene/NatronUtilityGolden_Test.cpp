@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,7 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
 #include "ofxNatron.h"
@@ -88,8 +90,16 @@ sameDepth(float reference,
 class NatronUtilityGoldenTest
     : public BaseTest {
 protected:
+    // The goldens hold one ray through each pixel's centre.
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
+    }
+
     virtual void TearDown() OVERRIDE
     {
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, std::map<std::string, PXR_NS::VtValue>());
         HydraRender::releaseAll();
         SceneQueryPool::instance().releaseIdle();
         BaseTest::TearDown();

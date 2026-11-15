@@ -26,6 +26,7 @@
 #include "UtilityInstancer.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <pxr/base/gf/matrix4f.h>
 #include <pxr/base/gf/quatf.h>
@@ -39,6 +40,9 @@
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/sceneDelegate.h>
 #include <pxr/imaging/hd/tokens.h>
+
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/UtilityScene.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -111,7 +115,74 @@ convertMatrices(const VtValue& value,
         out->clear();
     }
 }
+
+template <class T, unsigned int N>
+bool
+varies(const HdTimeSampleArray<T, N>& samples)
+{
+    for (std::size_t i = 1; i < samples.count; ++i) {
+        if (!(samples.values[i] == samples.values[0])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+template <class T, unsigned int N>
+void
+addTimes(const HdTimeSampleArray<T, N>& samples,
+         std::vector<float>* times)
+{
+    if (varies(samples)) {
+        times->insert(times->end(), samples.times.begin(), samples.times.begin() + samples.count);
+    }
+}
 } // anon namespace
+
+std::vector<float>
+utilityMotionTimes(std::vector<float> times,
+                   const GfVec2d& shutter)
+{
+    if (times.empty() || !(shutter[1] > shutter[0])) {
+        return std::vector<float>();
+    }
+    const float open = static_cast<float>(shutter[0]);
+    const float close = static_cast<float>(shutter[1]);
+
+    for (float& time : times) {
+        time = std::min(std::max(time, open), close);
+    }
+    times.push_back(open);
+    times.push_back(close);
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+
+    return times;
+}
+
+GfMatrix4d
+utilityTransformAt(const HdTimeSampleArray<GfMatrix4d, 4>& samples,
+                   float time)
+{
+    if (samples.count == 0) {
+        return GfMatrix4d(1.);
+    }
+    std::size_t next = 0;
+
+    while (next < samples.count && samples.times[next] < time) {
+        ++next;
+    }
+    if (next == 0) {
+        return samples.values[0];
+    }
+    if (next == samples.count) {
+        return samples.values[samples.count - 1];
+    }
+    const float span = samples.times[next] - samples.times[next - 1];
+
+    return UtilityScene::interpolate(samples.values[next - 1], samples.values[next], span > 0.f ? (time - samples.times[next - 1]) / span : 0.);
+}
 
 UtilityInstancer::UtilityInstancer(HdSceneDelegate* delegate,
                                    const SdfPath& id)
@@ -135,6 +206,72 @@ UtilityInstancer::Sync(HdSceneDelegate* delegate,
     if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, GetId())) {
         syncPrimvars(delegate, *dirtyBits);
     }
+    sampleMotion(delegate);
+}
+
+void
+UtilityInstancer::sampleMotion(HdSceneDelegate* delegate)
+{
+    const SdfPath& id = GetId();
+
+    _shutter = utilityMotionShutter(*delegate->GetRenderIndex().GetRenderDelegate(), kUtilitySettingTransformMotionBlur);
+    _translationSamples.Resize(0);
+    _rotationSamples.Resize(0);
+    _scaleSamples.Resize(0);
+    _transformSamples.Resize(0);
+    _instancerTransformSamples.Resize(0);
+    if (!(_shutter[1] > _shutter[0])) {
+        return;
+    }
+    const float open = static_cast<float>(_shutter[0]);
+    const float close = static_cast<float>(_shutter[1]);
+
+    if (!_translations.empty()) {
+        delegate->SamplePrimvar(id, HdInstancerTokens->instanceTranslations, open, close, &_translationSamples);
+    }
+    if (!_rotations.empty()) {
+        delegate->SamplePrimvar(id, HdInstancerTokens->instanceRotations, open, close, &_rotationSamples);
+    }
+    if (!_scales.empty()) {
+        delegate->SamplePrimvar(id, HdInstancerTokens->instanceScales, open, close, &_scaleSamples);
+    }
+    if (!_transforms.empty()) {
+        delegate->SamplePrimvar(id, HdInstancerTokens->instanceTransforms, open, close, &_transformSamples);
+    }
+    delegate->SampleInstancerTransform(id, open, close, &_instancerTransformSamples);
+}
+
+std::vector<float>
+UtilityInstancer::motionTimes(const SdfPath& /*prototypeId*/)
+{
+    std::vector<float> times;
+
+    if (!_visible || !(_shutter[1] > _shutter[0])) {
+        return times;
+    }
+    addTimes(_translationSamples, &times);
+    addTimes(_rotationSamples, &times);
+    addTimes(_scaleSamples, &times);
+    addTimes(_transformSamples, &times);
+    addTimes(_instancerTransformSamples, &times);
+    if (!GetParentId().IsEmpty()) {
+        HdInstancer* parent = GetDelegate()->GetRenderIndex().GetInstancer(GetParentId());
+
+        if (TF_VERIFY(parent)) {
+            const std::vector<float> above = static_cast<UtilityInstancer*>(parent)->motionTimes(GetId());
+
+            times.insert(times.end(), above.begin(), above.end());
+        }
+    }
+
+    return utilityMotionTimes(times, _shutter);
+}
+
+VtMatrix4dArray
+UtilityInstancer::computeInstanceTransformsAt(const SdfPath& prototypeId,
+                                              float time)
+{
+    return placements(prototypeId, &time);
 }
 
 void
@@ -175,10 +312,46 @@ UtilityInstancer::syncPrimvars(HdSceneDelegate* delegate,
 VtMatrix4dArray
 UtilityInstancer::computeInstanceTransforms(const SdfPath& prototypeId)
 {
+    return placements(prototypeId, nullptr);
+}
+
+VtMatrix4dArray
+UtilityInstancer::placements(const SdfPath& prototypeId,
+                             const float* time)
+{
     if (!_visible) {
         return VtMatrix4dArray();
     }
-    const GfMatrix4d instancerTransform = GetDelegate()->GetInstancerTransform(GetId());
+    const bool sampled = time && _shutter[1] > _shutter[0];
+    std::vector<GfVec3d> sampledTranslations;
+    std::vector<GfQuatd> sampledRotations;
+    std::vector<GfVec3d> sampledScales;
+    std::vector<GfMatrix4d> sampledTransforms;
+    const std::vector<GfVec3d>* translations = &_translations;
+    const std::vector<GfQuatd>* rotations = &_rotations;
+    const std::vector<GfVec3d>* scales = &_scales;
+    const std::vector<GfMatrix4d>* matrices = &_transforms;
+
+    if (sampled && varies(_translationSamples)) {
+        convertVectors(_translationSamples.Resample(*time), &sampledTranslations);
+        translations = &sampledTranslations;
+    }
+    if (sampled && varies(_rotationSamples)) {
+        convertRotations(_rotationSamples.Resample(*time), &sampledRotations);
+        for (GfQuatd& rotation : sampledRotations) {
+            rotation.Normalize();
+        }
+        rotations = &sampledRotations;
+    }
+    if (sampled && varies(_scaleSamples)) {
+        convertVectors(_scaleSamples.Resample(*time), &sampledScales);
+        scales = &sampledScales;
+    }
+    if (sampled && varies(_transformSamples)) {
+        convertMatrices(_transformSamples.Resample(*time), &sampledTransforms);
+        matrices = &sampledTransforms;
+    }
+    const GfMatrix4d instancerTransform = (sampled && _instancerTransformSamples.count > 0) ? utilityTransformAt(_instancerTransformSamples, *time) : GetDelegate()->GetInstancerTransform(GetId());
     const VtIntArray indices = GetDelegate()->GetInstanceIndices(GetId(), prototypeId);
     VtMatrix4dArray transforms(indices.size());
     GfMatrix4d* out = transforms.data();
@@ -187,17 +360,17 @@ UtilityInstancer::computeInstanceTransforms(const SdfPath& prototypeId)
         const std::size_t index = static_cast<std::size_t>(indices[i]);
         GfMatrix4d transform = instancerTransform;
 
-        if (index < _translations.size()) {
-            transform = GfMatrix4d(1.).SetTranslate(_translations[index]) * transform;
+        if (index < translations->size()) {
+            transform = GfMatrix4d(1.).SetTranslate((*translations)[index]) * transform;
         }
-        if (index < _rotations.size()) {
-            transform = GfMatrix4d(1.).SetRotate(_rotations[index]) * transform;
+        if (index < rotations->size()) {
+            transform = GfMatrix4d(1.).SetRotate((*rotations)[index]) * transform;
         }
-        if (index < _scales.size()) {
-            transform = GfMatrix4d(1.).SetScale(_scales[index]) * transform;
+        if (index < scales->size()) {
+            transform = GfMatrix4d(1.).SetScale((*scales)[index]) * transform;
         }
-        if (index < _transforms.size()) {
-            transform = _transforms[index] * transform;
+        if (index < matrices->size()) {
+            transform = (*matrices)[index] * transform;
         }
         out[i] = transform;
     }
@@ -209,7 +382,7 @@ UtilityInstancer::computeInstanceTransforms(const SdfPath& prototypeId)
     if (!TF_VERIFY(parent)) {
         return transforms;
     }
-    const VtMatrix4dArray parentTransforms = static_cast<UtilityInstancer*>(parent)->computeInstanceTransforms(GetId());
+    const VtMatrix4dArray parentTransforms = static_cast<UtilityInstancer*>(parent)->placements(GetId(), time);
     VtMatrix4dArray flattened(parentTransforms.size() * transforms.size());
     GfMatrix4d* flat = flattened.data();
 

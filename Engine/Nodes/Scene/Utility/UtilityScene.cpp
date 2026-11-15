@@ -26,12 +26,53 @@
 #include "UtilityScene.h"
 
 #include <algorithm>
+#include <atomic>
 
+#include <pxr/base/gf/matrix3d.h>
+#include <pxr/base/gf/quatd.h>
+#include <pxr/base/gf/vec3d.h>
 #include <pxr/base/tf/diagnostic.h>
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+// Scene versions count up from 0, so these never meet one.
+const std::uint64_t kEvaluatedVersionBit = std::uint64_t(1) << 63;
+std::atomic<std::uint64_t> gEvaluatedVersions(0);
+
+GfMatrix3d
+upperLeft(const GfMatrix4d& m)
+{
+    return GfMatrix3d(m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]);
+}
+
+// The sample before time and how far time is towards the next, clamped to the samples' span.
+void
+locate(const std::vector<double>& times,
+       double time,
+       std::size_t* index,
+       double* u)
+{
+    if (times.size() < 2 || time <= times.front()) {
+        *index = 0;
+        *u = 0.;
+
+        return;
+    }
+    if (time >= times.back()) {
+        *index = times.size() - 2;
+        *u = 1.;
+
+        return;
+    }
+    const std::size_t next = static_cast<std::size_t>(std::upper_bound(times.begin(), times.end(), time) - times.begin());
+
+    *index = next - 1;
+    *u = (time - times[next - 1]) / (times[next] - times[next - 1]);
+}
+} // anon namespace
 
 UtilityScene::UtilityScene()
 {
@@ -203,6 +244,11 @@ UtilityScene::stats() const
         }
         stats.triangleCount += entry.second.geometry.triangles.size();
     }
+    for (const auto& entry : _records) {
+        if (entry.second.topologyVaries) {
+            stats.topologyVaryingPaths.push_back(entry.second.geometry.path);
+        }
+    }
     stats.topologyBuilds = _topologyBuilds;
     stats.pointUpdates = _pointUpdates;
     stats.colorUpdates = _colorUpdates;
@@ -229,11 +275,162 @@ UtilityScene::snapshot() const
             instance.geometry = entry.first;
             instance.instanceIndex = static_cast<int>(i);
             instance.transform = entry.second.transforms[i];
+            instance.motion = entry.second.transformMotion;
             snapshot.instances.push_back(instance);
         }
     }
 
     return snapshot;
+}
+
+void
+UtilityScene::setPointMotion(GeometryId id,
+                             const std::shared_ptr<const PointMotion>& motion)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (TF_VERIFY(it != _records.end()) && (it->second.geometry.pointMotion || motion)) {
+        it->second.geometry.pointMotion = motion;
+        ++_version;
+    }
+}
+
+void
+UtilityScene::setTransformMotion(GeometryId id,
+                                 const std::shared_ptr<const TransformMotion>& motion)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (TF_VERIFY(it != _records.end()) && (it->second.transformMotion || motion)) {
+        it->second.transformMotion = motion;
+        ++_version;
+    }
+}
+
+void
+UtilityScene::setTopologyVaries(GeometryId id,
+                                bool varies)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (TF_VERIFY(it != _records.end())) {
+        it->second.topologyVaries = varies;
+    }
+}
+
+bool
+UtilityScene::moves(const Snapshot& snapshot)
+{
+    for (const Instance& instance : snapshot.instances) {
+        if (instance.motion || snapshot.geometries.at(instance.geometry).pointMotion) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+UtilityScene::Snapshot
+UtilityScene::evaluateAt(const Snapshot& snapshot,
+                         double time)
+{
+    Snapshot out = snapshot;
+
+    out.version = kEvaluatedVersionBit | ++gEvaluatedVersions;
+    for (auto& entry : out.geometries) {
+        Geometry& geometry = entry.second;
+
+        if (!geometry.pointMotion) {
+            continue;
+        }
+        const std::shared_ptr<const PointMotion> held = geometry.pointMotion;
+        const PointMotion& motion = *held;
+        std::size_t index = 0;
+
+        geometry.pointMotion.reset();
+        if (motion.points.empty() || motion.points.size() != motion.times.size()) {
+            continue;
+        }
+        double u = 0.;
+
+        locate(motion.times, time, &index, &u);
+
+        const VtVec3fArray& a = motion.points[index];
+        const VtVec3fArray& b = motion.points[std::min(index + 1, motion.points.size() - 1)];
+
+        if (a.size() != geometry.points.size() || b.size() != geometry.points.size()) {
+            continue;
+        }
+        VtVec3fArray points(a.size());
+        GfVec3f* written = points.data();
+        const float weight = static_cast<float>(u);
+
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            written[i] = a.cdata()[i] + (b.cdata()[i] - a.cdata()[i]) * weight;
+        }
+        geometry.points = points;
+        geometry.pointsVersion = out.version;
+    }
+    for (Instance& instance : out.instances) {
+        if (!instance.motion) {
+            continue;
+        }
+        const std::shared_ptr<const TransformMotion> held = instance.motion;
+        const TransformMotion& motion = *held;
+
+        instance.motion.reset();
+        if (motion.transforms.empty() || motion.transforms.size() != motion.times.size()) {
+            continue;
+        }
+        const std::size_t which = static_cast<std::size_t>(instance.instanceIndex);
+        std::size_t index = 0;
+        double u = 0.;
+
+        locate(motion.times, time, &index, &u);
+
+        const std::size_t next = std::min(index + 1, motion.transforms.size() - 1);
+
+        if (which < motion.transforms[index].size() && which < motion.transforms[next].size()) {
+            instance.transform = interpolate(motion.transforms[index][which], motion.transforms[next][which], u);
+        }
+    }
+
+    return out;
+}
+
+GfMatrix4d
+UtilityScene::interpolate(const GfMatrix4d& a,
+                          const GfMatrix4d& b,
+                          double u)
+{
+    if (u <= 0. || a == b) {
+        return a;
+    }
+    if (u >= 1.) {
+        return b;
+    }
+    const GfMatrix4d rotationA = a.RemoveScaleShear();
+    const GfMatrix4d rotationB = b.RemoveScaleShear();
+    // Row vectors: the upper left is the stretch then the rotation.
+    const GfMatrix3d stretchA = upperLeft(a) * upperLeft(rotationA).GetTranspose();
+    const GfMatrix3d stretchB = upperLeft(b) * upperLeft(rotationB).GetTranspose();
+    const GfQuatd from = rotationA.ExtractRotationQuat();
+    GfQuatd to = rotationB.ExtractRotationQuat();
+
+    if (GfDot(from, to) < 0.) {
+        to = to * -1.;
+    }
+    GfMatrix3d rotation(1.);
+
+    rotation.SetRotate(GfSlerp(u, from, to));
+
+    const GfMatrix3d stretch = stretchA * (1. - u) + stretchB * u;
+    const GfVec3d translation = a.ExtractTranslation() * (1. - u) + b.ExtractTranslation() * u;
+
+    return GfMatrix4d(stretch * rotation, translation);
 }
 
 NATRON_NAMESPACE_EXIT

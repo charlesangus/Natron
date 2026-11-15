@@ -804,10 +804,21 @@ try:
             yield from painted_rows_unchanged("pasting a copied Painted Frame key")
             QMetaObject.invokeMethod(view, "onSelectedAllTriggered")
             yield ("sleep", SETTLE_MS)
-            yield from painted_rows_unchanged("select all")
+            painted_at = dict(("%s/Painted Frame" % item_named(st, names[key]).getLabel(), frame)
+                              for key, frame in zip(("a", "b", "c", "d"), (5, 5, 12, EXTRA_STROKE_FRAME)))
+            all_keys = selected_keys()
+            off_frame = [k for k in all_keys if k.rsplit("@", 1)[0] in painted_at
+                         and int(float(k.rsplit("@", 1)[1])) != painted_at[k.rsplit("@", 1)[0]]]
+            check(all_keys and not off_frame,
+                  "select all: every selected Painted Frame key is on its painted frame (%r)" % (off_frame or all_keys,))
+            ok = yield ("until", lambda: markers() == before, POLL_TIMEOUT_S)
+            check(ok, "select all: the timeline markers are unchanged (%r, %r)" % (before, markers()))
             QMetaObject.invokeMethod(view, "copySelectedKeyframes")
             tree.selectionModel().select(painted["a"], QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
             QApplication.processEvents()
+            # Hovering anywhere inside a multi-key selection's box reports the move cursor, so the
+            # key positions are only measurable once the select-all selection is gone.
+            yield from painted_rows_unchanged("select all and copy")
             for slot in ("pasteKeyframesAbsolute", "pasteKeyframesRelative"):
                 QMetaObject.invokeMethod(view, slot)
                 yield ("sleep", SETTLE_MS)
@@ -893,6 +904,9 @@ try:
         inner_props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
         inner = app.createNode("RotoPaint", -1, group, inner_props)
         require(inner is not None, "create a RotoPaint inside the Group")
+        # The Group has its own namespace, so the inner node would also be labelled RotoPaint1 and
+        # panels are found by label.
+        inner.setLabel("GroupedRotoPaint")
         require(inner.getRotoContext() is not None, "the grouped RotoPaint has a roto context")
         require(show_in_viewer(inner, viewer, group), "showed the grouped RotoPaint in a viewer")
         ok = yield ("until", lambda: rg.viewer_gl() is not None, POLL_TIMEOUT_S)

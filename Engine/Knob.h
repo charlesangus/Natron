@@ -3300,6 +3300,11 @@ public:
 
     virtual ~KnobHolder();
 
+protected:
+    // Clears the holder of every knob still attached to this one.
+    void detachKnobs();
+
+public:
     void setPanelPointer(DockablePanelI* gui);
 
     void discardPanelPointer();

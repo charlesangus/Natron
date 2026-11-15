@@ -37,10 +37,12 @@
 #include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 
-#include <QReadWriteLock>
 #include <QCoreApplication>
+#include <QMutex>
+#include <QReadWriteLock>
 #include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 
@@ -103,11 +105,41 @@ EffectInstance::addThreadLocalInputImageTempPointer(int inputNb,
     _imp->addInputImageTempPointer(inputNb, img);
 }
 
+namespace {
+
+QMutex&
+liveEffectsMutex()
+{
+    // Leaked: effects may outlive static destruction.
+    static QMutex* mutex = new QMutex();
+
+    return *mutex;
+}
+
+std::unordered_map<const KnobHolder*, EffectInstance*>&
+liveEffects()
+{
+    static std::unordered_map<const KnobHolder*, EffectInstance*>* effects = new std::unordered_map<const KnobHolder*, EffectInstance*>();
+
+    return *effects;
+}
+
+void
+registerLiveEffect(EffectInstance* effect)
+{
+    QMutexLocker k(&liveEffectsMutex());
+
+    liveEffects()[effect] = effect;
+}
+
+} // anon namespace
+
 EffectInstance::EffectInstance(NodePtr node)
     : NamedKnobHolder( node ? node->getApp() : AppInstancePtr() )
     , _node(node)
     , _imp( new Implementation(this) )
 {
+    registerLiveEffect(this);
     if (node) {
         if ( !node->isRenderScaleSupportEnabledForPlugin() ) {
             setSupportsRenderScaleMaybe(eSupportsNo);
@@ -123,6 +155,7 @@ EffectInstance::EffectInstance(const EffectInstance& other)
     , _imp( new Implementation(*other._imp) )
 {
     _imp->_publicInterface = this;
+    registerLiveEffect(this);
 }
 
 namespace {
@@ -206,9 +239,37 @@ EffectInstance::closeOverlayEditStepIfOwner() const
 
 EffectInstance::~EffectInstance()
 {
+    {
+        // Together, so that under the mutex a knob's holder is either a registered effect or no
+        // effect at all: lockHolder() can then tell a dying effect from another kind of holder.
+        QMutexLocker k(&liveEffectsMutex());
+        liveEffects().erase(this);
+        detachKnobs();
+    }
     if (qApp && (QThread::currentThread() == qApp->thread())) {
         closeOverlayEditStepOf(this);
     }
+}
+
+EffectInstancePtr
+EffectInstance::lockHolder(const KnobI& knob,
+                           KnobHolder** holder)
+{
+    QMutexLocker k(&liveEffectsMutex());
+    KnobHolder* loaded = knob.getHolder();
+    std::unordered_map<const KnobHolder*, EffectInstance*>::const_iterator found = liveEffects().find(loaded);
+
+    if (found == liveEffects().end()) {
+        *holder = loaded;
+
+        return EffectInstancePtr();
+    }
+    // Unregistering waits on the mutex, so a registered effect is not freed yet. One whose last owner is
+    // gone already fails to lock.
+    EffectInstancePtr effect = found->second->weak_from_this().lock();
+    *holder = effect ? loaded : 0;
+
+    return effect;
 }
 
 void
@@ -4040,7 +4101,11 @@ EffectInstance::onKnobSlaved(const KnobIPtr& slave,
                              bool isSlave,
                              bool isExpression)
 {
-    getNode()->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
+    // Null once a destroyed node's effect outlives it: its links died with the node.
+    NodePtr node = getNode();
+    if (node) {
+        node->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
+    }
 }
 
 void

@@ -587,9 +587,14 @@ TEST_F(PythonUndo, UndoingARejectedRotoNodeExpressionRestoresThePreviousOne)
     recorder->commands.clear();
     recorder->touchedNodes.clear();
 
+    const std::uint64_t serialBefore = recorder->serial;
     ASSERT_TRUE(runStep("assert not " + param + ".setExpression('this is not python', False, 0)\n"));
     ASSERT_NE(std::string("0.5"), nodeKnob->getExpression(0));
-    ASSERT_EQ(1u, recorder->commands.size());
+    // One undo step holds a command per knob changed: the node's and the selected shape's.
+    EXPECT_EQ(serialBefore + 1, recorder->serial);
+    ASSERT_EQ(2u, recorder->commands.size());
+    EXPECT_EQ(roto, recorder->touchedNodes.front());
+    EXPECT_EQ(roto, recorder->touchedNodes.back());
 
     undoAll();
     EXPECT_EQ(std::string("0.5"), nodeKnob->getExpression(0));

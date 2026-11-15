@@ -144,6 +144,10 @@ const std::chrono::milliseconds kConvergencePoll(10);
 // again: until it shows one its buffers may hold the render of before, which is not read.
 const std::chrono::milliseconds kRestartUnseen(2000);
 
+// How long a render waits, before restarting a converged Cycles session, for it to say it is idle:
+// it marks its buffers converged a moment before, and its progress holds still only after.
+const std::chrono::milliseconds kIdleSettle(250);
+
 // The samples per pixel the delegate reports rendered, -1 if it reports none: Cycles' annotation
 // carries "Sample N/M", "Sample N" when uncapped.
 int
@@ -210,6 +214,11 @@ mayVaryInTime(const UsdStageRefPtr& stage)
  * rendering again. Until it does its buffers may hold the pixels of before, and its word that it
  * converged means nothing: Cycles resets its session on its own thread, after the pass that edits
  * it, and marks its buffers converged when a reset cuts a render short.
+ *
+ * Cycles' progress shows a restart only while it is under way: a small render can begin and
+ * finish between two reads, its sample count back where it was. What does not go back is its
+ * clock: it stops when the session has no more work, and starts over when the session takes a
+ * reset.
  **/
 class RestartWatch {
 public:
@@ -220,9 +229,12 @@ public:
         _seen = seen;
         _samplesAtRestart = -1;
         _clockAtRestart = -1.;
+        _capAtRestart = 0;
+        _idleAtRestart = false;
+        _moved = false;
         _clockFallen = false;
         _samplesAtClockFall = -1;
-        _clockSinceFall = -1.;
+        _previousClock = -1.;
     }
 
     // The delegate's progress just before the first pass after the restart.
@@ -231,34 +243,53 @@ public:
     {
         _samplesAtRestart = samplesOf(stats, cap);
         _clockAtRestart = clockOf(stats);
+        _capAtRestart = cap;
+        _idleAtRestart = idle(stats);
     }
 
     // Reads the delegate's progress after a pass; returns seen().
     bool after(int samples,
-               double clock)
+               double clock,
+               bool idleNow)
     {
         if (_seen) {
             return true;
         }
+        if ((_capAtRestart > 0) && (samples > _capAtRestart)) {
+            // More samples than the cap the restart set are the render of before: Cycles applies a
+            // sample count without a reset, waking an idle session only to stop it again, which
+            // moves its clock and status though its buffers still hold the old render.
+            return false;
+        }
         const bool samplesFell = (samples >= 0) && (_samplesAtRestart >= 0) && (samples < _samplesAtRestart);
-        bool clockStopped = false;
+        const bool blind = (samples < 0) && (clock < 0.);
+        if (_idleAtRestart) {
+            // An idle session's clock is not still: its cache eviction wakes it a while after it
+            // finished and stops its clock again later, with no reset and its status unchanged.
+            // Only a reset makes its clock fall, its samples fall or its status leave done; a
+            // reset that began and finished unseen, its clock past the old one, stays unseen and
+            // falls back on making the engine again. The pass may have missed the reset, for the
+            // session holds its scene while it wakes from idle: the change is trusted from the
+            // next pass on, which then takes it.
+            const bool movedBefore = _moved;
+            const bool clockFell = (clock >= 0.) && (_clockAtRestart >= 0.) && (clock < _clockAtRestart);
+            _moved = _moved || samplesFell || !idleNow || clockFell;
+            _seen = movedBefore || blind;
+
+            return _seen;
+        }
         if (!_clockFallen && (clock >= 0.) && (_clockAtRestart >= 0.) && (clock < _clockAtRestart)) {
             // Cycles starts its clock over when its session resets, before it renders a sample of
             // the new render: until its sample count moves after that, the count it reports and
             // the pixels it holds are still the render's of before.
             _clockFallen = true;
             _samplesAtClockFall = samples;
-        } else if (_clockFallen) {
-            // Cycles stops its clock only once a render is done, so a clock that stopped after it
-            // fell is the new render's, finished: a render quick enough to reach the count of
-            // before between two reads would otherwise never show a change.
-            clockStopped = (clock >= 0.) && (clock == _clockSinceFall);
         }
-        if (_clockFallen) {
-            _clockSinceFall = clock;
-        }
-        const bool clockFell = _clockFallen && ((samples < 0) || (samples != _samplesAtClockFall) || clockStopped);
-        const bool blind = (samples < 0) && (clock < 0.);
+        // A clock that fell and then held still between two reads was stopped by the new render
+        // finishing, which may have reached the old sample count before the count was read.
+        const bool finishedSinceFall = _clockFallen && (clock >= 0.) && (clock == _previousClock);
+        const bool clockFell = _clockFallen && ((samples < 0) || (samples != _samplesAtClockFall) || finishedSinceFall);
+        _previousClock = clock;
         _seen = samplesFell || clockFell || blind;
 
         return _seen;
@@ -269,12 +300,11 @@ public:
         return _seen;
     }
 
-    // Whether the delegate's clock fell since the restart: its session took the restart, and may
-    // spend long syncing a heavy stage before its first sample; making it again would only begin
-    // that sync over.
+    // Whether the delegate's session took the restart: it may spend long syncing a heavy stage
+    // before its first sample, and making it again would only begin that sync over.
     bool restarting() const
     {
-        return _clockFallen;
+        return _clockFallen || _moved;
     }
 
     // Whether a delegate's progress is known to show its restarts: Cycles' samples and clock start
@@ -285,13 +315,24 @@ public:
         return CyclesAovs::isCycles(renderer);
     }
 
+    // Whether Cycles says its session has no more work, its clock stopped.
+    static bool idle(const VtDictionary& stats)
+    {
+        const VtDictionary::const_iterator annotation = stats.find("renderProgressAnnotation");
+
+        return (annotation != stats.end()) && annotation->second.IsHolding<std::string>() && (annotation->second.UncheckedGet<std::string>().find("Rendering Done") != std::string::npos);
+    }
+
 private:
     bool _seen = true;
     int _samplesAtRestart = -1;
     double _clockAtRestart = -1.;
+    int _capAtRestart = 0;
+    bool _idleAtRestart = false;
+    bool _moved = false;
     bool _clockFallen = false;
     int _samplesAtClockFall = -1;
-    double _clockSinceFall = -1.;
+    double _previousClock = -1.;
 };
 
 // The GPU memory the engines may hold together by default.
@@ -1550,7 +1591,12 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         RestartWatch restartWatch;
         restartWatch.restart(!watchRestart);
         if (watchRestart) {
-            restartWatch.before(engine->GetRenderStats(), 0);
+            VtDictionary stats = engine->GetRenderStats();
+            while (!RestartWatch::idle(stats) && engine->IsConverged() && !(cancel && cancel->load()) && (std::chrono::steady_clock::now() - restarted < kIdleSettle)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                stats = engine->GetRenderStats();
+            }
+            restartWatch.before(stats, 0);
         }
         for (;;) {
             if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
@@ -1561,7 +1607,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // synced a texture it gave up on as missing, which the engine would keep: even
             // converged, it goes.
             const VtDictionary stats = engine->GetRenderStats();
-            const bool restartSeen = restartWatch.after(samplesOf(stats, 0), clockOf(stats));
+            const bool restartSeen = restartWatch.after(samplesOf(stats, 0), clockOf(stats), RestartWatch::idle(stats));
             if (restartSeen && engine->IsConverged() && !(cancel && cancel->load())) {
                 break;
             }
@@ -3584,7 +3630,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             restartWatch.before(before, cap);
         }
         const Clock::time_point now = Clock::now();
-        const bool restartSeen = restartWatch.after(samples, clock);
+        const bool restartSeen = restartWatch.after(samples, clock, RestartWatch::idle(stats));
         if (!restartSeen) {
             if (!restartWatch.restarting() && (now - restartTime >= kRestartUnseen)) {
                 // A new engine has no pixels from before to mistake for the restart's.

@@ -154,7 +154,7 @@ struct KernelFilmScatterParams {
     std::int32_t y;
     std::uint32_t width;
     std::uint32_t count;
-    std::uint32_t padding0;
+    std::uint32_t background;
     std::uint32_t padding1;
 };
 
@@ -512,6 +512,12 @@ makeUtilityFilmKernels(gpu::GpuDevice& device,
     }
 
     return status->ok() ? kernels : std::shared_ptr<const UtilityFilmKernels>();
+}
+
+std::vector<std::shared_ptr<gpu::GpuKernel>>
+utilityFilmKernelList(const UtilityFilmKernels& kernels)
+{
+    return { kernels.clear, kernels.scatter, kernels.pack };
 }
 
 UtilityDeviceResource::UtilityDeviceResource()
@@ -1268,7 +1274,8 @@ UtilityRenderBuffer::recordDeviceBatch(gpu::GpuRecordContext& context,
                                        int x,
                                        int y,
                                        int width,
-                                       int height)
+                                       int height,
+                                       bool background)
 {
     std::shared_ptr<UtilityDeviceFilm> film;
     KernelFilmScatterParams params = {};
@@ -1300,6 +1307,7 @@ UtilityRenderBuffer::recordDeviceBatch(gpu::GpuRecordContext& context,
     params.y = y;
     params.width = static_cast<std::uint32_t>(width);
     params.count = count;
+    params.background = background ? 1u : 0u;
 
     const std::array<gpu::GpuBinding, 5> bindings = {
         gpu::GpuBinding::storage(0, hitIds),

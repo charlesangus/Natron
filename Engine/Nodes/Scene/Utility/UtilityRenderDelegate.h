@@ -56,6 +56,8 @@
 #define kUtilityStatDevice "utilityDevice"
 // Why the last frame did not render on the device asked for, as a std::string; empty when it did.
 #define kUtilityStatWarning "utilityWarning"
+// What the scene draws other than as authored, as a std::string of lines; empty when nothing.
+#define kUtilityStatSceneWarning "utilitySceneWarning"
 // The samples per pixel the running or last frame has drawn, and the number it draws in all.
 #define kUtilityStatSamples "utilitySamples"
 #define kUtilityStatSamplesWanted "utilitySamplesWanted"
@@ -71,6 +73,8 @@
 #define kUtilityDeviceGpu "gpu"
 #define kUtilityDeviceCpu "cpu"
 
+// The most cutout or projection-discard surfaces a ray goes through before it is a miss: an int.
+#define kUtilitySettingMaxCutouts "maxCutouts"
 // How pixels are sampled. Pixel Samples, an int, is the side of the grid of samples a pixel takes; it
 // is not named samples, which the progressive viewer would take for its sample cap. Pixel Filter is a
 // TfToken, one of the four values below. Filter Width, a float, is in pixels. Seed is an int.
@@ -286,6 +290,7 @@ public:
     virtual PXR_NS::HdAovDescriptor GetDefaultAovDescriptor(const PXR_NS::TfToken& name) const OVERRIDE;
     virtual PXR_NS::HdRenderSettingDescriptorList GetRenderSettingDescriptors() const OVERRIDE;
     virtual PXR_NS::VtDictionary GetRenderStats() const OVERRIDE;
+    virtual PXR_NS::TfTokenVector GetShaderSourceTypes() const OVERRIDE;
     virtual bool IsStopSupported() const OVERRIDE;
     virtual bool IsStopped() const OVERRIDE;
     virtual bool Stop(bool blocking = true) OVERRIDE;

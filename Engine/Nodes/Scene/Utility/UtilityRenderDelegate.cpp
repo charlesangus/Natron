@@ -25,9 +25,11 @@
 
 #include "UtilityRenderDelegate.h"
 
+#include <algorithm>
 #include <atomic>
 
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/stringUtils.h>
 #include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/bprim.h>
 #include <pxr/imaging/hd/camera.h>
@@ -37,6 +39,8 @@
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityLight.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMesh.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderPass.h"
@@ -403,7 +407,13 @@ UtilityRenderDelegate::GetSupportedRprimTypes() const
 const TfTokenVector&
 UtilityRenderDelegate::GetSupportedSprimTypes() const
 {
-    static const TfTokenVector types = { HdPrimTypeTokens->camera, HdPrimTypeTokens->extComputation };
+    static const TfTokenVector types = [] {
+        TfTokenVector all = { HdPrimTypeTokens->camera, HdPrimTypeTokens->extComputation, HdPrimTypeTokens->material };
+
+        all.insert(all.end(), UtilityLight::supportedTypes().begin(), UtilityLight::supportedTypes().end());
+
+        return all;
+    }();
 
     return types;
 }
@@ -469,6 +479,14 @@ UtilityRenderDelegate::CreateSprim(const TfToken& typeId,
     }
     if (typeId == HdPrimTypeTokens->extComputation) {
         return new HdExtComputation(sprimId);
+    }
+    if (typeId == HdPrimTypeTokens->material) {
+        return new UtilityMaterial(sprimId);
+    }
+    const TfTokenVector& lights = UtilityLight::supportedTypes();
+
+    if (std::find(lights.begin(), lights.end(), typeId) != lights.end()) {
+        return new UtilityLight(sprimId, typeId);
     }
     TF_CODING_ERROR("Unknown Sprim type %s", typeId.GetText());
 
@@ -616,6 +634,7 @@ UtilityRenderDelegate::GetRenderSettingDescriptors() const
         HdRenderSettingDescriptor { "Pixel Filter", TfToken(kUtilitySettingPixelFilter), VtValue(TfToken(kUtilityFilterBlackmanHarris)) },
         HdRenderSettingDescriptor { "Filter Width", TfToken(kUtilitySettingFilterWidth), VtValue(kUtilityDefaultFilterWidth) },
         HdRenderSettingDescriptor { "Seed", TfToken(kUtilitySettingSeed), VtValue(int(0)) },
+        HdRenderSettingDescriptor { "Max Cutouts", TfToken(kUtilitySettingMaxCutouts), VtValue(static_cast<int>(kWavefrontDefaultMaxCutouts)) },
         HdRenderSettingDescriptor { "Override Shutter", TfToken(kUtilitySettingOverrideShutter), VtValue(false) },
         HdRenderSettingDescriptor { "Shutter", TfToken(kUtilitySettingShutter), VtValue(kUtilityDefaultShutter) },
         HdRenderSettingDescriptor { "Shutter Offset", TfToken(kUtilitySettingShutterOffset), VtValue(TfToken(kUtilityShutterCentred)) },
@@ -647,6 +666,7 @@ UtilityRenderDelegate::GetRenderStats() const
     _renderParam->frameReport(&device, &warning);
     dictionary[kUtilityStatDevice] = VtValue(device);
     dictionary[kUtilityStatWarning] = VtValue(warning);
+    dictionary[kUtilityStatSceneWarning] = VtValue(TfStringJoin(_scene->warnings(), "\n"));
 
     std::size_t samples = 0;
     std::size_t samplesWanted = 0;
@@ -670,6 +690,13 @@ UtilityRenderDelegate::GetRenderStats() const
     dictionary[kUtilityStatMotionWarning] = VtValue(motionWarning);
 
     return dictionary;
+}
+
+// Sdr finds natronProject3D.glslfx's node only for a delegate that takes glslfx sources.
+TfTokenVector
+UtilityRenderDelegate::GetShaderSourceTypes() const
+{
+    return { TfToken("glslfx") };
 }
 
 NATRON_NAMESPACE_EXIT

@@ -37,16 +37,22 @@
 #include <vector>
 
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec3i.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
+#include <pxr/base/vt/types.h>
 #include <pxr/usd/sdf/path.h>
 
 #include "Global/Macros.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct UtilityMaterialDesc;
+struct UtilityLightDesc;
+class UtilityTexturePool;
 
 /**
  * @brief What the utility renderer draws, in plain arrays: one geometry record per mesh and one
@@ -85,10 +91,24 @@ public:
         // Straight RGBA: displayColor with displayOpacity in alpha.
         PXR_NS::VtVec4fArray colors;
         ColorBinding colorBinding = eColorBindingConstant;
+        // Whether the prim has each primvar; colors holds a stand-in for one it lacks, and a material's
+        // primvar reader reads its own fallback there instead.
+        bool hasDisplayColor = false;
+        bool hasDisplayOpacity = false;
+        // Empty when no material is bound.
+        PXR_NS::SdfPath materialId;
+        // The bound material's texture coordinates, bound like the colours; hasSt is false when the
+        // mesh has none of that name.
+        PXR_NS::VtVec2fArray st;
+        ColorBinding stBinding = eColorBindingConstant;
+        bool hasSt = false;
+        // The light- and shadow-link categories the prim belongs to, and those of its instancer.
+        PXR_NS::TfTokenVector categories;
         // Each counts the changes to that part, so a render can tell a refit from a rebuild.
         std::uint64_t topologyVersion = 0;
         std::uint64_t pointsVersion = 0;
         std::uint64_t colorVersion = 0;
+        std::uint64_t stVersion = 0;
         // Null for a geometry that does not deform within the shutter; points are at the frame.
         std::shared_ptr<const PointMotion> pointMotion;
     };
@@ -97,6 +117,8 @@ public:
         GeometryId geometry = 0;
         int instanceIndex = 0;
         PXR_NS::GfMatrix4d transform = PXR_NS::GfMatrix4d(1.);
+        // The link categories of this placement alone; the geometry's own apply to every placement.
+        PXR_NS::TfTokenVector categories;
         // Null for an instance that does not move within the shutter; instanceIndex indexes its
         // transforms, and transform is at the frame.
         std::shared_ptr<const TransformMotion> motion;
@@ -118,6 +140,9 @@ public:
         std::uint64_t version = 0;
         std::map<GeometryId, Geometry> geometries;
         std::vector<Instance> instances;
+        std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityMaterialDesc>> materials;
+        std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityLightDesc>> lights;
+        std::shared_ptr<UtilityTexturePool> textures;
     };
 
     UtilityScene();
@@ -135,10 +160,30 @@ public:
                    const PXR_NS::VtVec3fArray& points);
     void setColors(GeometryId id,
                    ColorBinding binding,
-                   const PXR_NS::VtVec4fArray& colors);
-    // One instance per transform, replacing the geometry's previous ones.
+                   const PXR_NS::VtVec4fArray& colors,
+                   bool hasDisplayColor = true,
+                   bool hasDisplayOpacity = true);
+    // One instance per transform, replacing the geometry's previous ones. categories, when not
+    // empty, holds each instance's own link categories.
     void setInstances(GeometryId id,
-                      const std::vector<PXR_NS::GfMatrix4d>& transforms);
+                      const std::vector<PXR_NS::GfMatrix4d>& transforms,
+                      const std::vector<PXR_NS::TfTokenVector>& categories = std::vector<PXR_NS::TfTokenVector>());
+    void setMaterialId(GeometryId id,
+                       const PXR_NS::SdfPath& materialId);
+    void setSt(GeometryId id,
+               bool hasSt,
+               ColorBinding binding,
+               const PXR_NS::VtVec2fArray& st);
+    void setMaterial(const PXR_NS::SdfPath& path,
+                     const std::shared_ptr<const UtilityMaterialDesc>& material);
+    void removeMaterial(const PXR_NS::SdfPath& path);
+    void setCategories(GeometryId id,
+                       const PXR_NS::TfTokenVector& categories);
+    void setLight(const PXR_NS::SdfPath& path,
+                  const std::shared_ptr<const UtilityLightDesc>& light);
+    void removeLight(const PXR_NS::SdfPath& path);
+    // The camera that camera-space lights follow, as its view-to-world matrix.
+    void setViewToWorld(const PXR_NS::GfMatrix4d& viewToWorld);
     void setRenderTag(GeometryId id,
                       const PXR_NS::TfToken& tag);
     // The render tags whose geometries contribute instances to snapshots and stats, all of them when
@@ -149,6 +194,14 @@ public:
     std::uint64_t version() const;
     Stats stats() const;
     Snapshot snapshot() const;
+    // The textures every snapshot's materials read from.
+    const std::shared_ptr<UtilityTexturePool>& textures() const;
+    /**
+     * @brief What the scene draws other than as authored, one line per problem: the unsupported
+     * materials bound to visible geometry, textured geometry without texture coordinates, textures
+     * that could not be read, and IES profiles that could not be parsed.
+     **/
+    std::vector<std::string> warnings() const;
 
     // Null for none. The transform motion has a transform per instance setInstances() gave.
     void setPointMotion(GeometryId id,
@@ -181,6 +234,7 @@ private:
     struct Record {
         Geometry geometry;
         std::vector<PXR_NS::GfMatrix4d> transforms;
+        std::vector<PXR_NS::TfTokenVector> instanceCategories;
         std::shared_ptr<const TransformMotion> transformMotion;
         PXR_NS::TfToken renderTag;
         bool topologyVaries = false;
@@ -192,6 +246,10 @@ private:
     GeometryId _nextId = 1;
     std::map<GeometryId, Record> _records;
     PXR_NS::TfTokenVector _renderTags;
+    std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityMaterialDesc>> _materials;
+    std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityLightDesc>> _lights;
+    std::shared_ptr<UtilityTexturePool> _textures;
+    PXR_NS::GfMatrix4d _viewToWorld = PXR_NS::GfMatrix4d(1.);
     std::uint64_t _version = 0;
     std::size_t _topologyBuilds = 0;
     std::size_t _pointUpdates = 0;

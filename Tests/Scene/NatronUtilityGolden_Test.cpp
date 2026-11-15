@@ -120,13 +120,16 @@ protected:
         }
         KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
         KnobChoice* renderer = dynamic_cast<KnobChoice*>(render->getKnobByName(kUSDRenderParamRenderer).get());
+        KnobBool* headlight = dynamic_cast<KnobBool*>(render->getKnobByName(kUSDRenderParamHeadlight).get());
 
-        if (!file || !renderer) {
+        if (!file || !renderer || !headlight) {
             ADD_FAILURE() << "missing knobs";
 
             return NodePtr();
         }
         file->setValue(std::string(kFixture));
+        // The fixture has no lights, so only the headlight gives the colour golden lit shading.
+        headlight->setValue(true);
         if (!RenderSettingsTestUtils::configure(settings, "/World/Cam", kGoldenWidth, kGoldenHeight)) {
             return NodePtr();
         }

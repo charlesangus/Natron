@@ -11,7 +11,8 @@ struct FilmScatterParams
     int y;
     uint width;
     uint count;
-    uint padding0;
+    // Whether misses take the batch's colour, the background a dome light shows.
+    uint background;
     uint padding1;
 };
 
@@ -23,8 +24,9 @@ struct FilmScatterParams
 [[vk::binding(4, 0)]] RWStructuredBuffer<float4> accumulation;
 [[vk::push_constant]] ConstantBuffer<FilmScatterParams> params;
 
-// Adds each ray's sample to its pixel's weighted sum, a miss as the clear value as on the host, and
-// writes the pixel's mean. A pixel no sample has weight for yet keeps what it holds.
+// Adds each ray's sample to its pixel's weighted sum, a miss as the clear value as on the host or,
+// with a background, as the batch's colour, and writes the pixel's mean. A pixel no sample has weight
+// for yet keeps what it holds.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void utilityFilmScatter(uint3 id : SV_DispatchThreadID)
@@ -38,7 +40,8 @@ void utilityFilmScatter(uint3 id : SV_DispatchThreadID)
     const uint pixel = uint(fy) * params.filmWidth + uint(fx);
     const uint weightAt = params.filmWidth * params.filmHeight + pixel;
     const float weight = weights[id.x];
-    const float4 sample = hitIds[kHitGeometry * params.count + id.x] == kNoHit ? asfloat(params.clearValue) : color[id.x];
+    const bool miss = hitIds[kHitGeometry * params.count + id.x] == kNoHit;
+    const float4 sample = (miss && params.background == 0) ? asfloat(params.clearValue) : color[id.x];
     const float4 sum = accumulation[pixel] + weight * sample;
     const float total = accumulation[weightAt].x + weight;
     accumulation[pixel] = sum;

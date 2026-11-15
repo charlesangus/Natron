@@ -40,6 +40,7 @@
 #include <pxr/base/gf/rect2i.h>
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/vt/types.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/imaging/cameraUtil/framing.h>
@@ -51,6 +52,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/Tracer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
@@ -127,12 +129,13 @@ public:
 
             for (int column = 0; column < tile.rect.width; ++column, ++index) {
                 const bool hit = tile.hitGeometry[index] != Tracer::kNoHit;
+                const bool shown = hit || tile.background;
                 const float weight = tile.weight ? tile.weight[index] : 1.f;
                 const unsigned int x = static_cast<unsigned int>(tile.rect.x + column);
 
                 if (tile.color) {
                     for (UtilityRenderBuffer* buffer : _color) {
-                        buffer->addSample(x, y, hit ? tile.color + index * 4 : nullptr, 4, weight, true);
+                        buffer->addSample(x, y, shown ? tile.color + index * 4 : nullptr, 4, weight, true);
                     }
                 }
                 for (UtilityRenderBuffer* buffer : _depth) {
@@ -204,6 +207,18 @@ clearBuffers(const HdRenderPassAovBindingVector& bindings)
             buffer->clear(binding.clearValue);
         }
     }
+}
+
+std::uint32_t
+maxCutoutsSetting(const VtValue& value)
+{
+    const VtValue asInt = VtValue::Cast<int>(value);
+
+    if (asInt.IsEmpty()) {
+        return kWavefrontDefaultMaxCutouts;
+    }
+
+    return static_cast<std::uint32_t>(std::max(1, asInt.UncheckedGet<int>()));
 }
 
 std::string
@@ -364,6 +379,15 @@ buffersAreConverged(const HdRenderPassAovBindingVector& bindings)
 
     return true;
 }
+// A dome shows behind everything, so a scene of nothing but a dome still renders.
+bool
+hasDomeLight(const UtilityScene::Snapshot& snapshot)
+{
+    return std::any_of(snapshot.lights.begin(), snapshot.lights.end(), [](const auto& entry) {
+        return entry.second && entry.second->type == UtilityLightDesc::eTypeDome;
+    });
+}
+
 } // anon namespace
 
 UtilityRenderPass::UtilityRenderPass(HdRenderIndex* index,
@@ -382,7 +406,7 @@ UtilityRenderPass::~UtilityRenderPass()
 bool
 UtilityRenderPass::FrameKey::operator==(const FrameKey& other) const
 {
-    return device == other.device && version == other.version && worldToView == other.worldToView && projection == other.projection
+    return device == other.device && maxCutouts == other.maxCutouts && version == other.version && worldToView == other.worldToView && projection == other.projection
         && sameWindow(window, other.window) && sameSampling(sampling, other.sampling) && motion == other.motion && bindings == other.bindings;
 }
 
@@ -441,6 +465,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
     WavefrontFrame frame;
 
+    frame.maxCutouts = maxCutoutsSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingMaxCutouts)));
     frame.window = renderWindow(*renderPassState);
     frame.sampling = samplingSettings(*GetRenderIndex()->GetRenderDelegate());
 
@@ -451,6 +476,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     if (hasCamera) {
         frame.worldToView = renderPassState->GetWorldToViewMatrix();
         frame.projection = renderPassState->GetProjectionMatrix();
+        scene->setViewToWorld(frame.worldToView.GetInverse());
     }
 
     FrameKey key;
@@ -460,6 +486,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     key.worldToView = frame.worldToView;
     key.projection = frame.projection;
     key.window = frame.window;
+    key.maxCutouts = frame.maxCutouts;
     key.sampling = frame.sampling;
     key.motion = motion;
     key.bindings = bindings;
@@ -504,7 +531,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     _frameKey = key;
     _hasFrame = true;
 
-    if (!hasCamera || frame.window.width <= 0 || frame.window.height <= 0 || snapshot->instances.empty() || !wavefrontCameraIsUsable(frame)) {
+    if (!hasCamera || frame.window.width <= 0 || frame.window.height <= 0 || (snapshot->instances.empty() && !hasDomeLight(*snapshot)) || !wavefrontCameraIsUsable(frame)) {
         const std::lock_guard<std::mutex> l(_landingMutex);
 
         _frameFinished = true;
@@ -588,6 +615,8 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                         clearBuffers(frameBindings);
                     } else if (failed) {
                         throw std::runtime_error("The Utility renderer failed on the GPU: " + outcome.message);
+                    } else {
+                        warning = TfStringJoin(gpu->warnings(), "\n");
                     }
                 }
 #endif

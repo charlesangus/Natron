@@ -46,6 +46,7 @@ class GpuBuffer;
 class GpuBufferHandle;
 class GpuBufferPool;
 class GpuDevice;
+class GpuKernel;
 class GpuKernelRegistry;
 class GpuRecordContext;
 struct GpuStatus;
@@ -61,6 +62,9 @@ struct UtilityFilmKernels;
 // The kernels a device film runs, made once per device. Null with *status set when the device cannot make them.
 std::shared_ptr<const UtilityFilmKernels> makeUtilityFilmKernels(gpu::GpuDevice& device,
                                                                  gpu::GpuStatus* status);
+
+// Every pipeline of `kernels`.
+std::vector<std::shared_ptr<gpu::GpuKernel>> utilityFilmKernelList(const UtilityFilmKernels& kernels);
 
 /**
  * @brief Releases every device film whose device is lost, wherever it is held, so that none keeps the runtime from
@@ -247,9 +251,10 @@ public:
 
     /**
      * @brief Records into context the adding of a batch's colours, for the rays of the width x
-     * height pixels from (x, y), to their pixels with the rays' filter weights, as addSample() does.
-     * hitIds and color are laid out as the shading kernel reads and writes them, weights as the ray
-     * generation writes them. After beginDeviceFrame() only.
+     * height pixels from (x, y), to their pixels with the rays' filter weights, as addSample() does;
+     * a miss adds the clear value or, with background, the batch's colour. hitIds and color are laid
+     * out as the shading kernel reads and writes them, weights as the ray generation writes them.
+     * After beginDeviceFrame() only.
      **/
     gpu::GpuStatus recordDeviceBatch(gpu::GpuRecordContext& context,
                                      const gpu::GpuBuffer& hitIds,
@@ -258,7 +263,8 @@ public:
                                      int x,
                                      int y,
                                      int width,
-                                     int height);
+                                     int height,
+                                     bool background = false);
 #endif
 
 private:

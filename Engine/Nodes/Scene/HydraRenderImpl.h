@@ -438,6 +438,8 @@ public:
         bool showRender = false;
         bool showProxy = true;
         bool showGuides = false;
+        // Lit by a light at the camera instead of the stage's lights.
+        bool headlight = false;
 
         bool operator==(const View& other) const;
         bool operator!=(const View& other) const

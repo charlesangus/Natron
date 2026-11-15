@@ -1,0 +1,323 @@
+import UtilityTypes;
+import Texture;
+import PreviewSurface;
+import Project3D;
+import Lights;
+import Surface;
+
+// KernelShadeParams in UtilityKernels.h mirrors this. projection holds the row-vector projection terms
+// that decide clip z and w from view z: clip z = A * z + B, clip w = C * z + D. pixelFootprint holds a
+// pixel's world width on the near plane and on the far plane. lighting: the first light this pass
+// samples, how many it samples, the 32-bit words per link mask, and the scene's light count. pixels: the
+// frame position of the first hit's pixel, the width of the rows the hits cover, and the sample seed.
+struct ShadeParams
+{
+    float4 projection;
+    float viewZAtNear;
+    float viewZAtFar;
+    uint count;
+    uint padding;
+    float4 pixelFootprint;
+    uint4 lighting;
+    uint4 pixels;
+};
+
+[[vk::binding(0, 0)]] StructuredBuffer<float> rays;
+[[vk::binding(1, 0)]] StructuredBuffer<float> hitSurface;
+[[vk::binding(2, 0)]] StructuredBuffer<uint> hitIds;
+[[vk::binding(3, 0)]] StructuredBuffer<GeometryRecord> geometries;
+[[vk::binding(4, 0)]] StructuredBuffer<float4> colors;
+[[vk::binding(5, 0)]] StructuredBuffer<int> triangles;
+[[vk::binding(6, 0)]] StructuredBuffer<int> instanceIds;
+[[vk::binding(7, 0)]] RWStructuredBuffer<float4> colorOut;
+[[vk::binding(8, 0)]] RWStructuredBuffer<float> depthOut;
+[[vk::binding(9, 0)]] RWStructuredBuffer<int> primIdOut;
+[[vk::binding(10, 0)]] RWStructuredBuffer<int> instanceIdOut;
+[[vk::binding(11, 0)]] StructuredBuffer<MaterialRecord> materials;
+[[vk::binding(12, 0)]] StructuredBuffer<TextureBinding> textureBindings;
+[[vk::binding(13, 0)]] StructuredBuffer<uint4> images;
+[[vk::binding(14, 0)]] StructuredBuffer<float4> texels;
+[[vk::binding(15, 0)]] StructuredBuffer<ProjectionRecord> projections;
+[[vk::binding(16, 0)]] StructuredBuffer<float4> points;
+[[vk::binding(17, 0)]] StructuredBuffer<float4> instanceTransforms;
+[[vk::binding(18, 0)]] StructuredBuffer<float2> sts;
+[[vk::binding(19, 0)]] StructuredBuffer<LightRecord> lights;
+[[vk::binding(20, 0)]] StructuredBuffer<float> lightData;
+// Per instance, the light-link mask then the shadow-link mask, lighting.z words each; bit l is light l.
+[[vk::binding(21, 0)]] StructuredBuffer<uint> linkMasks;
+// One shadow ray per hit per light of the pass, light-major: eight arrays of lightBatch * count values.
+[[vk::binding(22, 0)]] RWStructuredBuffer<float> shadowRays;
+// What each shadow ray's light adds to its pixel when the ray is not blocked, premultiplied.
+[[vk::binding(23, 0)]] RWStructuredBuffer<float4> shadowContributions;
+[[vk::binding(24, 0)]] RWStructuredBuffer<uint> shadowLights;
+[[vk::push_constant]] ConstantBuffer<ShadeParams> params;
+
+static const float4 kUnsupportedColor = float4(1.0, 0.0, 1.0, 1.0);
+
+// Window depth, the convention the host reads every delegate's depth AOV in: 0 at the near plane, 1 at
+// the far plane, through the camera's projection. View z is linear along a ray, projected depth is not.
+float windowDepth(float alongRay)
+{
+    const float viewZ = params.viewZAtNear + alongRay * (params.viewZAtFar - params.viewZAtNear);
+    const float clipZ = params.projection.x * viewZ + params.projection.y;
+    const float clipW = params.projection.z * viewZ + params.projection.w;
+
+    return 0.5 * clipZ / clipW + 0.5;
+}
+
+float3 colorInput(MaterialRecord material, uint slot, float3 constant, bool hasSt, float2 st, float footprint)
+{
+    const int binding = textureOf(material, slot);
+    return binding == kNoTexture ? constant : readTexture(textureBindings, images, texels, binding, hasSt, st, footprint).xyz;
+}
+
+float floatInput(MaterialRecord material, uint slot, float constant, bool hasSt, float2 st, float footprint)
+{
+    const int binding = textureOf(material, slot);
+    return binding == kNoTexture ? constant : readTexture(textureBindings, images, texels, binding, hasSt, st, footprint).x;
+}
+
+// The pixel's width where the ray meets the surface, at alongRay of the way from the near plane to the
+// far plane.
+float pixelWidth(float alongRay)
+{
+    return lerp(params.pixelFootprint.x, params.pixelFootprint.y, alongRay);
+}
+
+void writeShadowRay(uint slot, uint light, float3 origin, float3 direction, float tMax, float3 contribution)
+{
+    const uint n = params.lighting.y * params.count;
+
+    shadowRays[kRayOriginX * n + slot] = origin.x;
+    shadowRays[kRayOriginY * n + slot] = origin.y;
+    shadowRays[kRayOriginZ * n + slot] = origin.z;
+    shadowRays[kRayDirectionX * n + slot] = direction.x;
+    shadowRays[kRayDirectionY * n + slot] = direction.y;
+    shadowRays[kRayDirectionZ * n + slot] = direction.z;
+    shadowRays[kRayTMin * n + slot] = 0.0;
+    shadowRays[kRayTMax * n + slot] = tMax;
+    shadowContributions[slot] = float4(contribution, 0.0);
+    shadowLights[slot] = light;
+}
+
+// A shadow ray the tracers skip, so the contribution is added unblocked.
+void writeUnshadowed(uint slot, uint light, float3 contribution)
+{
+    writeShadowRay(slot, light, float3(0.0), float3(0.0, 0.0, 1.0), -1.0, contribution);
+}
+
+void writeNoShadows(uint index)
+{
+    for (uint j = 0; j < params.lighting.y; ++j)
+        writeUnshadowed(j * params.count + index, params.lighting.x + j, float3(0.0));
+}
+
+bool linked(uint instance, uint light, uint mask)
+{
+    const uint words = params.lighting.z;
+
+    return ((linkMasks[(2 * instance + mask) * words + light / 32] >> (light % 32)) & 1) != 0;
+}
+
+// One sample of each of the pass's lights, each queued with the shadow ray that decides whether it
+// arrives.
+void sampleLights(uint index, uint instance, PreviewSurfaceSample surface, float3 position, float3 geometric, float3 toViewer)
+{
+    if (params.lighting.y == 0)
+        return;
+
+    const uint pixelX = params.pixels.x + index % params.pixels.z;
+    const uint pixelY = params.pixels.y + index / params.pixels.z;
+    const uint pixel = (pixelY << 16) ^ pixelX;
+    const float3 scaled = abs(position);
+    const float offset = 1e-4 * max(1.0, max(scaled.x, max(scaled.y, scaled.z)));
+
+    for (uint j = 0; j < params.lighting.y; ++j) {
+        const uint l = params.lighting.x + j;
+        const uint slot = j * params.count + index;
+
+        if (l >= params.lighting.w || !linked(instance, l, 0)) {
+            writeUnshadowed(slot, l, float3(0.0));
+            continue;
+        }
+
+        const LightRecord light = lights[l];
+        const LightSample s = sampleLight(light, lightData, textureBindings, images, texels, position, surface.normal, lightRandom(pixel, l, params.pixels.w));
+        const float3 contribution = s.weight * evaluatePreviewSurface(surface, toViewer, s.direction) * surface.opacity;
+
+        if (!any(contribution > float3(0.0)) || any(isnan(contribution)) || any(isinf(contribution))) {
+            writeUnshadowed(slot, l, float3(0.0));
+            continue;
+        }
+        if ((light.kind.y & kLightCastsShadows) == 0) {
+            writeUnshadowed(slot, l, contribution);
+            continue;
+        }
+
+        const float3 origin = position + (dot(geometric, s.direction) >= 0.0 ? offset : -offset) * geometric;
+        const float tMax = s.distance >= kLightAtInfinity ? kLightAtInfinity : s.distance * (1.0 - 1e-4);
+
+        writeShadowRay(slot, l, origin, s.direction, tMax, contribution);
+    }
+}
+
+// Where nothing shows the pixel takes the film's clear values, as a miss leaves them.
+void writeNothing(uint index)
+{
+    colorOut[index] = float4(0.0, 0.0, 0.0, 0.0);
+    depthOut[index] = 1.0;
+    primIdOut[index] = -1;
+    instanceIdOut[index] = -1;
+}
+
+// A miss sees every dome light behind the scene, opaque as Storm's sky dome draws it.
+void writeBackground(uint index)
+{
+    const uint count = params.count;
+    const float3 direction = normalize(float3(rays[kRayDirectionX * count + index], rays[kRayDirectionY * count + index], rays[kRayDirectionZ * count + index]));
+    float3 radiance = float3(0.0);
+    bool dome = false;
+
+    for (uint l = 0; l < params.lighting.w; ++l) {
+        const LightRecord light = lights[l];
+
+        if (light.kind.x == kLightDome) {
+            dome = true;
+            radiance += domeBackground(light, textureBindings, images, texels, direction);
+        }
+    }
+    writeNothing(index);
+    if (dome)
+        colorOut[index] = float4(radiance, 1.0);
+}
+
+// Emission, premultiplied by coverage, and the shadow rays of the pass's lights, whose unblocked
+// contributions ShadeLights adds. Only the pass that samples the first light writes the AOVs, so the
+// later passes leave the lighting already added alone.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
+{
+    const uint count = params.count;
+
+    if (id.x >= count)
+        return;
+
+    const uint geometryIndex = hitIds[kHitGeometry * count + id.x];
+    const bool writesAovs = params.lighting.x == 0;
+
+    if (geometryIndex == kNoHit) {
+        writeNoShadows(id.x);
+        if (writesAovs)
+            writeBackground(id.x);
+        return;
+    }
+
+    const GeometryRecord geometry = geometries[geometryIndex];
+    const MaterialRecord material = materials[geometry.materialIndex];
+    const uint primitive = hitIds[kHitPrimitive * count + id.x];
+    const uint instance = hitIds[kHitInstance * count + id.x];
+    const float t = hitSurface[kHitT * count + id.x];
+    const float u = hitSurface[kHitU * count + id.x];
+    const float v = hitSurface[kHitV * count + id.x];
+    const float3 origin = float3(rays[kRayOriginX * count + id.x], rays[kRayOriginY * count + id.x], rays[kRayOriginZ * count + id.x]);
+    const float3 direction = float3(rays[kRayDirectionX * count + id.x], rays[kRayDirectionY * count + id.x], rays[kRayDirectionZ * count + id.x]);
+    const float3 worldPosition = origin + t * direction;
+
+    const uint row = instance * kInstanceTransformRows;
+    const float4 o0 = instanceTransforms[row];
+    const float4 o1 = instanceTransforms[row + 1];
+    const float4 o2 = instanceTransforms[row + 2];
+    const float4 o3 = instanceTransforms[row + 3];
+    float3 p0;
+    float3 p1;
+    float3 p2;
+
+    triangleCorners(points, triangles, geometry, primitive, o0, o1, o2, o3, p0, p1, p2);
+
+    const float3 outward = normalize(cross(p1 - p0, p2 - p0));
+    const float alongRay = t / rays[kRayTMax * count + id.x];
+    const float width = pixelWidth(alongRay);
+    const float cosine = abs(dot(outward, direction));
+
+    float4 shaded = kUnsupportedColor;
+
+    if (material.kind.x == kMaterialProject3D) {
+        const float4 w0 = instanceTransforms[row + 4];
+        const float4 w1 = instanceTransforms[row + 5];
+        const float4 w2 = instanceTransforms[row + 6];
+        const float4 w3 = instanceTransforms[row + 7];
+
+        writeNoShadows(id.x);
+        if (!evaluateProject3D(projections[material.kind.y], textureBindings, images, texels, worldPosition, outward, direction, width, o0, o1, o2, o3, w0, w1, w2, w3, shaded)) {
+            if (writesAovs)
+                writeBackground(id.x);
+            return;
+        }
+    } else if (material.kind.x == kMaterialPreviewSurface) {
+        const bool hasSt = geometry.stBinding != kStBindingNone;
+        float2 st = float2(0.0, 0.0);
+        float2 st0 = st;
+        float2 st1 = st;
+        float2 st2 = st;
+
+        if (hasSt) {
+            cornerSts(sts, triangles, geometry, primitive, st0, st1, st2);
+            st = (1.0 - u - v) * st0 + u * st1 + v * st2;
+        }
+
+        const float footprint = stFootprint(width, p1 - p0, p2 - p0, st1 - st0, st2 - st0, cosine);
+
+        const float4 display = surfaceColor(colors, triangles, geometry, primitive, u, v);
+        const uint flags = material.kind.z;
+        // An input reading displayColor keeps its reader's fallback in its constant, for geometry without the primvar.
+        const bool displayColor = hasDisplayColor(geometry);
+        const float3 diffuseConstant = (flags & kMaterialDiffuseFromDisplayColor) != 0 && displayColor ? display.xyz : material.diffuseColor.xyz;
+        float opacity = surfaceOpacity(textureBindings, images, texels, material, geometry, display, hasSt, st, footprint);
+        const float threshold = material.coverage.y;
+
+        if (threshold > 0.0) {
+            if (opacity < threshold) {
+                writeNoShadows(id.x);
+                if (writesAovs)
+                    writeBackground(id.x);
+                return;
+            }
+            opacity = 1.0;
+        }
+
+        const float3 geometric = dot(outward, direction) > 0.0 ? -outward : outward;
+        float3 normal = geometric;
+        const float3 normalConstant = float3(material.diffuseColor.w, material.emissiveColor.w, material.coverage.w);
+        const float3 tangentNormal = colorInput(material, kSlotNormal, normalConstant, hasSt, st, footprint);
+
+        normal = applyNormalMap(geometric, tangentNormal, p1 - p0, p2 - p0, st1 - st0, st2 - st0);
+
+        PreviewSurfaceSample surface;
+        surface.diffuseColor = colorInput(material, kSlotDiffuseColor, diffuseConstant, hasSt, st, footprint);
+        surface.specularColor = colorInput(material, kSlotSpecularColor, material.specularColor.xyz, hasSt, st, footprint);
+        const float3 emissiveConstant = (flags & kMaterialEmissiveFromDisplayColor) != 0 && displayColor ? display.xyz : material.emissiveColor.xyz;
+        surface.emissiveColor = colorInput(material, kSlotEmissiveColor, emissiveConstant, hasSt, st, footprint);
+        surface.normal = normal;
+        surface.metallic = floatInput(material, kSlotMetallic, material.surface.x, hasSt, st, footprint);
+        surface.roughness = floatInput(material, kSlotRoughness, material.surface.y, hasSt, st, footprint);
+        surface.clearcoat = floatInput(material, kSlotClearcoat, material.surface.z, hasSt, st, footprint);
+        surface.clearcoatRoughness = floatInput(material, kSlotClearcoatRoughness, material.surface.w, hasSt, st, footprint);
+        surface.opacity = opacity;
+        surface.ior = floatInput(material, kSlotIor, material.coverage.z, hasSt, st, footprint);
+        surface.useSpecularWorkflow = material.specularColor.w != 0.0;
+
+        const float3 radiance = surface.emissiveColor;
+        shaded = float4(radiance * opacity, opacity);
+        sampleLights(id.x, instance, surface, worldPosition, geometric, -direction);
+    } else {
+        writeNoShadows(id.x);
+    }
+
+    if (!writesAovs)
+        return;
+    colorOut[id.x] = shaded;
+    depthOut[id.x] = windowDepth(alongRay);
+    primIdOut[id.x] = geometry.primId;
+    instanceIdOut[id.x] = instanceIds[instance];
+}

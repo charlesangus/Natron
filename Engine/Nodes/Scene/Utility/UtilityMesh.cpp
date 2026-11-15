@@ -29,6 +29,8 @@
 #include <cmath>
 #include <memory>
 
+#include <pxr/base/gf/vec2d.h>
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/imaging/hd/changeTracker.h>
@@ -46,6 +48,7 @@
 #include <pxr/imaging/hd/tokens.h>
 
 #include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -65,6 +68,8 @@ template <class T>
 struct Channel {
     ChannelRate rate = eChannelRateConstant;
     VtArray<T> values;
+    // False when values holds only the fallback, the primvar missing or unusable.
+    bool found = false;
 };
 
 template <class In, class Out>
@@ -104,6 +109,19 @@ convertChannel(const VtValue& value,
                VtFloatArray* out)
 {
     return convertChannelValue<float>(value, out) || convertChannelValue<double>(value, out);
+}
+
+bool
+convertChannel(const VtValue& value,
+               VtVec2fArray* out)
+{
+    return convertChannelValue<GfVec2f>(value, out) || convertChannelValue<GfVec2d>(value, out);
+}
+
+HdType
+channelType(const VtVec2fArray&)
+{
+    return HdTypeFloatVec2;
 }
 
 HdType
@@ -156,12 +174,14 @@ pullChannel(HdSceneDelegate* sceneDelegate,
             if (!values.empty()) {
                 channel.rate = eChannelRateConstant;
                 channel.values = values;
+                channel.found = true;
             }
             break;
         case HdInterpolationUniform:
             if (values.size() == static_cast<std::size_t>(topology.GetNumFaces())) {
                 channel.rate = eChannelRateUniform;
                 channel.values = values;
+                channel.found = true;
             }
             break;
         case HdInterpolationVertex:
@@ -169,6 +189,7 @@ pullChannel(HdSceneDelegate* sceneDelegate,
             if (values.size() == pointCount) {
                 channel.rate = eChannelRateVertex;
                 channel.values = values;
+                channel.found = true;
             }
             break;
         case HdInterpolationFaceVarying:
@@ -184,6 +205,7 @@ pullChannel(HdSceneDelegate* sceneDelegate,
                     && triangulated.UncheckedGet<VtArray<T>>().size() == triangleCount * 3) {
                     channel.rate = eChannelRateCorner;
                     channel.values = triangulated.UncheckedGet<VtArray<T>>();
+                    channel.found = true;
                 }
             }
             break;
@@ -279,7 +301,9 @@ UtilityMesh::GetInitialDirtyBitsMask() const
         | HdChangeTracker::DirtyVisibility
         | HdChangeTracker::DirtyPrimvar
         | HdChangeTracker::DirtyInstancer
-        | HdChangeTracker::DirtyInstanceIndex;
+        | HdChangeTracker::DirtyInstanceIndex
+        | HdChangeTracker::DirtyMaterialId
+        | HdChangeTracker::DirtyCategories;
 }
 
 HdDirtyBits
@@ -373,13 +397,31 @@ UtilityMesh::Sync(HdSceneDelegate* sceneDelegate,
         || HdChangeTracker::IsPrimvarDirty(bits, id, HdTokens->displayOpacity)) {
         syncColors(sceneDelegate, scene);
     }
+    if (topologyDirty || _points.size() != previousPointCount || (bits & (HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyPrimvar))) {
+        syncMaterial(sceneDelegate, scene, bits & HdChangeTracker::DirtyMaterialId);
+    }
     if (HdChangeTracker::IsTransformDirty(bits, id)) {
         _transform = sceneDelegate->GetTransform(id);
     }
     if (HdChangeTracker::IsVisibilityDirty(bits, id) || HdChangeTracker::IsTransformDirty(bits, id)
-        || HdChangeTracker::IsInstancerDirty(bits, id) || HdChangeTracker::IsInstanceIndexDirty(bits, id)) {
+        || HdChangeTracker::IsInstancerDirty(bits, id) || HdChangeTracker::IsInstanceIndexDirty(bits, id)
+        || (bits & HdChangeTracker::DirtyCategories)) {
         _UpdateInstancer(sceneDelegate, dirtyBits);
         syncInstances(sceneDelegate, scene);
+    }
+    if ((bits & HdChangeTracker::DirtyCategories) || HdChangeTracker::IsInstancerDirty(bits, id)) {
+        // The light-linking scene index puts a prim's collections on it and an instance's on its
+        // instancer, so an instanced mesh answers to both.
+        const VtArray<TfToken> own = sceneDelegate->GetCategories(id);
+        TfTokenVector categories(own.begin(), own.end());
+        const SdfPath& instancerId = GetInstancerId();
+
+        if (!instancerId.IsEmpty()) {
+            const VtArray<TfToken> inherited = sceneDelegate->GetCategories(instancerId);
+
+            categories.insert(categories.end(), inherited.begin(), inherited.end());
+        }
+        scene->setCategories(_geometry, categories);
     }
     *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
 }
@@ -569,7 +611,7 @@ UtilityMesh::syncColors(HdSceneDelegate* sceneDelegate,
             }
         }
     }
-    scene->setColors(_geometry, binding, colors);
+    scene->setColors(_geometry, binding, colors, color.found, opacity.found);
 }
 
 void
@@ -580,6 +622,7 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
     HdRenderIndex& renderIndex = sceneDelegate->GetRenderIndex();
     UtilityInstancer* instancer = nullptr;
     std::vector<GfMatrix4d> transforms;
+    std::vector<TfTokenVector> categories;
 
     if (instancerId.IsEmpty()) {
         transforms.push_back(_transform);
@@ -592,9 +635,13 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
             for (const GfMatrix4d& instance : instances) {
                 transforms.push_back(_transform * instance);
             }
+            categories = static_cast<UtilityInstancer*>(instancer)->computeInstanceCategories(GetId());
+            if (categories.size() != transforms.size()) {
+                categories.clear();
+            }
         }
     }
-    scene->setInstances(_geometry, transforms);
+    scene->setInstances(_geometry, transforms, categories);
 
     const GfVec2d shutter = utilityMotionShutter(*renderIndex.GetRenderDelegate(), kUtilitySettingTransformMotionBlur);
     std::shared_ptr<UtilityScene::TransformMotion> motion;
@@ -641,6 +688,65 @@ UtilityMesh::syncInstances(HdSceneDelegate* sceneDelegate,
         }
     }
     scene->setTransformMotion(_geometry, motion);
+}
+
+void
+UtilityMesh::syncMaterial(HdSceneDelegate* sceneDelegate,
+                          UtilityScene* scene,
+                          bool bindingDirty)
+{
+    const SdfPath& id = GetId();
+
+    if (bindingDirty) {
+        SetMaterialId(sceneDelegate->GetMaterialId(id));
+        scene->setMaterialId(_geometry, GetMaterialId());
+    }
+
+    const HdSprim* material = GetMaterialId().IsEmpty() ? nullptr : sceneDelegate->GetRenderIndex().GetSprim(HdPrimTypeTokens->material, GetMaterialId());
+    const TfToken name(material ? static_cast<const UtilityMaterial*>(material)->stPrimvar() : std::string("st"));
+    bool found = false;
+
+    for (int i = 0; i < HdInterpolationCount && !found; ++i) {
+        for (const HdPrimvarDescriptor& pv : sceneDelegate->GetPrimvarDescriptors(id, static_cast<HdInterpolation>(i))) {
+            found = found || pv.name == name;
+        }
+    }
+    if (!found) {
+        scene->setSt(_geometry, false, UtilityScene::eColorBindingConstant, VtVec2fArray());
+
+        return;
+    }
+
+    const Channel<GfVec2f> st = pullChannel<GfVec2f>(sceneDelegate, id, name, _topology, _points.size(), _allTriangles.size(), GfVec2f(0.f));
+    VtVec2fArray values;
+    UtilityScene::ColorBinding binding = UtilityScene::eColorBindingConstant;
+
+    switch (st.rate) {
+    case eChannelRateConstant:
+        values = VtVec2fArray(1, st.values.cdata()[0]);
+        break;
+    case eChannelRateUniform:
+        binding = UtilityScene::eColorBindingTriangle;
+        values.resize(_kept.size());
+        for (std::size_t t = 0; t < _kept.size(); ++t) {
+            values[t] = sampleCorner(st, _kept[t], 0, HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(_allParams.cdata()[_kept[t]]), 0);
+        }
+        break;
+    case eChannelRateVertex:
+        binding = UtilityScene::eColorBindingVertex;
+        values = st.values;
+        break;
+    case eChannelRateCorner:
+        binding = UtilityScene::eColorBindingCorner;
+        values.resize(_kept.size() * 3);
+        for (std::size_t t = 0; t < _kept.size(); ++t) {
+            for (int corner = 0; corner < 3; ++corner) {
+                values[t * 3 + corner] = sampleCorner(st, _kept[t], corner, 0, 0);
+            }
+        }
+        break;
+    }
+    scene->setSt(_geometry, true, binding, values);
 }
 
 NATRON_NAMESPACE_EXIT

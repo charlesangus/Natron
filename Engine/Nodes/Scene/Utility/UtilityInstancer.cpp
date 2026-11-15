@@ -395,4 +395,44 @@ UtilityInstancer::placements(const SdfPath& prototypeId,
     return flattened;
 }
 
+std::vector<TfTokenVector>
+UtilityInstancer::computeInstanceCategories(const SdfPath& prototypeId)
+{
+    if (!_visible) {
+        return std::vector<TfTokenVector>();
+    }
+    const std::vector<VtArray<TfToken>> perInstance = GetDelegate()->GetInstanceCategories(GetId());
+    const VtIntArray indices = GetDelegate()->GetInstanceIndices(GetId(), prototypeId);
+    std::vector<TfTokenVector> categories(indices.size());
+
+    for (std::size_t i = 0; i < indices.size(); ++i) {
+        const std::size_t index = static_cast<std::size_t>(indices[i]);
+
+        if (index < perInstance.size()) {
+            categories[i].assign(perInstance[index].begin(), perInstance[index].end());
+        }
+    }
+    if (GetParentId().IsEmpty()) {
+        return categories;
+    }
+    HdInstancer* parent = GetDelegate()->GetRenderIndex().GetInstancer(GetParentId());
+
+    if (!TF_VERIFY(parent)) {
+        return categories;
+    }
+    const std::vector<TfTokenVector> parentCategories = static_cast<UtilityInstancer*>(parent)->computeInstanceCategories(GetId());
+    std::vector<TfTokenVector> flattened(parentCategories.size() * categories.size());
+
+    for (std::size_t i = 0; i < parentCategories.size(); ++i) {
+        for (std::size_t j = 0; j < categories.size(); ++j) {
+            TfTokenVector& out = flattened[i * categories.size() + j];
+
+            out = categories[j];
+            out.insert(out.end(), parentCategories[i].begin(), parentCategories[i].end());
+        }
+    }
+
+    return flattened;
+}
+
 NATRON_NAMESPACE_EXIT

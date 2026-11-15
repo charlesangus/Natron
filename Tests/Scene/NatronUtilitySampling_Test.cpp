@@ -72,6 +72,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
@@ -177,6 +178,14 @@ addStripe(UtilityScene& scene,
     scene.setTopology(id, VtVec3fArray { GfVec3f(a, -50.f, 0.f), GfVec3f(b, -50.f, 0.f), GfVec3f(b, 50.f, 0.f), GfVec3f(a, 50.f, 0.f) }, VtVec3iArray { GfVec3i(0, 1, 2), GfVec3i(0, 2, 3) });
     scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
     scene.setInstances(id, { GfMatrix4d(1.) });
+
+    // The scene has no lights, so the stripe emits its displayColor for its colour to be its coverage.
+    UtilityMaterialDesc emissive;
+
+    emissive.diffuseColor = GfVec3f(0.f);
+    emissive.emissiveFromDisplayColor = true;
+    scene.setMaterial(SdfPath("/Emissive"), std::make_shared<const UtilityMaterialDesc>(emissive));
+    scene.setMaterialId(id, SdfPath("/Emissive"));
 }
 
 WavefrontFrame

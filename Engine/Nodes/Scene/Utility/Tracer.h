@@ -40,6 +40,27 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief Which casters may block which shadow rays: an instance c blocks ray r only when bit
+ * rayLights[r] is set in the stride words from casterMasks + c * stride, so a light's shadows fall only
+ * from the instances its shadow-link collection holds.
+ **/
+struct OcclusionFilter {
+    const std::uint32_t* rayLights = nullptr;
+    const std::uint32_t* casterMasks = nullptr;
+    std::uint32_t stride = 0;
+    // The instances casterMasks covers.
+    std::size_t casterCount = 0;
+
+    bool blocks(std::size_t ray,
+                std::uint32_t caster) const
+    {
+        const std::uint32_t light = rayLights[ray];
+
+        return ((casterMasks[static_cast<std::size_t>(caster) * stride + light / 32] >> (light % 32)) & 1u) != 0;
+    }
+};
+
+/**
  * @brief Intersects batches of rays with a UtilityScene. The render pipeline sees only this, so an
  * executor can trace with whichever backend suits its device.
  *
@@ -121,9 +142,11 @@ public:
     virtual void intersect(const RayBatch& rays,
                            const HitBatch& hits) const
         = 0;
-    // Writes 1 for each ray with anything in its way, 0 for the others.
+    // Writes 1 for each ray with anything in its way, 0 for the others. A filter with casterMasks
+    // ignores the instances it says cannot block a ray.
     virtual void occluded(const RayBatch& rays,
-                          std::uint8_t* blocked) const
+                          std::uint8_t* blocked,
+                          const OcclusionFilter* filter = nullptr) const
         = 0;
     virtual Stats stats() const = 0;
 };

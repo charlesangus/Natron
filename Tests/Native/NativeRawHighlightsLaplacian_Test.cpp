@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -38,6 +39,7 @@
 #include "BaseTest.h"
 #include "NativePluginIdentity.h"
 #include "RawTestSource.h"
+#include "RegionIndependenceSupport.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
@@ -95,17 +97,6 @@ whiteBalancedMetadata(const std::string& pattern)
     return metadata;
 }
 
-const RectI kTiles[] = {
-    RectI(30, 40, 70, 85),
-    RectI(0, 0, 9, 7),
-    RectI(kWidth - 11, kHeight - 5, kWidth, kHeight),
-    RectI(45, 60, 46, 61),
-    RectI(110, 47, 111, 48),
-    RectI(90, 0, 150, 64),
-    RectI(23, 38, 68, 82),
-    RectI(0, 50, kWidth, 53),
-};
-
 struct LaplacianVariant {
     int iterations;
     double noiseLevel;
@@ -130,7 +121,9 @@ protected:
     }
 
     NodePtr createChain(const std::string& pattern,
-                        int nComps = 1)
+                        int nComps = 1,
+                        NodePtr* sourceOut = nullptr,
+                        const RectI& rod = RectI(0, 0, kWidth, kHeight))
     {
         NodePtr source = createNode(QString::fromUtf8(kRawTestSourceID));
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_RAWHIGHLIGHTS));
@@ -141,9 +134,12 @@ protected:
         }
         const ImageMetadata metadata = whiteBalancedMetadata(pattern);
         const RawLayout layout = RawLayout::fromMetadata(metadata).value_or(RawLayout());
-        dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(RectI(0, 0, kWidth, kHeight), nComps, clippedScene(layout), metadata);
+        dynamic_cast<RawTestSource*>(source->getEffectInstance().get())->setRaw(rod, nComps, clippedScene(layout), metadata);
         connectNodes(source, node, 0, true);
         node->getEffectInstance()->getKnobByNameAndType<KnobChoice>(kRawHighlightsParamMode)->setValue((int)eRawHighlightsModeLaplacian);
+        if (sourceOut) {
+            *sourceOut = source;
+        }
 
         return node;
     }
@@ -198,7 +194,7 @@ TEST_F(NativeRawHighlightsLaplacianTest, TheKnobsDefaultToDarktables)
     EXPECT_EQ(0., effect->getKnobByNameAndType<KnobDouble>(kRawHighlightsParamNoiseLevel)->getValue());
 }
 
-TEST_F(NativeRawHighlightsLaplacianTest, TilesMatchTheFullFrameAndOnlyClippedAreasChange)
+TEST_F(NativeRawHighlightsLaplacianTest, OnlyClippedAreasChange)
 {
     for (const char* pattern : { "RGGB", "GBRG" }) {
         NodePtr node = createChain(pattern);
@@ -247,16 +243,28 @@ TEST_F(NativeRawHighlightsLaplacianTest, TilesMatchTheFullFrameAndOnlyClippedAre
             }
             ASSERT_GT(clippedCount, 0);
             EXPECT_GT(changed, 0) << pattern << " iterations " << variant.iterations;
+        }
+    }
+}
 
-            for (const RectI& tile : kTiles) {
-                RenderedPlane plane;
-                ASSERT_TRUE(renderRawTestPlane(node, tile, &plane, &error)) << pattern << ": " << error;
-                for (int y = tile.y1; y < tile.y2; ++y) {
-                    for (int x = tile.x1; x < tile.x2; ++x) {
-                        ASSERT_EQ(rawTestPlaneValue(full, x, y, 0), rawTestPlaneValue(plane, x, y, 0)) << pattern << " iterations " << variant.iterations << " at " << x << "," << y << " in tile " << tile.x1 << "," << tile.y1 << "-" << tile.x2 << "," << tile.y2;
-                    }
+// Every window of a frame at an offset origin and of odd size renders the pixels of the whole
+// frame, with each variant; on X-Trans, through the fallback to inpaint opposed.
+TEST_F(NativeRawHighlightsLaplacianTest, RegionIndependentCpu)
+{
+    const RectI frame(-5, -3, kWidth + 2, kHeight + 4);
+
+    for (const char* pattern : { "RGGB", "GBRG", kXTransPattern }) {
+        for (const LaplacianVariant& variant : kVariants) {
+            RegionIndependenceTest::expectRawRegionIndependent([&]() {
+                NodePtr source;
+                NodePtr node = createChain(pattern, 1, &source, frame);
+                if (node) {
+                    setVariant(node, variant);
                 }
-            }
+
+                return std::make_pair(node, source);
+            },
+                                                               frame, std::string(pattern) + " iterations " + std::to_string(variant.iterations));
         }
     }
 }

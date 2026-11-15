@@ -34,16 +34,22 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Color/ToneEqualizerInteract.h"
 #include "Engine/Nodes/Color/ToneEqualizerKernels.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 #include "Engine/RectI.h"
 
@@ -155,26 +161,47 @@ private:
 
     /**
      * @brief Sets a compensation from the mask of the current frame, as darktable's magic wands
-     * do: exposure when exposure is true, else contrast.
+     * do: exposure when exposure is true, else contrast. The mask is computed on the mask worker,
+     * and the compensation set later on the main thread, as one undo step.
      **/
     void autoAdjust(bool exposure);
 
     /**
-     * @brief The mask of the source at time, view and scale for the current knobs: the kept one
-     * when it matches, else computed as the render computes it, and kept.
-     **/
-    std::optional<Mask> maskForAdjust(double time,
-                                      ViewIdx view,
-                                      const RenderScale& scale) WARN_UNUSED_RETURN;
-
-    /**
      * @brief The mask the viewer readout and wheel read at time and view: the kept one when it
-     * matches the source and the knobs at any scale, else, when compute is true and no render
-     * is computing one, computed at the overlay's scale and kept.
+     * matches the source and the knobs at any scale. Never computes one.
      **/
     std::optional<Mask> interactMask(double time,
-                                     ViewIdx view,
-                                     bool compute) WARN_UNUSED_RETURN;
+                                     ViewIdx view) WARN_UNUSED_RETURN;
+
+    enum class MaskRequestKind {
+        eReadout,
+        eAutoExposure,
+        eAutoContrast,
+    };
+
+    struct MaskRequest {
+        MaskRequestKind kind = MaskRequestKind::eReadout;
+        double time = 0.;
+        ViewIdx view;
+        RenderScale scale;
+    };
+
+    /**
+     * @brief Queues request for the mask worker. The mask is computed off the main thread; the
+     * readout refresh or compensation it feeds is applied on the main thread. A readout request
+     * replaces the one still waiting.
+     **/
+    void requestMask(const MaskRequest& request);
+
+    void runMaskWorker();
+
+    void serveMaskRequest(const MaskRequest& request);
+
+    void applyAutoAdjust(MaskRequestKind kind,
+                         float value);
+
+    void refreshReadout(double time,
+                        ViewIdx view);
 
     /**
      * @brief Mask::source for the mask of time and view, with the plan it reads the source by in
@@ -208,14 +235,14 @@ private:
 
     /**
      * @brief The colour layer's mask at time, view and scale for r: the kept one when it matches,
-     * else computed as renderOp() computes it, and kept. With wait false, gives none rather than
-     * wait for another thread computing a mask.
+     * else the one renderOp() computes, through the same cache, and kept. Gives none once
+     * cancelled answers true.
      **/
     std::optional<Mask> colourMask(double time,
                                    ViewIdx view,
                                    const RenderScale& scale,
                                    const Resolved& r,
-                                   bool wait) WARN_UNUSED_RETURN;
+                                   const std::function<bool()>& cancelled) WARN_UNUSED_RETURN;
 
     void keepMask(const Mask& mask);
 
@@ -290,13 +317,19 @@ private:
     KnobButtonWPtr _applyPreset;
     KnobStringWPtr _cursorReadout;
 
-    // _maskMutex only guards the slots; _maskComputeMutex keeps two threads from computing a
-    // whole-frame mask at once without holding up the viewer, which reads the slots.
+    // Only guards the slots, so the viewer reading them never waits on a mask being computed.
     mutable std::mutex _maskMutex;
-    std::mutex _maskComputeMutex;
     std::string _maskKey;
     std::optional<Mask> _mask;
     std::optional<Mask> _colourMask;
+
+    WholeFrameCache _maskFrames;
+
+    std::mutex _requestMutex;
+    std::condition_variable _requestReady;
+    std::deque<MaskRequest> _requests;
+    std::atomic<bool> _maskWorkerStopping;
+    std::thread _maskWorker;
 
     ToneEqualizerInteract _interact;
 

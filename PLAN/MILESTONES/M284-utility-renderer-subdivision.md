@@ -9,7 +9,7 @@ motion blur cheap.
 ## Scope
 
 **In:**
-- `Subdivision Level` render setting (default 2, range 0–6) applying to every mesh whose scheme is not `none`; primvar `natron:subdivLevel` (int, constant) overrides per prim. The viewer still passes Hydra's `refineLevel` (display complexity) when no override is set in the viewer's own settings.
+- `Subdivision Level` render setting (default 0 — user, 2026-11-15; range 0–6) applying to every mesh whose scheme is not `none`; primvar `natron:subdivLevel` (int, constant) overrides per prim. The viewer still passes Hydra's `refineLevel` (display complexity) when no override is set in the viewer's own settings.
 - OpenSubdiv `Far` uniform refinement from `HdMeshTopology` and `PxOsdSubdivTags`: creases, corners, holes, `interpolateBoundary`, `faceVaryingLinearInterpolation`, `triangleSubdivisionRule`.
 - Primvars refined by interpolation type (vertex, varying, face-varying with its own channel, uniform carried per refined face).
 - Limit normals from the limit surface.
@@ -62,3 +62,4 @@ motion blur cheap.
 - 2026-11-14 — Build on 9416d79ae: everything passed except NatronUtilityGoldenTest.ReferenceScene and USDRenderSingleSampleTest.NatronUtilityMatchesStorm, which weren't pinned to the cage (default level 2). Both fixtures now set the subdivision level to 0 through `setRendererSettings` and clear it on teardown (a3a7eea74). Rebuilding.
 - 2026-11-15 — F7 (with M281) merged in (bdf6fed3d): refined meshes carry materials, st (face-varying), display colour/opacity with found flags, categories and motion samples through the stencils; settings list both sides. P1.T3 (cb53915a3): Hydra subdivision tags reach the mesh; textures read refined face-varying st; seam test; goldens subdiv_textured_cpu/gpu recorded at this gate. PM: the motion-blurred screenshot comes from a USDRender at F7's UAT (the 3D viewer applies no shutter). Gating with --record-goldens.
 - 2026-11-15 — Gate on cb53915a3 (run 43729241801): ctest both legs green, goldens recorded and committed (5956f1590); the GUI large-render stall check needed its grid mesh authored scheme none (8fa9ab3b5), GUI rerun 106/106. PR #293 into F7; Codex review running. Open with the user: default Subdivision Level 2 subdivides every USD mesh left at the catmullClark default.
+- 2026-11-15 — **Subdivision Level defaults to 0 (user):** "level 0 unless specifically changed." Meshes are subdivided only when the setting, the natron:subdivLevel primvar or the viewer refine level asks; USD's catmullClark default alone no longer subdivides.

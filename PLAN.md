@@ -422,7 +422,7 @@ future core work has solid ground to build on.
 | M281 | Utility Materials And Lights | done | M280, M233, M234 | bosley-native-nodes | E19 | F7 | | [M281-utility-materials-and-lights.md](PLAN/MILESTONES/M281-utility-materials-and-lights.md) |
 | M283 | Utility Sampling And Motion Blur | done | M280, M253 | bosley-native-nodes | E19 | F7 | | [M283-utility-sampling-and-motion-blur.md](PLAN/MILESTONES/M283-utility-sampling-and-motion-blur.md) |
 | M282 | Utility Reflection And Refraction | todo | M281, M283 |  | E19 | F7 | | [M282-utility-reflection-and-refraction.md](PLAN/MILESTONES/M282-utility-reflection-and-refraction.md) |
-| M284 | Utility Renderer Subdivision | doing | M280 | bosley-native-nodes | E19 | F7 | response | [M284-utility-renderer-subdivision.md](PLAN/MILESTONES/M284-utility-renderer-subdivision.md) |
+| M284 | Utility Renderer Subdivision | doing | M280 | bosley-native-nodes | E19 | F7 | | [M284-utility-renderer-subdivision.md](PLAN/MILESTONES/M284-utility-renderer-subdivision.md) |
 | M285 | Utility Renderer AOVs | todo | M256, M282, M283 |  | E19 | | | [M285-utility-renderer-aovs.md](PLAN/MILESTONES/M285-utility-renderer-aovs.md) |
 | M286 | Utility Renderer Deep Output | todo | M285 |  | E19 | F24 | | [M286-utility-renderer-deep-output.md](PLAN/MILESTONES/M286-utility-renderer-deep-output.md) |
 | M288 | Utility Renderer Projection Modes | todo | M281, M283 |  | E19 | F7 | | [M288-utility-renderer-projection-modes.md](PLAN/MILESTONES/M288-utility-renderer-projection-modes.md) |
@@ -628,4 +628,3 @@ future core work has solid ground to build on.
 
 - **F9 - Delegate Projection post-merge checks (PM, 2026-11-15, landed f74a781e2 / #282):** the UAT was approved before the main merge and the Cycles restart-detection rework (fork reset counters, cancel before a pass keeps the engine). On main, please re-check: a file reload during a Cycles progressive render shows the reloaded scene; editing a Cycles scene that has finished refines in place without a pause; MoonRay edits restart promptly; cancelling during a render stays fast.
 
-- **M284 - Utility Renderer Subdivision default level (PM, 2026-11-15):** USD meshes default to catmullClark, so the planned default Subdivision Level 2 subdivides every polygon asset whose author left the scheme unset (~16× triangles, rounded hard edges); Storm subdivides only when display complexity is raised. Keep 2, or default to 0?

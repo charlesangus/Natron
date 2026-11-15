@@ -44,6 +44,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Transform.h"
 #include "Engine/UndoCommand.h"
@@ -1314,6 +1315,64 @@ TEST_F(VectorFollowSplineWarpTest, APerPointFollowMovesALinkedCurvesPointsOnly)
     expectSameTransform(transformOf(target), targetBefore, 0., "target");
     EXPECT_DOUBLE_EQ(positionAt(target, 0, kStart + kSpan).x, targetStart.x);
     EXPECT_DOUBLE_EQ(positionAt(target, 0, kStart + kSpan).y, targetStart.y);
+}
+
+// A parent layer turns and scales the curve's own translate on its way to where the curve shows, so
+// a translate fit keyed as the shown motion would move the curve off the vectors.
+TEST_F(VectorFollowSplineWarpTest, ATranslateFitUnderATurnedOrScaledLayerMovesWithTheVectors)
+{
+    SplineWarpContextPtr warp = warpContext();
+    ASSERT_TRUE(bool(warp));
+    // About the square's centre, so the shown square stays inside the vectors' picture.
+    const double centreX = 110.;
+    const double centreY = 90.;
+    struct LayerCase {
+        const char* name;
+        double rotate;
+        double scale;
+    };
+    for (const LayerCase& layerCase : { LayerCase { "turned", 90., 1. }, LayerCase { "scaled", 0., 1.5 }, LayerCase { "turned and scaled", -30., 0.75 } }) {
+        SCOPED_TRACE(layerCase.name);
+        BezierPtr bezier = makeSquareIn(warp, kStart);
+        warp->clearSelection(RotoItem::eSelectionReasonOther);
+        RotoLayerPtr layer = warp->addLayer();
+        ASSERT_TRUE(bool(layer));
+        layer->addItem(bezier);
+        SplineWarpTransform transform;
+        int dims = 0;
+        transform.value(SplineWarpTransform::indexOf("rotate", &dims)).setValue(layerCase.rotate, kStart);
+        const int scale = SplineWarpTransform::indexOf("scale", &dims);
+        transform.value(scale).setValue(layerCase.scale, kStart);
+        transform.value(scale + 1).setValue(layerCase.scale, kStart);
+        const int center = SplineWarpTransform::indexOf("center", &dims);
+        transform.value(center).setValue(centreX, kStart);
+        transform.value(center + 1).setValue(centreY, kStart);
+        warp->setLayerTransform(layer, transform);
+        warp->clearSelection(RotoItem::eSelectionReasonOther);
+
+        const FollowPoint start = shownAt(bezier, positionAt(bezier, 0, kStart), kStart);
+        UndoCommandPtr undo;
+        const VectorFollowReport report = warp->followVectors(paramsFor(bezier, VectorFollowModel::eTranslate), &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+        EXPECT_TRUE(report.refused.empty());
+        ASSERT_EQ(report.shapes.size(), 1u);
+        EXPECT_FALSE(report.shapes[0].stopped);
+        ASSERT_TRUE(bool(undo));
+
+        for (int offset : { kSpan / 2, kSpan }) {
+            const FollowPoint shown = shownAt(bezier, positionAt(bezier, 0, kStart + offset), kStart + offset);
+            EXPECT_NEAR(shown.x, start.x + kShiftX * offset, kFollowTolerance) << "frame +" << offset;
+            EXPECT_NEAR(shown.y, start.y + kShiftY * offset, kFollowTolerance) << "frame +" << offset;
+        }
+        std::set<double> keys;
+        bezier->getKeyframeTimes(&keys);
+        EXPECT_EQ(keys.size(), 1u);
+
+        undo->undo();
+        const FollowPoint back = shownAt(bezier, positionAt(bezier, 0, kStart + kSpan), kStart + kSpan);
+        EXPECT_NEAR(back.x, start.x, 1e-9);
+        EXPECT_NEAR(back.y, start.y, 1e-9);
+    }
 }
 
 } // anonymous namespace

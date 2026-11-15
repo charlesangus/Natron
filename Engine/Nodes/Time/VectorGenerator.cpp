@@ -406,6 +406,20 @@ VectorGenerator::initializeKnobs()
     _model = ModelKnob::create(this, page, AiModelTask::eOpticalFlow, _downloader);
     _colourspace.create(this, page, []() { return std::optional<AiColourSpace>(AiColourSpace::eSrgb); });
 
+    KnobIntPtr maxInferenceSizeKnob = createKnob<KnobInt>(tr("Max Inference Size").toStdString());
+    maxInferenceSizeKnob->setName(kVectorGeneratorParamMaxInferenceSize);
+    maxInferenceSizeKnob->setHintToolTip(tr("The longest edge, in pixels, the Neural model is run at. A frame whose long edge exceeds it "
+                                            "is downscaled for inference, and the vectors are rescaled to full-resolution pixels. "
+                                            "Larger values keep finer motion detail and cost more time and memory.")
+                                             .toStdString());
+    // Below the model's smallest input a frame is padded up to it anyway, so a smaller size only loses detail.
+    maxInferenceSizeKnob->setMinimum(OpticalFlowSpec().minSize);
+    maxInferenceSizeKnob->setDisplayMinimum(OpticalFlowSpec().minSize);
+    maxInferenceSizeKnob->setDisplayMaximum(4096);
+    maxInferenceSizeKnob->setDefaultValue(OpticalFlowSpec().maxInferenceSize);
+    page->addKnob(maxInferenceSizeKnob);
+    _maxInferenceSize = maxInferenceSizeKnob;
+
     KnobChoicePtr qualityKnob = createKnob<KnobChoice>(tr("Quality").toStdString());
     qualityKnob->setName(kVectorGeneratorParamQuality);
     qualityKnob->setHintToolTip(tr("The speed and precision preset of the method. For Neural it sets the model's refinement iterations: 2, 4 or 8.").toStdString());
@@ -560,6 +574,9 @@ VectorGenerator::refreshMethodKnobs()
     }
     if (KnobIPtr space = getKnobByName(kModelColourspaceParam)) {
         space->setSecret(!neural);
+    }
+    if (KnobIntPtr size = _maxInferenceSize.lock()) {
+        size->setSecret(!neural);
     }
     if (KnobChoicePtr channels = _flowChannels.lock()) {
         channels->setAllDimensionsEnabled(!neural);
@@ -755,6 +772,9 @@ VectorGenerator::settingsAt(double time,
     }
     if (KnobChoicePtr knob = _quality.lock()) {
         s.params.quality = (FlowQuality)std::clamp(knob->getValueAtTime(time, 0, view), (int)eFlowQualityFast, (int)eFlowQualityFine);
+    }
+    if (KnobIntPtr knob = _maxInferenceSize.lock()) {
+        s.maxInferenceSize = std::max(knob->getValueAtTime(time, 0, view), OpticalFlowSpec().minSize);
     }
     if (KnobChoicePtr knob = _flowChannels.lock()) {
         s.params.channels = (FlowChannels)std::clamp(knob->getValueAtTime(time, 0, view), (int)eFlowChannelsLuminance, (int)eFlowChannelsRGB);
@@ -1078,6 +1098,7 @@ VectorGenerator::renderOp(const RenderActionArgs& args,
             }
             const std::shared_ptr<FlowNeuralModel> model = std::make_shared<FlowNeuralModel>();
             model->session = session;
+            model->spec.maxInferenceSize = s.maxInferenceSize;
             params.neural = model;
         }
 

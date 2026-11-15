@@ -34,12 +34,14 @@
 
 // clang-format off
 CLANG_DIAG_OFF(deprecated-declarations)
+#include <QCoreApplication>
 #include <QThread>
 CLANG_DIAG_ON(deprecated-declarations)
 // clang-format on
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/GenericSchedulerThread.h"
 #include "Engine/Image.h"
@@ -49,6 +51,7 @@ CLANG_DIAG_ON(deprecated-declarations)
 #include "Engine/Nodes/Time/VectorGenerator.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -170,6 +173,44 @@ presentLayersOf(const NodePtr& node,
     return present;
 }
 
+/*
+ * Ends a render's hold on the thread that ran it. The follow's worker outlives every render, so
+ * left registered it would stay tied to a finished render while it fits or idles, and abort() would
+ * reach a render that is over. The main thread's TLS also holds whatever action runs on it, so only
+ * a worker thread, which owns nothing else, has its render TLS cleaned up.
+ */
+class RenderHoldGuard {
+public:
+    RenderHoldGuard(std::mutex& mutex,
+                    AbortableRenderInfoPtr& published,
+                    const AbortableRenderInfoPtr& info)
+        : _mutex(mutex)
+        , _published(published)
+        , _info(info)
+    {
+    }
+
+    ~RenderHoldGuard()
+    {
+        QCoreApplication* app = QCoreApplication::instance();
+        if (!app || (QThread::currentThread() != app->thread())) {
+            appPTR->getAppTLS()->cleanupTLSForThread();
+        }
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_published == _info) {
+            _published.reset();
+        }
+    }
+
+    RenderHoldGuard(const RenderHoldGuard&) = delete;
+    RenderHoldGuard& operator=(const RenderHoldGuard&) = delete;
+
+private:
+    std::mutex& _mutex;
+    AbortableRenderInfoPtr& _published;
+    AbortableRenderInfoPtr _info;
+};
+
 } // anonymous namespace
 
 struct VectorSampler::Imp {
@@ -240,6 +281,7 @@ VectorSampler::Imp::render(int frame)
         std::lock_guard<std::mutex> lock(mutex);
         renderInfo = abortInfo;
     }
+    const RenderHoldGuard hold(mutex, renderInfo, abortInfo);
     // An abort before the info was published has nothing to reach, so look again.
     if (aborted.load()) {
         setError("Aborted.");

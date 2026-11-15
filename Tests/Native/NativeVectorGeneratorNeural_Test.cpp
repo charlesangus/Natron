@@ -287,6 +287,37 @@ TEST_F(NativeVectorGeneratorNeuralTest, ConfidenceIsTheRoundTripOfTheModelsTwoDi
     EXPECT_NEAR(meanOfChannel(confidence, 1, kMargin), expected, 1e-4);
 }
 
+// The stand-in returns the same flow at whatever size it runs, so a frame downscaled for inference
+// shows as that flow scaled back up to full-resolution pixels.
+TEST_F(NativeVectorGeneratorNeuralTest, MaxInferenceSizeDownscalesTheRunAndTheVectorsStayInFullResolutionPixels)
+{
+    ASSERT_EQ(std::string(), useFlowModel(true));
+    NodePtr node = createNeuralGenerator();
+    ASSERT_TRUE(bool(node));
+    KnobIntPtr size = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kVectorGeneratorParamMaxInferenceSize));
+    ASSERT_TRUE(bool(size));
+    EXPECT_EQ(size->getValue(), 1024);
+
+    RenderedPlane forward;
+    std::string error;
+    ASSERT_TRUE(renderPlane(node, forwardLayer(), &forward, &error)) << error << errorOf(node);
+    EXPECT_LT(meanDistance(forward, kModelDx, kModelDy, kMargin), 1e-3);
+
+    // Half the long edge: the run is 128 x 96, so a model pixel is two of the frame's.
+    const int half = kWidth / 2;
+    ASSERT_TRUE(setKnobValues(node, kVectorGeneratorParamMaxInferenceSize, { (double)half }));
+    ASSERT_TRUE(renderPlane(node, forwardLayer(), &forward, &error)) << error << errorOf(node);
+    EXPECT_EQ(forward.window.width(), kWidth);
+    EXPECT_EQ(forward.window.height(), kHeight);
+    const double kx = (double)kWidth / (double)half;
+    const double ky = (double)kHeight / (double)(kHeight * half / kWidth);
+    EXPECT_LT(meanDistance(forward, kModelDx * kx, kModelDy * ky, kMargin), 1e-3);
+
+    ASSERT_TRUE(setKnobValues(node, kVectorGeneratorParamMaxInferenceSize, { 1024. }));
+    ASSERT_TRUE(renderPlane(node, forwardLayer(), &forward, &error)) << error << errorOf(node);
+    EXPECT_LT(meanDistance(forward, kModelDx, kModelDy, kMargin), 1e-3);
+}
+
 TEST_F(NativeVectorGeneratorNeuralTest, AMissingModelIsAnErrorThatPointsToTheModelManager)
 {
     useFlowModel(false);
@@ -342,7 +373,7 @@ TEST_F(NativeVectorGeneratorNeuralTest, NeuralKnobsAreShownOnlyForTheNeuralMetho
     useFlowModel(false);
     NodePtr node = createNeuralGenerator();
     ASSERT_TRUE(bool(node));
-    const char* const names[] = { "model", "downloadModel", kModelColourspaceParam };
+    const char* const names[] = { "model", "downloadModel", kModelColourspaceParam, kVectorGeneratorParamMaxInferenceSize };
     for (const char* name : names) {
         KnobIPtr knob = node->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;

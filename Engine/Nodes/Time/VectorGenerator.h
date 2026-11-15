@@ -49,6 +49,7 @@
 
 #define kVectorGeneratorParamMethod "method"
 #define kVectorGeneratorParamQuality "quality"
+#define kVectorGeneratorParamMaxInferenceSize "maxInferenceSize"
 #define kVectorGeneratorParamFlowChannels "flowChannels"
 #define kVectorGeneratorParamMatteChannel "matteChannel"
 #define kVectorGeneratorParamTemporalSmoothing "temporalSmoothing"
@@ -247,6 +248,7 @@ private:
         bool backward = true;
         bool smoothing = false;
         float smoothingStrength = 0.f;
+        int maxInferenceSize = OpticalFlowSpec().maxInferenceSize;
     };
 
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -339,6 +341,7 @@ private:
 
     KnobChoiceWPtr _method;
     KnobChoiceWPtr _quality;
+    KnobIntWPtr _maxInferenceSize;
     KnobChoiceWPtr _flowChannels;
     KnobChannelSelectWPtr _matteChannel;
     KnobBoolWPtr _temporalSmoothing;

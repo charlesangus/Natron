@@ -136,7 +136,8 @@ struct VectorFollowAnchor {
     std::vector<FollowPoint> points;
     // The grid inside the shape and its control points, which the shape's motion is measured on.
     std::vector<FollowPoint> samples;
-    // The matrix a fit drives: the shape's transform, or its translation under eTranslate.
+    // The matrix a fit drives: the shape's transform, or under eTranslate, the translation to where a
+    // point of the shape shows.
     FollowMatrix transform;
 };
 

@@ -91,11 +91,83 @@ totalTransformAt(const RotoDrawableItem& item,
     return toFollowMatrix(m);
 }
 
+FollowMatrix
+localTransformAt(const RotoDrawableItem& item,
+                 double time)
+{
+    Transform::Matrix3x3 m;
+    item.getLocalTransformAtTime(time, &m);
+
+    return toFollowMatrix(m);
+}
+
 KnobDoublePtr
 doubleKnob(const RotoDrawableItem& item,
            const char* name)
 {
     return std::dynamic_pointer_cast<KnobDouble>(item.getKnobByName(name));
+}
+
+/*
+ * The item's own translate is the outermost step of its own transform, but what comes before it,
+ * such as a parent layer's rotation or scale, turns and scales a translate on its way to where it
+ * shows. A translate fit's motion is where it shows, so these carry it through what comes before.
+ * The total is what comes before times the own transform, so what comes before, inverted, is the
+ * own transform times the total inverted.
+ */
+struct TranslateFrame {
+    FollowMatrix before;
+    // The point the translate moves, in the space the translate is in, less the translate itself.
+    FollowPoint untranslated;
+};
+
+bool
+translateFrameAt(const RotoDrawableItem& item,
+                 double time,
+                 const FollowPoint& point,
+                 TranslateFrame* out)
+{
+    const FollowMatrix local = localTransformAt(item, time);
+    FollowMatrix inverseLocal;
+    if (!local.inverted(&inverseLocal)) {
+        return false;
+    }
+    const KnobDoublePtr translate = doubleKnob(item, kRotoDrawableItemTranslateParam);
+    const FollowPoint moved = local.apply(point);
+    out->before = totalTransformAt(item, time) * inverseLocal;
+    out->untranslated = FollowPoint(moved.x - translate->getValueAtTime(time, 0), moved.y - translate->getValueAtTime(time, 1));
+
+    return true;
+}
+
+FollowPoint
+translatedPoint(const TranslateFrame& frame,
+                double tx,
+                double ty)
+{
+    return frame.before.apply(FollowPoint(frame.untranslated.x + tx, frame.untranslated.y + ty));
+}
+
+// The own translate at time that shows point, in the item's coordinates, at shown.
+bool
+translateShowingAt(const RotoDrawableItem& item,
+                   double time,
+                   const FollowPoint& point,
+                   const FollowPoint& shown,
+                   FollowPoint* translate)
+{
+    FollowMatrix inverseTotal;
+    if (!totalTransformAt(item, time).inverted(&inverseTotal)) {
+        return false;
+    }
+    TranslateFrame frame;
+    if (!translateFrameAt(item, time, point, &frame)) {
+        return false;
+    }
+    const FollowPoint target = localTransformAt(item, time).apply(inverseTotal.apply(shown));
+    *translate = FollowPoint(target.x - frame.untranslated.x, target.y - frame.untranslated.y);
+
+    return true;
 }
 
 FollowMatrix
@@ -234,13 +306,15 @@ private:
     }
 };
 
-// A translation moves every point alike, so one point stands for the shape.
+// A translation moves every point alike, so one point, where it shows, stands for the shape.
 class TranslateCurvesMotion
     : public CurveCopiesMotion {
 public:
     TranslateCurvesMotion(const KnobDoublePtr& translate,
+                          const std::map<int, TranslateFrame>& frames,
                           const std::set<int>& keys)
         : CurveCopiesMotion(keys)
+        , _frames(frames)
     {
         addCopy(*translate->getCurve(ViewIdx(0), 0));
         addCopy(*translate->getCurve(ViewIdx(0), 1));
@@ -249,8 +323,11 @@ public:
     virtual void evaluate(int frame,
                           std::vector<FollowPoint>* points) const OVERRIDE FINAL
     {
-        points->assign(1, FollowPoint(_curves[0]->getValueAt(frame), _curves[1]->getValueAt(frame)));
+        points->assign(1, translatedPoint(_frames.at(frame), _curves[0]->getValueAt(frame), _curves[1]->getValueAt(frame)));
     }
+
+private:
+    std::map<int, TranslateFrame> _frames;
 };
 
 // The extra matrix through what comes before it, on the corners of the shape's box, so a deviation
@@ -301,6 +378,8 @@ struct FollowShape {
     bool bakesFit = false;
     // The tracked points, as trackedPointsAt() gives them, at the first anchor.
     std::vector<FollowPoint> reference;
+    // Under eTranslate, the point in the item's coordinates whose shown position the fit drives.
+    FollowPoint translatePivot;
     // The control points tracked one by one, when the model says so, or a baked fit moves.
     std::vector<int> tracked;
     // The shape's point count when the follow began, which the indices in tracked refer to.
@@ -629,7 +708,6 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
 
     addAnchorFrames(*shape);
 
-    KnobDoublePtr translate = doubleKnob(*item, kRotoDrawableItemTranslateParam);
     for (int frame : shape->anchorFrames) {
         VectorFollowAnchor anchor;
         anchor.frame = frame;
@@ -643,8 +721,6 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
             anchor.points = trackedPointsAt(*shape, frame);
             break;
         case VectorFollowModel::eTranslate:
-            anchor.transform = FollowMatrix::translation(translate->getValueAtTime(frame, 0), translate->getValueAtTime(frame, 1));
-            break;
         case VectorFollowModel::eAffine:
         case VectorFollowModel::ePerspective:
             anchor.transform = totalTransformAt(*item, frame);
@@ -670,11 +746,23 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
     if (shape->setup.model != VectorFollowModel::ePerPoint) {
         const VectorFollowAnchor& firstAnchor = shape->setup.anchors.front();
         shape->setup.corners = boxCorners(firstAnchor.samples);
-        if (shape->setup.model != VectorFollowModel::eTranslate) {
-            FollowMatrix inverse;
-            if (!firstAnchor.transform.inverted(&inverse)) {
-                return nullptr;
+        FollowMatrix inverse;
+        if (!firstAnchor.transform.inverted(&inverse)) {
+            return nullptr;
+        }
+        if ((shape->setup.model == VectorFollowModel::eTranslate) && !shape->bakesFit) {
+            // The translation fitted is where the box's centre shows, which each anchor's transform takes it to.
+            FollowPoint centre;
+            for (const FollowPoint& corner : shape->setup.corners) {
+                centre.x += corner.x / (double)shape->setup.corners.size();
+                centre.y += corner.y / (double)shape->setup.corners.size();
             }
+            shape->translatePivot = inverse.apply(centre);
+            for (VectorFollowAnchor& anchor : shape->setup.anchors) {
+                const FollowPoint shown = anchor.transform.apply(shape->translatePivot);
+                anchor.transform = FollowMatrix::translation(shown.x, shown.y);
+            }
+        } else {
             for (FollowPoint& corner : shape->setup.corners) {
                 corner = inverse.apply(corner);
             }
@@ -807,9 +895,14 @@ VectorFollowRun::Imp::writeFrame(FollowShape& shape,
             return;
         }
         break;
-    case VectorFollowModel::eTranslate:
-        shape.item->setTranslateKeyframe(time, frame.transform.m[2], frame.transform.m[5]);
+    case VectorFollowModel::eTranslate: {
+        FollowPoint translate;
+        if (!translateShowingAt(*shape.item, time, shape.translatePivot, FollowPoint(frame.transform.m[2], frame.transform.m[5]), &translate)) {
+            return;
+        }
+        shape.item->setTranslateKeyframe(time, translate.x, translate.y);
         break;
+    }
     case VectorFollowModel::eAffine:
     case VectorFollowModel::ePerspective: {
         // The item's transform is what the other knobs make times the extra matrix, so the extra
@@ -989,9 +1082,18 @@ VectorFollowRun::prepareReduction()
         case VectorFollowModel::ePerPoint:
             shape->motion.reset(new PointCurvesMotion(*shape->bezier, keys));
             break;
-        case VectorFollowModel::eTranslate:
-            shape->motion.reset(new TranslateCurvesMotion(doubleKnob(*shape->item, kRotoDrawableItemTranslateParam), keys));
+        case VectorFollowModel::eTranslate: {
+            std::map<int, TranslateFrame> frames;
+            for (int frame = *keys.begin(); frame <= *keys.rbegin(); ++frame) {
+                TranslateFrame translateFrame;
+                if (!translateFrameAt(*shape->item, frame, shape->translatePivot, &translateFrame)) {
+                    translateFrame = TranslateFrame();
+                }
+                frames[frame] = translateFrame;
+            }
+            shape->motion.reset(new TranslateCurvesMotion(doubleKnob(*shape->item, kRotoDrawableItemTranslateParam), frames, keys));
             break;
+        }
         case VectorFollowModel::eAffine:
         case VectorFollowModel::ePerspective: {
             KnobDoublePtr extraKnob = doubleKnob(*shape->item, kRotoDrawableItemExtraMatrixParam);

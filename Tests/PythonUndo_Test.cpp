@@ -567,3 +567,30 @@ TEST_F(PythonUndo, AShapeAccessorWriteUndoesInOneStep)
     EXPECT_DOUBLE_EQ(feather, shape->getFeatherKnob()->getValue());
     EXPECT_DOUBLE_EQ(0.25, shape->getOpacityKnob()->getValue());
 }
+
+// A rejected expression clears the shape's previous one, and undoing the step gives it back whole.
+TEST_F(PythonUndo, UndoingARejectedShapeExpressionRestoresThePreviousOne)
+{
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr shape = context->makeSquare(0., 0., 10., context->getTimelineCurrentTime());
+    ASSERT_TRUE(bool(shape));
+    ASSERT_TRUE(shape->setScriptName("rejectedShape"));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    const std::string param = "p = " + py(roto) + ".getRotoContext().getItemByName(\"rejectedShape\").getParam(\"opacity\")\n";
+
+    ASSERT_TRUE(runStep(param + "assert p.setExpression('0.5', False, 0)\n"));
+    ASSERT_EQ(std::string("0.5"), shape->getOpacityKnob()->getExpression(0));
+    recorder->commands.clear();
+    recorder->touchedNodes.clear();
+
+    ASSERT_TRUE(runStep(param + "assert not p.setExpression('this is not python', False, 0)\n"));
+    ASSERT_NE(std::string("0.5"), shape->getOpacityKnob()->getExpression(0));
+    ASSERT_EQ(1u, recorder->commands.size());
+    EXPECT_EQ(roto, recorder->touchedNodes.front());
+
+    undoAll();
+    EXPECT_EQ(std::string("0.5"), shape->getOpacityKnob()->getExpression(0));
+}

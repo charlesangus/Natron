@@ -1928,9 +1928,10 @@ Node::beginInputEdition()
     ++_imp->inputModifiedRecursion;
 }
 
-void
+bool
 Node::endInputEdition(bool triggerRender)
 {
+    bool inputsChanged = false;
     assert( QThread::currentThread() == qApp->thread() );
     if (_imp->inputModifiedRecursion > 0) {
         --_imp->inputModifiedRecursion;
@@ -1938,6 +1939,7 @@ Node::endInputEdition(bool triggerRender)
 
     if (!_imp->inputModifiedRecursion) {
         bool hasChanged = !_imp->inputsModified.empty();
+        inputsChanged = hasChanged;
         _imp->inputsModified.clear();
 
         if (hasChanged) {
@@ -1959,6 +1961,8 @@ Node::endInputEdition(bool triggerRender)
             }
         }
     }
+
+    return inputsChanged;
 }
 
 void

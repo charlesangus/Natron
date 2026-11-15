@@ -1538,6 +1538,12 @@ public:
     virtual bool tryLock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual void unlock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual bool canSetValue() const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Makes a background application queue the knob writes made while a node renders, as an
+     * interactive one does, so that tests can reproduce what an edit during a render does.
+     **/
+    static void setQueuesWritesDuringBackgroundRendersForTesting(bool queues);
     virtual void abortViewerRendersForEdit() OVERRIDE FINAL;
     virtual void abortAllRendersReadingThis() OVERRIDE FINAL;
     virtual void notifyValueQueued() OVERRIDE FINAL;
@@ -2396,6 +2402,15 @@ public:
      * @brief Called everytimes an input connection is changed
      **/
     virtual void onInputChanged(int inputNo);
+
+    /**
+     * @brief Called when deleting the node named sourceName left input inputNo empty. Disconnecting
+     * the input, and deleting a node whose input takes its place, do not call it.
+     **/
+    virtual void onInputSourceDeleted(int /*inputNo*/,
+                                      const std::string& /*sourceName*/)
+    {
+    }
 
     /**
      * @brief If the plug-in calls timelineGoTo and we're during a render/instance changed action,

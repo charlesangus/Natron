@@ -50,10 +50,20 @@ bool checkHolderIsEditable(const KnobHolder* holder);
 
 class Param
 {
+    friend class ItemBase;
+
 protected:
     KnobIWPtr _knob;
 
+    // The node holding the roto item whose knob this is; null for any other knob.
+    NodeWPtr _itemNode;
+
     bool checkIsEditable() const;
+
+    /**
+     * @brief recordPythonKnobEdit() for knob, a knob of this parameter.
+     **/
+    bool recordEdit(const KnobIPtr& knob) const WARN_UNUSED_RETURN;
 
 public:
 
@@ -292,6 +302,11 @@ public:
 
     /**
      * @brief Set an expression on the Param. This is a Python script, see documentation for more infos.
+     * An empty expr clears it. Either way the change is evaluated: the node re-renders and its
+     * param-changed callback runs with userEdited False, as for setValue, on every set. Inside a
+     * begin/endChanges batch only the render request is held back, and it is posted once by the
+     * outermost endChanges. Setting what is already set, or clearing an empty expression, changes
+     * nothing and evaluates nothing.
      **/
     bool setExpression(const QString& expr, bool hasRetVariable, int dimension = 0);
     QString getExpression(int dimension, bool* hasRetVariable) const;

@@ -1307,6 +1307,13 @@ public:
      **/
     void destroyNode(bool blockingDestroy, bool autoReconnect);
 
+    /**
+     * @brief Tells the outputs deactivate() just disconnected from this node that it was deleted,
+     * through EffectInstance::onInputSourceDeleted(). Deactivating is not deleting: undoing a node's
+     * creation or moving it into a group deactivate it too, so the caller says which this is.
+     **/
+    void notifyOutputsOfDeletion();
+
 private:
 
     void doDestroyNodeInternalEnd(bool autoReconnect);
@@ -1571,7 +1578,10 @@ public:
 
     void beginInputEdition();
 
-    void endInputEdition(bool triggerRender);
+    /**
+     * @brief Closes one input edition level. True when it was the outermost and inputs had changed.
+     **/
+    bool endInputEdition(bool triggerRender);
 
     void onInputChanged(int inputNb, bool isInputA = true);
 

@@ -61,10 +61,13 @@
 #define kUSDProject3DShaderName "Projection"
 #define kUSDProject3DTextureName "PlateTexture"
 #define kUSDProject3DReaderName "TexCoordReader"
+#define kUSDProject3DFrameReaderName "GeometryFrameReader"
+#define kUSDProject3DReferenceReaderName "ReferencePointsReader"
 // Shader inputs and attributes read beyond the node: by the geometry nodes the material is grafted
 // under, and by USDWrite's bake.
 #define kUSDProject3DInputProjectionSpace "projectionSpace"
 #define kUSDProject3DInputGeometryFrame "geometryFrame"
+#define kUSDProject3DInputReferencePoints "referencePoints"
 #define kUSDProject3DInputPlateTransform "plateTransform"
 #define kUSDProject3DInputWorldToProjector "worldToProjector"
 #define kUSDProject3DInputProjectorOrigin "projectorOrigin"
@@ -154,6 +157,8 @@ private:
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+    virtual void onInputSourceDeleted(int inputNo,
+                                      const std::string& sourceName) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
     virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
     virtual bool knobChanged(KnobI* k,

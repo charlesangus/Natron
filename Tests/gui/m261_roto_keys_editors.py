@@ -402,8 +402,8 @@ try:
         gt.shot("m261-curve-editor.png")
 
         gt.section("selected-item-keys")
-        # The RotoPaint shapes are still selected, so their knobs are slaved to the node's proxy
-        # knobs; dope sheet edits of their keys must still change the keys that render.
+        # The RotoPaint shapes are still selected, so the node's knobs mirror one of them; dope sheet
+        # edits of each shape's keys must change that shape's own keys, which are the ones that render.
         editors = editor_widgets("DopeSheetEditor")
         make_tab_current(editors[0], "dope")
         yield ("sleep", SETTLE_MS)

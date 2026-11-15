@@ -381,7 +381,7 @@ namespace {
     /*
      * The unscaled kernel's integral over [u0, u1]. Three-point Gauss-Legendre on each unit
      * piece is exact for the piecewise cubic kernels, whose pieces join at integers, and close
-     * for the smooth ones. resamplecore.slang's kernelIntegral matches it.
+     * for the smooth ones. resamplecore.slang's buildAxisTaps evaluates the same nodes.
      */
     double
     kernelIntegral(const FilterSpec& filter,

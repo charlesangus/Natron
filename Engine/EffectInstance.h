@@ -1988,9 +1988,13 @@ public:
                                            OutputCacheTier* servedBy = nullptr);
 
     /**
-     * @brief Whether renderRoI pulls this effect's inputs at level 0 whatever level it is asked for.
+     * @brief Whether renderRoI pulls this effect's inputs at level 0 whatever level it is asked for. The request pass,
+     * renderRoI and getImage all ask the inputs at the level this returns.
+     *
+     * An effect that renders at full scale below 100% overrides this when its inputs must not be downscaled at all,
+     * such as a stage reading camera photosites, which a downscale would mix across colour filters.
      **/
-    bool pullsInputsAtScaleOne() const;
+    virtual bool pullsInputsAtScaleOne() const WARN_UNUSED_RETURN;
 
     /**
      * @brief The key renderRoI caches this effect's output under when it renders at renderMappedMipmapLevel, before
@@ -2388,6 +2392,13 @@ public:
     void setSupportsRenderScaleMaybe(EffectInstance::SupportsEnum s) const;
 
     virtual bool supportsRenderQuality() const { return false; }
+
+    /**
+     * @brief Whether each output pixel depends only on the input pixels at the same place. Drafting such a node
+     * gains little, since it costs about as much per pixel at any level, so editing it never drafts. False unless
+     * the node declares it: an OFX plug-in cannot.
+     **/
+    virtual bool isPointOp() const { return false; }
 
     /**
      * @brief Does this effect can support multiple clips PAR ?

@@ -105,6 +105,17 @@ ImageKey::forEntry(unsigned int mipmapLevel,
     return key;
 }
 
+ImageKey
+ImageKey::nonDraft() const
+{
+    ImageKey key(*this);
+
+    key._draftMode = false;
+    key.resetHash();
+
+    return key;
+}
+
 const ImageLayerDesc*
 ImageKey::cachedLayerForRequest(const ImageLayerDesc& requested,
                                 const std::list<ImageLayerDesc>& outputComponents)

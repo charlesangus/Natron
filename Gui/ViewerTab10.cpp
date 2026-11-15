@@ -249,6 +249,12 @@ ViewerTab::onFullFrameButtonToggle(bool b)
 }
 
 void
+ViewerTab::onAutoProxyButtonToggle(bool b)
+{
+    appPTR->getCurrentSettings()->setAutoProxyEnabled(b);
+}
+
+void
 ViewerTab::onClipToProjectButtonToggle(bool b)
 {
     editViewerKnobs(tr("Clip To Format"), [this, b]() {
@@ -859,108 +865,110 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
         onEnableViewerRoIButtonToggle(!_imp->viewerValue<bool>(kViewerParamEnableUserRoI, false));
     } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionNewROI, modifiers, key) ) {
         onCreateNewRoIPressed();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyEnabled, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionAutoProxyScrubbing, modifiers, key)) {
+        onAutoProxyButtonToggle(!appPTR->getCurrentSettings()->isAutoProxyEnabled());
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyEnabled, modifiers, key)) {
         onRenderScaleButtonClicked(!_imp->viewerValue<bool>(kViewerParamEnableDownscale, false));
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel2, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel2, modifiers, key)) {
         _imp->renderScaleCombo->setCurrentIndex(0);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel4, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel4, modifiers, key)) {
         _imp->renderScaleCombo->setCurrentIndex(1);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel8, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel8, modifiers, key)) {
         _imp->renderScaleCombo->setCurrentIndex(2);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel16, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel16, modifiers, key)) {
         _imp->renderScaleCombo->setCurrentIndex(3);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel32, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionProxyLevel32, modifiers, key)) {
         _imp->renderScaleCombo->setCurrentIndex(4);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionZoomLevel100, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionZoomLevel100, modifiers, key)) {
         _imp->viewer->zoomSlot(100);
         _imp->zoomCombobox->setCurrentIndex_no_emit(7);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionZoomIn, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionZoomIn, modifiers, key)) {
         zoomIn();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionZoomOut, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionZoomOut, modifiers, key)) {
         zoomOut();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDNextLayer, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDNextLayer, modifiers, key)) {
         nextLayer();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDPrevLayer, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDPrevLayer, modifiers, key)) {
         previousLayer();
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput1, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput1, modifiers, key)) {
         connectToAInput(0);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput2, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput2, modifiers, key)) {
         connectToAInput(1);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput3, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput3, modifiers, key)) {
         connectToAInput(2);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput4, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput4, modifiers, key)) {
         connectToAInput(3);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput5, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput5, modifiers, key)) {
         connectToAInput(4);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput6, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput6, modifiers, key)) {
         connectToAInput(5);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput7, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput7, modifiers, key)) {
         connectToAInput(6);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput8, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput8, modifiers, key)) {
         connectToAInput(7);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput9, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput9, modifiers, key)) {
         connectToAInput(8);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput10, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput10, modifiers, key)) {
         connectToAInput(9);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput1, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput1, modifiers, key)) {
         connectToBInput(0);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput2, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput2, modifiers, key)) {
         connectToBInput(1);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput3, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput3, modifiers, key)) {
         connectToBInput(2);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput4, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput4, modifiers, key)) {
         connectToBInput(3);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput5, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput5, modifiers, key)) {
         connectToBInput(4);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput6, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput6, modifiers, key)) {
         connectToBInput(5);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput7, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput7, modifiers, key)) {
         connectToBInput(6);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput8, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput8, modifiers, key)) {
         connectToBInput(7);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput9, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput9, modifiers, key)) {
         connectToBInput(8);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput10, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerBToInput10, modifiers, key)) {
         connectToBInput(9);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionHideOverlays, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionHideOverlays, modifiers, key)) {
         _imp->viewer->toggleOverlays();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDToggleWipe, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDToggleWipe, modifiers, key)) {
         _imp->viewer->toggleWipe();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDCenterWipe, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDCenterWipe, modifiers, key)) {
         _imp->viewer->centerWipe();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionHideAll, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionHideAll, modifiers, key)) {
         hideAllToolbars();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionShowAll, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionShowAll, modifiers, key)) {
         showAllToolbars();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionHidePlayer, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionHidePlayer, modifiers, key)) {
         togglePlayerVisibility();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionHideTimeline, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionHideTimeline, modifiers, key)) {
         toggleTimelineVisibility();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionHideInfobar, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionHideInfobar, modifiers, key)) {
         toggleInfobarVisbility();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionHideLeft, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionHideLeft, modifiers, key)) {
         toggleLeftToolbarVisiblity();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionHideRight, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionHideRight, modifiers, key)) {
         toggleRightToolbarVisibility();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionHideTop, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionHideTop, modifiers, key)) {
         toggleTopToolbarVisibility();
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomIn, Qt::NoModifier, key) ) { // zoom in/out doesn't care about modifiers
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomIn, Qt::NoModifier, key)) { // zoom in/out doesn't care about modifiers
         QWheelEvent e(mapFromGlobal( QCursor::pos() ), QCursor::pos(), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         wheelEvent(&e);
-    } else if ( isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomOut, Qt::NoModifier, key) ) { // zoom in/out doesn't care about modifiers
+    } else if (isKeybind(kShortcutGroupGlobal, kShortcutIDActionZoomOut, Qt::NoModifier, key)) { // zoom in/out doesn't care about modifiers
         QWheelEvent e(mapFromGlobal( QCursor::pos() ), QCursor::pos(), QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         wheelEvent(&e);
     } else if (key == Qt::Key_Escape) {
         _imp->viewer->s_selectionCleared();
         update();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDSwitchInputAAndB, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDSwitchInputAAndB, modifiers, key)) {
         ///Put it after notifyOverlaysKeyDown() because Roto may intercept Enter
         if ( getViewer()->hasFocus() ) {
             switchInputAAndB();
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDPrevView, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDPrevView, modifiers, key)) {
         previousView();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDNextView, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDNextView, modifiers, key)) {
         nextView();
     } else {
         accept = false;

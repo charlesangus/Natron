@@ -536,6 +536,8 @@ public:
     OpenGLViewerI* uiContext; // written in the main thread before render thread creation, accessed from render thread
     mutable QMutex forceRenderMutex;
     bool forceRender[2]; /*!< true when we want to by-pass the cache*/
+    mutable QMutex adaptiveDraftMutex;
+    AdaptiveDraft adaptiveDraft;
     mutable QMutex isViewerPausedMutex;
     bool isViewerPaused[2]; /*!< When true we should no longer refresh the viewer */
 

@@ -974,6 +974,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionPauseViewerInputA, kShortcutDescActionPauseViewerInputA, Qt::NoModifier, Qt::Key_P);
 
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionProxyEnabled, kShortcutDescActionProxyEnabled, Qt::ControlModifier, Qt::Key_P);
+    registerKeybind(kShortcutGroupViewer, kShortcutIDActionAutoProxyScrubbing, kShortcutDescActionAutoProxyScrubbing, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_P);
     registerKeybindWithMask(kShortcutGroupViewer, kShortcutIDActionProxyLevel2, kShortcutDescActionProxyLevel2, Qt::AltModifier, Qt::Key_1,
                             Qt::ShiftModifier);
     registerKeybindWithMask(kShortcutGroupViewer, kShortcutIDActionProxyLevel4, kShortcutDescActionProxyLevel4, Qt::AltModifier, Qt::Key_2,

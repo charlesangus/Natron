@@ -523,6 +523,18 @@ CacheDeviceTier::find(const ImageKey& key)
 }
 
 CacheDeviceEntryPtr
+CacheDeviceTier::findServing(const ImageKey& key)
+{
+    if (key._draftMode) {
+        if (const CacheDeviceEntryPtr full = find(key.nonDraft())) {
+            return full;
+        }
+    }
+
+    return find(key);
+}
+
+CacheDeviceEntryPtr
 CacheDeviceTier::holdFor(const CacheDeviceEntryPtr& entry,
                          const std::function<void()>& holderEvict,
                          const std::weak_ptr<void>& alive)

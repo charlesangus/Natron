@@ -55,6 +55,7 @@
 
 #define kTestPluginIDCounting "test.natron.built-in.Counting"
 #define kTestPluginIDCountingMerge "test.natron.built-in.CountingMerge"
+#define kTestPluginIDDraftCounting "test.natron.built-in.DraftCounting"
 #define kTestPluginIDTiledIdentity "test.natron.built-in.TiledIdentity"
 #define kTestPluginIDSplitInputs "test.natron.built-in.SplitInputs"
 
@@ -554,6 +555,46 @@ private:
     static constexpr NodeSpec kNodeSpec = {
         .id = kTestPluginIDCounting,
         .label = "Test Counting",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+};
+
+/**
+ * @brief A CountingTestEffect that renders differently in draft, so that its output and everything downstream of it
+ * is cached under draft keys while drafting.
+ **/
+class DraftCountingTestEffect
+    : public CountingTestEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DraftCountingTestEffect(n);
+    }
+
+    explicit DraftCountingTestEffect(NodePtr n)
+        : CountingTestEffectBase(n)
+    {
+    }
+
+    virtual bool supportsRenderQuality() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDraftCounting,
+        .label = "Test Draft Counting",
         .outputKind = eDataKindImage,
         .inputs = kInputs,
     };

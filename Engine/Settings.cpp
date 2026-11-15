@@ -65,6 +65,7 @@
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, isApplication32Bits, printAsRAM
 #include "Engine/Node.h"
 #include "Engine/Nodes/Loop/LoopFrameCache.h"
+#include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -1290,10 +1291,13 @@ Settings::initializeKnobsViewers()
     _checkerboardColor2->setHintToolTip( tr("The second color used by the checkerboard.") );
     _viewersTab->addKnob(_checkerboardColor2);
 
-    _autoProxyWhenScrubbingTimeline = AppManager::createKnob<KnobBool>( this, tr("Automatically enable proxy when scrubbing the timeline") );
+    _autoProxyWhenScrubbingTimeline = AppManager::createKnob<KnobBool>(this, tr("Auto Proxy Scrubbing"));
     _autoProxyWhenScrubbingTimeline->setName("autoProxyScrubbing");
-    _autoProxyWhenScrubbingTimeline->setHintToolTip( tr("When checked, the proxy mode will be at least at the level "
-                                                        "indicated by the auto-proxy parameter.") );
+    _autoProxyWhenScrubbingTimeline->setHintToolTip(tr("When checked, the viewer drafts while the timeline is scrubbed or a "
+                                                       "control is dragged: it renders at least at the level indicated by the "
+                                                       "auto-proxy parameter. Dragging a control of a colour node that works "
+                                                       "pixel by pixel never drafts, and draft turns off on its own when the "
+                                                       "viewer's full resolution keeps up with the drag."));
     _autoProxyWhenScrubbingTimeline->setAddNewLine(false);
     _viewersTab->addKnob(_autoProxyWhenScrubbingTimeline);
 
@@ -1309,6 +1313,30 @@ Settings::initializeKnobsViewers()
     _autoProxyLevel->populateChoices(autoProxyChoices);
 
     _viewersTab->addKnob(_autoProxyLevel);
+
+    _viewerMipRounding = AppManager::createKnob<KnobChoice>(this, tr("Viewer Mip Rounding"));
+    _viewerMipRounding->setName("viewerMipRounding");
+    {
+        std::vector<ChoiceOption> roundings;
+        roundings.push_back(ChoiceOption("finer", tr("Finer").toStdString(), tr("The viewer renders at the nearest resolution at or above its zoom: 33% renders at 50%.").toStdString()));
+        roundings.push_back(ChoiceOption("nearest", tr("Nearest").toStdString(), tr("The viewer renders at the power of two nearest its zoom: 33% renders at 25%, which is faster and softer.").toStdString()));
+        _viewerMipRounding->populateChoices(roundings);
+    }
+    _viewerMipRounding->setHintToolTip(tr("How the viewer picks the resolution it renders at when zoomed below 100%. "
+                                          "Renders are at a power of two of the full resolution."));
+    _viewersTab->addKnob(_viewerMipRounding);
+
+    _zoomedOutDemosaic = AppManager::createKnob<KnobChoice>(this, tr("Zoomed-Out Demosaic"));
+    _zoomedOutDemosaic->setName("zoomedOutDemosaic");
+    {
+        std::vector<ChoiceOption> methods;
+        methods.push_back(ChoiceOption("fast", tr("Fast").toStdString(), tr("Below 100% the Raw Demosaic node averages each colour's photosites under every output pixel, without demosaicing at full resolution.").toStdString()));
+        methods.push_back(ChoiceOption("full", tr("Full").toStdString(), tr("Below 100% the Raw Demosaic node demosaics at full resolution with its own method, then downscales: slower, and the same pixels as the full-resolution render.").toStdString()));
+        _zoomedOutDemosaic->populateChoices(methods);
+    }
+    _zoomedOutDemosaic->setHintToolTip(tr("How the Raw Demosaic node renders when the viewer is zoomed below 100%. "
+                                          "Fast skips the demosaic method, green equilibration, capture sharpening, the dual blend and colour smoothing."));
+    _viewersTab->addKnob(_zoomedOutDemosaic);
 
     _maximumNodeViewerUIOpened = AppManager::createKnob<KnobInt>( this, tr("Max. opened node viewer interface") );
     _maximumNodeViewerUIOpened->setName("maxNodeUiOpened");
@@ -1890,6 +1918,8 @@ Settings::setDefaultValues()
     _checkerboardColor2->setDefaultValue(0., 3);
     _autoProxyWhenScrubbingTimeline->setDefaultValue(true);
     _autoProxyLevel->setDefaultValue(1);
+    _viewerMipRounding->setDefaultValue(0);
+    _zoomedOutDemosaic->setDefaultValue(0);
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
     _viewerOverlaysPath->setDefaultValue(true);
@@ -2619,6 +2649,19 @@ Settings::onKnobValueChanged(KnobI* k,
                 (*node)->refreshHostDrivenOverlayParams();
             }
         }
+    } else if (k == _zoomedOutDemosaic.get()) {
+        const AppInstanceVec& apps = appPTR->getAppInstances();
+        for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
+            NodesList nodes;
+            (*it)->getProject()->getNodes_recursive(nodes, false);
+            for (NodesList::const_iterator node = nodes.begin(); node != nodes.end(); ++node) {
+                if (RawDemosaic* demosaic = dynamic_cast<RawDemosaic*>((*node)->getEffectInstance().get())) {
+                    demosaic->refreshZoomedOutDemosaic();
+                }
+            }
+        }
+        // The nodes fold the trait into their hash, which must not be read back from before it changed.
+        Node::invalidateAllHashes("the Zoomed-Out Demosaic preference changed", k);
     } else if (k == _renderSchedulerMode.get()) {
         appPTR->onRenderSchedulerModeSettingChanged(getRenderSchedulerMode());
     } else if (k == _cacheAdmissionPolicy.get()) {
@@ -2734,6 +2777,25 @@ bool
 Settings::isAutoProxyEnabled() const
 {
     return _autoProxyWhenScrubbingTimeline->getValue();
+}
+
+void
+Settings::setAutoProxyEnabled(bool enabled)
+{
+    _autoProxyWhenScrubbingTimeline->setValue(enabled);
+    saveSetting(_autoProxyWhenScrubbingTimeline.get());
+}
+
+bool
+Settings::isViewerMipRoundingNearest() const
+{
+    return _viewerMipRounding->getValue() == 1;
+}
+
+bool
+Settings::isZoomedOutDemosaicFull() const
+{
+    return _zoomedOutDemosaic->getValue() == 1;
 }
 
 unsigned int

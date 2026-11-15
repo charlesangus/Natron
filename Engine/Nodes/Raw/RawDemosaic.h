@@ -136,7 +136,12 @@ enum RawDemosaicGreenEqEnum {
  * Each render reads its window grown by what the method reads around a pixel, aligned to the CFA
  * period (and, for AMaZE, LMMSE and Frequency Domain Chroma, to their own tile grids), so a tile is bit for bit the same pixels
  * as the full frame. Full green equilibration and capture sharpening's automatic radius measure
- * the whole image, once per source and settings. Renders at full resolution only.
+ * the whole image, once per source and settings.
+ *
+ * Below full resolution the Zoomed-Out Demosaic preference decides: Full renders at full
+ * resolution and downscales, Fast (RawSuperpixel) averages each colour's photosites under every
+ * output pixel, without the method, green equilibration, capture sharpening, the dual blend or
+ * colour smoothing. Either way the source is read at full resolution.
  **/
 class RawDemosaic
     : public StagedImageEffect {
@@ -150,6 +155,11 @@ public:
 
     virtual ~RawDemosaic();
 
+    virtual bool pullsInputsAtScaleOne() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -161,6 +171,11 @@ public:
     virtual void purgeCaches() OVERRIDE FINAL;
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
+
+    /**
+     * @brief Renders below full resolution as the Zoomed-Out Demosaic preference now says.
+     **/
+    void refreshZoomedOutDemosaic();
 
     struct Settings;
 
@@ -179,7 +194,12 @@ public:
 private:
     std::optional<Settings> resolveSettings(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
+    // Whether a render at scale is RawSuperpixel's, as Fast asks below full resolution.
+    bool rendersSuperpixel(const RenderScale& scale) const WARN_UNUSED_RETURN;
+
     virtual void initializeKnobs() OVERRIDE FINAL;
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,

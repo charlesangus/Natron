@@ -171,9 +171,17 @@ ParallelRenderArgsPtr gpuTaskContextArgs(const FrameGraph::Task& task,
                                          const FrameRenderContext& context);
 
 /**
- * @brief The query the effect of task is asked through canRenderOnGpu() for its single plane. False when the task
- * cannot go to the GPU whatever the effect answers: it is not a native image effect, renders more than one plane, or
- * is asked for a downscaled image it can only render at full scale, which a region refuses.
+ * @brief Whether a region renders task at level 0, as renderRoI() does, and box-downscales the result on the device to
+ * the task's level: the task is downscaled and its effect does not support render scale.
+ **/
+bool gpuRendersFullScale(const FrameGraph::Task& task,
+                         const EffectInstance& effect);
+
+/**
+ * @brief The query the effect of task is asked through canRenderOnGpu() for its single plane, at scale one for a task
+ * gpuRendersFullScale(). False when the task cannot go to the GPU whatever the effect answers: it is not a native
+ * image effect, renders more than one plane, or renders at full scale from inputs the request pass did not put at
+ * level 0.
  **/
 bool makeGpuQueryForTask(const FrameGraph::Task& task,
                          const FrameRenderContext& context,

@@ -1536,7 +1536,9 @@ TEST_F(GpuDeviceTierStressTest, DemotionDuringConcurrentRendersKeepsOutputsCorre
                     break;
                 }
                 if (n % 3 == 2) {
-                    appPTR->clearAllCaches();
+                    // clearAllCaches() purges every node's effect caches, which only the main
+                    // thread may do; the image cache and its device tier clear from any thread.
+                    appPTR->clearNodeCache();
                 }
             }
             ++finished;

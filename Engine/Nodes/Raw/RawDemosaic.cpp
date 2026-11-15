@@ -35,6 +35,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include <QCoreApplication>
@@ -43,6 +44,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -52,9 +54,12 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Raw/RawAmazeGpu.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
+#include "Engine/Nodes/Raw/RawSuperpixel.h"
 #include "Engine/OverlayDrawList.h"
 #include "Engine/OverlayImage.h"
 #include "Engine/RectD.h"
+#include "Engine/RenderScale.h"
+#include "Engine/Settings.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -215,6 +220,32 @@ struct RawDemosaic::Settings {
     float wbApplied[3] = { 1.f, 1.f, 1.f };
 };
 
+namespace {
+// What RawSuperpixel computes for s, the source having sourceComps channels.
+RawSuperpixel::ModeEnum
+superpixelMode(const RawDemosaic::Settings& s,
+               int sourceComps)
+{
+    if (s.algorithm == Algorithm::PhotositeMonochrome) {
+        return RawSuperpixel::eModeBoxMono;
+    }
+    if ((s.algorithm == Algorithm::PassThrough) || (s.layout.period() == 0)) {
+        return (sourceComps >= 3) ? RawSuperpixel::eModeBoxRgb : RawSuperpixel::eModeBoxMono;
+    }
+    if (s.algorithm == Algorithm::PhotositeColor) {
+        return RawSuperpixel::eModePhotositeColor;
+    }
+
+    return RawSuperpixel::eModeSuperpixel;
+}
+} // namespace
+
+bool
+RawDemosaic::rendersSuperpixel(const RenderScale& scale) const
+{
+    return (scale.toMipmapLevel() > 0) && (supportsRenderScaleMaybe() == eSupportsYes);
+}
+
 RawDemosaic::RawDemosaic(NodePtr node)
     : StagedImageEffect(node)
     , _bayerMethod()
@@ -234,11 +265,28 @@ RawDemosaic::RawDemosaic(NodePtr node)
     , _captureRadiusValue(0.)
     , _lastAutoCaptureRadius()
 {
-    setSupportsRenderScaleMaybe(eSupportsNo);
+    refreshZoomedOutDemosaic();
 }
 
 RawDemosaic::~RawDemosaic()
 {
+}
+
+void
+RawDemosaic::refreshZoomedOutDemosaic()
+{
+    const bool full = appPTR && appPTR->getCurrentSettings() && appPTR->getCurrentSettings()->isZoomedOutDemosaicFull();
+
+    // Full keeps renderRoI's path for a node without render scale support: a render at full
+    // resolution, cached there, then downscaled.
+    setSupportsRenderScaleMaybe(full ? eSupportsNo : eSupportsYes);
+}
+
+void
+RawDemosaic::appendNodeContentHash(ContentHasher& h) const
+{
+    // Fast and Full cache different pixels under the same reduced mipmap level.
+    h.appendBool(supportsRenderScaleMaybe() == eSupportsYes);
 }
 
 const NodeSpec*
@@ -930,6 +978,13 @@ RawDemosaic::getRegionsOfInterest(double time,
         return;
     }
     const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
+    if (rendersSuperpixel(scale)) {
+        const RectI window = PassExec::toPixelEnclosing(renderWindow, scale, par);
+        const RectI need = RawSuperpixel::sourceRegion(window, scale.toMipmapLevel(), settings->layout.period(), settings->sourceRoD);
+        (*ret)[input] = PassExec::toCanonical(need, RenderScale::identity, par);
+
+        return;
+    }
     const bool full = (settings->greenEq == eRawDemosaicGreenEqFull) || (settings->greenEq == eRawDemosaicGreenEqBoth);
     RectI need = full ? settings->sourceRoD : sourceRegionFor(PassExec::toPixelEnclosing(renderWindow, scale, par), time, view);
     if (settings->capture && (settings->captureSettings.radius <= 0.f)) {
@@ -982,6 +1037,42 @@ RawDemosaic::deriveOutputMetadata(double time,
     return metadata;
 }
 
+namespace {
+// Writes roi of every output layer from rgb, RGB with an alpha of 1, black where rgb has no pixel.
+StatusEnum
+writeDemosaicOutput(const std::list<std::pair<ImageLayerDesc, ImagePtr>>& outputLayers,
+                    const RectI& roi,
+                    const RawNodeSupport::TopDownBuffer& rgb,
+                    const RawKernels::ParallelFor& parallel,
+                    RenderCancellation& cancel)
+{
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
+        const ImagePtr& dst = it->second;
+        if (!dst || (dst->getBitDepth() != eImageBitDepthFloat)) {
+            return eStatusFailed;
+        }
+        const int dstComps = (int)dst->getComponentsCount();
+        Image::WriteAccess access(dst.get());
+        parallel(roi.height(), [&](int r) {
+            const int y = roi.y1 + r;
+            float* outPix = (float*)access.pixelAt(roi.x1, y);
+            if (!outPix) {
+                return;
+            }
+            for (int x = roi.x1; x < roi.x2; ++x, outPix += dstComps) {
+                const bool inside = (x >= rgb.rect.x1) && (x < rgb.rect.x2) && (y >= rgb.rect.y1) && (y < rgb.rect.y2);
+                const float* p = inside ? &rgb.data[rgb.offset(x, y)] : NULL;
+                for (int c = 0; c < dstComps; ++c) {
+                    outPix[c] = (c == 3) ? 1.f : (p ? p[c] : 0.f);
+                }
+            }
+        });
+    }
+
+    return cancel.check() ? eStatusFailed : eStatusOK;
+}
+} // namespace
+
 StatusEnum
 RawDemosaic::renderOp(const RenderActionArgs& args,
                       const StagePlan& /*plan*/)
@@ -993,12 +1084,15 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
     }
     const Settings& s = *found;
     const int sourceInput = getSourceInput();
+    // The superpixel reads the full-resolution mosaic the request pass prepared, as
+    // pullsInputsAtScaleOne() asks.
+    const bool superpixel = rendersSuperpixel(args.mappedScale);
 
     RawNodeSupport::LockedSource source;
     ImageLayerDesc layer;
     if (resolveInputPlaneForRender(sourceInput, args.time, args.view, &layer, NULL)) {
         RectI roiPixel;
-        source.image = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &layer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roiPixel);
+        source.image = getImage(sourceInput, args.time, superpixel ? RenderScale::identity : args.mappedScale, args.view, NULL, &layer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roiPixel);
     }
     if (!source.image || (source.image->getBitDepth() != eImageBitDepthFloat)) {
         return eStatusFailed;
@@ -1009,6 +1103,19 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
     const RawKernels::ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, appPTR->getNCPUsAvailableForEffect());
     const RectI& roi = args.roi;
     const RectI& rod = s.sourceRoD;
+
+    RawNodeSupport::TopDownBuffer rgb;
+    if (superpixel) {
+        const unsigned int mip = args.mappedScale.toMipmapLevel();
+        const RawSuperpixel::ModeEnum mode = superpixelMode(s, source.nComps);
+        RawNodeSupport::TopDownBuffer in;
+        in.allocate(RawSuperpixel::sourceRegion(roi, mip, s.layout.period(), rod), (mode == RawSuperpixel::eModeBoxRgb) ? source.nComps : 1);
+        RawNodeSupport::readTopDown(source, &in, parallel);
+        rgb.allocate(roi, 3);
+        RawSuperpixel::render(in, s.layout, rod, mip, mode, &rgb, parallel);
+
+        return writeDemosaicOutput(args.outputLayers, roi, rgb, parallel, cancel);
+    }
 
     // The capture sharpening settings for this frame, the automatic radius measured once per
     // frame key on the raw data, before green equilibration, as _calc_auto_radius() does.
@@ -1064,7 +1171,6 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
     const bool captureView = s.capture && ((maskView == (int)eRawDemosaicMaskViewSharpenedAreas) || (maskView == (int)eRawDemosaicMaskViewRadius));
     float* captureMask = NULL;
 
-    RawNodeSupport::TopDownBuffer rgb;
     if ((s.algorithm == Algorithm::PassThrough) && s.capture) {
         // darktable's true monochrome: the values themselves are the mosaic.
         const RectI need = sourceRegionFor(roi, args.time, args.view);
@@ -1207,27 +1313,8 @@ RawDemosaic::renderOp(const RenderActionArgs& args,
         rgb = std::move(out);
     }
 
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        const ImagePtr& dst = it->second;
-        if (!dst || (dst->getBitDepth() != eImageBitDepthFloat)) {
-            return eStatusFailed;
-        }
-        const int dstComps = (int)dst->getComponentsCount();
-        Image::WriteAccess access(dst.get());
-        parallel(roi.height(), [&](int r) {
-            const int y = roi.y1 + r;
-            float* outPix = (float*)access.pixelAt(roi.x1, y);
-            if (!outPix) {
-                return;
-            }
-            for (int x = roi.x1; x < roi.x2; ++x, outPix += dstComps) {
-                const bool inside = (x >= rgb.rect.x1) && (x < rgb.rect.x2) && (y >= rgb.rect.y1) && (y < rgb.rect.y2);
-                const float* p = inside ? &rgb.data[rgb.offset(x, y)] : NULL;
-                for (int c = 0; c < dstComps; ++c) {
-                    outPix[c] = (c == 3) ? 1.f : (p ? p[c] : 0.f);
-                }
-            }
-        });
+    if (writeDemosaicOutput(args.outputLayers, roi, rgb, parallel, cancel) != eStatusOK) {
+        return eStatusFailed;
     }
 
     const RectI maskTile = maskValues.empty() ? RectI() : roi.intersect(maskRect);
@@ -1264,6 +1351,9 @@ RawDemosaic::canRenderOpOnGpu(const GpuQuery& query) const
     const std::optional<Settings> settings = const_cast<RawDemosaic*>(this)->resolveSettings(query.time, query.view);
     if (!settings) {
         return false;
+    }
+    if (rendersSuperpixel(query.mappedScale)) {
+        return true;
     }
     // Capture sharpening has no GPU path.
     if (settings->capture) {
@@ -1311,10 +1401,15 @@ RawDemosaic::getOpGpuInputRoI(int inputNb,
                               double time,
                               ViewIdx view,
                               const RectI& outputRect,
-                              const RenderScale& /*scale*/) const
+                              const RenderScale& scale) const
 {
     if (inputNb != getSourceInput()) {
         return outputRect;
+    }
+    if (rendersSuperpixel(scale)) {
+        const std::optional<Settings> settings = const_cast<RawDemosaic*>(this)->resolveSettings(time, view);
+
+        return settings ? RawSuperpixel::sourceRegion(outputRect, scale.toMipmapLevel(), settings->layout.period(), settings->sourceRoD) : RectI();
     }
 
     return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, time, view);
@@ -1398,6 +1493,45 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     if ((srcEnd > UINT32_MAX) || (dstEnd > UINT32_MAX)) {
         return eStatusFailed;
     }
+    gpu::GpuRecordContext& ctx = args.context;
+
+    if (rendersSuperpixel(query.mappedScale)) {
+        if (!hasSource) {
+            return eStatusFailed;
+        }
+        const RawLayoutGpu layout = toRawLayoutGpu(s.layout);
+        RawSuperpixelGpuPush push = {};
+        push.period = layout.period;
+        push.originX = layout.originX;
+        push.originY = layout.originY;
+        push.mip = query.mappedScale.toMipmapLevel();
+        static_assert(sizeof(push.cells) == sizeof(layout.cells));
+        std::memcpy(push.cells, layout.cells, sizeof(push.cells));
+        push.mode = (std::uint32_t)superpixelMode(s, source.nComps);
+        push.srcOffset = (std::uint32_t)(source.byteOffset / sizeof(float));
+        push.srcStride = (std::uint32_t)source.rowStrideFloats;
+        push.srcComps = (std::uint32_t)source.nComps;
+        push.srcX1 = source.bounds.x1;
+        push.srcY1 = source.bounds.y1;
+        push.srcX2 = source.bounds.x2;
+        push.srcY2 = source.bounds.y2;
+        push.dstOffset = (std::uint32_t)(out.byteOffset / sizeof(float) + (std::uint64_t)(rect.y1 - out.bounds.y1) * (std::uint64_t)out.rowStrideFloats + (std::uint64_t)(rect.x1 - out.bounds.x1) * 4);
+        push.dstStride = (std::uint32_t)out.rowStrideFloats;
+        push.outX = rect.x1;
+        push.outY = rect.y1;
+        push.outWidth = (std::uint32_t)rect.width();
+        push.outHeight = (std::uint32_t)rect.height();
+        push.rodX1 = s.sourceRoD.x1;
+        push.rodY1 = s.sourceRoD.y1;
+        push.rodX2 = s.sourceRoD.x2;
+        push.rodY2 = s.sourceRoD.y2;
+        if (!ctx.dispatch(gpu::GpuKernelId::demosaic_superpixel, { source.buffer, out.buffer }, push, { push.outWidth, push.outHeight, 1 })) {
+            return eStatusFailed;
+        }
+        ctx.computeBarrier();
+
+        return eStatusOK;
+    }
 
     RawDemosaicGpuPush base = {};
     if (hasSource) {
@@ -1427,7 +1561,6 @@ RawDemosaic::renderOpGpu(const GpuRenderArgs& args)
     // PPG and RCD need under 16 floats a photosite, VNG its two RGBA planes. Markesteijn's one
     // RGBA plane is held to half the budget, its batches of tiles taking the other half. No
     // scratch is over what the device binds.
-    gpu::GpuRecordContext& ctx = args.context;
     const std::uint64_t maxScratchFloats = ctx.maxScratchBytes() / sizeof(float);
     const std::uint64_t maxWorkFloats = std::min<std::uint64_t>(std::uint64_t(1) << 25, maxScratchFloats);
     const std::uint64_t floatsPerPhotosite = (vng || markesteijn) ? 8 : 16;

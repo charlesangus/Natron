@@ -376,6 +376,11 @@ public:
     void getCheckerboardColor1(double* r, double* g, double* b, double* a) const;
     void getCheckerboardColor2(double* r, double* g, double* b, double* a) const;
     bool isAutoProxyEnabled() const;
+    void setAutoProxyEnabled(bool enabled);
+    // Whether the viewer rounds its zoom to the nearest power of two rather than the nearest finer one.
+    bool isViewerMipRoundingNearest() const;
+    // Whether Raw Demosaic below 100% demosaics at full resolution and downscales, rather than averaging photosites.
+    bool isZoomedOutDemosaicFull() const;
     unsigned int getAutoProxyMipmapLevel() const;
     int getMaxOpenedNodesViewerContext() const;
 
@@ -698,6 +703,8 @@ private:
     KnobColorPtr _checkerboardColor2;
     KnobBoolPtr _autoProxyWhenScrubbingTimeline;
     KnobChoicePtr _autoProxyLevel;
+    KnobChoicePtr _viewerMipRounding;
+    KnobChoicePtr _zoomedOutDemosaic;
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;

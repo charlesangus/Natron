@@ -344,6 +344,73 @@ TEST_F(RenderProfileTest, NoRecordBehindACacheHit)
     EXPECT_TRUE(byNode[cached->getScriptName_mt_safe()].deps.empty());
 }
 
+// A draft render reads what a full-quality render cached: the draft key misses, the full-quality entry answers it.
+TEST_F(RenderProfileTest, DraftRenderServesUpstreamFromAFullQualityEntry)
+{
+    const NodePtr upstream = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    const NodePtr cached = createNode(QString::fromUtf8(kTestPluginIDDraftCounting));
+    const NodePtr edited = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(upstream && cached && edited);
+    connectNodes(upstream, cached, 0, true);
+    connectNodes(cached, edited, 0, true);
+    ASSERT_TRUE(cached->isDraftModeUsed());
+    ASSERT_TRUE(edited->isDraftModeUsed());
+    KnobBool* cacheOutput = dynamic_cast<KnobBool*>(cached->getKnobByName("cacheOutput").get());
+    KnobDouble* value = dynamic_cast<KnobDouble*>(edited->getKnobByName("value").get());
+    ASSERT_TRUE(cacheOutput && value);
+    cacheOutput->setValue(true);
+    appPTR->clearAllCaches();
+
+    RenderScheduler::setProfilePath(_dir + "/profile.jsonl");
+    const std::string file = RenderScheduler::getProfileFilePath();
+    ASSERT_FALSE(file.empty());
+
+    const auto render = [&](bool draft) {
+        const double time = 1.;
+        const ViewIdx view(0);
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+        RenderStatsPtr stats = std::make_shared<RenderStats>(false);
+        ParallelRenderArgsSetter frameArgs(time, view, false, false, abortInfo, edited, 0, getApp()->getTimeLine().get(), NodePtr(), false, draft, stats);
+        std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+        EXPECT_NE(EffectInstance::computeRequestPass(time, view, 0, RectD(0., 0., kCountingTestSize, kCountingTestSize), edited, *request), eStatusFailed);
+        frameArgs.updateNodesRequest(*request);
+        FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameArgs, abortInfo, stats, time, view);
+        context->setRequest(request);
+        FrameGraph graph = RenderScheduler::buildGraph(context, edited, time, view, 0);
+        RenderScheduler::pruneBehindCacheHits(graph, context);
+        FrameFuturePtr future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
+        EXPECT_EQ(future->wait(), EffectInstance::eRenderRoIRetCodeOk);
+        RenderScheduler::flushProfile();
+    };
+    const auto readRecords = [&file]() {
+        std::vector<Record> records;
+        std::ifstream in(file.c_str());
+        std::string line;
+        while (std::getline(in, line)) {
+            records.push_back(parseRecord(line));
+        }
+
+        return records;
+    };
+
+    render(false);
+    const std::size_t firstRenderRecords = readRecords().size();
+    EXPECT_EQ(3u, firstRenderRecords);
+
+    value->setValue(10.);
+    render(true);
+
+    const std::vector<Record> records = readRecords();
+    std::map<std::string, Record> byNode;
+    for (std::size_t i = firstRenderRecords; i < records.size(); ++i) {
+        byNode[records[i].node] = records[i];
+    }
+    EXPECT_TRUE(byNode.find(upstream->getScriptName_mt_safe()) == byNode.end());
+    ASSERT_TRUE(byNode.find(cached->getScriptName_mt_safe()) != byNode.end());
+    ASSERT_TRUE(byNode.find(edited->getScriptName_mt_safe()) != byNode.end());
+    EXPECT_EQ("hit", byNode[cached->getScriptName_mt_safe()].cache);
+}
+
 TEST_F(RenderProfileTest, OffWritesNoFile)
 {
     buildScene();

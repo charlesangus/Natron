@@ -955,11 +955,10 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
                 if (pinsOutput && (image->getStorageMode() == eStorageModeGLTex)) {
                     continue;
                 }
-                if ((candidate._mipmapLevel == level) || (image->getStorageMode() == eStorageModeRAM)) {
-                    entry = image;
+                // A finer device entry serves too: the scheduler downscales it on the device.
+                entry = image;
 
-                    return true;
-                }
+                return true;
             }
 
             return false;
@@ -1776,11 +1775,10 @@ EffectInstance::getImage(int inputNb,
     ///Does this node supports images at a scale different than 1
     bool renderFullScaleThenDownscale = (!supportsRenderScale() && mipmapLevel != 0 && returnStorage == eStorageModeRAM);
 
-    ///Do we want to render the graph upstream at scale 1 or at the requested render scale ? (user setting)
     bool renderScaleOneUpstreamIfRenderScaleSupportDisabled = false;
     unsigned int renderMappedMipmapLevel = mipmapLevel;
     if (renderFullScaleThenDownscale) {
-        renderScaleOneUpstreamIfRenderScaleSupportDisabled = node->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
+        renderScaleOneUpstreamIfRenderScaleSupportDisabled = pullsInputsAtScaleOne();
         if (renderScaleOneUpstreamIfRenderScaleSupportDisabled) {
             renderMappedMipmapLevel = 0;
         }
@@ -6716,6 +6714,9 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
         mustCallOnFileNameParameterChanged = true;
     }
 
+    if ((reason != eValueChangedReasonTimeChanged) && getApp()->isDraftRenderEnabled()) {
+        getApp()->noteDraftEdit(node);
+    }
 
     bool ret = false;
 

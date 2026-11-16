@@ -1,8 +1,9 @@
 """Point, edge and primitive picking in the 3D view showing geometry.
 
 Graph: GeoPrimitive (cube, one division per side) -> Viewer1, then GeoPrimitive -> GeoToUSD ->
-USDToGeo (unpack off) -> Viewer1 for packed USD, then GeoToUSD -> Viewer1 for a scene. The view
-is put in the front orthographic view (Z) and framed (A), so the cube is a square centred in it.
+USDToGeo (unpack off, prim pattern /geo/mesh_0) -> Viewer1 for packed USD, then GeoToUSD ->
+Viewer1 for a scene. The view is put in the front orthographic view (Z) and framed (A), so the
+cube is a square centred in it.
 The square's extent is read from the framebuffer, since there is no Python access to the view's
 camera.
 
@@ -36,6 +37,7 @@ PICK_TIMEOUT_S = 3.0
 SETTLE_MS = 700
 STARTUP_TIMEOUT_S = 60.0
 DEFAULT_NAVIGATION_PRESET = 0
+CUBE_MESH = "/geo/mesh_0"
 MODES = (("objects", "geoPickObjects"), ("points", "geoPickPoints"), ("edges", "geoPickEdges"),
          ("primitives", "geoPickPrimitives"))
 
@@ -63,6 +65,7 @@ try:
     to_geo = app.createNode("USDToGeo")
     require(to_geo is not None, "create USDToGeo", plugin_problem("USDToGeo"))
     to_geo.getParam("unpack").setValue(False)
+    to_geo.getParam("primPattern").setValue(CUBE_MESH)
     require(to_geo.connectInput(0, to_usd), "connect the USDToGeo to the GeoToUSD")
 
     viewer = app.getNode("Viewer1")

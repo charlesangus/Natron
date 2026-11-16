@@ -25,15 +25,19 @@
 
 #include "GeoDisplayBar.h"
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QSignalBlocker>
+#include <QToolButton>
 
 #include "Engine/AppManager.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Engine/ViewerInstance.h"
+#include "Gui/ActionShortcuts.h"
 #include "Gui/GeoDisplay.h"
 #include "Gui/GuiDensity.h"
 
@@ -67,6 +71,44 @@ GeoDisplayBar::GeoDisplayBar(QWidget* parent)
     layout->setSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2));
     layout->setContentsMargins(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING),
                                TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING));
+
+    const QString pickTip = tr("What a click or marquee in the 3D view selects: whole objects, or the points, edges or primitives of the geometry shown.");
+    QLabel* pickLabel = new QLabel(tr("Pick"), this);
+    pickLabel->setToolTip(pickTip);
+    layout->addWidget(pickLabel);
+    _pickModes = new QButtonGroup(this);
+    _pickModes->setExclusive(true);
+    struct PickModeButton {
+        GeoComponentEnum mode;
+        QString label;
+        const char* name;
+        const char* shortcut;
+        QString tip;
+    };
+    const PickModeButton buttons[] = {
+        { eGeoComponentObjects, tr("Objects"), "geoPickObjects", kShortcutIDActionViewer3DPickObjects, tr("Selects whole prims.") },
+        { eGeoComponentPoints, tr("Points"), "geoPickPoints", kShortcutIDActionViewer3DPickPoints, tr("Selects points, marking every point to pick from.") },
+        { eGeoComponentEdges, tr("Edges"), "geoPickEdges", kShortcutIDActionViewer3DPickEdges, tr("Selects the edges of polygons, as pairs of points.") },
+        { eGeoComponentPrimitives, tr("Primitives"), "geoPickPrimitives", kShortcutIDActionViewer3DPickPrimitives,
+          tr("Selects primitives; a packed primitive is picked whole.") },
+    };
+    for (const PickModeButton& entry : buttons) {
+        QToolButton* button = new QToolButton(this);
+        button->setText(entry.label);
+        button->setObjectName(QString::fromUtf8(entry.name));
+        button->setCheckable(true);
+        button->setChecked(entry.mode == eGeoComponentObjects);
+        button->setFocusPolicy(Qt::NoFocus);
+        setToolTipWithShortcut(kShortcutGroupViewer3D, entry.shortcut,
+                               "<p>" + entry.tip.toStdString() + "</p><p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>", button);
+        _pickModes->addButton(button, int(entry.mode));
+        layout->addWidget(button);
+    }
+    QObject::connect(_pickModes, &QButtonGroup::idClicked, this, [this](int mode) {
+        if (_pickModeCallback) {
+            _pickModeCallback(mode);
+        }
+    });
 
     _pointMarkers = addToggle(this, layout, tr("Point Markers"), kViewerParamPointMarkers, tr("Marks every point."));
     _pointNumbers = addToggle(this, layout, tr("Point Numbers"), kViewerParamPointNumbers,
@@ -129,6 +171,22 @@ void
 GeoDisplayBar::setEditCallback(const std::function<void(const GeoDisplayOptions&)>& callback)
 {
     _callback = callback;
+}
+
+void
+GeoDisplayBar::setPickMode(int mode)
+{
+    QSignalBlocker blocker(_pickModes);
+
+    if (QAbstractButton* button = _pickModes->button(mode)) {
+        button->setChecked(true);
+    }
+}
+
+void
+GeoDisplayBar::setPickModeCallback(const std::function<void(int)>& callback)
+{
+    _pickModeCallback = callback;
 }
 
 GeoDisplayOptions

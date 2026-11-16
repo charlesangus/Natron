@@ -57,6 +57,9 @@ const char* const kNormalsName = "Normals";
 const char* const kHighlightPointsName = "HighlightPoints";
 const char* const kHighlightEdgesName = "HighlightEdges";
 const char* const kPackedBoundsName = "PackedBounds";
+const char* const kSelectedPointsName = "SelectedPoints";
+const char* const kSelectedPrimitivesName = "SelectedPrimitives";
+const GfVec3f kSelectionColour(1.f, 0.8f, 0.1f);
 
 // The layer's content changes in place, so one hash stands for it whatever it holds.
 const U64 kGuideLayerHash = 0x4e47656f44697370ULL;
@@ -76,6 +79,8 @@ struct Guides {
     VtVec3fArray highlightPoints;
     VtVec3fArray highlightEdges;
     VtVec3fArray packedBounds;
+    VtVec3fArray selectedPoints;
+    VtVec3fArray selectedPrimitives;
     float markerWidth = 0.f;
     float lineWidth = 0.f;
 };
@@ -123,10 +128,11 @@ readComponent(const GeoAttribute& attribute,
 void
 collectGuides(const GeoDetail& detail,
               const GeoDisplayOptions& options,
+              bool markers,
               Guides* guides)
 {
     const GeoIndexMap& points = detail.pointMap();
-    if (options.pointMarkers) {
+    if (markers) {
         points.forEachLive([&](GeoIndex, GeoOffset offset) {
             guides->markers.push_back(toVec(detail.pointPosition(offset)));
         });
@@ -340,6 +346,32 @@ paintAnchors(QPainter& painter,
     }
 }
 
+// The picked points, which the point guide drawn over the markers holds in this order, and the
+// bounds of the picked packed primitives.
+void
+collectSelectionGuides(const GeoDetail& detail,
+                       const GeoComponentSelection& selection,
+                       std::vector<GeoIndex>* selectedPoints,
+                       Guides* guides)
+{
+    if (selection.type == eGeoComponentPoints) {
+        for (GeoIndex index : selection.elements) {
+            const GeoOffset offset = detail.pointMap().offsetFromIndex(index);
+            if (offset >= 0) {
+                guides->selectedPoints.push_back(toVec(detail.pointPosition(offset)));
+                selectedPoints->push_back(index);
+            }
+        }
+    } else if (selection.type == eGeoComponentPrimitives) {
+        for (GeoIndex index : selection.elements) {
+            const GeoOffset primitive = detail.primitiveMap().offsetFromIndex(index);
+            if ((primitive >= 0) && geoPrimitiveIsPacked(detail.primitiveType(primitive))) {
+                addBox(&guides->selectedPrimitives, geoPackedWorldBounds(detail, primitive));
+            }
+        }
+    }
+}
+
 } // namespace
 
 namespace {
@@ -383,6 +415,11 @@ struct GeoDisplay::Implementation {
     std::vector<std::shared_ptr<const GeoUsdConvert>> converts;
     std::vector<LabelAnchor> pointLabels;
     std::vector<LabelAnchor> primitiveLabels;
+    GeoComponentEnum componentMode = eGeoComponentObjects;
+    GeoComponentSelection componentSelection;
+    U64 componentVersion = 0;
+    // The points the selected point guide was last authored with, in its order.
+    std::vector<GeoIndex> selectedPoints;
 
     std::atomic<bool> staged { false };
     std::atomic<U64> refreshes { 0 };
@@ -396,6 +433,7 @@ struct GeoDisplay::Implementation {
     bool authored = false;
     std::vector<const GeoDetail*> authoredDetails;
     GeoDisplayOptions authoredOptions;
+    U64 authoredComponentVersion = 0;
 };
 
 GeoDisplay::GeoDisplay()
@@ -436,6 +474,7 @@ GeoDisplay::stagedPayload(const ScenePayload& payload)
             _imp->authored = false;
             std::lock_guard<std::mutex> lock(_imp->mutex);
             _imp->converts.clear();
+            _imp->selectedPoints.clear();
             _imp->pointLabels.clear();
             _imp->primitiveLabels.clear();
         }
@@ -483,22 +522,40 @@ GeoDisplay::editStage(SceneStage& stage)
             converts.push_back(convert);
         }
     }
-    const GeoDisplayOptions options = getOptions();
-    if (_imp->authored && !edited && (details == _imp->authoredDetails) && (options == _imp->authoredOptions)) {
+    GeoDisplayOptions options;
+    GeoComponentEnum componentMode;
+    GeoComponentSelection componentSelection;
+    U64 componentVersion;
+    {
+        std::lock_guard<std::mutex> lock(_imp->mutex);
+        options = _imp->options;
+        componentMode = _imp->componentMode;
+        componentSelection = _imp->componentSelection;
+        componentVersion = _imp->componentVersion;
+    }
+    if (_imp->authored && !edited && (details == _imp->authoredDetails) && (options == _imp->authoredOptions)
+        && (componentVersion == _imp->authoredComponentVersion)) {
         return false;
     }
 
+    // Points are picked through their markers, so picking points shows them.
+    const bool markers = options.pointMarkers || ((componentMode == eGeoComponentPoints) && (converts.size() == 1));
     Guides guides;
     std::vector<LabelAnchor> pointLabels, primitiveLabels;
+    std::vector<GeoIndex> selectedPoints;
     GeoBounds bounds;
     bool hasBounds = false;
     for (const std::shared_ptr<const GeoUsdConvert>& convert : converts) {
         const GeoDetail& detail = *convert->detail();
-        collectGuides(detail, options, &guides);
+        collectGuides(detail, options, markers, &guides);
         collectLabels(detail, options, &pointLabels, &primitiveLabels);
     }
+    if (converts.size() == 1) {
+        collectSelectionGuides(*converts.front()->detail(), componentSelection, &selectedPoints, &guides);
+    }
     // The bounds only size guides: playing a frame with none draws no pass over its points.
-    const bool anyGuide = !guides.markers.empty() || !guides.normals.empty() || !guides.highlightPoints.empty() || !guides.highlightEdges.empty() || !guides.packedBounds.empty();
+    const bool anyGuide = !guides.markers.empty() || !guides.normals.empty() || !guides.highlightPoints.empty() || !guides.highlightEdges.empty() || !guides.packedBounds.empty()
+        || !guides.selectedPoints.empty() || !guides.selectedPrimitives.empty();
     for (const std::shared_ptr<const GeoUsdConvert>& convert : converts) {
         const GeoDetail& detail = *convert->detail();
         if (anyGuide && (detail.pointCount() > 0)) {
@@ -528,7 +585,7 @@ GeoDisplay::editStage(SceneStage& stage)
         }
         if (root) {
             setAttribute(root, "purpose", SdfValueTypeNames->Token, VtValue(TfToken("guide")), SdfVariabilityUniform);
-            if (options.pointMarkers) {
+            if (markers) {
                 authorGuide(layer, root, kPointMarkersName, false, guides.markers, guides.markerWidth, GfVec3f(0.95f, 0.8f, 0.2f));
             } else {
                 removeGuide(root, kPointMarkersName);
@@ -546,14 +603,26 @@ GeoDisplay::editStage(SceneStage& stage)
                 removeGuide(root, kHighlightEdgesName);
             }
             authorGuide(layer, root, kPackedBoundsName, true, guides.packedBounds, guides.lineWidth, GfVec3f(0.35f, 0.9f, 0.45f));
+            if (!guides.selectedPoints.empty()) {
+                authorGuide(layer, root, kSelectedPointsName, false, guides.selectedPoints, guides.markerWidth * 2.f, kSelectionColour);
+            } else {
+                removeGuide(root, kSelectedPointsName);
+            }
+            if (!guides.selectedPrimitives.empty()) {
+                authorGuide(layer, root, kSelectedPrimitivesName, true, guides.selectedPrimitives, guides.lineWidth * 2.f, kSelectionColour);
+            } else {
+                removeGuide(root, kSelectedPrimitivesName);
+            }
         }
     }
     _imp->authored = true;
     _imp->authoredDetails = details;
     _imp->authoredOptions = options;
+    _imp->authoredComponentVersion = componentVersion;
     {
         std::lock_guard<std::mutex> lock(_imp->mutex);
         _imp->converts.swap(converts);
+        _imp->selectedPoints.swap(selectedPoints);
         _imp->pointLabels.swap(pointLabels);
         _imp->primitiveLabels.swap(primitiveLabels);
     }
@@ -627,6 +696,80 @@ GeoDisplay::pickPrimitives(const std::string& primPath,
     }
 
     return false;
+}
+
+bool
+GeoDisplay::setComponentState(GeoComponentEnum mode,
+                              const GeoComponentSelection& selection)
+{
+    std::lock_guard<std::mutex> lock(_imp->mutex);
+    const bool markersChange = ((mode == eGeoComponentPoints) != (_imp->componentMode == eGeoComponentPoints)) && !_imp->options.pointMarkers;
+    // Only picked points and packed primitives have guides; the renderer highlights the rest.
+    const auto guided = [](const GeoComponentSelection& s) {
+        return ((s.type == eGeoComponentPoints) || (s.type == eGeoComponentPrimitives)) && !s.elements.empty();
+    };
+    const bool selectionChange = (guided(selection) || guided(_imp->componentSelection)) && !(selection == _imp->componentSelection);
+    _imp->componentMode = mode;
+    _imp->componentSelection = selection;
+    if (!markersChange && !selectionChange) {
+        return false;
+    }
+    ++_imp->componentVersion;
+
+    return true;
+}
+
+std::shared_ptr<const GeoUsdConvert>
+GeoDisplay::componentConvert() const
+{
+    std::lock_guard<std::mutex> lock(_imp->mutex);
+
+    return (_imp->converts.size() == 1) ? _imp->converts.front() : std::shared_ptr<const GeoUsdConvert>();
+}
+
+void
+GeoDisplay::mapComponentHits(const std::vector<GeoViewerLayer::ComponentHit>& hits,
+                             bool firstOnly,
+                             GeoComponentSelection* selection) const
+{
+    std::shared_ptr<const GeoUsdConvert> convert;
+    std::vector<GeoIndex> selectedPoints;
+    {
+        std::lock_guard<std::mutex> lock(_imp->mutex);
+        if (_imp->converts.size() != 1) {
+            return;
+        }
+        convert = _imp->converts.front();
+        if (selection->type == eGeoComponentPoints) {
+            selectedPoints = _imp->selectedPoints;
+        }
+    }
+    if (selection->type != eGeoComponentPoints) {
+        GeoViewerLayer::mapComponentHits(*convert, hits, firstOnly, selection);
+
+        return;
+    }
+    const SdfPath root = SdfPath::AbsoluteRootPath().AppendChild(TfToken(kRootName));
+    const std::string markersPath = root.AppendChild(TfToken(kPointMarkersName)).GetString();
+    const std::string selectedPath = root.AppendChild(TfToken(kSelectedPointsName)).GetString();
+    const GeoIndex pointCount = convert->detail()->pointCount();
+    for (const GeoViewerLayer::ComponentHit& hit : hits) {
+        GeoIndex point = GeoIndexMap::kInvalidIndex;
+        // The markers hold every point in number order; the picked points' guide drawn over them
+        // holds the picked ones.
+        if ((hit.primPath == markersPath) && (hit.index >= 0) && (hit.index < pointCount)) {
+            point = hit.index;
+        } else if ((hit.primPath == selectedPath) && (hit.index >= 0) && (std::size_t(hit.index) < selectedPoints.size())) {
+            point = selectedPoints[std::size_t(hit.index)];
+        }
+        if (point >= 0) {
+            selection->elements.push_back(point);
+            if (firstOnly) {
+                break;
+            }
+        }
+    }
+    selection->normalize();
 }
 
 NATRON_NAMESPACE_EXIT

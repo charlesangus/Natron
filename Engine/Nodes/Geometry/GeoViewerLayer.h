@@ -31,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/GeoDetail.h"
@@ -39,6 +40,35 @@
 NATRON_NAMESPACE_ENTER
 
 class GeoUsdConvert;
+
+/** @brief What a click in a 3D view showing geometry picks. */
+enum GeoComponentEnum {
+    eGeoComponentObjects = 0,
+    eGeoComponentPoints,
+    eGeoComponentEdges,
+    eGeoComponentPrimitives,
+};
+
+/**
+ * @brief Picked components of the geometry a 3D view shows, in its numbering. The type says
+ * which list is used: point or primitive numbers in elements, ascending and unique, or for edges
+ * point-number pairs in edges, each with p0 <= p1, ascending and unique.
+ **/
+struct GeoComponentSelection {
+    GeoComponentEnum type = eGeoComponentObjects;
+    std::vector<GeoIndex> elements;
+    std::vector<GeoEdge> edges;
+
+    bool empty() const
+    {
+        return elements.empty() && edges.empty();
+    }
+
+    // Sorts and removes duplicates.
+    void normalize();
+
+    bool operator==(const GeoComponentSelection&) const = default;
+};
 
 /**
  * @brief A viewer's own copy of the geometry it shows: one natrongeo layer opened for the viewer
@@ -124,6 +154,17 @@ public:
     };
 
     /**
+     * @brief A hit of a pick in a 3D view: the prim drawn and the point, edge or face of it the
+     * pick landed on, numbered as the renderer numbers them, or -1 for the prim as a whole, with
+     * the instancers drawing it, outermost first, and the instance of each.
+     **/
+    struct ComponentHit {
+        std::string primPath;
+        int index = -1;
+        std::vector<std::pair<std::string, int>> instancers;
+    };
+
+    /**
      * @brief The conversion the open layer @p identifier holds, null for another layer. The layer
      * must not be refreshed meanwhile; the conversion returned stays valid after a refresh.
      **/
@@ -136,6 +177,28 @@ public:
     static bool pickPrimitives(const GeoUsdConvert& convert,
                                const std::string& primPath,
                                Pick* pick);
+
+    /**
+     * @brief Adds to @p selection the edges or primitives of @p convert's detail its type picks
+     * that @p hits land on: an edge of a mesh prim, a face of a mesh prim or a curve of a curves
+     * prim, or a whole packed primitive drawn by a point instancer, as a native instance or, for
+     * packed USD, by its source prim. With
+     * @p firstOnly, only the first hit that maps to anything counts. Packed primitives are not
+     * edges. Any thread; @p selection is left normalized.
+     **/
+    static void mapComponentHits(const GeoUsdConvert& convert,
+                                 const std::vector<ComponentHit>& hits,
+                                 bool firstOnly,
+                                 GeoComponentSelection* selection);
+
+    /**
+     * @brief Per mesh or curves prim of @p convert, the faces or edges of it that the primitives
+     * or edges of @p selection are, numbered as the renderer numbers them, for it to highlight. A
+     * mesh edge has one number per face using it. Packed primitives and points have none. Any
+     * thread.
+     **/
+    static std::vector<std::pair<std::string, std::vector<int>>> componentHighlights(const GeoUsdConvert& convert,
+                                                                                     const GeoComponentSelection& selection);
 
     // What the layer is served from, shared with its provider.
     struct Slot;

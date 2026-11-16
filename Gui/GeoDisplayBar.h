@@ -32,6 +32,7 @@
 
 #include <QWidget>
 
+class QButtonGroup;
 class QCheckBox;
 class QDoubleSpinBox;
 class QLineEdit;
@@ -55,6 +56,12 @@ public:
     // Called with the options the controls show after the user changes one.
     void setEditCallback(const std::function<void(const GeoDisplayOptions&)>& callback);
 
+    // Shows the pick mode, a GeoComponentEnum, without calling the pick mode callback.
+    void setPickMode(int mode);
+
+    // Called with the pick mode the user chose.
+    void setPickModeCallback(const std::function<void(int)>& callback);
+
 private:
     GeoDisplayOptions currentOptions() const;
     void edited();
@@ -65,6 +72,8 @@ private:
     QCheckBox* _normals;
     QDoubleSpinBox* _normalScale;
     QLineEdit* _highlightGroup;
+    QButtonGroup* _pickModes;
+    std::function<void(int)> _pickModeCallback;
     std::function<void(const GeoDisplayOptions&)> _callback;
 };
 

@@ -449,6 +449,18 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DCreateFromSelection "createNodeFromSelection"
 #define kShortcutDescActionViewer3DCreateFromSelection "Create Node from Selection"
 
+#define kShortcutIDActionViewer3DPickObjects "geoPickObjects"
+#define kShortcutDescActionViewer3DPickObjects "Pick Objects"
+
+#define kShortcutIDActionViewer3DPickPoints "geoPickPoints"
+#define kShortcutDescActionViewer3DPickPoints "Pick Points"
+
+#define kShortcutIDActionViewer3DPickEdges "geoPickEdges"
+#define kShortcutDescActionViewer3DPickEdges "Pick Edges"
+
+#define kShortcutIDActionViewer3DPickPrimitives "geoPickPrimitives"
+#define kShortcutDescActionViewer3DPickPrimitives "Pick Primitives"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 

@@ -31,6 +31,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
@@ -69,8 +70,10 @@
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
@@ -113,8 +116,13 @@
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/glf/simpleLight.h>
 #include <pxr/imaging/glf/simpleMaterial.h>
+#include <pxr/imaging/hd/legacyRenderControlInterface.h>
+#include <pxr/imaging/hd/renderer.h>
+#include <pxr/imaging/hd/selection.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdx/pickTask.h>
+#include <pxr/imaging/hdx/selectionTracker.h>
+#include <pxr/imaging/hdx/taskControllerSceneIndex.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/texture.h>
 #include <pxr/usd/usd/notice.h>
@@ -551,6 +559,60 @@ private:
 
     TfNotice::Key _key;
 };
+
+/**
+ * @brief The engine, able also to pick points, edges and faces and to highlight them: its own
+ * intersection test always picks whole prims, and its selection is of whole prims.
+ **/
+class ComponentPickEngine
+    : public UsdImagingGLEngine {
+public:
+    explicit ComponentPickEngine(const Parameters& parameters)
+        : UsdImagingGLEngine(parameters)
+    {
+    }
+
+    // TestIntersection() with a pick target; the hits' object ids are render index paths.
+    bool testComponentIntersection(const TfToken& pickTarget,
+                                   const TfToken& resolveMode,
+                                   const GfMatrix4d& viewMatrix,
+                                   const GfMatrix4d& projectionMatrix,
+                                   const UsdPrim& root,
+                                   const UsdImagingGLRenderParams& params,
+                                   HdxPickHitVector* hits)
+    {
+        if (!_renderer || !_taskControllerSceneIndex) {
+            return false;
+        }
+        HdLegacyRenderControlInterface* const renderControl = _renderer->GetLegacyRenderControl();
+        if (!renderControl) {
+            return false;
+        }
+        PrepareBatch(root, params);
+        _UpdateHydraCollection(&_intersectCollection, { root.GetPath().ReplacePrefix(SdfPath::AbsoluteRootPath(), _sceneDelegateId) }, params);
+        _PrepareRender(params);
+        HdxPickTaskContextParams context;
+        context.pickTarget = pickTarget;
+        context.resolveMode = resolveMode;
+        context.viewMatrix = viewMatrix;
+        context.projectionMatrix = projectionMatrix;
+        context.clipPlanes = params.clipPlanes;
+        context.collection = _intersectCollection;
+        context.outHits = hits;
+        renderControl->SetTaskContextData(HdxPickTokens->pickParams, VtValue(context));
+        _Execute(params, _taskControllerSceneIndex->GetPickingTaskPaths());
+
+        return !hits->empty();
+    }
+
+    // Highlighted with the prims SetSelected() selects.
+    void setComponentSelection(const HdSelectionSharedPtr& selection)
+    {
+        if (_selTracker) {
+            _selTracker->SetSelection(selection);
+        }
+    }
+};
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -680,13 +742,18 @@ struct SceneViewportRenderer::Implementation {
     GfMatrix4d lookThroughOverride = GfMatrix4d(1.);
     // The selected prims, the current one last.
     std::vector<std::string> selected;
-    std::unique_ptr<UsdImagingGLEngine> engine;
+    std::unique_ptr<ComponentPickEngine> engine;
     std::atomic<bool> engineHeld { false };
     std::atomic<U64> engineCount { 0 };
     // What the engine has yet to be told is selected: the main thread sets it without waiting for
     // whichever thread holds the engine.
     std::mutex engineSelectionMutex;
     std::vector<std::string> engineSelection;
+    // While componentHighlight is set, the engine highlights these edges and faces, by prim path,
+    // instead of the selected prims.
+    bool componentHighlight = false;
+    std::vector<std::pair<std::string, std::vector<int>>> highlightEdges;
+    std::vector<std::pair<std::string, std::vector<int>>> highlightFaces;
     std::atomic<bool> engineSelectionDirty { false };
     // The renderer chosen, a delegate's id or kRenderDelegateSceneDefaultId; the delegate the
     // next engine is made with, the chosen one or the one the stage's render settings prim names;
@@ -1317,15 +1384,38 @@ struct SceneViewportRenderer::Implementation {
         backgroundFrame.imageKept = false;
         engineSelectionDirty = false;
         SdfPathVector paths;
+        HdSelectionSharedPtr components = std::make_shared<HdSelection>();
+        bool highlight = false;
         {
             std::lock_guard<std::mutex> lock(engineSelectionMutex);
-            for (const std::string& path : engineSelection) {
-                if (SdfPath::IsValidPathString(path)) {
-                    paths.push_back(SdfPath(path));
+            highlight = componentHighlight;
+            if (highlight) {
+                const auto add = [&components](const std::vector<std::pair<std::string, std::vector<int>>>& indices,
+                                               bool edges) {
+                    for (const std::pair<std::string, std::vector<int>>& prim : indices) {
+                        if (!SdfPath::IsValidPathString(prim.first)) {
+                            continue;
+                        }
+                        const VtIntArray array(prim.second.begin(), prim.second.end());
+                        if (edges) {
+                            components->AddEdges(HdSelection::HighlightModeSelect, SdfPath(prim.first), array);
+                        } else {
+                            components->AddElements(HdSelection::HighlightModeSelect, SdfPath(prim.first), array);
+                        }
+                    }
+                };
+                add(highlightEdges, true);
+                add(highlightFaces, false);
+            } else {
+                for (const std::string& path : engineSelection) {
+                    if (SdfPath::IsValidPathString(path)) {
+                        paths.push_back(SdfPath(path));
+                    }
                 }
             }
         }
-        if (paths.empty()) {
+        engine->setComponentSelection(components);
+        if (highlight || paths.empty()) {
             engine->ClearSelected();
         } else {
             engine->SetSelected(paths);
@@ -1381,7 +1471,7 @@ struct SceneViewportRenderer::Implementation {
             CyclesAovs::registerSceneIndices();
             {
                 TfErrorMark mark;
-                engine.reset(new UsdImagingGLEngine(parameters));
+                engine.reset(new ComponentPickEngine(parameters));
                 ++engineCount;
                 ++engineConstructionCount;
                 if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
@@ -3989,6 +4079,104 @@ SceneViewportRenderer::pickRect(int x0,
     return paths;
 }
 
+std::vector<GeoViewerLayer::ComponentHit>
+SceneViewportRenderer::pickComponents(GeoComponentEnum type,
+                                      int x0,
+                                      int y0,
+                                      int x1,
+                                      int y1,
+                                      int width,
+                                      int height,
+                                      bool nearest,
+                                      bool* busy)
+{
+    std::vector<GeoViewerLayer::ComponentHit> hits;
+    if ((type == eGeoComponentObjects) || (width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()
+        || (_imp->rendererId != kRenderDelegateStormId)) {
+        return hits;
+    }
+    const int left = std::max(0, std::min(x0, x1));
+    const int right = std::min(width - 1, std::max(x0, x1));
+    const int top = std::max(0, std::min(y0, y1));
+    const int bottom = std::min(height - 1, std::max(y0, y1));
+    if ((left > right) || (top > bottom)) {
+        return hits;
+    }
+    std::unique_lock<std::shared_mutex> lock;
+    if (!_imp->tryLockExclusive(&lock)) {
+        setBusy(busy);
+
+        return hits;
+    }
+    StormGLStateGuard guard;
+    StormGLSection section;
+
+    if (!_imp->ensureEngine()) {
+        return hits;
+    }
+    section.collectWith(_imp->engine->GetHgi());
+    const UsdStageRefPtr stage = _imp->currentStage();
+    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    const GfVec2d centre((left + right + 1.) / width - 1., 1. - (top + bottom + 1.) / height);
+    const GfVec2d size(double(right - left + 1) / width, double(bottom - top + 1) / height);
+    const GfFrustum pickFrustum = frustum.ComputeNarrowedFrustum(centre, size);
+    const GfMatrix4d viewMatrix = pickFrustum.ComputeViewMatrix();
+    const GfMatrix4d projection = pickFrustum.ComputeProjectionMatrix();
+    const UsdImagingGLRenderParams params = _imp->renderParams();
+    const TfToken& resolveMode = nearest ? HdxPickTokens->resolveNearestToCenter : HdxPickTokens->resolveUnique;
+
+    const TfToken& target = (type == eGeoComponentPoints) ? HdxPickTokens->pickPoints
+        : (type == eGeoComponentEdges)                    ? HdxPickTokens->pickEdges
+                                                          : HdxPickTokens->pickFaces;
+    HdxPickHitVector picked;
+    if (!_imp->engine->testComponentIntersection(target, resolveMode, viewMatrix, projection, stage->GetPseudoRoot(), params, &picked)) {
+        picked.clear();
+    }
+    for (const HdxPickHit& hit : picked) {
+        const int index = (type == eGeoComponentPoints) ? hit.pointIndex : (type == eGeoComponentEdges) ? hit.edgeIndex
+                                                                                                        : hit.elementIndex;
+        if ((index < 0) || hit.objectId.IsEmpty()) {
+            continue;
+        }
+        GeoViewerLayer::ComponentHit component;
+        component.primPath = hit.objectId.GetString();
+        component.index = index;
+        hits.push_back(std::move(component));
+    }
+    if (type == eGeoComponentPrimitives) {
+        // Instanced prims draw no faces of their own to pick; the prim and instance hit carry the
+        // instancers that map them to packed primitives.
+        UsdImagingGLEngine::PickParams pickParams;
+        pickParams.resolveMode = resolveMode;
+        UsdImagingGLEngine::IntersectionResultVector results;
+        if (!_imp->engine->TestIntersection(pickParams, viewMatrix, projection, stage->GetPseudoRoot(), params, &results)) {
+            results.clear();
+        }
+        for (const UsdImagingGLEngine::IntersectionResult& result : results) {
+            GeoViewerLayer::ComponentHit component;
+            component.primPath = result.hitPrimPath.GetString();
+            for (const std::pair<SdfPath, int>& instancer : result.instancerContext) {
+                component.instancers.emplace_back(instancer.first.GetString(), instancer.second);
+            }
+            hits.push_back(std::move(component));
+        }
+    }
+
+    return hits;
+} // SceneViewportRenderer::pickComponents
+
+void
+SceneViewportRenderer::setComponentHighlight(bool active,
+                                             std::vector<std::pair<std::string, std::vector<int>>> edges,
+                                             std::vector<std::pair<std::string, std::vector<int>>> faces)
+{
+    std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
+    _imp->componentHighlight = active;
+    _imp->highlightEdges = std::move(edges);
+    _imp->highlightFaces = std::move(faces);
+    _imp->engineSelectionDirty = true;
+}
+
 void
 SceneViewportRenderer::releaseGL()
 {
@@ -4406,6 +4594,48 @@ drawModeForKey(Qt::KeyboardModifiers modifiers,
     return -1;
 }
 
+struct GeoPickModeEntry {
+    GeoComponentEnum mode;
+    const char* actionID;
+    const char* name;
+};
+
+const GeoPickModeEntry kGeoPickModes[] = {
+    { eGeoComponentObjects, kShortcutIDActionViewer3DPickObjects, "objects" },
+    { eGeoComponentPoints, kShortcutIDActionViewer3DPickPoints, "points" },
+    { eGeoComponentEdges, kShortcutIDActionViewer3DPickEdges, "edges" },
+    { eGeoComponentPrimitives, kShortcutIDActionViewer3DPickPrimitives, "primitives" },
+};
+
+// The pick mode a key press asks for, or -1.
+int
+geoPickModeForKey(Qt::KeyboardModifiers modifiers,
+                  int key)
+{
+    for (const GeoPickModeEntry& entry : kGeoPickModes) {
+        if (matchesKeyBinding(entry.actionID, modifiers, key)) {
+            return (int)entry.mode;
+        }
+    }
+
+    return -1;
+}
+
+const char*
+geoPickModeName(GeoComponentEnum mode)
+{
+    for (const GeoPickModeEntry& entry : kGeoPickModes) {
+        if (entry.mode == mode) {
+            return entry.name;
+        }
+    }
+
+    return "objects";
+}
+
+// How far from the pointer, in logical pixels, a click finds a point or an edge.
+const int kComponentPickRadius = 6;
+
 const char*
 drawModeName(SceneViewportRenderer::DrawModeEnum mode)
 {
@@ -4653,6 +4883,8 @@ struct SceneViewport::Implementation {
         bool checkHandle = false;
         // A drag that no binding gives a role leaves the selection alone if it hit nothing.
         bool emptySelects = true;
+        // Picks components rather than prims.
+        bool components = false;
         SelectionModeEnum mode = eSelectionModeReplace;
         PressView view;
     };
@@ -4800,6 +5032,11 @@ struct SceneViewport::Implementation {
     ScenePayload requestedPayload;
     bool requestedLiveTextures = false;
     const std::shared_ptr<GeoDisplay> geoDisplay = std::make_shared<GeoDisplay>();
+    GeoComponentEnum geoPickMode = eGeoComponentObjects;
+    bool geometryContext = false;
+    GeoComponentSelection componentSelection;
+    // The geometry the engine's component highlight was mapped onto.
+    std::shared_ptr<const GeoUsdConvert> highlightConvert;
 
     // The thread requests for payload loads are serviced on. It waits under this mutex's condition
     // for the stage to have requests; a request only needs to wake it.
@@ -5061,6 +5298,10 @@ SceneViewport::SceneViewport(QWidget* parent)
     setProperty("natronSceneSelection", QStringList());
     // Per selected prim of viewed geometry: its path and the primitive numbers it is made of.
     setProperty("natronGeoPick", QVariantList());
+    setProperty("natronGeoPickMode", QString::fromUtf8("objects"));
+    setProperty("natronGeoComponents", false);
+    setProperty("natronGeoSelection", QString());
+    setProperty("natronGeoSelectionCount", 0);
     _imp->renderer.setStageEditor(_imp->geoDisplay);
     // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
@@ -5279,6 +5520,9 @@ SceneViewport::onSynced(U64 serial,
         _imp->clearPreview();
         update();
     }
+    if (componentsPickable() && !_imp->componentSelection.empty() && (_imp->geoDisplay->componentConvert() != _imp->highlightConvert)) {
+        refreshComponentHighlight();
+    }
     serviceDeferredInput();
     if (serial != _imp->requestedSerial) {
         // A newer request is on its way, but this one is drawn meanwhile: in playback each frame's
@@ -5442,6 +5686,17 @@ SceneViewport::serviceDeferredInput()
                 if (busy) {
                     return;
                 }
+            }
+            if (deferred.components) {
+                const GeoComponentSelection picked = deferred.marquee ? pickComponentsIn(deferred.rect, &busy) : pickComponentsAt(deferred.pos, &busy);
+                if (busy) {
+                    return;
+                }
+                _imp->deferredSelections.pop_front();
+                if (!picked.empty() || deferred.emptySelects) {
+                    selectComponents(picked, deferred.mode);
+                }
+                continue;
             }
             QStringList paths;
             if (deferred.marquee) {
@@ -6091,6 +6346,215 @@ QStringList
 SceneViewport::getSelection() const
 {
     return toStringList(_imp->renderer.getSelectedPrims());
+}
+
+void
+SceneViewport::setGeoPickMode(GeoComponentEnum mode)
+{
+    if (mode == _imp->geoPickMode) {
+        return;
+    }
+    _imp->geoPickMode = mode;
+    const bool cleared = (_imp->componentSelection.type != mode) && !_imp->componentSelection.empty();
+    _imp->componentSelection = GeoComponentSelection();
+    _imp->componentSelection.type = mode;
+    refreshComponentState();
+    Q_EMIT geoPickModeChanged(int(mode));
+    if (cleared) {
+        Q_EMIT componentSelectionChanged();
+    }
+}
+
+GeoComponentEnum
+SceneViewport::getGeoPickMode() const
+{
+    return _imp->geoPickMode;
+}
+
+void
+SceneViewport::setGeometryContext(bool geometry)
+{
+    if (geometry == _imp->geometryContext) {
+        return;
+    }
+    _imp->geometryContext = geometry;
+    refreshComponentState();
+}
+
+bool
+SceneViewport::componentsPickable() const
+{
+    return _imp->geometryContext && (_imp->geoPickMode != eGeoComponentObjects);
+}
+
+const GeoComponentSelection&
+SceneViewport::getComponentSelection() const
+{
+    return _imp->componentSelection;
+}
+
+void
+SceneViewport::setComponentSelection(const GeoComponentSelection& selection)
+{
+    if (selection == _imp->componentSelection) {
+        return;
+    }
+    _imp->componentSelection = selection;
+    refreshComponentState();
+    Q_EMIT componentSelectionChanged();
+}
+
+void
+SceneViewport::selectComponents(const GeoComponentSelection& picked,
+                                SelectionModeEnum mode)
+{
+    GeoComponentSelection selection;
+    selection.type = picked.type;
+    if ((mode == eSelectionModeReplace) || (_imp->componentSelection.type != picked.type)) {
+        selection = picked;
+    } else {
+        GeoComponentSelection current = _imp->componentSelection;
+        GeoComponentSelection added = picked;
+        current.normalize();
+        added.normalize();
+        if (mode == eSelectionModeAdd) {
+            std::set_union(current.elements.begin(), current.elements.end(), added.elements.begin(), added.elements.end(), std::back_inserter(selection.elements));
+            std::set_union(current.edges.begin(), current.edges.end(), added.edges.begin(), added.edges.end(), std::back_inserter(selection.edges));
+        } else {
+            std::set_symmetric_difference(current.elements.begin(), current.elements.end(), added.elements.begin(), added.elements.end(), std::back_inserter(selection.elements));
+            std::set_symmetric_difference(current.edges.begin(), current.edges.end(), added.edges.begin(), added.edges.end(), std::back_inserter(selection.edges));
+        }
+    }
+    selection.normalize();
+    setComponentSelection(selection);
+}
+
+GeoComponentSelection
+SceneViewport::pickComponentsAt(const QPoint& pos,
+                                bool* busy)
+{
+    GeoComponentSelection selection;
+    selection.type = _imp->geoPickMode;
+    if (!componentsPickable() || !_imp->glInitialized || !_imp->renderer.hasScene() || !context()) {
+        return selection;
+    }
+    if (pickMustWait()) {
+        if (busy) {
+            *busy = true;
+        }
+
+        return selection;
+    }
+    const qreal dpr = devicePixelRatio();
+    const int x = int(pos.x() * dpr);
+    const int y = int(pos.y() * dpr);
+    const int w = int(width() * dpr);
+    const int h = int(height() * dpr);
+    // A face is under the pointer or not; a point or an edge is a few pixels wide at most.
+    const int radius = (selection.type == eGeoComponentPrimitives) ? 0 : int(std::lround(kComponentPickRadius * dpr));
+    std::vector<GeoViewerLayer::ComponentHit> hits;
+    runWithEngineContext([&]() { hits = _imp->renderer.pickComponents(selection.type, x - radius, y - radius, x + radius, y + radius, w, h, true, busy); });
+    _imp->geoDisplay->mapComponentHits(hits, true, &selection);
+
+    return selection;
+}
+
+GeoComponentSelection
+SceneViewport::pickComponentsIn(const QRect& rect,
+                                bool* busy)
+{
+    GeoComponentSelection selection;
+    selection.type = _imp->geoPickMode;
+    if (!componentsPickable() || !_imp->glInitialized || !_imp->renderer.hasScene() || !context()) {
+        return selection;
+    }
+    if (pickMustWait()) {
+        if (busy) {
+            *busy = true;
+        }
+
+        return selection;
+    }
+    const qreal dpr = devicePixelRatio();
+    const QRect r = rect.normalized();
+    const int left = int(r.left() * dpr);
+    const int top = int(r.top() * dpr);
+    const int right = int((r.right() + 1) * dpr) - 1;
+    const int bottom = int((r.bottom() + 1) * dpr) - 1;
+    const int w = int(width() * dpr);
+    const int h = int(height() * dpr);
+    std::vector<GeoViewerLayer::ComponentHit> hits;
+    runWithEngineContext([&]() { hits = _imp->renderer.pickComponents(selection.type, left, top, right, bottom, w, h, false, busy); });
+    _imp->geoDisplay->mapComponentHits(hits, false, &selection);
+
+    return selection;
+}
+
+void
+SceneViewport::refreshComponentState()
+{
+    const bool pickable = componentsPickable();
+    GeoComponentSelection shown;
+    shown.type = _imp->geoPickMode;
+    if (pickable && (_imp->componentSelection.type == _imp->geoPickMode)) {
+        shown = _imp->componentSelection;
+    }
+    if (_imp->geoDisplay->setComponentState(pickable ? _imp->geoPickMode : eGeoComponentObjects, shown) && !_imp->requestedPayload.isEmpty()) {
+        requestSync(_imp->requestedPayload, _imp->requestedError);
+    }
+    refreshComponentHighlight();
+
+    setProperty("natronGeoPickMode", QString::fromUtf8(geoPickModeName(_imp->geoPickMode)));
+    setProperty("natronGeoComponents", pickable);
+    const GeoComponentSelection& selection = _imp->componentSelection;
+    setProperty("natronGeoSelectionCount", int(selection.elements.size() + selection.edges.size()));
+    QString pattern;
+    const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
+    if (convert && convert->detail() && !selection.empty()) {
+        const GeoDetail& detail = *convert->detail();
+        if (selection.type == eGeoComponentEdges) {
+            std::vector<GeoEdge> edges;
+            for (const GeoEdge& edge : selection.edges) {
+                const GeoOffset a = detail.pointMap().offsetFromIndex(edge.p0);
+                const GeoOffset b = detail.pointMap().offsetFromIndex(edge.p1);
+                if ((a >= 0) && (b >= 0)) {
+                    edges.push_back(GeoEdge(a, b));
+                }
+            }
+            pattern = QString::fromStdString(geoEncodeEdgePattern(detail, edges, true));
+        } else if (selection.type != eGeoComponentObjects) {
+            const GeoAttribClassEnum cls = (selection.type == eGeoComponentPoints) ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
+            const GeoIndexMap& map = detail.indexMap(cls);
+            GeoElementMask mask(std::size_t(std::max<GeoOffset>(0, map.offsetSize())), 0);
+            for (GeoIndex index : selection.elements) {
+                const GeoOffset offset = map.offsetFromIndex(index);
+                if ((offset >= 0) && (std::size_t(offset) < mask.size())) {
+                    mask[std::size_t(offset)] = 1;
+                }
+            }
+            pattern = QString::fromStdString(geoEncodePattern(detail, cls, mask, true));
+        }
+    }
+    setProperty("natronGeoSelection", pattern);
+    update();
+} // SceneViewport::refreshComponentState
+
+void
+SceneViewport::refreshComponentHighlight()
+{
+    const bool pickable = componentsPickable();
+    const std::shared_ptr<const GeoUsdConvert> convert = pickable ? _imp->geoDisplay->componentConvert() : std::shared_ptr<const GeoUsdConvert>();
+    std::vector<std::pair<std::string, std::vector<int>>> edges, faces;
+    if (convert && (_imp->componentSelection.type == _imp->geoPickMode)) {
+        if (_imp->componentSelection.type == eGeoComponentEdges) {
+            edges = GeoViewerLayer::componentHighlights(*convert, _imp->componentSelection);
+        } else if (_imp->componentSelection.type == eGeoComponentPrimitives) {
+            faces = GeoViewerLayer::componentHighlights(*convert, _imp->componentSelection);
+        }
+    }
+    _imp->highlightConvert = convert;
+    _imp->renderer.setComponentHighlight(pickable, std::move(edges), std::move(faces));
+    update();
 }
 
 void
@@ -6906,7 +7370,8 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
     // A marquee may start on a prim: a drag selects by rectangle wherever it starts,
     // and a release without a drag selects what is under the press.
     bool pickOwed = false;
-    if (clickSelects) {
+    // Components are picked at the release, which knows whether the press was a click or a marquee.
+    if (clickSelects && !componentsPickable()) {
         if (queued) {
             pickOwed = true;
         } else {
@@ -7023,7 +7488,19 @@ SceneViewport::mouseReleaseEvent(QMouseEvent* e)
     const bool owed = _imp->pressOwedPick || _imp->pressOwedHandle;
     clearGesture();
 
-    if (dragged && (role == Implementation::eDragRoleMarquee)) {
+    const bool marqueeSelects = dragged && (role == Implementation::eDragRoleMarquee);
+    const bool clickSelectsHere = (!dragged || (role == Implementation::eDragRoleNone)) && clickSelects;
+    if (componentsPickable() && (marqueeSelects || clickSelectsHere)) {
+        deferred.components = true;
+        deferred.marquee = marqueeSelects;
+        if (marqueeSelects) {
+            deferred.checkHandle = false;
+        } else {
+            deferred.emptySelects = !dragged;
+        }
+        _imp->deferredSelections.push_back(deferred);
+        serviceDeferredInput();
+    } else if (dragged && (role == Implementation::eDragRoleMarquee)) {
         bool busy = !_imp->deferredSelections.empty();
         QStringList paths;
         if (!busy) {
@@ -7306,6 +7783,7 @@ SceneViewport::event(QEvent* e)
             || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || isTransformKey(k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key())
+            || (geoPickModeForKey(k->modifiers(), k->key()) >= 0)
             || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
             e->accept();
 
@@ -7399,6 +7877,13 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     const int mode = viewModeForKey(e->modifiers(), e->key());
     if (mode >= 0) {
         setViewMode((SceneViewportRenderer::ViewModeEnum)mode);
+        e->accept();
+
+        return;
+    }
+    const int pickMode = geoPickModeForKey(e->modifiers(), e->key());
+    if (pickMode >= 0) {
+        setGeoPickMode((GeoComponentEnum)pickMode);
         e->accept();
 
         return;

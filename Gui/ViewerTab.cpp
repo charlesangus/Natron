@@ -1564,6 +1564,14 @@ ViewerTab::onActiveInputDataKindChanged()
         }
         QObject::connect(_imp->sceneViewport, &SceneViewport::rendererChanged, this, &ViewerTab::refreshSceneRenderRow);
         QObject::connect(_imp->sceneViewport, &SceneViewport::refineStateChanged, this, &ViewerTab::refreshRefineSamplesLabel);
+        QObject::connect(_imp->sceneViewport, &SceneViewport::geoPickModeChanged, _imp->geoDisplayRow, [this](int mode) {
+            _imp->geoDisplayRow->setPickMode(mode);
+        });
+        _imp->geoDisplayRow->setPickModeCallback([this](int mode) {
+            if (_imp->sceneViewport) {
+                _imp->sceneViewport->setGeoPickMode((GeoComponentEnum)mode);
+            }
+        });
         refreshSceneRenderFromKnobs();
     }
     if (!_imp->sceneViewport) {
@@ -1918,6 +1926,10 @@ ViewerTab::refreshSceneRenderRow()
     _imp->sceneRenderRow->setVisible(topVisible && progressive);
     const bool geometry = isShowingScene() && _imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry);
     _imp->geoDisplayRow->setVisible(topVisible && geometry);
+    // Without geometry, as downstream of a conversion to a scene, only prims are picked.
+    if (_imp->sceneViewport) {
+        _imp->sceneViewport->setGeometryContext(geometry);
+    }
     refreshRefineSamplesLabel();
 }
 

@@ -207,6 +207,10 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DCycleTool);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DToggleSpace);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DTogglePivot);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickObjects);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickPoints);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickEdges);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickPrimitives);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);
@@ -503,6 +507,11 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DTogglePivot, kShortcutDescActionViewer3DTogglePivot, Qt::NoModifier, Qt::Key(0), Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab, Qt::NoModifier, Qt::Key(0) },
+        // Function keys: the digits, with or without Alt or Ctrl, already belong to the Viewer.
+        { kShortcutIDActionViewer3DPickObjects, kShortcutDescActionViewer3DPickObjects, Qt::NoModifier, Qt::Key_F8, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickPoints, kShortcutDescActionViewer3DPickPoints, Qt::NoModifier, Qt::Key_F9, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickEdges, kShortcutDescActionViewer3DPickEdges, Qt::NoModifier, Qt::Key_F10, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickPrimitives, kShortcutDescActionViewer3DPickPrimitives, Qt::NoModifier, Qt::Key_F11, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

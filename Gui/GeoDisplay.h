@@ -30,6 +30,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Gui/SceneStageEditor.h"
@@ -103,6 +104,28 @@ public:
     // The primitives the prim at @p primPath of the geometry last synced was made from.
     bool pickPrimitives(const std::string& primPath,
                         GeoViewerLayer::Pick* pick) const;
+
+    /**
+     * @brief What the view picks and the components it has picked: picking points marks every
+     * point, and picked points and packed primitives get guides of their own. True if that
+     * changes what the next sync authors.
+     **/
+    bool setComponentState(GeoComponentEnum mode,
+                           const GeoComponentSelection& selection);
+
+    /**
+     * @brief The conversion of the geometry last synced when it is the only geometry viewed, which
+     * components are picked from; null otherwise.
+     **/
+    std::shared_ptr<const GeoUsdConvert> componentConvert() const;
+
+    /**
+     * @brief Adds to @p selection what @p hits land on, of its type: points through the point
+     * guides, the rest as GeoViewerLayer::mapComponentHits() maps them.
+     **/
+    void mapComponentHits(const std::vector<GeoViewerLayer::ComponentHit>& hits,
+                          bool firstOnly,
+                          GeoComponentSelection* selection) const;
 
 private:
     struct Implementation;

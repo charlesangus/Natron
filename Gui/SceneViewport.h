@@ -44,6 +44,7 @@
 #include <OpenColorIO/OpenColorIO.h>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Engine/ScenePayload.h"
 
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
@@ -637,6 +638,24 @@ public:
      **/
     std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height, bool* busy = nullptr);
 
+    /**
+     * @brief The points, edges or faces of @p type drawn in the rectangle with corners (x0, y0)
+     * and (x1, y1), pixels of a width x height view counted from the top left: the one nearest its
+     * centre if @p nearest, else all. Each hit is the prim drawing it and the component's index in
+     * that prim; picking primitives also hits prims drawn whole, index -1, with the instancers
+     * drawing them. Storm only. Needs the context of render() current.
+     **/
+    std::vector<GeoViewerLayer::ComponentHit> pickComponents(GeoComponentEnum type, int x0, int y0, int x1, int y1, int width, int height,
+                                                             bool nearest, bool* busy = nullptr);
+
+    /**
+     * @brief While @p active, highlights the edges and faces given by prim path and index, as
+     * GeoViewerLayer::componentHighlights() makes them, instead of the selected prims.
+     **/
+    void setComponentHighlight(bool active,
+                               std::vector<std::pair<std::string, std::vector<int>>> edges,
+                               std::vector<std::pair<std::string, std::vector<int>>> faces);
+
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
@@ -824,6 +843,39 @@ public:
     QStringList getSelection() const;
 
     /**
+     * @brief What a click or marquee picks: whole prims, or the points, edges or primitives of
+     * the geometry shown. Components are picked only while the view shows geometry; elsewhere the
+     * mode is kept and prims are picked. A mode of another type clears the component selection.
+     **/
+    void setGeoPickMode(GeoComponentEnum mode);
+
+    GeoComponentEnum getGeoPickMode() const;
+
+    // Whether the view shows geometry, where components can be picked, rather than a scene.
+    void setGeometryContext(bool geometry);
+
+    bool componentsPickable() const;
+
+    /**
+     * @brief The picked points or primitives, by number, or edges, by point numbers, of the
+     * geometry shown. It outlives the geometry it was picked on: each new geometry highlights the
+     * same numbers.
+     **/
+    const GeoComponentSelection& getComponentSelection() const;
+
+    // Takes @p selection as it is; componentSelectionChanged() if that changes the selection.
+    void setComponentSelection(const GeoComponentSelection& selection);
+
+    // Combines @p picked with the component selection as select() combines prims.
+    void selectComponents(const GeoComponentSelection& picked, SelectionModeEnum mode);
+
+    // The component of the pick mode nearest pos (widget coordinates); busy as for pickPrimAt().
+    GeoComponentSelection pickComponentsAt(const QPoint& pos, bool* busy = nullptr);
+
+    // The components of the pick mode drawn in rect (widget coordinates).
+    GeoComponentSelection pickComponentsIn(const QRect& rect, bool* busy = nullptr);
+
+    /**
      * @brief Sets the function that names the node whose transform handles are drawn while the
      * transform widget shows none on the selection: a USDEditTransform with its settings panel
      * open, or null for none. Dragging a handle sets the node's Translate, Rotate or Scale once,
@@ -919,6 +971,11 @@ Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
 
+    void componentSelectionChanged();
+
+    // A GeoComponentEnum.
+    void geoPickModeChanged(int mode);
+
     // From the context menu's Renderer submenu.
     void rendererChanged(const QString& id);
 
@@ -962,6 +1019,17 @@ private:
     void publishState();
 
     void publishRefineState();
+
+    /**
+     * @brief Hands the pick mode and component selection to the view's guides and highlight, and
+     * mirrors them into natronGeoPickMode ("objects", "points", "edges" or "primitives"),
+     * natronGeoComponents (whether components are picked), natronGeoSelection (the selection's
+     * group pattern, empty for none) and natronGeoSelectionCount.
+     **/
+    void refreshComponentState();
+
+    // Maps the component selection onto the geometry last synced, for the engine to highlight.
+    void refreshComponentHighlight();
 
     // Starts dragging the transform handle at pos (widget coordinates). False if none is there, or
     // with busy set if an edit holds the stage and it can't tell.

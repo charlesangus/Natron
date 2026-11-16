@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <functional>
 #include <map>
 #include <utility>
@@ -323,5 +324,252 @@ GeoViewerLayer::pickPrimitives(const GeoUsdConvert& convert,
 
     return false;
 }
+
+void
+GeoComponentSelection::normalize()
+{
+    std::sort(elements.begin(), elements.end());
+    elements.erase(std::unique(elements.begin(), elements.end()), elements.end());
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+}
+
+namespace {
+
+// The partition authoring exactly the prim at @p path, -1 for none.
+int
+partitionAt(const GeoUsdConvert& convert,
+            const SdfPath& path)
+{
+    const int partition = convert.specPartition(path);
+
+    return ((partition >= 0) && (convert.partitionPath(std::size_t(partition)) == path)) ? partition : -1;
+}
+
+int
+partitionAt(const GeoUsdConvert& convert,
+            const std::string& path)
+{
+    if (path.empty() || !SdfPath::IsValidPathString(path)) {
+        return -1;
+    }
+
+    return partitionAt(convert, SdfPath(path));
+}
+
+// Where each face of a mesh partition starts in its face-vertex list, the total last. The renderer
+// numbers a mesh's edges face by face, a face's first edge at its first face-vertex.
+std::vector<std::size_t>
+faceStarts(const GeoDetail& detail,
+           const std::vector<std::size_t>& primitives)
+{
+    std::vector<std::size_t> starts;
+    starts.reserve(primitives.size() + 1);
+    std::size_t at = 0;
+    for (std::size_t offset : primitives) {
+        starts.push_back(at);
+        at += std::size_t(std::max<GeoOffset>(0, detail.primitiveVertices(GeoOffset(offset)).count));
+    }
+    starts.push_back(at);
+
+    return starts;
+}
+
+// The number of the packed primitive a hit on a whole prim lands on, kInvalidIndex for none.
+GeoIndex
+packedPrimitive(const GeoUsdConvert& convert,
+                const GeoViewerLayer::ComponentHit& hit)
+{
+    const GeoIndexMap& primitives = convert.detail()->primitiveMap();
+    for (const std::pair<std::string, int>& instancer : hit.instancers) {
+        const int partition = partitionAt(convert, instancer.first);
+        if ((partition < 0) || (convert.partitionKind(std::size_t(partition)) != eGeoUsdPrimInstancer)) {
+            continue;
+        }
+        const std::vector<std::size_t>& offsets = convert.partitionPrimitives(std::size_t(partition));
+        if ((instancer.second >= 0) && (std::size_t(instancer.second) < offsets.size())) {
+            return primitives.indexFromOffset(GeoOffset(offsets[std::size_t(instancer.second)]));
+        }
+    }
+    // A native instance is the partition's child instance_<i>, made from its i-th primitive; a
+    // packed USD primitive is an over on its source prim, whose descendants it draws.
+    static const std::string kInstancePrefix = "instance_";
+    std::vector<std::string> paths { hit.primPath };
+    for (const std::pair<std::string, int>& instancer : hit.instancers) {
+        paths.push_back(instancer.first);
+    }
+    for (const std::string& start : paths) {
+        if (start.empty() || !SdfPath::IsValidPathString(start)) {
+            continue;
+        }
+        SdfPath child;
+        for (SdfPath path = SdfPath(start).GetPrimPath(); !path.IsEmpty() && (path != SdfPath::AbsoluteRootPath()); child = path, path = path.GetParentPath()) {
+            const int partition = partitionAt(convert, path);
+            if (partition < 0) {
+                continue;
+            }
+            const GeoUsdPrimKindEnum kind = convert.partitionKind(std::size_t(partition));
+            if (kind == eGeoUsdPrimOverride) {
+                const std::vector<std::size_t>& offsets = convert.partitionPrimitives(std::size_t(partition));
+                if (!offsets.empty()) {
+                    return primitives.indexFromOffset(GeoOffset(offsets.front()));
+                }
+            } else if ((kind == eGeoUsdPrimNativeInstances) && !child.IsEmpty()) {
+                const std::string& name = child.GetName();
+                std::size_t instance = 0;
+                if (name.compare(0, kInstancePrefix.size(), kInstancePrefix) == 0) {
+                    const char* first = name.data() + kInstancePrefix.size();
+                    const char* last = name.data() + name.size();
+                    const std::from_chars_result parsed = std::from_chars(first, last, instance);
+                    const std::vector<std::size_t>& offsets = convert.partitionPrimitives(std::size_t(partition));
+                    if ((parsed.ec == std::errc()) && (parsed.ptr == last) && (instance < offsets.size())) {
+                        return primitives.indexFromOffset(GeoOffset(offsets[instance]));
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    return GeoIndexMap::kInvalidIndex;
+}
+
+} // namespace
+
+void
+GeoViewerLayer::mapComponentHits(const GeoUsdConvert& convert,
+                                 const std::vector<ComponentHit>& hits,
+                                 bool firstOnly,
+                                 GeoComponentSelection* selection)
+{
+    if (!selection || !convert.detail()) {
+        return;
+    }
+    const GeoDetail& detail = *convert.detail();
+    const GeoIndexMap& points = detail.pointMap();
+    const GeoIndexMap& primitives = detail.primitiveMap();
+    std::map<int, std::vector<std::size_t>> starts;
+    for (const ComponentHit& hit : hits) {
+        const std::size_t before = selection->elements.size() + selection->edges.size();
+        const int partition = partitionAt(convert, hit.primPath);
+        const GeoUsdPrimKindEnum kind = (partition >= 0) ? convert.partitionKind(std::size_t(partition)) : eGeoUsdPrimOverride;
+        if (selection->type == eGeoComponentEdges) {
+            if ((hit.index < 0) || (kind != eGeoUsdPrimMesh)) {
+                continue;
+            }
+            const std::vector<std::size_t>& offsets = convert.partitionPrimitives(std::size_t(partition));
+            std::vector<std::size_t>& faces = starts[partition];
+            if (faces.empty()) {
+                faces = faceStarts(detail, offsets);
+            }
+            const std::size_t edge = std::size_t(hit.index);
+            if (edge >= faces.back()) {
+                continue;
+            }
+            const std::size_t face = std::size_t(std::upper_bound(faces.begin(), faces.end(), edge) - faces.begin()) - 1;
+            const GeoVertexRange vertices = detail.primitiveVertices(GeoOffset(offsets[face]));
+            const GeoOffset local = GeoOffset(edge - faces[face]);
+            const GeoOffset a = detail.vertexPoint(vertices.start + local);
+            const GeoOffset b = detail.vertexPoint(vertices.start + ((local + 1) % vertices.count));
+            const GeoIndex ia = points.indexFromOffset(a);
+            const GeoIndex ib = points.indexFromOffset(b);
+            if ((ia >= 0) && (ib >= 0) && (ia != ib)) {
+                selection->edges.push_back(GeoEdge(ia, ib));
+            }
+        } else if (selection->type == eGeoComponentPrimitives) {
+            if (hit.index >= 0) {
+                if ((kind != eGeoUsdPrimMesh) && (kind != eGeoUsdPrimCurves)) {
+                    continue;
+                }
+                const std::vector<std::size_t>& offsets = convert.partitionPrimitives(std::size_t(partition));
+                if (std::size_t(hit.index) < offsets.size()) {
+                    const GeoIndex primitive = primitives.indexFromOffset(GeoOffset(offsets[std::size_t(hit.index)]));
+                    if (primitive >= 0) {
+                        selection->elements.push_back(primitive);
+                    }
+                }
+            } else {
+                const GeoIndex primitive = packedPrimitive(convert, hit);
+                if (primitive >= 0) {
+                    selection->elements.push_back(primitive);
+                }
+            }
+        }
+        if (firstOnly && (selection->elements.size() + selection->edges.size() > before)) {
+            break;
+        }
+    }
+    selection->normalize();
+} // GeoViewerLayer::mapComponentHits
+
+std::vector<std::pair<std::string, std::vector<int>>>
+GeoViewerLayer::componentHighlights(const GeoUsdConvert& convert,
+                                    const GeoComponentSelection& selection)
+{
+    std::vector<std::pair<std::string, std::vector<int>>> highlights;
+    if (!convert.detail() || selection.empty()) {
+        return highlights;
+    }
+    const GeoDetail& detail = *convert.detail();
+    if (selection.type == eGeoComponentPrimitives) {
+        const GeoIndexMap& primitives = detail.primitiveMap();
+        std::vector<char> selected(std::size_t(std::max<GeoOffset>(0, primitives.offsetSize())), 0);
+        for (GeoIndex index : selection.elements) {
+            const GeoOffset offset = primitives.offsetFromIndex(index);
+            if ((offset >= 0) && (std::size_t(offset) < selected.size())) {
+                selected[std::size_t(offset)] = 1;
+            }
+        }
+        for (std::size_t partition = 0; partition < convert.partitionCount(); ++partition) {
+            const GeoUsdPrimKindEnum kind = convert.partitionKind(partition);
+            if ((kind != eGeoUsdPrimMesh) && (kind != eGeoUsdPrimCurves)) {
+                continue;
+            }
+            std::vector<int> faces;
+            const std::vector<std::size_t>& offsets = convert.partitionPrimitives(partition);
+            for (std::size_t i = 0; i < offsets.size(); ++i) {
+                if ((offsets[i] < selected.size()) && selected[offsets[i]]) {
+                    faces.push_back(int(i));
+                }
+            }
+            if (!faces.empty()) {
+                highlights.emplace_back(convert.partitionPath(partition).GetString(), std::move(faces));
+            }
+        }
+    } else if (selection.type == eGeoComponentEdges) {
+        const GeoIndexMap& points = detail.pointMap();
+        std::vector<GeoEdge> edges;
+        edges.reserve(selection.edges.size());
+        for (const GeoEdge& edge : selection.edges) {
+            const GeoOffset a = points.offsetFromIndex(edge.p0);
+            const GeoOffset b = points.offsetFromIndex(edge.p1);
+            if ((a >= 0) && (b >= 0)) {
+                edges.push_back(GeoEdge(a, b));
+            }
+        }
+        std::sort(edges.begin(), edges.end());
+        for (std::size_t partition = 0; partition < convert.partitionCount(); ++partition) {
+            if (convert.partitionKind(partition) != eGeoUsdPrimMesh) {
+                continue;
+            }
+            std::vector<int> indices;
+            int edgeIndex = 0;
+            for (std::size_t offset : convert.partitionPrimitives(partition)) {
+                const GeoVertexRange vertices = detail.primitiveVertices(GeoOffset(offset));
+                for (GeoOffset j = 0; j < vertices.count; ++j, ++edgeIndex) {
+                    const GeoEdge edge(detail.vertexPoint(vertices.start + j), detail.vertexPoint(vertices.start + ((j + 1) % vertices.count)));
+                    if (std::binary_search(edges.begin(), edges.end(), edge)) {
+                        indices.push_back(edgeIndex);
+                    }
+                }
+            }
+            if (!indices.empty()) {
+                highlights.emplace_back(convert.partitionPath(partition).GetString(), std::move(indices));
+            }
+        }
+    }
+
+    return highlights;
+} // GeoViewerLayer::componentHighlights
 
 NATRON_NAMESPACE_EXIT

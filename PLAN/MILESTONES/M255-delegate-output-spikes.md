@@ -31,13 +31,13 @@ Cycles Deep Output and M258 - MoonRay Deep Output are elaborated from them.
 
 ## Phase 255.1: AOV mechanism
 
-- [ ] M255.P1.T1 — Prototype delegate-discovered AOV checklist on Cycles
+- [x] M255.P1.T1 — Prototype delegate-discovered AOV checklist on Cycles
   - files: throwaway branch only; report
   - approach: query the Cycles delegate for its AOV descriptors (`GetDefaultAovDescriptor`, render-var tokens) and request a custom set through `SetRendererAovs`; render and read each. Record which AOVs and LPE strings it accepts and how they name their channels.
   - verify: report lists the AOVs obtained, names, formats, and any rejected request, with file/line citations to the delegate source.
   - size: M
 
-- [ ] M255.P1.T2 — Prototype RenderSettings-driven AOVs on Cycles
+- [x] M255.P1.T2 — Prototype RenderSettings-driven AOVs on Cycles
   - files: throwaway branch only; report
   - approach: author `RenderSettings`/`RenderProduct`/`RenderVar` prims in a stage and see whether the delegate's render-product path honours them in `UsdImagingGLEngine`; read Solaris/Karma and usdview behaviour from `.local/docs`. Record what is needed on the Natron side to author them (a node).
   - verify: report states whether Cycles consumes the prims, with source citations, plus the extra node/authoring cost.
@@ -75,3 +75,4 @@ Cycles Deep Output and M258 - MoonRay Deep Output are elaborated from them.
 - 2026-11-16 — P1.T1 done (report `spike/m255/REPORT-P1T1-aov-checklist.md` on `spike/m255-delegate-output`, 10b70a084). MoonRay deep transport is being costed: (a) in-process only for deep (consultant: about 10–15 d), (d) keep Arras and add a deep message (the user leans this way), (e) render deep EXR to a file and read it back (user: "for a production renderer that's not crazy"). The user decides after (d) and (e) are costed.
 - 2026-11-16 — MoonRay deep costing (consultant, source-read; figures estimated, not measured). MoonRay already fills DeepBuffer on the Arras/mcrt progressive path (only PROGRESSIVE_FAST skips it), and hdMoonray can request deep through `parameters:moonray:*` AOV settings. Only batch (`RaasApplication::writeFinal`) writes deep EXR. Options: (a) in-process for deep, 10–15 d, +600–950 lines, no isolation; (d) a banded DeepFrame Arras message sent after the FINISHED frame, 15–22 d, 900–1,400 lines across moonray, mcrt_messages, mcrt_computation and hdMoonray (the middle two need forking), 0.3–3 s per 1080p frame; (e) the Arras render writes a deep EXR side output, 8–12 d, half-float AOVs, temp files; (e) batch, a second render, poor fit. Recommendation (d), banded. Awaiting the user's choice.
 - 2026-11-16 — **MoonRay deep transport: (d), Arras carries deep in bands (user).** Project-wide decision `PLAN/DECISIONS/2026-11-16-moonray-deep-over-arras.md`. P2.T2 is narrowed to verifying (d) with a real render on the published image. It checks that the mcrt/Arras path fills DeepBuffer with `output_type` deep on a RenderOutput requested via `parameters:moonray:*`, that McrtFbSender copes with a deep output alongside the flat ones, that deep weighting stays correct across progressive passes, and the actual sample counts and band sizes for a test scene. It no longer evaluates in-process rendering.
+- 2026-11-16 — P1.T2 done (`spike/m255/REPORT-P1T2-rendersettings-aovs.md`, bb8b25259). Neither hdCycles nor `UsdImagingGLEngine` maps RenderSettings, RenderProduct or RenderVar prims to AOVs, so the mapping is host-side, as husk does it. Recommendation: store AOVs as RenderVars and use the delegate-discovered checklist as the UI that authors them. Open for the user at P2.T3: union multiple products or add a Product knob; table knob or stopgap text field for custom primvar and LPE vars; whether to patch the Cycles fork (about 75 lines for `cycles:<pass>` plus an `aovNames` stat); whether to drop the dead elementId descriptor.

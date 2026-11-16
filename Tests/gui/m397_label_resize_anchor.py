@@ -33,7 +33,7 @@ BACKDROP_LINE = ("one backdrop label line that runs far wider than any default b
                  "and must stay on a single line however long it gets")
 BACKDROP_NAME = "Backdrop_whose_name_is_also_much_wider_than_the_default_backdrop_width"
 BACKDROP_GROWN = (1800.0, 500.0)
-BACKDROP_SHRUNK = (60.0, 60.0)
+BACKDROP_SHRUNK = (200.0, 120.0)
 
 try:
     import NatronEngine
@@ -131,19 +131,6 @@ try:
             lines += block.layout().lineCount()
             block = block.next()
         return lines
-
-    def check_unwrapped(label, node, text):
-        item = text_item(node, text)
-        check(item is not None, "%s: the text %r is drawn" % (label, text[:30]))
-        if item is None:
-            return None
-        lines = laid_out_lines(item)
-        check(lines == 1, "%s: %r is laid out on one line (got %d)" % (label, text[:30], lines))
-        r = QRectF(item.sceneBoundingRect())
-        x, y, w, h = geometry(node)
-        check(node_covers(node, r.right() - 2.0, r.center().y()),
-              "%s: the backdrop reaches the end of %r at x %g (backdrop %r)" % (label, text[:30], r.right(), (x, w)))
-        return r
 
     def string_param(node, names):
         for name in names:
@@ -246,52 +233,58 @@ try:
         bd_label = string_param(backdrop, ("Label", "label", "userTextArea"))
         gt.require(bd_label is not None, "the Backdrop has a label param")
         before = geometry(backdrop)
-        grown_probe = (before[0] + PROBE_MARGIN, before[1] + before[3] + 3 * PROBE_MARGIN)
-        check(not node_covers(backdrop, *grown_probe),
-              "e-backdrop: before the label, nothing of the backdrop lies at %r" % (grown_probe,))
         bd_label.set(BACKDROP_LABEL)
         backdrop.setLabel("Backdrop_with_a_much_longer_name_than_the_default_one")
-        ok = yield ("until", lambda: node_covers(backdrop, *grown_probe), REFRESH_TIMEOUT_S)
+        yield ("sleep", SETTLE_MS)
         yield ("sleep", SETTLE_MS)
         after = geometry(backdrop)
-        check(ok, "e-backdrop: the tall label grows the backdrop down past %r (getSize %r -> %r)"
-              % (grown_probe, before[2:], after[2:]))
-        check_top_left("e-backdrop", before, after)
+        check(after == before, "e-backdrop: a tall label and a long name leave the backdrop at %r (got %r)" % (before, after))
 
-        gt.section("e-backdrop-single-line")
+        gt.section("e-backdrop-wrap-at-edge")
         wide = create("Backdrop", 0, 2000)
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         wide_label = string_param(wide, ("Label", "label", "userTextArea"))
         gt.require(wide_label is not None, "the Backdrop has a label param")
-        before = geometry(wide)
-        wide_label.set(BACKDROP_LINE)
-        wide.setLabel(BACKDROP_NAME)
-        yield ("until", lambda: text_item(wide, BACKDROP_LINE) is not None, REFRESH_TIMEOUT_S)
-        yield ("sleep", SETTLE_MS)
-        after = geometry(wide)
-        report("NOTE e-backdrop-single-line: %r -> %r" % (before, after))
-        line_rect = check_unwrapped("e-backdrop-single-line label", wide, BACKDROP_LINE)
-        check_unwrapped("e-backdrop-single-line name", wide, BACKDROP_NAME)
-        if line_rect is not None:
-            check(after[2] >= line_rect.width(),
-                  "e-backdrop-single-line: the width %g is at least the label's %g" % (after[2], line_rect.width()))
-        check_top_left("e-backdrop-single-line", before, after)
-
         wide.setSize(*BACKDROP_GROWN)
         yield ("sleep", SETTLE_MS)
-        grown = geometry(wide)
-        check(abs(grown[2] - BACKDROP_GROWN[0]) <= TOL,
-              "e-backdrop-single-line: a backdrop can still be made wider than its label (%r)" % (grown,))
-        far = (grown[0] + BACKDROP_GROWN[0] - PROBE_MARGIN, grown[1] + BACKDROP_GROWN[1] - PROBE_MARGIN)
-        check(node_covers(wide, *far), "e-backdrop-single-line: the widened backdrop covers %r" % (far,))
-        check_unwrapped("e-backdrop-single-line widened", wide, BACKDROP_LINE)
+        wide_label.set(BACKDROP_LINE)
+        yield ("until", lambda: text_item(wide, BACKDROP_LINE) is not None, REFRESH_TIMEOUT_S)
+        yield ("sleep", SETTLE_MS)
+        item = text_item(wide, BACKDROP_LINE)
+        check(item is not None and laid_out_lines(item) == 1,
+              "e-backdrop-wrap-at-edge: a backdrop wider than the label shows it on one line")
 
         wide.setSize(*BACKDROP_SHRUNK)
         yield ("sleep", SETTLE_MS)
-        report("NOTE e-backdrop-single-line shrunk: %r" % (geometry(wide),))
-        check_unwrapped("e-backdrop-single-line shrunk", wide, BACKDROP_LINE)
-        check_unwrapped("e-backdrop-single-line shrunk name", wide, BACKDROP_NAME)
+        shrunk = geometry(wide)
+        check(abs(shrunk[2] - BACKDROP_SHRUNK[0]) <= TOL and abs(shrunk[3] - BACKDROP_SHRUNK[1]) <= TOL,
+              "e-backdrop-wrap-at-edge: the label does not override the user's size (%r)" % (shrunk,))
+        item = text_item(wide, BACKDROP_LINE)
+        check(item is not None and laid_out_lines(item) > 1,
+              "e-backdrop-wrap-at-edge: a backdrop narrower than the label wraps it")
+        if item is not None:
+            r = QRectF(item.sceneBoundingRect())
+            check(r.left() >= shrunk[0] - TOL and r.right() <= shrunk[0] + shrunk[2] + TOL,
+                  "e-backdrop-wrap-at-edge: the wrapped label %r stays within the backdrop %r" % ((r.left(), r.right()), shrunk))
+
+        wide.setSize(*BACKDROP_GROWN)
+        yield ("sleep", SETTLE_MS)
+        item = text_item(wide, BACKDROP_LINE)
+        check(item is not None and laid_out_lines(item) == 1,
+              "e-backdrop-wrap-at-edge: growing the backdrop unwraps the label")
+
+        wide_label.set(BACKDROP_LINE + "\nand a second line")
+        yield ("sleep", SETTLE_MS)
+        after = geometry(wide)
+        check(abs(after[2] - BACKDROP_GROWN[0]) <= TOL and abs(after[3] - BACKDROP_GROWN[1]) <= TOL,
+              "e-backdrop-wrap-at-edge: changing the label text leaves the size alone (%r)" % (after,))
+        wide.setLabel(BACKDROP_NAME)
+        yield ("sleep", SETTLE_MS)
+        after = geometry(wide)
+        check(abs(after[2] - BACKDROP_GROWN[0]) <= TOL and abs(after[3] - BACKDROP_GROWN[1]) <= TOL,
+              "e-backdrop-wrap-at-edge: changing the name leaves the size alone (%r)" % (after,))
+
 
         gt.section("f-odd-width")
         start = geometry(node)

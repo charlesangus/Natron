@@ -26,7 +26,6 @@
 #include "BackdropGui.h"
 
 #include <algorithm> // min, max
-#include <cmath>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -65,11 +64,11 @@ struct BackdropGuiPrivate
 
     void refreshLabelText(int nameHeight, const QString & text);
 
-    // Unlike a node's label, a backdrop's never wraps: the backdrop widens to its longest line.
-    void layOutLabelUnwrapped()
+    // The label wraps at the backdrop's edge, never earlier, and never sizes the backdrop.
+    void wrapLabelTo(int backdropWidth)
     {
-        label->setTextWidth(-1);
-        label->setTextWidth(label->boundingRect().width());
+        const qreal padding = 2. * label->document()->documentMargin();
+        label->setTextWidth(std::max(1., backdropWidth - padding));
     }
 
     std::string getLabelValue() const;
@@ -138,11 +137,7 @@ BackdropGui::adjustSizeToContent(int *w,
                                  bool /*adjustToTextSize*/)
 {
     NodeGui::adjustSizeToContent(w, h, false);
-    _imp->layOutLabelUnwrapped();
-    QRectF labelBbox = _imp->label->boundingRect();
-
-    *h = std::max( (double)*h, labelBbox.height() * 1.5 );
-    *w = std::max(*w, (int)std::ceil(labelBbox.width()));
+    _imp->wrapLabelTo(*w);
 }
 
 void
@@ -166,8 +161,8 @@ BackdropGui::refreshTextLabelFromKnob()
 }
 
 void
-BackdropGuiPrivate::refreshLabelText(int nameHeight,
-                                     const QString &text)
+BackdropGuiPrivate::refreshLabelText(int /*nameHeight*/,
+                                     const QString& text)
 {
     QString textLabel = text;
 
@@ -186,14 +181,7 @@ BackdropGuiPrivate::refreshLabelText(int nameHeight,
     }
 
     label->setHtml(textLabel);
-    layOutLabelUnwrapped();
-
-    QRectF bbox = _publicInterface->bodyRect();
-
-    QRectF labelBbox = label->boundingRect();
-    int w = std::max(bbox.width(), std::ceil(labelBbox.width()));
-    int h = std::max( labelBbox.height() + nameHeight + TO_DPIX(10), bbox.height() );
-    _publicInterface->resize(w, h);
+    wrapLabelTo(_publicInterface->bodyRect().width());
     _publicInterface->update();
 }
 

@@ -1453,12 +1453,6 @@ NodeGui::adjustSizeToContent(int* w,
             _nameItem->setTextWidth(contentWidth);
             labelWrapped = true;
         }
-    } else {
-        // adjustSize() wraps long lines to a compact block, so the width is taken from the
-        // unwrapped layout, which then fixes the width the alignment works against.
-        _nameItem->setTextWidth(-1);
-        _nameItem->setTextWidth(_nameItem->boundingRect().width());
-        *w = std::max(*w, (int)std::ceil(_nameItem->boundingRect().width()));
     }
 
     QRectF labelBbox = _nameItem->boundingRect();

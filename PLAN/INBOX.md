@@ -1,9 +1,5 @@
 ## Pending
 
-### 2026-11-16T03:30:00-05:00 — change-request
-- refs: none
-- New milestone requested (user, 2026-11-16, node graph UAT of M397 - Label Resize Keeps Node Top-Centre / M374 - Remove Node Magnify On Ctrl-Scroll): node error and warning text is drawn over the node in a very ugly way and should be redesigned. Suggested name "Node Error And Warning Display", E10. Not part of the M397/M374 fixes.
-
 ### 2026-11-16T03:31:00-05:00 — change-request
 - refs: none
 - Follow-up milestone requested (user, 2026-11-16, F8 - Motion Vectors UAT): put follow results in a separate animation layer, so the user keeps the benefit of the follow and can still keyframe the shape on top; the keyframe-reduction pass could then run on the follow layer. Suggested name "Follow Animation Layer", E10. The rest of that UAT round is being fixed on the F8 branch.

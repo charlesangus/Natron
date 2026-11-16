@@ -87,7 +87,7 @@ try:
         gt.section("viewer-row")
         set_project_range(START, MAIN_LAST)
         reset_shapes(scene.ctx)
-        ensure_source(scene.roto, scene.gen)
+        yield from ensure_source(scene.roto, scene.gen)
         set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
@@ -105,7 +105,7 @@ try:
         set_project_range(START, MAIN_LAST)
         set_choice(scene.roto, "followRange", "project")
         reset_shapes(scene.ctx)
-        ensure_source(scene.roto, scene.gen)
+        yield from ensure_source(scene.roto, scene.gen)
         set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
@@ -150,7 +150,7 @@ try:
     def section_panel_entry(scene):
         gt.section("panel-entry")
         reset_shapes(scene.ctx)
-        ensure_source(scene.roto, scene.gen)
+        yield from ensure_source(scene.roto, scene.gen)
         set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
@@ -196,7 +196,7 @@ try:
         gt.section("models")
         for model in MODELS[1:]:
             reset_shapes(scene.ctx)
-            ensure_source(scene.roto, scene.gen)
+            yield from ensure_source(scene.roto, scene.gen)
             set_choice(scene.roto, "followModel", MODEL_IDS[model])
             bez = new_shape(scene.ctx)
             p0 = [pos(bez, i, START) for i in range(POINTS)]
@@ -250,7 +250,7 @@ try:
         set_project_range(START, MAIN_LAST)
         set_choice(scene.roto, "followRange", "project")
         reset_shapes(scene.ctx)
-        ensure_source(scene.roto, scene.gen)
+        yield from ensure_source(scene.roto, scene.gen)
         set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
@@ -313,7 +313,7 @@ try:
         before = snapshot(bez, frames)
         keys_before = keys_of(bez)
         tolerance = param(scene.roto, "reduceTolerance").getValue()
-        disconnect_vectors(scene.roto)
+        yield from disconnect_vectors(scene.roto)
         select_shapes([bez])
         press(scene.roto, "reduceKeyframes")
         yield from settle(SETTLE_MS)
@@ -331,7 +331,7 @@ try:
         yield ("sleep", SEEK_MS)
         restored = keys_of(bez) == keys_before and snapshot(bez, frames) == before
         check(restored, "reduce: one undo puts back every key it removed (keys %r)" % (keys_of(bez),))
-        ensure_source(scene.roto, scene.gen)
+        yield from ensure_source(scene.roto, scene.gen)
 
     def check_stomp(scene):
         """A Forward press keys every frame it reaches over the shape's key there, starting from the
@@ -367,7 +367,7 @@ try:
     def section_forward_only(scene):
         gt.section("forward-only")
         reset_shapes(scene.ctx)
-        ensure_source(scene.roto, scene.forward_gen)
+        yield from ensure_source(scene.roto, scene.forward_gen)
         connected = scene.roto.getInput(vectors_input(scene.roto))
         check(connected is not None and connected.getScriptName() == scene.forward_gen.getScriptName(),
               "the forward-only source feeds the Vectors input")
@@ -404,7 +404,7 @@ try:
         frames = list(range(START, MAIN_LAST + 1))
         for model in ("Per Point", "Affine"):
             reset_shapes(scene.ctx)
-            ensure_source(scene.roto, scene.gen)
+            yield from ensure_source(scene.roto, scene.gen)
             set_choice(scene.roto, "followModel", MODEL_IDS[model])
             first = new_shape(scene.ctx)
             second = new_shape(scene.ctx, SQ2_X, SQ2_Y)

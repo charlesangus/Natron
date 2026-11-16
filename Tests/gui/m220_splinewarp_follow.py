@@ -86,7 +86,7 @@ try:
 
         gt.section("follow")
         set_project_range(START, MAIN_LAST)
-        ensure_source(scene.roto, scene.gen)
+        yield from ensure_source(scene.roto, scene.gen)
         set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         source = new_shape(scene.ctx)
         destination = new_shape(scene.ctx, SQ_X + DEST_OFFSET[0], SQ_Y + DEST_OFFSET[1])

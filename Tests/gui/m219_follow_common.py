@@ -294,19 +294,35 @@ def vectors_input(node):
             return i
     require(False, "%s has a %s input" % (node.getScriptName(), VECTORS_INPUT_LABEL))
 
+def vectors_source_is(node, index, source):
+    current = node.getInput(index)
+    if source is None:
+        return current is None
+    return current is not None and current.getScriptName() == source.getScriptName()
+
+def wait_vectors_applied(node, index, source):
+    """An input edit made while the node renders applies once that render ends, and getInput reads
+    the applied inputs, so every edit here waits for it before the next one reads them."""
+    ok = yield ("until", lambda: vectors_source_is(node, index, source), POLL_TIMEOUT_S)
+    require(ok, "the %s input of %s %s within %.0f s" % (
+        VECTORS_INPUT_LABEL, node.getScriptName(),
+        "is disconnected" if source is None else "reads " + source.getScriptName(), POLL_TIMEOUT_S))
+
 def ensure_source(node, source):
     """Connects source to node's Vectors input."""
     index = vectors_input(node)
-    current = node.getInput(index)
-    if current is None or current.getScriptName() != source.getScriptName():
-        if current is not None:
+    if not vectors_source_is(node, index, source):
+        if node.getInput(index) is not None:
             node.disconnectInput(index)
+            yield from wait_vectors_applied(node, index, None)
         require(node.connectInput(index, source), "connect %s to the %s input of %s" % (source.getScriptName(), VECTORS_INPUT_LABEL, node.getScriptName()))
+        yield from wait_vectors_applied(node, index, source)
     QApplication.processEvents()
 
 def disconnect_vectors(node):
-    node.disconnectInput(vectors_input(node))
-    QApplication.processEvents()
+    index = vectors_input(node)
+    node.disconnectInput(index)
+    yield from wait_vectors_applied(node, index, None)
 
 def wait_follow(scene, label, timeout, on_tick=None):
     """Ticks the GUI thread every TICK_MS until Roto.isFollowingVectors() turns false, then takes the
@@ -439,13 +455,13 @@ def global_rect(w):
 def check_row(host_label, node, source):
     """With node's Vectors input disconnected the row is hidden; connecting source shows it, laid out
     with the threshold's label in the row, over nothing else, icon-only buttons and no node name."""
-    disconnect_vectors(node)
+    yield from disconnect_vectors(node)
     yield ("sleep", SETTLE_MS)
     ok = yield ("until", lambda: not row_widgets(), POLL_TIMEOUT_S)
     check(ok, "%s: the viewer hides the Follow Vectors row while the Vectors input is disconnected (shown: %r)"
           % (host_label, sorted(row_widgets())))
 
-    ensure_source(node, source)
+    yield from ensure_source(node, source)
     ok = yield ("until", lambda: len(row_widgets()) == len(HINTS), POLL_TIMEOUT_S)
     found = row_widgets()
     missing = sorted(set(HINTS) - set(found))

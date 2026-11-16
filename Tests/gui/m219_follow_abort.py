@@ -49,7 +49,7 @@ try:
     def section_abort(scene):
         set_project_range(START, PLATE_FRAMES)
         reset_shapes(scene.ctx)
-        ensure_source(scene.roto, scene.slow_gen)
+        yield from ensure_source(scene.roto, scene.slow_gen)
         set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]

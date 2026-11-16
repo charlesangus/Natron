@@ -677,8 +677,10 @@ public Q_SLOTS:
     /**
      * @brief resize() for a size the node's own content dictates: the top edge and the horizontal
      * centre stay put, so the node keeps lining up with its neighbours as its text grows or shrinks.
+     * A node with no explicit size (Node::hasSize()) is laid out from its default size, so it
+     * shrinks back when its content does; an explicitly sized node or a backdrop only grows.
      **/
-    void resizeToContent(int width, int height, bool adjustToTextSize, bool hadContentLayout);
+    void resizeToContent(bool adjustToTextSize, bool hadContentLayout);
 
     /*Updates the preview image, only if the project is in auto-preview mode*/
     void updatePreviewImage(double time);

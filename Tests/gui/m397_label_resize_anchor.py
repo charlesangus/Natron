@@ -57,14 +57,22 @@ try:
     def size_differs(node, size):
         return tuple(node.getSize()) != tuple(size)
 
-    def check_top_centre(label, before, after):
+    def check_top_centre(label, before, after, height_changes=True):
         bx, by, bw, bh = before
         ax, ay, aw, ah = after
         report("NOTE %s: %r -> %r" % (label, before, after))
-        check(aw != bw and ah != bh, "%s: width and height change (%gx%g -> %gx%g)" % (label, bw, bh, aw, ah))
+        if height_changes:
+            check(aw != bw and ah != bh, "%s: width and height change (%gx%g -> %gx%g)" % (label, bw, bh, aw, ah))
+        else:
+            check(aw != bw, "%s: the width changes (%gx%g -> %gx%g)" % (label, bw, bh, aw, ah))
         check(abs(ay - by) <= TOL, "%s: the top edge stays at y=%g (got %g)" % (label, by, ay))
         check(abs((ax + aw / 2.0) - (bx + bw / 2.0)) <= TOL,
               "%s: the horizontal centre stays at %g (got %g)" % (label, bx + bw / 2.0, ax + aw / 2.0))
+
+    def check_restored(label, original, got):
+        check(got[2:] == original[2:], "%s: the size returns to %r (got %r)" % (label, original[2:], got[2:]))
+        check(abs(got[0] - original[0]) <= TOL and abs(got[1] - original[1]) <= TOL,
+              "%s: the position returns to (%g, %g) (got (%g, %g))" % (label, original[0], original[1], got[0], got[1]))
 
     def check_top_left(label, before, after):
         report("NOTE %s: %r -> %r" % (label, before, after))
@@ -101,23 +109,29 @@ try:
         check_top_centre("a-label", original, labelled)
 
         gt.section("b-rename")
-        node.setLabel(LONG_NAME)
-        yield ("until", lambda: size_differs(node, labelled[2:]), REFRESH_TIMEOUT_S)
+        named = create("Blur", -400, 0)
+        gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
-        renamed = geometry(node)
-        check_top_centre("b-rename", labelled, renamed)
+        named_original = geometry(named)
+        named_original_name = named.getLabel()
+        named.setLabel(LONG_NAME)
+        yield ("until", lambda: size_differs(named, named_original[2:]), REFRESH_TIMEOUT_S)
+        yield ("sleep", SETTLE_MS)
+        renamed = geometry(named)
+        check_top_centre("b-rename", named_original, renamed, height_changes=False)
 
         gt.section("c-clear")
-        node.setLabel(original_name)
         label.set("")
-        yield ("until", lambda: not size_differs(node, original[2:]), REFRESH_TIMEOUT_S)
+        named.setLabel(named_original_name)
+        yield ("until", lambda: not size_differs(node, original[2:]) and not size_differs(named, named_original[2:]),
+               REFRESH_TIMEOUT_S)
         yield ("sleep", SETTLE_MS)
         cleared = geometry(node)
-        report("NOTE c-clear: %r -> %r" % (renamed, cleared))
-        check(cleared[2:] == original[2:], "c-clear: the size returns to %r (got %r)" % (original[2:], cleared[2:]))
-        check(abs(cleared[0] - original[0]) <= TOL and abs(cleared[1] - original[1]) <= TOL,
-              "c-clear: the position returns to (%g, %g) (got (%g, %g))"
-              % (original[0], original[1], cleared[0], cleared[1]))
+        report("NOTE c-clear label: %r -> %r" % (labelled, cleared))
+        check_restored("c-clear label", original, cleared)
+        named_cleared = geometry(named)
+        report("NOTE c-clear name: %r -> %r" % (renamed, named_cleared))
+        check_restored("c-clear name", named_original, named_cleared)
 
         gt.section("d-setsize")
         sized = create("Blur", 400, 0)
@@ -146,7 +160,7 @@ try:
         label.set(LONG_LABEL)
         yield ("until", lambda: size_differs(node, original[2:]), REFRESH_TIMEOUT_S)
         yield ("sleep", SETTLE_MS)
-        nodes = [node, sized, backdrop]
+        nodes = [node, named, sized, backdrop]
         saved = dict((n.getScriptName(), tuple(n.getPosition())) for n in nodes)
         report("NOTE saved positions %r" % (saved,))
         path = os.path.join(gt.OUT, "m397_label_resize_anchor.ntpz")

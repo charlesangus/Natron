@@ -1356,30 +1356,32 @@ NodeGui::removeSettingsPanel(NodeSettingsPanel* panel)
 void
 NodeGui::refreshSize()
 {
-    const QRectF bbox = bodyRect();
-
-    QString& label = _nodeLabel;
-    resizeToContent(bbox.width(), bbox.height(), !label.isEmpty(), _nameItemInputsSet);
+    resizeToContent(!_nodeLabel.isEmpty(), _nameItemInputsSet);
 }
 
 void
-NodeGui::resizeToContent(int width,
-                         int height,
-                         bool adjustToTextSize,
+NodeGui::resizeToContent(bool adjustToTextSize,
                          bool hadContentLayout)
 {
     const int oldWidth = getSize().width();
     const QPointF oldPos = pos();
+    NodePtr node = getNode();
 
+    const QRectF bbox = bodyRect();
+    int width = bbox.width();
+    int height = bbox.height();
+    if (node && !node->hasSize() && !mustFrameName()) {
+        if (_previewPixmap && _previewPixmap->isVisible()) {
+            getSizeWithPreview(&width, &height);
+        } else {
+            getInitialSize(&width, &height);
+        }
+    }
     resize(width, height, false, adjustToTextSize);
 
     // Before the first name layout the width is a placeholder, and a project load or node-tree
     // creation restores positions that were saved against the final size.
-    if (!hadContentLayout || oldWidth <= 0 || mustFrameName()) {
-        return;
-    }
-    NodePtr node = getNode();
-    if (!node) {
+    if (!hadContentLayout || oldWidth <= 0 || mustFrameName() || !node) {
         return;
     }
     AppInstancePtr app = node->getApp();
@@ -4529,8 +4531,7 @@ NodeGui::setNameItemHtmlNow(const QString& name,
     }
     _nameItem->adjustSize();
 
-    const QRectF bbox = bodyRect();
-    resizeToContent(bbox.width(), bbox.height(), !label.isEmpty(), hadContentLayout);
+    resizeToContent(!label.isEmpty(), hadContentLayout);
 } // setNameItemHtml
 
 void

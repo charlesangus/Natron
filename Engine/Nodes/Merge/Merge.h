@@ -66,7 +66,7 @@
 #define kNativeMergeAlphaPerLayer "perLayer"
 #define kNativeMergeAlphaPerChannel "perChannel"
 
-// Inputs: B, A, Mask, then A2..A64, Nuke's order.
+// Inputs: B, A, Mask, then A2..A64.
 #define kNativeMergeInputB 0
 #define kNativeMergeInputA 1
 #define kNativeMergeInputMask 2
@@ -119,11 +119,11 @@ struct NativeMergeOp {
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_NATIVE_MERGE,
         .label = "Merge",
-        .description = "Composites A over B with one of Nuke's operators, then A2 over the result, and so on. "
+        .description = "Composites A over B with one of the compositing operators, then A2 over the result, and so on. "
                        "Each layer of B the Layers list names, or every layer of B under All, is merged in place, "
                        "reading A's layer of the same name or one chosen A layer; every other layer of B passes "
                        "through. Each side's alpha is one channel, each layer's own alpha or a per-channel alpha "
-                       "layer. The operators are made HDR-safe where Nuke's clamp or jump outside 0 to 1.",
+                       "layer. The operators are made HDR-safe where their usual definitions clamp or jump outside 0 to 1.",
         .grouping = PLUGIN_GROUP_MERGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_NATIVE_MERGE,
         .minorVersion = 0,

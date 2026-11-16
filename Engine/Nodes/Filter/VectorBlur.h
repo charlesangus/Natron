@@ -95,7 +95,7 @@ inline constexpr NodeSpec kVectorBlurNodeSpec = {
 };
 
 inline constexpr ImagePipelineSpec kVectorBlurPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Custom,
 };

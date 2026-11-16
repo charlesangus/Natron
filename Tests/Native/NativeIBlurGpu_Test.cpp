@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -268,6 +269,24 @@ TEST_F(NativeIBlurGpuTest, DisconnectedMapMatchesTheCpu)
     ASSERT_TRUE(bool(source) && bool(iblur));
 
     expectParity(std::vector<NodePtr>({ iblur }), iblur, kIBlurTolerance, "disconnected Map");
+}
+
+// The blur reaches past the source on every side, which each edge mode reads its own way, with
+// the Map disconnected and connected.
+TEST_F(NativeIBlurGpuTest, EdgeModesMatchTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr map = makeParitySource();
+    NodePtr plain = makeIBlur(source, NodePtr(), 12.);
+    NodePtr mapped = makeIBlur(source, map, 9.);
+    ASSERT_TRUE(bool(source) && bool(map) && bool(plain) && bool(mapped));
+    ASSERT_TRUE(setKnobValues(mapped, kMapInputParamSizeAtBlack, { 3., 2. }));
+    for (const char* edgeMode : { "stretch", "black" }) {
+        ASSERT_TRUE(setKnobValue(plain, kEdgeModeParam, std::string(edgeMode)));
+        ASSERT_TRUE(setKnobValue(mapped, kEdgeModeParam, std::string(edgeMode)));
+        expectParity(std::vector<NodePtr>({ plain }), plain, kIBlurTolerance, std::string(edgeMode) + ", disconnected Map");
+        expectParity(std::vector<NodePtr>({ mapped }), mapped, kIBlurTolerance, std::string(edgeMode) + ", connected Map");
+    }
 }
 
 // A Map white over the right half only, outside its image on the left, which reads as a black

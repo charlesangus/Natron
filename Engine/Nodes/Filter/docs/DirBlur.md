@@ -4,7 +4,7 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| DirBlur (DirBlur) | resampling | `kDirBlurTolerance` = `ParityTolerance::make(0., 1e-4)` | GPU against CPU, every filter, with and without Clamp and Black outside: the GPU uses the CPU's matrices, factors and summation order, with two-float sample positions |
+| DirBlur (DirBlur) | resampling | `kDirBlurTolerance` = `ParityTolerance::make(0., 1e-4)` | GPU against CPU, every filter, with and without Clamp, under Black and Stretch: the GPU uses the CPU's matrices, factors and summation order, with two-float sample positions |
 
 Smears the image along a direction, around a centre or towards a centre. It replaces the OFX
 DirBlur (`net.sf.openfx.DirBlur`). Rays from a transformed copy of the image are the GodRays node
@@ -41,7 +41,7 @@ Length 0 with no Pixel Offset is the identity, whatever the tints or Max.
 
 ## Resampling
 
-Filter, Clamp, Black outside, Lobes, Bicubic B and Bicubic C are the Transform node's knobs, with
+Filter, Clamp, Lobes, Bicubic B and Bicubic C are the Transform node's knobs, with
 its filter set and semantics; see [Transform](../../Transform/docs/Transform.md). The CPU uses
 `Resampler::resampleRow` per copy, and a minified copy widens the filter's kernel as Transform does.
 
@@ -50,8 +50,9 @@ its filter set and semantics; see [Transform](../../Transform/docs/Transform.md)
   Lanczos filters, Sinc and Bicubic). It keeps the filter's overshoot within the range of the
   pixels the filter reads.
 - **Lobes** is shown only for Sinc, **Bicubic B** and **Bicubic C** only for Bicubic.
-- **Black outside** (default on): a copy reads black beyond the Source's image, and the region of
-  definition grows by one pixel. Off, a copy reads the Source's edge pixels, extended outwards, and
+- **Edge Mode** (`edgeMode`, default Input): what a copy reads beyond the Source's image. Input
+  takes the Source's own edge mode. Under Black a copy reads black there, and the region of
+  definition grows by one pixel. Under Stretch a copy reads the Source's edge pixels, extended outwards, and
   the region of definition is the union of the copies' regions, not grown. To keep a tile equal to
   the full frame, the Source's region of interest is then clamped into the Source's region of
   definition instead of being cut by it. Wherever a read goes past the region of definition, the
@@ -60,7 +61,7 @@ its filter set and semantics; see [Transform](../../Transform/docs/Transform.md)
 ## Region
 
 The region of definition is the union of the Source's region of definition carried by every copy's
-forward matrix, grown by a pixel with Black outside, plus the Source's own region under a mask or a
+forward matrix, grown by a pixel under Black, plus the Source's own region under a mask or a
 mix below 1. Each input is read over the window's preimage under every copy, grown by the
 filter's radius, widened by a minifying copy's scale (`DirBlur::sourceRegion`). The CPU
 region of interest and the GPU input region are the same region in canonical coordinates. Each copy
@@ -89,7 +90,7 @@ shown; the others are hidden, and come back with their values when the Mode chan
 | `pixelOffset` | Pixel Offset | 0 | Zoom only: moves every copy this many pixels further along the blur at the corners |
 | `filter` | Filter | Cubic | The Transform node's filters |
 | `clamp` | Clamp | off | Clamp the filter's overshoot |
-| `black_outside` | Black outside | on | Read black beyond the Source; off repeats its edge pixels |
+| `edgeMode` | Edge Mode | Input | What a copy reads beyond the Source: its own mode (Input), black (Black) or its edge pixels (Stretch) |
 | `lobes` | Lobes | 4 | Sinc's lobe count and radius, 2 to 8 |
 | `bicubicB` | Bicubic B | 1/3 | Bicubic's B; higher blurs more |
 | `bicubicC` | Bicubic C | 1/3 | Bicubic's C; higher sharpens more |
@@ -130,5 +131,5 @@ The CPU properties are in `Tests/Native/NativeDirBlur_Test.cpp`. They cover the 
 the visibility of the knobs in each mode, the sample positions and weights, the ramps, each mode's
 smear, flat fields, target, pixel offset and Max, edge repeat and clamp, tiles against the full frame (every
 mode, filters, Clamp and edge repeat) and legacy against task-graph renders. The GPU parity
-(every filter in every mode, with and without Black outside, mask, mix, channels and a
+(every filter in every mode, under Black and Stretch, mask, mix, channels and a
 fused Grade chain) is in `Tests/Native/NativeDirBlurGpu_Test.cpp`.

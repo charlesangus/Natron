@@ -64,6 +64,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/OCIO/ModelColourspace.h"
 #include "Engine/Nodes/Transform/NeuralUpscale.h"
@@ -172,6 +173,8 @@ protected:
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(pair.native && effectOf(pair.native));
+        // The expectations resample the source under Stretch, which the node reads under Input.
+        setBlackOutside(pair.source, false);
 
         return pair;
     }
@@ -360,6 +363,7 @@ TEST_F(NativeNeuralUpscaleTest, KnobsListBothFactorsAndLabelsMatchScriptNames)
         { kModelColourspaceParam, "Model Colourspace" },
         { kNeuralUpscaleParamAlphaFilter, "Alpha Filter" },
         { kNeuralUpscaleParamTileSize, "Tile Size" },
+        { kEdgeModeParam, "Edge Mode" },
     };
     for (const std::pair<const char*, const char*>& expected : labels) {
         KnobIPtr knob = pair.native->getKnobByName(expected.first);
@@ -565,7 +569,7 @@ TEST_F(NativeNeuralUpscaleTest, AlphaFollowsTheChosenFilter)
         for (int y = window.y1; y < window.y2; ++y) {
             for (int x = window.x1; x < window.x2; ++x) {
                 float expected[4];
-                ASSERT_TRUE(Resampler::interpolate(Resampler::eFilterCubic, false, (x + 0.5) / f, (y + 0.5) / f, image, false, expected));
+                ASSERT_TRUE(Resampler::interpolate(Resampler::eFilterCubic, false, (x + 0.5) / f, (y + 0.5) / f, image, EdgeMode::Stretch, expected));
                 for (int c = 0; c < 4; ++c) {
                     ASSERT_NEAR(expected[c], planeValue(cubic, x, y, c), 1e-5) << f << "x " << x << "," << y << " c=" << c;
                 }
@@ -593,6 +597,49 @@ TEST_F(NativeNeuralUpscaleTest, AlphaFollowsTheChosenFilter)
         EXPECT_LT(lanczosMin, -1e-3) << f;
         EXPECT_GT(lanczosMax, 1. + 1e-3) << f;
         EXPECT_GT(difference, 1e-2) << f;
+    }
+}
+
+// A small Source upscaled: Stretch repeats its edge pixels into the filter's reach, Black reads
+// zero there.
+TEST_F(NativeNeuralUpscaleTest, EdgeModeDecidesWhatTheFilterReadsPastTheSource)
+{
+    ParityPair pair = makePair();
+    ASSERT_TRUE(bool(pair.native));
+    processChannels(pair.native, { "A" });
+    ASSERT_TRUE(setKnobOnBoth(pair, kNeuralUpscaleParamAlphaFilter, kNeuralUpscaleParamAlphaFilterCubic));
+
+    const RectI sourceWindow = paritySourceWindow(pair.source, kTime, 0);
+    RenderedPlane source;
+    ASSERT_TRUE(renderRGBA(pair.source, 0, sourceWindow, &source));
+    const Resampler::SourceImage image(source.pixels.data(), source.window, 4);
+
+    for (int f : { 2, 4 }) {
+        ASSERT_TRUE(setKnobValue(pair.native, kNeuralUpscaleParamScale, (f == 2) ? kNeuralUpscaleParamScale2x : kNeuralUpscaleParamScale4x));
+        const RectI window = scaled(sourceWindow, f);
+        RenderedPlane planes[2];
+        const std::pair<const char*, EdgeMode> modes[] = { { "black", EdgeMode::Black }, { "stretch", EdgeMode::Stretch } };
+        for (int m = 0; m < 2; ++m) {
+            ASSERT_TRUE(setKnobValue(pair.native, kEdgeModeParam, std::string(modes[m].first)));
+            ASSERT_TRUE(renderRGBA(pair.native, 0, window, &planes[m])) << modes[m].first;
+            for (int y = window.y1; y < window.y2; ++y) {
+                for (int x = window.x1; x < window.x2; ++x) {
+                    float expected[4];
+                    (void)Resampler::interpolate(Resampler::eFilterCubic, false, (x + 0.5) / f, (y + 0.5) / f, image, modes[m].second, expected);
+                    for (int c = 0; c < 4; ++c) {
+                        ASSERT_NEAR(expected[c], planeValue(planes[m], x, y, c), 1e-5) << modes[m].first << " " << f << "x " << x << "," << y << " c=" << c;
+                    }
+                }
+            }
+        }
+        // The outermost output pixels reach past the Source, so the two modes part there.
+        double edgeDifference = 0.;
+        for (int x = window.x1; x < window.x2; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                edgeDifference = std::max(edgeDifference, (double)std::fabs(planeValue(planes[0], x, window.y1, c) - planeValue(planes[1], x, window.y1, c)));
+            }
+        }
+        EXPECT_GT(edgeDifference, 1e-3) << f;
     }
 }
 
@@ -664,7 +711,7 @@ TEST_F(NativeNeuralUpscaleTest, RealModelBeatsCubicInPsnr)
     for (int y = original.y1; y < original.y2; ++y) {
         for (int x = original.x1; x < original.x2; ++x) {
             float cubic[4];
-            ASSERT_TRUE(Resampler::interpolate(Resampler::eFilterCubic, false, (x + 0.5) / 2., (y + 0.5) / 2., image, false, cubic));
+            ASSERT_TRUE(Resampler::interpolate(Resampler::eFilterCubic, false, (x + 0.5) / 2., (y + 0.5) / 2., image, EdgeMode::Stretch, cubic));
             for (int c = 0; c < 3; ++c) {
                 const double truth = planeValue(full, x, y, c);
                 modelError += std::pow(planeValue(upscaled, x, y, c) - truth, 2.);

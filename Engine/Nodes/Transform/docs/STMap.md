@@ -11,8 +11,9 @@ format. A pixel centre maps to itself when U = (x + 0.5) / width.
 The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic C controls; see [Transform](Transform.md).
 
 The output format is the UV input's. `formatFrom` chooses whether the output covers the UV format
-or the UV region of definition. A UV channel that the input lacks, or None, reads 0, and so does UV outside
-its image. A non-finite coordinate reads black, except under Clamp wrap, where an infinity clamps
+or the UV region of definition. A UV channel that the input lacks, or None, reads 0. Outside its image the UV
+follows its own edge mode: under Stretch it repeats its nearest edge pixel, UV Alpha included, and under
+Black it reads 0. A non-finite coordinate reads black, except under Clamp wrap, where an infinity clamps
 to the edge. With UV or Source disconnected, the output is black.
 
 Filtering uses the Jacobian of the map, taken from central differences of UV between neighbouring
@@ -33,8 +34,8 @@ Map shows the Source untouched. With no Map connected the output is bit for bit 
 node's without the input.
 
 - The Map is sampled in output space, at the pixel being written, as the UV is. Outside its image
-  the Map reads as a black pixel, inverted and remapped like any other (the pixel stays in place unless
-  Invert Map is on).
+  the Map follows its own edge mode: under Stretch it repeats its nearest edge pixel, under Black it reads
+  as a black pixel, inverted and remapped like any other (the pixel stays in place unless Invert Map is on).
 - The Jacobian takes the Map's gradient with the UV's, so the Map is read one pixel past the
   render window. A hard Map edge between black and white tears the image along it when the UV
   moves pixels far; soften the Map to bend the image instead.

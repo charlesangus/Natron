@@ -927,14 +927,14 @@ autoScale(const lfLens& lens,
     return modifier.GetAutoScale(request.reverse);
 }
 
-namespace {
-    bool
-    answered(float x,
-             float y)
-    {
-        return std::isfinite(x) && std::isfinite(y) && (std::abs(x) < kNoAnswer) && (std::abs(y) < kNoAnswer);
-    }
+bool
+answered(float x,
+         float y)
+{
+    return std::isfinite(x) && std::isfinite(y) && (std::abs(x) < kNoAnswer) && (std::abs(y) < kNoAnswer);
+}
 
+namespace {
     // Solves forward(u) = target for one channel by fixed-point iteration, from guess. Good enough
     // for a bounding box because a lens map stays close to the identity.
     void

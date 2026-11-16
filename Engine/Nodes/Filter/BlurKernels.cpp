@@ -27,8 +27,13 @@
 #include "BlurKernels.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <limits>
+#include <map>
+#include <mutex>
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuBlur.h"
@@ -64,7 +69,7 @@ LineFilter::LineFilter()
 LineFilter
 LineFilter::deriche(float sigma,
                     unsigned int order,
-                    bool neumann)
+                    EdgeMode lineEnds)
 {
     LineFilter f;
     const double nsigma = std::max(0.f, sigma);
@@ -102,7 +107,7 @@ LineFilter::deriche(float sigma,
     }
     f._kind = eKindDeriche;
     f._order = order;
-    f._neumann = neumann;
+    f._neumann = (lineEnds == EdgeMode::Stretch);
     f._a0 = a0;
     f._a1 = a1;
     f._a2 = a2;
@@ -118,11 +123,11 @@ LineFilter::deriche(float sigma,
 LineFilter
 LineFilter::vanVliet(float sigma,
                      unsigned int order,
-                     bool neumann)
+                     EdgeMode lineEnds)
 {
     const float nsigma = std::max(0.f, sigma);
     if (nsigma < 0.5f) {
-        return deriche(nsigma, order, neumann);
+        return deriche(nsigma, order, lineEnds);
     }
     LineFilter f;
     if (order > 3) {
@@ -137,7 +142,7 @@ LineFilter::vanVliet(float sigma,
                  b2 = qsq * (m0 + 2 * m1 + 3 * q) / scale, b3 = -qsq * q / scale, B = (m0 * (m1sq + m2sq)) / scale;
     f._kind = eKindVanVliet;
     f._order = order;
-    f._neumann = neumann;
+    f._neumann = (lineEnds == EdgeMode::Stretch);
     f._filter[0] = B;
     f._filter[1] = -b1;
     f._filter[2] = -b2;
@@ -162,7 +167,7 @@ LineFilter::vanVliet(float sigma,
 LineFilter
 LineFilter::box(float boxSize,
                 int order,
-                bool neumann,
+                EdgeMode lineEnds,
                 unsigned int iterations)
 {
     LineFilter f;
@@ -176,7 +181,7 @@ LineFilter::box(float boxSize,
     }
     f._kind = eKindBox;
     f._order = order < 0 ? 0u : static_cast<unsigned int>(order);
-    f._neumann = neumann;
+    f._neumann = (lineEnds == EdgeMode::Stretch);
     f._boxSize = nboxSize;
     f._iterations = iterations;
 
@@ -219,7 +224,7 @@ LineFilter::firGaussianWeights(double sigma)
 LineFilter
 LineFilter::firGaussian(double sigma,
                         unsigned int order,
-                        bool neumann)
+                        EdgeMode lineEnds)
 {
     LineFilter f;
     if (order > 2) {
@@ -231,7 +236,7 @@ LineFilter::firGaussian(double sigma,
     }
     f._kind = eKindFIRGaussian;
     f._order = order;
-    f._neumann = neumann;
+    f._neumann = (lineEnds == EdgeMode::Stretch);
     f._radius = radius;
     f._weights = firGaussianWeights(sigma);
 
@@ -242,21 +247,21 @@ LineFilter
 LineFilter::forFilter(Filter filter,
                       float size,
                       unsigned int order,
-                      bool neumann)
+                      EdgeMode lineEnds)
 {
     switch (filter) {
     case eFilterQuasiGaussian:
-        return deriche(size, order, neumann);
+        return deriche(size, order, lineEnds);
     case eFilterGaussian:
-        return vanVliet(size, order, neumann);
+        return vanVliet(size, order, lineEnds);
     case eFilterBox:
-        return box(size, static_cast<int>(order), neumann, 1);
+        return box(size, static_cast<int>(order), lineEnds, 1);
     case eFilterTriangle:
-        return box(size, static_cast<int>(order), neumann, 2);
+        return box(size, static_cast<int>(order), lineEnds, 2);
     case eFilterQuadratic:
-        return box(size, static_cast<int>(order), neumann, 3);
+        return box(size, static_cast<int>(order), lineEnds, 3);
     case eFilterFIRGaussian:
-        return firGaussian(size, order, neumann);
+        return firGaussian(size, order, lineEnds);
     }
 
     return LineFilter();
@@ -322,6 +327,77 @@ LineFilter::apply(float* data,
     LineScratch scratch;
 
     apply(data, n, stride, scratch);
+}
+
+int
+LineFilter::recursiveReach() const
+{
+    if ((_kind != eKindDeriche) && (_kind != eKindVanVliet)) {
+        return 0;
+    }
+    // The simulated line can reach a million floats; plans rebuild on every parameter change, so
+    // the result is kept per exact coefficient set. The line ends do not affect it.
+    using Key = std::array<std::uint64_t, 14>;
+    Key key;
+    {
+        const double values[12] = { _a0, _a1, _a2, _a3, _b1, _b2, _coefp, _coefn, _filter[0], _filter[1], _filter[2], _filter[3] };
+        for (int i = 0; i < 12; ++i) {
+            std::memcpy(&key[i], &values[i], sizeof(std::uint64_t));
+        }
+        key[12] = (std::uint64_t)_kind;
+        key[13] = (std::uint64_t)_order;
+    }
+    static std::mutex cacheMutex;
+    static std::map<Key, int> cache;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        const auto it = cache.find(key);
+        if (it != cache.end()) {
+            return it->second;
+        }
+    }
+    const int reach = simulateRecursiveReach();
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        cache.emplace(key, reach);
+    }
+
+    return reach;
+}
+
+int
+LineFilter::simulateRecursiveReach() const
+{
+    const double eps = std::ldexp(1., -24);
+    LineFilter dirichlet(*this);
+    dirichlet._neumann = false;
+    LineScratch scratch;
+    std::vector<float> line;
+    // The impulse response on a line long enough that its own ends leave the measured tail
+    // untouched: the line is lengthened until the reach found is within its inner half.
+    for (int half = 32; half < (std::numeric_limits<int>::max() / 4); half *= 2) {
+        line.assign((std::size_t)(2 * half + 1), 0.f);
+        line[half] = 1.f;
+        dirichlet.apply(line.data(), (int)line.size(), 1, scratch);
+        double total = 0.;
+        for (float v : line) {
+            total += std::fabs((double)v);
+        }
+        double tail = 0.;
+        int reach = half;
+        for (; reach > 0; --reach) {
+            const double next = tail + std::fabs((double)line[half - reach]) + std::fabs((double)line[half + reach]);
+            if (next >= eps * total) {
+                break;
+            }
+            tail = next;
+        }
+        if (reach <= half / 2) {
+            return reach;
+        }
+    }
+
+    return std::numeric_limits<int>::max() / 4;
 }
 
 void
@@ -782,7 +858,7 @@ toGpuLineFilter(const LineFilter& filter)
         return f;
     }
     f.order = filter.order();
-    f.neumann = filter.neumann();
+    f.lineEnds = filter.lineEnds();
 
     return f;
 }
@@ -794,9 +870,9 @@ deriche(float* data,
         std::ptrdiff_t stride,
         float sigma,
         unsigned int order,
-        bool neumann)
+        EdgeMode lineEnds)
 {
-    LineFilter::deriche(sigma, order, neumann).apply(data, n, stride);
+    LineFilter::deriche(sigma, order, lineEnds).apply(data, n, stride);
 }
 
 void
@@ -805,9 +881,9 @@ vanVliet(float* data,
          std::ptrdiff_t stride,
          float sigma,
          unsigned int order,
-         bool neumann)
+         EdgeMode lineEnds)
 {
-    LineFilter::vanVliet(sigma, order, neumann).apply(data, n, stride);
+    LineFilter::vanVliet(sigma, order, lineEnds).apply(data, n, stride);
 }
 
 void
@@ -816,10 +892,10 @@ boxFilter(float* data,
           std::ptrdiff_t stride,
           float boxSize,
           int order,
-          bool neumann,
+          EdgeMode lineEnds,
           unsigned int iterations)
 {
-    LineFilter::box(boxSize, order, neumann, iterations).apply(data, n, stride);
+    LineFilter::box(boxSize, order, lineEnds, iterations).apply(data, n, stride);
 }
 } // namespace BlurKernels
 

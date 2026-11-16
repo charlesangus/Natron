@@ -54,6 +54,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/TransformMath.h"
@@ -270,7 +271,7 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
         kResamplerParamBicubicB,
         kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
-        kResamplerParamFilterBlackOutside,
+        kEdgeModeParam,
         kSplineWarpParamBBox,
         kSplineWarpParamLayerAmount,
         kSplineWarpParamLinkAmount,
@@ -293,9 +294,7 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     KnobDoublePtr fieldResolution = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kSplineWarpParamFieldResolution));
     ASSERT_TRUE(bool(fieldResolution));
     EXPECT_EQ("Field Resolution", fieldResolution->getLabel());
-    KnobBoolPtr blackOutside = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kResamplerParamFilterBlackOutside));
-    ASSERT_TRUE(bool(blackOutside));
-    EXPECT_TRUE(blackOutside->getValue());
+    EXPECT_FALSE(bool(node->getKnobByName(kResamplerParamFilterBlackOutside)));
     KnobChoicePtr bbox = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kSplineWarpParamBBox));
     ASSERT_TRUE(bool(bbox));
     EXPECT_EQ(0, bbox->getValue());
@@ -353,7 +352,7 @@ TEST_F(NativeSplineWarpTest, KnobsAndDefaults)
     EXPECT_FALSE(bool(node->getKnobByName("RotoTransformInteractive"))) << "the global preference sets how the transform handle updates";
     for (const char* name : { kSplineWarpParamSolver, kSplineWarpParamSmoothness, kSplineWarpParamCurveResolution,
                               kSplineWarpParamBoundaryCurveResolution, kSplineWarpParamFieldResolution, kResamplerParamFilterType,
-                              kResamplerParamFilterClamp, kResamplerParamFilterBlackOutside, kSplineWarpParamBBox,
+                              kResamplerParamFilterClamp, kSplineWarpParamBBox,
                               kSplineWarpParamMotionBlur, kSplineWarpParamShutter, kResamplerParamShutterOffset,
                               kResamplerParamShutterCustomOffset }) {
         KnobIPtr knob = node->getKnobByName(name);
@@ -605,7 +604,6 @@ TEST_F(NativeSplineWarpTest, RoICoversWhatTheWindowReads)
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { x1, y1 }));
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { std::ceil(roi.x2) - x1, std::ceil(roi.y2) - y1 }));
     ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
-    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 0. }));
 
     const RectI all(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane whole, part;
@@ -652,7 +650,6 @@ TEST_F(NativeSplineWarpTest, ConcatenatesAPrecedingTransform)
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 0., 0. }));
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { (double)kParitySourceWidth, (double)kParitySourceHeight }));
     ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
-    ASSERT_TRUE(setKnobValues(crop, kCropParamBlackOutside, { 0. }));
     NodePtr warp = makeSplineWarp(transform);
     NodePtr twice = makeSplineWarp(crop);
     ASSERT_TRUE(warp && twice);
@@ -887,6 +884,7 @@ TEST_F(NativeSplineWarpTest, CropToFormat)
     NodePtr warp = makeSplineWarp(source);
     ASSERT_TRUE(source && warp);
     setParitySourceOrigin(source, -8, -8);
+    setBlackOutside(source, true);
     ASSERT_TRUE(setKnobValues(warp, kResamplerParamFilterType, { (double)Resampler::eFilterImpulse }));
     ASSERT_TRUE(bool(linkQuad(contextOf(warp), 20., 15., 16., 3., 0.)));
     expectRectNear(RectD(-8., -8., 56., 40.), rodOf(source), "source");

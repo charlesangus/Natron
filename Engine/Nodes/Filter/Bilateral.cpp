@@ -948,7 +948,8 @@ Bilateral::passes(const BilateralParams& params,
     const float eps = (float)(params.rangeSigma * params.rangeSigma);
     const bool guidedMode = (params.mode == eBilateralModeGuided);
 
-    list.boundary = PassExec::Boundary::Zero;
+    list.edgeMode = EdgeMode::Black;
+    list.clipToRegion = true;
     if (guided) {
         list.passes.push_back(Pass::point(false, guideKeyWorker(guide)));
     }

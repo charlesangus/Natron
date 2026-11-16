@@ -945,7 +945,7 @@ public:
         _requestRead = requestRead;
     }
 
-    bool readsWithoutPrim() const override
+    bool readsWithoutPrim(const NodePtr& /*node*/) const override
     {
         return _modeValue == eLayerModeNodeContribution;
     }
@@ -1136,7 +1136,8 @@ ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& s
                                                double framesPerSecond,
                                                const std::atomic<U64>& latestGeneration,
                                                U64 generation,
-                                               const NodePtr& node)
+                                               const NodePtr& node,
+                                               const ViewerInstancePtr& viewer)
     : _source(source)
     , _path(path)
     , _property(property)
@@ -1145,6 +1146,7 @@ ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& s
     , _latestGeneration(latestGeneration)
     , _generation(generation)
     , _node(node)
+    , _viewer(viewer)
 {
 }
 
@@ -1164,6 +1166,12 @@ const NodePtr&
 ScenePrimInspectorRead::getNode() const
 {
     return _node;
+}
+
+const ViewerInstancePtr&
+ScenePrimInspectorRead::getViewer() const
+{
+    return _viewer;
 }
 
 const SceneGraphStageSourcePtr&
@@ -1221,6 +1229,7 @@ struct ScenePrimInspector::Implementation {
         double frame = 0.;
         double framesPerSecond = 24.;
         NodePtr node;
+        ViewerInstancePtr viewer;
         ScenePrimInspectorTab* tab = nullptr;
         U64 generation = 0;
     };
@@ -1234,6 +1243,7 @@ struct ScenePrimInspector::Implementation {
     SceneGraphStageSourcePtr source;
     QString path;
     NodePtr node;
+    ViewerInstanceWPtr viewer;
     // The property the Opinions tab lists the specs of, besides the prim's.
     QString property;
     std::function<void(const NodePtr&)> openNode;
@@ -1320,7 +1330,7 @@ struct ScenePrimInspector::Implementation {
 
     bool readUnderWayIsFor(const ScenePrimInspectorTab* tab) const
     {
-        return running.tab && (running.tab == tab) && (running.source == source) && (running.path == path) && (running.property == property) && (running.node == node) && (runningEditCount == source->getEditCount());
+        return running.tab && (running.tab == tab) && (running.source == source) && (running.path == path) && (running.property == property) && (running.node == node) && (running.viewer == viewer.lock()) && (runningEditCount == source->getEditCount());
     }
 
     void startRead()
@@ -1345,7 +1355,7 @@ struct ScenePrimInspector::Implementation {
         }
         readOwed = false;
         const int current = tabWidget->currentIndex();
-        if (!source || (current < 0) || (path.isEmpty() && !tabs[current]->readsWithoutPrim())) {
+        if (!source || (current < 0) || (path.isEmpty() && !tabs[current]->readsWithoutPrim(node))) {
             busy = false;
             greyTimer.stop();
             for (const std::unique_ptr<ScenePrimInspectorTab>& tab : tabs) {
@@ -1367,6 +1377,7 @@ struct ScenePrimInspector::Implementation {
             request.source = source;
             request.path = path;
             request.node = node;
+            request.viewer = viewer.lock();
             request.property = property;
             request.frame = frame;
             request.framesPerSecond = framesPerSecond;
@@ -1425,11 +1436,12 @@ struct ScenePrimInspector::Implementation {
             }
             std::function<void()> show;
             if (next.generation == generation) {
-                const ScenePrimInspectorRead read(next.source, next.path, next.property, next.frame, next.framesPerSecond, generation, next.generation, next.node);
+                const ScenePrimInspectorRead read(next.source, next.path, next.property, next.frame, next.framesPerSecond, generation, next.generation, next.node, next.viewer);
                 show = next.tab->read(read);
             }
             next.source.reset();
             next.node.reset();
+            next.viewer.reset();
             const U64 readGeneration = next.generation;
             const QString readPath = next.path;
             QMetaObject::invokeMethod(inspector, [this, readGeneration, readPath, show]() { onReadEnded(readGeneration, readPath, show); }, Qt::QueuedConnection);
@@ -1525,9 +1537,11 @@ ScenePrimInspector::setNodeOpener(const std::function<void(const NodePtr& node)>
 }
 
 void
-ScenePrimInspector::setNode(const NodePtr& node)
+ScenePrimInspector::setNode(const NodePtr& node,
+                            const ViewerInstancePtr& viewer)
 {
     _imp->node = node;
+    _imp->viewer = viewer;
 }
 
 void

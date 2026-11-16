@@ -55,13 +55,17 @@ public:
                            double framesPerSecond,
                            const std::atomic<U64>& latestGeneration,
                            U64 generation,
-                           const NodePtr& node);
+                           const NodePtr& node,
+                           const ViewerInstancePtr& viewer);
 
     const QString& getPath() const;
 
     const QString& getProperty() const;
 
     const NodePtr& getNode() const;
+
+    // The viewer whose 3D view shows the node, null when none does.
+    const ViewerInstancePtr& getViewer() const;
 
     const SceneGraphStageSourcePtr& getSource() const;
 
@@ -86,6 +90,7 @@ private:
     const std::atomic<U64>& _latestGeneration;
     U64 _generation;
     const NodePtr& _node;
+    const ViewerInstancePtr& _viewer;
 };
 
 /**
@@ -119,8 +124,8 @@ public:
     // Forgets the selected row, whose prim is no longer the one shown. Main thread.
     virtual void clearSelection() { }
 
-    // Whether a read needs no prim, so an empty path leaves it reading. Main thread.
-    virtual bool readsWithoutPrim() const { return false; }
+    // Whether a read of node's scene needs no prim, so an empty path leaves it reading. Main thread.
+    virtual bool readsWithoutPrim(const NodePtr& /*node*/) const { return false; }
 
     // Whether what a read returns varies with the frame. Main thread.
     virtual bool readsAtFrame() const { return true; }
@@ -138,7 +143,8 @@ void openScenePrimFullValue(QWidget* parent,
  * row naming the node or file that authored it. The Opinions tab lists the specs behind the prim
  * and behind the attribute or relationship last selected on it, strongest first. The Layer tab shows
  * the shown node's own layers as USDA, or the selected prim's composed definition. The Spreadsheet
- * tab lists the prim's points, vertices, primitives and detail, one column per component. Reads run on a worker; a new prim cancels the read
+ * tab lists the prim's points, vertices, primitives and detail, one column per component, or, for a node
+ * that puts out geometry, the whole of that geometry whichever prim is selected. Reads run on a worker; a new prim cancels the read
  * under way, and while a read has not finished, for instance with the stage lock busy with a load,
  * the last result stays up, greyed. A new frame lets the read under way finish, and a tab that varies
  * with the frame then reads the latest one. Nothing is read while the inspector is hidden.
@@ -174,8 +180,10 @@ public:
 
     void addTab(std::unique_ptr<ScenePrimInspectorTab> tab);
 
-    // The node whose scene the prim belongs to. Takes effect with the next setPrim().
-    void setNode(const NodePtr& node);
+    // The node whose scene the prim belongs to, and the viewer whose 3D view shows that node, null
+    // when none does. Takes effect with the next setPrim().
+    void setNode(const NodePtr& node,
+                 const ViewerInstancePtr& viewer);
 
     // Called on the main thread when a row naming a node is double-clicked.
     void setNodeOpener(const std::function<void(const NodePtr& node)>& openNode);

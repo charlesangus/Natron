@@ -26,8 +26,10 @@
 #include "Gui/GeoSpreadsheet.h"
 
 #include <atomic>
+#include <exception>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <QtCore/QEvent>
 #include <QtCore/QLocale>
@@ -44,8 +46,14 @@
 #include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
+#include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePrimElements.h"
+#include "Engine/TLSHolder.h"
+#include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 #include "Gui/ScenePrimInspector.h"
 
 NATRON_NAMESPACE_ENTER
@@ -103,8 +111,16 @@ public:
         return _widget;
     }
 
+    bool readsWithoutPrim(const NodePtr& node) const override
+    {
+        return putsOutGeometry(node);
+    }
+
     std::function<void()> read(const ScenePrimInspectorRead& read) override
     {
+        if (putsOutGeometry(read.getNode())) {
+            return readGeometry(read);
+        }
         const ScenePrimElements elements = SceneOps::readPrimElements(
             [&read](const std::function<void(const SceneStage* stage)>& readOne) { return read.readStage(readOne); },
             read.getPath().toStdString(),
@@ -151,6 +167,51 @@ public:
     }
 
 private:
+    static bool putsOutGeometry(const NodePtr& node)
+    {
+        const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+        return effect && node->isActivated() && effect->producesGeometryData();
+    }
+
+    // The node's whole detail: a prim selected in its scene, one of the layer the viewer made of
+    // it, narrows nothing.
+    std::function<void()> readGeometry(const ScenePrimInspectorRead& read)
+    {
+        GeoDetailConstPtr detail;
+        const ViewerInstancePtr& viewer = read.getViewer();
+
+        // The viewer's own copy, when it has one, numbers the elements as its 3D view picks them.
+        if (!viewer || !viewer->getShownGeometry(0, &detail, nullptr) || !detail) {
+            detail.reset();
+            const EffectInstancePtr effect = read.getNode()->getEffectInstance();
+            std::string error;
+            EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+            try {
+                code = effect->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(read.getFrame(), ViewIdx(0)), &detail, &error);
+            } catch (const std::exception& e) {
+                error = e.what();
+            } catch (...) {
+            }
+            appPTR->getAppTLS()->cleanupTLSForThread();
+            if (read.isCancelled()) {
+                return std::function<void()>();
+            }
+            if ((code != EffectInstance::eRenderRoIRetCodeOk) || !detail) {
+                const QString text = error.empty() ? GeoSpreadsheetWidget::tr("The geometry could not be evaluated")
+                                                   : GeoSpreadsheetWidget::tr("The geometry could not be evaluated: %1").arg(QString::fromStdString(error));
+
+                return [this, text]() { _widget->showMessage(text); };
+            }
+        }
+        if (read.isCancelled()) {
+            return std::function<void()>();
+        }
+        const GeoSpreadsheetModel::SourcePtr source = std::make_shared<GeoDetailSpreadsheetSource>(detail);
+
+        return [this, source]() { _widget->setSnapshot(source); };
+    }
+
     GeoSpreadsheetWidget* _widget;
 };
 
@@ -215,10 +276,23 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
 
 GeoSpreadsheetWidget::~GeoSpreadsheetWidget() = default;
 
+QStringList
+GeoSpreadsheetWidget::columnNames() const
+{
+    QStringList names;
+
+    for (int c = 0; c < _model->columnCount(); ++c) {
+        names << _model->headerData(c, Qt::Horizontal).toString();
+    }
+
+    return names;
+}
+
 void
 GeoSpreadsheetWidget::setSnapshot(const GeoSpreadsheetModel::SourcePtr& source)
 {
-    GeoAttribClassEnum cls = _model->attribClass();
+    const GeoAttribClassEnum shownClass = _model->attribClass();
+    GeoAttribClassEnum cls = shownClass;
 
     if (source && (source->rowCount(cls) == 0)) {
         for (int c = 0; c < kGeoAttribClassCount; ++c) {
@@ -228,11 +302,25 @@ GeoSpreadsheetWidget::setSnapshot(const GeoSpreadsheetModel::SourcePtr& source)
             }
         }
     }
+    // A new frame of the same geometry keeps the widths, measured or set by the user: the reset
+    // would put every column back to its default width.
+    const bool mayKeepWidths = _model->source() && source && (cls == shownClass) && !_metricsOwed;
+    const QStringList names = mayKeepWidths ? columnNames() : QStringList();
+    std::vector<int> widths;
+    for (int c = 0; c < names.size(); ++c) {
+        widths.push_back(_table->columnWidth(c));
+    }
     _model->setSnapshot(source, cls);
     _message->clear();
     _stack->setCurrentWidget(_table);
     updateClassBar();
-    updateMetrics();
+    if (mayKeepWidths && (columnNames() == names)) {
+        for (int c = 0; c < names.size(); ++c) {
+            _table->setColumnWidth(c, widths[(std::size_t)c]);
+        }
+    } else {
+        updateMetrics();
+    }
 }
 
 void

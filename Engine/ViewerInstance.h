@@ -474,6 +474,14 @@ public:
     bool showGeometryFrame(int textureIndex, int frame);
 
     /**
+     * @brief The geometry the viewer's copy for the given texture's input is served from, so element
+     * numbers match what the 3D view picks, and in *frame the frame the 3D view last read it at.
+     * False when that input shows no geometry or the 3D view has not read any yet. Either pointer
+     * may be null. MT-safe.
+     **/
+    bool getShownGeometry(int textureIndex, GeoDetailConstPtr* detail, int* frame) const;
+
+    /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
      * first (see Node::getNodesWithPersistentMessageUpstream()).
      **/

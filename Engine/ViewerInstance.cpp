@@ -5267,6 +5267,30 @@ ViewerInstance::showGeometryFrame(int textureIndex,
     return layer && layer->showFrame(frame);
 }
 
+bool
+ViewerInstance::getShownGeometry(int textureIndex,
+                                 GeoDetailConstPtr* detail,
+                                 int* frame) const
+{
+    if ((textureIndex != 0) && (textureIndex != 1)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+    const std::shared_ptr<GeoViewerLayer>& layer = _imp->geometryLayers[textureIndex];
+    int served = 0;
+    if (!layer || !GeoViewerLayer::getServedFrame(layer->getIdentifier(), &served)) {
+        return false;
+    }
+    if (detail) {
+        *detail = layer->getDetail();
+    }
+    if (frame) {
+        *frame = served;
+    }
+
+    return true;
+}
+
 void
 ViewerInstance::refreshActiveInputDataKind()
 {

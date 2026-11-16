@@ -32,6 +32,7 @@
 #include <memory>
 
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 #include <QtWidgets/QWidget>
 
 #include "Gui/GeoSpreadsheetModel.h"
@@ -94,6 +95,7 @@ private:
     void showClass(GeoAttribClassEnum cls);
     void updateClassBar();
     void updateMetrics();
+    QStringList columnNames() const;
     void openFullValue(const QModelIndex& index);
 
     GeoSpreadsheetModel* _model;
@@ -106,7 +108,9 @@ private:
 
 /**
  * @brief The inspector's Spreadsheet tab: the selected prim's points, vertices, primitives and detail as
- * USD holds them at the inspector's frame, read without loading a payload.
+ * USD holds them at the inspector's frame, read without loading a payload. For a node that puts out
+ * geometry, its whole detail instead: the one the viewer shows when the viewer shows that node, else
+ * the node evaluated on the inspector's worker at the inspector's frame.
  **/
 std::unique_ptr<ScenePrimInspectorTab> createScenePrimSpreadsheetTab();
 

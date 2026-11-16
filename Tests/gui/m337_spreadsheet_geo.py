@@ -1,0 +1,353 @@
+"""The prim inspector's Spreadsheet tab on the geometry the viewer shows.
+
+Builds, with the Viewer on each in turn: a GeoPrimitive grid of 2 rows by 3 columns; a GeoDelete
+deleting points 0-3 of it; a USDRead of a scene written under $NATRON_GUI_TEST_OUT feeding a packed
+USDToGeo; and a GeoTransform on the grid whose translate[y] is keyed 0 at frame 1 and 4 at frame 9.
+Checks:
+  - the grid lists its whole detail with no prim selected: 12 points, 24 vertices, 6 primitives and
+    1 detail row, in the class buttons and in the table;
+  - after the GeoDelete the 8 points left are numbered 0 to 7, and the vertices name only those;
+  - the packed USDToGeo output lists intrinsic:* columns on its primitives, and the tooltip of an
+    intrinsic:transform cell holds all 16 values of the matrix;
+  - scrubbing the frame on the animated GeoTransform updates P[y], and the column widths, one of
+    them set by hand, stay put.
+
+One screenshot per check goes to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-off.
+Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
+"""
+import os
+import sys
+import traceback
+
+sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
+
+POLL_TIMEOUT_S = 30.0
+STARTUP_TIMEOUT_S = 60.0
+SETTLE_MS = 400
+SPREADSHEET = "sceneGraphSpreadsheet"
+SPREADSHEET_TITLE = "Spreadsheet"
+CLASSES = ("Points", "Vertices", "Primitives", "Detail")
+GRID_ROWS = 2
+GRID_COLUMNS = 3
+GRID_COUNTS = {
+    "Points": (GRID_ROWS + 1) * (GRID_COLUMNS + 1),
+    "Vertices": 4 * GRID_ROWS * GRID_COLUMNS,
+    "Primitives": GRID_ROWS * GRID_COLUMNS,
+    "Detail": 1,
+}
+# Deleting the first row of points takes the first row of faces with it.
+DELETED_COUNTS = {
+    "Points": GRID_ROWS * (GRID_COLUMNS + 1),
+    "Vertices": 4 * (GRID_ROWS - 1) * GRID_COLUMNS,
+    "Primitives": (GRID_ROWS - 1) * GRID_COLUMNS,
+    "Detail": 1,
+}
+INTRINSICS = ["intrinsic:kind", "intrinsic:transform", "intrinsic:bounds", "intrinsic:sourcePath"]
+KEYS = ((1, 0.0), (9, 4.0))
+SCRUB = (1, 3, 5, 7, 9)
+HAND_WIDTH = 173
+
+
+def write_scene(directory):
+    """Writes two meshes under /World, one moved, and returns the layer's path."""
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, "packed.usda")
+    with open(path, "w") as f:
+        f.write('#usda 1.0\n(\n    defaultPrim = "World"\n    upAxis = "Y"\n)\n')
+        f.write('def Xform "World"\n{\n')
+        for name, offset in (("Left", 0.0), ("Right", 3.0)):
+            f.write('    def Mesh "%s"\n    {\n' % name)
+            f.write('        double3 xformOp:translate = (%g, 2, -1)\n' % offset)
+            f.write('        uniform token[] xformOpOrder = ["xformOp:translate"]\n')
+            f.write('        int[] faceVertexCounts = [3]\n')
+            f.write('        int[] faceVertexIndices = [0, 1, 2]\n')
+            f.write('        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n')
+            f.write('    }\n')
+        f.write('}\n')
+    return path
+
+
+try:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel, QTabWidget, QTableView, QToolButton, QWidget
+
+    from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
+
+    fixture_dir = os.path.realpath(os.path.join(OUT, "m337_spreadsheet_geo"))
+    scene_path = write_scene(fixture_dir)
+
+    def make(plugin):
+        node = app.createNode(plugin)
+        require(node is not None, "create " + plugin, plugin_problem(plugin))
+        return node
+
+    grid = make("GeoPrimitive")
+    grid.getParam("type").setValue(1)
+    grid.getParam("gridRows").setValue(GRID_ROWS)
+    grid.getParam("gridColumns").setValue(GRID_COLUMNS)
+
+    delete = make("GeoDelete")
+    delete.getParam("groupType").setValue(0)
+    delete.getParam("group").setValue("0-3")
+    require(delete.connectInput(0, grid), "connect the GeoDelete to the grid")
+
+    reader = make("USDRead")
+    reader.getParam("filename").setValue(scene_path)
+    packed = make("USDToGeo")
+    packed.getParam("primPattern").setValue("/World/*")
+    packed.getParam("unpack").setValue(False)
+    require(packed.connectInput(0, reader), "connect the USDToGeo to the USDRead")
+
+    moved = make("GeoTransform")
+    translate = moved.getParam("translate")
+    for frame, y in KEYS:
+        translate.setValueAtTime(y, frame, 1)
+    require(moved.connectInput(0, grid), "connect the GeoTransform to the grid")
+
+    viewer = app.getNode("Viewer1")
+    if viewer is None:
+        viewer = app.createNode("Viewer")
+    require(viewer is not None, "a Viewer exists")
+    for i, node in enumerate((grid, delete, reader, packed, moved, viewer)):
+        node.setPosition(200 * (i % 3), 120 * (i // 3))
+
+    _held = []
+
+    def hold(w):
+        """Keeps w's wrapper alive: a child wrapper dies with a temporary parent wrapper."""
+        if w is not None and not any(x is w for x in _held):
+            _held.append(w)
+        return w
+
+    def view():
+        views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
+        return hold(views[0]) if views else None
+
+    _found = {}
+
+    def panel():
+        if "panel" not in _found:
+            panels = widgets_of("SceneGraphPanel")
+            if panels:
+                _found["panel"] = hold(panels[0])
+        return _found.get("panel")
+
+    def child(cls, name):
+        if name not in _found:
+            p = panel()
+            try:
+                c = hold(p.findChild(cls, name)) if p is not None else None
+            except RuntimeError:
+                return None
+            if c is None:
+                return None
+            _found[name] = c
+        return _found[name]
+
+    def inspector():
+        return child(QWidget, "sceneGraphInspector")
+
+    def inspector_state(name):
+        return inspector().property("natronSceneGraphInspector" + name)
+
+    def scene_drawn():
+        v = view()
+        return (v is not None and bool(v.property("natronSceneSynced")) and bool(v.property("natronSceneShown"))
+                and not v.property("natronSceneError"))
+
+    def ancestor_of_class(widget, name):
+        w = widget
+        while w is not None:
+            if w.metaObject().className().split("::")[-1] == name:
+                return w
+            w = w.parentWidget()
+        return None
+
+    def sheet():
+        return child(QWidget, SPREADSHEET)
+
+    def sheet_state(name):
+        return sheet().property("natronGeoSpreadsheet" + name)
+
+    def table():
+        return child(QTableView, SPREADSHEET + "Table")
+
+    def class_button(label):
+        return child(QToolButton, SPREADSHEET + label)
+
+    def message():
+        return child(QLabel, SPREADSHEET + "Message")
+
+    def headers():
+        m = table().model()
+        return [str(m.headerData(c, Qt.Horizontal)) for c in range(m.columnCount())]
+
+    def row_numbers():
+        m = table().model()
+        return [m.headerData(r, Qt.Vertical) for r in range(m.rowCount())]
+
+    def column_cells(name, role=Qt.DisplayRole):
+        m = table().model()
+        names = headers()
+        if name not in names:
+            return None
+        c = names.index(name)
+        return ["" if m.index(r, c).data(role) is None else str(m.index(r, c).data(role)) for r in range(m.rowCount())]
+
+    def numbers(cells):
+        try:
+            return [float(x) for x in cells] if cells is not None else None
+        except ValueError:
+            return None
+
+    def show_class(label):
+        class_button(label).click()
+        return sheet_state("Class") == label
+
+    def class_counts():
+        counts = {}
+        for label in CLASSES:
+            text = class_button(label).text()
+            try:
+                counts[label] = int(text.split()[-1])
+            except (ValueError, IndexError):
+                counts[label] = text
+        return counts
+
+    def settled():
+        return not inspector_state("Busy") and table().isVisible()
+
+    def shows_counts(counts):
+        return settled() and class_counts() == counts
+
+    def show_spreadsheet_tab():
+        tabs = child(QTabWidget, "sceneGraphInspectorTabs")
+        titles = [tabs.tabText(i) for i in range(tabs.count())]
+        if SPREADSHEET_TITLE not in titles:
+            return False
+        tabs.setCurrentIndex(titles.index(SPREADSHEET_TITLE))
+        return True
+
+    def view_node(node):
+        require(viewer.connectInput(0, node), "view " + node.getScriptName())
+
+    def class_rows():
+        """Shows each class in turn, and returns the rows the table listed for each."""
+        listed = {}
+        for label in CLASSES:
+            if show_class(label):
+                listed[label] = int(sheet_state("Rows"))
+        return listed
+
+    def grid_section():
+        section("grid")
+        view_node(grid)
+        ok = yield ("until", lambda: shows_counts(GRID_COUNTS), POLL_TIMEOUT_S)
+        check(ok, "the grid's class buttons count its detail with no prim selected (got %r, path %r)"
+              % (class_counts(), inspector_state("Path")))
+        listed = class_rows()
+        check(listed == GRID_COUNTS, "the table lists every element of each class (got %r)" % (listed,))
+        check(show_class("Points"), "back to the Points class")
+        names = headers()
+        report("NOTE grid point columns: %r" % (names,))
+        check(names[:3] == ["P[x]", "P[y]", "P[z]"], "the points list P one column per component (got %r)" % (names[:3],))
+        check(numbers(column_cells("P[y]")) == [0.0] * GRID_COUNTS["Points"], "the grid lies flat (P[y] %r)" % (column_cells("P[y]"),))
+        shot("m337-spreadsheet-geo-grid.png")
+
+    def delete_section():
+        section("delete")
+        view_node(delete)
+        ok = yield ("until", lambda: shows_counts(DELETED_COUNTS), POLL_TIMEOUT_S)
+        check(ok, "after the GeoDelete the class buttons count what is left (got %r)" % (class_counts(),))
+        points = DELETED_COUNTS["Points"]
+        check(show_class("Points") and row_numbers() == list(range(points)),
+              "the points left are numbered 0 to %d (got %r)" % (points - 1, row_numbers()))
+        check(show_class("Vertices"), "the Vertices class is shown")
+        named = column_cells("Point")
+        named = sorted(set(int(x) for x in named)) if named else named
+        check(named == list(range(points)), "the vertices name the dense point numbers only (got %r)" % (named,))
+        check(row_numbers() == list(range(DELETED_COUNTS["Vertices"])), "the vertices are numbered densely (got %r)" % (row_numbers(),))
+        shot("m337-spreadsheet-geo-delete.png")
+
+    def packed_section():
+        section("packed")
+        view_node(packed)
+        ok = yield ("until", lambda: settled() and class_counts().get("Primitives") == 2, POLL_TIMEOUT_S)
+        check(ok, "the packed USDToGeo lists one primitive per mesh (got %r, message %r)" % (class_counts(), message().text()))
+        check(show_class("Primitives"), "the Primitives class is shown")
+        names = headers()
+        report("NOTE packed primitive columns: %r" % (names,))
+        intrinsics = [n for n in names if n.startswith("intrinsic:")]
+        check(intrinsics == INTRINSICS, "the packed primitives list the intrinsic columns (got %r)" % (intrinsics,))
+        tips = column_cells("intrinsic:transform", Qt.ToolTipRole) or []
+        report("NOTE intrinsic:transform tooltips: %r" % (tips,))
+        matrices = [numbers(tip.split()) for tip in tips]
+        check(len(matrices) == 2 and all(m is not None and len(m) == 16 for m in matrices),
+              "each intrinsic:transform tooltip holds all 16 values (got %r)" % (tips,))
+        check(any(m is not None and 3.0 in m for m in matrices),
+              "a tooltip carries the moved mesh's translation (got %r)" % (tips,))
+        shot("m337-spreadsheet-geo-packed.png")
+
+    def scrub_section(py_viewer):
+        section("scrub")
+        py_viewer.seek(KEYS[0][0])
+        view_node(moved)
+        points = GRID_COUNTS["Points"]
+        ok = yield ("until", lambda: shows_counts(GRID_COUNTS) and show_class("Points")
+                    and numbers(column_cells("P[y]")) == [KEYS[0][1]] * points, POLL_TIMEOUT_S)
+        check(ok, "at frame %d P[y] is %g (got %r)" % (KEYS[0][0], KEYS[0][1], column_cells("P[y]")))
+        names = headers()
+        t = table()
+        if "P[y]" in names:
+            t.setColumnWidth(names.index("P[y]"), HAND_WIDTH)
+        widths = [t.columnWidth(c) for c in range(len(names))]
+        report("NOTE widths before scrubbing: %r" % (widths,))
+        for frame in SCRUB[1:]:
+            py_viewer.seek(frame)
+            yield ("sleep", 60)
+        last, y = KEYS[-1]
+        ok = yield ("until", lambda: settled() and numbers(column_cells("P[y]")) == [y] * points, POLL_TIMEOUT_S)
+        check(ok, "scrubbed to frame %d P[y] is %g (got %r)" % (last, y, column_cells("P[y]")))
+        yield ("sleep", SETTLE_MS)
+        after = [t.columnWidth(c) for c in range(t.model().columnCount())]
+        check(headers() == names and after == widths,
+              "scrubbing keeps the column widths, the hand-set one included (%r, was %r)" % (after, widths))
+        check(sheet_state("Class") == "Points", "scrubbing keeps the class shown (got %r)" % (sheet_state("Class"),))
+        shot("m337-spreadsheet-geo-scrub.png")
+
+    def steps():
+        view_node(grid)
+        ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
+        require(ok, "the viewer is up")
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        require(ok, "the scene view shows the grid")
+        require(panel() is not None, "the Scene Graph panel exists")
+
+        home = ancestor_of_class(view(), "TabWidget")
+        require(home is not None, "the scene view is in a pane")
+        split = app.getTabWidget(home.objectName()).splitHorizontally()
+        require(split is not None, "split the viewer's pane")
+        require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
+        split = None
+        ok = yield ("until", lambda: panel().isVisible(), POLL_TIMEOUT_S)
+        require(ok, "the panel shows")
+        require(inspector() is not None, "the panel has its inspector")
+        require(show_spreadsheet_tab(), "the inspector has a Spreadsheet tab")
+        require(sheet() is not None and table() is not None and message() is not None, "the Spreadsheet tab has its table")
+        require(all(class_button(label) is not None for label in CLASSES), "the Spreadsheet tab has its class bar")
+
+        py_viewer = hold(app.getViewer(viewer.getScriptName()))
+        py_viewer.seek(1)
+        yield from grid_section()
+        yield from delete_section()
+        yield from packed_section()
+        yield from scrub_section(py_viewer)
+
+    run(steps())
+except Exception:
+    try:
+        check(False, "setup error: " + traceback.format_exc())
+        finish()
+    except NameError:
+        traceback.print_exc()
+        os._exit(1)

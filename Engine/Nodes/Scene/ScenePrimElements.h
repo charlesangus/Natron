@@ -96,6 +96,9 @@ public:
         return _groups;
     }
 
+    // The point a vertex row uses, or -1 for a prim without face-vertex indices or a row out of range.
+    std::int64_t pointOfVertex(std::int64_t row) const;
+
     // An attribute or primvar as read, with the class it was placed in.
     struct Binding {
         std::string name;

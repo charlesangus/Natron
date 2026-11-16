@@ -138,9 +138,65 @@ groupHelp()
                                     "ranges with a step (0-99:2), attribute tests (@Cd > 0.5), ! to invert and ^ to remove.");
 }
 
+// A prim's rows that its highlighted points or faces name: a face highlight names faces only, a point
+// highlight points and the vertices that use them.
+bool
+primSelectedRowMask(const ScenePrimElementsSource& prim,
+                    GeoAttribClassEnum cls,
+                    const GeoComponentSelection& selection,
+                    const std::atomic<bool>& cancelled,
+                    GeoElementMask* mask)
+{
+    const std::int64_t rows = prim.rowCount(cls);
+    mask->assign((std::size_t)std::max<std::int64_t>(0, rows), 0);
+    if (selection.type == eGeoComponentPrimitives) {
+        if (cls == eGeoAttribClassPrimitive) {
+            for (const GeoIndex element : selection.elements) {
+                if ((element >= 0) && (element < rows)) {
+                    (*mask)[(std::size_t)element] = 1;
+                }
+            }
+        }
+
+        return true;
+    }
+    if (selection.type != eGeoComponentPoints) {
+        return true;
+    }
+    if (cls == eGeoAttribClassPoint) {
+        for (const GeoIndex element : selection.elements) {
+            if ((element >= 0) && (element < rows)) {
+                (*mask)[(std::size_t)element] = 1;
+            }
+        }
+    } else if (cls == eGeoAttribClassVertex) {
+        GeoIndex highest = -1;
+        for (const GeoIndex element : selection.elements) {
+            highest = std::max(highest, element);
+        }
+        std::vector<char> points((std::size_t)(highest + 1), 0);
+        for (const GeoIndex element : selection.elements) {
+            if (element >= 0) {
+                points[(std::size_t)element] = 1;
+            }
+        }
+        for (std::int64_t vertex = 0; vertex < rows; ++vertex) {
+            if (((vertex & 0xFFFF) == 0) && cancelled.load()) {
+                return true;
+            }
+            const std::int64_t point = prim.pointOfVertex(vertex);
+            if ((point >= 0) && (point <= highest) && points[(std::size_t)point]) {
+                (*mask)[(std::size_t)vertex] = 1;
+            }
+        }
+    }
+
+    return true;
+}
+
 // The rows of @p cls that @p selection names, as a mask in the same storage-offset space as geoSelectElements.
-// Returns false for a source that has no view selection to read; a prim's component highlighting would
-// fill the mask here.
+// Returns false for a source that has no view selection to read; the highlighted points or faces of a prim
+// fill the mask for a prim.
 bool
 selectedRowMask(const GeoSpreadsheetModel::SourcePtr& source,
                 GeoAttribClassEnum cls,
@@ -150,6 +206,9 @@ selectedRowMask(const GeoSpreadsheetModel::SourcePtr& source,
 {
     const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get());
 
+    if (const ScenePrimElementsSource* prim = dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
+        return primSelectedRowMask(*prim, cls, selection, cancelled, mask);
+    }
     if (!geometry) {
         return false;
     }
@@ -346,14 +405,14 @@ showRows(const GeoSpreadsheetModel::SourcePtr& source,
     GeoSpreadsheetShowResult result;
     const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get());
 
-    if (!geometry) {
+    if (!geometry && !dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
         return result;
     }
-    const GeoDetail& detail = *geometry->detail();
     const std::int64_t count = source->rowCount(cls);
     std::vector<GeoIndex> endpoints;
     const std::vector<GeoIndex>* elements = &selection.elements;
-    if (selection.type == eGeoComponentEdges) {
+    if (geometry && (selection.type == eGeoComponentEdges)) {
+        const GeoDetail& detail = *geometry->detail();
         std::vector<GeoEdge> edges;
         for (const GeoEdge& edge : selection.edges) {
             const GeoOffset a = detail.pointMap().offsetFromIndex(edge.p0);
@@ -437,11 +496,12 @@ pickRows(const GeoSpreadsheetModel::SourcePtr& source,
 {
     GeoSpreadsheetPickResult result;
     const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get());
+    const ScenePrimElementsSource* prim = dynamic_cast<const ScenePrimElementsSource*>(source.get());
 
-    if (!geometry || (cls == eGeoAttribClassDetail)) {
+    if ((!geometry && !prim) || (cls == eGeoAttribClassDetail)) {
         return result;
     }
-    const GeoDetail& detail = *geometry->detail();
+    const GeoDetail* detail = geometry ? geometry->detail().get() : nullptr;
     const std::int64_t count = source->rowCount(cls);
     const bool vertices = cls == eGeoAttribClassVertex;
     result.selection.type = (cls == eGeoAttribClassPrimitive) ? eGeoComponentPrimitives : eGeoComponentPoints;
@@ -460,8 +520,12 @@ pickRows(const GeoSpreadsheetModel::SourcePtr& source,
                 continue;
             }
             if (vertices) {
-                const GeoOffset vertex = detail.vertexMap().offsetFromIndex(element);
-                element = (vertex >= 0) ? detail.pointMap().indexFromOffset(detail.vertexPoint(vertex)) : -1;
+                if (prim) {
+                    element = (GeoIndex)prim->pointOfVertex(element);
+                } else {
+                    const GeoOffset vertex = detail->vertexMap().offsetFromIndex(element);
+                    element = (vertex >= 0) ? detail->pointMap().indexFromOffset(detail->vertexPoint(vertex)) : -1;
+                }
                 if (element < 0) {
                     continue;
                 }
@@ -566,19 +630,30 @@ public:
         case eScenePrimElementsStatusOk: {
             const GeoSpreadsheetModel::SourcePtr source = elements.source;
 
-            return [this, source]() {
+            const ViewerInstanceWPtr viewer = read.getViewer();
+            const QString path = read.getPath();
+            const NodeWPtr node = read.getNode();
+
+            return [this, source, viewer, path, node]() {
                 _widget->setSelectionViewer(ViewerInstanceWPtr());
+                _widget->setHighlightTarget(viewer, path, node);
                 _widget->setSnapshot(source);
             };
         }
         case eScenePrimElementsStatusNotLoaded:
-            return [this]() { _widget->showMessage(GeoSpreadsheetWidget::tr("Not loaded — load the payload from the scene graph to inspect it")); };
+            return [this]() {
+                _widget->setHighlightTarget(ViewerInstanceWPtr(), QString(), NodeWPtr());
+                _widget->showMessage(GeoSpreadsheetWidget::tr("Not loaded — load the payload from the scene graph to inspect it"));
+            };
         case eScenePrimElementsStatusMissing:
         case eScenePrimElementsStatusCancelled:
             break;
         }
 
-        return [this]() { _widget->setSnapshot(GeoSpreadsheetModel::SourcePtr()); };
+        return [this]() {
+            _widget->setHighlightTarget(ViewerInstanceWPtr(), QString(), NodeWPtr());
+            _widget->setSnapshot(GeoSpreadsheetModel::SourcePtr());
+        };
     }
 
     void setStale(bool stale) override
@@ -588,6 +663,7 @@ public:
 
     void clear() override
     {
+        _widget->setHighlightTarget(ViewerInstanceWPtr(), QString(), NodeWPtr());
         _widget->setSnapshot(GeoSpreadsheetModel::SourcePtr());
     }
 
@@ -637,7 +713,10 @@ private:
                 const QString text = error.empty() ? GeoSpreadsheetWidget::tr("The geometry could not be evaluated")
                                                    : GeoSpreadsheetWidget::tr("The geometry could not be evaluated: %1").arg(QString::fromStdString(error));
 
-                return [this, text]() { _widget->showMessage(text); };
+                return [this, text]() {
+                    _widget->setHighlightTarget(ViewerInstanceWPtr(), QString(), NodeWPtr());
+                    _widget->showMessage(text);
+                };
             }
         }
         if (read.isCancelled()) {
@@ -647,6 +726,7 @@ private:
         const ViewerInstanceWPtr target = fromViewer ? ViewerInstanceWPtr(viewer) : ViewerInstanceWPtr();
 
         return [this, source, target]() {
+            _widget->setHighlightTarget(ViewerInstanceWPtr(), QString(), NodeWPtr());
             _widget->setSelectionViewer(target);
             _widget->setSnapshot(source);
         };
@@ -781,6 +861,7 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
 
 GeoSpreadsheetWidget::~GeoSpreadsheetWidget()
 {
+    clearHighlight();
     if (_pickCancel) {
         _pickCancel->store(true);
     }
@@ -876,6 +957,7 @@ GeoSpreadsheetWidget::showMessage(const QString& text)
     _message->setText(text);
     _stack->setCurrentWidget(_message);
     updateClassBar();
+    updateSelectedOnlyEnabled();
 }
 
 void
@@ -926,21 +1008,84 @@ GeoSpreadsheetWidget::setSelectionViewer(const ViewerInstanceWPtr& viewer)
     }
 }
 
+void
+GeoSpreadsheetWidget::setHighlightTarget(const ViewerInstanceWPtr& viewer,
+                                         const QString& primPath,
+                                         const NodeWPtr& node)
+{
+    const std::string path = primPath.toStdString();
+    const bool sameNode = !node.owner_before(_highlightNode) && !_highlightNode.owner_before(node);
+    const bool same = sameNode && (path == _highlightPath) && !viewer.owner_before(_highlightViewer) && !_highlightViewer.owner_before(viewer);
+
+    if (!same) {
+        if (selectedOnlyActive() && !viewportOf(_selectionViewer.lock())) {
+            setSelectedOnly(false);
+        }
+        cancelPick();
+        clearHighlight();
+        _highlightViewer = viewer;
+        _highlightPath = path;
+        _highlightNode = node;
+    }
+    updateSelectedOnlyEnabled();
+}
+
+void
+GeoSpreadsheetWidget::clearHighlight()
+{
+    _highlightSelection = GeoComponentSelection();
+    if (SceneViewport* viewport = viewportOf(_highlightViewer.lock())) {
+        viewport->clearSceneComponentHighlight();
+    }
+}
+
+void
+GeoSpreadsheetWidget::applyHighlight(const GeoComponentSelection& selection)
+{
+    SceneViewport* viewport = viewportOf(_highlightViewer.lock());
+
+    _highlightSelection = selection;
+    if (!viewport) {
+        return;
+    }
+    if (selection.empty() || ((selection.type != eGeoComponentPoints) && (selection.type != eGeoComponentPrimitives))) {
+        viewport->clearSceneComponentHighlight();
+
+        return;
+    }
+    viewport->setSceneComponentHighlight(_highlightPath,
+                                         (selection.type == eGeoComponentPrimitives) ? eGeoAttribClassPrimitive : eGeoAttribClassPoint,
+                                         std::vector<int>(selection.elements.begin(), selection.elements.end()));
+}
+
 bool
 GeoSpreadsheetWidget::selectedOnlyActive() const
 {
     const GeoSpreadsheetModel::SourcePtr source = _model->source();
 
-    return _selectedOnly && source && (_model->attribClass() != eGeoAttribClassDetail)
-        && dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get()) && viewportOf(_selectionViewer.lock());
+    if (!_selectedOnly || !source || (_model->attribClass() == eGeoAttribClassDetail)) {
+        return false;
+    }
+    if (dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
+        return viewportOf(_highlightViewer.lock()) != nullptr;
+    }
+
+    return dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get()) && viewportOf(_selectionViewer.lock());
 }
 
 void
 GeoSpreadsheetWidget::updateSelectedOnlyEnabled()
 {
     const GeoSpreadsheetModel::SourcePtr source = _model->source();
-    const bool usable = source && dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get()) && viewportOf(_selectionViewer.lock());
+    bool usable = false;
 
+    if (source) {
+        if (dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
+            usable = viewportOf(_highlightViewer.lock()) != nullptr;
+        } else {
+            usable = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get()) && viewportOf(_selectionViewer.lock());
+        }
+    }
     _selectedOnlyButton->setEnabled(usable);
 }
 
@@ -992,7 +1137,15 @@ GeoSpreadsheetWidget::rowsSelected()
     SceneViewport* viewport = viewportOf(_selectionViewer.lock());
 
     cancelPick();
-    if (!viewport || !source || (cls == eGeoAttribClassDetail) || !dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get())) {
+    const bool scene = source && dynamic_cast<const ScenePrimElementsSource*>(source.get());
+    if (scene) {
+        viewport = viewportOf(_highlightViewer.lock());
+        if (!viewport || (cls == eGeoAttribClassDetail)) {
+            clearHighlight();
+
+            return;
+        }
+    } else if (!viewport || !source || (cls == eGeoAttribClassDetail) || !dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get())) {
         return;
     }
     std::int64_t rows = 0;
@@ -1000,7 +1153,12 @@ GeoSpreadsheetWidget::rowsSelected()
     const GeoSpreadsheetModel::RowOrderPtr order = _model->rowOrder();
     if (rows <= kInlinePickRows) {
         const std::atomic<bool> never(false);
-        writeSelection(viewport, pickRows(source, cls, order, ranges, never).selection);
+        const GeoComponentSelection picked = pickRows(source, cls, order, ranges, never).selection;
+        if (scene) {
+            applyHighlight(picked);
+        } else {
+            writeSelection(viewport, picked);
+        }
 
         return;
     }
@@ -1036,15 +1194,16 @@ GeoSpreadsheetWidget::syncFromViewer(bool switchClass,
     }
     const FlagScope scope(_showingSelection);
     const GeoSpreadsheetModel::SourcePtr source = _model->source();
-    SceneViewport* viewport = viewportOf(_selectionViewer.lock());
+    const bool scene = source && dynamic_cast<const ScenePrimElementsSource*>(source.get());
+    SceneViewport* viewport = viewportOf((scene ? _highlightViewer : _selectionViewer).lock());
 
     cancelPick();
-    if (!viewport || !source || !dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get())) {
+    if (!viewport || !source || (!scene && !dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get()))) {
         clearRows();
 
         return;
     }
-    const GeoComponentSelection selection = viewport->getComponentSelection();
+    const GeoComponentSelection selection = scene ? _highlightSelection : viewport->getComponentSelection();
     if ((selection.type == eGeoComponentObjects) || selection.empty()) {
         clearRows();
 
@@ -1148,6 +1307,12 @@ GeoSpreadsheetWidget::finishPick(quint64 generation,
         return;
     }
     _pickCancel.reset();
+    const GeoSpreadsheetModel::SourcePtr source = _model->source();
+    if (source && dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
+        applyHighlight(result.selection);
+
+        return;
+    }
     SceneViewport* viewport = viewportOf(_selectionViewer.lock());
     if (!viewport) {
         return;
@@ -1394,7 +1559,9 @@ GeoSpreadsheetWidget::launchBuild(const QString& pattern,
     const bool descending = _descending;
     std::shared_ptr<const GeoComponentSelection> selectedOnly;
     if (selectedOnlyActive()) {
-        if (SceneViewport* viewport = viewportOf(_selectionViewer.lock())) {
+        if (dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
+            selectedOnly = std::make_shared<const GeoComponentSelection>(_highlightSelection);
+        } else if (SceneViewport* viewport = viewportOf(_selectionViewer.lock())) {
             selectedOnly = std::make_shared<const GeoComponentSelection>(viewport->getComponentSelection());
         }
     }

@@ -31,6 +31,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <string>
 
 #include <QtCore/QMetaObject>
 #include <QtCore/QString>
@@ -38,6 +39,7 @@
 #include <QtWidgets/QWidget>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Gui/GeoSpreadsheetModel.h"
 
 class QComboBox;
@@ -51,7 +53,6 @@ NATRON_NAMESPACE_ENTER
 
 class ScenePrimInspectorTab;
 class SceneViewport;
-struct GeoComponentSelection;
 struct GeoSpreadsheetBuildResult;
 struct GeoSpreadsheetPickResult;
 struct GeoSpreadsheetShowResult;
@@ -99,6 +100,12 @@ struct GeoSpreadsheetShowResult;
  * it is on, selecting rows does not write the view's selection, which would shrink the rows to the ones
  * selected. It is disabled without a viewer, or for a snapshot that is not geometry.
  *
+ * A prim's rows highlight in the scene view instead, through setHighlightTarget() when the viewer shows
+ * the inspected node: Points rows (and the points of Vertices rows) highlight those points, Primitives
+ * rows those faces, Detail none. The highlight is display only, and clears on another prim or node and on
+ * no rows selected. Selected Only then narrows the rows to the highlighted ones: points, and vertices
+ * using them, for a point highlight; faces for a face highlight; the other classes show none.
+ *
  * Child SelectedOnly carries the widget's object name as prefix like the others.
  **/
 class GeoSpreadsheetWidget
@@ -133,6 +140,14 @@ public:
 
     // The viewer whose view takes the rows selected; empty for none.
     void setSelectionViewer(const ViewerInstanceWPtr& viewer);
+
+    /**
+     * @brief For a prim's rows: the viewer whose scene view shows @p node, and the prim at @p primPath
+     * the rows highlight there. A change of any of the three, or an empty viewer, clears the highlight.
+     **/
+    void setHighlightTarget(const ViewerInstanceWPtr& viewer,
+                            const QString& primPath,
+                            const NodeWPtr& node);
 
     bool getSelectedOnly() const
     {
@@ -210,6 +225,8 @@ private:
     bool selectedOnlyActive() const;
     void updateSelectedOnlyEnabled();
     void rebuildForSelection();
+    void clearHighlight();
+    void applyHighlight(const GeoComponentSelection& selection);
 
     GeoSpreadsheetModel* _model;
     std::array<QToolButton*, kGeoAttribClassCount> _classButtons;
@@ -243,6 +260,10 @@ private:
     bool _selectedOnly = false;
 
     ViewerInstanceWPtr _selectionViewer;
+    ViewerInstanceWPtr _highlightViewer;
+    NodeWPtr _highlightNode;
+    std::string _highlightPath;
+    GeoComponentSelection _highlightSelection;
     std::shared_ptr<std::atomic<bool>> _pickCancel;
     quint64 _pickGeneration = 0;
     bool _writingSelection = false;

@@ -763,6 +763,9 @@ struct SceneViewportRenderer::Implementation {
     bool componentHighlight = false;
     std::vector<std::pair<std::string, std::vector<int>>> highlightEdges;
     std::vector<std::pair<std::string, std::vector<int>>> highlightFaces;
+    // Highlighted whichever of the two applies, by prim path.
+    std::vector<std::pair<std::string, std::vector<int>>> displayPoints;
+    std::vector<std::pair<std::string, std::vector<int>>> displayFaces;
     std::atomic<bool> engineSelectionDirty { false };
     // The renderer chosen, a delegate's id or kRenderDelegateSceneDefaultId; the delegate the
     // next engine is made with, the chosen one or the one the stage's render settings prim names;
@@ -1427,6 +1430,19 @@ struct SceneViewportRenderer::Implementation {
                     if (SdfPath::IsValidPathString(path)) {
                         paths.push_back(SdfPath(path));
                     }
+                }
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(engineSelectionMutex);
+            for (const std::pair<std::string, std::vector<int>>& prim : displayPoints) {
+                if (SdfPath::IsValidPathString(prim.first)) {
+                    components->AddPoints(HdSelection::HighlightModeSelect, SdfPath(prim.first), VtIntArray(prim.second.begin(), prim.second.end()), GfVec4f(1.f, 0.6f, 0.f, 1.f));
+                }
+            }
+            for (const std::pair<std::string, std::vector<int>>& prim : displayFaces) {
+                if (SdfPath::IsValidPathString(prim.first)) {
+                    components->AddElements(HdSelection::HighlightModeSelect, SdfPath(prim.first), VtIntArray(prim.second.begin(), prim.second.end()));
                 }
             }
         }
@@ -4283,6 +4299,16 @@ SceneViewportRenderer::setComponentHighlight(bool active,
 }
 
 void
+SceneViewportRenderer::setDisplayHighlight(std::vector<std::pair<std::string, std::vector<int>>> points,
+                                           std::vector<std::pair<std::string, std::vector<int>>> faces)
+{
+    std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
+    _imp->displayPoints = std::move(points);
+    _imp->displayFaces = std::move(faces);
+    _imp->engineSelectionDirty = true;
+}
+
+void
 SceneViewportRenderer::releaseGL()
 {
     const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
@@ -5683,6 +5709,7 @@ struct SceneViewport::Implementation {
     const std::shared_ptr<GeoDisplay> geoDisplay = std::make_shared<GeoDisplay>();
     GeoComponentEnum geoPickMode = eGeoComponentObjects;
     bool geometryContext = false;
+    int displayHighlightCount = 0;
     GeoComponentSelection componentSelection;
     bool reselecting = false;
     GeoComponentEnum reselectPickMode = eGeoComponentObjects;
@@ -5954,6 +5981,7 @@ SceneViewport::SceneViewport(QWidget* parent)
     setProperty("natronGeoComponents", false);
     setProperty("natronGeoSelection", QString());
     setProperty("natronGeoSelectionCount", 0);
+    setProperty("natronSceneHighlightCount", 0);
     _imp->renderer.setStageEditor(_imp->geoDisplay);
     // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
@@ -7063,6 +7091,7 @@ SceneViewport::setGeometryContext(bool geometry)
         return;
     }
     _imp->geometryContext = geometry;
+    clearSceneComponentHighlight();
     refreshComponentState();
 }
 
@@ -7087,6 +7116,37 @@ SceneViewport::setComponentSelection(const GeoComponentSelection& selection)
     _imp->componentSelection = selection;
     refreshComponentState();
     Q_EMIT componentSelectionChanged();
+}
+
+void
+SceneViewport::setSceneComponentHighlight(const std::string& primPath,
+                                          GeoAttribClassEnum cls,
+                                          std::vector<int> indices)
+{
+    if (_imp->geometryContext || indices.empty() || primPath.empty() || ((cls != eGeoAttribClassPoint) && (cls != eGeoAttribClassPrimitive))) {
+        clearSceneComponentHighlight();
+
+        return;
+    }
+    const int count = int(indices.size());
+    std::vector<std::pair<std::string, std::vector<int>>> points, faces;
+    ((cls == eGeoAttribClassPoint) ? points : faces).emplace_back(primPath, std::move(indices));
+    _imp->displayHighlightCount = count;
+    _imp->renderer.setDisplayHighlight(std::move(points), std::move(faces));
+    setProperty("natronSceneHighlightCount", count);
+    update();
+}
+
+void
+SceneViewport::clearSceneComponentHighlight()
+{
+    if (_imp->displayHighlightCount == 0) {
+        return;
+    }
+    _imp->displayHighlightCount = 0;
+    _imp->renderer.setDisplayHighlight({}, {});
+    setProperty("natronSceneHighlightCount", 0);
+    update();
 }
 
 void

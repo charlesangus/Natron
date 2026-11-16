@@ -322,6 +322,20 @@ ScenePrimElementsSource::ScenePrimElementsSource(const std::int64_t (&rowCounts)
 ScenePrimElementsSource::~ScenePrimElementsSource() = default;
 
 std::int64_t
+ScenePrimElementsSource::pointOfVertex(std::int64_t row) const
+{
+    for (const Binding& binding : _bindings) {
+        if ((binding.cls == eGeoAttribClassVertex) && (binding.name == "Point") && binding.values.IsHolding<PXR_NS::VtIntArray>()) {
+            const PXR_NS::VtIntArray& indices = binding.values.UncheckedGet<PXR_NS::VtIntArray>();
+
+            return ((row >= 0) && (std::size_t(row) < indices.size())) ? std::int64_t(indices[std::size_t(row)]) : -1;
+        }
+    }
+
+    return -1;
+}
+
+std::int64_t
 ScenePrimElementsSource::rowCount(GeoAttribClassEnum cls) const
 {
     return _rowCounts[cls];

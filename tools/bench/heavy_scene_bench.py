@@ -1611,7 +1611,7 @@ try:
 
     def log_scenario(name, edge, at):
         line = "SCENARIO %s %s %.3f %s" % (edge, name, at, time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(at)))
-        print(line, flush=True)
+        print(line)
         report(line)
 
     def write_record(record):

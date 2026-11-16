@@ -12,11 +12,12 @@ and the script leaves the camera alone.
 A heartbeat, a 5 ms Qt timer on the main thread, records the gap between its ticks (wall clock: a
 GUI thread blocked on a lock burns no CPU, so a CPU-time budget would hide it). Starting once Storm
 has drawn the scene, the longest gap, including the script's own menu work, must stay under 100 ms
-in every phase. On the switch to Storm a gap in which Storm frames were drawn counts without those
-frames (natronSceneStormFrames, natronSceneStormPaints: each drawn frame's start and cost): Storm
-draws on the GUI thread, and on software GL one frame of this scene takes most of a second however
-little was edited since. The frames are checked instead: the first one after the switch may cost at
-most a steady Storm frame plus 100 ms, so catch-up work inside that paint still counts. The steady
+in every phase. On the switch to Storm a gap counts without the time Storm frames ran inside it
+(natronSceneStormFrames: each frame's start and cost, whether a paint or the render thread drew it
+ahead of the paint): on software GL one frame of this scene takes most of a second however little
+was edited since, and the GUI thread waits it out, in the paint that draws it or, behind a frame
+drawn ahead, when it next composes the window. The frames are checked instead: the first one after
+the switch may cost at most a steady Storm frame plus 100 ms, so catch-up work inside it still counts. The steady
 frame is the costliest of three synchronous repaints after the switch, with the heartbeat stopped.
 The Renderer entry's trigger, which switches the renderer and lays the view out on the GUI thread,
 is timed on its own too and must cost under 100 ms, the Storm frames it draws aside, so a switch's
@@ -46,7 +47,7 @@ NATRON_TEST_MESHES for that machine.
 View properties read: natronSceneRenderer, natronSceneSynced, natronSceneShown, natronSceneError,
 natronSceneRendererError, natronSceneMaxSamples, natronSceneSamples, natronSceneDrawnSamples,
 natronSceneRefineConverged, natronSceneRefineFrames, natronSceneUploadMs, natronSceneEngineCount,
-natronSceneEngineHeld, natronSceneLastPaintMs, natronSceneStormFrames, natronSceneStormPaints.
+natronSceneEngineHeld, natronSceneLastPaintMs, natronSceneStormFrames.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -322,8 +323,12 @@ try:
     # longest gap of each phase it keeps how much of it the main thread ran and how much it waited
     # for a CPU (/proc schedstat), the rest being time it was blocked: so a stall shows whether
     # the GUI thread was busy, starved by the render's threads, or waiting on something.
-    beat = {"last": None, "last_wall_ms": None, "storm_paints": 0, "sched": None, "phase": "idle",
-            "max": {}, "raw_max": {}, "split": {}, "view": None, "picked": None, "first_frame": None,
+    # On the phases whose Storm frames are set aside every gap is kept, as (wall-clock start ms,
+    # end ms, length ms, schedstat split), and settled against the frames once they are all
+    # published: a frame rendered in the background is published when it ends, after the gap in
+    # which the GUI thread waited for it on the GPU may have begun.
+    beat = {"last": None, "last_wall_ms": None, "sched": None, "phase": "idle", "max": {}, "raw_max": {},
+            "split": {}, "gaps": {}, "frames": {}, "view": None, "picked": None, "first_frame": None,
             "upload_ms": 0.0, "paints_in_gap": 0, "phase_wall_ms": 0.0, "switch": {}}
     timer = QTimer()
     timer.setInterval(HEARTBEAT_MS)
@@ -350,21 +355,19 @@ try:
         now = time.perf_counter()
         now_wall_ms = time.time() * 1000.0
         stat = sched()
-        storm_paints = int(view_prop("natronSceneStormPaints", 0))
+        beat["frames"].update(storm_frames())
         if beat["last"] is not None:
             gap = (now - beat["last"]) * 1000.0
+            split = (stat[0] - beat["sched"][0], stat[1] - beat["sched"][1]) if (stat is not None and beat["sched"] is not None) else None
             beat["raw_max"][beat["phase"]] = max(beat["raw_max"].get(beat["phase"], 0.0), gap)
-            if beat["phase"] in STORM_FRAMES_EXCLUDED and storm_paints > beat["storm_paints"]:
-                drawn = sum(ms for start, ms in storm_frames() if start >= beat["last_wall_ms"])
-                gap = max(0.0, gap - drawn)
-                beat["paints_in_gap"] = max(beat["paints_in_gap"], storm_paints - beat["storm_paints"])
-            if gap > beat["max"].get(beat["phase"], 0.0):
+            if beat["phase"] in STORM_FRAMES_EXCLUDED:
+                beat["gaps"].setdefault(beat["phase"], []).append((beat["last_wall_ms"], now_wall_ms, gap, split))
+            elif gap > beat["max"].get(beat["phase"], 0.0):
                 beat["max"][beat["phase"]] = gap
-                if stat is not None and beat["sched"] is not None:
-                    beat["split"][beat["phase"]] = (stat[0] - beat["sched"][0], stat[1] - beat["sched"][1])
+                if split is not None:
+                    beat["split"][beat["phase"]] = split
         beat["last"] = now
         beat["last_wall_ms"] = now_wall_ms
-        beat["storm_paints"] = storm_paints
         beat["sched"] = stat
         if beat["picked"] is not None and beat["first_frame"] is None and view_prop("natronSceneRefineFrames", 0) > 0:
             beat["first_frame"] = now - beat["picked"]
@@ -377,13 +380,31 @@ try:
         beat["phase"] = name
         beat["phase_wall_ms"] = time.time() * 1000.0
         beat["view"] = view()
-        beat["storm_paints"] = int(view_prop("natronSceneStormPaints", 0))
+
+    def settle():
+        """Sets each kept gap's length without the time Storm frames ran inside it."""
+        beat["frames"].update(storm_frames())
+        for name, gaps in beat["gaps"].items():
+            longest = None
+            for begin, end, gap, split in gaps:
+                overlaps = [min(end, start + ms) - max(begin, start) for start, ms in beat["frames"].items()]
+                overlaps = [ms for ms in overlaps if ms > 0.0]
+                beat["paints_in_gap"] = max(beat["paints_in_gap"], len(overlaps))
+                left = max(0.0, gap - sum(overlaps))
+                if longest is None or left > longest[0]:
+                    longest = (left, split)
+            if longest is not None:
+                beat["max"][name] = longest[0]
+                if longest[1] is not None:
+                    beat["split"][name] = longest[1]
 
     def worst(name=None):
+        settle()
         gaps = [beat["max"].get(name, 0.0)] if name else list(beat["max"].values())
         return max(gaps) if gaps else 0.0
 
     def over_limit():
+        settle()
         return {name: round(gap, 1) for name, gap in beat["max"].items() if gap >= STALL_LIMIT_MS}
 
     def steady_storm_frame_ms():
@@ -396,7 +417,6 @@ try:
             view().repaint()
         costs = [ms for start, ms in storm_frames() if start >= since]
         beat["last"] = None
-        beat["storm_paints"] = int(view_prop("natronSceneStormPaints", 0))
         timer.start()
         return max(costs) if costs else None
 
@@ -466,7 +486,8 @@ try:
             after_switch = [ms for start, ms in storm_frames() if start >= switched_ms]
             first_ms = after_switch[0] if after_switch else None
             steady_ms = steady_storm_frame_ms()
-            report("NOTE the switch's longest gap, frames included, was %.1f ms, and %d Storm frame(s) were drawn "
+            settle()
+            report("NOTE the switch's longest gap, frames included, was %.1f ms, and %d Storm frame(s) ran "
                    "in one gap at most" % (beat["raw_max"].get("switch to Storm", 0.0), beat["paints_in_gap"]))
             check(first_ms is not None and steady_ms is not None and first_ms <= steady_ms + STALL_LIMIT_MS,
                   "the first Storm frame after the switch costs at most a steady frame plus %.0f ms (first %r ms, steady %r ms)"

@@ -3341,7 +3341,7 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     return true;
 }
 
-void
+bool
 SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
 {
     Implementation::BackgroundFrame& frame = _imp->backgroundFrame;
@@ -3357,12 +3357,12 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     // Another delegate renders on the refinement's own thread, and one the stage's render
     // settings prim names instead is switched to on the main thread before Storm compiles for it.
     if (_imp->rendererId != kRenderDelegateStormId) {
-        return;
+        return false;
     }
     if (_imp->effectiveRenderer() != _imp->rendererId) {
         _imp->rendererSwitchPending = true;
 
-        return;
+        return false;
     }
     // Storm, the only delegate rendering here, cannot be stopped inside a pass
     // (HdStRenderDelegate leaves IsStopSupported at false), so the frame ends between passes.
@@ -3375,7 +3375,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         return (pass > 0) && ((imp->backgroundStops != frame.stops) || (imp->exclusiveWaiting > 0));
     };
     if (ended(0) || !_imp->ensureEngine()) {
-        return;
+        return false;
     }
     section.collectWith(_imp->engine->GetHgi());
     _imp->serviceDrawFilter(true);
@@ -3416,11 +3416,11 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         section.collectWith(nullptr);
         _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
 
-        return;
+        return false;
     }
     _imp->noteDrawFilterRendered(passes != 0);
     if (passes == 0) {
-        return;
+        return false;
     }
     if (timed) {
         // Only the render thread waits here, and the image could not be shown before the GPU is
@@ -3437,6 +3437,8 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     frame.loadEditCount = _imp->sceneStage->getLoadEditCount();
     frame.previewGeneration = _imp->sceneStage->getPreviewGeneration();
     frame.imageKept = converged;
+
+    return true;
 }
 
 void
@@ -6791,6 +6793,34 @@ SceneViewport::isStageSynced() const
     return _imp->syncedSerial == _imp->requestedSerial;
 }
 
+namespace {
+// Storm draws for most of a second a frame on software GL, and the GUI thread waits out such a
+// frame in a paint or, behind it on the GPU, when it next composes. Scripts need each frame's
+// start and cost to tell a stall around the frames from the frames themselves.
+void
+publishStormFrame(QObject* view,
+                  double startMs,
+                  double costMs)
+{
+    // Several frames can begin between two polls; the list lets a poller find each of them.
+    QVariantList frames = view->property("natronSceneStormFrames").toList();
+    frames.append(QVariant(QVariantList { startMs, costMs }));
+    while (frames.size() > 16) {
+        frames.removeFirst();
+    }
+    view->setProperty("natronSceneStormFrames", frames);
+    view->setProperty("natronSceneStormPaints", QVariant::fromValue<qulonglong>(view->property("natronSceneStormPaints").toULongLong() + 1));
+}
+
+// The clock and precision a script's own wall time has, so a frame starting in the same
+// millisecond as a poll is still ordered against it.
+double
+epochMs()
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+} // anonymous namespace
+
 void
 SceneViewport::startBackgroundFrame()
 {
@@ -6810,12 +6840,21 @@ SceneViewport::startBackgroundFrame()
     Implementation* imp = _imp.get();
     const int target = _imp->presentPacer.backTarget();
     _imp->postToRenderThread([this, imp, target, w, h]() {
-        imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h));
+        const double startMs = epochMs();
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        const bool rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h));
         // The widget's context reads the image only after a later fence, but the commands must be
         // on their way before this thread goes idle.
         glFlush();
+        const double costMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        const auto done = [this, rendered, startMs, costMs]() {
+            if (rendered) {
+                publishStormFrame(this, startMs, costMs);
+            }
+            onBackgroundFrameDone();
+        };
         // Dropped by Qt if the widget is gone by then.
-        QMetaObject::invokeMethod(this, [this]() { onBackgroundFrameDone(); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(this, done, Qt::QueuedConnection);
     });
     publishState();
 }
@@ -8883,27 +8922,14 @@ SceneViewport::paintGL()
         }
     }
     const bool stormPaint = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
-    // Fractional epoch milliseconds, the clock and precision a script's own wall time has, so a
-    // frame starting in the same millisecond as a poll is still ordered against it.
-    const double paintStartMs = std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+    const double paintStartMs = epochMs();
     const std::chrono::steady_clock::time_point paintStart = std::chrono::steady_clock::now();
-    // Storm draws while the GUI thread waits, on the render thread or on its own, for most of a
-    // second a frame on software GL, so scripts need each frame's start and cost to tell a stall
-    // around the frame from the frame itself. The cost is that of the paint that rendered the
-    // frame: a render-thread frame is shown by a later paint, which costs next to nothing.
-    const auto publishStormFrame = [this, stormPaint, paintStartMs, paintStart]() {
-        if (!stormPaint) {
-            return;
+    // The cost is that of the paint that rendered the frame: a frame rendered ahead, in the
+    // background, is shown by a later paint, which costs next to nothing.
+    const auto publishPaintedStormFrame = [this, stormPaint, paintStartMs, paintStart]() {
+        if (stormPaint) {
+            publishStormFrame(this, paintStartMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count());
         }
-        const double paintMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count();
-        // Several frames can begin between two polls; the list lets a poller find each of them.
-        QVariantList frames = property("natronSceneStormFrames").toList();
-        frames.append(QVariant(QVariantList { paintStartMs, paintMs }));
-        while (frames.size() > 16) {
-            frames.removeFirst();
-        }
-        setProperty("natronSceneStormFrames", frames);
-        setProperty("natronSceneStormPaints", QVariant::fromValue<qulonglong>(property("natronSceneStormPaints").toULongLong() + 1));
     };
     refreshTransformHandles();
     {
@@ -8938,7 +8964,7 @@ SceneViewport::paintGL()
                 }
             });
             if (rendered != SceneViewportRenderer::eRenderStatusBusy) {
-                publishStormFrame();
+                publishPaintedStormFrame();
                 Implementation::PresentFrame frame;
                 frame.width = w;
                 frame.height = h;
@@ -8966,7 +8992,7 @@ SceneViewport::paintGL()
         status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
         // A busy paint drew nothing and is left out, or it would hide the cost of the next one.
         if (status != SceneViewportRenderer::eRenderStatusBusy) {
-            publishStormFrame();
+            publishPaintedStormFrame();
         }
     }
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
@@ -9012,6 +9038,9 @@ SceneViewport::paintGL()
     }
     // The deltas the frame on screen took in, unlike the stats, which also change on the way to it.
     setProperty("natronSceneDrawPresented", QVariant::fromValue<qulonglong>(absorbed));
+    // Whatever published the state last may have seen a frame still on its way to the screen,
+    // and the paint that shows it is the last thing to run.
+    setProperty("natronSceneSynced", isSceneSynced());
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());

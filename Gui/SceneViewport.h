@@ -368,9 +368,9 @@ public:
      * If the next render() is of the same view into the same fbo with nothing changed, it keeps this
      * image and only draws the overlays. Needs the context of render() current. Renders up to a
      * few passes, and after the first ends early for stopBackgroundFrame() or a thread waiting to
-     * edit the stage; then it keeps nothing for render() to reuse.
+     * edit the stage; then it keeps nothing for render() to reuse. True if it rendered a pass.
      **/
-    void renderBackgroundFrame(unsigned int fbo);
+    bool renderBackgroundFrame(unsigned int fbo);
 
     /**
      * @brief Ends the background frame running, or the one prepared, after its current pass, and

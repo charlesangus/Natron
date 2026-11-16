@@ -897,6 +897,28 @@ public:
     // @p selection as the group pattern that selects it in @p detail; empty when it is empty.
     static std::string componentSelectionPattern(const GeoDetail& detail, const GeoComponentSelection& selection);
 
+    /**
+     * @brief The numbers of @p type (points, edges or primitives) that the group @p pattern selects
+     * in @p detail, as selection; a blank pattern selects every element. False with @p error set
+     * for a malformed pattern.
+     **/
+    static bool componentSelectionFromPattern(const GeoDetail& detail, GeoComponentEnum type, const std::string& pattern, GeoComponentSelection* selection, std::string* error);
+
+    // The geometry the component selection is picked on, null when none is shown.
+    GeoDetailConstPtr shownDetail() const;
+
+    /**
+     * @brief Whether the view is reselecting, as beginReselect() starts it. While it is, Enter
+     * hands the selection to the commitReselect selection action and Escape to cancelReselect.
+     **/
+    bool isReselecting() const;
+
+    // Starts reselecting: shows @p selection, in its type's pick mode, remembering the pick mode and selection it replaces.
+    void beginReselect(const GeoComponentSelection& selection);
+
+    // Ends reselecting, putting back the pick mode and selection beginReselect() replaced.
+    void endReselect();
+
     // Combines @p picked with the component selection as select() combines prims.
     void selectComponents(const GeoComponentSelection& picked, SelectionModeEnum mode);
 
@@ -947,6 +969,10 @@ public:
         std::function<void(const QStringList& paths)> setOnNode;
         std::function<void(const QStringList& paths)> createFromSelection;
         std::function<void(const GeoDetailConstPtr& detail, const GeoComponentSelection& selection)> createFromComponents;
+        // Reselect for Current Node was asked for; commitReselect and cancelReselect answer Enter and Escape while reselecting.
+        std::function<void()> reselect;
+        std::function<void(const GeoComponentSelection& selection)> commitReselect;
+        std::function<void()> cancelReselect;
     };
 
     void setSelectionActions(const SelectionActions& actions);

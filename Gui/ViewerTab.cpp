@@ -1542,6 +1542,10 @@ ViewerTab::onActiveInputDataKindChanged()
             actions.createFromComponents = [this](const GeoDetailConstPtr& detail, const GeoComponentSelection& selection) {
                 SceneSelectionActions::createFromComponents(getGui(), getSceneViewedNode(), detail, selection);
             };
+            auto reselect = std::make_shared<SceneSelectionActions::ReselectSession>(getGui(), this, _imp->sceneViewport);
+            actions.reselect = [reselect]() { reselect->begin(); };
+            actions.commitReselect = [reselect](const GeoComponentSelection& selection) { reselect->commit(selection); };
+            actions.cancelReselect = [reselect]() { reselect->cancel(); };
             _imp->sceneViewport->setSelectionActions(actions);
         }
         {

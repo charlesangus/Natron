@@ -216,6 +216,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DConvertToPoints);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DConvertToEdges);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DConvertToPrimitives);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DReselect);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);
@@ -522,6 +523,7 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DConvertToPoints, kShortcutDescActionViewer3DConvertToPoints, Qt::ControlModifier, Qt::Key_F9, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DConvertToEdges, kShortcutDescActionViewer3DConvertToEdges, Qt::ControlModifier, Qt::Key_F10, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DConvertToPrimitives, kShortcutDescActionViewer3DConvertToPrimitives, Qt::ControlModifier, Qt::Key_F11, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DReselect, kShortcutDescActionViewer3DReselect, Qt::NoModifier, Qt::Key_QuoteLeft, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

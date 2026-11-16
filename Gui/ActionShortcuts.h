@@ -476,6 +476,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DConvertToPrimitives "geoConvertToPrimitives"
 #define kShortcutDescActionViewer3DConvertToPrimitives "Convert to Primitives"
 
+#define kShortcutIDActionViewer3DReselect "geoReselect"
+#define kShortcutDescActionViewer3DReselect "Reselect for Current Node"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 

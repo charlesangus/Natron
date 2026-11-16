@@ -34,6 +34,7 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -4918,6 +4919,14 @@ runGeoSelectionAction(SceneViewport* view,
     }
 }
 
+// Enter and Escape, which end reselecting.
+bool
+isReselectKey(Qt::KeyboardModifiers modifiers,
+              int key)
+{
+    return ((modifiers & ~Qt::KeypadModifier) == Qt::NoModifier) && ((key == Qt::Key_Return) || (key == Qt::Key_Enter) || (key == Qt::Key_Escape));
+}
+
 } // anonymous namespace
 
 // How far from the pointer, in logical pixels, a click finds a point or an edge.
@@ -5370,6 +5379,9 @@ struct SceneViewport::Implementation {
     GeoComponentEnum geoPickMode = eGeoComponentObjects;
     bool geometryContext = false;
     GeoComponentSelection componentSelection;
+    bool reselecting = false;
+    GeoComponentEnum reselectPickMode = eGeoComponentObjects;
+    GeoComponentSelection reselectSelection;
     // The geometry the engine's component highlight was mapped onto.
     std::shared_ptr<const GeoUsdConvert> highlightConvert;
 
@@ -6769,6 +6781,91 @@ SceneViewport::setComponentSelection(const GeoComponentSelection& selection)
     }
     _imp->componentSelection = selection;
     refreshComponentState();
+    Q_EMIT componentSelectionChanged();
+}
+
+bool
+SceneViewport::componentSelectionFromPattern(const GeoDetail& detail,
+                                             GeoComponentEnum type,
+                                             const std::string& pattern,
+                                             GeoComponentSelection* selection,
+                                             std::string* error)
+{
+    selection->type = type;
+    selection->elements.clear();
+    selection->edges.clear();
+    if (type == eGeoComponentEdges) {
+        std::set<GeoEdge> edges;
+        if (!geoSelectEdges(detail, pattern, &edges, error)) {
+            return false;
+        }
+        selection->edges = edgesToNumbers(detail, std::vector<GeoEdge>(edges.begin(), edges.end()));
+
+        return true;
+    }
+    if (type == eGeoComponentObjects) {
+        return true;
+    }
+    const GeoAttribClassEnum cls = (type == eGeoComponentPoints) ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
+    GeoElementMask mask;
+    if (!geoSelectElements(detail, cls, pattern, &mask, error)) {
+        return false;
+    }
+    selection->elements = numbersFromMask(detail, cls, mask);
+
+    return true;
+}
+
+GeoDetailConstPtr
+SceneViewport::shownDetail() const
+{
+    const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
+
+    return convert ? convert->detail() : GeoDetailConstPtr();
+}
+
+bool
+SceneViewport::isReselecting() const
+{
+    return _imp->reselecting;
+}
+
+void
+SceneViewport::beginReselect(const GeoComponentSelection& selection)
+{
+    if (!_imp->reselecting) {
+        _imp->reselectPickMode = _imp->geoPickMode;
+        _imp->reselectSelection = _imp->componentSelection;
+    }
+    _imp->reselecting = true;
+    setProperty("natronGeoReselecting", true);
+    // Not setGeoPickMode(): the selection is in the numbers of the geometry to come, so nothing is converted.
+    const GeoComponentEnum previous = _imp->geoPickMode;
+    _imp->geoPickMode = selection.type;
+    _imp->componentSelection = selection;
+    refreshComponentState();
+    if (previous != selection.type) {
+        Q_EMIT geoPickModeChanged(int(selection.type));
+    }
+    Q_EMIT componentSelectionChanged();
+}
+
+void
+SceneViewport::endReselect()
+{
+    if (!_imp->reselecting) {
+        return;
+    }
+    _imp->reselecting = false;
+    setProperty("natronGeoReselecting", false);
+    const GeoComponentEnum previous = _imp->geoPickMode;
+    _imp->geoPickMode = _imp->reselectPickMode;
+    _imp->componentSelection = _imp->reselectSelection;
+    _imp->reselectSelection = GeoComponentSelection();
+    refreshComponentState();
+    if (previous != _imp->geoPickMode) {
+        Q_EMIT geoPickModeChanged(int(_imp->geoPickMode));
+    }
     Q_EMIT componentSelectionChanged();
 }
 
@@ -8255,6 +8352,8 @@ SceneViewport::event(QEvent* e)
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key())
             || (geoPickModeForKey(k->modifiers(), k->key()) >= 0) || (geoSelectionActionForKey(k->modifiers(), k->key()) >= 0)
+            || matchesKeyBinding(kShortcutIDActionViewer3DReselect, k->modifiers(), k->key())
+            || (_imp->reselecting && isReselectKey(k->modifiers(), k->key()))
             || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
             e->accept();
 
@@ -8277,6 +8376,27 @@ SceneViewport::event(QEvent* e)
 void
 SceneViewport::keyPressEvent(QKeyEvent* e)
 {
+    if (_imp->reselecting && isReselectKey(e->modifiers(), e->key())) {
+        const bool commit = (e->key() != Qt::Key_Escape);
+        if (commit && _imp->selectionActions.commitReselect) {
+            _imp->selectionActions.commitReselect(_imp->componentSelection);
+        } else if (!commit && _imp->selectionActions.cancelReselect) {
+            _imp->selectionActions.cancelReselect();
+        } else {
+            endReselect();
+        }
+        e->accept();
+
+        return;
+    }
+    if (matchesKeyBinding(kShortcutIDActionViewer3DReselect, e->modifiers(), e->key())) {
+        if (_imp->selectionActions.reselect) {
+            _imp->selectionActions.reselect();
+        }
+        e->accept();
+
+        return;
+    }
     if ((e->key() == Qt::Key_Space) && bindingsUseSpace()) {
         _imp->spaceHeld = true;
         e->accept();

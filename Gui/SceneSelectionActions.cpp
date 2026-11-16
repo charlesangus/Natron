@@ -25,25 +25,32 @@
 
 #include "SceneSelectionActions.h"
 
+#include <functional>
 #include <list>
 #include <string>
 
+#include <QFutureWatcher>
 #include <QPointF>
+#include <QPointer>
 #include <QRectF>
 #include <QSet>
 #include <QStatusBar>
 #include <QUndoCommand>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QCoreApplication>
 
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Plugin.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/Gui.h"
@@ -426,6 +433,129 @@ setGroupFromComponents(Gui* gui,
     history->push(new SetGeoGroupCommand(group, pattern, typeKnob, typeIndex, label), UndoScope(UndoScope::holderForNode(node)));
 }
 
+struct ReselectTarget {
+    NodePtr node;
+    const NodeSpec* spec = nullptr;
+    KnobStringPtr group;
+    KnobChoicePtr type;
+    NodePtr input;
+};
+
+// The node of the graph the viewer is in that Reselect applies to, or why it doesn't apply.
+bool
+findReselectTarget(const NodePtr& viewerNode,
+                   ReselectTarget* target,
+                   QString* problem)
+{
+    NodeCollectionPtr collection = viewerNode ? viewerNode->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = collection ? dynamic_cast<NodeGraph*>(collection->getNodeGraph()) : nullptr;
+    if (!graph) {
+        *problem = tr("Reselect: there is no node graph to take the node from.");
+
+        return false;
+    }
+    const std::list<NodeGuiPtr>& selected = graph->getSelectedNodes();
+    if (selected.empty()) {
+        *problem = tr("Reselect: select a node with a group first.");
+
+        return false;
+    }
+    if (selected.size() > 1) {
+        *problem = tr("Reselect: select only one node.");
+
+        return false;
+    }
+    target->node = selected.front()->getNode();
+    const QString name = QString::fromStdString(target->node->getLabel());
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(target->node->getEffectInstance().get());
+    target->spec = native ? native->nodeSpec() : nullptr;
+    if (!target->spec || target->spec->geoGroupKnob.empty()) {
+        *problem = tr("Reselect: %1 has no group to reselect.").arg(name);
+
+        return false;
+    }
+    target->group = std::dynamic_pointer_cast<KnobString>(target->node->getKnobByName(std::string(target->spec->geoGroupKnob)));
+    if (!target->group) {
+        *problem = tr("Reselect: %1 has no group to reselect.").arg(name);
+
+        return false;
+    }
+    if (!target->spec->geoGroupTypeKnob.empty()) {
+        target->type = std::dynamic_pointer_cast<KnobChoice>(target->node->getKnobByName(std::string(target->spec->geoGroupTypeKnob)));
+    }
+    const int input = firstInputTaking(target->node, eDataKindGeometry);
+    target->input = (input >= 0) ? target->node->getInput(input) : NodePtr();
+    if (!target->input) {
+        *problem = tr("Reselect: %1 has no geometry connected to its input.").arg(name);
+
+        return false;
+    }
+
+    return true;
+}
+
+// The class the node's group type and pattern select in detail.
+bool
+resolveReselectType(const ReselectTarget& target,
+                    const GeoDetail& detail,
+                    GeoComponentEnum* type,
+                    std::string* error)
+{
+    GeoGroupTypeEnum groupType = eGeoGroupTypeGuess;
+    if (target.type) {
+        const std::vector<ChoiceOption> options = target.type->getEntries_mt_safe();
+        const int index = target.type->getValue(0);
+        if ((index >= 0) && (std::size_t(index) < options.size())) {
+            const std::string& id = options[std::size_t(index)].id;
+            if (id == "points") {
+                groupType = eGeoGroupTypePoints;
+            } else if (id == "primitives") {
+                groupType = eGeoGroupTypePrimitives;
+            } else if (id == "edges") {
+                groupType = eGeoGroupTypeEdges;
+            }
+        }
+    }
+    if (groupType == eGeoGroupTypeGuess) {
+        std::vector<GeoGroupTypeEnum> allowed;
+        const unsigned classes = target.spec->geoGroupClasses;
+        if (classes & eGeoGroupClassPoints) {
+            allowed.push_back(eGeoGroupTypePoints);
+        }
+        if (classes & eGeoGroupClassEdges) {
+            allowed.push_back(eGeoGroupTypeEdges);
+        }
+        if (classes & eGeoGroupClassPrimitives) {
+            allowed.push_back(eGeoGroupTypePrimitives);
+        }
+        if (allowed.empty() || !geoGuessGroupType(detail, target.group->getValue(0), allowed, eGeoGroupTypePrimitives, &groupType, error)) {
+            if (allowed.empty() && error) {
+                *error = tr("the node selects no point, edge or primitive group").toStdString();
+            }
+
+            return false;
+        }
+    }
+    switch (groupType) {
+    case eGeoGroupTypePoints:
+        *type = eGeoComponentPoints;
+        break;
+    case eGeoGroupTypeEdges:
+        *type = eGeoComponentEdges;
+        break;
+    default:
+        *type = eGeoComponentPrimitives;
+        break;
+    }
+
+    return true;
+}
+
+struct ReselectEvaluation {
+    GeoDetailConstPtr detail;
+    std::string error;
+};
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 namespace SceneSelectionActions {
@@ -644,6 +774,194 @@ createFromComponents(Gui* gui,
         setGroupFromComponents(gui, created, detail, selection);
     };
     TabMenuBridge::launch(graph, context);
+}
+
+struct ReselectSession::Implementation {
+    Gui* gui;
+    ViewerTab* tab;
+    QPointer<SceneViewport> view;
+    // Evaluating the input's geometry, or showing it, is under way.
+    bool pending = false;
+    NodeWPtr node;
+    GeoDetailConstPtr detail;
+    // Puts back what the viewer showed; empty when it was not changed.
+    std::function<void()> restoreViewer;
+
+    NodePtr viewerNode() const
+    {
+        ViewerInstance* viewer = tab ? tab->getInternalNode() : nullptr;
+
+        return viewer ? viewer->getNode() : NodePtr();
+    }
+
+    // Makes the viewer's input A show input, when it doesn't; false if it can't.
+    bool showInput(const NodePtr& input)
+    {
+        NodePtr viewerNode = this->viewerNode();
+        ViewerInstance* viewer = tab->getInternalNode();
+        InspectorNodePtr inspector = std::dynamic_pointer_cast<InspectorNode>(viewerNode);
+        int a = -1, b = -1;
+        if (!inspector || !viewer) {
+            return false;
+        }
+        viewer->getActiveInputs(a, b);
+        if (a < 0) {
+            return false;
+        }
+        if (viewerNode->getInput(a) == input) {
+            return true;
+        }
+        for (int i = 0; i < viewerNode->getNInputs(); ++i) {
+            if (viewerNode->getInput(i) == input) {
+                inspector->setActiveInputAndRefresh(i, true);
+                restoreViewer = [inspector, a]() { inspector->setActiveInputAndRefresh(a, true); };
+
+                return true;
+            }
+        }
+        const NodePtr previous = viewerNode->getInput(a);
+        if (!inspector->replaceInput(input, a)) {
+            return false;
+        }
+        restoreViewer = [inspector, previous, a]() {
+            if (previous) {
+                ignore_result(inspector->replaceInput(previous, a));
+            } else {
+                ignore_result(inspector->disconnectInput(a));
+            }
+        };
+
+        return true;
+    }
+
+    void finish()
+    {
+        pending = false;
+        node.reset();
+        detail.reset();
+        if (view) {
+            view->endReselect();
+        }
+        if (restoreViewer) {
+            restoreViewer();
+            restoreViewer = nullptr;
+        }
+    }
+
+    void load(const ReselectTarget& target,
+              const GeoDetailConstPtr& input)
+    {
+        pending = false;
+        GeoComponentEnum type = eGeoComponentPrimitives;
+        std::string error;
+        GeoComponentSelection selection;
+        if (!input || !resolveReselectType(target, *input, &type, &error)
+            || !SceneViewport::componentSelectionFromPattern(*input, type, target.group->getValue(0), &selection, &error)) {
+            showHint(gui, tr("Reselect: the group of %1 can't be read: %2").arg(QString::fromStdString(target.node->getLabel()), QString::fromStdString(error)));
+            if (restoreViewer) {
+                restoreViewer();
+                restoreViewer = nullptr;
+            }
+
+            return;
+        }
+        node = target.node;
+        detail = input;
+        view->beginReselect(selection);
+        showHint(gui, tr("Reselecting %1: Enter applies the selection, Escape cancels.").arg(QString::fromStdString(target.node->getLabel())));
+    }
+};
+
+ReselectSession::ReselectSession(Gui* gui,
+                                 ViewerTab* tab,
+                                 SceneViewport* view)
+    : _imp(new Implementation)
+{
+    _imp->gui = gui;
+    _imp->tab = tab;
+    _imp->view = view;
+}
+
+ReselectSession::~ReselectSession() = default;
+
+void
+ReselectSession::begin()
+{
+    if (!_imp->view || _imp->pending || _imp->view->isReselecting()) {
+        return;
+    }
+    ReselectTarget target;
+    QString problem;
+    if (!findReselectTarget(_imp->viewerNode(), &target, &problem)) {
+        showHint(_imp->gui, problem);
+
+        return;
+    }
+    const bool shown = _imp->tab->getSceneViewedNode() == target.input;
+    if (!_imp->showInput(target.input)) {
+        showHint(_imp->gui, tr("Reselect: the viewer can't show the input of %1.").arg(QString::fromStdString(target.node->getLabel())));
+
+        return;
+    }
+    if (shown) {
+        if (GeoDetailConstPtr detail = _imp->view->shownDetail()) {
+            _imp->load(target, detail);
+
+            return;
+        }
+    }
+    _imp->pending = true;
+    const EffectInstancePtr effect = target.input->getEffectInstance();
+    const double frame = _imp->tab->getTimeLine()->currentFrame();
+    auto* watcher = new QFutureWatcher<ReselectEvaluation>(_imp->view);
+    QObject::connect(watcher, &QFutureWatcher<ReselectEvaluation>::finished, _imp->view, [this, watcher, target]() {
+        const ReselectEvaluation result = watcher->result();
+        watcher->deleteLater();
+        if (!result.detail) {
+            _imp->pending = false;
+            showHint(_imp->gui, tr("Reselect: the geometry of the input can't be computed: %1").arg(QString::fromStdString(result.error)));
+            if (_imp->restoreViewer) {
+                _imp->restoreViewer();
+                _imp->restoreViewer = nullptr;
+            }
+
+            return;
+        }
+        _imp->load(target, result.detail);
+    });
+    watcher->setFuture(QtConcurrent::run([effect, frame]() {
+        ReselectEvaluation result;
+        if (effect->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(frame, ViewIdx(0)), &result.detail, &result.error) != EffectInstance::eRenderRoIRetCodeOk) {
+            result.detail.reset();
+        }
+
+        return result;
+    }));
+}
+
+void
+ReselectSession::commit(const GeoComponentSelection& selection)
+{
+    NodePtr node = _imp->node.lock();
+    if (!node || !node->isActivated()) {
+        showHint(_imp->gui, tr("Reselect: the node is gone."));
+        _imp->finish();
+
+        return;
+    }
+    if (selection.empty()) {
+        showHint(_imp->gui, tr("Reselect: nothing is selected. Select something, or Escape to leave the group as it is."));
+
+        return;
+    }
+    setGroupFromComponents(_imp->gui, node, _imp->detail, selection);
+    _imp->finish();
+}
+
+void
+ReselectSession::cancel()
+{
+    _imp->finish();
 }
 
 void

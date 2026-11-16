@@ -127,25 +127,68 @@ try:
             return (mid.x(), mid.y())
         return None
 
+    def wiring():
+        """Every node in the graph with what feeds its first input, for the log."""
+        parts = []
+        for n in app.getChildren():
+            if n.getMaxInputCount() < 1:
+                continue
+            fed = n.getInput(0)
+            parts.append("%s<-%s" % (n.getScriptName(), fed.getScriptName() if fed else None))
+        return ", ".join(parts)
+
+    def check_inserted(label, source, dest):
+        """Checks that dest is fed by a Dot that the source feeds, and returns that Dot."""
+        dot = dest.getInput(0)
+        report("NOTE %s: wiring %s" % (label, wiring()))
+        check(is_dot(dot), "%s: the Blur's input is a Dot" % label)
+        check(is_dot(dot) and same(dot.getInput(0), source), "%s: the Dot is fed by the Constant" % label)
+        return dot if is_dot(dot) else None
+
+    def make_pipe(label, x):
+        """A Constant feeding a Blur straight below it, so the pipe's bend point is known."""
+        source = create("Constant", x, 0)
+        dest = create("Blur", x, PIPE_GAP)
+        gt.close_all_panels()
+        sx, sy, sw, sh = box(source)
+        dx, dy, dw, dh = box(dest)
+        dest.setPosition(sx + sw / 2.0 - dw / 2.0, dy)
+        gt.require(dest.connectInput(0, source), "%s: connect the Blur to the Constant" % label)
+        return source, dest
+
     def steps():
         ok = yield ("until", lambda: root_graph() is not None, STARTUP_TIMEOUT_S)
         gt.require(ok, "node graph widget is up")
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
 
-        gt.section("a-insert")
-        source = create("Constant", 0, 0)
-        dest = create("Blur", 0, PIPE_GAP)
+        gt.section("a-click")
+        source, dest = make_pipe("a-click", 0)
+        yield ("sleep", SETTLE_MS)
+        graph = root_graph()
+        bend = bend_point(graph, source, dest)
+        gt.require(bend is not None, "a-click: found the Constant -> Blur pipe item in the graph scene")
+        report("NOTE source %r, dest %r, bend point %r" % (box(source), box(dest), bend))
+        view_at(graph, bend)
+        at = to_vp(graph, bend)
+        vp = graph.viewport()
+        ctrl = Qt.ControlModifier
+        send_key(graph, QEvent.KeyPress, Qt.Key_Control, ctrl)
+        send_mouse(vp, QEvent.MouseButtonPress, at, Qt.LeftButton, Qt.LeftButton, ctrl)
+        yield ("sleep", SETTLE_MS)
+        gt.shot("a_click_pressed.png")
+        check_inserted("a-click (button down)", source, dest)
+        send_mouse(vp, QEvent.MouseButtonRelease, at, Qt.LeftButton, Qt.NoButton, ctrl)
+        send_key(graph, QEvent.KeyRelease, Qt.Key_Control, Qt.NoModifier)
+        yield ("sleep", SETTLE_MS)
         gt.close_all_panels()
+        gt.shot("a_click_released.png")
+        check_inserted("a-click (released)", source, dest)
+
+        gt.section("a-insert")
+        source, dest = make_pipe("a-insert", 600)
         yield ("sleep", SETTLE_MS)
         sx, sy, sw, sh = box(source)
-        dx, dy, dw, dh = box(dest)
-        # Centred in one column, the pipe is vertical, so its midpoint (the bend point) is known.
-        dest.setPosition(sx + sw / 2.0 - dw / 2.0, dy)
-        gt.require(dest.connectInput(0, source), "connect the Blur to the Constant")
-        yield ("sleep", SETTLE_MS)
-        sx, sy, sw, sh = box(source)
-        dx, dy, dw, dh = box(dest)
         graph = root_graph()
         bend = bend_point(graph, source, dest)
         gt.require(bend is not None, "a-insert: found the Constant -> Blur pipe item in the graph scene")
@@ -155,11 +198,10 @@ try:
         end = to_vp(graph, (bend[0] + DOT_DRAG[0], bend[1] + DOT_DRAG[1]))
         ctrl_drag(graph, start, end)
         yield ("sleep", SETTLE_MS)
+        gt.shot("a_insert_dragged.png")
 
-        dot = dest.getInput(0)
-        report("NOTE the Blur's input after the Ctrl+click: %r" % (dot.getScriptName() if dot else None,))
-        gt.require(is_dot(dot), "a-insert: Ctrl+click on the bend point puts a Dot on the Blur's input")
-        check(same(dot.getInput(0), source), "a-insert: the Dot is fed by the Constant")
+        dot = check_inserted("a-insert", source, dest)
+        gt.require(dot is not None, "a-insert: Ctrl+click on the bend point puts a Dot on the Blur's input")
         dot_x, dot_y = dot.getPosition()
         check(abs(dot_x - bend[0]) > 1.0 or abs(dot_y - bend[1]) > 1.0,
               "a-insert: the Ctrl-drag that followed moved the Dot (at %r, bend point %r)" % ((dot_x, dot_y), bend))

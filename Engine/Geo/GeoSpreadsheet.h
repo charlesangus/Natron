@@ -28,14 +28,17 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <variant>
 #include <vector>
 
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/GeoDetail.h"
 
 NATRON_NAMESPACE_ENTER
@@ -141,6 +144,21 @@ private:
     std::vector<GeoSpreadsheetColumn> _columns[kGeoAttribClassCount];
     std::vector<Column> _bindings[kGeoAttribClassCount];
 };
+
+/**
+ * @brief The element numbers of one class in view order: the elements @p mask keeps (every element when null; an
+ * element past the mask's size is dropped), sorted by column @p sortColumn (unsorted when negative).
+ *
+ * Equal keys stay in ascending element order, descending included. Keys of different kinds in one column order by
+ * kind, then value; NaN sorts after every number. Returns null when @p cancelled became true before the order was
+ * complete; it is polled at least every few tens of thousands of rows.
+ **/
+std::shared_ptr<const std::vector<GeoIndex>> geoSpreadsheetBuildOrder(const GeoSpreadsheetSource& source,
+                                                                      GeoAttribClassEnum cls,
+                                                                      const GeoElementMask* mask,
+                                                                      int sortColumn,
+                                                                      bool descending,
+                                                                      const std::atomic<bool>& cancelled);
 
 /**
  * @brief Test hook: counts the attribute and topology pages readCells() reads, one per column and run of rows in

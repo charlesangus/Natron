@@ -25,11 +25,16 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -297,4 +302,195 @@ TEST(GeoSpreadsheetTest, BlockNearEndOfHugeDetailReadsOnlyItsPages)
     EXPECT_EQ(out[0], std::to_string(kPoints - 50));
     EXPECT_GT(pages, 0u);
     EXPECT_LE(pages, 3u * 2u);
+}
+
+namespace {
+
+class FakeSource : public GeoSpreadsheetSource {
+public:
+    typedef std::function<GeoSpreadsheetSortKey(std::int64_t)> KeyFn;
+
+    FakeSource(std::int64_t rows,
+               KeyFn key)
+        : _rows(rows)
+        , _key(std::move(key))
+        , _columns(1)
+    {
+    }
+
+    std::int64_t rowCount(GeoAttribClassEnum) const override
+    {
+        return _rows;
+    }
+
+    const std::vector<GeoSpreadsheetColumn>& columns(GeoAttribClassEnum) const override
+    {
+        return _columns;
+    }
+
+    void readCells(GeoAttribClassEnum,
+                   std::int64_t,
+                   std::int64_t,
+                   std::span<const int>,
+                   std::vector<std::string>& out) const override
+    {
+        out.clear();
+    }
+
+    GeoSpreadsheetSortKey sortKey(GeoAttribClassEnum,
+                                  int,
+                                  std::int64_t row) const override
+    {
+        return _key(row);
+    }
+
+    std::string fullValue(GeoAttribClassEnum,
+                          int,
+                          std::int64_t) const override
+    {
+        return std::string();
+    }
+
+private:
+    std::int64_t _rows;
+    KeyFn _key;
+    std::vector<GeoSpreadsheetColumn> _columns;
+};
+
+std::vector<GeoIndex>
+buildOrder(const GeoSpreadsheetSource& src,
+           const GeoElementMask* mask,
+           int column,
+           bool descending)
+{
+    const std::atomic<bool> cancelled(false);
+    const auto order = geoSpreadsheetBuildOrder(src, eGeoAttribClassPoint, mask, column, descending, cancelled);
+    EXPECT_NE(order, nullptr);
+
+    return order ? *order : std::vector<GeoIndex>();
+}
+
+std::vector<GeoIndex>
+sorted(const std::vector<GeoIndex>& elements,
+       const std::function<int(GeoIndex, GeoIndex)>& cmp)
+{
+    std::vector<GeoIndex> out = elements;
+    std::stable_sort(out.begin(), out.end(), [&](GeoIndex a, GeoIndex b) { return cmp(a, b) < 0; });
+
+    return out;
+}
+
+std::vector<GeoIndex>
+elementRange(std::int64_t n)
+{
+    std::vector<GeoIndex> v;
+    v.resize(std::size_t(n));
+    for (std::int64_t i = 0; i < n; ++i) {
+        v[std::size_t(i)] = i;
+    }
+
+    return v;
+}
+
+// More rows than one sort chunk, so the merge passes run, with many ties.
+constexpr std::int64_t kOrderRows = 200000;
+
+} // namespace
+
+TEST(GeoSpreadsheetOrderTest, FloatColumnAscendingAndDescendingKeepTiesInElementOrder)
+{
+    auto key = [](std::int64_t r) { return double((r * 7919) % 1000) * 0.5; };
+    const FakeSource src(kOrderRows, [&](std::int64_t r) { return GeoSpreadsheetSortKey(key(r)); });
+    const std::vector<GeoIndex> asc = buildOrder(src, nullptr, 0, false);
+    const std::vector<GeoIndex> desc = buildOrder(src, nullptr, 0, true);
+    EXPECT_EQ(asc, sorted(elementRange(kOrderRows), [&](GeoIndex a, GeoIndex b) { return key(a) < key(b) ? -1 : (key(a) > key(b) ? 1 : 0); }));
+    EXPECT_EQ(desc, sorted(elementRange(kOrderRows), [&](GeoIndex a, GeoIndex b) { return key(a) > key(b) ? -1 : (key(a) < key(b) ? 1 : 0); }));
+}
+
+TEST(GeoSpreadsheetOrderTest, IntegerColumnIsOrderedByValue)
+{
+    const FakeSource src(kOrderRows, [](std::int64_t r) { return GeoSpreadsheetSortKey(double(-(r % 97))); });
+    const std::vector<GeoIndex> asc = buildOrder(src, nullptr, 0, false);
+    ASSERT_EQ(asc.size(), std::size_t(kOrderRows));
+    for (std::size_t i = 1; i < asc.size(); ++i) {
+        const double a = -double(asc[i - 1] % 97);
+        const double b = -double(asc[i] % 97);
+        ASSERT_TRUE(a < b || (a == b && asc[i - 1] < asc[i])) << i;
+    }
+}
+
+TEST(GeoSpreadsheetOrderTest, StringColumnAscendingAndDescending)
+{
+    auto key = [](std::int64_t r) { return std::string("s") + std::to_string((r * 31) % 500); };
+    const FakeSource src(kOrderRows, [&](std::int64_t r) { return GeoSpreadsheetSortKey(key(r)); });
+    auto cmp = [&](GeoIndex a, GeoIndex b) { return key(a).compare(key(b)); };
+    EXPECT_EQ(buildOrder(src, nullptr, 0, false), sorted(elementRange(kOrderRows), cmp));
+    EXPECT_EQ(buildOrder(src, nullptr, 0, true), sorted(elementRange(kOrderRows), [&](GeoIndex a, GeoIndex b) { return cmp(b, a); }));
+}
+
+TEST(GeoSpreadsheetOrderTest, ArrayLengthColumnOrdersByLength)
+{
+    auto len = [](std::int64_t r) { return (r * 13) % 50; };
+    const FakeSource src(1000, [&](std::int64_t r) { return GeoSpreadsheetSortKey(GeoSpreadsheetArrayLength { len(r) }); });
+    auto cmp = [&](GeoIndex a, GeoIndex b) { return len(a) < len(b) ? -1 : (len(a) > len(b) ? 1 : 0); };
+    EXPECT_EQ(buildOrder(src, nullptr, 0, false), sorted(elementRange(1000), cmp));
+    EXPECT_EQ(buildOrder(src, nullptr, 0, true), sorted(elementRange(1000), [&](GeoIndex a, GeoIndex b) { return cmp(b, a); }));
+}
+
+TEST(GeoSpreadsheetOrderTest, MixedKindsOrderByKindThenValue)
+{
+    auto key = [](std::int64_t r) {
+        switch (r % 3) {
+        case 0:
+            return GeoSpreadsheetSortKey(std::string(1, char('a' + r % 7)));
+        case 1:
+            return GeoSpreadsheetSortKey(double(r % 5));
+        default:
+            return GeoSpreadsheetSortKey(GeoSpreadsheetArrayLength { r % 4 });
+        }
+    };
+    const FakeSource src(300, key);
+    const std::vector<GeoIndex> asc = buildOrder(src, nullptr, 0, false);
+    ASSERT_EQ(asc.size(), 300u);
+    for (std::size_t i = 1; i < asc.size(); ++i) {
+        const GeoSpreadsheetSortKey a = key(asc[i - 1]);
+        const GeoSpreadsheetSortKey b = key(asc[i]);
+        ASSERT_LE(a.index(), b.index()) << i;
+        if (a == b) {
+            ASSERT_LT(asc[i - 1], asc[i]) << i;
+        }
+    }
+}
+
+TEST(GeoSpreadsheetOrderTest, MaskKeepsOnlyItsElementsAndNoSortKeepsElementOrder)
+{
+    const FakeSource src(1000, [](std::int64_t r) { return GeoSpreadsheetSortKey(double(1000 - r)); });
+    GeoElementMask mask(1000, 0);
+    std::vector<GeoIndex> kept;
+    for (std::size_t i = 0; i < mask.size(); i += 7) {
+        mask[i] = 1;
+        kept.push_back(GeoIndex(i));
+    }
+    EXPECT_EQ(buildOrder(src, &mask, -1, false), kept);
+    std::vector<GeoIndex> reversed(kept.rbegin(), kept.rend());
+    EXPECT_EQ(buildOrder(src, &mask, 0, false), reversed);
+    EXPECT_EQ(buildOrder(src, nullptr, -1, false), elementRange(1000));
+}
+
+TEST(GeoSpreadsheetOrderTest, CancellingMidSortReturnsPromptly)
+{
+    constexpr std::int64_t kRows = 10000000;
+    const FakeSource src(kRows, [](std::int64_t r) { return GeoSpreadsheetSortKey(double((r * 2654435761u) % 1000003)); });
+    std::atomic<bool> cancelled(false);
+    std::atomic<std::int64_t> setAt(0);
+    std::thread canceller([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        setAt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        cancelled = true;
+    });
+    const auto order = geoSpreadsheetBuildOrder(src, eGeoAttribClassPoint, nullptr, 0, false, cancelled);
+    const std::int64_t doneAt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    canceller.join();
+    EXPECT_FALSE(order);
+    EXPECT_LT(doneAt - setAt.load(), 100000);
 }

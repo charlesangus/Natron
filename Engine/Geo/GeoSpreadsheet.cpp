@@ -23,6 +23,8 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <cmath>
+#include <functional>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -540,6 +542,213 @@ GeoDetailSpreadsheetSource::fullValue(GeoAttribClassEnum cls,
     }
 
     return intrinsicText(o, col.kind, true);
+}
+
+namespace {
+
+constexpr std::size_t kOrderChunk = 65536;
+
+int
+compareKeys(const GeoSpreadsheetSortKey& a,
+            const GeoSpreadsheetSortKey& b);
+
+int
+compareDoubles(double a,
+               double b)
+{
+    const bool an = std::isnan(a);
+    const bool bn = std::isnan(b);
+    if (an || bn) {
+        return int(an) - int(bn);
+    }
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+int
+compareKeys(const GeoSpreadsheetSortKey& a,
+            const GeoSpreadsheetSortKey& b)
+{
+    if (a.index() != b.index()) {
+        return a.index() < b.index() ? -1 : 1;
+    }
+    switch (a.index()) {
+    case 0:
+        return compareDoubles(std::get<0>(a), std::get<0>(b));
+    case 1:
+        return std::get<1>(a).compare(std::get<1>(b)) < 0 ? -1 : (std::get<1>(a) == std::get<1>(b) ? 0 : 1);
+    default: {
+        const std::int64_t x = std::get<2>(a).length;
+        const std::int64_t y = std::get<2>(b).length;
+        return x < y ? -1 : (x > y ? 1 : 0);
+    }
+    }
+}
+
+// Sorts and merges with a strict total order (key, then element number), so no stable sort is needed.
+template <typename Compare>
+std::shared_ptr<const std::vector<GeoIndex>>
+sortOrder(std::vector<GeoIndex> order,
+          const Compare& before,
+          const std::atomic<bool>& cancelled)
+{
+    const std::size_t n = order.size();
+    const std::size_t chunks = (n + kOrderChunk - 1) / kOrderChunk;
+    geoParallelFor(
+        chunks, [&](std::size_t c) {
+            if (cancelled.load(std::memory_order_relaxed)) {
+                return;
+            }
+            const std::size_t b = c * kOrderChunk;
+            std::sort(order.begin() + b, order.begin() + std::min(n, b + kOrderChunk), before);
+        },
+        2);
+    if (cancelled.load()) {
+        return nullptr;
+    }
+
+    std::vector<GeoIndex> scratch(n);
+    std::vector<GeoIndex>* src = &order;
+    std::vector<GeoIndex>* dst = &scratch;
+    for (std::size_t width = kOrderChunk; width < n; width *= 2) {
+        const std::size_t pairs = (n + 2 * width - 1) / (2 * width);
+        geoParallelFor(
+            pairs, [&](std::size_t p) {
+                const std::size_t lo = p * 2 * width;
+                const std::size_t mid = std::min(n, lo + width);
+                const std::size_t hi = std::min(n, lo + 2 * width);
+                std::size_t i = lo;
+                std::size_t j = mid;
+                std::size_t k = lo;
+                const GeoIndex* in = src->data();
+                GeoIndex* out = dst->data();
+                while (i < mid && j < hi) {
+                    if ((k & (kOrderChunk - 1)) == 0 && cancelled.load(std::memory_order_relaxed)) {
+                        return;
+                    }
+                    out[k++] = before(in[j], in[i]) ? in[j++] : in[i++];
+                }
+                while (i < mid) {
+                    out[k++] = in[i++];
+                }
+                while (j < hi) {
+                    out[k++] = in[j++];
+                }
+            },
+            2);
+        if (cancelled.load()) {
+            return nullptr;
+        }
+        std::swap(src, dst);
+    }
+    return std::make_shared<const std::vector<GeoIndex>>(std::move(*src));
+}
+
+} // namespace
+
+std::shared_ptr<const std::vector<GeoIndex>>
+geoSpreadsheetBuildOrder(const GeoSpreadsheetSource& source,
+                         GeoAttribClassEnum cls,
+                         const GeoElementMask* mask,
+                         int sortColumn,
+                         bool descending,
+                         const std::atomic<bool>& cancelled)
+{
+    const std::int64_t rows = std::max<std::int64_t>(0, source.rowCount(cls));
+    std::vector<GeoIndex> order;
+    order.reserve(std::size_t(rows));
+    for (std::int64_t r = 0; r < rows; ++r) {
+        if ((r & (kOrderChunk - 1)) == 0 && cancelled.load(std::memory_order_relaxed)) {
+            return nullptr;
+        }
+        if (!mask || (std::size_t(r) < mask->size() && (*mask)[std::size_t(r)])) {
+            order.push_back(r);
+        }
+    }
+    if (sortColumn < 0 || order.size() < 2) {
+        return std::make_shared<const std::vector<GeoIndex>>(std::move(order));
+    }
+
+    const std::size_t n = order.size();
+    const std::size_t chunks = (n + kOrderChunk - 1) / kOrderChunk;
+
+    // Keys are indexed by element number. A column that only holds numbers is kept as plain doubles: a variant
+    // per row would cost five times the memory on the tables this exists for.
+    std::vector<double> numbers;
+    numbers.resize(std::size_t(rows));
+    std::atomic<bool> allNumbers(true);
+    geoParallelFor(
+        chunks, [&](std::size_t c) {
+            const std::size_t b = c * kOrderChunk;
+            const std::size_t e = std::min(n, b + kOrderChunk);
+            for (std::size_t i = b; i < e; ++i) {
+                if (cancelled.load(std::memory_order_relaxed) || !allNumbers.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                const GeoSpreadsheetSortKey key = source.sortKey(cls, sortColumn, order[i]);
+                if (const double* d = std::get_if<double>(&key)) {
+                    numbers[std::size_t(order[i])] = *d;
+                } else {
+                    allNumbers.store(false, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        },
+        2);
+    if (cancelled.load()) {
+        return nullptr;
+    }
+
+    if (allNumbers.load()) {
+        const double* k = numbers.data();
+        if (descending) {
+            return sortOrder(
+                std::move(order), [k](GeoIndex a, GeoIndex b) {
+                    const int c = compareDoubles(k[a], k[b]);
+                    return c != 0 ? c > 0 : a < b;
+                },
+                cancelled);
+        }
+        return sortOrder(
+            std::move(order), [k](GeoIndex a, GeoIndex b) {
+                const int c = compareDoubles(k[a], k[b]);
+                return c != 0 ? c < 0 : a < b;
+            },
+            cancelled);
+    }
+
+    numbers = std::vector<double>();
+    std::vector<GeoSpreadsheetSortKey> keys;
+    keys.resize(std::size_t(rows));
+    geoParallelFor(
+        chunks, [&](std::size_t c) {
+            const std::size_t b = c * kOrderChunk;
+            const std::size_t e = std::min(n, b + kOrderChunk);
+            for (std::size_t i = b; i < e; ++i) {
+                if (cancelled.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                keys[std::size_t(order[i])] = source.sortKey(cls, sortColumn, order[i]);
+            }
+        },
+        2);
+    if (cancelled.load()) {
+        return nullptr;
+    }
+    const GeoSpreadsheetSortKey* k = keys.data();
+    if (descending) {
+        return sortOrder(
+            std::move(order), [k](GeoIndex a, GeoIndex b) {
+                const int c = compareKeys(k[a], k[b]);
+                return c != 0 ? c > 0 : a < b;
+            },
+            cancelled);
+    }
+    return sortOrder(
+        std::move(order), [k](GeoIndex a, GeoIndex b) {
+            const int c = compareKeys(k[a], k[b]);
+            return c != 0 ? c < 0 : a < b;
+        },
+        cancelled);
 }
 
 NATRON_NAMESPACE_EXIT

@@ -78,6 +78,7 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
@@ -1230,8 +1231,9 @@ protected:
     virtual void SetUp() OVERRIDE
     {
         USDRenderRendererTest::SetUp();
-        // Natron Utility too traces one ray through each pixel's centre.
-        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
+        // Natron Utility too traces one ray through each pixel's centre, and Storm renders the cage,
+        // which a level above 0 would refine on the Utility side.
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) } });
         const char* samples = std::getenv("HDX_MSAA_SAMPLE_COUNT");
         ASSERT_TRUE(samples && (std::strcmp(samples, "1") == 0)) << "run this suite alone with HDX_MSAA_SAMPLE_COUNT=1, as ctest does";
     }

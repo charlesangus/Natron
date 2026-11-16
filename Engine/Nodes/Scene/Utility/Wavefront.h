@@ -296,12 +296,14 @@ private:
         std::uint64_t topologyVersion;
         std::uint64_t pointsVersion;
         std::uint64_t stVersion;
+        std::uint64_t normalsVersion;
         std::size_t pointCount;
 
         bool operator==(const SourceVersion& other) const
         {
             return id == other.id && colorVersion == other.colorVersion && topologyVersion == other.topologyVersion
-                && pointsVersion == other.pointsVersion && stVersion == other.stVersion && pointCount == other.pointCount;
+                && pointsVersion == other.pointsVersion && stVersion == other.stVersion && normalsVersion == other.normalsVersion
+                && pointCount == other.pointCount;
         }
     };
 
@@ -323,6 +325,7 @@ private:
     std::vector<PXR_NS::GfVec4f> _points;
     std::vector<PXR_NS::GfVec4f> _instanceTransforms;
     std::vector<PXR_NS::GfVec2f> _sts;
+    std::vector<PXR_NS::GfVec4f> _normals;
     std::vector<SourceVersion> _sources;
     std::vector<KernelLightRecord> _lights;
     // The dome importance tables and IES tables the light records point into.

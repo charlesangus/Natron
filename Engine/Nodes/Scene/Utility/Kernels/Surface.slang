@@ -62,6 +62,37 @@ public void cornerSts(StructuredBuffer<float2> sts, StructuredBuffer<int> triang
     st2 = sts[corners.z];
 }
 
+// The object-space shading normal at a hit, interpolated from the geometry's normals; zero without them.
+public float3 surfaceNormal(StructuredBuffer<float4> normals, StructuredBuffer<int> triangles, GeometryRecord geometry, uint primitive, float u, float v)
+{
+    const uint offset = geometry.normalOffset;
+    const uint binding = geometry.normalBinding;
+
+    if (binding == kNormalBindingNone)
+        return float3(0.0, 0.0, 0.0);
+    if (binding == kColorBindingConstant)
+        return normals[offset].xyz;
+    if (binding == kColorBindingTriangle)
+        return normals[offset + primitive].xyz;
+
+    const uint3 corners = cornerIndices(triangles, geometry, offset, binding, primitive);
+    return ((1.0 - u - v) * normals[corners.x] + u * normals[corners.y] + v * normals[corners.z]).xyz;
+}
+
+// The unit world shading normal for an object-space normal, through the instance's world-to-object
+// rows (the inverse transpose), turned to geometric's side; geometric when there is none.
+public float3 shadingNormal(float3 objectNormal, float4 w0, float4 w1, float4 w2, float3 geometric)
+{
+    const float3 world = float3(dot(w0.xyz, objectNormal), dot(w1.xyz, objectNormal), dot(w2.xyz, objectNormal));
+    const float lengthW = length(world);
+
+    if (!(lengthW > 1e-12) || isinf(lengthW))
+        return geometric;
+
+    const float3 unit = world / lengthW;
+    return dot(unit, geometric) < 0.0 ? -unit : unit;
+}
+
 // The world positions of a hit triangle's corners, through the instance's object-to-world rows.
 public void triangleCorners(StructuredBuffer<float4> points, StructuredBuffer<int> triangles, GeometryRecord geometry, uint primitive,
                             float4 o0, float4 o1, float4 o2, float4 o3, out float3 p0, out float3 p1, out float3 p2)

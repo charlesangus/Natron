@@ -76,6 +76,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
 
@@ -399,6 +400,7 @@ public:
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color }));
         _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceCpu)));
         _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(pixelSamples));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingSubdivLevel), VtValue(0));
         _engine->SetRendererSetting(TfToken(kUtilitySettingPixelFilter), VtValue(TfToken(kUtilityFilterBox)));
         _engine->SetRendererSetting(TfToken(kUtilitySettingFilterWidth), VtValue(1.f));
         _engine->SetRendererSetting(TfToken(kUtilitySettingShutterSegments), VtValue(segments));

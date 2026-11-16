@@ -299,6 +299,26 @@ UtilityRenderParam::restart()
     _cancel.store(false);
 }
 
+void
+UtilityRenderParam::syncAgain(const SdfPath& id,
+                              HdDirtyBits dirtyBits)
+{
+    const std::lock_guard<std::mutex> l(_syncAgainMutex);
+
+    _syncAgain.emplace_back(id, dirtyBits);
+}
+
+std::vector<std::pair<SdfPath, HdDirtyBits>>
+UtilityRenderParam::takeSyncsAgain()
+{
+    std::vector<std::pair<SdfPath, HdDirtyBits>> taken;
+    const std::lock_guard<std::mutex> l(_syncAgainMutex);
+
+    taken.swap(_syncAgain);
+
+    return taken;
+}
+
 bool
 UtilityRenderParam::startFrame(const std::function<void()>& body)
 {
@@ -643,6 +663,8 @@ UtilityRenderDelegate::GetRenderSettingDescriptors() const
         HdRenderSettingDescriptor { "Camera Motion Blur", TfToken(kUtilitySettingCameraMotionBlur), VtValue(true) },
         HdRenderSettingDescriptor { "Transform Motion Blur", TfToken(kUtilitySettingTransformMotionBlur), VtValue(true) },
         HdRenderSettingDescriptor { "Deformation Motion Blur", TfToken(kUtilitySettingDeformationMotionBlur), VtValue(true) },
+        HdRenderSettingDescriptor { "Subdivision Level", TfToken(kUtilitySettingSubdivLevel), VtValue(UtilitySubdivRefinement::kDefaultLevel) },
+        HdRenderSettingDescriptor { "Max Subdivided Triangles", TfToken(kUtilitySettingMaxSubdivTriangles), VtValue(static_cast<int>(UtilitySubdivRefinement::kDefaultMaxTriangles)) },
     };
 }
 
@@ -664,6 +686,9 @@ UtilityRenderDelegate::GetRenderStats() const
     std::string warning;
 
     _renderParam->frameReport(&device, &warning);
+    for (const std::string& line : stats.warnings) {
+        warning += (warning.empty() ? "" : "\n") + line;
+    }
     dictionary[kUtilityStatDevice] = VtValue(device);
     dictionary[kUtilityStatWarning] = VtValue(warning);
     dictionary[kUtilityStatSceneWarning] = VtValue(TfStringJoin(_scene->warnings(), "\n"));

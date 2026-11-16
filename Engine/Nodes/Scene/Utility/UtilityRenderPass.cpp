@@ -44,6 +44,7 @@
 #include <pxr/base/vt/types.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/imaging/cameraUtil/framing.h>
+#include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/renderPassState.h>
@@ -55,6 +56,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/GpuContext.h"
@@ -414,6 +416,27 @@ bool
 UtilityRenderPass::IsConverged() const
 {
     return _converged.load();
+}
+
+void
+UtilityRenderPass::_Sync()
+{
+    HdRenderIndex* index = GetRenderIndex();
+    const HdRenderDelegate* delegate = index->GetRenderDelegate();
+    const VtValue level = delegate->GetRenderSetting(TfToken(kUtilitySettingSubdivLevel));
+    const VtValue budget = delegate->GetRenderSetting(TfToken(kUtilitySettingMaxSubdivTriangles));
+
+    if (_subdivSettingsSeen && (level != _subdivLevel || budget != _subdivBudget)) {
+        index->GetChangeTracker().MarkAllRprimsDirty(HdChangeTracker::DirtyTopology);
+    }
+    _subdivSettingsSeen = true;
+    _subdivLevel = level;
+    _subdivBudget = budget;
+    for (const std::pair<SdfPath, HdDirtyBits>& prim : _renderParam->takeSyncsAgain()) {
+        if (index->HasRprim(prim.first)) {
+            index->GetChangeTracker().MarkRprimDirty(prim.first, prim.second);
+        }
+    }
 }
 
 void

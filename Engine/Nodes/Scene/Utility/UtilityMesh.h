@@ -39,12 +39,14 @@
 #include "Global/Macros.h"
 
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 
 NATRON_NAMESPACE_ENTER
 
 /**
  * @brief A mesh prim's contribution to the UtilityScene: triangulated with holes and orientation
- * applied, unrefined, with triangles that cannot be hit removed.
+ * applied, with triangles that cannot be hit removed. A mesh whose scheme is not none is first refined
+ * to its subdivision level, its points carried to the limit surface.
  **/
 class UtilityMesh : public PXR_NS::HdMesh {
 public:
@@ -69,21 +71,45 @@ private:
     bool pullPoints(PXR_NS::HdSceneDelegate* sceneDelegate,
                     PXR_NS::HdDirtyBits dirtyBits);
     std::shared_ptr<UtilityScene::PointMotion> samplePointMotion(PXR_NS::HdSceneDelegate* sceneDelegate);
-    bool filterTriangles();
-    void syncColors(PXR_NS::HdSceneDelegate* sceneDelegate,
-                    UtilityScene* scene);
+    // False when stopped; *changed tells whether the surviving list differs from the last one.
+    bool filterTriangles(const UtilitySubdivRefinement::StopCheck& stopped,
+                         bool* changed);
+    int subdivLevel(PXR_NS::HdSceneDelegate* sceneDelegate) const;
+    // Stopped leaves the mesh without a refinement, for its sync to be run again.
+    enum class SubdivSync {
+        Unchanged,
+        Changed,
+        Stopped,
+    };
+
+    SubdivSync syncSubdivTopology(PXR_NS::HdSceneDelegate* sceneDelegate,
+                                  UtilityScene* scene,
+                                  bool topologyChanged,
+                                  const UtilitySubdivRefinement::StopCheck& stopped);
+    const PXR_NS::VtVec3fArray& scenePoints() const;
+    // These three return false when stopped, having changed nothing in the scene.
+    bool syncColors(PXR_NS::HdSceneDelegate* sceneDelegate,
+                    UtilityScene* scene,
+                    const UtilitySubdivRefinement::StopCheck& stopped);
+    bool syncNormals(PXR_NS::HdSceneDelegate* sceneDelegate,
+                     UtilityScene* scene,
+                     const UtilitySubdivRefinement::StopCheck& stopped);
     void syncInstances(PXR_NS::HdSceneDelegate* sceneDelegate,
                        UtilityScene* scene);
-    // The material binding, and the texture coordinates of the primvar the material reads.
-    void syncMaterial(PXR_NS::HdSceneDelegate* sceneDelegate,
+    // The primvar the bound material reads its texture coordinates from.
+    PXR_NS::TfToken stPrimvarName(PXR_NS::HdSceneDelegate* sceneDelegate) const;
+    // The texture coordinates of that primvar.
+    bool syncMaterial(PXR_NS::HdSceneDelegate* sceneDelegate,
                       UtilityScene* scene,
-                      bool bindingDirty);
+                      const UtilitySubdivRefinement::StopCheck& stopped);
 
     UtilityScene::GeometryId _geometry = 0;
     PXR_NS::GfMatrix4d _transform = PXR_NS::GfMatrix4d(1.);
     PXR_NS::HdMeshTopology _topology;
     PXR_NS::VtVec3fArray _points;
     bool _pointsComputed = false;
+    // The cage's points within the shutter, which a refinement carries to its own.
+    std::shared_ptr<const UtilityScene::PointMotion> _coarseMotion;
     // Whether the points and topology are the shutter's middle rather than the frame's.
     bool _midShutter = false;
     // Everything the triangulation gave, then what is left for the scene and where each came from.
@@ -91,6 +117,16 @@ private:
     PXR_NS::VtIntArray _allParams;
     PXR_NS::VtVec3iArray _triangles;
     std::vector<int> _kept;
+    // The refinement in use, null for the cage, and what it made of _points.
+    UtilitySubdivRefinementPtr _subdiv;
+    int _subdivLevel = -1;
+    PXR_NS::TfTokenVector _faceVaryingNames;
+    std::vector<PXR_NS::VtIntArray> _faceVaryingIndices;
+    // The primvars _subdiv carries a channel for: _faceVaryingNames, or none when it was refined without them.
+    PXR_NS::TfTokenVector _channelNames;
+    PXR_NS::VtVec3fArray _refinedPoints;
+    // The limit normals of _refinedPoints, empty without a smooth refinement.
+    PXR_NS::VtVec3fArray _normals;
 };
 
 NATRON_NAMESPACE_EXIT

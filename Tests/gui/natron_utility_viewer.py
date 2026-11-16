@@ -164,6 +164,7 @@ try:
         with open(path, "w") as out:
             out.write('#usda 1.0\n(\n    defaultPrim = "Heavy"\n    upAxis = "Y"\n)\n\n')
             out.write('def Mesh "Heavy"\n{\n')
+            out.write('    uniform token subdivisionScheme = "none"\n')
             out.write("    int[] faceVertexCounts = [%s]\n" % ", ".join(["4"] * (n * n)))
             out.write("    int[] faceVertexIndices = [")
             for y in range(n):

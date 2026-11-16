@@ -133,9 +133,12 @@ struct KernelGeometryRecord {
     std::uint32_t stOffset;
     std::uint32_t stBinding;
     std::uint32_t pointOffset;
+    std::uint32_t normalOffset;
+    std::uint32_t normalBinding;
 };
 
 const std::uint32_t kKernelStBindingNone = 0xffffffffu;
+const std::uint32_t kKernelNormalBindingNone = 0xffffffffu;
 // The flags above the binding in GeometryRecord::colorBinding in Kernels/UtilityTypes.slang.
 const std::uint32_t kKernelColorBindingMask = 0xffu;
 const std::uint32_t kKernelColorNoDisplayColor = 0x100u;
@@ -222,6 +225,8 @@ struct KernelShadeBuffers {
     float* shadowRays = nullptr;
     float* shadowContributions = nullptr;
     std::uint32_t* shadowLights = nullptr;
+    const float* normals = nullptr; // four per value
+    std::size_t normalCount = 0;
 };
 
 // The per-batch buffers ResolveHits reads and writes besides the scene's tables, count rays each.

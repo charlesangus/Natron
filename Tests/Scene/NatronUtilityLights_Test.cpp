@@ -62,6 +62,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Nodes/Scene/Utility/UtilityTextures.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
@@ -174,8 +175,9 @@ public:
         EXPECT_EQ(TfToken(kRenderDelegateUtilityId), _engine->GetCurrentRendererId());
         _engine->SetEnablePresentation(false);
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
-        // These tests read pixels as one ray through each centre draws them.
+        // These tests read pixels as one ray through each centre draws them, on the cage.
         _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(int(1)));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingSubdivLevel), VtValue(0));
     }
 
     void setDevice(const char* device)

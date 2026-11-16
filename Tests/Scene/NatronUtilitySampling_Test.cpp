@@ -76,6 +76,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
 
@@ -625,6 +626,7 @@ public:
         _engine->SetEnablePresentation(false);
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color }));
         setting(kUtilitySettingDevice, VtValue(TfToken(kUtilityDeviceCpu)));
+        setting(kUtilitySettingSubdivLevel, VtValue(0));
     }
 
     void setting(const char* key,

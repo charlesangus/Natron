@@ -60,6 +60,7 @@
 #include "Engine/Nodes/Scene/Utility/EmbreeTracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -90,6 +91,7 @@ public:
         parameters.gpuEnabled = false;
         _engine.reset(new UsdImagingGLEngine(parameters));
         _engine->SetEnablePresentation(false);
+        _engine->SetRendererSetting(TfToken(kUtilitySettingSubdivLevel), VtValue(0));
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
     }
 

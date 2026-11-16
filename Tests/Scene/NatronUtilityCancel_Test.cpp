@@ -158,6 +158,7 @@ defineGrid(const UsdStageRefPtr& stage,
     mesh.CreatePointsAttr(VtValue(points));
     mesh.CreateFaceVertexCountsAttr(VtValue(counts));
     mesh.CreateFaceVertexIndicesAttr(VtValue(indices));
+    mesh.CreateSubdivisionSchemeAttr(VtValue(UsdGeomTokens->none));
     mesh.CreateDisplayColorAttr(VtValue(VtVec3fArray(1, color)));
     UsdShadeMaterialBindingAPI::Apply(mesh.GetPrim()).Bind(emitDisplayColor(stage));
 }

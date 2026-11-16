@@ -231,15 +231,17 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
         }
     }
     RectI roi;
+    RenderScale roiScale = scale;
     if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
         roi = resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
     } else if (kind == OpKind::Custom) {
         roi = getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
+        roiScale = getOpGpuInputScale(inputNb, time, view, scale);
     } else {
         roi = NativeEffectBase::getGpuInputRoI(inputNb, time, view, outputRect, scale);
     }
 
-    return stretchGpuInputRoI(*this, inputNb, getInputReadTimes(inputNb, time, view), [&](double t) { return inputEdgeMode(inputNb, t, view); }, view, roi, scale);
+    return stretchGpuInputRoI(*this, inputNb, getInputReadTimes(inputNb, time, view), [&](double t) { return inputEdgeMode(inputNb, t, view); }, view, roi, roiScale);
 }
 
 bool

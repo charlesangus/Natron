@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <list>
 #include <map>
 #include <memory>
@@ -81,6 +82,10 @@ public:
         std::map<ImageLayerDesc, ImagePtr> layers;
         std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
 
+        // What each device layer added to deviceBytes: once the device tier has moved a shared image's pixels to RAM, the
+        // image no longer reports the bytes it held.
+        std::map<ImageLayerDesc, std::size_t> deviceLayerBytes;
+
         // Intersection of the bounds of all layers.
         RectI bounds;
 
@@ -101,6 +106,7 @@ public:
             : lock()
             , layers()
             , deviceLayers()
+            , deviceLayerBytes()
             , bounds()
             , renderedRoI()
             , consumersLeft(0)
@@ -132,6 +138,12 @@ public:
     void putDevice(const TaskKey& key, std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers, const RectI& renderedRoI, int consumers);
 
     /**
+     * @brief Like put(), with a device copy of some of the layers too, so that a device consumer reads those in place
+     * and a RAM one never waits on a download.
+     **/
+    void put(const TaskKey& key, std::map<ImageLayerDesc, ImagePtr> layers, std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers, const RectI& renderedRoI, int consumers);
+
+    /**
      * @brief Appends to out the image of each needed layer, in order, if all of them are stored for key and both
      * their bounds and the RoI rendered for key contain pixelRoI. Returns false and leaves out untouched otherwise.
      * A layer stored only in device memory is downloaded once and kept in RAM for the later finds.
@@ -145,9 +157,10 @@ public:
 
     /**
      * @brief Moves the device layers of key to RAM and frees their device memory, leaving the consumer count alone.
-     * Returns the device bytes freed.
+     * With only set, just the layer holding that image. Returns the device bytes freed.
      **/
-    std::size_t evictToRam(const TaskKey& key);
+    std::size_t evictToRam(const TaskKey& key,
+                           const DeviceImage* only = nullptr);
 
     /**
      * @brief Called once by each consumer of key when done reading it; the entry is erased by the last one.
@@ -285,6 +298,20 @@ public:
      **/
     bool isRotoPaintTreeNode(const Node* node) const;
 
+    /**
+     * @brief Records that node's output at time and view in this frame holds pixels computed for it, by its own effect
+     * or by the nodes an identity one passes through, rather than taken from a cache. Lock free: the mark is kept on
+     * the node (see Node::stampFreshOutput()). It is per (node, time, view), not per consumer, so in a diamond the
+     * consumer that took the output from the cache after the other one's pull computed it sees it fresh too.
+     **/
+    void noteFreshOutput(const Node* node, double time, ViewIdx view) const;
+
+    /**
+     * @brief Whether noteFreshOutput() was called for node at time and view in this frame. Lock free; it can miss a
+     * fresh output when the node is rendered for many frames or times at once, never report a cached one.
+     **/
+    bool hasFreshOutput(const Node* node, double time, ViewIdx view) const;
+
     const AbortableRenderInfoPtr& getAbortInfo() const
     {
         return _abortInfo;
@@ -354,6 +381,15 @@ public:
      * @brief Returns the planes setRootDevicePlanes() set and leaves none. Thread safe.
      **/
     std::map<ImageLayerDesc, GpuDeviceImagePtr> takeRootDevicePlanes();
+
+    /**
+     * @brief CacheDeviceTier::purgeGeneration() when the frame was made, before it read any of its sources, for the
+     * frame's inserts into a device tier.
+     **/
+    std::uint64_t deviceTierGeneration() const
+    {
+        return _deviceTierGeneration;
+    }
 #endif
 
 private:
@@ -364,6 +400,10 @@ private:
     // Effects share the holder of their render clones, so a clone finds the args of its node.
     std::unordered_map<const TLSHolderBase*, ParallelRenderArgsPtr> _argsByHolder;
     std::unordered_set<const Node*> _rotoPaintTreeNodes;
+    std::uint64_t freshOutputKey(double time, ViewIdx view) const;
+
+    // Unique among the frames of the session, so a node's fresh-output marks from an older frame never match.
+    const std::uint64_t _freshOutputFrameId;
     std::shared_ptr<FrameRequestMap> _request;
     AbortableRenderInfoPtr _abortInfo;
     RenderStatsPtr _stats;
@@ -378,6 +418,7 @@ private:
     std::atomic<bool> _wantsRootOnDevice;
     std::mutex _rootDeviceMutex;
     std::map<ImageLayerDesc, GpuDeviceImagePtr> _rootDevicePlanes;
+    const std::uint64_t _deviceTierGeneration;
 #endif
 };
 

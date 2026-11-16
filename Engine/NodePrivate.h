@@ -31,6 +31,7 @@
 #include "Node.h"
 #include "Timer.h" // gettimeofday()
 
+#include "Engine/CacheRetention.h"
 #include "Engine/EffectInstance.h"
 
 #include <atomic>
@@ -245,8 +246,10 @@ public:
         , lastRenderStartedMutex()
         , lastRenderStartedSlotCallTime()
         , renderStartedCounter(0)
-        , inputIsRenderingCounter(0)
-        , lastInputNRenderStartedSlotCallTime()
+        , executionCounts()
+        , inputExecutionCounts(nullptr)
+        , inputExecutionCountBlocks()
+        , freshOutputStamps()
         , nodeIsDequeuing(false)
         , actionsQueued(false)
         , renderStartsHeldByEdits(0)
@@ -315,7 +318,6 @@ public:
     {
         ///Initialize timers
         gettimeofday(&lastRenderStartedSlotCallTime, 0);
-        gettimeofday(&lastInputNRenderStartedSlotCallTime, 0);
     }
 
     void abortPreview_non_blocking();
@@ -443,6 +445,7 @@ public:
     std::atomic<U64> hashCleanEpoch { 0 };
     // Set while a mark of this node waits for its dependents to be marked too.
     std::atomic<bool> hashDirtyQueued { false };
+    const CacheRetentionSignalsPtr retentionSignals = std::make_shared<CacheRetentionSignals>();
     U64 hashFlushVisit = 0; //< the flush pass that last reached the node; only read and written under the flush mutex
     U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
     U64 hashFlushLeafVisit = 0; //< the flush pass that last marked the node as a leaf; same locking
@@ -536,11 +539,32 @@ public:
     bool keyframesDisplayedOnTimeline;
 
     ///This is to avoid the slots connected to the main-thread to be called too much
-    QMutex lastRenderStartedMutex; //< protects lastRenderStartedSlotCallTime & lastInputNRenderStartedSlotCallTime
+    QMutex lastRenderStartedMutex; //< protects lastRenderStartedSlotCallTime & renderStartedCounter
     timeval lastRenderStartedSlotCallTime;
     int renderStartedCounter;
-    std::vector<int> inputIsRenderingCounter;
-    timeval lastInputNRenderStartedSlotCallTime;
+    std::atomic<int> executionCounts[2];
+
+    struct InputExecutionCounts {
+        explicit InputExecutionCounts(int n)
+            : size(n)
+            , counts(new std::atomic<int>[n]())
+        {
+        }
+
+        const int size;
+        const std::unique_ptr<std::atomic<int>[]> counts;
+    };
+
+    // Render threads read the counts with no lock, so a node gaining inputs publishes a larger block rather than
+    // resizing one a reader may hold; the replaced blocks live as long as the node. Grown on the main thread only.
+    std::atomic<InputExecutionCounts*> inputExecutionCounts;
+    std::vector<std::unique_ptr<InputExecutionCounts>> inputExecutionCountBlocks;
+
+    // Each holds the key of a (frame, time, view) the node's output was computed for (see
+    // FrameRenderContext::noteFreshOutput()). Two keys sharing a slot overwrite each other, which can only miss a
+    // fresh output, never invent one.
+    static constexpr std::size_t kFreshOutputSlots = 8;
+    std::atomic<std::uint64_t> freshOutputStamps[kFreshOutputSlots];
 
     ///True when the node is dequeuing the connectionQueue and no render should be started 'til it is empty
     bool nodeIsDequeuing;

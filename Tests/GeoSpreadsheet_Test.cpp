@@ -197,7 +197,8 @@ TEST(GeoSpreadsheetTest, RowsAreDenseAfterDelete)
 {
     GeoDetailBuilder b(makeGrid());
     const GeoOffset dead[] = { 2, 3, 4 };
-    b.deletePoints(dead, eGeoPointDeleteKeepReferenced);
+    // Both triangles use a doomed point, so keeping referenced points would delete nothing.
+    b.deletePoints(dead, eGeoPointDeleteDegenerate);
     const GeoDetail d = b.finish();
     ASSERT_GT(d.pointMap().tombstoneCount(), 0);
     const GeoDetailSpreadsheetSource src(std::make_shared<const GeoDetail>(d));

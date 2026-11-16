@@ -123,6 +123,11 @@ TEST(GeoSpreadsheetModelTest, PaintingAViewportReadsBoundedCells)
     view.resize(400, 40 * 20);
     applyGeoSpreadsheetMetrics(&view);
     view.show();
+    // The metrics pass filled the block under the first rows, so paint far from it to make the reads come from
+    // the paint itself.
+    view.doItemsLayout();
+    view.scrollTo(model.index(int(kHugeRows / 2), 0), QAbstractItemView::PositionAtTop);
+    ASSERT_GE(view.rowAt(0), 2 * GeoSpreadsheetModel::kBlockRows);
     model.resetCellsRead();
     view.grab();
     // A viewport of at most 40 rows spans at most two aligned blocks, and a block read covers kBlockRows rows of

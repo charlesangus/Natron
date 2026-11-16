@@ -8887,6 +8887,24 @@ SceneViewport::paintGL()
     // frame starting in the same millisecond as a poll is still ordered against it.
     const double paintStartMs = std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
     const std::chrono::steady_clock::time_point paintStart = std::chrono::steady_clock::now();
+    // Storm draws while the GUI thread waits, on the render thread or on its own, for most of a
+    // second a frame on software GL, so scripts need each frame's start and cost to tell a stall
+    // around the frame from the frame itself. The cost is that of the paint that rendered the
+    // frame: a render-thread frame is shown by a later paint, which costs next to nothing.
+    const auto publishStormFrame = [this, stormPaint, paintStartMs, paintStart]() {
+        if (!stormPaint) {
+            return;
+        }
+        const double paintMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count();
+        // Several frames can begin between two polls; the list lets a poller find each of them.
+        QVariantList frames = property("natronSceneStormFrames").toList();
+        frames.append(QVariant(QVariantList { paintStartMs, paintMs }));
+        while (frames.size() > 16) {
+            frames.removeFirst();
+        }
+        setProperty("natronSceneStormFrames", frames);
+        setProperty("natronSceneStormPaints", QVariant::fromValue<qulonglong>(property("natronSceneStormPaints").toULongLong() + 1));
+    };
     refreshTransformHandles();
     {
         // The free camera this paint draws with, for scripts: pivot x, y, z, distance, azimuth,
@@ -8920,6 +8938,7 @@ SceneViewport::paintGL()
                 }
             });
             if (rendered != SceneViewportRenderer::eRenderStatusBusy) {
+                publishStormFrame();
                 Implementation::PresentFrame frame;
                 frame.width = w;
                 frame.height = h;
@@ -8945,20 +8964,10 @@ SceneViewport::paintGL()
         }
     } else {
         status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
-    }
-    if (stormPaint && (status != SceneViewportRenderer::eRenderStatusBusy)) {
-        // Storm draws on the GUI thread, for most of a second a frame on software GL, so scripts
-        // need each frame's start and cost to tell a stall around the frame from the frame itself.
         // A busy paint drew nothing and is left out, or it would hide the cost of the next one.
-        const double paintMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count();
-        // Several frames can begin between two polls; the list lets a poller find each of them.
-        QVariantList frames = property("natronSceneStormFrames").toList();
-        frames.append(QVariant(QVariantList { paintStartMs, paintMs }));
-        while (frames.size() > 16) {
-            frames.removeFirst();
+        if (status != SceneViewportRenderer::eRenderStatusBusy) {
+            publishStormFrame();
         }
-        setProperty("natronSceneStormFrames", frames);
-        setProperty("natronSceneStormPaints", QVariant::fromValue<qulonglong>(property("natronSceneStormPaints").toULongLong() + 1));
     }
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
         // The worker is syncing; it asks for a repaint when it is done. The refinement passing

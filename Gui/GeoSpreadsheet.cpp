@@ -134,8 +134,8 @@ compactCount(std::int64_t count)
 QString
 groupHelp()
 {
-    return GeoSpreadsheetWidget::tr("Show only the elements of a group. Geometry also takes element numbers (0-9 14), "
-                                    "ranges with a step (0-99:2), attribute tests (@Cd > 0.5), ! to invert and ^ to remove.");
+    return GeoSpreadsheetWidget::tr("Show only the elements of a group, by name or with wildcards (top*). Also takes element numbers (0-9 14), "
+                                    "ranges with a step (0-99:2), ! to invert and ^ to remove. Geometry also takes attribute tests (@Cd > 0.5).");
 }
 
 // A prim's rows that its highlighted points or faces name: a face highlight names faces only, a point
@@ -331,25 +331,17 @@ runBuild(const GeoSpreadsheetModel::SourcePtr& source,
             }
             filtered = true;
         } else if (const ScenePrimElementsSource* prim = dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
-            const std::string name = QString::fromStdString(pattern).trimmed().toStdString();
-            const ScenePrimElementGroup* found = nullptr;
+            std::vector<GeoNamedElementGroup> groups;
             for (const ScenePrimElementGroup& group : prim->groups()) {
-                if ((group.cls == cls) && (group.name == name)) {
-                    found = &group;
-                    break;
+                if (group.cls == cls) {
+                    groups.push_back({ group.name, std::span<const std::int32_t>(group.indices.data(), group.indices.size()) });
                 }
             }
-            if (!found) {
-                result.error = GeoSpreadsheetWidget::tr("No group named \"%1\"").arg(QString::fromStdString(name));
+            std::string error;
+            if (!geoSelectElementsInDomain((std::size_t)std::max<std::int64_t>(0, source->rowCount(cls)), groups, pattern, &mask, &error, false)) {
+                result.error = QString::fromStdString(error);
 
                 return result;
-            }
-            const std::int64_t rows = source->rowCount(cls);
-            mask.assign((std::size_t)rows, 0);
-            for (const int index : found->indices) {
-                if ((index >= 0) && (index < rows)) {
-                    mask[(std::size_t)index] = 1;
-                }
             }
             filtered = true;
         }

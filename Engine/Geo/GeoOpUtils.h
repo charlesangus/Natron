@@ -30,6 +30,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <span>
@@ -168,6 +169,24 @@ bool geoSelectElements(const GeoDetail& detail,
                        std::string_view pattern,
                        GeoElementMask* mask,
                        std::string* error);
+
+/** @brief A named group over a dense element domain; elements are row numbers. */
+struct GeoNamedElementGroup {
+    std::string name;
+    std::span<const std::int32_t> elements;
+};
+
+/**
+ * @brief geoSelectElements() over @p count dense elements numbered 0..count-1 whose groups are
+ * @p namedGroups. Attribute terms ("@attr op value") are an error with @p error set unless
+ * @p allowAttributes, and with it select nothing, since the domain carries no attributes.
+ **/
+bool geoSelectElementsInDomain(std::size_t count,
+                               std::span<const GeoNamedElementGroup> namedGroups,
+                               std::string_view pattern,
+                               GeoElementMask* mask,
+                               std::string* error,
+                               bool allowAttributes = false);
 
 /**
  * @brief The compact pattern that geoSelectElements() reads back as @p mask: ascending

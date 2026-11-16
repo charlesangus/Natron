@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <random>
 #include <set>
 #include <string>
@@ -247,4 +248,64 @@ TEST(GeoOpUtils, GuessGroupTypeReadsTheClassFromThePattern)
     EXPECT_EQ(eGeoGroupTypeGuess, guess("p0-1 myPrimGroup", &error));
     EXPECT_NE(std::string::npos, error.find("p0-1"));
     EXPECT_NE(std::string::npos, error.find("myPrimGroup"));
+}
+
+namespace {
+struct SubsetFixture {
+    std::vector<std::int32_t> top = { 0, 1, 2, 3, 4 };
+    std::vector<std::int32_t> topRim = { 5, 6 };
+    std::vector<std::int32_t> bottom = { 7, 8, 9, 10 };
+
+    std::vector<GeoNamedElementGroup> groups() const
+    {
+        return { { "top", top }, { "topRim", topRim }, { "bottom", bottom } };
+    }
+
+    // Selected rows of a 20-row domain.
+    std::vector<int> select(const std::string& pattern, std::string* error = nullptr, bool allowAttributes = false) const
+    {
+        const std::vector<GeoNamedElementGroup> g = groups();
+        GeoElementMask mask;
+        std::string localError;
+        std::vector<int> rows;
+        if (!geoSelectElementsInDomain(20, g, pattern, &mask, error ? error : &localError, allowAttributes)) {
+            return { -1 };
+        }
+        for (std::size_t i = 0; i < mask.size(); ++i) {
+            if (mask[i]) {
+                rows.push_back(int(i));
+            }
+        }
+
+        return rows;
+    }
+};
+} // namespace
+
+TEST(GeoOpUtilsTest, DomainNumbersAndRanges)
+{
+    const SubsetFixture f;
+    EXPECT_EQ((std::vector<int> { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 14 }), f.select("0-9 14"));
+    EXPECT_EQ((std::vector<int> { 0, 2, 4, 6, 8, 10, 12, 14, 16, 18 }), f.select("0-100:2"));
+    EXPECT_EQ(20u, f.select("").size());
+}
+
+TEST(GeoOpUtilsTest, DomainNamedGroups)
+{
+    const SubsetFixture f;
+    EXPECT_EQ((std::vector<int> { 0, 1, 2, 3, 4, 5, 6 }), f.select("top*"));
+    EXPECT_EQ((std::vector<int> { 0, 1, 2, 3, 4, 7, 8, 9, 10 }), f.select("top bottom"));
+    EXPECT_EQ((std::vector<int> { 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 }), f.select("* ^top"));
+    EXPECT_TRUE(f.select("nothingHere").empty());
+}
+
+TEST(GeoOpUtilsTest, DomainRefusesAttributeTests)
+{
+    const SubsetFixture f;
+    std::string error;
+    EXPECT_EQ((std::vector<int> { -1 }), f.select("@P.y>0", &error));
+    EXPECT_NE(std::string::npos, error.find("Attribute tests are not supported on USD prims"));
+    error.clear();
+    EXPECT_EQ((std::vector<int> { -1 }), f.select("0-3 !@P.y>0", &error));
+    EXPECT_FALSE(error.empty());
 }

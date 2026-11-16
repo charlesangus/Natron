@@ -70,6 +70,12 @@ def write_scene(directory):
                 '            interpolation = "constant"\n        )\n'
                 '        float[] primvars:pair = [1, 2, 3, 4, 5, 6, 7, 8] (\n'
                 '            elementSize = 2\n            interpolation = "vertex"\n        )\n'
+                '        def GeomSubset "top"\n        {\n'
+                '            uniform token elementType = "face"\n            uniform token familyName = "part"\n'
+                '            int[] indices = [0]\n        }\n'
+                '        def GeomSubset "topRim"\n        {\n'
+                '            uniform token elementType = "face"\n            uniform token familyName = "rim"\n'
+                '            int[] indices = [1]\n        }\n'
                 '    }\n')
         f.write('    def Xform "Lazy" (\n        prepend payload = @./payloads/lazy.usda@\n    )\n    {\n    }\n')
         f.write('}\n')
@@ -79,7 +85,7 @@ def write_scene(directory):
 try:
     import NatronEngine
     from PySide6.QtCore import QModelIndex, QItemSelectionModel, Qt
-    from PySide6.QtWidgets import QDialog, QLabel, QPlainTextEdit, QTabWidget, QTableView, QToolButton, QTreeView, QWidget
+    from PySide6.QtWidgets import QComboBox, QDialog, QLabel, QPlainTextEdit, QTabWidget, QTableView, QToolButton, QTreeView, QWidget
     from pxr import Sdf
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
@@ -339,6 +345,43 @@ try:
               "the chosen class stays chosen on a prim with rows in it (got %r, %r rows)" % (sheet_state("Class"), sheet_state("Rows")))
         shot("m337-spreadsheet-usd-class-kept.png")
 
+    def filter_section():
+        section("filter")
+        select(find(QUAD))
+        ok = yield ("until", lambda: settled_on(QUAD) and table().isVisible() and int(sheet_state("Rows")) > 0, POLL_TIMEOUT_S)
+        require(ok, "the mesh is shown")
+        check(show_class("Primitives"), "the Primitives class is chosen")
+        group = child(QComboBox, SPREADSHEET + "Group")
+        require(group is not None, "the filter bar has its group box")
+
+        def apply(text):
+            group.lineEdit().setText(text)
+            group.lineEdit().editingFinished.emit()
+
+        apply("0")
+        ok = yield ("until", lambda: int(sheet_state("Rows")) == 1, POLL_TIMEOUT_S)
+        check(ok and column_cells("faceWeight") == ["0.5"], "a row number keeps that row (got %r)" % (column_cells("faceWeight"),))
+        apply("0-1:1")
+        ok = yield ("until", lambda: int(sheet_state("Rows")) == 2, POLL_TIMEOUT_S)
+        check(ok, "a range keeps its rows (got %r rows)" % (sheet_state("Rows"),))
+        apply("top*")
+        ok = yield ("until", lambda: int(sheet_state("Rows")) == 2, POLL_TIMEOUT_S)
+        check(ok, "a wildcard subset name keeps both subsets (got %r rows)" % (sheet_state("Rows"),))
+        apply("top")
+        ok = yield ("until", lambda: int(sheet_state("Rows")) == 1 and column_cells("faceWeight") == ["0.5"], POLL_TIMEOUT_S)
+        check(ok, "an exact subset name keeps its rows (got %r)" % (column_cells("faceWeight"),))
+        apply("* ^top")
+        ok = yield ("until", lambda: int(sheet_state("Rows")) == 1 and column_cells("faceWeight") == ["0.25"], POLL_TIMEOUT_S)
+        check(ok, "an exclusion removes the subset's rows (got %r)" % (column_cells("faceWeight"),))
+        apply("@faceWeight>0")
+        err = child(QLabel, SPREADSHEET + "Error")
+        ok = yield ("until", lambda: err is not None and err.isVisible() and "not supported" in err.text(), POLL_TIMEOUT_S)
+        check(ok, "an attribute test is refused on a prim (got %r)" % (err.text() if err is not None else None,))
+        shot("m337-spreadsheet-usd-filter.png")
+        apply("")
+        ok = yield ("until", lambda: int(sheet_state("Rows")) == 2, POLL_TIMEOUT_S)
+        check(ok, "clearing the filter lists every row (got %r rows)" % (sheet_state("Rows"),))
+
     def steps():
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -368,6 +411,7 @@ try:
         yield from frame_section(py_viewer)
         yield from payload_section()
         yield from class_kept_section()
+        yield from filter_section()
 
     run(steps())
 except Exception:

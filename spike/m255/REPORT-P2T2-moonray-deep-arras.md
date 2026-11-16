@@ -24,3 +24,31 @@ Probe: `moonray/run.sh`. It renders 256x256 at 64 spp through stock hd_moonray o
 
 ## Verdict
 Transport (d) works as designed, with small payloads. The open question is value: MoonRay deep gives fewer, less complete samples than Cycles deep (P2.T1).
+
+## Follow-up: first-surface limit confirmed and fixed (2026-11-16)
+**The limit is deliberate in MoonRay, and only affects presence.** The evidence:
+- `lib/rendering/pbr/handlers/ShadeBundleHandler.cc:211` says "first hit only for now", and line 566 drops deep data on presence continuation rays.
+- In scalar mode, `PathIntegrator.cc` (~1408-1426, ~1486) adds one sample with the composite colour at the front depth.
+- `Film.cc:441` hardcodes one deep layer, and no scene variable changes it.
+
+Refraction and opaque surfaces were already correct. The earlier claim that deep forces scalar mode was wrong: only volumes combined with deep do (`RenderContext.cc:3465`).
+
+**Patch:** `moonray/moonray-true-deep.patch`, +76/−12 lines in `PathIntegrator.cc/.h` and `ShadeBundleHandler.cc`; only `librendering_pbr.so` changes. Every surface in a presence chain gets its own deep record, with its own depth from the camera, colour and alpha. Built with `moonray/build.sh` (results in `moonray/results/true-deep/`).
+
+Batch, 128x128 at 16 spp, flattened deep vs beauty RMSE (rgba):
+
+| Variant | Before | After | Samples per covered px (after) |
+|---|---|---|---|
+| presence, vector | 0.106 | 0.00011 | 1.41 |
+| presence, scalar | 0.137 | 0.00002 | 1.40 |
+| presence, z tolerance 0.01 | 0.106 | 0.00011 | 4.02 |
+| presence, DCX | 0.153 | 0.153 | (DCX writer doesn't premultiply; not fixed) |
+| opaque / glass | ~0 | ~0 | 1.01 |
+
+Hydra over Arras at 256x256 / 64 spp: flattened progressive deep vs Hydra colour RMSE is 0.00006, and no pixel has less deep alpha than flat alpha. There are 43,176 samples (0.66/px; histogram 1:19336, 2:11344, 3:384). Progressive and batch sample counts differ on 88 pixels, which is sampling noise.
+
+**Remaining gaps:**
+- the DCX writer;
+- volumes behind presence;
+- behind-surface scalar samples carry RGB only (no deep AOVs);
+- MoonRay's default deep Z tolerance (2.0) merges layers less than 1 unit apart, so Natron should send a smaller value.

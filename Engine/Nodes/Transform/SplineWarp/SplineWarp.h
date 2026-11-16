@@ -108,7 +108,7 @@ inline constexpr NodeSpec kSplineWarpNodeSpec = {
 };
 
 inline constexpr ImagePipelineSpec kSplineWarpPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Custom,
 };
@@ -226,7 +226,7 @@ private:
         double fieldResolution = 8.;
         Resampler::FilterSpec filter;
         bool clamp = false;
-        bool blackOutside = true;
+        EdgeMode edgeMode = EdgeMode::Stretch;
         bool bboxUnion = false;
         double motionBlur = 0.;
         double shutter = 0.5;
@@ -436,7 +436,6 @@ private:
     KnobIntWPtr _previewResolution;
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
-    KnobBoolWPtr _blackOutside;
     Resampler::FilterKnobs _filterKnobs;
     KnobChoiceWPtr _bbox;
     KnobDoubleWPtr _motionBlur;

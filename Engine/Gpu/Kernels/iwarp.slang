@@ -2,6 +2,7 @@ import pixelwrap;
 import coordmap;
 import resamplecore;
 import mapremap;
+import edgesample;
 
 // IWarp::renderOp per pixel without motion blur, for ITransform and ICornerPin. The wrap's push
 // block carries the Source, which is both the image sampled and the image blended under the mask
@@ -12,13 +13,13 @@ import mapremap;
 [[vk::binding(4, 0)]] StructuredBuffer<float> mapBuf;
 
 static const uint kIWarpClamp = 1;
-static const uint kIWarpBlackOutside = 2;
 static const uint kIWarpJacobian = 4;
 static const uint kIWarpSample = 8;
 static const uint kIWarpMapConnected = 16;
 static const uint kIWarpMapRead = 32;
 static const uint kIWarpMapInvert = 64;
 static const uint kIWarpMapSmooth = 128;
+static const uint kIWarpMapEdgeBlack = 256;
 
 // The words before the curve, and the floats of one knot: its matrix's high floats, its matrix's
 // low floats, then its derivative in m.
@@ -59,15 +60,18 @@ IWarp iwarpLoad(StructuredBuffer<uint> params)
     return w;
 }
 
-// The remapped Map value at (x, y): 1 with no Map, and a black pixel, remapped and inverted like
-// any other, off the Map's pixels or when its channel is not read, as MapInput::fill() gives it.
+// The remapped Map value at (x, y), as MapInput::fill() gives it: 1 with no Map, and a black pixel,
+// remapped and inverted like any other, when its channel is not read. Off the Map's pixels it reads
+// black under the Map's Black edge mode and its nearest pixel under Stretch.
 float iwarpMap(IWarp w, int x, int y)
 {
     if ((w.flags & kIWarpMapConnected) == 0)
         return 1.0;
     float raw = 0.0;
-    if ((w.flags & kIWarpMapRead) != 0 && w.mapComponent >= 0 && wrapInside(int2(x, y), w.mapX1, w.mapY1, w.mapX2, w.mapY2))
-        raw = mapBuf[w.mapOffset + uint(y - w.mapY1) * w.mapStride + uint(x - w.mapX1) * w.mapComps + uint(w.mapComponent)];
+    int2 p;
+    if ((w.flags & kIWarpMapRead) != 0 && w.mapComponent >= 0
+        && edgePixel(int2(x, y), int4(w.mapX1, w.mapY1, w.mapX2, w.mapY2), edgeModeFromFlags(w.flags, kIWarpMapEdgeBlack), p))
+        raw = mapBuf[w.mapOffset + uint(p.y - w.mapY1) * w.mapStride + uint(p.x - w.mapX1) * w.mapComps + uint(w.mapComponent)];
     return mapRemap(raw, (w.flags & kIWarpMapInvert) != 0, (w.flags & kIWarpMapSmooth) != 0, w.exponent);
 }
 
@@ -221,7 +225,7 @@ float4 iwarpSample(IWarp w, int2 p)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.blackOutside = (w.flags & kIWarpBlackOutside) != 0;
+    src.edgeMode = edgeModeFromFlags(w.flags, kFlagEdgeBlack);
     const float4 v = sampleAt(src, sx, sy, J, jacobian, w.spec, (w.flags & kIWarpClamp) != 0, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
     if (wrap.nComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);

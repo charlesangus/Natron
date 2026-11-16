@@ -88,13 +88,16 @@ struct WarpGpuParams {
 static_assert(sizeof(WarpGpuParams) == 46 * 4, "stmap.slang reads 46 words");
 
 inline constexpr uint32_t kWarpGpuClamp = 1;
-inline constexpr uint32_t kWarpGpuBlackOutside = 2;
+// kFlagEdgeBlack in Engine/Gpu/Kernels/edgesample.slang.
+inline constexpr uint32_t kWarpGpuEdgeBlack = 2;
 inline constexpr uint32_t kWarpGpuJacobian = 4;
 inline constexpr uint32_t kWarpGpuSample = 8;
 inline constexpr uint32_t kWarpGpuMapConnected = 16;
 inline constexpr uint32_t kWarpGpuMapRead = 32;
 inline constexpr uint32_t kWarpGpuMapInvert = 64;
 inline constexpr uint32_t kWarpGpuMapSmooth = 128;
+inline constexpr uint32_t kWarpGpuUVEdgeBlack = 256;
+inline constexpr uint32_t kWarpGpuMapEdgeBlack = 512;
 
 // The Map input of a warp and its knobs at the render's time and view; input -1 for a node
 // without one.
@@ -233,6 +236,9 @@ recordWarpGpu(EffectInstance& effect,
     if (!stageGpuInputView(effect, args, uvInput, &uv)) {
         return eStatusFailed;
     }
+    if (stageInputEdgeMode(effect, uvInput, plan.time, plan.view) == EdgeMode::Black) {
+        params.flags |= kWarpGpuUVEdgeBlack;
+    }
     if (uv.buffer) {
         const int channels[3] = { uChannel, vChannel, alphaChannel };
         int32_t* const components[3] = { &params.uComponent, &params.vComponent, &params.alphaComponent };
@@ -259,7 +265,8 @@ recordWarpGpu(EffectInstance& effect,
         if (!stageGpuInputView(effect, args, map.input, &mapView)) {
             return eStatusFailed;
         }
-        params.flags |= kWarpGpuMapConnected | (map.params.invert ? kWarpGpuMapInvert : 0u) | (map.params.smooth ? kWarpGpuMapSmooth : 0u);
+        params.flags |= kWarpGpuMapConnected | (map.params.invert ? kWarpGpuMapInvert : 0u) | (map.params.smooth ? kWarpGpuMapSmooth : 0u)
+            | ((stageInputEdgeMode(effect, map.input, plan.time, plan.view) == EdgeMode::Black) ? kWarpGpuMapEdgeBlack : 0u);
         params.mapExponent = map.params.exponent;
         if (mapView.buffer && (map.channel >= 0) && (map.channel < map.layer.getNumComponents())) {
             const int component = stageGpuMaskViewComponent(map.layer, map.channel, mapView.nComps);

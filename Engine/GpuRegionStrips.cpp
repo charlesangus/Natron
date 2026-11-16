@@ -118,6 +118,38 @@ slotUses(const GpuStripGraph& graph)
     return uses;
 }
 
+unsigned int
+bandLevel(const GpuStripGraph& graph)
+{
+    unsigned int level = std::numeric_limits<unsigned int>::max();
+
+    for (const GpuStripSlot& slot : graph.images) {
+        if (slot.interior && !slot.resident && !slot.bounds.isNull()) {
+            level = std::min(level, slot.mipmapLevel);
+        }
+    }
+
+    return (level == std::numeric_limits<unsigned int>::max()) ? 0 : level;
+}
+
+unsigned int
+slotBandShift(const GpuStripGraph& graph,
+              const GpuStripSlot& slot)
+{
+    const unsigned int level = bandLevel(graph);
+
+    return (slot.mipmapLevel > level) ? slot.mipmapLevel - level : 0;
+}
+
+// Both ends of a band round down, so that the strips split every coarser image into disjoint, contiguous rows; the
+// bands end at the coarser bounds scaled up, which the last band's end still reaches.
+int
+floorShift(int y,
+           unsigned int shift)
+{
+    return (y >= 0) ? (y >> shift) : -((-y + (1 << shift) - 1) >> shift);
+}
+
 /**
  * @brief The windows of the strip over rows band0 to band1, or false when a member it runs would have nothing of an
  * input it reads.
@@ -137,7 +169,8 @@ stripOf(const GpuStripGraph& graph,
         if (slot.resident) {
             strip->rects[s] = slot.bounds;
         } else if (slot.interior) {
-            strip->interiors[s] = rowsOf(slot.bounds, band0, band1);
+            const unsigned int shift = slotBandShift(graph, slot);
+            strip->interiors[s] = rowsOf(slot.bounds, floorShift(band0, shift), floorShift(band1, shift));
             strip->rects[s] = strip->interiors[s];
         }
     }
@@ -378,7 +411,7 @@ gpuStripCost(const GpuStripGraph& graph,
         const GpuStripSlot& out = graph.images[member.outSlot];
         bufferOf[member.outSlot] = acquire(bufferBytes(rects[member.outSlot], out.nComps));
         for (std::size_t s = 0; s < nSlots; ++s) {
-            if ((bufferOf[s] >= 0) && !graph.images[s].interior && (uses[s].lastRead == (int)i)) {
+            if ((bufferOf[s] >= 0) && !graph.images[s].interior && !graph.images[s].held && (uses[s].lastRead == (int)i)) {
                 spare[bufferOf[s]] = true;
                 bufferOf[s] = -1;
             }
@@ -408,7 +441,8 @@ gpuStripBands(const GpuStripGraph& graph)
 
     for (const GpuStripSlot& slot : graph.images) {
         if (slot.interior && !slot.resident && !slot.bounds.isNull()) {
-            mergeRows(&bands, slot.bounds);
+            const int scale = 1 << slotBandShift(graph, slot);
+            mergeRows(&bands, RectI(slot.bounds.x1, slot.bounds.y1 * scale, slot.bounds.x2, slot.bounds.y2 * scale));
         }
     }
 

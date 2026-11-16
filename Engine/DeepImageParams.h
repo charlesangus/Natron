@@ -40,11 +40,10 @@ NATRON_NAMESPACE_ENTER
  * (nodeHash, time, view, scale) without minting a new cache identity -- the "bounds growth, not
  * tiling" model.
  *
- * DeepImageCacheEntry does not use NonKeyParams' CacheEntryStorageInfo to describe this
- * DeepImage's real payload (that payload is variable-size, structured as a sample table plus a
- * set of per-channel buffers, not a fixed-stride typed buffer). The storage info here is fixed
- * to a trivial 1-byte RAM allocation so that CacheEntryHelper's own allocate-once/deallocate
- * bookkeeping (which the RAM path depends on) works normally; see DeepImageCacheEntry.
+ * NonKeyParams' CacheEntryStorageInfo cannot describe the DeepImage's real payload (that payload
+ * is variable-size, structured as a sample table plus a set of per-channel buffers, not a
+ * fixed-stride typed buffer). The storage info here says eStorageModeNone, so CacheEntryHelper
+ * allocates and accounts nothing; see DeepImageCacheEntry.
  **/
 class DeepImageParams
     : public NonKeyParams {

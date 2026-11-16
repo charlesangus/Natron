@@ -41,6 +41,9 @@ set(_natron_long_suite_timeouts
     NativeLoopFeedbackTest 1500
     # Whole optical-flow solves on llvmpipe, several in each case.
     NativeVectorGeneratorGpuTest 1800
+    # Debug: about 180 s alone and up to 315 s beside other suites, as each of its uncached variants
+    # decodes and develops a whole raw.
+    NativeRawColorCalibrationReferenceTest 900
     # Debug llvmpipe on a loaded runner: 150 to 285 s with ten filters, most of it one frame per
     # filter and clamp, so it grows with the filter list and the wider kernels.
     NativeSplineWarpGpuTest 900

@@ -175,6 +175,7 @@ public:
                                             bool isPartialRect,
                                             bool isFirstTile,
                                             TexturePtr* texture) OVERRIDE FINAL;
+    virtual void setDisplayedEdgeMode(int textureIndex, EdgeMode mode) OVERRIDE FINAL;
     virtual void endTransferBufferFromRAMToGPU(int textureIndex,
                                                const TexturePtr& texture,
                                                const ImagePtr& image,
@@ -679,12 +680,11 @@ private:
     void updateInfoWidgetColorPicker(const QPointF & imgPos,
                                      const QPoint & widgetPos);
 
-    void updateInfoWidgetColorPickerInternal(const QPointF & imgPos,
-                                             const QPoint & widgetPos,
+    void updateInfoWidgetColorPickerInternal(const QPointF& imgPos,
+                                             const QPoint& widgetPos,
                                              int width,
                                              int height,
-                                             const RectD & rod, // in canonical coordinates
-                                             const RectD & dispW, // in canonical coordinates
+                                             const RectD& dispW, // in canonical coordinates
                                              int texIndex);
     void updateRectangleColorPicker();
     void updateRectangleColorPickerInternal(bool pickOutput);

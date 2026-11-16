@@ -1,0 +1,1 @@
+slang_add_kernel(demosaic_superpixel Kernels/demosaic_superpixel.slang ENTRY demosaic_superpixel REGISTRY NatronGpu)

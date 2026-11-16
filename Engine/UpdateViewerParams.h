@@ -34,6 +34,7 @@
 #include <string>
 #include <vector>
 
+#include "Global/EdgeMode.h"
 #include "Global/Enums.h"
 
 #include "Engine/BufferableObject.h"
@@ -108,6 +109,7 @@ public:
         , deviceRootHold()
 #endif
         , rod()
+        , edgeMode(EdgeMode::Black)
         , pixelAspectRatio(1.)
         , abortInfo()
         , isSequential(false)
@@ -180,6 +182,9 @@ public:
 
     // The RoD of the src image
     RectD rod;
+
+    // What the src image holds past rod; the viewer displays it there without rod growing.
+    EdgeMode edgeMode;
 
     // The RoI of the viewer, rounded to the tile size
     RectI roi,roiNotRoundedToTileSize;

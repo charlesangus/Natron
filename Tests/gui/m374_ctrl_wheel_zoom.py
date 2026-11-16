@@ -7,8 +7,8 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xv
         Tests/gui/run-gui-test.sh Tests/gui/m374_ctrl_wheel_zoom.py build/fast/App/Natron'
 
 Wheel events are synthetic QWheelEvents sent to the NodeGraph viewport, as in
-Tests/gui/m55_node_graph.py. The node's scale is read back through getSize(), since the scene is
-not reachable from Python in this binary.
+Tests/gui/m55_node_graph.py. A node's scale lives on its graphics item, not in getSize(), so the
+check reads the scene transforms of the items the view finds over the node.
 """
 import os
 import sys
@@ -51,6 +51,22 @@ try:
                                                      Qt.NoScrollPhase, False))
         QApplication.processEvents()
 
+    def node_item_scales(graph, node):
+        """The scene scale of every item over node's centre, the node's own items included.
+
+        Scaling a node scales all of its child items' scene transforms, so a magnified node changes
+        this list. The view lists the items itself: NodeGraph.scene() raises "already deleted" here."""
+        x, y = node.getPosition()
+        w, h = node.getSize()
+        scales = []
+        try:
+            for item in graph.items(graph.mapFromScene(x + w / 2.0, y + h / 2.0)):
+                t = item.sceneTransform()
+                scales.append((t.m11(), t.m22()))
+        except RuntimeError:
+            return []
+        return sorted(scales)
+
     def steps():
         ok = yield ("until", lambda: root_graph() is not None, STARTUP_TIMEOUT_S)
         gt.require(ok, "node graph widget is up")
@@ -80,7 +96,9 @@ try:
         graph.centerOn(x + w / 2.0, y + h / 2.0)
         QApplication.processEvents()
         over_node = graph.mapFromScene(x + w / 2.0, y + h / 2.0)
-        start_size = tuple(node.getSize())
+        start_scales = node_item_scales(graph, node)
+        gt.require(len(start_scales) > 0, "the view finds the node's items over its centre")
+        check((1.0, 1.0) in start_scales, "the node's items start unscaled (%r)" % (start_scales,))
 
         gt.section("ctrl-wheel")
         start_zoom = graph.transform().m11()
@@ -88,8 +106,9 @@ try:
         ctrl_zoom = graph.transform().m11()
         check(ctrl_zoom != start_zoom, "ctrl-wheel: Ctrl+wheel over a selected node changes the graph zoom (%.4f -> %.4f)"
               % (start_zoom, ctrl_zoom))
-        check(tuple(node.getSize()) == start_size,
-              "ctrl-wheel: Ctrl+wheel leaves the selected node at %s (got %s)" % (start_size, tuple(node.getSize())))
+        ctrl_scales = node_item_scales(graph, node)
+        check(ctrl_scales == start_scales,
+              "ctrl-wheel: Ctrl+wheel leaves the selected node's item scales at %r (got %r)" % (start_scales, ctrl_scales))
         ctrl_ratio = ctrl_zoom / start_zoom
 
         gt.section("plain-wheel")
@@ -103,7 +122,9 @@ try:
         check(plain_ratio != 1.0, "plain-wheel: the wheel changes the graph zoom (%.4f -> %.4f)" % (start_zoom, plain_zoom))
         check(abs(plain_ratio - ctrl_ratio) <= ZOOM_TOLERANCE,
               "plain-wheel: the plain wheel zoom change %.6f equals the Ctrl+wheel change %.6f" % (plain_ratio, ctrl_ratio))
-        check(tuple(node.getSize()) == start_size, "plain-wheel: the node stays at %s" % (start_size,))
+        plain_scales = node_item_scales(graph, node)
+        check(plain_scales == start_scales,
+              "plain-wheel: the node's item scales stay at %r (got %r)" % (start_scales, plain_scales))
 
         del vp
         del graph

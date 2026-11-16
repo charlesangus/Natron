@@ -1370,14 +1370,16 @@ NodeGui::resizeToContent(bool adjustToTextSize,
     const QRectF bbox = bodyRect();
     int width = bbox.width();
     int height = bbox.height();
-    if (node && !node->hasSize() && !mustFrameName()) {
+    const bool layoutFromDefaultSize = node && !node->hasSize() && !mustFrameName();
+    if (layoutFromDefaultSize) {
         if (_previewPixmap && _previewPixmap->isVisible()) {
             getSizeWithPreview(&width, &height);
         } else {
             getInitialSize(&width, &height);
         }
     }
-    resize(width, height, false, adjustToTextSize);
+    // An explicitly sized node keeps its size as a minimum, so its label may only grow it.
+    resize(width, height, false, layoutFromDefaultSize && adjustToTextSize);
 
     // Before the first name layout the width is a placeholder, and a project load or node-tree
     // creation restores positions that were saved against the final size.

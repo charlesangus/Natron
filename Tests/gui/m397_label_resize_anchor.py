@@ -1,6 +1,6 @@
 """A node whose own content changes size (label, name) keeps its top edge and horizontal centre, so
 it stays lined up with its neighbours. User resizes through setSize(), backdrops and a save/reload
-keep the top-left corner.
+keep the top-left corner, and an explicitly sized node keeps its size when its label is short.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && \
@@ -18,15 +18,17 @@ LOAD_TIMEOUT_S = 30.0
 REFRESH_TIMEOUT_S = 5.0
 WATCHDOG_S = 120
 SETTLE_MS = 400
-TOL = 0.5
+STEP_TIMEOUT_S = 1.0
+TOL = 1e-6
+PROBE_MARGIN = 20.0
+EXPLICIT_SIZE = (200.0, 300.0)
 
 LONG_LABEL = ("a label line that is a good deal wider than the node it sits on\n"
               "second line\n"
               "third line of the label")
 LONG_NAME = "Blur_with_a_much_longer_name_than_the_default_one"
-BACKDROP_LABEL = ("a backdrop label line that is a good deal wider than the backdrop\n"
-                  "second line\n"
-                  "third line")
+ODD_WIDTH_LABELS = ["odd width probe " + "abcdefghijklmnop"[:k] for k in range(17)]
+BACKDROP_LABEL = "\n".join("backdrop line %d" % i for i in range(1, 25))
 
 try:
     import NatronEngine
@@ -56,6 +58,26 @@ try:
 
     def size_differs(node, size):
         return tuple(node.getSize()) != tuple(size)
+
+    def node_covers(node, scene_x, scene_y):
+        """Whether one of node's own graphics items lies under a scene point.
+
+        getSize() reports the size setSize() stored, not the laid-out one, so an explicitly sized
+        node's drawn extent is read from the scene. Items reaching above the node or outside its
+        horizontal span (input arrows, view overlays) are not the node's body."""
+        graph = root_graph()
+        if graph is None:
+            return False
+        x, y = node.getPosition()
+        w = node.getSize()[0]
+        try:
+            for item in graph.items(graph.mapFromScene(scene_x, scene_y)):
+                r = item.sceneBoundingRect()
+                if r.left() >= x - 5 and r.right() <= x + w + 5 and r.top() >= y - 5:
+                    return True
+        except RuntimeError:
+            return False
+        return False
 
     def check_top_centre(label, before, after, height_changes=True):
         bx, by, bw, bh = before
@@ -91,6 +113,10 @@ try:
         gt.require(ok, "node graph widget is up")
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
+
+        graph = root_graph()
+        graph.resetTransform()
+        del graph
 
         node = create("Blur", 0, 0)
         gt.close_all_panels()
@@ -144,6 +170,31 @@ try:
         check(after[2:] != before[2:], "d-setsize: setSize() changes the size (%r -> %r)" % (before[2:], after[2:]))
         check_top_left("d-setsize", before, after)
 
+        gt.section("d-explicit-size-label")
+        explicit = create("Blur", 800, 0)
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        explicit.setSize(*EXPLICIT_SIZE)
+        yield ("sleep", SETTLE_MS)
+        before = geometry(explicit)
+        ex, ey = before[0], before[1]
+        bottom_probe = (ex + EXPLICIT_SIZE[0] / 2.0, ey + EXPLICIT_SIZE[1] - PROBE_MARGIN)
+        corner_probe = (ex + EXPLICIT_SIZE[0] - PROBE_MARGIN, ey + EXPLICIT_SIZE[1] - PROBE_MARGIN)
+        check(node_covers(explicit, *bottom_probe) and node_covers(explicit, *corner_probe),
+              "d-explicit-size-label: the node is drawn %gx%g after setSize()" % EXPLICIT_SIZE)
+        explicit_label = explicit.getParam("userTextArea")
+        gt.require(explicit_label is not None, "the explicitly sized Blur has a label param")
+        explicit_label.set("short")
+        yield ("sleep", SETTLE_MS)
+        after = geometry(explicit)
+        report("NOTE d-explicit-size-label: %r -> %r" % (before, after))
+        check(node_covers(explicit, *bottom_probe) and node_covers(explicit, *corner_probe),
+              "d-explicit-size-label: a short label keeps the node drawn at least %gx%g" % EXPLICIT_SIZE)
+        check(after[2:] == before[2:], "d-explicit-size-label: the size stays %r (got %r)" % (before[2:], after[2:]))
+        check(after[0] == before[0] and after[1] == before[1],
+              "d-explicit-size-label: the top-left stays at (%g, %g) (got (%g, %g))"
+              % (before[0], before[1], after[0], after[1]))
+
         gt.section("e-backdrop")
         backdrop = create("Backdrop", 0, 400)
         gt.close_all_panels()
@@ -151,16 +202,43 @@ try:
         bd_label = string_param(backdrop, ("Label", "label", "userTextArea"))
         gt.require(bd_label is not None, "the Backdrop has a label param")
         before = geometry(backdrop)
+        grown_probe = (before[0] + PROBE_MARGIN, before[1] + before[3] + 3 * PROBE_MARGIN)
+        check(not node_covers(backdrop, *grown_probe),
+              "e-backdrop: before the label, nothing of the backdrop lies at %r" % (grown_probe,))
         bd_label.set(BACKDROP_LABEL)
         backdrop.setLabel("Backdrop_with_a_much_longer_name_than_the_default_one")
+        ok = yield ("until", lambda: node_covers(backdrop, *grown_probe), REFRESH_TIMEOUT_S)
         yield ("sleep", SETTLE_MS)
-        check_top_left("e-backdrop", before, geometry(backdrop))
+        after = geometry(backdrop)
+        check(ok, "e-backdrop: the tall label grows the backdrop down past %r (getSize %r -> %r)"
+              % (grown_probe, before[2:], after[2:]))
+        check_top_left("e-backdrop", before, after)
 
-        gt.section("f-reload")
-        label.set(LONG_LABEL)
-        yield ("until", lambda: size_differs(node, original[2:]), REFRESH_TIMEOUT_S)
-        yield ("sleep", SETTLE_MS)
-        nodes = [node, named, sized, backdrop]
+        gt.section("f-odd-width")
+        start = geometry(node)
+        check(start == original, "f-odd-width: the node starts back at %r (got %r)" % (original, start))
+        odd = None
+        previous = start
+        for text in ODD_WIDTH_LABELS:
+            label.set(text)
+            yield ("until", lambda: size_differs(node, previous[2:]), STEP_TIMEOUT_S)
+            yield ("sleep", SETTLE_MS)
+            now = geometry(node)
+            expected_x = start[0] - (now[2] - start[2]) / 2.0
+            report("NOTE f-odd-width %r: %r, expected x %r" % (text, now, expected_x))
+            check(abs(now[0] - expected_x) <= TOL and abs(now[1] - start[1]) <= TOL,
+                  "f-odd-width %r: the node sits at (%r, %r) (got (%r, %r))"
+                  % (text, expected_x, start[1], now[0], now[1]))
+            previous = now
+            if (now[2] - start[2]) % 2 == 1:
+                odd = now
+                break
+        gt.require(odd is not None, "f-odd-width: one of the probe labels changes the width by an odd amount")
+        check((odd[0] - start[0]) % 1 == 0.5,
+              "f-odd-width: an odd width change moves x by a half pixel (%r -> %r)" % (start[0], odd[0]))
+
+        gt.section("g-reload")
+        nodes = [node, named, sized, explicit, backdrop]
         saved = dict((n.getScriptName(), tuple(n.getPosition())) for n in nodes)
         report("NOTE saved positions %r" % (saved,))
         path = os.path.join(gt.OUT, "m397_label_resize_anchor.ntpz")
@@ -175,7 +253,7 @@ try:
         yield ("sleep", SETTLE_MS)
         for name, pos in sorted(saved.items()):
             got = tuple(host.getNode(name).getPosition())
-            check(got == pos, "f-reload: %s comes back at %r (got %r)" % (name, pos, got))
+            check(got == pos, "g-reload: %s comes back at %r (got %r)" % (name, pos, got))
 
         faulthandler.cancel_dump_traceback_later()
 

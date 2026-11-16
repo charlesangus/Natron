@@ -522,6 +522,7 @@ future core work has solid ground to build on.
 | M450 | USDWrite Export Preview | todo | M448, M449 |  | E9 | F27 | | [M450-usdwrite-export-preview.md](PLAN/MILESTONES/M450-usdwrite-export-preview.md) |
 | M451 | Viewer Stale Cue Experiments | todo | M302 |  | E10 | | | [M451-viewer-stale-cue-experiments.md](PLAN/MILESTONES/M451-viewer-stale-cue-experiments.md) |
 | M452 | Node Error And Warning Display | todo | M397 |  | E10 | | | [M452-node-error-and-warning-display.md](PLAN/MILESTONES/M452-node-error-and-warning-display.md) |
+| M453 | Follow Animation Layer | todo | M220 |  | E10 | | | [M453-follow-animation-layer.md](PLAN/MILESTONES/M453-follow-animation-layer.md) |
 
 # Epics
 

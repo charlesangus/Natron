@@ -50,7 +50,7 @@ try:
     grid.getParam("gridColumns").setValue(GRID)
 
     turned = make("GeoTransform")
-    turned.getParam("rotate").setValue(90.0, 0)
+    turned.getParam("rotate").set(90.0, 0.0, 0.0)
     require(turned.connectInput(0, grid), "connect the GeoTransform to the grid")
 
     viewer = app.getNode("Viewer1")
@@ -258,7 +258,7 @@ try:
         click_header("P[y]")
         check(bool(sheet_state("SortBusy")), "a P[y] sort is building when the transform changes")
         order = header().sortIndicatorOrder()
-        turned.getParam("translate").setValue(LIFT, 1)
+        turned.getParam("translate").set(0.0, LIFT, 0.0)
         ok = yield ("until", lambda: sort_idle() and inspector_state("Busy") is False and sheet_state("SortsCancelled") > cancelled,
                     BUILD_TIMEOUT_S)
         check(ok, "the change cancelled the sort under way (cancelled %r, was %r)" % (sheet_state("SortsCancelled"), cancelled))

@@ -20,7 +20,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <vector>
 
 #include "Engine/Bezier.h"
@@ -36,7 +35,6 @@
 #include "Engine/RotoUndoCommand.h"
 #include "Engine/Transform.h"
 #include "Engine/VectorFollowModels.h"
-#include "Engine/VectorFollowReduce.h"
 #include "Engine/VectorSampler.h"
 #include "Engine/ViewIdx.h"
 
@@ -45,6 +43,7 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 constexpr int kMaxStrokeSamples = 256;
+constexpr const char* kTooFewKeys = "it has fewer than two keys within the frame range";
 constexpr double kMinCornerSpan = 1.;
 
 FollowMatrix
@@ -140,14 +139,6 @@ translateFrameAt(const RotoDrawableItem& item,
     return true;
 }
 
-FollowPoint
-translatedPoint(const TranslateFrame& frame,
-                double tx,
-                double ty)
-{
-    return frame.before.apply(FollowPoint(frame.untranslated.x + tx, frame.untranslated.y + ty));
-}
-
 // The own translate at time that shows point, in the item's coordinates, at shown.
 bool
 translateShowingAt(const RotoDrawableItem& item,
@@ -214,159 +205,6 @@ insertKnobKeys(const KnobDoublePtr& knob,
     }
 }
 
-// Copies of curves, which reduction edits off the main thread while the originals stay in use.
-class CurveCopiesMotion
-    : public VectorFollowKeyedMotion {
-public:
-    explicit CurveCopiesMotion(const std::set<int>& keys)
-        : _keys(keys)
-    {
-    }
-
-    virtual ~CurveCopiesMotion() { }
-
-    virtual std::set<int> keys() const OVERRIDE FINAL
-    {
-        return _keys;
-    }
-
-    virtual void removeKey(int frame) OVERRIDE FINAL
-    {
-        std::vector<KeyFrame>& stash = _removed[frame];
-        stash.assign(_curves.size(), KeyFrame());
-        for (std::size_t i = 0; i < _curves.size(); ++i) {
-            if (_curves[i]->getKeyFrameWithTime(frame, &stash[i])) {
-                _curves[i]->removeKeyFrameWithTime(frame);
-            }
-        }
-        _keys.erase(frame);
-    }
-
-    virtual void restoreKey(int frame) OVERRIDE FINAL
-    {
-        const std::vector<KeyFrame>& stash = _removed[frame];
-        for (std::size_t i = 0; i < _curves.size(); ++i) {
-            _curves[i]->addKeyFrame(stash[i]);
-        }
-        _keys.insert(frame);
-    }
-
-protected:
-    std::size_t addCopy(const Curve& original)
-    {
-        CurvePtr copy = std::make_shared<Curve>();
-        copy->clone(original);
-        _curves.push_back(copy);
-
-        return _curves.size() - 1;
-    }
-
-    std::vector<CurvePtr> _curves;
-
-private:
-    std::set<int> _keys;
-    std::map<int, std::vector<KeyFrame>> _removed;
-};
-
-// Every position and tangent of a curve, in its own coordinates.
-class PointCurvesMotion
-    : public CurveCopiesMotion {
-public:
-    PointCurvesMotion(const Bezier& bezier,
-                      const std::set<int>& keys)
-        : CurveCopiesMotion(keys)
-    {
-        addPoints(bezier.getControlPoints_mt_safe());
-        if (bezier.useFeatherPoints()) {
-            addPoints(bezier.getFeatherPoints_mt_safe());
-        }
-    }
-
-    virtual void evaluate(int frame,
-                          std::vector<FollowPoint>* points) const OVERRIDE FINAL
-    {
-        points->resize(_curves.size() / 2);
-        for (std::size_t i = 0; i < points->size(); ++i) {
-            (*points)[i].x = _curves[i * 2]->getValueAt(frame);
-            (*points)[i].y = _curves[i * 2 + 1]->getValueAt(frame);
-        }
-    }
-
-private:
-    void addPoints(const std::list<BezierCPPtr>& points)
-    {
-        for (std::list<BezierCPPtr>::const_iterator it = points.begin(); it != points.end(); ++it) {
-            addCopy(*(*it)->getXCurve());
-            addCopy(*(*it)->getYCurve());
-            addCopy(*(*it)->getLeftXCurve());
-            addCopy(*(*it)->getLeftYCurve());
-            addCopy(*(*it)->getRightXCurve());
-            addCopy(*(*it)->getRightYCurve());
-        }
-    }
-};
-
-// A translation moves every point alike, so one point, where it shows, stands for the shape.
-class TranslateCurvesMotion
-    : public CurveCopiesMotion {
-public:
-    TranslateCurvesMotion(const KnobDoublePtr& translate,
-                          const std::map<int, TranslateFrame>& frames,
-                          const std::set<int>& keys)
-        : CurveCopiesMotion(keys)
-        , _frames(frames)
-    {
-        addCopy(*translate->getCurve(ViewIdx(0), 0));
-        addCopy(*translate->getCurve(ViewIdx(0), 1));
-    }
-
-    virtual void evaluate(int frame,
-                          std::vector<FollowPoint>* points) const OVERRIDE FINAL
-    {
-        points->assign(1, translatedPoint(_frames.at(frame), _curves[0]->getValueAt(frame), _curves[1]->getValueAt(frame)));
-    }
-
-private:
-    std::map<int, TranslateFrame> _frames;
-};
-
-// The extra matrix through what comes before it, on the corners of the shape's box, so a deviation
-// is measured where it shows and not in the matrix's own, possibly scaled, space.
-class MatrixCurvesMotion
-    : public CurveCopiesMotion {
-public:
-    MatrixCurvesMotion(const KnobDoublePtr& extraMatrix,
-                       const std::vector<FollowPoint>& corners,
-                       const std::map<int, FollowMatrix>& before,
-                       const std::set<int>& keys)
-        : CurveCopiesMotion(keys)
-        , _corners(corners)
-        , _before(before)
-    {
-        for (int dim = 0; dim < 9; ++dim) {
-            addCopy(*extraMatrix->getCurve(ViewIdx(0), dim));
-        }
-    }
-
-    virtual void evaluate(int frame,
-                          std::vector<FollowPoint>* points) const OVERRIDE FINAL
-    {
-        FollowMatrix extra;
-        for (int dim = 0; dim < 9; ++dim) {
-            extra.m[dim] = _curves[dim]->getValueAt(frame);
-        }
-        const FollowMatrix total = _before.at(frame) * extra;
-        points->resize(_corners.size());
-        for (std::size_t i = 0; i < _corners.size(); ++i) {
-            (*points)[i] = total.apply(_corners[i]);
-        }
-    }
-
-private:
-    std::vector<FollowPoint> _corners;
-    std::map<int, FollowMatrix> _before;
-};
-
 struct FollowShape {
     RotoDrawableItemPtr item;
     BezierPtr bezier;
@@ -388,9 +226,6 @@ struct FollowShape {
     std::set<int> anchorFrames;
     std::set<int> written;
     VectorFollowShapeOutcome outcome;
-    std::unique_ptr<CurveCopiesMotion> motion;
-    std::set<int> removable;
-    std::set<int> removed;
 };
 
 std::vector<FollowPoint>
@@ -552,15 +387,22 @@ struct VectorFollowRun::Imp {
         : context(context_)
         , params(params_)
     {
+        if (params.mode == VectorFollowMode::eBlendBetweenKeys) {
+            params.direction = VectorFollowDirection::eForward;
+        }
+    }
+
+    bool blends() const
+    {
+        return params.mode == VectorFollowMode::eBlendBetweenKeys;
     }
 
     std::unique_ptr<FollowShape> makeShape(const RotoDrawableItemPtr& item, std::string* refusal) const;
-    std::unique_ptr<FollowShape> makePointsShape(const VectorFollowPointsPtr& points) const;
-    void addAnchorFrames(FollowShape& shape) const;
+    std::unique_ptr<FollowShape> makePointsShape(const VectorFollowPointsPtr& points, std::string* refusal) const;
+    bool addAnchorFrames(FollowShape& shape) const;
     std::set<int> keyFramesOf(const FollowShape& shape, int first, int last) const;
     bool writePoints(FollowShape& shape, double time, const std::vector<FollowPoint>& points) const;
     void writeFrame(FollowShape& shape, const VectorFollowFrame& frame) const;
-    void removeKeys(FollowShape& shape) const;
     void orderByTransformSources();
 };
 
@@ -706,7 +548,11 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
         }
     }
 
-    addAnchorFrames(*shape);
+    if (!addAnchorFrames(*shape)) {
+        *refusal = kTooFewKeys;
+
+        return nullptr;
+    }
 
     for (int frame : shape->anchorFrames) {
         VectorFollowAnchor anchor;
@@ -772,27 +618,32 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
     return shape;
 }
 
-void
+bool
 VectorFollowRun::Imp::addAnchorFrames(FollowShape& shape) const
 {
-    shape.anchorFrames = keyFramesOf(shape, params.first, params.last);
-    const bool forward = params.direction == VectorFollowDirection::eForward;
-    const int start = forward ? params.first : params.last;
-    /*
-     * What the start frame shows is only worth keeping when a key behind it shaped it. Then it is
-     * an anchor like any key, and bridges to the next key ahead. Without one, a key ahead is the
-     * only state the artist set, so the follow tracks back from it to the start frame instead.
-     */
-    const bool keyBehind = forward ? !keyFramesOf(shape, std::numeric_limits<int>::min(), params.first - 1).empty()
-                                   : !keyFramesOf(shape, params.last + 1, std::numeric_limits<int>::max()).empty();
-    if (shape.anchorFrames.empty() || (keyBehind && !shape.anchorFrames.count(start))) {
-        shape.anchorFrames.insert(start);
-        shape.setup.seedIsNew = true;
+    if (blends()) {
+        shape.anchorFrames = keyFramesOf(shape, params.first, params.last);
+        if (shape.anchorFrames.size() < 2) {
+            return false;
+        }
+        // Out past the outer keys there is nothing to blend toward, so those frames stay as they are.
+        shape.setup.first = *shape.anchorFrames.begin();
+        shape.setup.last = *shape.anchorFrames.rbegin();
+
+        return true;
     }
+    // The start frame is keyed too, with what it shows: keys landing on the frames next to it would
+    // otherwise change what it interpolates to.
+    shape.anchorFrames.clear();
+    shape.anchorFrames.insert(params.direction == VectorFollowDirection::eForward ? params.first : params.last);
+    shape.setup.seedIsNew = true;
+
+    return true;
 }
 
 std::unique_ptr<FollowShape>
-VectorFollowRun::Imp::makePointsShape(const VectorFollowPointsPtr& points) const
+VectorFollowRun::Imp::makePointsShape(const VectorFollowPointsPtr& points,
+                                      std::string* refusal) const
 {
     std::unique_ptr<FollowShape> shape(new FollowShape);
     shape->points = points;
@@ -802,7 +653,11 @@ VectorFollowRun::Imp::makePointsShape(const VectorFollowPointsPtr& points) const
     shape->setup.last = params.last;
     shape->setup.model = VectorFollowModel::ePerPoint;
     shape->setup.forwardOnly = forwardOnly;
-    addAnchorFrames(*shape);
+    if (!addAnchorFrames(*shape)) {
+        *refusal = kTooFewKeys;
+
+        return nullptr;
+    }
     for (int frame : shape->anchorFrames) {
         VectorFollowAnchor anchor;
         anchor.frame = frame;
@@ -929,33 +784,6 @@ VectorFollowRun::Imp::writeFrame(FollowShape& shape,
     shape.written.insert(frame.frame);
 }
 
-void
-VectorFollowRun::Imp::removeKeys(FollowShape& shape) const
-{
-    if (shape.removed.empty()) {
-        return;
-    }
-    if (keysPoints(shape)) {
-        std::set<double> times(shape.removed.begin(), shape.removed.end());
-        shape.bezier->removeKeyframes(times);
-
-        return;
-    }
-
-    KnobDoublePtr knob = doubleKnob(*shape.item, shape.setup.model == VectorFollowModel::eTranslate ? kRotoDrawableItemTranslateParam : kRotoDrawableItemExtraMatrixParam);
-    KnobIPtr deletable = knob;
-    knob->beginChanges();
-    for (int frame : shape.removed) {
-        for (int dim = 0; dim < knob->getDimension(); ++dim) {
-            deletable->deleteValueAtTime(eCurveChangeReasonInternal, frame, ViewSpec::all(), dim, false);
-        }
-    }
-    knob->endChanges();
-    if (shape.bezier) {
-        shape.bezier->invalidatePolygonOrientation();
-    }
-}
-
 VectorFollowRun::VectorFollowRun(const RotoCurveContextPtr& context,
                                  const VectorFollowParams& params)
     : _imp(new Imp(context, params))
@@ -994,14 +822,20 @@ VectorFollowRun::prepare(std::string* error)
     }
     _imp->orderByTransformSources();
     for (const VectorFollowPointsPtr& points : params.points) {
-        std::unique_ptr<FollowShape> shape = points ? _imp->makePointsShape(points) : nullptr;
+        if (!points) {
+            continue;
+        }
+        std::string refusal;
+        std::unique_ptr<FollowShape> shape = _imp->makePointsShape(points, &refusal);
         if (shape) {
             _imp->shapes.push_back(std::move(shape));
+        } else if (!refusal.empty()) {
+            _imp->refused.push_back(VectorFollowRefusal { points->getName(), refusal });
         }
     }
     if (_imp->shapes.empty()) {
         _imp->tieSuspension.reset();
-        *error = "None of the given shapes can follow vectors.";
+        *error = _imp->blends() ? "None of the given shapes has two keys within the frame range to blend between." : "None of the given shapes can follow vectors.";
         for (const VectorFollowRefusal& refused : _imp->refused) {
             *error += " " + refused.name + ": " + refused.reason + ".";
         }
@@ -1010,6 +844,7 @@ VectorFollowRun::prepare(std::string* error)
     }
 
     _imp->undo = std::make_shared<FollowVectorsUndoCommand>(_imp->context, items, !params.points.empty());
+    _imp->undo->setText(_imp->blends() ? kVectorFollowBlendActionName : kVectorFollowActionName);
 
     // An anchor keyed on another knob only would slide once keys land around it on the extra matrix.
     for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
@@ -1060,91 +895,13 @@ VectorFollowRun::applyFrame(int shape,
     _imp->writeFrame(*_imp->shapes[shape], frame);
 }
 
-void
-VectorFollowRun::prepareReduction()
-{
-    for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
-        // Points that are not a curve's keep every key the follow wrote.
-        if (shape->points) {
-            continue;
-        }
-        shape->removable = shape->written;
-        for (int frame : shape->anchorFrames) {
-            shape->removable.erase(frame);
-        }
-        if (shape->removable.empty()) {
-            continue;
-        }
-
-        std::set<int> keys = shape->written;
-        keys.insert(shape->anchorFrames.begin(), shape->anchorFrames.end());
-        switch (shape->bakesFit ? VectorFollowModel::ePerPoint : shape->setup.model) {
-        case VectorFollowModel::ePerPoint:
-            shape->motion.reset(new PointCurvesMotion(*shape->bezier, keys));
-            break;
-        case VectorFollowModel::eTranslate: {
-            std::map<int, TranslateFrame> frames;
-            for (int frame = *keys.begin(); frame <= *keys.rbegin(); ++frame) {
-                TranslateFrame translateFrame;
-                if (!translateFrameAt(*shape->item, frame, shape->translatePivot, &translateFrame)) {
-                    translateFrame = TranslateFrame();
-                }
-                frames[frame] = translateFrame;
-            }
-            shape->motion.reset(new TranslateCurvesMotion(doubleKnob(*shape->item, kRotoDrawableItemTranslateParam), frames, keys));
-            break;
-        }
-        case VectorFollowModel::eAffine:
-        case VectorFollowModel::ePerspective: {
-            KnobDoublePtr extraKnob = doubleKnob(*shape->item, kRotoDrawableItemExtraMatrixParam);
-            std::map<int, FollowMatrix> before;
-            for (int frame = *keys.begin(); frame <= *keys.rbegin(); ++frame) {
-                FollowMatrix inverseExtra;
-                if (extraMatrixAt(extraKnob, frame).inverted(&inverseExtra)) {
-                    before[frame] = totalTransformAt(*shape->item, frame) * inverseExtra;
-                } else {
-                    before[frame] = FollowMatrix();
-                }
-            }
-            shape->motion.reset(new MatrixCurvesMotion(extraKnob, shape->setup.corners, before, keys));
-            break;
-        }
-        }
-    }
-}
-
-void
-VectorFollowRun::reduce(const std::function<bool()>& aborted)
-{
-    for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
-        if (!shape->motion) {
-            continue;
-        }
-        shape->removed = reduceVectorFollowKeys(*shape->motion, shape->removable, _imp->params.tolerance, aborted);
-        if (aborted()) {
-            _imp->aborted = true;
-            _imp->userStopped = true;
-
-            return;
-        }
-    }
-}
-
-void
-VectorFollowRun::applyReduction()
-{
-    for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
-        _imp->removeKeys(*shape);
-        shape->motion.reset();
-    }
-}
-
 VectorFollowReport
 VectorFollowRun::finish(bool sourceLost,
                         const std::string& error,
                         UndoCommandPtr* undo)
 {
     VectorFollowReport report;
+    report.action = _imp->blends() ? kVectorFollowBlendActionName : kVectorFollowActionName;
     report.aborted = _imp->aborted;
     report.userStopped = _imp->userStopped;
     report.refused = _imp->refused;

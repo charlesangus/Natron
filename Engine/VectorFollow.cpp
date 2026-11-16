@@ -815,16 +815,16 @@ formatVectorFollowReport(const VectorFollowReport& report)
     std::ostringstream text;
 
     if (report.sourceLost) {
-        text << "Follow Vectors: the vector source went away, so the follow was reverted.";
+        text << report.action << ": the vector source went away, so the change was reverted.";
 
         return text.str();
     }
     if (!report.error.empty()) {
-        text << "Follow Vectors: " << report.error << "\n";
+        text << report.action << ": " << report.error << "\n";
     } else if (report.aborted) {
-        text << "Follow Vectors was aborted. The keys of the completed frames stay.\n";
+        text << report.action << " was aborted. The keys of the completed frames stay.\n";
     } else {
-        text << "Follow Vectors is done.\n";
+        text << report.action << " is done.\n";
     }
     for (const VectorFollowShapeReport& shape : report.shapes) {
         text << shape.name << ":";
@@ -871,7 +871,7 @@ formatVectorFollowReport(const VectorFollowReport& report)
         text << "\n";
     }
     for (const VectorFollowRefusal& refused : report.refused) {
-        text << refused.name << ": not followed, as " << refused.reason << "\n";
+        text << refused.name << ": left alone, as " << refused.reason << "\n";
     }
 
     return text.str();

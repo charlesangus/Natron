@@ -71,6 +71,20 @@ public:
 
 typedef std::shared_ptr<VectorFollowPoints> VectorFollowPointsPtr;
 
+enum class VectorFollowMode {
+    /*
+     * From the shape as the start frame shows it, the first going forward and the last going
+     * backward, keys every frame of first..last, over any key already there.
+     */
+    eFollow,
+    /*
+     * Between each two keys within first..last, keys the frames in between with the vectors from
+     * both keys blended, so the motion meets both exactly. The keys stay as they are, and frames
+     * before the first key or after the last are left alone.
+     */
+    eBlendBetweenKeys
+};
+
 struct VectorFollowParams {
     std::list<RotoDrawableItemPtr> items;
     std::list<VectorFollowPointsPtr> points;
@@ -80,10 +94,10 @@ struct VectorFollowParams {
     NodePtr source;
     int first = 0;
     int last = 0;
+    VectorFollowMode mode = VectorFollowMode::eFollow;
+    // Unused by eBlendBetweenKeys, which always works up from each key to the next.
     VectorFollowDirection direction = VectorFollowDirection::eForward;
     VectorFollowModel model = VectorFollowModel::ePerPoint;
-    bool reduce = false;
-    double tolerance = kVectorFollowDefaultTolerance;
     double confidenceThreshold = kVectorFollowDefaultConfidenceThreshold;
     // Empty when nothing can stop it. Any thread.
     std::function<bool()> shouldAbort;
@@ -116,11 +130,6 @@ public:
 
     // Main thread.
     void applyFrame(int shape, const VectorFollowFrame& frame);
-
-    // Main thread, then any thread, then main thread. Call after every frame was applied.
-    void prepareReduction();
-    void reduce(const std::function<bool()>& aborted);
-    void applyReduction();
 
     /**
      * @brief Main thread. The whole follow becomes one undo step, pushed on the node, or handed over

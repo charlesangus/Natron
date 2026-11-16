@@ -24,6 +24,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <map>
 #include <set>
@@ -44,6 +45,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoKeyframeReduce.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Transform.h"
@@ -60,8 +62,7 @@ using namespace VectorFollowTest;
 constexpr double kFollowTolerance = 0.5;
 constexpr int kStart = 5;
 constexpr int kSpan = 20;
-// A key before kStart that holds the same pose as the shape's other key, so a follow from kStart
-// starts from what kStart shows.
+// A frame before the follow range.
 constexpr int kEarlier = kStart - 2;
 
 class VectorFollowBakeBase
@@ -120,6 +121,15 @@ public:
         params.first = kStart;
         params.last = kStart + kSpan;
         params.model = model;
+
+        return params;
+    }
+
+    VectorFollowParams blendParamsFor(const RotoDrawableItemPtr& item,
+                                      VectorFollowModel model) const
+    {
+        VectorFollowParams params = paramsFor(item, model);
+        params.mode = VectorFollowMode::eBlendBetweenKeys;
 
         return params;
     }
@@ -228,6 +238,10 @@ class VectorFollowSelectionTest
     : public VectorFollowBakeBase {
 };
 
+class RotoReduceKeyframesTest
+    : public VectorFollowBakeBase {
+};
+
 class VectorFollowZoomTest
     : public VectorFollowBakeBase {
 public:
@@ -300,21 +314,189 @@ TEST_F(VectorFollowBakeTest, UndoPutsBackThePointsAndRedoTheFollow)
     EXPECT_DOUBLE_EQ(positionAt(bezier, 2, kStart + kSpan).y, followed.y);
 }
 
-TEST_F(VectorFollowBakeTest, AnExistingKeyIsAnAnchorAndStaysExact)
+TEST_F(VectorFollowBakeTest, AFollowKeysOverTheKeysOnItsFrames)
 {
     BezierPtr bezier = makeSquare(kStart);
     const int later = kStart + 10;
     bezier->setKeyframe(later);
-    const FollowPoint atStart = positionAt(bezier, 1, kStart);
-    const FollowPoint atLater = positionAt(bezier, 1, later);
+    const FollowPoint start = positionAt(bezier, 1, kStart);
 
     UndoCommandPtr undo;
-    context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+    const VectorFollowReport report = context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    ASSERT_EQ(report.shapes.size(), 1u);
+    EXPECT_TRUE(report.shapes[0].passStops.empty());
+    EXPECT_TRUE(report.shapes[0].unfollowed.empty());
 
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, kStart).x, atStart.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, kStart).y, atStart.y);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, later).x, atLater.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, later).y, atLater.y);
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)kSpan + 1);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, kStart).x, start.x);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, kStart).y, start.y);
+    EXPECT_NEAR(positionAt(bezier, 1, later).x, start.x + kShiftX * 10, kFollowTolerance);
+    EXPECT_NEAR(positionAt(bezier, 1, later).y, start.y + kShiftY * 10, kFollowTolerance);
+}
+
+// A shape keyed on every frame, corrected on one and followed again from there.
+TEST_F(VectorFollowBakeTest, ReFollowingFromACorrectedFrameOverwritesTheFramesAfterIt)
+{
+    BezierPtr bezier = makeSquare(kStart);
+    UndoCommandPtr undo;
+    context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+    ASSERT_TRUE(bool(undo));
+    std::map<int, FollowPoint> followed;
+    for (int frame = kStart; frame <= kStart + kSpan; ++frame) {
+        followed[frame] = positionAt(bezier, 0, frame);
+    }
+
+    const int corrected = kStart + 8;
+    for (int i = 0; i < 4; ++i) {
+        bezier->movePointByIndex(i, corrected, 6., -4.);
+    }
+    const FollowPoint fixed = positionAt(bezier, 0, corrected);
+    ASSERT_NEAR(fixed.x, followed[corrected].x + 6., 1e-9);
+
+    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
+    params.first = corrected;
+    UndoCommandPtr refollow;
+    const VectorFollowReport report = context()->followVectors(params, &refollow);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    ASSERT_TRUE(bool(refollow));
+
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)kSpan + 1);
+    for (int frame = kStart; frame < corrected; ++frame) {
+        EXPECT_DOUBLE_EQ(positionAt(bezier, 0, frame).x, followed[frame].x) << frame;
+        EXPECT_DOUBLE_EQ(positionAt(bezier, 0, frame).y, followed[frame].y) << frame;
+    }
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, corrected).x, fixed.x);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, corrected).y, fixed.y);
+    for (int frame = corrected + 1; frame <= kStart + kSpan; ++frame) {
+        EXPECT_NEAR(positionAt(bezier, 0, frame).x, fixed.x + kShiftX * (frame - corrected), kFollowTolerance) << frame;
+        EXPECT_NEAR(positionAt(bezier, 0, frame).y, fixed.y + kShiftY * (frame - corrected), kFollowTolerance) << frame;
+    }
+
+    refollow->undo();
+    keys.clear();
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)kSpan + 1);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, corrected).x, fixed.x);
+    for (int frame = corrected + 1; frame <= kStart + kSpan; ++frame) {
+        EXPECT_DOUBLE_EQ(positionAt(bezier, 0, frame).x, followed[frame].x) << frame;
+        EXPECT_DOUBLE_EQ(positionAt(bezier, 0, frame).y, followed[frame].y) << frame;
+    }
+}
+
+TEST_F(VectorFollowBakeTest, KeysOutsideTheFollowedFramesStayAsTheyAre)
+{
+    BezierPtr bezier = makeSquare(kStart);
+    bezier->setKeyframe(kEarlier);
+    const int after = kStart + kSpan + 3;
+    bezier->setKeyframe(after);
+    for (int i = 0; i < 4; ++i) {
+        bezier->movePointByIndex(i, after, -5., 2.);
+    }
+    const FollowPoint atEarlier = positionAt(bezier, 0, kEarlier);
+    const FollowPoint atAfter = positionAt(bezier, 0, after);
+
+    UndoCommandPtr undo;
+    const VectorFollowReport report = context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)kSpan + 3);
+    EXPECT_EQ(keys.count((double)kEarlier), 1u);
+    EXPECT_EQ(keys.count((double)after), 1u);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kEarlier).x, atEarlier.x);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kEarlier).y, atEarlier.y);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, after).x, atAfter.x);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, after).y, atAfter.y);
+}
+
+TEST_F(VectorFollowBakeTest, AFollowStartsFromWhatTheStartFrameShows)
+{
+    const int later = kStart + 10;
+    BezierPtr bezier = makeSquare(later);
+    const FollowPoint held = positionAt(bezier, 0, later);
+
+    UndoCommandPtr undo;
+    const VectorFollowReport report = context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)kSpan + 1);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart).x, held.x);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart).y, held.y);
+    EXPECT_NEAR(positionAt(bezier, 0, later).x, held.x + kShiftX * 10, kFollowTolerance);
+    EXPECT_NEAR(positionAt(bezier, 0, later).y, held.y + kShiftY * 10, kFollowTolerance);
+
+    ASSERT_TRUE(bool(undo));
+    undo->undo();
+    keys.clear();
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys, std::set<double> { (double)later });
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).x, held.x);
+}
+
+TEST_F(VectorFollowBakeTest, AFitFollowOverwritesALaterKeyOfItsOwn)
+{
+    const int later = kStart + 10;
+    BezierPtr bezier = makeSquare(kStart);
+    const FollowPoint start = positionAt(bezier, 0, kStart);
+    bezier->setTranslateKeyframe(later, 0., 0.);
+
+    for (VectorFollowModel model : { VectorFollowModel::eTranslate, VectorFollowModel::eAffine }) {
+        UndoCommandPtr undo;
+        const VectorFollowReport report = context()->followVectors(paramsFor(bezier, model), &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+
+        const FollowPoint atStart = shownAt(bezier, start, kStart);
+        EXPECT_NEAR(atStart.x, start.x, 1e-9);
+        EXPECT_NEAR(atStart.y, start.y, 1e-9);
+        const FollowPoint atLater = shownAt(bezier, start, later);
+        EXPECT_NEAR(atLater.x, start.x + kShiftX * 10, kFollowTolerance);
+        EXPECT_NEAR(atLater.y, start.y + kShiftY * 10, kFollowTolerance);
+
+        ASSERT_TRUE(bool(undo));
+        undo->undo();
+        const FollowPoint back = shownAt(bezier, start, later);
+        EXPECT_NEAR(back.x, start.x, 1e-9);
+        EXPECT_NEAR(back.y, start.y, 1e-9);
+    }
+}
+
+TEST_F(VectorFollowBakeTest, ABackwardFollowOverwritesTheFramesBeforeTheStart)
+{
+    const int current = kStart + kSpan;
+    BezierPtr bezier = makeSquare(current);
+    bezier->setKeyframe(kStart);
+    bezier->setKeyframe(kEarlier);
+    const FollowPoint held = positionAt(bezier, 0, current);
+
+    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
+    params.direction = VectorFollowDirection::eBackward;
+    UndoCommandPtr undo;
+    const VectorFollowReport report = context()->followVectors(params, &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)kSpan + 2);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, current).x, held.x);
+    EXPECT_NEAR(positionAt(bezier, 0, kStart).x, held.x - kShiftX * kSpan, kFollowTolerance);
+    EXPECT_NEAR(positionAt(bezier, 0, kStart).y, held.y - kShiftY * kSpan, kFollowTolerance);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kEarlier).x, held.x);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kEarlier).y, held.y);
+
+    ASSERT_TRUE(bool(undo));
+    undo->undo();
+    keys.clear();
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys, (std::set<double> { (double)kEarlier, (double)kStart, (double)current }));
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart).x, held.x);
 }
 
 TEST_F(VectorFollowBakeTest, SelectedPointsMoveAndTheRestStaysPut)
@@ -410,17 +592,258 @@ TEST_F(VectorFollowBakeTest, AnAbortKeepsTheFramesAlreadyDone)
     EXPECT_EQ(keys.size(), 1u);
 }
 
-// The first shape's backward pass has no layer to run on; the user stops the follow during the second.
-TEST_F(VectorFollowBakeTest, AUserStopAfterAPassStopIsStillAUserStop)
+TEST_F(VectorFollowBakeTest, OnlyAStopTheUserAskedForThatKeptItsSourceIsAUserStop)
+{
+    VectorFollowReport report;
+    report.aborted = true;
+    report.shapes.resize(1);
+    report.shapes[0].passStops.resize(1);
+    report.shapes[0].stopped = true;
+    EXPECT_FALSE(isUserStopVectorFollowReport(report));
+
+    report.userStopped = true;
+    report.error = "Aborted.";
+    EXPECT_TRUE(isUserStopVectorFollowReport(report));
+
+    report.sourceLost = true;
+    EXPECT_FALSE(isUserStopVectorFollowReport(report));
+}
+
+TEST_F(VectorFollowBlendTest, ABlendMeetsBothKeysAndBlendsBetween)
+{
+    const int later = kStart + 10;
+    BezierPtr bezier = makeSquare(later);
+    bezier->setKeyframe(kStart);
+    const FollowPoint held = positionAt(bezier, 1, later);
+
+    UndoCommandPtr undo;
+    const VectorFollowReport report = context()->followVectors(blendParamsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    ASSERT_EQ(report.shapes.size(), 1u);
+    EXPECT_TRUE(report.shapes[0].passStops.empty());
+    EXPECT_EQ(report.action, std::string(kVectorFollowBlendActionName));
+
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), 11u);
+    EXPECT_EQ(*keys.begin(), (double)kStart);
+    EXPECT_EQ(*keys.rbegin(), (double)later);
+    for (int frame : { kStart, later, later + 5 }) {
+        EXPECT_DOUBLE_EQ(positionAt(bezier, 1, frame).x, held.x) << frame;
+        EXPECT_DOUBLE_EQ(positionAt(bezier, 1, frame).y, held.y) << frame;
+    }
+
+    // Both keys hold the same pose on a moving picture, so at each frame one pass is ahead by the
+    // frames since the earlier key and the other behind by the frames to the later one.
+    for (int frame : { kStart + 3, kStart + 5, kStart + 8 }) {
+        const double weight = followBridgeWeight(frame, kStart, later);
+        const double offset = (frame - kStart) - weight * 10.;
+        EXPECT_NEAR(positionAt(bezier, 1, frame).x, held.x + kShiftX * offset, kFollowTolerance) << frame;
+        EXPECT_NEAR(positionAt(bezier, 1, frame).y, held.y + kShiftY * offset, kFollowTolerance) << frame;
+    }
+}
+
+TEST_F(VectorFollowBlendTest, ABlendUndoesAsOneStep)
+{
+    const int later = kStart + 10;
+    BezierPtr bezier = makeSquare(later);
+    bezier->setKeyframe(kStart);
+    const FollowPoint held = positionAt(bezier, 0, later);
+
+    UndoCommandPtr undo;
+    context()->followVectors(blendParamsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+    ASSERT_TRUE(bool(undo));
+    const FollowPoint blended = positionAt(bezier, 0, kStart + 3);
+
+    undo->undo();
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys, (std::set<double> { (double)kStart, (double)later }));
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart + 3).x, held.x);
+
+    undo->redo();
+    keys.clear();
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), 11u);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart + 3).x, blended.x);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart + 3).y, blended.y);
+}
+
+TEST_F(VectorFollowBlendTest, AnAbortMidBlendKeepsFinishedFramesAndTheKeys)
+{
+    const int later = kStart + 10;
+    BezierPtr bezier = makeSquare(later);
+    bezier->setKeyframe(kStart);
+    const FollowPoint held = positionAt(bezier, 0, later);
+
+    VectorFollowParams params = blendParamsFor(bezier, VectorFollowModel::ePerPoint);
+    int total = 0;
+    params.shouldAbort = [&total]() {
+        ++total;
+
+        return false;
+    };
+    UndoCommandPtr undo;
+    context()->followVectors(params, &undo);
+    ASSERT_TRUE(bool(undo));
+    std::map<int, FollowPoint> whole;
+    for (int frame = kStart; frame <= later; ++frame) {
+        whole[frame] = positionAt(bezier, 0, frame);
+    }
+    undo->undo();
+
+    // The held pass takes the first half of the checks, so this one stops inside the baking pass.
+    int calls = 0;
+    const int allowed = (total * 3) / 4;
+    params.shouldAbort = [&calls, allowed]() { return ++calls > allowed; };
+    const VectorFollowReport report = context()->followVectors(params, &undo);
+    EXPECT_TRUE(report.aborted);
+    EXPECT_TRUE(report.error.empty()) << report.error;
+
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    keys.erase((double)later);
+    keys.erase((double)kStart);
+    ASSERT_GT(keys.size(), 0u);
+    EXPECT_LT(keys.size(), 9u);
+    int expected = kStart + 1;
+    for (double t : keys) {
+        EXPECT_EQ((int)t, expected++);
+        EXPECT_NEAR(positionAt(bezier, 0, t).x, whole[(int)t].x, 1e-6) << t;
+        EXPECT_NEAR(positionAt(bezier, 0, t).y, whole[(int)t].y, 1e-6) << t;
+    }
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart).x, held.x);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).x, held.x);
+
+    undo->undo();
+    keys.clear();
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), 2u);
+}
+
+TEST_F(VectorFollowBlendTest, AFitBlendLandsOnItsOwnKeys)
+{
+    const int later = kStart + 10;
+    BezierPtr bezier = makeSquare(kStart);
+    const FollowPoint start = positionAt(bezier, 0, kStart);
+    bezier->setTranslateKeyframe(kStart, 0., 0.);
+    bezier->setTranslateKeyframe(later, 0., 0.);
+
+    for (VectorFollowModel model : { VectorFollowModel::eTranslate, VectorFollowModel::eAffine }) {
+        UndoCommandPtr undo;
+        const VectorFollowReport report = context()->followVectors(blendParamsFor(bezier, model), &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+
+        for (int frame : { kStart, later, later + 5 }) {
+            const FollowPoint shown = shownAt(bezier, start, frame);
+            EXPECT_NEAR(shown.x, start.x, 1e-9) << frame;
+            EXPECT_NEAR(shown.y, start.y, 1e-9) << frame;
+        }
+        // Ahead by five frames from one side and behind by five from the other, weighted evenly.
+        const FollowPoint middle = shownAt(bezier, start, kStart + 5);
+        EXPECT_NEAR(middle.x, start.x, kFollowTolerance);
+        EXPECT_NEAR(middle.y, start.y, kFollowTolerance);
+
+        ASSERT_TRUE(bool(undo));
+        undo->undo();
+    }
+}
+
+TEST_F(VectorFollowBlendTest, ABlendOverAForwardOnlySourceFallsBackToForwardAndReportsIt)
+{
+    forwardOnly();
+    const int later = kStart + 10;
+    BezierPtr bezier = makeSquare(later);
+    bezier->setKeyframe(kStart);
+    const FollowPoint held = positionAt(bezier, 0, later);
+
+    UndoCommandPtr undo;
+    const VectorFollowReport report = context()->followVectors(blendParamsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    ASSERT_EQ(report.shapes.size(), 1u);
+    EXPECT_FALSE(report.shapes[0].stopped);
+    ASSERT_EQ(report.shapes[0].passStops.size(), 1u);
+    EXPECT_EQ(report.shapes[0].passStops[0].reason, VectorFollowPassEnd::eNoLayer);
+    EXPECT_EQ(report.shapes[0].passStops[0].direction, VectorFollowDirection::eBackward);
+    EXPECT_EQ(report.shapes[0].passStops[0].otherOnly.first, kStart + 1);
+    EXPECT_EQ(report.shapes[0].passStops[0].otherOnly.last, later - 1);
+
+    EXPECT_NEAR(positionAt(bezier, 0, later - 1).x, held.x + kShiftX * 9, kFollowTolerance);
+    EXPECT_NEAR(positionAt(bezier, 0, later - 1).y, held.y + kShiftY * 9, kFollowTolerance);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).x, held.x);
+    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).y, held.y);
+}
+
+// The range picks the keys: one before it is no key to blend from.
+TEST_F(VectorFollowBlendTest, OnlyTheKeysWithinTheRangeCount)
+{
+    const int later = kStart + 10;
+    BezierPtr bezier = makeSquare(later);
+    bezier->setKeyframe(kStart);
+    const int before = kStart - 6;
+    bezier->setKeyframe(before);
+    for (int i = 0; i < 4; ++i) {
+        bezier->movePointByIndex(i, before, -8., 0.);
+    }
+    std::map<int, FollowPoint> outside;
+    for (int frame = before; frame <= kStart; ++frame) {
+        outside[frame] = positionAt(bezier, 0, frame);
+    }
+
+    UndoCommandPtr undo;
+    const VectorFollowReport report = context()->followVectors(blendParamsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), 12u);
+    for (int frame = before; frame <= kStart; ++frame) {
+        EXPECT_DOUBLE_EQ(positionAt(bezier, 0, frame).x, outside[frame].x) << frame;
+        EXPECT_DOUBLE_EQ(positionAt(bezier, 0, frame).y, outside[frame].y) << frame;
+    }
+}
+
+TEST_F(VectorFollowBlendTest, AShapeWithFewerThanTwoKeysInTheRangeIsLeftAlone)
+{
+    BezierPtr single = makeSquare(kStart);
+    UndoCommandPtr undo;
+    VectorFollowReport report = context()->followVectors(blendParamsFor(single, VectorFollowModel::ePerPoint), &undo);
+    EXPECT_FALSE(report.error.empty());
+    EXPECT_FALSE(bool(undo));
+    std::set<double> keys;
+    single->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), 1u);
+
+    const int later = kStart + 10;
+    BezierPtr pair = makeSquare(later, 150.);
+    pair->setKeyframe(kStart);
+    VectorFollowParams params = blendParamsFor(single, VectorFollowModel::ePerPoint);
+    params.items.push_back(pair);
+    report = context()->followVectors(params, &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    ASSERT_EQ(report.shapes.size(), 1u);
+    EXPECT_EQ(report.shapes[0].name, pair->getScriptName());
+    ASSERT_EQ(report.refused.size(), 1u);
+    EXPECT_EQ(report.refused[0].name, single->getScriptName());
+    keys.clear();
+    single->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), 1u);
+    keys.clear();
+    pair->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), 11u);
+}
+
+// The first shape's backward pass has no layer to run on; the user stops the blend during the second.
+TEST_F(VectorFollowBlendTest, AUserStopAfterAPassStopIsStillAUserStop)
 {
     forwardOnly();
     const int later = kStart + 10;
     BezierPtr bridged = makeSquare(later);
-    bridged->setKeyframe(kEarlier);
-    BezierPtr second = makeSquare(kStart, 150.);
+    bridged->setKeyframe(kStart);
+    BezierPtr second = makeSquare(later, 150.);
+    second->setKeyframe(kStart);
 
-    VectorFollowParams params = paramsFor(bridged, VectorFollowModel::ePerPoint);
-    params.last = later;
+    VectorFollowParams params = blendParamsFor(bridged, VectorFollowModel::ePerPoint);
     int firstShapeChecks = 0;
     params.shouldAbort = [&firstShapeChecks]() {
         ++firstShapeChecks;
@@ -451,529 +874,8 @@ TEST_F(VectorFollowBakeTest, AUserStopAfterAPassStopIsStillAUserStop)
 
     std::set<double> keys;
     second->getKeyframeTimes(&keys);
-    EXPECT_GT(keys.size(), 1u);
-    EXPECT_LT(keys.size(), (std::size_t)(later - kStart + 1));
-}
-
-TEST_F(VectorFollowBakeTest, OnlyAStopTheUserAskedForThatKeptItsSourceIsAUserStop)
-{
-    VectorFollowReport report;
-    report.aborted = true;
-    report.shapes.resize(1);
-    report.shapes[0].passStops.resize(1);
-    report.shapes[0].stopped = true;
-    EXPECT_FALSE(isUserStopVectorFollowReport(report));
-
-    report.userStopped = true;
-    report.error = "Aborted.";
-    EXPECT_TRUE(isUserStopVectorFollowReport(report));
-
-    report.sourceLost = true;
-    EXPECT_FALSE(isUserStopVectorFollowReport(report));
-}
-
-TEST_F(VectorFollowBakeTest, ReducesInsideTheSameUndoStep)
-{
-    BezierPtr bezier = makeSquare(kStart);
-
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.reduce = true;
-    params.tolerance = 0.5;
-    UndoCommandPtr undo;
-    context()->followVectors(params, &undo);
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_LT(keys.size(), (std::size_t)kSpan);
-    EXPECT_EQ(keys.count(kStart), 1u);
-
-    undo->undo();
-    keys.clear();
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), 1u);
-}
-
-TEST_F(VectorFollowBlendTest, AForwardFollowWithALaterKeyMeetsBothAndBlendsBetween)
-{
-    const int later = kStart + 10;
-    BezierPtr bezier = makeSquare(later);
-    bezier->setKeyframe(kEarlier);
-    const FollowPoint held = positionAt(bezier, 1, later);
-    const FollowPoint shown = positionAt(bezier, 1, kStart);
-    EXPECT_NEAR(shown.x, held.x, 1e-9);
-    EXPECT_NEAR(shown.y, held.y, 1e-9);
-
-    UndoCommandPtr undo;
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.last = later;
-    const VectorFollowReport report = context()->followVectors(params, &undo);
-    ASSERT_TRUE(report.error.empty()) << report.error;
-    ASSERT_EQ(report.shapes.size(), 1u);
-    EXPECT_TRUE(report.shapes[0].passStops.empty());
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), 12u);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, kStart).x, shown.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, kStart).y, shown.y);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, later).x, held.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, later).y, held.y);
-
-    // Both anchors hold the same pose on a moving picture, so at each frame one pass is ahead by the
-    // frames since the start and the other behind by the frames to the key.
-    for (int frame : { kStart + 3, kStart + 5, kStart + 8 }) {
-        const double weight = followBridgeWeight(frame, kStart, later);
-        const double offset = (frame - kStart) - weight * 10.;
-        EXPECT_NEAR(positionAt(bezier, 1, frame).x, held.x + kShiftX * offset, kFollowTolerance) << frame;
-        EXPECT_NEAR(positionAt(bezier, 1, frame).y, held.y + kShiftY * offset, kFollowTolerance) << frame;
-    }
-}
-
-TEST_F(VectorFollowBlendTest, ABlendedFollowUndoesAsOneStep)
-{
-    const int later = kStart + 10;
-    BezierPtr bezier = makeSquare(later);
-    bezier->setKeyframe(kEarlier);
-    const FollowPoint held = positionAt(bezier, 0, later);
-    const FollowPoint shown = positionAt(bezier, 0, kStart);
-
-    UndoCommandPtr undo;
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.last = later;
-    context()->followVectors(params, &undo);
-    ASSERT_TRUE(bool(undo));
-    const FollowPoint followed = positionAt(bezier, 0, kStart + 3);
-
-    undo->undo();
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys, (std::set<double> { (double)kEarlier, (double)later }));
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart).x, shown.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).x, held.x);
-
-    undo->redo();
-    keys.clear();
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), 12u);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart + 3).x, followed.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart + 3).y, followed.y);
-}
-
-TEST_F(VectorFollowBlendTest, AnAbortMidBlendKeepsFinishedFramesAndTheLaterKey)
-{
-    const int later = kStart + 10;
-    BezierPtr bezier = makeSquare(later);
-    bezier->setKeyframe(kEarlier);
-    const FollowPoint held = positionAt(bezier, 0, later);
-
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.last = later;
-    int total = 0;
-    params.shouldAbort = [&total]() {
-        ++total;
-
-        return false;
-    };
-    UndoCommandPtr undo;
-    context()->followVectors(params, &undo);
-    ASSERT_TRUE(bool(undo));
-    std::map<int, FollowPoint> whole;
-    for (int frame = kStart; frame <= later; ++frame) {
-        whole[frame] = positionAt(bezier, 0, frame);
-    }
-    undo->undo();
-
-    // The held pass takes the first half of the checks, so this one stops inside the baking pass.
-    int calls = 0;
-    const int allowed = (total * 3) / 4;
-    params.shouldAbort = [&calls, allowed]() { return ++calls > allowed; };
-    const VectorFollowReport report = context()->followVectors(params, &undo);
-    EXPECT_TRUE(report.aborted);
-    EXPECT_TRUE(report.error.empty()) << report.error;
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    keys.erase((double)later);
-    keys.erase((double)kEarlier);
-    ASSERT_GT(keys.size(), 1u);
-    EXPECT_LT(keys.size(), 10u);
-    int expected = kStart;
-    for (double t : keys) {
-        EXPECT_EQ((int)t, expected++);
-        EXPECT_NEAR(positionAt(bezier, 0, t).x, whole[(int)t].x, 1e-6) << t;
-        EXPECT_NEAR(positionAt(bezier, 0, t).y, whole[(int)t].y, 1e-6) << t;
-    }
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).x, held.x);
-
-    undo->undo();
-    keys.clear();
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), 2u);
-}
-
-TEST_F(VectorFollowBlendTest, AFitLandsOnALaterKeyOfItsOwn)
-{
-    const int later = kStart + 10;
-    BezierPtr bezier = makeSquare(kStart);
-    const FollowPoint start = positionAt(bezier, 0, kStart);
-    bezier->setTranslateKeyframe(kEarlier, 0., 0.);
-    bezier->setTranslateKeyframe(later, 0., 0.);
-
-    for (VectorFollowModel model : { VectorFollowModel::eTranslate, VectorFollowModel::eAffine }) {
-        VectorFollowParams params = paramsFor(bezier, model);
-        params.last = later;
-        UndoCommandPtr undo;
-        const VectorFollowReport report = context()->followVectors(params, &undo);
-        ASSERT_TRUE(report.error.empty()) << report.error;
-
-        for (int frame : { kStart, later }) {
-            const FollowPoint shown = shownAt(bezier, start, frame);
-            EXPECT_NEAR(shown.x, start.x, 1e-9) << frame;
-            EXPECT_NEAR(shown.y, start.y, 1e-9) << frame;
-        }
-        // Ahead by five frames from one side and behind by five from the other, weighted evenly.
-        const FollowPoint middle = shownAt(bezier, start, kStart + 5);
-        EXPECT_NEAR(middle.x, start.x, kFollowTolerance);
-        EXPECT_NEAR(middle.y, start.y, kFollowTolerance);
-
-        undo->undo();
-    }
-}
-
-TEST_F(VectorFollowBlendTest, AForwardOnlySourceFollowsForward)
-{
-    forwardOnly();
-    BezierPtr bezier = makeSquare(kStart);
-    const FollowPoint start = positionAt(bezier, 0, kStart);
-
-    UndoCommandPtr undo;
-    const VectorFollowReport report = context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
-    ASSERT_TRUE(report.error.empty()) << report.error;
-    ASSERT_EQ(report.shapes.size(), 1u);
-    EXPECT_FALSE(report.shapes[0].stopped);
-    EXPECT_TRUE(report.shapes[0].passStops.empty());
-
-    const FollowPoint end = positionAt(bezier, 0, kStart + kSpan);
-    EXPECT_NEAR(end.x, start.x + kShiftX * kSpan, kFollowTolerance);
-    EXPECT_NEAR(end.y, start.y + kShiftY * kSpan, kFollowTolerance);
-}
-
-TEST_F(VectorFollowBlendTest, ABackwardFollowOfAForwardOnlySourceReportsTheMissingLayer)
-{
-    forwardOnly();
-    BezierPtr bezier = makeSquare(kStart + kSpan);
-
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.direction = VectorFollowDirection::eBackward;
-    UndoCommandPtr undo;
-    const VectorFollowReport report = context()->followVectors(params, &undo);
-    EXPECT_NE(report.error.find("no backward motion layer"), std::string::npos) << report.error;
-    EXPECT_FALSE(bool(undo));
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), 1u);
-}
-
-TEST_F(VectorFollowBlendTest, ATwoWayFollowOfAForwardOnlySourceFallsBackToForwardAndReportsIt)
-{
-    forwardOnly();
-    const int later = kStart + 10;
-    BezierPtr bezier = makeSquare(later);
-    bezier->setKeyframe(kEarlier);
-    const FollowPoint held = positionAt(bezier, 0, later);
-
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.last = later;
-    UndoCommandPtr undo;
-    const VectorFollowReport report = context()->followVectors(params, &undo);
-    ASSERT_TRUE(report.error.empty()) << report.error;
-    ASSERT_EQ(report.shapes.size(), 1u);
-    EXPECT_FALSE(report.shapes[0].stopped);
-    ASSERT_EQ(report.shapes[0].passStops.size(), 1u);
-    EXPECT_EQ(report.shapes[0].passStops[0].reason, VectorFollowPassEnd::eNoLayer);
-    EXPECT_EQ(report.shapes[0].passStops[0].direction, VectorFollowDirection::eBackward);
-    EXPECT_EQ(report.shapes[0].passStops[0].otherOnly.first, kStart + 1);
-    EXPECT_EQ(report.shapes[0].passStops[0].otherOnly.last, later - 1);
-
-    EXPECT_NEAR(positionAt(bezier, 0, later - 1).x, held.x + kShiftX * 9, kFollowTolerance);
-    EXPECT_NEAR(positionAt(bezier, 0, later - 1).y, held.y + kShiftY * 9, kFollowTolerance);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).x, held.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).y, held.y);
-}
-
-TEST_F(VectorFollowBlendTest, AForwardFollowWithOnlyALaterKeyTracksBackFromIt)
-{
-    const int later = kStart + 10;
-    BezierPtr bezier = makeSquare(later);
-    const FollowPoint held = positionAt(bezier, 0, later);
-
-    UndoCommandPtr undo;
-    const VectorFollowReport report = context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
-    ASSERT_TRUE(report.error.empty()) << report.error;
-    ASSERT_EQ(report.shapes.size(), 1u);
-    EXPECT_FALSE(report.shapes[0].stopped);
-    EXPECT_TRUE(report.shapes[0].passStops.empty());
-    EXPECT_TRUE(report.shapes[0].unfollowed.empty());
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), (std::size_t)kSpan + 1);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).x, held.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).y, held.y);
-    // Not the held pose: the current frame is where the vectors bring the key back to.
-    EXPECT_NEAR(positionAt(bezier, 0, kStart).x, held.x - kShiftX * 10, kFollowTolerance);
-    EXPECT_NEAR(positionAt(bezier, 0, kStart).y, held.y - kShiftY * 10, kFollowTolerance);
-    EXPECT_NEAR(positionAt(bezier, 0, kStart + kSpan).x, held.x + kShiftX * 10, kFollowTolerance);
-    EXPECT_NEAR(positionAt(bezier, 0, kStart + kSpan).y, held.y + kShiftY * 10, kFollowTolerance);
-
-    ASSERT_TRUE(bool(undo));
-    undo->undo();
-    keys.clear();
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys, std::set<double> { (double)later });
-}
-
-TEST_F(VectorFollowBlendTest, AFitWithOnlyALaterKeyOfItsOwnTracksBackFromIt)
-{
-    const int later = kStart + 10;
-    // The point key on the start frame is no key to a fit, which keys the transform.
-    BezierPtr bezier = makeSquare(kStart);
-    const FollowPoint start = positionAt(bezier, 0, kStart);
-    bezier->setTranslateKeyframe(later, 0., 0.);
-
-    for (VectorFollowModel model : { VectorFollowModel::eTranslate, VectorFollowModel::eAffine }) {
-        VectorFollowParams params = paramsFor(bezier, model);
-        params.last = later;
-        UndoCommandPtr undo;
-        const VectorFollowReport report = context()->followVectors(params, &undo);
-        ASSERT_TRUE(report.error.empty()) << report.error;
-        ASSERT_EQ(report.shapes.size(), 1u);
-        EXPECT_TRUE(report.shapes[0].passStops.empty());
-
-        const FollowPoint atLater = shownAt(bezier, start, later);
-        EXPECT_NEAR(atLater.x, start.x, 1e-9);
-        EXPECT_NEAR(atLater.y, start.y, 1e-9);
-        const FollowPoint atStart = shownAt(bezier, start, kStart);
-        EXPECT_NEAR(atStart.x, start.x - kShiftX * 10, kFollowTolerance);
-        EXPECT_NEAR(atStart.y, start.y - kShiftY * 10, kFollowTolerance);
-
-        ASSERT_TRUE(bool(undo));
-        undo->undo();
-    }
-}
-
-TEST_F(VectorFollowBlendTest, AForwardFollowOfAForwardOnlySourceWithOnlyALaterKeyReportsTheMissingLayer)
-{
-    forwardOnly();
-    const int later = kStart + 10;
-    BezierPtr bezier = makeSquare(later);
-    const FollowPoint held = positionAt(bezier, 0, later);
-
-    UndoCommandPtr undo;
-    const VectorFollowReport report = context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
-    ASSERT_TRUE(report.error.empty()) << report.error;
-    ASSERT_EQ(report.shapes.size(), 1u);
-    EXPECT_FALSE(report.shapes[0].stopped);
-    ASSERT_EQ(report.shapes[0].passStops.size(), 1u);
-    EXPECT_EQ(report.shapes[0].passStops[0].direction, VectorFollowDirection::eBackward);
-    EXPECT_EQ(report.shapes[0].passStops[0].reason, VectorFollowPassEnd::eNoLayer);
-    EXPECT_EQ(report.shapes[0].passStops[0].frame, later);
-    EXPECT_TRUE(report.shapes[0].passStops[0].otherOnly.empty());
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(*keys.begin(), (double)later);
-    EXPECT_EQ(keys.size(), (std::size_t)(kStart + kSpan - later + 1));
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart).x, held.x);
-    EXPECT_NEAR(positionAt(bezier, 0, kStart + kSpan).x, held.x + kShiftX * 10, kFollowTolerance);
-}
-
-TEST_F(VectorFollowBlendTest, ABackwardFollowWithAnEarlierKeyMeetsBothAndBlendsBetween)
-{
-    const int current = kStart + 10;
-    BezierPtr bezier = makeSquare(kStart);
-    bezier->setKeyframe(current + 2);
-    const FollowPoint held = positionAt(bezier, 1, kStart);
-    const FollowPoint shown = positionAt(bezier, 1, current);
-    EXPECT_NEAR(shown.x, held.x, 1e-9);
-    EXPECT_NEAR(shown.y, held.y, 1e-9);
-
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.last = current;
-    params.direction = VectorFollowDirection::eBackward;
-    UndoCommandPtr undo;
-    const VectorFollowReport report = context()->followVectors(params, &undo);
-    ASSERT_TRUE(report.error.empty()) << report.error;
-    ASSERT_EQ(report.shapes.size(), 1u);
-    EXPECT_FALSE(report.shapes[0].stopped);
-    EXPECT_TRUE(report.shapes[0].passStops.empty());
-    EXPECT_TRUE(report.shapes[0].unfollowed.empty());
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), 12u);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, current).x, shown.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, current).y, shown.y);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, kStart).x, held.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 1, kStart).y, held.y);
-
-    // As forward: one pass ahead by the frames since the earlier key, the other behind by the frames
-    // to the current frame.
-    for (int frame : { kStart + 2, kStart + 5, kStart + 7 }) {
-        const double weight = followBridgeWeight(frame, kStart, current);
-        const double offset = (frame - kStart) - weight * 10.;
-        EXPECT_NEAR(positionAt(bezier, 1, frame).x, held.x + kShiftX * offset, kFollowTolerance) << frame;
-        EXPECT_NEAR(positionAt(bezier, 1, frame).y, held.y + kShiftY * offset, kFollowTolerance) << frame;
-    }
-}
-
-TEST_F(VectorFollowBlendTest, ABackwardBlendUndoesAsOneStep)
-{
-    const int current = kStart + 10;
-    BezierPtr bezier = makeSquare(kStart);
-    bezier->setKeyframe(current + 2);
-    const FollowPoint shown = positionAt(bezier, 0, current);
-
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.last = current;
-    params.direction = VectorFollowDirection::eBackward;
-    UndoCommandPtr undo;
-    context()->followVectors(params, &undo);
-    ASSERT_TRUE(bool(undo));
-    const FollowPoint followed = positionAt(bezier, 0, kStart + 7);
-
-    undo->undo();
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys, (std::set<double> { (double)kStart, (double)(current + 2) }));
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, current).x, shown.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, current).y, shown.y);
-
-    undo->redo();
-    keys.clear();
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), 12u);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart + 7).x, followed.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart + 7).y, followed.y);
-}
-
-TEST_F(VectorFollowBlendTest, AnAbortMidBackwardBlendKeepsFinishedFramesNextToTheCurrentFrame)
-{
-    const int current = kStart + 10;
-    BezierPtr bezier = makeSquare(kStart);
-    bezier->setKeyframe(current + 2);
-    const FollowPoint held = positionAt(bezier, 0, kStart);
-
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.last = current;
-    params.direction = VectorFollowDirection::eBackward;
-    int total = 0;
-    params.shouldAbort = [&total]() {
-        ++total;
-
-        return false;
-    };
-    UndoCommandPtr undo;
-    context()->followVectors(params, &undo);
-    ASSERT_TRUE(bool(undo));
-    std::map<int, FollowPoint> whole;
-    for (int frame = kStart; frame <= current; ++frame) {
-        whole[frame] = positionAt(bezier, 0, frame);
-    }
-    undo->undo();
-
-    // The held pass takes the first half of the checks, so this one stops inside the baking pass.
-    int calls = 0;
-    const int allowed = (total * 3) / 4;
-    params.shouldAbort = [&calls, allowed]() { return ++calls > allowed; };
-    const VectorFollowReport report = context()->followVectors(params, &undo);
-    EXPECT_TRUE(report.aborted);
-    EXPECT_TRUE(report.error.empty()) << report.error;
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    keys.erase((double)kStart);
-    keys.erase((double)(current + 2));
-    ASSERT_GT(keys.size(), 1u);
-    EXPECT_LT(keys.size(), 10u);
-    int expected = current;
-    for (std::set<double>::const_reverse_iterator it = keys.rbegin(); it != keys.rend(); ++it) {
-        const double t = *it;
-        EXPECT_EQ((int)t, expected--);
-        EXPECT_NEAR(positionAt(bezier, 0, t).x, whole[(int)t].x, 1e-6) << t;
-        EXPECT_NEAR(positionAt(bezier, 0, t).y, whole[(int)t].y, 1e-6) << t;
-    }
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart).x, held.x);
-
-    undo->undo();
-    keys.clear();
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), 2u);
-}
-
-TEST_F(VectorFollowBlendTest, ABackwardFitLandsOnAnEarlierKeyOfItsOwn)
-{
-    const int current = kStart + 10;
-    BezierPtr bezier = makeSquare(kStart);
-    const FollowPoint start = positionAt(bezier, 0, kStart);
-    bezier->setTranslateKeyframe(kStart, 0., 0.);
-    bezier->setTranslateKeyframe(current + 2, 0., 0.);
-
-    for (VectorFollowModel model : { VectorFollowModel::eTranslate, VectorFollowModel::eAffine }) {
-        VectorFollowParams params = paramsFor(bezier, model);
-        params.last = current;
-        params.direction = VectorFollowDirection::eBackward;
-        UndoCommandPtr undo;
-        const VectorFollowReport report = context()->followVectors(params, &undo);
-        ASSERT_TRUE(report.error.empty()) << report.error;
-
-        for (int frame : { kStart, current }) {
-            const FollowPoint shown = shownAt(bezier, start, frame);
-            EXPECT_NEAR(shown.x, start.x, 1e-9) << frame;
-            EXPECT_NEAR(shown.y, start.y, 1e-9) << frame;
-        }
-        const FollowPoint middle = shownAt(bezier, start, kStart + 5);
-        EXPECT_NEAR(middle.x, start.x, kFollowTolerance);
-        EXPECT_NEAR(middle.y, start.y, kFollowTolerance);
-
-        ASSERT_TRUE(bool(undo));
-        undo->undo();
-    }
-}
-
-TEST_F(VectorFollowBlendTest, ABackwardFollowWithOnlyAnEarlierKeyTracksForwardFromIt)
-{
-    const int earlier = kStart + 10;
-    BezierPtr bezier = makeSquare(earlier);
-    const FollowPoint held = positionAt(bezier, 0, earlier);
-
-    VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
-    params.direction = VectorFollowDirection::eBackward;
-    UndoCommandPtr undo;
-    const VectorFollowReport report = context()->followVectors(params, &undo);
-    ASSERT_TRUE(report.error.empty()) << report.error;
-    ASSERT_EQ(report.shapes.size(), 1u);
-    EXPECT_FALSE(report.shapes[0].stopped);
-    EXPECT_TRUE(report.shapes[0].passStops.empty());
-    EXPECT_TRUE(report.shapes[0].unfollowed.empty());
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), (std::size_t)kSpan + 1);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, earlier).x, held.x);
-    EXPECT_DOUBLE_EQ(positionAt(bezier, 0, earlier).y, held.y);
-    // Not the held pose: the current frame is where the vectors bring the key forward to.
-    EXPECT_NEAR(positionAt(bezier, 0, kStart + kSpan).x, held.x + kShiftX * 10, kFollowTolerance);
-    EXPECT_NEAR(positionAt(bezier, 0, kStart + kSpan).y, held.y + kShiftY * 10, kFollowTolerance);
-    EXPECT_NEAR(positionAt(bezier, 0, kStart).x, held.x - kShiftX * 10, kFollowTolerance);
-    EXPECT_NEAR(positionAt(bezier, 0, kStart).y, held.y - kShiftY * 10, kFollowTolerance);
-
-    ASSERT_TRUE(bool(undo));
-    undo->undo();
-    keys.clear();
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys, std::set<double> { (double)earlier });
+    EXPECT_GT(keys.size(), 2u);
+    EXPECT_LT(keys.size(), 11u);
 }
 
 TEST_F(VectorFollowBlendTest, ARefusedSourceWritesNothing)
@@ -990,6 +892,169 @@ TEST_F(VectorFollowBlendTest, ARefusedSourceWritesNothing)
     std::set<double> keys;
     bezier->getKeyframeTimes(&keys);
     EXPECT_EQ(keys.size(), 1u);
+}
+
+// A square keyed by hand on every frame from kStart to kStart + steps, its points moved by step on each.
+static BezierPtr
+keyEveryFrame(const BezierPtr& bezier,
+              int steps,
+              const std::function<FollowPoint(int)>& step)
+{
+    for (int frame = kStart + 1; frame <= kStart + steps; ++frame) {
+        bezier->setKeyframe(frame);
+        const FollowPoint by = step(frame);
+        for (int i = 0; i < 4; ++i) {
+            bezier->movePointByIndex(i, frame, by.x, by.y);
+        }
+    }
+
+    return bezier;
+}
+
+using PointsByFrame = std::map<int, std::vector<FollowPoint>>;
+
+static PointsByFrame
+pointsOver(const BezierPtr& bezier,
+           int first,
+           int last)
+{
+    PointsByFrame points;
+    for (int frame = first; frame <= last; ++frame) {
+        for (int i = 0; i < 4; ++i) {
+            FollowPoint p;
+            bezier->getControlPointAtIndex(i)->getPositionAtTime(false, frame, ViewIdx(0), &p.x, &p.y);
+            points[frame].push_back(p);
+        }
+    }
+
+    return points;
+}
+
+static void
+expectPointsWithin(const PointsByFrame& got,
+                   const PointsByFrame& expected,
+                   double tolerance)
+{
+    ASSERT_EQ(got.size(), expected.size());
+    for (const auto& frame : expected) {
+        const std::vector<FollowPoint>& points = got.at(frame.first);
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            EXPECT_NEAR(points[i].x, frame.second[i].x, tolerance) << "frame " << frame.first << ", point " << i;
+            EXPECT_NEAR(points[i].y, frame.second[i].y, tolerance) << "frame " << frame.first << ", point " << i;
+        }
+    }
+}
+
+// Reduction needs no vectors, so these shapes are keyed by hand on a Roto node with nothing connected.
+TEST_F(RotoReduceKeyframesTest, HandKeysReduceWithinTheToleranceAsOneUndoStep)
+{
+    const int steps = 10;
+    BezierPtr bezier = keyEveryFrame(makeSquare(kStart), steps, [](int) { return FollowPoint(1.5, 0.5); });
+    const PointsByFrame before = pointsOver(bezier, kStart - 2, kStart + steps + 2);
+
+    UndoCommandPtr undo;
+    const std::vector<RotoReducedItem> reduced = reduceRotoKeyframes(context(), { bezier }, kStart, kStart + steps, kFollowTolerance, &undo);
+    ASSERT_EQ(reduced.size(), 1u);
+    EXPECT_EQ(reduced[0].item, bezier);
+    ASSERT_FALSE(reduced[0].removed.empty());
+    ASSERT_TRUE(bool(undo));
+
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)steps + 1 - reduced[0].removed.size());
+    for (int frame : reduced[0].removed) {
+        EXPECT_EQ(keys.count((double)frame), 0u) << frame;
+    }
+    EXPECT_EQ(keys.count((double)kStart), 1u);
+    EXPECT_EQ(keys.count((double)kStart + steps), 1u);
+    expectPointsWithin(pointsOver(bezier, kStart - 2, kStart + steps + 2), before, kFollowTolerance + 1e-9);
+
+    undo->undo();
+    keys.clear();
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)steps + 1);
+    expectPointsWithin(pointsOver(bezier, kStart - 2, kStart + steps + 2), before, 1e-9);
+
+    undo->redo();
+    keys.clear();
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)steps + 1 - reduced[0].removed.size());
+}
+
+TEST_F(RotoReduceKeyframesTest, KeysThatShapeTheMotionStayUnderASmallTolerance)
+{
+    const int steps = 10;
+    BezierPtr bezier = keyEveryFrame(makeSquare(kStart), steps, [](int frame) {
+        return FollowPoint((frame % 2) ? 4. : -4., 0.);
+    });
+    const PointsByFrame before = pointsOver(bezier, kStart, kStart + steps);
+
+    UndoCommandPtr undo;
+    std::vector<RotoReducedItem> reduced = reduceRotoKeyframes(context(), { bezier }, kStart, kStart + steps, kFollowTolerance, &undo);
+    EXPECT_TRUE(reduced.empty());
+    EXPECT_FALSE(bool(undo));
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    EXPECT_EQ(keys.size(), (std::size_t)steps + 1);
+
+    const double loose = 10.;
+    reduced = reduceRotoKeyframes(context(), { bezier }, kStart, kStart + steps, loose, &undo);
+    ASSERT_EQ(reduced.size(), 1u);
+    EXPECT_FALSE(reduced[0].removed.empty());
+    expectPointsWithin(pointsOver(bezier, kStart, kStart + steps), before, loose + 1e-9);
+}
+
+TEST_F(RotoReduceKeyframesTest, OnlyKeysWithinTheRangeGo)
+{
+    const int steps = 10;
+    BezierPtr bezier = keyEveryFrame(makeSquare(kStart), steps, [](int) { return FollowPoint(1.5, 0.5); });
+    const int first = kStart + 5;
+
+    UndoCommandPtr undo;
+    const std::vector<RotoReducedItem> reduced = reduceRotoKeyframes(context(), { bezier }, first, kStart + steps, 100., &undo);
+    ASSERT_EQ(reduced.size(), 1u);
+    ASSERT_FALSE(reduced[0].removed.empty());
+    EXPECT_GE(*reduced[0].removed.begin(), first);
+    EXPECT_LE(*reduced[0].removed.rbegin(), kStart + steps);
+
+    std::set<double> keys;
+    bezier->getKeyframeTimes(&keys);
+    for (int frame = kStart; frame < first; ++frame) {
+        EXPECT_EQ(keys.count((double)frame), 1u) << frame;
+    }
+}
+
+TEST_F(RotoReduceKeyframesTest, TransformKeysReduceToo)
+{
+    const int steps = 10;
+    BezierPtr bezier = makeSquare(kStart);
+    const FollowPoint start = positionAt(bezier, 0, kStart);
+    for (int frame = kStart; frame <= kStart + steps; ++frame) {
+        bezier->setTranslateKeyframe(frame, 2. * (frame - kStart), -1. * (frame - kStart));
+    }
+    std::map<int, FollowPoint> shown;
+    for (int frame = kStart; frame <= kStart + steps; ++frame) {
+        shown[frame] = shownAt(bezier, start, frame);
+    }
+    const TransformState transform = transformOf(bezier);
+
+    UndoCommandPtr undo;
+    const std::vector<RotoReducedItem> reduced = reduceRotoKeyframes(context(), { bezier }, kStart, kStart + steps, kFollowTolerance, &undo);
+    ASSERT_EQ(reduced.size(), 1u);
+    EXPECT_FALSE(reduced[0].removed.empty());
+
+    KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(bezier->getKnobByName("translate"));
+    ASSERT_TRUE(bool(translate));
+    EXPECT_LT(translate->getCurve(ViewIdx(0), 0)->getKeyFramesCount(), steps + 1);
+    for (int frame = kStart; frame <= kStart + steps; ++frame) {
+        const FollowPoint now = shownAt(bezier, start, frame);
+        EXPECT_NEAR(now.x, shown[frame].x, kFollowTolerance + 1e-9) << frame;
+        EXPECT_NEAR(now.y, shown[frame].y, kFollowTolerance + 1e-9) << frame;
+    }
+
+    ASSERT_TRUE(bool(undo));
+    undo->undo();
+    expectSameTransform(transformOf(bezier), transform, 1e-9, "after undo");
 }
 
 // A write that changes several dimensions of one selected shape's matrix at once reaches that shape

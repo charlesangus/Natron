@@ -41,8 +41,7 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 enum PhaseEnum {
-    ePhaseCompute,
-    ePhaseReduce
+    ePhaseCompute
 };
 
 class PhaseArgs
@@ -95,7 +94,7 @@ struct VectorFollowTask::Imp {
     // A waited abort ends the follow with this phase's signal still queued; the next follow must not take it for its own.
     int generation = 0;
     bool sourceLost = false;
-    // Cancelling is only seen by asking, and one frame of an upstream render or the reduction can take long.
+    // Cancelling is only seen by asking, and one frame of an upstream render can take long.
     QTimer progressPoll;
     std::mutex framesMutex;
     std::deque<PendingFrame> frames;
@@ -103,7 +102,7 @@ struct VectorFollowTask::Imp {
     int framesDone = 0;
     std::unique_ptr<VectorFollowReport> lastReport;
     // The interface's modal progress dialog, held open until the follow has written its last key:
-    // the progress task ends first, and the reduction or the bake of the last frames may follow.
+    // the progress task ends first, and the bake of the last frames may follow.
     std::shared_ptr<void> modal;
 
     std::function<bool()> abortCheck()
@@ -179,9 +178,10 @@ VectorFollowTask::startFollow(const VectorFollowParams& params,
     _imp->framesTotal = std::max(1, (int)(params.items.size() + params.points.size()) * (params.last - params.first + 1));
     QObject::connect(params.source.get(), SIGNAL(deactivated(bool)), this, SLOT(onSourceDeactivated()), Qt::UniqueConnection);
     host->clearPersistentMessage(false);
-    host->getApp()->progressStart(host, tr("Following vectors...").toStdString(), "");
+    const bool blends = params.mode == VectorFollowMode::eBlendBetweenKeys;
+    host->getApp()->progressStart(host, (blends ? tr("Blending between keys...") : tr("Following vectors...")).toStdString(), "");
     QPointer<VectorFollowTask> self(this);
-    _imp->modal = host->getApp()->showProgressModal(host, tr("Following Vectors").toStdString(), [self]() {
+    _imp->modal = host->getApp()->showProgressModal(host, (blends ? tr("Blending Between Keys") : tr("Following Vectors")).toStdString(), [self]() {
         if (self) {
             self->requestAbort();
         }
@@ -263,7 +263,7 @@ VectorFollowTask::forgetLastReport()
 void
 VectorFollowTask::requestAbort()
 {
-    // The scheduler skips onAbortRequested while idle, which is where it sits between two phases.
+    // The scheduler skips onAbortRequested while idle, which is where it sits once the phase has ended.
     onAbortRequested(false);
     abortThreadedTask();
 }
@@ -314,8 +314,7 @@ VectorFollowTask::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
                 hook();
             }
             IsolatedJob::ThreadScope inJob(_imp->job.get());
-            if (args->phase == ePhaseCompute) {
-                _imp->run->compute(*_imp->sampler, [this](int shape, const VectorFollowFrame& frame) {
+            _imp->run->compute(*_imp->sampler, [this](int shape, const VectorFollowFrame& frame) {
                     PendingFrame pending;
                     pending.shape = shape;
                     pending.frame = frame;
@@ -324,9 +323,6 @@ VectorFollowTask::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
                         _imp->frames.push_back(pending);
                     }
                     Q_EMIT framesReady(); }, _imp->abortCheck());
-            } else {
-                _imp->run->reduce(_imp->abortCheck());
-            }
         }
     }
     Q_EMIT phaseDone((int)args->phase, args->generation);
@@ -406,21 +402,13 @@ VectorFollowTask::endFollowPhase(int phase,
                                  int generation,
                                  bool showDialog)
 {
+    Q_UNUSED(phase);
     if (!_imp->run || (generation != _imp->generation)) {
         return;
     }
     onFramesReady();
 
     NodePtr host = _imp->host.lock();
-    const bool canReduce = (phase == ePhaseCompute) && _imp->params.reduce && !_imp->run->wasAborted() && !_imp->aborted && !_imp->sourceLost && host;
-    if (canReduce) {
-        IsolatedJob::ThreadScope inJob(_imp->hostJob.get());
-        _imp->run->prepareReduction();
-        startTask(std::make_shared<PhaseArgs>(ePhaseReduce, _imp->generation));
-
-        return;
-    }
-
     _imp->progressPoll.stop();
     const NodePtr source = _imp->params.source;
     QObject::disconnect(source.get(), SIGNAL(deactivated(bool)), this, SLOT(onSourceDeactivated()));
@@ -433,9 +421,6 @@ VectorFollowTask::endFollowPhase(int phase,
         // Must end before the dialog below, whose event loop would let the user's edits through as
         // the follow's own.
         IsolatedJob::ThreadScope inJob(_imp->hostJob.get());
-        if ((phase == ePhaseReduce) && !_imp->aborted) {
-            _imp->run->applyReduction();
-        }
         report = _imp->run->finish(sourceLost, error);
     }
     // The stop can reach the sampler before the run asks whether to go on, and then the run only

@@ -130,27 +130,39 @@ handle where they overlap.
 
 **Follow Vectors:** the viewer's follow row and the Follow Vectors group (Follow Model, Follow
 Range Backward, Follow Backward To Start, Follow Backward One, Follow Forward One, Follow Forward
-To End, Follow Range Forward, Follow Range, Follow In, Follow Out, Follow Reduce, Follow Tolerance,
-Follow Confidence Threshold) key the
-selection along the motion vectors connected to the Vectors input, such as a VectorGenerator's, as
-in Roto. The Vectors input needs the forward motion layer, and the backward one for following
-backward; only the follow reads it, so it never changes the render. The viewer shows the follow
-row only while the Vectors input is connected; its buttons are icons, and their tool tips name
-the action and its keyboard shortcut, which the Shortcut Editor sets. Follow Range Forward and
-Follow Range Backward follow over the whole of Follow Range from its first or last frame, whatever
-the current frame is. Any
-selected curve follows, source or destination: following one end of a link leaves the other
-curve where it is, and the link stays. A correspondence selected with the correspondence tool
-follows too, keyed at its own frames: each end moves with the picture under it and is keyed where
-its curve passes nearest, within the correspondences on either side. Follow Reduce thins the
-curves' keys only; a correspondence keeps every key the follow set. A follow keys every frame it
-reaches, refreshes the viewer frame by frame as it goes, and is one undo step, curves and
-correspondences together. The Translate, Affine and Perspective models normally key a curve's transform; on a
-curve whose transform is linked to another item they key the curve's own points instead, so the
-target's transform and the other curves linked to it never change, the link stays and the
-Transform page stays disabled. While a follow started from the buttons runs, an application-modal
-progress window blocks the rest of the interface; its Cancel button stops the follow and keeps the
-frames already followed, with no further message.
+To End, Follow Range Forward, Blend Between Keys, Follow Range, Follow In, Follow Out, Reduce
+Keyframes, Reduce Tolerance, Follow Confidence Threshold) key the selection along the motion
+vectors connected to the Vectors input, such as a VectorGenerator's, as in Roto. The Vectors input
+needs the forward motion layer, and the backward one for following backward; only the follow reads
+it, so it never changes the render. The viewer shows the follow row only while the Vectors input is
+connected; its buttons are icons, and their tool tips name the action and its keyboard shortcut,
+which the Shortcut Editor sets. Follow Range Forward and Follow Range Backward follow over the whole
+of Follow Range from its first or last frame, whatever the current frame is. A follow starts from
+the selection as its first frame shows it and keys every frame it reaches, over any key already
+there; keys on other frames stay as they are. Any selected curve follows, source or destination:
+following one end of a link leaves the other curve where it is, and the link stays. A
+correspondence selected with the correspondence tool follows too, keyed at its own frames: each end
+moves with the picture under it and is keyed where its curve passes nearest, within the
+correspondences on either side. A follow refreshes the viewer frame by frame as it goes and is one
+undo step, curves and correspondences together. The Translate, Affine and Perspective models
+normally key a curve's transform; on a curve whose transform is linked to another item they key the
+curve's own points instead, so the target's transform and the other curves linked to it never
+change, the link stays and the Transform page stays disabled. While a follow started from the
+buttons runs, an application-modal progress window blocks the rest of the interface; its Cancel
+button stops the follow and keeps the frames already followed, with no further message.
+
+Blend Between Keys fills the frames between the keys the selection already has within Follow
+Range: between each two keys it tracks forward from the earlier and backward from the later and
+blends the two, so the motion meets both keys exactly. It never changes a key, leaves the frames
+before the first key and after the last alone, and leaves alone any curve or correspondence with
+fewer than two keys in the range. It needs the backward motion layer too; without it the frames
+are followed forward and the report says so.
+
+Reduce Keyframes, on the panel, removes the keys of the selected curves within Follow Range that
+the rest of their animation can do without, so that no point moves further than Reduce Tolerance
+(pixels, default 0.5) on any frame. The keys of a curve's points and of its own transform both
+count. It needs no vectors, works on keys set by hand as well as followed ones, and is one undo
+step. Correspondences keep their keys.
 
 ## Notes
 
@@ -164,10 +176,13 @@ frames already followed, with no further message.
 `node.getSplineWarp()` returns the links, boundaries, cookie cutters, layer amounts and transform
 links of the node's curves. The curves themselves are made and edited through
 `node.getRotoContext()`, and each curve's transform through its parameters (`curve.getParam("translate")`).
-The context's `followVectors(items, first, last, direction, model, reduce=False, tolerance=0.5,
-confidenceThreshold=0.5)`, `isFollowingVectors()` and `getLastFollowReport()` work as on Roto, for
-curves: `followVectors` reads the Vectors input and raises ValueError while it is not connected.
-Correspondences follow only from the viewer.
+The context's `followVectors(items, first, last, direction, model, confidenceThreshold=0.5)`,
+`blendBetweenKeys(items, first, last, model, confidenceThreshold=0.5)`,
+`reduceKeyframes(items, first, last, tolerance=0.5)`, `isFollowingVectors()` and
+`getLastFollowReport()` work as on Roto, for curves: `followVectors` and `blendBetweenKeys` read
+the Vectors input and raise ValueError while it is not connected; `reduceKeyframes` needs no
+vectors and returns, by item script name, the frames whose keys it removed. Correspondences follow
+and blend only from the viewer.
 
 - `link(source, destination, duplicate=False)`, `unlink(curve)`, `getLink(curve)`, `getLinks()`
 - `setBoundary(curve, on)`, `isBoundary(curve)`: boundaries, closed unlinked curves only. Set the

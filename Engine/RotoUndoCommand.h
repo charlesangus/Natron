@@ -894,8 +894,9 @@ private:
 };
 
 /**
- * @brief A whole follow of vectors, whose keys were written as the follow went: puts back the points
- * and transform animation of the shapes as they were before, or as they were after.
+ * @brief A whole follow of vectors, blend between keys or reduction of keyframes, whose keys were
+ * written before the command is pushed: puts back the points and transform animation of the shapes
+ * as they were before, or as they were after.
  **/
 class FollowVectorsUndoCommand
     : public UndoCommand {

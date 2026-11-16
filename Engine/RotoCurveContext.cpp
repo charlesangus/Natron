@@ -2518,6 +2518,7 @@ RotoCurveContext::followVectors(const VectorFollowParams& params,
     std::string error;
     if (!run.prepare(&error)) {
         VectorFollowReport report;
+        report.action = (params.mode == VectorFollowMode::eBlendBetweenKeys) ? kVectorFollowBlendActionName : kVectorFollowActionName;
         report.error = error;
 
         return report;
@@ -2528,11 +2529,6 @@ RotoCurveContext::followVectors(const VectorFollowParams& params,
         return params.shouldAbort && params.shouldAbort();
     };
     run.compute(sampler, [&run](int shape, const VectorFollowFrame& frame) { run.applyFrame(shape, frame); }, aborted);
-    if (params.reduce && !run.wasAborted()) {
-        run.prepareReduction();
-        run.reduce(aborted);
-        run.applyReduction();
-    }
 
     return run.finish(false, run.wasAborted() ? sampler.lastError() : std::string(), undo);
 }

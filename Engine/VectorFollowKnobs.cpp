@@ -36,6 +36,7 @@
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoKeyframeReduce.h"
 #include "Engine/VectorFollowBake.h"
 #include "Engine/VectorFollowTask.h"
 
@@ -48,31 +49,35 @@
 
 #define kFollowParamBackwardToStart "followBackwardToStart"
 #define kFollowParamBackwardToStartLabel "Follow Backward To Start"
-#define kFollowParamBackwardToStartHint "Follows the selection from the current frame back to the start of the range. When the selection has a key after the current frame, it keeps the current frame as it shows now, and down to an earlier key it tracks backward from the current frame and forward from that key and blends the two, so the follow meets both exactly. With no key at or after the current frame, it tracks forward from the nearest earlier key instead. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
+#define kFollowParamBackwardToStartHint "Follows the selection from the current frame back to the start of the range, starting from the selection as the current frame shows it. Every frame it reaches is keyed, over any key already there; keys on other frames stay as they are. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
 
 #define kFollowParamBackwardOne "followBackwardOne"
 #define kFollowParamBackwardOneLabel "Follow Backward One"
-#define kFollowParamBackwardOneHint "Follows the selection one frame back. When the frame before has a key and nothing is keyed at or after the current frame, it tracks forward from that key to the current frame instead."
+#define kFollowParamBackwardOneHint "Follows the selection one frame back, starting from the selection as the current frame shows it. The current frame and the one before are keyed, over any key already there."
 
 #define kFollowParamForwardOne "followForwardOne"
 #define kFollowParamForwardOneLabel "Follow Forward One"
-#define kFollowParamForwardOneHint "Follows the selection one frame forward. When the next frame has a key and nothing is keyed at or before the current frame, it tracks backward from that key to the current frame instead."
+#define kFollowParamForwardOneHint "Follows the selection one frame forward, starting from the selection as the current frame shows it. The current frame and the next are keyed, over any key already there."
 
 #define kFollowParamForwardToEnd "followForwardToEnd"
 #define kFollowParamForwardToEndLabel "Follow Forward To End"
-#define kFollowParamForwardToEndHint "Follows the selection from the current frame to the end of the range. When the selection has a key before the current frame, it keeps the current frame as it shows now, and up to a later key it tracks forward from the current frame and backward from that key and blends the two, so the follow meets both exactly. With no key at or before the current frame, it tracks backward from the nearest later key instead. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
+#define kFollowParamForwardToEndHint "Follows the selection from the current frame to the end of the range, starting from the selection as the current frame shows it. Every frame it reaches is keyed, over any key already there; keys on other frames stay as they are. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
 
 #define kFollowParamRangeBackward "followRangeBackward"
 #define kFollowParamRangeBackwardLabel "Follow Range Backward"
-#define kFollowParamRangeBackwardHint "Follows the selection backward over the whole range, from its last frame down to its first, whatever the current frame is. Keys count as for Follow Backward To Start, with the last frame of the range in place of the current frame. Follow Range sets the range. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
+#define kFollowParamRangeBackwardHint "Follows the selection backward over the whole range, whatever the current frame is, starting from the selection as the last frame of the range shows it. Every frame it reaches is keyed, over any key already there; keys on other frames stay as they are. Follow Range sets the range. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
 
 #define kFollowParamRangeForward "followRangeForward"
 #define kFollowParamRangeForwardLabel "Follow Range Forward"
-#define kFollowParamRangeForwardHint "Follows the selection forward over the whole range, from its first frame up to its last, whatever the current frame is. Keys count as for Follow Forward To End, with the first frame of the range in place of the current frame. Follow Range sets the range. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
+#define kFollowParamRangeForwardHint "Follows the selection forward over the whole range, whatever the current frame is, starting from the selection as the first frame of the range shows it. Every frame it reaches is keyed, over any key already there; keys on other frames stay as they are. Follow Range sets the range. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
+
+#define kFollowParamBlendBetweenKeys "blendBetweenKeys"
+#define kFollowParamBlendBetweenKeysLabel "Blend Between Keys"
+#define kFollowParamBlendBetweenKeysHint "Fills the frames between the keys of the selection within the range. Between each two keys it tracks forward from the earlier and backward from the later, and blends the two so the motion meets both keys exactly. The keys stay as they are, and frames before the first key or after the last are left alone. A shape with fewer than two keys in the range is left alone. Follow Range sets the range. While it runs, a progress window blocks the interface; its Cancel button stops the blend and keeps the frames already blended."
 
 #define kFollowParamRange "followRange"
 #define kFollowParamRangeLabel "Follow Range"
-#define kFollowParamRangeHint "The frames a follow stays within: the project's frame range, or Follow In to Follow Out."
+#define kFollowParamRangeHint "The frames a follow stays within, and those Blend Between Keys and Reduce Keyframes work on: the project's frame range, or Follow In to Follow Out."
 
 #define kFollowParamIn "followIn"
 #define kFollowParamInLabel "Follow In"
@@ -82,19 +87,20 @@
 #define kFollowParamOutLabel "Follow Out"
 #define kFollowParamOutHint "The last frame of the range when Follow Range is In Out."
 
-#define kFollowParamReduce "followReduce"
-#define kFollowParamReduceLabel "Follow Reduce"
-#define kFollowParamReduceHint "After a follow, removes the keys it wrote that the rest of the animation can do without, within Follow Tolerance."
+#define kFollowParamReduceKeyframes "reduceKeyframes"
+#define kFollowParamReduceKeyframesLabel "Reduce Keyframes"
+#define kFollowParamReduceKeyframesHint "Removes the keys of the selected shapes within the range that the rest of their animation can do without, so no point moves further than Reduce Tolerance on any frame. The keys of a shape's points and of its own transform both count. It needs no vectors and works on any keys, followed or set by hand. Follow Range sets the range; keys outside it stay."
 
-#define kFollowParamTolerance "followTolerance"
-#define kFollowParamToleranceLabel "Follow Tolerance"
-#define kFollowParamToleranceHint "How far, in pixels, removing keys may move any point at any frame."
+#define kFollowParamReduceTolerance "reduceTolerance"
+#define kFollowParamReduceToleranceLabel "Reduce Tolerance"
+#define kFollowParamReduceToleranceHint "How far, in pixels, Reduce Keyframes may move any point of a shape on any frame."
 
 #define kFollowParamConfidenceThreshold "followConfidenceThreshold"
 #define kFollowParamConfidenceThresholdLabel "Follow Confidence Threshold"
 #define kFollowParamConfidenceThresholdHint "A vector with less confidence than this does not count. A shape with too few vectors left stops at that frame."
 
 #define kFollowMenuActionId "followVectors"
+#define kReduceMenuActionId "reduceKeyframes"
 
 NATRON_NAMESPACE_ENTER
 
@@ -142,11 +148,12 @@ public:
     KnobButtonPtr forwardOne;
     KnobButtonPtr forwardToEnd;
     KnobButtonPtr rangeForward;
+    KnobButtonPtr blendBetweenKeys;
     KnobChoicePtr range;
     KnobIntPtr in;
     KnobIntPtr out;
-    KnobBoolPtr reduce;
-    KnobDoublePtr tolerance;
+    KnobButtonPtr reduceKeyframes;
+    KnobDoublePtr reduceTolerance;
     KnobDoublePtr confidenceThreshold;
     std::vector<KnobIWPtr> viewerKnobs;
     QMetaObject::Connection inputConnection;
@@ -201,13 +208,16 @@ public:
     }
 
     void follow(const VectorFollowParams& shapes,
+                VectorFollowMode mode,
                 VectorFollowDirection direction,
                 FollowSpan span);
-    void followSelection(VectorFollowDirection direction, FollowSpan span);
+    VectorFollowParams selection() const;
+    void reduce(const std::list<RotoDrawableItemPtr>& items);
 };
 
 void
 VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
+                                  VectorFollowMode mode,
                                   VectorFollowDirection direction,
                                   FollowSpan span)
 {
@@ -224,7 +234,7 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
 
     VectorFollowParams params = shapes;
     if (params.items.empty() && params.points.empty()) {
-        warn(tr("Select the shapes or points to follow.").toStdString());
+        warn((mode == VectorFollowMode::eBlendBetweenKeys ? tr("Select the shapes or points to blend between their keys.") : tr("Select the shapes or points to follow.")).toStdString());
 
         return;
     }
@@ -240,6 +250,7 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
     int rangeFirst;
     int rangeLast;
     rangeBounds(&rangeFirst, &rangeLast);
+    params.mode = mode;
     params.direction = direction;
     if (span == FollowSpan::eWholeRange) {
         params.first = rangeFirst;
@@ -252,8 +263,6 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
         params.last = current;
     }
     params.model = modelFromIndex(model->getValue());
-    params.reduce = reduce->getValue();
-    params.tolerance = tolerance->getValue();
     params.confidenceThreshold = confidenceThreshold->getValue();
 
     if (!task) {
@@ -265,9 +274,8 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
     }
 }
 
-void
-VectorFollowControls::Imp::followSelection(VectorFollowDirection direction,
-                                           FollowSpan span)
+VectorFollowParams
+VectorFollowControls::Imp::selection() const
 {
     VectorFollowParams params;
     params.items = interact->selectedItems;
@@ -293,7 +301,33 @@ VectorFollowControls::Imp::followSelection(VectorFollowDirection direction,
         params.points = selectedPoints();
     }
 
-    follow(params, direction, span);
+    return params;
+}
+
+void
+VectorFollowControls::Imp::reduce(const std::list<RotoDrawableItemPtr>& items)
+{
+    const NodePtr node = host->getNode();
+    if (task && task->isFollowing()) {
+        warn(tr("Wait for the follow to end before reducing keyframes.").toStdString());
+
+        return;
+    }
+    if (items.empty()) {
+        warn(tr("Select the shapes whose keyframes to reduce.").toStdString());
+
+        return;
+    }
+    int first;
+    int last;
+    rangeBounds(&first, &last);
+    const std::vector<RotoReducedItem> reduced = reduceRotoKeyframes(node->getCurveContext(), items, first, last, reduceTolerance->getValue());
+    std::size_t keys = 0;
+    for (const RotoReducedItem& item : reduced) {
+        keys += item.removed.size();
+    }
+    node->clearPersistentMessage(false);
+    node->setQuietInfoMessage(tr("Reduce Keyframes removed %1 key(s) from %2 shape(s).").arg(keys).arg(reduced.size()).toStdString());
 }
 
 VectorFollowControls::VectorFollowControls(EffectInstance* host,
@@ -375,19 +409,7 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
     _imp->forwardOne = makeButton(kFollowParamForwardOne, kFollowParamForwardOneLabel, kFollowParamForwardOneHint, NATRON_ICONS_PATH "lucide/step-forward.svg");
     _imp->forwardToEnd = makeButton(kFollowParamForwardToEnd, kFollowParamForwardToEndLabel, kFollowParamForwardToEndHint, NATRON_ICONS_PATH "lucide/skip-forward.svg");
     _imp->rangeForward = makeButton(kFollowParamRangeForward, kFollowParamRangeForwardLabel, kFollowParamRangeForwardHint, NATRON_ICONS_PATH "lucide/arrow-right-from-line.svg");
-
-    KnobBoolPtr reduce = AppManager::createKnob<KnobBool>(host, std::string(kFollowParamReduceLabel));
-    reduce->setDefaultValue(false);
-    addToGroup(reduce, kFollowParamReduce, kFollowParamReduceLabel, kFollowParamReduceHint, true);
-    _imp->reduce = reduce;
-
-    KnobDoublePtr tolerance = AppManager::createKnob<KnobDouble>(host, std::string(kFollowParamToleranceLabel));
-    tolerance->setDefaultValue(kVectorFollowDefaultTolerance);
-    tolerance->setMinimum(0.);
-    tolerance->setDisplayMinimum(0.);
-    tolerance->setDisplayMaximum(5.);
-    addToGroup(tolerance, kFollowParamTolerance, kFollowParamToleranceLabel, kFollowParamToleranceHint, true);
-    _imp->tolerance = tolerance;
+    _imp->blendBetweenKeys = makeButton(kFollowParamBlendBetweenKeys, kFollowParamBlendBetweenKeysLabel, kFollowParamBlendBetweenKeysHint, NATRON_ICONS_PATH "lucide/blend.svg");
 
     KnobDoublePtr confidence = AppManager::createKnob<KnobDouble>(host, std::string(kFollowParamConfidenceThresholdLabel));
     confidence->setDefaultValue(kVectorFollowDefaultConfidenceThreshold);
@@ -422,6 +444,21 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
     out->setDefaultAllDimensionsEnabled(false);
     _imp->out = out;
 
+    // In the panel only, where the follow row's hiding without vectors does not reach it.
+    KnobButtonPtr reduceKeyframes = AppManager::createKnob<KnobButton>(host, std::string(kFollowParamReduceKeyframesLabel));
+    reduceKeyframes->setIsPersistent(false);
+    reduceKeyframes->setAddNewLine(false);
+    addToGroup(reduceKeyframes, kFollowParamReduceKeyframes, kFollowParamReduceKeyframesLabel, kFollowParamReduceKeyframesHint, false);
+    _imp->reduceKeyframes = reduceKeyframes;
+
+    KnobDoublePtr reduceTolerance = AppManager::createKnob<KnobDouble>(host, std::string(kFollowParamReduceToleranceLabel));
+    reduceTolerance->setDefaultValue(kVectorFollowDefaultTolerance);
+    reduceTolerance->setMinimum(0.);
+    reduceTolerance->setDisplayMinimum(0.);
+    reduceTolerance->setDisplayMaximum(5.);
+    addToGroup(reduceTolerance, kFollowParamReduceTolerance, kFollowParamReduceToleranceLabel, kFollowParamReduceToleranceHint, false);
+    _imp->reduceTolerance = reduceTolerance;
+
     if (const NodePtr node = host->getNode()) {
         Imp* imp = _imp.get();
         _imp->inputConnection = QObject::connect(node.get(), &Node::inputChanged, host, [imp](int inputNb) {
@@ -445,9 +482,19 @@ VectorFollowControls::onKnobChanged(KnobI* k)
         return true;
     }
 
+    if (k == imp.reduceKeyframes.get()) {
+        imp.reduce(imp.selection().items);
+
+        return true;
+    }
+
+    VectorFollowMode mode = VectorFollowMode::eFollow;
     VectorFollowDirection direction = VectorFollowDirection::eForward;
     FollowSpan span = FollowSpan::eOneFrame;
-    if (k == imp.rangeBackward.get()) {
+    if (k == imp.blendBetweenKeys.get()) {
+        mode = VectorFollowMode::eBlendBetweenKeys;
+        span = FollowSpan::eWholeRange;
+    } else if (k == imp.rangeBackward.get()) {
         direction = VectorFollowDirection::eBackward;
         span = FollowSpan::eWholeRange;
     } else if (k == imp.backwardToStart.get()) {
@@ -460,10 +507,10 @@ VectorFollowControls::onKnobChanged(KnobI* k)
     } else if (k == imp.rangeForward.get()) {
         span = FollowSpan::eWholeRange;
     } else if (k != imp.forwardOne.get()) {
-        return k == imp.model.get() || k == imp.reduce.get() || k == imp.tolerance.get() || k == imp.confidenceThreshold.get() || k == imp.in.get() || k == imp.out.get();
+        return k == imp.model.get() || k == imp.reduceTolerance.get() || k == imp.confidenceThreshold.get() || k == imp.in.get() || k == imp.out.get();
     }
 
-    imp.followSelection(direction, span);
+    imp.follow(imp.selection(), mode, direction, span);
 
     return true;
 }
@@ -483,6 +530,7 @@ VectorFollowControls::getShortcuts(std::list<PluginActionShortcut>* shortcuts)
     shortcuts->push_back(PluginActionShortcut(kFollowParamForwardOne, kFollowParamForwardOneLabel));
     shortcuts->push_back(PluginActionShortcut(kFollowParamForwardToEnd, kFollowParamForwardToEndLabel));
     shortcuts->push_back(PluginActionShortcut(kFollowParamRangeForward, kFollowParamRangeForwardLabel));
+    shortcuts->push_back(PluginActionShortcut(kFollowParamBlendBetweenKeys, kFollowParamBlendBetweenKeysLabel));
 }
 
 bool
@@ -521,14 +569,18 @@ VectorFollowControls::getItemText(const RotoItemPtr& /*item*/,
 std::vector<RotoCurvePanelHook::MenuAction>
 VectorFollowControls::getItemMenuActions(const std::list<RotoItemPtr>& items) const
 {
+    bool anyDrawable = false;
+    for (const RotoItemPtr& item : items) {
+        anyDrawable = anyDrawable || bool(std::dynamic_pointer_cast<RotoDrawableItem>(item));
+    }
     std::vector<MenuAction> actions;
     MenuAction action;
     action.id = kFollowMenuActionId;
     action.label = QCoreApplication::translate("VectorFollowControls", "Follow Vectors...").toStdString();
-    action.enabled = false;
-    for (const RotoItemPtr& item : items) {
-        action.enabled = action.enabled || bool(std::dynamic_pointer_cast<RotoDrawableItem>(item));
-    }
+    action.enabled = anyDrawable;
+    actions.push_back(action);
+    action.id = kReduceMenuActionId;
+    action.label = QCoreApplication::translate("VectorFollowControls", "Reduce Keyframes").toStdString();
     actions.push_back(action);
 
     return actions;
@@ -538,7 +590,7 @@ void
 VectorFollowControls::onItemMenuActionTriggered(const std::string& actionId,
                                                 const std::list<RotoItemPtr>& items)
 {
-    if (actionId != kFollowMenuActionId) {
+    if ((actionId != kFollowMenuActionId) && (actionId != kReduceMenuActionId)) {
         return;
     }
     VectorFollowParams params;
@@ -548,7 +600,12 @@ VectorFollowControls::onItemMenuActionTriggered(const std::string& actionId,
             params.items.push_back(drawable);
         }
     }
-    _imp->follow(params, VectorFollowDirection::eForward, FollowSpan::eToRangeEnd);
+    if (actionId == kReduceMenuActionId) {
+        _imp->reduce(params.items);
+
+        return;
+    }
+    _imp->follow(params, VectorFollowMode::eFollow, VectorFollowDirection::eForward, FollowSpan::eToRangeEnd);
 }
 
 NATRON_NAMESPACE_EXIT

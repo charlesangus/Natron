@@ -206,44 +206,74 @@ public:
     /**
      * @brief Moves each item with the motion vectors connected to the node's Vectors input over
      * first..last, and returns once done, as one undo step. direction is "forward" or "backward",
-     * model is "perPoint", "translate", "affine" or "perspective". Between two keys, it tracks both ways and blends the two so it meets both exactly. The frame a follow starts from,
-     * first going forward and last going backward, counts as a key when it is unkeyed but the item
-     * has a key before it, going forward, or after it, going backward; then it keeps what it shows
-     * there. Otherwise it tracks back to that frame from the nearest key ahead. A key is one of the
-     * points for "perPoint", and one of the transform knobs the model keys for a fit: translate,
-     * or for "affine" and "perspective" any of translate, rotate, scale, skew, center and the extra
-     * matrix. Returns a dict of the items' names to {"inferred": [(first, last), ...],
-     * "stopFrame": frame or None, "passStops": [...], "unfollowed": [(first, last), ...]}. A
-     * passStops entry is a pass that ended before the key it went to, or that the source has no
-     * layer for, as {"direction": "forward" or "backward", "reason": "lowConfidence",
-     * "unreadable" or "noLayer", "frame": the last it reached, "otherOnly": (first, last) or None,
-     * the frames the other pass carried alone}; unfollowed lists the frames between two keys that
-     * neither pass reached. Raises ValueError when the Vectors input is not connected, when the node
-     * there has no forward motion layer, has no backward one for a backward follow, or depends on
-     * this node, and for a direction or model it does not know.
+     * model is "perPoint", "translate", "affine" or "perspective". The follow starts from each item
+     * as it shows at first going forward, or at last going backward, and keys every frame of
+     * first..last, the start frame too, over any key already there; keys on other frames stay. A
+     * key is one of the points for "perPoint", and the translate, or for "affine" and "perspective"
+     * the extra matrix, for a fit. Returns a dict of the items' names to {"inferred": [(first,
+     * last), ...], "stopFrame": frame or None, "passStops": [...], "unfollowed": [(first, last),
+     * ...]}, the last two always empty for a follow (see blendBetweenKeys()). Raises ValueError when
+     * the Vectors input is not connected, when the node there has no forward motion layer, has no
+     * backward one for a backward follow, or depends on this node, and for a direction or model it
+     * does not know.
      **/
     PyObject* followVectors(const std::list<ItemBase*>& items,
                             int first,
                             int last,
                             const QString& direction,
                             const QString& model,
-                            bool reduce = false,
-                            double tolerance = 0.5,
                             double confidenceThreshold = 0.5);
 
     /**
-     * @brief True while a follow started from the Follow Vectors buttons or the curve panel's
-     * Follow Vectors... entry runs. Such a follow runs in the background and returns at once.
+     * @brief Fills the frames between each two keys of each item within first..last with the motion
+     * vectors connected to the node's Vectors input, and returns once done, as one undo step. It
+     * tracks forward from the earlier key and backward from the later one and blends the two, so the
+     * motion meets both keys exactly. The keys stay as they are, and frames before an item's first
+     * key or after its last within first..last are left alone. A key is one of the points for
+     * "perPoint", and one of the transform knobs the model keys for a fit: translate, or for
+     * "affine" and "perspective" any of translate, rotate, scale, skew, center and the extra
+     * matrix. An item with fewer than two keys within first..last is left alone and left out of the
+     * result. Returns a dict as followVectors() does, where a passStops entry is a pass that ended
+     * before the key it went to, or that the source has no layer for, as {"direction": "forward" or
+     * "backward", "reason": "lowConfidence", "unreadable" or "noLayer", "frame": the last it
+     * reached, "otherOnly": (first, last) or None, the frames the other pass carried alone}, and
+     * unfollowed lists the frames between two keys that neither pass reached. Raises ValueError as
+     * followVectors() does, and when no item has two keys within first..last.
+     **/
+    PyObject* blendBetweenKeys(const std::list<ItemBase*>& items,
+                               int first,
+                               int last,
+                               const QString& model,
+                               double confidenceThreshold = 0.5);
+
+    /**
+     * @brief Removes the keys of each item, on whole frames of first..last, that the rest of its
+     * animation can do without, so no point of it moves further than tolerance pixels, where it
+     * shows, on any frame between its first and last key. The keys of its points and of its own
+     * transform both count, and a frame's key goes from all of them. It needs no vectors and works
+     * on any keys. One undo step. Returns a dict of the names of the items that lost keys to the
+     * sorted list of the frames whose keys went. Raises ValueError with no shape or stroke, when
+     * first is after last, and for a negative tolerance.
+     **/
+    PyObject* reduceKeyframes(const std::list<ItemBase*>& items,
+                              int first,
+                              int last,
+                              double tolerance = 0.5);
+
+    /**
+     * @brief True while a follow or blend started from the Follow Vectors buttons, the Blend Between
+     * Keys button or the curve panel's Follow Vectors... entry runs. Such a follow runs in the background and returns at once.
      **/
     bool isFollowingVectors() const;
 
     /**
-     * @brief The report of the last follow started from the Follow Vectors buttons or the curve
-     * panel's Follow Vectors... entry, or None while it runs, after a press that was refused (the
+     * @brief The report of the last follow or blend started from the Follow Vectors buttons, the
+     * Blend Between Keys button or the curve panel's Follow Vectors... entry, or None while it runs, after a press that was refused (the
      * reason is then the node's warning message), and before any. A report is a dict:
      * {"status": "done", "aborted", "sourceLost" or "error", "error": the error or "", "message":
      * the text shown to the user, "shapes": the items' names to entries as followVectors() returns
-     * them}. On "sourceLost" the follow was reverted. followVectors() does not change it.
+     * them}. On "sourceLost" the follow was reverted. followVectors() and blendBetweenKeys() do not
+     * change it.
      * The node also keeps the report's text as its message (getPersistentMessage()), without a
      * warning or error mark; a follow that stopped early, was aborted or lost its source opens a
      * dialog with it as well, a clean one does not.
@@ -251,6 +281,15 @@ public:
     PyObject* getLastFollowReport() const;
 
 private:
+    PyObject* runFollow(const char* function,
+                        const std::list<ItemBase*>& items,
+                        int first,
+                        int last,
+                        int mode,
+                        const QString& direction,
+                        const QString& model,
+                        double confidenceThreshold);
+
     RotoCurveContextPtr _ctx;
 };
 

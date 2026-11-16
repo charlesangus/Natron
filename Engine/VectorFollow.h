@@ -94,6 +94,8 @@ enum class VectorFollowModel {
 constexpr double kVectorFollowDefaultConfidenceThreshold = 0.5;
 constexpr double kVectorFollowDefaultTolerance = 0.5;
 constexpr double kVectorFollowMinConfidentFraction = 0.25;
+constexpr const char* kVectorFollowActionName = "Follow Vectors";
+constexpr const char* kVectorFollowBlendActionName = "Blend Between Keys";
 
 struct FollowTrajectory {
     int firstFrame = 0;
@@ -206,6 +208,8 @@ struct VectorFollowRefusal {
 };
 
 struct VectorFollowReport {
+    // What the report's text calls the run.
+    std::string action = kVectorFollowActionName;
     std::vector<VectorFollowShapeReport> shapes;
     std::vector<VectorFollowRefusal> refused;
     bool aborted = false;

@@ -40,6 +40,7 @@
 #include "Engine/RotoContext.h"
 #include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoKeyframeReduce.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
@@ -882,14 +883,14 @@ followHost(const RotoCurveContextPtr& context)
 } // anonymous namespace
 
 PyObject*
-Roto::followVectors(const std::list<ItemBase*>& items,
-                    int first,
-                    int last,
-                    const QString& direction,
-                    const QString& model,
-                    bool reduce,
-                    double tolerance,
-                    double confidenceThreshold)
+Roto::runFollow(const char* function,
+                const std::list<ItemBase*>& items,
+                int first,
+                int last,
+                int mode,
+                const QString& direction,
+                const QString& model,
+                double confidenceThreshold)
 {
     if (refusesShapeEdit(_ctx)) {
         return nullptr;
@@ -903,6 +904,7 @@ Roto::followVectors(const std::list<ItemBase*>& items,
     }
 
     VectorFollowParams params;
+    params.mode = (VectorFollowMode)mode;
     for (ItemBase* item : items) {
         RotoDrawableItemPtr drawable = item ? std::dynamic_pointer_cast<RotoDrawableItem>(item->getInternalItem()) : RotoDrawableItemPtr();
         if (drawable) {
@@ -910,7 +912,7 @@ Roto::followVectors(const std::list<ItemBase*>& items,
         }
     }
     if (params.items.empty()) {
-        return raiseValueError("followVectors needs at least one shape or stroke.");
+        return raiseValueError(std::string(function) + " needs at least one shape or stroke.");
     }
 
     if (direction == QString::fromUtf8("forward")) {
@@ -943,8 +945,6 @@ Roto::followVectors(const std::list<ItemBase*>& items,
     }
     params.first = first;
     params.last = last;
-    params.reduce = reduce;
-    params.tolerance = tolerance;
     params.confidenceThreshold = confidenceThreshold;
 
     const VectorFollowReport report = _ctx->followVectors(params);
@@ -958,6 +958,74 @@ Roto::followVectors(const std::list<ItemBase*>& items,
     }
 
     return followReportToPython(report);
+}
+
+PyObject*
+Roto::followVectors(const std::list<ItemBase*>& items,
+                    int first,
+                    int last,
+                    const QString& direction,
+                    const QString& model,
+                    double confidenceThreshold)
+{
+    return runFollow("followVectors", items, first, last, (int)VectorFollowMode::eFollow, direction, model, confidenceThreshold);
+}
+
+PyObject*
+Roto::blendBetweenKeys(const std::list<ItemBase*>& items,
+                       int first,
+                       int last,
+                       const QString& model,
+                       double confidenceThreshold)
+{
+    return runFollow("blendBetweenKeys", items, first, last, (int)VectorFollowMode::eBlendBetweenKeys, QString::fromUtf8("forward"), model, confidenceThreshold);
+}
+
+PyObject*
+Roto::reduceKeyframes(const std::list<ItemBase*>& items,
+                      int first,
+                      int last,
+                      double tolerance)
+{
+    if (refusesShapeEdit(_ctx)) {
+        return nullptr;
+    }
+    const VectorFollowControls* running = followHost(_ctx);
+    if (running && running->isFollowing()) {
+        PyErr_SetString(PyExc_RuntimeError, "A follow is running on this node.");
+
+        return nullptr;
+    }
+    std::list<RotoDrawableItemPtr> drawables;
+    for (ItemBase* item : items) {
+        RotoDrawableItemPtr drawable = item ? std::dynamic_pointer_cast<RotoDrawableItem>(item->getInternalItem()) : RotoDrawableItemPtr();
+        if (drawable) {
+            drawables.push_back(drawable);
+        }
+    }
+    if (drawables.empty()) {
+        return raiseValueError("reduceKeyframes needs at least one shape or stroke.");
+    }
+    if (first > last) {
+        return raiseValueError("first must not be after last.");
+    }
+    if (!(tolerance >= 0.)) {
+        return raiseValueError("tolerance must not be negative.");
+    }
+
+    const std::vector<RotoReducedItem> reduced = reduceRotoKeyframes(_ctx, drawables, first, last, tolerance);
+    PyObject* result = PyDict_New();
+    for (const RotoReducedItem& item : reduced) {
+        PyObject* frames = PyList_New((Py_ssize_t)item.removed.size());
+        Py_ssize_t index = 0;
+        for (int frame : item.removed) {
+            PyList_SetItem(frames, index++, PyLong_FromLong(frame));
+        }
+        PyDict_SetItemString(result, item.item->getScriptName().c_str(), frames);
+        Py_DECREF(frames);
+    }
+
+    return result;
 }
 
 namespace {

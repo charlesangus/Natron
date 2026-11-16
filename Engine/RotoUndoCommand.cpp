@@ -2672,7 +2672,9 @@ FollowVectorsUndoCommand::FollowVectorsUndoCommand(const RotoCurveContextPtr& co
             }
             state.bezier->getKeyframeTimes(&state.keysBefore);
         }
-        for (const char* name : { kRotoDrawableItemTranslateParam, kRotoDrawableItemExtraMatrixParam }) {
+        for (const char* name : { kRotoDrawableItemTranslateParam, kRotoDrawableItemRotateParam, kRotoDrawableItemScaleParam,
+                                  kRotoDrawableItemSkewXParam, kRotoDrawableItemSkewYParam, kRotoDrawableItemCenterParam,
+                                  kRotoDrawableItemExtraMatrixParam }) {
             KnobState knobState;
             knobState.knob = followedKnob(*item, name);
             if (knobState.knob) {

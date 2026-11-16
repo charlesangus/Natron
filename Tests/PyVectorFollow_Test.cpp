@@ -319,25 +319,18 @@ public:
     BezierPtr _bezier;
 };
 
-TEST_F(PyVectorFollowTest, FollowsReducesAndReports)
+TEST_F(PyVectorFollowTest, FollowsAndReports)
 {
     ASSERT_TRUE(_roto->connectInput(_generator, vectorsInputOf(_roto)));
-    expectScriptPasses("report = roto.followVectors([shape], 5, 25, \"forward\", \"perPoint\", True, 0.5, 0.5)\n"
+    expectScriptPasses("report = roto.followVectors([shape], 5, 25, \"forward\", \"perPoint\", 0.5)\n"
                        "assert shape.getScriptName() in report, str(report)\n"
                        "entry = report[shape.getScriptName()]\n"
                        "assert entry['stopFrame'] is None, str(entry)\n"
                        "assert isinstance(entry['inferred'], list), str(entry)\n");
 
-    double x = 0.;
-    double y = 0.;
-    _bezier->getControlPointAtIndex(0)->getPositionAtTime(false, 25., ViewIdx(0), &x, &y);
-    EXPECT_NEAR(x, 90. + kShiftX * 20., 2. * kFollowTolerance);
-    EXPECT_NEAR(y, 70. + kShiftY * 20., 2. * kFollowTolerance);
-
-    std::set<double> keys;
-    _bezier->getKeyframeTimes(&keys);
-    EXPECT_GE(keys.size(), (std::size_t)2);
-    EXPECT_LT(keys.size(), (std::size_t)21);
+    EXPECT_NEAR(positionAt(25.).x, 90. + kShiftX * 20., 2. * kFollowTolerance);
+    EXPECT_NEAR(positionAt(25.).y, 70. + kShiftY * 20., 2. * kFollowTolerance);
+    EXPECT_EQ(keyTimes().size(), 21u);
 }
 
 TEST_F(PyVectorFollowTest, OptionalArgumentsCanBeLeftOut)
@@ -346,13 +339,63 @@ TEST_F(PyVectorFollowTest, OptionalArgumentsCanBeLeftOut)
                                                                                       "assert shape.getScriptName() in report, str(report)\n");
 }
 
+TEST_F(PyVectorFollowTest, ReducesFollowedKeysAsAStepOfItsOwn)
+{
+    ASSERT_TRUE(_roto->connectInput(_generator, vectorsInputOf(_roto)));
+    expectScriptPasses("roto.followVectors([shape], 5, 25, \"forward\", \"perPoint\")\n"
+                       "removed = roto.reduceKeyframes([shape], 5, 25, 0.5)\n"
+                       "frames = removed[shape.getScriptName()]\n"
+                       "assert frames and frames == sorted(frames), str(removed)\n"
+                       "assert all(5 < f < 25 for f in frames), str(frames)\n");
+
+    const std::set<double> keys = keyTimes();
+    EXPECT_GE(keys.size(), 2u);
+    EXPECT_LT(keys.size(), 21u);
+    EXPECT_NEAR(positionAt(25.).x, 90. + kShiftX * 20., 2. * kFollowTolerance);
+}
+
+// Reduction needs no vectors: these keys are set by hand with the Vectors input left empty.
+TEST_F(PyVectorFollowTest, ReducesHandKeysWithoutVectors)
+{
+    for (int frame = 6; frame <= 15; ++frame) {
+        _bezier->setKeyframe(frame);
+        for (int i = 0; i < 4; ++i) {
+            _bezier->movePointByIndex(i, frame, 1., 0.5);
+        }
+    }
+    expectScriptPasses("removed = roto.reduceKeyframes([shape], 5, 15)\n"
+                       "assert list(removed) == [shape.getScriptName()], str(removed)\n");
+    const std::set<double> keys = keyTimes();
+    EXPECT_LT(keys.size(), 11u);
+    EXPECT_EQ(keys.count(5.), 1u);
+    EXPECT_EQ(keys.count(15.), 1u);
+    EXPECT_NEAR(positionAt(10.).x, 95., kFollowTolerance);
+
+    expectScriptPasses(expectValueError("roto.reduceKeyframes([], 5, 15)"));
+    expectScriptPasses(expectValueError("roto.reduceKeyframes([shape], 15, 5)"));
+    expectScriptPasses(expectValueError("roto.reduceKeyframes([shape], 5, 15, -1.)"));
+}
+
 TEST_F(PyVectorFollowTest, ABlendReportsNoPassStops)
 {
     _bezier->setKeyframe(15.);
-    expectScriptPasses("report = " + followCall(_generator, "forward", "perPoint") + "\n"
-                                                                                     "entry = report[shape.getScriptName()]\n"
-                                                                                     "assert entry['passStops'] == [], str(entry)\n"
-                                                                                     "assert entry['unfollowed'] == [], str(entry)\n");
+    ASSERT_TRUE(_roto->connectInput(_generator, vectorsInputOf(_roto)));
+    expectScriptPasses("report = roto.blendBetweenKeys([shape], 5, 25, \"perPoint\")\n"
+                       "entry = report[shape.getScriptName()]\n"
+                       "assert entry['passStops'] == [], str(entry)\n"
+                       "assert entry['unfollowed'] == [], str(entry)\n");
+
+    EXPECT_EQ(keyTimes().size(), 11u);
+    EXPECT_DOUBLE_EQ(positionAt(5.).x, 90.);
+    EXPECT_DOUBLE_EQ(positionAt(15.).x, 90.);
+}
+
+TEST_F(PyVectorFollowTest, ABlendNeedsTwoKeysInItsRange)
+{
+    _bezier->setKeyframe(15.);
+    ASSERT_TRUE(_roto->connectInput(_generator, vectorsInputOf(_roto)));
+    expectScriptPasses(expectValueError("roto.blendBetweenKeys([shape], 5, 12, \"perPoint\")"));
+    EXPECT_EQ(keyTimes(), (std::set<double> { 5., 15. }));
 }
 
 TEST_F(PyVectorFollowTest, AForwardOnlySourceFollowsForwardAndRaisesForBackward)
@@ -363,19 +406,20 @@ TEST_F(PyVectorFollowTest, AForwardOnlySourceFollowsForwardAndRaisesForBackward)
                                                                                      "assert report[shape.getScriptName()]['passStops'] == [], str(report)\n");
 }
 
-TEST_F(PyVectorFollowTest, ATwoWayFollowOfAForwardOnlySourceReportsTheMissingPass)
+TEST_F(PyVectorFollowTest, ABlendOverAForwardOnlySourceReportsTheMissingPass)
 {
     setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
     _bezier->setKeyframe(15.);
-    expectScriptPasses("report = " + followCall(_generator, "forward", "perPoint") + "\n"
-                                                                                     "stops = report[shape.getScriptName()]['passStops']\n"
-                                                                                     "assert len(stops) == 1, str(stops)\n"
-                                                                                     "assert stops[0]['direction'] == 'backward', str(stops)\n"
-                                                                                     "assert stops[0]['reason'] == 'noLayer', str(stops)\n"
-                                                                                     "assert stops[0]['otherOnly'] == (6, 14), str(stops)\n");
+    ASSERT_TRUE(_roto->connectInput(_generator, vectorsInputOf(_roto)));
+    expectScriptPasses("report = roto.blendBetweenKeys([shape], 5, 25, \"perPoint\")\n"
+                       "stops = report[shape.getScriptName()]['passStops']\n"
+                       "assert len(stops) == 1, str(stops)\n"
+                       "assert stops[0]['direction'] == 'backward', str(stops)\n"
+                       "assert stops[0]['reason'] == 'noLayer', str(stops)\n"
+                       "assert stops[0]['otherOnly'] == (6, 14), str(stops)\n");
 }
 
-TEST_F(PyVectorFollowTest, AForwardFollowWithOnlyALaterKeyTracksBackFromIt)
+TEST_F(PyVectorFollowTest, AForwardFollowKeysOverTheShapesKeyFromWhatItsFirstFrameShows)
 {
     expectScriptPasses("report = " + followCall(_generator, "forward", "perPoint", 2, 12) + "\n"
                                                                                             "entry = report[shape.getScriptName()]\n"
@@ -384,52 +428,24 @@ TEST_F(PyVectorFollowTest, AForwardFollowWithOnlyALaterKeyTracksBackFromIt)
                                                                                             "assert entry['stopFrame'] is None, str(entry)\n");
 
     EXPECT_EQ(keyTimes().size(), 11u);
-    EXPECT_DOUBLE_EQ(positionAt(5.).x, 90.);
-    EXPECT_NEAR(positionAt(2.).x, 90. - kShiftX * 3., 2. * kFollowTolerance);
-    EXPECT_NEAR(positionAt(2.).y, 70. - kShiftY * 3., 2. * kFollowTolerance);
-}
-
-TEST_F(PyVectorFollowTest, AForwardOnlySourceWithOnlyALaterKeyReportsTheMissingPass)
-{
-    setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
-    expectScriptPasses("report = " + followCall(_generator, "forward", "perPoint", 2, 12) + "\n"
-                                                                                            "entry = report[shape.getScriptName()]\n"
-                                                                                            "stops = entry['passStops']\n"
-                                                                                            "assert stops == [{'direction': 'backward', 'reason': 'noLayer', 'frame': 5, 'otherOnly': None}], str(stops)\n"
-                                                                                            "assert entry['unfollowed'] == [], str(entry)\n"
-                                                                                            "assert entry['stopFrame'] is None, str(entry)\n");
-
-    EXPECT_EQ(*keyTimes().begin(), 5.);
     EXPECT_DOUBLE_EQ(positionAt(2.).x, 90.);
+    EXPECT_NEAR(positionAt(5.).x, 90. + kShiftX * 3., 2. * kFollowTolerance);
+    EXPECT_NEAR(positionAt(5.).y, 70. + kShiftY * 3., 2. * kFollowTolerance);
 }
 
-TEST_F(PyVectorFollowTest, ABackwardBlendReportsNoPassStops)
+TEST_F(PyVectorFollowTest, ABackwardFollowKeysBackFromWhatItsLastFrameShows)
 {
     _bezier->setKeyframe(15.);
-    const FollowPoint shown = positionAt(12.);
-    expectScriptPasses("report = " + followCall(_generator, "backward", "perPoint", 5, 12) + "\n"
-                                                                                             "entry = report[shape.getScriptName()]\n"
-                                                                                             "assert entry['passStops'] == [], str(entry)\n"
-                                                                                             "assert entry['unfollowed'] == [], str(entry)\n"
-                                                                                             "assert entry['stopFrame'] is None, str(entry)\n");
-
-    EXPECT_EQ(keyTimes(), (std::set<double> { 5., 6., 7., 8., 9., 10., 11., 12., 15. }));
-    EXPECT_DOUBLE_EQ(positionAt(12.).x, shown.x);
-    EXPECT_DOUBLE_EQ(positionAt(12.).y, shown.y);
-    EXPECT_DOUBLE_EQ(positionAt(5.).x, 90.);
-}
-
-TEST_F(PyVectorFollowTest, ABackwardFollowWithOnlyAnEarlierKeyTracksForwardFromIt)
-{
     expectScriptPasses("report = " + followCall(_generator, "backward", "perPoint", 5, 12) + "\n"
                                                                                              "entry = report[shape.getScriptName()]\n"
                                                                                              "assert entry['passStops'] == [], str(entry)\n"
                                                                                              "assert entry['unfollowed'] == [], str(entry)\n");
 
-    EXPECT_EQ(keyTimes().size(), 8u);
-    EXPECT_DOUBLE_EQ(positionAt(5.).x, 90.);
-    EXPECT_NEAR(positionAt(12.).x, 90. + kShiftX * 7., 2. * kFollowTolerance);
-    EXPECT_NEAR(positionAt(12.).y, 70. + kShiftY * 7., 2. * kFollowTolerance);
+    EXPECT_EQ(keyTimes(), (std::set<double> { 5., 6., 7., 8., 9., 10., 11., 12., 15. }));
+    EXPECT_DOUBLE_EQ(positionAt(12.).x, 90.);
+    EXPECT_DOUBLE_EQ(positionAt(15.).x, 90.);
+    EXPECT_NEAR(positionAt(5.).x, 90. - kShiftX * 7., 2. * kFollowTolerance);
+    EXPECT_NEAR(positionAt(5.).y, 70. - kShiftY * 7., 2. * kFollowTolerance);
 }
 
 TEST_F(PyVectorFollowTest, SourceWithoutLayersRaises)
@@ -535,6 +551,52 @@ TEST_F(PyVectorFollowTest, FollowRangeBackwardKeysTheWholeRangeFromItsLastFrame)
     EXPECT_TRUE(isCleanVectorFollowReport(report)) << formatVectorFollowReport(report);
 }
 
+TEST_F(PyVectorFollowTest, BlendBetweenKeysFillsBetweenTheKeysInTheFollowRange)
+{
+    _bezier->setKeyframe(15.);
+    _bezier->setKeyframe(30.);
+    ASSERT_TRUE(runFollowButton("blendBetweenKeys", 4, 20, 9)) << "the blend was refused or did not end";
+
+    std::set<double> expected { 30. };
+    for (int frame = 5; frame <= 15; ++frame) {
+        expected.insert(frame);
+    }
+    EXPECT_EQ(keyTimes(), expected);
+    EXPECT_DOUBLE_EQ(positionAt(5.).x, 90.);
+    EXPECT_DOUBLE_EQ(positionAt(15.).x, 90.);
+    VectorFollowReport report;
+    ASSERT_TRUE(followControlsOf(_roto)->getLastReport(&report));
+    EXPECT_EQ(report.action, std::string(kVectorFollowBlendActionName));
+    EXPECT_TRUE(isCleanVectorFollowReport(report)) << formatVectorFollowReport(report);
+}
+
+TEST_F(PyVectorFollowTest, ReduceKeyframesWorksOverTheFollowRangeWithNoVectors)
+{
+    for (int frame = 6; frame <= 20; ++frame) {
+        _bezier->setKeyframe(frame);
+        for (int i = 0; i < 4; ++i) {
+            _bezier->movePointByIndex(i, frame, 1., 0.5);
+        }
+    }
+    KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(_roto->getKnobByName("reduceKeyframes"));
+    KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followRange"));
+    KnobIntPtr inKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followIn"));
+    KnobIntPtr outKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followOut"));
+    ASSERT_TRUE(button && range && inKnob && outKnob);
+    range->setValue(1, ViewSpec::all(), 0);
+    inKnob->setValue(10, ViewSpec::all(), 0);
+    outKnob->setValue(20, ViewSpec::all(), 0);
+    _roto->getCurveContext()->select(_bezier, RotoItem::eSelectionReasonSettingsPanel);
+    button->trigger();
+
+    const std::set<double> keys = keyTimes();
+    EXPECT_LT(keys.size(), 16u);
+    for (int frame = 5; frame < 10; ++frame) {
+        EXPECT_EQ(keys.count(frame), 1u) << frame;
+    }
+    EXPECT_EQ(keys.count(20.), 1u);
+}
+
 TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnlyWhileConnected)
 {
     VectorFollowControls* follow = followControlsOf(_roto);
@@ -554,8 +616,7 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnly
         "followForwardOne",
         "followForwardToEnd",
         "followRangeForward",
-        "followReduce",
-        "followTolerance",
+        "blendBetweenKeys",
         "followConfidenceThreshold",
     };
     const auto expectViewerSecret = [&](bool secret) {
@@ -566,8 +627,15 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnly
             EXPECT_EQ(knob->getInViewerContextSecret(), secret) << name;
         }
     };
-    for (const char* name : { "followRangeBackward", "followBackwardToStart", "followBackwardOne", "followForwardOne", "followForwardToEnd", "followRangeForward" }) {
+    for (const char* name : { "followRangeBackward", "followBackwardToStart", "followBackwardOne", "followForwardOne", "followForwardToEnd", "followRangeForward", "blendBetweenKeys" }) {
         EXPECT_TRUE(_roto->getKnobByName(name)->getInViewerContextLabel().empty()) << name;
+    }
+    // Reduction needs no vectors, so it stays on the panel whether or not the input is connected.
+    for (const char* name : { "reduceKeyframes", "reduceTolerance" }) {
+        KnobIPtr knob = _roto->getKnobByName(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        EXPECT_FALSE(_roto->getEffectInstance()->isInViewerUIKnob(knob)) << name;
+        EXPECT_FALSE(knob->getIsSecret()) << name;
     }
 
     expectViewerSecret(true);

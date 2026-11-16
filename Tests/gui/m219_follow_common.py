@@ -49,8 +49,6 @@ SQ_X, SQ_Y, SQ_SIZE = 130.0, 130.0, 60.0
 SQ2_X, SQ2_Y = 60.0, 170.0
 BRIDGE_KEY = 9
 BRIDGE_OFFSET = (8.0, 0.0)
-BACK_CURRENT = 9
-BACK_LATER_KEY = MAIN_LAST
 LATER_ONLY_KEY = 9
 POINTS = 4
 
@@ -79,11 +77,10 @@ HINTS = {
     "backwardOne": "Follows the selection one frame back",
     "forwardOne": "Follows the selection one frame forward",
     "forwardToEnd": "to the end of the range",
-    "reduce": "removes the keys it wrote",
-    "tolerance": "How far, in pixels, removing keys",
+    "blend": "Fills the frames between the keys",
     "threshold": "A vector with less confidence than this",
 }
-BUTTON_KEYS = ["rangeBackward", "backwardToStart", "backwardOne", "forwardOne", "forwardToEnd", "rangeForward"]
+BUTTON_KEYS = ["rangeBackward", "backwardToStart", "backwardOne", "forwardOne", "forwardToEnd", "rangeForward", "blend"]
 BUTTON_LABELS = {
     "rangeBackward": "Follow Range Backward",
     "rangeForward": "Follow Range Forward",
@@ -91,6 +88,7 @@ BUTTON_LABELS = {
     "backwardOne": "Follow Backward One",
     "forwardOne": "Follow Forward One",
     "forwardToEnd": "Follow Forward To End",
+    "blend": "Blend Between Keys",
 }
 VECTORS_INPUT_LABEL = "Vectors"
 THRESHOLD_LABEL = "Follow Confidence Threshold:"

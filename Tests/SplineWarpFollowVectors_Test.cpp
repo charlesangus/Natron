@@ -319,8 +319,7 @@ TEST_F(SplineWarpFollowVectorsTest, TheVectorsInputFeedsOnlyTheFollowAndShowsIts
         "followForwardOne",
         "followForwardToEnd",
         "followRangeForward",
-        "followReduce",
-        "followTolerance",
+        "blendBetweenKeys",
         "followConfidenceThreshold",
     };
     const auto expectViewerSecret = [&](bool secret) {
@@ -331,6 +330,12 @@ TEST_F(SplineWarpFollowVectorsTest, TheVectorsInputFeedsOnlyTheFollowAndShowsIts
         }
     };
     expectViewerSecret(true);
+    for (const char* name : { "reduceKeyframes", "reduceTolerance" }) {
+        KnobIPtr knob = _warpNode->getKnobByName(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        EXPECT_FALSE(effect->isInViewerUIKnob(knob)) << name;
+        EXPECT_FALSE(knob->getIsSecret()) << name;
+    }
 
     ASSERT_TRUE(_warpNode->connectInput(_vectors, kSplineWarpInputVectors));
     expectViewerSecret(false);

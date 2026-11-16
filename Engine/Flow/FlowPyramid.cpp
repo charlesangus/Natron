@@ -53,7 +53,7 @@ void
 blurPlane(FlowPlane& plane,
           const FlowContext& context)
 {
-    const BlurKernels::LineFilter filter = BlurKernels::LineFilter::firGaussian(kDownsampleSigma, 0, true);
+    const BlurKernels::LineFilter filter = BlurKernels::LineFilter::firGaussian(kDownsampleSigma, 0, EdgeMode::Stretch);
     context.parallel(plane.height, [&](int y) {
         BlurKernels::LineScratch scratch;
         filter.apply(plane.row(y), plane.width, 1, scratch);

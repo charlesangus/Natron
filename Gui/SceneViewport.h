@@ -861,7 +861,7 @@ public:
     /**
      * @brief What a click or marquee picks: whole prims, or the points, edges or primitives of
      * the geometry shown. Components are picked only while the view shows geometry; elsewhere the
-     * mode is kept and prims are picked. A mode of another type clears the component selection.
+     * mode is kept and prims are picked. The component selection is converted to the new mode: points to primitives keeps the primitives whose points are all selected, and points to edges the edges with both ends selected; primitives give all their points or edges, edges give their ends or the primitives using them. Objects clears it.
      **/
     void setGeoPickMode(GeoComponentEnum mode);
 
@@ -881,6 +881,15 @@ public:
 
     // Takes @p selection as it is; componentSelectionChanged() if that changes the selection.
     void setComponentSelection(const GeoComponentSelection& selection);
+
+    /**
+     * @brief Grows the component selection by @p steps rings of neighbours, or shrinks it for a
+     * negative count; nothing while no components are picked or selected.
+     **/
+    void expandComponentSelection(int steps);
+
+    // Picks @p mode, carrying the component selection over to it as setGeoPickMode() does.
+    void convertComponentSelection(GeoComponentEnum mode);
 
     // Combines @p picked with the component selection as select() combines prims.
     void selectComponents(const GeoComponentSelection& picked, SelectionModeEnum mode);

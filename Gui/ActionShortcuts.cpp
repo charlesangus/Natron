@@ -211,6 +211,11 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickPoints);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickEdges);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickPrimitives);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DGrowSelection);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DShrinkSelection);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DConvertToPoints);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DConvertToEdges);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DConvertToPrimitives);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);
@@ -512,6 +517,11 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DPickPoints, kShortcutDescActionViewer3DPickPoints, Qt::NoModifier, Qt::Key_F9, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DPickEdges, kShortcutDescActionViewer3DPickEdges, Qt::NoModifier, Qt::Key_F10, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DPickPrimitives, kShortcutDescActionViewer3DPickPrimitives, Qt::NoModifier, Qt::Key_F11, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DGrowSelection, kShortcutDescActionViewer3DGrowSelection, Qt::ControlModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DShrinkSelection, kShortcutDescActionViewer3DShrinkSelection, Qt::ControlModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DConvertToPoints, kShortcutDescActionViewer3DConvertToPoints, Qt::ControlModifier, Qt::Key_F9, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DConvertToEdges, kShortcutDescActionViewer3DConvertToEdges, Qt::ControlModifier, Qt::Key_F10, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DConvertToPrimitives, kShortcutDescActionViewer3DConvertToPrimitives, Qt::ControlModifier, Qt::Key_F11, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

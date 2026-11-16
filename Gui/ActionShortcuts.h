@@ -461,6 +461,21 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DPickPrimitives "geoPickPrimitives"
 #define kShortcutDescActionViewer3DPickPrimitives "Pick Primitives"
 
+#define kShortcutIDActionViewer3DGrowSelection "geoGrowSelection"
+#define kShortcutDescActionViewer3DGrowSelection "Grow Selection"
+
+#define kShortcutIDActionViewer3DShrinkSelection "geoShrinkSelection"
+#define kShortcutDescActionViewer3DShrinkSelection "Shrink Selection"
+
+#define kShortcutIDActionViewer3DConvertToPoints "geoConvertToPoints"
+#define kShortcutDescActionViewer3DConvertToPoints "Convert to Points"
+
+#define kShortcutIDActionViewer3DConvertToEdges "geoConvertToEdges"
+#define kShortcutDescActionViewer3DConvertToEdges "Convert to Edges"
+
+#define kShortcutIDActionViewer3DConvertToPrimitives "geoConvertToPrimitives"
+#define kShortcutDescActionViewer3DConvertToPrimitives "Convert to Primitives"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 

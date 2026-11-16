@@ -70,6 +70,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Geo/GeoGroupOps.h"
 #include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -4724,6 +4725,201 @@ geoPickModeName(GeoComponentEnum mode)
     return "objects";
 }
 
+namespace {
+
+GeoElementMask
+maskFromNumbers(const GeoDetail& detail,
+                GeoAttribClassEnum cls,
+                const std::vector<GeoIndex>& numbers)
+{
+    const GeoIndexMap& map = detail.indexMap(cls);
+    GeoElementMask mask(std::size_t(std::max<GeoOffset>(0, map.offsetSize())), 0);
+    for (GeoIndex number : numbers) {
+        const GeoOffset offset = map.offsetFromIndex(number);
+        if ((offset >= 0) && (std::size_t(offset) < mask.size())) {
+            mask[std::size_t(offset)] = 1;
+        }
+    }
+
+    return mask;
+}
+
+std::vector<GeoIndex>
+numbersFromMask(const GeoDetail& detail,
+                GeoAttribClassEnum cls,
+                const GeoElementMask& mask)
+{
+    const GeoIndexMap& map = detail.indexMap(cls);
+    std::vector<GeoIndex> numbers;
+    const std::size_t count = std::min(mask.size(), std::size_t(std::max<GeoOffset>(0, map.offsetSize())));
+    for (std::size_t offset = 0; offset < count; ++offset) {
+        if (mask[offset] && map.isLive(GeoOffset(offset))) {
+            numbers.push_back(map.indexFromOffset(GeoOffset(offset)));
+        }
+    }
+
+    return numbers;
+}
+
+std::vector<GeoEdge>
+edgesFromNumbers(const GeoDetail& detail,
+                 const std::vector<GeoEdge>& numbers)
+{
+    std::vector<GeoEdge> edges;
+    for (const GeoEdge& edge : numbers) {
+        const GeoOffset a = detail.pointMap().offsetFromIndex(edge.p0);
+        const GeoOffset b = detail.pointMap().offsetFromIndex(edge.p1);
+        if ((a >= 0) && (b >= 0)) {
+            edges.push_back(GeoEdge(a, b));
+        }
+    }
+
+    return edges;
+}
+
+std::vector<GeoEdge>
+edgesToNumbers(const GeoDetail& detail,
+               const std::vector<GeoEdge>& edges)
+{
+    std::vector<GeoEdge> numbers;
+    for (const GeoEdge& edge : edges) {
+        if (detail.pointMap().isLive(edge.p0) && detail.pointMap().isLive(edge.p1)) {
+            numbers.push_back(GeoEdge(detail.pointMap().indexFromOffset(edge.p0), detail.pointMap().indexFromOffset(edge.p1)));
+        }
+    }
+    std::sort(numbers.begin(), numbers.end());
+    numbers.erase(std::unique(numbers.begin(), numbers.end()), numbers.end());
+
+    return numbers;
+}
+
+// The selection as another component type, keeping only what the other type's elements are
+// built from entirely: a primitive needs all its points and an edge both its ends.
+GeoComponentSelection
+convertedSelection(const GeoDetail& detail,
+                   const GeoComponentSelection& from,
+                   GeoComponentEnum to)
+{
+    if (from.type == to) {
+        return from;
+    }
+    GeoComponentSelection out;
+    out.type = to;
+    if ((to == eGeoComponentObjects) || (from.type == eGeoComponentObjects)) {
+        return out;
+    }
+    if (from.type == eGeoComponentPoints) {
+        const GeoElementMask points = maskFromNumbers(detail, eGeoAttribClassPoint, from.elements);
+        if (to == eGeoComponentEdges) {
+            out.edges = edgesToNumbers(detail, geoPromotePointsToEdges(detail, points, true));
+        } else {
+            out.elements = numbersFromMask(detail, eGeoAttribClassPrimitive, geoPromotePointsToPrimitives(detail, points, true));
+        }
+    } else if (from.type == eGeoComponentPrimitives) {
+        const GeoElementMask primitives = maskFromNumbers(detail, eGeoAttribClassPrimitive, from.elements);
+        if (to == eGeoComponentEdges) {
+            out.edges = edgesToNumbers(detail, geoPromotePrimitivesToEdges(detail, primitives));
+        } else {
+            out.elements = numbersFromMask(detail, eGeoAttribClassPoint, geoPromotePrimitivesToPoints(detail, primitives));
+        }
+    } else {
+        const std::vector<GeoEdge> edges = edgesFromNumbers(detail, from.edges);
+        if (to == eGeoComponentPoints) {
+            out.elements = numbersFromMask(detail, eGeoAttribClassPoint, geoPromoteEdgesToPoints(detail, edges));
+        } else {
+            out.elements = numbersFromMask(detail, eGeoAttribClassPrimitive, geoPromoteEdgesToPrimitives(detail, edges));
+        }
+    }
+
+    return out;
+}
+
+GeoComponentSelection
+expandedSelection(const GeoDetail& detail,
+                  const GeoComponentSelection& selection,
+                  int steps)
+{
+    GeoComponentSelection out;
+    out.type = selection.type;
+    if (selection.type == eGeoComponentPoints) {
+        const GeoElementMask mask = maskFromNumbers(detail, eGeoAttribClassPoint, selection.elements);
+        out.elements = numbersFromMask(detail, eGeoAttribClassPoint, geoExpandPoints(detail, mask, steps));
+    } else if (selection.type == eGeoComponentPrimitives) {
+        const GeoElementMask mask = maskFromNumbers(detail, eGeoAttribClassPrimitive, selection.elements);
+        out.elements = numbersFromMask(detail, eGeoAttribClassPrimitive, geoExpandPrimitives(detail, mask, steps));
+    } else if (selection.type == eGeoComponentEdges) {
+        out.edges = edgesToNumbers(detail, geoExpandEdges(detail, edgesFromNumbers(detail, selection.edges), steps));
+    }
+
+    return out;
+}
+
+// Drops the numbers the detail has no element for.
+GeoComponentSelection
+pruneComponentSelection(const GeoDetail& detail,
+                        const GeoComponentSelection& selection)
+{
+    GeoComponentSelection out;
+    out.type = selection.type;
+    const GeoIndex limit = (selection.type == eGeoComponentPrimitives) ? detail.primitiveMap().size() : detail.pointMap().size();
+    for (GeoIndex number : selection.elements) {
+        if (number < limit) {
+            out.elements.push_back(number);
+        }
+    }
+    for (const GeoEdge& edge : selection.edges) {
+        if ((edge.p0 < limit) && (edge.p1 < limit)) {
+            out.edges.push_back(edge);
+        }
+    }
+
+    return out;
+}
+
+struct GeoSelectionActionEntry {
+    const char* actionID;
+    const char* description;
+    // 0 for a conversion, else the steps to expand by.
+    int steps;
+    GeoComponentEnum convertTo;
+};
+
+const GeoSelectionActionEntry kGeoSelectionActions[] = {
+    { kShortcutIDActionViewer3DGrowSelection, kShortcutDescActionViewer3DGrowSelection, 1, eGeoComponentObjects },
+    { kShortcutIDActionViewer3DShrinkSelection, kShortcutDescActionViewer3DShrinkSelection, -1, eGeoComponentObjects },
+    { kShortcutIDActionViewer3DConvertToPoints, kShortcutDescActionViewer3DConvertToPoints, 0, eGeoComponentPoints },
+    { kShortcutIDActionViewer3DConvertToEdges, kShortcutDescActionViewer3DConvertToEdges, 0, eGeoComponentEdges },
+    { kShortcutIDActionViewer3DConvertToPrimitives, kShortcutDescActionViewer3DConvertToPrimitives, 0, eGeoComponentPrimitives },
+};
+
+// The index in kGeoSelectionActions a key press asks for, or -1.
+int
+geoSelectionActionForKey(Qt::KeyboardModifiers modifiers,
+                         int key)
+{
+    for (std::size_t i = 0; i < std::size(kGeoSelectionActions); ++i) {
+        if (matchesKeyBinding(kGeoSelectionActions[i].actionID, modifiers, key)) {
+            return int(i);
+        }
+    }
+
+    return -1;
+}
+
+void
+runGeoSelectionAction(SceneViewport* view,
+                      int index)
+{
+    const GeoSelectionActionEntry& entry = kGeoSelectionActions[index];
+    if (entry.steps != 0) {
+        view->expandComponentSelection(entry.steps);
+    } else {
+        view->convertComponentSelection(entry.convertTo);
+    }
+}
+
+} // anonymous namespace
+
 // How far from the pointer, in logical pixels, a click finds a point or an edge.
 const int kComponentPickRadius = 6;
 
@@ -5660,7 +5856,14 @@ SceneViewport::onSynced(U64 serial,
         update();
     }
     if (componentsPickable() && !_imp->componentSelection.empty() && (_imp->geoDisplay->componentConvert() != _imp->highlightConvert)) {
-        refreshComponentHighlight();
+        const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
+        if (convert && convert->detail()) {
+            const GeoComponentSelection pruned = pruneComponentSelection(*convert->detail(), _imp->componentSelection);
+            if (pruned != _imp->componentSelection) {
+                setComponentSelection(pruned);
+            }
+        }
+        refreshComponentState();
     }
     serviceDeferredInput();
     if (serial != _imp->requestedSerial) {
@@ -6494,14 +6697,40 @@ SceneViewport::setGeoPickMode(GeoComponentEnum mode)
         return;
     }
     _imp->geoPickMode = mode;
-    const bool cleared = (_imp->componentSelection.type != mode) && !_imp->componentSelection.empty();
-    _imp->componentSelection = GeoComponentSelection();
-    _imp->componentSelection.type = mode;
+    GeoComponentSelection converted;
+    converted.type = mode;
+    if ((mode != eGeoComponentObjects) && !_imp->componentSelection.empty()) {
+        const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
+        if (convert && convert->detail()) {
+            converted = convertedSelection(*convert->detail(), _imp->componentSelection, mode);
+        }
+    }
+    const bool changed = (converted.elements != _imp->componentSelection.elements) || (converted.edges != _imp->componentSelection.edges);
+    _imp->componentSelection = converted;
     refreshComponentState();
     Q_EMIT geoPickModeChanged(int(mode));
-    if (cleared) {
+    if (changed) {
         Q_EMIT componentSelectionChanged();
     }
+}
+
+void
+SceneViewport::convertComponentSelection(GeoComponentEnum mode)
+{
+    setGeoPickMode(mode);
+}
+
+void
+SceneViewport::expandComponentSelection(int steps)
+{
+    if (!componentsPickable() || _imp->componentSelection.empty() || (steps == 0)) {
+        return;
+    }
+    const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
+    if (!convert || !convert->detail()) {
+        return;
+    }
+    setComponentSelection(expandedSelection(*convert->detail(), _imp->componentSelection, steps));
 }
 
 GeoComponentEnum
@@ -7999,7 +8228,7 @@ SceneViewport::event(QEvent* e)
             || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || isTransformKey(k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key())
-            || (geoPickModeForKey(k->modifiers(), k->key()) >= 0)
+            || (geoPickModeForKey(k->modifiers(), k->key()) >= 0) || (geoSelectionActionForKey(k->modifiers(), k->key()) >= 0)
             || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
             e->accept();
 
@@ -8100,6 +8329,13 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     const int pickMode = geoPickModeForKey(e->modifiers(), e->key());
     if (pickMode >= 0) {
         setGeoPickMode((GeoComponentEnum)pickMode);
+        e->accept();
+
+        return;
+    }
+    const int selectionAction = geoSelectionActionForKey(e->modifiers(), e->key());
+    if (selectionAction >= 0) {
+        runGeoSelectionAction(this, selectionAction);
         e->accept();
 
         return;
@@ -8506,6 +8742,20 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     QObject::connect(guides, &QAction::toggled, this, [this](bool show) {
         setShowGuides(show);
     });
+
+    if (_imp->geometryContext) {
+        menu.addSeparator();
+        for (std::size_t i = 0; i < std::size(kGeoSelectionActions); ++i) {
+            const GeoSelectionActionEntry& entry = kGeoSelectionActions[i];
+            QAction* action = menu.addAction(shortcutText(entry.description));
+            action->setShortcut(keySequenceOf(entry.actionID));
+            action->setEnabled((entry.steps != 0) ? (componentsPickable() && !_imp->componentSelection.empty()) : true);
+            const int index = int(i);
+            QObject::connect(action, &QAction::triggered, this, [this, index]() {
+                runGeoSelectionAction(this, index);
+            });
+        }
+    }
 
     menu.exec(globalPos);
     clearGesture();

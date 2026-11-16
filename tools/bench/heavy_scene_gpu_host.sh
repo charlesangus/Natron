@@ -40,9 +40,10 @@
 #   acceptance  The end-to-end budget run, with NATRON_DRAW_STATE_TIMING=1, one process per line: the
 #             workflow scenario (open, twirl, Full on an asset, Full + Load on a block, a pattern node, a
 #             node switch, a prim in the inspector, save, reopen) on flat, the city, Lobby and Island, each
-#             step judged against its budget; then reveal and cancel on the loaded city, Lobby and Island
-#             (populate_full, load_all, reveal_wide, reveal_cancel_paced, orbit10k), and reveal_load_all
-#             on the unloaded city. Island is skipped, with a record, when it is not found or under
+#             step judged against its budget; then the time-to-picture budgets and reveal and cancel on
+#             the loaded city, Lobby and Island (populate_full, load_all, draw_budget, reveal_wide,
+#             reveal_cancel_paced, orbit10k), and reveal_load_all on the unloaded city. Ends with
+#             heavy_scene_budget_table.py's table when there are draw_budget records. Island is skipped, with a record, when it is not found or under
 #             ISLAND_MIN_RAM_GB; its loaded run picks rows from the fully loaded scene, so
 #             BENCH_PICK_LIMIT_S is raised for it (default 3600).
 #   fixtures Only makes the fixtures; needs neither a display nor an AppImage.
@@ -75,7 +76,16 @@
 #   BENCH_HOLD_FILE    passed to the run: the populate scenarios report "BEGIN populate" and wait (up to
 #                      BENCH_HOLD_S, default 120) for this file to exist before they open the file, so a
 #                      stack sampler can attach first; BENCH_PTRACER_ANY=1 lets any process of the user attach
-#   ISLAND_MIN_RAM_GB  available RAM below which Island is skipped (default 24)
+#   ISLAND_MIN_RAM_GB  available RAM below which Island is skipped (default 48)
+#   SAMPLE=1           samples the stacks of every thread of each run's Natron process while it runs, with
+#                      eu-stack every SAMPLE_INTERVAL_S (default 0.25 s), or, without eu-stack, gdb every
+#                      SAMPLE_GDB_INTERVAL_S (default 2 s), into out/<label>.stacks (pid in .stacks.pid,
+#                      sampler errors in .stacks.err). Each sample stops the process while it is taken, so
+#                      the records say stack_sampled and their timings are for diagnosis, not for judging.
+#                      Under kernel.yama.ptrace_scope 1 the run lets the sampler attach (BENCH_PTRACER_ANY=1);
+#                      under 2 only root samples. Sampling that cannot work is reported and left out; it
+#                      never stops the bench. heavy_scene_stack_window.py folds a scenario's samples into
+#                      the top stacks of the main and render threads.
 #
 # Memory guard: heavy_scene_watchdog.sh polls once a second and kills the run with SIGKILL when
 # MemAvailable falls under BENCH_MEM_FLOOR_GB (default the larger of 4 and 10% of MemTotal), when the
@@ -226,6 +236,61 @@ export BENCH_ROWS_DIR="$FIXTURE_DIR/rows"
 export BENCH_TIMEOUT_S=1800
 export GUI_TEST_TIMEOUT=7200
 
+SAMPLER=""
+SAMPLE_PERIOD=""
+if [ "${SAMPLE:-0}" = 1 ]; then
+    # shellcheck source=ptrace_remedy.sh
+    # shellcheck disable=SC1091
+    . "$ROOT/tools/bench/ptrace_remedy.sh"
+    if command -v eu-stack > /dev/null 2>&1; then
+        SAMPLER="$ROOT/tools/bench/sample_stacks.sh"
+        SAMPLE_PERIOD="${SAMPLE_INTERVAL_S:-0.25}"
+    elif command -v gdb > /dev/null 2>&1; then
+        SAMPLER="$ROOT/tools/bench/sample_stacks_gdb.sh"
+        SAMPLE_PERIOD="${SAMPLE_GDB_INTERVAL_S:-2}"
+    else
+        echo "sample: neither eu-stack nor gdb is installed (sudo apt install elfutils); running without stack samples" >&2
+    fi
+    if [ -n "$SAMPLER" ]; then
+        case "$(ptrace_scope)" in
+            none | 0) ;;
+            1)
+                # The sampler is the run's sibling, not its ancestor, so the run has to name it a tracer.
+                [ "$(id -u)" = 0 ] || export BENCH_PTRACER_ANY=1
+                ;;
+            *)
+                if [ "$(id -u)" != 0 ]; then
+                    echo "sample: $(ptrace_remedy); running without stack samples" >&2
+                    SAMPLER=""
+                fi
+                ;;
+        esac
+    fi
+    [ -n "$SAMPLER" ] && echo "sample: $(basename "$SAMPLER") every $SAMPLE_PERIOD s, ptrace_scope $(ptrace_scope); samples go to $FIXTURE_DIR/out/<label>.stacks" >&2
+fi
+
+# Samples the Natron process of the run whose launcher is $1 until the run ends; never fails the run.
+sample_run() {
+    local bench="$1" out="$2" pid="" sampler
+    while kill -0 "$bench" 2> /dev/null; do
+        if [ -s "$out.pid" ]; then
+            pid="$(head -n 1 "$out.pid")"
+            kill -0 "$pid" 2> /dev/null && break
+        fi
+        pid=""
+        sleep 0.2
+    done
+    [ -n "$pid" ] || return 0
+    "$SAMPLER" "$pid" 1000000000 "$SAMPLE_PERIOD" "$out" > /dev/null 2>&1 &
+    sampler=$!
+    while kill -0 "$sampler" 2> /dev/null && kill -0 "$bench" 2> /dev/null; do
+        sleep 0.5
+    done
+    kill "$sampler" 2> /dev/null
+    wait "$sampler" 2> /dev/null
+    return 0
+}
+
 # What the display reports, for a record no Natron process lived to write.
 host_gpu_name() {
     command -v glxinfo > /dev/null 2>&1 || return 0
@@ -272,18 +337,44 @@ host_report() {
     echo "    host: MemTotal $(($(meminfo_kb MemTotal) / 1024)) MB, MemAvailable $(($(meminfo_kb MemAvailable) / 1024)) MB, swap in use $((($(meminfo_kb SwapTotal) - $(meminfo_kb SwapFree)) / 1024)) MB, VRAM $(vram_report), GPU ${HOST_GPU:-unknown}"
 }
 
+run_bench() {
+    local label="$1" fixture="$2" file="$3" scenarios="$4"
+    shift 4
+    nice -n 5 env BENCH_FIXTURE="$fixture" BENCH_FILE="$file" BENCH_SCENARIOS="$scenarios" BENCH_LABEL="$label" \
+        NATRON_GUI_TEST_OUT="$FIXTURE_DIR/out/$label" "$@" \
+        Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py "$APPIMAGE" > "$FIXTURE_DIR/out/$label.log" 2>&1
+}
+
 launch() {
-    local label="$1" fixture="$2" file="$3" scenarios="$4" rc
+    local label="$1" fixture="$2" file="$3" scenarios="$4" rc bench sampler="" stacks="$FIXTURE_DIR/out/$label.stacks" sampling
     shift 4
     wanted "$label" || return 0
     [ -n "${ONLY_SCENARIOS:-}" ] && scenarios="$ONLY_SCENARIOS"
     echo "=== $label"
     host_report
-    nice -n 5 env BENCH_FIXTURE="$fixture" BENCH_FILE="$file" BENCH_SCENARIOS="$scenarios" BENCH_LABEL="$label" \
-        NATRON_GUI_TEST_OUT="$FIXTURE_DIR/out/$label" "$@" \
-        Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py "$APPIMAGE" > "$FIXTURE_DIR/out/$label.log" 2>&1
-    rc=$?
+    if [ -z "$SAMPLER" ]; then
+        run_bench "$label" "$fixture" "$file" "$scenarios" "$@"
+        rc=$?
+    else
+        rm -f -- "${FIXTURE_DIR:?}/out/$label.stacks" "${FIXTURE_DIR:?}/out/$label.stacks.err" "${FIXTURE_DIR:?}/out/$label.stacks.pid"
+        sampling=(BENCH_PID_FILE="$stacks.pid" BENCH_STACK_SAMPLED=1)
+        run_bench "$label" "$fixture" "$file" "$scenarios" "${sampling[@]}" "$@" &
+        bench=$!
+        sample_run "$bench" "$stacks" &
+        sampler=$!
+        wait "$bench"
+        rc=$?
+    fi
     echo "    exit=$rc"
+    if [ -n "$sampler" ]; then
+        wait "$sampler"
+        if [ -s "$stacks" ]; then
+            echo "    stacks: $(grep -c '^=== SAMPLE' "$stacks") samples of pid $(head -n 1 "$stacks.pid") in $stacks"
+        else
+            echo "    stacks: none taken (no pid in $stacks.pid, or the sampler could not attach)"
+        fi
+        [ -s "$stacks.err" ] && echo "    stacks: sampler said: $(head -n 3 "$stacks.err" | tr '\n' ' ')"
+    fi
     # The bench's watchdog starts once the scene's rows are picked; a process lost before then has
     # told the results file nothing.
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ] && ! grep -q "\"label\": \"$label\"" "$RESULT"; then
@@ -298,11 +389,8 @@ for ((block = 2; block < 2 + ${GATE_LARGE_BLOCKS:-30}; block++)); do
     LARGE_BLOCKS="$LARGE_BLOCKS${LARGE_BLOCKS:+,}/World/Block$block"
 done
 
-# 24 GB is twice an estimate of 12 GB, from a per-element tally outside Natron: about 3.5 GB of
-# composed stages with their geometry read, 2 GB of instance transforms for 31M point instances,
-# 2 GB of buffers for 37M points and 152M face vertices, 3.5 GB for 119k meshes at Hydra's cost per
-# prim, 1 GB of Natron. Doubled because Island has never been loaded in Natron to measure it.
-ISLAND_MIN_RAM_GB="${ISLAND_MIN_RAM_GB:-24}"
+# Island's loaded acceptance run peaked at 42 GB RSS on the GPU host; 48 GB leaves room above that.
+ISLAND_MIN_RAM_GB="${ISLAND_MIN_RAM_GB:-48}"
 
 # Prints why Island cannot run, or nothing when it can.
 island_unfit() {
@@ -312,7 +400,7 @@ island_unfit() {
     elif [ "$available_gb" -lt "$ISLAND_MIN_RAM_GB" ]; then
         echo "$available_gb GB available, under the $ISLAND_MIN_RAM_GB GB estimated for it (set ISLAND_MIN_RAM_GB to override)"
     else
-        echo "island: $available_gb GB available, $ISLAND_MIN_RAM_GB GB wanted (about 12 GB estimated, doubled)" >&2
+        echo "island: $available_gb GB available, $ISLAND_MIN_RAM_GB GB wanted (42 GB peak RSS measured)" >&2
     fi
 }
 
@@ -336,7 +424,7 @@ budget_runs() {
 
 # The workflow reopens the project, so each one runs alone in its process.
 acceptance_runs() {
-    local reason loaded="populate_full,load_all,reveal_wide,reveal_cancel_paced,orbit10k"
+    local reason loaded="populate_full,load_all,draw_budget,reveal_wide,reveal_cancel_paced,orbit10k"
     launch accept-flat flat "$FIXTURE_DIR/heavy_flat.usdc" workflow NATRON_DRAW_STATE_TIMING=1
     launch accept-city city "$CITY" workflow NATRON_DRAW_STATE_TIMING=1
     launch accept-city-loaded city "$CITY" "$loaded" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
@@ -357,8 +445,8 @@ acceptance_runs() {
 }
 
 summarize() {
-    if command -v python3 > /dev/null 2>&1; then
-        python3 tools/bench/heavy_scene_budget_table.py "$RESULT"
+    if command -v python3 > /dev/null 2>&1 && grep -q '"scenario": "draw_budget"' "$RESULT"; then
+        python3 -I tools/bench/heavy_scene_budget_table.py "$RESULT"
     fi
     echo "results: $RESULT ($(wc -l < "$RESULT") lines: $(grep -c '"result": "pass"' "$RESULT") pass, $(grep -c '"result": "fail"' "$RESULT") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted)"' "$RESULT") did not finish, $(grep -c '"result": "skipped"' "$RESULT") skipped)"
 }

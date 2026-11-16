@@ -49,6 +49,9 @@
         BENCH_HOLD_FILE  when set, populate_full and populate_pruned report "BEGIN populate" and wait up to
                          BENCH_HOLD_S (default 120) for this file to exist before opening the scene, so a stack
                          sampler can attach first; BENCH_PTRACER_ANY=1 lets any process of the user attach
+        BENCH_PID_FILE   file this Natron process writes its pid to as the script starts, for a stack sampler
+        BENCH_STACK_SAMPLED  1 when a stack sampler is attached, which stops the process for each sample;
+                         stored in each record as stack_sampled, as its timings are then not the viewer's own
         BENCH_SCENARIO_LIMIT_S  wall-clock limit of a scenario, from outside Natron (default 300)
         BENCH_OPEN_LIMIT_S      the same for one that opens or loads the whole file (default 1800)
         BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB  see heavy_scene_watchdog.sh
@@ -69,12 +72,18 @@ display can vouch for) or not_applicable. Actions are the ACTIONS table.
 Every record carries gl_renderer and gl_vendor, and the memory the process has used: peak_rss_mb and
 peak_rss_gb (its high-water mark) and mem_available_min_gb (the lowest MemAvailable during the
 scenario). result is pass or fail, fail whenever a check of the scenario failed (failed_checks lists
-them), or one of: not_applicable (the action had nothing to measure in this process, with a reason;
-load_all after an open with Full + Load), skipped (with a reason; nothing ran, so its peak_rss_mb
+them), or one of: not_applicable (the action had nothing to measure in this process, with a reason),
+skipped (with a reason; nothing ran, so its peak_rss_mb
 is the process's so far, or null when the watchdog wrote it), timed_out (past its wall-clock limit),
 out_of_memory (the memory guard ended the process), aborted (the process ended on its own during the
 scenario). heavy_scene_watchdog.sh writes those last three from outside Natron, so a hung run leaves
-a record.
+a record. Every record has started_at and ended_at (epoch seconds), and the log a "SCENARIO start" and
+"SCENARIO end" line for each, so that stack samples can be lined up with them.
+
+Full + Load keeps loading payloads after the first frame, so after an open with it load_all waits for
+the loads still pending and composing to end (load_ms), and the payloads it loads were all requested.
+The reveal, orbit and draw_budget scenarios first wait for every pending load to end
+(loads_settle_wait_ms; action_started_at is when the action itself began).
 
 The draw state scenarios drive SceneViewport's setDrawState, clearDrawState and setDrawRevealBatch, and
 wait for natronSceneDrawPresented, which a paint sets only once its image has taken in every change so
@@ -107,8 +116,10 @@ Budgets: main-thread stall under 100 ms; time from a draw state change to the im
 100 ms (time_to_picture_ms, worst untraced change of prune_restore, sibling_state and draw_budget, with
 draw_budget's rows also judged apart); a paced reveal of the root with Load All (reveal_load_all,
 which also waits for the loads to land) and of the wide row (reveal_wide) completes with no gap over
-100 ms between painted frames; a paced reveal of the wide row boxed again shows at most the one batch
-under way (reveal_cancel_paced); first frame under 2 s on the payload city, the only scene the design
+100 ms between painted frames; a paced reveal of the wide row boxed again as soon as its first step is
+on screen shows at most the one batch under way (reveal_cancel_paced; when the row fits in one paced
+step it is revealed again with a fixed batch of a 32nd of its prims, cancel_paced_mode forced_batch,
+and a cancel that still lands after the reveal ended fails the record); first frame under 2 s on the payload city, the only scene the design
 gives it; no payload
 file opened that the action did not request; orbit at or above 30 fps; no stage edit or notice from a
 draw state; the draw filter on this viewer's engine; pixels changed on the control row.
@@ -144,6 +155,8 @@ DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal",
 # A wide row's restore puts the whole scene back into Hydra, several times over.
 LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide", "workflow")
 PICTURE_SCENARIOS = ("prune_restore", "sibling_state", "draw_budget")
+# Payloads still landing from a Full + Load open would be measured along with these.
+SETTLED_SCENARIOS = ("reveal", "reveal_cancel", "reveal_wide", "reveal_cancel_paced", "orbit", "orbit10k", "draw_budget")
 DRAW_TIMING = os.environ.get("NATRON_DRAW_STATE_TIMING") == "1"
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
 ROW_RECORD_KEYS = ("root", "branch", "branch_gprims", "widest_row", "widest_children", "sibling_row", "sibling_kind",
@@ -181,6 +194,10 @@ try:
         _libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
         if _libc.prctl(0x59616d61, ctypes.c_ulong(-1).value, 0, 0, 0) != 0:
             report("NOTE prctl(PR_SET_PTRACER_ANY) failed: %s" % os.strerror(ctypes.get_errno()))
+
+    if os.environ.get("BENCH_PID_FILE"):
+        with open(os.environ["BENCH_PID_FILE"], "w") as pid_file:
+            pid_file.write("%d\n" % os.getpid())
 
     ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
     fixture = os.environ.get("BENCH_FIXTURE", "flat")
@@ -611,13 +628,39 @@ try:
         m.values["twirl_move_gap_ms"] = longest_gap
         load_results(m, v, "load", edits_before)
 
+    def loads_settled():
+        v = view()
+        return v is not None and not v.property("natronSceneLoadsPending") and not v.property("natronSceneComposing")
+
+    def wait_loads_settled(label):
+        """Waits until no load is pending or composing, twice in a row 500 ms apart, since a load can queue
+        the next one as it lands; returns the wait in ms."""
+        t0 = time.perf_counter()
+        deadline = time.time() + TIMEOUT_S
+        while True:
+            ok = yield ("until", loads_settled, max(1.0, deadline - time.time()))
+            if not ok:
+                break
+            yield ("sleep", 500)
+            if loads_settled():
+                break
+        check(ok, "%s: the scene's loads are over (pending %r, composing %r)"
+              % (label, prop("natronSceneLoadsPending"), prop("natronSceneComposing")))
+        return round((time.perf_counter() - t0) * 1000.0, 1)
+
     def action_load_all(m):
-        if project_state["loaded_at_open"]:
-            # The stage then has nothing left to load, so the load edit count waited on below never moves.
-            m.not_applicable = "the scene was opened with Full + Load, which loads every payload"
-            return
         require(view() is not None and shown(), "load_all: a scene view is visible and showing the scene")
         v = view()
+        if project_state["loaded_at_open"]:
+            # Full + Load keeps loading payloads after the first frame; what is left is what this waits for.
+            edits_before = int(v.property("natronSceneLoadEdits") or 0)
+            m.all_payloads_requested = True
+            m.values["loaded_at_open"] = True
+            m.values["load_ms"] = yield from wait_loads_settled("load_all")
+            m.values["prims_added_upstream"] = draw_stats().get("inputAdded")
+            m.values["prims_hidden_rules"] = draw_stats().get("ruleCount")
+            load_results(m, v, "load", edits_before)
+            return
         edits_before = int(v.property("natronSceneLoadEdits") or 0)
         m.all_payloads_requested = True
         committed = commit_watch(v)
@@ -859,30 +902,48 @@ try:
     def action_reveal_wide(m):
         yield from paced_reveal(m, "reveal_wide", rows["widest_row"], "bbox", "full")
 
+    CANCEL_FORCED_STEPS = 32
+
+    def cancel_reveal_attempt(row, batch):
+        """Reveals row from BBox with batch (-1 paced) and boxes it again as soon as the first step is
+        on screen; returns the stats at the cancel, after it, the cancel's timings and the prims shown."""
+        v = view()
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, batch))
+        before = draw_stats()
+        # The change's first reveal step runs in the same apply, so its presented frame is the first progress tick.
+        yield from set_draw_state(row, "full")
+        at_cancel = draw_stats()
+        cancelled = yield from set_draw_state(row, "bbox")
+        yield ("sleep", 200)
+        settled = draw_stats()
+        return before, at_cancel, settled, cancelled
+
     def action_reveal_cancel_paced(m):
         row = rows["widest_row"]
         yield from clear_draw_states()
         yield from set_draw_state(row, "bbox")
         v = view()
-        draw_call(v, "setDrawRevealBatch", Q_ARG(int, -1))
         heartbeat.start()
-        before = draw_stats()
-        yield from set_draw_state(row, "full")
-
-        def advanced():
-            stats = draw_stats()
-            return stats.get("revealSteps", 0) - before.get("revealSteps", 0) >= 3 or not stats.get("revealing")
-
-        ok = yield ("until", advanced, TIMEOUT_S)
-        check(ok, "reveal_cancel_paced: the reveal advanced")
-        at_cancel = draw_stats()
-        cancelled = yield from set_draw_state(row, "bbox")
-        yield ("sleep", 200)
-        settled = draw_stats()
+        before, at_cancel, settled, cancelled = yield from cancel_reveal_attempt(row, -1)
+        mode = "paced"
+        batch = at_cancel.get("revealBatch")
+        if not at_cancel.get("revealing"):
+            # The row fit in one paced step; a fixed batch of a fraction of it gives the cancel steps to land between.
+            row_prims = max(0, at_cancel.get("shownSent", 0) - before.get("shownSent", 0))
+            m.values["cancel_paced_row_prims"] = row_prims
+            if row_prims >= 2:
+                mode = "forced_batch"
+                batch = max(1, row_prims // CANCEL_FORCED_STEPS)
+                before, at_cancel, settled, cancelled = yield from cancel_reveal_attempt(row, batch)
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
+        active = bool(at_cancel.get("revealing"))
+        check(active, "reveal_cancel_paced: the cancel landed while the reveal was under way (%s, batch %r, %r prims shown)"
+              % (mode, batch, at_cancel.get("shownSent", 0) - before.get("shownSent", 0)))
         m.values["cancel_paced_row"] = row
-        m.values["cancel_paced_was_active"] = bool(at_cancel.get("revealing"))
-        m.values["cancel_paced_batch"] = at_cancel.get("revealBatch")
+        m.values["cancel_paced_mode"] = mode
+        m.values["cancel_paced_was_active"] = active
+        m.values["cancel_paced_batch"] = batch
+        m.values["cancel_paced_steps_before"] = at_cancel.get("revealSteps", 0) - before.get("revealSteps", 0)
         m.values["cancel_paced_total_ms"] = cancelled["total_ms"]
         # A step under way when the change is posted may still finish; nothing after it may run.
         m.values["cancel_paced_overshoot_prims"] = settled.get("shownSent", 0) - at_cancel.get("shownSent", 0)
@@ -1474,7 +1535,10 @@ try:
         if "first_frame_ms" in m.values:
             budgets["first_frame_ms"] = verdict(m.values["first_frame_ms"], FIRST_FRAME_BUDGET_MS, True, valid=gpu,
                                                 applicable=first_frame_judged, reason=first_frame_unjudged_reason)
-        if m.all_payloads_requested:
+        if project_state["loaded_at_open"]:
+            budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_applicable",
+                                               "reason": "the scene was opened with Full + Load, which requests every payload"}
+        elif m.all_payloads_requested:
             budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_applicable"}
         elif new_layers is None:
             budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_valid"}
@@ -1492,7 +1556,10 @@ try:
         if "cancel_paced_overshoot_prims" in m.values:
             batch = m.values["cancel_paced_batch"]
             budgets["cancel_paced_overshoot_prims"] = verdict(m.values["cancel_paced_overshoot_prims"], batch, True,
-                                                              valid=m.values["cancel_paced_was_active"] and batch is not None)
+                                                              valid=batch is not None)
+            if not m.values["cancel_paced_was_active"]:
+                budgets["cancel_paced_overshoot_prims"]["status"] = "fail"
+                budgets["cancel_paced_overshoot_prims"]["reason"] = "the reveal had finished before the cancel landed"
             budgets["cancel_paced_stopped"] = verdict(1 if m.values["cancel_paced_stopped"] else 0, 1, False)
         for step_name, step in m.steps.items():
             applicable = step["applicable"]
@@ -1527,6 +1594,7 @@ try:
         "gl_renderer": gl_renderer_name,
         "gl_vendor": gl_vendor_name,
         "frame_rate": "valid" if gpu else "not valid on this display",
+        "stack_sampled": os.environ.get("BENCH_STACK_SAMPLED") == "1",
         "rows_source": rows["source"],
         "rows": {key: rows[key] for key in ROW_RECORD_KEYS if key in rows},
     }
@@ -1540,6 +1608,11 @@ try:
 
     def mark_running(name, remaining, started, limit):
         write_progress("%d %d\n%s\n%s\n%s\n" % (started, limit, name, " ".join(remaining), json.dumps(common_fields)[1:-1]))
+
+    def log_scenario(name, edge, at):
+        line = "SCENARIO %s %s %.3f %s" % (edge, name, at, time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(at)))
+        print(line, flush=True)
+        report(line)
 
     def write_record(record):
         line = json.dumps(record)
@@ -1597,15 +1670,20 @@ try:
         for index, name in enumerate(names):
             reason = skip_reason(name)
             if reason is not None:
-                record = dict(common_fields, scenario=name, result="skipped", reason=reason, time=time.strftime("%Y-%m-%dT%H:%M:%S"))
+                record = dict(common_fields, scenario=name, result="skipped", reason=reason, time=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                              started_at=round(time.time(), 3), ended_at=round(time.time(), 3))
                 record.update(memory_fields(time.time()))
                 write_record(record)
                 continue
             started = time.time()
             mark_running(name, names[index + 1:], started, OPEN_LIMIT_S if name in LONG_SCENARIOS else SCENARIO_LIMIT_S)
+            log_scenario(name, "start", started)
             m = Measure()
             current["name"], current["m"] = name, m
             scenario_checks["failed"] = m.failed_checks
+            if name in SETTLED_SCENARIOS and view() is not None:
+                m.values["loads_settle_wait_ms"] = yield from wait_loads_settled(name)
+                m.values["action_started_at"] = round(time.time(), 3)
             before = loaded_layers()
             heartbeat.start()
             yield from ACTIONS[name](m)
@@ -1613,8 +1691,11 @@ try:
             if m.not_applicable is not None:
                 heartbeat.stop()
                 scenario_checks["failed"] = None
+                ended = time.time()
+                log_scenario(name, "end", ended)
                 record = dict(common_fields, scenario=name, result="not_applicable", reason=m.not_applicable,
-                              wall_s=round(time.time() - started, 1), time=time.strftime("%Y-%m-%dT%H:%M:%S"))
+                              wall_s=round(ended - started, 1), time=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                              started_at=round(started, 3), ended_at=round(ended, 3))
                 record.update(memory_fields(started))
                 write_record(record)
                 write_progress("idle\n")
@@ -1623,6 +1704,8 @@ try:
                 m.values["filter_bound"] = bool(draw_stats().get("filterBound"))
             yield ("sleep", 200)
             stall_ms = heartbeat.stop()
+            ended = time.time()
+            log_scenario(name, "end", ended)
             after = loaded_layers()
             new_layers = None if before is None or after is None else after - before
             budgets = judge(m, stall_ms, new_layers)
@@ -1632,7 +1715,9 @@ try:
             record.update(memory_fields(started))
             record.update({
                 "scenario": name,
-                "wall_s": round(time.time() - started, 1),
+                "wall_s": round(ended - started, 1),
+                "started_at": round(started, 3),
+                "ended_at": round(ended, 3),
                 "layers_before": None if before is None else len(before),
                 "layers_after": None if after is None else len(after),
                 "layers_loaded": None if new_layers is None else len(new_layers),

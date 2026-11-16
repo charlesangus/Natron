@@ -90,3 +90,4 @@ Cycles Deep Output and M258 - MoonRay Deep Output are elaborated from them.
   7. Deep volume segments carry colour and alpha on both Cycles and MoonRay.
   8. Deep is never denoised; document that a flattened deep won't match a denoised beauty.
   The drafts for M256, M257 and M258 go to `/cat-plan` through the inbox, since those files are plan-scoped. Nothing from the spike branch merges.
+- 2026-11-16 — Gate met: every spike answered with evidence, the user's decisions recorded above, and the M256 - Delegate AOV Selection, M257 - Cycles Deep Output and M258 - MoonRay Deep Output elaboration handed to /cat-plan through the inbox (2026-11-16T11:00 change-request), since those files are plan-scoped. Nothing from spike/m255-delegate-output merges; the branch stays as the reference. Done.

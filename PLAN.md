@@ -205,7 +205,7 @@ future core work has solid ground to build on.
 | M252 | MoonRay Rendering | done | M248, M250 | misty-marten | E9 | F3 | | [M252-moonray-rendering.md](PLAN/MILESTONES/M252-moonray-rendering.md) |
 | M253 | Delegate Render Settings | done | M251, M252 | misty-marten | E9 | F3 | | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
 | M254 | Progressive Viewer Render | done | M248, M251 | misty-marten | E9 | F3 | | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
-| M255 | Delegate Output Spikes | doing | M251, M252 | bosley-executor | E9 | | | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
+| M255 | Delegate Output Spikes | done | M251, M252 | bosley-executor | E9 | | | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | | | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255, M286 |  | E8 | F24 | | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
 | M258 | MoonRay Deep Output | todo | M255, M286 |  | E8 | F24 | | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |

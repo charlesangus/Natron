@@ -1,0 +1,190 @@
+diff --git a/lib/rendering/pbr/handlers/ShadeBundleHandler.cc b/lib/rendering/pbr/handlers/ShadeBundleHandler.cc
+index 0b0687c..630be1d 100644
+--- a/lib/rendering/pbr/handlers/ShadeBundleHandler.cc
++++ b/lib/rendering/pbr/handlers/ShadeBundleHandler.cc
+@@ -206,14 +206,17 @@ void shadeBundleHandler(mcrt_common::ThreadLocalState *tls, unsigned numEntries,
+ 
+             rayStatesToFree[numRayStatesToFree++] = rs;
+         } else {
+-            // Populate deep data, first hit only for now
++            // Populate deep data for each camera-ray hit, including hits of presence continuation
++            // rays, which carry their own DeepData.
+             if (ray->getDepth() == 0 && rs->mDeepDataHandle != pbr::nullHandle) {
+                 pbr::DeepData *deepData = static_cast<pbr::DeepData*>(pbrTls->getListItem(rs->mDeepDataHandle, 0));
+                 deepData->mHitDeep = 1;
+                 deepData->mSubpixelX = rs->mSubpixel.mSubpixelX;
+                 deepData->mSubpixelY = rs->mSubpixel.mSubpixelY;
+                 deepData->mRayZ = ray->dir.z;
+-                deepData->mDeepT = ray->tfar;
++                // A presence continuation ray starts at the previous hit, so its t is offset by the
++                // distance already travelled to give the deep Z of this surface.
++                deepData->mDeepT = rs->mPathVertex.pathDistance + ray->tfar;
+                 deepData->mDeepNormal = ray->Ng;
+ 
+                 // retrieve all of the deep IDs for this intersection from the primitive attrs
+@@ -563,7 +566,16 @@ void shadeBundleHandler(mcrt_common::ThreadLocalState *tls, unsigned numEntries,
+                         presenceRay->mRay.geomID = -1;
+                         presenceRay->mRay.primID = -1;
+                         presenceRay->mRay.instID = -1;
++                        // The surface behind gets its own deep sample: radiance gathered by the
++                        // continuation ray lands at its hit, weighted by its share of the pixel.
+                         presenceRay->mDeepDataHandle = nullHandle;
++                        if (rs->mDeepDataHandle != nullHandle && ray->getDepth() == 0) {
++                            presenceRay->mDeepDataHandle = pbrTls->allocList(sizeof(pbr::DeepData), 1);
++                            pbr::DeepData *presenceDeepData = static_cast<pbr::DeepData*>(
++                                pbrTls->getListItem(presenceRay->mDeepDataHandle, 0));
++                            presenceDeepData->mRefCount = 1;
++                            presenceDeepData->mHitDeep = 0;
++                        }
+                         presenceRay->mParentLobeLightSets = rs->mParentLobeLightSets;
+ 
+                         rs->mPathVertex.pathPixelWeight *= presences[i];
+diff --git a/lib/rendering/pbr/integrator/PathIntegrator.cc b/lib/rendering/pbr/integrator/PathIntegrator.cc
+index 227c68e..b97ae1b 100644
+--- a/lib/rendering/pbr/integrator/PathIntegrator.cc
++++ b/lib/rendering/pbr/integrator/PathIntegrator.cc
+@@ -484,6 +484,16 @@ PathIntegrator::computeRadianceRecurse0(pbr::TLState *pbrTls, mcrt_common::RayDi
+     // (Note that Embree uses tfar to signal the t value of the intersection point.)
+     float tHit = ray.tfar;
+ 
++    if (deepParams) {
++        // A presence continuation ray starts at the previous hit, so its t is offset by the
++        // distance already travelled to give the deep Z of this surface.
++        deepParams->mT = pv.pathDistance + tHit;
++        deepParams->mRayZ = ray.dir.z;
++        deepParams->mNormal = ray.getNg();
++        deepParams->mPresenceRadiance = scene_rdl2::math::sBlack;
++        deepParams->mSurfaceWeight = 0.f;
++    }
++
+     //---------------------------------------------------------------------
+     // Transfer the ray to its intersection before we run shaders. This is
+     // needed for texture filtering based on ray differentials.
+@@ -554,9 +564,13 @@ PathIntegrator::computeRadianceRecurse0(pbr::TLState *pbrTls, mcrt_common::RayDi
+                                                    transparency, presenceTransparency, vt, sequenceID,
+                                                    aovs, cryptomatteFlags, parentLobeLightSets,
+                                                    newPriorityList, newPriorityListCount,
+-                                                   currentVolumeDepth, rayEpsilon, presence);
++                                                   currentVolumeDepth, rayEpsilon, presence, deepParams);
+         radiance += presenceRadiance;
+     }
++    if (deepParams) {
++        deepParams->mPresenceRadiance = presenceRadiance;
++        deepParams->mSurfaceWeight = pv.pathPixelWeight;
++    }
+ 
+     //---------------------------------------------------------------------
+     // Run the material shader at the ray intersection point to get the Bsdf
+@@ -943,7 +957,8 @@ PathIntegrator::computeRadianceRecurse1(pbr::TLState *pbrTls, mcrt_common::RayDi
+                                             transparency, presenceTransparency, vt, sequenceID,
+                                             aovs, cryptomatteFlags, parentLobeLightSets,
+                                             newPriorityList, newPriorityListCount,
+-                                            currentVolumeDepth, rayEpsilon, presence);
++                                            currentVolumeDepth, rayEpsilon, presence,
++                                            /* deepParams = */ nullptr);
+     }
+ 
+     //---------------------------------------------------------------------
+@@ -1353,6 +1368,7 @@ PathIntegrator::computeRadiance(pbr::TLState *pbrTls, int pixelX, int pixelY,
+         deepParams.mHitGeom = false;
+         deepParams.mHitVolume = false;
+         deepParams.mVolumeAovs = deepVolumeAovs;
++        deepParams.mSurfaceWeight = 0.f;
+ 
+         // This is the only place we pass a non-null deepParams as we only want to
+         // populate the deep buffer for the primary ray.
+@@ -1417,13 +1433,15 @@ PathIntegrator::computeRadiance(pbr::TLState *pbrTls, int pixelX, int pixelY,
+         } else {
+             // We didn't hit a volume.  Fill in the hard surface data with the existing
+             // radiance+aov values.
+-            if (deepParams.mHitGeom) {
+-                // put the hard surface deep intersection into the deep buffer
+-                scene_rdl2::math::Vec3f deepNormal = ray.getNg();
++            // Surfaces behind this one through presence added their own samples, so this
++            // sample holds only this surface's share of the camera sample, as in vector mode.
++            if (deepParams.mHitGeom && deepParams.mSurfaceWeight > 0.f) {
+                 deepBuffer->addSample(pbrTls, deepParams.mPixelX, deepParams.mPixelY,
+                                       deepParams.mSampleX, deepParams.mSampleY, 0,
+-                                      deepParams.mDeepIDs, ray.tfar, ray.dir.z, deepNormal,
+-                                      deepAlpha, deepRadiance, aovs, 1.f, 1.f);
++                                      deepParams.mDeepIDs, deepParams.mT, deepParams.mRayZ,
++                                      deepParams.mNormal, deepParams.mSurfaceWeight,
++                                      deepRadiance - deepParams.mPresenceRadiance, aovs,
++                                      1.f, deepParams.mSurfaceWeight);
+             }
+         }
+ 
+@@ -1488,7 +1506,8 @@ PathIntegrator::computeRadiancePresence(pbr::TLState *pbrTls, mcrt_common::RayDi
+         float &transparency, float &presenceTransparency, VolumeTransmittance& vt, unsigned sequenceID, float *aovs,
+         uint32_t cryptomatteFlags, const Rdl2LightSetList& parentLobeLightSets,
+         const scene_rdl2::rdl2::Material* newPriorityList[4], int newPriorityListCount[4],
+-        int currentVolumeDepth, float rayEpsilon, float presence) const
++        int currentVolumeDepth, float rayEpsilon, float presence,
++        const DeepParams *deepParams) const
+ {
+     float totalPresence = (1.0f - prevPv.totalPresence) * presence;
+ 
+@@ -1550,9 +1569,32 @@ PathIntegrator::computeRadiancePresence(pbr::TLState *pbrTls, mcrt_common::RayDi
+     VolumeTransmittance vtPresence;
+     scene_rdl2::math::Color presenceRadiance;
+     if (ray.getDepth() == 0) {
++        // A primary ray that hit a volume is re-rendered without volumes for its hard surface
++        // sample, so only volume-free presence chains record their surfaces here.
++        const bool recordDeep = deepParams && !deepParams->mHitVolume;
++        DeepParams presenceDeepParams;
++        if (recordDeep) {
++            presenceDeepParams = *deepParams;
++            presenceDeepParams.mHitGeom = false;
++            presenceDeepParams.mHitVolume = false;
++            presenceDeepParams.mSurfaceWeight = 0.f;
++        }
+         presenceRadiance = computeRadianceRecurse0(pbrTls, presenceRay, sp, newPv, lobe, presenceTransparency,
+-                                vtPresence, sequenceID, aovs, /* depth = */ nullptr, /* DeepParams = */ nullptr,
++                                vtPresence, sequenceID, aovs, /* depth = */ nullptr,
++                                recordDeep ? &presenceDeepParams : nullptr,
+                                 cryptomatteFlags, parentLobeLightSets);
++        if (recordDeep && presenceDeepParams.mHitGeom && !presenceDeepParams.mHitVolume &&
++            presenceDeepParams.mSurfaceWeight > 0.f) {
++            const scene_rdl2::math::Color own = presenceRadiance - presenceDeepParams.mPresenceRadiance;
++            constexpr int channels[3] = { 0, 1, 2 };
++            const float values[3] = { own.r, own.g, own.b };
++            presenceDeepParams.mDeepBuffer->addSample(pbrTls, presenceDeepParams.mPixelX,
++                                presenceDeepParams.mPixelY, presenceDeepParams.mSampleX,
++                                presenceDeepParams.mSampleY, 0, presenceDeepParams.mDeepIDs,
++                                presenceDeepParams.mT, presenceDeepParams.mRayZ, presenceDeepParams.mNormal,
++                                presenceDeepParams.mSurfaceWeight, channels, 3, values,
++                                1.f, presenceDeepParams.mSurfaceWeight);
++        }
+     } else {
+         presenceRadiance = computeRadianceRecurse1(pbrTls, presenceRay, sp, newPv, lobe, presenceTransparency,
+                                 vtPresence, sequenceID, aovs, /* cryptomatteFlags = */ 0, parentLobeLightSets);
+diff --git a/lib/rendering/pbr/integrator/PathIntegrator.h b/lib/rendering/pbr/integrator/PathIntegrator.h
+index e9659c2..4d8c9ec 100644
+--- a/lib/rendering/pbr/integrator/PathIntegrator.h
++++ b/lib/rendering/pbr/integrator/PathIntegrator.h
+@@ -146,6 +146,15 @@ public:
+         bool mHitGeom;
+         bool mHitVolume;
+         float mDeepIDs[7];  // Also see types.hh DEEP_DATA_MEMBERS
++
++        // Hard surface hit, measured from the camera, and this surface's own share of the camera
++        // sample: its radiance excluding what presence continuation saw behind it, and its
++        // presence-scaled path pixel weight.
++        float mT;
++        float mRayZ;
++        scene_rdl2::math::Vec3f mNormal;
++        scene_rdl2::math::Color mPresenceRadiance;
++        float mSurfaceWeight;
+     };
+ 
+     /// Constructor / Destructor
+@@ -507,7 +516,8 @@ private:
+             float &transparency, float &presenceTransparency, VolumeTransmittance& vt, unsigned sequenceID, float *aovs,
+             uint32_t cryptomatteFlags, const Rdl2LightSetList& parentLobeLightSets,
+             const scene_rdl2::rdl2::Material* newPriorityList[4], int newPriorityListCount[4],
+-            int currentVolumeDepth, float rayEpsilon, float presence) const;
++            int currentVolumeDepth, float rayEpsilon, float presence,
++            const DeepParams *deepParams) const;
+ 
+     // Auxiliary function to compute the in-camera radiance of a light hit directly by a primary ray. Not called
+     // for non-primary rays since those contributions are already gathered by light & bsdf sampling.

@@ -22,8 +22,13 @@ while [ $# -gt 0 ]; do
 done
 mkdir -p "$out/wrap"
 
+pbr_mount=()
+if [ -n "${MOONRAY_PBR_LIB:-}" ]; then
+    pbr_mount=(-v "$MOONRAY_PBR_LIB:/opt/moonray/lib64/librendering_pbr.so:ro")
+fi
+
 in_image() {
-    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "${here}:${here}" -w "$here" \
+    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "${here}:${here}" "${pbr_mount[@]}" -w "$here" \
         --entrypoint bash "$image" -c "$1"
 }
 

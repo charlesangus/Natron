@@ -78,6 +78,53 @@ guiStateCopy(const BezierCPPtr& point)
     return copy;
 }
 
+bool
+shapeHasKeyframeAt(const BezierPtr& curve,
+                   double time)
+{
+    const std::list<BezierCPPtr>& cps = curve->getControlPoints();
+
+    return !cps.empty() && cps.front()->hasKeyFrameAtTime(true, time);
+}
+
+void
+copyCurvePoints(const BezierPtr& curve,
+                std::vector<BezierCPPtr>* cps,
+                std::vector<BezierCPPtr>* fps)
+{
+    cps->clear();
+    fps->clear();
+    const std::list<BezierCPPtr>& c = curve->getControlPoints();
+    for (std::list<BezierCPPtr>::const_iterator it = c.begin(); it != c.end(); ++it) {
+        cps->push_back(guiStateCopy(*it));
+    }
+    const std::list<BezierCPPtr>& f = curve->getFeatherPoints();
+    for (std::list<BezierCPPtr>::const_iterator it = f.begin(); it != f.end(); ++it) {
+        fps->push_back(guiStateCopy(*it));
+    }
+}
+
+void
+restoreCurvePoints(const BezierPtr& curve,
+                   const std::vector<BezierCPPtr>& cps,
+                   const std::vector<BezierCPPtr>& fps)
+{
+    const std::list<BezierCPPtr>& c = curve->getControlPoints();
+    const std::list<BezierCPPtr>& f = curve->getFeatherPoints();
+
+    if ((c.size() != cps.size()) || (f.size() != fps.size())) {
+        return;
+    }
+    std::size_t i = 0;
+    for (std::list<BezierCPPtr>::const_iterator it = c.begin(); it != c.end(); ++it, ++i) {
+        curve->restorePointState(*it, *cps[i]);
+    }
+    i = 0;
+    for (std::list<BezierCPPtr>::const_iterator it = f.begin(); it != f.end(); ++it, ++i) {
+        curve->restorePointState(*it, *fps[i]);
+    }
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 RefusedEditWatch::RefusedEditWatch(const RotoCurveContextPtr& context)
@@ -204,6 +251,8 @@ MoveControlPointsUndoCommand::MoveControlPointsUndoCommand(const RotoCurveIntera
     : RotoDragUndoCommand(roto, time)
     , _dx(dx)
     , _dy(dy)
+    , _smoothsMovedPoints(false)
+    , _pixelScale(1., 1.)
     , _selectedTool(roto->selectedToolAction)
     , _pointsToDrag(toDrag)
 {
@@ -271,6 +320,25 @@ MoveControlPointsUndoCommand::addDelta(double dx,
 }
 
 void
+MoveControlPointsUndoCommand::setSmoothsMovedPoints(const std::pair<double, double>& pixelScale)
+{
+    _smoothsMovedPoints = true;
+    _pixelScale = pixelScale;
+}
+
+bool
+MoveControlPointsUndoCommand::movesControlPoint(const BezierCPPtr& cp) const
+{
+    for (SelectedCpList::const_iterator it = _pointsToDrag.begin(); it != _pointsToDrag.end(); ++it) {
+        if ((it->first == cp) || (it->second == cp)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
 MoveControlPointsUndoCommand::movePoints(double dx,
                                          double dy)
 {
@@ -294,10 +362,11 @@ MoveControlPointsUndoCommand::movePoints(double dx,
                     itPoints->first->getBezier()->moveFeatherByIndex(*it, _time, dx, dy);
                 }
             } else {
-                if ( ok && ( ( selectedTool == eRotoToolSelectPoints ) ||
-                             ( selectedTool == eRotoToolSelectAll ) ||
-                             ( selectedTool == eRotoToolDrawBezier ) ) ) {
+                if (_smoothsMovedPoints || (ok && ((selectedTool == eRotoToolSelectPoints) || (selectedTool == eRotoToolSelectAll) || (selectedTool == eRotoToolDrawBezier)))) {
                     itPoints->first->getBezier()->movePointByIndex(*it, _time, dx, dy);
+                    if (_smoothsMovedPoints) {
+                        itPoints->first->getBezier()->smoothPointAtIndex(*it, _time, _pixelScale);
+                    }
                 }
             }
         }
@@ -417,7 +486,11 @@ AddPointUndoCommand::AddPointUndoCommand(const RotoCurveInteractPtr& roto,
     , _curve(curve)
     , _index(index)
     , _t(t)
+    , _restoresPoints(false)
+    , _dragTime(0.)
+    , _dragKeyedShape(false)
 {
+    setGestureKey(roto->undoGesture.key());
     setText( tr("Add control point").toStdString() );
 }
 
@@ -433,7 +506,25 @@ AddPointUndoCommand::undo()
     if (!roto) {
         return;
     }
-    _curve->removeControlPointByIndex(_index + 1);
+    if (_insertDrag) {
+        _dragTime = _insertDrag->getTime();
+        const bool keyedAfter = shapeHasKeyframeAt(_curve, _dragTime);
+        copyCurvePoints(_curve, &_cpsAfter, &_fpsAfter);
+        _insertDrag->undo();
+        _insertDrag.reset();
+        _curve->removeControlPointByIndex(_index + 1);
+        _dragKeyedShape = keyedAfter && !shapeHasKeyframeAt(_curve, _dragTime);
+        copyCurvePoints(_curve, &_cpsBefore, &_fpsBefore);
+        _restoresPoints = true;
+    } else {
+        _curve->removeControlPointByIndex(_index + 1);
+        if (_restoresPoints) {
+            restoreCurvePoints(_curve, _cpsBefore, _fpsBefore);
+            if (_dragKeyedShape) {
+                Q_EMIT _curve->keyframeRemoved(_dragTime);
+            }
+        }
+    }
     if (_hostBefore) {
         roto->getCurveContext()->restoreHostState(_hostBefore);
     }
@@ -461,12 +552,34 @@ AddPointUndoCommand::redo()
         // different, so it would not land on the parameters of the first insertion.
         roto->getCurveContext()->restoreHostState(_hostAfter);
     }
+    if (_restoresPoints) {
+        restoreCurvePoints(_curve, _cpsAfter, _fpsAfter);
+        if (_dragKeyedShape) {
+            Q_EMIT _curve->keyframeSet(_dragTime);
+        }
+    }
     roto->setSelection( _curve, std::make_pair(cp, newFp) );
     if (_firstRedoCalled) {
         roto->evaluate(true);
     }
 
     _firstRedoCalled = true;
+}
+
+bool
+AddPointUndoCommand::mergeWith(const UndoCommandPtr& other)
+{
+    std::shared_ptr<MoveControlPointsUndoCommand> drag = std::dynamic_pointer_cast<MoveControlPointsUndoCommand>(other);
+
+    if (!drag || _insertDrag || _restoresPoints || !inSameGestureAs(*drag)) {
+        return false;
+    }
+    if (!drag->movesControlPoint(_curve->getControlPointAtIndex(_index + 1))) {
+        return false;
+    }
+    _insertDrag = drag;
+
+    return true;
 }
 
 ////////////////////////

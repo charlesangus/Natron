@@ -144,3 +144,9 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
 - 2026-11-16 — **Worked ahead of unmet Deps (user):** started before F4 - Heavy Scene Viewer lands, stacked on M376 - Geometry Display's branch (F4 and F15 merged in). The PR into F15 opens only after F4 lands, M376 merges into F15, and this branch is rebased onto F15.
 - 2026-11-16 — P3.T3: `GeoCopyToPoints` gets no Group Type knob. Its source group is fixed to primitives and its target group to points, so it has no class to choose or guess. `GeoGroupTypeEnum` is `Points=0, Primitives, Edges, Guess`, which keeps `GeoDelete`'s existing indices. The edge parser moved from `GeoGroup` to `geoSelectEdges` in GeoOpUtils. Converting an edge selection for a node without edges (Scope edge case) is left to the Tab-create and reselect paths (P4.T2, P4.T3); `geoGuessGroupType` reports an error for an edge term on such a node.
 - 2026-11-16 — **`GeoDelete` Edges matches Houdini (user):** it deletes the points the edge group uses, as Blast's docs state, rather than opening polygons at the edges (the first P3.T4 implementation, c2b1b1b72). P2.T1's fourth chain is updated to match.
+- 2026-11-16 — P4.T2 calls (implementer; awaiting the user's review in UAT):
+  - Tab-create rewires every compatible output of the viewed node through the new node, as the graph's "insert after" does, not just the link toward the Viewer.
+  - GeoWrangle's Run Over is set from the selection's class, since it doubles as its group type.
+  - A selection that converts to nothing is written as `^*` (selects nothing), not an empty pattern (everything).
+  - Accepted classes come from new `NodeSpec` fields (`geoGroupKnob`, `geoGroupClasses`, `geoGroupTypeKnob`).
+  - GeoCopyToPoints' `targetGroup` is not filled.

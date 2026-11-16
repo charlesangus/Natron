@@ -197,16 +197,22 @@ STRIP_BYTES_AFTER=0
 # also gets SYMBOLS_DIR/<name>.bin.syms, nm's address-sorted listing, which
 # heavy_scene_stack_window.py --symbols applies to frames by absolute address.
 keep_symbols() {
-    local target="$1" build_id name
+    local target="$1" build_id name notes header
 
-    build_id="$(LC_ALL=C readelf -n "$target" 2>/dev/null | awk '/Build ID:/ { print $3; exit }')"
+    # Each reader gets the whole output before it looks at it: an awk that
+    # exits, or a grep -q that stops, on the first match closes the pipe while
+    # readelf is still writing, and pipefail turns that SIGPIPE (141) into a
+    # fatal error under set -e.
+    notes="$(LC_ALL=C readelf -n "$target" 2>/dev/null || true)"
+    build_id="$(awk '/Build ID:/ { print $3; exit }' <<< "$notes")"
     if [[ ${#build_id} -gt 2 ]]; then
         mkdir -p "$SYMBOLS_DIR/.build-id/${build_id:0:2}"
         objcopy --only-keep-debug --strip-debug "$target" "$SYMBOLS_DIR/.build-id/${build_id:0:2}/${build_id:2}.debug" \
             || echo "  warning: no symbol file for ${target#"$STAGE_DIR"/}" >&2
     fi
     if [[ "$(dirname "$target")" == "$STAGE_DIR/bin" && "$target" != *.bin ]] \
-        && LC_ALL=C readelf -h "$target" 2>/dev/null | grep -q 'Type: *EXEC'; then
+        && header="$(LC_ALL=C readelf -h "$target" 2>/dev/null || true)" \
+        && grep -q 'Type: *EXEC' <<< "$header"; then
         name="$(basename "$target").bin"
         nm -n -S -C --defined-only "$target" > "$SYMBOLS_DIR/$name.syms" \
             || echo "  warning: no symbol listing for ${target#"$STAGE_DIR"/}" >&2

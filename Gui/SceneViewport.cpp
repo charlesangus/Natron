@@ -26,12 +26,14 @@
 #include "SceneViewport.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <set>
@@ -578,6 +580,7 @@ public:
     // TestIntersection() with a pick target; the hits' object ids are render index paths.
     bool testComponentIntersection(const TfToken& pickTarget,
                                    const TfToken& resolveMode,
+                                   const GfVec2i& resolution,
                                    const GfMatrix4d& viewMatrix,
                                    const GfMatrix4d& projectionMatrix,
                                    const UsdPrim& root,
@@ -597,6 +600,7 @@ public:
         HdxPickTaskContextParams context;
         context.pickTarget = pickTarget;
         context.resolveMode = resolveMode;
+        context.resolution = resolution;
         context.viewMatrix = viewMatrix;
         context.projectionMatrix = projectionMatrix;
         context.clipPlanes = params.clipPlanes;
@@ -4221,8 +4225,14 @@ SceneViewportRenderer::pickComponents(GeoComponentEnum type,
     const TfToken& target = (type == eGeoComponentPoints) ? HdxPickTokens->pickPoints
         : (type == eGeoComponentEdges)                    ? HdxPickTokens->pickEdges
                                                           : HdxPickTokens->pickFaces;
+    // The pick buffer spans only the region. At its default size a marquee's region is squeezed
+    // into fewer texels than it has pixels, and components thinner than a texel drop out.
+    GfVec2i resolution = HdxPickTaskContextParams().resolution;
+    if (!nearest) {
+        resolution = GfVec2i(std::max(resolution[0], right - left + 1), std::max(resolution[1], bottom - top + 1));
+    }
     HdxPickHitVector picked;
-    if (!_imp->engine->testComponentIntersection(target, resolveMode, viewMatrix, projection, stage->GetPseudoRoot(), params, &picked)) {
+    if (!_imp->engine->testComponentIntersection(target, resolveMode, resolution, viewMatrix, projection, stage->GetPseudoRoot(), params, &picked)) {
         picked.clear();
     }
     for (const HdxPickHit& hit : picked) {
@@ -4925,6 +4935,175 @@ isReselectKey(Qt::KeyboardModifiers modifiers,
               int key)
 {
     return ((modifiers & ~Qt::KeypadModifier) == Qt::NoModifier) && ((key == Qt::Key_Return) || (key == Qt::Key_Enter) || (key == Qt::Key_Escape));
+}
+
+// Where the view drew p, in pixels of a width x height view; false behind the eye.
+bool
+projectToPixel(const double viewProjection[16],
+               const std::array<double, 3>& p,
+               int width,
+               int height,
+               QPointF* pixel)
+{
+    double clip[4];
+    for (int j = 0; j < 4; ++j) {
+        clip[j] = p[0] * viewProjection[j] + p[1] * viewProjection[4 + j] + p[2] * viewProjection[8 + j] + viewProjection[12 + j];
+    }
+    if (!(clip[3] > 0.)) {
+        return false;
+    }
+    *pixel = QPointF((clip[0] / clip[3] + 1.) * 0.5 * width, (1. - clip[1] / clip[3]) * 0.5 * height);
+
+    return true;
+}
+
+bool
+segmentMeetsRect(const QPointF& a,
+                 const QPointF& b,
+                 const QRectF& rect)
+{
+    double t0 = 0.;
+    double t1 = 1.;
+    const double dx = b.x() - a.x();
+    const double dy = b.y() - a.y();
+    const double p[4] = { -dx, dx, -dy, dy };
+    const double q[4] = { a.x() - rect.left(), rect.right() - a.x(), a.y() - rect.top(), rect.bottom() - a.y() };
+    for (int i = 0; i < 4; ++i) {
+        if (p[i] == 0.) {
+            if (q[i] < 0.) {
+                return false;
+            }
+            continue;
+        }
+        const double t = q[i] / p[i];
+        if (p[i] < 0.) {
+            t0 = std::max(t0, t);
+        } else {
+            t1 = std::min(t1, t);
+        }
+        if (t0 > t1) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+double
+distanceToSegment(const QPointF& c,
+                  const QPointF& a,
+                  const QPointF& b)
+{
+    const QPointF d = b - a;
+    const double length2 = QPointF::dotProduct(d, d);
+    const double t = (length2 > 0.) ? std::clamp(QPointF::dotProduct(c - a, d) / length2, 0., 1.) : 0.;
+    const QPointF n = a + d * t - c;
+
+    return std::hypot(n.x(), n.y());
+}
+
+// The points, or edges, of the given polygons and polylines that the view draws in region; with
+// nearest, only the one closest to the region's centre.
+GeoComponentSelection
+componentsOfPrimitives(const GeoDetail& detail,
+                       const std::vector<GeoIndex>& primitives,
+                       GeoComponentEnum type,
+                       const double viewProjection[16],
+                       int width,
+                       int height,
+                       const QRectF& region,
+                       bool nearest)
+{
+    GeoComponentSelection out;
+    out.type = type;
+    const QPointF centre = region.center();
+    const GeoIndexMap& points = detail.pointMap();
+    double best = std::numeric_limits<double>::max();
+    for (GeoIndex number : primitives) {
+        const GeoOffset primitive = detail.primitiveMap().offsetFromIndex(number);
+        if (primitive < 0) {
+            continue;
+        }
+        const GeoPrimitiveTypeEnum primitiveType = detail.primitiveType(primitive);
+        if ((primitiveType != eGeoPrimitivePolygon) && (primitiveType != eGeoPrimitivePolyline)) {
+            continue;
+        }
+        const GeoVertexRange range = detail.primitiveVertices(primitive);
+        GeoOffset count = range.count;
+        if (type == eGeoComponentEdges) {
+            count = ((primitiveType == eGeoPrimitivePolygon) && (range.count > 2)) ? range.count : range.count - 1;
+        }
+        for (GeoOffset i = 0; i < count; ++i) {
+            const GeoOffset a = detail.vertexPoint(range.start + i);
+            QPointF pa;
+            if (!projectToPixel(viewProjection, detail.pointPosition(a), width, height, &pa)) {
+                continue;
+            }
+            double distance = 0.;
+            const GeoIndex point = points.indexFromOffset(a);
+            GeoEdge edge;
+            if (type == eGeoComponentPoints) {
+                if ((point < 0) || !region.contains(pa)) {
+                    continue;
+                }
+                distance = std::hypot(pa.x() - centre.x(), pa.y() - centre.y());
+            } else {
+                const GeoOffset b = detail.vertexPoint(range.start + (i + 1) % range.count);
+                QPointF pb;
+                if ((a == b) || !projectToPixel(viewProjection, detail.pointPosition(b), width, height, &pb) || !segmentMeetsRect(pa, pb, region)) {
+                    continue;
+                }
+                edge = GeoEdge(point, points.indexFromOffset(b));
+                if (edge.p0 < 0) {
+                    continue;
+                }
+                distance = distanceToSegment(centre, pa, pb);
+            }
+            if (nearest) {
+                if (distance >= best) {
+                    continue;
+                }
+                best = distance;
+                out.elements.clear();
+                out.edges.clear();
+            }
+            if (type == eGeoComponentPoints) {
+                out.elements.push_back(point);
+            } else {
+                out.edges.push_back(edge);
+            }
+        }
+    }
+    out.normalize();
+
+    return out;
+}
+
+// Storm can miss points and edges that the faces around them hide: the point markers lie at the
+// faces' own depth, and its edge ids come from the delegate's shaders. The faces it picks in the
+// region give their points and edges there instead; faces hidden in the region give none.
+GeoComponentSelection
+componentsOfPickedFaces(const GeoDisplay& display,
+                        const SceneViewportRenderer& renderer,
+                        const std::vector<GeoViewerLayer::ComponentHit>& faceHits,
+                        GeoComponentEnum type,
+                        int width,
+                        int height,
+                        const QRectF& region,
+                        bool nearest)
+{
+    GeoComponentSelection out;
+    out.type = type;
+    const std::shared_ptr<const GeoUsdConvert> convert = display.componentConvert();
+    double viewProjection[16];
+    if (!convert || !convert->detail() || !renderer.getDrawnView(viewProjection, nullptr, nullptr)) {
+        return out;
+    }
+    GeoComponentSelection faces;
+    faces.type = eGeoComponentPrimitives;
+    display.mapComponentHits(faceHits, false, &faces);
+
+    return componentsOfPrimitives(*convert->detail(), faces.elements, type, viewProjection, width, height, region, nearest);
 }
 
 } // anonymous namespace
@@ -6920,6 +7099,14 @@ SceneViewport::pickComponentsAt(const QPoint& pos,
     std::vector<GeoViewerLayer::ComponentHit> hits;
     runWithEngineContext([&]() { hits = _imp->renderer.pickComponents(selection.type, x - radius, y - radius, x + radius, y + radius, w, h, true, busy); });
     _imp->geoDisplay->mapComponentHits(hits, true, &selection);
+    if (selection.empty() && (selection.type != eGeoComponentPrimitives) && !(busy && *busy)) {
+        std::vector<GeoViewerLayer::ComponentHit> faces;
+        runWithEngineContext([&]() { faces = _imp->renderer.pickComponents(eGeoComponentPrimitives, x - radius, y - radius, x + radius, y + radius, w, h, false, busy); });
+        if (!(busy && *busy)) {
+            selection = componentsOfPickedFaces(*_imp->geoDisplay, _imp->renderer, faces, selection.type, w, h,
+                                                QRectF(x - radius, y - radius, 2 * radius + 1, 2 * radius + 1), true);
+        }
+    }
 
     return selection;
 }
@@ -6951,6 +7138,18 @@ SceneViewport::pickComponentsIn(const QRect& rect,
     std::vector<GeoViewerLayer::ComponentHit> hits;
     runWithEngineContext([&]() { hits = _imp->renderer.pickComponents(selection.type, left, top, right, bottom, w, h, false, busy); });
     _imp->geoDisplay->mapComponentHits(hits, false, &selection);
+    if ((selection.type != eGeoComponentPrimitives) && !(busy && *busy)) {
+        std::vector<GeoViewerLayer::ComponentHit> faces;
+        runWithEngineContext([&]() { faces = _imp->renderer.pickComponents(eGeoComponentPrimitives, left, top, right, bottom, w, h, false, busy); });
+        if (busy && *busy) {
+            return selection;
+        }
+        const GeoComponentSelection onFaces = componentsOfPickedFaces(*_imp->geoDisplay, _imp->renderer, faces, selection.type, w, h,
+                                                                      QRectF(left, top, right - left + 1, bottom - top + 1), false);
+        selection.elements.insert(selection.elements.end(), onFaces.elements.begin(), onFaces.elements.end());
+        selection.edges.insert(selection.edges.end(), onFaces.edges.begin(), onFaces.edges.end());
+        selection.normalize();
+    }
 
     return selection;
 }

@@ -472,7 +472,7 @@ TEST_F(GeoPipelineTest, FullChainExportsTheGeometryAndReadsBackAsTheSameDetail)
     const NodePtr normals = after(displace, PLUGINID_NATRON_GEONORMALS);
     const NodePtr wrangle = normals ? after(normals, PLUGINID_NATRON_GEOWRANGLE) : NodePtr();
     ASSERT_TRUE(wrangle != nullptr);
-    setString(wrangle, kGeoWrangleParamSnippet, "@P.y += 0.1");
+    setString(wrangle, kGeoWrangleParamSnippet, "@P.y += 0.1;");
 
     const GeoDetailConstPtr beforeEdit = pull(wrangle);
     ASSERT_TRUE(beforeEdit != nullptr);

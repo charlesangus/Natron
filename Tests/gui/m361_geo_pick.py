@@ -11,6 +11,7 @@ Checks:
     toolbar button switches the mode back;
   - Points: a click on the square's corner selects one point and the view draws it; Shift+click
     on it keeps one point; Ctrl+click on it toggles it off; a marquee over the view selects points;
+  - switching to Edges converts the picked points to the edges whose two ends are both picked;
   - Edges: a click on the middle of the square's right side selects one edge, a point pair
     ("p<a>-<b>"); a marquee over the view selects edges;
   - Primitives: a click at the centre selects one primitive; a marquee over the view selects
@@ -24,6 +25,7 @@ Natron's widgets under Xvfb). Run through Tests/gui/run-gui-test.sh. Screenshots
 to $NATRON_GUI_TEST_OUT (default build/gui-test-out/). Exit status 0 only if every check passed.
 """
 import os
+import re
 import sys
 import traceback
 
@@ -187,6 +189,28 @@ try:
         key((Qt.Key_F8, Qt.Key_F9, Qt.Key_F10, Qt.Key_F11)[index])
         return ("until", lambda: prop("natronGeoPickMode") == MODES[index][0], PICK_TIMEOUT_S)
 
+    def point_numbers(text):
+        """The point numbers of a points pattern ("3 5", "0-6", "0-6:2"), or None for every point ("*")."""
+        if text.strip() == "*":
+            return None
+        numbers = set()
+        for token in text.split():
+            m = re.match(r"^(\d+)(?:-(\d+)(?::(\d+))?)?$", token)
+            if m is None:
+                continue
+            first = int(m.group(1))
+            last = int(m.group(2)) if m.group(2) else first
+            numbers.update(range(first, last + 1, int(m.group(3)) if m.group(3) else 1))
+        return numbers
+
+    def edge_ends(text):
+        """The edges of an edges pattern, whose tokens are paths of point numbers ("p0-1-3")."""
+        edges = []
+        for token in text.split():
+            path = [int(n) for n in token.lstrip("p").split("-") if n.isdigit()]
+            edges.extend(zip(path, path[1:]))
+        return edges
+
     def whole_view():
         v = view()
         return QPoint(3, 3), QPoint(v.width() - 4, v.height() - 4)
@@ -246,9 +270,16 @@ try:
         report("NOTE points marquee %r" % pattern())
         check(ok and count() <= 8, "a marquee over the view selects the cube's points (%d)" % count())
 
+        picked_points = point_numbers(pattern())
         ok = yield set_mode(2)
         require(ok, "Edges mode is on")
-        check(count() == 0, "switching mode clears the selection")
+        edges = edge_ends(pattern())
+        report("NOTE points %r converted to edges %r" % (sorted(picked_points) if picked_points is not None else "*", pattern()))
+        if picked_points is None:
+            check(count() == 12, "switching to Edges with every point picked gives the cube's 12 edges (%d)" % count())
+        else:
+            check(len(edges) == count() and all(a in picked_points and b in picked_points for a, b in edges),
+                  "switching to Edges keeps only edges whose ends were both picked (%r)" % pattern())
         side = centre + QPoint(half_w, 0)
         hit = yield from pick_until(around(side, radius=4, step=2), lambda: count() == 1)
         if check(hit is not None, "a click on the cube's right side selects one edge (%r)" % pattern()):
@@ -272,6 +303,7 @@ try:
         report("NOTE primitives marquee %r" % pattern())
         check(ok and count() <= 6, "a marquee over the view selects the cube's primitives (%d)" % count())
 
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, to_geo), "connect the Viewer to the USDToGeo")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         require(ok, "the 3D view shows the packed USD (%r)" % (prop("natronSceneError"),))
@@ -288,6 +320,7 @@ try:
         yield ("sleep", SETTLE_MS)
         check(count() == 0, "a packed primitive has no edges to pick (%r)" % pattern())
 
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, to_usd), "connect the Viewer to the GeoToUSD")
         ok = yield ("until", lambda: scene_drawn() and not prop("natronGeoComponents"), POLL_TIMEOUT_S)
         check(ok, "downstream of GeoToUSD no components are pickable")

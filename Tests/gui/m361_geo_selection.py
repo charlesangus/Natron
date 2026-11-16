@@ -251,6 +251,7 @@ try:
         check(ok, "a marquee over the view selects all %d points (%d)" % (GRID_POINTS, count()))
         yield settle()
         shot("m361-selection-all.png")
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, delete), "connect the Viewer to the GeoDelete")
         ok = yield ("until", lambda: 0 < count() <= KEPT_POINTS, POLL_TIMEOUT_S)
         check(ok, "numbers past the new point count are dropped (%d of %d points left)" % (count(), KEPT_POINTS))

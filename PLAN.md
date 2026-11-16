@@ -629,4 +629,14 @@ future core work has solid ground to build on.
 - **F9 - Delegate Projection post-merge checks (PM, 2026-11-15, landed f74a781e2 / #282):** the UAT was approved before the main merge and the Cycles restart-detection rework (fork reset counters, cancel before a pass keeps the engine). On main, please re-check: a file reload during a Cycles progressive render shows the reloaded scene; editing a Cycles scene that has finished refines in place without a pause; MoonRay edits restart promptly; cancelling during a render stays fast.
 
 
-- **F8 - Motion Vectors ship (PM, 2026-11-15):** gate green on c22092d9a (run 43749309288; one unrelated MoonRay timeout passed on re-run). Feature PR #295 opened; Codex Feature review round 1 (3 findings: Translate fit under layer transforms, Max Inference Size knob, follow-worker TLS) fixed in 1b3bca54e; PR CI and a release GUI gate running. Release GUI gate green on 1b3bca54e (run 43775176418, 6 follow/vector scripts); UAT AppImage build/appimages/Natron-f8-motion-vectors.AppImage with steps .md handed over (GPU-host timings dropped per the no-timing-gates rule).
+- **F8 - Motion Vectors ship (PM, 2026-11-15):** gate green on c22092d9a (run 43749309288; one unrelated MoonRay timeout passed on re-run). Feature PR #295 opened; Codex Feature review round 1 (3 findings: Translate fit under layer transforms, Max Inference Size knob, follow-worker TLS) fixed in 1b3bca54e; PR CI and a release GUI gate running. Release GUI gate green on 1b3bca54e (run 43775176418, 6 follow/vector scripts); UAT AppImage build/appimages/Natron-f8-motion-vectors.AppImage with steps .md handed over (GPU-host timings dropped per the no-timing-gates rule). UAT round 1 (user, 2026-11-16) asked for 9 changes:
+  - keyframe reduction becomes a separate post-process on any shape;
+  - a Vectors input replaces the source dropdown;
+  - the follow toolbar is hidden unless Vectors is connected;
+  - the confidence label is on the wrong toolbar;
+  - a stray node-name label is removed;
+  - follow fails when keys already exist;
+  - a follow range forward/backward option is added;
+  - follow buttons lose their text labels;
+  - a separate follow animation layer (follow-up, inbox).
+  The first eight are being fixed on the Feature branch in three batches; Needs stays uat.

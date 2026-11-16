@@ -399,8 +399,8 @@ public:
 
     QSize getSize() const;
 
-    // The laid-out body size that resize() takes: no outline pen, no magnify scale.
-    QRectF bodyRect() const;
+    // The laid-out body size that resize() takes: no outline pen.
+    virtual QRectF bodyRect() const;
 
     /*Returns an edge if the node has an edge close to the
        point pt. pt is in scene coord.*/
@@ -673,6 +673,14 @@ public Q_SLOTS:
     void resize(int width, int height, bool forceSize = false, bool adjustToTextSize = false);
 
     void refreshSize();
+
+    /**
+     * @brief resize() for a size the node's own content dictates: the top edge and the horizontal
+     * centre stay put, so the node keeps lining up with its neighbours as its text grows or shrinks.
+     * A node with no explicit size (Node::hasSize()) is laid out from its default size, so it
+     * shrinks back when its content does; an explicitly sized node or a backdrop only grows.
+     **/
+    void resizeToContent(bool adjustToTextSize, bool hadContentLayout);
 
     /*Updates the preview image, only if the project is in auto-preview mode*/
     void updatePreviewImage(double time);

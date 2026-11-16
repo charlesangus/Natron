@@ -257,6 +257,12 @@ DotGui::boundingRect() const
     return t.mapRect(bbox);
 }
 
+QRectF
+DotGui::bodyRect() const
+{
+    return diskShape ? diskShape->rect() : QRectF();
+}
+
 QPainterPath
 DotGui::shape() const
 {

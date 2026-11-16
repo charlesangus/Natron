@@ -59,6 +59,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Gui/GeoSpreadsheet.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -605,7 +606,7 @@ private:
 class FullValueWindow
     : public QDialog {
 public:
-    FullValueWindow(const InspectorCell& cell,
+    FullValueWindow(const std::function<QString(const std::atomic<bool>* cancelled)>& full,
                     QWidget* parent)
         : QDialog(parent)
         , _text(new QPlainTextEdit(this))
@@ -623,12 +624,12 @@ public:
         QVBoxLayout* layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->addWidget(_text);
-        _worker = std::thread([this, value = cell.value, tip = cell.tip]() {
-            const QString full = value.IsEmpty() ? tip : QString::fromStdString(SceneOps::valueText(value, std::numeric_limits<std::size_t>::max(), &_cancelled));
+        _worker = std::thread([this, full]() {
+            const QString text = full(&_cancelled);
             if (_cancelled) {
                 return;
             }
-            const std::shared_ptr<const QString> wrapped = std::make_shared<const QString>(wrappedForTip(full, &_cancelled));
+            const std::shared_ptr<const QString> wrapped = std::make_shared<const QString>(wrappedForTip(text, &_cancelled));
             if (_cancelled) {
                 return;
             }
@@ -786,7 +787,9 @@ public:
                     _openNode(node);
                 }
             } else if (cell->cut) {
-                (new FullValueWindow(*cell, _view))->show();
+                openScenePrimFullValue(_view, [value = cell->value, tip = cell->tip](const std::atomic<bool>* cancelled) {
+                    return value.IsEmpty() ? tip : QString::fromStdString(SceneOps::valueText(value, std::numeric_limits<std::size_t>::max(), cancelled));
+                });
             }
         });
         QObject::connect(_view->selectionModel(), &QItemSelectionModel::selectionChanged, _view, [this]() {
@@ -1118,6 +1121,13 @@ private:
 };
 
 } // anon namespace
+
+void
+openScenePrimFullValue(QWidget* parent,
+                       const std::function<QString(const std::atomic<bool>* cancelled)>& full)
+{
+    (new FullValueWindow(full, parent))->show();
+}
 
 ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& source,
                                                const QString& path,
@@ -1484,6 +1494,7 @@ ScenePrimInspector::ScenePrimInspector(QWidget* parent)
     addTableTab(tr("Opinions"), "sceneGraphOpinions",
                 QStringList() << tr("Opinion") << tr("Authored By") << tr("Layer") << tr("Value") << tr("Layer Offset"), readOpinions, false, true);
     addTab(std::make_unique<LayerTextTab>(&_imp->definitionReads));
+    addTab(createScenePrimSpreadsheetTab());
     _imp->publishState();
     _imp->worker = std::thread([this]() { _imp->run(); });
 }

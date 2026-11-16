@@ -127,10 +127,18 @@ public:
 };
 
 /**
- * @brief The selected prim's tabs: Attributes, Relationships, Metadata, Composition, Opinions and Layer at the given frame, each
+ * @brief Opens the inspector's full value window (sceneGraphFullValue) over parent. full makes the text on a
+ * worker thread, and should stop early once *cancelled is set: the window closing sets it.
+ **/
+void openScenePrimFullValue(QWidget* parent,
+                            const std::function<QString(const std::atomic<bool>* cancelled)>& full);
+
+/**
+ * @brief The selected prim's tabs: Attributes, Relationships, Metadata, Composition, Opinions, Layer and Spreadsheet at the given frame, each
  * row naming the node or file that authored it. The Opinions tab lists the specs behind the prim
  * and behind the attribute or relationship last selected on it, strongest first. The Layer tab shows
- * the shown node's own layers as USDA, or the selected prim's composed definition. Reads run on a worker; a new prim cancels the read
+ * the shown node's own layers as USDA, or the selected prim's composed definition. The Spreadsheet
+ * tab lists the prim's points, vertices, primitives and detail, one column per component. Reads run on a worker; a new prim cancels the read
  * under way, and while a read has not finished, for instance with the stage lock busy with a load,
  * the last result stays up, greyed. A new frame lets the read under way finish, and a tab that varies
  * with the frame then reads the latest one. Nothing is read while the inspector is hidden.
@@ -141,6 +149,7 @@ public:
  *
  * Scripts find its widgets by object name: sceneGraphInspector, sceneGraphInspectorTabs,
  * sceneGraphInspectorPrim, sceneGraphAttributes, sceneGraphRelationships, sceneGraphMetadata, sceneGraphComposition, sceneGraphOpinions, sceneGraphLayerMode, sceneGraphLayerText,
+ * sceneGraphSpreadsheet (see GeoSpreadsheetWidget),
  * sceneGraphFullValue and sceneGraphFullValueText. Those last two text edits say whether their text
  * is still arriving in a natronSceneGraphTextLoading property.
  * It mirrors its state into the natronSceneGraphInspectorPath (the prim of the rows shown),

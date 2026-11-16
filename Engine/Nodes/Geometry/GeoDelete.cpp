@@ -26,7 +26,10 @@
 #include "GeoDelete.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <exception>
+#include <set>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -53,13 +56,163 @@ valueAt(const std::weak_ptr<Knob<T>>& knob,
 }
 } // anonymous namespace
 
+namespace {
+
+bool
+isBlank(const std::string& text)
+{
+    return text.find_first_not_of(" \t\r\n") == std::string::npos;
+}
+
+struct EdgeRun {
+    GeoOffset sourcePrimitive = 0;
+    std::vector<GeoOffset> sourceVertices;
+};
+
+// Splits each polygon and polyline that uses a deleted edge into the open runs of edges that
+// survive; a polygon is cut at its deleted edges, so a run starts right after one.
+void
+deleteEdges(GeoDetailBuilder& builder,
+            const std::set<GeoEdge>& doomed)
+{
+    const GeoDetail& detail = builder.detail();
+    std::vector<EdgeRun> runs;
+    std::vector<GeoOffset> affected;
+    detail.primitiveMap().forEachLive([&](GeoIndex /*index*/, GeoOffset prim) {
+        const GeoPrimitiveTypeEnum type = detail.primitiveType(prim);
+        if (type != eGeoPrimitivePolygon && type != eGeoPrimitivePolyline) {
+            return;
+        }
+        const GeoVertexRange range = detail.primitiveVertices(prim);
+        if (range.count < 2) {
+            return;
+        }
+        const bool closed = type == eGeoPrimitivePolygon && range.count > 2;
+        const GeoOffset segments = closed ? range.count : range.count - 1;
+        std::vector<char> cut(std::size_t(segments), 0);
+        bool anyCut = false;
+        for (GeoOffset i = 0; i < segments; ++i) {
+            const GeoOffset a = detail.vertexPoint(range.start + i);
+            const GeoOffset b = detail.vertexPoint(range.start + (i + 1) % range.count);
+            if (a != b && doomed.count(GeoEdge(a, b))) {
+                cut[std::size_t(i)] = 1;
+                anyCut = true;
+            }
+        }
+        if (!anyCut) {
+            return;
+        }
+        affected.push_back(prim);
+
+        // A closed polygon begins after a cut so no run wraps around its seam.
+        GeoOffset first = 0;
+        if (closed) {
+            while (!cut[std::size_t(first)]) {
+                ++first;
+            }
+            first = (first + 1) % segments;
+        }
+        EdgeRun run;
+        run.sourcePrimitive = prim;
+        const auto flush = [&] {
+            if (!run.sourceVertices.empty()) {
+                runs.push_back(std::move(run));
+                run = EdgeRun();
+                run.sourcePrimitive = prim;
+            }
+        };
+        for (GeoOffset n = 0; n < segments; ++n) {
+            const GeoOffset i = (first + n) % segments;
+            if (cut[std::size_t(i)]) {
+                flush();
+                continue;
+            }
+            if (run.sourceVertices.empty()) {
+                run.sourceVertices.push_back(range.start + i);
+            }
+            run.sourceVertices.push_back(range.start + (i + 1) % range.count);
+        }
+        flush();
+    });
+    if (affected.empty()) {
+        return;
+    }
+
+    if (!runs.empty()) {
+        std::vector<std::int32_t> counts;
+        std::vector<GeoOffset> points;
+        for (const EdgeRun& run : runs) {
+            counts.push_back(std::int32_t(run.sourceVertices.size()));
+            for (const GeoOffset v : run.sourceVertices) {
+                points.push_back(detail.vertexPoint(v));
+            }
+        }
+        const GeoOffset firstPrim = builder.appendPrimitives(eGeoPrimitivePolyline, counts, points);
+
+        // Names are listed first: writing an attribute replaces the page it writes to.
+        const auto carry = [&](GeoAttribClassEnum cls) {
+            std::vector<std::string> names;
+            for (std::size_t i = 0; i < detail.attributeCount(cls); ++i) {
+                names.push_back(detail.attribute(cls, i).desc().name);
+            }
+            for (const std::string& name : names) {
+                GeoAttribute* attribute = builder.attributeForWriting(cls, name);
+                if (!attribute) {
+                    continue;
+                }
+                for (std::size_t r = 0; r < runs.size(); ++r) {
+                    const GeoOffset prim = firstPrim + GeoOffset(r);
+                    if (cls == eGeoAttribClassPrimitive) {
+                        attribute->copyElement(std::size_t(prim), std::size_t(runs[r].sourcePrimitive));
+                        continue;
+                    }
+                    const GeoVertexRange range = builder.detail().primitiveVertices(prim);
+                    for (GeoOffset k = 0; k < range.count; ++k) {
+                        attribute->copyElement(std::size_t(range.start + k), std::size_t(runs[r].sourceVertices[std::size_t(k)]));
+                    }
+                }
+            }
+        };
+        carry(eGeoAttribClassPrimitive);
+        carry(eGeoAttribClassVertex);
+    }
+    builder.deletePrimitives(affected, false);
+}
+} // anonymous namespace
+
 bool
 GeoDelete::deleteElements(GeoDetailBuilder& builder,
                           const GeoDeleteParams& params,
                           std::string* error)
 {
     const GeoDetail& detail = builder.detail();
-    const GeoAttribClassEnum cls = params.groupType == eGeoGroupTypePoints ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
+    GeoGroupTypeEnum groupType = params.groupType;
+    if (groupType == eGeoGroupTypeGuess) {
+        groupType = eGeoGroupTypePrimitives;
+        if (!isBlank(params.group)) {
+            const GeoGroupTypeEnum allowed[] = { eGeoGroupTypePoints, eGeoGroupTypeEdges, eGeoGroupTypePrimitives };
+            if (!geoGuessGroupType(detail, params.group, allowed, eGeoGroupTypePrimitives, &groupType, error)) {
+                return false;
+            }
+        }
+    }
+    if (groupType == eGeoGroupTypeEdges) {
+        std::set<GeoEdge> selected;
+        if (!geoSelectEdges(detail, params.group, &selected, error)) {
+            return false;
+        }
+        if (params.deleteNonSelected) {
+            std::set<GeoEdge> others = geoAllEdges(detail);
+            for (const GeoEdge& edge : selected) {
+                others.erase(edge);
+            }
+            selected = std::move(others);
+        }
+        deleteEdges(builder, selected);
+
+        return true;
+    }
+    const GeoAttribClassEnum cls = groupType == eGeoGroupTypePoints ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
     GeoElementMask selected(detail.elementOffsetSize(cls), 0);
     if (!geoSelectElements(detail, cls, params.group, &selected, error)) {
         return false;
@@ -131,13 +284,21 @@ GeoDelete::initializeKnobs()
 
     KnobChoicePtr groupType = AppManager::createKnob<KnobChoice>(this, tr("Group Type").toStdString());
     groupType->setName(kGeoDeleteParamGroupType);
-    groupType->setHintToolTip(tr("Whether the group selects points or primitives.").toStdString());
+    groupType->setHintToolTip(tr("Whether the group pattern selects points, edges or primitives.").toStdString());
     std::vector<ChoiceOption> types;
     types.push_back(ChoiceOption("points", tr("Points").toStdString(),
                                  tr("Deleting a point also deletes the primitives that use it.").toStdString()));
     types.push_back(ChoiceOption("primitives", tr("Primitives").toStdString(), ""));
+    types.push_back(ChoiceOption("edges", tr("Edges").toStdString(),
+                                 tr("Opens each polygon at the selected edges and removes the selected segments of polylines. "
+                                    "Points are kept.")
+                                     .toStdString()));
+    types.push_back(ChoiceOption("guess", tr("Guess from Group").toStdString(),
+                                 tr("The class the group pattern names: edge paths mean edges, a group name means the class that has it, "
+                                    "and plain numbers mean primitives.")
+                                     .toStdString()));
     groupType->populateChoices(types);
-    groupType->setDefaultValue((int)eGeoGroupTypePrimitives);
+    groupType->setDefaultValue((int)eGeoGroupTypeGuess);
     groupType->setAnimationEnabled(false);
     page->addKnob(groupType);
     _groupType = groupType;
@@ -167,7 +328,8 @@ GeoDelete::updateVisibility()
     const KnobChoicePtr groupType = _groupType.lock();
     const KnobBoolPtr unused = _deleteUnusedPoints.lock();
     if (groupType && unused) {
-        unused->setSecret(groupType->getValue() != eGeoGroupTypePrimitives);
+        const int type = groupType->getValue();
+        unused->setSecret(type == eGeoGroupTypePoints || type == eGeoGroupTypeEdges);
     }
 }
 
@@ -201,8 +363,10 @@ GeoDelete::renderGeometry(const GeoRenderActionArgs& args,
 {
     GeoDeleteParams p;
     p.group = valueAt<std::string>(_group, p.group, args.time, args.view);
-    p.groupType = valueAt<int>(_groupType, (int)p.groupType, args.time, args.view) == eGeoGroupTypePoints ? eGeoGroupTypePoints
-                                                                                                          : eGeoGroupTypePrimitives;
+    const int groupType = valueAt<int>(_groupType, (int)p.groupType, args.time, args.view);
+    if (groupType >= eGeoGroupTypePoints && groupType <= eGeoGroupTypeGuess) {
+        p.groupType = (GeoGroupTypeEnum)groupType;
+    }
     p.deleteNonSelected = valueAt<bool>(_deleteNonSelected, p.deleteNonSelected, args.time, args.view);
     p.deleteUnusedPoints = valueAt<bool>(_deleteUnusedPoints, p.deleteUnusedPoints, args.time, args.view);
 

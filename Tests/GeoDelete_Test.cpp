@@ -27,11 +27,14 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Geometry/GeoDelete.h"
 #include "Engine/Nodes/Geometry/GeoGroup.h"
@@ -102,7 +105,139 @@ expectPagesShared(const GeoDetail& a,
         EXPECT_EQ(x->values().page(i).get(), y->values().page(i).get()) << name << " page " << i;
     }
 }
+
+// One quad on points 0-3 with a primitive attribute "tag" and a vertex attribute "vid" (10 + vertex).
+GeoDetail
+taggedQuad()
+{
+    GeoDetailBuilder builder;
+    builder.appendPoints(4);
+    const std::array<GeoOffset, 4> quad { 0, 1, 2, 3 };
+    const GeoOffset prim = builder.appendPrimitive(eGeoPrimitivePolygon, quad);
+    GeoAttributeDesc tagDesc;
+    tagDesc.name = "tag";
+    tagDesc.storage = eGeoStorageInt32;
+    builder.addAttribute(eGeoAttribClassPrimitive, tagDesc).set<std::int32_t>(std::size_t(prim), 7);
+    GeoAttributeDesc vidDesc;
+    vidDesc.name = "vid";
+    vidDesc.storage = eGeoStorageInt32;
+    GeoAttribute& vid = builder.addAttribute(eGeoAttribClassVertex, vidDesc);
+    for (GeoOffset v = 0; v < 4; ++v) {
+        vid.set<std::int32_t>(std::size_t(v), std::int32_t(10 + v));
+    }
+
+    return builder.finish();
+}
+
+std::vector<std::vector<GeoOffset>>
+polylinePoints(const GeoDetail& d)
+{
+    std::vector<std::vector<GeoOffset>> result;
+    d.primitiveMap().forEachLive([&](GeoIndex /*index*/, GeoOffset prim) {
+        EXPECT_EQ(eGeoPrimitivePolyline, d.primitiveType(prim));
+        const GeoVertexRange range = d.primitiveVertices(prim);
+        std::vector<GeoOffset> pts;
+        for (GeoOffset v = range.start; v < range.start + range.count; ++v) {
+            pts.push_back(d.vertexPoint(v));
+        }
+        result.push_back(pts);
+    });
+
+    return result;
+}
 } // namespace
+
+TEST(GeoDeleteTest, DeletingOneQuadEdgeOpensItIntoAPolyline)
+{
+    const GeoDetail input = taggedQuad();
+    GeoDeleteParams params;
+    params.group = "p0-1";
+    params.groupType = eGeoGroupTypeEdges;
+    const GeoDetail out = deleted(input, params);
+
+    EXPECT_EQ(4, out.pointCount());
+    ASSERT_EQ(1, out.primitiveCount());
+    const auto lines = polylinePoints(out);
+    ASSERT_EQ(1u, lines.size());
+    EXPECT_EQ((std::vector<GeoOffset> { 1, 2, 3, 0 }), lines[0]);
+
+    const GeoAttribute* tag = out.findAttribute(eGeoAttribClassPrimitive, "tag");
+    const GeoAttribute* vid = out.findAttribute(eGeoAttribClassVertex, "vid");
+    ASSERT_NE(nullptr, tag);
+    ASSERT_NE(nullptr, vid);
+    out.primitiveMap().forEachLive([&](GeoIndex /*index*/, GeoOffset prim) {
+        EXPECT_EQ(7, tag->get<std::int32_t>(std::size_t(prim)));
+        const GeoVertexRange range = out.primitiveVertices(prim);
+        const std::array<std::int32_t, 4> expected { 11, 12, 13, 10 };
+        for (GeoOffset k = 0; k < range.count; ++k) {
+            EXPECT_EQ(expected[std::size_t(k)], vid->get<std::int32_t>(std::size_t(range.start + k)));
+        }
+    });
+}
+
+TEST(GeoDeleteTest, DeletingOppositeQuadEdgesSplitsItInTwo)
+{
+    const GeoDetail input = taggedQuad();
+    GeoDeleteParams params;
+    params.group = "p0-1 p2-3";
+    params.groupType = eGeoGroupTypeEdges;
+    const GeoDetail out = deleted(input, params);
+
+    EXPECT_EQ(4, out.pointCount());
+    auto lines = polylinePoints(out);
+    ASSERT_EQ(2u, lines.size());
+    for (const auto& line : lines) {
+        EXPECT_EQ(2u, line.size());
+    }
+    const std::set<std::set<GeoOffset>> got { { lines[0].begin(), lines[0].end() }, { lines[1].begin(), lines[1].end() } };
+    const std::set<std::set<GeoOffset>> want { { 1, 2 }, { 3, 0 } };
+    EXPECT_EQ(want, got);
+
+    const GeoAttribute* tag = out.findAttribute(eGeoAttribClassPrimitive, "tag");
+    ASSERT_NE(nullptr, tag);
+    out.primitiveMap().forEachLive([&](GeoIndex /*index*/, GeoOffset prim) {
+        EXPECT_EQ(7, tag->get<std::int32_t>(std::size_t(prim)));
+    });
+}
+
+TEST(GeoDeleteTest, DeletingEveryEdgeRemovesThePrimitive)
+{
+    const GeoDetail input = taggedQuad();
+    GeoDeleteParams params;
+    params.group = "p0-1-2-3-0";
+    params.groupType = eGeoGroupTypeEdges;
+    const GeoDetail out = deleted(input, params);
+
+    EXPECT_EQ(0, out.primitiveCount());
+    EXPECT_EQ(4, out.pointCount());
+}
+
+TEST(GeoDeleteTest, DeleteNonSelectedEdgesKeepsOnlyTheSelectedOnes)
+{
+    const GeoDetail input = taggedQuad();
+    GeoDeleteParams params;
+    params.group = "p0-1";
+    params.groupType = eGeoGroupTypeEdges;
+    params.deleteNonSelected = true;
+    const GeoDetail out = deleted(input, params);
+
+    EXPECT_EQ(4, out.pointCount());
+    const auto lines = polylinePoints(out);
+    ASSERT_EQ(1u, lines.size());
+    EXPECT_EQ((std::vector<GeoOffset> { 0, 1 }), lines[0]);
+}
+
+TEST(GeoDeleteTest, GuessResolvesAnEdgePathToEdges)
+{
+    const GeoDetail input = taggedQuad();
+    GeoDeleteParams params;
+    params.group = "p0-1";
+    const GeoDetail out = deleted(input, params);
+
+    EXPECT_EQ(4, out.pointCount());
+    ASSERT_EQ(1, out.primitiveCount());
+    EXPECT_EQ(1u, polylinePoints(out).size());
+}
 
 TEST(GeoDeleteTest, DeletingLeftPointsKeepsTheRightHalf)
 {

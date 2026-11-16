@@ -39,6 +39,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/Geo/GeoGroupOps.h"
 #include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/KnobTypes.h"
 
@@ -228,10 +229,10 @@ GeoGroup::selectEdges(const GeoDetail& detail,
     return geoSelectEdges(detail, pattern, edges, error);
 }
 
-bool
-GeoGroup::createGroup(GeoDetailBuilder& builder,
-                      const GeoGroupParams& params,
-                      std::string* error)
+static bool
+buildSelection(GeoDetailBuilder& builder,
+               const GeoGroupParams& params,
+               std::string* error)
 {
     if (params.name.empty()) {
         if (error) {
@@ -246,7 +247,7 @@ GeoGroup::createGroup(GeoDetailBuilder& builder,
 
     if (params.elements == eGeoGroupElementEdges) {
         std::set<GeoEdge> selected;
-        if (params.usePattern && !selectEdges(detail, params.pattern, &selected, error)) {
+        if (params.usePattern && !geoSelectEdges(detail, params.pattern, &selected, error)) {
             return false;
         }
         if (params.useBounding) {
@@ -341,6 +342,146 @@ GeoGroup::createGroup(GeoDetailBuilder& builder,
     return true;
 }
 
+namespace {
+
+GeoAttribClassEnum
+promoteClass(GeoGroupPromoteEnum to)
+{
+    switch (to) {
+    case eGeoGroupPromotePoints:
+        return eGeoAttribClassPoint;
+    case eGeoGroupPromoteEdges:
+        break;
+    case eGeoGroupPromotePrimitives:
+        return eGeoAttribClassPrimitive;
+    }
+
+    return eGeoAttribClassVertex;
+}
+
+GeoElementMask
+groupMask(const GeoDetail& detail,
+          GeoAttribClassEnum cls,
+          const std::string& name)
+{
+    GeoElementMask mask(detail.elementOffsetSize(cls), 0);
+    if (const GeoElementGroup* group = detail.findGroup(cls, name)) {
+        detail.indexMap(cls).forEachLive([&](GeoIndex /*index*/, GeoOffset offset) {
+            mask[std::size_t(offset)] = group->contains(offset);
+        });
+    }
+
+    return mask;
+}
+
+void
+storeMask(GeoDetailBuilder& builder,
+          GeoAttribClassEnum cls,
+          const std::string& name,
+          const GeoElementMask& mask)
+{
+    GeoElementGroup& group = builder.addGroup(cls, name);
+    group.clear();
+    group.add(geoMaskedOffsets(mask));
+}
+
+void
+storeEdges(GeoDetailBuilder& builder,
+           const std::string& name,
+           const std::vector<GeoEdge>& edges)
+{
+    GeoEdgeGroup& group = builder.addEdgeGroup(name);
+    group.clear();
+    group.add(edges);
+}
+
+bool
+editGroup(GeoDetailBuilder& builder,
+          const GeoGroupParams& params,
+          std::string* error)
+{
+    if (params.elements == eGeoGroupElementVertices) {
+        if (error) {
+            *error = "Expand and Promote need a group type of points, edges or primitives";
+        }
+
+        return false;
+    }
+    const bool fromEdges = params.elements == eGeoGroupElementEdges;
+    const GeoAttribClassEnum fromClass = elementClass(params.elements);
+    const GeoDetail& detail = builder.detail();
+
+    GeoElementMask mask;
+    std::vector<GeoEdge> edges;
+    if (fromEdges) {
+        if (const GeoEdgeGroup* group = detail.findEdgeGroup(params.name)) {
+            edges.assign(group->edges().begin(), group->edges().end());
+        }
+        if (params.expand) {
+            edges = geoExpandEdges(detail, edges, params.expandSteps);
+        }
+    } else {
+        mask = groupMask(detail, fromClass, params.name);
+        if (params.expand) {
+            mask = fromClass == eGeoAttribClassPoint ? geoExpandPoints(detail, mask, params.expandSteps)
+                                                     : geoExpandPrimitives(detail, mask, params.expandSteps);
+        }
+    }
+
+    const bool toEdges = params.promote && params.promoteTo == eGeoGroupPromoteEdges;
+    const bool toSame = !params.promote || (toEdges ? fromEdges : (!fromEdges && promoteClass(params.promoteTo) == fromClass));
+    if (toSame) {
+        if (params.expand) {
+            if (fromEdges) {
+                storeEdges(builder, params.name, edges);
+            } else {
+                storeMask(builder, fromClass, params.name, mask);
+            }
+        }
+
+        return true;
+    }
+
+    if (toEdges) {
+        const std::vector<GeoEdge> result = fromClass == eGeoAttribClassPoint ? geoPromotePointsToEdges(detail, mask, params.entirelyContained)
+                                                                              : geoPromotePrimitivesToEdges(detail, mask);
+        storeEdges(builder, params.name, result);
+    } else {
+        const GeoAttribClassEnum toClass = promoteClass(params.promoteTo);
+        GeoElementMask result;
+        if (fromEdges) {
+            result = toClass == eGeoAttribClassPoint ? geoPromoteEdgesToPoints(detail, edges) : geoPromoteEdgesToPrimitives(detail, edges);
+        } else if (toClass == eGeoAttribClassPoint) {
+            result = geoPromotePrimitivesToPoints(detail, mask);
+        } else {
+            result = geoPromotePointsToPrimitives(detail, mask, params.entirelyContained);
+        }
+        storeMask(builder, toClass, params.name, result);
+    }
+    if (!params.keepOriginal) {
+        if (fromEdges) {
+            builder.removeEdgeGroup(params.name);
+        } else {
+            builder.removeGroup(fromClass, params.name);
+        }
+    }
+
+    return true;
+}
+} // anonymous namespace
+
+bool
+GeoGroup::createGroup(GeoDetailBuilder& builder,
+                      const GeoGroupParams& params,
+                      std::string* error)
+{
+    if (!buildSelection(builder, params, error)) {
+        return false;
+    }
+
+    return !(params.expand || params.promote) || editGroup(builder, params, error);
+}
+
 GeoGroup::GeoGroup(NodePtr node)
     : NativeEffectBase(node)
 {
@@ -418,6 +559,39 @@ GeoGroup::initializeKnobs()
                                            "otherwise all their points must be."),
                                         false);
 
+    _expand = makeBoolKnob(this, page, tr("Expand"), kGeoGroupParamExpand,
+                           tr("Grows the group by Expand Steps rings of neighbouring elements. Points neighbour each other "
+                              "through a shared edge, primitives through a shared edge, and edges through a shared point. "
+                              "Needs a group type of points, edges or primitives."),
+                           false);
+    KnobIntPtr steps = createKnob<KnobInt>(tr("Expand Steps").toStdString());
+    steps->setName(kGeoGroupParamExpandSteps);
+    steps->setHintToolTip(tr("How many rings of neighbours to add. A negative count shrinks the group instead, "
+                             "removing the elements on its boundary.")
+                              .toStdString());
+    steps->setDefaultValue(1);
+    steps->setAnimationEnabled(false);
+    page->addKnob(steps);
+    _expandSteps = steps;
+
+    _promote = makeBoolKnob(this, page, tr("Promote"), kGeoGroupParamPromote,
+                            tr("Converts the group into a group of the same name holding another kind of element. Runs "
+                               "after Expand. Needs a group type of points, edges or primitives."),
+                            false);
+    std::vector<ChoiceOption> targets;
+    targets.push_back(ChoiceOption("points", tr("Points").toStdString(), tr("Every point of the group's elements.").toStdString()));
+    targets.push_back(ChoiceOption("edges", tr("Edges").toStdString(), tr("The edges of the group's elements.").toStdString()));
+    targets.push_back(ChoiceOption("primitives", tr("Primitives").toStdString(), tr("The primitives that use the group's elements.").toStdString()));
+    _promoteTo = makeChoiceKnob(this, page, tr("Promote To"), kGeoGroupParamPromoteTo,
+                                tr("The kind of element the converted group holds."), targets, (int)eGeoGroupPromotePoints);
+    _entirelyContained = makeBoolKnob(this, page, tr("Entirely Contained"), kGeoGroupParamEntirelyContained,
+                                      tr("Promoting points to edges or primitives keeps only those whose points are all in the "
+                                         "group; otherwise one point is enough."),
+                                      false);
+    _keepOriginal = makeBoolKnob(this, page, tr("Keep Original"), kGeoGroupParamKeepOriginal,
+                                 tr("Keeps the group of the original kind next to the converted one; otherwise it is removed."),
+                                 false);
+
     updateVisibility();
 }
 
@@ -436,6 +610,12 @@ GeoGroup::updateVisibility()
     setKnobSecret(_boundingType, !bounding);
     setKnobSecret(_centre, !bounding);
     setKnobSecret(_size, !bounding);
+    const KnobBoolPtr expand = _expand.lock();
+    const KnobBoolPtr promote = _promote.lock();
+    setKnobSecret(_expandSteps, !expand || !expand->getValue());
+    setKnobSecret(_promoteTo, !promote || !promote->getValue());
+    setKnobSecret(_entirelyContained, !promote || !promote->getValue());
+    setKnobSecret(_keepOriginal, !promote || !promote->getValue());
     setKnobSecret(_includePartlyInside, !bounding || (type != eGeoGroupElementPrimitives && type != eGeoGroupElementEdges));
 }
 
@@ -455,7 +635,9 @@ GeoGroup::knobChanged(KnobI* k,
     const KnobBoolPtr usePattern = _usePattern.lock();
     const KnobBoolPtr useBounding = _useBounding.lock();
     const KnobChoicePtr groupType = _groupType.lock();
-    if ((usePattern && k == usePattern.get()) || (useBounding && k == useBounding.get()) || (groupType && k == groupType.get())) {
+    const KnobBoolPtr expand = _expand.lock();
+    const KnobBoolPtr promote = _promote.lock();
+    if ((expand && k == expand.get()) || (promote && k == promote.get()) || (usePattern && k == usePattern.get()) || (useBounding && k == useBounding.get()) || (groupType && k == groupType.get())) {
         updateVisibility();
 
         return true;
@@ -490,6 +672,16 @@ GeoGroup::renderGeometry(const GeoRenderActionArgs& args,
         p.size[d] = valueAt<double>(_size, p.size[d], time, view, d);
     }
     p.includePartlyInside = valueAt<bool>(_includePartlyInside, p.includePartlyInside, time, view);
+
+    p.expand = valueAt<bool>(_expand, p.expand, time, view);
+    p.expandSteps = valueAt<int>(_expandSteps, p.expandSteps, time, view);
+    p.promote = valueAt<bool>(_promote, p.promote, time, view);
+    const int target = valueAt<int>(_promoteTo, (int)p.promoteTo, time, view);
+    if (target >= eGeoGroupPromotePoints && target <= eGeoGroupPromotePrimitives) {
+        p.promoteTo = (GeoGroupPromoteEnum)target;
+    }
+    p.entirelyContained = valueAt<bool>(_entirelyContained, p.entirelyContained, time, view);
+    p.keepOriginal = valueAt<bool>(_keepOriginal, p.keepOriginal, time, view);
 
     return renderGeometryFromInput(args, 0, [&p](GeoDetailBuilder& detail, std::string* error) {
         try {

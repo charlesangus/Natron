@@ -229,6 +229,8 @@ try:
         return True
 
     def view_node(node):
+        if viewer.getInput(0) is not None:
+            viewer.disconnectInput(0)
         require(viewer.connectInput(0, node), "view " + node.getScriptName())
 
     def class_rows():

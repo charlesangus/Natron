@@ -110,7 +110,10 @@ public:
     }
 
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
+    /** @brief One blank column when the class has rows but no attribute columns, so its rows can be selected. */
     int columnCount(const QModelIndex& parent = QModelIndex()) const override;
+    /** @brief The source's columns for the class, without the blank one. */
+    int attributeColumnCount() const;
     QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
 

@@ -86,16 +86,22 @@ try:
     def picked_numbers():
         """The numbers the viewer's selection names: its element numbers, or an edge's two points."""
         numbers = set()
+        edges = prop("natronGeoPickMode") == "edges"
         for token in pattern().split():
-            token = token.lstrip("p")
-            if "-" in token and not token.startswith("-"):
-                parts = re.findall(r"\d+", token)
-                if len(parts) == 2 and prop("natronGeoPickMode") != "edges":
-                    numbers.update(range(int(parts[0]), int(parts[1]) + 1))
-                else:
-                    numbers.update(int(x) for x in parts)
+            if edges:
+                # A point path such as p3-4-5 names every point on it.
+                numbers.update(int(x) for x in re.findall(r"\d+", token))
+                continue
+            run = re.fullmatch(r"(\d+)-(\d+)(?::(\d+))?", token)
+            if run:
+                numbers.update(range(int(run.group(1)), int(run.group(2)) + 1, int(run.group(3) or 1)))
             elif token.isdigit():
                 numbers.add(int(token))
+            elif token == "*":
+                label = "Primitives" if prop("natronGeoPickMode") == "primitives" else "Points"
+                tip = child(QToolButton, SPREADSHEET + label).toolTip()
+                digits = "".join(c for c in tip.split(":")[-1] if c.isdigit())
+                numbers.update(range(int(digits or 0)))
         return numbers
 
     _found = {}
@@ -290,9 +296,10 @@ try:
     def sort_section(start, end):
         section("sort")
         yield set_mode(POINTS)
+        converted = pattern()
         marquee(start, end)
-        ok = yield ("until", lambda: count() >= 2 and rows_match_pick(), POLL_TIMEOUT_S)
-        require(ok, "a points marquee selects its rows (%r)" % (pattern(),))
+        ok = yield ("until", lambda: count() >= 2 and pattern() != converted and rows_match_pick(), POLL_TIMEOUT_S)
+        require(ok, "a points marquee selects its rows (%r, was %r)" % (pattern(), converted))
         columns = table().model().columnCount()
         reordered = False
         for column in range(columns):

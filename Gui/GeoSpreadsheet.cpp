@@ -27,10 +27,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -860,6 +862,7 @@ GeoSpreadsheetWidget::~GeoSpreadsheetWidget()
     if (_cancel) {
         _cancel->store(true);
     }
+    _holdSorts.store(false);
     _thread->quit();
     _thread->wait();
     delete _worker;
@@ -1407,7 +1410,7 @@ GeoSpreadsheetWidget::openFullValue(const QModelIndex& index)
     }
     const GeoAttribClassEnum cls = _model->attribClass();
     const GeoIndex element = _model->elementAt(index.row());
-    if ((element < 0) || (element >= source->rowCount(cls))) {
+    if ((element < 0) || (element >= source->rowCount(cls)) || (index.column() >= _model->attributeColumnCount())) {
         return;
     }
     const int column = index.column();
@@ -1467,7 +1470,7 @@ GeoSpreadsheetWidget::setError(const QString& text)
 void
 GeoSpreadsheetWidget::headerClicked(int column)
 {
-    if (!_model->source() || (column < 0) || (column >= _model->columnCount())) {
+    if (!_model->source() || (column < 0) || (column >= _model->attributeColumnCount())) {
         return;
     }
     if (column == _sortColumn) {
@@ -1564,6 +1567,9 @@ GeoSpreadsheetWidget::launchBuild(const QString& pattern,
     ++_sortsStarted;
     _busyLabel->show();
     QMetaObject::invokeMethod(_worker, [this, source, cls, text, column, descending, selectedOnly, cancel, generation, pattern, keepError]() {
+        while (_holdSorts.load() && !cancel->load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         GeoSpreadsheetBuildResult result = runBuild(source, cls, text, column, descending, selectedOnly.get(), *cancel);
         // The destructor joins this thread before the widget goes, so the widget outlives this call.
         QMetaObject::invokeMethod(this, [this, generation, result, pattern, keepError]() { finishBuild(generation, result, pattern, keepError); }, Qt::QueuedConnection); }, Qt::QueuedConnection);

@@ -125,6 +125,16 @@ GeoSpreadsheetModel::columnCount(const QModelIndex& parent) const
     if (parent.isValid()) {
         return 0;
     }
+    // A class with rows but no attributes still needs a cell per row for its rows to be selectable.
+    if (_allColumns.empty() && (_rows > 0)) {
+        return 1;
+    }
+    return (int)_allColumns.size();
+}
+
+int
+GeoSpreadsheetModel::attributeColumnCount() const
+{
     return (int)_allColumns.size();
 }
 
@@ -188,7 +198,7 @@ GeoSpreadsheetModel::blockFor(std::int64_t viewRow) const
 QVariant
 GeoSpreadsheetModel::data(const QModelIndex& index, int role) const
 {
-    if (!_source || !index.isValid() || index.row() < 0 || index.row() >= rowCount() || index.column() < 0 || index.column() >= columnCount()) {
+    if (!_source || !index.isValid() || index.row() < 0 || index.row() >= rowCount() || index.column() < 0 || index.column() >= attributeColumnCount()) {
         return QVariant();
     }
     const std::vector<GeoSpreadsheetColumn>& columns = _source->columns(_cls);

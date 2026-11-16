@@ -7,7 +7,8 @@ the GeoTransform. Checks:
   - clicking another header while a sort builds cancels it (the cancelled count rises);
   - scrolling the table works while the sort is busy;
   - the group "0-9 14" shows 11 rows, and a malformed pattern shows its error and keeps those rows;
-  - changing the GeoTransform while a sort builds re-sorts the new data.
+  - changing the GeoTransform while a sort builds (held with natronGeoSpreadsheetHoldSorts) cancels
+    it and re-sorts the new data.
 
 One screenshot per check goes to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-off.
 Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
@@ -255,12 +256,14 @@ try:
             ok = yield ("until", sort_idle, BUILD_TIMEOUT_S)
             require(ok, "the P[y] sort finishes before the upstream change")
         cancelled = sheet_state("SortsCancelled")
+        # The new snapshot only lands once the 9M-point transform has cooked, which a sort can outrun.
+        sheet().setProperty("natronGeoSpreadsheetHoldSorts", True)
         click_header("P[y]")
         check(bool(sheet_state("SortBusy")), "a P[y] sort is building when the transform changes")
         order = header().sortIndicatorOrder()
         turned.getParam("translate").set(0.0, LIFT, 0.0)
-        ok = yield ("until", lambda: sort_idle() and inspector_state("Busy") is False and sheet_state("SortsCancelled") > cancelled,
-                    BUILD_TIMEOUT_S)
+        ok = yield ("until", lambda: inspector_state("Busy") is False and sheet_state("SortsCancelled") > cancelled, BUILD_TIMEOUT_S)
+        sheet().setProperty("natronGeoSpreadsheetHoldSorts", False)
         check(ok, "the change cancelled the sort under way (cancelled %r, was %r)" % (sheet_state("SortsCancelled"), cancelled))
         want = HALF + LIFT if order == Qt.DescendingOrder else -HALF + LIFT
         ok = yield ("until", lambda: sort_idle() and not inspector_state("Busy")

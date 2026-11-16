@@ -136,6 +136,8 @@
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/pointBased.h>
+#include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #include <pxr/usdImaging/usdImagingGL/renderParams.h>
@@ -766,6 +768,9 @@ struct SceneViewportRenderer::Implementation {
     // Highlighted whichever of the two applies, by prim path.
     std::vector<std::pair<std::string, std::vector<int>>> displayPoints;
     std::vector<std::pair<std::string, std::vector<int>>> displayFaces;
+    // Storm draws a mesh's selected points only in its points repr, so the shaded and wireframe
+    // modes would show none of displayPoints: they are drawn over the frame instead.
+    std::atomic<bool> hasDisplayPoints { false };
     std::atomic<bool> engineSelectionDirty { false };
     // The renderer chosen, a delegate's id or kRenderDelegateSceneDefaultId; the delegate the
     // next engine is made with, the chosen one or the one the stage's render settings prim names;
@@ -2347,6 +2352,77 @@ struct SceneViewportRenderer::Implementation {
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
     } // drawGuides
+
+    bool drawsOverlays() const
+    {
+        return showGrid || showGuides || hasHandles || hasDisplayPoints;
+    }
+
+    // The highlighted points of displayPoints at the shown time, over everything. Needs stageMutex.
+    void drawDisplayPoints(const GfFrustum& frustum)
+    {
+        std::vector<std::pair<std::string, std::vector<int>>> prims;
+        {
+            std::lock_guard<std::mutex> lock(engineSelectionMutex);
+            prims = displayPoints;
+        }
+        const UsdStageRefPtr stage = currentStage();
+        if (prims.empty() || !stage) {
+            return;
+        }
+        const UsdTimeCode time(timeCode());
+        UsdGeomXformCache xforms(time);
+        std::vector<GfVec3d> world;
+        for (const std::pair<std::string, std::vector<int>>& prim : prims) {
+            if (!SdfPath::IsValidPathString(prim.first)) {
+                continue;
+            }
+            const UsdPrim usdPrim = stage->GetPrimAtPath(SdfPath(prim.first));
+            VtVec3fArray points;
+            if (usdPrim && usdPrim.IsA<UsdGeomPointBased>()) {
+                UsdGeomPointBased(usdPrim).GetPointsAttr().Get(&points, time);
+            } else if (usdPrim && usdPrim.IsA<UsdGeomPointInstancer>()) {
+                UsdGeomPointInstancer(usdPrim).GetPositionsAttr().Get(&points, time);
+            } else {
+                continue;
+            }
+            const GfMatrix4d toWorld = xforms.GetLocalToWorldTransform(usdPrim);
+            for (const int index : prim.second) {
+                if ((index >= 0) && ((std::size_t)index < points.size())) {
+                    world.push_back(toWorld.Transform(GfVec3d(points[(std::size_t)index])));
+                }
+            }
+        }
+        if (world.empty()) {
+            return;
+        }
+
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeProjectionMatrix().GetArray());
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeViewMatrix().GetArray());
+
+        glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glPointSize(7.f);
+        glColor4f(1.f, 0.6f, 0.f, 1.f);
+        glBegin(GL_POINTS);
+        for (const GfVec3d& p : world) {
+            glVertex3d(p[0], p[1], p[2]);
+        }
+        glEnd();
+        glPointSize(1.f);
+
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+    } // drawDisplayPoints
 };
 
 SceneViewportRenderer::SceneViewportRenderer()
@@ -3872,7 +3948,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
 
     _imp->noteDrawnView(frustum, width, height);
     _imp->drawnGuides.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
+    if (_imp->drawsOverlays()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
         glUseProgram(0);
@@ -3886,6 +3962,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
             _imp->drawGuides(frustum, width, height);
         }
         _imp->drawTransformHandles(frustum, width, height);
+        _imp->drawDisplayPoints(frustum);
     }
 
     return converged ? eRenderStatusDone : eRenderStatusRefining;
@@ -3989,7 +4066,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         glBlitFramebuffer(0, 0, frameWidth, frameHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, ((frameWidth == width) && (frameHeight == height)) ? GL_NEAREST : GL_LINEAR);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glDeleteFramebuffers(1, &readFramebuffer);
-        if ((_imp->showGrid || _imp->showGuides || _imp->hasHandles) && (frameWidth == width) && (frameHeight == height)) {
+        if (_imp->drawsOverlays() && (frameWidth == width) && (frameHeight == height)) {
             // The frame's depth, so that the grid and guides hide behind what it shows.
             glUseProgram(0);
             glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -4011,7 +4088,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
 
     _imp->noteDrawnView(frustum, width, height);
     _imp->drawnGuides.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
+    if (_imp->drawsOverlays()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
         glUseProgram(0);
@@ -4024,6 +4101,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
             _imp->drawGuides(frustum, width, height);
         }
         _imp->drawTransformHandles(frustum, width, height);
+        _imp->drawDisplayPoints(frustum);
     }
 
     const bool finished = status.converged && frame && frame->converged && (frame->restart == status.restarts);
@@ -4305,6 +4383,7 @@ SceneViewportRenderer::setDisplayHighlight(std::vector<std::pair<std::string, st
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
     _imp->displayPoints = std::move(points);
     _imp->displayFaces = std::move(faces);
+    _imp->hasDisplayPoints = !_imp->displayPoints.empty();
     _imp->engineSelectionDirty = true;
 }
 

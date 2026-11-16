@@ -76,6 +76,8 @@ struct GeoSpreadsheetShowResult;
  * malformed pattern shows its error under the Group box and leaves the previous filter applied.
  * natronGeoSpreadsheetSortBusy is true while a build runs; natronGeoSpreadsheetSortsStarted and
  * natronGeoSpreadsheetSortsCancelled count builds started and builds cancelled before they finished.
+ * A script sets natronGeoSpreadsheetHoldSorts to true to keep every build from starting until it sets
+ * it back or the build is cancelled, which holds one under way for as long as a test needs.
  * Children Group, Busy and Error carry the widget's object name as prefix like the others.
  *
  * With a viewer set through setSelectionViewer(), whose view shows the geometry the table lists, selecting
@@ -121,6 +123,7 @@ class GeoSpreadsheetWidget
     Q_PROPERTY(bool natronGeoSpreadsheetSortBusy READ getSortBusy)
     Q_PROPERTY(int natronGeoSpreadsheetSortsStarted READ getSortsStarted)
     Q_PROPERTY(int natronGeoSpreadsheetSortsCancelled READ getSortsCancelled)
+    Q_PROPERTY(bool natronGeoSpreadsheetHoldSorts READ getHoldSorts WRITE setHoldSorts)
 
 public:
     explicit GeoSpreadsheetWidget(const QString& objectName,
@@ -177,6 +180,16 @@ public:
     int getSortsCancelled() const
     {
         return _sortsCancelled;
+    }
+
+    bool getHoldSorts() const
+    {
+        return _holdSorts.load();
+    }
+
+    void setHoldSorts(bool hold)
+    {
+        _holdSorts.store(hold);
     }
 
 protected:
@@ -275,6 +288,7 @@ private:
     bool _busy = false;
     int _sortsStarted = 0;
     int _sortsCancelled = 0;
+    std::atomic<bool> _holdSorts { false };
 };
 
 /**

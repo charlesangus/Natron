@@ -114,11 +114,10 @@ try:
         return child(QToolButton, SPREADSHEET + label)
 
     def points_count():
-        text = class_button("Points").text()
-        try:
-            return int(text.split()[-1].replace(",", ""))
-        except (ValueError, IndexError):
-            return -1
+        """The exact count from the Points button's tooltip: the button itself shortens millions to 4.19M."""
+        text = class_button("Points").toolTip()
+        digits = "".join(c for c in text.split(":")[-1] if c.isdigit())
+        return int(digits) if digits else -1
 
     def show_class(label):
         class_button(label).click()

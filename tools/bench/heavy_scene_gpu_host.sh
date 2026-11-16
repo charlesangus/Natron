@@ -346,7 +346,8 @@ run_bench() {
 }
 
 launch() {
-    local label="$1" fixture="$2" file="$3" scenarios="$4" rc bench sampler="" stacks="$FIXTURE_DIR/out/$label.stacks" sampling
+    local label="$1" fixture="$2" file="$3" scenarios="$4" rc bench sampler="" stacks sampling
+    stacks="$FIXTURE_DIR/out/$label.stacks"
     shift 4
     wanted "$label" || return 0
     [ -n "${ONLY_SCENARIOS:-}" ] && scenarios="$ONLY_SCENARIOS"

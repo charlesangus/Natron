@@ -152,3 +152,5 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
   - GeoCopyToPoints' `targetGroup` is not filled.
 
 - 2026-11-16 — Release gate green at d9ef56647 (run 43895026302: ctest all legs; GUI m361_geo_selection 28/28, m361_geo_tab_create 44/44, m361_geo_reselect 30/30, m376_geometry_display 50/50; m361_geo_pick 51/51 on the --from-run re-run after the script gave USDToGeo a prim pattern). P2.T2 waits on GPU-host bench numbers (tools/bench/geo_scale.py). PR into F15 waits until F4 lands.
+
+- 2026-11-16 — A blank USDToGeo Prim Pattern stays "nothing imported", and the USD nodes keep blank = no prims (user: "USD nodes should keep their current behaviour. It's ok that usdtogeo does nothing until a prim selection is made"). Scripts that use USDToGeo must set primPattern.

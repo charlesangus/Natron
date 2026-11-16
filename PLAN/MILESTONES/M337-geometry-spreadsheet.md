@@ -120,3 +120,5 @@ Interface assumed from M361 - Geometry Point Editing, as its brief states it: M3
 - 2026-11-16 — **Worked ahead of unmet Deps (user):** started before F4 - Heavy Scene Viewer lands, stacked on M376 - Geometry Display's branch (F4 and F15 merged in) via M361 - Geometry Point Editing's branch. The PR into F15 opens only after F4 lands, M376 merges into F15, and this branch is rebased onto F15.
 - 2026-11-16 — **Selecting rows replaces the viewer's live selection, matching Houdini (user).** Tab-create and reselect then use the rows picked. The general rule (user): when in doubt, match Houdini, but never name Houdini in code, comments, tooltips or node docs.
 - 2026-11-16 — **USD-prim Group box takes full patterns, without attribute tests (user).** Added as M337.P4.T5.
+
+- 2026-11-16 — A sort cancels when the changed input's new snapshot arrives, not as soon as the input node changes (user: "current behaviour sounds ok"). natronGeoSpreadsheetHoldSorts exists only so a script can observe that cancel.

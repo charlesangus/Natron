@@ -882,6 +882,9 @@ public:
     // Takes @p selection as it is; componentSelectionChanged() if that changes the selection.
     void setComponentSelection(const GeoComponentSelection& selection);
 
+    // Picks the mode of @p selection and takes it as it is, without carrying the previous selection over to that mode.
+    void setPickedComponents(const GeoComponentSelection& selection);
+
     /**
      * @brief Grows the component selection by @p steps rings of neighbours, or shrinks it for a
      * negative count; nothing while no components are picked or selected.

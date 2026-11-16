@@ -7089,6 +7089,25 @@ SceneViewport::setComponentSelection(const GeoComponentSelection& selection)
     Q_EMIT componentSelectionChanged();
 }
 
+void
+SceneViewport::setPickedComponents(const GeoComponentSelection& selection)
+{
+    const bool modeChanged = selection.type != _imp->geoPickMode;
+    if (!modeChanged && (selection == _imp->componentSelection)) {
+        return;
+    }
+    const bool changed = selection != _imp->componentSelection;
+    _imp->geoPickMode = selection.type;
+    _imp->componentSelection = selection;
+    refreshComponentState();
+    if (modeChanged) {
+        Q_EMIT geoPickModeChanged(int(selection.type));
+    }
+    if (changed) {
+        Q_EMIT componentSelectionChanged();
+    }
+}
+
 bool
 SceneViewport::componentSelectionFromPattern(const GeoDetail& detail,
                                              GeoComponentEnum type,

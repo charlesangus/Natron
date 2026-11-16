@@ -75,6 +75,12 @@ public:
         return _cls;
     }
 
+    // Null when the rows are in element order.
+    const RowOrderPtr& rowOrder() const
+    {
+        return _order;
+    }
+
     /** @brief The element number shown at a view row. */
     GeoIndex elementAt(std::int64_t viewRow) const;
 

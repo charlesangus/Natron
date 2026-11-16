@@ -36,6 +36,7 @@
 #include <QtCore/QStringList>
 #include <QtWidgets/QWidget>
 
+#include "Engine/EngineFwd.h"
 #include "Gui/GeoSpreadsheetModel.h"
 
 class QComboBox;
@@ -48,7 +49,10 @@ class QToolButton;
 NATRON_NAMESPACE_ENTER
 
 class ScenePrimInspectorTab;
+class SceneViewport;
+struct GeoComponentSelection;
 struct GeoSpreadsheetBuildResult;
+struct GeoSpreadsheetPickResult;
 
 /**
  * @brief A class bar (Points, Vertices, Primitives, Detail, each with its row count) over a table of one
@@ -70,6 +74,12 @@ struct GeoSpreadsheetBuildResult;
  * natronGeoSpreadsheetSortBusy is true while a build runs; natronGeoSpreadsheetSortsStarted and
  * natronGeoSpreadsheetSortsCancelled count builds started and builds cancelled before they finished.
  * Children Group, Busy and Error carry the widget's object name as prefix like the others.
+ *
+ * With a viewer set through setSelectionViewer(), whose view shows the geometry the table lists, selecting
+ * rows of Points, Vertices or Primitives replaces that view's live component selection: the points,
+ * the points of the vertices, or the primitives numbered by the rows. A selection of many rows is
+ * gathered on the worker and handed to the view when done, a newer one cancelling it. Detail rows select
+ * nothing.
  **/
 class GeoSpreadsheetWidget
     : public QWidget {
@@ -98,6 +108,9 @@ public:
     void setStale(bool stale);
 
     void clearSelection();
+
+    // The viewer whose view takes the rows selected; empty for none.
+    void setSelectionViewer(const ViewerInstanceWPtr& viewer);
 
     qlonglong getShownRows() const;
 
@@ -145,6 +158,12 @@ private:
                      bool keepError);
     void applyOrder(const GeoSpreadsheetModel::RowOrderPtr& order);
     bool shownMatchesWanted() const;
+    void rowsSelected();
+    void cancelPick();
+    void writeSelection(SceneViewport* viewport,
+                        const GeoComponentSelection& selection);
+    void finishPick(quint64 generation,
+                    const GeoSpreadsheetPickResult& result);
     QString wantedPattern() const;
 
     GeoSpreadsheetModel* _model;
@@ -173,6 +192,11 @@ private:
     QString _shownPattern;
     int _shownColumn = -1;
     bool _shownDescending = false;
+
+    ViewerInstanceWPtr _selectionViewer;
+    std::shared_ptr<std::atomic<bool>> _pickCancel;
+    quint64 _pickGeneration = 0;
+    bool _writingSelection = false;
 
     std::shared_ptr<std::atomic<bool>> _cancel;
     quint64 _generation = 0;

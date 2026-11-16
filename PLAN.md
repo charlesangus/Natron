@@ -233,7 +233,7 @@ future core work has solid ground to build on.
 | M420 | Spline Curve Primitive | todo | M358, M376 |  | E9 | F21 | | [M420-spline-curve-primitive.md](PLAN/MILESTONES/M420-spline-curve-primitive.md) |
 | M421 | Stroke Keyframe Indicators | done | M261, M305, M272 | bosley-executor | E10 | | | [M421-stroke-keyframe-indicators.md](PLAN/MILESTONES/M421-stroke-keyframe-indicators.md) |
 | M424 | Python setExpression Refreshes The Viewer | done | - | bosley-native-nodes | E10 | | | [M424-python-set-expression-refreshes-viewer.md](PLAN/MILESTONES/M424-python-set-expression-refreshes-viewer.md) |
-| M422 | Snap Viewer Wheel Zoom | todo | - |  | E10 | | | [M422-snap-viewer-wheel-zoom.md](PLAN/MILESTONES/M422-snap-viewer-wheel-zoom.md) |
+| M422 | Snap Viewer Wheel Zoom | doing | - | bosley-executor | E10 |  F29 | | [M422-snap-viewer-wheel-zoom.md](PLAN/MILESTONES/M422-snap-viewer-wheel-zoom.md) |
 | M413 | Geometry Modeling Ops | todo | M359, M420 |  | E9 | F21 | | [M413-geometry-modeling-ops.md](PLAN/MILESTONES/M413-geometry-modeling-ops.md) |
 | M415 | Geometry Attribute Ops | todo | M359, M360, M402 |  | E9 | F21 | | [M415-geometry-attribute-ops.md](PLAN/MILESTONES/M415-geometry-attribute-ops.md) |
 | M414 | Geometry Advanced Modeling | todo | M359, M415 |  | E9 | F21 | | [M414-geometry-advanced-modeling.md](PLAN/MILESTONES/M414-geometry-advanced-modeling.md) |
@@ -521,12 +521,13 @@ future core work has solid ground to build on.
 | M449 | USD Layer Save Paths | todo | M448 |  | E9 | F27 | | [M449-usd-layer-save-paths.md](PLAN/MILESTONES/M449-usd-layer-save-paths.md) |
 | M450 | USDWrite Export Preview | todo | M448, M449 |  | E9 | F27 | | [M450-usdwrite-export-preview.md](PLAN/MILESTONES/M450-usdwrite-export-preview.md) |
 | M451 | Viewer Stale Cue Experiments | todo | M302 |  | E10 | | | [M451-viewer-stale-cue-experiments.md](PLAN/MILESTONES/M451-viewer-stale-cue-experiments.md) |
-| M452 | Node Error And Warning Display | todo | M397 |  | E10 | | | [M452-node-error-and-warning-display.md](PLAN/MILESTONES/M452-node-error-and-warning-display.md) |
+| M452 | Node Error And Warning Display | doing | M397 | bosley-executor | E10 |  F29 | | [M452-node-error-and-warning-display.md](PLAN/MILESTONES/M452-node-error-and-warning-display.md) |
 | M453 | Follow Animation Layer | todo | M220 |  | E10 | | | [M453-follow-animation-layer.md](PLAN/MILESTONES/M453-follow-animation-layer.md) |
-| M454 | Roto Insert Point Drag | todo | - |  | E10 | | | [M454-roto-insert-point-drag.md](PLAN/MILESTONES/M454-roto-insert-point-drag.md) |
-| M455 | Keyframe Markers For Visible Pages | todo | M421 |  | E10 | | | [M455-keyframe-markers-for-visible-pages.md](PLAN/MILESTONES/M455-keyframe-markers-for-visible-pages.md) |
-| M456 | File Dialog Toolbar And Split | todo | - |  | E10 | | | [M456-file-dialog-toolbar-and-split.md](PLAN/MILESTONES/M456-file-dialog-toolbar-and-split.md) |
+| M454 | Roto Insert Point Drag | doing | - | bosley-executor | E10 |  F29 | | [M454-roto-insert-point-drag.md](PLAN/MILESTONES/M454-roto-insert-point-drag.md) |
+| M455 | Keyframe Markers For Visible Pages | doing | M421 | bosley-executor | E10 |  F29 | | [M455-keyframe-markers-for-visible-pages.md](PLAN/MILESTONES/M455-keyframe-markers-for-visible-pages.md) |
+| M456 | File Dialog Toolbar And Split | doing | - | bosley-executor | E10 |  F29 | | [M456-file-dialog-toolbar-and-split.md](PLAN/MILESTONES/M456-file-dialog-toolbar-and-split.md) |
 | M457 | ColorWarp Space Spike | todo | - |  | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |
+| F29 | UI Polish Batch | open |  |  | feature/f29-ui-polish-batch | Ship five small UI fixes — snapped viewer zoom, node error and warning display, Roto insert-point drag, keyframe markers for visible pages and the file dialog toolbar — on one build and one merge. |
 | M458 | ColorWarp Node | todo | M457 |  | E3 | F28 | | [M458-colorwarp-node.md](PLAN/MILESTONES/M458-colorwarp-node.md) |
 | M459 | ColorWarp 3D View | todo | M458 |  | E3 | F28 | | [M459-colorwarp-3d-view.md](PLAN/MILESTONES/M459-colorwarp-3d-view.md) |
 

@@ -285,6 +285,7 @@ struct ViewerGL::Implementation
     PenType pointerTypeOnPress;
     double pressureOnPress, pressureOnRelease;
     int wheelDeltaSeekFrame; // accumulated wheel delta for frame seeking (crtl+wheel)
+    int wheelDeltaZoom; // accumulated wheel delta not yet spent on a zoom preset step
     bool isUpdatingTexture;
     bool renderOnPenUp;
     int updateViewerPboIndex;  // always accessed in the main thread: initialized in the constructor, then always accessed and modified by updateViewer()

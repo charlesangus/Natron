@@ -82,14 +82,15 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiMacros.h" // buttonDownIsLeft...
 #include "Gui/Histogram.h"
 #include "Gui/InfoViewerWidget.h"
+#include "Gui/KnobGuiParametric.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
-#include "Gui/KnobGuiParametric.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/Shaders.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ViewerTab.h"
+#include "Gui/ViewerZoomLadder.h"
 
 #include <QOpenGLContext>
 #include <QRegularExpression>
@@ -3257,44 +3258,57 @@ ViewerGL::wheelEvent(QWheelEvent* e)
     NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(nodeGui_i);
     gui->selectNode(nodeGui);
 
-    double zoomFactor;
-    unsigned int oldMipmapLevel, newMipmapLevel;
-    double scaleFactor = std::pow( NATRON_WHEEL_ZOOM_PER_DELTA, e->angleDelta().y() );
+    // High-resolution wheels and trackpads send small deltas; only each full notch of 120 steps a
+    // preset, and turning back discards what was gathered the other way.
+    const int delta = e->angleDelta().y();
+    if ((delta > 0 && _imp->wheelDeltaZoom < 0) || (delta < 0 && _imp->wheelDeltaZoom > 0)) {
+        _imp->wheelDeltaZoom = 0;
+    }
+    _imp->wheelDeltaZoom += delta;
+    const int steps = _imp->wheelDeltaZoom / 120;
+    _imp->wheelDeltaZoom -= steps * 120;
+    if (steps != 0) {
+        stepZoomPresets(steps, e->position());
+    }
+} // ViewerGL::wheelEvent
+
+void
+ViewerGL::stepZoomPresets(int steps,
+                          const QPointF& pivot)
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+
+    double oldZoomFactor, zoomFactor;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
-        QPointF zoomCenter = _imp->zoomCtx.toZoomCoordinates( e->position().x(), e->position().y() );
-
+        oldZoomFactor = _imp->zoomCtx.factor();
+        const double target = stepZoomPreset(oldZoomFactor, steps, _imp->zoomCtx.minFactor(), _imp->zoomCtx.maxFactor());
+        if (target == oldZoomFactor) {
+            return;
+        }
+        const QPointF zoomCenter = _imp->zoomCtx.toZoomCoordinates(pivot.x(), pivot.y());
+        _imp->zoomCtx.zoom(zoomCenter.x(), zoomCenter.y(), target / oldZoomFactor);
         zoomFactor = _imp->zoomCtx.factor();
-        //oldMipmapLevel = std::log( zoomFactor >= 1 ? 1 : ipow( 2, -std::ceil(std::log(zoomFactor) / M_LN2) ) ) / M_LN2;
-        oldMipmapLevel = zoomFactor >= 1 ? 0 : -std::ceil(std::log(zoomFactor) / M_LN2);
-
-        _imp->zoomCtx.zoom(zoomCenter.x(), zoomCenter.y(), scaleFactor);
-        zoomFactor = _imp->zoomCtx.factor();
+        _imp->zoomOrPannedSinceLastFit = true;
     }
-    //newMipmapLevel = std::log( zoomFactor >= 1 ? 1 : std::pow( 2, -std::ceil(std::log(zoomFactor) / M_LN2) ) ) / M_LN2;
-    newMipmapLevel = zoomFactor >= 1 ? 0 : -std::ceil(std::log(zoomFactor) / M_LN2);
-    _imp->zoomOrPannedSinceLastFit = true;
-    int zoomValue = (int)(100 * zoomFactor);
-    if (zoomValue == 0) {
-        zoomValue = 1; // sometimes, floor(100*0.01) makes 0
-    }
-    assert(zoomValue > 0);
-    Q_EMIT zoomChanged(zoomValue);
+    const unsigned int oldMipmapLevel = oldZoomFactor >= 1 ? 0 : -std::ceil(std::log(oldZoomFactor) / M_LN2);
+    const unsigned int newMipmapLevel = zoomFactor >= 1 ? 0 : -std::ceil(std::log(zoomFactor) / M_LN2);
+    Q_EMIT zoomChanged(std::max(1, (int)std::lround(100 * zoomFactor)));
 
-    if ( _imp->viewerTab->isViewersSynchroEnabled() ) {
+    if (_imp->viewerTab && _imp->viewerTab->isViewersSynchroEnabled()) {
         _imp->viewerTab->synchronizeOtherViewersProjection();
     }
 
     checkIfViewPortRoIValidOrRender();
 
-
     ///Clear green cached line so the user doesn't expect to see things in the cache
     ///since we're changing the zoom factor
-    if (oldMipmapLevel != newMipmapLevel) {
+    if (_imp->viewerTab && oldMipmapLevel != newMipmapLevel) {
         _imp->viewerTab->clearTimelineCacheLine();
     }
     update();
-} // ViewerGL::wheelEvent
+}
 
 void
 ViewerGL::zoomSlot(double v)

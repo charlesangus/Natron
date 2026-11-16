@@ -127,6 +127,12 @@ public:
     double getZoomFactor() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief Zooms `steps` presets along the zoom menu's ladder (positive zooms in), keeping the
+     * widget point `pivot` fixed, and reports the new level through zoomChanged.
+     **/
+    void stepZoomPresets(int steps, const QPointF& pivot);
+
+    /**
      * @brief Returns the rectangle of the image displayed by the viewer
      **/
     virtual RectI getImageRectangleDisplayed(const RectI & imageRoD, const double par, unsigned int mipmapLevel) OVERRIDE FINAL;

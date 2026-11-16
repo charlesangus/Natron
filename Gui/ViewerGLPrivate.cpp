@@ -193,6 +193,7 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , pressureOnPress(1.)
     , pressureOnRelease(1.)
     , wheelDeltaSeekFrame(0)
+    , wheelDeltaZoom(0)
     , isUpdatingTexture(false)
     , renderOnPenUp(false)
     , updateViewerPboIndex(0)

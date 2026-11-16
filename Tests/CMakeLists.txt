@@ -375,6 +375,7 @@ set(GuiTests_SOURCES
     UndoHistory_Test.cpp
     ValueKnobEditSession_Test.cpp
     ValueKnobGlobalModeTarget_Test.cpp
+    ViewerZoomLadder_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )

@@ -1,4 +1,5 @@
 import resamplecore;
+import edgesample;
 
 // Resampler::resampleRowFromCoords for one pixel: sampling at a per-pixel source coordinate, wrapped
 // per axis, with resamplecore.slang's interpolateSuper, on the Jacobian when the caller has one.
@@ -13,9 +14,11 @@ static const uint kWrapMirror = 3;
 // samplers stay defined.
 static const float kCoordLimit = 1073741824.0;
 
+// By the bits: the device compiler may fold isnan() and isinf() away, assuming no float is NaN or
+// infinite, and a coordinate with no solution would then read the edge pixel instead of zero.
 bool isFiniteF(float v)
 {
-    return !isnan(v) && !isinf(v);
+    return (asuint(v) & 0x7f800000u) != 0x7f800000u;
 }
 
 // d - k * period for k = floor(d / period), d >= 0 apart from rounding.
@@ -100,9 +103,8 @@ float finiteOrZero(float v)
 // when empty). A coordinate that is not finite after wrapping is outside and reads zero, whatever
 // black-outside says. `J` is (Jxx, Jxy, Jyx, Jyy), the coordinate's derivatives along the
 // destination's x and y; the impulse filter and hasJacobian false sample with the filter alone.
-// Otherwise non-finite entries read 0, the row of an axis that clamping moved is zeroed, and, as
-// resample.slang's samplePixel does, so is the row of an axis with no source pixel within half a
-// pixel, both rows under black-outside when either axis is out.
+// Otherwise non-finite entries read 0 and the row of an axis that clamping moved is zeroed; past the
+// source's bounds the footprint filters the source extended by its edge mode.
 float4 sampleAt(ResampleSource src, float sx, float sy, float4 J, bool hasJacobian, FilterSpec spec, bool clampOn, uint wrapU, uint wrapV,
                 int4 domain)
 {
@@ -123,19 +125,12 @@ float4 sampleAt(ResampleSource src, float sx, float sy, float4 J, bool hasJacobi
     float Jxy = useJacobian ? finiteOrZero(J.y) : 0.0;
     float Jyx = useJacobian ? finiteOrZero(J.z) : 0.0;
     float Jyy = useJacobian ? finiteOrZero(J.w) : 0.0;
-    bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
-    bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
-    if (src.blackOutside && !(xinside && yinside))
-    {
-        xinside = false;
-        yinside = false;
-    }
-    if (!xinside || movedX)
+    if (movedX)
     {
         Jxx = 0.0;
         Jxy = 0.0;
     }
-    if (!yinside || movedY)
+    if (movedY)
     {
         Jyx = 0.0;
         Jyy = 0.0;

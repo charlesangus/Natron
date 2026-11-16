@@ -2712,6 +2712,7 @@ ViewerInstance::planGpuPlacementOfInput(int textureIndex,
 
     const NodeMetadataConstPtr metadata = args.activeInputToRender->getRenderMetadata(time, view);
     args.params->pixelAspectRatio = metadata->getPixelAspectRatio(-1);
+    args.params->edgeMode = metadata->getEdgeMode();
     RectI roi;
     const bool exact = args.userRoIEnabled || args.isDoingPartialUpdates;
     if (!getGpuPlacementRoI(textureIndex, rod, args.params->pixelAspectRatio, mipmapLevel, exact, &roi) || roi.isNull()) {
@@ -3281,6 +3282,7 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
 
     // The PAR of the input image
     outArgs->params->pixelAspectRatio = activeInputMetadata->getPixelAspectRatio(-1);
+    outArgs->params->edgeMode = activeInputMetadata->getEdgeMode();
 
     // Is it playback ?
     outArgs->params->isSequential = isSequential;
@@ -5674,6 +5676,9 @@ ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& pa
         }
     }
 
+    if (!params->isPartialRect) {
+        uiContext->setDisplayedEdgeMode(params->textureIndex, params->edgeMode);
+    }
     uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->recenterViewport, params->viewportCenter, params->isPartialRect);
     if (!params->isPartialRect && (originalImage || deviceFrame)) {
         uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);

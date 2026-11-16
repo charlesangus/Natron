@@ -48,6 +48,7 @@
 #include "Engine/Nodes/Filter/IDefocus.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -381,4 +382,17 @@ TEST_F(NativeIDefocusGpuTest, AnimatedSizeAtAnotherTimeThanTheTimeline)
     setGpuStripOverridesForTests(0, 8);
     expectParity(idefocus, "strips", kWindow, other);
     setGpuStripOverridesForTests(0, 0);
+}
+
+// The window is the source's image, so the bokeh at its border reads past the image under each mode.
+TEST_F(NativeIDefocusGpuTest, EdgeModesMatchTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr idefocus = makeIDefocus(source, NodePtr(), 9.);
+    ASSERT_TRUE(bool(source) && bool(idefocus));
+
+    for (const char* mode : { "black", "stretch" }) {
+        ASSERT_TRUE(setKnobValue(idefocus, kEdgeModeParam, std::string(mode)));
+        expectParity(idefocus, std::string("edge mode ") + mode);
+    }
 }

@@ -78,7 +78,7 @@ inline constexpr InputSpec kBloomInputs[] = {
  * @brief Bloom: the mean of count blurs of the source, of sizes size * ratio^i for i = 0 to
  * count - 1, as CImg's Bloom. The Gaussian (FIR) blurs run on a decimated pyramid
  * (BloomKernels.h), so the cost stays bounded at any size; the other filters run at full
- * resolution as Blur's. The nearest pixel is repeated outside the image, so the region of
+ * resolution as Blur's. Outside the image the blurs read by the Edge Mode; the region of
  * definition is the source's. Scene-linear: nothing is clamped.
  **/
 struct BloomOp {
@@ -93,7 +93,7 @@ struct BloomOp {
                        "\n"
                        "The Gaussian (FIR) filter, the default, blurs large sizes on a downsampled copy of the image, so its cost hardly grows with the size. The other filters are Blur's, at full resolution.\n"
                        "\n"
-                       "The edge pixels are repeated outside the image, and nothing is clamped: values below 0 and above 1 go through.",
+                       "Outside the image the blurs read by the edge mode: Stretch repeats the edge pixels, so a constant keeps its value to the border, while Black darkens the border. Nothing is clamped: values below 0 and above 1 go through.",
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_BLOOM,
         .minorVersion = 0,
@@ -102,7 +102,7 @@ struct BloomOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Passes,
     };
@@ -116,8 +116,8 @@ struct BloomOp {
     bool isIdentity(const Params& params,
                     const PassContext& context) const;
 
-    /// BloomKernels' passes from slot 0 into slot 1, with the nearest pixel repeated, and its GPU
-    /// recorder.
+    /// BloomKernels' passes from slot 0 into slot 1, reading outside the image by the context's edge
+    /// mode, and its GPU recorder.
     PassList passes(const Params& params,
                     const PassContext& context) const;
 

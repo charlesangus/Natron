@@ -290,7 +290,7 @@ private:
  * corner of the render window. Caches its output only when its "cacheOutput" knob is set, so that by default every
  * renderRoI on it reaches render(). Fails when its "fail" knob is set, throws when its "throwInRender" knob is set,
  * and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks overlap. Its images are keyed by
- * frame only when its "frameVarying" knob is set.
+ * frame only when its "frameVarying" knob is set. Its edge mode is Black when its "blackEdge" knob is set, else Stretch.
  **/
 class CountingTestEffectBase
     : public NativeEffectBase {
@@ -303,6 +303,7 @@ public:
         , _cacheOutput()
         , _throwInRender()
         , _frameVarying()
+        , _blackEdge()
     {
     }
 
@@ -404,6 +405,14 @@ private:
         frameVarying->setDefaultValue(false);
         page->addKnob(frameVarying);
         _frameVarying = frameVarying;
+
+        KnobBoolPtr blackEdge = createKnob<KnobBool>(std::string("Black Edge"));
+        blackEdge->setName("blackEdge");
+        blackEdge->setAnimationEnabled(false);
+        blackEdge->setDefaultValue(false);
+        blackEdge->setIsMetadataSlave(true);
+        page->addKnob(blackEdge);
+        _blackEdge = blackEdge;
     }
 
     virtual StatusEnum getPreferredMetadataAt(double /*time*/,
@@ -414,6 +423,10 @@ private:
 
         if (frameVaryingKnob && frameVaryingKnob->getValue()) {
             metadata.setIsFrameVarying(true);
+        }
+        KnobBoolPtr blackEdgeKnob = _blackEdge.lock();
+        if (blackEdgeKnob && blackEdgeKnob->getValue()) {
+            metadata.setEdgeMode(EdgeMode::Black);
         }
 
         return eStatusOK;
@@ -500,6 +513,7 @@ private:
     KnobBoolWPtr _cacheOutput;
     KnobBoolWPtr _throwInRender;
     KnobBoolWPtr _frameVarying;
+    KnobBoolWPtr _blackEdge;
 };
 
 class CountingTestEffect

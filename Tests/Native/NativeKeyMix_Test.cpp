@@ -153,6 +153,7 @@ protected:
         EXPECT_TRUE(bool(source));
         if (source) {
             setParitySourceOrigin(source, originX, originY);
+            setBlackOutside(source, true);
         }
 
         return source;

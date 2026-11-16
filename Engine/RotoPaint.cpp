@@ -38,6 +38,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoObjectSelect.h"
@@ -736,6 +737,9 @@ RotoPaint::getRegionOfDefinition(U64 hash,
     }
     RectD maskRod;
     getNode()->getRotoContext()->getMaskRegionOfDefinition(time, view, &maskRod);
+    // The shapes are zero past their outlines, so their region keeps a zero border: reading
+    // past it under Stretch then repeats zero instead of a shape.
+    addOutsideColourBorder(getRenderMetadata(time, view)->getPixelAspectRatio(-1), scale, &maskRod);
     if ( rod->isNull() ) {
         *rod = maskRod;
     } else {

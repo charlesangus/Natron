@@ -33,6 +33,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
@@ -138,7 +139,8 @@ public:
      * @brief When inputNb is the source, at time and view: for a Passes op, outputRect
      * grown by the halo of the op's passes; for a Resample op that opts into the GPU,
      * resampleGpuSourceRoI(). For an Aux input of a Passes op, opPassesInputRoI(). For a Custom
-     * op, getOpGpuInputRoI() for any input. outputRect otherwise.
+     * op, getOpGpuInputRoI() for any input. outputRect otherwise. A region that misses a Stretch
+     * input then moves into it, as stretchGpuInputRoI() does.
      **/
     virtual RectI getGpuInputRoI(int inputNb,
                                  double time,
@@ -299,6 +301,44 @@ protected:
                                       RoIMap* ret) OVERRIDE;
 
     /**
+     * @brief Moves the regions of interest of Stretch inputs that miss their input into it, as
+     * clampStretchRegionsOfInterest() does, so a read past the edge has the edge to repeat.
+     * Under concatenation the regions are already in the space of the effect the input fetches
+     * from, and that effect's region bounds them.
+     **/
+    virtual void adjustInputRegionsOfInterest(double time,
+                                              const RenderScale& scale,
+                                              ViewIdx view,
+                                              const InputMatrixMap* transforms,
+                                              RoIMap* ret) OVERRIDE;
+
+    /**
+     * @brief The times a render at time and view reads input inputNb at, each read past its image
+     * by inputEdgeMode() at that time; the regions of interest of a Stretch input hold the edge
+     * band of its region at every one of them. time alone by default.
+     **/
+    virtual std::vector<double> getInputReadTimes(int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The edge mode the node reads inputNb under at time and view: for the source with the
+     * EdgeMode stage, the Edge Mode knob resolved against the source's mode; the input's own
+     * mode otherwise, Stretch with nothing connected.
+     **/
+    EdgeMode inputEdgeMode(int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief inputEdgeMode() of the source: the mode the op samples under, and with the EdgeMode
+     * stage the one the output carries.
+     **/
+    EdgeMode resolvedEdgeMode(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For an op with a matrix, the edge mode opResample() samples under; none otherwise.
+     **/
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
+                                                             ViewIdx view) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
      * @brief Where route() chooses an input, whatever the op kind, only that input at the time
      * it chooses, and no input where it answers Black; the default where it answers None.
      **/
@@ -321,7 +361,8 @@ protected:
     /**
      * @brief Where route() answers Black, RGBA float at the project format and PAR, as a node
      * with no input answers; the identity rule covers an Input answer, and None keeps the
-     * default derivation. A node that overrides this has no Black answer.
+     * default derivation. With the EdgeMode stage, a forced Edge Mode is the output's edge mode.
+     * A node with that stage that overrides this calls it first.
      **/
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
@@ -689,9 +730,7 @@ protected:
 
             return eStatusFailed;
         } else if constexpr (PIPELINE.op == OpKind::Passes) {
-            const typename OP::Params params = bake(args.time, args.view);
-
-            return runPassesCpu(*this, plan, args, _op.passes(params, getPassContext(args.time, args.view, args.mappedScale)));
+            return runPassesCpu(*this, plan, args, opPasses(args.time, args.view, args.mappedScale));
         } else if constexpr (PIPELINE.op == OpKind::Resample) {
             return runResampleCpu(*this, plan, args, opResample(args.time, args.view, args.mappedScale));
         } else if constexpr (PIPELINE.op == OpKind::Composite) {
@@ -743,8 +782,18 @@ private:
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         if constexpr (PIPELINE.op == OpKind::Passes) {
-            return _op.passes(bake(time, view), getPassContext(time, view, scale));
+            const PassContext context = getPassContext(time, view, scale);
+            PassList list = _op.passes(bake(time, view), context);
+            if constexpr (PIPELINE.stages.has(Stage::EdgeMode)) {
+                list.edgeMode = context.edgeMode;
+            }
+
+            return list;
         } else {
+            Q_UNUSED(time);
+            Q_UNUSED(view);
+            Q_UNUSED(scale);
+
             return PassList();
         }
     }
@@ -786,6 +835,9 @@ private:
                 if constexpr (requires { requires OP::kClipsSourceToRoI; }) {
                     request.clipSourceToRoI = true;
                 }
+            }
+            if constexpr (PIPELINE.stages.has(Stage::EdgeMode)) {
+                request.settings.edgeMode = resolvedEdgeMode(time, view);
             }
 
             return request;

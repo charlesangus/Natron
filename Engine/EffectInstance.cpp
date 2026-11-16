@@ -2560,6 +2560,7 @@ EffectInstance::tryConcatenateTransforms(double time,
                                          InputMatrixMap* inputTransforms)
 {
     bool canTransform = getNode()->getCurrentCanTransform();
+    const std::optional<EdgeMode> edgeMode = getConcatenationEdgeMode(time, view);
 
     //An effect might not be able to concatenate transforms but can still apply a transform (e.g CornerPinMasked)
     std::list<int> inputHoldingTransforms;
@@ -2618,6 +2619,10 @@ EffectInstance::tryConcatenateTransforms(double time,
                         im.newInputEffect = input;
                     }
                 } else if (inputCanTransform) {
+                    const std::optional<EdgeMode> inputEdgeMode = input->getConcatenationEdgeMode(time, view);
+                    if (edgeMode && inputEdgeMode && (*edgeMode != *inputEdgeMode)) {
+                        break;
+                    }
                     Transform::Matrix3x3 m;
                     inputToTransform.reset();
                     StatusEnum stat = input->getTransform_public(time, scale, draftRender, view, &inputToTransform, &m);
@@ -5230,17 +5235,25 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
 
 void
 EffectInstance::getRegionsOfInterest_public(double time,
-                                            const RenderScale & scale,
-                                            const RectD & outputRoD, //!< effect RoD in canonical coordinates
-                                            const RectD & renderWindow, //!< the region to be rendered in the output image, in Canonical Coordinates
+                                            const RenderScale& scale,
+                                            const RectD& outputRoD, //!< effect RoD in canonical coordinates
+                                            const RectD& renderWindow, //!< the region to be rendered in the output image, in Canonical Coordinates
                                             ViewIdx view,
-                                            RoIMap* ret)
+                                            RoIMap* ret,
+                                            const InputMatrixMapPtr& transforms,
+                                            double par,
+                                            std::map<int, EffectInstancePtr>* reroutesMap)
 {
     NON_RECURSIVE_ACTION();
     assert(outputRoD.x2 >= outputRoD.x1 && outputRoD.y2 >= outputRoD.y1);
     assert(renderWindow.x2 >= renderWindow.x1 && renderWindow.y2 >= renderWindow.y1);
 
     getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+    const bool transformed = transforms && reroutesMap;
+    if (transformed) {
+        transformInputRois(this, transforms, par, scale, ret, reroutesMap);
+    }
+    adjustInputRegionsOfInterest(time, scale, view, transformed ? transforms.get() : nullptr, ret);
 }
 
 FramesNeededMap
@@ -7480,6 +7493,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
     double projectPAR = projectFormat.getPixelAspectRatio();
 
     RectI firstOptionalInputFormat, firstNonOptionalInputFormat;
+    EdgeMode firstOptionalInputEdgeMode = EdgeMode::Stretch, firstNonOptionalInputEdgeMode = EdgeMode::Stretch;
 
     // Format: Take format from the first non optional input if any. Otherwise from the first optional input.
     // Otherwise fallback on project format
@@ -7509,11 +7523,13 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
             if (isOptional) {
                 if (!firstOptionalInputFormatSet && inputMetadata) {
                     firstOptionalInputFormat = inputMetadata->getOutputFormat();
+                    firstOptionalInputEdgeMode = inputMetadata->getEdgeMode();
                     firstOptionalInputFormatSet = true;
                 }
             } else {
                 if (!firstNonOptionalInputFormatSet && inputMetadata) {
                     firstNonOptionalInputFormat = inputMetadata->getOutputFormat();
+                    firstNonOptionalInputEdgeMode = inputMetadata->getEdgeMode();
                     firstNonOptionalInputFormatSet = true;
                 }
             }
@@ -7561,6 +7577,18 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
 
     metadata.setOutputFormat(outputFormat);
 
+    // The same input gives the format and the edge mode. A plug-in's clip preferences cannot
+    // express an edge mode, so an OpenFX effect starts from Stretch whatever its inputs say.
+    EdgeMode edgeMode = EdgeMode::Stretch;
+    if (!isOpenFX()) {
+        if (firstNonOptionalInputFormatSet) {
+            edgeMode = firstNonOptionalInputEdgeMode;
+        } else if (firstOptionalInputFormatSet) {
+            edgeMode = firstOptionalInputEdgeMode;
+        }
+    }
+    metadata.setEdgeMode(edgeMode);
+
     return eStatusOK;
 } // EffectInstance::getDefaultMetadataFromInputs
 
@@ -7595,6 +7623,9 @@ copyOutputMetadata(const NodeMetadata& from,
     }
     if (!defaults || (to->getIsContinuous() == defaults->getIsContinuous())) {
         to->setIsContinuous(from.getIsContinuous());
+    }
+    if (!defaults || (to->getEdgeMode() == defaults->getEdgeMode())) {
+        to->setEdgeMode(from.getEdgeMode());
     }
     to->setIsFrameVarying(to->getIsFrameVarying() || from.getIsFrameVarying());
 }
@@ -7696,6 +7727,16 @@ EffectInstance::applyIdentityRule(U64 hash,
     }
     std::shared_ptr<NodeMetadata> metadata = std::make_shared<NodeMetadata>(*own);
     copyOutputMetadata(*inputMetadata, defaults, metadata.get());
+    // An OpenFX effect resets the edge mode (getDefaultMetadataFromInputs()) even where the
+    // plug-in passes its input through; only the host's bypass of an inactive node forwards it.
+    if (isOpenFX()) {
+        const NodePtr node = getNode();
+        const RotoDrawableItemPtr rotoItem = node ? node->getAttachedRotoItem() : RotoDrawableItemPtr();
+        const bool bypassed = node && (node->isNodeDisabled(time) || (rotoItem && !rotoItem->isActivated(time)));
+        if (!bypassed) {
+            metadata->setEdgeMode(own->getEdgeMode());
+        }
+    }
 
     return metadata;
 }

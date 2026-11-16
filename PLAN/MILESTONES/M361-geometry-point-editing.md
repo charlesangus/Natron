@@ -50,31 +50,31 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
 
 ## Phase 361.3: Group classes and conversions (engine)
 
-- [ ] M361.P3.T1 — Group Promote and Expand helpers
+- [x] M361.P3.T1 — Group Promote and Expand helpers
   - files: `Engine/Geo/GeoGroupOps.h`/`.cpp` (new), `Tests/GeoGroupOps_Test.cpp`, `Tests/CMakeLists.txt`, `Engine/CMakeLists.txt`
   - approach: free functions on `GeoDetail` over element sets: point, edge and primitive bitsets, plus `GeoEdge` lists for edges. **Promote** converts between points, edges and primitives with an "entirely contained" flag. Points → primitives requires all of a primitive's points with the flag, any with it off. Primitives → points takes all their points. Edges → points takes the endpoints. Edges → primitives takes primitives using an edge. Points → edges takes edges with both ends with the flag, either end without. Primitives → edges takes all their edges. **Expand** grows (positive steps) or shrinks (negative) by topological neighbours through `GeoReverseTopology`: points through shared edges, primitives through shared edges, and edges through shared points. Shrinking removes elements on the set's boundary. Tombstoned elements are never returned.
   - verify: unit tests on a 4×4 grid — promoting a 2×2 point block to primitives gives one primitive with the flag and nine without; edges → points → edges round-trips a closed edge loop; expanding one centre point by 1 gives it plus its four edge neighbours; expand +1 then −1 of a 2×2 primitive block returns the block; deleted elements never appear.
   - size: M
 
-- [ ] M361.P3.T2 — Selection pattern encoder
+- [x] M361.P3.T2 — Selection pattern encoder
   - files: `Engine/Geo/GeoOpUtils.h`/`.cpp`, `Tests/GeoOpUtils_Test.cpp`
   - approach: `geoEncodePattern` turns a point, primitive or vertex element set into the shortest pattern in Houdini group syntax that `geoSelectElements` reads back. It coalesces runs into `A-B` and regular strides into `A-B:step`, and emits ascending space-separated terms. It turns a `GeoEdge` list into edge point paths (`p3-4-5`), chaining edges that share endpoints into one path. An empty set encodes as an empty pattern only when the caller asks for "everything". Otherwise it encodes as a pattern that selects nothing, which needs a documented token: add `^*` support to `geoSelectElements` if no such token exists.
   - verify: unit tests — for random sets over a 10k-element detail, `geoSelectElements(geoEncodePattern(s)) == s` for points, primitives and edges; `{0..9, 14}` encodes as `0-9 14`; `{0,2,4,6}` as `0-6:2`; a closed edge loop encodes as one path; the empty set round-trips as empty.
   - size: M
 
-- [ ] M361.P3.T3 — Group Type knob with "Guess from Group" and edges on Transform and Displace
+- [x] M361.P3.T3 — Group Type knob with "Guess from Group" and edges on Transform and Displace
   - files: `Engine/Geo/GeoOpUtils.h`/`.cpp` (`GeoGroupTypeEnum`, `geoGuessGroupType`), `Engine/Nodes/Geometry/GeoTransform.h`/`.cpp`, `Engine/Nodes/Geometry/GeoDisplace.h`/`.cpp`, `Engine/Nodes/Geometry/GeoCopyToPoints.h`/`.cpp`, `Tests/GeoTransform_Test.cpp`, `Tests/GeoDisplace_Test.cpp`, `Tests/GeoOpUtils_Test.cpp`
   - approach: extend `GeoGroupTypeEnum` with Guess and Edges. `geoGuessGroupType(detail, pattern, allowed, fallback)` resolves the class: an edge path term means edges; a group name or glob means the class whose group names it matches (primitive groups first, then point, then edge, as Houdini does); `@attr` means the attribute's class; plain numbers mean the node's fallback. Mixed classes set an error naming the terms. Each operator that accepts more than one class gets a "Group Type" choice knob (script name `groupType`, label "Group Type"), default Guess: `GeoTransform` (points, edges, primitives), `GeoDisplace` (points, edges) and `GeoCopyToPoints` (its current classes). Edges on Transform and Displace resolve to the edges' endpoints through M361.P3.T1's Promote and then run the point path. The other single-class operators are unchanged.
   - verify: unit tests — Guess picks primitives for a primitive group name, edges for `p0-1-2` and the fallback for `0-5`; mixed `p0-1 myPrimGroup` errors; `GeoTransform` with an edge group moves exactly the edges' points; `GeoDisplace` with Edges displaces only those points; Guess with an empty group transforms everything.
   - size: M
 
-- [ ] M361.P3.T4 — `GeoDelete` edges and Group Type
+- [x] M361.P3.T4 — `GeoDelete` edges and Group Type
   - files: `Engine/Nodes/Geometry/GeoDelete.h`/`.cpp`, `Tests/GeoDelete_Test.cpp`
   - approach: give `GeoDelete` the Group Type knob from M361.P3.T3 (Guess, points, edges, primitives). Edges follow Blast SOP's Edges type: each polygon using a deleted edge is opened at it, so a closed polygon becomes an open polyline starting after the cut and a polygon cut twice splits into polylines. A polygon whose edges are all deleted is removed, and open polylines lose the deleted segment. Attributes carry to the resulting primitives and vertices, and tombstoning follows M54.P1.T5. "Delete non-selected" applies to edges too. Confirm the Blast behaviour against Houdini first (Scope assumption), and record any difference in `## Decisions`.
   - verify: unit tests — deleting one edge of a closed quad gives one open 4-point polyline; deleting two opposite edges gives two 2-point polylines; deleting all four removes the primitive; primitive and vertex attributes carry over; point count is unchanged.
   - size: M
 
-- [ ] M361.P3.T5 — `GeoGroup` Expand and Promote modes
+- [x] M361.P3.T5 — `GeoGroup` Expand and Promote modes
   - files: `Engine/Nodes/Geometry/GeoGroup.h`/`.cpp`, `Engine/Nodes/Geometry/docs/GeoGroup.md`, `Tests/GeoGroup_Test.cpp`
   - approach: add two sections to `GeoGroup` after its existing tests. **Expand** (toggle `expand`, `expandSteps` integer, negative shrinks) applies M361.P3.T1's Expand to the group the node produces. **Promote** (toggle `promote`, `promoteTo` choice of points/edges/primitives, `entirelyContained` default off, `keepOriginal` default off) converts the produced group into a group of the target class with the same name, as Group Promote SOP does. Labels match the script names. Only group storage detaches.
   - verify: unit tests — a one-point group with Expand 2 on a grid gives the expected diamond; Promote of a 2×2 point block to primitives with and without `entirelyContained` gives one and nine primitives; `keepOriginal` leaves the point group in place; all other attribute pages stay shared.
@@ -82,13 +82,13 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
 
 ## Phase 361.1: Picking and editing
 
-- [ ] M361.P1.T1 — 3D-view point, edge and primitive picking
+- [x] M361.P1.T1 — 3D-view point, edge and primitive picking
   - files: `Gui/SceneViewport.cpp`/`.h`, `Gui/ActionShortcuts.h`, `Tests/gui/m361_geo_pick.py`
   - approach: point, edge and primitive pick modes using `UsdImagingGLEngine::TestIntersection` with the pick target set to `pickPoints`, `pickEdges` or `pickFaces` (Storm renders the id AOVs for this), with click and marquee select (`resolveUnique` for the marquee). Selection is stored as global point numbers, primitive numbers or `GeoEdge` point pairs, mapped from (prim path, index) through the partition table; an edge hit's `edgeIndex` is resolved to its two points through the mesh's face-vertex topology (Scope assumption). Highlighting uses Storm's own selection: an `HdSelection` with point, edge or element-index highlighting through the engine's selection tracker, plus guide prims (purpose `guide`) in the viewer-private session layer for point markers and the marquee. Nothing is drawn by a second GL pass outside Hydra. Mode buttons sit in the Viewer's 3D toolbar, and their shortcuts register under `kShortcutGroupViewer3D` with defaults that avoid existing Viewer keys. Component display and picking exist **only in the geometry context**, when the Viewer's active input is geometry. In the scene context, picking stays at prim level (M19.P2.T3, M232 - Scene Selection To Nodes), as in Solaris. Packed primitives pick as whole primitives and don't pick in edge mode.
   - verify: GUI script — clicking a corner of a `GeoPrimitive` cube selects that point and highlights it; clicking an edge selects that point pair; marquee selects the expected set in each mode; a packed `USDToGeo` output picks whole packed primitives; viewing a `GeoToUSD` downstream of the same cube offers prim picking only, with no component modes.
   - size: L
 
-- [ ] M361.P1.T2 — `GeoEdit` node with viewport drag
+- [x] M361.P1.T2 — `GeoEdit` node with viewport drag
   - files: `Engine/Nodes/Geometry/GeoEdit.h`/`.cpp`/`.reg.inc`, `Gui/SceneViewport.cpp` (drag → knob writeback), `Tests/GeoEdit_Test.cpp`
   - approach: the Edit SOP. It stores a sparse map from global point number to offset, and from packed primitive number to transform delta, in a serialized knob (a `KnobString` holding a compact text encoding is acceptable; a table knob if one fits). It also records the input's point and primitive counts at edit time. Render applies the offsets to `P` (detaching only the touched pages) and multiplies the packed primitives' transforms. It then recomputes `N` if present. In the viewport, with the node selected and points, edges or packed primitives picked (M361.P1.T1), M20.P2.T1's translate gizmo drags them, and release writes one knob change (one undo entry). An edge selection drags the edges' endpoints, and a non-packed primitive selection drags its points. Topology guard: if the input's point or primitive count differs from the recorded count, skip all edits and set a node warning.
   - verify: unit test — an edit map round-trips through serialization and moves exactly the listed points; a packed primitive's edit moves its transform only; changing the upstream point count triggers the warning and leaves points unmodified. Manual — drag creates one undo entry; dragging an edge moves its two points.
@@ -96,19 +96,19 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
 
 ## Phase 361.4: Selection workflow in the Viewer
 
-- [ ] M361.P4.T1 — Live selection: mode-switch conversion, grow, shrink and convert
+- [x] M361.P4.T1 — Live selection: mode-switch conversion, grow, shrink and convert
   - files: `Gui/SceneViewport.cpp`/`.h`, `Gui/ActionShortcuts.h`, `Tests/gui/m361_geo_selection.py`
   - approach: the Viewer holds one live geometry selection (class plus set) for the displayed detail. Switching pick mode converts it with M361.P3.T1's Promote, entirely-contained on. Grow, Shrink and "Convert to Points/Edges/Primitives" actions apply Expand ±1 and Promote, and register under `kShortcutGroupViewer3D` with defaults that avoid existing Viewer keys. When the detail changes, numbers past the new count are dropped and nothing else is remapped (SOP behaviour). The selection is exposed through one accessor so M337 - Geometry Spreadsheet can sync with it later.
   - verify: GUI script — select one grid point, Grow twice → the expected diamond is highlighted; switch to primitive mode → only fully covered primitives remain; Shrink returns the previous set; deleting points upstream drops out-of-range numbers without error.
   - size: M
 
-- [ ] M361.P4.T2 — Tab-create a geometry node from the selection
+- [x] M361.P4.T2 — Tab-create a geometry node from the selection
   - files: `Gui/SceneViewport.cpp`, `Gui/TabMenuBridge.cpp`/`.h`, `Tests/gui/m361_geo_tab_create.py`
   - approach: Tab in the Viewer's 3D view in the geometry context opens the node creation menu (through `TabMenuBridge`, as the node graph does). Choosing a geometry node inserts it after the node feeding the Viewer's active input, rewires that input's downstream links through it, and points the Viewer at it. If the node has a `group` knob, the live selection is converted to the node's accepted class (edges kept where the node's Group Type allows them, else converted per M361.P3.T1), encoded with M361.P3.T2, and written into `group`, with `groupType` set to the selection's class. The whole insertion is one undo entry. An empty selection leaves `group` empty.
   - verify: GUI script — select edges of a grid, Tab-create `GeoTransform` → it sits between the source and the Viewer with `group` = the edge path and Group Type = Edges; Tab-create `GeoSubdivide` from a point selection → its group holds the promoted primitives; one undo removes the node and restores the links.
   - size: L
 
-- [ ] M361.P4.T3 — Reselect for the current node
+- [x] M361.P4.T3 — Reselect for the current node
   - files: `Gui/SceneViewport.cpp`, `Gui/ActionShortcuts.h`, `Tests/gui/m361_geo_reselect.py`
   - approach: "Reselect for Current Node" (default backtick, `kShortcutGroupViewer3D`) applies when exactly one geometry node with a `group` knob is selected. It loads that node's current group into the live selection, decoded with `geoSelectElements` on the node's input detail and shown in the matching pick mode. Enter then writes the new pattern and `groupType` back into that node (one undo entry), the same encoding as M361.P4.T2. Escape cancels. Enter without reselect keeps the Tab-create path. In any other state the shortcut does nothing and the status line says why.
   - verify: GUI script — with a `GeoDelete` selected, backtick shows its primitive group highlighted; adding two primitives and Enter writes the extended pattern; undo restores the old one; with only a `GeoMerge` selected (no group knob) the shortcut does nothing and the status line explains.
@@ -116,7 +116,7 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
 
 ## Phase 361.2: Integration and scale
 
-- [ ] M361.P2.T1 — Geometry pipeline integration test in CI
+- [x] M361.P2.T1 — Geometry pipeline integration test in CI
   - files: `Tests/GeoPipeline_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: headless graph — `GeoPrimitive`(grid) → `GeoTransform` → `GeoGroup`(bbox, then Expand 1 and Promote to primitives) → `GeoDelete` → `GeoDisplace`(constant) → `GeoNormals` → `GeoWrangle`(`@P.y += 0.1`) → `GeoEdit`(one point) → `GeoToUSD` → `USDMerge`(with `USDRead`) → `USDWrite`. Assert the exported mesh's point count, one edited point's position, and `normals`. Also `USDToGeo`(unpacked) of the same export equals the pre-bridge detail after defragment. A second chain is the SOP Modify round trip: `USDRead` → `USDToGeo`(packed) → `GeoTransform` → `GeoToUSD`(Scene input connected) → `USDWrite`. Assert the source prims moved at their original paths and the export has no extra prims. A third is scatter-instancing: `GeoScatter` → `GeoCopyToPoints`(Pack and Instance) → `GeoToUSD` → `USDWrite`, asserting one `PointInstancer` with the scattered count. A fourth deletes an edge group with `GeoDelete` and asserts the exported mesh's point and face counts match deleting the edges' points.
   - verify: test green in `build-and-test`.
@@ -150,3 +150,5 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
   - A selection that converts to nothing is written as `^*` (selects nothing), not an empty pattern (everything).
   - Accepted classes come from new `NodeSpec` fields (`geoGroupKnob`, `geoGroupClasses`, `geoGroupTypeKnob`).
   - GeoCopyToPoints' `targetGroup` is not filled.
+
+- 2026-11-16 — Release gate green at d9ef56647 (run 43895026302: ctest all legs; GUI m361_geo_selection 28/28, m361_geo_tab_create 44/44, m361_geo_reselect 30/30, m376_geometry_display 50/50; m361_geo_pick 51/51 on the --from-run re-run after the script gave USDToGeo a prim pattern). P2.T2 waits on GPU-host bench numbers (tools/bench/geo_scale.py). PR into F15 waits until F4 lands.

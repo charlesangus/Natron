@@ -141,3 +141,4 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
 - 2026-11-13 — Switching pick mode converts the live selection, points → primitives keeping only fully covered ones (user, grill).
 - 2026-11-13 — Stays one milestone rather than splitting the engine work into a separate F15 - Native Geometry member (user, grill).
 - 2026-11-13 — Confirmed (user, grill): Tab-create inserts the node after the one feeding the Viewer's active input and points the Viewer at it; pick-mode buttons sit in the 3D toolbar with shortcut-editor defaults that avoid existing Viewer keys; `GeoEdit` with an edge selection drags the edges' points.
+- 2026-11-16 — **Worked ahead of unmet Deps (user):** started before F4 - Heavy Scene Viewer lands, stacked on M376 - Geometry Display's branch (F4 and F15 merged in). The PR into F15 opens only after F4 lands, M376 merges into F15, and this branch is rebased onto F15.

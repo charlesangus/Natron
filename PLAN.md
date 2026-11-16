@@ -182,7 +182,7 @@ future core work has solid ground to build on.
 | M336 | Heavy Scene Acceptance | doing | M329, M330, M331, M332 | bosley-executor | E9 | F4 | uat | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |
 | M401 | 3D Viewer Breadcrumbs | done | M231, M232, M328, M332 | bosley-native-nodes | E9 | F4 | | [M401-3d-viewer-breadcrumbs.md](PLAN/MILESTONES/M401-3d-viewer-breadcrumbs.md) |
 | M423 | USDPrune Isolate Mode | todo | M381 |  | E9 | | | [M423-usdprune-isolate-mode.md](PLAN/MILESTONES/M423-usdprune-isolate-mode.md) |
-| M337 | Geometry Spreadsheet | todo | M54, M358, M361, M333 |  | E9 | F15 | | [M337-geometry-spreadsheet.md](PLAN/MILESTONES/M337-geometry-spreadsheet.md) |
+| M337 | Geometry Spreadsheet | doing | M54, M358, M361, M333 | bosley-executor | E9 | F15 | | [M337-geometry-spreadsheet.md](PLAN/MILESTONES/M337-geometry-spreadsheet.md) |
 | M233 | Live Node Textures | done | M19, M20 | bosley-native-nodes | E9 | | | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
 | M234 | Camera Projection Nodes | done | M227, M233 | bosley-native-nodes | E9 | | | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | | | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
@@ -216,7 +216,7 @@ future core work has solid ground to build on.
 | M358 | Geometry Bridges And Display | done | M54, M52 | | E9 | F15 | | [M358-geometry-bridges-and-display.md](PLAN/MILESTONES/M358-geometry-bridges-and-display.md) |
 | M359 | Geometry Operators | done | M54 | | E9 | F15 | | [M359-geometry-operators.md](PLAN/MILESTONES/M359-geometry-operators.md) |
 | M360 | Geometry Kernel Language | done | M54 | | E9 | F15 | | [M360-geometry-kernel-language.md](PLAN/MILESTONES/M360-geometry-kernel-language.md) |
-| M361 | Geometry Point Editing | todo | M358, M359, M360, M376 |  | E9 | F15 | | [M361-geometry-point-editing.md](PLAN/MILESTONES/M361-geometry-point-editing.md) |
+| M361 | Geometry Point Editing | doing | M358, M359, M360, M376 | bosley-executor | E9 | F15 | | [M361-geometry-point-editing.md](PLAN/MILESTONES/M361-geometry-point-editing.md) |
 | M362 | Geometry Operators II | todo | M359, M360 |  | E9 | F21 | | [M362-geometry-operators-ii.md](PLAN/MILESTONES/M362-geometry-operators-ii.md) |
 | M363 | Geometry Display Extras | todo | M358, M376 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
 | M402 | Geometry Loops | todo | M180, M181, M190, M359, M360 |  | E22 | F18 | | [M402-geometry-loops.md](PLAN/MILESTONES/M402-geometry-loops.md) |

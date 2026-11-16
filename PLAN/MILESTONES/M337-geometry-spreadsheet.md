@@ -42,3 +42,4 @@ Acceptance sketch:
 - 2026-11-08 — **Houdini's layout, virtualised (user):** class tabs, a column per component, expandable array cells, packed intrinsics, group filter and worker-built sort.
 - 2026-11-08 — **Selection syncs both ways (user);** this adds M361 - Geometry Point Editing as a dependency.
 - 2026-11-08 — **Joined F15 - Native Geometry (user);** stays a stub until its blockers land (user).
+- 2026-11-16 — **Worked ahead of unmet Deps (user):** started before F4 - Heavy Scene Viewer lands, stacked on M376 - Geometry Display's branch (F4 and F15 merged in) via M361 - Geometry Point Editing's branch. The PR into F15 opens only after F4 lands, M376 merges into F15, and this branch is rebased onto F15.

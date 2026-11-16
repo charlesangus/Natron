@@ -78,7 +78,6 @@ public:
     std::map<QString, ViewerToolButton*> toolButtons;
     ColoredFrame* mainContainer;
     QHBoxLayout* mainContainerLayout;
-    Label* nodeLabel;
     QWidget* widgetsContainer;
     QVBoxLayout* widgetsContainerLayout;
 
@@ -87,7 +86,7 @@ public:
                              ViewerTab* viewer)
         : publicInterface(pi)
         , node(node)
-        , viewer( viewer->getViewer() )
+        , viewer(viewer->getViewer())
         , viewerTab(viewer)
         , knobsMapping()
         , currentRole()
@@ -96,7 +95,6 @@ public:
         , toolButtons()
         , mainContainer(0)
         , mainContainerLayout(0)
-        , nodeLabel(0)
         , widgetsContainer(0)
         , widgetsContainerLayout(0)
     {
@@ -177,14 +175,11 @@ NodeViewerContext::createGui()
         _imp->mainContainerLayout = new QHBoxLayout(_imp->mainContainer);
         _imp->mainContainerLayout->setContentsMargins(0, 0, 0, 0);
         _imp->mainContainerLayout->setSpacing(0);
-        _imp->nodeLabel = new Label(QString::fromUtf8( node->getNode()->getLabel().c_str() ), _imp->mainContainer);
-        QObject::connect( node->getNode().get(), SIGNAL(labelChanged(QString)), _imp->nodeLabel, SLOT(setText(QString)) );
         _imp->widgetsContainer = new QWidget(_imp->mainContainer);
         _imp->widgetsContainerLayout = new QVBoxLayout(_imp->widgetsContainer);
         _imp->widgetsContainerLayout->setContentsMargins(0, 0, 0, 0);
         _imp->widgetsContainerLayout->setSpacing(0);
         _imp->mainContainerLayout->addWidget(_imp->widgetsContainer);
-        _imp->mainContainerLayout->addWidget(_imp->nodeLabel);
         _imp->mainContainerLayout->addStretch();
         onNodeColorChanged( node->getCurrentColor() );
         QObject::connect( node.get(), SIGNAL(colorChanged(QColor)), this, SLOT(onNodeColorChanged(QColor)) );
@@ -262,9 +257,6 @@ addSpacer(QBoxLayout* layout)
 void
 NodeViewerContext::onNodeColorChanged(const QColor& color)
 {
-    QString labelStyle = QString::fromUtf8("Label { color: rgb(%1, %2, %3); }").arg( color.red() ).arg( color.green() ).arg( color.blue() );
-
-    _imp->nodeLabel->setStyleSheet(labelStyle);
     _imp->mainContainer->setFrameColor(color);
 }
 
@@ -339,7 +331,10 @@ NodeViewerContextPrivate::createKnobs(const KnobsVec& knobsOrdered)
             label = new KnobClickableLabel(QString::fromUtf8( inViewerLabel.c_str() ) + QLatin1String(":"), ret, widgetsContainer);
             QObject::connect( label, SIGNAL(clicked(bool)), ret.get(), SIGNAL(labelClicked(bool)) );
         }
-        ret->createGUI(lastRowContainer, 0, label, 0 /*warningIndicator*/, lastRowLayout, makeNewLine, 0, knobsOnSameLine);
+        // Never "on a new line" to createGUI(): that would keep the label out of the row's layout, and
+        // in the viewer a row's last knob carries the new line flag, so its label would float over
+        // the first row.
+        ret->createGUI(lastRowContainer, 0, label, 0 /*warningIndicator*/, lastRowLayout, false, 0, knobsOnSameLine);
 
         if (makeNewLine) {
             knobsOnSameLine.clear();

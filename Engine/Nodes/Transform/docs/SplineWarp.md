@@ -128,10 +128,14 @@ it, is selected with a select tool, the viewer shows the transform handle; dragg
 item's transform, setting keys when auto-keying is on. Editing the curve's points wins over the
 handle where they overlap.
 
-**Follow Vectors:** the viewer's toolbar row and the Follow Vectors group (Follow Source, Follow
-Model, Follow Backward To Start, Follow Backward One, Follow Forward One, Follow Forward To End,
-Follow Range, Follow In, Follow Out, Follow Reduce, Follow Tolerance, Follow Confidence Threshold)
-key the selection along the motion vectors of the node picked as Follow Source, as in Roto. Any
+**Follow Vectors:** the viewer's follow row and the Follow Vectors group (Follow Model, Follow
+Backward To Start, Follow Backward One, Follow Forward One, Follow Forward To End, Follow Range,
+Follow In, Follow Out, Follow Reduce, Follow Tolerance, Follow Confidence Threshold) key the
+selection along the motion vectors connected to the Vectors input, such as a VectorGenerator's, as
+in Roto. The Vectors input needs the forward motion layer, and the backward one for following
+backward; only the follow reads it, so it never changes the render. The viewer shows the follow
+row only while the Vectors input is connected; its buttons are icons, and their tool tips name
+the action and its keyboard shortcut, which the Shortcut Editor sets. Any
 selected curve follows, source or destination: following one end of a link leaves the other
 curve where it is, and the link stays. A correspondence selected with the correspondence tool
 follows too, keyed at its own frames: each end moves with the picture under it and is keyed where

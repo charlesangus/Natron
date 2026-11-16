@@ -81,7 +81,7 @@ try:
 
     def section_follow(scene):
         gt.section("row")
-        count = yield from check_row("SplineWarp")
+        count = yield from check_row("SplineWarp", scene.roto, scene.gen)
         report("NOTE SplineWarp: %d of %d row controls found" % (count, len(HINTS)))
 
         gt.section("follow")

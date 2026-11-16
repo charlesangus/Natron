@@ -32,20 +32,15 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/Project.h"
+#include "Engine/PluginActionShortcut.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/VectorFollowBake.h"
 #include "Engine/VectorFollowTask.h"
-#include "Engine/VectorSampler.h"
 
 #define kFollowParamGroup "followVectors"
 #define kFollowParamGroupLabel "Follow Vectors"
-
-#define kFollowParamSource "followSource"
-#define kFollowParamSourceLabel "Follow Source"
-#define kFollowParamSourceHint "The node whose motion vectors the shapes follow. Only nodes that output the forward motion layer and do not depend on this node are listed. A node with no backward motion layer cannot be followed backward, and between keys it is followed forward only."
 
 #define kFollowParamModel "followModel"
 #define kFollowParamModelLabel "Follow Model"
@@ -125,7 +120,7 @@ struct VectorFollowControls::Imp {
 public:
     EffectInstance* host;
     RotoCurveInteract* interact;
-    KnobChoicePtr source;
+    const int vectorsInput;
     KnobChoicePtr model;
     KnobButtonPtr backwardToStart;
     KnobButtonPtr backwardOne;
@@ -137,14 +132,36 @@ public:
     KnobBoolPtr reduce;
     KnobDoublePtr tolerance;
     KnobDoublePtr confidenceThreshold;
+    std::vector<KnobIWPtr> viewerKnobs;
+    QMetaObject::Connection inputConnection;
     std::unique_ptr<VectorFollowTask> task;
     std::function<std::list<VectorFollowPointsPtr>()> selectedPoints;
 
     Imp(EffectInstance* host_,
-        RotoCurveInteract* interact_)
+        RotoCurveInteract* interact_,
+        int vectorsInput_)
         : host(host_)
         , interact(interact_)
+        , vectorsInput(vectorsInput_)
     {
+    }
+
+    NodePtr vectorsSource() const
+    {
+        const NodePtr node = host->getNode();
+
+        return node ? node->getGuiInput(vectorsInput) : NodePtr();
+    }
+
+    // Hidden rather than disabled: without vectors the row would only take up the viewer.
+    void refreshViewerKnobs()
+    {
+        const bool connected = bool(vectorsSource());
+        for (const KnobIWPtr& weak : viewerKnobs) {
+            if (const KnobIPtr knob = weak.lock()) {
+                knob->setInViewerContextSecret(!connected);
+            }
+        }
     }
 
     void warn(const std::string& message) const
@@ -195,10 +212,9 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
 
         return;
     }
-    const std::string sourceName = source->getActiveEntry().id;
-    params.source = sourceName.empty() ? NodePtr() : host->getApp()->getNodeByFullySpecifiedName(sourceName);
+    params.source = vectorsSource();
     if (!params.source) {
-        warn(tr("Choose a %1 first.").arg(QString::fromUtf8(kFollowParamSourceLabel)).toStdString());
+        warn(tr("Connect the %1 input first.").arg(QString::fromUtf8(kVectorFollowInputLabel)).toStdString());
 
         return;
     }
@@ -262,13 +278,15 @@ VectorFollowControls::Imp::followSelection(VectorFollowDirection direction,
 }
 
 VectorFollowControls::VectorFollowControls(EffectInstance* host,
-                                           RotoCurveInteract* interact)
-    : _imp(new Imp(host, interact))
+                                           RotoCurveInteract* interact,
+                                           int vectorsInput)
+    : _imp(new Imp(host, interact, vectorsInput))
 {
 }
 
 VectorFollowControls::~VectorFollowControls()
 {
+    QObject::disconnect(_imp->inputConnection);
 }
 
 void
@@ -288,20 +306,25 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
 
     const auto addToGroup = [&](const KnobIPtr& knob,
                                 const char* name,
-                                const char* label,
+                                const char* viewerLabel,
                                 const char* hint,
                                 bool inViewer) {
         knob->setName(name);
-        knob->setInViewerContextLabel(QString::fromUtf8(label));
+        if (viewerLabel) {
+            knob->setInViewerContextLabel(QString::fromUtf8(viewerLabel));
+        }
         knob->setHintToolTip(std::string(hint));
         knob->setEvaluateOnChange(false);
         knob->setAnimationEnabled(false);
         knob->setHashExempt(true);
         group->addKnob(knob);
         if (inViewer) {
+            knob->setInViewerContextSecret(true);
             host->addKnobToViewerUI(knob);
+            _imp->viewerKnobs.push_back(knob);
         }
     };
+    // Icon only in the viewer: the tool tip names the action.
     const auto makeButton = [&](const char* name,
                                 const char* label,
                                 const char* hint,
@@ -310,15 +333,10 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
         button->setIconLabel(icon);
         button->setIsPersistent(false);
         button->setInViewerContextCanHaveShortcut(true);
-        addToGroup(button, name, label, hint, true);
+        addToGroup(button, name, nullptr, hint, true);
 
         return button;
     };
-
-    KnobChoicePtr source = AppManager::createKnob<KnobChoice>(host, std::string(kFollowParamSourceLabel));
-    source->setHostCanAddOptions(false);
-    addToGroup(source, kFollowParamSource, kFollowParamSourceLabel, kFollowParamSourceHint, true);
-    _imp->source = source;
 
     KnobChoicePtr model = AppManager::createKnob<KnobChoice>(host, std::string(kFollowParamModelLabel));
     {
@@ -382,6 +400,16 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
     addToGroup(out, kFollowParamOut, kFollowParamOutLabel, kFollowParamOutHint, false);
     out->setDefaultAllDimensionsEnabled(false);
     _imp->out = out;
+
+    if (const NodePtr node = host->getNode()) {
+        Imp* imp = _imp.get();
+        _imp->inputConnection = QObject::connect(node.get(), &Node::inputChanged, host, [imp](int inputNb) {
+            if (inputNb == imp->vectorsInput) {
+                imp->refreshViewerKnobs();
+            }
+        });
+    }
+    _imp->refreshViewerKnobs();
 }
 
 bool
@@ -406,39 +434,27 @@ VectorFollowControls::onKnobChanged(KnobI* k)
     } else if (k == imp.forwardToEnd.get()) {
         toRangeEnd = true;
     } else if (k != imp.forwardOne.get()) {
-        return k == imp.source.get() || k == imp.model.get() || k == imp.reduce.get() || k == imp.tolerance.get() || k == imp.confidenceThreshold.get() || k == imp.in.get() || k == imp.out.get();
+        return k == imp.model.get() || k == imp.reduce.get() || k == imp.tolerance.get() || k == imp.confidenceThreshold.get() || k == imp.in.get() || k == imp.out.get();
     }
 
-    refreshSources();
     imp.followSelection(direction, toRangeEnd);
 
     return true;
 }
 
-void
-VectorFollowControls::refreshSources()
+NodePtr
+VectorFollowControls::getVectorsSource() const
 {
-    if (!_imp->source || !_imp->host->getApp()) {
-        return;
-    }
-    const NodePtr host = _imp->host->getNode();
-    const double time = _imp->host->getCurrentTime();
-    NodesList nodes;
-    _imp->host->getApp()->getProject()->getNodes_recursive(nodes, true);
+    return _imp->vectorsSource();
+}
 
-    std::vector<ChoiceOption> options;
-    std::string ignored;
-    for (const NodePtr& node : nodes) {
-        if ((node != host) && VectorSampler::checkSource(node, host, time, &ignored)) {
-            const std::string name = node->getFullyQualifiedName();
-            options.push_back(ChoiceOption(name, name, ""));
-        }
-    }
-    const ChoiceOption active = _imp->source->getActiveEntry();
-    _imp->source->populateChoices(options);
-    if (!active.id.empty()) {
-        _imp->source->setActiveEntry(active);
-    }
+void
+VectorFollowControls::getShortcuts(std::list<PluginActionShortcut>* shortcuts)
+{
+    shortcuts->push_back(PluginActionShortcut(kFollowParamBackwardToStart, kFollowParamBackwardToStartLabel));
+    shortcuts->push_back(PluginActionShortcut(kFollowParamBackwardOne, kFollowParamBackwardOneLabel));
+    shortcuts->push_back(PluginActionShortcut(kFollowParamForwardOne, kFollowParamForwardOneLabel));
+    shortcuts->push_back(PluginActionShortcut(kFollowParamForwardToEnd, kFollowParamForwardToEndLabel));
 }
 
 bool
@@ -504,7 +520,6 @@ VectorFollowControls::onItemMenuActionTriggered(const std::string& actionId,
             params.items.push_back(drawable);
         }
     }
-    refreshSources();
     _imp->follow(params, VectorFollowDirection::eForward, true);
 }
 

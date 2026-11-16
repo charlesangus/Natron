@@ -75,6 +75,12 @@ followControlsOf(const NodePtr& node)
     return hook ? hook->getVectorFollowControls() : NULL;
 }
 
+int
+vectorsInputOf(const NodePtr& node)
+{
+    return node->getInputNumberFromLabel(kVectorFollowInputLabel);
+}
+
 using PhaseHookSetter = void (*)(const std::function<void()>&);
 
 // Holds every follow's thread at the given hook, by default as its phase begins, until released. The
@@ -231,14 +237,11 @@ public:
     VectorFollowControls* startPanelFollow()
     {
         VectorFollowControls* follow = followControlsOf(_roto);
-        KnobChoicePtr source = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followSource"));
         KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followRange"));
         KnobIntPtr out = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followOut"));
-        if (!follow || !source || !range || !out) {
+        if (!follow || !range || !out || !_roto->connectInput(_generator, vectorsInputOf(_roto))) {
             return NULL;
         }
-        const std::string sourceName = _generator->getFullyQualifiedName();
-        source->setActiveEntry(ChoiceOption(sourceName, sourceName, ""));
         range->setValue(1, ViewSpec::all(), 0);
         out->setValue(12, ViewSpec::all(), 0);
         getApp()->getTimeLine()->seekFrame(5, false, NULL, eTimelineChangeReasonOtherSeek);
@@ -394,12 +397,10 @@ TEST_F(PyVectorFollowTest, APanelFollowRunsInTheBackgroundAndLeavesItsReport)
 {
     VectorFollowControls* follow = followControlsOf(_roto);
     ASSERT_TRUE(follow);
-    KnobChoicePtr source = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followSource"));
     KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followRange"));
     KnobIntPtr out = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followOut"));
-    ASSERT_TRUE(source && range && out);
-    const std::string sourceName = _generator->getFullyQualifiedName();
-    source->setActiveEntry(ChoiceOption(sourceName, sourceName, ""));
+    ASSERT_TRUE(range && out);
+    ASSERT_TRUE(_roto->connectInput(_generator, vectorsInputOf(_roto)));
     range->setValue(1, ViewSpec::all(), 0);
     out->setValue(12, ViewSpec::all(), 0);
     getApp()->getTimeLine()->seekFrame(5, false, NULL, eTimelineChangeReasonOtherSeek);
@@ -435,6 +436,60 @@ TEST_F(PyVectorFollowTest, APanelFollowRunsInTheBackgroundAndLeavesItsReport)
     EXPECT_FALSE(follow->isFollowing());
     expectScriptPasses("assert roto.getLastFollowReport() is None\n"
                        "assert not roto.isFollowingVectors()\n");
+}
+
+TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnlyWhileConnected)
+{
+    VectorFollowControls* follow = followControlsOf(_roto);
+    ASSERT_TRUE(follow);
+    const int vectors = vectorsInputOf(_roto);
+    ASSERT_GE(vectors, 0);
+    EXPECT_EQ(vectors, _roto->getNInputs() - 1);
+    EXPECT_TRUE(_roto->getEffectInstance()->isInputOptional(vectors));
+    EXPECT_FALSE(_roto->getEffectInstance()->isInputMask(vectors));
+    EXPECT_FALSE(bool(_roto->getKnobByName("followSource")));
+
+    const char* viewerKnobs[] = {
+        "followModel",
+        "followBackwardToStart",
+        "followBackwardOne",
+        "followForwardOne",
+        "followForwardToEnd",
+        "followReduce",
+        "followTolerance",
+        "followConfidenceThreshold",
+    };
+    const auto expectViewerSecret = [&](bool secret) {
+        for (const char* name : viewerKnobs) {
+            KnobIPtr knob = _roto->getKnobByName(name);
+            ASSERT_TRUE(bool(knob)) << name;
+            EXPECT_TRUE(_roto->getEffectInstance()->isInViewerUIKnob(knob)) << name;
+            EXPECT_EQ(knob->getInViewerContextSecret(), secret) << name;
+        }
+    };
+    for (const char* name : { "followBackwardToStart", "followBackwardOne", "followForwardOne", "followForwardToEnd" }) {
+        EXPECT_TRUE(_roto->getKnobByName(name)->getInViewerContextLabel().empty()) << name;
+    }
+
+    expectViewerSecret(true);
+    EXPECT_FALSE(follow->getVectorsSource());
+
+    _roto->clearPersistentMessage(false);
+    follow->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>(1, _bezier));
+    EXPECT_FALSE(follow->isFollowing());
+    ASSERT_TRUE(_roto->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    _roto->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.contains(QString::fromUtf8(kVectorFollowInputLabel))) << message.toStdString();
+
+    ASSERT_TRUE(_roto->connectInput(_generator, vectors));
+    expectViewerSecret(false);
+    EXPECT_EQ(follow->getVectorsSource(), _generator);
+
+    _roto->disconnectInput(vectors);
+    expectViewerSecret(true);
+    EXPECT_FALSE(follow->getVectorsSource());
 }
 
 // A headless test has no node GUI, so the viewer never hands RotoPaint a press: the host lock is

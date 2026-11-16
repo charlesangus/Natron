@@ -68,7 +68,7 @@ try:
     def section_rows_roto(scene):
         gt.section("rows-roto")
         yield from open_scene_roto(scene)
-        count = yield from check_row("Roto")
+        count = yield from check_row("Roto", scene.roto, scene.gen)
         models = [str(o) for o in param(scene.roto, "followModel").getOptions()]
         check(models == [MODEL_IDS[m] for m in MODELS], "Roto: the model menu offers %r (has %r)" % ([MODEL_IDS[m] for m in MODELS], models))
         shot("m219-row-roto.png", "Roto: the Follow Vectors row in the viewer, %d of %d controls found" % (count, len(HINTS)))
@@ -356,11 +356,9 @@ try:
         gt.section("forward-only")
         reset_shapes(scene.ctx)
         ensure_source(scene.roto, scene.forward_gen)
-        options = [str(o) for o in param(scene.roto, "followSource").getOptions()]
-        check(scene.forward_gen.getScriptName() in options, "the forward-only source is listed (%r)" % (options,))
-        check(scene.gen.getScriptName() in options, "the two-way source is listed (%r)" % (options,))
-        check(scene.read.getScriptName() not in options, "a node with no motion layers is not listed (%r)" % (options,))
-        check(scene.roto.getScriptName() not in options, "the host itself is not listed (%r)" % (options,))
+        connected = scene.roto.getInput(vectors_input(scene.roto))
+        check(connected is not None and connected.getScriptName() == scene.forward_gen.getScriptName(),
+              "the forward-only source feeds the Vectors input")
 
         set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
@@ -445,7 +443,7 @@ try:
         keep(ctx)
         rg.activate()
         yield from settle()
-        count = yield from check_row("RotoPaint")
+        count = yield from check_row("RotoPaint", paint, scene.gen)
         models = [str(o) for o in param(paint, "followModel").getOptions()]
         check(models == [MODEL_IDS[m] for m in MODELS], "RotoPaint: the model menu offers %r (has %r)" % ([MODEL_IDS[m] for m in MODELS], models))
         shot("m219-row-rotopaint.png", "RotoPaint: the Follow Vectors row in the viewer, %d of %d controls found" % (count, len(HINTS)))

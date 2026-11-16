@@ -50,6 +50,7 @@
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/VectorFollowBake.h"
+#include "Engine/VectorFollowKnobs.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -301,6 +302,43 @@ public:
     BezierPtr _destination;
     SplineWarpLinkPtr _link;
 };
+
+TEST_F(SplineWarpFollowVectorsTest, TheVectorsInputFeedsOnlyTheFollowAndShowsItsViewerRow)
+{
+    EXPECT_EQ(_warpNode->getInputNumberFromLabel(kVectorFollowInputLabel), kSplineWarpInputVectors);
+    EffectInstancePtr effect = _warpNode->getEffectInstance();
+    EXPECT_TRUE(effect->isInputOptional(kSplineWarpInputVectors));
+    EXPECT_FALSE(effect->isInputMask(kSplineWarpInputVectors));
+    EXPECT_FALSE(bool(_warpNode->getKnobByName("followSource")));
+
+    const char* viewerKnobs[] = {
+        "followModel",
+        "followBackwardToStart",
+        "followBackwardOne",
+        "followForwardOne",
+        "followForwardToEnd",
+        "followReduce",
+        "followTolerance",
+        "followConfidenceThreshold",
+    };
+    const auto expectViewerSecret = [&](bool secret) {
+        for (const char* name : viewerKnobs) {
+            KnobIPtr knob = _warpNode->getKnobByName(name);
+            ASSERT_TRUE(bool(knob)) << name;
+            EXPECT_EQ(knob->getInViewerContextSecret(), secret) << name;
+        }
+    };
+    expectViewerSecret(true);
+
+    ASSERT_TRUE(_warpNode->connectInput(_vectors, kSplineWarpInputVectors));
+    expectViewerSecret(false);
+    const FramesNeededMap frames = effect->getFramesNeeded_public(effect->getRenderHash(), kStart, ViewIdx(0), 0);
+    EXPECT_EQ(frames.count(kSplineWarpInputVectors), 0u);
+    EXPECT_EQ(frames.count(kSplineWarpInputSource), 1u);
+
+    _warpNode->disconnectInput(kSplineWarpInputVectors);
+    expectViewerSecret(true);
+}
 
 TEST_F(SplineWarpFollowVectorsTest, ASourceCurveFollowsWhileItsDestinationStays)
 {

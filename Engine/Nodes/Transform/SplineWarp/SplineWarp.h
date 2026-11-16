@@ -81,12 +81,14 @@
 
 #define kSplineWarpInputSource 0
 #define kSplineWarpInputMask 1
+#define kSplineWarpInputVectors 2
 
 NATRON_NAMESPACE_ENTER
 
 inline constexpr InputSpec kSplineWarpInputs[] = {
     InputSpec { .label = "Source" },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = kVectorFollowInputLabel, .role = InputRole::Aux, .optional = true },
 };
 
 inline constexpr NodeSpec kSplineWarpNodeSpec = {
@@ -189,7 +191,6 @@ public:
     virtual bool onOverlayPenDoubleClicked(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool onOverlayKeyDown(double time, const RenderScale& renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) OVERRIDE FINAL;
     virtual bool onOverlayKeyUp(double time, const RenderScale& renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) OVERRIDE FINAL;
-    virtual bool onOverlayFocusGained(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
     virtual bool onOverlayFocusLost(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
     virtual void onInteractViewportSelectionCleared() OVERRIDE FINAL;
     virtual void onInteractViewportSelectionUpdated(const RectD& rectangle, bool onRelease) OVERRIDE FINAL;
@@ -305,6 +306,13 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
+    /**
+     * @brief The frames StagedImageEffect::getFramesNeeded() lists, without the Vectors input,
+     * which only the follow tools read.
+     **/
+    virtual FramesNeededMap getFramesNeeded(double time,
+                                            ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -334,7 +342,8 @@ private:
      **/
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The outputMask plane is made from the cookie cutters alone.
+    // The outputMask plane is made from the cookie cutters alone, and only the follow tools read
+    // the Vectors input.
     virtual bool readsGpuInput(int inputNb,
                                const ImageLayerDesc& plane,
                                double time,

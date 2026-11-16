@@ -36,9 +36,13 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/RotoCurvePanelHook.h"
 
+#define kVectorFollowInputLabel "Vectors"
+#define kVectorFollowInputHint "The motion vectors the shapes follow, such as a VectorGenerator's. The node must output the forward motion layer, and the backward one too for following backward. Only the follow tools read this input; it does not change the render."
+
 NATRON_NAMESPACE_ENTER
 
 class RotoCurveInteract;
+struct PluginActionShortcut;
 class VectorFollowPoints;
 class VectorFollowTask;
 typedef std::shared_ptr<VectorFollowPoints> VectorFollowPointsPtr;
@@ -46,13 +50,16 @@ struct VectorFollowReport;
 
 /**
  * @brief The Follow Vectors group of a curve host: its knobs, what its buttons do with the host's
- * selection, the context menu entry of its curve panel and the follow they run. Main thread.
+ * selection, the context menu entry of its curve panel and the follow they run. The vectors come
+ * from the host's Vectors input, and the viewer shows the group's controls only while that input
+ * is connected. Main thread.
  **/
 class VectorFollowControls
     : public RotoCurvePanelHook {
 public:
     VectorFollowControls(EffectInstance* host,
-                         RotoCurveInteract* interact);
+                         RotoCurveInteract* interact,
+                         int vectorsInput);
 
     virtual ~VectorFollowControls();
 
@@ -61,8 +68,11 @@ public:
     // True when k is one of this group's knobs.
     bool onKnobChanged(KnobI* k);
 
-    // Nodes appear and lose their layers at any time and a choice knob cannot ask before it opens.
-    void refreshSources();
+    // The node connected to the host's Vectors input, or null.
+    NodePtr getVectorsSource() const;
+
+    // The shortcut editor entries of the follow buttons, which have no default keys.
+    static void getShortcuts(std::list<PluginActionShortcut>* shortcuts);
 
     bool isFollowing() const;
     void abortFollow(bool wait);

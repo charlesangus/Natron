@@ -11,9 +11,9 @@ import re
 import subprocess
 import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QTreeWidget, QTreeWidgetItemIterator
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QTreeWidget, QTreeWidgetItemIterator, QWidget
 
 import guitest as gt
 import roto_gui as rg
@@ -72,7 +72,6 @@ MATRIX_PERSPECTIVE_TOL = 1e-3
 ABORT_AFTER_KEYS = 4
 
 HINTS = {
-    "source": "The node whose motion vectors the shapes follow",
     "model": "How a shape follows the vectors",
     "backwardToStart": "back to the start of the range",
     "backwardOne": "Follows the selection one frame back",
@@ -82,6 +81,15 @@ HINTS = {
     "tolerance": "How far, in pixels, removing keys",
     "threshold": "A vector with less confidence than this",
 }
+BUTTON_KEYS = ["backwardToStart", "backwardOne", "forwardOne", "forwardToEnd"]
+BUTTON_LABELS = {
+    "backwardToStart": "Follow Backward To Start",
+    "backwardOne": "Follow Backward One",
+    "forwardOne": "Follow Forward One",
+    "forwardToEnd": "Follow Forward To End",
+}
+VECTORS_INPUT_LABEL = "Vectors"
+THRESHOLD_LABEL = "Follow Confidence Threshold:"
 MODELS = ["Per Point", "Translate", "Affine", "Perspective"]
 # getOptions() returns the option ids, not the labels the menu shows.
 MODEL_IDS = {"Per Point": "perPoint", "Translate": "translate", "Affine": "affine", "Perspective": "perspective"}
@@ -278,15 +286,22 @@ def press(node, name):
     param(node, name).trigger()
     QApplication.processEvents()
 
+def vectors_input(node):
+    for i in range(node.getMaxInputCount()):
+        if str(node.getInputLabel(i)) == VECTORS_INPUT_LABEL:
+            return i
+    require(False, "%s has a %s input" % (node.getScriptName(), VECTORS_INPUT_LABEL))
+
 def ensure_source(node, source):
-    """Chooses source in the picker. The list is only refreshed by a press or by focusing the viewer, so a press
-    with nothing selected (which only warns) refreshes it first."""
-    p = param(node, "followSource")
-    if source.getScriptName() not in [str(o) for o in p.getOptions()]:
-        press(node, "followForwardOne")
-    options = [str(o) for o in p.getOptions()]
-    require(source.getScriptName() in options, "the Follow Source picker lists %s (has %r)" % (source.getScriptName(), options))
-    p.setValue(options.index(source.getScriptName()))
+    """Connects source to node's Vectors input."""
+    index = vectors_input(node)
+    current = node.getInput(index)
+    if current is None or current.getScriptName() != source.getScriptName():
+        require(node.connectInput(index, source), "connect %s to the %s input of %s" % (source.getScriptName(), VECTORS_INPUT_LABEL, node.getScriptName()))
+    QApplication.processEvents()
+
+def disconnect_vectors(node):
+    node.disconnectInput(vectors_input(node))
     QApplication.processEvents()
 
 def wait_follow(scene, label, timeout, on_tick=None):
@@ -404,13 +419,67 @@ def on_screen(w):
     screen = QGuiApplication.primaryScreen().geometry()
     return w.width() > 0 and w.height() > 0 and screen.contains(centre) and screen.contains(top_left)
 
-def check_row(host_label):
+def viewer_labels():
+    found = []
+    for w in QApplication.allWidgets():
+        try:
+            if isinstance(w, QLabel) and w.isVisible() and rg.ancestor_of_class(w, "ViewerTab") is not None:
+                found.append(w)
+        except RuntimeError:
+            continue
+    return found
+
+def global_rect(w):
+    return QRect(w.mapToGlobal(QPoint(0, 0)), w.size())
+
+def check_row(host_label, node, source):
+    """With node's Vectors input disconnected the row is hidden; connecting source shows it, laid out
+    with the threshold's label in the row, over nothing else, icon-only buttons and no node name."""
+    disconnect_vectors(node)
+    yield ("sleep", SETTLE_MS)
+    ok = yield ("until", lambda: not row_widgets(), POLL_TIMEOUT_S)
+    check(ok, "%s: the viewer hides the Follow Vectors row while the Vectors input is disconnected (shown: %r)"
+          % (host_label, sorted(row_widgets())))
+
+    ensure_source(node, source)
     ok = yield ("until", lambda: len(row_widgets()) == len(HINTS), POLL_TIMEOUT_S)
     found = row_widgets()
     missing = sorted(set(HINTS) - set(found))
-    check(ok and not missing, "%s: the viewer shows the Follow Vectors row (missing: %r)" % (host_label, missing))
+    check(ok and not missing, "%s: the viewer shows the Follow Vectors row once the Vectors input is connected (missing: %r)" % (host_label, missing))
     hidden = sorted(k for k, w in found.items() if not on_screen(w))
     check(not hidden, "%s: every control of the row is on screen (off screen: %r)" % (host_label, hidden))
+
+    for key in BUTTON_KEYS:
+        button = found.get(key)
+        if button is None:
+            continue
+        text = button.text() if hasattr(button, "text") else ""
+        check(text == "", "%s: the %s button shows no text (has %r)" % (host_label, key, text))
+        tip = html.unescape(re.sub(r"<[^>]*>", " ", button.toolTip()))
+        check(BUTTON_LABELS[key] in tip and "Keyboard shortcut" in tip,
+              "%s: the %s tool tip names the action and its shortcut (%r)" % (host_label, key, tip))
+    labels = [str(lab.text()) for lab in viewer_labels()]
+    stray = [t for t in labels if any(t.startswith(BUTTON_LABELS[k]) for k in BUTTON_KEYS)]
+    check(not stray, "%s: no text label sits by the follow buttons (%r)" % (host_label, stray))
+
+    node_label = str(node.getLabel())
+    named = [t for t in labels if t.strip() == node_label]
+    check(not named, "%s: the viewer shows no node-name label (%r)" % (host_label, named))
+
+    threshold = [lab for lab in viewer_labels() if str(lab.text()) == THRESHOLD_LABEL]
+    check(len(threshold) == 1, "%s: the viewer shows one %r label (found %d)" % (host_label, THRESHOLD_LABEL, len(threshold)))
+    anchor = found.get("forwardOne")
+    if threshold and anchor is not None:
+        label = threshold[0]
+        row = anchor.parentWidget()
+        check(label.parentWidget() is row, "%s: the threshold label is in the follow row" % host_label)
+        inside = global_rect(row).contains(global_rect(label))
+        check(inside, "%s: the threshold label %r lies inside the follow row %r" % (host_label, global_rect(label), global_rect(row)))
+        others = [w for w in row.findChildren(QWidget) if w is not label and w.isVisible() and w.parentWidget() is row]
+        others += [w for w in found.values() if w.parentWidget() is not row]
+        overlaps = sorted(set(gt.class_name(w) + ":" + (w.toolTip() or "")[:40] for w in others
+                              if global_rect(w).intersects(global_rect(label))))
+        check(not overlaps, "%s: the threshold label overlaps no other control (%r)" % (host_label, overlaps))
     return len(found)
 
 

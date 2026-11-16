@@ -244,6 +244,9 @@ SplineWarp::getInputHint(int inputNb) const
     if (inputNb == kSplineWarpInputSource) {
         return tr("The image to warp.").toStdString();
     }
+    if (inputNb == kSplineWarpInputVectors) {
+        return tr(kVectorFollowInputHint).toStdString();
+    }
 
     return EffectInstance::getInputHint(inputNb);
 }
@@ -585,7 +588,7 @@ SplineWarp::initializeKnobs()
     _ui->connectToCurveContext();
     _ui->createViewerButtonKnobs(page);
     _ui->createDisplayKnobs(page);
-    _vectorFollow.reset(new VectorFollowControls(this, _ui.get()));
+    _vectorFollow.reset(new VectorFollowControls(this, _ui.get(), kSplineWarpInputVectors));
     _vectorFollow->createKnobs(page);
     _vectorFollow->setSelectedPointsProvider([this]() {
         std::list<VectorFollowPointsPtr> points;
@@ -1059,6 +1062,7 @@ SplineWarp::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
     RotoCurveInteract::getViewerButtonShortcuts(shortcuts);
     SplineWarpInteract::getToolbarShortcuts(shortcuts);
     RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
+    VectorFollowControls::getShortcuts(shortcuts);
 }
 
 void
@@ -1172,18 +1176,6 @@ SplineWarp::onOverlayFocusLost(double /*time*/,
     }
 
     return _ui->onOverlayFocusLost();
-}
-
-bool
-SplineWarp::onOverlayFocusGained(double /*time*/,
-                                 const RenderScale& /*renderScale*/,
-                                 ViewIdx /*view*/)
-{
-    if (_vectorFollow) {
-        _vectorFollow->refreshSources();
-    }
-
-    return false;
 }
 
 void
@@ -1751,6 +1743,10 @@ SplineWarp::getRegionsOfInterest(double time,
     StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
 
     EffectInstancePtr source = getInput(kSplineWarpInputSource);
+    const EffectInstancePtr vectors = getInput(kSplineWarpInputVectors);
+    if (vectors && (vectors != source) && (vectors != getInput(kSplineWarpInputMask))) {
+        ret->erase(vectors);
+    }
     if (!source) {
         return;
     }
@@ -1792,6 +1788,16 @@ SplineWarp::getRegionsOfInterest(double time,
     }
     (*ret)[source] = region;
 } // SplineWarp::getRegionsOfInterest
+
+FramesNeededMap
+SplineWarp::getFramesNeeded(double time,
+                            ViewIdx view)
+{
+    FramesNeededMap ret = StagedImageEffect::getFramesNeeded(time, view);
+    ret.erase(kSplineWarpInputVectors);
+
+    return ret;
+}
 
 bool
 SplineWarp::isOpIdentity(double time,
@@ -2184,6 +2190,10 @@ SplineWarp::readsGpuInput(int inputNb,
                           double time,
                           ViewIdx view) const
 {
+    if (inputNb == kSplineWarpInputVectors) {
+        return false;
+    }
+
     return (inputNb != kSplineWarpInputSource) || !isOutputMaskPlane(plane, time, view);
 }
 

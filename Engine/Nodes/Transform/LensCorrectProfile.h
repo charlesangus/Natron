@@ -163,6 +163,12 @@ struct Request {
 Profile build(const lfLens& lens, const Request& request);
 
 /**
+ * @brief Whether a position Profile::map() gives is an answer: finite and short of the huge
+ * values lensfun returns where the model has no solution.
+ **/
+bool answered(float x, float y);
+
+/**
  * @brief The scale build() applies when request.scale is 0.
  **/
 float autoScale(const lfLens& lens, const Request& request);

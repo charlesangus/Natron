@@ -33,6 +33,7 @@
 #include <optional>
 
 #include "Engine/Image.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuKernelRegistry.h"
@@ -63,9 +64,10 @@ bool
 renderCpu(const ImagePtr& dst,
           const RectI& roi,
           std::span<const ImagePtr> images,
-          std::span<const double> weights)
+          std::span<const double> weights,
+          std::span<const EdgeMode> edgeModes)
 {
-    if (!dst || (dst->getBitDepth() != eImageBitDepthFloat) || images.empty() || (images.size() != weights.size())) {
+    if (!dst || (dst->getBitDepth() != eImageBitDepthFloat) || images.empty() || (images.size() != weights.size()) || (images.size() != edgeModes.size())) {
         return false;
     }
     for (const ImagePtr& image : images) {
@@ -76,10 +78,12 @@ renderCpu(const ImagePtr& dst,
     const std::vector<float> blends = stepBlends(weights);
     const int nComps = (int)dst->getComponentsCount();
     std::vector<int> comps(images.size(), 0);
+    std::vector<RectI> bounds(images.size());
     std::vector<std::optional<Image::ReadAccess>> access(images.size());
     for (std::size_t k = 0; k < images.size(); ++k) {
         if (images[k]) {
             comps[k] = std::min(nComps, (int)images[k]->getComponentsCount());
+            bounds[k] = images[k]->getBounds();
             access[k].emplace(images[k].get());
         }
     }
@@ -93,7 +97,9 @@ renderCpu(const ImagePtr& dst,
             for (int c = 0; c < nComps; ++c) {
                 float result = 0.f;
                 for (std::size_t k = 0; k < images.size(); ++k) {
-                    const float* p = access[k] ? (const float*)access[k]->pixelAt(x, y) : nullptr;
+                    int sx = 0;
+                    int sy = 0;
+                    const float* p = (access[k] && EdgeSample::pixel(x, y, bounds[k], edgeModes[k], &sx, &sy)) ? (const float*)access[k]->pixelAt(sx, sy) : nullptr;
                     const float v = (p && (c < comps[k])) ? p[c] : 0.f;
                     result = (k == 0) ? v : ((v - result) * blends[k - 1] + result);
                 }
@@ -131,10 +137,11 @@ recordFoldGpu(const GpuRenderArgs& args,
               Operation op,
               float factor,
               std::span<const float> blends,
+              std::span<const EdgeMode> edgeModes,
               GpuImageView* result)
 {
 #ifdef NATRON_HAVE_GPU
-    if (!result || views.empty() || (blends.size() + 1 != views.size()) || args.outputRect.isNull()) {
+    if (!result || views.empty() || (blends.size() + 1 != views.size()) || (edgeModes.size() != views.size()) || args.outputRect.isNull()) {
         return eStatusFailed;
     }
     // A null view keeps the default wrap view, whose empty bounds read zero.
@@ -143,14 +150,19 @@ recordFoldGpu(const GpuRenderArgs& args,
         if (views[k] && ((views[k]->nComps != args.output.nComps) || !toWrapView(*views[k], &wrapViews[k]))) {
             return eStatusFailed;
         }
+        wrapViews[k].edgeMode = edgeModes[k];
     }
     if (views.size() == 1) {
         if (!views[0]) {
             return eStatusFailed;
         }
-        *result = *views[0];
+        const RectI& b = views[0]->bounds;
+        const bool covers = (b.x1 <= args.outputRect.x1) && (b.y1 <= args.outputRect.y1) && (b.x2 >= args.outputRect.x2) && (b.y2 >= args.outputRect.y2);
+        if (covers || (edgeModes[0] == EdgeMode::Black)) {
+            *result = *views[0];
 
-        return eStatusOK;
+            return eStatusOK;
+        }
     }
 
     const gpu::GpuWrapRect output { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
@@ -172,24 +184,31 @@ recordFoldGpu(const GpuRenderArgs& args,
     gpu::GpuWrapStep step;
     step.output = output;
     step.nComps = nComps;
-    for (std::size_t k = 1; k < wrapViews.size(); ++k) {
+    // A lone view that does not cover the output is copied over it by a step that keeps the
+    // result as it reads, the maximum of the view with itself, so its edge is repeated as the CPU
+    // repeats it.
+    const bool lone = (wrapViews.size() == 1);
+    const std::size_t steps = lone ? 2 : wrapViews.size();
+    for (std::size_t k = 1; k < steps; ++k) {
         // The timeblend parameter block: blend, operation, factor.
-        uint32_t words[3] = { 0, (uint32_t)op, 0 };
-        std::memcpy(&words[0], &blends[k - 1], sizeof(float));
-        std::memcpy(&words[2], &factor, sizeof(float));
+        const float stepBlend = lone ? 0.f : blends[k - 1];
+        const float stepFactor = lone ? 1.f : factor;
+        uint32_t words[3] = { 0, (uint32_t)(lone ? eOperationMax : op), 0 };
+        std::memcpy(&words[0], &stepBlend, sizeof(float));
+        std::memcpy(&words[2], &stepFactor, sizeof(float));
         gpu::GpuBuffer* params = nullptr;
         if (!ctx.scratch(sizeof(words), params) || !params || !ctx.updateBuffer(*params, 0, std::as_bytes(std::span<const uint32_t>(words, 3)))) {
             return eStatusFailed;
         }
         step.result = (k == 1) ? wrapViews[0] : scratch[k & 1];
-        step.input = wrapViews[k];
+        step.input = lone ? wrapViews[0] : wrapViews[k];
         step.dst = scratch[(k - 1) & 1];
         if (!gpu::recordWrapStep(ctx, gpu::GpuKernelId::timeblend, step, params)) {
             return eStatusFailed;
         }
         ctx.computeBarrier();
     }
-    const int last = (int)((wrapViews.size() - 2) & 1);
+    const int last = (int)((steps - 2) & 1);
     result->buffer = scratchBuffers[last];
     result->byteOffset = 0;
     result->bounds = args.outputRect;
@@ -203,6 +222,7 @@ recordFoldGpu(const GpuRenderArgs& args,
     Q_UNUSED(op);
     Q_UNUSED(factor);
     Q_UNUSED(blends);
+    Q_UNUSED(edgeModes);
     Q_UNUSED(result);
 
     return eStatusFailed;
@@ -212,15 +232,16 @@ recordFoldGpu(const GpuRenderArgs& args,
 StatusEnum
 recordGpu(const GpuRenderArgs& args,
           std::span<const GpuImageView* const> views,
-          std::span<const double> weights)
+          std::span<const double> weights,
+          std::span<const EdgeMode> edgeModes)
 {
 #ifdef NATRON_HAVE_GPU
-    if (views.empty() || (views.size() != weights.size()) || args.outputRect.isNull()) {
+    if (views.empty() || (views.size() != weights.size()) || (views.size() != edgeModes.size()) || args.outputRect.isNull()) {
         return eStatusFailed;
     }
     const std::vector<float> blends = stepBlends(weights);
     GpuImageView folded;
-    if (recordFoldGpu(args, views, eOperationAverage, 1.f, blends, &folded) != eStatusOK) {
+    if (recordFoldGpu(args, views, eOperationAverage, 1.f, blends, edgeModes, &folded) != eStatusOK) {
         return eStatusFailed;
     }
     gpu::GpuWrap wrap;
@@ -228,6 +249,7 @@ recordGpu(const GpuRenderArgs& args,
     if (!toWrapView(args.output, &wrap.dst) || (views[0] && !toWrapView(*views[0], &wrap.src)) || !toWrapView(folded, &foldedView)) {
         return eStatusFailed;
     }
+    wrap.src.edgeMode = edgeModes[0];
     wrap.output = gpu::GpuWrapRect { args.outputRect.x1, args.outputRect.y1, args.outputRect.x2, args.outputRect.y2 };
     wrap.nComps = (uint32_t)args.output.nComps;
 
@@ -236,6 +258,7 @@ recordGpu(const GpuRenderArgs& args,
     Q_UNUSED(args);
     Q_UNUSED(views);
     Q_UNUSED(weights);
+    Q_UNUSED(edgeModes);
 
     return eStatusFailed;
 #endif

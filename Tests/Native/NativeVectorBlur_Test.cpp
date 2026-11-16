@@ -57,6 +57,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Filter/VectorBlur.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Plugin.h"
@@ -478,6 +479,8 @@ protected:
         EXPECT_TRUE(node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get()));
         if (node && source) {
             connectNodes(source, node, kVectorBlurInputSource, true);
+            // The test source is black past its frame, and its own bit says Stretch.
+            EXPECT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
         }
 
         return node;

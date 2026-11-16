@@ -958,10 +958,12 @@ struct IErodeDilateSpec {
                        "Where the Map is white the element has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
                        "and in between a size in between; a fractional size blends the results of the sizes either side of it, so the result changes smoothly with the Map. "
                        "Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. "
-                       "Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the element has the Size everywhere.\n"
+                       "Outside the Map image, the Map reads black before Invert Map and the remap when the Map input is black outside, and its nearest edge pixel when it stretches. With no Map connected, the element has the Size everywhere.\n"
                        "\n"
                        "The element is a rectangle of 2*|size|+1 pixels, as ErodeDilate's, or a disc (an ellipse when the two sizes differ). Where the X and Y sizes have opposite signs, "
-                       "X is filtered before Y, each by a line. At a whole Size where the Map is white, the rectangle gives ErodeDilate's result. The Mask and Mix limit the result as usual.",
+                       "X is filtered before Y, each by a line. At a whole Size where the Map is white, the rectangle gives ErodeDilate's result. The Mask and Mix limit the result as usual.\n"
+                       "\n"
+                       "Outside the image the element reads by the Edge Mode: Stretch repeats the edge pixels, so a constant keeps its value to the border, while Black erodes the border towards black.",
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_IERODEDILATE,
         .icon = NATRON_IMAGES_PATH "NativeNodes/IErodeDilate.png",
@@ -969,7 +971,7 @@ struct IErodeDilateSpec {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Passes,
     };
@@ -1270,6 +1272,7 @@ const uint32_t kGpuMapConnected = 1;
 const uint32_t kGpuMapRead = 2;
 const uint32_t kGpuMapInvert = 4;
 const uint32_t kGpuMapSmooth = 8;
+const uint32_t kGpuMapEdgeBlack = 16;
 
 // Mirrors MorphParams in Kernels/ierodedilate.slang, which has no padding between members.
 struct IErodeDilateGpuParams {
@@ -1293,8 +1296,9 @@ struct IErodeDilateGpuParams {
     uint32_t outHeight;
     uint32_t dstOffset;
     uint32_t dstStride;
+    uint32_t edgeMode;
 };
-static_assert(sizeof(IErodeDilateGpuParams) == 80);
+static_assert(sizeof(IErodeDilateGpuParams) == 84);
 static_assert(offsetof(IErodeDilateGpuParams, srcX1) == 32);
 static_assert(offsetof(IErodeDilateGpuParams, outX1) == 56);
 
@@ -1379,7 +1383,8 @@ recordIErodeDilateGpu(const PassGpuIO& io,
                       const IErodeDilateParams& params,
                       const RenderScale& scale,
                       bool mapConnected,
-                      int mapChannel)
+                      int mapChannel,
+                      EdgeMode mapEdgeMode)
 {
     namespace K = IErodeDilateKernels;
     gpu::GpuRecordContext& ctx = io.context;
@@ -1417,7 +1422,8 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     }
 
     IErodeDilateGpuConstants k {};
-    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
+    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u)
+        | ((mapEdgeMode == EdgeMode::Black) ? kGpuMapEdgeBlack : 0u);
     k.exponent = params.map.exponent;
     k.outside = mapConnected ? params.map.remap(0.f) : 1.f;
     k.blackRx = axisX.black;
@@ -1472,6 +1478,7 @@ recordIErodeDilateGpu(const PassGpuIO& io,
     base.domWidth = (uint32_t)width;
     base.domHeight = (uint32_t)height;
     base.channels = (uint32_t)nComps;
+    base.edgeMode = gpu::gpuEdgeMode(io.edgeMode);
     const gpu::GpuBlurImage filtered = PassExec::toGpuBlurImage(io.filtered);
     base.outX1 = io.output.x1;
     base.outY1 = io.output.y1;
@@ -1725,10 +1732,14 @@ IErodeDilate::passes(const IErodeDilateParams& params,
                      const RenderScale& scale,
                      const MapRange& range,
                      const std::shared_ptr<const MapPlane>& map,
-                     const RectI& roi)
+                     const RectI& roi,
+                     EdgeMode edgeMode,
+                     const RectI& bound)
 {
     namespace K = IErodeDilateKernels;
     PassList list;
+
+    list.edgeMode = edgeMode;
     IErodeDilateAxis axisX;
     IErodeDilateAxis axisY;
     int stages[K::kStageCount];
@@ -1738,6 +1749,14 @@ IErodeDilate::passes(const IErodeDilateParams& params,
 
     if (count == 0) {
         return list;
+    }
+    // Each stage reads past the scratch by repeating its edge, so only the stages before the
+    // last need what they computed past the source materialised.
+    list.stretchReachX = 0;
+    list.stretchReachY = 0;
+    for (int i = 0; i + 1 < count; ++i) {
+        list.stretchReachX += haloX[stages[i]];
+        list.stretchReachY += haloY[stages[i]];
     }
     // Slot 0 keeps the source; the stages alternate between slots 1 and 2.
     list.scratchSlots = (count > 1) ? 3 : 2;
@@ -1772,7 +1791,10 @@ IErodeDilate::passes(const IErodeDilateParams& params,
             growX += haloX[stages[later]];
             growY += haloY[stages[later]];
         }
-        const RectI window(roi.x1 - growX, roi.y1 - growY, roi.x2 + growX, roi.y2 + growY);
+        RectI window(roi.x1 - growX, roi.y1 - growY, roi.x2 + growX, roi.y2 + growY);
+        if (!PassExec::isEmptyRect(bound)) {
+            window = window.intersect(bound);
+        }
         const int x1 = window.x1;
         const int y1 = window.y1;
         const int width = window.width();
@@ -1866,7 +1888,10 @@ IErodeDilate::opPasses(double time,
                        const RenderScale& scale) const
 {
     const IErodeDilateParams params = getParams(time, view);
-    PassList list = passes(params, scale, fullMapRange(), std::shared_ptr<const MapPlane>(), RectI());
+    PassList list = passes(params, scale, fullMapRange(), std::shared_ptr<const MapPlane>(), RectI(), resolvedEdgeMode(time, view));
+    if (getInput(kIErodeDilateInputMap)) {
+        list.stretchVaries = passInputRoDPixels(*const_cast<IErodeDilate*>(this), kIErodeDilateInputMap, time, scale, view);
+    }
 
 #ifdef NATRON_HAVE_GPU
     bool capped = false;
@@ -1899,7 +1924,7 @@ IErodeDilate::recordGpu(const PassGpuIO& io,
         channel = -1;
     }
 
-    return recordIErodeDilateGpu(io, params, scale, connected, channel);
+    return recordIErodeDilateGpu(io, params, scale, connected, channel, inputEdgeMode(kIErodeDilateInputMap, time, view));
 #else
     Q_UNUSED(io);
     Q_UNUSED(time);
@@ -1975,17 +2000,40 @@ IErodeDilate::renderOp(const RenderActionArgs& args,
         return runPassesCpu(*this, plan, args, full);
     }
     const IErodeDilateParams params = getParams(args.time, args.view);
+    const EdgeMode edgeMode = resolvedEdgeMode(args.time, args.view);
     // The Map over every pixel whose radii a stage needs, as getRegionsOfInterest() asked for it;
-    // the tile's halos are those of its radii there.
-    const RectI window = mapWindow(params, args.mappedScale, fullMapRange(), args.roi);
+    // the tile's halos are those of its radii there. Under Stretch no stage computes a pixel past
+    // the full list's scratch, and every pixel of the halo past it clamps onto it, onto a pixel
+    // of the same Map value, so the range is the whole halo's.
+    RectI window = mapWindow(params, args.mappedScale, fullMapRange(), args.roi);
+    RectI scratch(0, 0, 0, 0);
+    if (edgeMode == EdgeMode::Stretch) {
+        if (!passScratchRect(*this, plan, full, args.roi, args.time, args.mappedScale, args.view, &scratch)) {
+            return eStatusFailed;
+        }
+        window = window.intersect(scratch);
+    }
     std::shared_ptr<MapPlane> map = std::make_shared<MapPlane>();
     const StatusEnum status = _map.read(this, kIErodeDilateInputMap, params.map, args.time, args.view, args.mappedScale, window, map.get());
     if (status != eStatusOK) {
         return status;
     }
     const MapRange range = map->tileRange(window);
+    RectI bound(0, 0, 0, 0);
+    if (edgeMode == EdgeMode::Stretch) {
+        PassList shape = passes(params, args.mappedScale, range, std::shared_ptr<const MapPlane>(), args.roi, edgeMode);
+        shape.stretchVaries = full.stretchVaries;
+        if (shape.empty()) {
+            return runPassesCpu(*this, plan, args, shape);
+        }
+        if (!passScratchRect(*this, plan, shape, args.roi, args.time, args.mappedScale, args.view, &bound)) {
+            return eStatusFailed;
+        }
+    }
+    PassList list = passes(params, args.mappedScale, range, map, args.roi, edgeMode, bound);
+    list.stretchVaries = full.stretchVaries;
 
-    return runPassesCpu(*this, plan, args, passes(params, args.mappedScale, range, map, args.roi));
+    return runPassesCpu(*this, plan, args, list);
 }
 
 bool

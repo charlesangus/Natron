@@ -739,24 +739,32 @@ USDCamera::knobChanged(KnobI* k,
     }
 
     if (k == reload.get()) {
-        std::vector<std::string> reloaded;
-        std::string error;
-        if (!_fileCamera->source.reload(file->getSingleFilePath(), &error, &reloaded)) {
-            setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
-        } else {
-            clearPersistentMessage(false);
-        }
-        purgeCaches();
-        // Same as USDRead: the Reload bracket hashed this node before purgeCaches() moved its
-        // hash inputs.
-        NodePtr node = getNode();
-        if (node) {
-            node->markHashDirty();
-        }
-        SceneFileSource::reloadOtherReaders(reloaded, file->getResolvedPath(), this);
-        // A camera gone from the file stays selected, so the node reports it.
-        refreshCameraChoices(false);
-        showFileValues(time);
+        // As USDRead: the node's hash moves once the layers hold the new content, and a reload
+        // that ends inside this call leaves the render to the Reload bracket.
+        const std::shared_ptr<bool> inCall = std::make_shared<bool>(true);
+        _fileCamera->source.reload(file->getSingleFilePath(), weak_from_this(), [this, inCall](bool ok, const std::string& error, const std::vector<std::string>& reloaded) {
+            KnobFilePtr reloadedFile = _file.lock();
+            if (!ok) {
+                setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
+            } else {
+                clearPersistentMessage(false);
+            }
+            purgeCaches();
+            // Same as USDRead: the Reload bracket hashed this node before purgeCaches() moved its
+            // hash inputs.
+            NodePtr node = getNode();
+            if (node) {
+                node->markHashDirty();
+            }
+            SceneFileSource::reloadOtherReaders(reloaded, reloadedFile ? reloadedFile->getResolvedPath() : std::string(), this);
+            // A camera gone from the file stays selected, so the node reports it.
+            refreshCameraChoices(false);
+            showFileValues(getCurrentTime());
+            if (!*inCall) {
+                evaluate(true, true);
+            }
+        });
+        *inCall = false;
 
         return true;
     }

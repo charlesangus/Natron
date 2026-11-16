@@ -328,23 +328,21 @@ SceneStage::syncProjections()
 {
     _unresolvedProjections.clear();
     const bool deferred = SceneOps::hasDeferredProjections(_payload);
-    if (!deferred && _projections->GetRootPrims().empty()) {
+    if (!deferred && (_projectionsDigest == 0)) {
         return;
     }
     // Resolved apart and swapped in whole: the stage hears of one change, and of none when the
-    // values are the ones it has.
+    // digest of what would be authored is the one it has.
     PXR_NS::SdfLayerRefPtr resolved = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-projections");
     if (!resolved) {
         return;
     }
-    if (deferred) {
-        SceneProjectionCameras::resolve(_stage, resolved, &_unresolvedProjections);
-    }
-    std::string wanted, current;
-    if (resolved->ExportToString(&wanted) && _projections->ExportToString(&current) && (wanted == current)) {
+    const U64 digest = deferred ? SceneProjectionCameras::resolve(_stage, resolved, &_unresolvedProjections, _projectionsDigest) : 0;
+    if (digest == _projectionsDigest) {
         return;
     }
     _projections->TransferContent(resolved);
+    _projectionsDigest = digest;
 }
 
 const std::vector<SceneProjectionCameras::Unresolved>&
@@ -446,6 +444,8 @@ SceneStage::setPreviewTransforms(const std::vector<std::pair<std::string, PXR_NS
     }
 
     ++_previewGeneration;
+    _previewDeltas = deltas;
+    _previewTimeCode = timeCode;
     PXR_NS::SdfChangeBlock block;
     for (PreviewPrim& preview : _preview) {
         for (const std::pair<std::string, PXR_NS::GfMatrix4d>& delta : deltas) {
@@ -468,6 +468,8 @@ void
 SceneStage::clearPreviewTransforms()
 {
     _previewRequested.clear();
+    _previewDeltas.clear();
+    _previewTimeCode = 0.;
     if (_preview.empty() || !_root) {
         _preview.clear();
 
@@ -861,6 +863,52 @@ double
 SceneStage::getLastLoadHoldMs() const
 {
     return _lastLoadHoldMs;
+}
+
+SceneStageSnapshot
+SceneStage::getSnapshot() const
+{
+    SceneStageSnapshot snapshot;
+    snapshot.payload = _payload;
+    snapshot.loadSet = getLoadSet();
+    if (!_preview.empty()) {
+        snapshot.previewDeltas = _previewDeltas;
+        snapshot.previewTimeCode = _previewTimeCode;
+    }
+
+    return snapshot;
+}
+
+bool
+SceneStage::syncTo(const SceneStageSnapshot& snapshot)
+{
+    if (!_stage) {
+        return false;
+    }
+    bool edited = sync(snapshot.payload);
+    // After the sync: the rules apply to the prims it composes.
+    const SceneLoadSetPtr& applied = getAppliedLoadSet();
+    const bool sameLoadSet = applied && snapshot.loadSet && ((applied == snapshot.loadSet) || (*applied == *snapshot.loadSet));
+    if (!sameLoadSet && applyLoadSet(snapshot.loadSet)) {
+        edited = true;
+    }
+    if (snapshot.previewDeltas.empty()) {
+        if (!_preview.empty()) {
+            clearPreviewTransforms();
+            edited = true;
+        }
+
+        return edited;
+    }
+    const bool same = (snapshot.previewDeltas == _previewDeltas) && (snapshot.previewTimeCode == _previewTimeCode);
+    if (!same || _preview.empty()) {
+        const bool had = !_preview.empty();
+        if (setPreviewTransforms(snapshot.previewDeltas, snapshot.previewTimeCode) || had) {
+            edited = true;
+        }
+    }
+
+    return edited;
 }
 
 NATRON_NAMESPACE_EXIT

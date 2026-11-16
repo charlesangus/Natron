@@ -894,6 +894,12 @@ UndoHistory::isCapturing() const
     return !_imp->replaying && !_imp->frames.empty();
 }
 
+bool
+UndoHistory::isReplaying() const
+{
+    return _imp->replaying;
+}
+
 quint64
 UndoHistory::getCaptureSerial() const
 {

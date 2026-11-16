@@ -1,5 +1,6 @@
 import pixelwrap;
 import resamplecore;
+import edgesample;
 
 // DirBlur::renderOp per pixel: the sum, or with Max the maximum, over the samples in the CPU's
 // order of each sample's factors times the source resampled through its matrix, as
@@ -14,7 +15,7 @@ import resamplecore;
 static const uint kDirBlurSourceValid = 1;
 static const uint kDirBlurMax = 2;
 static const uint kDirBlurClamp = 16;
-static const uint kDirBlurBlackOutside = 32;
+static const uint kDirBlurEdgeBlack = 32;
 static const uint kDirBlurIdentityNearest = 64;
 static const uint kDirBlurHeaderWords = 6;
 static const uint kDirBlurSampleWords = 16;
@@ -47,12 +48,11 @@ ResampleSource dirblurSource(uint flags)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = (flags & kDirBlurSourceValid) != 0 && wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.blackOutside = (flags & kDirBlurBlackOutside) != 0;
+    src.edgeMode = edgeModeFromFlags(flags, kDirBlurEdgeBlack);
     return src;
 }
 
-// Resampler's samplePixel for an affine matrix: z is 1, the Jacobian is the matrix's linear part,
-// zeroed along each axis the sample falls outside the source on, and along both with blackOutside.
+// Resampler's samplePixel for an affine matrix: z is 1, the Jacobian is the matrix's linear part.
 float4 dirblurSample(ResampleSource src, FilterSpec spec, bool clampOn, uint base, int2 p)
 {
     const FF h00 = dirblurFF(base);
@@ -69,19 +69,7 @@ float4 dirblurSample(ResampleSource src, FilterSpec spec, bool clampOn, uint bas
     const FF zero = ffMake(0.0, 0.0);
     if (spec.filter == kFilterImpulse)
         return interpolateSuper(src, spec, clampOn, fx, fy, zero, zero, zero, zero);
-    // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
-    bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
-    bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
-    if (src.blackOutside && !(xinside && yinside))
-    {
-        xinside = false;
-        yinside = false;
-    }
-    const FF Jxx = xinside ? h00 : zero;
-    const FF Jxy = xinside ? h01 : zero;
-    const FF Jyx = yinside ? h10 : zero;
-    const FF Jyy = yinside ? h11 : zero;
-    return interpolateSuper(src, spec, clampOn, fx, fy, Jxx, Jxy, Jyx, Jyy);
+    return interpolateSuper(src, spec, clampOn, fx, fy, h00, h01, h10, h11);
 }
 
 struct DirBlurOp : IPixelOp

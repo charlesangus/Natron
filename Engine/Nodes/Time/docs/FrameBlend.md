@@ -9,7 +9,9 @@ frameInterval)` frames, folded oldest first. Without an input the output is blac
    weighted mean, frame `i` weighing `f^(n - 1 - i)`. Min, Max, Sum and Product first scale the
    result by `f`, then take the minimum, maximum, sum or product with the new frame. Over lays
    the new frame over the scaled result, `in + (1 - a) * f * r`, with `a` the new frame's alpha.
-   `f = (1 - decay)^frameInterval`. Pixels outside a frame read zero.
+   `f = (1 - decay)^frameInterval`. Past its own region each frame reads as the input's edge
+   mode at that frame says: zero under Black, its edge pixels under Stretch, which also asks the
+   input for the edge band of a frame the window misses.
 2. **Output Count.** Writes `n` to alpha.
 3. **Stages.** Mask, mix and unprocessed channels blend against the input at the current frame.
 

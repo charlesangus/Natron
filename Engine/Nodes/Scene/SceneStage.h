@@ -45,6 +45,20 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief What a SceneStage composes, taken from one to make another compose the same: the payload
+ * last synced, the payloads it includes and the drag preview set over it. Copying it shares the
+ * payload's layers, it does not copy them.
+ **/
+struct SceneStageSnapshot {
+    ScenePayload payload;
+    // getLoadSet() of the stage; null for every payload.
+    SceneLoadSetPtr loadSet;
+    // The deltas and time code of the last setPreviewTransforms(), none while nothing is previewed.
+    std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>> previewDeltas;
+    double previewTimeCode = 0.;
+};
+
+/**
  * @brief A long-lived stage that follows a changing layer stack. It owns a private anonymous root
  * layer and one stage opened on it for its whole life; sync() points the root's sublayers at a
  * payload's layers and writes the payload's stage metadata onto the root, inside one change
@@ -218,6 +232,16 @@ public:
     // How long the last serviced batch held writeLocked.
     double getLastLoadHoldMs() const;
 
+    SceneStageSnapshot getSnapshot() const;
+
+    /**
+     * @brief Makes the stage compose what snapshot holds: sync() of its payload, its load set
+     * applied, then its preview set or cleared. Returns true if anything was edited. A stage opened
+     * with LoadNone reads no payload file the snapshot's set leaves out. Another stage composing the same
+     * layers shares the write domain of the layers read from files (SceneWriteBarrier).
+     **/
+    bool syncTo(const SceneStageSnapshot& snapshot);
+
 private:
     void syncProjections();
 
@@ -238,6 +262,8 @@ private:
     PXR_NS::SdfLayerRefPtr _root;
     // The strongest sublayer: the projection cameras the payload leaves for the stage to resolve.
     PXR_NS::SdfLayerRefPtr _projections;
+    // Of what resolve() last authored into _projections, 0 for nothing.
+    U64 _projectionsDigest = 0;
     std::vector<SceneProjectionCameras::Unresolved> _unresolvedProjections;
     PXR_NS::UsdStageRefPtr _stage;
     ScenePayload _payload;
@@ -262,6 +288,8 @@ private:
     std::atomic<U64> _loadEditCount { 0 };
     std::atomic<double> _lastLoadHoldMs { 0. };
     SceneLoadSetPtr _appliedLoadSet;
+    std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>> _previewDeltas;
+    double _previewTimeCode = 0.;
 };
 
 NATRON_NAMESPACE_EXIT

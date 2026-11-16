@@ -1432,6 +1432,15 @@ struct RotoStrokeItemPrivate
     }
 };
 
+/**
+ * @brief A node item knob's own state at one moment: its curves and raw static values.
+ **/
+struct RotoProxyKnobBaseline {
+    std::vector<std::shared_ptr<Curve>> curves;
+    std::vector<double> numbers;
+    std::vector<std::string> strings;
+};
+
 struct RotoContextPrivate
 {
     Q_DECLARE_TR_FUNCTIONS(RotoContext)
@@ -1520,8 +1529,17 @@ public:
     // The knobs createTransformKnobs() made, empty when the host has no Transform page.
     std::list<KnobIWPtr> transformKnobs;
 
-    ///This keeps track  of the items linked to the context knobs
     std::list<RotoItemPtr> selectedItems;
+    // Selected only because a layer holding them was: edits on the node's item knobs skip them.
+    std::list<RotoItemPtr> selectedThroughLayer;
+    // The selected item the node's item knobs show.
+    RotoDrawableItemWPtr mirroredItem;
+    // Above zero while the node's item knobs are made to show an item or an edit on them is
+    // replayed on the selected items, so that neither echoes back.
+    int proxySyncDepth = 0;
+    // Each node item knob's state when it last showed an item or had an edit replayed: what an edit
+    // is told apart by.
+    std::map<const KnobI*, RotoProxyKnobBaseline> proxyBaselines;
     RotoItemPtr lastInsertedItem;
     RotoItemPtr lastLockedItem;
     mutable QMutex doingNeatRenderMutex;

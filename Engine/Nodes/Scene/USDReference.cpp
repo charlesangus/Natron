@@ -239,23 +239,42 @@ USDReference::reloadFile()
     KnobFilePtr file = _file.lock();
     const std::string path = SceneNodeAuthoring::getAnchoredFilePath(file);
     PXR_NS::SdfLayerHandle open = path.empty() ? PXR_NS::SdfLayerHandle() : PXR_NS::SdfLayer::Find(path);
-    std::string error;
-
+    // As USDRead: the node's hash moves once the layers hold the new content, and a reload that
+    // ends inside this call leaves the render to the Reload bracket.
+    const std::shared_ptr<bool> inCall = std::make_shared<bool>(true);
+    const std::weak_ptr<EffectInstance> self = weak_from_this();
+    const auto finish = [this, self, inCall](bool ok,
+                                             const std::string& error) {
+        const EffectInstancePtr alive = self.lock();
+        if (!alive) {
+            return;
+        }
+        if (!ok) {
+            setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
+        } else {
+            clearPersistentMessage(false);
+        }
+        KnobFilePtr reloadedFile = _file.lock();
+        if (reloadedFile) {
+            reloadedFile->invalidateFileStamp();
+        }
+        invalidateSceneLayer();
+        clearActionsCache();
+        NodePtr node = getNode();
+        if (node) {
+            node->markHashDirty();
+        }
+        if (!*inCall) {
+            evaluate(true, true);
+        }
+    };
     // A file no stage has open yet is read fresh when it is first composed.
-    if (open && !SceneOps::reloadFileLayers(SceneOps::getOpenFileLayers(PXR_NS::SdfLayerRefPtr(open)), &error)) {
-        setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
+    if (open) {
+        SceneOps::requestFileLayerReload(SceneOps::getOpenFileLayers(PXR_NS::SdfLayerRefPtr(open)), finish);
     } else {
-        clearPersistentMessage(false);
+        finish(true, std::string());
     }
-    if (file) {
-        file->invalidateFileStamp();
-    }
-    invalidateSceneLayer();
-    clearActionsCache();
-    NodePtr node = getNode();
-    if (node) {
-        node->markHashDirty();
-    }
+    *inCall = false;
 }
 
 bool

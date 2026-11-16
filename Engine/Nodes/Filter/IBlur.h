@@ -121,15 +121,18 @@ public:
     /**
      * @brief Records passes() for params at context's scale on the GPU over io.domain, the Map
      * being channel mapChannel of io.inputs[kIBlurInputMap], or none when mapChannel is negative.
-     * A Map that is not connected blurs at Size everywhere; a connected one reads a black pixel,
-     * remapped and inverted like any other, outside its image or everywhere when it is none. Fails,
-     * so that the CPU renders, without a GPU or when a buffer exceeds the kernels' 32-bit indices.
+     * A Map that is not connected blurs at Size everywhere; a connected one reads, outside its
+     * image, a black pixel, remapped and inverted like any other, under EdgeMode::Black and its
+     * nearest edge pixel under EdgeMode::Stretch, and a black pixel everywhere when it is none.
+     * Fails, so that the CPU renders, without a GPU or when a buffer exceeds the kernels' 32-bit
+     * indices.
      **/
     static StatusEnum recordPassesGpu(const PassGpuIO& io,
                                       const IBlurParams& params,
                                       const PassContext& context,
                                       bool mapConnected,
-                                      int mapChannel) WARN_UNUSED_RETURN;
+                                      int mapChannel,
+                                      EdgeMode mapEdgeMode) WARN_UNUSED_RETURN;
 
     /**
      * @brief The text of the warning a disconnected Map posts.

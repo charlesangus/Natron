@@ -89,6 +89,8 @@ try:
             else:
                 reload.trigger()
                 what = "reload %d" % (i - EDITS + 1)
+                ok = yield ("until", lambda: app.waitForReloads(0), POLL_TIMEOUT_S)
+                check(ok, "%s: the reload ended" % what)
             ok = yield ("until", synced_and_drawn, POLL_TIMEOUT_S)
             v = view()
             error = v.property("natronSceneError") if v is not None else None

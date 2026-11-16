@@ -299,10 +299,10 @@ SceneFileSource::walk(const std::string& path)
     return _digest.exchange(digest) != digest;
 }
 
-bool
+void
 SceneFileSource::reload(const std::string& path,
-                        std::string* errorMessage,
-                        std::vector<std::string>* reloadedFiles)
+                        const std::weak_ptr<const void>& owner,
+                        const ReloadDoneFunction& done)
 {
     // The layers to read again: those the last walk found and those it left closed that a stage
     // has loaded since. Before any walk, those of the file's layer if another consumer has it
@@ -326,17 +326,42 @@ SceneFileSource::reload(const std::string& path,
     for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
         before.push_back(layer->GetRealPath());
     }
-    const bool reloaded = layers.empty() || SceneOps::reloadFileLayers(layers, errorMessage);
-    FileStampRegistry& stamps = FileStampRegistry::instance();
-    for (const std::string& file : before) {
-        if (!file.empty()) {
-            stamps.invalidate(file);
-        }
+    std::uint64_t loadCount;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        loadCount = _loadCount;
     }
-    reloadedFiles->insert(reloadedFiles->end(), before.begin(), before.end());
-    takeDigest();
+    const auto finish = [this, owner, before, loadCount, done](bool reloaded,
+                                                               const std::string& errorMessage) {
+        const std::shared_ptr<const void> alive = owner.lock();
+        if (!alive) {
+            return;
+        }
+        FileStampRegistry& stamps = FileStampRegistry::instance();
+        for (const std::string& file : before) {
+            if (!file.empty()) {
+                stamps.invalidate(file);
+            }
+        }
+        bool loadedSince;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            loadedSince = _loadCount != loadCount;
+        }
+        // A load() meanwhile has set the digest of the file now named.
+        if (!loadedSince) {
+            takeDigest();
+        }
+        if (done) {
+            done(reloaded, errorMessage, before);
+        }
+    };
+    if (layers.empty()) {
+        finish(true, std::string());
 
-    return reloaded;
+        return;
+    }
+    SceneOps::requestFileLayerReload(layers, finish);
 } // SceneFileSource::reload
 
 bool

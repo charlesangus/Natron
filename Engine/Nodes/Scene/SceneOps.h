@@ -430,6 +430,16 @@ bool reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
                       std::string* errorMessage);
 
 /**
+ * @brief reloadFileLayers() for the main thread, which it does not block while the viewers'
+ * renders stop (SceneWriteBarrier::runExclusiveAsync()). done is called on the main thread once
+ * the layers are reloaded, with whether they all were and the error otherwise; before returning
+ * when nothing had to stop. Requests made while one waits are reloaded together, in one change
+ * block. Off the main thread it blocks, as reloadFileLayers() does.
+ **/
+void requestFileLayerReload(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
+                            const std::function<void(bool ok, const std::string& errorMessage)>& done);
+
+/**
  * @brief How many times reloadFileLayers() has reloaded layers in this process. A reload can
  * change what any open file layer sublayers, references or loads as a payload, so a
  * getFileLayerClosure() result taken at one count may be stale at a later one.
@@ -462,12 +472,14 @@ bool parsePrimExpression(const std::string& text,
  * @brief The prims of stage that expression (parsePrimExpression()) selects, in depth-first stage
  * order. Only active, loaded, defined, non-abstract prims are visited, so a prim under an inactive one
  * never matches. Returns false with *errorMessage set, and *paths empty, when expression does not
- * parse; blank text selects nothing.
+ * parse; blank text selects nothing. With traverseInstanceProxies, prims inside native instances
+ * are visited and can match too.
  **/
 bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
                  const std::string& expression,
                  std::vector<PXR_NS::SdfPath>* paths,
-                 std::string* errorMessage);
+                 std::string* errorMessage,
+                 bool traverseInstanceProxies = false);
 
 /**
  * @brief selectPrims() that polls cancelled as it walks and gives up as soon as it turns true,

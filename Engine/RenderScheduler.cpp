@@ -51,7 +51,10 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheDeviceTier.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/GpuContext.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionTask.h"
 #include "Engine/Image.h"
@@ -69,6 +72,13 @@
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Global/FloatingPointExceptions.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/CacheEntry.h"
+#include "Engine/Gpu/GpuDownscale.h"
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -349,6 +359,23 @@ bitDepthName(ImageBitDepthEnum depth)
     return "none";
 }
 
+const char*
+renderCacheStateName(EffectInstance::RenderCacheStateEnum state)
+{
+    switch (state) {
+    case EffectInstance::eRenderCacheStateHit:
+        return "hit";
+    case EffectInstance::eRenderCacheStatePartial:
+        return "partial";
+    case EffectInstance::eRenderCacheStateMiss:
+        return "miss";
+    case EffectInstance::eRenderCacheStateBypass:
+        break;
+    }
+
+    return "bypass";
+}
+
 std::string
 formatTaskRecord(const FrameGraph::Task& task,
                  const EffectInstancePtr& effect,
@@ -356,7 +383,8 @@ formatTaskRecord(const FrameGraph::Task& task,
                  int taskIndex,
                  long long wallNs,
                  bool ok,
-                 bool ranOnCpu = false)
+                 bool ranOnCpu = false,
+                 EffectInstance::RenderCacheStateEnum cacheState = EffectInstance::eRenderCacheStateBypass)
 {
     const NodePtr& node = task.key.node;
     const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
@@ -401,7 +429,9 @@ formatTaskRecord(const FrameGraph::Task& task,
                   (!ranOnCpu && (task.device == FrameGraph::Device::Gpu)) ? "gpu" : "cpu", task.regionId);
     line.append(num);
     line.append(ok ? "true" : "false");
-    line.append("}\n");
+    line.append(",\"cache\":\"");
+    line.append(renderCacheStateName(cacheState));
+    line.append("\"}\n");
 
     return line;
 }
@@ -501,6 +531,36 @@ RenderScheduler::~RenderScheduler()
     setGpuPlacementAvailableFunc(nullptr);
 }
 
+namespace {
+
+void
+setBranchFlags(FrameGraph* graph)
+{
+    for (std::size_t i = 0; i < graph->tasks.size(); ++i) {
+        FrameGraph::Task& task = graph->tasks[i];
+        bool allLeaves = true;
+        bool releasesAnInput = false;
+        for (std::vector<int>::const_iterator it = task.dependencies.begin(); it != task.dependencies.end(); ++it) {
+            const FrameGraph::Task& input = graph->tasks[*it];
+            if (!input.dependencies.empty()) {
+                allLeaves = false;
+            }
+            bool onlyConsumer = true;
+            for (std::vector<int>::const_iterator c = input.consumerTasks.begin(); c != input.consumerTasks.end(); ++c) {
+                if (*c != (int)i) {
+                    onlyConsumer = false;
+                    break;
+                }
+            }
+            releasesAnInput = releasesAnInput || onlyConsumer;
+        }
+        task.startsBranch = allLeaves;
+        task.sharesEveryInput = !task.dependencies.empty() && !releasesAnInput;
+    }
+}
+
+} // anonymous namespace
+
 FrameGraph
 RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
                             const NodePtr& root,
@@ -582,6 +642,12 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
 
         task.dfsPostOrder = fvRequest->dfsPostOrder;
         task.isIdentity = fvRequest->globalData.isIdentity;
+        if (task.isIdentity) {
+            const CacheRetentionSignals& identity = *task.key.node->getRetentionSignals();
+            for (const int dependency : task.dependencies) {
+                graph.tasks[dependency].key.node->getRetentionSignals()->inheritInputOfEdited(identity);
+            }
+        }
         // The frame's own layout, not the widest over the sequence, sizes the memory estimate.
         const NodeMetadataConstPtr metadata = effect->getRenderMetadata(context->getArgs(nodeKey), task.key.time, task.key.view);
         task.bitdepth = metadata->getBitDepth(-1);
@@ -604,8 +670,10 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
 
         // Composed transforms can ask for an infinite RoI, which renderRoI clips to the RoD.
         task.renderedRoI = task.roi;
+        task.pixelAspectRatio = par;
         if (!fvRequest->globalData.rod.isNull()) {
             const RectI pixelRoD = fvRequest->globalData.rod.toPixelEnclosing(task.key.mipmapLevel, par);
+            task.pixelRoD = pixelRoD;
             const RectI estimatedRoI = task.roi.intersect(pixelRoD);
             // An effect without tiles support renders its whole RoD whatever the RoI, but when it renders at full
             // scale only the RoI is downscaled.
@@ -614,40 +682,192 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
         }
         task.estimatedBytes = estimateBytes(task.renderedRoI, task.components, task.bitdepth);
 
-        if (!task.isIdentity && !renderContextHasLoopVariables(nodeRequest->second->context)) {
-            if (frameArgs && frameArgs->frameVaryingComputed && effect->shouldCacheOutput(false, task.key.time, task.key.view, frameArgs->visitsCount)) {
+        // A frame with an analysis is not scheduled, so no caller is needed for the analysis answer.
+        if (!task.isIdentity && frameArgs && frameArgs->frameVaryingComputed) {
+            task.cacheKeyHasTime = frameArgs->isFrameVaryingOrAnimated;
+            task.cacheMipmapLevel = rendersFullScale ? 0 : task.key.mipmapLevel;
+            // The cases renderRoI answers without a lookup, or whose entries it doesn't take at face value. A stroke being
+            // painted clears the bitmap of the entry it finds.
+            task.probesCachedOutput = !frameArgs->overlayImagePass && !frameArgs->isDuringPaintStrokeCreation
+                && !(effect->isWriter() && effect->isRenderingOwnSequence())
+                && !renderContextHasLoopVariables(nodeRequest->second->context);
+            if (effect->admitsOutputToCache(nodeRequest->second->context, *frameArgs, frameArgs->isFrameVaryingOrAnimated, task.key.time, task.key.view, nullptr)) {
                 task.sharesCachedOutput = true;
                 task.nodeHash = nodeRequest->second->nodeHash;
-                task.cacheKeyHasTime = frameArgs->isFrameVaryingOrAnimated;
-                task.cacheMipmapLevel = rendersFullScale ? 0 : task.key.mipmapLevel;
             }
         }
     }
 
-    for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
-        FrameGraph::Task& task = graph.tasks[i];
-        bool allLeaves = true;
-        bool releasesAnInput = false;
-        for (std::vector<int>::const_iterator it = task.dependencies.begin(); it != task.dependencies.end(); ++it) {
-            const FrameGraph::Task& input = graph.tasks[*it];
-            if (!input.dependencies.empty()) {
-                allLeaves = false;
-            }
-            bool onlyConsumer = true;
-            for (std::vector<int>::const_iterator c = input.consumerTasks.begin(); c != input.consumerTasks.end(); ++c) {
-                if (*c != (int)i) {
-                    onlyConsumer = false;
-                    break;
-                }
-            }
-            releasesAnInput = releasesAnInput || onlyConsumer;
-        }
-        task.startsBranch = allLeaves;
-        task.sharesEveryInput = !task.dependencies.empty() && !releasesAnInput;
-    }
+    setBranchFlags(&graph);
 
     return graph;
 } // RenderScheduler::buildGraph
+
+namespace {
+
+// Whether the part of the task's output a partial cache hit left to render reads dep. Anything this can't show to be
+// unread stays a dependency: a render that does read it would pull it unplanned.
+bool
+missingPartReads(const FrameGraph::Task& dep,
+                 const FrameViewRequest& request,
+                 const FrameRequestMap& requests,
+                 const RoIMap& missingPartRoIs)
+{
+    bool foundEdge = false;
+    const EffectInstancePtr depEffect = dep.key.node->getEffectInstance();
+    for (const FrameViewRequest::TaskEdge& edge : request.dependencies) {
+        if ((edge.node.lock() != dep.key.node) || (edge.time != dep.key.time) || (edge.view != dep.key.view)
+            || (edge.mipmapLevel != dep.key.mipmapLevel) || (edge.contextKey != dep.key.contextKey)) {
+            continue;
+        }
+        foundEdge = true;
+        if (edge.inputNb < 0) {
+            return true;
+        }
+        const FrameViewRequest* depRequest = requests.findFrameViewRequest(NodeCtxKey(dep.key.node, dep.key.contextKey), dep.key.time, dep.key.view);
+        if (!depRequest || !inputRoIMissesRoD(missingPartRoIs, depEffect, depRequest->globalData.rod)) {
+            return true;
+        }
+    }
+
+    return !foundEdge;
+}
+
+} // anonymous namespace
+
+void
+RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
+                                      const FrameRenderContextPtr& context)
+{
+    if (graph.tasks.empty() || !context || !context->getRequest() || !appPTR) {
+        return;
+    }
+    const FrameRequestMap& requests = *context->getRequest();
+    const int count = (int)graph.tasks.size();
+
+    // A task is only known to be needed once all its consumers have decided.
+    std::vector<int> undecidedConsumers(count);
+    std::vector<int> order;
+    order.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        undecidedConsumers[i] = (int)graph.tasks[i].consumerTasks.size();
+        if (undecidedConsumers[i] == 0) {
+            order.push_back(i);
+        }
+    }
+    for (std::size_t next = 0; next < order.size(); ++next) {
+        for (const int dep : graph.tasks[order[next]].dependencies) {
+            if (--undecidedConsumers[dep] == 0) {
+                order.push_back(dep);
+            }
+        }
+    }
+    if ((int)order.size() != count) {
+        return;
+    }
+
+    std::vector<char> needed(count, 0);
+    needed[0] = 1;
+    // Edge positions rather than task indices, so that dependencyInputNbs is filtered alongside dependencies.
+    std::vector<std::vector<int>> keptEdges(count);
+    bool droppedAny = false;
+    for (const int index : order) {
+        if (!needed[index]) {
+            continue;
+        }
+        FrameGraph::Task& task = graph.tasks[index];
+        std::vector<int>& kept = keptEdges[index];
+        kept.resize(task.dependencies.size());
+        for (std::size_t e = 0; e < kept.size(); ++e) {
+            kept[e] = (int)e;
+        }
+
+        const NodeCtxKey nodeKey(task.key.node, task.key.contextKey);
+        const FrameRequestMap::const_iterator nodeRequest = requests.find(nodeKey);
+        const FrameViewRequest* request = requests.findFrameViewRequest(nodeKey, task.key.time, task.key.view);
+        const EffectInstancePtr effect = task.key.node->getEffectInstance();
+        const ParallelRenderArgsPtr frameArgs = context->getArgs(nodeKey);
+        if (task.probesCachedOutput && effect && (nodeRequest != requests.end()) && nodeRequest->second && request && frameArgs) {
+            // The viewer sets its root's RoI after planning it, and the planned region doesn't follow.
+            RectI region = task.renderedRoI;
+            const RectI clippedRoI = task.roi.intersect(task.pixelRoD);
+            if (!clippedRoI.isNull()) {
+                region.merge(clippedRoI);
+            }
+
+            const bool rendersFullScale = (task.key.mipmapLevel != 0) && (task.cacheMipmapLevel == 0);
+            RectD missing;
+            EffectInstance::OutputCacheTier servedBy = EffectInstance::OutputCacheTier::Memory;
+            const EffectInstance::OutputCacheCoverage coverage = effect->probeOutputInCache(nodeRequest->second->nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, task.key.mipmapLevel,
+                                                                                            rendersFullScale, frameArgs->draftMode && task.key.node->isDraftModeUsed(), frameArgs->tilesSupported,
+                                                                                            region, request->globalData.rod, task.pixelAspectRatio, task.components, task.bitdepth, &missing, &servedBy);
+            if (coverage == EffectInstance::OutputCacheCoverage::Full) {
+                kept.clear();
+                task.servedFromCache = true;
+                task.servedTier = servedBy;
+            } else if (coverage == EffectInstance::OutputCacheCoverage::Partial) {
+                // The device tier holds entries at the exact level only, which is the level a region renders at.
+                if ((servedBy == EffectInstance::OutputCacheTier::Device) && !rendersFullScale) {
+                    task.deviceMissingRoI = missing.toPixelEnclosing(task.key.mipmapLevel, task.pixelAspectRatio).intersect(task.renderedRoI);
+                }
+                task.servedTier = servedBy;
+                if (!kept.empty() && (!request->globalData.transforms || request->globalData.transforms->empty())) {
+                    RoIMap missingPartRoIs;
+                    effect->getRegionsOfInterest_public(task.key.time, nodeRequest->second->mappedScale, request->globalData.rod, missing, task.key.view, &missingPartRoIs);
+                    const std::size_t before = kept.size();
+                    kept.erase(std::remove_if(kept.begin(), kept.end(), [&](int edge) {
+                                   return !missingPartReads(graph.tasks[task.dependencies[edge]], *request, requests, missingPartRoIs);
+                               }),
+                               kept.end());
+                    task.servedFromCache = kept.size() != before;
+                }
+            }
+        }
+        droppedAny = droppedAny || (kept.size() != task.dependencies.size());
+        for (const int edge : kept) {
+            needed[task.dependencies[edge]] = 1;
+        }
+    }
+    if (!droppedAny) {
+        return;
+    }
+
+    std::vector<int> newIndex(count, -1);
+    int keptCount = 0;
+    for (int i = 0; i < count; ++i) {
+        if (needed[i]) {
+            newIndex[i] = keptCount++;
+        }
+    }
+    std::vector<FrameGraph::Task> tasks;
+    for (int i = 0; i < count; ++i) {
+        if (needed[i]) {
+            FrameGraph::Task task = std::move(graph.tasks[i]);
+            std::vector<int> dependencies;
+            std::vector<int> dependencyInputNbs;
+            for (const int edge : keptEdges[i]) {
+                dependencies.push_back(newIndex[task.dependencies[edge]]);
+                if (edge < (int)task.dependencyInputNbs.size()) {
+                    dependencyInputNbs.push_back(task.dependencyInputNbs[edge]);
+                }
+            }
+            task.dependencies = std::move(dependencies);
+            task.dependencyInputNbs = std::move(dependencyInputNbs);
+            task.consumerTasks.clear();
+            tasks.push_back(std::move(task));
+        }
+    }
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        for (const int dep : tasks[i].dependencies) {
+            tasks[dep].consumerTasks.push_back((int)i);
+        }
+    }
+    for (FrameGraph::Task& task : tasks) {
+        task.consumers = (int)task.consumerTasks.size();
+    }
+    graph.tasks = std::move(tasks);
+    setBranchFlags(&graph);
+} // RenderScheduler::pruneBehindCacheHits
 
 FrameFuturePtr
 RenderScheduler::submit(const FrameRenderContextPtr& context,
@@ -1146,6 +1366,284 @@ failTaskWithReason(const EffectInstancePtr& effect,
     appPTR->writeToErrorLog_mt_safe(name, QDateTime::currentDateTime(), QString::fromUtf8("Render task failed: the node %1").arg(QString::fromUtf8(reason)));
 }
 
+// Whether a region reads the task's output on the device, and whether a task or the frame's future reads it in RAM.
+void
+consumerDevices(const FrameGraph& graph,
+                const FrameGraph::Task& task,
+                bool* onGpu,
+                bool* onCpu)
+{
+    *onGpu = false;
+    *onCpu = task.consumers == 0;
+    for (const int consumer : task.consumerTasks) {
+        if (graph.tasks[consumer].regionId >= 0) {
+            *onGpu = true;
+        } else {
+            *onCpu = true;
+        }
+    }
+}
+
+#ifdef NATRON_HAVE_GPU
+/**
+ * @brief For a task the device tier holds layer of only at a finer level: that entry box-downscaled on the device to
+ * the task's level, over its renderedRoI, and cached in the tier under exact, the key the task's level is looked up by.
+ * Null when no finer entry holds all of what the downscale reads, or the downscale cannot be made.
+ **/
+CacheDeviceEntryPtr
+downscaleFinerDeviceEntry(CacheDeviceTier& tier,
+                          const ImageKey& base,
+                          const ImageKey& exact,
+                          const FrameGraph::Task& task,
+                          const ImageLayerDesc& layer,
+                          const RenderStatsPtr& stats)
+{
+    gpu::GpuRuntime* runtime = tier.runtime();
+    const unsigned int level = task.key.mipmapLevel;
+    if (!runtime || (level == 0) || task.renderedRoI.isNull()) {
+        return CacheDeviceEntryPtr();
+    }
+    const std::uint64_t generation = CacheDeviceTier::purgeGeneration();
+    for (unsigned int finer = level; finer-- > 0;) {
+        const CacheDeviceEntryPtr source = tier.findServing(base.forEntry(finer, layer, eImageBitDepthFloat));
+        if (!source) {
+            continue;
+        }
+        const GpuDeviceImagePtr& image = source->image();
+        const GpuImageLayout& from = image->layout();
+        if ((image->runtime() != runtime) || (from.mipmapLevel != finer) || (from.layer.getChannels() != layer.getChannels())) {
+            continue;
+        }
+        const unsigned int levels = level - finer;
+        const RectI read = task.renderedRoI.upscalePowerOfTwo(levels).intersect(from.rod.toPixelEnclosing(finer, from.par));
+        if (read.isNull() || !from.bounds.contains(read)) {
+            continue;
+        }
+        std::list<RectI> unrendered;
+        source->header()->bitmap.minimalNonMarkedRects(read, unrendered);
+        if (!unrendered.empty()) {
+            continue;
+        }
+
+        GpuImageLayout layout = from;
+        layout.bounds = task.renderedRoI;
+        layout.mipmapLevel = level;
+        layout.key = exact;
+        gpu::GpuBufferHandle handle;
+        if (!runtime->acquire(layout.deviceBytes(), handle)) {
+            return CacheDeviceEntryPtr();
+        }
+        std::unique_ptr<gpu::GpuRecordContext> recorder;
+        if (!runtime->newRecordContext(recorder) || !recorder) {
+            return CacheDeviceEntryPtr();
+        }
+        gpu::GpuBuffer* sourceBuffer = image->pin();
+        if (!sourceBuffer) {
+            continue;
+        }
+        // The view holds only what the downscale reads, so that a partial edge block averages none of the entry's
+        // pixels beyond the RoD.
+        gpu::GpuDownscaleView src;
+        src.buffer = sourceBuffer;
+        src.strideFloats = (std::uint32_t)(from.bounds.width() * from.nComps());
+        src.offsetFloats = (std::uint64_t)(read.y1 - from.bounds.y1) * src.strideFloats + (std::uint64_t)(read.x1 - from.bounds.x1) * from.nComps();
+        src.bounds = { read.x1, read.y1, read.x2, read.y2 };
+        src.nComps = (std::uint32_t)from.nComps();
+        gpu::GpuDownscaleView dst;
+        dst.buffer = &handle.buffer();
+        dst.bounds = { layout.bounds.x1, layout.bounds.y1, layout.bounds.x2, layout.bounds.y2 };
+        dst.strideFloats = (std::uint32_t)(layout.bounds.width() * layout.nComps());
+        dst.nComps = (std::uint32_t)layout.nComps();
+        gpu::GpuStatus status = gpu::recordMipDownscale(*recorder, src, dst, dst.bounds, levels);
+        if (status) {
+            status = recorder->submitAndWait();
+        }
+        image->unpin();
+        if (!status) {
+            runtime->note(status);
+
+            return CacheDeviceEntryPtr();
+        }
+
+        const GpuDeviceImagePtr downscaled = GpuDeviceImage::create(*runtime, handle, layout, stats);
+        if (!downscaled) {
+            return CacheDeviceEntryPtr();
+        }
+        const CacheEntryHeaderPtr header = std::make_shared<CacheEntryHeader>();
+        header->key = std::make_shared<const ImageKey>(exact);
+        header->bounds = layout.bounds;
+        header->bitmap.initialize(layout.bounds);
+        header->bitmap.setTo1();
+        header->recomputeCostNs.store(source->header()->recomputeCostNs.load());
+
+        return tier.insert(exact, downscaled, header, std::function<void()>(), generation);
+    }
+
+    return CacheDeviceEntryPtr();
+} // downscaleFinerDeviceEntry
+#endif // NATRON_HAVE_GPU
+
+/**
+ * @brief Gives the task the device tier's entries of its layers without rendering it: as device layers when a region
+ * reads them, which it then does in place, and otherwise moved to the host tier as planes. A layer the tier holds only
+ * at a finer level is downscaled on the device first. False, with both maps left empty, when an entry left the tier or
+ * the device was lost since the plan, so that the task renders instead.
+ **/
+bool
+serveFromDeviceTier(const FrameRenderContext& context,
+                    const FrameGraph& graph,
+                    const FrameGraph::Task& task,
+                    const EffectInstancePtr& effect,
+                    std::map<ImageLayerDesc, ImagePtr>* planes,
+                    std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers,
+                    std::vector<CacheDeviceEntryPtr>* inPlace)
+{
+#ifdef NATRON_HAVE_GPU
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    const std::shared_ptr<void> held = gpu ? gpu->holdRuntime() : std::shared_ptr<void>();
+    const CacheDeviceTierPtr tier = held ? appPTR->getDeviceCacheTier() : CacheDeviceTierPtr();
+    if (!tier || task.components.empty()) {
+        return false;
+    }
+    const ParallelRenderArgsPtr frameArgs = context.getArgs(NodeCtxKey(task.key.node, task.key.contextKey));
+    const bool draft = task.key.node->isDraftModeUsed() && frameArgs && frameArgs->draftMode;
+    const ImageKey base = effect->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, draft, task.cacheMipmapLevel);
+
+    std::map<ImageLayerDesc, CacheDeviceEntryPtr> entries;
+    for (const ImageLayerDesc& layer : task.components) {
+        const ImageKey exact = base.forEntry(task.key.mipmapLevel, layer, eImageBitDepthFloat);
+        CacheDeviceEntryPtr entry = tier->findServing(exact);
+        if (!entry) {
+            entry = downscaleFinerDeviceEntry(*tier, base, exact, task, layer, context.getStats());
+        }
+        if (!entry) {
+            return false;
+        }
+        // A consumer of the store gets exactly the channels it asked for, over all of what the task renders.
+        const GpuDeviceImagePtr& image = entry->image();
+        if ((image->runtime() != tier->runtime()) || (image->layout().layer.getChannels() != layer.getChannels()) || !image->bounds().contains(task.renderedRoI)) {
+            return false;
+        }
+        entries[layer] = entry;
+    }
+
+    bool onGpu = false;
+    bool onCpu = false;
+    consumerDevices(graph, task, &onGpu, &onCpu);
+    std::map<ImageLayerDesc, ImagePtr> ram;
+    std::map<ImageLayerDesc, DeviceImagePtr> device;
+    std::vector<CacheDeviceEntryPtr> readInPlace;
+    for (const std::pair<const ImageLayerDesc, CacheDeviceEntryPtr>& entry : entries) {
+        // A RAM consumer beside a region downloads from the store, after or instead of the region's read in place.
+        if (onGpu) {
+            device[entry.first] = entry.second->image();
+            readInPlace.push_back(entry.second);
+            continue;
+        }
+        const ImagePtr image = tier->downloadToHost(entry.second);
+        if (!image) {
+            return false;
+        }
+        ram[entry.first] = image;
+    }
+    planes->swap(ram);
+    deviceLayers->swap(device);
+    inPlace->swap(readInPlace);
+
+    return true;
+#else
+    (void)context;
+    (void)graph;
+    (void)task;
+    (void)effect;
+    (void)planes;
+    (void)deviceLayers;
+    (void)inPlace;
+
+    return false;
+#endif
+} // serveFromDeviceTier
+
+// Uploads the cached planes a region is about to read into the device tier, so that the region reads them in place and
+// the next frame is served from the device.
+void
+promoteForGpu(const std::map<ImageLayerDesc, ImagePtr>& planes,
+              std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers,
+              std::vector<CacheDeviceEntryPtr>* inPlace)
+{
+#ifdef NATRON_HAVE_GPU
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    const std::shared_ptr<void> held = gpu ? gpu->holdRuntime() : std::shared_ptr<void>();
+    const CacheDeviceTierPtr tier = held ? appPTR->getDeviceCacheTier() : CacheDeviceTierPtr();
+    if (!tier) {
+        return;
+    }
+    for (const std::pair<const ImageLayerDesc, ImagePtr>& plane : planes) {
+        const ImagePtr& image = plane.second;
+        if (!image || !image->getCacheAPI() || !image->getEntryHeader() || !tier->promote(image)) {
+            continue;
+        }
+        const CacheDeviceEntryPtr entry = tier->find(image->getKey());
+        if (entry) {
+            (*deviceLayers)[plane.first] = entry->image();
+            inPlace->push_back(entry);
+        }
+    }
+#else
+    (void)planes;
+    (void)deviceLayers;
+    (void)inPlace;
+#endif
+}
+
+/**
+ * @brief Makes the frame store's entry of key the other holder of the device tier's images it was handed in place, as
+ * it is of a region's outputs: when the pool takes one of their buffers mid-frame, the tier demotes or drops its entry
+ * and the store still moves the pixels to RAM for the consumers left. Without it the store would keep a device image
+ * nothing reads back, and its consumers would fall back to the CPU.
+ **/
+void
+holdInStore(const FrameRenderContextPtr& context,
+            const FrameStore::TaskKey& key,
+            const std::vector<CacheDeviceEntryPtr>& inPlace)
+{
+#ifdef NATRON_HAVE_GPU
+    if (inPlace.empty()) {
+        return;
+    }
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    const std::shared_ptr<void> runtimeHeld = gpu ? gpu->holdRuntime() : std::shared_ptr<void>();
+    const CacheDeviceTierPtr tier = runtimeHeld ? appPTR->getDeviceCacheTier() : CacheDeviceTierPtr();
+    if (!tier) {
+        return;
+    }
+    const std::weak_ptr<FrameRenderContext> weakContext = context;
+    const std::weak_ptr<RenderStats> weakStats = context->getStats();
+    for (const CacheDeviceEntryPtr& entry : inPlace) {
+        // Only the layer whose buffer was taken: the others may still be read in place, by this frame and by others
+        // the tier served them to.
+        const DeviceImage* image = entry->image().get();
+        const std::function<void()> evictFromStore = [weakContext, weakStats, key, image]() {
+            const FrameRenderContextPtr held = weakContext.lock();
+            if (held && (held->getStore().evictToRam(key, image) > 0)) {
+                if (const RenderStatsPtr stats = weakStats.lock()) {
+                    stats->noteEviction();
+                }
+            }
+        };
+        if (!tier->holdFor(entry, evictFromStore, weakContext)) {
+            // The image left the tier after the store took it, so no eviction reaches the store any more and the pool
+            // may have taken the buffer already: the store keeps its pixels in RAM instead.
+            evictFromStore();
+        }
+    }
+#else
+    (void)context;
+    (void)key;
+    (void)inPlace;
+#endif
+}
+
 } // namespace
 
 EffectInstance::RenderRoIRetCode
@@ -1187,6 +1685,32 @@ RenderScheduler::renderTaskOnCpu(const FrameGraph& graph,
 }
 
 void
+RenderScheduler::noteTaskRanOnCpu(const FrameRenderContext& context,
+                                  const FrameGraph& graph,
+                                  int taskIndex,
+                                  EffectInstance::RenderCacheStateEnum cacheState,
+                                  bool executed)
+{
+    const FrameGraph::Task& task = graph.tasks[taskIndex];
+    if (!task.key.node || (cacheState == EffectInstance::eRenderCacheStateHit)) {
+        return;
+    }
+    if (task.isIdentity || !executed) {
+        for (int d : task.dependencies) {
+            const FrameStore::TaskKey& input = graph.tasks[d].key;
+            if (context.hasFreshOutput(input.node.get(), input.time, input.view)) {
+                context.noteFreshOutput(task.key.node.get(), task.key.time, task.key.view);
+                break;
+            }
+        }
+
+        return;
+    }
+    task.key.node->noteExecution(Node::eExecutionDeviceCpu);
+    context.noteFreshOutput(task.key.node.get(), task.key.time, task.key.view);
+}
+
+void
 RenderScheduler::executeTask(const FramePtr& frame,
                              int taskIndex,
                              int budget,
@@ -1201,9 +1725,25 @@ RenderScheduler::executeTask(const FramePtr& frame,
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeFailed;
     std::map<ImageLayerDesc, ImagePtr> planes;
+    std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
     EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+    bool servedInPlace = false;
+    std::vector<CacheDeviceEntryPtr> inPlace;
 
-    if (effect) {
+    if (effect && task.servedFromCache && (task.servedTier == EffectInstance::OutputCacheTier::Device) && task.deviceMissingRoI.isNull()) {
+        ProfileSink& sink = profileSink();
+        const std::chrono::steady_clock::time_point serveStart = sink.isEnabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+        servedInPlace = serveFromDeviceTier(*frame->context, frame->graph, task, effect, &planes, &deviceLayers, &inPlace);
+        if (servedInPlace) {
+            retCode = EffectInstance::eRenderRoIRetCodeOk;
+            if (sink.isEnabled()) {
+                const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - serveStart).count();
+                sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, true, false, EffectInstance::eRenderCacheStateHit));
+            }
+        }
+    }
+
+    if (effect && !servedInPlace) {
         AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
         OpenMPThreadsScope openMPThreads(budget);
         ProfileSink& sink = profileSink();
@@ -1213,11 +1753,18 @@ RenderScheduler::executeTask(const FramePtr& frame,
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
         }
+        EffectInstance::takeLastRenderCacheState();
+        EffectInstance::takeLastRenderExecuted();
         retCode = renderTaskOnCpu(frame->graph, taskIndex, task.storage, &planes);
+        const EffectInstance::RenderCacheStateEnum cacheState = EffectInstance::takeLastRenderCacheState();
+        const bool executed = EffectInstance::takeLastRenderExecuted();
+        if (retCode == EffectInstance::eRenderRoIRetCodeOk) {
+            noteTaskRanOnCpu(*frame->context, frame->graph, taskIndex, cacheState, executed);
+        }
         --_tasksRendering;
         if (profiling) {
             const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count();
-            sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, retCode == EffectInstance::eRenderRoIRetCodeOk));
+            sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, retCode == EffectInstance::eRenderRoIRetCodeOk, false, cacheState));
         }
 
         bool glPlanes = false;
@@ -1258,9 +1805,23 @@ RenderScheduler::executeTask(const FramePtr& frame,
         const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
         // The consumers of a task of an aborted frame never run, so its planes would only be held until it finishes.
         if ((task.consumers > 0) && !(abortInfo && abortInfo->isAborted())) {
-            store.put(task.key, planes, task.renderedRoI, task.consumers);
+            if (task.servedFromCache && !servedInPlace) {
+                bool onGpu = false;
+                bool onCpu = false;
+                consumerDevices(frame->graph, task, &onGpu, &onCpu);
+                if (onGpu) {
+                    promoteForGpu(planes, &deviceLayers, &inPlace);
+                }
+            }
+            if (deviceLayers.empty()) {
+                store.put(task.key, planes, task.renderedRoI, task.consumers);
+            } else {
+                store.put(task.key, planes, std::move(deviceLayers), task.renderedRoI, task.consumers);
+                holdInStore(frame->context, task.key, inPlace);
+            }
         }
-        if (frame->context->getStats()) {
+        // A task served in place ran nothing.
+        if (frame->context->getStats() && !servedInPlace) {
             frame->context->getStats()->incTasksRun();
         }
     }
@@ -1307,13 +1868,18 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             const std::vector<int>& members = frame->graph.regions[region].members;
             const bool ok = retCode == EffectInstance::eRenderRoIRetCodeOk;
             std::string lines;
+            GpuRegionTimes times;
             for (std::size_t i = 0; i < members.size(); ++i) {
                 const FrameGraph::Task& member = frame->graph.tasks[members[i]];
                 const EffectInstancePtr effect = member.key.node ? member.key.node->getEffectInstance() : EffectInstancePtr();
                 const long long memberNs = (i < report.memberNs.size()) ? report.memberNs[i] : 0;
-                lines += formatTaskRecord(member, effect, frame->sequence, members[i], memberNs, ok, !report.cpuFallback.empty());
+                const EffectInstance::RenderCacheStateEnum memberState = (i < report.memberCache.size()) ? report.memberCache[i] : EffectInstance::eRenderCacheStateBypass;
+                lines += formatTaskRecord(member, effect, frame->sequence, members[i], memberNs, ok, !report.cpuFallback.empty(), memberState);
+                const bool ran = report.cpuFallback.empty() || ((i < report.memberCache.size()) && (memberState != EffectInstance::eRenderCacheStateHit));
+                if (ran) {
+                    times.executed.push_back(members[i]);
+                }
             }
-            GpuRegionTimes times;
             times.uploadMs = report.uploadMs;
             times.uploadBytes = report.uploadBytes;
             times.kernelMs = report.kernelMs;
@@ -1354,6 +1920,35 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             sink.append(lines);
         }
         deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);
+        if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !deviceLost) {
+            const std::vector<int>& members = frame->graph.regions[region].members;
+            // Members read one another on the device, where no pull lights their edges; members come after their
+            // inputs, so an input's output is known fresh before its consumers are looked at.
+            for (std::size_t i = 0; (i < members.size()) && (i < report.memberRanOnDevice.size()); ++i) {
+                const FrameGraph::Task& member = frame->graph.tasks[members[i]];
+                if (!member.key.node) {
+                    continue;
+                }
+                const bool ran = report.memberRanOnDevice[i] != 0;
+                bool freshInput = false;
+                for (std::size_t k = 0; (k < member.dependencies.size()) && (k < member.dependencyInputNbs.size()); ++k) {
+                    const FrameStore::TaskKey& input = frame->graph.tasks[member.dependencies[k]].key;
+                    if ((member.dependencyInputNbs[k] < 0) || !frame->context->hasFreshOutput(input.node.get(), input.time, input.view)) {
+                        continue;
+                    }
+                    freshInput = true;
+                    if (ran || member.isIdentity) {
+                        member.key.node->noteInputExecution(member.dependencyInputNbs[k]);
+                    }
+                }
+                if (ran) {
+                    member.key.node->noteExecution(Node::eExecutionDeviceGpu);
+                }
+                if (ran || (member.isIdentity && freshInput)) {
+                    frame->context->noteFreshOutput(member.key.node.get(), member.key.time, member.key.view);
+                }
+            }
+        }
         if (deviceLost || !report.cpuFallback.empty()) {
             RegionFallback fallback;
             fallback.region = region;
@@ -1397,6 +1992,13 @@ RenderScheduler::completeTask(const FramePtr& frame,
     int runnablePriority = 0;
     std::vector<ReadyRef> purgedOnFailure;
     bool failsFrame = retCode == EffectInstance::eRenderRoIRetCodeFailed;
+
+    // Once the consumers are ready the frame can finish and its caller clear the cache before this
+    // thread returns, and a plane held here would count as a use that keeps the cleared entry in
+    // RAM. The consumers read theirs from the store.
+    if (task.consumers > 0) {
+        planes.clear();
+    }
     {
         QMutexLocker k(&_mutex);
         --_outstandingRunnables;

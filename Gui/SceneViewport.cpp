@@ -80,6 +80,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureSceneIndex.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
@@ -1157,8 +1158,10 @@ struct SceneViewportRenderer::Implementation {
     }
 
     /**
-     * @brief Renders with renderer from the next render on: a change destroys the engine, so it
-     * needs the context of render() current. Needs stageMutex.
+     * @brief Renders with renderer from the next render on. The Storm engine stays while another
+     * delegate renders: it keeps queueing the stage's change notices, so going back to Storm
+     * applies only the edits made since, where a new engine would populate the whole stage on the
+     * main thread. Needs stageMutex.
      **/
     void switchRenderer(const std::string& renderer)
     {
@@ -1172,7 +1175,8 @@ struct SceneViewportRenderer::Implementation {
         setRendererErrorCopy(std::string());
         setRefineErrorCopy(std::string());
         uploadedFrame.reset();
-        dropEngine();
+        // A return to Storm renders afresh rather than showing the image from before the switch.
+        backgroundFrame.imageKept = false;
         // The last delegate's refinement engine goes; another has its own default cap, and starts
         // refining.
         progressive->setRenderer(std::string());
@@ -1621,6 +1625,7 @@ struct SceneViewportRenderer::Implementation {
             SceneDrawFilter::registerForAllRenderers();
             CyclesAovs::registerSceneIndices();
             StormPtexBindingFilter::registerForStorm();
+            LiveTextureSceneIndex::registerSceneIndices();
             {
                 TfErrorMark mark;
                 const SceneDrawFilter::EngineScope scope;
@@ -2845,22 +2850,33 @@ SceneViewportRenderer::SceneViewportRenderer()
     : _imp(new Implementation)
 {
     // A layer reload edits layers the stage composes: it waits until no paint, pick or sync is
-    // reading the stage, and keeps them out until it is done.
+    // reading the stage, and keeps them out until it is done. Quiesced last: the progressive
+    // worker's quiesce waits out a delegate call that can take seconds, and holding stageMutex
+    // through that wait would stall every paint on the GUI thread.
     std::shared_mutex* stageMutex = &_imp->stageMutex;
     _imp->participant = SceneWriteBarrier::registerParticipant([stageMutex]() { stageMutex->lock(); },
-                                                               [stageMutex]() { stageMutex->unlock(); });
+                                                               [stageMutex]() { stageMutex->unlock(); },
+                                                               SceneWriteBarrier::eQuiesceOrderLast);
     Implementation* imp = _imp.get();
-    // The refinement reads the stage alongside paints, and like any other reader lets a failed
+    // The refinement snapshots the stage alongside paints, and like any other reader lets a failed
     // try to edit know when it lets go.
     HydraRender::ProgressiveRender::StageLock refineStageLock;
-    refineStageLock.acquire = [stageMutex]() { stageMutex->lock_shared(); };
+    refineStageLock.tryAcquire = [stageMutex]() { return stageMutex->try_lock_shared(); };
     refineStageLock.release = [imp, stageMutex]() {
         stageMutex->unlock_shared();
         if (imp->exclusiveOwed.exchange(false) && imp->readEnded) {
             imp->readEnded();
         }
     };
-    _imp->progressive.reset(new HydraRender::ProgressiveRender(refineStageLock, [imp]() { return imp->currentStage(); }, [imp]() {
+    const auto snapshot = [imp](SceneStageSnapshot* into) {
+        if (!imp->shown || !imp->sceneStage) {
+            return false;
+        }
+        *into = imp->sceneStage->getSnapshot();
+
+        return true;
+    };
+    _imp->progressive.reset(new HydraRender::ProgressiveRender(refineStageLock, snapshot, [imp]() {
         std::function<void()> listener;
         {
             std::lock_guard<std::mutex> lock(imp->refineListenerMutex);
@@ -2894,8 +2910,8 @@ SceneViewportRenderer::SceneViewportRenderer()
 
 SceneViewportRenderer::~SceneViewportRenderer()
 {
-    // Its worker reads the stage's layers under stageMutex: joined while the barrier still holds
-    // writes back for it.
+    // Ahead of the rest: until it returns its worker may call the snapshot, which reads
+    // stageMutex and the stage. It does not wait for the delegate to stop.
     _imp->progressive.reset();
     _imp->boxes.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
@@ -4127,6 +4143,14 @@ SceneViewportRenderer::tumble(double azimuthDegrees,
 }
 
 void
+SceneViewportRenderer::releaseStormEngine()
+{
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+
+    _imp->dropEngine();
+}
+
+void
 SceneViewportRenderer::pan(double dxPixels,
                            double dyPixels,
                            int viewHeight)
@@ -4623,7 +4647,6 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     // the renderer it has and leaves the switch to followSceneRenderer(), outside Qt's paint.
     const std::string effective = _imp->effectiveRenderer();
     if (followScene) {
-        StormGLStateGuard guard;
         _imp->switchRenderer(effective);
     }
     _imp->rendererSwitchPending = (effective != _imp->rendererId);
@@ -4920,8 +4943,8 @@ SceneViewportRenderer::pick(int x,
         return std::string();
     }
     if (_imp->rendererId != kRenderDelegateStormId) {
-        // From the AOVs of the last pass, of the size of the view when it rendered; it takes the
-        // viewer lock itself, so it is read before ours is taken.
+        // From the AOVs of the last pass, of the size of the view when it rendered; empty while a
+        // pass holds them.
         const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = _imp->progressive->getFrame();
         // What is under the pixel and its window depth; a prim without one is behind everything.
         std::string path;
@@ -6731,8 +6754,6 @@ SceneViewport::onSynced(U64 serial,
 void
 SceneViewport::followSceneRenderer()
 {
-    // Dropping the old engine needs its context, which a view not yet shown has not made: it has
-    // no engine then either.
     if (_imp->renderThreadBusy()) {
         _imp->followSceneOwed = true;
 
@@ -7813,16 +7834,21 @@ SceneViewport::setLightingMode(SceneViewportRenderer::LightingModeEnum mode)
 void
 SceneViewport::setRendererId(const QString& id)
 {
-    // Dropping the old engine needs its context.
     const std::string renderer = id.toStdString();
     if (!_imp->usesRenderThread) {
         ++_imp->rendererSwitchLatest;
         _imp->rendererSwitchRunning = false;
         runWithEngineContext([this, &renderer]() { _imp->renderer.setRendererId(renderer); });
         publishState();
-        update();
         _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
+        const QSize before = size();
         Q_EMIT rendererChanged(id);
+        // The render row shown or hidden lays the view out at once, and QOpenGLWidget paints in its
+        // resize: a repaint asked for as well would draw the frame twice, a whole Storm frame on
+        // software GL.
+        if (!isVisible() || (size() == before)) {
+            update();
+        }
 
         return;
     }
@@ -7859,6 +7885,7 @@ SceneViewport::onRendererSwitched(const QString& id,
         _imp->composingTimer->stop();
     }
     _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
+    const QSize before = size();
     Q_EMIT rendererChanged(id);
     if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
         followSceneRenderer();
@@ -7866,7 +7893,12 @@ SceneViewport::onRendererSwitched(const QString& id,
     startBackgroundFrame();
     serviceDeferredInput();
     publishState();
-    update();
+    // The render row shown or hidden lays the view out at once, and QOpenGLWidget paints in its
+    // resize: a repaint asked for as well would draw the frame twice, a whole Storm frame on
+    // software GL.
+    if (!isVisible() || (size() == before)) {
+        update();
+    }
 }
 
 void
@@ -8738,12 +8770,23 @@ SceneViewport::releaseEngine()
 {
     // The engine's GL objects belong to its context, and releaseGL() takes the viewer lock, so the
     // worker is not syncing into the stage the engine listens to while it goes.
+    // Another delegate's render holds host memory and keeps going; only the Storm engine kept
+    // behind it goes.
+    const bool storm = RenderDelegates::isStorm(_imp->renderer.getActiveRendererId());
     if (_imp->glInitialized && context()) {
         // A background frame would keep the main thread waiting for the rest of its passes.
         _imp->renderer.cancelBackgroundFrame();
-        runWithEngineContext([this]() { _imp->renderer.releaseGL(); });
+        runWithEngineContext([this, storm]() {
+            if (storm) {
+                _imp->renderer.releaseGL();
+            } else {
+                _imp->renderer.releaseStormEngine();
+            }
+        });
     }
-    _imp->renderer.releaseRefinement();
+    if (storm) {
+        _imp->renderer.releaseRefinement();
+    }
     if (_imp->requestedLiveTextures) {
         // Free GPU Memory emptied the store too, and only the worker's sync renders textures.
         requestSync(_imp->requestedPayload, _imp->requestedError);
@@ -8839,6 +8882,11 @@ SceneViewport::paintGL()
             renders = false;
         }
     }
+    const bool stormPaint = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
+    // Fractional epoch milliseconds, the clock and precision a script's own wall time has, so a
+    // frame starting in the same millisecond as a poll is still ordered against it.
+    const double paintStartMs = std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::chrono::steady_clock::time_point paintStart = std::chrono::steady_clock::now();
     refreshTransformHandles();
     {
         // The free camera this paint draws with, for scripts: pivot x, y, z, distance, azimuth,
@@ -8897,6 +8945,20 @@ SceneViewport::paintGL()
         }
     } else {
         status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
+    }
+    if (stormPaint && (status != SceneViewportRenderer::eRenderStatusBusy)) {
+        // Storm draws on the GUI thread, for most of a second a frame on software GL, so scripts
+        // need each frame's start and cost to tell a stall around the frame from the frame itself.
+        // A busy paint drew nothing and is left out, or it would hide the cost of the next one.
+        const double paintMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count();
+        // Several frames can begin between two polls; the list lets a poller find each of them.
+        QVariantList frames = property("natronSceneStormFrames").toList();
+        frames.append(QVariant(QVariantList { paintStartMs, paintMs }));
+        while (frames.size() > 16) {
+            frames.removeFirst();
+        }
+        setProperty("natronSceneStormFrames", frames);
+        setProperty("natronSceneStormPaints", QVariant::fromValue<qulonglong>(property("natronSceneStormPaints").toULongLong() + 1));
     }
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
         // The worker is syncing; it asks for a repaint when it is done. The refinement passing

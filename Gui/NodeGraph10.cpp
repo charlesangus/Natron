@@ -733,12 +733,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         NodeGuiPtr selectedNode = nearbyNode->shared_from_this();
 
         didSomething = true;
-        if ( buttonDownIsLeft(e) ) {
-            BackdropGui* isBd = dynamic_cast<BackdropGui*>( selectedNode.get() );
-            if (!isBd) {
-                _imp->_magnifiedNode = selectedNode;
-            }
-
+        if (buttonDownIsLeft(e)) {
             if ( !selectedNode->getIsSelected() ) {
                 selectNode( selectedNode, modCASIsShift(e) );
             } else if ( modCASIsShift(e) ) {
@@ -758,7 +753,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
                     _imp->_nodesWithinBDAtPenDown.insert( std::make_pair(*it, nodesWithin) );
                 }
             }
-        } else if ( buttonDownIsRight(e) ) {
+        } else if (buttonDownIsRight(e)) {
             if ( !selectedNode->getIsSelected() ) {
                 selectNode(selectedNode, true); //< don't wipe the selection
             }

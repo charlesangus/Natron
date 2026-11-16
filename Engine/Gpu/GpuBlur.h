@@ -2,12 +2,26 @@
 
 #include "GpuKernel.h"
 
+#include "Global/EdgeMode.h"
+
 #include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
 
 namespace gpu {
+
+using NATRON_NAMESPACE::EdgeMode;
+
+// The edge modes as Kernels/edgesample.slang numbers them.
+inline constexpr uint32_t kGpuEdgeStretch = 0;
+inline constexpr uint32_t kGpuEdgeBlack = 1;
+
+inline constexpr uint32_t
+gpuEdgeMode(EdgeMode mode)
+{
+    return mode == EdgeMode::Black ? kGpuEdgeBlack : kGpuEdgeStretch;
+}
 
 class GpuBuffer;
 class GpuRecordContext;
@@ -19,16 +33,18 @@ struct GpuBlurRegion {
     int32_t outY = 0;
     uint32_t dstOffset = 0;
     uint32_t dstStride = 0;
-    // The source pixels that exist, the first stored at srcOffset; samples outside are black.
+    // The source pixels that exist, the first stored at srcOffset; samples outside read by edgeMode.
     int32_t srcX1 = 0;
     int32_t srcY1 = 0;
     int32_t srcX2 = 0;
     int32_t srcY2 = 0;
     uint32_t srcOffset = 0;
     uint32_t srcStride = 0;
-    // The extent of the filtered line along the blur axis: taps and outputs beyond it are zero.
+    // The extent of the filtered line along the blur axis: outputs beyond it are zero, and taps
+    // beyond it read zero under Black and the line's end under Stretch.
     int32_t lineLo = 0;
     int32_t lineHi = 0;
+    EdgeMode edgeMode = EdgeMode::Black;
 };
 
 // Host side of Kernels/blur.slang (entry blurPass): validates a pass against the kernel's
@@ -66,6 +82,7 @@ struct GpuBlurParams {
     uint32_t srcStride;
     int32_t lineLo;
     int32_t lineHi;
+    uint32_t edgeMode;
 };
 
 inline constexpr uint32_t kGpuBlurMaxRadius = 512;
@@ -104,12 +121,14 @@ struct GpuBlurImage {
 };
 
 // A separable FIR blur of `output`, computed as a horizontal then a vertical pass over the lines of
-// `domain`. Samples outside srcValid and taps beyond `domain` are black, and so are output pixels
-// outside `domain`.
+// `domain`, as LineFilter::firGaussian() runs over a buffer filled by edgeMode. Samples outside
+// srcValid and taps beyond `domain` read by edgeMode: black, or the nearest pixel and the line's
+// end. Output pixels outside `domain` are black.
 struct GpuSeparableBlur {
     GpuBlurImage src;
     // Within src.bounds, or empty when the source has no pixels.
     GpuBlurRect srcValid;
+    EdgeMode edgeMode = EdgeMode::Black;
     GpuBlurImage dst;
     // Within dst.bounds.
     GpuBlurRect output;
@@ -146,8 +165,8 @@ struct GpuLineFilter {
     uint32_t iterations = 0;
     // 0, or 1 for the first derivative.
     uint32_t order = 0;
-    // The end samples repeat outside the line, where otherwise it is black.
-    bool neumann = false;
+    // LineFilter::lineEnds(): Stretch repeats the end samples outside the line, Black reads zero.
+    EdgeMode lineEnds = EdgeMode::Black;
 };
 
 // Mirrors LinesParams in Kernels/blur_lines.slang, which has no padding between members.
@@ -175,18 +194,20 @@ struct GpuLineBlurParams {
     int32_t half;
     uint32_t iterations;
     uint32_t order;
-    uint32_t neumann;
+    uint32_t lineEnds;
+    uint32_t srcEdgeMode;
 };
-static_assert(sizeof(GpuLineBlurParams) == 96);
+static_assert(sizeof(GpuLineBlurParams) == 100);
 
 // A separable recursive filter of `output`, as the CPU's passes run LineFilter: every row of the
 // filtered rect, then every column, each over the whole rect along its axis, with samples outside
-// it black or, for a Neumann filter, the line's end samples. Samples outside srcValid are black too, and so are output pixels outside the filtered
-// rect.
+// it read by each filter's lineEnds. Samples outside srcValid read by srcEdgeMode, as the CPU's
+// buffer fill does, and output pixels outside the filtered rect are black.
 struct GpuLineBlur {
     GpuBlurImage src;
     // Within src.bounds, or empty when the source has no pixels.
     GpuBlurRect srcValid;
+    EdgeMode srcEdgeMode = EdgeMode::Black;
     GpuBlurImage dst;
     // Within dst.bounds.
     GpuBlurRect output;

@@ -61,6 +61,10 @@ public:
     // Weight of a new measurement, low enough that one outlier does not swing the rates.
     static constexpr double kEmaWeight = 0.25;
 
+    // What a decision that cannot wait for rates assumes a download runs at: about the readback of a PCIe 3 x16
+    // link, slower than most discrete devices calibrate, so that an unknown bus never makes downloads look cheap.
+    static constexpr double kUncalibratedDownloadBytesPerSecond = 8e9;
+
     GpuTransferModel() = default;
 
     /**

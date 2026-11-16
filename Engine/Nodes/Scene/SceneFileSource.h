@@ -31,6 +31,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -114,16 +115,20 @@ public:
      **/
     void load(const std::string& path);
 
+    typedef std::function<void(bool ok, const std::string& errorMessage, const std::vector<std::string>& reloadedFiles)> ReloadDoneFunction;
+
     /**
      * @brief Reads again every file layer the last walk found and every open layer it brings in
-     * or, before any walk, those of the file at path if another consumer has it open. Opens
-     * nothing: the next walk() walks afresh, which finds files that were missing. Drops the stamps
-     * of those files, takes them again into the digest and appends them to *reloadedFiles. Returns
-     * false with *errorMessage set when the reload fails.
+     * or, before any walk, those of the file at path if another consumer has it open
+     * (SceneOps::requestFileLayerReload()). Opens nothing: the next walk() walks afresh, which
+     * finds files that were missing. Drops the stamps of those files and takes them again into the
+     * digest, unless a load() came meanwhile, then calls done with whether the reload worked, the
+     * error if not, and those files. On the main thread done may run later, from the event loop,
+     * and neither runs once owner, which owns this source, is gone.
      **/
-    bool reload(const std::string& path,
-                std::string* errorMessage,
-                std::vector<std::string>* reloadedFiles);
+    void reload(const std::string& path,
+                const std::weak_ptr<const void>& owner,
+                const ReloadDoneFunction& done);
 
     /**
      * @brief EffectInstance::refreshFileDependencies() for the node: when the closure holds one of

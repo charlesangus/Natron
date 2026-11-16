@@ -37,8 +37,9 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief OpenUSD's resolver for natron:// URIs, which Ar hands every asset path of that scheme. A
- * URI resolves to itself while LiveTextureStore holds its texture, and to nothing otherwise; opening
- * it serves the stored bytes without a copy. It never renders: consumers fill the store before
+ * URI resolves to itself while LiveTextureStore holds its texture or has recorded why it failed, and
+ * to nothing otherwise; opening it serves the stored bytes without a copy, or for a failure a 1x1
+ * image of kLiveTextureMissingColour. It never renders: consumers fill the store before
  * Hydra reads the stage (LiveTextureStore::prepare). The URIs are read-only and carry their
  * content's hash, so their extension is the image type LiveTextureImage reads and their timestamp
  * never changes.
@@ -51,6 +52,12 @@ class LiveTextureResolver
 public:
     LiveTextureResolver();
     virtual ~LiveTextureResolver() OVERRIDE;
+
+    /**
+     * @brief Whether bytes, an opened asset's buffer, are the 1x1 image of kLiveTextureMissingColour
+     * served for a failed URI.
+     **/
+    static bool isMissingTexture(const char* bytes);
 
 protected:
     virtual std::string _CreateIdentifier(const std::string& assetPath,

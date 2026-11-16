@@ -106,7 +106,11 @@ public:
         view.height = size;
         view.time = PXR_NS::UsdTimeCode::Default();
         NATRON_NAMESPACE::SceneStage* stage = _stage.get();
-        _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, std::function<void()>(), 0.f));
+        _render.reset(new ProgressiveRender(&_stageLock, [stage](NATRON_NAMESPACE::SceneStageSnapshot* into) {
+            *into = stage->getSnapshot();
+
+            return true;
+        }, std::function<void()>(), 0.f));
         _render->setDrawRules(rules);
         _render->setThreads([]() { return 2; });
         _render->setRenderer(kRenderDelegateCyclesId);

@@ -890,7 +890,14 @@ formatRegionRecord(unsigned long long frameSequence,
     }
     line.append("\",\"retries\":");
     line.append(std::to_string(times.retries));
-    line.append("}\n");
+    line.append(",\"executed\":[");
+    for (std::size_t i = 0; i < times.executed.size(); ++i) {
+        if (i > 0) {
+            line.push_back(',');
+        }
+        line.append(std::to_string(times.executed[i]));
+    }
+    line.append("]}\n");
 
     return line;
 }

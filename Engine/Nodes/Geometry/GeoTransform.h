@@ -58,7 +58,7 @@ NATRON_NAMESPACE_ENTER
 struct GeoTransformParams {
     // A group pattern (see geoSelectElements()) over groupType's class; empty for everything.
     std::string group;
-    GeoGroupTypeEnum groupType = eGeoGroupTypePrimitives;
+    GeoGroupTypeEnum groupType = eGeoGroupTypeGuess;
     std::array<double, 3> translate = { 0., 0., 0. };
     std::array<double, 3> rotate = { 0., 0., 0. };
     std::array<double, 3> scale = { 1., 1., 1. };

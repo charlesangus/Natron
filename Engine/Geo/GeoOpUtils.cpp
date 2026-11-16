@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <type_traits>
 
 NATRON_NAMESPACE_ENTER
@@ -1000,6 +1001,273 @@ geoComposeTransform(const std::array<double, 3>& translate,
     m = geoMatrixMultiply(m, scaling);
 
     return geoMatrixMultiply(m, translation(-pivot[0], -pivot[1], -pivot[2]));
+}
+
+std::set<GeoEdge>
+geoAllEdges(const GeoDetail& detail)
+{
+    std::set<GeoEdge> edges;
+    geoForEachEdge(detail, [&](const GeoEdge& e, GeoOffset /*prim*/) {
+        edges.insert(e);
+    });
+
+    return edges;
+}
+
+namespace {
+
+bool
+parsePointPath(const GeoDetail& detail,
+               std::string_view token,
+               std::set<GeoEdge>* out)
+{
+    std::vector<GeoOffset> path;
+    std::size_t pos = 1;
+    while (pos <= token.size()) {
+        const std::size_t start = pos;
+        GeoIndex value = 0;
+        while (pos < token.size() && std::isdigit((unsigned char)token[pos])) {
+            value = value * 10 + GeoIndex(token[pos] - '0');
+            ++pos;
+        }
+        if (pos == start) {
+            return false;
+        }
+        path.push_back(value < detail.pointCount() ? detail.pointMap().offsetFromIndex(value) : GeoOffset(-1));
+        if (pos == token.size()) {
+            break;
+        }
+        if (token[pos] != '-') {
+            return false;
+        }
+        ++pos;
+    }
+    if (path.size() < 2) {
+        return false;
+    }
+    for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+        if (path[i] >= 0 && path[i + 1] >= 0 && path[i] != path[i + 1]) {
+            out->insert(GeoEdge(path[i], path[i + 1]));
+        }
+    }
+
+    return true;
+}
+
+} // anonymous namespace
+
+bool
+geoSelectEdges(const GeoDetail& detail,
+               const std::string& pattern,
+               std::set<GeoEdge>* edges,
+               std::string* error)
+{
+    const std::set<GeoEdge> all = geoAllEdges(detail);
+    const std::vector<std::string_view> tokens = geoSplitPattern(pattern);
+    edges->clear();
+    if (tokens.empty()) {
+        *edges = all;
+
+        return true;
+    }
+    for (std::string_view token : tokens) {
+        const bool remove = token.front() == '^';
+        if (remove) {
+            token.remove_prefix(1);
+        }
+        const bool negate = !token.empty() && token.front() == '!';
+        if (negate) {
+            token.remove_prefix(1);
+        }
+        std::set<GeoEdge> hit;
+        if (token.empty()) {
+            continue;
+        } else if (token == "*") {
+            hit = all;
+        } else if (token.front() == '@') {
+            GeoAttribCompare compare;
+            if (!geoParseAttribCompare(token, &compare, error)) {
+                return false;
+            }
+            if (const GeoAttribute* a = detail.findAttribute(eGeoAttribClassPoint, compare.attribute)) {
+                for (const GeoEdge& e : all) {
+                    if (geoEvalAttribCompare(*a, std::size_t(e.p0), compare) && geoEvalAttribCompare(*a, std::size_t(e.p1), compare)) {
+                        hit.insert(e);
+                    }
+                }
+            }
+        } else if (token.size() > 1 && token.front() == 'p' && std::isdigit((unsigned char)token[1])) {
+            if (!parsePointPath(detail, token, &hit)) {
+                if (error) {
+                    *error = "malformed point path \"" + std::string(token) + "\"";
+                }
+
+                return false;
+            }
+        } else if (std::isdigit((unsigned char)token.front())) {
+            if (error) {
+                *error = "edges are named by point paths such as p0-1, not by numbers: \"" + std::string(token) + "\"";
+            }
+
+            return false;
+        } else {
+            for (const std::string& name : detail.edgeGroupNames()) {
+                if (!geoGlobMatch(token, name)) {
+                    continue;
+                }
+                if (const GeoEdgeGroup* group = detail.findEdgeGroup(name)) {
+                    for (const GeoEdge& e : group->edges()) {
+                        if (detail.pointMap().isLive(e.p0) && detail.pointMap().isLive(e.p1)) {
+                            hit.insert(e);
+                        }
+                    }
+                }
+            }
+        }
+        if (negate) {
+            std::set<GeoEdge> complement;
+            std::set_difference(all.begin(), all.end(), hit.begin(), hit.end(), std::inserter(complement, complement.end()));
+            hit.swap(complement);
+        }
+        for (const GeoEdge& e : hit) {
+            if (remove) {
+                edges->erase(e);
+            } else {
+                edges->insert(e);
+            }
+        }
+    }
+
+    return true;
+}
+
+namespace {
+
+struct GuessTerm {
+    bool classified = false;
+    GeoGroupTypeEnum type = eGeoGroupTypePoints;
+};
+
+GuessTerm
+classifyTerm(const GeoDetail& detail,
+             std::string_view token)
+{
+    GuessTerm term;
+    if (token.empty() || token == "*") {
+        return term;
+    }
+    const auto set = [&](GeoGroupTypeEnum type) {
+        term.classified = true;
+        term.type = type;
+    };
+    if (token.front() == '@') {
+        GeoAttribCompare compare;
+        std::string ignored;
+        if (!geoParseAttribCompare(token, &compare, &ignored)) {
+            return term;
+        }
+        if (detail.findAttribute(eGeoAttribClassPrimitive, compare.attribute)) {
+            set(eGeoGroupTypePrimitives);
+        } else if (detail.findAttribute(eGeoAttribClassPoint, compare.attribute)) {
+            set(eGeoGroupTypePoints);
+        }
+
+        return term;
+    }
+    if (token.size() > 1 && token.front() == 'p' && std::isdigit((unsigned char)token[1])) {
+        set(eGeoGroupTypeEdges);
+
+        return term;
+    }
+    if (std::isdigit((unsigned char)token.front())) {
+        return term;
+    }
+    const auto matches = [&](const std::vector<std::string>& names) {
+        return std::any_of(names.begin(), names.end(), [&](const std::string& n) {
+            return geoGlobMatch(token, n);
+        });
+    };
+    if (matches(detail.groupNames(eGeoAttribClassPrimitive))) {
+        set(eGeoGroupTypePrimitives);
+    } else if (matches(detail.groupNames(eGeoAttribClassPoint))) {
+        set(eGeoGroupTypePoints);
+    } else if (matches(detail.edgeGroupNames())) {
+        set(eGeoGroupTypeEdges);
+    }
+
+    return term;
+}
+
+const char*
+groupTypeName(GeoGroupTypeEnum type)
+{
+    switch (type) {
+    case eGeoGroupTypePoints:
+        return "points";
+    case eGeoGroupTypePrimitives:
+        return "primitives";
+    case eGeoGroupTypeEdges:
+        return "edges";
+    case eGeoGroupTypeGuess:
+        break;
+    }
+
+    return "guess";
+}
+
+} // anonymous namespace
+
+bool
+geoGuessGroupType(const GeoDetail& detail,
+                  std::string_view pattern,
+                  std::span<const GeoGroupTypeEnum> allowed,
+                  GeoGroupTypeEnum fallback,
+                  GeoGroupTypeEnum* type,
+                  std::string* error)
+{
+    const auto isAllowed = [&](GeoGroupTypeEnum t) {
+        return std::find(allowed.begin(), allowed.end(), t) != allowed.end();
+    };
+    bool found = false;
+    GeoGroupTypeEnum resolved = fallback;
+    std::string firstTerm;
+    for (std::string_view token : geoSplitPattern(pattern)) {
+        std::string_view bare = token;
+        if (!bare.empty() && bare.front() == '^') {
+            bare.remove_prefix(1);
+        }
+        if (!bare.empty() && bare.front() == '!') {
+            bare.remove_prefix(1);
+        }
+        const GuessTerm term = classifyTerm(detail, bare);
+        if (!term.classified) {
+            continue;
+        }
+        if (!isAllowed(term.type)) {
+            if (error) {
+                *error = "\"" + std::string(token) + "\" selects " + groupTypeName(term.type) + ", which this node does not take";
+            }
+
+            return false;
+        }
+        if (!found) {
+            found = true;
+            resolved = term.type;
+            firstTerm = std::string(token);
+        } else if (term.type != resolved) {
+            if (error) {
+                *error = "the group mixes " + std::string(groupTypeName(resolved)) + " (\"" + firstTerm + "\") and " + groupTypeName(term.type) + " (\"" + std::string(token) + "\"); set the group type instead of guessing";
+            }
+
+            return false;
+        }
+    }
+    if (!found && !isAllowed(fallback) && !allowed.empty()) {
+        resolved = allowed.front();
+    }
+    *type = resolved;
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -31,6 +31,7 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -114,7 +115,39 @@ bool geoEvalAttribCompare(const GeoAttribute& attribute, std::size_t offset, con
 enum GeoGroupTypeEnum {
     eGeoGroupTypePoints = 0,
     eGeoGroupTypePrimitives,
+    eGeoGroupTypeEdges,
+    eGeoGroupTypeGuess,
 };
+
+/** @brief Every distinct edge of the live polygons and polylines. */
+std::set<GeoEdge> geoAllEdges(const GeoDetail& detail);
+
+/**
+ * @brief The edges of the live polygons and polylines that @p pattern selects. Edges are named
+ * by point paths ("p3-4-5"), edge group names and globs and "@attr" comparisons that both
+ * endpoints meet, with "*", "!" and "^" as in geoSelectElements(). A blank pattern selects every
+ * edge. Returns false with @p error set for a malformed term.
+ **/
+bool geoSelectEdges(const GeoDetail& detail,
+                    const std::string& pattern,
+                    std::set<GeoEdge>* edges,
+                    std::string* error);
+
+/**
+ * @brief Resolves "guess from group": the class a group pattern names. An edge point path or
+ * edge group means edges; a group name or glob means the class that has a matching group,
+ * primitives before points before edges; "@attr" means the class of the attribute; numbers,
+ * "*" and unknown names say nothing and a pattern that says nothing resolves to @p fallback
+ * (the first of @p allowed when the fallback is not allowed). Returns false with @p error
+ * naming the conflicting terms when the terms resolve to different classes, or the term whose
+ * class is not in @p allowed.
+ **/
+bool geoGuessGroupType(const GeoDetail& detail,
+                       std::string_view pattern,
+                       std::span<const GeoGroupTypeEnum> allowed,
+                       GeoGroupTypeEnum fallback,
+                       GeoGroupTypeEnum* type,
+                       std::string* error);
 
 /**
  * @brief Selects elements of a point, vertex or primitive class with a group pattern. Tokens

@@ -218,3 +218,33 @@ TEST(GeoOpUtilsTest, OpenChainsAndBranchesUseFewPaths)
     const std::string pattern = geoEncodeEdgePattern(d, star);
     EXPECT_EQ(std::vector<GeoEdge>(star), decodeEdges(d, pattern));
 }
+
+TEST(GeoOpUtils, GuessGroupTypeReadsTheClassFromThePattern)
+{
+    GeoDetailBuilder builder;
+    builder.appendPoints(6);
+    builder.addGroup(eGeoAttribClassPoint, "pts").add(builder.detail().pointMap().offsetFromIndex(0));
+    const GeoOffset tri[3] = { 0, 1, 2 };
+    builder.appendPrimitive(eGeoPrimitivePolygon, tri);
+    builder.addGroup(eGeoAttribClassPrimitive, "myPrimGroup").add(builder.detail().primitiveMap().offsetFromIndex(0));
+    const GeoDetail d = builder.finish();
+    const GeoGroupTypeEnum allowed[] = { eGeoGroupTypePoints, eGeoGroupTypeEdges, eGeoGroupTypePrimitives };
+
+    const auto guess = [&](const std::string& pattern, std::string* error = nullptr) {
+        GeoGroupTypeEnum type = eGeoGroupTypeGuess;
+        std::string localError;
+        const bool ok = geoGuessGroupType(d, pattern, allowed, eGeoGroupTypePoints, &type, error ? error : &localError);
+
+        return ok ? type : eGeoGroupTypeGuess;
+    };
+    EXPECT_EQ(eGeoGroupTypePrimitives, guess("myPrimGroup"));
+    EXPECT_EQ(eGeoGroupTypePoints, guess("pts"));
+    EXPECT_EQ(eGeoGroupTypeEdges, guess("p0-1-2"));
+    EXPECT_EQ(eGeoGroupTypePoints, guess("0-5"));
+    EXPECT_EQ(eGeoGroupTypePoints, guess(""));
+
+    std::string error;
+    EXPECT_EQ(eGeoGroupTypeGuess, guess("p0-1 myPrimGroup", &error));
+    EXPECT_NE(std::string::npos, error.find("p0-1"));
+    EXPECT_NE(std::string::npos, error.find("myPrimGroup"));
+}

@@ -136,55 +136,6 @@ boundingMask(const GeoDetail& detail,
     return mask;
 }
 
-std::set<GeoEdge>
-allEdges(const GeoDetail& detail)
-{
-    std::set<GeoEdge> edges;
-    geoForEachEdge(detail, [&](const GeoEdge& e, GeoOffset /*prim*/) {
-        edges.insert(e);
-    });
-
-    return edges;
-}
-
-bool
-parsePointPath(const GeoDetail& detail,
-               std::string_view token,
-               std::set<GeoEdge>* out)
-{
-    std::vector<GeoOffset> path;
-    std::size_t pos = 1;
-    while (pos <= token.size()) {
-        const std::size_t start = pos;
-        GeoIndex value = 0;
-        while (pos < token.size() && std::isdigit((unsigned char)token[pos])) {
-            value = value * 10 + GeoIndex(token[pos] - '0');
-            ++pos;
-        }
-        if (pos == start) {
-            return false;
-        }
-        path.push_back(value < detail.pointCount() ? detail.pointMap().offsetFromIndex(value) : GeoOffset(-1));
-        if (pos == token.size()) {
-            break;
-        }
-        if (token[pos] != '-') {
-            return false;
-        }
-        ++pos;
-    }
-    if (path.size() < 2) {
-        return false;
-    }
-    for (std::size_t i = 0; i + 1 < path.size(); ++i) {
-        if (path[i] >= 0 && path[i + 1] >= 0 && path[i] != path[i + 1]) {
-            out->insert(GeoEdge(path[i], path[i + 1]));
-        }
-    }
-
-    return true;
-}
-
 template <typename T>
 T
 valueAt(const std::weak_ptr<Knob<T>>& knob,
@@ -274,83 +225,7 @@ GeoGroup::selectEdges(const GeoDetail& detail,
                       std::set<GeoEdge>* edges,
                       std::string* error)
 {
-    const std::set<GeoEdge> all = allEdges(detail);
-    const std::vector<std::string_view> tokens = geoSplitPattern(pattern);
-    edges->clear();
-    if (tokens.empty()) {
-        *edges = all;
-
-        return true;
-    }
-    for (std::string_view token : tokens) {
-        const bool remove = token.front() == '^';
-        if (remove) {
-            token.remove_prefix(1);
-        }
-        const bool negate = !token.empty() && token.front() == '!';
-        if (negate) {
-            token.remove_prefix(1);
-        }
-        std::set<GeoEdge> hit;
-        if (token.empty()) {
-            continue;
-        } else if (token == "*") {
-            hit = all;
-        } else if (token.front() == '@') {
-            GeoAttribCompare compare;
-            if (!geoParseAttribCompare(token, &compare, error)) {
-                return false;
-            }
-            if (const GeoAttribute* a = detail.findAttribute(eGeoAttribClassPoint, compare.attribute)) {
-                for (const GeoEdge& e : all) {
-                    if (geoEvalAttribCompare(*a, std::size_t(e.p0), compare) && geoEvalAttribCompare(*a, std::size_t(e.p1), compare)) {
-                        hit.insert(e);
-                    }
-                }
-            }
-        } else if (token.size() > 1 && token.front() == 'p' && std::isdigit((unsigned char)token[1])) {
-            if (!parsePointPath(detail, token, &hit)) {
-                if (error) {
-                    *error = "malformed point path \"" + std::string(token) + "\"";
-                }
-
-                return false;
-            }
-        } else if (std::isdigit((unsigned char)token.front())) {
-            if (error) {
-                *error = "edges are named by point paths such as p0-1, not by numbers: \"" + std::string(token) + "\"";
-            }
-
-            return false;
-        } else {
-            for (const std::string& name : detail.edgeGroupNames()) {
-                if (!geoGlobMatch(token, name)) {
-                    continue;
-                }
-                if (const GeoEdgeGroup* group = detail.findEdgeGroup(name)) {
-                    for (const GeoEdge& e : group->edges()) {
-                        if (detail.pointMap().isLive(e.p0) && detail.pointMap().isLive(e.p1)) {
-                            hit.insert(e);
-                        }
-                    }
-                }
-            }
-        }
-        if (negate) {
-            std::set<GeoEdge> complement;
-            std::set_difference(all.begin(), all.end(), hit.begin(), hit.end(), std::inserter(complement, complement.end()));
-            hit.swap(complement);
-        }
-        for (const GeoEdge& e : hit) {
-            if (remove) {
-                edges->erase(e);
-            } else {
-                edges->insert(e);
-            }
-        }
-    }
-
-    return true;
+    return geoSelectEdges(detail, pattern, edges, error);
 }
 
 bool
@@ -376,7 +251,7 @@ GeoGroup::createGroup(GeoDetailBuilder& builder,
         }
         if (params.useBounding) {
             std::set<GeoEdge> bounded;
-            for (const GeoEdge& e : params.usePattern ? selected : allEdges(detail)) {
+            for (const GeoEdge& e : params.usePattern ? selected : geoAllEdges(detail)) {
                 const bool a = inside[std::size_t(e.p0)];
                 const bool b = inside[std::size_t(e.p1)];
                 if (params.includePartlyInside ? (a || b) : (a && b)) {

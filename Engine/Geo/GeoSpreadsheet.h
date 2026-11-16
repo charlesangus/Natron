@@ -44,6 +44,8 @@ struct GeoSpreadsheetColumn {
     std::string name;
     // True when the cell text is a summary and fullValue() carries more (array attributes, transforms, bounds).
     bool hasFullValue = false;
+    // Set when the column's values cannot be shown, saying why; its cells are then empty.
+    std::string problem;
 };
 
 /** @brief The length of an array attribute element; arrays sort by length, not by content. */

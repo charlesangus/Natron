@@ -40,6 +40,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
+#include "Engine/Nodes/Scene/ScenePrimElements.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 
@@ -673,6 +674,18 @@ void flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
                          const SceneStage& stage,
                          const std::string& primPath,
                          const std::string& name);
+
+/**
+ * @brief The element data of the prim at primPath, at frame as readAttribute() reads it. Runs a
+ * ScenePrimElementsRead through readStage, one step per call, so the stage lock is held for one
+ * attribute's Get at a time. Stops as Cancelled when readStage refuses a step or once *cancelled is
+ * set. A prim in a payload that is not loaded reads as NotLoaded and is never loaded.
+ **/
+ScenePrimElements readPrimElements(const ScenePrimElementsStageReader& readStage,
+                                   const std::string& primPath,
+                                   double frame,
+                                   double framesPerSecond,
+                                   const std::atomic<bool>* cancelled = nullptr);
 
 // One address per layer, to tell whether two reads got the same layers.
 std::vector<const void*> getLayerIdentities(const std::vector<PXR_NS::SdfLayerRefPtr>& layers);

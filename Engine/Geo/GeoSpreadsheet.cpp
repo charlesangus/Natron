@@ -320,7 +320,7 @@ GeoDetailSpreadsheetSource::GeoDetailSpreadsheetSource(GeoDetailConstPtr detail)
         std::vector<GeoSpreadsheetColumn>& cols = _columns[c];
         std::vector<Column>& binds = _bindings[c];
         const auto add = [&](std::string name, bool full, Column b) {
-            cols.push_back(GeoSpreadsheetColumn { std::move(name), full });
+            cols.push_back(GeoSpreadsheetColumn { std::move(name), full, std::string() });
             binds.push_back(b);
         };
         if (cls == eGeoAttribClassVertex) {

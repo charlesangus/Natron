@@ -217,6 +217,7 @@ set(NatronEngine_NODE_DOCS
     ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoGroup.md
     ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoWrangle.md
     ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoPython.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoEdit.md
 )
 foreach(nodeDoc IN LISTS NatronEngine_NODE_DOCS)
     get_filename_component(nodeDocName ${nodeDoc} NAME)

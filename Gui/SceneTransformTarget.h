@@ -152,6 +152,18 @@ void applySceneKnobEdits(const NodePtr& node,
                          const QString& text);
 
 /**
+ * @brief Writes newValue to knob, a knob of node, then records the change from oldValue in history
+ * as one command labelled text. oldValue may differ from the knob's value before this call, so a
+ * change already shown while it was being made undoes to where it started.
+ **/
+void applySceneStringEdit(const NodePtr& node,
+                          const KnobStringPtr& knob,
+                          const std::string& oldValue,
+                          const std::string& newValue,
+                          UndoHistory* history,
+                          const QString& text);
+
+/**
  * @brief The policy the Preferences choose: the knobs of each prim's owner node (or the
  * matrix of its owning Replace-mode USDEditTransform), else an
  * USDEditTransform; the USDEditTransform whose panel is open; or one at the end of the viewed

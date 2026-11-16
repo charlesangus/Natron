@@ -511,6 +511,22 @@ public:
     void clearTransformHandles();
 
     /**
+     * @brief Draws translate handles along the world axes at @p origin (world space), for dragging
+     * picked geometry components, until clearComponentHandles(). They take the place of the
+     * selection's and the op's handles, and a drag of them previews nothing on the stage: the
+     * caller edits the geometry instead.
+     **/
+    void setComponentHandles(const double origin[3]);
+
+    void clearComponentHandles();
+
+    // Whether component handles are set.
+    bool hasComponentHandles() const;
+
+    // Whether the drag under way is of the component handles.
+    bool isComponentTransformDrag() const;
+
+    /**
      * @brief The transform widget's tool, frame and origin (SceneTransform::ToolEnum, SpaceEnum
      * and PivotEnum): the handles of the tool on the selected prims.
      **/
@@ -1043,6 +1059,19 @@ private:
 
     // Writes the change of the op handle drag under way to its node, as one undo step.
     bool commitOpHandleDrag(double change);
+
+    /**
+     * @brief Draws translate handles at the centre of the picked components while the view shows
+     * a GeoEdit node whose edits apply to the geometry shown, and none otherwise.
+     **/
+    void refreshComponentHandles();
+
+    /**
+     * @brief Writes the component drag under way, moved by change, to its GeoEdit's edits: with
+     * @p commit, as one undo step (restoring the edits from before the drag when change moves
+     * nothing), else without one, as a live preview. True if a commit wrote an edit.
+     **/
+    bool writeComponentDrag(double change, bool commit);
 
     /**
      * @brief Mirrors the handles drawn into natronSceneTransformHandles (handle, x, y in widget

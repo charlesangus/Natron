@@ -602,6 +602,24 @@ applySceneKnobEdits(const NodePtr& node,
     applyEdits(node, frame, edits, std::vector<SceneStringEdit>(), history, text);
 }
 
+void
+applySceneStringEdit(const NodePtr& node,
+                     const KnobStringPtr& knob,
+                     const std::string& oldValue,
+                     const std::string& newValue,
+                     UndoHistory* history,
+                     const QString& text)
+{
+    if (!knob) {
+        return;
+    }
+    SceneStringEdit edit;
+    edit.knob = knob;
+    edit.oldValue = oldValue;
+    edit.newValue = newValue;
+    applyEdits(node, 0., std::vector<SceneKnobEdit>(), { edit }, history, text);
+}
+
 NodePtr
 findSceneTransformOwner(const NodePtr& viewed,
                         const std::string& primPath)

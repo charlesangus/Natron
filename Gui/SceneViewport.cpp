@@ -73,6 +73,7 @@
 #include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoEdit.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
@@ -877,6 +878,13 @@ struct SceneViewportRenderer::Implementation {
     std::vector<std::pair<std::string, GfMatrix4d>> dragOpTargets;
     double dragChange = 0.;
     bool dragChanged = false;
+    // Translate handles on picked geometry components, set by the main thread. Their drag keeps
+    // its change in an atomic, as the drag edits a node rather than the stage and must not wait
+    // for the stage lock that each sync of those edits takes.
+    bool hasComponentHandles = false;
+    GfVec3d componentOrigin = GfVec3d(0.);
+    bool dragComponents = false;
+    std::atomic<double> componentDragChange { 0. };
     // The serial after which a synced scene has the drag written; kNoPreviewClear while none is
     // awaited. Set on the main thread, read by sync.
     static const U64 kNoPreviewClear = ~U64(0);
@@ -1987,9 +1995,42 @@ struct SceneViewportRenderer::Implementation {
      * @brief Where the handles drawn sit at the shown time: the selection's widget, else an op's.
      * *selection tells which. False if none are drawn. Needs stageMutex.
      **/
+    bool componentHandlesShown() const
+    {
+        return (dragHandle != SceneGizmo::kNoHandle) ? dragComponents : hasComponentHandles;
+    }
+
+    // The component handles, carried along by a drag of them under way.
+    bool computeComponentFrame(SceneGizmo::Frame* frame) const
+    {
+        if (!componentHandlesShown()) {
+            return false;
+        }
+        GfVec3d origin = componentOrigin;
+        if (dragHandle != SceneGizmo::kNoHandle) {
+            origin = dragFrame.origin;
+            origin[SceneGizmo::getHandleAxis(dragHandle)] += componentDragChange.load();
+        }
+        frame->origin = origin;
+        for (int i = 0; i < 3; ++i) {
+            GfVec3d axis(0.);
+            axis[i] = 1.;
+            frame->axes[i] = axis;
+            frame->rotateAxes[i] = axis;
+            frame->scaleAxes[i] = axis;
+        }
+
+        return true;
+    }
+
     bool computeHandleFrame(SceneGizmo::Frame* frame,
                             bool* selection) const
     {
+        if (computeComponentFrame(frame)) {
+            *selection = false;
+
+            return true;
+        }
         if (computeSelectionFrame(frame)) {
             *selection = true;
 
@@ -2014,12 +2055,20 @@ struct SceneViewportRenderer::Implementation {
     {
         std::vector<SceneGizmo::HandleShape> shapes = SceneGizmo::buildHandles(frame, length);
 
+        if (componentHandlesShown()) {
+            return SceneTransformWidget::filterHandles(shapes, SceneTransform::eToolTranslate);
+        }
+
         return selection ? SceneTransformWidget::filterHandles(shapes, transformTool) : shapes;
     }
 
     bool isDrawnHandle(int handle,
                        bool selection) const
     {
+        if (componentHandlesShown()) {
+            return SceneTransformWidget::isToolHandle(SceneTransform::eToolTranslate, handle);
+        }
+
         return selection ? SceneTransformWidget::isToolHandle(transformTool, handle) : ((handle >= 0) && (handle < SceneGizmo::kNumHandles));
     }
 
@@ -3291,6 +3340,37 @@ SceneViewportRenderer::clearTransformHandles()
 }
 
 void
+SceneViewportRenderer::setComponentHandles(const double origin[3])
+{
+    _imp->hasComponentHandles = true;
+    _imp->componentOrigin = GfVec3d(origin[0], origin[1], origin[2]);
+}
+
+void
+SceneViewportRenderer::clearComponentHandles()
+{
+    if (!_imp->hasComponentHandles) {
+        return;
+    }
+    _imp->hasComponentHandles = false;
+    if (!_imp->dragComponents) {
+        _imp->highlightedHandle = SceneGizmo::kNoHandle;
+    }
+}
+
+bool
+SceneViewportRenderer::hasComponentHandles() const
+{
+    return _imp->hasComponentHandles;
+}
+
+bool
+SceneViewportRenderer::isComponentTransformDrag() const
+{
+    return (_imp->dragHandle != SceneGizmo::kNoHandle) && _imp->dragComponents;
+}
+
+void
 SceneViewportRenderer::setTransformTool(int tool)
 {
     _imp->transformTool = (SceneTransform::ToolEnum)std::max(0, std::min(tool, (int)SceneTransform::eToolScale));
@@ -3473,12 +3553,16 @@ SceneViewportRenderer::beginTransformDrag(int handle,
     _imp->clearPreviewLocked();
     _imp->dragHandle = SceneGizmo::kNoHandle;
     _imp->dragSelection = false;
+    _imp->dragComponents = false;
     if (!_imp->computeHandleFrame(&frame, &selection) || !_imp->isDrawnHandle(handle, selection)) {
         return false;
     }
     _imp->dragPrims.clear();
     _imp->dragOpTargets.clear();
-    if (selection) {
+    _imp->componentDragChange = 0.;
+    if (_imp->hasComponentHandles) {
+        _imp->dragComponents = true;
+    } else if (selection) {
         const double time = _imp->timeCode();
         UsdGeomXformCache xforms((UsdTimeCode(time)));
         for (const UsdPrim& prim : _imp->transformablePrims()) {
@@ -3544,6 +3628,11 @@ SceneViewportRenderer::previewTransformDrag(double change,
     if (_imp->dragHandle == SceneGizmo::kNoHandle) {
         return false;
     }
+    if (_imp->dragComponents) {
+        _imp->componentDragChange = change;
+
+        return false;
+    }
     std::vector<std::pair<std::string, GfMatrix4d>> deltas;
     if (_imp->dragSelection) {
         const GfMatrix4d delta = SceneTransformWidget::computeDelta(_imp->dragFrame, _imp->dragHandle, change);
@@ -3606,6 +3695,8 @@ SceneViewportRenderer::endTransformDrag()
 {
     _imp->dragHandle = SceneGizmo::kNoHandle;
     _imp->dragSelection = false;
+    _imp->dragComponents = false;
+    _imp->componentDragChange = 0.;
     _imp->dragPrims.clear();
     _imp->dragOpTargets.clear();
     _imp->dragChange = 0.;
@@ -4922,6 +5013,16 @@ struct SceneViewport::Implementation {
     bool handleChanged = false;
     std::shared_ptr<SceneTransformTarget> transformTarget;
     SceneTransformRecorder transformRecorder;
+    // A drag of picked components, made on handleNode's GeoEdit: its edits before the drag, the
+    // geometry shown then and what the picked components drag in it.
+    std::string componentBaseText;
+    GeoEditData componentBase;
+    GeoDetailConstPtr componentDetail;
+    GeoEditTargets componentTargets;
+    // The last edits text read, decoded, as each paint looks at it.
+    std::string componentCacheText;
+    GeoEditData componentCache;
+    bool componentCacheValid = true;
     // Drops a preview whose written drag never reaches the scene shown, as when the node written
     // is not in the viewed branch. Long, since a heavy graph may take a while to evaluate before
     // it requests the scene with the drag.
@@ -4987,6 +5088,44 @@ struct SceneViewport::Implementation {
         }
 
         return dynamic_cast<USDEditTransform*>((*node)->getEffectInstance().get());
+    }
+
+    /**
+     * @brief The GeoEdit the view shows, while components are picked on geometry its edits
+     * apply to: its node, edits knob and decoded edits, the geometry shown and what the picked
+     * components drag in it. False when there is nothing to drag, and when the edits were made
+     * on other counts, as a drag could only add to edits the node skips.
+     **/
+    bool findComponentEdit(NodePtr* node,
+                           KnobStringPtr* knob,
+                           GeoEditData* data,
+                           GeoDetailConstPtr* detail,
+                           GeoEditTargets* targets)
+    {
+        if (!geometryContext || (geoPickMode == eGeoComponentObjects) || componentSelection.empty() || !viewedNodeProvider) {
+            return false;
+        }
+        *node = viewedNodeProvider();
+        GeoEdit* effect = *node ? dynamic_cast<GeoEdit*>((*node)->getEffectInstance().get()) : nullptr;
+        *knob = effect ? effect->getEditsKnob() : KnobStringPtr();
+        const std::shared_ptr<const GeoUsdConvert> convert = geoDisplay->componentConvert();
+        *detail = convert ? convert->detail() : GeoDetailConstPtr();
+        if (!*knob || !*detail) {
+            return false;
+        }
+        const std::string text = (*knob)->getValue();
+        if (text != componentCacheText) {
+            std::string error;
+            componentCacheText = text;
+            componentCacheValid = GeoEditData::decode(text, &componentCache, &error);
+        }
+        if (!componentCacheValid || !componentCache.matches(**detail)) {
+            return false;
+        }
+        *data = componentCache;
+        *targets = GeoEdit::targets(**detail, componentSelection);
+
+        return !targets->empty();
     }
 
     // The device pixel of a widget position.
@@ -7026,8 +7165,29 @@ SceneViewport::createCameraFromView()
 } // SceneViewport::createCameraFromView
 
 void
+SceneViewport::refreshComponentHandles()
+{
+    if (_imp->renderer.isComponentTransformDrag()) {
+        return;
+    }
+    NodePtr node;
+    KnobStringPtr knob;
+    GeoEditData data;
+    GeoDetailConstPtr detail;
+    GeoEditTargets targets;
+    std::array<double, 3> centre;
+    if (!_imp->findComponentEdit(&node, &knob, &data, &detail, &targets) || !GeoEdit::centre(*detail, targets, &centre)) {
+        _imp->renderer.clearComponentHandles();
+
+        return;
+    }
+    _imp->renderer.setComponentHandles(centre.data());
+}
+
+void
 SceneViewport::refreshTransformHandles()
 {
+    refreshComponentHandles();
     NodePtr node;
     USDEditTransform* effect = _imp->getTransformNode(&node);
     std::string primPath, opName;
@@ -7562,20 +7722,30 @@ SceneViewport::beginHandleDrag(const QPoint& pos,
     if (handle == SceneGizmo::kNoHandle) {
         return false;
     }
-    bool selectionBusy = false;
-    const bool selection = _imp->renderer.hasSelectionHandles(&selectionBusy);
-    if (selectionBusy) {
-        if (busy) {
-            *busy = true;
-        }
-
-        return false;
-    }
     NodePtr node;
-    if (!selection && !_imp->getTransformNode(&node)) {
-        return false;
+    if (_imp->renderer.hasComponentHandles()) {
+        KnobStringPtr knob;
+        if (!_imp->findComponentEdit(&node, &knob, &_imp->componentBase, &_imp->componentDetail, &_imp->componentTargets)) {
+            return false;
+        }
+        _imp->componentBaseText = knob->getValue();
+    } else {
+        bool selectionBusy = false;
+        const bool selection = _imp->renderer.hasSelectionHandles(&selectionBusy);
+        if (selectionBusy) {
+            if (busy) {
+                *busy = true;
+            }
+
+            return false;
+        }
+        if (!selection && !_imp->getTransformNode(&node)) {
+            return false;
+        }
     }
     if (!_imp->renderer.beginTransformDrag(handle, pixel[0], pixel[1], w, h, busy)) {
+        _imp->componentDetail.reset();
+
         return false;
     }
     _imp->previewClearOwed = false;
@@ -7616,6 +7786,14 @@ SceneViewport::dragHandle(const QPoint& pos)
     // each time, and the prims would only move as fast as that round trip.
     _imp->handleChange = change;
     _imp->handleChanged = true;
+    if (_imp->renderer.isComponentTransformDrag()) {
+        // Written as it goes: the geometry shown is the node's output, with no stage-side preview.
+        _imp->renderer.previewTransformDrag(change, &busy);
+        writeComponentDrag(change, false);
+        update();
+
+        return;
+    }
     _imp->renderer.previewTransformDrag(change, &busy);
     if (busy) {
         _imp->handleMoveOwed = true;
@@ -7646,8 +7824,12 @@ SceneViewport::endHandleDrag()
     // Before any write, which may request the scene that has it before returning.
     const U64 serial = _imp->requestedSerial;
     bool written = false;
+    const bool components = _imp->renderer.isComponentTransformDrag();
 
-    if (changed) {
+    if (components) {
+        // Also when nothing changed, as Escape does, to take back what the drag wrote.
+        written = writeComponentDrag(changed ? change : 0., true);
+    } else if (changed) {
         if (_imp->renderer.isSelectionTransformDrag()) {
             SceneTransformDrag drag;
             if (_imp->renderer.getTransformDrag(change, _imp->frame, &drag)) {
@@ -7675,7 +7857,9 @@ SceneViewport::endHandleDrag()
     _imp->handleNode.reset();
     _imp->handleChange = 0.;
     _imp->handleChanged = false;
-    if (written && (_imp->syncedSerial <= serial)) {
+    _imp->componentDetail.reset();
+    _imp->componentTargets = GeoEditTargets();
+    if (written && !components && (_imp->syncedSerial <= serial)) {
         // The preview stays until the scene with the written drag is shown.
         _imp->renderer.clearTransformPreviewAfter(serial);
         _imp->previewAwaitsSync = true;
@@ -7723,6 +7907,38 @@ SceneViewport::commitOpHandleDrag(double change)
 
     return true;
 } // SceneViewport::commitOpHandleDrag
+
+bool
+SceneViewport::writeComponentDrag(double change,
+                                  bool commit)
+{
+    NodePtr node = _imp->handleNode.lock();
+    GeoEdit* effect = node ? dynamic_cast<GeoEdit*>(node->getEffectInstance().get()) : nullptr;
+    KnobStringPtr knob = effect ? effect->getEditsKnob() : KnobStringPtr();
+
+    if (!knob || !_imp->componentDetail) {
+        return false;
+    }
+    std::string text = _imp->componentBaseText;
+    if (change != 0.) {
+        GeoEditData data = _imp->componentBase;
+        std::array<double, 3> delta = { 0., 0., 0. };
+        delta[SceneGizmo::getHandleAxis(_imp->handle)] = change;
+        GeoEdit::translate(&data, *_imp->componentDetail, _imp->componentTargets, delta);
+        text = data.encode();
+    }
+    if (!commit || (text == _imp->componentBaseText)) {
+        if (knob->getValue() != text) {
+            knob->setValue(text, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, nullptr);
+        }
+
+        return false;
+    }
+    applySceneStringEdit(node, knob, _imp->componentBaseText, text, _imp->undoHistory.data(),
+                         tr("Move components of %1").arg(QString::fromUtf8(node->getLabel().c_str())));
+
+    return true;
+} // SceneViewport::writeComponentDrag
 
 void
 SceneViewport::highlightHandleAt(const QPoint& pos)

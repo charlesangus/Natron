@@ -224,12 +224,19 @@ try:
 
     def big_section():
         section("big")
+        resized_ms = int(time.time() * 1000)
         grid.getParam("gridRows").setValue(BIG_GRID)
         grid.getParam("gridColumns").setValue(BIG_GRID)
         total = (BIG_GRID + 1) ** 2
         ok = yield ("until", lambda: points_count() == total and table().isVisible(), BIG_TIMEOUT_S)
         require(ok, "the Points class counts the big grid's %d points (got %r)" % (total, points_count()))
         require(show_class("Points"), "the Points class is shown")
+        # With software GL every window flush queues behind the scene view's frame, which takes
+        # seconds for this grid: measured before that frame is done, the heartbeat would time the
+        # grid's drawing instead of the selection.
+        ok = yield ("until", lambda: (int(prop("natronSceneSyncedAtMs", 0) or 0) >= resized_ms) and scene_drawn() and not prop("natronSceneComposing", False)
+                    and (int(prop("natronSceneLastPaintMs", 0) or 0) >= int(prop("natronSceneSyncedAtMs", 0) or 0)), BIG_TIMEOUT_S)
+        require(ok, "the scene view draws the big grid")
         yield ("sleep", SETTLE_MS)
         beat = Heartbeat()
         beat.start()

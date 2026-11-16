@@ -136,6 +136,7 @@
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/pointBased.h>
 #include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/xformCache.h>
@@ -769,8 +770,9 @@ struct SceneViewportRenderer::Implementation {
     std::vector<std::pair<std::string, std::vector<int>>> displayPoints;
     std::vector<std::pair<std::string, std::vector<int>>> displayFaces;
     // Storm draws a mesh's selected points only in its points repr, so the shaded and wireframe
-    // modes would show none of displayPoints: they are drawn over the frame instead.
-    std::atomic<bool> hasDisplayPoints { false };
+    // modes would show none of displayPoints, and it lights its selection colour, so a face lit
+    // black shows none of displayFaces: both are drawn over the frame instead.
+    std::atomic<bool> hasDisplayHighlight { false };
     std::atomic<bool> engineSelectionDirty { false };
     // The renderer chosen, a delegate's id or kRenderDelegateSceneDefaultId; the delegate the
     // next engine is made with, the chosen one or the one the stage's render settings prim names;
@@ -2355,7 +2357,7 @@ struct SceneViewportRenderer::Implementation {
 
     bool drawsOverlays() const
     {
-        return showGrid || showGuides || hasHandles || hasDisplayPoints;
+        return showGrid || showGuides || hasHandles || hasDisplayHighlight;
     }
 
     // The highlighted points of displayPoints at the shown time, over everything. Needs stageMutex.
@@ -2423,6 +2425,112 @@ struct SceneViewportRenderer::Implementation {
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
     } // drawDisplayPoints
+
+    // The highlighted faces of displayFaces at the shown time, over everything: Storm mixes its
+    // selection colour in before lighting, so a face lit black (a scene without lights, or a
+    // face turned from the light) would show none of it. Needs stageMutex.
+    void drawDisplayFaces(const GfFrustum& frustum)
+    {
+        std::vector<std::pair<std::string, std::vector<int>>> prims;
+        {
+            std::lock_guard<std::mutex> lock(engineSelectionMutex);
+            prims = displayFaces;
+        }
+        const UsdStageRefPtr stage = currentStage();
+        if (prims.empty() || !stage) {
+            return;
+        }
+        const UsdTimeCode time(timeCode());
+        UsdGeomXformCache xforms(time);
+        // Each face's corners in world space, one after the other; counts holds how many each has.
+        std::vector<GfVec3d> corners;
+        std::vector<int> counts;
+        for (const std::pair<std::string, std::vector<int>>& prim : prims) {
+            if (!SdfPath::IsValidPathString(prim.first)) {
+                continue;
+            }
+            const UsdPrim usdPrim = stage->GetPrimAtPath(SdfPath(prim.first));
+            if (!usdPrim || !usdPrim.IsA<UsdGeomMesh>()) {
+                continue;
+            }
+            const UsdGeomMesh mesh(usdPrim);
+            VtVec3fArray points;
+            VtIntArray faceCounts, faceIndices;
+            mesh.GetPointsAttr().Get(&points, time);
+            mesh.GetFaceVertexCountsAttr().Get(&faceCounts, time);
+            mesh.GetFaceVertexIndicesAttr().Get(&faceIndices, time);
+            std::vector<std::size_t> starts(faceCounts.size() + 1, 0);
+            for (std::size_t face = 0; face < faceCounts.size(); ++face) {
+                starts[face + 1] = starts[face] + (std::size_t)std::max(0, faceCounts[face]);
+            }
+            const GfMatrix4d toWorld = xforms.GetLocalToWorldTransform(usdPrim);
+            for (const int face : prim.second) {
+                if ((face < 0) || ((std::size_t)face >= faceCounts.size()) || (starts[(std::size_t)face + 1] > faceIndices.size())) {
+                    continue;
+                }
+                int count = 0;
+                for (std::size_t corner = starts[(std::size_t)face]; corner < starts[(std::size_t)face + 1]; ++corner) {
+                    const int point = faceIndices[corner];
+                    if ((point >= 0) && ((std::size_t)point < points.size())) {
+                        corners.push_back(toWorld.Transform(GfVec3d(points[(std::size_t)point])));
+                        ++count;
+                    }
+                }
+                counts.push_back(count);
+            }
+        }
+        if (corners.empty()) {
+            return;
+        }
+
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeProjectionMatrix().GetArray());
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeViewMatrix().GetArray());
+
+        glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(1.f, 0.6f, 0.f, 0.4f);
+        glBegin(GL_TRIANGLES);
+        std::size_t first = 0;
+        for (const int count : counts) {
+            for (int corner = 1; corner + 1 < count; ++corner) {
+                const GfVec3d& a = corners[first];
+                const GfVec3d& b = corners[first + (std::size_t)corner];
+                const GfVec3d& c = corners[first + (std::size_t)corner + 1];
+                glVertex3d(a[0], a[1], a[2]);
+                glVertex3d(b[0], b[1], b[2]);
+                glVertex3d(c[0], c[1], c[2]);
+            }
+            first += (std::size_t)count;
+        }
+        glEnd();
+        glDisable(GL_BLEND);
+        glColor4f(1.f, 0.6f, 0.f, 1.f);
+        glBegin(GL_LINES);
+        first = 0;
+        for (const int count : counts) {
+            for (int corner = 0; corner < count; ++corner) {
+                const GfVec3d& a = corners[first + (std::size_t)corner];
+                const GfVec3d& b = corners[first + (std::size_t)((corner + 1) % count)];
+                glVertex3d(a[0], a[1], a[2]);
+                glVertex3d(b[0], b[1], b[2]);
+            }
+            first += (std::size_t)count;
+        }
+        glEnd();
+
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+    } // drawDisplayFaces
 };
 
 SceneViewportRenderer::SceneViewportRenderer()
@@ -3962,6 +4070,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
             _imp->drawGuides(frustum, width, height);
         }
         _imp->drawTransformHandles(frustum, width, height);
+        _imp->drawDisplayFaces(frustum);
         _imp->drawDisplayPoints(frustum);
     }
 
@@ -4101,6 +4210,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
             _imp->drawGuides(frustum, width, height);
         }
         _imp->drawTransformHandles(frustum, width, height);
+        _imp->drawDisplayFaces(frustum);
         _imp->drawDisplayPoints(frustum);
     }
 
@@ -4383,7 +4493,7 @@ SceneViewportRenderer::setDisplayHighlight(std::vector<std::pair<std::string, st
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
     _imp->displayPoints = std::move(points);
     _imp->displayFaces = std::move(faces);
-    _imp->hasDisplayPoints = !_imp->displayPoints.empty();
+    _imp->hasDisplayHighlight = !_imp->displayPoints.empty() || !_imp->displayFaces.empty();
     _imp->engineSelectionDirty = true;
 }
 

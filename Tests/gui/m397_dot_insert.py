@@ -14,6 +14,8 @@ import sys
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
+# Turns on the node graph's Dot-insertion diagnostics in natron.log; the graph reads the variable
+# on every event, so setting it from this script inside the Natron process is enough.
 
 STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 120
@@ -79,12 +81,22 @@ try:
         QApplication.sendEvent(widget, QKeyEvent(etype, key, modifiers))
         QApplication.processEvents()
 
+    def press_ctrl(graph):
+        """Ctrl goes down as X11 delivers it: the event carries the modifier state from before the
+        press. QKeyEvent::modifiers() flips the bit of the key's own modifier, so an event built
+        with ControlModifier would report no modifier and the graph would not show bend points."""
+        graph.setFocus()
+        send_key(graph, QEvent.KeyPress, Qt.Key_Control, Qt.NoModifier)
+
+    def release_ctrl(graph):
+        send_key(graph, QEvent.KeyRelease, Qt.Key_Control, Qt.ControlModifier)
+
     def ctrl_drag(graph, start, end, finish=None):
         """Presses at start with Ctrl held, moves to end in steps, runs finish (if any) with the
         button still down, then releases. Ctrl is pressed as a key first, as a user holds it."""
         vp = graph.viewport()
         ctrl = Qt.ControlModifier
-        send_key(graph, QEvent.KeyPress, Qt.Key_Control, ctrl)
+        press_ctrl(graph)
         start = QPointF(start)
         end = QPointF(end)
         send_mouse(vp, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton, ctrl)
@@ -94,7 +106,7 @@ try:
         if finish is not None:
             finish()
         send_mouse(vp, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton, ctrl)
-        send_key(graph, QEvent.KeyRelease, Qt.Key_Control, Qt.NoModifier)
+        release_ctrl(graph)
 
     def bend_point(graph, src, dst):
         """The scene position of the bend point of the pipe from src to dst, from the Edge item.
@@ -173,13 +185,17 @@ try:
         at = to_vp(graph, bend)
         vp = graph.viewport()
         ctrl = Qt.ControlModifier
-        send_key(graph, QEvent.KeyPress, Qt.Key_Control, ctrl)
+        press_ctrl(graph)
         send_mouse(vp, QEvent.MouseButtonPress, at, Qt.LeftButton, Qt.LeftButton, ctrl)
         yield ("sleep", SETTLE_MS)
         gt.shot("a_click_pressed.png")
         check_inserted("a-click (button down)", source, dest)
         send_mouse(vp, QEvent.MouseButtonRelease, at, Qt.LeftButton, Qt.NoButton, ctrl)
-        send_key(graph, QEvent.KeyRelease, Qt.Key_Control, Qt.NoModifier)
+        release_ctrl(graph)
+        # A click that grabbed the pipe instead picks it up; Escape drops it so the next section
+        # starts from a clean graph.
+        send_key(graph, QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+        send_key(graph, QEvent.KeyRelease, Qt.Key_Escape, Qt.NoModifier)
         yield ("sleep", SETTLE_MS)
         gt.close_all_panels()
         gt.shot("a_click_released.png")

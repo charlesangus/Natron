@@ -359,6 +359,7 @@ set(GuiTests_SOURCES
     SceneGizmo_Test.cpp
     SceneGraphModel_Test.cpp
     SceneGuides_Test.cpp
+    ScenePresentPacer_Test.cpp
     SceneSelectionActions_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp

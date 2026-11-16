@@ -114,7 +114,9 @@ enum WalkFlags : unsigned {
     eWalkHide = 1,
     eWalkShow = 2,
     // Sets each prim's output to what the rules give, without notices.
-    eWalkSeed = 4
+    eWalkSeed = 4,
+    // Brings into Hydra, invisible, the geometry the rules show and Hydra lacks.
+    eWalkStage = 8
 };
 
 RulePtr
@@ -482,7 +484,7 @@ SceneDrawFilter::forget(Node* top)
             _lights.erase(node);
             _lightPaths.erase(*node->path);
         }
-        if (!_arrivalRoots.empty() && node->hideable && (node->output != eOutputAbsent)) {
+        if (!_arrivalRoots.empty() && node->hideable && (node->output == eOutputShown)) {
             _removedHeld.insert(*node->path);
         }
         if (node->output == eOutputInvisible) {
@@ -776,7 +778,7 @@ SceneDrawFilter::descends(const Frame& frame,
     if ((mode & eWalkHide) && geometryHidden) {
         return true;
     }
-    if (!(mode & eWalkShow) || lightsHidden) {
+    if (!(mode & (eWalkShow | eWalkStage)) || lightsHidden) {
         return false;
     }
 
@@ -808,10 +810,19 @@ SceneDrawFilter::visit(const Frame& frame,
     }
     if (hidden) {
         if (mode & eWalkHide) {
-            const OutputEnum after = ((node.output == eOutputAbsent) || underHiddenRow(frame.now)) ? eOutputAbsent : eOutputInvisible;
+            // What Hydra holds until the call's notices go: a prim it has never held stays out of it.
+            const OutputEnum held = node.pending ? node.before : node.output;
+            const OutputEnum after = ((held == eOutputAbsent) || underHiddenRow(frame.now)) ? eOutputAbsent : eOutputInvisible;
             if (after != node.output) {
                 transition(node, after);
             }
+        }
+
+        return 0;
+    }
+    if (mode & eWalkStage) {
+        if ((node.output == eOutputAbsent) && !node.light) {
+            transition(node, eOutputInvisible);
         }
 
         return 0;
@@ -888,10 +899,6 @@ SceneDrawFilter::sendChanges()
     std::size_t addedCount = 0;
     for (Node* node : _changes) {
         node->pending = false;
-        if ((node->output == eOutputInvisible) && (node->before == eOutputAbsent)) {
-            // Shown and boxed again before Hydra heard of it: Hydra has still never held it.
-            setOutput(*node, eOutputAbsent);
-        }
         if ((node->output != node->before) && ((node->output == eOutputAbsent) || (node->before == eOutputAbsent))) {
             ++addedCount;
         }
@@ -907,7 +914,10 @@ SceneDrawFilter::sendChanges()
             ++_hiddenSent;
         } else if (node->before == eOutputAbsent) {
             added.emplace_back(*node->path, node->type);
-            ++_shownSent;
+            ++_insertedSent;
+            if (node->output == eOutputShown) {
+                ++_shownSent;
+            }
         }
     }
     if (!added.empty()) {
@@ -1063,6 +1073,8 @@ SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
         walk(&changed, eWalkShow, all, never);
         walk(&_revealStack, eWalkShow, all, never);
     } else {
+        std::vector<Frame> staging = changed;
+        walk(&staging, eWalkStage, all, never);
         _revealStack.insert(_revealStack.end(), changed.begin(), changed.end());
     }
     updateRevealRoots(deltas, tops, revealBatch);
@@ -1110,7 +1122,7 @@ SceneDrawFilter::defersArrival(const Node& node,
         return false;
     }
     if (known) {
-        return before == eOutputAbsent;
+        return before != eOutputShown;
     }
 
     return _removedHeld.empty() || (_removedHeld.count(*node.path) == 0);
@@ -1187,7 +1199,7 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
             }
         }
         if ((output == eOutputShown) && arriving && defersArrival(*node, known, before)) {
-            output = eOutputAbsent;
+            output = eOutputInvisible;
             deferred = true;
         }
         setOutput(*node, output);
@@ -1305,23 +1317,31 @@ SceneRevealPacer::observe(std::size_t prims,
         spread += (_samples[i].prims - meanPrims) * (_samples[i].prims - meanPrims);
         covariance += (_samples[i].prims - meanPrims) * (_samples[i].ms - meanMs);
     }
-    double fixedMs = -1.;
-    double perPrimMs = 0.;
+    const double minPerPrimMs = 1e-9;
+    const double current = double(_batch);
+    double wanted = current;
     // Batches of one size cannot tell the fixed part from the rest, nor can noise between close ones.
     const double relative = 0.1 * meanPrims;
     if ((_sampleCount >= 3) && (spread > relative * relative * double(_sampleCount))) {
-        perPrimMs = covariance / spread;
-        fixedMs = meanMs - perPrimMs * meanPrims;
+        // A cost that does not grow with the batch is all fixed.
+        _perPrimMs = (std::max)(covariance / spread, minPerPrimMs);
+        _fixedMs = (std::min)(meanMs - _perPrimMs * meanPrims, longest);
+        if (_fixedMs < 0.) {
+            _fixedMs = 0.;
+            _perPrimMs = (std::max)(meanMs / meanPrims, minPerPrimMs);
+        }
+        _fitted = true;
+    } else if (_fitted) {
+        _fixedMs = (std::min)(_fixedMs, 0.9 * ms);
+        _perPrimMs = (std::max)((ms - _fixedMs) / double(prims), minPerPrimMs);
+    } else {
+        _fixedMs = 0.;
+        _perPrimMs = (std::max)(ms / double(prims), minPerPrimMs);
+        wanted = (ms <= _targetMs) ? (current * 2.) : (current / 2.);
     }
-    if ((perPrimMs <= 0.) || (fixedMs < 0.) || (fixedMs > longest)) {
-        fixedMs = (std::min)(_fixedMs, 0.9 * ms);
-        perPrimMs = (ms - fixedMs) / double(prims);
+    if (_fitted) {
+        wanted = (std::max)(_targetMs, _fixedMs) / _perPrimMs;
     }
-    _fixedMs = fixedMs;
-    _perPrimMs = (std::max)(perPrimMs, 1e-9);
-
-    const double wanted = (_fixedMs < 0.75 * _targetMs) ? ((_targetMs - _fixedMs) / _perPrimMs) : (_fixedMs / _perPrimMs);
-    const double current = double(_batch);
     const double bounded = (std::min)((std::max)(wanted, current / 4.), current * 2.);
     // The upper bound only keeps the conversion defined.
     _batch = std::size_t((std::min)((std::max)(bounded, 1.), 1e15));

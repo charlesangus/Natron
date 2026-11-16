@@ -1328,6 +1328,12 @@ private:
 
     void onBackgroundFrameDone();
 
+    // Main thread: whether the GPU has finished the frame on it, asking for the paint that shows it
+    // if so and polling again later if not. Never waits for the GPU.
+    void pollPresent();
+    // Main thread: a paint has a frame on the GPU and nothing new to show.
+    void holdPresent();
+
     // Main thread: the render thread has switched to the renderer id for the switch numbered serial.
     void onRendererSwitched(const QString& id, U64 serial);
 

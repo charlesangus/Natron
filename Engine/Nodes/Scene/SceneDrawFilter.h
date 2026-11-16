@@ -73,6 +73,12 @@ NATRON_NAMESPACE_ENTER
  * GetRprimIndexVersion); a visibility change reaches HdStCommandBuffer::SyncDrawItemVisibility
  * instead (hdSt/commandBuffer.h) and keeps the batches. A Hidden row then takes the prim out.
  *
+ * So a reveal brings every prim it will show that Hydra lacks in at once, held invisible, and its
+ * steps only flip visibility: the batches are rebuilt once a reveal, not once a step. Storm still
+ * syncs an invisible prim in full the first time (HdRprim::CanSkipDirtyBitPropagationAndSync), so
+ * that first frame pays for the whole row. Lights are sprims, which no draw batch holds, and come
+ * with the steps as before.
+ *
  * Every other prim passes through, because drawn geometry keeps needing a material or camera that
  * lives under a boxed row. That rules out a RemovedPrimEntry, which takes the whole subtree, and so a
  * hide or a show announces each prim: HdsiPrefixPathPruningSceneIndex is out too, since a prefix is
@@ -163,7 +169,8 @@ public:
      * have not changed, so what is left there still comes, after what this delta shows.
      *
      * With a non-zero revealBatch, what the delta's loads bring in joins a reveal as it arrives
-     * instead of reaching Hydra all at once, until a delta with revealBatch 0 comes.
+     * instead of being drawn all at once, until a delta with revealBatch 0 comes. Either way, what a
+     * reveal is to show reaches Hydra invisible straight away.
      */
     void applyDelta(const SceneDrawDelta& delta, std::size_t revealBatch = 0);
 
@@ -189,7 +196,7 @@ public:
 
     /**
      * @brief Marks a render's end. A prim the input takes away and adds again within one render, as a
-     * resync does, is one Hydra held, and it comes back as it was rather than joining a reveal.
+     * resync does, comes back as it was: drawn if Hydra drew it, rather than joining a reveal.
      */
     void endRender();
 
@@ -222,6 +229,9 @@ public:
     unsigned long long getShownSentCount() const { return _shownSent; }
     // The hides and shows that went as a visibility change, with the prim kept in Hydra.
     unsigned long long getVisibilitySentCount() const { return _visibilitySent; }
+    // Prims this filter brought into Hydra, shown or held invisible for a reveal. With
+    // getInputAddedCount(), it tells a frame that rebuilt the draw batches from one that did not.
+    unsigned long long getInsertedSentCount() const { return _insertedSent; }
     std::size_t getHeldInvisibleCount() const { return _invisibleCount; }
     // Native instances the rules turn off in their instancer's mask.
     std::size_t getMaskedInstanceCount() const { return _maskedCount; }
@@ -318,7 +328,7 @@ private:
 
     // Where what loads in is revealed rather than sent at once.
     std::set<PXR_NS::SdfPath> _arrivalRoots;
-    // Prims Hydra held when the input took them away during this render.
+    // Prims Hydra drew when the input took them away during this render.
     std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _removedHeld;
 
     std::unordered_map<PXR_NS::SdfPath, Node, PXR_NS::SdfPath::Hash> _nodes;
@@ -347,6 +357,7 @@ private:
     unsigned long long _hiddenSent = 0;
     unsigned long long _shownSent = 0;
     unsigned long long _visibilitySent = 0;
+    unsigned long long _insertedSent = 0;
     Clock::time_point _lastInputAdded;
 };
 
@@ -354,11 +365,14 @@ private:
  * @brief Sizes a reveal's batches from what the frames that showed them cost, so a modest machine and
  * a many-core one both keep near the frame time they aim for.
  *
- * A frame costs a fixed part and a part per prim shown. The fixed part is large in Storm, which
- * gathers every draw item again when an rprim comes or goes (hd/changeTracker.h
- * GetRprimIndexVersion), and it grows as the reveal does. The pacer fits both to its last few
- * frames. Where the fixed part alone nearly fills the target, no batch keeps the target, and a batch
- * costing about the fixed part again keeps half of each frame for progress.
+ * A frame costs a fixed part and a part per prim shown, and the pacer fits both to its last few
+ * frames. The fixed part comes with every step whatever its size: Storm walks every rprim it holds
+ * when a prim first turns varying (HdDirtyList, HdChangeTracker::ResetVaryingState). So it is not
+ * taken out of the batch, which would only buy more steps each paying it again: the prims get the
+ * whole target, and where the fixed part is longer than the target, as long again as it.
+ *
+ * Until the frames have varied enough in size to tell the parts apart, the batch doubles after a
+ * frame within the target and halves after one beyond it.
  */
 class SceneRevealPacer {
 public:
@@ -385,6 +399,7 @@ private:
     std::size_t _nextSample = 0;
     double _fixedMs = 0.;
     double _perPrimMs = 0.;
+    bool _fitted = false;
 };
 
 NATRON_NAMESPACE_EXIT

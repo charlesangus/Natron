@@ -34,12 +34,14 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <QActionGroup>
@@ -88,6 +90,7 @@
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/Nodes/Scene/StormPtexBindingFilter.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
@@ -151,6 +154,7 @@
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneGuides.h"
+#include "Gui/ScenePresentPacer.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneTransformWidget.h"
 #include "Gui/UndoHistory.h"
@@ -172,6 +176,7 @@ const int kMaxRenderPasses = 8;
 // A stage change usually reaches the screen sooner than this, and a status flashing over the old
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
+const int kPresentPollMs = 2;
 // The longest a sync's first frame waits for the graph policy its prims take: past it, the view
 // draws them as they are rather than seem stuck.
 const int kPolicyHoldMs = 500;
@@ -800,6 +805,10 @@ struct SceneViewportRenderer::Implementation {
     // A paced step is timed from its start to the end of the render that sent it to Hydra, which is
     // where its cost lands.
     SceneRevealPacer drawRevealPacer { kRevealTargetMs };
+    // A frame in which rprims entered Hydra also rebuilt every draw batch, which says nothing of what
+    // a step costs; these count such entries as of the last render's end and of the step's frame.
+    unsigned long long drawInsertsRendered = 0;
+    unsigned long long drawRevealStepInserts = 0;
     bool drawRevealStepTimed = false;
     std::size_t drawRevealStepPrims = 0;
     std::chrono::steady_clock::time_point drawRevealStepStart;
@@ -1611,6 +1620,7 @@ struct SceneViewportRenderer::Implementation {
         try {
             SceneDrawFilter::registerForAllRenderers();
             CyclesAovs::registerSceneIndices();
+            StormPtexBindingFilter::registerForStorm();
             {
                 TfErrorMark mark;
                 const SceneDrawFilter::EngineScope scope;
@@ -1861,6 +1871,7 @@ struct SceneViewportRenderer::Implementation {
             drawRevealStepTimed = paced && (stepped != 0) && !filter->wasStepCut();
             drawRevealStepPrims = stepped;
             drawRevealStepStart = stepStart;
+            drawRevealStepInserts = drawInsertsRendered;
         }
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
         const double ms = std::chrono::duration<double, std::milli>(end - start).count();
@@ -1891,7 +1902,9 @@ struct SceneViewportRenderer::Implementation {
             return;
         }
         filter->endRender();
-        if (drawRevealStepTimed && rendered) {
+        const unsigned long long inserts = filter->getInputAddedCount() + filter->getInsertedSentCount();
+        drawInsertsRendered = inserts;
+        if (drawRevealStepTimed && rendered && (inserts == drawRevealStepInserts)) {
             drawRevealPacer.observe(drawRevealStepPrims, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawRevealStepStart).count());
         }
         drawRevealStepTimed = false;
@@ -6062,15 +6075,40 @@ struct SceneViewport::Implementation {
     // Whether the engine's context is the render thread's right now. Main thread.
     bool usesRenderThread = false;
     std::unique_ptr<QOffscreenSurface> renderSurface;
-    // Render thread: its context, sharing the widget's, and the target it draws into.
+    // Render thread: its context, sharing the widget's.
     std::unique_ptr<QOpenGLContext> renderContext;
-    GLuint renderFbo = 0;
-    GLuint renderTexture = 0;
-    GLuint renderDepth = 0;
-    int renderWidth = 0;
-    int renderHeight = 0;
+    // Render thread, but for readFence, which the main thread sets once it has copied the target
+    // to the screen; presentPacer says which target each thread may touch.
+    struct RenderTarget {
+        GLuint fbo = 0;
+        GLuint texture = 0;
+        GLuint depth = 0;
+        int width = 0;
+        int height = 0;
+        GLsync readFence = nullptr;
+    };
+    RenderTarget renderTargets[2];
     // The widget's context: framebuffer objects are not shared, so it has its own on the texture.
     GLuint presentFbo = 0;
+
+    // A render-thread frame, from its render to its presentation.
+    struct PresentFrame {
+        int width = 0;
+        int height = 0;
+        SceneViewportRenderer::RenderStatusEnum status = SceneViewportRenderer::eRenderStatusDone;
+        // The draw changes the frame took in.
+        unsigned long long absorbed = 0;
+        QVariantList view;
+    };
+    // Main thread, and the render thread while the main thread waits for it.
+    ScenePresentPacer<PresentFrame> presentPacer {
+        [](void* fence) { return glClientWaitSync(static_cast<GLsync>(fence), 0, 0) != GL_TIMEOUT_EXPIRED; },
+        [](void* fence) { glDeleteSync(static_cast<GLsync>(fence)); }
+    };
+    // Asks the GPU, without waiting, whether the frame on it is done.
+    QTimer* presentPoll = nullptr;
+    // The poll found the frame done and asked for the paint that shows it.
+    bool presentWoken = false;
 
     // Main thread.
     bool backgroundFrameRunning = false;
@@ -6187,34 +6225,42 @@ struct SceneViewport::Implementation {
         return started;
     }
 
-    // Render thread. The target of a width x height frame, reallocated when the size changes.
-    GLuint ensureRenderTarget(int width,
+    // Render thread. Target index of a width x height frame, reallocated when the size changes.
+    GLuint ensureRenderTarget(int index,
+                              int width,
                               int height)
     {
-        if (renderFbo && (renderWidth == width) && (renderHeight == height)) {
-            return renderFbo;
+        RenderTarget& target = renderTargets[index];
+        if (target.readFence) {
+            // The GPU, not this thread, waits for the widget's copy of the last image to be done.
+            glWaitSync(target.readFence, 0, GL_TIMEOUT_IGNORED);
+            glDeleteSync(target.readFence);
+            target.readFence = nullptr;
         }
-        if (!renderFbo) {
-            glGenFramebuffers(1, &renderFbo);
-            glGenTextures(1, &renderTexture);
-            glGenRenderbuffers(1, &renderDepth);
+        if (target.fbo && (target.width == width) && (target.height == height)) {
+            return target.fbo;
         }
-        glBindTexture(GL_TEXTURE_2D, renderTexture);
+        if (!target.fbo) {
+            glGenFramebuffers(1, &target.fbo);
+            glGenTextures(1, &target.texture);
+            glGenRenderbuffers(1, &target.depth);
+        }
+        glBindTexture(GL_TEXTURE_2D, target.texture);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glBindTexture(GL_TEXTURE_2D, 0);
-        glBindRenderbuffer(GL_RENDERBUFFER, renderDepth);
+        glBindRenderbuffer(GL_RENDERBUFFER, target.depth);
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, renderFbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, renderTexture, 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, renderDepth);
+        glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target.texture, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, target.depth);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        renderWidth = width;
-        renderHeight = height;
+        target.width = width;
+        target.height = height;
 
-        return renderFbo;
+        return target.fbo;
     }
 
     // Render thread: everything of the render context, the engine first.
@@ -6224,11 +6270,16 @@ struct SceneViewport::Implementation {
             return;
         }
         renderer.releaseGL();
-        glDeleteFramebuffers(1, &renderFbo);
-        glDeleteTextures(1, &renderTexture);
-        glDeleteRenderbuffers(1, &renderDepth);
-        renderFbo = renderTexture = renderDepth = 0;
-        renderWidth = renderHeight = 0;
+        presentPacer.clear();
+        for (RenderTarget& target : renderTargets) {
+            glDeleteFramebuffers(1, &target.fbo);
+            glDeleteTextures(1, &target.texture);
+            glDeleteRenderbuffers(1, &target.depth);
+            if (target.readFence) {
+                glDeleteSync(target.readFence);
+            }
+            target = RenderTarget();
+        }
         renderContext->doneCurrent();
         renderContext.reset();
     }
@@ -6242,6 +6293,8 @@ struct SceneViewport::Implementation {
             return;
         }
         callOnRenderThread([this]() { releaseRenderContext(); });
+        presentPoll->stop();
+        presentWoken = false;
         if (presentFbo) {
             glDeleteFramebuffers(1, &presentFbo);
             presentFbo = 0;
@@ -6266,30 +6319,37 @@ struct SceneViewport::Implementation {
         renderThread.join();
     }
 
-    // Main thread, the widget's context current. The render thread has finished its work on the
-    // texture when fence signals.
+    // Main thread, the widget's context current. The front target's frame, which the GPU has
+    // finished: the copy never waits for the render thread's work.
     void presentRenderTarget(GLuint target,
                              int width,
-                             int height,
-                             GLsync fence)
+                             int height)
     {
-        if (fence) {
-            glWaitSync(fence, 0, GL_TIMEOUT_IGNORED);
-            glDeleteSync(fence);
+        const int front = presentPacer.frontTarget();
+        if (front < 0) {
+            return;
         }
+        RenderTarget& source = renderTargets[front];
         if (!presentFbo) {
             glGenFramebuffers(1, &presentFbo);
         }
         glBindFramebuffer(GL_READ_FRAMEBUFFER, presentFbo);
         // Attached anew each time: a change made in another context is only seen after a bind, and
         // a resize has given the texture a new image.
-        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, renderTexture, 0);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, source.texture, 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_FRAMEBUFFER_SRGB);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
         glBindFramebuffer(GL_FRAMEBUFFER, target);
+        // The render thread draws into this target again only after the copy, without waiting for it.
+        if (source.readFence) {
+            glDeleteSync(source.readFence);
+        }
+        source.readFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        // A fence another context waits on has to reach the GPU first.
+        glFlush();
     }
 };
 
@@ -6369,6 +6429,11 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->composingTimer->setSingleShot(true);
     _imp->composingTimer->setInterval(kComposingStatusDelayMs);
     QObject::connect(_imp->composingTimer, &QTimer::timeout, this, [this]() { update(); });
+    _imp->presentPoll = new QTimer(this);
+    _imp->presentPoll->setSingleShot(true);
+    _imp->presentPoll->setTimerType(Qt::PreciseTimer);
+    _imp->presentPoll->setInterval(kPresentPollMs);
+    QObject::connect(_imp->presentPoll, &QTimer::timeout, this, [this]() { pollPresent(); });
 
     _imp->policyHoldTimer = new QTimer(this);
     _imp->policyHoldTimer->setSingleShot(true);
@@ -6696,7 +6761,7 @@ SceneViewport::isSceneSynced() const
     // A view nobody sees takes nothing in until it is shown.
     const bool awaitsEngine = _imp->usesRenderThread && isVisible() && (width() > 0) && (height() > 0);
 
-    return !awaitsEngine || (!_imp->renderThreadBusy() && !_imp->renderer.needsBackgroundFrame());
+    return !awaitsEngine || (!_imp->renderThreadBusy() && !_imp->renderer.needsBackgroundFrame() && !_imp->presentPacer.pending());
 }
 
 bool
@@ -6708,7 +6773,8 @@ SceneViewport::isStageSynced() const
 void
 SceneViewport::startBackgroundFrame()
 {
-    if (!_imp->usesRenderThread || _imp->renderThreadBusy() || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn() || _imp->policyHeld()) {
+    // One frame on the GPU at a time: its target is the one this frame would draw into.
+    if (!_imp->usesRenderThread || _imp->renderThreadBusy() || _imp->presentPacer.inFlight() || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn() || _imp->policyHeld()) {
         return;
     }
     const qreal dpr = devicePixelRatio();
@@ -6721,8 +6787,9 @@ SceneViewport::startBackgroundFrame()
     _imp->composingClock.start();
     _imp->composingTimer->start();
     Implementation* imp = _imp.get();
-    _imp->postToRenderThread([this, imp, w, h]() {
-        imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(w, h));
+    const int target = _imp->presentPacer.backTarget();
+    _imp->postToRenderThread([this, imp, target, w, h]() {
+        imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h));
         // The widget's context reads the image only after a later fence, but the commands must be
         // on their way before this thread goes idle.
         glFlush();
@@ -6750,6 +6817,37 @@ SceneViewport::onBackgroundFrameDone()
     serviceDeferredInput();
     publishState();
     update();
+}
+
+void
+SceneViewport::pollPresent()
+{
+    if (!_imp->presentPacer.inFlight() || !context()) {
+        return;
+    }
+    makeCurrent();
+    const bool ready = _imp->presentPacer.poll();
+    doneCurrent();
+    if (!ready) {
+        _imp->presentPoll->start();
+
+        return;
+    }
+    _imp->presentWoken = true;
+    serviceDeferredInput();
+    update();
+}
+
+void
+SceneViewport::holdPresent()
+{
+    if (!_imp->presentPoll->isActive()) {
+        _imp->presentPoll->start();
+    }
+    // Otherwise the framebuffer keeps the last frame shown.
+    if (!_imp->presentedScene) {
+        paintComposingStatus();
+    }
 }
 
 void
@@ -7994,10 +8092,12 @@ SceneViewport::pickMustWait()
 {
     // The engine is busy for as long as a background frame runs, and a stage change not yet taken
     // in would have the pick do that frame's work on the render thread, with the main thread
-    // waiting for it. Asking for the frame here brings the retry that follows it.
+    // waiting for it. Asking for the frame here brings the retry that follows it. A pick behind a
+    // frame still on the GPU would have the main thread wait for the GPU; the poll that finds it
+    // done retries.
     startBackgroundFrame();
 
-    return _imp->renderThreadBusy() || (_imp->usesRenderThread && _imp->renderer.needsBackgroundFrame());
+    return _imp->renderThreadBusy() || _imp->presentPacer.inFlight() || (_imp->usesRenderThread && _imp->renderer.needsBackgroundFrame());
 }
 
 QString
@@ -8685,18 +8785,58 @@ SceneViewport::paintGL()
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
-    if (_imp->usesRenderThread && (w > 0) && (h > 0)) {
+    Implementation* imp = _imp.get();
+    const bool stormOnRenderThread = imp->usesRenderThread && (imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
+    const auto paintedView = [imp, w, h]() {
+        const SceneViewportRenderer::FreeCamera& camera = imp->renderer.getFreeCamera();
+
+        return QVariantList { camera.pivot[0], camera.pivot[1], camera.pivot[2], camera.distance, camera.azimuth, camera.elevation, camera.fovY,
+                              int(camera.viewMode), QString::fromStdString(imp->renderer.getLookThroughCamera()), w, h };
+    };
+    // Qt merges paint requests: the one the poll asked for may also carry a change's, which shows
+    // as a view other than the frame's.
+    const bool woken = std::exchange(imp->presentWoken, false);
+    // The render thread's frame this paint shows, which the GPU has finished.
+    std::optional<Implementation::PresentFrame> shown;
+    if (!stormOnRenderThread) {
+        imp->presentPacer.clear();
+    } else if ((w > 0) && (h > 0)) {
+        imp->presentPacer.poll();
+        if (imp->presentPacer.inFlight()) {
+            // What asked for this paint is drawn by the frame after the one on the GPU.
+            imp->presentPacer.markOwed();
+            holdPresent();
+
+            return;
+        }
+        shown = imp->presentPacer.takeReady();
+        if (shown && ((shown->width != w) || (shown->height != h))) {
+            shown.reset();
+        } else if (shown) {
+            imp->presentRenderTarget(defaultFramebufferObject(), w, h);
+            if (!woken || (shown->view != paintedView())) {
+                imp->presentPacer.markOwed();
+            }
+        }
+    }
+    // A paint that shows a finished frame renders the next only if something asked for it.
+    bool renders = !shown || imp->presentPacer.takeOwed();
+    if (imp->usesRenderThread && (w > 0) && (h > 0)) {
         startBackgroundFrame();
-        if (_imp->renderThreadBusy() || _imp->renderer.needsBackgroundFrame()) {
-            if (!_imp->renderThreadBusy() && !_imp->stageAwaitsTakeIn()) {
+        if (imp->renderThreadBusy() || imp->renderer.needsBackgroundFrame()) {
+            if (!imp->renderThreadBusy() && !imp->stageAwaitsTakeIn()) {
                 // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
                 update();
             }
-            if (!_imp->presentedScene || (_imp->composingClock.isValid() && (_imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
-                paintComposingStatus();
-            }
+            if (!shown) {
+                if (!imp->presentedScene || (imp->composingClock.isValid() && (imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
+                    paintComposingStatus();
+                }
 
-            return;
+                return;
+            }
+            // The background frame's end asks for the paint that renders after it.
+            renders = false;
         }
     }
     refreshTransformHandles();
@@ -8719,20 +8859,41 @@ SceneViewport::paintGL()
         // wake-ups on processors the delegate keeps busy, at every frame it refines.
         status = _imp->renderer.renderRefinementIfIdle(defaultFramebufferObject(), w, h);
     } else if (_imp->usesRenderThread) {
-        GLuint target = 0;
-        GLsync fence = nullptr;
-        Implementation* imp = _imp.get();
-        imp->callOnRenderThread([imp, w, h, &status, &target, &fence]() {
-            target = imp->ensureRenderTarget(w, h);
-            status = imp->renderer.renderIfIdle(target, w, h);
-            if (status != SceneViewportRenderer::eRenderStatusBusy) {
-                fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-                // A fence another context waits on has to reach the GPU first.
-                glFlush();
+        if (renders) {
+            SceneViewportRenderer::RenderStatusEnum rendered = SceneViewportRenderer::eRenderStatusBusy;
+            GLsync fence = nullptr;
+            const int target = imp->presentPacer.backTarget();
+            imp->callOnRenderThread([imp, target, w, h, &rendered, &fence]() {
+                rendered = imp->renderer.renderIfIdle(imp->ensureRenderTarget(target, w, h), w, h);
+                if (rendered != SceneViewportRenderer::eRenderStatusBusy) {
+                    fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                    // A fence another context polls has to reach the GPU first.
+                    glFlush();
+                }
+            });
+            if (rendered != SceneViewportRenderer::eRenderStatusBusy) {
+                Implementation::PresentFrame frame;
+                frame.width = w;
+                frame.height = h;
+                frame.status = rendered;
+                frame.absorbed = imp->renderer.getDrawFilterStats().absorbed;
+                frame.view = paintedView();
+                imp->presentPacer.submitted(fence, std::move(frame));
+                if (!shown && imp->presentPacer.poll()) {
+                    shown = imp->presentPacer.takeReady();
+                    imp->presentRenderTarget(defaultFramebufferObject(), w, h);
+                }
             }
-        });
-        if (status != SceneViewportRenderer::eRenderStatusBusy) {
-            imp->presentRenderTarget(defaultFramebufferObject(), w, h, fence);
+        }
+        if (shown) {
+            status = shown->status;
+            if (imp->presentPacer.inFlight() && !imp->presentPoll->isActive()) {
+                imp->presentPoll->start();
+            }
+        } else if (imp->presentPacer.inFlight()) {
+            holdPresent();
+
+            return;
         }
     } else {
         status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
@@ -8770,14 +8931,16 @@ SceneViewport::paintGL()
     publishRefineState();
     publishTransformState();
     publishDrawStats();
+    // A render-thread frame is shown after its render, once the GPU has finished it, and shows
+    // the changes it took in then.
+    const unsigned long long absorbed = shown ? shown->absorbed : _imp->renderer.getDrawFilterStats().absorbed;
     if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
-        if (timing->presented(_imp->renderer.getDrawFilterStats().absorbed, std::chrono::steady_clock::now())) {
+        if (timing->presented(absorbed, std::chrono::steady_clock::now())) {
             setProperty("natronSceneDrawTimings", timing->records());
         }
     }
-    // A paint gets here only once the frame has taken in every delta posted so far, unlike the stats,
-    // which also change on the way to the screen.
-    setProperty("natronSceneDrawPresented", QVariant::fromValue<qulonglong>(_imp->renderer.getDrawFilterStats().absorbed));
+    // The deltas the frame on screen took in, unlike the stats, which also change on the way to it.
+    setProperty("natronSceneDrawPresented", QVariant::fromValue<qulonglong>(absorbed));
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());

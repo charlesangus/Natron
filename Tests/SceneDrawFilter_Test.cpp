@@ -79,20 +79,24 @@ visible(const HdSceneIndexPrim& prim)
 }
 
 // hides and shows hold every prim that stopped or started being drawn; leftHydra and invisible say
-// which of the hides took the prim out of Hydra and which kept it there, invisible.
+// which of the hides took the prim out of Hydra and which kept it there, invisible. enteredInvisible
+// holds the prims that came into Hydra without being drawn, as a reveal brings them in.
 class Recorder
     : public HdSceneIndexObserver {
 public:
-    void PrimsAdded(const HdSceneIndexBase& /*sender*/,
+    void PrimsAdded(const HdSceneIndexBase& sender,
                     const AddedPrimEntries& entries) override
     {
         for (const AddedPrimEntry& entry : entries) {
             if (entry.primType.IsEmpty()) {
                 hides.insert(entry.primPath.GetString());
                 leftHydra.insert(entry.primPath.GetString());
-            } else {
+            } else if (visible(sender.GetPrim(entry.primPath))) {
                 shows.insert(entry.primPath.GetString());
+            } else {
+                enteredInvisible.insert(entry.primPath.GetString());
             }
+            ++addedEntries;
         }
     }
 
@@ -132,21 +136,25 @@ public:
         shows.clear();
         leftHydra.clear();
         invisible.clear();
+        enteredInvisible.clear();
         removed.clear();
         dirtied.clear();
+        addedEntries = 0;
     }
 
     bool empty() const
     {
-        return hides.empty() && shows.empty() && removed.empty() && dirtied.empty();
+        return hides.empty() && shows.empty() && enteredInvisible.empty() && removed.empty() && dirtied.empty();
     }
 
     PathSet hides;
     PathSet shows;
     PathSet leftHydra;
     PathSet invisible;
+    PathSet enteredInvisible;
     PathSet removed;
     PathSet dirtied;
+    std::size_t addedEntries = 0;
 };
 
 HdContainerDataSourceHandle
@@ -1549,11 +1557,11 @@ namespace {
 class ShowOrder
     : public HdSceneIndexObserver {
 public:
-    void PrimsAdded(const HdSceneIndexBase& /*sender*/,
+    void PrimsAdded(const HdSceneIndexBase& sender,
                     const AddedPrimEntries& entries) override
     {
         for (const AddedPrimEntry& entry : entries) {
-            if (!entry.primType.IsEmpty()) {
+            if (!entry.primType.IsEmpty() && visible(sender.GetPrim(entry.primPath))) {
                 shown.push_back(entry.primPath.GetString());
             }
         }
@@ -1776,7 +1784,8 @@ TEST_F(SceneDrawFilterTest, WhatALoadAllBringsInJoinsAReveal)
     addPayload(scene);
 
     EXPECT_TRUE(filter->isRevealing());
-    EXPECT_EQ((PathSet { "/World/a/payload/p1", "/World/a/payload/p2" }), recorder.leftHydra);
+    EXPECT_EQ((PathSet { "/World/a/payload/p1", "/World/a/payload/p2" }), recorder.enteredInvisible);
+    EXPECT_TRUE(recorder.leftHydra.empty());
     EXPECT_EQ((PathSet { "/World/a/payload", "/World/a/payload/lamp" }), recorder.shows);
     EXPECT_FALSE(drawn("/World/a/payload/p1"));
 
@@ -1839,6 +1848,131 @@ TEST_F(SceneDrawFilterTest, BoxingTheRowOfALoadAllLeavesWhatArrivesBoxed)
     EXPECT_FALSE(drawn("/World/a/payload/p1"));
     EXPECT_FALSE(drawn("/World/a/payload/p2"));
     EXPECT_TRUE(drawn("/World/a/payload/lamp"));
+}
+
+// What keeps a reveal's steps cheap in Storm: its prims enter the render index once, at its start,
+// and every step after only changes visibility, so the draw batches are not rebuilt step by step.
+TEST_F(SceneDrawFilterTest, ARevealBringsItsPrimsInOnceAndThenOnlyChangesVisibility)
+{
+    CountingRenderDelegate delegate;
+    std::unique_ptr<HdRenderIndex> index(HdRenderIndex::New(&delegate, HdDriverVector()));
+    ASSERT_TRUE(index != nullptr);
+    index->InsertSceneIndex(filter, SdfPath::AbsoluteRootPath());
+    const SdfPathVector meshes = { SdfPath("/World/a/m1"), SdfPath("/World/a/deep/m2"), SdfPath("/World/b/m3"), SdfPath("/World/c") };
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    for (const SdfPath& mesh : meshes) {
+        ASSERT_FALSE(index->GetRprim(mesh)) << mesh;
+    }
+    recorder.reset();
+    const unsigned long long insertedBefore = filter->getInsertedSentCount();
+    const int destroyedBefore = delegate.rprimsDestroyed;
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+
+    EXPECT_TRUE(filter->isRevealing());
+    EXPECT_EQ(kAllGeometry, recorder.enteredInvisible);
+    EXPECT_EQ(kAllGeometry.size(), recorder.addedEntries);
+    EXPECT_TRUE(recorder.shows.empty());
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_EQ(kAllGeometry.size(), filter->getInsertedSentCount() - insertedBefore);
+    HdChangeTracker& tracker = index->GetChangeTracker();
+    for (const SdfPath& mesh : meshes) {
+        ASSERT_TRUE(index->GetRprim(mesh)) << mesh;
+        EXPECT_FALSE(index->GetSceneDelegateForRprim(mesh)->GetVisible(mesh)) << mesh;
+        tracker.MarkRprimClean(mesh);
+    }
+    const unsigned indexVersion = tracker.GetRprimIndexVersion();
+    const unsigned visibilityChanges = tracker.GetVisibilityChangeCount();
+    const unsigned long long shownBefore = filter->getShownSentCount();
+    recorder.reset();
+
+    std::size_t steps = 0;
+    while (filter->isRevealing()) {
+        filter->stepReveal(1);
+        ++steps;
+    }
+
+    EXPECT_LE(kAllGeometry.size(), steps);
+    EXPECT_EQ(indexVersion, tracker.GetRprimIndexVersion());
+    EXPECT_NE(visibilityChanges, tracker.GetVisibilityChangeCount());
+    EXPECT_EQ(0u, recorder.addedEntries);
+    EXPECT_EQ(kAllGeometry, recorder.shows);
+    EXPECT_EQ(kAllGeometry.size(), filter->getShownSentCount() - shownBefore);
+    EXPECT_EQ(kAllGeometry.size(), filter->getInsertedSentCount() - insertedBefore);
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+    for (const SdfPath& mesh : meshes) {
+        EXPECT_NE(0u, tracker.GetRprimDirtyBits(mesh) & HdChangeTracker::DirtyVisibility) << mesh;
+        EXPECT_TRUE(index->GetSceneDelegateForRprim(mesh)->GetVisible(mesh)) << mesh;
+    }
+    EXPECT_EQ(destroyedBefore, delegate.rprimsDestroyed);
+}
+
+TEST_F(SceneDrawFilterTest, BoxingARevealMidwayKeepsWhatItBroughtInInvisible)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(2);
+    const PathSet announced = recorder.shows;
+    ASSERT_EQ(2u, announced.size());
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_EQ(announced, recorder.invisible);
+    EXPECT_TRUE(recorder.leftHydra.empty());
+    EXPECT_EQ(0u, recorder.addedEntries);
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_EQ(kAllGeometry.size(), filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, HidingARevealMidwayTakesEverythingItBroughtInOut)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(2);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_EQ(kAllGeometry, recorder.leftHydra);
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, HidingARowDuringARevealTakesOnlyItOutAndTheRevealFinishes)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(1);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateHidden), 1);
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2" }), recorder.leftHydra);
+    revealAll(*filter, 1);
+
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), drawnGeometry());
+    EXPECT_TRUE(recorder.enteredInvisible.empty());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, ARowBoxedAndClearedDuringARevealIsShownWithoutEnteringHydraAgain)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(1);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox), 1);
+    filter->applyDelta(states.clearState("/World/b"), 1);
+    revealAll(*filter, 1);
+
+    EXPECT_EQ(0u, recorder.addedEntries);
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
 }
 
 TEST_F(SceneDrawFilterTest, AStepStopsAtItsDeadline)
@@ -1910,13 +2044,24 @@ TEST(SceneRevealPacerTest, BatchesFillTheTargetFrame)
     EXPECT_NEAR(3300., double(pacer.nextBatch()), 33.);
 }
 
-TEST(SceneRevealPacerTest, TheFixedPartOfAFrameIsLeftOutOfTheBatch)
+TEST(SceneRevealPacerTest, TheFixedPartOfAFrameDoesNotShrinkTheBatch)
 {
     SceneRevealPacer pacer(33., 1024);
     pace(pacer, 10., 0.001, 30);
 
-    EXPECT_NEAR(23000., double(pacer.nextBatch()), 230.);
+    EXPECT_NEAR(33000., double(pacer.nextBatch()), 330.);
     EXPECT_NEAR(10., pacer.getFixedMs(), 0.1);
+    EXPECT_NEAR(0.001, pacer.getPerPrimMs(), 1e-5);
+}
+
+TEST(SceneRevealPacerTest, FramesThatCostTheSameWhateverTheBatchGrowIt)
+{
+    SceneRevealPacer pacer(33., 1024);
+    const std::vector<std::size_t> batches = pace(pacer, 50., 0., 12);
+
+    EXPECT_GT(batches.back(), 1024u);
+    EXPECT_GE(batches.back(), batches[batches.size() - 2]);
+    EXPECT_NEAR(50., pacer.getFixedMs(), 0.5);
 }
 
 TEST(SceneRevealPacerTest, AFasterMachineTakesLargerBatches)
@@ -1940,14 +2085,14 @@ TEST(SceneRevealPacerTest, AFrameTheFixedPartFillsSpendsAsMuchAgainOnTheReveal)
     EXPECT_NEAR(1e6, double(pacer.nextBatch()), 1e4);
 }
 
-TEST(SceneRevealPacerTest, ASlowFrameShrinksTheBatchByAQuarterAtMost)
+TEST(SceneRevealPacerTest, ASlowFirstFrameHalvesTheBatch)
 {
     SceneRevealPacer pacer(33., 1024);
     pacer.observe(1024, 10000.);
 
-    EXPECT_EQ(256u, pacer.nextBatch());
+    EXPECT_EQ(512u, pacer.nextBatch());
     pacer.observe(0, 50.);
-    EXPECT_EQ(256u, pacer.nextBatch());
+    EXPECT_EQ(512u, pacer.nextBatch());
     for (int i = 0; i < 20; ++i) {
         pacer.observe(pacer.nextBatch(), 10000.);
     }

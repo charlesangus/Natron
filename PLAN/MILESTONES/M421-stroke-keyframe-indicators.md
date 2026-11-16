@@ -91,3 +91,4 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 - 2026-11-15 — Gate on 20a2f4601 (run 43702938018): ctest both legs, m305 and m261 GUI pass; m421_stroke_markers failed 6/763, both script-side: after select all the dope sheet shows the move cursor across the selection box, so cursor-sweep positions read the box centre (keys never moved — lifeTimeFrame unchanged); and the grouped RotoPaint shares the label RotoPaint1, so panel lookup hit one panel twice. Fixed in 27740e2f2 (no product change); GUI-only rerun on the same build.
 - 2026-11-15 — GUI rerun (run on build 43702938018, script at 27740e2f2): m421_stroke_markers 768/768. UAT AppImage + steps ready (build/appimages/Natron-m421-stroke-keyframe-indicators.*); Needs uat.
 - 2026-11-16 — **UAT approved (user).** Main (F6 - Unified Tiered Cache and others) merged in (27b28b1c6); merging once PR CI is green.
+- 2026-11-16 — Merged to main (PR #279, 5031f097c).

@@ -57,7 +57,7 @@ Cycles Deep Output and M258 - MoonRay Deep Output are elaborated from them.
   - verify: report with sample statistics and the answer to "reachable in-process without a file", with source citations.
   - size: L
 
-- [ ] M255.P2.T3 — Findings and decision drafts
+- [x] M255.P2.T3 — Findings and decision drafts
   - files: report only
   - approach: combine the four reports into one comparison: per delegate, whether it can fill `HydraDeepBuffer` and the patch size; the AOV mechanism (checking how each candidate carries per-AOV metadata such as Cryptomatte manifests, for M285 - Utility Renderer AOVs); and elaborated task lists for the three stubs. Name the user decisions needed.
   - verify: the report answers each Scope question in one line and recommends one option per fork.
@@ -80,3 +80,13 @@ Cycles Deep Output and M258 - MoonRay Deep Output are elaborated from them.
 - 2026-11-16 — P2.T2 done (`spike/m255/REPORT-P2T2-moonray-deep-arras.md`, 852f31da2). The Arras progressive path fills DeepBuffer exactly as batch does, and flat AOVs survive alongside a deep output, so (d) is viable: about 31 MiB per 1080p frame, 1.8 MiB per 64-row band. However, MoonRay's deep records only the first surface each camera ray hits (`PathIntegrator.cc:1408-1426`), so flattened deep differs from beauty (RMSE 0.106) wherever surfaces overlap. Whether MoonRay deep is still worth wiring up is put to the user.
 - 2026-11-16 — **MoonRay first-surface deep (user):** "why have deep with that limitation". Dig deeper to confirm it across transparency modes and deep settings; if it holds, spike a MoonRay fork patch that records every surface along the camera path. M258 - MoonRay Deep Output waits on the result.
 - 2026-11-16 — **MoonRay true deep (c8e1892ee):** the first-surface limit is deliberate in MoonRay ("first hit only for now", `ShadeBundleHandler.cc:211`) and affects presence only. A +76/−12 patch to `librendering_pbr` records every presence layer. With it, flattened deep matches beauty (RMSE 0.106 → 0.0001) in vector, scalar and Hydra-over-Arras renders. M258 - MoonRay Deep Output needs that patch in our MoonRay fork, a smaller deep Z tolerance, and a decision on DCX (left wrong). P2.T3 (combined findings and the elaboration of M256/M257/M258) is next.
+- 2026-11-16 — P2.T3 done (`spike/m255/REPORT-P2T3-findings.md` and `REPORT-P2T3-drafts.md`, a1e0d29fd). **User decisions:**
+  1. Several RenderProducts: union their vars; differing cameras or resolutions are an error.
+  2. Custom primvar and LPE AOVs: a KnobTable.
+  3. The Cycles fork AOV patch (`cycles:<pass>`, `aovNames`, light groups, primvar AOVs) is in M256 - Delegate AOV Selection's scope.
+  4. Drop elementId from the Cycles fork.
+  5. Don't fix MoonRay's DCX writer.
+  6. USDRender's deep compaction controls apply to every delegate.
+  7. Deep volume segments carry colour and alpha on both Cycles and MoonRay.
+  8. Deep is never denoised; document that a flattened deep won't match a denoised beauty.
+  The drafts for M256, M257 and M258 go to `/cat-plan` through the inbox, since those files are plan-scoped. Nothing from the spike branch merges.

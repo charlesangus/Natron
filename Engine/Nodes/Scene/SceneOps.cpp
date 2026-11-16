@@ -44,6 +44,8 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+thread_local U64 s_layersAuthoredOnThread = 0;
+
 // A property under one of an input's roots whose composed targets leave that root.
 struct InputLink {
     PXR_NS::SdfPath property;
@@ -1511,6 +1513,7 @@ reparentRoots(const SceneReparentArgs& args,
 
             return false;
         }
+        ++s_layersAuthoredOnThread;
         ContentHasher h;
         h.appendString("structure");
         h.appendString(args.destinationPath);
@@ -1542,6 +1545,7 @@ reparentRoots(const SceneReparentArgs& args,
             return false;
         }
         ++graftLayersAuthored;
+        ++s_layersAuthoredOnThread;
 
         std::shared_ptr<SceneLayerDependencies> dependencies = std::make_shared<SceneLayerDependencies>();
         dependencies->layers.push_back(slot.wrapper);
@@ -1772,6 +1776,7 @@ SceneLayerMemo::produce(const Key& key,
         return false;
     }
     ++_imp->authorCount;
+    ++s_layersAuthoredOnThread;
     edit.layer->SetPermissionToEdit(false);
 
     SceneLayerEntry entry;
@@ -1831,6 +1836,12 @@ SceneLayerMemo::getAuthorCount() const
     std::lock_guard<std::mutex> lock(_imp->mutex);
 
     return _imp->authorCount;
+}
+
+U64
+SceneLayerMemo::getLayersAuthoredOnThread()
+{
+    return s_layersAuthoredOnThread;
 }
 
 SceneGraftMemo::SceneGraftMemo()

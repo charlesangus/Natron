@@ -448,10 +448,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
         inputContext.install();
 
         {
-            ///Notify the node that we're going to render something with the input
-            EffectInstance::NotifyInputNRenderingStarted_RAIIPtr inputNIsRendering_RAII;
             assert(inputNb != -1); //< see getInputNumber
-            inputNIsRendering_RAII.reset(new EffectInstance::NotifyInputNRenderingStarted_RAII(node.get(), inputNb));
 
             ///For all views requested in input
             for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
@@ -482,6 +479,15 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                 roi = (ownRoI != inputRois.end()) ? ownRoI->second : RectD();
                             }
 
+                            // The planned RoI is what every rect of the frame reads together, so the rect being rendered
+                            // has to be asked: its own RoI may not reach an input a plan left out for it.
+                            if (roiIsInRequestPass && !inputRois.empty()) {
+                                const FrameViewRequest* inputRequest = frameArgs->request->getFrameViewRequest(f, viewIt->first);
+                                if (inputRequest && inputRoIMissesRoD(inputRois, inputEffect, inputRequest->globalData.rod)) {
+                                    continue;
+                                }
+                            }
+
                             const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
                             const RenderScale upstreamScale = useScaleOneInputs ? RenderScale::identity : RenderScale::fromMipmapLevel(originalMipmapLevel);
                             const RectI inputRoIPixelCoords = roi.toPixelEnclosing(upstreamMipmapLevel, inputPar);
@@ -504,9 +510,14 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                                                                    time /*callerRenderTime*/));
 
                                 EffectInstance::RenderRoIRetCode ret;
-                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext); //< requested bitdepth
+                                bool freshInput = false;
+                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext, &freshInput); //< requested bitdepth
                                 if (ret != EffectInstance::eRenderRoIRetCodeOk) {
                                     return ret;
+                                }
+                                // An input the cache served lights no edge: nothing ran upstream for this render.
+                                if (freshInput) {
+                                    node->noteInputExecution(inputNb);
                                 }
                             }
                             for (std::map<ImageLayerDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
@@ -526,7 +537,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                     }
                 } // for all ranges
             } // for all views
-        } // EffectInstance::NotifyInputNRenderingStarted_RAII
+        }
     } // for all inputs
     return EffectInstance::eRenderRoIRetCodeOk;
 } // EffectInstance::treeRecurseFunctor
@@ -1113,10 +1124,7 @@ visitRequestPassItem(bool useTransforms,
     }
 
     // Mirrors the choice renderRoI makes before renderInputImagesForRoI.
-    bool useScaleOneInputs = node->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
-    if (!useScaleOneInputs && !effect->supportsMultiResolution()) {
-        useScaleOneInputs = true;
-    }
+    const bool useScaleOneInputs = effect->pullsInputsAtScaleOne();
     // Same level as treeRecurseFunctor picks for this input when rendering.
     const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
 

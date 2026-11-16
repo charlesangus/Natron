@@ -84,6 +84,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -467,7 +468,8 @@ protected:
     bool prepareFrame(const NodePtr& root,
                       const RectI& renderWindow,
                       FrameRun* run,
-                      std::string* error)
+                      std::string* error,
+                      bool draftMode = false)
     {
         run->abortInfo = AbortableRenderInfo::create(true, 0);
         run->stats = std::make_shared<RenderStats>(false);
@@ -482,7 +484,7 @@ protected:
                                            getApp()->getTimeLine().get(),
                                            NodePtr(),
                                            false /*isAnalysis*/,
-                                           false /*draftMode*/,
+                                           draftMode,
                                            run->stats);
         std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
         const RectD window(renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2);
@@ -503,7 +505,7 @@ protected:
                                                   getApp()->getTimeLine().get(),
                                                   NodePtr(),
                                                   false /*isAnalysis*/,
-                                                  false /*draftMode*/,
+                                                  draftMode,
                                                   run->stats);
         run->context->setRequest(request);
         run->graph = RenderScheduler::buildGraph(run->context, root, kTime, ViewIdx(0), 0 /*mipmapLevel*/);
@@ -577,6 +579,51 @@ protected:
         }
 
         return run->future->wait() == EffectInstance::eRenderRoIRetCodeOk;
+    }
+
+    // The key renderRoI looks the RGBA output of node's task in graph up by.
+    static ImageKey outputKey(const FrameGraph& graph,
+                              const NodePtr& node)
+    {
+        const int index = taskOf(graph, node);
+        if (index < 0) {
+            return ImageKey();
+        }
+        const FrameGraph::Task& task = graph.tasks[index];
+
+        return task.key.node->getEffectInstance()->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, false /*draft*/, task.cacheMipmapLevel).forEntry(task.key.mipmapLevel, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+    }
+
+    // A RAM entry of the host tier, not the stub a peek makes of a device entry.
+    static bool inHostTier(const ImageKey& key)
+    {
+        std::list<ImagePtr> cached;
+        if (!appPTR->peekImage(key, &cached)) {
+            return false;
+        }
+        for (const ImagePtr& image : cached) {
+            if (image && (image->getStorageMode() == eStorageModeRAM) && image->isAllocated()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // The bytes of the RAM entry of the host tier under key, 0 without one.
+    static std::size_t hostTierBytes(const ImageKey& key)
+    {
+        std::list<ImagePtr> cached;
+        if (!appPTR->peekImage(key, &cached)) {
+            return 0;
+        }
+        for (const ImagePtr& image : cached) {
+            if (image && (image->getStorageMode() == eStorageModeRAM) && image->isAllocated()) {
+                return (std::size_t)image->getBounds().area() * image->getComponentsCount() * sizeof(float);
+            }
+        }
+
+        return 0;
     }
 
     // The chain's RAM root, rendered on the GPU without asking for the root on the device.
@@ -725,6 +772,10 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     setGpuStripOverridesForTests(1u << 20, 64);
     FrameRun run;
     ASSERT_TRUE(prepareChainFrame(true, &run, &error)) << error;
+    const ImageKey gradeKey = outputKey(run.graph, _grade);
+    const ImageKey blurKey = outputKey(run.graph, _blur);
+    ASSERT_FALSE(inHostTier(gradeKey));
+    ASSERT_FALSE(inHostTier(blurKey));
     ASSERT_TRUE(render(&run));
 
     const RenderScheduler::RegionReport report = *_last;
@@ -732,9 +783,15 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     EXPECT_EQ(1, run.stats->getGpuRegionsRun());
     EXPECT_GT(report.strips, 1);
     const std::size_t rootBytes = (std::size_t)ramRoot->getBounds().area() * 4 * sizeof(float);
-    EXPECT_EQ(rootBytes, report.downloadBytes);
     EXPECT_GT(run.stats->getDownloadCount(), 0);
-    EXPECT_EQ((unsigned long long)rootBytes, run.stats->getDownloadBytes());
+    EXPECT_TRUE(inHostTier(gradeKey)) << "the host tier did not admit the Grade";
+    EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
+    // The Grade and the Blur reach the host tier, and the root comes back to RAM whole on top of them.
+    const std::size_t gradeBytes = hostTierBytes(gradeKey);
+    const std::size_t blurBytes = hostTierBytes(blurKey);
+    EXPECT_GT(gradeBytes, 0u);
+    EXPECT_GT(blurBytes, 0u);
+    EXPECT_GE(report.downloadBytes, rootBytes + gradeBytes + blurBytes);
     EXPECT_EQ(1, legacyFallbacksOf(run, kStripsReason));
     EXPECT_TRUE(run.context->takeRootDevicePlanes().empty());
 
@@ -800,6 +857,65 @@ TEST_F(ViewerRootOnDevice, RenderPlacementTreatsAKeptRootAsFree)
         EXPECT_EQ(wantsRootOnDevice != 0, inputs.rootOnDevice);
         EXPECT_EQ(wantsRootOnDevice != 0, regionTransfersAreFree(whole, region, inputs.rootOnDevice));
     }
+}
+
+// renderRoI looks a draft frame's output up under the draft key too, so a cached draft image keeps the node on the CPU.
+TEST_F(ViewerRootOnDevice, PlacementProbesTheDraftKeyOfADraftFrame)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(_sourceDir.isValid());
+    const std::string path = writeSource(_sourceDir);
+    ASSERT_FALSE(path.empty());
+    _read = makeNode(PLUGINID_NATRON_READ, PLUGIN_MAJOR_NATRON_READ);
+    NodePtr reformat = makeNode(PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT);
+    _grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(_read && reformat && _grade);
+    KnobFile* file = dynamic_cast<KnobFile*>(_read->getKnobByName(kOfxImageEffectFileParamName).get());
+    ASSERT_TRUE(file != nullptr);
+    file->setValue(path);
+    _read->getEffectInstance()->dropCachedMetadata();
+    connectNodes(_read, reformat, 0, true);
+    connectNodes(reformat, _grade, 0, true);
+    ASSERT_TRUE(_grade->isDraftModeUsed());
+    ASSERT_TRUE(setKnobValues(_grade, "multiply", { 1.25, 1.25, 1.25, 1.25 }));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_grade, RectI(0, 0, kWidth, kHeight), &run, &error, true /*draftMode*/)) << error;
+    const int index = taskOf(run.graph, _grade);
+    ASSERT_GE(index, 0);
+    const FrameGraph::Task task = run.graph.tasks[index];
+    ASSERT_FALSE(task.isIdentity);
+    ASSERT_FALSE(task.components.empty());
+
+    const PlacementInputs inputs = makeRenderPlacementInputs(run.context);
+    ASSERT_TRUE(bool(inputs.isCached));
+    const auto cachedAfterPruning = [&](FrameGraph graph, const FrameRenderContextPtr& context) {
+        RenderScheduler::pruneBehindCacheHits(graph, context);
+        const int pruned = taskOf(graph, _grade);
+
+        return (pruned >= 0) && inputs.isCached(graph.tasks[pruned]);
+    };
+    EXPECT_FALSE(cachedAfterPruning(run.graph, run.context));
+
+    const FrameRequestMap::const_iterator request = run.context->getRequest()->find(NodeCtxKey(_grade, 0));
+    ASSERT_TRUE(request != run.context->getRequest()->end());
+    const ImageLayerDesc layer = task.components.front();
+    const ImageKey draftKey = _grade->getEffectInstance()->outputCacheKey(request->second->nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, true, task.cacheMipmapLevel);
+    ImageParamsPtr params = Image::makeParams(RectD(0, 0, kWidth, kHeight), 1., task.cacheMipmapLevel, false, layer, eImageBitDepthFloat, eImageFieldingOrderNone);
+    ImagePtr cached;
+    appPTR->getImageOrCreate(draftKey, params, &cached);
+    ASSERT_TRUE(cached != nullptr);
+    cached->allocateMemory();
+    cached->markForRendered(RectI(0, 0, kWidth, kHeight));
+
+    EXPECT_TRUE(cachedAfterPruning(run.graph, run.context));
+
+    FrameRun plain;
+    ASSERT_TRUE(prepareFrame(_grade, RectI(0, 0, kWidth, kHeight), &plain, &error)) << error;
+    EXPECT_FALSE(cachedAfterPruning(plain.graph, plain.context));
 }
 
 // A lone Grade over a UHD frame, whose downloaded root moves enough bytes to run as overlapped strips, stays whole once

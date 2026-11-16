@@ -144,6 +144,27 @@ struct FrameGraph {
         // The level renderRoI renders at: 0 for an effect without render scale support.
         unsigned int cacheMipmapLevel = 0;
 
+        // renderRoI would look its output up in the cache. An entry can serve a task that wouldn't store its own, an
+        // earlier render having stored it, so this is no question of sharesCachedOutput.
+        bool probesCachedOutput = false;
+
+        // The planned cache hit let its dependencies go, all of them or those only the cached part of its output read.
+        // Such a task can't join a GPU region, which renders the whole RoI from the region's inputs, unless the hit is
+        // a partial one of the device tier (deviceMissingRoI).
+        bool servedFromCache = false;
+
+        // Where the entries that serve the task were found; meaningful when servedFromCache.
+        EffectInstance::OutputCacheTier servedTier = EffectInstance::OutputCacheTier::Memory;
+
+        // For a partial hit whose every entry is in the device tier: the bounding rectangle, within renderedRoI, of
+        // what the entries miss, which a region renders alone into an image grown from theirs. Null otherwise. The
+        // dependencies servedFromCache let go are unread by this rectangle only.
+        RectI deviceMissingRoI;
+
+        // Empty when the request doesn't know the region of definition.
+        RectI pixelRoD;
+        double pixelAspectRatio = 1.;
+
         Device device = Device::Cpu;
 
         // Where renderRoI allocates the task's images when it runs on its own.
@@ -318,6 +339,25 @@ public:
         int strips = 0;
         int stripsInFlight = 0;
 
+        // The device bytes the plan of a region run whole expects at most without and with its outputs kept for the
+        // device tier, both 0 for one run as strips; and what the region's buffers held at most.
+        unsigned long long wholePeakDeviceBytes = 0;
+        unsigned long long plannedPeakDeviceBytes = 0;
+        unsigned long long peakDeviceBytes = 0;
+
+        // The member outputs the region left in the device tier.
+        int publishedToDevice = 0;
+
+        // The member outputs the region read back to RAM and admitted to the host tier.
+        int admittedToHost = 0;
+
+        // What each task of Region::members rendered, over all its planes: less than its renderedRoI where the device
+        // tier held the rest. Null for an identity task.
+        std::vector<RectI> renderedRects;
+
+        // The member outputs grown from a partial entry of the device tier, its pixels copied in on the device.
+        int grownFromDevice = 0;
+
         // The region fits the device whole and was stripped anyway, to overlap its transfers with its compute.
         bool overlapStrips = false;
 
@@ -390,8 +430,16 @@ public:
         // Why the members were rendered on the CPU rather than the GPU; empty when they were not.
         std::string cpuFallback;
 
+        // The cache state each CPU-fallback member rendered with, in Region::members order; shorter than the
+        // members when a member failed or the frame aborted, and empty when the GPU ran them.
+        std::vector<EffectInstance::RenderCacheStateEnum> memberCache;
+
         // How many times the region was run again on the GPU after running out of device memory.
         int retries = 0;
+
+        // Per member, in Region::members order: whether device work recording it was submitted, in any run of the
+        // region, those before a retry or a CPU fallback included. Empty when nothing was submitted.
+        std::vector<char> memberRanOnDevice;
     };
 
     /**
@@ -435,6 +483,20 @@ public:
                                  unsigned int mipmapLevel);
 
     /**
+     * @brief Removes from a graph buildGraph returned the tasks only a cache hit's render would have read: a task whose
+     * output is cached in full loses its dependencies, one cached in part those its missing part doesn't read, and tasks
+     * left without a consumer go with them. Must run before placeRenderGraph, on the thread buildGraph ran on, and after
+     * the caller has settled the root's region, layers and depth.
+     *
+     * At most one probe per task, none on a task behind a hit, and the cache lock is only held per key. Nothing is pinned:
+     * an entry evicted before its task runs is rendered again, its inputs then being pulled as unplanned reads, which is
+     * correct but slower. A plan-wide pin would keep what memory pressure has to evict and bypass the admission of tasks
+     * by bytes in flight.
+     **/
+    static void pruneBehindCacheHits(FrameGraph& graph,
+                                     const FrameRenderContextPtr& context);
+
+    /**
      * @brief Renders graph.tasks[task] with renderRoI as the scheduler runs a task outside every region, its images
      * allocated with storage, on the calling thread, which must have the frame context installed. Leaves the frame's
      * store alone.
@@ -443,6 +505,18 @@ public:
                                                             int task,
                                                             StorageModeEnum storage,
                                                             std::map<ImageLayerDesc, ImagePtr>* planes);
+
+    /**
+     * @brief Records what renderTaskOnCpu() did for graph.tasks[task], which left cacheState and executed (see
+     * EffectInstance::takeLastRenderExecuted()): when the effect executed, a CPU execution of its node and a fresh
+     * output in context. A task the cache did not serve but that executed nothing, an identity one among them, has a
+     * fresh output when one of its dependencies has.
+     **/
+    static void noteTaskRanOnCpu(const FrameRenderContext& context,
+                                 const FrameGraph& graph,
+                                 int task,
+                                 EffectInstance::RenderCacheStateEnum cacheState,
+                                 bool executed);
 
     /**
      * @brief Queues the tasks of graph. The context must stay unchanged until the future finished. An empty graph

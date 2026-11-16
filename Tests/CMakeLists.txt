@@ -69,6 +69,7 @@ set(Tests_SOURCES
     GeoDelete_Test.cpp
     GeoDisplace_Test.cpp
     GeoGroup_Test.cpp
+    GeoGroupOps_Test.cpp
     GeoImportOBJ_Test.cpp
     GeoIndexMap_Test.cpp
     GeoKernelRunner_Test.cpp

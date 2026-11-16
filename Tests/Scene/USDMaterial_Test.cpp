@@ -30,6 +30,7 @@
 #include <cmath>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -129,6 +130,31 @@ protected:
         }
 
         return PXR_NS::UsdShadeShader(source.GetPrim());
+    }
+
+    // The asset the input's texture reads, empty when the input has no texture.
+    static std::string textureFileOf(const NodePtr& material,
+                                     const char* materialPath,
+                                     const char* inputName)
+    {
+        const PXR_NS::UsdStageRefPtr stage = compose(material);
+        const PXR_NS::UsdShadeShader texture = stage ? textureOf(stage, materialPath, inputName) : PXR_NS::UsdShadeShader();
+        PXR_NS::SdfAssetPath file;
+
+        if (!texture || !texture.GetInput(PXR_NS::TfToken("file")).Get(&file)) {
+            return std::string();
+        }
+
+        return file.GetAssetPath();
+    }
+
+    // What the delete commands' redo does, with the same arguments.
+    static void deleteKeepingUndo(const NodePtr& node,
+                                  const NodePtr& output,
+                                  bool reconnect)
+    {
+        node->deactivate(NodesList(1, output), false, reconnect, true, false);
+        node->notifyOutputsOfDeletion();
     }
 
     // A node of pluginID named name, its inputs connected in order.
@@ -330,6 +356,183 @@ TEST_F(USDMaterialTest, ThePathFollowsARename)
     PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
     EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Chrome")))));
+}
+
+TEST_F(USDMaterialTest, ADeletedSourceFailsAsAMissingTextureNamingIt)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(constant && material);
+    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    const std::string name = constant->getFullyQualifiedName();
+    const std::string live = textureFileOf(material, "/Material1", "diffuseColor");
+    ASSERT_FALSE(live.empty());
+
+    constant->destroyNode(true, false);
+    constant.reset();
+    ASSERT_FALSE(material->getInput(kUSDMaterialInputDiffuseColor));
+
+    const std::string uri = LiveTextureSource::makeUri(name, "rgba", 0);
+    EXPECT_EQ(uri, textureFileOf(material, "/Material1", "diffuseColor"));
+    EXPECT_NE(live, uri);
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              material->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+        << error;
+    const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
+    ASSERT_EQ((std::size_t)1, sources.size());
+    int numFailed = -1;
+    std::thread worker([&]() { numFailed = LiveTextureStore::instance().prepare(sources, 1.); });
+    worker.join();
+    EXPECT_EQ(1, numFailed);
+    EXPECT_NE(std::string::npos, LiveTextureStore::instance().getFailure(uri).find(name));
+
+    // An evaluation after the failure says so too, as for any other failed texture.
+    EXPECT_EQ(uri, textureFileOf(material, "/Material1", "diffuseColor"));
+    const std::string warning = warningOf(material);
+    EXPECT_NE(std::string::npos, warning.find("magenta")) << warning;
+    EXPECT_NE(std::string::npos, warning.find(name)) << warning;
+}
+
+TEST_F(USDMaterialTest, AnEmissiveMaterialsDeletedSourceFailsTheSameWay)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1");
+    ASSERT_TRUE(constant && material);
+    ASSERT_TRUE(material->connectInput(constant, kUSDEmissiveMaterialInputEmissive));
+    const std::string name = constant->getFullyQualifiedName();
+
+    constant->destroyNode(true, false);
+    constant.reset();
+
+    EXPECT_EQ(LiveTextureSource::makeUri(name, "rgba", 0), textureFileOf(material, "/Material1", "emissiveColor"));
+}
+
+TEST_F(USDMaterialTest, AnInputNeverConnectedOrDisconnectedHasNoTexture)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(constant && material);
+    EXPECT_TRUE(textureFileOf(material, "/Material1", "diffuseColor").empty());
+
+    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    EXPECT_FALSE(textureFileOf(material, "/Material1", "diffuseColor").empty());
+
+    ignore_result(material->disconnectInput(kUSDMaterialInputDiffuseColor));
+    EXPECT_TRUE(textureFileOf(material, "/Material1", "diffuseColor").empty());
+    EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
+
+    // A source deleted once it is no longer connected has taken nothing from the input.
+    constant->destroyNode(true, false);
+    constant.reset();
+    EXPECT_TRUE(textureFileOf(material, "/Material1", "diffuseColor").empty());
+}
+
+TEST_F(USDMaterialTest, OnlyTheInputThatLostItsSourceHasAMissingTexture)
+{
+    NodePtr deleted = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr kept = node(PLUGINID_NATRON_CONSTANT, "Constant2");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(deleted && kept && material);
+    ASSERT_TRUE(material->connectInput(deleted, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(kept, kUSDMaterialInputEmissiveColor));
+    const std::string keptTexture = textureFileOf(material, "/Material1", "emissiveColor");
+    const std::string name = deleted->getFullyQualifiedName();
+
+    deleted->destroyNode(true, false);
+    deleted.reset();
+
+    EXPECT_EQ(LiveTextureSource::makeUri(name, "rgba", 0), textureFileOf(material, "/Material1", "diffuseColor"));
+    EXPECT_EQ(keptTexture, textureFileOf(material, "/Material1", "emissiveColor"));
+    EXPECT_TRUE(textureFileOf(material, "/Material1", "roughness").empty());
+}
+
+TEST_F(USDMaterialTest, ConnectingAnInputThatLostItsSourceClearsTheMissingTexture)
+{
+    NodePtr deleted = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr other = node(PLUGINID_NATRON_CONSTANT, "Constant2");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(deleted && other && material);
+    ASSERT_TRUE(material->connectInput(deleted, kUSDMaterialInputDiffuseColor));
+    deleted->destroyNode(true, false);
+    deleted.reset();
+    ASSERT_FALSE(textureFileOf(material, "/Material1", "diffuseColor").empty());
+
+    ASSERT_TRUE(material->connectInput(other, kUSDMaterialInputDiffuseColor));
+    const std::string prefix = std::string(kLiveTextureScheme) + "://" + other->getFullyQualifiedName() + "/rgba?v=";
+    const std::string connected = textureFileOf(material, "/Material1", "diffuseColor");
+    EXPECT_EQ(0u, connected.rfind(prefix, 0)) << connected;
+
+    ignore_result(material->disconnectInput(kUSDMaterialInputDiffuseColor));
+    EXPECT_TRUE(textureFileOf(material, "/Material1", "diffuseColor").empty());
+}
+
+TEST_F(USDMaterialTest, DeletingANodeWhoseInputTakesItsPlaceLosesNothing)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr dot = node(PLUGINID_NATRON_DOT, "Dot1", std::vector<NodePtr>(1, constant));
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(constant && dot && material);
+    ASSERT_TRUE(material->connectInput(dot, kUSDMaterialInputDiffuseColor));
+
+    deleteKeepingUndo(dot, material, true);
+
+    ASSERT_EQ(constant, material->getInput(kUSDMaterialInputDiffuseColor));
+    const std::string prefix = std::string(kLiveTextureScheme) + "://" + constant->getFullyQualifiedName() + "/rgba?v=";
+    const std::string texture = textureFileOf(material, "/Material1", "diffuseColor");
+    EXPECT_EQ(0u, texture.rfind(prefix, 0)) << texture;
+}
+
+TEST_F(USDMaterialTest, UndoingTheDeletionRestoresTheTexture)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(constant && material);
+    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    const std::string live = textureFileOf(material, "/Material1", "diffuseColor");
+    const std::string missing = LiveTextureSource::makeUri(constant->getFullyQualifiedName(), "rgba", 0);
+
+    deleteKeepingUndo(constant, material, false);
+    EXPECT_EQ(missing, textureFileOf(material, "/Material1", "diffuseColor"));
+
+    constant->activate(NodesList(1, material), false, false);
+    EXPECT_EQ(constant, material->getInput(kUSDMaterialInputDiffuseColor));
+    EXPECT_EQ(live, textureFileOf(material, "/Material1", "diffuseColor"));
+
+    deleteKeepingUndo(constant, material, false);
+    EXPECT_EQ(missing, textureFileOf(material, "/Material1", "diffuseColor"));
+
+    constant->activate(NodesList(1, material), false, false);
+    EXPECT_EQ(live, textureFileOf(material, "/Material1", "diffuseColor"));
+}
+
+TEST_F(USDMaterialTest, ALostSourceIsStillMissingWhenTheProjectIsReopened)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(constant && material);
+    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    const std::string name = constant->getFullyQualifiedName();
+    const std::string materialName = material->getFullyQualifiedName();
+    constant->destroyNode(true, false);
+    constant.reset();
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("deleted-source.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    material.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr loaded = project->getNodeByName(materialName);
+    ASSERT_TRUE(bool(loaded));
+    EXPECT_EQ(LiveTextureSource::makeUri(name, "rgba", 0), textureFileOf(loaded, "/Material1", "diffuseColor"));
 }
 
 TEST_F(USDMaterialTest, AConstantIntoDiffuseAuthorsOneLiveTexture)

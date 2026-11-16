@@ -26,6 +26,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include "Global/EdgeMode.h"
 #include "Global/Macros.h"
 
 #include <limits>
@@ -119,6 +120,17 @@ public:
                                             bool isPartialRect,
                                             bool isFirstTile,
                                             TexturePtr* texture) = 0;
+    /**
+     * @brief What the image of the next endTransferBufferFromRAMToGPU() for textureIndex holds past its RoD,
+     * which the viewer displays there without the RoD growing.
+     **/
+    virtual void setDisplayedEdgeMode(int textureIndex,
+                                      EdgeMode mode)
+    {
+        (void)textureIndex;
+        (void)mode;
+    }
+
     virtual void endTransferBufferFromRAMToGPU(int textureIndex,
                                                const TexturePtr& texture,
                                                const ImagePtr& image,

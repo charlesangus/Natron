@@ -41,6 +41,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
@@ -333,6 +334,22 @@ FrameBlend::getFramesNeeded(double time,
     return frames;
 }
 
+std::vector<double>
+FrameBlend::getInputReadTimes(int inputNb,
+                              double time,
+                              ViewIdx view) const
+{
+    if (inputNb != 0) {
+        return StagedImageEffect::getInputReadTimes(inputNb, time, view);
+    }
+    std::vector<double> times = settingsAt(time, view).samples.times;
+    if (stagesReadSource(time, view) && (std::find(times.begin(), times.end(), time) == times.end())) {
+        times.push_back(time);
+    }
+
+    return times;
+}
+
 StatusEnum
 FrameBlend::getRegionOfDefinition(U64 /*hash*/,
                                   double time,
@@ -406,8 +423,10 @@ FrameBlend::renderOp(const RenderActionArgs& args,
             // Every frame of the chunk is fetched before any image is locked: fetching renders
             // upstream. A null image is an input with nothing there, which reads as black.
             std::vector<ImagePtr> images;
+            std::vector<EdgeMode> edgeModes;
             for (std::size_t k = chunk; k < chunkEnd; ++k) {
                 ImagePtr image = fetchInputAt(0, times[k], args, &output.first);
+                edgeModes.push_back(inputEdgeMode(0, times[k], args.view));
                 if (!image && !declaresInputTime(0, args.time, args.view, times[k])) {
                     // fetchInputAt() has posted why.
                     return eStatusFailed;
@@ -420,6 +439,8 @@ FrameBlend::renderOp(const RenderActionArgs& args,
             for (std::size_t k = chunk; k < chunkEnd; ++k) {
                 const ImagePtr& image = images[k - chunk];
                 const int comps = image ? std::min(nComps, (int)image->getComponentsCount()) : 0;
+                const RectI bounds = image ? image->getBounds() : RectI();
+                const EdgeMode edgeMode = edgeModes[k - chunk];
                 std::optional<Image::ReadAccess> access;
                 if (image) {
                     access.emplace(image.get());
@@ -428,7 +449,9 @@ FrameBlend::renderOp(const RenderActionArgs& args,
                 for (int y = roi.y1; y < roi.y2; ++y) {
                     float* row = &acc[(std::size_t)(y - roi.y1) * width * nComps];
                     for (int x = roi.x1; x < roi.x2; ++x) {
-                        const float* p = access ? (const float*)access->pixelAt(x, y) : nullptr;
+                        int sx = 0;
+                        int sy = 0;
+                        const float* p = (access && EdgeSample::pixel(x, y, bounds, edgeMode, &sx, &sy)) ? (const float*)access->pixelAt(sx, sy) : nullptr;
                         for (int c = 0; c < nComps; ++c) {
                             in[c] = (p && (c < comps)) ? p[c] : 0.f;
                         }
@@ -539,12 +562,14 @@ FrameBlend::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     std::vector<const GpuImageView*> views;
+    std::vector<EdgeMode> edgeModes;
     for (double t : settings.samples.times) {
         views.push_back(args.inputAt(0, t));
+        edgeModes.push_back(inputEdgeMode(0, t, args.query.view));
     }
     const std::vector<float> blends = foldBlends(settings.samples);
     GpuImageView folded;
-    if (TimeBlend::recordFoldGpu(args, views, settings.operation, settings.samples.factor, blends, &folded) != eStatusOK) {
+    if (TimeBlend::recordFoldGpu(args, views, settings.operation, settings.samples.factor, blends, edgeModes, &folded) != eStatusOK) {
         return eStatusFailed;
     }
 

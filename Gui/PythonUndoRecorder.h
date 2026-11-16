@@ -57,6 +57,8 @@ public:
 
     virtual std::uint64_t getCaptureSerial() const OVERRIDE FINAL;
 
+    virtual bool isReplaying() const OVERRIDE FINAL;
+
     virtual void record(const UndoCommandPtr& command, const UndoTouched& touched) OVERRIDE FINAL;
 
 private:

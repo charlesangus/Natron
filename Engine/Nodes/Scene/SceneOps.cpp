@@ -581,43 +581,118 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
 
 namespace {
     std::atomic<std::uint64_t> fileLayerReloadCount(0);
+
+    const char* const kReloadFailed = "Some USD files could not be read again.";
+
+    // Inside a barrier write.
+    bool
+    reloadInWrite(const std::set<PXR_NS::SdfLayerHandle>& fileLayers)
+    {
+        // Only layers whose file changed since they were read reload (force = false compares
+        // modification times, sdf/layer.h). All of them in one call: ReloadLayers wraps the
+        // reloads in one change block (OpenUSD v26.08 sdf/layer.cpp), so each stage recomposes
+        // once.
+        const bool reloaded = PXR_NS::SdfLayer::ReloadLayers(fileLayers, false);
+        // Counted even when some layers failed: the others may have reloaded.
+        fileLayerReloadCount.fetch_add(1);
+
+        return reloaded;
+    }
+
+    std::vector<PXR_NS::SdfLayerRefPtr>
+    fileLayersOf(const std::vector<PXR_NS::SdfLayerRefPtr>& layers)
+    {
+        std::vector<PXR_NS::SdfLayerRefPtr> fileLayers;
+        for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+            // UsdStage::Reload documents that reloading an anonymous layer clears its content.
+            if (layer && !layer->IsAnonymous()) {
+                fileLayers.push_back(layer);
+            }
+        }
+
+        return fileLayers;
+    }
+
+    // The layers asked for by the requests waiting for one write, and that write's outcome.
+    struct PendingReload {
+        std::vector<PXR_NS::SdfLayerRefPtr> layers;
+        // 1 reloaded, 0 some failed, -1 not run.
+        std::shared_ptr<int> outcome;
+    };
+
+    std::mutex pendingReloadMutex;
+    PendingReload pendingReload;
 } // anonymous namespace
 
 bool
 reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
                  std::string* errorMessage)
 {
-    std::set<PXR_NS::SdfLayerHandle> fileLayers;
-
-    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
-        // UsdStage::Reload documents that reloading an anonymous layer clears its content.
-        if (layer && !layer->IsAnonymous()) {
-            fileLayers.insert(layer);
-        }
-    }
-    if (fileLayers.empty()) {
+    const std::vector<PXR_NS::SdfLayerRefPtr> kept = fileLayersOf(layers);
+    if (kept.empty()) {
         return true;
     }
+    const std::set<PXR_NS::SdfLayerHandle> fileLayers(kept.begin(), kept.end());
 
     bool reloaded = true;
-    if (!SceneWriteBarrier::runExclusive([&fileLayers, &reloaded]() {
-            // Only layers whose file changed since they were read reload (force = false compares
-            // modification times, sdf/layer.h). All of them in one call: ReloadLayers wraps the
-            // reloads in one change block (OpenUSD v26.08 sdf/layer.cpp), so each stage recomposes
-            // once.
-            reloaded = PXR_NS::SdfLayer::ReloadLayers(fileLayers, false);
-            // Counted even when some layers failed: the others may have reloaded.
-            fileLayerReloadCount.fetch_add(1);
-        },
+    if (!SceneWriteBarrier::runExclusive([&fileLayers, &reloaded]() { reloaded = reloadInWrite(fileLayers); },
                                          errorMessage)) {
         return false;
     }
     if (!reloaded && errorMessage) {
-        *errorMessage = "Some USD files could not be read again.";
+        *errorMessage = kReloadFailed;
     }
 
     return reloaded;
 }
+
+void
+requestFileLayerReload(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
+                       const std::function<void(bool ok, const std::string& errorMessage)>& done)
+{
+    const std::vector<PXR_NS::SdfLayerRefPtr> kept = fileLayersOf(layers);
+    if (kept.empty()) {
+        if (done) {
+            done(true, std::string());
+        }
+
+        return;
+    }
+    std::shared_ptr<int> outcome;
+    {
+        std::lock_guard<std::mutex> lock(pendingReloadMutex);
+        if (!pendingReload.outcome) {
+            pendingReload.outcome = std::make_shared<int>(-1);
+        }
+        pendingReload.layers.insert(pendingReload.layers.end(), kept.begin(), kept.end());
+        outcome = pendingReload.outcome;
+    }
+    // The first write of a batch reloads every request's layers; the others find none left.
+    const auto write = []() {
+        PendingReload batch;
+        {
+            std::lock_guard<std::mutex> lock(pendingReloadMutex);
+            std::swap(batch, pendingReload);
+        }
+        if (batch.layers.empty() || !batch.outcome) {
+            return;
+        }
+        const std::set<PXR_NS::SdfLayerHandle> fileLayers(batch.layers.begin(), batch.layers.end());
+        *batch.outcome = reloadInWrite(fileLayers) ? 1 : 0;
+    };
+    SceneWriteBarrier::runExclusiveAsync(write, [outcome, done](bool ok, const std::string& errorMessage) {
+        if (!done) {
+            return;
+        }
+        if (!ok) {
+            done(false, errorMessage);
+        } else if (*outcome == 0) {
+            done(false, kReloadFailed);
+        } else {
+            done(true, std::string());
+        }
+    });
+} // requestFileLayerReload
 
 std::uint64_t
 getFileLayerReloadCount()
@@ -676,7 +751,8 @@ bool
 selectPrims(const PXR_NS::UsdStageRefPtr& stage,
             const std::string& expression,
             std::vector<PXR_NS::SdfPath>* paths,
-            std::string* errorMessage)
+            std::string* errorMessage,
+            bool traverseInstanceProxies)
 {
     paths->clear();
     PXR_NS::SdfPathExpression parsed;
@@ -688,7 +764,7 @@ selectPrims(const PXR_NS::UsdStageRefPtr& stage,
     }
     const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
     PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
-    PXR_NS::UsdPrimRange range = stage->Traverse();
+    PXR_NS::UsdPrimRange range = traverseInstanceProxies ? stage->Traverse(PXR_NS::UsdTraverseInstanceProxies()) : stage->Traverse();
     for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
         const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(it->GetPath());
         if (result.GetValue()) {

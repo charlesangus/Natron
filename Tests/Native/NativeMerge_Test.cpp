@@ -125,7 +125,8 @@ protected:
         return merge;
     }
 
-    // An RGBA parity source with its region of definition at (x, y).
+    // An RGBA parity source with its region of definition at (x, y), black past it, as the expected
+    // pixels assume.
     NodePtr createSource(int x,
                          int y)
     {
@@ -135,6 +136,7 @@ protected:
         if (source) {
             setParitySourceComponents(source, "rgba");
             setParitySourceOrigin(source, x, y);
+            setBlackOutside(source, true);
         }
 
         return source;

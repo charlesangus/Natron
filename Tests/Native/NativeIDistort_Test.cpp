@@ -415,7 +415,7 @@ TEST_F(NativeIDistortTest, UVFromAnyLayer)
             const float* uvPix = pixelAt(field, x, y);
             const float sx = (float)((double)x + 0.5 + (double)uvPix[0] * scale);
             const float sy = (float)((double)y + 0.5 + (double)uvPix[1] * scale);
-            (void)Resampler::interpolate(Resampler::eFilterImpulse, false, sx, sy, image, false, want);
+            (void)Resampler::interpolate(Resampler::eFilterImpulse, false, sx, sy, image, EdgeMode::Stretch, want);
             if (std::memcmp(want, pixelAt(before, x, y), 4 * sizeof(float)) != 0) {
                 ++moved;
             }

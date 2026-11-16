@@ -3928,6 +3928,10 @@ Node::makeInfoForInput(int inputNumber) const
         double par = inputMetadata->getPixelAspectRatio(-1);
         ss << "<b>" << tr("Pixel aspect ratio:").toStdString() << "</b> <font color=#c8c8c8>" << par << "</font><br />";
     }
+    {
+        const QString edgeMode = (inputMetadata->getEdgeMode() == EdgeMode::Black) ? tr("Black") : tr("Stretch");
+        ss << "<b>" << tr("Edge Mode:").toStdString() << "</b> <font color=#c8c8c8>" << edgeMode.toStdString() << "</font><br />";
+    }
     { // fps
         double fps = inputMetadata->getOutputFrameRate();
         ss << "<b>" << tr("Frame rate:").toStdString() << "</b> <font color=#c8c8c8>" << tr("%1fps").arg(fps).toStdString() << "</font><br />";
@@ -5126,7 +5130,20 @@ Node::setEffect(const EffectInstancePtr& effect)
     ////Only called by the main-thread
     assert( QThread::currentThread() == qApp->thread() );
     _imp->effect = effect;
+    _imp->hostedEffect.store(effect.get(), std::memory_order_release);
     _imp->effect->initializeData();
+}
+
+bool
+Node::hostsEffect(const EffectInstance* effect) const
+{
+    return effect && (_imp->hostedEffect.load(std::memory_order_acquire) == effect);
+}
+
+bool
+Node::hasEffectAttached() const
+{
+    return _imp->hostedEffect.load(std::memory_order_acquire) != nullptr;
 }
 
 EffectInstancePtr
@@ -5570,6 +5587,25 @@ Node::clearLastRenderedImage()
 /*After this call this node still knows the link to the old inputs/outputs
    but no other node knows this node.*/
 void
+Node::notifyOutputsOfDeletion()
+{
+    const AppInstancePtr app = getApp();
+
+    // Closing a project deletes every node, and nothing will read what the outputs would record.
+    if (!app || !app->getProject() || app->getProject()->isProjectClosing()) {
+        return;
+    }
+    const std::string name = getFullyQualifiedName();
+    for (DeactivatedState::const_iterator it = _imp->deactivatedState.begin(); it != _imp->deactivatedState.end(); ++it) {
+        const NodePtr output = it->first.lock();
+        const EffectInstancePtr effect = output ? output->getEffectInstance() : EffectInstancePtr();
+        if (effect && !output->getRealInput(it->second)) {
+            effect->onInputSourceDeleted(it->second, name);
+        }
+    }
+}
+
+void
 Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                  bool disconnectAll,
                  bool reconnect,
@@ -5612,27 +5648,40 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     if (unslaveKnobs) {
         ///For all knobs that have listeners, invalidate expressions
         NodeGroup* isParentGroup = dynamic_cast<NodeGroup*>( parentCol.get() );
-        // The effect holding a knob that reads this node from outside it and its enclosing group,
-        // or null.
-        const auto outsideReader = [this, isParentGroup](const KnobIPtr& listener) -> EffectInstance* {
-            KnobHolder* holder = listener->getHolder();
-            if (!holder || (holder == _imp->effect.get()) || (holder == isParentGroup)) {
-                return 0;
+        // The effect holding a knob that reads this node from outside it and its enclosing group, and
+        // its node, or nulls. Both are held through the edit: the effect's last owner may be a render
+        // thread, and the effect only weakly references its node, which endChanges() reaches.
+        struct OutsideReader {
+            EffectInstancePtr effect;
+            NodePtr node;
+        };
+        const auto outsideReader = [this, isParentGroup](const KnobIPtr& listener) -> OutsideReader {
+            KnobHolder* holder = 0;
+            OutsideReader reader;
+            reader.effect = EffectInstance::lockHolder(*listener, &holder);
+            if (!reader.effect || (holder == _imp->effect.get()) || (holder == isParentGroup)) {
+                return OutsideReader();
             }
-            EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
-            if (!isEffect) {
-                return 0;
+            reader.node = reader.effect->getNode();
+            if (!reader.node || !reader.node->hostsEffect(reader.effect.get())) {
+                return OutsideReader();
             }
-            NodeCollectionPtr effectParent = isEffect->getNode()->getGroup();
+            {
+                QMutexLocker k(&reader.node->_imp->isBeingDestroyedMutex);
+                if (reader.node->_imp->isBeingDestroyed) {
+                    return OutsideReader();
+                }
+            }
+            NodeCollectionPtr effectParent = reader.node->getGroup();
             if (!effectParent) {
-                return 0;
+                return OutsideReader();
             }
             NodeGroup* isEffectParentGroup = dynamic_cast<NodeGroup*>(effectParent.get());
             if (isEffectParentGroup && (isEffectParentGroup == _imp->effect.get())) {
-                return 0;
+                return OutsideReader();
             }
 
-            return isEffect;
+            return reader;
         };
         std::stringstream missingNode;
         missingNode << tr("Missing node ").toStdString();
@@ -5658,7 +5707,8 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                 if (!listener) {
                     continue;
                 }
-                EffectInstance* isEffect = outsideReader(listener);
+                const OutsideReader reader = outsideReader(listener);
+                EffectInstance* isEffect = reader.effect.get();
                 if (!isEffect) {
                     continue;
                 }
@@ -5683,7 +5733,8 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         std::list<std::pair<KnobIPtr, int>> metadataReaders;
         getMetadataReaders(&metadataReaders);
         for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = metadataReaders.begin(); it != metadataReaders.end(); ++it) {
-            EffectInstance* isEffect = outsideReader(it->first);
+            const OutsideReader reader = outsideReader(it->first);
+            EffectInstance* isEffect = reader.effect.get();
             if (!isEffect || it->first->getExpression(it->second).empty()) {
                 continue;
             }

@@ -1,3 +1,4 @@
+import edgesample;
 import gradeops;
 import exactdivide;
 
@@ -53,6 +54,27 @@ struct WrapParams
 static const uint kWrapMask = 1;
 static const uint kWrapMaskInvert = 2;
 static const uint kWrapClampAlpha = 4;
+// The source, and the mask or a step's input, read past their bounds by their nearest pixel rather
+// than zero: GpuWrap.h's kGpuWrapFlagSrcStretch and kGpuWrapFlagMaskStretch.
+static const uint kWrapSrcStretch = 8;
+static const uint kWrapMaskStretch = 16;
+
+uint wrapEdgeMode(uint stretchBit)
+{
+    return (wrap.flags & stretchBit) != 0 ? kEdgeStretch : kEdgeBlack;
+}
+
+// Where the source reads at p, false when it reads zero there.
+bool wrapSourcePixel(int2 p, out int2 at)
+{
+    return edgePixel(p, int4(wrap.srcX1, wrap.srcY1, wrap.srcX2, wrap.srcY2), wrapEdgeMode(kWrapSrcStretch), at);
+}
+
+// Where the mask, or a step's input, reads at p, false when it reads zero there.
+bool wrapMaskPixel(int2 p, out int2 at)
+{
+    return edgePixel(p, int4(wrap.maskX1, wrap.maskY1, wrap.maskX2, wrap.maskY2), wrapEdgeMode(kWrapMaskStretch), at);
+}
 
 // The op sees and returns pixels in channel-bit order, absent channels reading as zero, and only
 // the channels in channelMask of its result are kept.
@@ -86,10 +108,11 @@ bool wrapInside(int2 p, int x1, int y1, int x2, int y2)
 float4 wrapReadSource(int2 p)
 {
     float4 v = float4(0.0, 0.0, 0.0, 0.0);
-    if (!wrapInside(p, wrap.srcX1, wrap.srcY1, wrap.srcX2, wrap.srcY2))
+    int2 at;
+    if (!wrapSourcePixel(p, at))
         return v;
     const uint n = wrap.nComps;
-    const uint base = wrap.srcOffset + uint(p.y - wrap.srcY1) * wrap.srcStride + uint(p.x - wrap.srcX1) * n;
+    const uint base = wrap.srcOffset + uint(at.y - wrap.srcY1) * wrap.srcStride + uint(at.x - wrap.srcX1) * n;
     for (uint c = 0; c < n && c < 4; ++c)
         v[wrapChannelBit(n, c)] = wrapSrc[base + c];
     return v;
@@ -102,7 +125,8 @@ bool wrapHasDivisor()
 
 float wrapDivisor(int2 p, float4 src)
 {
-    if (!wrapInside(p, wrap.srcX1, wrap.srcY1, wrap.srcX2, wrap.srcY2))
+    int2 at;
+    if (!wrapSourcePixel(p, at))
         return 1.0;
     return src[wrapChannelBit(wrap.nComps, uint(wrap.divisorChannel))];
 }
@@ -127,10 +151,11 @@ float4 wrapDivide(float4 v, float d)
 
 float wrapMaskValue(int2 p)
 {
-    if (!wrapInside(p, wrap.maskX1, wrap.maskY1, wrap.maskX2, wrap.maskY2))
+    int2 at;
+    if (!wrapMaskPixel(p, at))
         return 0.0;
-    return wrapMask[wrap.maskOffset + uint(p.y - wrap.maskY1) * wrap.maskStride
-                    + uint(p.x - wrap.maskX1) * wrap.maskComps + wrap.maskChannel];
+    return wrapMask[wrap.maskOffset + uint(at.y - wrap.maskY1) * wrap.maskStride
+                    + uint(at.x - wrap.maskX1) * wrap.maskComps + wrap.maskChannel];
 }
 
 // Image::premultiplyValue's std::max(0, d) yields 0 for a NaN divisor, which GLSL max leaves undefined.
@@ -206,7 +231,7 @@ void runWrapped<Op : IPixelOp>(Op op, uint3 tid)
 }
 
 // An op under a Divisor stage: it sees the undivided source and the "(Un)premult by" channel (1
-// where there is none, and outside the source), and nothing is multiplied back.
+// where there is none, and where the source reads zero), and nothing is multiplied back.
 interface IDivisorPixelOp
 {
     [mutating] void load(StructuredBuffer<uint> params);

@@ -31,6 +31,7 @@
 #include <bitset>
 #include <list>
 #include <mutex>
+#include <optional>
 
 #include "Global/GlobalDefines.h"
 #include "Global/KeySymbols.h"
@@ -335,6 +336,13 @@ public:
     // dtor
     virtual ~EffectInstance();
 
+    /**
+     * @brief Sets holder to knob's holder and returns it held when it is an effect. An effect being
+     * destroyed sets holder to null. Any other kind of holder is set but not held: the caller's context
+     * keeps it alive. An effect's last owner may be a render thread, so a knob's holder read
+     * on its own may already be freed by the time it is dereferenced.
+     **/
+    static EffectInstancePtr lockHolder(const KnobI& knob, KnobHolder** holder);
 
     virtual bool canHandleEvaluateOnChangeInOtherThread() const OVERRIDE
     {
@@ -1551,6 +1559,12 @@ public:
     virtual bool tryLock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual void unlock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual bool canSetValue() const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Makes a background application queue the knob writes made while a node renders, as an
+     * interactive one does, so that tests can reproduce what an edit during a render does.
+     **/
+    static void setQueuesWritesDuringBackgroundRendersForTesting(bool queues);
     virtual void abortViewerRendersForEdit() OVERRIDE FINAL;
     virtual void abortAllRendersReadingThis() OVERRIDE FINAL;
     virtual void notifyValueQueued() OVERRIDE FINAL;
@@ -2060,6 +2074,34 @@ protected:
                                       RoIMap* ret);
 
     /**
+     * @brief Called by getRegionsOfInterest_public() on what getRegionsOfInterest() returned, so
+     * a node can adjust every input's region whatever its subclasses' getRegionsOfInterest() do.
+     * When transforms is set, ret is already keyed by the effects the concatenated inputs fetch
+     * from, in their space, as transformInputRois() leaves it. Does nothing by default.
+     **/
+    virtual void adjustInputRegionsOfInterest(double /*time*/,
+                                              const RenderScale& /*scale*/,
+                                              ViewIdx /*view*/,
+                                              const InputMatrixMap* /*transforms*/,
+                                              RoIMap* /*ret*/)
+    {
+    }
+
+public:
+    /**
+     * @brief The edge mode this node resamples its concatenated chain under at time and view,
+     * when it offers its transform; none when it has no say. tryConcatenateTransforms() stops at
+     * an upstream node whose mode differs from this node's, since a chain samples its source under
+     * one mode.
+     **/
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double /*time*/,
+                                                             ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return std::nullopt;
+    }
+
+protected:
+    /**
      * @brief Can be derived to indicate for each input node what is the frame range(s) (which can be discontinuous)
      * that this effects need in order to render the frame at the given time.
      **/
@@ -2107,14 +2149,19 @@ public:
     bool hasComponentsNeededInCache(U64 hash, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
 public:
-
-
+    /**
+     * @brief getRegionsOfInterest(), then, when transforms and reroutesMap are set,
+     * transformInputRois() with par, then adjustInputRegionsOfInterest().
+     **/
     void getRegionsOfInterest_public(double time,
-                                     const RenderScale & scale,
-                                     const RectD & outputRoD,
-                                     const RectD & renderWindow,   //!< the region to be rendered in the output image, in Canonical Coordinates
+                                     const RenderScale& scale,
+                                     const RectD& outputRoD,
+                                     const RectD& renderWindow, //!< the region to be rendered in the output image, in Canonical Coordinates
                                      ViewIdx view,
-                                     RoIMap* ret);
+                                     RoIMap* ret,
+                                     const InputMatrixMapPtr& transforms = InputMatrixMapPtr(),
+                                     double par = 1.,
+                                     std::map<int, EffectInstancePtr>* reroutesMap = nullptr);
 
     FramesNeededMap getFramesNeeded_public(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel) WARN_UNUSED_RETURN;
 
@@ -2476,6 +2523,15 @@ public:
      * @brief Called everytimes an input connection is changed
      **/
     virtual void onInputChanged(int inputNo);
+
+    /**
+     * @brief Called when deleting the node named sourceName left input inputNo empty. Disconnecting
+     * the input, and deleting a node whose input takes its place, do not call it.
+     **/
+    virtual void onInputSourceDeleted(int /*inputNo*/,
+                                      const std::string& /*sourceName*/)
+    {
+    }
 
     /**
      * @brief If the plug-in calls timelineGoTo and we're during a render/instance changed action,

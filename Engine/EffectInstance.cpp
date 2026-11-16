@@ -27,6 +27,7 @@
 #include "EffectInstancePrivate.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <bitset>
 #include <cassert>
 #include <cmath>
@@ -36,10 +37,12 @@
 #include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 
-#include <QReadWriteLock>
 #include <QCoreApplication>
+#include <QMutex>
+#include <QReadWriteLock>
 #include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 
@@ -102,11 +105,41 @@ EffectInstance::addThreadLocalInputImageTempPointer(int inputNb,
     _imp->addInputImageTempPointer(inputNb, img);
 }
 
+namespace {
+
+QMutex&
+liveEffectsMutex()
+{
+    // Leaked: effects may outlive static destruction.
+    static QMutex* mutex = new QMutex();
+
+    return *mutex;
+}
+
+std::unordered_map<const KnobHolder*, EffectInstance*>&
+liveEffects()
+{
+    static std::unordered_map<const KnobHolder*, EffectInstance*>* effects = new std::unordered_map<const KnobHolder*, EffectInstance*>();
+
+    return *effects;
+}
+
+void
+registerLiveEffect(EffectInstance* effect)
+{
+    QMutexLocker k(&liveEffectsMutex());
+
+    liveEffects()[effect] = effect;
+}
+
+} // anon namespace
+
 EffectInstance::EffectInstance(NodePtr node)
     : NamedKnobHolder( node ? node->getApp() : AppInstancePtr() )
     , _node(node)
     , _imp( new Implementation(this) )
 {
+    registerLiveEffect(this);
     if (node) {
         if ( !node->isRenderScaleSupportEnabledForPlugin() ) {
             setSupportsRenderScaleMaybe(eSupportsNo);
@@ -122,6 +155,7 @@ EffectInstance::EffectInstance(const EffectInstance& other)
     , _imp( new Implementation(*other._imp) )
 {
     _imp->_publicInterface = this;
+    registerLiveEffect(this);
 }
 
 namespace {
@@ -205,9 +239,37 @@ EffectInstance::closeOverlayEditStepIfOwner() const
 
 EffectInstance::~EffectInstance()
 {
+    {
+        // Together, so that under the mutex a knob's holder is either a registered effect or no
+        // effect at all: lockHolder() can then tell a dying effect from another kind of holder.
+        QMutexLocker k(&liveEffectsMutex());
+        liveEffects().erase(this);
+        detachKnobs();
+    }
     if (qApp && (QThread::currentThread() == qApp->thread())) {
         closeOverlayEditStepOf(this);
     }
+}
+
+EffectInstancePtr
+EffectInstance::lockHolder(const KnobI& knob,
+                           KnobHolder** holder)
+{
+    QMutexLocker k(&liveEffectsMutex());
+    KnobHolder* loaded = knob.getHolder();
+    std::unordered_map<const KnobHolder*, EffectInstance*>::const_iterator found = liveEffects().find(loaded);
+
+    if (found == liveEffects().end()) {
+        *holder = loaded;
+
+        return EffectInstancePtr();
+    }
+    // Unregistering waits on the mutex, so a registered effect is not freed yet. One whose last owner is
+    // gone already fails to lock.
+    EffectInstancePtr effect = found->second->weak_from_this().lock();
+    *holder = effect ? loaded : 0;
+
+    return effect;
 }
 
 void
@@ -2748,6 +2810,7 @@ EffectInstance::tryConcatenateTransforms(double time,
                                          InputMatrixMap* inputTransforms)
 {
     bool canTransform = getNode()->getCurrentCanTransform();
+    const std::optional<EdgeMode> edgeMode = getConcatenationEdgeMode(time, view);
 
     //An effect might not be able to concatenate transforms but can still apply a transform (e.g CornerPinMasked)
     std::list<int> inputHoldingTransforms;
@@ -2806,6 +2869,10 @@ EffectInstance::tryConcatenateTransforms(double time,
                         im.newInputEffect = input;
                     }
                 } else if (inputCanTransform) {
+                    const std::optional<EdgeMode> inputEdgeMode = input->getConcatenationEdgeMode(time, view);
+                    if (edgeMode && inputEdgeMode && (*edgeMode != *inputEdgeMode)) {
+                        break;
+                    }
                     Transform::Matrix3x3 m;
                     inputToTransform.reset();
                     StatusEnum stat = input->getTransform_public(time, scale, draftRender, view, &inputToTransform, &m);
@@ -4290,7 +4357,11 @@ EffectInstance::onKnobSlaved(const KnobIPtr& slave,
                              bool isSlave,
                              bool isExpression)
 {
-    getNode()->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
+    // Null once a destroyed node's effect outlives it: its links died with the node.
+    NodePtr node = getNode();
+    if (node) {
+        node->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
+    }
 }
 
 void
@@ -5420,17 +5491,25 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
 
 void
 EffectInstance::getRegionsOfInterest_public(double time,
-                                            const RenderScale & scale,
-                                            const RectD & outputRoD, //!< effect RoD in canonical coordinates
-                                            const RectD & renderWindow, //!< the region to be rendered in the output image, in Canonical Coordinates
+                                            const RenderScale& scale,
+                                            const RectD& outputRoD, //!< effect RoD in canonical coordinates
+                                            const RectD& renderWindow, //!< the region to be rendered in the output image, in Canonical Coordinates
                                             ViewIdx view,
-                                            RoIMap* ret)
+                                            RoIMap* ret,
+                                            const InputMatrixMapPtr& transforms,
+                                            double par,
+                                            std::map<int, EffectInstancePtr>* reroutesMap)
 {
     NON_RECURSIVE_ACTION();
     assert(outputRoD.x2 >= outputRoD.x1 && outputRoD.y2 >= outputRoD.y1);
     assert(renderWindow.x2 >= renderWindow.x1 && renderWindow.y2 >= renderWindow.y1);
 
     getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+    const bool transformed = transforms && reroutesMap;
+    if (transformed) {
+        transformInputRois(this, transforms, par, scale, ret, reroutesMap);
+    }
+    adjustInputRegionsOfInterest(time, scale, view, transformed ? transforms.get() : nullptr, ret);
 }
 
 FramesNeededMap
@@ -7141,13 +7220,23 @@ EffectInstance::onNodeHashChanged(U64 hash)
     }
 }
 
+namespace {
+std::atomic<bool> s_queuesWritesDuringBackgroundRenders(false);
+}
+
+void
+EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(bool queues)
+{
+    s_queuesWritesDuringBackgroundRenders = queues;
+}
+
 bool
 EffectInstance::canSetValue() const
 {
     // A render can keep the effect alive after its node is destroyed; nothing renders the node then.
     NodePtr node = getNode();
 
-    return !node || !node->isNodeRendering() || appPTR->isBackground();
+    return !node || !node->isNodeRendering() || (appPTR->isBackground() && !s_queuesWritesDuringBackgroundRenders);
 }
 
 void
@@ -7663,6 +7752,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
     double projectPAR = projectFormat.getPixelAspectRatio();
 
     RectI firstOptionalInputFormat, firstNonOptionalInputFormat;
+    EdgeMode firstOptionalInputEdgeMode = EdgeMode::Stretch, firstNonOptionalInputEdgeMode = EdgeMode::Stretch;
 
     // Format: Take format from the first non optional input if any. Otherwise from the first optional input.
     // Otherwise fallback on project format
@@ -7692,11 +7782,13 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
             if (isOptional) {
                 if (!firstOptionalInputFormatSet && inputMetadata) {
                     firstOptionalInputFormat = inputMetadata->getOutputFormat();
+                    firstOptionalInputEdgeMode = inputMetadata->getEdgeMode();
                     firstOptionalInputFormatSet = true;
                 }
             } else {
                 if (!firstNonOptionalInputFormatSet && inputMetadata) {
                     firstNonOptionalInputFormat = inputMetadata->getOutputFormat();
+                    firstNonOptionalInputEdgeMode = inputMetadata->getEdgeMode();
                     firstNonOptionalInputFormatSet = true;
                 }
             }
@@ -7744,6 +7836,18 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
 
     metadata.setOutputFormat(outputFormat);
 
+    // The same input gives the format and the edge mode. A plug-in's clip preferences cannot
+    // express an edge mode, so an OpenFX effect starts from Stretch whatever its inputs say.
+    EdgeMode edgeMode = EdgeMode::Stretch;
+    if (!isOpenFX()) {
+        if (firstNonOptionalInputFormatSet) {
+            edgeMode = firstNonOptionalInputEdgeMode;
+        } else if (firstOptionalInputFormatSet) {
+            edgeMode = firstOptionalInputEdgeMode;
+        }
+    }
+    metadata.setEdgeMode(edgeMode);
+
     return eStatusOK;
 } // EffectInstance::getDefaultMetadataFromInputs
 
@@ -7778,6 +7882,9 @@ copyOutputMetadata(const NodeMetadata& from,
     }
     if (!defaults || (to->getIsContinuous() == defaults->getIsContinuous())) {
         to->setIsContinuous(from.getIsContinuous());
+    }
+    if (!defaults || (to->getEdgeMode() == defaults->getEdgeMode())) {
+        to->setEdgeMode(from.getEdgeMode());
     }
     to->setIsFrameVarying(to->getIsFrameVarying() || from.getIsFrameVarying());
 }
@@ -7879,6 +7986,16 @@ EffectInstance::applyIdentityRule(U64 hash,
     }
     std::shared_ptr<NodeMetadata> metadata = std::make_shared<NodeMetadata>(*own);
     copyOutputMetadata(*inputMetadata, defaults, metadata.get());
+    // An OpenFX effect resets the edge mode (getDefaultMetadataFromInputs()) even where the
+    // plug-in passes its input through; only the host's bypass of an inactive node forwards it.
+    if (isOpenFX()) {
+        const NodePtr node = getNode();
+        const RotoDrawableItemPtr rotoItem = node ? node->getAttachedRotoItem() : RotoDrawableItemPtr();
+        const bool bypassed = node && (node->isNodeDisabled(time) || (rotoItem && !rotoItem->isActivated(time)));
+        if (!bypassed) {
+            metadata->setEdgeMode(own->getEdgeMode());
+        }
+    }
 
     return metadata;
 }

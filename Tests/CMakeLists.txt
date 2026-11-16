@@ -108,6 +108,7 @@ set(Tests_SOURCES
     GenericSchedulerAbortWait_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    RotoSelectionProxy_Test.cpp
     PyRotoCreate_Test.cpp
     CurveTrackLink_Test.cpp
     CurveClipboard_Test.cpp
@@ -159,6 +160,7 @@ set(Tests_SOURCES
     FpTrapGuard_Test.cpp
     PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
+    ProjectResetListeners_Test.cpp
     QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
     ViewerKnobs_Test.cpp

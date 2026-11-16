@@ -909,6 +909,9 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->sceneRenderRowLayout->addWidget(_imp->refineSamplesLabel);
     _imp->sceneRenderRowLayout->addStretch();
     _imp->sceneRenderRow->hide();
+    // The first switch to a progressive renderer shows the row: its style sheet polish is done
+    // now rather than on that switch.
+    _imp->sceneRenderRow->ensurePolished();
     QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
     QObject::connect(_imp->refinementPausedButton, SIGNAL(clicked(bool)), this, SLOT(onRefinementPausedButtonClicked(bool)));
     /*=============================================*/
@@ -1865,8 +1868,15 @@ ViewerTab::refreshSceneRenderRow()
     }
     const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
 
-    _imp->sceneRenderRow->setVisible(topVisible && progressive);
+    const bool show = topVisible && progressive;
+    const bool toggled = _imp->sceneRenderRow->isVisibleTo(this) != show;
+    _imp->sceneRenderRow->setVisible(show);
     refreshRefineSamplesLabel();
+    if (toggled) {
+        // Laid out now rather than at the posted layout request, so that the view's resize, which
+        // paints it, comes before any repaint asked for after this (SceneViewport::setRendererId()).
+        _imp->mainLayout->activate();
+    }
 }
 
 void

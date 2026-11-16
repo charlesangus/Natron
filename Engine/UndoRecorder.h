@@ -96,6 +96,12 @@ public:
     virtual std::uint64_t getCaptureSerial() const = 0;
 
     /**
+     * @brief Whether the history is undoing or redoing an entry. Edits made then reproduce
+     * recorded ones, so they must not cause edits of their own: those are recorded too.
+     **/
+    virtual bool isReplaying() const;
+
+    /**
      * @brief Records command, whose edit has already been made: undo and redo run it later.
      **/
     virtual void record(const UndoCommandPtr& command, const UndoTouched& touched) = 0;

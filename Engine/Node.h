@@ -306,6 +306,13 @@ public:
     EffectInstancePtr getEffectInstance() const;
 
     /**
+     * @brief Whether effect is this node's effect, or whether it still has one, without racing the
+     * teardown that detaches it. A node kept alive past its teardown no longer has one.
+     **/
+    bool hostsEffect(const EffectInstance* effect) const;
+    bool hasEffectAttached() const;
+
+    /**
      * @brief Returns true if the node is a multi-instance node, that is, holding several other nodes.
      * e.g: the Tracker node.
      **/
@@ -1308,6 +1315,13 @@ public:
      * @param autoReconnect If set to true, outputs connected to this node will try to connect to the input of this node automatically.
      **/
     void destroyNode(bool blockingDestroy, bool autoReconnect);
+
+    /**
+     * @brief Tells the outputs deactivate() just disconnected from this node that it was deleted,
+     * through EffectInstance::onInputSourceDeleted(). Deactivating is not deleting: undoing a node's
+     * creation or moving it into a group deactivate it too, so the caller says which this is.
+     **/
+    void notifyOutputsOfDeletion();
 
 private:
 
@@ -2441,6 +2455,11 @@ public:
     void clearStreamWarning(StreamWarningEnum warning);
     void getStreamWarnings(std::map<StreamWarningEnum, QString>* warnings) const;
 
+    /**
+     * @brief The info page's readout for one input, or for the output when inputNumber is -1.
+     **/
+    std::string makeInfoForInput(int inputNumber) const;
+
 private:
 
     bool setStreamWarningInternal(StreamWarningEnum warning, const QString& message);
@@ -2830,7 +2849,6 @@ private:
     void declareTrackerPythonField();
 
     std::string makeCacheInfo() const;
-    std::string makeInfoForInput(int inputNumber) const;
 
     void setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes);
 

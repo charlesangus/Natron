@@ -873,6 +873,22 @@ Knob<T>::isValueChangeAtCurrentTime(const T& value,
 }
 
 template <typename T>
+std::list<KeyFrame>
+Knob<T>::getQueuedKeyFrames(int dimension) const
+{
+    std::list<KeyFrame> keys;
+    QMutexLocker kql(&_setValuesQueueMutex);
+
+    for (typename std::list<QueuedSetValuePtr>::const_iterator it = _setValuesQueue.begin(); it != _setValuesQueue.end(); ++it) {
+        if (((*it)->dimension() == dimension) && ((*it)->useKey() || (*it)->isSetValueAtTime())) {
+            keys.push_back((*it)->key());
+        }
+    }
+
+    return keys;
+}
+
+template <typename T>
 bool
 Knob<T>::getValueFromCurve(double time,
                            ViewSpec view,
@@ -1705,6 +1721,9 @@ Knob<T>::setValueAtTime(double time,
         assert(curve);
 
         setInternalCurveHasChanged(view, dimension, true);
+        if (_signalSlotHandler && (QThread::currentThread() == qApp->thread())) {
+            _signalSlotHandler->s_curveEditHeldForRender(view, dimension);
+        }
 
         KeyFrame k;
         bool hasAnimation = curve->isAnimated();
@@ -1920,10 +1939,11 @@ Knob<T>::unSlaveInternal(int dimension,
                          ValueChangedReasonEnum reason,
                          bool copyState)
 {
-    if ( !isSlave(dimension) ) {
+    // One read, which keeps the master alive: a second could find it expired after the first did not.
+    std::pair<int, KnobIPtr> master = getMaster(dimension);
+    if (!master.second) {
         return;
     }
-    std::pair<int, KnobIPtr> master = getMaster(dimension);
     KnobHelperPtr masterHelper = std::dynamic_pointer_cast<KnobHelper>(master.second);
 
     if (masterHelper->getSignalSlotHandler() && _signalSlotHandler) {
@@ -2406,6 +2426,8 @@ Knob<T>::setKeyFrame(const KeyFrame& key,
         }
         guiCurveCloneInternalCurve(eCurveChangeReasonInternal, view, dimension, reason);
         evaluateValueChange(dimension, key.getTime(), view, reason);
+    } else if (_signalSlotHandler) {
+        _signalSlotHandler->s_curveEditHeldForRender(view, dimension);
     }
 
     return ret;
@@ -3124,6 +3146,25 @@ insertDequeuedValueChange(std::map<int, ValueChangedReasonEnum>& dimensionChange
     std::pair<std::map<int, ValueChangedReasonEnum>::iterator, bool> ret = dimensionChanged.insert(std::make_pair(dimension, reason));
     if (!ret.second && (ret.first->second == eValueChangedReasonSlaveRefresh)) {
         ret.first->second = reason;
+    }
+}
+
+template <typename T>
+void
+Knob<T>::discardQueuedValues()
+{
+    {
+        QMutexLocker kql(&_setValuesQueueMutex);
+        if (_setValuesQueue.empty()) {
+            return;
+        }
+        _setValuesQueue.clear();
+        // The main thread's values showed the dropped writes.
+        QMutexLocker k(&_valueMutex);
+        _guiValues = _values;
+    }
+    if (_signalSlotHandler) {
+        _signalSlotHandler->s_valueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronInternalEdited);
     }
 }
 

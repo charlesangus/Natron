@@ -34,6 +34,9 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -46,12 +49,26 @@
 
 #include <gtest/gtest.h>
 
+#include <QtCore/QCoreApplication>
+#include <QtCore/QElapsedTimer>
+#include <QtCore/QEventLoop>
+#include <QtCore/QTemporaryDir>
+#include <QtCore/QThread>
+
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/MoonRayRuntime.h"
+#include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Tests/Scene/CyclesTestUtils.h"
 #include "Tests/TestWatchdog.h"
 
@@ -71,6 +88,8 @@ const int kSize = 32;
 const int kSamples = 256;
 const float kNearDistance = 9.f;
 const std::chrono::seconds kTimeout(120);
+// How long a destroyed render's worker may take to stop its delegate and end.
+const int kEndMs = 60000;
 
 typedef HydraRender::ProgressiveRender ProgressiveRender;
 
@@ -135,6 +154,119 @@ centreDepth(const ProgressiveRender::Frame& frame)
 {
     return frame.depth[(std::size_t)(frame.height / 2) * (std::size_t)frame.width + (std::size_t)(frame.width / 2)];
 }
+
+// A layer of grids meshes of size by size quads, children of parent, at most half a unit from
+// its origin.
+PXR_NS::SdfLayerRefPtr
+heavyLayer(int grids,
+           int size,
+           const std::string& parent)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("ProgressiveRenderTestHeavy");
+    PXR_NS::VtIntArray counts((std::size_t)size * (std::size_t)size, 4);
+    PXR_NS::VtIntArray indices;
+    indices.reserve(counts.size() * 4);
+    const int row = size + 1;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const int corner = y * row + x;
+            indices.push_back(corner);
+            indices.push_back(corner + 1);
+            indices.push_back(corner + row + 1);
+            indices.push_back(corner + row);
+        }
+    }
+    for (int g = 0; g < grids; ++g) {
+        const float z = (grids > 1) ? -0.5f + (float)g / (float)(grids - 1) : 0.f;
+        PXR_NS::VtVec3fArray points;
+        points.reserve((std::size_t)row * (std::size_t)row);
+        for (int y = 0; y < row; ++y) {
+            for (int x = 0; x < row; ++x) {
+                points.push_back(PXR_NS::GfVec3f((float)x / (float)size - 0.5f, (float)y / (float)size - 0.5f, z));
+            }
+        }
+        PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath(parent + "/HeavyGrid_" + std::to_string(g)));
+        prim->SetSpecifier(PXR_NS::SdfSpecifierDef);
+        prim->SetTypeName("Mesh");
+        PXR_NS::SdfAttributeSpec::New(prim, "points", PXR_NS::SdfValueTypeNames->Point3fArray)->SetDefaultValue(PXR_NS::VtValue(points));
+        PXR_NS::SdfAttributeSpec::New(prim, "faceVertexCounts", PXR_NS::SdfValueTypeNames->IntArray)->SetDefaultValue(PXR_NS::VtValue(counts));
+        PXR_NS::SdfAttributeSpec::New(prim, "faceVertexIndices", PXR_NS::SdfValueTypeNames->IntArray)->SetDefaultValue(PXR_NS::VtValue(indices));
+        PXR_NS::SdfAttributeSpec::New(prim, "subdivisionScheme", PXR_NS::SdfValueTypeNames->Token, PXR_NS::SdfVariabilityUniform)->SetDefaultValue(PXR_NS::VtValue(PXR_NS::TfToken("none")));
+    }
+
+    return layer;
+}
+
+// base with grids meshes of size by size quads inside /World/Near, which hides them: a scene a
+// delegate's first sync takes long enough on for an edit to come while it runs.
+ScenePayload
+heavyScene(const ScenePayload& base,
+           int grids,
+           int size)
+{
+    return SceneOps::appendLayer(base, heavyLayer(grids, size, "/World"), 0x4ea7700ULL);
+}
+
+// Writes to path, in place of what it held and in one step, a file of heavyLayer()'s grids under
+// /World/Near with /World/Near moved back by back units: a reader of the file it replaces keeps
+// reading that one.
+bool
+writeHeavyFile(const std::string& path,
+               int grids,
+               int size,
+               double back)
+{
+    PXR_NS::SdfLayerRefPtr layer = heavyLayer(grids, size, "/World/Near");
+    PXR_NS::SdfPrimSpecHandle prim = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Near"));
+    PXR_NS::SdfAttributeSpecHandle translate = PXR_NS::SdfAttributeSpec::New(prim, "xformOp:translate", PXR_NS::SdfValueTypeNames->Double3);
+    translate->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3d(0., 0., -back)));
+    PXR_NS::SdfAttributeSpecHandle order = PXR_NS::SdfAttributeSpec::New(prim, "xformOpOrder", PXR_NS::SdfValueTypeNames->TokenArray, PXR_NS::SdfVariabilityUniform);
+    order->SetDefaultValue(PXR_NS::VtValue(PXR_NS::VtTokenArray(1, PXR_NS::TfToken("xformOp:translate"))));
+    const std::string next = path.substr(0, path.size() - 5) + "-next.usdc";
+    if (!layer->Export(next)) {
+        ADD_FAILURE() << "cannot write " << next;
+
+        return false;
+    }
+    if (std::rename(next.c_str(), path.c_str()) != 0) {
+        ADD_FAILURE() << "cannot move " << next << " to " << path;
+
+        return false;
+    }
+
+    return true;
+}
+
+bool
+moonRayAvailable()
+{
+    return bool(PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hd_moonray"));
+}
+
+// The bundled gtest has no GTEST_SKIP, so the test returns early on false.
+bool
+moonRayOrSkip()
+{
+    if (moonRayAvailable()) {
+        return true;
+    }
+    const char* reason = "OpenUSD has no hd_moonray plug-in registered; this build image predates the "
+                         "MoonRay render delegate (tools/ci/local/build-moonray.sh), or the CPU lacks an instruction set MoonRay needs (MoonRayRuntime::cpuRunsMoonRay)";
+    const char* require = std::getenv("NATRON_TEST_REQUIRE_MOONRAY");
+    if (require && (std::strcmp(require, "1") == 0) && MoonRayRuntime::cpuRunsMoonRay()) {
+        ADD_FAILURE() << "NATRON_TEST_REQUIRE_MOONRAY=1 but " << reason;
+    } else {
+        std::printf("[  SKIPPED ] %s\n", reason);
+    }
+
+    return false;
+}
+
+long long
+millisecondsSince(const std::chrono::steady_clock::time_point& from)
+{
+    return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - from).count();
+}
 } // anon namespace
 
 class ProgressiveRenderTest
@@ -155,8 +287,11 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         _watchdog.setPhase("teardown");
+        ProgressiveRender::setPassHook(std::function<void()>());
         hold(false);
         _render.reset();
+        // A worker still ending would hold a Cycles session of its thread count into the next test.
+        EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
         _stage.reset();
         HydraRender::setRendererSettings(kRenderDelegateCyclesId, std::map<std::string, PXR_NS::VtValue>());
         BaseTest::TearDown();
@@ -178,25 +313,39 @@ protected:
         }
     }
 
+    // What a render takes the stage it renders from, as the viewer's does.
+    std::function<bool(SceneStageSnapshot*)> snapshotOfStage()
+    {
+        SceneStage* stage = _stage.get();
+
+        return [stage](SceneStageSnapshot* into) {
+            *into = stage->getSnapshot();
+
+            return true;
+        };
+    }
+
     // A render of the stage, with nothing set yet, whose listener is heard().
     void newRender()
     {
         hold(false);
         _listened = nullptr;
         _render.reset();
+        // The worker of the one before could otherwise meet the fault hook a test sets next.
+        EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
         {
             std::lock_guard<std::mutex> lock(_signalMutex);
             _published.clear();
             _calls = 0;
         }
-        SceneStage* stage = _stage.get();
-        _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [this]() { heard(); }, 0.05f));
+        _render.reset(new ProgressiveRender(&_stageLock, snapshotOfStage(), [this]() { heard(); }, 0.05f));
         _listened = _render.get();
     }
 
-    // Starts a Cycles render of the fixture through its camera, kSize pixels square, with a render
-    // settings prim's settings.
-    bool start(const std::map<std::string, PXR_NS::VtValue>& settings = std::map<std::string, PXR_NS::VtValue>())
+    // Starts a render of the fixture by renderer, Cycles unless given, through its camera, kSize
+    // pixels square, with a render settings prim's settings.
+    bool start(const std::map<std::string, PXR_NS::VtValue>& settings = std::map<std::string, PXR_NS::VtValue>(),
+               const std::string& renderer = kRenderDelegateCyclesId)
     {
         if (!_stage->isValid()) {
             ADD_FAILURE() << "OpenUSD could not open a stage";
@@ -217,7 +366,7 @@ protected:
         _view.time = PXR_NS::UsdTimeCode::Default();
         newRender();
         _render->setSettings(settings);
-        _render->setRenderer(kRenderDelegateCyclesId);
+        _render->setRenderer(renderer);
         _render->setThreads([]() { return 2; });
         _render->setView(_view);
 
@@ -321,6 +470,97 @@ protected:
         return finished;
     }
 
+    // Sets settings, which makes the engine again, and returns once its first pass over the heavy
+    // scene has been under way for a while and has published nothing yet. False, with a failure,
+    // if no such pass began or it ended first.
+    bool heavyPass(const std::map<std::string, PXR_NS::VtValue>& settings)
+    {
+        std::shared_ptr<std::atomic<std::uint64_t>> seen = std::make_shared<std::atomic<std::uint64_t>>(0);
+        const std::uint64_t builds = HydraRender::getEngineBuildCount();
+        ProgressiveRender::setPassHook([seen]() { *seen = HydraRender::getEngineBuildCount(); });
+        _render->setSettings(settings);
+        const bool began = waitUntil([seen, builds]() { return seen->load() > builds; }, "a pass of a new engine");
+        ProgressiveRender::setPassHook(std::function<void()>());
+        if (!began) {
+            return false;
+        }
+        // The new engine publishes only once its Render() returns, which the hook precedes.
+        const std::size_t mark = publishedCount();
+        // Into the delegate's sync of the heavy scene, past the hook.
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (publishedCount() != mark) {
+            ADD_FAILURE() << "the new engine's pass over the heavy scene ended before the change it was meant to interrupt";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // A settings change, a change of renderer to other and the render's destruction, each made
+    // while renderer is in its first pass over a heavy scene, return on this thread within 50 ms,
+    // and the frames that follow the first two are of the change.
+    void interruptsMidPass(const std::string& renderer,
+                           const std::string& samplesKey,
+                           const std::string& other)
+    {
+        const long long kReturnMs = 50;
+        const int liveBefore = ProgressiveRender::getLiveCount();
+        std::map<std::string, PXR_NS::VtValue> settings;
+        settings[samplesKey] = PXR_NS::VtValue(2);
+        ASSERT_TRUE(start(settings, renderer));
+        sync(heavyScene(_base, 24, 160));
+
+        settings[samplesKey] = PXR_NS::VtValue(64);
+        ASSERT_TRUE(heavyPass(settings));
+        settings[samplesKey] = PXR_NS::VtValue(3);
+        std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
+        std::size_t mark = publishedCount();
+        _render->setSettings(settings);
+        EXPECT_LT(millisecondsSince(asked), kReturnMs) << "a settings change waited for the pass";
+        std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+        ASSERT_TRUE(collectUntilDone(mark, &frames));
+        ASSERT_FALSE(frames.empty());
+        EXPECT_EQ(3, _render->getMaxSamples());
+        EXPECT_EQ(3, frames.back()->maxSamples);
+
+        settings[samplesKey] = PXR_NS::VtValue(4);
+        ASSERT_TRUE(heavyPass(settings));
+        asked = std::chrono::steady_clock::now();
+        _render->setRenderer(other);
+        EXPECT_LT(millisecondsSince(asked), kReturnMs) << "a renderer change waited for the pass";
+        std::printf("[          ] the renderer change mid-pass went to %s\n",
+                    other.empty() ? "no renderer: NOT TESTED, no second delegate is installed, so this only checked going idle" : other.c_str());
+        if (other.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            const ProgressiveRender::Status status = _render->getStatus();
+            EXPECT_FALSE(status.active);
+            EXPECT_TRUE(status.error.empty()) << status.error;
+            EXPECT_TRUE(_render->getFrame() == nullptr) << "a frame of the renderer left was shown";
+        } else {
+            std::string error;
+            EXPECT_TRUE(waitUntil([this, &error]() {
+                const ProgressiveRender::Status status = _render->getStatus();
+                error = status.error;
+                const std::shared_ptr<const ProgressiveRender::Frame> frame = _render->getFrame();
+
+                return !error.empty() || (frame && (frame->restart == status.restarts));
+            },
+                                  "a frame of the other renderer"));
+            EXPECT_TRUE(error.empty()) << error;
+        }
+
+        _render->setRenderer(renderer);
+        settings[samplesKey] = PXR_NS::VtValue(5);
+        ASSERT_TRUE(heavyPass(settings));
+        asked = std::chrono::steady_clock::now();
+        _listened = nullptr;
+        _render.reset();
+        EXPECT_LT(millisecondsSince(asked), kReturnMs) << "destroying the render waited for the pass";
+        EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
+        EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
+    }
+
     std::mutex _stageLock;
     std::unique_ptr<SceneStage> _stage;
     TestWatchdog _watchdog;
@@ -391,6 +631,7 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
 
     EXPECT_EQ(liveBefore + 1, ProgressiveRender::getLiveCount());
     _render.reset();
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
     EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
 }
 
@@ -586,6 +827,8 @@ TEST_F(ProgressiveRenderTest, AnEditDuringAFailingPassDoesNotHideTheFailure)
     EXPECT_FALSE(armed.load());
     EXPECT_NE(std::string::npos, _render->getStatus().error.find("texture commit failed")) << _render->getStatus().error;
     _render.reset();
+    // The hook reads this test's locals, which a worker still ending could call it on.
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
     RenderDelegates::setRenderFaultHook(nullptr);
 }
 
@@ -628,6 +871,8 @@ TEST_F(ProgressiveRenderTest, AFailureRetriesAtTheNextSceneEditAndNotAtAMove)
     EXPECT_FALSE(frames.empty());
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
     _render.reset();
+    // The hook reads this test's locals, which a worker still ending could call it on.
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
     RenderDelegates::setRenderFaultHook(nullptr);
 }
 
@@ -673,8 +918,7 @@ TEST_F(ProgressiveRenderTest, CyclesSessionsShareTheLastCountAskedFor)
     const U64 restartsBefore = _render->getRestartCount();
     const std::uint64_t buildsBefore = HydraRender::getEngineBuildCount();
 
-    SceneStage* stage = _stage.get();
-    std::unique_ptr<ProgressiveRender> second(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, std::function<void()>(), 0.05f));
+    std::unique_ptr<ProgressiveRender> second(new ProgressiveRender(&_stageLock, snapshotOfStage(), std::function<void()>(), 0.05f));
     second->setRenderer(kRenderDelegateCyclesId);
     second->setThreads([]() { return 3; });
     second->setView(_view);
@@ -745,4 +989,528 @@ TEST_F(ProgressiveRenderTest, ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverT
     EXPECT_EQ(7, _render->getMaxSamples());
     EXPECT_EQ(7, frames.back()->samples);
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
+}
+
+namespace {
+// The next worker pass, once armed, held up for sleepMs inside the worker's engine lock as a slow
+// delegate call would be, and whether it still is.
+struct SlowSync {
+    std::atomic<bool> armed { false };
+    std::atomic<bool> entered { false };
+    std::atomic<bool> inside { false };
+    std::atomic<int> sleepMs { 0 };
+};
+
+// Takes and drops the stage lock every couple of milliseconds until stopped, recording the
+// longest wait for it; joined when it goes, however the test ends.
+class LockProbe {
+public:
+    explicit LockProbe(std::mutex* lock)
+        : _thread([this, lock]() {
+            while (!_stop) {
+                const std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
+                {
+                    std::lock_guard<std::mutex> l(*lock);
+                }
+                const long long waited = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - asked).count();
+                if (waited > _longest.load()) {
+                    _longest = waited;
+                }
+                ++_taken;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        })
+    {
+    }
+
+    ~LockProbe()
+    {
+        stop();
+    }
+
+    void stop()
+    {
+        _stop = true;
+        if (_thread.joinable()) {
+            _thread.join();
+        }
+    }
+
+    // In milliseconds.
+    double longest() const
+    {
+        return _longest.load() / 1000.;
+    }
+
+    int taken() const
+    {
+        return _taken.load();
+    }
+
+private:
+    std::atomic<bool> _stop { false };
+    // In microseconds.
+    std::atomic<long long> _longest { 0 };
+    std::atomic<int> _taken { 0 };
+    std::thread _thread;
+};
+} // anon namespace
+
+// The worker holds the stage lock only to take its snapshot. Through a new engine's first sync and
+// render of a heavy scene the stage lock is free within 50 ms whenever it is asked for. A pass held
+// up inside the worker's engine lock, as a slow delegate call would be, ends while the test thread
+// holds the stage lock. The edit still reaches the frames.
+TEST_F(ProgressiveRenderTest, TheStageLockIsFreeWhileTheWorkerSyncsAndRenders)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const double kPromptMs = 50.;
+    // The fixed sampling without its samples, which would override the test's.
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["cycles:samples"] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+
+    std::shared_ptr<SlowSync> slow = std::make_shared<SlowSync>();
+    ProgressiveRender::setPassHook([slow]() {
+        if (!slow->armed.exchange(false)) {
+            return;
+        }
+        slow->inside = true;
+        slow->entered = true;
+        const std::chrono::milliseconds wait(slow->sleepMs.load());
+        if (wait.count() > 0) {
+            std::this_thread::sleep_for(wait);
+        }
+        slow->inside = false;
+    });
+    // payload and new settings in one edit, so the pass that brings them is a new engine's first
+    // sync of the whole scene. Returns the published count from before it.
+    const auto edit = [this, &settings, &slow](const ScenePayload& payload,
+                                               int samples,
+                                               int sleepMs) {
+        settings["cycles:samples"] = PXR_NS::VtValue(samples);
+        slow->sleepMs = sleepMs;
+        slow->entered = false;
+        slow->armed = true;
+        const std::size_t mark = publishedCount();
+        std::lock_guard<std::mutex> lock(_stageLock);
+        if (_stage->sync(payload)) {
+            _render->invalidate();
+        }
+        _render->setSettings(settings);
+
+        return mark;
+    };
+
+    const ScenePayload heavy = heavyScene(_base, 24, 160);
+    std::size_t mark = edit(heavy, 3, 0);
+    {
+        const std::chrono::steady_clock::time_point entered = std::chrono::steady_clock::now();
+        LockProbe probe(&_stageLock);
+        ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's pass over the heavy scene"));
+        const bool framed = waitUntil([this, mark]() { return _published.size() > mark; }, "a frame of the heavy scene");
+        const long long passMs = millisecondsSince(entered);
+        probe.stop();
+        ASSERT_TRUE(framed);
+        std::printf("[          ] a new engine's first pass over the heavy scene took %lld ms; the stage lock was taken %d times meanwhile, after %.2f ms at most\n",
+                    passMs, probe.taken(), probe.longest());
+        EXPECT_GT(probe.taken(), 0);
+        EXPECT_LT(probe.longest(), kPromptMs) << "the worker's sync or render of the heavy scene holds the stage lock";
+        // A pass longer than the bound is enough: a stage lock held through it would be waited
+        // on for longer than the bound. A fast runner's pass comes close to twice the bound.
+        EXPECT_GT(passMs, (long long)kPromptMs) << "the heavy pass was too quick to show the stage lock free through it";
+    }
+
+    const double kBack = 4.;
+    // Without the heavy layer: its grids sit inside /World/Near, and would show once it moved back.
+    mark = edit(movedNear(_base, kBack, 0x5104ULL), 4, 800);
+    ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's held-up pass"));
+    {
+        const std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> held(_stageLock);
+        const double waited = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - asked).count();
+        EXPECT_LT(waited, kPromptMs) << "the worker holds the stage lock inside its engine lock";
+        // Held from here for the rest of the held-up call: it ends all the same.
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (slow->inside && (std::chrono::steady_clock::now() < end)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        EXPECT_FALSE(slow->inside.load()) << "the worker's held-up pass waits for the stage lock";
+    }
+
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
+    ASSERT_TRUE(collectUntilDone(mark, &after));
+    ASSERT_FALSE(after.empty());
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.back()), 1e-4f);
+}
+
+// A reload of a file layer while the worker is held up inside its engine lock, as a slow delegate
+// call holds it, keeps nobody else waiting: asked for on the main thread it returns at once, and
+// while another thread's reload waits for the worker, readers and the stage lock stay free. Both
+// end once the call does, and the frames after them show the file's new content.
+TEST_F(ProgressiveRenderTest, AFileReloadDuringAPassKeepsTheMainThreadAndReadersFree)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const double kPromptMs = 100.;
+    const double kBack = 4.;
+    const int kHoldMs = 2000;
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("heavy.usdc")).toStdString();
+    ASSERT_TRUE(writeHeavyFile(path, 24, 160, 0.));
+
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["cycles:samples"] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings));
+    PXR_NS::SdfLayerRefPtr fileScene = SceneOps::createNodeLayer("ProgressiveRenderTestFile");
+    fileScene->InsertSubLayerPath(path);
+    sync(SceneOps::appendLayer(_base, fileScene, 0xf11e5ULL));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance), centreDepth(*frames.back()), 1e-4f);
+    PXR_NS::SdfLayerRefPtr file = PXR_NS::SdfLayer::Find(path);
+    ASSERT_TRUE(bool(file)) << "the stage did not open " << path;
+    const std::vector<PXR_NS::SdfLayerRefPtr> layers = SceneOps::getFileLayerClosure(file);
+    // Before the hold, which writing this much could use up on a busy machine: the stage keeps
+    // the file it opened until the reload.
+    ASSERT_TRUE(writeHeavyFile(path, 24, 160, kBack));
+
+    // As the viewer's stage lock is: a write's last participant, since quiescing it waits for
+    // a worker taking its snapshot.
+    struct StageParticipant {
+        explicit StageParticipant(std::mutex* lock)
+            : id(SceneWriteBarrier::registerParticipant([lock]() { lock->lock(); },
+                                                        [lock]() { lock->unlock(); },
+                                                        SceneWriteBarrier::eQuiesceOrderLast))
+        {
+        }
+
+        ~StageParticipant()
+        {
+            SceneWriteBarrier::unregisterParticipant(id);
+        }
+
+        SceneWriteBarrier::ParticipantId id;
+    } stageParticipant(&_stageLock);
+
+    std::shared_ptr<SlowSync> slow = std::make_shared<SlowSync>();
+    ProgressiveRender::setPassHook([slow]() {
+        if (!slow->armed.exchange(false)) {
+            return;
+        }
+        slow->inside = true;
+        slow->entered = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(slow->sleepMs.load()));
+        slow->inside = false;
+    });
+    slow->sleepMs = kHoldMs;
+    slow->armed = true;
+    settings["cycles:samples"] = PXR_NS::VtValue(3);
+    _render->setSettings(settings);
+    ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's held-up pass"));
+    const std::uint64_t reloads = SceneOps::getFileLayerReloadCount();
+    const std::size_t mark = publishedCount();
+
+    // Shared, as the completion may come after a failed assertion has left the test.
+    struct Outcome {
+        std::atomic<bool> done { false };
+        std::atomic<bool> ok { false };
+        std::mutex errorMutex;
+        std::string error;
+    };
+    const std::shared_ptr<Outcome> asked = std::make_shared<Outcome>();
+    const std::chrono::steady_clock::time_point request = std::chrono::steady_clock::now();
+    SceneOps::requestFileLayerReload(layers, [asked](bool ok, const std::string& error) {
+        {
+            std::lock_guard<std::mutex> l(asked->errorMutex);
+            asked->error = error;
+        }
+        asked->ok = ok;
+        asked->done = true;
+    });
+    const double requestMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request).count();
+    EXPECT_LT(requestMs, kPromptMs) << "requestFileLayerReload on the main thread waits for the worker's held-up pass";
+    EXPECT_TRUE(slow->inside.load()) << "the held-up pass ended before the reload it was meant to hold up";
+
+    const std::shared_ptr<Outcome> blocking = std::make_shared<Outcome>();
+    struct Joined {
+        ~Joined()
+        {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+
+        std::thread thread;
+    } other;
+    other.thread = std::thread([blocking, layers]() {
+        std::string error;
+        const bool ok = SceneOps::reloadFileLayers(layers, &error);
+        {
+            std::lock_guard<std::mutex> l(blocking->errorMutex);
+            blocking->error = error;
+        }
+        blocking->ok = ok;
+        blocking->done = true;
+    });
+
+    _watchdog.setPhase("reload");
+    double longest = 0.;
+    int taken = 0;
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    while (!(asked->done && blocking->done) && (std::chrono::steady_clock::now() < end)) {
+        const std::chrono::steady_clock::time_point probe = std::chrono::steady_clock::now();
+        {
+            SceneWriteBarrier::ReadScope read;
+            std::lock_guard<std::mutex> stage(_stageLock);
+        }
+        longest = std::max(longest, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - probe).count());
+        ++taken;
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const long long reloadMs = millisecondsSince(request);
+    if (other.thread.joinable()) {
+        other.thread.join();
+    }
+    ASSERT_TRUE(asked->done.load()) << "the main thread's reload did not end in " << kTimeout.count() << " s";
+    ASSERT_TRUE(blocking->done.load()) << "the other thread's reload did not end in " << kTimeout.count() << " s";
+    std::printf("[          ] the reloads ended %lld ms after they were asked for; a reader and the stage lock were taken %d times meanwhile, after %.2f ms at most\n",
+                reloadMs, taken, longest);
+    EXPECT_TRUE(asked->ok.load()) << asked->error;
+    EXPECT_TRUE(blocking->ok.load()) << blocking->error;
+    EXPECT_GT(reloadMs, (long long)(2 * kPromptMs)) << "the reloads did not wait for the held-up pass, which they cannot cut short";
+    EXPECT_GT(taken, 0);
+    EXPECT_LT(longest, kPromptMs) << "a reload waiting for the worker keeps readers or the stage lock waiting";
+    EXPECT_GT(SceneOps::getFileLayerReloadCount(), reloads);
+
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
+    ASSERT_TRUE(collectUntilDone(mark, &after));
+    ASSERT_FALSE(after.empty());
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.front()), 1e-4f) << "a frame of the file's old content came after the reload";
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.back()), 1e-4f);
+}
+
+// A drag preview set on the caller's stage reaches the worker's stage with the snapshot, and
+// clearing it brings the prim back.
+TEST_F(ProgressiveRenderTest, ThePreviewTransformsReachTheRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    const float rest = windowDepth(_view.frustum, kNearDistance);
+    EXPECT_NEAR(rest, centreDepth(*frames.back()), 1e-4f);
+
+    const double kBack = 3.;
+    PXR_NS::GfMatrix4d delta(1.);
+    delta.SetTranslate(PXR_NS::GfVec3d(0., 0., -kBack));
+    std::size_t mark = publishedCount();
+    {
+        std::lock_guard<std::mutex> lock(_stageLock);
+        ASSERT_TRUE(_stage->setPreviewTransforms(std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>>(1, std::make_pair(std::string("/World/Near"), delta)), 0.));
+        _render->invalidate();
+    }
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*frames.back()), 1e-4f);
+
+    mark = publishedCount();
+    {
+        std::lock_guard<std::mutex> lock(_stageLock);
+        _stage->clearPreviewTransforms();
+        _render->invalidate();
+    }
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    EXPECT_NEAR(rest, centreDepth(*frames.back()), 1e-4f);
+}
+
+TEST_F(ProgressiveRenderTest, CyclesReturnsAtOnceFromChangesMidPass)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    // The fixed sampling without its samples, which would override the test's.
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    interruptsMidPass(kRenderDelegateCyclesId, "cycles:samples", moonRayAvailable() ? std::string(kMoonRayRendererId) : std::string());
+}
+
+TEST_F(ProgressiveRenderTest, CyclesSurvivesRepeatedChangesMidPass)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    const int liveBefore = ProgressiveRender::getLiveCount();
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["cycles:samples"] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings, kRenderDelegateCyclesId));
+    sync(heavyScene(_base, 24, 160));
+
+    // Each change tears down an engine whose session thread may be writing tiles while the next
+    // engine binds its outputs; varying the delay moves the teardown across the pass, so a race
+    // between the two has many chances to corrupt the heap.
+    for (int i = 0; i < 8; ++i) {
+        settings["cycles:samples"] = PXR_NS::VtValue(16 + i);
+        ASSERT_TRUE(heavyPass(settings));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10 * (i % 4)));
+    }
+    settings["cycles:samples"] = PXR_NS::VtValue(3);
+    const std::size_t mark = publishedCount();
+    _render->setSettings(settings);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(3, frames.back()->maxSamples);
+
+    settings["cycles:samples"] = PXR_NS::VtValue(5);
+    ASSERT_TRUE(heavyPass(settings));
+    _listened = nullptr;
+    _render.reset();
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
+    EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
+}
+
+TEST_F(ProgressiveRenderTest, MoonRayReturnsAtOnceFromChangesMidPass)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const bool cycles = bool(PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hdCycles"));
+    interruptsMidPass(kMoonRayRendererId, MoonRaySettings::samplesKey(), cycles ? std::string(kRenderDelegateCyclesId) : std::string());
+}
+
+// MoonRay reports no reset counts: an edit restarts its render in place, and its frames are
+// published without waiting out kRestartUnseen and making the engine again.
+TEST_F(ProgressiveRenderTest, AMoonRayEditRestartsInPlace)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings[MoonRaySettings::samplesKey()] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings, kMoonRayRendererId));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    const ProgressiveRender::Status before = _render->getStatus();
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+
+    const double kBack = 5.;
+    const std::size_t mark = publishedCount();
+    const std::chrono::steady_clock::time_point edited = std::chrono::steady_clock::now();
+    sync(movedNear(_base, kBack, 0x300e1ULL));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
+    ASSERT_TRUE(collectUntilDone(mark, &after));
+    ASSERT_FALSE(after.empty());
+    std::printf("[          ] the edit's render converged in %lld ms\n", millisecondsSince(edited));
+
+    const ProgressiveRender::Status end = _render->getStatus();
+    EXPECT_EQ(before.restarts + 1, end.restarts);
+    EXPECT_EQ(before.engines, end.engines) << "the engine was made again after the edit";
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    const float moved = windowDepth(_view.frustum, kNearDistance + kBack);
+    const float still = windowDepth(_view.frustum, kNearDistance);
+    const float depth = centreDepth(*after.back());
+    EXPECT_LT(std::fabs(moved - depth), std::fabs(still - depth)) << "the last frame is of the scene before the edit";
+}
+
+// A pass waiting on a texture export stops waiting when a change makes its engine again, and the
+// render goes on with a new engine, which asks for the texture afresh.
+TEST_F(ProgressiveRenderTest, AnEngineChangeCutsTheTextureExportThePassWaitsOn)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const long long kCutMs = 1000;
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["cycles:samples"] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+
+    // A source whose texture is rendering until the test ends it: an export of it waits.
+    CountingTestRegistry::reset();
+    std::atomic<bool> rendering(false);
+    CountingTestRegistry::setRenderHook([&rendering](const Node* node) {
+        rendering = true;
+        QElapsedTimer timer;
+        timer.start();
+        while (!node->aborted() && (timer.elapsed() < 20000)) {
+            QThread::msleep(5);
+        }
+    });
+    NodePtr slow = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(bool(slow));
+    LiveTextureSource source;
+    source.node = slow;
+    source.nodeName = slow->getFullyQualifiedName();
+    source.layer = "rgba";
+    source.contentHash = slow->getEffectInstance()->getHash();
+    const std::string uri = source.getUri(1.);
+    std::atomic<bool> sourceAborted(false);
+    std::thread preparing([&source, &sourceAborted]() {
+        LiveTextureStore::instance().prepare(LiveTextureSourceList(1, source), 1., [&sourceAborted]() { return sourceAborted.load(); });
+    });
+    const bool started = waitUntil([&rendering]() { return rendering.load(); }, "the source's render");
+
+    struct Export {
+        std::atomic<bool> armed { false };
+        std::atomic<bool> entered { false };
+        std::atomic<bool> returned { false };
+    };
+    std::shared_ptr<Export> waiting = std::make_shared<Export>();
+    ProgressiveRender::setPassHook([waiting, uri]() {
+        if (!waiting->armed.exchange(false)) {
+            return;
+        }
+        waiting->entered = true;
+        (void)LiveTextureStore::instance().exportToSharedMemory(uri);
+        waiting->returned = true;
+    });
+    if (started) {
+        const std::uint64_t builds = HydraRender::getEngineBuildCount();
+        waiting->armed = true;
+        _render->invalidate();
+        EXPECT_TRUE(waitUntil([&waiting]() { return waiting->entered.load(); }, "the pass's export"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        EXPECT_FALSE(waiting->returned.load()) << "the export did not wait for the texture being rendered";
+
+        const std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
+        const std::size_t mark = publishedCount();
+        settings["cycles:samples"] = PXR_NS::VtValue(3);
+        _render->setSettings(settings);
+        EXPECT_TRUE(waitUntil([&waiting]() { return waiting->returned.load(); }, "the cut export"));
+        EXPECT_LT(millisecondsSince(asked), kCutMs) << "the export waited on through the change";
+        EXPECT_TRUE(LiveTextureStore::instance().getFailure(uri).empty()) << "a cut export is not a failure of the texture";
+
+        std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
+        EXPECT_TRUE(collectUntilDone(mark, &after));
+        EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
+    }
+
+    ProgressiveRender::setPassHook(std::function<void()>());
+    sourceAborted = true;
+    preparing.join();
+    CountingTestRegistry::reset();
+    EXPECT_TRUE(started) << "the source never started rendering";
 }

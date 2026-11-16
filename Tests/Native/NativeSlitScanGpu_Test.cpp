@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -71,7 +72,8 @@ protected:
     // on the GPU when onGpu, on the CPU otherwise. False when the device is missing.
     bool expectParity(const std::vector<NodePtr>& graph,
                       double time,
-                      bool onGpu)
+                      bool onGpu,
+                      std::vector<float>* cpuFrame = nullptr)
     {
         const NodePtr& node = graph.back();
         const EndToEndResult result = renderEndToEnd(graph, node, NativeTimeNodes::kWindow, time);
@@ -90,6 +92,9 @@ protected:
         } else {
             EXPECT_FALSE(ranOnGpu) << "the node rendered on the GPU";
         }
+        if (cpuFrame) {
+            *cpuFrame = result.cpu;
+        }
         EXPECT_EQ(result.cpu.size(), result.gpu.size());
         if (result.cpu.size() == result.gpu.size()) {
             const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::make(1e-5, 0.));
@@ -97,6 +102,29 @@ protected:
         }
 
         return true;
+    }
+
+    // Renders the graph build makes under Black, then Stretch: each matches the CPU on the GPU,
+    // and the two frames differ, so the edge mode of the frames read is exercised.
+    void expectBothEdgeModes(const std::function<std::vector<NodePtr>(const char* edgeMode)>& build,
+                             double time)
+    {
+        std::vector<float> frames[2];
+        const char* modes[2] = { "black", "stretch" };
+        for (int m = 0; m < 2; ++m) {
+            SCOPED_TRACE(modes[m]);
+            const std::vector<NodePtr> graph = build(modes[m]);
+            ASSERT_FALSE(graph.empty());
+            if (!expectParity(graph, time, true, &frames[m])) {
+                return;
+            }
+        }
+        ASSERT_EQ(frames[0].size(), frames[1].size());
+        std::size_t nDiffer = 0;
+        for (std::size_t i = 0; i < frames[0].size(); ++i) {
+            nDiffer += (frames[0][i] != frames[1][i]) ? 1 : 0;
+        }
+        EXPECT_GT(nDiffer, 0u) << "Black and Stretch rendered the same frame";
     }
 };
 
@@ -174,4 +202,41 @@ TEST_F(NativeSlitScanGpuTest, AppendClipDissolveAndFadeMatchTheCpu)
         return;
     }
     expectParity(graph, 2., true);
+}
+
+// Frames whose regions differ, each read past its own region by its edge mode, CPU and GPU alike.
+TEST_F(NativeSlitScanGpuTest, FramesOfDifferentRegionsFollowTheirEdgeMode)
+{
+    expectBothEdgeModes([this](const char* edgeMode) -> std::vector<NodePtr> {
+        NodePtr source = createSequence(1, 40);
+        NodePtr crop = source ? createChangingCrop(source, 1, 40, edgeMode) : NodePtr();
+        NodePtr slit = crop ? createOver(PLUGINID_NATRON_SLITSCAN, PLUGIN_MAJOR_NATRON_SLITSCAN, crop) : NodePtr();
+        if (!slit) {
+            return std::vector<NodePtr>();
+        }
+        setKnob<KnobDouble>(slit, kSlitScanParamRetimeGain, -6.);
+        setKnob<KnobChoice>(slit, kSlitScanParamFilter, (int)SlitScanTime::eFilterLinear);
+        return std::vector<NodePtr>({ source, crop, slit }); }, 20.);
+}
+
+// A Retime Map smaller than the window, read past its region by its own edge mode.
+TEST_F(NativeSlitScanGpuTest, RetimeMapSmallerThanTheSourceFollowsItsEdgeMode)
+{
+    expectBothEdgeModes([this](const char* edgeMode) -> std::vector<NodePtr> {
+        NodePtr source = createSequence(1, 40);
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+        if (!source || !constant || !setKnobValues(constant, kConstantParamColor, { 0., 0., 0., 0.25 })) {
+            return std::vector<NodePtr>();
+        }
+        NodePtr map = createChangingCrop(constant, 20, 20, edgeMode);
+        NodePtr slit = map ? createOver(PLUGINID_NATRON_SLITSCAN, PLUGIN_MAJOR_NATRON_SLITSCAN, source) : NodePtr();
+        if (!slit) {
+            return std::vector<NodePtr>();
+        }
+        connectNodes(map, slit, kSlitScanInputRetimeMap, true);
+        setKnob<KnobChoice>(slit, kSlitScanParamRetimeFunction, (int)SlitScanTime::eRetimeFunctionRetimeMap);
+        setKnob<KnobChoice>(slit, kSlitScanParamFilter, (int)SlitScanTime::eFilterLinear);
+        setKnob<KnobDouble>(slit, kSlitScanParamRetimeGain, -6.);
+        setKnob<KnobInt>(slit, kSlitScanParamFrameRange, -6, 0);
+        return std::vector<NodePtr>({ source, constant, map, slit }); }, 20.);
 }

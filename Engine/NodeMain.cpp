@@ -115,6 +115,7 @@ Node::load(const CreateNodeArgs& args)
          */
         _imp->effect.reset( func.second(thisShared) );
         assert(_imp->effect);
+        _imp->hostedEffect.store(_imp->effect.get(), std::memory_order_release);
 
         initNodeScriptName(serialization.get(), QString::fromUtf8(argFixedName.c_str()));
 
@@ -137,6 +138,7 @@ Node::load(const CreateNodeArgs& args)
         // ofx plugin
         _imp->effect = appPTR->createOFXEffect(thisShared, args);
         assert(_imp->effect);
+        _imp->hostedEffect.store(_imp->effect.get(), std::memory_order_release);
     }
 
     _imp->effect->initializeOverlayInteract();
@@ -688,13 +690,19 @@ Node::restoreKnobsLinks(const NodesList & allNodes,
 void
 Node::doDestroyNodeInternalEnd(bool autoReconnect)
 {
+    // An inactive node was deleted by a command already, or never was: an undo stack dropping its
+    // command, or a create undone, must not count as a second deletion.
+    const bool wasActive = isActivated();
+
     ///Remove the node from the project
     deactivate(NodesList(),
                true,
                autoReconnect,
                true,
                false);
-
+    if (wasActive) {
+        notifyOutputsOfDeletion();
+    }
 
     {
         NodeGuiIPtr guiPtr = _imp->guiPointer.lock();
@@ -746,6 +754,7 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
     EffectInstancePtr effect;
     {
         QMutexLocker k(&_imp->effectTeardownMutex);
+        _imp->hostedEffect.store(nullptr, std::memory_order_release);
         effect.swap(_imp->effect);
     }
     effect.reset();
@@ -820,7 +829,7 @@ Node::destroyNode(bool blockingDestroy, bool autoReconnect)
     }
 
     {
-        QMutexLocker k(&_imp->activatedMutex);
+        QMutexLocker k(&_imp->isBeingDestroyedMutex);
         _imp->isBeingDestroyed = true;
     }
     if (QThread::currentThread() == qApp->thread()) {

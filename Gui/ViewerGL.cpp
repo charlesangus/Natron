@@ -3082,13 +3082,9 @@ ViewerGL::updateColorPicker(int textureIndex,
     float r, g, b, a;
     bool picked = false;
     bool fromInput = false;
-    RectD rod = getRoD(textureIndex);
     RectD formatCanonical = getCanonicalFormat(textureIndex);
     unsigned int mmLevel;
-    if ( ( imgPosCanonical.x() >= rod.left() ) &&
-         ( imgPosCanonical.x() < rod.right() ) &&
-         ( imgPosCanonical.y() >= rod.bottom() ) &&
-         ( imgPosCanonical.y() < rod.top() ) ) {
+    if (_imp->displaysImageAt(textureIndex, imgPosCanonical.x(), imgPosCanonical.y())) {
         if ( (pos.x() >= 0) && ( pos.x() < width() ) &&
              (pos.y() >= 0) && ( pos.y() < height() ) ) {
             ///if the clip to project format is enabled, make sure it is in the project format too
@@ -3479,6 +3475,15 @@ double
 ViewerGL::getPAR(int texIndex) const
 {
     return _imp->displayTextures[texIndex].pixelAspectRatio;
+}
+
+void
+ViewerGL::setDisplayedEdgeMode(int textureIndex,
+                               EdgeMode mode)
+{
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(textureIndex == 0 || textureIndex == 1);
+    _imp->displayTextures[textureIndex].edgeMode = mode;
 }
 
 void
@@ -4284,20 +4289,18 @@ ViewerGL::updateInfoWidgetColorPicker(const QPointF & imgPos,
 
     if (!isDrawing) {
         for (int i = 0; i < 2; ++i) {
-            const RectD& rod = getRoD(i);
             RectD canonicalDispW = getCanonicalFormat(i);
-            updateInfoWidgetColorPickerInternal(imgPos, widgetPos, width(), height(), rod, canonicalDispW, i);
+            updateInfoWidgetColorPickerInternal(imgPos, widgetPos, width(), height(), canonicalDispW, i);
         }
     }
 }
 
 void
-ViewerGL::updateInfoWidgetColorPickerInternal(const QPointF & imgPos,
-                                              const QPoint & widgetPos,
+ViewerGL::updateInfoWidgetColorPickerInternal(const QPointF& imgPos,
+                                              const QPoint& widgetPos,
                                               int width,
                                               int height,
-                                              const RectD & rod, // in canonical coordinates
-                                              const RectD & dispW, // in canonical coordinates
+                                              const RectD& dispW, // in canonical coordinates
                                               int texIndex)
 {
     if ( !_imp->viewerTab || !_imp->viewerTab->getGui() || _imp->viewerTab->getGui()->isGUIFrozen() ) {
@@ -4306,13 +4309,7 @@ ViewerGL::updateInfoWidgetColorPickerInternal(const QPointF & imgPos,
 
     const std::list<Histogram*>& histograms = _imp->viewerTab->getGui()->getHistograms();
 
-    if ( _imp->displayTextures[texIndex].isVisible &&
-         ( imgPos.x() >= rod.left() ) &&
-         ( imgPos.x() < rod.right() ) &&
-         ( imgPos.y() >= rod.bottom() ) &&
-         ( imgPos.y() < rod.top() ) &&
-         ( widgetPos.x() >= 0) && ( widgetPos.x() < width) &&
-         ( widgetPos.y() >= 0) && ( widgetPos.y() < height) ) {
+    if (_imp->displayTextures[texIndex].isVisible && _imp->displaysImageAt(texIndex, imgPos.x(), imgPos.y()) && (widgetPos.x() >= 0) && (widgetPos.x() < width) && (widgetPos.y() >= 0) && (widgetPos.y() < height)) {
         ///if the clip to project format is enabled, make sure it is in the project format too
         if ( isClippingImageToFormat() &&
              ( ( imgPos.x() < dispW.left() ) ||
@@ -4875,6 +4872,11 @@ ViewerGL::getColorAt(double x,
     ///Convert to pixel coords
     int xPixel = std::floor(x  * scale / par);
     int yPixel = std::floor(y * scale);
+    RectI stretchBounds;
+    if (_imp->getStretchPixelBounds(textureIndex, image->getMipmapLevel(), par, &stretchBounds)) {
+        xPixel = std::min(std::max(xPixel, stretchBounds.x1), stretchBounds.x2 - 1);
+        yPixel = std::min(std::max(yPixel, stretchBounds.y1), stretchBounds.y2 - 1);
+    }
     bool gotval;
     switch (depth) {
     case eImageBitDepthByte:
@@ -5018,9 +5020,14 @@ ViewerGL::getColorAtRect(const RectD& rect, // rectangle in canonical coordinate
 
     ImageBitDepthEnum depth = image->getBitDepth();
 
+    RectI stretchBounds;
+    const bool stretch = _imp->getStretchPixelBounds(textureIndex, mipmapLevel, par, &stretchBounds);
+
     unsigned long area = 0;
-    for (int yPixel = rectPixel.bottom(); yPixel < rectPixel.top(); ++yPixel) {
-        for (int xPixel = rectPixel.x1; xPixel < rectPixel.x2; ++xPixel) {
+    for (int y = rectPixel.bottom(); y < rectPixel.top(); ++y) {
+        const int yPixel = stretch ? std::min(std::max(y, stretchBounds.y1), stretchBounds.y2 - 1) : y;
+        for (int x = rectPixel.x1; x < rectPixel.x2; ++x) {
+            const int xPixel = stretch ? std::min(std::max(x, stretchBounds.x1), stretchBounds.x2 - 1) : x;
             float rPix, gPix, bPix, aPix;
             bool gotval = false;
             switch (depth) {

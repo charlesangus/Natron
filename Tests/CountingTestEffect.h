@@ -292,8 +292,9 @@ private:
  * corner of the render window. Caches its output only when its "cacheOutput" knob is set, so that by default every
  * renderRoI on it reaches render(). Fails when its "fail" knob is set, throws when its "throwInRender" knob is set,
  * and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks overlap. Its images are keyed by
- * frame only when its "frameVarying" knob is set. Its "identity" knob makes it an identity of its first input, as a
- * disabled node is: it has no settings panel, so no Disable knob.
+ * frame only when its "frameVarying" knob is set. Its edge mode is Black when its "blackEdge" knob is set, else Stretch.
+ * Its "identity" knob makes it an identity of its first input, as a disabled node is: it has no settings panel, so
+ * no Disable knob.
  **/
 class CountingTestEffectBase
     : public NativeEffectBase {
@@ -307,6 +308,7 @@ public:
         , _throwInRender()
         , _frameVarying()
         , _identity()
+        , _blackEdge()
     {
     }
 
@@ -435,6 +437,13 @@ private:
         identity->setDefaultValue(false);
         page->addKnob(identity);
         _identity = identity;
+        KnobBoolPtr blackEdge = createKnob<KnobBool>(std::string("Black Edge"));
+        blackEdge->setName("blackEdge");
+        blackEdge->setAnimationEnabled(false);
+        blackEdge->setDefaultValue(false);
+        blackEdge->setIsMetadataSlave(true);
+        page->addKnob(blackEdge);
+        _blackEdge = blackEdge;
     }
 
     virtual StatusEnum getPreferredMetadataAt(double /*time*/,
@@ -445,6 +454,10 @@ private:
 
         if (frameVaryingKnob && frameVaryingKnob->getValue()) {
             metadata.setIsFrameVarying(true);
+        }
+        KnobBoolPtr blackEdgeKnob = _blackEdge.lock();
+        if (blackEdgeKnob && blackEdgeKnob->getValue()) {
+            metadata.setEdgeMode(EdgeMode::Black);
         }
 
         return eStatusOK;
@@ -532,6 +545,7 @@ private:
     KnobBoolWPtr _throwInRender;
     KnobBoolWPtr _frameVarying;
     KnobBoolWPtr _identity;
+    KnobBoolWPtr _blackEdge;
 };
 
 class CountingTestEffect

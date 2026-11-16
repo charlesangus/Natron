@@ -139,3 +139,4 @@
 - 2026-11-15 — cycles-reset-counters: Cycles restart detection reads fork reset counters, not samples/clock → DECISIONS/2026-11-15-cycles-reset-counters.md
 - 2026-11-16 — moonray-deep-over-arras: MoonRay deep goes over a banded Arras DeepFrame message into HydraDeepBuffer; MoonRay stays out of process → DECISIONS/2026-11-16-moonray-deep-over-arras.md
 - 2026-11-16 — deep-opacity-output: every deep render path offers an alpha-only (deep opacity) output → DECISIONS/2026-11-16-deep-opacity-output.md
+- 2026-11-16 — follow-stomps-keys: follow overwrites keys on followed frames; Blend Between Keys and Reduce Keyframes are separate actions → DECISIONS/2026-11-16-follow-stomps-keys.md

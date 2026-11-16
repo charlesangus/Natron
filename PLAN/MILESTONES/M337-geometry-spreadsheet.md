@@ -103,6 +103,12 @@ Interface assumed from M361 - Geometry Point Editing, as its brief states it: M3
   - verify: GUI script. Selecting 5 point rows of a `USDRead` mesh highlights them (pixel check under Xvfb), and selecting another prim clears it.
   - size: M
 
+- [ ] M337.P4.T5 — Group patterns in the USD-prim view
+  - files: `Engine/Nodes/Scene/ScenePrimElements.h`/`.cpp`, `Engine/Geo/GeoOpUtils.h`/`.cpp` (a pattern evaluator over an element count plus named index sets), `Gui/GeoSpreadsheet.cpp`, `Tests/Scene/ScenePrimElements_Test.cpp`, `Tests/gui/m337_spreadsheet_usd.py`
+  - approach: the Group box on a USD prim accepts the same pattern language as the geometry view, with `UsdGeomSubset`s of the class as the named groups: numbers, ranges, steps, subset names with wildcards, several terms, and `^` exclusion. Attribute tests (`@…`) are not supported there; a pattern using one shows an error. Parsing runs on the tab's worker. Share the parser with `geoSelectElements` rather than duplicating it.
+  - verify: unit tests: `0-9 14`, `top*`, `top bottom`, `* ^top` and `0-100:2` select the expected rows on a mesh with face subsets, and `@P.y>0` errors. The GUI script filters a USD mesh by a range and by a wildcard subset name.
+  - size: M
+
 **Verification gate:** CI green; unit tests green (M337.P1.T1, M337.P1.T2 and M337.P3.T1 engine tests, and the M337.P2.T1 GuiTests); the remote GUI run, with an explicit `--gui`, passes `m337_spreadsheet_usd.py`, `m337_spreadsheet_geo.py`, `m337_spreadsheet_sort.py`, `m337_selection_rows_to_viewer.py`, `m337_selection_viewer_to_rows.py` and `m337_selection_usd.py`; on a mesh with millions of points (a 3000×3000 grid, viewed both as `GeoDetail` and through `GeoToUSD` as a USD mesh) switching class tabs, scrolling to the last row, sorting `P[y]` and select-all keep a QTimer heartbeat gap under 500 ms and the cell-read counter stays at the visible rows, and a prim under an unloaded payload stays unloaded; Xvfb screenshots (one file each) of the Points, Primitives (packed intrinsics) and Detail tabs, a sort in progress and a row ↔ viewer selection are shared with the user before sign-off, and the toolbar fits the 1920x1080 default layout; the pre-existing ctest suite is green.
 
 ## Decisions
@@ -113,3 +119,4 @@ Interface assumed from M361 - Geometry Point Editing, as its brief states it: M3
 - 2026-11-08 — **Joined F15 - Native Geometry (user);** stays a stub until its blockers land (user).
 - 2026-11-16 — **Worked ahead of unmet Deps (user):** started before F4 - Heavy Scene Viewer lands, stacked on M376 - Geometry Display's branch (F4 and F15 merged in) via M361 - Geometry Point Editing's branch. The PR into F15 opens only after F4 lands, M376 merges into F15, and this branch is rebased onto F15.
 - 2026-11-16 — **Selecting rows replaces the viewer's live selection, matching Houdini (user).** Tab-create and reselect then use the rows picked. The general rule (user): when in doubt, match Houdini, but never name Houdini in code, comments, tooltips or node docs.
+- 2026-11-16 — **USD-prim Group box takes full patterns, without attribute tests (user).** Added as M337.P4.T5.

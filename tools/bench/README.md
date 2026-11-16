@@ -24,6 +24,7 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `reformat_filter_bench.sh`, `reformat_filter_bench.py` | CPU cost of a 4x Reformat downscale with Cubic and Lanczos 3, a main AppImage against a branch AppImage. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 | `bezier_keying_bench.py` | Keys Roto Beziers at 1..K frames in NatronRenderer and prints the keying time per K, the median per-edit cost and the log-log slope against K. |
+| `geo_scale.py` | Times GeoTransform, GeoEdit, GeoDelete, GeoToUSD, `geoEncodePattern` and `geoExpandPoints` on a 10M-point grid with the bench-only `DISABLED_GeoBenchTest` suite (`Tests/GeoBench_Test.cpp`) of two `Tests` binaries, and prints median time and peak RSS per stage, before against after. |
 
 Topologies: `chain` (N Grades in series), `mixed` (Grade/Blur/Transform/ColorCorrect in series),
 `wide` (sources merged by a balanced tree), `comp` (seeded random DAG with fan-out and merges).

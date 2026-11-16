@@ -63,6 +63,7 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GeoAttribute_Test.cpp
+    GeoBench_Test.cpp
     GeoCopyToPoints_Test.cpp
     GeoDetail_Test.cpp
     GeoDetailCache_Test.cpp

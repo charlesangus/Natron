@@ -32,7 +32,7 @@ Wheel zoom in the 2D viewer steps along the zoom menu's presets (10, 25, 50, 75,
 
 ## Phase 422.1: Preset Ladder
 
-- [ ] M422.P1.T1 — Shared zoom preset ladder with stepping function
+- [x] M422.P1.T1 — Shared zoom preset ladder with stepping function
   - files: new `Gui/ViewerZoomLadder.h` (and `.cpp` if needed), `Gui/ViewerTab.cpp`, `Gui/CMakeLists.txt` or the Gui sources list, new `Tests/ViewerZoomLadder_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: Define the preset list once (percent values, current order) and a pure function `double stepZoomPreset(double currentFactor, int steps, double minFactor, double maxFactor)` that returns the factor `steps` presets away, applying the off-ladder, 0.5% tolerance, halving/doubling-beyond-the-ends and clamp rules from Scope. Populate the zoom combobox from the list instead of literal strings, keeping the 100% entry as `level100Action` at the same index (the 100% shortcut sets index 7).
   - verify: gtest covers 100%→125%→150%→200%→400% and back; 87% +1 → 100%, 87% −1 → 75%; 10% −1 → 5%; 6400% +1 → 12800%; clamp at min/max returns the bound; 99.8% treated as 100%; multi-step jumps. Zoom menu entries unchanged in a Xvfb launch or the existing viewer GUI script.
@@ -40,12 +40,12 @@ Wheel zoom in the 2D viewer steps along the zoom menu's presets (10, 25, 50, 75,
 
 ## Phase 422.2: Snapping Steps
 
-- [ ] M422.P2.T1 — Wheel zoom steps along the ladder
+- [x] M422.P2.T1 — Wheel zoom steps along the ladder
   - files: `Gui/ViewerGL.cpp`, `Gui/ViewerGLPrivate.h`, new `Tests/gui/m422_viewer_zoom_snap.py`
   - approach: In `ViewerGL::wheelEvent`, accumulate `angleDelta().y()` in a new private member (reset on direction change), and for each full 120 call `stepZoomPreset`; apply `zoomCtx.zoom(cursorPoint, target / current)` so the cursor point stays fixed. Keep the mipmap-level and cache-line logic, `zoomOrPannedSinceLastFit`, viewer sync and the render check. Emit `zoomChanged` with the rounded percent (`std::lround`). Model the GUI script on `Tests/gui/m338_viewer_input_keys.py`, sending real `QWheelEvent`s to the viewer's GL widget.
   - verify: GUI script: from Fit, wheel-in notches show 100%, 125%, 150%, 200%, 400% in the zoom menu (from the next preset above the fit level), wheel-out returns along the same values; 30-delta events need four to step once; the image coordinate under the cursor is the same before and after a step (read through the viewer's Python or zoom API). Fails on current main.
   - size: M
-- [ ] M422.P2.T2 — Zoom In and Zoom Out actions step along the ladder
+- [x] M422.P2.T2 — Zoom In and Zoom Out actions step along the ladder
   - files: `Gui/ViewerTab40.cpp`, `Tests/gui/m422_viewer_zoom_snap.py`
   - approach: Replace the ×1.1/×0.9 in `ViewerTab::zoomIn`/`zoomOut` with `stepZoomPreset(current, ±1, …)` and set the combobox text from the rounded percent. Bounds come from the same zoom context the wheel uses.
   - verify: GUI script extension: from 87%, the viewer Zoom In shortcut gives 100%, then 125%; Zoom Out from 100% gives 75%; the menu's `+`/`-` actions do the same; the global Zoom In key (synthetic wheel) still steps one preset.
@@ -58,3 +58,5 @@ Wheel zoom in the 2D viewer steps along the zoom menu's presets (10, 25, 50, 75,
 - 2026-11-13 — Wheel steps along the existing menu presets, continuing by halving/doubling past 10% and 6400% (user): no new menu entries.
 - 2026-11-13 — Viewer Zoom In/Zoom Out shortcuts and menu actions snap to the same ladder (user).
 - 2026-11-13 — Off-ladder levels step to the next preset in the wheel's direction, not the nearest (cat-plan): a notch then always zooms the way the user turned the wheel.
+
+- 2026-11-16 — All three tasks implemented (f5994e71e on milestone/m422-snap-viewer-wheel-zoom). Deviations: Zoom In/Out now sync other viewers as the wheel does; menu labels round to whole percent below 10%; the ladder runs 1%–102400% (the viewer's 0.01–1024 bounds). Found: no global-group Zoom In/Out keybind is registered, so ViewerTab::keyPressEvent's global branch never fires (and would call QWidget::wheelEvent on the tab); left alone, question to the user. Gate running.

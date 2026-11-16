@@ -32,6 +32,7 @@
 #include <atomic>
 #include <memory>
 
+#include <QtCore/QMetaObject>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 #include <QtWidgets/QWidget>
@@ -53,6 +54,7 @@ class SceneViewport;
 struct GeoComponentSelection;
 struct GeoSpreadsheetBuildResult;
 struct GeoSpreadsheetPickResult;
+struct GeoSpreadsheetShowResult;
 
 /**
  * @brief A class bar (Points, Vertices, Primitives, Detail, each with its row count) over a table of one
@@ -80,6 +82,13 @@ struct GeoSpreadsheetPickResult;
  * the points of the vertices, or the primitives numbered by the rows. A selection of many rows is
  * gathered on the worker and handed to the view when done, a newer one cancelling it. Detail rows select
  * nothing.
+ *
+ * The other way round, a change of that view's selection that the table did not make selects the rows of
+ * the elements picked, in the class they belong to: points and primitives as they are, edges as their
+ * endpoints in Points. Objects mode or nothing picked clears the rows. The first selected row is scrolled
+ * into view. Rows are selected as runs of contiguous view rows, through the inverse of the sort and filter
+ * order built beside that order. Picked elements the group filter leaves out are counted in the
+ * SelectionNote label, which natronGeoSpreadsheetSelectionNote reads, e.g. "12 selected, 3 hidden by filter".
  **/
 class GeoSpreadsheetWidget
     : public QWidget {
@@ -89,6 +98,7 @@ class GeoSpreadsheetWidget
     Q_PROPERTY(qlonglong natronGeoSpreadsheetRows READ getShownRows)
     Q_PROPERTY(QString natronGeoSpreadsheetClass READ getShownClassName)
     Q_PROPERTY(qulonglong natronGeoSpreadsheetCellReads READ getCellReads)
+    Q_PROPERTY(QString natronGeoSpreadsheetSelectionNote READ getSelectionNote)
     Q_PROPERTY(bool natronGeoSpreadsheetSortBusy READ getSortBusy)
     Q_PROPERTY(int natronGeoSpreadsheetSortsStarted READ getSortsStarted)
     Q_PROPERTY(int natronGeoSpreadsheetSortsCancelled READ getSortsCancelled)
@@ -117,6 +127,8 @@ public:
     QString getShownClassName() const;
 
     qulonglong getCellReads() const;
+
+    QString getSelectionNote() const;
 
     bool getSortBusy() const
     {
@@ -156,9 +168,20 @@ private:
                      const GeoSpreadsheetBuildResult& result,
                      const QString& pattern,
                      bool keepError);
-    void applyOrder(const GeoSpreadsheetModel::RowOrderPtr& order);
+    void applyOrder(const GeoSpreadsheetModel::RowOrderPtr& order,
+                    const GeoSpreadsheetModel::RowInversePtr& inverse = GeoSpreadsheetModel::RowInversePtr());
     bool shownMatchesWanted() const;
     void rowsSelected();
+    void viewerSelectionChanged();
+    void syncFromViewer(bool switchClass,
+                        bool scroll);
+    void applyShown(const GeoSpreadsheetShowResult& result,
+                    bool scroll);
+    void finishShow(quint64 generation,
+                    const GeoSpreadsheetShowResult& result,
+                    bool scroll);
+    void clearRows();
+    void setSelectionNote(const QString& text);
     void cancelPick();
     void writeSelection(SceneViewport* viewport,
                         const GeoComponentSelection& selection);
@@ -176,6 +199,7 @@ private:
     QComboBox* _group;
     QLabel* _busyLabel;
     QLabel* _error;
+    QLabel* _selectionNote;
     QThread* _thread;
     QObject* _worker;
 
@@ -197,6 +221,8 @@ private:
     std::shared_ptr<std::atomic<bool>> _pickCancel;
     quint64 _pickGeneration = 0;
     bool _writingSelection = false;
+    bool _showingSelection = false;
+    std::array<QMetaObject::Connection, 2> _viewerConnections;
 
     std::shared_ptr<std::atomic<bool>> _cancel;
     quint64 _generation = 0;

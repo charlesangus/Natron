@@ -56,6 +56,8 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Geo/GeoGroupOps.h"
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePrimElements.h"
@@ -72,11 +74,20 @@ NATRON_NAMESPACE_ENTER
 
 struct GeoSpreadsheetBuildResult {
     GeoSpreadsheetModel::RowOrderPtr order;
+    GeoSpreadsheetModel::RowInversePtr inverse;
     QString error;
 };
 
 struct GeoSpreadsheetPickResult {
     GeoComponentSelection selection;
+    bool cancelled = false;
+};
+
+struct GeoSpreadsheetShowResult {
+    // Sorted, non-overlapping runs of view rows, both ends included.
+    std::vector<std::pair<int, int>> ranges;
+    std::int64_t selected = 0;
+    std::int64_t hidden = 0;
     bool cancelled = false;
 };
 
@@ -177,9 +188,119 @@ runBuild(const GeoSpreadsheetModel::SourcePtr& source,
         }
     }
     result.order = geoSpreadsheetBuildOrder(*source, cls, filtered ? &mask : nullptr, sortColumn, descending, cancelled);
+    if (result.order) {
+        const std::int64_t count = source->rowCount(cls);
+        std::shared_ptr<std::vector<GeoIndex>> inverse = std::make_shared<std::vector<GeoIndex>>((std::size_t)count, -1);
+        const std::vector<GeoIndex>& order = *result.order;
+        for (std::size_t row = 0; row < order.size(); ++row) {
+            if (((row & 0xFFFF) == 0) && cancelled.load()) {
+                result.order.reset();
+
+                return result;
+            }
+            const GeoIndex element = order[row];
+            if ((element >= 0) && (element < count)) {
+                (*inverse)[(std::size_t)element] = (GeoIndex)row;
+            }
+        }
+        result.inverse = inverse;
+    }
 
     return result;
 }
+
+// The view rows showing the picked elements, as runs. Edges are shown as their endpoints. With a sort or
+// filter order, @p inverse gives each element's row and elements it leaves out are counted as hidden.
+GeoSpreadsheetShowResult
+showRows(const GeoSpreadsheetModel::SourcePtr& source,
+         GeoAttribClassEnum cls,
+         const GeoComponentSelection& selection,
+         bool ordered,
+         const GeoSpreadsheetModel::RowInversePtr& inverse,
+         const std::atomic<bool>& cancelled)
+{
+    GeoSpreadsheetShowResult result;
+    const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get());
+
+    if (!geometry) {
+        return result;
+    }
+    const GeoDetail& detail = *geometry->detail();
+    const std::int64_t count = source->rowCount(cls);
+    std::vector<GeoIndex> endpoints;
+    const std::vector<GeoIndex>* elements = &selection.elements;
+    if (selection.type == eGeoComponentEdges) {
+        std::vector<GeoEdge> edges;
+        for (const GeoEdge& edge : selection.edges) {
+            const GeoOffset a = detail.pointMap().offsetFromIndex(edge.p0);
+            const GeoOffset b = detail.pointMap().offsetFromIndex(edge.p1);
+            if ((a >= 0) && (b >= 0)) {
+                edges.push_back(GeoEdge(a, b));
+            }
+        }
+        const GeoElementMask points = geoPromoteEdgesToPoints(detail, edges);
+        const GeoIndexMap& map = detail.pointMap();
+        const std::size_t limit = std::min(points.size(), (std::size_t)std::max<GeoOffset>(0, map.offsetSize()));
+        for (std::size_t offset = 0; offset < limit; ++offset) {
+            if (points[offset] && map.isLive((GeoOffset)offset)) {
+                endpoints.push_back(map.indexFromOffset((GeoOffset)offset));
+            }
+        }
+        elements = &endpoints;
+    }
+    std::vector<int> rows;
+    rows.reserve(elements->size());
+    std::int64_t visited = 0;
+    for (const GeoIndex element : *elements) {
+        if (((++visited) & 0xFFFF) == 0 && cancelled.load()) {
+            result.cancelled = true;
+
+            return result;
+        }
+        if ((element < 0) || (element >= count)) {
+            continue;
+        }
+        ++result.selected;
+        const GeoIndex row = ordered ? ((inverse && (element < (GeoIndex)inverse->size())) ? (*inverse)[(std::size_t)element] : -1) : element;
+        if (row < 0) {
+            ++result.hidden;
+        } else {
+            rows.push_back((int)row);
+        }
+    }
+    if (!std::is_sorted(rows.begin(), rows.end())) {
+        std::sort(rows.begin(), rows.end());
+    }
+    for (const int row : rows) {
+        if (!result.ranges.empty() && (row <= result.ranges.back().second + 1)) {
+            result.ranges.back().second = std::max(result.ranges.back().second, row);
+        } else {
+            result.ranges.emplace_back(row, row);
+        }
+    }
+
+    return result;
+}
+
+// Marks the table's selection changes as not the user's while it is alive.
+class FlagScope {
+public:
+    explicit FlagScope(bool& flag)
+        : _flag(flag)
+        , _previous(flag)
+    {
+        _flag = true;
+    }
+
+    ~FlagScope()
+    {
+        _flag = _previous;
+    }
+
+private:
+    bool& _flag;
+    bool _previous;
+};
 
 // The elements the rows name, as component numbers of the view: rows of a vertex class give the points
 // their vertices use. Walks ranges, so selecting every row of a large class is one pass over an index list.
@@ -423,6 +544,7 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
     , _group(nullptr)
     , _busyLabel(nullptr)
     , _error(nullptr)
+    , _selectionNote(nullptr)
     , _thread(new QThread(this))
     , _worker(new QObject)
 {
@@ -444,7 +566,10 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
         _classButtons[(std::size_t)c] = button;
     }
     barLayout->addStretch(1);
-    QObject::connect(group, &QButtonGroup::idClicked, this, [this](int id) { showClass((GeoAttribClassEnum)id); });
+    QObject::connect(group, &QButtonGroup::idClicked, this, [this](int id) {
+        showClass((GeoAttribClassEnum)id);
+        syncFromViewer(false, false);
+    });
 
     _model = new GeoSpreadsheetModel(_table);
     _table->setObjectName(objectName + QString::fromUtf8("Table"));
@@ -491,8 +616,12 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
     _busyLabel = new QLabel(tr("Sorting…"), filterBar);
     _busyLabel->setObjectName(objectName + QString::fromUtf8("Busy"));
     _busyLabel->hide();
+    _selectionNote = new QLabel(filterBar);
+    _selectionNote->setObjectName(objectName + QString::fromUtf8("SelectionNote"));
+    _selectionNote->hide();
     filterLayout->addWidget(_group, 1);
     filterLayout->addWidget(_busyLabel);
+    filterLayout->addWidget(_selectionNote);
 
     _error = new QLabel(this);
     _error->setObjectName(objectName + QString::fromUtf8("Error"));
@@ -592,6 +721,11 @@ GeoSpreadsheetWidget::setSnapshot(const GeoSpreadsheetModel::SourcePtr& source)
     updateSortIndicator();
     if (source) {
         requestBuild(wanted);
+        if (_busy) {
+            syncFromViewer(false, false);
+        }
+    } else {
+        setSelectionNote(QString());
     }
 }
 
@@ -632,7 +766,20 @@ GeoSpreadsheetWidget::clearSelection()
 void
 GeoSpreadsheetWidget::setSelectionViewer(const ViewerInstanceWPtr& viewer)
 {
+    for (QMetaObject::Connection& connection : _viewerConnections) {
+        QObject::disconnect(connection);
+        connection = QMetaObject::Connection();
+    }
     _selectionViewer = viewer;
+    SceneViewport* viewport = viewportOf(viewer.lock());
+    if (!viewport) {
+        cancelPick();
+        setSelectionNote(QString());
+
+        return;
+    }
+    _viewerConnections[0] = QObject::connect(viewport, &SceneViewport::componentSelectionChanged, this, [this]() { viewerSelectionChanged(); });
+    _viewerConnections[1] = QObject::connect(viewport, &SceneViewport::geoPickModeChanged, this, [this](int) { viewerSelectionChanged(); });
 }
 
 void
@@ -648,9 +795,10 @@ GeoSpreadsheetWidget::cancelPick()
 void
 GeoSpreadsheetWidget::rowsSelected()
 {
-    if (_writingSelection) {
+    if (_writingSelection || _showingSelection) {
         return;
     }
+    setSelectionNote(QString());
     const GeoSpreadsheetModel::SourcePtr source = _model->source();
     const GeoAttribClassEnum cls = _model->attribClass();
     SceneViewport* viewport = viewportOf(_selectionViewer.lock());
@@ -675,6 +823,128 @@ GeoSpreadsheetWidget::rowsSelected()
         GeoSpreadsheetPickResult result = pickRows(source, cls, order, ranges, *cancel);
         // The destructor joins this thread before the widget goes, so the widget outlives this call.
         QMetaObject::invokeMethod(this, [this, generation, result = std::move(result)]() { finishPick(generation, result); }, Qt::QueuedConnection); }, Qt::QueuedConnection);
+}
+
+void
+GeoSpreadsheetWidget::viewerSelectionChanged()
+{
+    if (_writingSelection) {
+        return;
+    }
+    syncFromViewer(true, true);
+}
+
+void
+GeoSpreadsheetWidget::syncFromViewer(bool switchClass,
+                                     bool scroll)
+{
+    if (_showingSelection) {
+        return;
+    }
+    const FlagScope scope(_showingSelection);
+    const GeoSpreadsheetModel::SourcePtr source = _model->source();
+    SceneViewport* viewport = viewportOf(_selectionViewer.lock());
+
+    cancelPick();
+    if (!viewport || !source || !dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get())) {
+        clearRows();
+
+        return;
+    }
+    const GeoComponentSelection selection = viewport->getComponentSelection();
+    if ((selection.type == eGeoComponentObjects) || selection.empty()) {
+        clearRows();
+
+        return;
+    }
+    const GeoAttribClassEnum cls = (selection.type == eGeoComponentPrimitives) ? eGeoAttribClassPrimitive : eGeoAttribClassPoint;
+    if (cls != _model->attribClass()) {
+        if (!switchClass) {
+            clearRows();
+
+            return;
+        }
+        showClass(cls);
+    }
+    const bool ordered = (bool)_model->rowOrder();
+    const GeoSpreadsheetModel::RowInversePtr inverse = _model->rowInverse();
+    if ((std::int64_t)(selection.elements.size() + selection.edges.size()) <= kInlinePickRows) {
+        const std::atomic<bool> never(false);
+        applyShown(showRows(source, cls, selection, ordered, inverse, never), scroll);
+
+        return;
+    }
+    const std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);
+    const quint64 generation = _pickGeneration;
+    _pickCancel = cancel;
+    QMetaObject::invokeMethod(_worker, [this, source, cls, selection, ordered, inverse, cancel, generation, scroll]() {
+        GeoSpreadsheetShowResult result = showRows(source, cls, selection, ordered, inverse, *cancel);
+        // The destructor joins this thread before the widget goes, so the widget outlives this call.
+        QMetaObject::invokeMethod(this, [this, generation, scroll, result = std::move(result)]() { finishShow(generation, result, scroll); }, Qt::QueuedConnection); }, Qt::QueuedConnection);
+}
+
+void
+GeoSpreadsheetWidget::finishShow(quint64 generation,
+                                 const GeoSpreadsheetShowResult& result,
+                                 bool scroll)
+{
+    if ((generation != _pickGeneration) || result.cancelled) {
+        return;
+    }
+    _pickCancel.reset();
+    applyShown(result, scroll);
+}
+
+void
+GeoSpreadsheetWidget::applyShown(const GeoSpreadsheetShowResult& result,
+                                 bool scroll)
+{
+    const FlagScope scope(_showingSelection);
+    const int columns = _model->columnCount();
+    const int rows = _model->rowCount();
+    QItemSelection selection;
+
+    for (const std::pair<int, int>& range : result.ranges) {
+        if ((columns > 0) && (range.first >= 0) && (range.second < rows)) {
+            selection.append(QItemSelectionRange(_model->index(range.first, 0), _model->index(range.second, columns - 1)));
+        }
+    }
+    if (selection.isEmpty()) {
+        _table->selectionModel()->clearSelection();
+    } else {
+        _table->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        if (scroll) {
+            _table->scrollTo(_model->index(selection.first().top(), std::max(0, _table->columnAt(0))), QAbstractItemView::EnsureVisible);
+        }
+    }
+    if (result.selected <= 0) {
+        setSelectionNote(QString());
+    } else if (result.hidden > 0) {
+        setSelectionNote(tr("%1 selected, %2 hidden by filter").arg(result.selected).arg(result.hidden));
+    } else {
+        setSelectionNote(tr("%1 selected").arg(result.selected));
+    }
+}
+
+void
+GeoSpreadsheetWidget::clearRows()
+{
+    const FlagScope scope(_showingSelection);
+    _table->selectionModel()->clearSelection();
+    setSelectionNote(QString());
+}
+
+void
+GeoSpreadsheetWidget::setSelectionNote(const QString& text)
+{
+    _selectionNote->setText(text);
+    _selectionNote->setVisible(!text.isEmpty());
+}
+
+QString
+GeoSpreadsheetWidget::getSelectionNote() const
+{
+    return _selectionNote->text();
 }
 
 void
@@ -736,6 +1006,7 @@ GeoSpreadsheetWidget::showClass(GeoAttribClassEnum cls)
 {
     if (cls != _model->attribClass()) {
         cancelBuild();
+        cancelPick();
         _model->setClass(cls);
         _shownValid = false;
         _sortColumn = -1;
@@ -967,7 +1238,7 @@ GeoSpreadsheetWidget::finishBuild(quint64 generation,
     if (!keepError) {
         setError(QString());
     }
-    applyOrder(result.order);
+    applyOrder(result.order, result.inverse);
     _shownValid = true;
     _shownPattern = _pattern;
     _shownColumn = _sortColumn;
@@ -976,20 +1247,23 @@ GeoSpreadsheetWidget::finishBuild(quint64 generation,
 
 // A model reset drops the column widths, which the user may have set.
 void
-GeoSpreadsheetWidget::applyOrder(const GeoSpreadsheetModel::RowOrderPtr& order)
+GeoSpreadsheetWidget::applyOrder(const GeoSpreadsheetModel::RowOrderPtr& order,
+                                 const GeoSpreadsheetModel::RowInversePtr& inverse)
 {
+    cancelPick();
     std::vector<int> widths;
     const int columns = _model->columnCount();
 
     for (int c = 0; c < columns; ++c) {
         widths.push_back(_table->columnWidth(c));
     }
-    _model->setRowOrder(order);
+    _model->setRowOrder(order, inverse);
     if (_model->columnCount() == columns) {
         for (int c = 0; c < columns; ++c) {
             _table->setColumnWidth(c, widths[(std::size_t)c]);
         }
     }
+    syncFromViewer(false, false);
 }
 
 std::unique_ptr<ScenePrimInspectorTab>

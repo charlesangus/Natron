@@ -59,12 +59,13 @@ GeoSpreadsheetModel::rebuildColumns()
 }
 
 void
-GeoSpreadsheetModel::setSnapshot(SourcePtr source, GeoAttribClassEnum cls, RowOrderPtr order)
+GeoSpreadsheetModel::setSnapshot(SourcePtr source, GeoAttribClassEnum cls, RowOrderPtr order, RowInversePtr inverse)
 {
     beginResetModel();
     _source = std::move(source);
     _cls = cls;
     _order = std::move(order);
+    _inverse = std::move(inverse);
     rebuildColumns();
     endResetModel();
 }
@@ -72,13 +73,29 @@ GeoSpreadsheetModel::setSnapshot(SourcePtr source, GeoAttribClassEnum cls, RowOr
 void
 GeoSpreadsheetModel::setClass(GeoAttribClassEnum cls)
 {
-    setSnapshot(_source, cls, RowOrderPtr());
+    setSnapshot(_source, cls, RowOrderPtr(), RowInversePtr());
 }
 
 void
-GeoSpreadsheetModel::setRowOrder(RowOrderPtr order)
+GeoSpreadsheetModel::setRowOrder(RowOrderPtr order, RowInversePtr inverse)
 {
-    setSnapshot(_source, _cls, std::move(order));
+    setSnapshot(_source, _cls, std::move(order), std::move(inverse));
+}
+
+std::int64_t
+GeoSpreadsheetModel::viewRowOf(GeoIndex element) const
+{
+    if (!_source || (element < 0)) {
+        return -1;
+    }
+    if (!_order) {
+        return (element < _source->rowCount(_cls)) ? element : -1;
+    }
+    if (!_inverse || (element >= (GeoIndex)_inverse->size())) {
+        return -1;
+    }
+
+    return (*_inverse)[(std::size_t)element];
 }
 
 GeoIndex

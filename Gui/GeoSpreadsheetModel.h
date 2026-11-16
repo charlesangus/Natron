@@ -52,6 +52,8 @@ class GeoSpreadsheetModel : public QAbstractTableModel {
 public:
     typedef std::shared_ptr<const GeoSpreadsheetSource> SourcePtr;
     typedef std::shared_ptr<const std::vector<GeoIndex>> RowOrderPtr;
+    // Indexed by element number, the view row showing it, or -1 for an element the order leaves out.
+    typedef std::shared_ptr<const std::vector<GeoIndex>> RowInversePtr;
 
     // Rows read per cache fill; a fill reads at most this many rows times the column count.
     static constexpr int kBlockRows = 128;
@@ -59,11 +61,14 @@ public:
     explicit GeoSpreadsheetModel(QObject* parent = nullptr);
     ~GeoSpreadsheetModel() override;
 
-    /** @brief Replaces the snapshot, class and row order in one model reset. A null order is the identity. */
-    void setSnapshot(SourcePtr source, GeoAttribClassEnum cls, RowOrderPtr order = RowOrderPtr());
+    /**
+     * @brief Replaces the snapshot, class and row order in one model reset. A null order is the identity.
+     * The inverse belongs to the order and is dropped with it.
+     **/
+    void setSnapshot(SourcePtr source, GeoAttribClassEnum cls, RowOrderPtr order = RowOrderPtr(), RowInversePtr inverse = RowInversePtr());
     void setClass(GeoAttribClassEnum cls);
     /** @brief The order's size is the row count; element numbers outside the class show as empty rows. */
-    void setRowOrder(RowOrderPtr order);
+    void setRowOrder(RowOrderPtr order, RowInversePtr inverse = RowInversePtr());
 
     const SourcePtr& source() const
     {
@@ -81,8 +86,17 @@ public:
         return _order;
     }
 
+    // Null when the rows are in element order, or when the order came without one.
+    const RowInversePtr& rowInverse() const
+    {
+        return _inverse;
+    }
+
     /** @brief The element number shown at a view row. */
     GeoIndex elementAt(std::int64_t viewRow) const;
+
+    /** @brief The view row showing an element; -1 when the order leaves it out or has no inverse. */
+    std::int64_t viewRowOf(GeoIndex element) const;
 
     /** @brief Cells requested from the source since construction or the last reset; for tests. */
     std::uint64_t cellsRead() const
@@ -115,6 +129,7 @@ private:
     SourcePtr _source;
     GeoAttribClassEnum _cls;
     RowOrderPtr _order;
+    RowInversePtr _inverse;
     std::vector<int> _allColumns;
     std::int64_t _rows;
 

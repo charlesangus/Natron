@@ -2,20 +2,25 @@
 
   heavy_scene_stack_window.py SAMPLES [--results RESULTS.jsonl --label LABEL --scenario NAME [--action]]
                               [--from EPOCH] [--to EPOCH] [--main-tid TID] [--render-match REGEX]
-                              [--top N] [--depth N] [--busy]
+                              [--top N] [--depth N] [--busy] [--symbols DIR]
 
 SAMPLES is heavy_scene_gpu_host.sh's out/<label>.stacks with SAMPLE=1 (sample_stacks.sh's format:
-"=== SAMPLE i epoch-seconds", "TID n:", "#k 0xaddr function - module"). The window is the scenario's
+"=== SAMPLE i epoch-seconds [ms taken]", "TID n:", "#k 0xaddr function - module"). The window is the scenario's
 record in RESULTS (its started_at to ended_at; with --action from action_started_at, after the wait for
 pending loads), the last such record when there are several; --from and --to override either end.
 The main thread is MAIN_TID, else the pid in SAMPLES.pid, else the lowest thread id. Render threads are
 the other threads with a frame matching REGEX in any sample (default the scene viewer's render thread,
-startRenderThread); when none matches, the busiest other threads are shown instead.
+startRenderThread); when none matches, the threads that run Hydra (HdEngine::Execute, a symbol the USD
+libraries export, so it resolves without Natron's symbols), and failing that the busiest other threads.
+--symbols DIR names frames eu-stack left as "??" in a module from DIR/<module>.syms, an "nm -n -S -C"
+listing of the unstripped file (stage-bundle.sh's NATRON_STAGE_SYMBOLS_DIR writes one per non-PIE
+executable). Addresses are taken as absolute, which holds only for non-PIE executables.
 Stacks are innermost first, DEPTH frames deep (default 12). --busy leaves out samples whose innermost
 frame is a wait. Standard library only, and safe under python3 -I.
 """
 
 import argparse
+import bisect
 import collections
 import json
 import os
@@ -26,10 +31,50 @@ WAIT_RE = re.compile(r"futex|pthread_cond_|^(__)?poll$|^__GI___poll|epoll_wait|n
                      r"^(__libc_)?read$|sem_wait|__lll_lock_wait|^syscall$|QWaitCondition::wait|"
                      r"QSemaphore::acquire|^ppoll|^__ppoll|^gomp_(team_)?barrier_wait|^gomp_thread_start|"
                      r"^__GI___clock_nanosleep|^g_main_context_iteration|^g_poll")
-FRAME_RE = re.compile(r"^#\d+\s+(?:0x[0-9a-fA-F]+\s*)?(.*)$")
+FRAME_RE = re.compile(r"^#(\d+)\s+(?:0x([0-9a-fA-F]+)\s*)?(.*)$")
+HYDRA_RE = r"HdEngine::Execute"
 
 
-def frame_name(rest):
+class Symbols:
+    """Address to function name for the modules that have a DIR/<module>.syms listing."""
+
+    def __init__(self, directory):
+        self.modules = {}
+        for entry in sorted(os.listdir(directory)):
+            if entry.endswith(".syms"):
+                self.modules[entry[:-len(".syms")]] = self._load(os.path.join(directory, entry))
+
+    @staticmethod
+    def _load(path):
+        starts, ends, names = [], [], []
+        with open(path, errors="replace") as f:
+            for line in f:
+                parts = line.rstrip("\n").split(" ", 3)
+                if len(parts) == 4 and len(parts[2]) == 1:
+                    address, size, kind, name = int(parts[0], 16), int(parts[1], 16), parts[2], parts[3]
+                elif len(parts) >= 3 and len(parts[1]) == 1:
+                    address, size, kind, name = int(parts[0], 16), None, parts[1], " ".join(parts[2:])
+                else:
+                    continue
+                if kind not in "tTwWiI":
+                    continue
+                starts.append(address)
+                ends.append(address + size if size else None)
+                names.append(name)
+        return starts, ends, names
+
+    def name(self, module, address):
+        table = self.modules.get(module)
+        if not table:
+            return None
+        starts, ends, names = table
+        i = bisect.bisect_right(starts, address) - 1
+        if i < 0 or (ends[i] is not None and address >= ends[i]):
+            return None
+        return names[i]
+
+
+def frame_name(rest, address=None, symbols=None, outer=False):
     function, module = rest, ""
     cut = rest.rfind(" - ")
     if cut >= 0:
@@ -38,11 +83,17 @@ def frame_name(rest):
         function, module = "", rest[2:]
     function = re.sub(r"\s+", " ", function).strip()
     if not function or function == "??":
-        return "??@" + (os.path.basename(module.strip()) or "?")
+        module = os.path.basename(module.strip()) or "?"
+        if symbols is not None and address is not None:
+            # An outer frame's address is a return address, which can already be past its caller's end.
+            found = symbols.name(module, address - 1 if outer else address)
+            if found:
+                return found
+        return "??@" + module
     return function
 
 
-def parse(path):
+def parse(path, symbols=None):
     """[(epoch, {tid: [innermost frame, ...]})]."""
     samples = []
     threads = None
@@ -61,7 +112,8 @@ def parse(path):
             elif stack is not None:
                 m = FRAME_RE.match(line.strip())
                 if m:
-                    stack.append(frame_name(m.group(1)))
+                    address = int(m.group(2), 16) if m.group(2) else None
+                    stack.append(frame_name(m.group(3), address, symbols, m.group(1) != "0"))
     return samples
 
 
@@ -122,6 +174,7 @@ def main():
     parser.add_argument("--top", type=int, default=15)
     parser.add_argument("--depth", type=int, default=12)
     parser.add_argument("--busy", action="store_true")
+    parser.add_argument("--symbols")
     args = parser.parse_args()
 
     start, end = None, None
@@ -137,7 +190,10 @@ def main():
     if args.end is not None:
         end = args.end
 
-    samples = parse(args.samples)
+    symbols = Symbols(args.symbols) if args.symbols else None
+    if symbols is not None:
+        print("symbols for %s from %s" % (", ".join(sorted(symbols.modules)) or "no module", args.symbols))
+    samples = parse(args.samples, symbols)
     if not samples:
         print("no samples in %s" % args.samples, file=sys.stderr)
         return 1
@@ -160,21 +216,28 @@ def main():
     def keep(stack):
         return not (args.busy and waiting(stack))
 
-    render_re = re.compile(args.render_match)
-    render_tids = sorted(set(tid for _, threads in samples for tid, stack in threads.items()
-                             if tid != main_tid and any(render_re.search(fn) for fn in stack)))
+    def matching(pattern):
+        found = re.compile(pattern)
+        return sorted(set(tid for _, threads in samples for tid, stack in threads.items()
+                          if tid != main_tid and any(found.search(fn) for fn in stack)))
+
+    render_match = args.render_match
+    render_tids = matching(render_match)
+    if not render_tids and render_match != HYDRA_RE:
+        print("\nno thread has a frame matching %r (stripped symbols, or another name); trying %r" % (render_match, HYDRA_RE))
+        render_match = HYDRA_RE
+        render_tids = matching(render_match)
 
     print("\nmain thread %d:" % main_tid)
     fold([threads[main_tid] for _, threads in chosen if main_tid in threads and keep(threads[main_tid])], args.depth, args.top)
 
     if render_tids:
-        print("\nrender threads %s (a frame matches %r):" % (", ".join(map(str, render_tids)), args.render_match))
+        print("\nrender threads %s (a frame matches %r):" % (", ".join(map(str, render_tids)), render_match))
         for tid in render_tids:
             print("  thread %d:" % tid)
             fold([threads[tid] for _, threads in chosen if tid in threads and keep(threads[tid])], args.depth, args.top)
     else:
-        print("\nno thread has a frame matching %r (stripped symbols, or another name); the busiest other threads:"
-              % args.render_match)
+        print("\nno thread has a frame matching %r; the busiest other threads:" % render_match)
         busy = collections.Counter(tid for _, threads in chosen for tid, stack in threads.items()
                                    if tid != main_tid and stack and not waiting(stack))
         for tid, _ in busy.most_common(3):

@@ -82,6 +82,11 @@ on:
         required: false
         type: string
         default: ''
+      debug_symbols:
+        description: 'With appimage: also upload the symbol tables strip removes from the bundle (natron-symbols-<preset>-<sha>), for stack samples of that AppImage; the AppImage itself is unchanged'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -309,6 +314,8 @@ jobs:
       # check-startup.sh runs inside make-appimage.sh.
       - name: Stage bundle
         if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
+        env:
+          NATRON_STAGE_SYMBOLS_DIR: ${{ inputs.debug_symbols && '/tmp/natron-symbols' || '' }}
         run: tools/release/stage-bundle.sh "build/$PRESET" /tmp/natron-stage
 
       - name: Create AppImage
@@ -323,6 +330,21 @@ jobs:
           name: natron-${{ env.PRESET }}-${{ github.sha }}
           path: /tmp/artifacts/*.AppImage
           if-no-files-found: error
+          retention-days: 7
+
+      # One tarball, so the .build-id tree survives the artifact's handling of hidden files.
+      - name: Pack symbols
+        if: inputs.debug_symbols && steps.upload_appimage.outcome == 'success'
+        run: tar -C /tmp/natron-symbols -czf /tmp/natron-symbols.tar.gz .
+
+      - name: Upload symbols
+        if: inputs.debug_symbols && steps.upload_appimage.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: natron-symbols-${{ env.PRESET }}-${{ github.sha }}
+          path: /tmp/natron-symbols.tar.gz
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 7
 
       - name: Save ccache

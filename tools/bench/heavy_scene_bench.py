@@ -28,7 +28,11 @@
         BENCH_BUDGET_REPEATS  untraced set and clear pairs draw_budget makes per row (default 2)
         BENCH_REVEAL_BRANCH  prim path reveal acts on (default /World)
         BENCH_REVEAL_BATCH   prims per frame in reveal (default 2000)
-        BENCH_REVEAL_MAX_S   seconds reveal runs before it is cancelled (default 120)
+        BENCH_REVEAL_MAX_S   seconds a reveal (reveal, reveal_wide, reveal_load_all, the workflow's block)
+                         runs before it is cancelled (default 500 us per prim of the scene, the picked
+                         count or the viewer's, at least 120 s and at most half the scenario's
+                         wall-clock limit: 900 s under the default BENCH_OPEN_LIMIT_S, 150 s under
+                         BENCH_SCENARIO_LIMIT_S); records store the limit used as <scenario>_max_s
         BENCH_BOXES      boxes orbit10k asks for (default 10000)
         BENCH_BOX_DEPTH  path depth of the prims orbit10k draws as boxes (default the depth whose count
                          of geometry-holding prims is nearest BENCH_BOXES)
@@ -52,6 +56,8 @@
         BENCH_PID_FILE   file this Natron process writes its pid to as the script starts, for a stack sampler
         BENCH_STACK_SAMPLED  1 when a stack sampler is attached, which stops the process for each sample;
                          stored in each record as stack_sampled, as its timings are then not the viewer's own
+        BENCH_BISECT     the bisect variant the run's environment was set up for, stored in each record as
+                         bisect (null without one)
         BENCH_SCENARIO_LIMIT_S  wall-clock limit of a scenario, from outside Natron (default 300)
         BENCH_OPEN_LIMIT_S      the same for one that opens or loads the whole file (default 1800)
         BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB  see heavy_scene_watchdog.sh
@@ -71,8 +77,8 @@ display can vouch for) or not_applicable. Actions are the ACTIONS table.
 
 Every record carries gl_renderer and gl_vendor, and the memory the process has used: peak_rss_mb and
 peak_rss_gb (its high-water mark) and mem_available_min_gb (the lowest MemAvailable during the
-scenario). result is pass or fail, fail whenever a check of the scenario failed (failed_checks lists
-them), or one of: not_applicable (the action had nothing to measure in this process, with a reason),
+scenario). result is pass or fail, fail whenever a check or a budget of the scenario failed
+(failed_checks lists each as {"kind": "check" or "budget", "name", "reason"}), or one of: not_applicable (the action had nothing to measure in this process, with a reason),
 skipped (with a reason; nothing ran, so its peak_rss_mb
 is the process's so far, or null when the watchdog wrote it), timed_out (past its wall-clock limit),
 out_of_memory (the memory guard ended the process), aborted (the process ended on its own during the
@@ -141,6 +147,12 @@ PICTURE_BUDGET_MS = 100.0
 FIRST_FRAME_BUDGET_MS = 2000.0
 ORBIT_BUDGET_FPS = 30.0
 HEARTBEAT_MS = 10
+# Pace of the loops that drive the mouse or watch frames. Back-to-back polls would leave the main thread
+# no idle time, so stack samples and stalls would be the bench's; a paint that falls between two polls
+# with another is merged into it, which lengthens a measured gap by at most this.
+POLL_MS = 5
+REVEAL_MIN_S = 120.0
+REVEAL_S_PER_PRIM = 500e-6
 SWITCH_NODES = int(os.environ.get("BENCH_SWITCH_NODES", "4"))
 TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
 EDIT_POST_WAIT_S = 10.0
@@ -179,7 +191,7 @@ try:
 
     def check(ok, label):
         if not ok and scenario_checks["failed"] is not None:
-            scenario_checks["failed"].append(label)
+            scenario_checks["failed"].append({"kind": "check", "name": label, "reason": "did not hold"})
         return guitest_check(ok, label)
 
     PATH_ROLE = Qt.UserRole + 1
@@ -231,7 +243,7 @@ try:
     load_state = "all" if os.environ.get("BENCH_LOAD_ALL") == "1" else "none"
     box_count = int(os.environ.get("BENCH_BOXES", "10000"))
     reveal_batch = int(os.environ.get("BENCH_REVEAL_BATCH", "2000"))
-    reveal_max_s = float(os.environ.get("BENCH_REVEAL_MAX_S", "120"))
+    reveal_max_override_s = float(os.environ["BENCH_REVEAL_MAX_S"]) if os.environ.get("BENCH_REVEAL_MAX_S") else None
     budget_repeats = max(1, int(os.environ.get("BENCH_BUDGET_REPEATS", "2")))
     file_stem = os.path.splitext(os.path.basename(path))[0]
 
@@ -337,9 +349,57 @@ try:
             viewer.getParam(enable_name).setValue(True)
             viewer.getParam(knob_name).setValue(float(os.environ[env_name]))
 
-    def view():
+    try:
+        import shiboken6
+    except ImportError:
+        shiboken6 = None
+
+    # Scanning QApplication.allWidgets() wraps every widget of the window, which on a loaded scene costs
+    # the main thread more than the poll it serves; the widgets are looked up once and kept until Qt
+    # destroys them or the project is reset.
+    widget_cache = {}
+
+    def widget_alive(w):
+        if shiboken6 is not None and not shiboken6.isValid(w):
+            return False
+        try:
+            w.objectName()
+            return True
+        except RuntimeError:
+            return False
+
+    def forget_widgets():
+        widget_cache.clear()
+
+    def cached_widget(key, find, usable=lambda w: True):
+        """find()'s widget, reused while it lives and usable(widget) holds; find() runs again only when not."""
+        w = widget_cache.get(key)
+        if w is not None:
+            if widget_alive(w) and usable(w):
+                return w
+            if not widget_alive(w):
+                widget_cache.pop(key, None)
+        found = find()
+        if found is None:
+            return None
+        if widget_cache.get(key) is not found:
+            widget_cache[key] = found
+
+            def destroyed(*_args, key=key, found=found):
+                # The wrapper of a widget made in C++ is not always invalidated with it, and a later
+                # call through it would crash rather than raise.
+                if widget_cache.get(key) is found:
+                    widget_cache.pop(key, None)
+
+            found.destroyed.connect(destroyed)
+        return found if usable(found) else None
+
+    def first_visible_view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
         return views[0] if views else None
+
+    def view():
+        return cached_widget("view", first_visible_view, lambda w: w.isVisible())
 
     def prop(name, default=None):
         v = view()
@@ -433,7 +493,7 @@ try:
             step += 1
             offset = QPoint(int((step % 40) * 4 - 80), int((step % 20) * 2 - 20))
             mouse(QEvent.MouseMove, centre + offset, Qt.NoButton, Qt.LeftButton)
-            yield ("sleep", 0)
+            yield ("sleep", POLL_MS)
             painted = prop("natronSceneLastPaintMs")
             if painted is not None:
                 paints.add(painted)
@@ -470,7 +530,7 @@ try:
             moves += 1
             offset = QPoint(int((moves % 40) * 4 - 80), int((moves % 20) * 2 - 20))
             mouse(QEvent.MouseMove, centre + offset, Qt.NoButton, Qt.LeftButton)
-            yield ("sleep", 0)
+            yield ("sleep", POLL_MS)
             now = time.perf_counter()
             longest_gap = max(longest_gap, (now - last_move) * 1000.0)
             last_move = now
@@ -540,13 +600,19 @@ try:
             held_widgets.append(w)
         return w
 
-    def panel():
+    def first_panel():
         panels = widgets_of("SceneGraphPanel")
-        return hold(panels[0]) if panels else None
+        return panels[0] if panels else None
+
+    def panel():
+        return hold(cached_widget("panel", first_panel))
+
+    def panel_tree():
+        p = panel()
+        return p.findChild(QTreeView, "sceneGraphTree") if p is not None else None
 
     def tree():
-        p = panel()
-        return hold(p.findChild(QTreeView, "sceneGraphTree")) if p is not None else None
+        return hold(cached_widget("tree", panel_tree))
 
     def rows_under(parent=QModelIndex()):
         model = hold(tree().model())
@@ -774,14 +840,15 @@ try:
         require(v is not None, "%s %s: a scene view is visible" % (state, row))
         timings = yield from presented_after_call(v, "%s %s" % (state, row), "setDrawState", Q_ARG("QString", row), Q_ARG("QString", state),
                                                   row_tag=row_tag)
-        require(bool(timings), "%s %s: the draw state changed something (no change posted within %.0f s; waited %s ms)"
-                % (state, row, EDIT_POST_WAIT_S, current.get("post_wait_ms")))
+        require(bool(timings), "%s %s: the draw state changed something" % (state, row),
+                "no change posted within %.0f s; waited %s ms" % (EDIT_POST_WAIT_S, current.get("post_wait_ms")))
         return timings
 
     def clear_draw_state(row, row_tag=None):
         v = view()
         timings = yield from presented_after_call(v, "clear " + row, "clearDrawState", Q_ARG("QString", row), row_tag=row_tag)
-        require(bool(timings), "clear %s: the draw state changed something" % row)
+        require(bool(timings), "clear %s: the draw state changed something" % row,
+                "no change posted within %.0f s; waited %s ms" % (EDIT_POST_WAIT_S, current.get("post_wait_ms")))
         return timings
 
     def clear_draw_states():
@@ -846,21 +913,37 @@ try:
             for key, value in timings.items():
                 m.values["%s_%s" % (name, key)] = value
 
+    def reveal_limit_s():
+        """How long a reveal may run before it is cancelled: BENCH_REVEAL_MAX_S, or REVEAL_S_PER_PRIM for each
+        prim of the scene (the picked count, or the viewer's, which grows as payloads land), at least
+        REVEAL_MIN_S and at most half the scenario's wall-clock limit, which has to leave room for the rest."""
+        if reveal_max_override_s is not None:
+            return reveal_max_override_s
+        prims = max(int(rows.get("prims") or 0), int(draw_stats().get("inputAdded", 0)))
+        outer = OPEN_LIMIT_S if current["name"] in LONG_SCENARIOS else SCENARIO_LIMIT_S
+        return min(max(REVEAL_MIN_S, prims * REVEAL_S_PER_PRIM), max(REVEAL_MIN_S, 0.5 * outer))
+
     def watch_reveal(done):
-        """Waits up to reveal_max_s for done; returns whether it held, the frames painted and the longest gap between two."""
+        """Waits up to reveal_limit_s() for done; returns whether it held, the frames painted, the longest gap
+        between two and the limit it ended with."""
         paints = set()
         worst = 0.0
-        last = time.perf_counter()
-        deadline = time.time() + reveal_max_s
-        while not done() and time.time() < deadline:
-            yield ("sleep", 0)
+        started = time.time()
+        last = started * 1000.0
+        limit_s = reveal_limit_s()
+        limit_checked = started
+        while not done() and time.time() < started + limit_s:
+            yield ("sleep", POLL_MS)
             painted = prop("natronSceneLastPaintMs")
             if painted is not None and painted not in paints:
                 paints.add(painted)
-                now = time.perf_counter()
-                worst = max(worst, (now - last) * 1000.0)
-                last = now
-        return done(), len(paints), worst
+                # The paint's own timestamp, not this poll's, so the poll interval does not count as a gap.
+                worst = max(worst, painted - last)
+                last = max(last, painted)
+            if time.time() - limit_checked >= 1.0:
+                limit_checked = time.time()
+                limit_s = reveal_limit_s()
+        return done(), len(paints), worst, round(limit_s, 1)
 
     def paced_reveal(m, name, row, start_state, state, done=None, keep_states=False):
         """Reveals row from start_state to state at the viewer's own pace and records how the frames held up."""
@@ -873,7 +956,7 @@ try:
         before = draw_stats()
         started = time.perf_counter()
         yield from set_draw_state(row, state)
-        complete, frames, worst = yield from watch_reveal(lambda: not draw_stats().get("revealing") and (done is None or done()))
+        complete, frames, worst, limit_s = yield from watch_reveal(lambda: not draw_stats().get("revealing") and (done is None or done()))
         elapsed = (time.perf_counter() - started) * 1000.0
         after = draw_stats()
         if not complete:
@@ -881,6 +964,7 @@ try:
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
         m.values[name + "_row"] = row
         m.values[name + "_complete"] = complete
+        m.values[name + "_max_s"] = limit_s
         m.values[name + "_prims"] = after.get("shownSent", 0) - before.get("shownSent", 0)
         m.values[name + "_steps"] = after.get("revealSteps", 0) - before.get("revealSteps", 0)
         m.values[name + "_last_batch"] = after.get("revealBatch")
@@ -959,7 +1043,7 @@ try:
         before = draw_stats()
         started = time.perf_counter()
         yield from set_draw_state(row, "full")
-        complete, frames, worst = yield from watch_reveal(lambda: not draw_stats().get("revealing"))
+        complete, frames, worst, limit_s = yield from watch_reveal(lambda: not draw_stats().get("revealing"))
         elapsed = (time.perf_counter() - started) * 1000.0
         after = draw_stats()
         if not complete:
@@ -968,6 +1052,7 @@ try:
         m.values["reveal_branch"] = row
         m.values["reveal_batch"] = reveal_batch
         m.values["reveal_complete"] = complete
+        m.values["reveal_max_s"] = limit_s
         m.values["reveal_prims"] = after.get("shownSent", 0) - before.get("shownSent", 0)
         m.values["reveal_frames"] = frames
         m.values["reveal_ms"] = round(elapsed, 1)
@@ -1425,6 +1510,7 @@ try:
         require(reset, "workflow: reset the project")
         # The nodes and widgets of the closed project are gone.
         project_state["reopened"] = True
+        forget_widgets()
         del held_widgets[:]
         yield ("sleep", 400)
         t0_ms = int(time.time() * 1000.0)
@@ -1487,6 +1573,8 @@ try:
         judged = {"value": value, "limit": limit, "status": status}
         if not applicable and reason:
             judged["reason"] = reason
+        elif status == "fail":
+            judged["reason"] = "%s is %s the limit %s" % (value, "above" if below_is_good else "below", limit)
         return judged
 
     first_frame_judged = fixture == "city"
@@ -1595,6 +1683,7 @@ try:
         "gl_vendor": gl_vendor_name,
         "frame_rate": "valid" if gpu else "not valid on this display",
         "stack_sampled": os.environ.get("BENCH_STACK_SAMPLED") == "1",
+        "bisect": os.environ.get("BENCH_BISECT") or None,
         "rows_source": rows["source"],
         "rows": {key: rows[key] for key in ROW_RECORD_KEYS if key in rows},
     }
@@ -1710,7 +1799,9 @@ try:
             new_layers = None if before is None or after is None else after - before
             budgets = judge(m, stall_ms, new_layers)
             scenario_checks["failed"] = None
-            failed = any(b["status"] == "fail" for b in budgets.values()) or bool(m.failed_checks)
+            failed_checks = list(m.failed_checks) + [{"kind": "budget", "name": budget_name, "reason": b.get("reason")}
+                                                     for budget_name, b in sorted(budgets.items()) if b["status"] == "fail"]
+            failed = bool(failed_checks)
             record = dict(common_fields)
             record.update(memory_fields(started))
             record.update({
@@ -1723,7 +1814,7 @@ try:
                 "layers_loaded": None if new_layers is None else len(new_layers),
                 "budgets": budgets,
                 "result": "fail" if failed else "pass",
-                "failed_checks": list(m.failed_checks),
+                "failed_checks": failed_checks,
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
             record.update(m.values)

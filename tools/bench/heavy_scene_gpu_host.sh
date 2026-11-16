@@ -78,14 +78,44 @@
 #                      stack sampler can attach first; BENCH_PTRACER_ANY=1 lets any process of the user attach
 #   ISLAND_MIN_RAM_GB  available RAM below which Island is skipped (default 48)
 #   SAMPLE=1           samples the stacks of every thread of each run's Natron process while it runs, with
-#                      eu-stack every SAMPLE_INTERVAL_S (default 0.25 s), or, without eu-stack, gdb every
+#                      eu-stack every SAMPLE_INTERVAL_S (default 0.1 s), or, without eu-stack, gdb every
 #                      SAMPLE_GDB_INTERVAL_S (default 2 s), into out/<label>.stacks (pid in .stacks.pid,
 #                      sampler errors in .stacks.err). Each sample stops the process while it is taken, so
 #                      the records say stack_sampled and their timings are for diagnosis, not for judging.
 #                      Under kernel.yama.ptrace_scope 1 the run lets the sampler attach (BENCH_PTRACER_ANY=1);
 #                      under 2 only root samples. Sampling that cannot work is reported and left out; it
 #                      never stops the bench. heavy_scene_stack_window.py folds a scenario's samples into
-#                      the top stacks of the main and render threads.
+#                      the top stacks of the main and render threads. A sample eu-stack takes longer than
+#                      the interval to collect delays the next one; the period the samples actually kept
+#                      is the "sample period" line heavy_scene_stack_window.py prints.
+#   SYMBOLS            with SAMPLE=1: the symbols of the AppImage's bundle, the natron-symbols.tar.gz that
+#                      tools/ci/remote/build.sh --debug-symbols downloads with that AppImage, or the
+#                      directory it unpacks to. eu-stack reads the libraries' symbols from it; Natron.bin's
+#                      it cannot use (see heavy_scene_stack_window.py --symbols, which names those frames
+#                      afterwards from the same directory). A tarball is unpacked into FIXTURE_DIR/symbols.
+#   VRAM_CARD          the card whose memory is sampled (card1, say; default the one with the most VRAM).
+#                      sample_vram.sh reads its mem_info_vram_used and mem_info_gtt_used every
+#                      VRAM_INTERVAL_S (default SAMPLE_INTERVAL_S with SAMPLE=1, else 0.25 s) while each run
+#                      lives, into out/<label>.vram. heavy_scene_vram.py then adds vram_peak_mb, gtt_peak_mb,
+#                      vram_start_mb, vram_end_mb, vram_delta_mb, gtt_delta_mb and the totals to each of the
+#                      run's records, and prints them. The counters are the device's, the desktop's included.
+#   LOG_LINEBUF=0      leaves Natron's stdout block buffered. By default libstdbuf.so (coreutils) makes it
+#                      line buffered, so the stamps of out/<label>/natron.ts.log, a copy of natron.log with
+#                      each line prefixed by the epoch seconds it was written at, are the lines' own.
+#                      out/<label>.log, the runner's output, is stamped the same way.
+#   BISECT             comma separated variants that set Natron's environment for every run:
+#                        lights<N>   HDST_MAX_LIGHTS=N (Storm's default is 16)
+#                        nolights    USDIMAGING_ENABLE_SCENE_LIGHTS=0, no scene lights reach Storm
+#                        bindless    HGIGL_ENABLE_BINDLESS_TEXTURE=1, so draw items with distinct
+#                                    textures batch together
+#                        noglthread  mesa_glthread=false
+#                        hud         GALLIUM_HUD=GPU-load,VRAM-usage,GTT-usage,fps, dumped to out/<label>.hud/
+#                        shaderlog   TF_DEBUG=HD_BUFFER_ARRAY_INFO HDST_LOG_DRAWING_SHADER_PROGRAM_MISSES
+#                      Each record's bisect names them (null without BISECT); the default results file
+#                      becomes heavy-scene-<mode>-<variants joined by +>.jsonl and the out/ files
+#                      <label>.<variants joined by +>.*, so variants never overwrite each other.
+#                      Storm has no environment setting that turns materials off: unbound material
+#                      pruning and material primvar filtering are already on by default.
 #
 # Memory guard: heavy_scene_watchdog.sh polls once a second and kills the run with SIGKILL when
 # MemAvailable falls under BENCH_MEM_FLOOR_GB (default the larger of 4 and 10% of MemTotal), when the
@@ -165,7 +195,39 @@ fi
 : "${DISPLAY:?set DISPLAY to the X session of the GPU host}"
 [ -e "$2" ] || { echo "no AppImage at $2" >&2; exit 2; }
 APPIMAGE="$(readlink -f "$2")"
-RESULT="$(readlink -m "${3:-$ROOT/build/bench-gpu/heavy-scene-$MODE.jsonl}")"
+
+BISECT_VARIANTS="lights<N> nolights bindless noglthread hud shaderlog"
+BISECT_ENV=()
+BISECT_HUD=""
+BISECT_TF_DEBUG=""
+BISECT_NAMES=()
+BISECT="${BISECT:-}"
+for variant in ${BISECT//,/ }; do
+    case "$variant" in
+        lights[0-9] | lights[0-9][0-9] | lights[0-9][0-9][0-9]) BISECT_ENV+=(HDST_MAX_LIGHTS="${variant#lights}") ;;
+        nolights) BISECT_ENV+=(USDIMAGING_ENABLE_SCENE_LIGHTS=0) ;;
+        bindless) BISECT_ENV+=(HGIGL_ENABLE_BINDLESS_TEXTURE=1) ;;
+        noglthread) BISECT_ENV+=(mesa_glthread=false) ;;
+        hud) BISECT_HUD="GPU-load,VRAM-usage,GTT-usage,fps" ;;
+        shaderlog) BISECT_TF_DEBUG="HD_BUFFER_ARRAY_INFO HDST_LOG_DRAWING_SHADER_PROGRAM_MISSES" ;;
+        *)
+            echo "BISECT: unknown variant '$variant' (one or more of: $BISECT_VARIANTS)" >&2
+            exit 2
+            ;;
+    esac
+    BISECT_NAMES+=("$variant")
+done
+[ -n "$BISECT_TF_DEBUG" ] && BISECT_ENV+=(TF_DEBUG="$BISECT_TF_DEBUG")
+BISECT="$(IFS=,; echo "${BISECT_NAMES[*]}")"
+BISECT_TAG="${BISECT//,/+}"
+if [ -n "$BISECT" ]; then
+    BISECT_JSON="\"$BISECT\""
+    echo "bisect: $BISECT: ${BISECT_ENV[*]}${BISECT_HUD:+ GALLIUM_HUD=$BISECT_HUD}" >&2
+else
+    BISECT_JSON=null
+fi
+
+RESULT="$(readlink -m "${3:-$ROOT/build/bench-gpu/heavy-scene-$MODE${BISECT_TAG:+-$BISECT_TAG}.jsonl}")"
 mkdir -p "$(dirname "$RESULT")"
 make_fixtures || exit 1
 [ -s "$RESULT" ] && mv -f "$RESULT" "$RESULT.prev"
@@ -244,7 +306,7 @@ if [ "${SAMPLE:-0}" = 1 ]; then
     . "$ROOT/tools/bench/ptrace_remedy.sh"
     if command -v eu-stack > /dev/null 2>&1; then
         SAMPLER="$ROOT/tools/bench/sample_stacks.sh"
-        SAMPLE_PERIOD="${SAMPLE_INTERVAL_S:-0.25}"
+        SAMPLE_PERIOD="${SAMPLE_INTERVAL_S:-0.1}"
     elif command -v gdb > /dev/null 2>&1; then
         SAMPLER="$ROOT/tools/bench/sample_stacks_gdb.sh"
         SAMPLE_PERIOD="${SAMPLE_GDB_INTERVAL_S:-2}"
@@ -267,6 +329,37 @@ if [ "${SAMPLE:-0}" = 1 ]; then
         esac
     fi
     [ -n "$SAMPLER" ] && echo "sample: $(basename "$SAMPLER") every $SAMPLE_PERIOD s, ptrace_scope $(ptrace_scope); samples go to $FIXTURE_DIR/out/<label>.stacks" >&2
+    if [ -n "$SAMPLER" ] && [ -n "${SYMBOLS:-}" ]; then
+        if [ -d "$SYMBOLS" ]; then
+            SAMPLE_DEBUGINFO_PATH="$(readlink -f "$SYMBOLS")"
+        elif [ -f "$SYMBOLS" ]; then
+            rm -rf -- "${FIXTURE_DIR:?}/symbols"
+            mkdir -p "$FIXTURE_DIR/symbols"
+            if tar -C "$FIXTURE_DIR/symbols" -xzf "$SYMBOLS"; then
+                SAMPLE_DEBUGINFO_PATH="$(readlink -f "$FIXTURE_DIR/symbols")"
+            else
+                echo "sample: could not unpack $SYMBOLS; sampling without its symbols" >&2
+            fi
+        else
+            echo "sample: no symbols at $SYMBOLS; sampling without them" >&2
+        fi
+        if [ -n "${SAMPLE_DEBUGINFO_PATH:-}" ]; then
+            export SAMPLE_DEBUGINFO_PATH
+            echo "sample: library symbols from $SAMPLE_DEBUGINFO_PATH; name Natron.bin's frames with heavy_scene_stack_window.py --symbols $SAMPLE_DEBUGINFO_PATH" >&2
+        fi
+    fi
+fi
+
+VRAM_DEVICE="$("$ROOT/tools/bench/sample_vram.sh" --pick)" || VRAM_DEVICE=""
+if [ "${SAMPLE:-0}" = 1 ]; then
+    VRAM_INTERVAL_S="${VRAM_INTERVAL_S:-${SAMPLE_INTERVAL_S:-0.1}}"
+else
+    VRAM_INTERVAL_S="${VRAM_INTERVAL_S:-0.25}"
+fi
+if [ -n "$VRAM_DEVICE" ]; then
+    echo "vram: $VRAM_DEVICE every $VRAM_INTERVAL_S s into $FIXTURE_DIR/out/<label>.vram" >&2
+else
+    echo "vram: no amdgpu mem_info_vram_used under /sys/class/drm (or not VRAM_CARD's); running without VRAM samples" >&2
 fi
 
 # Samples the Natron process of the run whose launcher is $1 until the run ends; never fails the run.
@@ -309,8 +402,8 @@ wanted() {
 
 record_skip() {
     wanted "$1" || return 0
-    printf '{"label": "%s", "scenario": "*", "result": "skipped", "reason": "%s", "peak_rss_mb": null, "gl_renderer": "%s"}\n' \
-        "$1" "$2" "$HOST_GPU" >> "$RESULT"
+    printf '{"label": "%s", "scenario": "*", "result": "skipped", "reason": "%s", "peak_rss_mb": null, "gl_renderer": "%s", "bisect": %s}\n' \
+        "$1" "$2" "$HOST_GPU" "$BISECT_JSON" >> "$RESULT"
     echo "=== $1: skipped: $2"
 }
 
@@ -337,35 +430,82 @@ host_report() {
     echo "    host: MemTotal $(($(meminfo_kb MemTotal) / 1024)) MB, MemAvailable $(($(meminfo_kb MemAvailable) / 1024)) MB, swap in use $((($(meminfo_kb SwapTotal) - $(meminfo_kb SwapFree)) / 1024)) MB, VRAM $(vram_report), GPU ${HOST_GPU:-unknown}"
 }
 
+if perl -MTime::HiRes -e 1 > /dev/null 2>&1; then
+    stamp_lines() { perl -MTime::HiRes=time -ne 'BEGIN { $| = 1 } printf "%.3f %s", time, $_'; }
+else
+    stamp_lines() {
+        local line LC_ALL=C
+        while IFS= read -r line || [ -n "$line" ]; do
+            printf '%s %s\n' "${EPOCHREALTIME:0:-3}" "$line"
+        done
+    }
+fi
+
+# Natron's stdout goes to a file, so stdio buffers it in blocks and a line's stamp would be the time
+# of the flush that wrote it; coreutils' stdbuf library makes it line buffered.
+LINEBUF_ENV=()
+if [ "${LOG_LINEBUF:-1}" = 1 ]; then
+    for lib in /usr/libexec/coreutils/libstdbuf.so /usr/lib/coreutils/libstdbuf.so /usr/lib/x86_64-linux-gnu/coreutils/libstdbuf.so; do
+        if [ -r "$lib" ]; then
+            LINEBUF_ENV=(LD_PRELOAD="$lib${LD_PRELOAD:+:$LD_PRELOAD}" _STDBUF_O=L)
+            break
+        fi
+    done
+    [ ${#LINEBUF_ENV[@]} -gt 0 ] || echo "log: no libstdbuf.so; natron.ts.log stamps lines when stdio flushes them" >&2
+fi
+
+# run-gui-test.sh writes Natron's output to <out>/natron.log itself, so the stamped copy is taken by
+# following that file rather than by piping the runner.
 run_bench() {
-    local label="$1" fixture="$2" file="$3" scenarios="$4"
-    shift 4
+    local label="$1" stem="$2" fixture="$3" file="$4" scenarios="$5" out runner follower rc
+    shift 5
+    out="$FIXTURE_DIR/out/$stem"
+    mkdir -p "$out"
+    : > "$out/natron.log"
     nice -n 5 env BENCH_FIXTURE="$fixture" BENCH_FILE="$file" BENCH_SCENARIOS="$scenarios" BENCH_LABEL="$label" \
-        NATRON_GUI_TEST_OUT="$FIXTURE_DIR/out/$label" "$@" \
-        Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py "$APPIMAGE" > "$FIXTURE_DIR/out/$label.log" 2>&1
+        BENCH_BISECT="$BISECT" NATRON_GUI_TEST_OUT="$out" "${BISECT_ENV[@]}" "${LINEBUF_ENV[@]}" "$@" \
+        Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py "$APPIMAGE" > >(stamp_lines > "$out.log") 2>&1 &
+    runner=$!
+    tail -n +1 -F -s 0.1 --pid="$runner" "$out/natron.log" 2> /dev/null | stamp_lines > "$out/natron.ts.log" &
+    follower=$!
+    wait "$runner"
+    rc=$?
+    wait "$follower"
+    return "$rc"
 }
 
 launch() {
-    local label="$1" fixture="$2" file="$3" scenarios="$4" rc bench sampler="" stacks sampling
-    stacks="$FIXTURE_DIR/out/$label.stacks"
+    local label="$1" fixture="$2" file="$3" scenarios="$4" rc bench sampler="" vram_sampler="" stem stacks vram extra=()
     shift 4
     wanted "$label" || return 0
+    stem="$label${BISECT_TAG:+.$BISECT_TAG}"
+    stacks="$FIXTURE_DIR/out/$stem.stacks"
+    vram="$FIXTURE_DIR/out/$stem.vram"
     [ -n "${ONLY_SCENARIOS:-}" ] && scenarios="$ONLY_SCENARIOS"
-    echo "=== $label"
+    echo "=== $label${BISECT:+ (bisect $BISECT)}"
     host_report
-    if [ -z "$SAMPLER" ]; then
-        run_bench "$label" "$fixture" "$file" "$scenarios" "$@"
-        rc=$?
-    else
-        rm -f -- "${FIXTURE_DIR:?}/out/$label.stacks" "${FIXTURE_DIR:?}/out/$label.stacks.err" "${FIXTURE_DIR:?}/out/$label.stacks.pid"
-        sampling=(BENCH_PID_FILE="$stacks.pid" BENCH_STACK_SAMPLED=1)
-        run_bench "$label" "$fixture" "$file" "$scenarios" "${sampling[@]}" "$@" &
-        bench=$!
+    rm -f -- "$vram"
+    if [ -n "$SAMPLER" ]; then
+        rm -f -- "$stacks" "$stacks.err" "$stacks.pid"
+        extra=(BENCH_PID_FILE="$stacks.pid" BENCH_STACK_SAMPLED=1)
+    fi
+    if [ -n "$BISECT_HUD" ]; then
+        mkdir -p "$FIXTURE_DIR/out/$stem.hud"
+        extra+=(GALLIUM_HUD="$BISECT_HUD" GALLIUM_HUD_DUMP_DIR="$FIXTURE_DIR/out/$stem.hud/")
+    fi
+    run_bench "$label" "$stem" "$fixture" "$file" "$scenarios" "${extra[@]}" "$@" &
+    bench=$!
+    if [ -n "$SAMPLER" ]; then
         sample_run "$bench" "$stacks" &
         sampler=$!
-        wait "$bench"
-        rc=$?
     fi
+    if [ -n "$VRAM_DEVICE" ]; then
+        "$ROOT/tools/bench/sample_vram.sh" "$VRAM_DEVICE" "$VRAM_INTERVAL_S" "$vram" "$bench" 2> /dev/null &
+        vram_sampler=$!
+    fi
+    wait "$bench"
+    rc=$?
+    [ -n "$vram_sampler" ] && wait "$vram_sampler"
     echo "    exit=$rc"
     if [ -n "$sampler" ]; then
         wait "$sampler"
@@ -379,8 +519,12 @@ launch() {
     # The bench's watchdog starts once the scene's rows are picked; a process lost before then has
     # told the results file nothing.
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ] && ! grep -q "\"label\": \"$label\"" "$RESULT"; then
-        printf '{"label": "%s", "scenario": "*", "result": "aborted", "exit_code": %d, "reason": "ended before any scenario; see %s", "peak_rss_mb": null, "gl_renderer": "%s"}\n' \
-            "$label" "$rc" "$FIXTURE_DIR/out/$label.log" "$HOST_GPU" >> "$RESULT"
+        printf '{"label": "%s", "scenario": "*", "result": "aborted", "exit_code": %d, "reason": "ended before any scenario; see %s", "peak_rss_mb": null, "gl_renderer": "%s", "bisect": %s}\n' \
+            "$label" "$rc" "$FIXTURE_DIR/out/$stem.log" "$HOST_GPU" "$BISECT_JSON" >> "$RESULT"
+    fi
+    if command -v python3 > /dev/null 2>&1; then
+        python3 -I tools/bench/heavy_scene_vram.py "$vram" "$RESULT" "$label" --bisect "$BISECT" \
+            || echo "    vram: could not add the samples to the records"
     fi
 }
 

@@ -402,7 +402,7 @@ whose engine lost the filter fails rather than reporting a cheap nothing.
 | `load_all` | Loads the root with descendants; `BENCH_LOAD_ALL=1` picks rows from the loaded scene | `load_ms`, `prims_added_upstream`, `load_hold_ms` |
 | `prune_restore` | `bbox` then clear on the branch | `prune_*` and `restore_*`: `apply_ms`, `frame_ms`, `total_ms`; hidden and shown notices |
 | `sibling_state` | The same on one row among many, twice | `sibling_*`; `sibling_resynced_paths` budget 0 |
-| `reveal` | Row `bbox`, then `full` at `BENCH_REVEAL_BATCH` prims per frame, up to `BENCH_REVEAL_MAX_S` | `reveal_prims`, `reveal_frames`, `reveal_fps`, `reveal_worst_frame_ms`, `reveal_complete` |
+| `reveal` | Row `bbox`, then `full` at `BENCH_REVEAL_BATCH` prims per frame, up to `BENCH_REVEAL_MAX_S` (default 500 µs per scene prim, 120 s at least, half the scenario's limit at most) | `reveal_prims`, `reveal_frames`, `reveal_fps`, `reveal_worst_frame_ms`, `reveal_complete` |
 | `reveal_cancel` | Starts a reveal at 50 prims per frame, then `bbox` after three frames' worth | `cancel_total_ms`, `cancel_was_active`, `cancel_stopped` |
 | `noedit` | Sets, clears, reveals and cancels on the branch | `stage_edits`, budget 0, counting stage change notices and edit counts |
 | `sibling_shot` | Screen grabs around one change on the sibling row, the branch and the root as control | `*_shot_changed_*`, `*_shot_frame_coverage`, `shot_reading`; `control_changed_pixels` at least 1 |
@@ -520,4 +520,24 @@ did-not-finish counts at the end. A single scene runs the same way through `ONLY
 ```
 BENCH_FIXTURE=city BENCH_SCENARIOS=workflow NATRON_DRAW_STATE_TIMING=1 BENCH_GPU=1 \
     Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py /path/to/Natron.AppImage
+```
+
+Every GPU-host run also records GPU memory and stamps its logs. `sample_vram.sh` reads the amdgpu
+card's `mem_info_vram_used` and `mem_info_gtt_used` (the card with the most VRAM, or `VRAM_CARD`) every
+0.25 s, or every `SAMPLE_INTERVAL_S` with `SAMPLE=1`, into `out/<label>.vram`, and `heavy_scene_vram.py`
+adds `vram_peak_mb`, `gtt_peak_mb`, `vram_delta_mb`, `gtt_delta_mb` (and the start, end and total) to each
+record and prints them in the run log. The counters are the device's, the desktop's use included.
+`out/<label>/natron.ts.log` is `natron.log` with each line prefixed by its epoch seconds; Natron's stdout
+is made line buffered for it through coreutils' `libstdbuf.so` (`LOG_LINEBUF=0` turns that off).
+
+`BISECT` sets Natron's environment for every run from a comma list of variants: `lights<N>`
+(`HDST_MAX_LIGHTS=N`; Storm's default is 16), `nolights` (`USDIMAGING_ENABLE_SCENE_LIGHTS=0`), `bindless`
+(`HGIGL_ENABLE_BINDLESS_TEXTURE=1`), `noglthread` (`mesa_glthread=false`), `hud` (`GALLIUM_HUD` GPU load,
+VRAM, GTT and fps, dumped to `out/<label>.hud/`) and `shaderlog` (`TF_DEBUG=HD_BUFFER_ARRAY_INFO
+HDST_LOG_DRAWING_SHADER_PROGRAM_MISSES`). Records carry it as `bisect`; the results file and the `out/`
+files take the variants' names, so variants do not overwrite each other. A quick Island bisect:
+
+```
+BISECT=noglthread ONLY_LABELS=accept-island,accept-island-loaded DISPLAY=:0 \
+    tools/bench/heavy_scene_gpu_host.sh acceptance /path/to/Natron.AppImage
 ```

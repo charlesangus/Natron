@@ -1,0 +1,3 @@
+# Deep renders can output deep opacity only
+
+Every deep render path (M286 - Utility Renderer Deep Output, M257 - Cycles Deep Output, M258 - MoonRay Deep Output, and USDRender's deep output) must offer a "deep opacity" output: deep samples carrying only alpha (plus Z and ZBack), with no colour or AOV channels. Holdouts and deep merges often need only opacity, and dropping the colour channels cuts memory and transfer, including the MoonRay Arras DeepFrame bands. Requested by the user on 2026-11-16 during the F8 - Motion Vectors / node graph UAT round. `/cat-plan` should add it to those milestones' scope.

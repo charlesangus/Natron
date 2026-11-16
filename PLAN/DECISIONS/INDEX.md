@@ -138,3 +138,4 @@
 - 2026-11-15 — materialx-via-native-translation: MaterialX reopened; Cycles and MoonRay render it through a Hydra filter translating to native nodes, no OSL; materialx_shaders for MoonRay, exact procedurals as Cycles SVM nodes (user) → DECISIONS/2026-11-15-materialx-via-native-translation.md
 - 2026-11-15 — cycles-reset-counters: Cycles restart detection reads fork reset counters, not samples/clock → DECISIONS/2026-11-15-cycles-reset-counters.md
 - 2026-11-16 — moonray-deep-over-arras: MoonRay deep goes over a banded Arras DeepFrame message into HydraDeepBuffer; MoonRay stays out of process → DECISIONS/2026-11-16-moonray-deep-over-arras.md
+- 2026-11-16 — deep-opacity-output: every deep render path offers an alpha-only (deep opacity) output → DECISIONS/2026-11-16-deep-opacity-output.md

@@ -74,7 +74,7 @@ TEST_F(ScenePresentPacerTest, AFrameIsShownOnlyOnceItsFenceSignalsAndNeverWaits)
     pacer->submitted(fence(0), 7);
     EXPECT_TRUE(pacer->inFlight());
     EXPECT_FALSE(pacer->poll()) << "the GPU has not finished the frame";
-    EXPECT_FALSE(pacer->takeReady());
+    EXPECT_FALSE(pacer->takeReady().has_value());
     EXPECT_TRUE(_released.empty());
 
     signal(0);
@@ -84,9 +84,9 @@ TEST_F(ScenePresentPacerTest, AFrameIsShownOnlyOnceItsFenceSignalsAndNeverWaits)
     EXPECT_NE(back, pacer->backTarget()) << "the next frame draws into the other target";
     ASSERT_EQ(std::vector<Pacer::Fence> { fence(0) }, _released);
     std::optional<int> ready = pacer->takeReady();
-    ASSERT_TRUE(ready);
+    ASSERT_TRUE(ready.has_value());
     EXPECT_EQ(7, *ready);
-    EXPECT_FALSE(pacer->takeReady()) << "a frame is handed out once";
+    EXPECT_FALSE(pacer->takeReady().has_value()) << "a frame is handed out once";
     EXPECT_FALSE(pacer->pending());
 }
 
@@ -99,7 +99,7 @@ TEST_F(ScenePresentPacerTest, TheTargetsAlternateSoTheShownOneIsNeverDrawnInto)
         pacer->submitted(fence(i), i);
         signal(i);
         ASSERT_TRUE(pacer->poll());
-        ASSERT_TRUE(pacer->takeReady());
+        ASSERT_TRUE(pacer->takeReady().has_value());
         EXPECT_EQ(back, pacer->frontTarget());
         EXPECT_NE(pacer->frontTarget(), pacer->backTarget());
     }
@@ -118,7 +118,7 @@ TEST_F(ScenePresentPacerTest, TheNewestFrameWinsAndEveryFenceIsReleasedOnce)
     signal(1);
     ASSERT_TRUE(pacer->poll());
     std::optional<int> ready = pacer->takeReady();
-    ASSERT_TRUE(ready);
+    ASSERT_TRUE(ready.has_value());
     EXPECT_EQ(1, *ready);
     EXPECT_EQ((std::vector<Pacer::Fence> { fence(0), fence(1) }), _released);
 }
@@ -136,7 +136,7 @@ TEST_F(ScenePresentPacerTest, AFinishedFrameNotYetShownGivesWayToANewerOne)
     signal(1);
     ASSERT_TRUE(pacer->poll());
     std::optional<int> ready = pacer->takeReady();
-    ASSERT_TRUE(ready);
+    ASSERT_TRUE(ready.has_value());
     EXPECT_EQ(1, *ready);
 }
 

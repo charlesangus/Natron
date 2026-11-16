@@ -374,7 +374,8 @@ TEST(GeoGroupTest, PromoteToEdgesAndExpandThenPromote)
     both.promote = true;
     both.promoteTo = eGeoGroupPromotePrimitives;
     both.entirelyContained = true;
-    EXPECT_EQ(9u, members(grouped(input, both), eGeoAttribClassPrimitive, "g").size());
+    // Growing the centre 2x2 point block by one ring leaves only the four grid corners unselected, so five quads are entirely contained.
+    EXPECT_EQ(5u, members(grouped(input, both), eGeoAttribClassPrimitive, "g").size());
 }
 
 TEST(GeoGroupTest, ExpandAndPromoteLeaveOtherPagesShared)

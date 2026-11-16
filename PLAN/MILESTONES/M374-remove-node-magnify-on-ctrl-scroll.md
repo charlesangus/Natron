@@ -39,3 +39,5 @@ and releasing Ctrl snaps it back to its normal size. The user finds it pointless
 - 2026-11-16 — PR #296; Codex review round 1 (4 findings: explicitly sized nodes collapsing to label height — also on main — and three weak test checks) fixed in c04334d29. Release gate green (run 43801587865: m397 43/43, m374 11/11, m55 241/241). UAT AppImage build/appimages/Natron-m397-m374-node-graph-fixes.AppImage with steps .md handed over.
 - 2026-11-16 — UAT round 1 (user): Ctrl-click to add a Dot crashes Natron reliably; backdrop labels wrap but should grow arbitrarily wide for long lines (unlike regular nodes). Both are being fixed on the branch. The ugly error/warning text drawing over nodes was requested as a separate milestone (inbox).
 - 2026-11-16 — **UAT round 2 passed (user).** Main merged in (3027ec1c0); merging PR #296 once its CI is green. The review round closed earlier (Codex round 1, all findings replied to); the round-2 fixes (Dot bodyRect override, backdrop wrap at the edge) were judged too small for a second round.
+
+- 2026-11-16 — **Merged:** PR #296 squash-merged to main as 727758c59.

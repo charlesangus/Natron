@@ -86,3 +86,5 @@ the node stays in its column and its top doesn't move) is accepted by the user.
 - 2026-11-16 — **Backdrop labels (user correction):** the user can always set a backdrop's size, and the label never changes it. The label wraps at the backdrop's edge, never earlier. The first fix (149b06d81, never wrap plus a label-driven minimum width) was wrong and is being reworked.
 - 2026-11-16 — Round-2 fixes (Ctrl-click Dot crash: DotGui::bodyRect; backdrop label wraps at the edge, never resizes) pass dot-insert 22/22, label-resize 50/50 and ctrl-wheel 11/11 on run 43827450020. The first dot-insert failures were the script's synthetic Ctrl press, which Qt reports without the Ctrl modifier. UAT round-2 AppImage and steps handed over; Needs stays uat.
 - 2026-11-16 — **UAT round 2 passed (user).** Main merged in (3027ec1c0); merging PR #296 once its CI is green. The review round closed earlier (Codex round 1, all findings replied to); the round-2 fixes (Dot bodyRect override, backdrop wrap at the edge) were judged too small for a second round.
+
+- 2026-11-16 — **Merged:** PR #296 squash-merged to main as 727758c59.

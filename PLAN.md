@@ -262,7 +262,7 @@ future core work has solid ground to build on.
 | M394 | Release Versioning | todo | M386, M387 |  | E21 | | | [M394-release-versioning.md](PLAN/MILESTONES/M394-release-versioning.md) |
 | M395 | Release Notes 1.0 | todo | M388, M394 |  | E21 | | | [M395-release-notes-1-0.md](PLAN/MILESTONES/M395-release-notes-1-0.md) |
 | M396 | Release 1.0 Cut | todo | M391, M392, M393, M394, M395 |  | E21 | | | [M396-release-1-0-cut.md](PLAN/MILESTONES/M396-release-1-0-cut.md) |
-| M397 | Label Resize Keeps Node Top-Centre | doing | - | bosley-executor | E10 | | | [M397-label-resize-keeps-node-top-centre.md](PLAN/MILESTONES/M397-label-resize-keeps-node-top-centre.md) |
+| M397 | Label Resize Keeps Node Top-Centre | done | - | | E10 | | | [M397-label-resize-keeps-node-top-centre.md](PLAN/MILESTONES/M397-label-resize-keeps-node-top-centre.md) |
 | M398 | Cycles Offline Render After Scene Edits | done | - | bosley-native-nodes | E9 | |  | [M398-cycles-offline-render-after-scene-edits.md](PLAN/MILESTONES/M398-cycles-offline-render-after-scene-edits.md) |
 | M399 | Node Creation Keys And Speed | done | M118 | bosley-native-nodes | E10 | | | [M399-node-creation-keys-and-speed.md](PLAN/MILESTONES/M399-node-creation-keys-and-speed.md) |
 | M21 | Deep Tier-2 Nodes | todo | M18, M60 |  | E8 | F23 | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
@@ -496,7 +496,7 @@ future core work has solid ground to build on.
 | M371 | Cycles Abort Test Thread Count | done | - | bosley-native-nodes | E9 |  | | [M371-cycles-abort-test-thread-count.md](PLAN/MILESTONES/M371-cycles-abort-test-thread-count.md) |
 | M372 | User Knob Engine Edits | todo | - |  | E10 | F16 | | [M372-user-knob-engine-edits.md](PLAN/MILESTONES/M372-user-knob-engine-edits.md) |
 | M373 | In-Panel Knob Editor | todo | M372 |  | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
-| M374 | Remove Node Magnify On Ctrl-Scroll | doing | - | bosley-executor | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
+| M374 | Remove Node Magnify On Ctrl-Scroll | done | - | | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
 | M375 | No CPU Vulkan Auto-Select | done | - | bosley-native-nodes | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |
 | M400 | Pointer Direction Badges | todo | - |  | E10 |  | | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |
 | M425 | No ONNX Runtime Telemetry | done | - | bosley-native-nodes | E16 |  | | [M425-no-onnx-runtime-telemetry.md](PLAN/MILESTONES/M425-no-onnx-runtime-telemetry.md) |

@@ -23,19 +23,19 @@ User request (2026-11-16): keyframes from a background tab must not show on the 
 
 ## Phase 455.1: Visible-page rule
 
-- [ ] M455.P1.T1 — Filter node-knob markers by foreground panel and visible page
+- [x] M455.P1.T1 — Filter node-knob markers by foreground panel and visible page
   - files: `Gui/GuiAppInstance.cpp`, `Gui/GuiAppInstance.h`, `Gui/DockablePanel.cpp`, `Gui/DockablePanel.h`, `Gui/DockablePanelPrivate.cpp`, `Gui/PropertiesBinWrapper.cpp` (or wherever the bin orders panels)
   - approach: give `DockablePanel` a query for its visible page and its foreground state (expanded and top of its bin, or floating), and signals on page change, minimise/expand and bin reorder that call `invalidateNodeKeyframeIndicators()`. In the rebuild, keep only nodes whose panel is foreground and only knobs whose top-level page is the visible page (walk `KnobI::getParentKnob` to the `KnobPage`).
   - verify: syntax-check; P1.T3's script.
   - size: M
 
-- [ ] M455.P1.T2 — Roto and Tracker markers follow the same rule
+- [x] M455.P1.T2 — Roto and Tracker markers follow the same rule
   - files: `Gui/RotoPanel.cpp`, `Gui/TrackerPanel.cpp`, `Gui/GuiAppInstance.cpp`
   - approach: gate Roto's and Tracker's indicator lists on the foreground/visible-page test for the page holding their item list: hide their indicators when it fails, restore them when it passes, driven by the same signals. Don't change how M421 - Stroke Keyframe Indicators builds the Roto list, only whether it is shown.
   - verify: syntax-check; P1.T3's script.
   - size: M
 
-- [ ] M455.P1.T3 — GUI check of the visible-page rule
+- [x] M455.P1.T3 — GUI check of the visible-page rule
   - files: `Tests/gui/m455_visible_page_markers.py` (new), `Gui/TimeLineGui.cpp` (only if the M305 marker accessor needs extending)
   - approach: a Roto with transform keys and shape keys on different pages, and a Transform node with keys; switch pages, minimise and expand, open both panels and swap which is on top, float one; after each step compare the timeline's markers (M305's read-only accessor) with the expected set; screenshot before and after a page switch.
   - verify: the script passes in the remote gate and fails on main.
@@ -46,3 +46,5 @@ User request (2026-11-16): keyframes from a background tab must not show on the 
 ## Decisions
 
 - 2026-11-16 — Both rules apply (user): only an open, foreground panel's visible page contributes markers.
+
+- 2026-11-16 — All three tasks implemented (fb16ad0e2 on milestone/m455-keyframe-markers-for-visible-pages). Panels report foreground/page changes to the main window, which sends one combined refresh; Roto item-knob keys filter by the page of the same-named node knob (changes M421's list, as the Roto example requires); m305 and m421 GUI scripts updated to the new rule. Gate run 43982776533. Open for the user: Tracker user keys hidden with the panel (Out says user keys unchanged); a minimised top panel shows no keys rather than the next expanded panel stepping in.

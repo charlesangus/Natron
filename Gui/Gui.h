@@ -401,6 +401,12 @@ public:
     void addVisibleDockablePanel(DockablePanel* panel);
     void removeVisibleDockablePanel(DockablePanel* panel);
 
+    /**
+     * @brief Tells the app that which panels are in the foreground, or which page they show, may
+     * have changed.
+     **/
+    void notifyPanelForegroundChanged() const;
+
     const std::list<DockablePanel*>& getVisiblePanels() const;
     std::list<DockablePanel*> getVisiblePanels_mt_safe() const;
     void setToolButtonMenuOpened(QToolButton* button);

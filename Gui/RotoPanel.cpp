@@ -25,8 +25,9 @@
 
 #include "RotoPanel.h"
 
-#include <stdexcept>
+#include <functional>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -530,7 +531,18 @@ public:
     // that can show markers are wired, so a node with many strokes costs nothing extra.
     void wireItem(const RotoDrawableItemPtr& item, bool connect);
     void rewireMarkerSources(const std::set<RotoDrawableItemPtr>& wanted);
-    static void collectItemKnobKeyframes(const RotoDrawableItemPtr& item, std::set<double>* times);
+    static void collectItemKnobKeyframes(const RotoDrawableItemPtr& item,
+                                         const std::function<bool(const KnobIPtr&)>& accept,
+                                         std::set<double>* times);
+
+    // The node's settings panel, which holds this one below its pages.
+    DockablePanel* hostPanel() const;
+
+    // The panel's markers show only while its host is in the foreground with this list in view.
+    bool markersInView() const;
+
+    // An item knob is shown on the node's page of the same-named proxy knob.
+    bool isItemKnobOnVisiblePage(const KnobIPtr& itemKnob) const;
 
     // The app remembers the last stroke painted until another is painted, across nodes, so it
     // is adopted as this panel's current stroke only once per stroke and only for this node.
@@ -564,6 +576,14 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
         }
     }
     QObject::connect( n.get(), SIGNAL(settingsPanelClosed(bool)), this, SLOT(onSettingsPanelClosed(bool)) );
+    {
+        GuiAppInstancePtr guiApp = std::dynamic_pointer_cast<GuiAppInstance>(n->getNode()->getApp());
+        if (guiApp) {
+            QObject::connect(guiApp.get(), &GuiAppInstance::panelForegroundChanged, this, [this]() {
+                _imp->scheduleMarkerRefresh();
+            });
+        }
+    }
     {
         DockablePanel* panel = dynamic_cast<DockablePanel*>(parent);
         _imp->markersEnabled = panel && !panel->isClosed();
@@ -2476,6 +2496,7 @@ ownPaintedFrame(const RotoStrokeItemPtr& stroke)
 
 void
 RotoPanelPrivate::collectItemKnobKeyframes(const RotoDrawableItemPtr& item,
+                                           const std::function<bool(const KnobIPtr&)>& accept,
                                            std::set<double>* times)
 {
     // The lifetime frame of a stroke is its painted frame, already published on its own.
@@ -2483,7 +2504,7 @@ RotoPanelPrivate::collectItemKnobKeyframes(const RotoDrawableItemPtr& item,
     const std::list<KnobIPtr>& knobs = item->getKnobs();
     for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         const KnobIPtr& knob = *it;
-        if (knob == lifeTimeFrame || !knob->canAnimate() || knob->getIsSecret()) {
+        if (knob == lifeTimeFrame || !knob->canAnimate() || knob->getIsSecret() || !accept(knob)) {
             continue;
         }
         for (int dim = 0; dim < knob->getDimension(); ++dim) {
@@ -2497,6 +2518,35 @@ RotoPanelPrivate::collectItemKnobKeyframes(const RotoDrawableItemPtr& item,
             }
         }
     }
+}
+
+DockablePanel*
+RotoPanelPrivate::hostPanel() const
+{
+    NodeGuiPtr nodeGui = node.lock();
+
+    return nodeGui ? nodeGui->getSettingPanel() : 0;
+}
+
+bool
+RotoPanelPrivate::markersInView() const
+{
+    DockablePanel* panel = hostPanel();
+
+    return panel && panel->isInForeground() && panel->isWidgetOnVisiblePage(publicInterface);
+}
+
+bool
+RotoPanelPrivate::isItemKnobOnVisiblePage(const KnobIPtr& itemKnob) const
+{
+    DockablePanel* panel = hostPanel();
+    NodeGuiPtr nodeGui = node.lock();
+    if (!panel || !nodeGui) {
+        return false;
+    }
+    KnobIPtr proxy = nodeGui->getNode()->getEffectInstance()->getKnobByName(itemKnob->getName());
+
+    return proxy && panel->isPageVisible(proxy->getTopLevelPage());
 }
 
 void
@@ -2553,7 +2603,7 @@ void
 RotoPanelPrivate::publishMarkers()
 {
     AppInstancePtr app = this->app.lock();
-    if (!markersEnabled) {
+    if (!markersEnabled || !markersInView()) {
         rewireMarkerSources(std::set<RotoDrawableItemPtr>());
         if (app) {
             app->clearPanelKeyframeIndicators(publicInterface);
@@ -2577,7 +2627,7 @@ RotoPanelPrivate::publishMarkers()
         }
         RotoDrawableItemPtr isDrawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
         if (isDrawable && (liveBezier || liveStroke)) {
-            collectItemKnobKeyframes(isDrawable, &times);
+            collectItemKnobKeyframes(isDrawable, [this](const KnobIPtr& knob) { return isItemKnobOnVisiblePage(knob); }, &times);
             wanted.insert(isDrawable);
         }
         if (liveStroke) {

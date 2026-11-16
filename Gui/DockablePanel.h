@@ -87,6 +87,23 @@ public:
     bool isFloating() const;
     bool isHideUnmodified() const;
 
+    /**
+     * @brief True when the panel is open and expanded, and is either floating or the top panel of
+     * its properties bin. Only such a panel puts keyframes on the timeline.
+     **/
+    bool isInForeground() const;
+
+    /**
+     * @brief True when the page is the one the panel shows. A null page is never shown, except on a
+     * panel without tabs, which shows everything at once.
+     **/
+    bool isPageVisible(const KnobPagePtr& page) const;
+
+    /**
+     * @brief True when the widget is on the page the panel shows, or outside the pages altogether.
+     **/
+    bool isWidgetOnVisiblePage(const QWidget* widget) const;
+
     /*Creates a new button and inserts it in the header
        at position headerPosition. You can then take
        the pointer to the Button to customize it the
@@ -284,6 +301,8 @@ protected:
 private:
 
     void setClosedInternal(bool c);
+
+    void notifyForegroundChanged() const;
 
     void initializeKnobsInternal();
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL

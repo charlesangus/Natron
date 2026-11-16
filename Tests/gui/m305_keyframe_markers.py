@@ -1,11 +1,14 @@
-"""GUI check that the timeline's keyframe markers always match the keys of the nodes with open panels.
+"""GUI check that the timeline's keyframe markers always match the keys of the nodes whose panels are in
+the foreground: the top panel of the properties bin and any floating panel.
 
 Graph: Constant -> Blur A -> Blur B -> Viewer, project range 1-100. Both Blurs have a keyed size.
 The script reads the markers through TimeLineGui::keyframeMarkerTimes() and, after every step,
-compares them with the keys read back from Python for the Blurs whose panels are open:
-  - panels: opening and closing each panel adds and drops that node's keys;
+compares them with the keys read back from Python for the Blurs whose panels are in the foreground:
+  - panels: opening and closing each panel adds and drops that node's keys, and a panel opened on
+    top hides the keys of the one below it;
   - closed: keys edited while a panel is closed leave no marker, and no stale entry when it reopens;
-  - shared-frame: a frame keyed on both nodes keeps its marker until both keys are gone;
+  - shared-frame: with B floating, a frame keyed on both nodes keeps its marker until both keys
+    are gone;
   - panel: a key typed into a spin box and a Set Key / Remove Key from the knob's menu, with
     undo and redo of the typed key;
   - dope-sheet and curve-editor: deleting keys, then undo and redo, which add them back;
@@ -138,6 +141,43 @@ try:
             except RuntimeError:
                 continue
         return None
+
+    def bin_order():
+        """Labels of the docked panels in properties-bin order, top first."""
+        win = main_window()
+        out = []
+        for panel in gt.widgets_of("NodeSettingsPanel"):
+            try:
+                if not panel.isVisible() or panel.window() is not win:
+                    continue
+                for le in panel.findChildren(QLineEdit):
+                    if gt.class_name(le) == "LineEdit":
+                        out.append((panel.mapTo(win, panel.rect().topLeft()).y(), le.text()))
+                        break
+            except RuntimeError:
+                continue
+        return [label for _y, label in sorted(out)]
+
+    def in_foreground(name):
+        panel = panel_of(name)
+        if panel is None:
+            return False
+        if panel.window() is not main_window():
+            return True
+        return bin_order()[:1] == [app.getNode(name).getLabel()]
+
+    def float_panel(name):
+        panel = panel_of(name)
+        require(panel is not None, "the settings panel of %s is open" % name)
+        QMetaObject.invokeMethod(panel, "floatPanel")
+        ok = yield ("until", lambda: panel_of(name) is not None and panel_of(name).window() is not main_window(),
+                    POLL_TIMEOUT_S)
+        require(ok, "floated the settings panel of " + name)
+        # A floating window takes activation, and an inactive main window drops graph clicks.
+        win = main_window()
+        win.activateWindow()
+        win.raise_()
+        yield ("sleep", SETTLE_MS)
 
     def open_panel(name):
         graphs = gt.widgets_of("NodeGraph")
@@ -296,12 +336,12 @@ try:
         def expected():
             times = set()
             for name in watched:
-                if panel_of(name) is not None:
+                if in_foreground(name):
                     times |= key_times(name)
             return sorted(times)
 
         def expect(label, frames=None):
-            """Markers match the open panels' keys, and the literal frames when the step knows them."""
+            """Markers match the foreground panels' keys, and the literal frames when the step knows them."""
             ok = yield ("until", lambda: markers() == expected() and (frames is None or markers() == frames),
                         POLL_TIMEOUT_S)
             # A late refresh must not bring back frames the timeline has dropped.
@@ -309,7 +349,7 @@ try:
             got = markers()
             want = expected()
             check(ok and got == want and (frames is None or got == frames),
-                  "%s: markers %r match the open panels' keys %r%s" %
+                  "%s: markers %r match the foreground panels' keys %r%s" %
                   (label, got, want, "" if frames is None else " and %r" % (frames,)))
 
         key_param(a).setValueAtTime(2.0, 5, 0)
@@ -327,7 +367,7 @@ try:
         yield from open_panel(a)
         yield from expect("A open", [5, 15])
         yield from open_panel(b)
-        yield from expect("A and B open", [5, 15, 25])
+        yield from expect("A and B open, B on top", [15, 25])
         timeline_shot("m305-timeline-both-open.png")
         yield from close_panel(a)
         yield from expect("B open", [15, 25])
@@ -355,6 +395,8 @@ try:
 
         gt.section("shared-frame")
         yield from open_panel(b)
+        yield from expect("B opened on top of A", [15, 25])
+        yield from float_panel(b)
         yield from expect("frame 15 keyed on both", [5, 15, 25])
         key_param(b).deleteValueAtTime(15, 0)
         yield from expect("B dropped frame 15, A still has it", [5, 15, 25])
@@ -464,7 +506,7 @@ try:
         require(ok, "undo restored " + b)
         ok = yield ("until", lambda: panel_of(b) is not None, POLL_TIMEOUT_S)
         check(ok, "undo reopened the panel of " + b)
-        yield from expect("B restored", [5, 15, 25])
+        yield from expect("B restored, docked on top of A", [15, 25])
         timeline_shot("m305-timeline-node-restored.png")
 
         gt.section("python-loop")
@@ -481,13 +523,14 @@ try:
         started = time.time()
         got = markers()
         report("NOTE read %d markers in %.3f s" % (len(got or []), time.time() - started))
-        check(len(got or []) == BULK_KEYS + 3,
+        check(len(got or []) == BULK_KEYS,
               "all %d keys show as markers right after the loop (%d)" % (BULK_KEYS, len(got or [])))
         yield from expect("after the Python loop")
         bulk_param.removeAnimation(0)
-        yield from expect("after removeAnimation", [5, 15, 25])
+        yield from expect("after removeAnimation, the bulk panel on top", [])
         yield from close_panel(bulk_name)
         watched = (a, b)
+        yield from expect("the bulk panel closed, B on top again", [15, 25])
 
         gt.section("project-close")
         path = os.path.join(gt.OUT, "m305_keyframe_markers.ntpz")

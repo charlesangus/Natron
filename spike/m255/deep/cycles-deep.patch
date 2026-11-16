@@ -1,0 +1,316 @@
+diff --git a/src/hydra/HydraDeepBuffer.h b/src/hydra/HydraDeepBuffer.h
+new file mode 100644
+index 0000000..bfaab3a
+--- /dev/null
++++ b/src/hydra/HydraDeepBuffer.h
+@@ -0,0 +1,40 @@
++// Stand-in for the deep buffer a Hydra render delegate hands out through
++// HdRenderBuffer::GetResource(), held in the VtValue as HydraDeepBufferPtr.
++//
++// Pixel p (row-major, rows in the order of the delegate's other AOVs) owns the samples
++// [offsets[p], offsets[p] + counts[p]) of every channel, sorted front to back. Colour channels
++// are premultiplied by the sample's alpha; Z and ZBack are camera-space depths along the view
++// axis in scene units, ZBack == Z for surfaces.
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <vector>
++
++struct HydraDeepBuffer {
++    int width = 0;
++    int height = 0;
++    std::vector<uint32_t> counts;
++    std::vector<uint64_t> offsets;
++    std::vector<std::string> channelNames;
++    std::vector<std::vector<float>> channels;
++
++    uint64_t totalSamples() const
++    {
++        return offsets.empty() ? 0 : offsets.back() + counts.back();
++    }
++
++    int channelIndex(const std::string& name) const
++    {
++        for (size_t i = 0; i < channelNames.size(); ++i) {
++            if (channelNames[i] == name) {
++                return int(i);
++            }
++        }
++        return -1;
++    }
++};
++
++using HydraDeepBufferPtr = std::shared_ptr<const HydraDeepBuffer>;
+diff --git a/src/hydra/output_driver.cpp b/src/hydra/output_driver.cpp
+index 106e349..b8da676 100644
+--- a/src/hydra/output_driver.cpp
++++ b/src/hydra/output_driver.cpp
+@@ -5,9 +5,14 @@
+ 
+ #include "hydra/output_driver.h"
+ #include "hydra/render_buffer.h"
++#include "hydra/HydraDeepBuffer.h"
+ #include "hydra/session.h"
++#include "session/deep_output_driver.h"
+ #include "session/session.h"
+ 
++#include <algorithm>
++#include <memory>
++
+ HDCYCLES_NAMESPACE_OPEN_SCOPE
+ 
+ HdCyclesOutputDriver::HdCyclesOutputDriver(HdCyclesSession *renderParam)
+@@ -24,6 +29,9 @@ void updateAovBuffers(const HdCyclesSession *renderParam, const OutputDriver::Ti
+   std::vector<float> pixels;
+ 
+   for (const HdRenderPassAovBinding &aovBinding : renderParam->GetAovBindingsLocked()) {
++    if (aovBinding.aovName == HdCyclesDeepAovToken()) {
++      continue;  // Written once, from the deep samples, when the render finishes
++    }
+     if (auto *const renderBuffer = static_cast<HdCyclesRenderBuffer *>(aovBinding.renderBuffer)) {
+       if (aovBinding == displayAovBinding && renderBuffer->IsResourceUsed()) {
+         continue;  // Display AOV binding is already updated by Cycles display driver
+@@ -74,6 +82,95 @@ void updateAovBuffers(const HdCyclesSession *renderParam, const OutputDriver::Ti
+   }
+ }
+ 
++HdCyclesRenderBuffer *deepRenderBuffer(const HdCyclesSession *renderParam)
++{
++  for (const HdRenderPassAovBinding &aovBinding : renderParam->GetAovBindingsLocked()) {
++    if (aovBinding.aovName == HdCyclesDeepAovToken()) {
++      return static_cast<HdCyclesRenderBuffer *>(aovBinding.renderBuffer);
++    }
++  }
++  return nullptr;
++}
++
++/* Hands the finished render's deep samples to the cycles:deep render buffer: the samples as its
++ * resource, and their front-to-back composite as its pixels. Only a whole-image tile is handled,
++ * as the deep buffers cover the full frame. */
++void updateDeepBuffer(const HdCyclesSession *renderParam, const OutputDriver::Tile &tile)
++{
++  HdCyclesRenderBuffer *const renderBuffer = deepRenderBuffer(renderParam);
++  DeepOutputDriver *const deep = renderParam->session->get_deep_output_driver();
++  if (!renderBuffer || !deep || !deep->is_enabled()) {
++    return;
++  }
++  const int width = deep->get_width();
++  const int height = deep->get_height();
++  if (tile.offset.x != 0 || tile.offset.y != 0 || tile.size.x != width || tile.size.y != height) {
++    TF_RUNTIME_ERROR("Deep output needs a whole-image tile (%dx%d at %d,%d for a %dx%d image)",
++                     tile.size.x,
++                     tile.size.y,
++                     tile.offset.x,
++                     tile.offset.y,
++                     width,
++                     height);
++    return;
++  }
++
++  const size_t numPixels = size_t(width) * size_t(height);
++  std::vector<float> beauty(numPixels * 4);
++  if (tile.get_pass_pixels(HdAovTokens->color.GetString(), 4, beauty.data())) {
++    deep->set_beauty_buffer(beauty.data(), width, height);
++  }
++  const std::unique_ptr<std::vector<std::vector<blender::DeepSample>>> samples(
++      deep->get_processed_deep_data());
++  if (!samples || samples->size() != numPixels) {
++    TF_RUNTIME_ERROR("Deep output produced no samples");
++    return;
++  }
++
++  auto result = std::make_shared<HydraDeepBuffer>();
++  result->width = width;
++  result->height = height;
++  result->counts.resize(numPixels);
++  result->offsets.resize(numPixels);
++  uint64_t total = 0;
++  for (size_t p = 0; p < numPixels; ++p) {
++    result->offsets[p] = total;
++    result->counts[p] = uint32_t((*samples)[p].size());
++    total += result->counts[p];
++  }
++  result->channelNames = {"R", "G", "B", "A", "Z", "ZBack"};
++  result->channels.assign(result->channelNames.size(), std::vector<float>(total));
++  std::vector<float> flat(numPixels * 4, 0.0f);
++  for (size_t p = 0; p < numPixels; ++p) {
++    float *const out = flat.data() + p * 4;
++    uint64_t i = result->offsets[p];
++    for (const blender::DeepSample &s : (*samples)[p]) {
++      const float values[] = {s.r, s.g, s.b, s.a, s.z, s.z_back};
++      for (size_t c = 0; c < 6; ++c) {
++        result->channels[c][i] = values[c];
++      }
++      ++i;
++      const float t = 1.0f - out[3];
++      out[0] += t * s.r;
++      out[1] += t * s.g;
++      out[2] += t * s.b;
++      out[3] += t * s.a;
++    }
++  }
++
++  renderBuffer->SetResource(VtValue(HydraDeepBufferPtr(std::move(result))));
++  if (renderBuffer->GetFormat() == HdFormatFloat32Vec4) {
++    auto *const data = static_cast<float *>(renderBuffer->Map());
++    if (data && renderBuffer->GetWidth() == unsigned(width) &&
++        renderBuffer->GetHeight() == unsigned(height) &&
++        renderBuffer->GetFormat() == HdFormatFloat32Vec4)
++    {
++      std::copy(flat.begin(), flat.end(), data);
++    }
++    renderBuffer->Unmap();
++  }
++}
++
+ }  // namespace
+ 
+ void HdCyclesOutputDriver::write_render_tile(const Tile &tile)
+@@ -81,6 +178,7 @@ void HdCyclesOutputDriver::write_render_tile(const Tile &tile)
+   const thread_scoped_lock lock = _renderParam->LockAovBindings();
+ 
+   updateAovBuffers(_renderParam, tile);
++  updateDeepBuffer(_renderParam, tile);
+   const uint64_t rendering = _renderParam->session->get_reset_rendering();
+   _renderParam->resetsWritten = rendering;
+   _renderParam->resetsConverged = rendering;
+diff --git a/src/hydra/render_delegate.cpp b/src/hydra/render_delegate.cpp
+index e9e8b42..2a5bdaa 100644
+--- a/src/hydra/render_delegate.cpp
++++ b/src/hydra/render_delegate.cpp
+@@ -147,11 +147,9 @@ bool IsSettingSocket(const std::string_view nodeName, const SocketType &socket)
+     default:
+       break;
+   }
+-  // Deep output writes through buffers only a deep output driver provides, which the delegate
+-  // does not install
+-  if (nodeName == "film" &&
+-      (socket.name == "use_deep_output" || socket.name.string().rfind("deep_", 0) == 0))
+-  {
++  // Deep output is switched on by binding the cycles:deep AOV, the only way its samples reach the
++  // caller; deep_max_samples, deep_merge_threshold and deep_peel stay settings
++  if (nodeName == "film" && socket.name == "use_deep_output") {
+     return false;
+   }
+   return true;
+@@ -435,6 +433,9 @@ HdAovDescriptor HdCyclesDelegate::GetDefaultAovDescriptor(const TfToken &name) c
+   {
+     return HdAovDescriptor(HdFormatInt32, false, VtValue(-1));
+   }
++  if (name == HdCyclesDeepAovToken()) {
++    return HdAovDescriptor(HdFormatFloat32Vec4, false, VtValue(GfVec4f(0.0f)));
++  }
+ 
+   return HdAovDescriptor();
+ }
+diff --git a/src/hydra/session.cpp b/src/hydra/session.cpp
+index f0a7313..8392185 100644
+--- a/src/hydra/session.cpp
++++ b/src/hydra/session.cpp
+@@ -9,6 +9,7 @@
+ // Have to include shader.h before background.h so that 'set_shader' uses the correct 'set'
+ // overload taking a 'Node *', rather than the one taking a 'bool'
+ #include "scene/background.h"
++#include "scene/film.h"
+ #include "scene/light.h"
+ #include "scene/shader_graph.h"
+ #include "scene/shader_nodes.h"
+@@ -159,7 +160,14 @@ void HdCyclesSession::SyncAovBindings(const HdRenderPassAovBindingVector &aovBin
+     const thread_scoped_lock lock(_aovMutex);
+     _aovBindings = aovBindings;
+   }
++  bool deep = false;
++  bool color = false;
+   for (const HdRenderPassAovBinding &aovBinding : aovBindings) {
++    if (aovBinding.aovName == HdCyclesDeepAovToken()) {
++      deep = true;
++      continue;
++    }
++    color = color || aovBinding.aovName == HdAovTokens->color;
+     const auto cyclesAov = kAovToPass.find(aovBinding.aovName);
+     if (cyclesAov == kAovToPass.end()) {
+       // TODO: Use PASS_AOV_COLOR and PASS_AOV_VALUE for these?
+@@ -175,6 +183,16 @@ void HdCyclesSession::SyncAovBindings(const HdRenderPassAovBindingVector &aovBin
+     pass->set_mode(mode);
+     pass->set_name(ustring(aovBinding.aovName.GetString()));
+   }
++
++  /* The deep samples are resolved against the beauty alpha (DeepOutputDriver::set_beauty_buffer),
++   * read back by name from the final tile. */
++  if (deep && !color) {
++    Pass *pass = scene->create_node<Pass>();
++    pass->set_type(PASS_COMBINED);
++    pass->set_mode(PassMode::NOISY);
++    pass->set_name(ustring(HdAovTokens->color.GetString()));
++  }
++  scene->film->set_use_deep_output(deep);
+ }
+ 
+ void HdCyclesSession::RemoveAovBinding(HdRenderBuffer *renderBuffer)
+diff --git a/src/hydra/session.h b/src/hydra/session.h
+index 800067c..8f9d9e9 100644
+--- a/src/hydra/session.h
++++ b/src/hydra/session.h
+@@ -16,6 +16,14 @@
+ 
+ HDCYCLES_NAMESPACE_OPEN_SCOPE
+ 
++/* The AOV that turns deep output on. Its render buffer holds the flattened deep image, and its
++ * GetResource() the per-pixel samples (HydraDeepBufferPtr) once the render has converged. */
++inline const PXR_NS::TfToken &HdCyclesDeepAovToken()
++{
++  static const PXR_NS::TfToken token("cycles:deep");
++  return token;
++}
++
+ struct SceneLock {
+   SceneLock(const PXR_NS::HdRenderParam *renderParam);
+   ~SceneLock();
+diff --git a/src/integrator/path_trace.cpp b/src/integrator/path_trace.cpp
+index d821624..319f3d9 100644
+--- a/src/integrator/path_trace.cpp
++++ b/src/integrator/path_trace.cpp
+@@ -139,6 +139,11 @@ void PathTrace::reset(const BufferParams &full_params,
+   render_state_.has_denoised_result = false;
+   render_state_.tile_written = false;
+ 
++  /* The kernel adds every path into the deep samples it finds, so a new render starts empty. */
++  if (reset_rendering && deep_output_driver_ && deep_output_driver_->is_enabled()) {
++    deep_output_driver_->clear_device_buffers();
++  }
++
+   did_draw_after_reset_ = false;
+ }
+ 
+@@ -865,9 +870,27 @@ void PathTrace::rebalance(const RenderWork &render_work)
+ 
+ void PathTrace::sync_deep_output_buffers()
+ {
+-  if (!deep_output_driver_ || !deep_output_driver_->is_enabled()) {
++  /* Film use_deep_output alone switches deep output on: the driver is created and sized here, on
++   * the render thread, since the kernel may be reading its buffers whenever the host thread could
++   * otherwise reach it. */
++  const KernelFilm &kfilm = device_scene_->data.film;
++  if (!kfilm.use_deep_output) {
++    if (deep_output_driver_ && deep_output_driver_->is_enabled()) {
++      deep_output_driver_->set_enabled(false);
++    }
+     return;
+   }
++  if (!deep_output_driver_) {
++    deep_output_driver_ = make_unique<DeepOutputDriver>(device_);
++  }
++  const int max_samples = max(kfilm.deep_max_samples, 1);
++  if (!deep_output_driver_->is_enabled() || deep_output_driver_->get_width() != full_params_.width ||
++      deep_output_driver_->get_height() != full_params_.height ||
++      deep_output_driver_->get_max_samples_per_pixel() != max_samples)
++  {
++    deep_output_driver_->set_enabled(true);
++    deep_output_driver_->reset(full_params_.width, full_params_.height, max_samples);
++  }
+ 
+   vector<DeepOutputDriver::SliceParams> slices;
+   slices.reserve(path_trace_works_.size());

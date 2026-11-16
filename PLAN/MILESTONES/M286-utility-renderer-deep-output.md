@@ -16,6 +16,7 @@ controls, trimmed to four) at render time, and the same library ships as a stand
 - Shared compaction library `DeepCompaction` (no Hydra types) with four controls: `Merge Distance` (scene units, default 0.1), `Max Samples` per pixel (default 0 = unlimited), `Alpha Cull` threshold (default 0), `Occlusion Cutoff` (accumulated alpha, default 1.0 = off). Over budget, the closest adjacent pair merges first; samples behind the occlusion cutoff are dropped before merging.
 - The host transport: `HdRenderBuffer::GetResource` returns a deep-buffer handle (sample counts, offsets, named channels) that HydraRenderImpl recognises for any delegate and converts into `DeepImage`; USDRender gains deep output.
 - `DeepCompact` node (Engine/Nodes/Deep) exposing the same four controls on any deep input.
+- A **deep opacity** output on USDRender: deep samples carrying only alpha, Z and ZBack, no colour or AOV channels, for holdouts and deep merges (project-wide decision `DECISIONS/2026-11-16-deep-opacity-output.md`). The `HydraDeepBuffer` handle can carry an opacity-only channel set, so Cycles and MoonRay use the same switch.
 
 **Out:**
 - Cycles and MoonRay filling the deep buffer — M257 - Cycles Deep Output and M258 - MoonRay Deep Output (now scoped by this transport).
@@ -29,6 +30,7 @@ controls, trimmed to four) at render time, and the same library ships as a stand
 - Motion blur: fragments from different time buckets merge by depth like any others.
 - `Max Samples` 1: the pixel collapses to one sample equal to the flattened result at the front depth.
 - Accuracy: with Merge Distance 0, Max Samples unlimited and both culls off, the flattened deep image equals the flat render within 1e-4.
+- Deep opacity: the flattened alpha equals the full deep render's flattened alpha; with opacity only, the working bins hold no colour or AOV channels, so per-pixel memory drops accordingly.
 - Bins full on the GPU before compaction (fixed working capacity, setting `Working Samples`, default 32): closest adjacent pair merges in-kernel.
 
 **Assumptions:**
@@ -69,6 +71,12 @@ controls, trimmed to four) at render time, and the same library ships as a stand
   - verify: gtest — USDRender (Natron Utility, deep) → DeepToImage equals the flat USDRender within tolerance; → DeepMerge with a DeepFromImage card holds out correctly; Storm with deep requested gives the named error.
   - size: L
 
+- [ ] M286.P2.T4 — Deep opacity output
+  - files: `Engine/Nodes/Scene/USDRender.{h,cpp}`, `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/HydraDeepBuffer.h`, `Engine/Nodes/Scene/Utility/UtilityDeepBuffer.cpp`, `Engine/Nodes/Scene/Utility/UtilityRenderPass.cpp`, `Engine/Nodes/Scene/docs/USDRender.md`, `Tests/Scene/USDRender_Test.cpp`
+  - approach: a USDRender deep-content choice (`deepContent`, "Deep Content": Full / Opacity Only). Opacity Only requests the `deep` AOV with an opacity-only channel set recorded in the `HydraDeepBuffer` handle (alpha, Z, ZBack); Natron Utility's bins then allocate no colour or AOV slots, compaction runs on alpha alone, and the converted `DeepImage` has only those channels. A delegate that ignores the flag still works: the host drops the extra channels at conversion.
+  - verify: gtest — Opacity Only gives a `DeepImage` with exactly alpha/Z/ZBack, its flattened alpha equals Full's within 1e-4, and its working-bin allocation is smaller than Full's; DeepMerge holdout with the opacity-only render matches the Full holdout.
+  - size: M
+
 **Verification gate:** full build and ctest green on both backends; a deep render of overlapping semi-transparent and opaque objects is merged with a 2D card via DeepMerge in the GUI under Xvfb and the screenshot is shared with the user.
 
 ## Decisions
@@ -77,3 +85,4 @@ controls, trimmed to four) at render time, and the same library ships as a stand
 - 2026-11-01 — **User-controlled compaction modelled on DeepThinner (user):** at minimum a merge distance in scene units and a per-pixel sample budget; Alpha Cull and Occlusion Cutoff added from DeepThinner's defaults-on passes.
 - 2026-11-01 — **DeepCompact node in this milestone (user).**
 - 2026-11-01 — **Refractive surfaces end the deep ray** with refracted light baked into their colour; only partial opacity and ior-1 transparency continue it.
+- 2026-11-16 — **Deep opacity output (user, inbox):** every deep render path offers alpha+Z+ZBack-only deep; here as USDRender's Deep Content choice and an opacity-only channel set in `HydraDeepBuffer` (task P2.T4). See `PLAN/DECISIONS/2026-11-16-deep-opacity-output.md`.

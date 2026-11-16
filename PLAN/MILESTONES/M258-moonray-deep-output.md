@@ -14,6 +14,7 @@ Acceptance sketch:
 - USDRender with Renderer = MoonRay can output a deep image whose samples carry z, zback, colour, alpha.
 - The deep image flows through the existing deep cache and RoI path with no side channel.
 - A deep comp matches a flat render within tolerance.
+- Deep Opacity (USDRender's Deep Content = Opacity Only, M286 - Utility Renderer Deep Output) yields alpha/Z/ZBack-only samples, and the DeepFrame bands then carry only those channels, cutting Arras transfer.
 - Deep is produced for the final frame only, never for progressive passes; a cancel during the deep transfer stops promptly.
 - Volumes render as deep segments: each sample carries its own z and zback range, so a VDB from M346 - USDVolume Node composites correctly against deep elements through DeepMerge.
 
@@ -21,3 +22,4 @@ Acceptance sketch:
 
 - 2026-11-05 — Volume segments are required in MoonRay deep output (user): smoke must hold out correctly in a deep comp. M255 - Delegate Output Spikes has to show the transport can carry them; if it can't, bring that back to the user rather than dropping this.
 - 2026-11-16 — MoonRay deep travels over Arras, MoonRay stays out of process (user): a banded DeepFrame Arras message after the FINISHED frame, received by hdMoonray into `HydraDeepBuffer`; deep is final-frame only and multi-machine merge (`progmcrt_merge`) gets no deep. Rejected: in-process rendering for deep (loses crash/memory isolation and concurrent renders; one global RenderDriver; process-wide TBB cap), a deep EXR side output read back from disk (half-float AOVs, temp files, delayed cancel), and a separate batch render (double cost, deep would not match the flat AOVs). Full record: PLAN/DECISIONS/2026-11-16-moonray-deep-over-arras.md.
+- 2026-11-16 — **Deep opacity output (user, inbox):** MoonRay honours the opacity-only channel set, and the DeepFrame bands omit colour and AOVs when it is set. See `PLAN/DECISIONS/2026-11-16-deep-opacity-output.md`.

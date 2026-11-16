@@ -262,6 +262,11 @@ private:
                                    const RectI& outputRect,
                                    const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual RenderScale getOpGpuInputScale(int inputNb,
+                                           double time,
+                                           ViewIdx view,
+                                           const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual void getRegionsOfInterest(double time,
                                       const RenderScale& scale,
                                       const RectD& outputRoD,

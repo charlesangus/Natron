@@ -1415,6 +1415,16 @@ RawDemosaic::getOpGpuInputRoI(int inputNb,
     return const_cast<RawDemosaic*>(this)->sourceRegionFor(outputRect, time, view);
 }
 
+RenderScale
+RawDemosaic::getOpGpuInputScale(int inputNb,
+                                double /*time*/,
+                                ViewIdx /*view*/,
+                                const RenderScale& scale) const
+{
+    // The superpixel reads the full-resolution mosaic below full resolution.
+    return ((inputNb == getSourceInput()) && rendersSuperpixel(scale)) ? RenderScale::identity : scale;
+}
+
 #ifdef NATRON_HAVE_GPU
 namespace {
 // The pattern RawKernels::vng() runs with over a buffer of rect, from its top-left photosite: the

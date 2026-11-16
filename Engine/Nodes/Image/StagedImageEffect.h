@@ -140,7 +140,8 @@ public:
      * grown by the halo of the op's passes; for a Resample op that opts into the GPU,
      * resampleGpuSourceRoI(). For an Aux input of a Passes op, opPassesInputRoI(). For a Custom
      * op, getOpGpuInputRoI() for any input. outputRect otherwise. A region that misses a Stretch
-     * input then moves into it, as stretchGpuInputRoI() does.
+     * input then moves into it, as stretchGpuInputRoI() does at the region's scale:
+     * getOpGpuInputScale() for a Custom op, scale otherwise.
      **/
     virtual RectI getGpuInputRoI(int inputNb,
                                  double time,
@@ -533,6 +534,19 @@ protected:
                                    const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
     {
         return outputRect;
+    }
+
+    /**
+     * @brief For a Custom op rendering at scale, the scale of the pixels getOpGpuInputRoI()
+     * names for input inputNb, at which getGpuInputRoI() finds a Stretch input's edge. scale by
+     * default.
+     **/
+    virtual RenderScale getOpGpuInputScale(int /*inputNb*/,
+                                           double /*time*/,
+                                           ViewIdx /*view*/,
+                                           const RenderScale& scale) const WARN_UNUSED_RETURN
+    {
+        return scale;
     }
 
     /**

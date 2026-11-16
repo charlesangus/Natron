@@ -89,6 +89,14 @@ struct InputLayer {
     }
 };
 
+/** @brief Element classes of geometry a group pattern can select, or-ed together. */
+enum GeoGroupClassFlags : unsigned {
+    eGeoGroupClassNone = 0,
+    eGeoGroupClassPoints = 1u << 0,
+    eGeoGroupClassPrimitives = 1u << 1,
+    eGeoGroupClassEdges = 1u << 2,
+};
+
 /**
  * @brief Statically describes one input, or for InputRole::Variadic a run of count inputs
  * labelled label followed by firstNumber, firstNumber + 1, ...
@@ -131,6 +139,13 @@ struct NodeSpec {
     std::string_view primPathKnob = {};
     // Whether that knob takes a prim pattern, several prims, rather than a single prim path.
     bool primPathKnobTakesPattern = false;
+    // The script name of the KnobString holding a group pattern over the geometry of the first
+    // input, for a geometry node that has one, and the GeoGroupClassFlags it can select.
+    std::string_view geoGroupKnob = {};
+    unsigned geoGroupClasses = eGeoGroupClassNone;
+    // The KnobChoice choosing the class the group selects, for a node that has one; its options
+    // with the ids "points", "primitives" and "edges" name those classes.
+    std::string_view geoGroupTypeKnob = {};
 
     /**
      * @brief The InputSpec an input number falls in, and for a Variadic one the input's index

@@ -39,6 +39,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+struct GeoComponentSelection;
+
 /**
  * @brief What the 3D view and the Scene Graph panel do with the prims selected in a viewer: write
  * them into the prim knob of the current node, or create a node after the viewed node with them.
@@ -100,6 +102,17 @@ QString createBlocker(Gui* gui, const NodePtr& viewed);
  * unless paths is empty.
  **/
 void createFromSelection(Gui* gui, const NodePtr& viewed, const QStringList& paths);
+
+/**
+ * @brief Opens the tab menu listing the node types whose first input takes geometry. The node
+ * chosen reads viewed through that input and takes its place in every output of viewed that can
+ * read it, the viewer among them, as the node graph inserts a node after the selected one. When
+ * the node declares a group knob (NodeSpec::geoGroupKnob), selection, picked on detail, is
+ * carried to a class the group selects, written into it, and that class chosen in its group type
+ * knob. Creating, connecting and setting the group are one undo step. An empty selection, or no
+ * detail, leaves the group empty.
+ **/
+void createFromComponents(Gui* gui, const NodePtr& viewed, const GeoDetailConstPtr& detail, const GeoComponentSelection& selection);
 
 /**
  * @brief Shows text in gui's status bar for a few seconds.

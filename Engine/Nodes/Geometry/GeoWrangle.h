@@ -86,6 +86,9 @@ public:
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kGeoWrangleInputs,
+        .geoGroupKnob = kGeoWrangleParamGroup,
+        .geoGroupClasses = eGeoGroupClassPoints | eGeoGroupClassPrimitives,
+        .geoGroupTypeKnob = kGeoWrangleParamRunOver,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

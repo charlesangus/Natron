@@ -40,6 +40,8 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Plugin.h"
 #include "Engine/ViewerInstance.h"
@@ -50,6 +52,7 @@
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/SceneViewport.h"
 #include "Gui/TabMenuBridge.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
@@ -138,16 +141,67 @@ pushSet(Gui* gui,
     return true;
 }
 
-// The first input of node that isn't a mask and can take a scene; -1 when it has none.
+// Sets a node's group pattern knob and the choice of the class it selects, as one edit.
+class SetGeoGroupCommand
+    : public QUndoCommand {
+public:
+    SetGeoGroupCommand(const KnobStringPtr& group,
+                       const std::string& pattern,
+                       const KnobChoicePtr& type,
+                       int typeIndex,
+                       const QString& text)
+        : QUndoCommand(text)
+        , _group(group)
+        , _oldPattern(group->getValue(0))
+        , _newPattern(pattern)
+        , _type(type)
+        , _oldTypeIndex(type ? type->getValue(0) : -1)
+        , _newTypeIndex(typeIndex)
+    {
+    }
+
+    void undo() override
+    {
+        set(_oldPattern, _oldTypeIndex);
+    }
+
+    void redo() override
+    {
+        set(_newPattern, _newTypeIndex);
+    }
+
+private:
+    void set(const std::string& pattern,
+             int typeIndex)
+    {
+        KnobChoicePtr type = _type.lock();
+        if (type && (typeIndex >= 0)) {
+            ignore_result(type->setValue(typeIndex, ViewSpec::all(), 0, eValueChangedReasonUserEdited, nullptr));
+        }
+        if (KnobStringPtr group = _group.lock()) {
+            ignore_result(group->setValue(pattern, ViewSpec::all(), 0, eValueChangedReasonUserEdited, nullptr));
+        }
+    }
+
+    KnobStringWPtr _group;
+    std::string _oldPattern;
+    std::string _newPattern;
+    KnobChoiceWPtr _type;
+    int _oldTypeIndex;
+    int _newTypeIndex;
+};
+
+// The first input of node that isn't a mask and can take kind; -1 when it has none.
 int
-sceneInput(const NodePtr& node)
+firstInputTaking(const NodePtr& node,
+                 DataKindEnum kind)
 {
     const EffectInstancePtr effect = node->getEffectInstance();
     const int inputs = node->getNInputs();
 
     for (int i = 0; i < inputs; ++i) {
-        const DataKindEnum kind = effect->getInputDataKind(i);
-        if (!effect->isInputMask(i) && ((kind == eDataKindScene) || (kind == eDataKindPolymorphic))) {
+        const DataKindEnum inputKind = effect->getInputDataKind(i);
+        if (!effect->isInputMask(i) && ((inputKind == kind) || (inputKind == eDataKindPolymorphic))) {
             return i;
         }
     }
@@ -155,15 +209,21 @@ sceneInput(const NodePtr& node)
     return -1;
 }
 
-// Finds the first output of viewed that can read created in place of viewed, and which of its
-// inputs reads viewed. A viewer declares image inputs and takes a scene through an adapter, so
-// the input's declared kind can't decide this.
-bool
-firstSceneOutput(const NodePtr& viewed,
-                 const NodePtr& created,
-                 NodePtr* output,
-                 int* outputInput)
+struct OutputLink {
+    NodePtr node;
+    int input;
+};
+
+// The inputs of viewed's outputs that read viewed and can read created in its place, the first
+// one only unless everyOutput. A viewer declares image inputs and takes a scene or geometry
+// through an adapter, so the input's declared kind can't decide this.
+std::vector<OutputLink>
+outputLinks(const NodePtr& viewed,
+            const NodePtr& created,
+            bool everyOutput)
 {
+    std::vector<OutputLink> links;
+
     for (const NodeWPtr& outputW : viewed->getOutputs()) {
         NodePtr candidate = outputW.lock();
         if (!candidate || (candidate == created) || !candidate->getParentMultiInstanceName().empty()) {
@@ -173,22 +233,22 @@ firstSceneOutput(const NodePtr& viewed,
         const int inputs = candidate->getNInputs();
         for (int i = 0; i < inputs; ++i) {
             if ((candidate->getInput(i) == viewed) && !effect->isInputMask(i) && !candidate->isInputDataKindUnacceptable(created, i)) {
-                *output = candidate;
-                *outputInput = i;
-
-                return true;
+                links.push_back(OutputLink { candidate, i });
+                if (!everyOutput) {
+                    return links;
+                }
             }
         }
     }
 
-    return false;
+    return links;
 }
 
-// Puts created below viewed, moving output down when it is in the way.
+// Puts created below viewed, moving the outputs down when they are in the way.
 void
 placeBelow(const NodePtr& viewed,
            const NodePtr& created,
-           const NodePtr& output)
+           const std::vector<NodePtr>& outputs)
 {
     NodeGuiPtr viewedGui = std::dynamic_pointer_cast<NodeGui>(viewed->getNodeGui());
     NodeGuiPtr createdGui = std::dynamic_pointer_cast<NodeGui>(created->getNodeGui());
@@ -201,21 +261,26 @@ placeBelow(const NodePtr& viewed,
     const QPointF viewedPos = viewedGui->scenePos();
     const QPointF position(viewedPos.x() + (viewedSize.width() - createdSize.width()) / 2.,
                            viewedPos.y() + viewedSize.height() + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
-    if (NodeGuiPtr outputGui = output ? std::dynamic_pointer_cast<NodeGui>(output->getNodeGui()) : NodeGuiPtr()) {
-        outputGui->moveBelowPositionRecursively(QRectF(position, createdSize));
+    for (const NodePtr& output : outputs) {
+        if (NodeGuiPtr outputGui = std::dynamic_pointer_cast<NodeGui>(output->getNodeGui())) {
+            outputGui->moveBelowPositionRecursively(QRectF(position, createdSize));
+        }
     }
     const QPointF inParent = createdGui->mapToParent(createdGui->mapFromScene(position));
     createdGui->setPosition(inParent.x(), inParent.y());
 }
 
-// Connects created after viewed and gives it viewed's first scene output only, as an undoable edit.
-// The input is connected first so the output is never left without a scene, and so that a
-// pass-through created resolves to a scene before the output is judged against it.
+// Connects created after viewed through its first input taking kind, and gives it viewed's first
+// output that can read it, or with everyOutput every such output, as an undoable edit. The input
+// is connected first so no output is ever left without data, and so that a pass-through created
+// resolves to a kind before the outputs are judged against it.
 void
 insertAfterViewed(const NodePtr& viewed,
-                  const NodePtr& created)
+                  const NodePtr& created,
+                  DataKindEnum kind,
+                  bool everyOutput)
 {
-    const int input = sceneInput(created);
+    const int input = firstInputTaking(created, kind);
 
     if (input == -1) {
         return;
@@ -227,16 +292,18 @@ insertAfterViewed(const NodePtr& viewed,
     std::vector<ReconnectInputsCommand::InputChange> changes;
     changes.push_back(ReconnectInputsCommand::InputChange { created, input, previousInput, viewed });
 
-    NodePtr output;
-    int outputInput = -1;
-    if (!created->isOutputNode() && firstSceneOutput(viewed, created, &output, &outputInput)) {
-        if (output->replaceInput(created, outputInput)) {
-            changes.push_back(ReconnectInputsCommand::InputChange { output, outputInput, viewed, created });
-        } else {
-            output.reset();
+    std::vector<NodePtr> moved;
+    if (!created->isOutputNode()) {
+        for (const OutputLink& link : outputLinks(viewed, created, everyOutput)) {
+            if (link.node->replaceInput(created, link.input)) {
+                changes.push_back(ReconnectInputsCommand::InputChange { link.node, link.input, viewed, created });
+                if (std::find(moved.begin(), moved.end(), link.node) == moved.end()) {
+                    moved.push_back(link.node);
+                }
+            }
         }
     }
-    placeBelow(viewed, created, output);
+    placeBelow(viewed, created, moved);
 
     NodeCollectionPtr group = viewed->getGroup();
     NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
@@ -244,12 +311,119 @@ insertAfterViewed(const NodePtr& viewed,
         UndoScope scope;
         scope.touchNode(created);
         scope.touchNode(viewed);
-        if (output) {
+        for (const NodePtr& output : moved) {
             scope.touchNode(output);
         }
         // The connections are made, so the command's first redo does nothing.
         graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
     }
+}
+
+GeoGroupClassFlags
+groupClassOf(GeoComponentEnum type)
+{
+    switch (type) {
+    case eGeoComponentPoints:
+        return eGeoGroupClassPoints;
+    case eGeoComponentEdges:
+        return eGeoGroupClassEdges;
+    case eGeoComponentPrimitives:
+        return eGeoGroupClassPrimitives;
+    case eGeoComponentObjects:
+        break;
+    }
+
+    return eGeoGroupClassNone;
+}
+
+// The class a selection of type is carried to for a group selecting classes: its own when
+// allowed, else the nearest one it converts to. Objects when none is allowed.
+GeoComponentEnum
+carriedComponentType(GeoComponentEnum type,
+                     unsigned classes)
+{
+    if (classes & groupClassOf(type)) {
+        return type;
+    }
+    GeoComponentEnum order[2] = { eGeoComponentObjects, eGeoComponentObjects };
+    if (type == eGeoComponentPoints) {
+        order[0] = eGeoComponentPrimitives;
+        order[1] = eGeoComponentEdges;
+    } else if (type == eGeoComponentPrimitives) {
+        order[0] = eGeoComponentPoints;
+        order[1] = eGeoComponentEdges;
+    } else if (type == eGeoComponentEdges) {
+        order[0] = eGeoComponentPoints;
+        order[1] = eGeoComponentPrimitives;
+    }
+    for (GeoComponentEnum candidate : order) {
+        if (classes & groupClassOf(candidate)) {
+            return candidate;
+        }
+    }
+
+    return eGeoComponentObjects;
+}
+
+const char*
+groupClassId(GeoComponentEnum type)
+{
+    switch (type) {
+    case eGeoComponentPoints:
+        return "points";
+    case eGeoComponentEdges:
+        return "edges";
+    case eGeoComponentPrimitives:
+        return "primitives";
+    case eGeoComponentObjects:
+        break;
+    }
+
+    return "";
+}
+
+// Writes selection, carried to a class node's group can select, into that group, and the class
+// into its group type choice, as an undoable edit. A node with no declared group, an empty
+// selection or no geometry to carry it over leave the group as it is.
+void
+setGroupFromComponents(Gui* gui,
+                       const NodePtr& node,
+                       const GeoDetailConstPtr& detail,
+                       const GeoComponentSelection& selection)
+{
+    UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(node->getEffectInstance().get());
+    const NodeSpec* spec = native ? native->nodeSpec() : nullptr;
+
+    if (!history || !spec || spec->geoGroupKnob.empty() || !detail || selection.empty()) {
+        return;
+    }
+    KnobStringPtr group = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(std::string(spec->geoGroupKnob)));
+    const GeoComponentEnum type = carriedComponentType(selection.type, spec->geoGroupClasses);
+    if (!group || (type == eGeoComponentObjects)) {
+        return;
+    }
+    const GeoComponentSelection carried = SceneViewport::convertedComponentSelection(*detail, selection, type);
+    // A selection the class keeps nothing of selects nothing, where an empty pattern would select everything.
+    const std::string pattern = carried.empty() ? std::string("^*") : SceneViewport::componentSelectionPattern(*detail, carried);
+
+    KnobChoicePtr typeKnob;
+    int typeIndex = -1;
+    if (!spec->geoGroupTypeKnob.empty()) {
+        typeKnob = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(std::string(spec->geoGroupTypeKnob)));
+        const std::vector<ChoiceOption> options = typeKnob ? typeKnob->getEntries_mt_safe() : std::vector<ChoiceOption>();
+        for (std::size_t i = 0; i < options.size(); ++i) {
+            if (options[i].id == groupClassId(type)) {
+                typeIndex = int(i);
+                break;
+            }
+        }
+        if (typeIndex == -1) {
+            typeKnob.reset();
+        }
+    }
+    const QString label = tr("Set %1 of %2").arg(QString::fromStdString(group->getLabel()), QString::fromStdString(node->getLabel()));
+    history->push(new SetGeoGroupCommand(group, pattern, typeKnob, typeIndex, label), UndoScope(UndoScope::holderForNode(node)));
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -433,11 +607,41 @@ createFromSelection(Gui* gui,
     context.created = [gui, paths, viewedWeak = NodeWPtr(viewed)](const NodePtr& created) {
         NodePtr viewedNode = viewedWeak.lock();
         if (viewedNode && viewedNode->isActivated()) {
-            insertAfterViewed(viewedNode, created);
+            insertAfterViewed(viewedNode, created, eDataKindScene, false);
         }
         if (KnobStringPtr knob = primKnob(created)) {
             pushSet(gui, created, knob, paths);
         }
+    };
+    TabMenuBridge::launch(graph, context);
+}
+
+void
+createFromComponents(Gui* gui,
+                     const NodePtr& viewed,
+                     const GeoDetailConstPtr& detail,
+                     const GeoComponentSelection& selection)
+{
+    NodeCollectionPtr group = viewed ? viewed->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
+
+    if (!gui || !graph) {
+        showHint(gui, tr("Create Node from Selection: the viewer shows no geometry."));
+
+        return;
+    }
+    TabMenuBridge::LaunchContext context;
+    context.inputKind = eDataKindGeometry;
+    context.decorateArgs = [](CreateNodeArgs& args) {
+        // The graph's auto-connect would only connect the new node to the selected nodes.
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    };
+    context.created = [gui, detail, selection, viewedWeak = NodeWPtr(viewed)](const NodePtr& created) {
+        NodePtr viewedNode = viewedWeak.lock();
+        if (viewedNode && viewedNode->isActivated()) {
+            insertAfterViewed(viewedNode, created, eDataKindGeometry, true);
+        }
+        setGroupFromComponents(gui, created, detail, selection);
     };
     TabMenuBridge::launch(graph, context);
 }

@@ -1539,6 +1539,9 @@ ViewerTab::onActiveInputDataKindChanged()
             actions.createFromSelection = [this](const QStringList& paths) {
                 SceneSelectionActions::createFromSelection(getGui(), getSceneViewedNode(), paths);
             };
+            actions.createFromComponents = [this](const GeoDetailConstPtr& detail, const GeoComponentSelection& selection) {
+                SceneSelectionActions::createFromComponents(getGui(), getSceneViewedNode(), detail, selection);
+            };
             _imp->sceneViewport->setSelectionActions(actions);
         }
         {

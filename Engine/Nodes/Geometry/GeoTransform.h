@@ -107,6 +107,9 @@ public:
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
+        .geoGroupKnob = kGeoTransformParamGroup,
+        .geoGroupClasses = eGeoGroupClassPoints | eGeoGroupClassPrimitives | eGeoGroupClassEdges,
+        .geoGroupTypeKnob = kGeoTransformParamGroupType,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

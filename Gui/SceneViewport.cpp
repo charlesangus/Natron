@@ -6858,6 +6858,54 @@ SceneViewport::pickComponentsIn(const QRect& rect,
     return selection;
 }
 
+std::string
+SceneViewport::componentSelectionPattern(const GeoDetail& detail,
+                                         const GeoComponentSelection& selection)
+{
+    if (selection.empty()) {
+        return std::string();
+    }
+    if (selection.type == eGeoComponentEdges) {
+        const std::vector<GeoEdge> edges = edgesFromNumbers(detail, selection.edges);
+
+        return geoEncodeEdgePattern(detail, edges, true);
+    }
+    if (selection.type == eGeoComponentObjects) {
+        return std::string();
+    }
+    const GeoAttribClassEnum cls = (selection.type == eGeoComponentPoints) ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
+
+    return geoEncodePattern(detail, cls, maskFromNumbers(detail, cls, selection.elements), true);
+}
+
+GeoComponentSelection
+SceneViewport::convertedComponentSelection(const GeoDetail& detail,
+                                           const GeoComponentSelection& selection,
+                                           GeoComponentEnum type)
+{
+    return convertedSelection(detail, selection, type);
+}
+
+void
+SceneViewport::createFromSelection(const QStringList& paths)
+{
+    if (!_imp->geometryContext) {
+        if (_imp->selectionActions.createFromSelection) {
+            _imp->selectionActions.createFromSelection(paths);
+        }
+
+        return;
+    }
+    if (!_imp->selectionActions.createFromComponents) {
+        return;
+    }
+    const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
+    const GeoDetailConstPtr detail = convert ? convert->detail() : GeoDetailConstPtr();
+    // Without the geometry the numbers were picked on, they can't be carried to another class.
+    const GeoComponentSelection selection = detail ? _imp->componentSelection : GeoComponentSelection();
+    _imp->selectionActions.createFromComponents(detail, selection);
+}
+
 void
 SceneViewport::refreshComponentState()
 {
@@ -6878,30 +6926,8 @@ SceneViewport::refreshComponentState()
     setProperty("natronGeoSelectionCount", int(selection.elements.size() + selection.edges.size()));
     QString pattern;
     const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
-    if (convert && convert->detail() && !selection.empty()) {
-        const GeoDetail& detail = *convert->detail();
-        if (selection.type == eGeoComponentEdges) {
-            std::vector<GeoEdge> edges;
-            for (const GeoEdge& edge : selection.edges) {
-                const GeoOffset a = detail.pointMap().offsetFromIndex(edge.p0);
-                const GeoOffset b = detail.pointMap().offsetFromIndex(edge.p1);
-                if ((a >= 0) && (b >= 0)) {
-                    edges.push_back(GeoEdge(a, b));
-                }
-            }
-            pattern = QString::fromStdString(geoEncodeEdgePattern(detail, edges, true));
-        } else if (selection.type != eGeoComponentObjects) {
-            const GeoAttribClassEnum cls = (selection.type == eGeoComponentPoints) ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
-            const GeoIndexMap& map = detail.indexMap(cls);
-            GeoElementMask mask(std::size_t(std::max<GeoOffset>(0, map.offsetSize())), 0);
-            for (GeoIndex index : selection.elements) {
-                const GeoOffset offset = map.offsetFromIndex(index);
-                if ((offset >= 0) && (std::size_t(offset) < mask.size())) {
-                    mask[std::size_t(offset)] = 1;
-                }
-            }
-            pattern = QString::fromStdString(geoEncodePattern(detail, cls, mask, true));
-        }
+    if (convert && convert->detail()) {
+        pattern = QString::fromStdString(componentSelectionPattern(*convert->detail(), selection));
     }
     setProperty("natronGeoSelection", pattern);
     update();
@@ -8288,9 +8314,7 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
         return;
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, e->modifiers(), e->key())) {
-        if (_imp->selectionActions.createFromSelection) {
-            _imp->selectionActions.createFromSelection(getSelection());
-        }
+        createFromSelection(getSelection());
         e->accept();
 
         return;
@@ -8543,11 +8567,10 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
         QAction* create = menu.addAction(tr(kShortcutDescActionViewer3DCreateFromSelection));
         create->setObjectName(QString::fromUtf8("sceneCreateFromSelection"));
         create->setShortcut(keySequenceOf(kShortcutIDActionViewer3DCreateFromSelection));
-        create->setEnabled(bool(_imp->selectionActions.createFromSelection) && _imp->renderer.hasScene());
+        const bool canCreate = _imp->geometryContext ? bool(_imp->selectionActions.createFromComponents) : bool(_imp->selectionActions.createFromSelection);
+        create->setEnabled(canCreate && _imp->renderer.hasScene());
         QObject::connect(create, &QAction::triggered, this, [this, selection]() {
-            if (_imp->selectionActions.createFromSelection) {
-                _imp->selectionActions.createFromSelection(selection);
-            }
+            createFromSelection(selection);
         });
     }
 

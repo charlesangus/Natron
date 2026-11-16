@@ -891,6 +891,12 @@ public:
     // Picks @p mode, carrying the component selection over to it as setGeoPickMode() does.
     void convertComponentSelection(GeoComponentEnum mode);
 
+    // The component selection carried over to @p type as setGeoPickMode() carries it.
+    static GeoComponentSelection convertedComponentSelection(const GeoDetail& detail, const GeoComponentSelection& selection, GeoComponentEnum type);
+
+    // @p selection as the group pattern that selects it in @p detail; empty when it is empty.
+    static std::string componentSelectionPattern(const GeoDetail& detail, const GeoComponentSelection& selection);
+
     // Combines @p picked with the component selection as select() combines prims.
     void selectComponents(const GeoComponentSelection& picked, SelectionModeEnum mode);
 
@@ -932,12 +938,15 @@ public:
 
     /**
      * @brief What the selection is used for. setOnNodeBlocker says why setOnNode can't take the
-     * paths now, or nothing when it can.
+     * paths now, or nothing when it can. In the geometry context, creating from the selection
+     * calls createFromComponents with the geometry shown, null for none, and the component
+     * selection instead of createFromSelection.
      **/
     struct SelectionActions {
         std::function<QString(const QStringList& paths)> setOnNodeBlocker;
         std::function<void(const QStringList& paths)> setOnNode;
         std::function<void(const QStringList& paths)> createFromSelection;
+        std::function<void(const GeoDetailConstPtr& detail, const GeoComponentSelection& selection)> createFromComponents;
     };
 
     void setSelectionActions(const SelectionActions& actions);
@@ -1052,6 +1061,9 @@ private:
      * group pattern, empty for none) and natronGeoSelectionCount.
      **/
     void refreshComponentState();
+
+    // Hands paths, or in the geometry context the component selection, to the selection actions.
+    void createFromSelection(const QStringList& paths);
 
     // Maps the component selection onto the geometry last synced, for the engine to highlight.
     void refreshComponentHighlight();

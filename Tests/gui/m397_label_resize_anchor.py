@@ -29,9 +29,16 @@ LONG_LABEL = ("a label line that is a good deal wider than the node it sits on\n
 LONG_NAME = "Blur_with_a_much_longer_name_than_the_default_one"
 ODD_WIDTH_LABELS = ["odd width probe " + "abcdefghijklmnop"[:k] for k in range(17)]
 BACKDROP_LABEL = "\n".join("backdrop line %d" % i for i in range(1, 25))
+BACKDROP_LINE = ("one backdrop label line that runs far wider than any default backdrop "
+                 "and must stay on a single line however long it gets")
+BACKDROP_NAME = "Backdrop_whose_name_is_also_much_wider_than_the_default_backdrop_width"
+BACKDROP_GROWN = (1800.0, 500.0)
+BACKDROP_SHRUNK = (60.0, 60.0)
 
 try:
     import NatronEngine
+    from PySide6.QtCore import QRectF
+    from PySide6.QtWidgets import QGraphicsTextItem
 
     import guitest as gt
     from guitest import check, report
@@ -100,6 +107,43 @@ try:
         report("NOTE %s: %r -> %r" % (label, before, after))
         check(abs(after[0] - before[0]) <= TOL and abs(after[1] - before[1]) <= TOL,
               "%s: the top-left stays at (%g, %g) (got (%g, %g))" % (label, before[0], before[1], after[0], after[1]))
+
+    def text_item(node, text):
+        """The graph text item near node whose plain text starts with text. Never call
+        parentItem() here: the wrapper PySide builds for the NodeGui parent deletes the node's
+        graphics item when it is collected."""
+        graph = root_graph()
+        if graph is None:
+            return None
+        x, y, w, h = geometry(node)
+        area = graph.mapFromScene(QRectF(x - 60, y - 60, w + 2000, h + 120)).boundingRect()
+        for it in graph.items(area):
+            if isinstance(it, QGraphicsTextItem) and it.toPlainText().strip().startswith(text[:30]):
+                return it
+        return None
+
+    def laid_out_lines(item):
+        doc = item.document()
+        doc.documentLayout().documentSize()
+        lines = 0
+        block = doc.begin()
+        while block.isValid():
+            lines += block.layout().lineCount()
+            block = block.next()
+        return lines
+
+    def check_unwrapped(label, node, text):
+        item = text_item(node, text)
+        check(item is not None, "%s: the text %r is drawn" % (label, text[:30]))
+        if item is None:
+            return None
+        lines = laid_out_lines(item)
+        check(lines == 1, "%s: %r is laid out on one line (got %d)" % (label, text[:30], lines))
+        r = QRectF(item.sceneBoundingRect())
+        x, y, w, h = geometry(node)
+        check(node_covers(node, r.right() - 2.0, r.center().y()),
+              "%s: the backdrop reaches the end of %r at x %g (backdrop %r)" % (label, text[:30], r.right(), (x, w)))
+        return r
 
     def string_param(node, names):
         for name in names:
@@ -213,6 +257,41 @@ try:
         check(ok, "e-backdrop: the tall label grows the backdrop down past %r (getSize %r -> %r)"
               % (grown_probe, before[2:], after[2:]))
         check_top_left("e-backdrop", before, after)
+
+        gt.section("e-backdrop-single-line")
+        wide = create("Backdrop", 0, 2000)
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        wide_label = string_param(wide, ("Label", "label", "userTextArea"))
+        gt.require(wide_label is not None, "the Backdrop has a label param")
+        before = geometry(wide)
+        wide_label.set(BACKDROP_LINE)
+        wide.setLabel(BACKDROP_NAME)
+        yield ("until", lambda: text_item(wide, BACKDROP_LINE) is not None, REFRESH_TIMEOUT_S)
+        yield ("sleep", SETTLE_MS)
+        after = geometry(wide)
+        report("NOTE e-backdrop-single-line: %r -> %r" % (before, after))
+        line_rect = check_unwrapped("e-backdrop-single-line label", wide, BACKDROP_LINE)
+        check_unwrapped("e-backdrop-single-line name", wide, BACKDROP_NAME)
+        if line_rect is not None:
+            check(after[2] >= line_rect.width(),
+                  "e-backdrop-single-line: the width %g is at least the label's %g" % (after[2], line_rect.width()))
+        check_top_left("e-backdrop-single-line", before, after)
+
+        wide.setSize(*BACKDROP_GROWN)
+        yield ("sleep", SETTLE_MS)
+        grown = geometry(wide)
+        check(abs(grown[2] - BACKDROP_GROWN[0]) <= TOL,
+              "e-backdrop-single-line: a backdrop can still be made wider than its label (%r)" % (grown,))
+        far = (grown[0] + BACKDROP_GROWN[0] - PROBE_MARGIN, grown[1] + BACKDROP_GROWN[1] - PROBE_MARGIN)
+        check(node_covers(wide, *far), "e-backdrop-single-line: the widened backdrop covers %r" % (far,))
+        check_unwrapped("e-backdrop-single-line widened", wide, BACKDROP_LINE)
+
+        wide.setSize(*BACKDROP_SHRUNK)
+        yield ("sleep", SETTLE_MS)
+        report("NOTE e-backdrop-single-line shrunk: %r" % (geometry(wide),))
+        check_unwrapped("e-backdrop-single-line shrunk", wide, BACKDROP_LINE)
+        check_unwrapped("e-backdrop-single-line shrunk name", wide, BACKDROP_NAME)
 
         gt.section("f-odd-width")
         start = geometry(node)

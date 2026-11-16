@@ -256,8 +256,12 @@ try:
         ok = yield ("until", lambda: 0 < count() <= KEPT_POINTS, POLL_TIMEOUT_S)
         check(ok, "numbers past the new point count are dropped (%d of %d points left)" % (count(), KEPT_POINTS))
         yield settle()
-        numbers = [int(n) for n in re.findall(r"\d+", pattern())]
-        check(bool(numbers) and max(numbers) < KEPT_POINTS, "no remaining number reaches the new count (%r)" % pattern())
+        # Every point of the new detail is encoded as "*", which names no number past its count.
+        if pattern() == "*":
+            check(count() == KEPT_POINTS, "no remaining number reaches the new count (%r, %d)" % (pattern(), count()))
+        else:
+            numbers = [int(n) for n in re.findall(r"\d+", pattern())]
+            check(bool(numbers) and max(numbers) < KEPT_POINTS, "no remaining number reaches the new count (%r)" % pattern())
         check(prop("natronGeoPickMode") == "points" and not prop("natronSceneError"), "the mode is kept and the view shows no error (%r)" % (prop("natronSceneError"),))
         shot("m361-selection-deleted.png")
 

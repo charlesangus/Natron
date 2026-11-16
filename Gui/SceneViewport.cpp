@@ -75,6 +75,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Geo/GeoGroupOps.h"
 #include "Engine/Geo/GeoOpUtils.h"
+#include "Engine/Geo/GeoPacked.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Geometry/GeoEdit.h"
@@ -113,6 +114,7 @@
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec2i.h>
 #include <pxr/base/gf/vec3d.h>
+#include <pxr/base/gf/vec4d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/errorMark.h>
 #include <pxr/base/tf/notice.h>
@@ -5106,6 +5108,130 @@ componentsOfPickedFaces(const GeoDisplay& display,
     return componentsOfPrimitives(*convert->detail(), faces.elements, type, viewProjection, width, height, region, nearest);
 }
 
+// Where along the segment from @p from to @p to it enters @p bounds, as a fraction of it; false
+// when it misses them.
+bool
+segmentEntersBounds(const GfVec3d& from,
+                    const GfVec3d& to,
+                    const GeoBounds& bounds,
+                    double* entry)
+{
+    double t0 = 0.;
+    double t1 = 1.;
+    for (int axis = 0; axis < 3; ++axis) {
+        const double d = to[axis] - from[axis];
+        if (d == 0.) {
+            if ((from[axis] < bounds.min[axis]) || (from[axis] > bounds.max[axis])) {
+                return false;
+            }
+            continue;
+        }
+        double a = (bounds.min[axis] - from[axis]) / d;
+        double b = (bounds.max[axis] - from[axis]) / d;
+        if (a > b) {
+            std::swap(a, b);
+        }
+        t0 = std::max(t0, a);
+        t1 = std::min(t1, b);
+        if (t0 > t1) {
+            return false;
+        }
+    }
+    *entry = t0;
+
+    return true;
+}
+
+// The view's stage holds only the outline of a packed USD primitive's bounds, not its source, so
+// the renderer has no faces of it to pick: its solid bounds stand in for them, whatever hides them.
+// With nearest, only the one the region's centre meets first.
+std::vector<GeoIndex>
+packedUsdPrimitivesIn(const GeoDetail& detail,
+                      const double viewProjection[16],
+                      int width,
+                      int height,
+                      const QRectF& region,
+                      bool nearest)
+{
+    std::vector<GeoIndex> out;
+    if ((width <= 0) || (height <= 0)) {
+        return out;
+    }
+    GfMatrix4d toClip(1.);
+    std::copy(viewProjection, viewProjection + 16, toClip.data());
+    double determinant = 0.;
+    const GfMatrix4d fromClip = toClip.GetInverse(&determinant);
+    const QPointF centre = region.center();
+    const double nx = 2. * centre.x() / width - 1.;
+    const double ny = 1. - 2. * centre.y() / height;
+    const auto unproject = [&fromClip](double x, double y, double z, GfVec3d* p) {
+        const GfVec4d h = GfVec4d(x, y, z, 1.) * fromClip;
+        if (h[3] == 0.) {
+            return false;
+        }
+        *p = GfVec3d(h[0] / h[3], h[1] / h[3], h[2] / h[3]);
+
+        return true;
+    };
+    GfVec3d nearPoint, farPoint;
+    const bool hasRay = (determinant != 0.) && unproject(nx, ny, -1., &nearPoint) && unproject(nx, ny, 1., &farPoint);
+    double best = std::numeric_limits<double>::max();
+    detail.primitiveMap().forEachLive([&](GeoIndex number, GeoOffset primitive) {
+        if (detail.primitiveType(primitive) != eGeoPrimitivePackedUSD) {
+            return;
+        }
+        const GeoBounds bounds = geoPackedWorldBounds(detail, primitive);
+        double entry = 0.;
+        const bool underCentre = hasRay && segmentEntersBounds(nearPoint, farPoint, bounds, &entry);
+        if (nearest) {
+            if (underCentre && (entry < best)) {
+                best = entry;
+                out.assign(1, number);
+            }
+
+            return;
+        }
+        bool inRegion = underCentre;
+        QPointF corners[8];
+        bool projected[8];
+        for (int i = 0; i < 8; ++i) {
+            const std::array<double, 3> p { (i & 1) ? bounds.max[0] : bounds.min[0], (i & 2) ? bounds.max[1] : bounds.min[1], (i & 4) ? bounds.max[2] : bounds.min[2] };
+            projected[i] = projectToPixel(viewProjection, p, width, height, &corners[i]);
+            inRegion = inRegion || (projected[i] && region.contains(corners[i]));
+        }
+        for (int i = 0; (i < 8) && !inRegion; ++i) {
+            for (int axis = 1; (axis < 8) && !inRegion; axis <<= 1) {
+                if (!(i & axis) && projected[i] && projected[i | axis]) {
+                    inRegion = segmentMeetsRect(corners[i], corners[i | axis], region);
+                }
+            }
+        }
+        if (inRegion) {
+            out.push_back(number);
+        }
+    });
+
+    return out;
+}
+
+// The packed USD primitives of the one detail the view shows that @p region picks.
+std::vector<GeoIndex>
+pickedPackedUsdPrimitives(const GeoDisplay& display,
+                          const SceneViewportRenderer& renderer,
+                          int width,
+                          int height,
+                          const QRectF& region,
+                          bool nearest)
+{
+    const std::shared_ptr<const GeoUsdConvert> convert = display.componentConvert();
+    double viewProjection[16];
+    if (!convert || !convert->detail() || !renderer.getDrawnView(viewProjection, nullptr, nullptr)) {
+        return std::vector<GeoIndex>();
+    }
+
+    return packedUsdPrimitivesIn(*convert->detail(), viewProjection, width, height, region, nearest);
+}
+
 } // anonymous namespace
 
 // How far from the pointer, in logical pixels, a click finds a point or an edge.
@@ -7099,6 +7225,9 @@ SceneViewport::pickComponentsAt(const QPoint& pos,
     std::vector<GeoViewerLayer::ComponentHit> hits;
     runWithEngineContext([&]() { hits = _imp->renderer.pickComponents(selection.type, x - radius, y - radius, x + radius, y + radius, w, h, true, busy); });
     _imp->geoDisplay->mapComponentHits(hits, true, &selection);
+    if (selection.empty() && (selection.type == eGeoComponentPrimitives) && !(busy && *busy)) {
+        selection.elements = pickedPackedUsdPrimitives(*_imp->geoDisplay, _imp->renderer, w, h, QRectF(x, y, 1, 1), true);
+    }
     if (selection.empty() && (selection.type != eGeoComponentPrimitives) && !(busy && *busy)) {
         std::vector<GeoViewerLayer::ComponentHit> faces;
         runWithEngineContext([&]() { faces = _imp->renderer.pickComponents(eGeoComponentPrimitives, x - radius, y - radius, x + radius, y + radius, w, h, false, busy); });
@@ -7138,6 +7267,12 @@ SceneViewport::pickComponentsIn(const QRect& rect,
     std::vector<GeoViewerLayer::ComponentHit> hits;
     runWithEngineContext([&]() { hits = _imp->renderer.pickComponents(selection.type, left, top, right, bottom, w, h, false, busy); });
     _imp->geoDisplay->mapComponentHits(hits, false, &selection);
+    if ((selection.type == eGeoComponentPrimitives) && !(busy && *busy)) {
+        const std::vector<GeoIndex> packed = pickedPackedUsdPrimitives(*_imp->geoDisplay, _imp->renderer, w, h,
+                                                                       QRectF(left, top, right - left + 1, bottom - top + 1), false);
+        selection.elements.insert(selection.elements.end(), packed.begin(), packed.end());
+        selection.normalize();
+    }
     if ((selection.type != eGeoComponentPrimitives) && !(busy && *busy)) {
         std::vector<GeoViewerLayer::ComponentHit> faces;
         runWithEngineContext([&]() { faces = _imp->renderer.pickComponents(eGeoComponentPrimitives, left, top, right, bottom, w, h, false, busy); });

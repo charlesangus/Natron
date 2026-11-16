@@ -348,6 +348,7 @@ set(GuiTests_SOURCES
     DisplayLegendColour_Test.cpp
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GeoSpreadsheetModel_Test.cpp
     GlobalModeTargeting_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp

@@ -89,6 +89,17 @@ struct GeoSpreadsheetShowResult;
  * into view. Rows are selected as runs of contiguous view rows, through the inverse of the sort and filter
  * order built beside that order. Picked elements the group filter leaves out are counted in the
  * SelectionNote label, which natronGeoSpreadsheetSelectionNote reads, e.g. "12 selected, 3 hidden by filter".
+ *
+ * With a viewer set, a Selected Only button (natronGeoSpreadsheetSelectedOnly reads and sets it) narrows
+ * the rows, on top of the group filter, to the elements of the class shown that the view's selection
+ * names: points and primitives promoted to each other (a primitive needs all its points), edges as their
+ * endpoints or their primitives, vertices by their point. Detail keeps its one row. The rows are built in
+ * the same cancellable build as the filter and sort, from the selection as it was when the build began,
+ * and a change of the view's selection rebuilds. The class shown does not follow the selection then. While
+ * it is on, selecting rows does not write the view's selection, which would shrink the rows to the ones
+ * selected. It is disabled without a viewer, or for a snapshot that is not geometry.
+ *
+ * Child SelectedOnly carries the widget's object name as prefix like the others.
  **/
 class GeoSpreadsheetWidget
     : public QWidget {
@@ -99,6 +110,7 @@ class GeoSpreadsheetWidget
     Q_PROPERTY(QString natronGeoSpreadsheetClass READ getShownClassName)
     Q_PROPERTY(qulonglong natronGeoSpreadsheetCellReads READ getCellReads)
     Q_PROPERTY(QString natronGeoSpreadsheetSelectionNote READ getSelectionNote)
+    Q_PROPERTY(bool natronGeoSpreadsheetSelectedOnly READ getSelectedOnly WRITE setSelectedOnly)
     Q_PROPERTY(bool natronGeoSpreadsheetSortBusy READ getSortBusy)
     Q_PROPERTY(int natronGeoSpreadsheetSortsStarted READ getSortsStarted)
     Q_PROPERTY(int natronGeoSpreadsheetSortsCancelled READ getSortsCancelled)
@@ -121,6 +133,13 @@ public:
 
     // The viewer whose view takes the rows selected; empty for none.
     void setSelectionViewer(const ViewerInstanceWPtr& viewer);
+
+    bool getSelectedOnly() const
+    {
+        return _selectedOnly;
+    }
+
+    void setSelectedOnly(bool on);
 
     qlonglong getShownRows() const;
 
@@ -188,6 +207,9 @@ private:
     void finishPick(quint64 generation,
                     const GeoSpreadsheetPickResult& result);
     QString wantedPattern() const;
+    bool selectedOnlyActive() const;
+    void updateSelectedOnlyEnabled();
+    void rebuildForSelection();
 
     GeoSpreadsheetModel* _model;
     std::array<QToolButton*, kGeoAttribClassCount> _classButtons;
@@ -200,6 +222,7 @@ private:
     QLabel* _busyLabel;
     QLabel* _error;
     QLabel* _selectionNote;
+    QToolButton* _selectedOnlyButton;
     QThread* _thread;
     QObject* _worker;
 
@@ -216,6 +239,8 @@ private:
     QString _shownPattern;
     int _shownColumn = -1;
     bool _shownDescending = false;
+    bool _shownSelectedOnly = false;
+    bool _selectedOnly = false;
 
     ViewerInstanceWPtr _selectionViewer;
     std::shared_ptr<std::atomic<bool>> _pickCancel;

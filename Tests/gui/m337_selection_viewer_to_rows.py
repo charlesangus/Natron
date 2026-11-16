@@ -39,7 +39,7 @@ try:
     from PySide6.QtCore import QEvent, QItemSelection, QItemSelectionModel, QPoint, QPointF, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QComboBox, QTabWidget, QTableView, QWidget
+    from PySide6.QtWidgets import QApplication, QComboBox, QTabWidget, QTableView, QToolButton, QWidget
 
     from guitest import check, finish, plugin_problem, require, run, section, shot, viewer_up, widgets_of
 
@@ -348,6 +348,60 @@ try:
         yield ("sleep", SETTLE_MS)
         shot("m337-viewer-filter-note.png")
 
+    def set_group(text):
+        group = child(QComboBox, SPREADSHEET + "Group")
+        group.setEditText(text)
+        group.lineEdit().editingFinished.emit()
+        return ("until", lambda: not sheet_state("SortBusy"), POLL_TIMEOUT_S)
+
+    def selected_only_section(total, start, end):
+        section("selected only")
+        yield set_group("")
+        yield set_mode(POINTS)
+        ok = yield ("until", lambda: sheet_state("Rows") == total, POLL_TIMEOUT_S)
+        require(ok, "clearing the group shows every row (%r of %r)" % (sheet_state("Rows"), total))
+        button = child(QToolButton, SPREADSHEET + "SelectedOnly")
+        require(button is not None and button.isEnabled(), "the geometry spreadsheet has an enabled Selected Only button")
+        require(not sheet_state("SelectedOnly"), "Selected Only starts off")
+        t = table()
+        model = t.model()
+        t.selectionModel().select(QItemSelection(model.index(0, 0), model.index(2, model.columnCount() - 1)),
+                                  QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        ok = yield ("until", lambda: count() == 3, POLL_TIMEOUT_S)
+        require(ok, "selecting three rows picks three points (%r)" % (pattern(),))
+        picked = picked_numbers()
+        yield ("sleep", SETTLE_MS)
+
+        button.click()
+        ok = yield ("until", lambda: sheet_state("SelectedOnly") and sheet_state("Rows") == 3 and not sheet_state("SortBusy"), POLL_TIMEOUT_S)
+        check(ok, "Selected Only with three points picked shows three rows (%r)" % (sheet_state("Rows"),))
+        listed = {int(model.headerData(r, Qt.Vertical)) for r in range(model.rowCount())}
+        check(listed == picked, "the rows are the picked points (rows %r, picked %r)" % (sorted(listed), sorted(picked)))
+        yield ("sleep", SETTLE_MS)
+        shot("m337-selected-only-points.png")
+
+        t.selectionModel().select(QItemSelection(model.index(0, 0), model.index(0, model.columnCount() - 1)),
+                                  QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        yield ("sleep", SETTLE_MS)
+        check(count() == 3 and sheet_state("Rows") == 3, "selecting a row does not shrink the selection or the rows (picked %r, rows %r)"
+              % (count(), sheet_state("Rows")))
+
+        ordered = sorted(picked)
+        outside = max(picked) + 1
+        yield set_group("%d %d %d" % (ordered[0], ordered[1], outside))
+        ok = yield ("until", lambda: sheet_state("Rows") == 2 and not sheet_state("SortBusy"), POLL_TIMEOUT_S)
+        check(ok, "a group of two picked points and one other shows the two (%r rows)" % (sheet_state("Rows"),))
+        yield ("sleep", SETTLE_MS)
+        shot("m337-selected-only-group.png")
+
+        yield set_group("")
+        button.click()
+        ok = yield ("until", lambda: not sheet_state("SelectedOnly") and sheet_state("Rows") == total and not sheet_state("SortBusy"),
+                    POLL_TIMEOUT_S)
+        check(ok, "turning Selected Only off restores every row (%r of %r)" % (sheet_state("Rows"), total))
+        yield ("sleep", SETTLE_MS)
+        shot("m337-selected-only-off.png")
+
     def objects_section():
         section("objects")
         yield set_mode(OBJECTS)
@@ -383,6 +437,7 @@ try:
         require(10 < half_w < view().width() // 2 - 4 and 10 < half_h < view().height() // 2 - 4,
                 "the cube draws as a square inside the front view")
         start, end = whole_view()
+        total = sheet_state("Rows")
 
         yield from points_section(centre, half_w, half_h)
         yield from primitives_section(start, end)
@@ -390,6 +445,7 @@ try:
         yield from sort_section(start, end)
         yield from echo_section()
         yield from filter_section(start, end)
+        yield from selected_only_section(total, start, end)
         yield from objects_section()
 
     run(steps())

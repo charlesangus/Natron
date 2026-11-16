@@ -138,6 +138,113 @@ groupHelp()
                                     "ranges with a step (0-99:2), attribute tests (@Cd > 0.5), ! to invert and ^ to remove.");
 }
 
+// The rows of @p cls that @p selection names, as a mask in the same storage-offset space as geoSelectElements.
+// Returns false for a source that has no view selection to read; a prim's component highlighting would
+// fill the mask here.
+bool
+selectedRowMask(const GeoSpreadsheetModel::SourcePtr& source,
+                GeoAttribClassEnum cls,
+                const GeoComponentSelection& selection,
+                const std::atomic<bool>& cancelled,
+                GeoElementMask* mask)
+{
+    const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get());
+
+    if (!geometry) {
+        return false;
+    }
+    const GeoDetail& detail = *geometry->detail();
+    const GeoIndexMap& pointMap = detail.pointMap();
+    const GeoIndexMap& primitiveMap = detail.primitiveMap();
+    GeoElementMask points;
+    GeoElementMask primitives;
+    bool havePoints = false;
+    bool havePrimitives = false;
+
+    switch (selection.type) {
+    case eGeoComponentPoints: {
+        points.assign((std::size_t)std::max<GeoOffset>(0, pointMap.offsetSize()), 0);
+        for (const GeoIndex element : selection.elements) {
+            const GeoOffset offset = pointMap.offsetFromIndex(element);
+            if ((offset >= 0) && ((std::size_t)offset < points.size())) {
+                points[(std::size_t)offset] = 1;
+            }
+        }
+        havePoints = true;
+        break;
+    }
+    case eGeoComponentPrimitives: {
+        primitives.assign((std::size_t)std::max<GeoOffset>(0, primitiveMap.offsetSize()), 0);
+        for (const GeoIndex element : selection.elements) {
+            const GeoOffset offset = primitiveMap.offsetFromIndex(element);
+            if ((offset >= 0) && ((std::size_t)offset < primitives.size())) {
+                primitives[(std::size_t)offset] = 1;
+            }
+        }
+        havePrimitives = true;
+        break;
+    }
+    case eGeoComponentEdges: {
+        std::vector<GeoEdge> edges;
+        for (const GeoEdge& edge : selection.edges) {
+            const GeoOffset a = pointMap.offsetFromIndex(edge.p0);
+            const GeoOffset b = pointMap.offsetFromIndex(edge.p1);
+            if ((a >= 0) && (b >= 0)) {
+                edges.push_back(GeoEdge(a, b));
+            }
+        }
+        if (cls == eGeoAttribClassPrimitive) {
+            primitives = geoPromoteEdgesToPrimitives(detail, edges);
+            havePrimitives = true;
+        } else {
+            points = geoPromoteEdgesToPoints(detail, edges);
+            havePoints = true;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    if (cancelled.load()) {
+        return true;
+    }
+    if (!havePoints && !havePrimitives) {
+        mask->clear();
+
+        return true;
+    }
+    if (cls == eGeoAttribClassPrimitive) {
+        *mask = havePrimitives ? std::move(primitives) : geoPromotePointsToPrimitives(detail, points, true);
+
+        return true;
+    }
+    if (!havePoints) {
+        points = geoPromotePrimitivesToPoints(detail, primitives);
+    }
+    if (cls == eGeoAttribClassPoint) {
+        *mask = std::move(points);
+
+        return true;
+    }
+    const GeoIndexMap& vertexMap = detail.vertexMap();
+    const GeoOffset vertexCount = vertexMap.offsetSize();
+    mask->assign((std::size_t)std::max<GeoOffset>(0, vertexCount), 0);
+    for (GeoOffset vertex = 0; vertex < vertexCount; ++vertex) {
+        if (((vertex & 0xFFFF) == 0) && cancelled.load()) {
+            return true;
+        }
+        if (!vertexMap.isLive(vertex)) {
+            continue;
+        }
+        const GeoOffset point = detail.vertexPoint(vertex);
+        if ((point >= 0) && ((std::size_t)point < points.size()) && points[(std::size_t)point]) {
+            (*mask)[(std::size_t)vertex] = 1;
+        }
+    }
+
+    return true;
+}
+
 // Runs on the worker thread. A null order with no error is a cancelled build.
 GeoSpreadsheetBuildResult
 runBuild(const GeoSpreadsheetModel::SourcePtr& source,
@@ -145,6 +252,7 @@ runBuild(const GeoSpreadsheetModel::SourcePtr& source,
          const std::string& pattern,
          int sortColumn,
          bool descending,
+         const GeoComponentSelection* selectedOnly,
          const std::atomic<bool>& cancelled)
 {
     GeoSpreadsheetBuildResult result;
@@ -185,6 +293,22 @@ runBuild(const GeoSpreadsheetModel::SourcePtr& source,
                 }
             }
             filtered = true;
+        }
+    }
+    if (selectedOnly && (cls != eGeoAttribClassDetail)) {
+        GeoElementMask selected;
+        if (selectedRowMask(source, cls, *selectedOnly, cancelled, &selected)) {
+            if (cancelled.load()) {
+                return result;
+            }
+            if (filtered) {
+                for (std::size_t i = 0; i < mask.size(); ++i) {
+                    mask[i] = (mask[i] && (i < selected.size()) && selected[i]) ? 1 : 0;
+                }
+            } else {
+                mask = std::move(selected);
+                filtered = true;
+            }
         }
     }
     result.order = geoSpreadsheetBuildOrder(*source, cls, filtered ? &mask : nullptr, sortColumn, descending, cancelled);
@@ -545,6 +669,7 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
     , _busyLabel(nullptr)
     , _error(nullptr)
     , _selectionNote(nullptr)
+    , _selectedOnlyButton(nullptr)
     , _thread(new QThread(this))
     , _worker(new QObject)
 {
@@ -619,7 +744,17 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
     _selectionNote = new QLabel(filterBar);
     _selectionNote->setObjectName(objectName + QString::fromUtf8("SelectionNote"));
     _selectionNote->hide();
+    _selectedOnlyButton = new QToolButton(filterBar);
+    _selectedOnlyButton->setObjectName(objectName + QString::fromUtf8("SelectedOnly"));
+    _selectedOnlyButton->setText(tr("Selected Only"));
+    _selectedOnlyButton->setCheckable(true);
+    _selectedOnlyButton->setAutoRaise(true);
+    _selectedOnlyButton->setEnabled(false);
+    _selectedOnlyButton->setToolTip(tr("Show only the elements selected in the viewer, within the group filter. "
+                                       "While on, selecting rows does not change the viewer's selection."));
+    QObject::connect(_selectedOnlyButton, &QToolButton::toggled, this, [this](bool on) { setSelectedOnly(on); });
     filterLayout->addWidget(_group, 1);
+    filterLayout->addWidget(_selectedOnlyButton);
     filterLayout->addWidget(_busyLabel);
     filterLayout->addWidget(_selectionNote);
 
@@ -719,6 +854,7 @@ GeoSpreadsheetWidget::setSnapshot(const GeoSpreadsheetModel::SourcePtr& source)
     }
     populateGroups();
     updateSortIndicator();
+    updateSelectedOnlyEnabled();
     if (source) {
         requestBuild(wanted);
         if (_busy) {
@@ -766,20 +902,69 @@ GeoSpreadsheetWidget::clearSelection()
 void
 GeoSpreadsheetWidget::setSelectionViewer(const ViewerInstanceWPtr& viewer)
 {
+    const bool wasActive = selectedOnlyActive();
     for (QMetaObject::Connection& connection : _viewerConnections) {
         QObject::disconnect(connection);
         connection = QMetaObject::Connection();
     }
     _selectionViewer = viewer;
     SceneViewport* viewport = viewportOf(viewer.lock());
+    updateSelectedOnlyEnabled();
     if (!viewport) {
         cancelPick();
         setSelectionNote(QString());
+        if (wasActive) {
+            rebuildForSelection();
+        }
 
         return;
     }
     _viewerConnections[0] = QObject::connect(viewport, &SceneViewport::componentSelectionChanged, this, [this]() { viewerSelectionChanged(); });
     _viewerConnections[1] = QObject::connect(viewport, &SceneViewport::geoPickModeChanged, this, [this](int) { viewerSelectionChanged(); });
+    if (selectedOnlyActive() != wasActive) {
+        rebuildForSelection();
+    }
+}
+
+bool
+GeoSpreadsheetWidget::selectedOnlyActive() const
+{
+    const GeoSpreadsheetModel::SourcePtr source = _model->source();
+
+    return _selectedOnly && source && (_model->attribClass() != eGeoAttribClassDetail)
+        && dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get()) && viewportOf(_selectionViewer.lock());
+}
+
+void
+GeoSpreadsheetWidget::updateSelectedOnlyEnabled()
+{
+    const GeoSpreadsheetModel::SourcePtr source = _model->source();
+    const bool usable = source && dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get()) && viewportOf(_selectionViewer.lock());
+
+    _selectedOnlyButton->setEnabled(usable);
+}
+
+void
+GeoSpreadsheetWidget::setSelectedOnly(bool on)
+{
+    if (on == _selectedOnly) {
+        return;
+    }
+    _selectedOnly = on;
+    {
+        const QSignalBlocker blocker(_selectedOnlyButton);
+        _selectedOnlyButton->setChecked(on);
+    }
+    rebuildForSelection();
+}
+
+void
+GeoSpreadsheetWidget::rebuildForSelection()
+{
+    if (!_model->source()) {
+        return;
+    }
+    requestBuild(wantedPattern(), !_error->text().isEmpty());
 }
 
 void
@@ -796,6 +981,9 @@ void
 GeoSpreadsheetWidget::rowsSelected()
 {
     if (_writingSelection || _showingSelection) {
+        return;
+    }
+    if (selectedOnlyActive()) {
         return;
     }
     setSelectionNote(QString());
@@ -829,6 +1017,11 @@ void
 GeoSpreadsheetWidget::viewerSelectionChanged()
 {
     if (_writingSelection) {
+        return;
+    }
+    if (selectedOnlyActive()) {
+        rebuildForSelection();
+
         return;
     }
     syncFromViewer(true, true);
@@ -1146,7 +1339,8 @@ GeoSpreadsheetWidget::groupSubmitted()
 bool
 GeoSpreadsheetWidget::shownMatchesWanted() const
 {
-    return _shownValid && (_shownColumn == _sortColumn) && (_shownDescending == _descending) && (_shownPattern == _pattern);
+    return _shownValid && (_shownColumn == _sortColumn) && (_shownDescending == _descending) && (_shownPattern == _pattern)
+        && (_shownSelectedOnly == selectedOnlyActive());
 }
 
 void
@@ -1170,7 +1364,7 @@ GeoSpreadsheetWidget::requestBuild(const QString& pattern,
     if (!_model->source()) {
         return;
     }
-    if ((_sortColumn < 0) && pattern.trimmed().isEmpty()) {
+    if ((_sortColumn < 0) && pattern.trimmed().isEmpty() && !selectedOnlyActive()) {
         _pattern = pattern;
         if (!keepError) {
             setError(QString());
@@ -1180,6 +1374,7 @@ GeoSpreadsheetWidget::requestBuild(const QString& pattern,
         _shownPattern = _pattern;
         _shownColumn = -1;
         _shownDescending = _descending;
+        _shownSelectedOnly = false;
 
         return;
     }
@@ -1197,14 +1392,20 @@ GeoSpreadsheetWidget::launchBuild(const QString& pattern,
     const std::string text = pattern.toStdString();
     const int column = _sortColumn;
     const bool descending = _descending;
+    std::shared_ptr<const GeoComponentSelection> selectedOnly;
+    if (selectedOnlyActive()) {
+        if (SceneViewport* viewport = viewportOf(_selectionViewer.lock())) {
+            selectedOnly = std::make_shared<const GeoComponentSelection>(viewport->getComponentSelection());
+        }
+    }
 
     _cancel = cancel;
     _busy = true;
     _pendingPattern = pattern;
     ++_sortsStarted;
     _busyLabel->show();
-    QMetaObject::invokeMethod(_worker, [this, source, cls, text, column, descending, cancel, generation, pattern, keepError]() {
-        GeoSpreadsheetBuildResult result = runBuild(source, cls, text, column, descending, *cancel);
+    QMetaObject::invokeMethod(_worker, [this, source, cls, text, column, descending, selectedOnly, cancel, generation, pattern, keepError]() {
+        GeoSpreadsheetBuildResult result = runBuild(source, cls, text, column, descending, selectedOnly.get(), *cancel);
         // The destructor joins this thread before the widget goes, so the widget outlives this call.
         QMetaObject::invokeMethod(this, [this, generation, result, pattern, keepError]() { finishBuild(generation, result, pattern, keepError); }, Qt::QueuedConnection); }, Qt::QueuedConnection);
 }
@@ -1243,6 +1444,7 @@ GeoSpreadsheetWidget::finishBuild(quint64 generation,
     _shownPattern = _pattern;
     _shownColumn = _sortColumn;
     _shownDescending = _descending;
+    _shownSelectedOnly = selectedOnlyActive();
 }
 
 // A model reset drops the column widths, which the user may have set.

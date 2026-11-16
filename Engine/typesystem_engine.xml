@@ -2550,7 +2550,7 @@
         </modify-function>
     </object-type>
     <object-type name="Roto">
-        <modify-function signature="followVectors(std::list&lt;ItemBase*&gt;,QString,int,int,QString,QString,bool,double,double)">
+        <modify-function signature="followVectors(std::list&lt;ItemBase*&gt;,int,int,QString,QString,bool,double,double)">
             <modify-argument index="return">
                 <replace-type modified-type="PyObject"/>
             </modify-argument>

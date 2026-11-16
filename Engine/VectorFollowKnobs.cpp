@@ -62,6 +62,14 @@
 #define kFollowParamForwardToEndLabel "Follow Forward To End"
 #define kFollowParamForwardToEndHint "Follows the selection from the current frame to the end of the range. When the selection has a key before the current frame, it keeps the current frame as it shows now, and up to a later key it tracks forward from the current frame and backward from that key and blends the two, so the follow meets both exactly. With no key at or before the current frame, it tracks backward from the nearest later key instead. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
 
+#define kFollowParamRangeBackward "followRangeBackward"
+#define kFollowParamRangeBackwardLabel "Follow Range Backward"
+#define kFollowParamRangeBackwardHint "Follows the selection backward over the whole range, from its last frame down to its first, whatever the current frame is. Keys count as for Follow Backward To Start, with the last frame of the range in place of the current frame. Follow Range sets the range. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
+
+#define kFollowParamRangeForward "followRangeForward"
+#define kFollowParamRangeForwardLabel "Follow Range Forward"
+#define kFollowParamRangeForwardHint "Follows the selection forward over the whole range, from its first frame up to its last, whatever the current frame is. Keys count as for Follow Forward To End, with the first frame of the range in place of the current frame. Follow Range sets the range. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
+
 #define kFollowParamRange "followRange"
 #define kFollowParamRangeLabel "Follow Range"
 #define kFollowParamRangeHint "The frames a follow stays within: the project's frame range, or Follow In to Follow Out."
@@ -97,6 +105,12 @@ enum RangeEnum {
     eRangeInOut
 };
 
+enum class FollowSpan {
+    eOneFrame,
+    eToRangeEnd,
+    eWholeRange
+};
+
 VectorFollowModel
 modelFromIndex(int index)
 {
@@ -122,10 +136,12 @@ public:
     RotoCurveInteract* interact;
     const int vectorsInput;
     KnobChoicePtr model;
+    KnobButtonPtr rangeBackward;
     KnobButtonPtr backwardToStart;
     KnobButtonPtr backwardOne;
     KnobButtonPtr forwardOne;
     KnobButtonPtr forwardToEnd;
+    KnobButtonPtr rangeForward;
     KnobChoicePtr range;
     KnobIntPtr in;
     KnobIntPtr out;
@@ -186,14 +202,14 @@ public:
 
     void follow(const VectorFollowParams& shapes,
                 VectorFollowDirection direction,
-                bool toRangeEnd);
-    void followSelection(VectorFollowDirection direction, bool toRangeEnd);
+                FollowSpan span);
+    void followSelection(VectorFollowDirection direction, FollowSpan span);
 };
 
 void
 VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
                                   VectorFollowDirection direction,
-                                  bool toRangeEnd)
+                                  FollowSpan span)
 {
     const NodePtr node = host->getNode();
     if (task && task->isFollowing()) {
@@ -225,11 +241,14 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
     int rangeLast;
     rangeBounds(&rangeFirst, &rangeLast);
     params.direction = direction;
-    if (direction == VectorFollowDirection::eForward) {
+    if (span == FollowSpan::eWholeRange) {
+        params.first = rangeFirst;
+        params.last = rangeLast;
+    } else if (direction == VectorFollowDirection::eForward) {
         params.first = current;
-        params.last = toRangeEnd ? rangeLast : current + 1;
+        params.last = (span == FollowSpan::eToRangeEnd) ? rangeLast : current + 1;
     } else {
-        params.first = toRangeEnd ? rangeFirst : current - 1;
+        params.first = (span == FollowSpan::eToRangeEnd) ? rangeFirst : current - 1;
         params.last = current;
     }
     params.model = modelFromIndex(model->getValue());
@@ -248,7 +267,7 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
 
 void
 VectorFollowControls::Imp::followSelection(VectorFollowDirection direction,
-                                           bool toRangeEnd)
+                                           FollowSpan span)
 {
     VectorFollowParams params;
     params.items = interact->selectedItems;
@@ -274,7 +293,7 @@ VectorFollowControls::Imp::followSelection(VectorFollowDirection direction,
         params.points = selectedPoints();
     }
 
-    follow(params, direction, toRangeEnd);
+    follow(params, direction, span);
 }
 
 VectorFollowControls::VectorFollowControls(EffectInstance* host,
@@ -350,10 +369,12 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
     addToGroup(model, kFollowParamModel, kFollowParamModelLabel, kFollowParamModelHint, true);
     _imp->model = model;
 
+    _imp->rangeBackward = makeButton(kFollowParamRangeBackward, kFollowParamRangeBackwardLabel, kFollowParamRangeBackwardHint, NATRON_ICONS_PATH "lucide/arrow-left-from-line.svg");
     _imp->backwardToStart = makeButton(kFollowParamBackwardToStart, kFollowParamBackwardToStartLabel, kFollowParamBackwardToStartHint, NATRON_ICONS_PATH "lucide/skip-back.svg");
     _imp->backwardOne = makeButton(kFollowParamBackwardOne, kFollowParamBackwardOneLabel, kFollowParamBackwardOneHint, NATRON_ICONS_PATH "lucide/step-back.svg");
     _imp->forwardOne = makeButton(kFollowParamForwardOne, kFollowParamForwardOneLabel, kFollowParamForwardOneHint, NATRON_ICONS_PATH "lucide/step-forward.svg");
     _imp->forwardToEnd = makeButton(kFollowParamForwardToEnd, kFollowParamForwardToEndLabel, kFollowParamForwardToEndHint, NATRON_ICONS_PATH "lucide/skip-forward.svg");
+    _imp->rangeForward = makeButton(kFollowParamRangeForward, kFollowParamRangeForwardLabel, kFollowParamRangeForwardHint, NATRON_ICONS_PATH "lucide/arrow-right-from-line.svg");
 
     KnobBoolPtr reduce = AppManager::createKnob<KnobBool>(host, std::string(kFollowParamReduceLabel));
     reduce->setDefaultValue(false);
@@ -425,19 +446,24 @@ VectorFollowControls::onKnobChanged(KnobI* k)
     }
 
     VectorFollowDirection direction = VectorFollowDirection::eForward;
-    bool toRangeEnd = false;
-    if (k == imp.backwardToStart.get()) {
+    FollowSpan span = FollowSpan::eOneFrame;
+    if (k == imp.rangeBackward.get()) {
         direction = VectorFollowDirection::eBackward;
-        toRangeEnd = true;
+        span = FollowSpan::eWholeRange;
+    } else if (k == imp.backwardToStart.get()) {
+        direction = VectorFollowDirection::eBackward;
+        span = FollowSpan::eToRangeEnd;
     } else if (k == imp.backwardOne.get()) {
         direction = VectorFollowDirection::eBackward;
     } else if (k == imp.forwardToEnd.get()) {
-        toRangeEnd = true;
+        span = FollowSpan::eToRangeEnd;
+    } else if (k == imp.rangeForward.get()) {
+        span = FollowSpan::eWholeRange;
     } else if (k != imp.forwardOne.get()) {
         return k == imp.model.get() || k == imp.reduce.get() || k == imp.tolerance.get() || k == imp.confidenceThreshold.get() || k == imp.in.get() || k == imp.out.get();
     }
 
-    imp.followSelection(direction, toRangeEnd);
+    imp.followSelection(direction, span);
 
     return true;
 }
@@ -451,10 +477,12 @@ VectorFollowControls::getVectorsSource() const
 void
 VectorFollowControls::getShortcuts(std::list<PluginActionShortcut>* shortcuts)
 {
+    shortcuts->push_back(PluginActionShortcut(kFollowParamRangeBackward, kFollowParamRangeBackwardLabel));
     shortcuts->push_back(PluginActionShortcut(kFollowParamBackwardToStart, kFollowParamBackwardToStartLabel));
     shortcuts->push_back(PluginActionShortcut(kFollowParamBackwardOne, kFollowParamBackwardOneLabel));
     shortcuts->push_back(PluginActionShortcut(kFollowParamForwardOne, kFollowParamForwardOneLabel));
     shortcuts->push_back(PluginActionShortcut(kFollowParamForwardToEnd, kFollowParamForwardToEndLabel));
+    shortcuts->push_back(PluginActionShortcut(kFollowParamRangeForward, kFollowParamRangeForwardLabel));
 }
 
 bool
@@ -520,7 +548,7 @@ VectorFollowControls::onItemMenuActionTriggered(const std::string& actionId,
             params.items.push_back(drawable);
         }
     }
-    _imp->follow(params, VectorFollowDirection::eForward, true);
+    _imp->follow(params, VectorFollowDirection::eForward, FollowSpan::eToRangeEnd);
 }
 
 NATRON_NAMESPACE_EXIT

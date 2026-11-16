@@ -99,6 +99,35 @@ try:
         shot("m219-viewer-row-follow.png", "Roto, Per Point, Forward To End pressed in the viewer row at frame %d: frame %d, largest error %.3f px (known pan %d,%d px a frame)"
              % (START, MAIN_LAST, worst, PAN_U, PAN_V))
 
+    def section_range(scene):
+        gt.section("range")
+        set_project_range(START, MAIN_LAST)
+        set_choice(scene.roto, "followRange", "project")
+        reset_shapes(scene.ctx)
+        ensure_source(scene.roto, scene.gen)
+        set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
+        bez = new_shape(scene.ctx)
+        p0 = [pos(bez, i, START) for i in range(POINTS)]
+        select_shapes([bez])
+        yield from go_to(MAIN_LAST)
+        yield from run_follow(scene, "followRangeForward", "range, Per Point, Follow Range Forward pressed at frame %d" % MAIN_LAST)
+        check_per_point_follow(bez, p0, "range forward")
+        keys = keys_of(bez)
+        expected = [float(f) for f in range(START, MAIN_LAST + 1)]
+        check(keys == expected, "range forward: the shape is keyed on every frame of the range and nowhere else (keys %r)" % (keys,))
+
+        reset_shapes(scene.ctx)
+        bez = keep(scene.ctx.createRectangle(SQ_X, SQ_Y, SQ_SIZE, MAIN_LAST))
+        last = [pos(bez, i, MAIN_LAST) for i in range(POINTS)]
+        select_shapes([bez])
+        yield from go_to(START)
+        yield from run_follow(scene, "followRangeBackward", "range, Per Point, Follow Range Backward pressed at frame %d" % START)
+        worst = max_deviation(bez, list(range(START, MAIN_LAST + 1)),
+                              lambda t, i: shifted(last[i], *[a - b for a, b in zip(known_shift(t), known_shift(MAIN_LAST))]))
+        check(worst <= POS_TOL, "range backward: every point is within %.2f px of the known position (largest error %.4f)" % (POS_TOL, worst))
+        keys = keys_of(bez)
+        check(keys == expected, "range backward: the shape is keyed on every frame of the range and nowhere else (keys %r)" % (keys,))
+
     def right_click_item(tree, item):
         """Right-clicks the item's label. The panel's tree only opens its menu for the label column; a click on
         any other column of a selected row toggles that column instead, and visualItemRect() spans every column."""
@@ -452,6 +481,7 @@ try:
         scene = yield from start_scene()
         yield from section_rows_roto(scene)
         yield from section_viewer_row(scene)
+        yield from section_range(scene)
         yield from section_panel_entry(scene)
         yield from section_models(scene)
         yield from section_bridge(scene)

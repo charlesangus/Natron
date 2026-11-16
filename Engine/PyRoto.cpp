@@ -883,7 +883,6 @@ followHost(const RotoCurveContextPtr& context)
 
 PyObject*
 Roto::followVectors(const std::list<ItemBase*>& items,
-                    const QString& source,
                     int first,
                     int last,
                     const QString& direction,
@@ -934,10 +933,13 @@ Roto::followVectors(const std::list<ItemBase*>& items,
         return raiseValueError("model must be \"perPoint\", \"translate\", \"affine\" or \"perspective\", not \"" + model.toStdString() + "\".");
     }
 
-    params.source = host->getApp()->getNodeByFullySpecifiedName(source.toStdString());
+    params.source = running ? running->getVectorsSource() : NodePtr();
+    if (!params.source) {
+        return raiseValueError("Connect the " kVectorFollowInputLabel " input first.");
+    }
     std::string error;
     if (!VectorSampler::checkSource(params.source, host, first, params.direction, &error)) {
-        return raiseValueError(source.toStdString() + ": " + error);
+        return raiseValueError(params.source->getFullyQualifiedName() + ": " + error);
     }
     params.first = first;
     params.last = last;

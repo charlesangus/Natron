@@ -73,6 +73,8 @@ ABORT_AFTER_KEYS = 4
 
 HINTS = {
     "model": "How a shape follows the vectors",
+    "rangeBackward": "backward over the whole range",
+    "rangeForward": "forward over the whole range",
     "backwardToStart": "back to the start of the range",
     "backwardOne": "Follows the selection one frame back",
     "forwardOne": "Follows the selection one frame forward",
@@ -81,8 +83,10 @@ HINTS = {
     "tolerance": "How far, in pixels, removing keys",
     "threshold": "A vector with less confidence than this",
 }
-BUTTON_KEYS = ["backwardToStart", "backwardOne", "forwardOne", "forwardToEnd"]
+BUTTON_KEYS = ["rangeBackward", "backwardToStart", "backwardOne", "forwardOne", "forwardToEnd", "rangeForward"]
 BUTTON_LABELS = {
+    "rangeBackward": "Follow Range Backward",
+    "rangeForward": "Follow Range Forward",
     "backwardToStart": "Follow Backward To Start",
     "backwardOne": "Follow Backward One",
     "forwardOne": "Follow Forward One",

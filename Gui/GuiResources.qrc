@@ -72,8 +72,10 @@
         <file>Resources/Fonts/DroidSans-Bold.ttf</file>
         <file>Resources/Fonts/DroidSans.ttf</file>
         <file>Resources/Icons/lucide/aperture.svg</file>
+        <file>Resources/Icons/lucide/arrow-left-from-line.svg</file>
         <file>Resources/Icons/lucide/arrow-left-right.svg</file>
         <file>Resources/Icons/lucide/arrow-left.svg</file>
+        <file>Resources/Icons/lucide/arrow-right-from-line.svg</file>
         <file>Resources/Icons/lucide/arrow-right-to-line.svg</file>
         <file>Resources/Icons/lucide/arrow-right.svg</file>
         <file>Resources/Icons/lucide/arrow-up.svg</file>

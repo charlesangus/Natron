@@ -313,10 +313,12 @@ TEST_F(SplineWarpFollowVectorsTest, TheVectorsInputFeedsOnlyTheFollowAndShowsIts
 
     const char* viewerKnobs[] = {
         "followModel",
+        "followRangeBackward",
         "followBackwardToStart",
         "followBackwardOne",
         "followForwardOne",
         "followForwardToEnd",
+        "followRangeForward",
         "followReduce",
         "followTolerance",
         "followConfidenceThreshold",

@@ -204,10 +204,9 @@ public:
     BezierCurve* createRectangle(double x, double y, double size, double time);
 
     /**
-     * @brief Moves each item with the motion vectors of the node source, a fully qualified name,
-     * over first..last, and returns once done, as one undo step. direction is "forward" or
-     * "backward", model is "perPoint", "translate", "affine" or "perspective". Between two keys, it
-     * tracks both ways and blends the two so it meets both exactly. The frame a follow starts from,
+     * @brief Moves each item with the motion vectors connected to the node's Vectors input over
+     * first..last, and returns once done, as one undo step. direction is "forward" or "backward",
+     * model is "perPoint", "translate", "affine" or "perspective". Between two keys, it tracks both ways and blends the two so it meets both exactly. The frame a follow starts from,
      * first going forward and last going backward, counts as a key when it is unkeyed but the item
      * has a key before it, going forward, or after it, going backward; then it keeps what it shows
      * there. Otherwise it tracks back to that frame from the nearest key ahead. A key is one of the
@@ -219,12 +218,11 @@ public:
      * layer for, as {"direction": "forward" or "backward", "reason": "lowConfidence",
      * "unreadable" or "noLayer", "frame": the last it reached, "otherOnly": (first, last) or None,
      * the frames the other pass carried alone}; unfollowed lists the frames between two keys that
-     * neither pass reached. Raises ValueError when source has no forward motion layer, has no
-     * backward one for a backward follow, or depends on this node, and for a direction or model it
-     * does not know.
+     * neither pass reached. Raises ValueError when the Vectors input is not connected, when the node
+     * there has no forward motion layer, has no backward one for a backward follow, or depends on
+     * this node, and for a direction or model it does not know.
      **/
     PyObject* followVectors(const std::list<ItemBase*>& items,
-                            const QString& source,
                             int first,
                             int last,
                             const QString& direction,

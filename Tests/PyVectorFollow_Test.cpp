@@ -216,13 +216,16 @@ public:
                      "assert raised, 'no ValueError'\n";
     }
 
+    // Connects source to the Vectors input, which the call reads.
     std::string followCall(const NodePtr& source,
                            const char* direction,
                            const char* model,
                            int first = 5,
                            int last = 25) const
     {
-        return "roto.followVectors([shape], \"" + source->getFullyQualifiedName() + "\", " + std::to_string(first) + ", " + std::to_string(last) + ", \"" + direction + "\", \"" + model + "\")";
+        EXPECT_TRUE(_roto->replaceInput(source, vectorsInputOf(_roto)));
+
+        return "roto.followVectors([shape], " + std::to_string(first) + ", " + std::to_string(last) + ", \"" + direction + "\", \"" + model + "\")";
     }
 
     FollowPoint positionAt(double time) const
@@ -250,6 +253,58 @@ public:
         return follow;
     }
 
+    /*
+     * Presses the named follow button with the shape selected, Follow Range set to in..out and the
+     * timeline at current, and waits for the follow to end. False when it did not start or end.
+     */
+    bool runFollowButton(const char* name,
+                         int in,
+                         int out,
+                         int current)
+    {
+        VectorFollowControls* follow = followControlsOf(_roto);
+        KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(_roto->getKnobByName(name));
+        KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followRange"));
+        KnobIntPtr inKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followIn"));
+        KnobIntPtr outKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followOut"));
+        if (!follow || !button || !range || !inKnob || !outKnob || !_roto->replaceInput(_generator, vectorsInputOf(_roto))) {
+            return false;
+        }
+        range->setValue(1, ViewSpec::all(), 0);
+        inKnob->setValue(in, ViewSpec::all(), 0);
+        outKnob->setValue(out, ViewSpec::all(), 0);
+        getApp()->getTimeLine()->seekFrame(current, false, NULL, eTimelineChangeReasonOtherSeek);
+        _roto->getCurveContext()->select(_bezier, RotoItem::eSelectionReasonSettingsPanel);
+        button->trigger();
+        if (!follow->isFollowing()) {
+            return false;
+        }
+        for (int i = 0; i < 6000 && follow->isFollowing(); ++i) {
+            QCoreApplication::processEvents();
+            QThread::msleep(10);
+        }
+
+        return !follow->isFollowing();
+    }
+
+    // keys outside first..last, and every frame of first..last.
+    static std::set<double> keysWithRange(const std::set<double>& keys,
+                                          int first,
+                                          int last)
+    {
+        std::set<double> result;
+        for (double key : keys) {
+            if ((key < first) || (key > last)) {
+                result.insert(key);
+            }
+        }
+        for (int frame = first; frame <= last; ++frame) {
+            result.insert(frame);
+        }
+
+        return result;
+    }
+
     std::set<double> keyTimes() const
     {
         std::set<double> keys;
@@ -266,11 +321,12 @@ public:
 
 TEST_F(PyVectorFollowTest, FollowsReducesAndReports)
 {
-    expectScriptPasses("report = roto.followVectors([shape], \"" + _generator->getFullyQualifiedName() + "\", 5, 25, \"forward\", \"perPoint\", True, 0.5, 0.5)\n"
-                                                                                                         "assert shape.getScriptName() in report, str(report)\n"
-                                                                                                         "entry = report[shape.getScriptName()]\n"
-                                                                                                         "assert entry['stopFrame'] is None, str(entry)\n"
-                                                                                                         "assert isinstance(entry['inferred'], list), str(entry)\n");
+    ASSERT_TRUE(_roto->connectInput(_generator, vectorsInputOf(_roto)));
+    expectScriptPasses("report = roto.followVectors([shape], 5, 25, \"forward\", \"perPoint\", True, 0.5, 0.5)\n"
+                       "assert shape.getScriptName() in report, str(report)\n"
+                       "entry = report[shape.getScriptName()]\n"
+                       "assert entry['stopFrame'] is None, str(entry)\n"
+                       "assert isinstance(entry['inferred'], list), str(entry)\n");
 
     double x = 0.;
     double y = 0.;
@@ -381,10 +437,19 @@ TEST_F(PyVectorFollowTest, SourceWithoutLayersRaises)
     expectScriptPasses(expectValueError(followCall(_texture, "forward", "perPoint")));
 }
 
-TEST_F(PyVectorFollowTest, SourceDownstreamOfTheHostRaises)
+TEST_F(PyVectorFollowTest, ADisconnectedVectorsInputRaises)
+{
+    ASSERT_FALSE(_roto->getInput(vectorsInputOf(_roto)));
+    const std::set<double> before = keyTimes();
+    expectScriptPasses(expectValueError("roto.followVectors([shape], 5, 25, \"forward\", \"perPoint\")"));
+    EXPECT_EQ(keyTimes(), before);
+}
+
+TEST_F(PyVectorFollowTest, ASourceDownstreamOfTheHostCannotBeConnected)
 {
     const NodePtr cyclic = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, _roto);
-    expectScriptPasses(expectValueError(followCall(cyclic, "forward", "perPoint")));
+    EXPECT_FALSE(_roto->connectInput(cyclic, vectorsInputOf(_roto)));
+    expectScriptPasses(expectValueError("roto.followVectors([shape], 5, 25, \"forward\", \"perPoint\")"));
 }
 
 TEST_F(PyVectorFollowTest, UnknownNamesRaise)
@@ -438,6 +503,38 @@ TEST_F(PyVectorFollowTest, APanelFollowRunsInTheBackgroundAndLeavesItsReport)
                        "assert not roto.isFollowingVectors()\n");
 }
 
+TEST_F(PyVectorFollowTest, FollowRangeForwardKeysTheWholeRangeFromItsFirstFrame)
+{
+    const std::set<double> before = keyTimes();
+    const FollowPoint start = positionAt(8.);
+    ASSERT_TRUE(runFollowButton("followRangeForward", 8, 14, 3)) << "the follow was refused or did not end";
+
+    EXPECT_EQ(keyTimes(), keysWithRange(before, 8, 14));
+    EXPECT_DOUBLE_EQ(positionAt(8.).x, start.x);
+    EXPECT_DOUBLE_EQ(positionAt(8.).y, start.y);
+    EXPECT_NEAR(positionAt(14.).x, start.x + kShiftX * 6., 2. * kFollowTolerance);
+    EXPECT_NEAR(positionAt(14.).y, start.y + kShiftY * 6., 2. * kFollowTolerance);
+    VectorFollowReport report;
+    ASSERT_TRUE(followControlsOf(_roto)->getLastReport(&report));
+    EXPECT_TRUE(isCleanVectorFollowReport(report)) << formatVectorFollowReport(report);
+}
+
+TEST_F(PyVectorFollowTest, FollowRangeBackwardKeysTheWholeRangeFromItsLastFrame)
+{
+    const std::set<double> before = keyTimes();
+    const FollowPoint start = positionAt(14.);
+    ASSERT_TRUE(runFollowButton("followRangeBackward", 8, 14, 20)) << "the follow was refused or did not end";
+
+    EXPECT_EQ(keyTimes(), keysWithRange(before, 8, 14));
+    EXPECT_DOUBLE_EQ(positionAt(14.).x, start.x);
+    EXPECT_DOUBLE_EQ(positionAt(14.).y, start.y);
+    EXPECT_NEAR(positionAt(8.).x, start.x - kShiftX * 6., 2. * kFollowTolerance);
+    EXPECT_NEAR(positionAt(8.).y, start.y - kShiftY * 6., 2. * kFollowTolerance);
+    VectorFollowReport report;
+    ASSERT_TRUE(followControlsOf(_roto)->getLastReport(&report));
+    EXPECT_TRUE(isCleanVectorFollowReport(report)) << formatVectorFollowReport(report);
+}
+
 TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnlyWhileConnected)
 {
     VectorFollowControls* follow = followControlsOf(_roto);
@@ -451,10 +548,12 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnly
 
     const char* viewerKnobs[] = {
         "followModel",
+        "followRangeBackward",
         "followBackwardToStart",
         "followBackwardOne",
         "followForwardOne",
         "followForwardToEnd",
+        "followRangeForward",
         "followReduce",
         "followTolerance",
         "followConfidenceThreshold",
@@ -467,7 +566,7 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnly
             EXPECT_EQ(knob->getInViewerContextSecret(), secret) << name;
         }
     };
-    for (const char* name : { "followBackwardToStart", "followBackwardOne", "followForwardOne", "followForwardToEnd" }) {
+    for (const char* name : { "followRangeBackward", "followBackwardToStart", "followBackwardOne", "followForwardOne", "followForwardToEnd", "followRangeForward" }) {
         EXPECT_TRUE(_roto->getKnobByName(name)->getInViewerContextLabel().empty()) << name;
     }
 

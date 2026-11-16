@@ -129,13 +129,16 @@ item's transform, setting keys when auto-keying is on. Editing the curve's point
 handle where they overlap.
 
 **Follow Vectors:** the viewer's follow row and the Follow Vectors group (Follow Model, Follow
-Backward To Start, Follow Backward One, Follow Forward One, Follow Forward To End, Follow Range,
-Follow In, Follow Out, Follow Reduce, Follow Tolerance, Follow Confidence Threshold) key the
+Range Backward, Follow Backward To Start, Follow Backward One, Follow Forward One, Follow Forward
+To End, Follow Range Forward, Follow Range, Follow In, Follow Out, Follow Reduce, Follow Tolerance,
+Follow Confidence Threshold) key the
 selection along the motion vectors connected to the Vectors input, such as a VectorGenerator's, as
 in Roto. The Vectors input needs the forward motion layer, and the backward one for following
 backward; only the follow reads it, so it never changes the render. The viewer shows the follow
 row only while the Vectors input is connected; its buttons are icons, and their tool tips name
-the action and its keyboard shortcut, which the Shortcut Editor sets. Any
+the action and its keyboard shortcut, which the Shortcut Editor sets. Follow Range Forward and
+Follow Range Backward follow over the whole of Follow Range from its first or last frame, whatever
+the current frame is. Any
 selected curve follows, source or destination: following one end of a link leaves the other
 curve where it is, and the link stays. A correspondence selected with the correspondence tool
 follows too, keyed at its own frames: each end moves with the picture under it and is keyed where
@@ -161,8 +164,10 @@ frames already followed, with no further message.
 `node.getSplineWarp()` returns the links, boundaries, cookie cutters, layer amounts and transform
 links of the node's curves. The curves themselves are made and edited through
 `node.getRotoContext()`, and each curve's transform through its parameters (`curve.getParam("translate")`).
-The context's `followVectors(...)`, `isFollowingVectors()` and `getLastFollowReport()` work as on
-Roto, for curves; correspondences follow only from the viewer.
+The context's `followVectors(items, first, last, direction, model, reduce=False, tolerance=0.5,
+confidenceThreshold=0.5)`, `isFollowingVectors()` and `getLastFollowReport()` work as on Roto, for
+curves: `followVectors` reads the Vectors input and raises ValueError while it is not connected.
+Correspondences follow only from the viewer.
 
 - `link(source, destination, duplicate=False)`, `unlink(curve)`, `getLink(curve)`, `getLinks()`
 - `setBoundary(curve, on)`, `isBoundary(curve)`: boundaries, closed unlinked curves only. Set the

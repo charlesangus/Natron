@@ -26,7 +26,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QKeyEvent, QMouseEvent
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QGraphicsLineItem
 
     import guitest as gt
     from guitest import check, report
@@ -96,6 +96,37 @@ try:
         send_mouse(vp, QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton, ctrl)
         send_key(graph, QEvent.KeyRelease, Qt.Key_Control, Qt.NoModifier)
 
+    def bend_point(graph, src, dst):
+        """The scene position of the bend point of the pipe from src to dst, from the Edge item.
+        Edge::initLineNow() sets the item's line from dst's boundary to src's centre; the bend
+        point (Edge::middlePoint, grabbed within 10 scene units by Edge::isNearbyBendPoint) is the
+        midpoint of the part of that line between the two node boundaries."""
+        sx, sy, sw, sh = box(src)
+        src_c = QPointF(sx + sw / 2.0, sy + sh / 2.0)
+        for item in graph.scene().items():
+            if not isinstance(item, QGraphicsLineItem):
+                continue
+            line = item.line()
+            p1 = item.mapToScene(line.p1())
+            p2 = item.mapToScene(line.p2())
+            if (p2 - src_c).manhattanLength() > 3.0:
+                continue
+            dx, dy, dw, dh = box(dst)
+            if not (dx - 3.0 <= p1.x() <= dx + dw + 3.0 and dy - 3.0 <= p1.y() <= dy + dh + 3.0):
+                continue
+            # Walk from the source centre towards the destination boundary until leaving the source box.
+            d = p1 - p2
+            tmin = 1.0
+            if abs(d.x()) > 1e-9:
+                tmin = min(tmin, (sw / 2.0) / abs(d.x()))
+            if abs(d.y()) > 1e-9:
+                tmin = min(tmin, (sh / 2.0) / abs(d.y()))
+            leave = p2 + d * tmin
+            mid = (leave + p1) / 2.0
+            report("NOTE pipe item line %r -> %r, leaves the source at %r" % ((p1.x(), p1.y()), (p2.x(), p2.y()), (leave.x(), leave.y())))
+            return (mid.x(), mid.y())
+        return None
+
     def steps():
         ok = yield ("until", lambda: root_graph() is not None, STARTUP_TIMEOUT_S)
         gt.require(ok, "node graph widget is up")
@@ -115,10 +146,10 @@ try:
         yield ("sleep", SETTLE_MS)
         sx, sy, sw, sh = box(source)
         dx, dy, dw, dh = box(dest)
-        bend = (sx + sw / 2.0, (sy + sh + dy) / 2.0)
-        report("NOTE source %r, dest %r, bend point %r" % (box(source), box(dest), bend))
-
         graph = root_graph()
+        bend = bend_point(graph, source, dest)
+        gt.require(bend is not None, "a-insert: found the Constant -> Blur pipe item in the graph scene")
+        report("NOTE source %r, dest %r, bend point %r" % (box(source), box(dest), bend))
         view_at(graph, bend)
         start = to_vp(graph, bend)
         end = to_vp(graph, (bend[0] + DOT_DRAG[0], bend[1] + DOT_DRAG[1]))

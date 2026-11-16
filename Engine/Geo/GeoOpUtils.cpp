@@ -652,6 +652,129 @@ geoSelectElements(const GeoDetail& detail,
     return true;
 }
 
+std::string
+geoEncodePattern(const GeoDetail& detail,
+                 GeoAttribClassEnum cls,
+                 const GeoElementMask& mask,
+                 bool emptyMeansEverything)
+{
+    const GeoIndexMap& map = detail.indexMap(cls);
+    std::vector<GeoIndex> numbers;
+    map.forEachLiveRun([&](GeoIndex index, GeoOffset offset, GeoOffset count) {
+        for (GeoOffset i = 0; i < count; ++i) {
+            const std::size_t at = std::size_t(offset + i);
+            if (at < mask.size() && mask[at]) {
+                numbers.push_back(index + GeoIndex(i));
+            }
+        }
+    });
+    if (numbers.empty()) {
+        return emptyMeansEverything ? std::string() : std::string("^*");
+    }
+    if (numbers.size() > 1 && GeoIndex(numbers.size()) == map.size()) {
+        return "*";
+    }
+    std::string out;
+    const std::size_t n = numbers.size();
+    std::size_t i = 0;
+    while (i < n) {
+        std::size_t last = i;
+        GeoIndex step = 0;
+        if (i + 1 < n) {
+            step = numbers[i + 1] - numbers[i];
+            last = i + 1;
+            while (last + 1 < n && numbers[last + 1] - numbers[last] == step) {
+                ++last;
+            }
+        }
+        if (!out.empty()) {
+            out += ' ';
+        }
+        if (last - i + 1 >= 3) {
+            out += std::to_string(numbers[i]) + '-' + std::to_string(numbers[last]);
+            if (step != 1) {
+                out += ':' + std::to_string(step);
+            }
+            i = last + 1;
+        } else {
+            out += std::to_string(numbers[i]);
+            ++i;
+        }
+    }
+
+    return out;
+}
+
+std::string
+geoEncodeEdgePattern(const GeoDetail& detail,
+                     std::span<const GeoEdge> edges,
+                     bool emptyMeansEverything)
+{
+    const GeoIndexMap& points = detail.pointMap();
+    std::vector<std::pair<GeoIndex, GeoIndex>> pairs;
+    pairs.reserve(edges.size());
+    for (const GeoEdge& e : edges) {
+        if (e.p0 >= 0 && e.p1 >= 0 && points.isLive(e.p0) && points.isLive(e.p1) && e.p0 != e.p1) {
+            pairs.emplace_back(points.indexFromOffset(e.p0), points.indexFromOffset(e.p1));
+        }
+    }
+    std::sort(pairs.begin(), pairs.end());
+    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+    if (pairs.empty()) {
+        return emptyMeansEverything ? std::string() : std::string("^*");
+    }
+
+    // Each entry of a point's list is (neighbour, edge); the lists come out ascending because
+    // the pairs are sorted and element numbers follow offset order.
+    std::vector<std::vector<std::pair<GeoIndex, std::size_t>>> adjacency(std::size_t(points.size()));
+    for (std::size_t e = 0; e < pairs.size(); ++e) {
+        adjacency[std::size_t(pairs[e].first)].emplace_back(pairs[e].second, e);
+        adjacency[std::size_t(pairs[e].second)].emplace_back(pairs[e].first, e);
+    }
+    std::vector<char> used(pairs.size(), 0);
+    std::vector<std::size_t> cursor(adjacency.size(), 0);
+    std::vector<std::size_t> remaining(adjacency.size(), 0);
+    for (std::size_t v = 0; v < adjacency.size(); ++v) {
+        remaining[v] = adjacency[v].size();
+    }
+
+    std::string out;
+    auto walkFrom = [&](std::size_t start) {
+        std::string path = "p" + std::to_string(start);
+        std::size_t current = start;
+        for (;;) {
+            auto& list = adjacency[current];
+            std::size_t& at = cursor[current];
+            while (at < list.size() && used[list[at].second]) {
+                ++at;
+            }
+            if (at == list.size()) {
+                break;
+            }
+            used[list[at].second] = 1;
+            --remaining[current];
+            --remaining[std::size_t(list[at].first)];
+            current = std::size_t(list[at].first);
+            path += '-' + std::to_string(current);
+        }
+        if (!out.empty()) {
+            out += ' ';
+        }
+        out += path;
+    };
+    // Starting at an odd-degree point first keeps the path count at its minimum: a walk from
+    // one can only end at another, so loops are left for the pass that follows.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (std::size_t v = 0; v < adjacency.size(); ++v) {
+            while (remaining[v] > 0 && (pass == 1 || (remaining[v] & 1))) {
+                walkFrom(v);
+            }
+        }
+    }
+
+    return out;
+}
+
 std::optional<GeoAttributeDesc>
 geoPromotedDesc(const GeoAttributeDesc& a,
                 const GeoAttributeDesc& b)

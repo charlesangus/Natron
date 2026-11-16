@@ -76,6 +76,7 @@ set(Tests_SOURCES
     GeoKernelTopology_Test.cpp
     GeoMerge_Test.cpp
     GeoNormals_Test.cpp
+    GeoOpUtils_Test.cpp
     GeoPacked_Test.cpp
     GeoPrimitive_Test.cpp
     GeoPython_Test.cpp

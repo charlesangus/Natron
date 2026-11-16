@@ -136,6 +136,29 @@ bool geoSelectElements(const GeoDetail& detail,
                        GeoElementMask* mask,
                        std::string* error);
 
+/**
+ * @brief The compact pattern that geoSelectElements() reads back as @p mask: ascending
+ * element numbers (not storage offsets, so tombstones are skipped), runs written "A-B", regular
+ * strides "A-B:step", and "*" when every live element is selected. A term is only coalesced
+ * from three elements up. An empty selection is "" when @p emptyMeansEverything (the caller
+ * reads a blank pattern as every element) and "^*" otherwise, which removes everything from a
+ * selection that is already empty.
+ **/
+std::string geoEncodePattern(const GeoDetail& detail,
+                             GeoAttribClassEnum cls,
+                             const GeoElementMask& mask,
+                             bool emptyMeansEverything = false);
+
+/**
+ * @brief The pattern that GeoGroup::selectEdges() reads back as @p edges: point paths such as
+ * "p3-4-5" over point element numbers, edges that share endpoints chained into one path and a
+ * closed loop written as one path that returns to its start. Edges with a dead endpoint are
+ * dropped. The empty set follows the same "" / "^*" rule as geoEncodePattern().
+ **/
+std::string geoEncodeEdgePattern(const GeoDetail& detail,
+                                 std::span<const GeoEdge> edges,
+                                 bool emptyMeansEverything = false);
+
 /** @brief Calls f(edge, primitive) for each edge of each live polygon and polyline, edges repeating where primitives share them. */
 template <typename F>
 void

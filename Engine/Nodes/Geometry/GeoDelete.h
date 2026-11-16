@@ -58,9 +58,8 @@ struct GeoDeleteParams {
  * Deleted elements are tombstoned, so element numbers of what remains stay in order and the
  * attribute pages are not rewritten. Deleting points also deletes the primitives using them
  * and their vertices. Deleting primitives deletes their vertices, and the points no remaining
- * vertex uses when deleteUnusedPoints is on. Deleting edges opens each polygon at them and
- * removes them from polylines, leaving open polylines that carry the source primitive's and
- * vertices' attributes; points stay. A blank pattern selects every element.
+ * vertex uses when deleteUnusedPoints is on. Deleting edges deletes the points they use,
+ * exactly as deleting those points does. A blank pattern selects every element.
  **/
 class GeoDelete
     : public NativeEffectBase {

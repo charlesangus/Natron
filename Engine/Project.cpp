@@ -3193,11 +3193,9 @@ Project::onKnobValueChanged(KnobI* knob,
     }
 
     if ( knob == _imp->viewsList.get() ) {
-        /**
-         * All cache entries are linked to a view index which may no longer be correct since the user changed the project settings.
-         * The only way to overcome this is to wipe the cache.
-         **/
-        appPTR->clearAllCaches();
+        // View names are in the project digest, so every node's key has just moved and nothing cached
+        // can be served for this project any more. Files stay for the sessions that can still use them.
+        appPTR->clearAllCachesInRam();
 
         std::vector<std::string> viewNames = getProjectViewNames();
         getApp()->setupViewersForViews(viewNames);
@@ -3858,7 +3856,8 @@ Project::getContentDigest() const
         if (_imp->contentDigestValid && (_imp->contentDigestKnobsGeneration == knobsGeneration) && (_imp->contentDigestFormatsGeneration == formatsGeneration) && (_imp->contentDigestLayers == layers) && (_imp->contentDigestOCIOSource == ocioSource) && (_imp->contentDigestRenderSettings == renderSettings)) {
             digest = _imp->contentDigest;
         } else {
-            digest = computeContentDigestWithoutFileStamps(layers, ocioSource, renderSettings);
+            ContentHasher::SaltScope salt;
+            digest = ContentHasher::withSaltFlag(computeContentDigestWithoutFileStamps(layers, ocioSource, renderSettings), salt.salted());
             _imp->contentDigestValid = true;
             _imp->contentDigestKnobsGeneration = knobsGeneration;
             _imp->contentDigestFormatsGeneration = formatsGeneration;
@@ -3879,7 +3878,7 @@ Project::getContentDigest() const
         h.appendU64(FileStampRegistry::instance().stamp(ocioSource));
     }
 
-    return h.finalize();
+    return ContentHasher::withSaltFlag(h.finalize(), ContentHasher::isSalted(digest));
 }
 
 U64

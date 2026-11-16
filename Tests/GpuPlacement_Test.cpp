@@ -1108,6 +1108,32 @@ TEST(GpuWeightPlacement, TransfersAreFreeOnlyWithoutUploadOrDownload)
     EXPECT_LT(regionWeightGain(graph, root, point, false), 0.);
 }
 
+// root 0 <- 1 <- 2, with 2 served from a cache and the root on the device: only the device tier's copy is free to read.
+TEST(GpuWeightPlacement, InputServedFromTheDeviceTierIsFreeToRead)
+{
+    WeightFixture fixture(3, { { 0, 1 }, { 1, 2 } });
+    FrameGraph& graph = fixture.graph;
+    graph.tasks[0].device = FrameGraph::Device::Gpu;
+
+    FrameGraph::Region middle;
+    middle.members = { 1 };
+    middle.externalInputs = { 2 };
+    FrameGraph::Region::Output middleOutput;
+    middleOutput.task = 1;
+    middleOutput.externalConsumers = 1;
+    middle.outputs.push_back(middleOutput);
+
+    graph.tasks[2].servedFromCache = true;
+    graph.tasks[2].servedTier = EffectInstance::OutputCacheTier::Memory;
+    EXPECT_FALSE(regionTransfersAreFree(graph, middle, false));
+    graph.tasks[2].servedTier = EffectInstance::OutputCacheTier::Disk;
+    EXPECT_FALSE(regionTransfersAreFree(graph, middle, false));
+    graph.tasks[2].servedTier = EffectInstance::OutputCacheTier::Device;
+    EXPECT_TRUE(regionTransfersAreFree(graph, middle, false));
+    graph.tasks[2].servedFromCache = false;
+    EXPECT_FALSE(regionTransfersAreFree(graph, middle, false));
+}
+
 namespace {
 
 const RectI kUhd(0, 0, 3840, 2160);

@@ -219,7 +219,6 @@ AppManagerPrivate::AppManagerPrivate()
     , ofxHost(new OfxHost())
     , _knobFactory(new KnobFactory())
     , _nodeCache()
-    , _diskCache()
     , _viewerCache()
     , diskCachesLocationMutex()
     , diskCachesLocation()
@@ -411,7 +410,6 @@ AppManagerPrivate::saveCaches()
     if (!appPTR->isBackground()) {
         saveCache<FrameEntry>( _viewerCache.get() );
     }
-    saveCache<Image>( _diskCache.get() );
 } // saveCaches
 
 template <typename T>
@@ -458,8 +456,7 @@ restoreCache(AppManagerPrivate* p,
 void
 AppManagerPrivate::restoreCaches()
 {
-    restoreCache<FrameEntry>( this, _viewerCache.get() );
-    restoreCache<Image>( this, _diskCache.get() );
+    restoreCache<FrameEntry>(this, _viewerCache.get());
 } // restoreCaches
 
 bool

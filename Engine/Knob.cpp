@@ -493,10 +493,8 @@ struct KnobHelperPrivate
 {
     KnobHelper* publicInterface;
 
-#ifdef DEBUG
-//#pragma message WARN("This should be a weak_ptr")
-#endif
-    KnobHolder* holder;
+    // Detaching and re-adding a knob on the main thread rewrite this while render threads read it.
+    std::atomic<KnobHolder*> holder;
     mutable QMutex labelMutex;
     std::string label; //< the text label that will be displayed  on the GUI
     std::string iconFilePath[2]; //< an icon to replace the label (one when checked, one when unchecked, for toggable buttons)
@@ -706,7 +704,7 @@ struct KnobHelperPrivate
         , contentHashesValid(false)
     {
         tlsData = std::make_shared<TLSHolder<KnobHelper::KnobTLSData> >();
-        if ( holder && !holder->canKnobsAnimate() ) {
+        if (holder_ && !holder_->canKnobsAnimate()) {
             isAnimationEnabled = false;
         }
 
@@ -746,13 +744,28 @@ struct KnobHelperPrivate
 
     std::string declarePythonVariables(bool addTab, int dimension, const std::string& expression);
 
+    // The holder, and when it is an effect the reference that keeps it alive.
+    struct HeldHolder {
+        KnobHolder* holder = 0;
+        EffectInstancePtr effect;
+    };
+
+    HeldHolder lockHolder() const
+    {
+        HeldHolder held;
+        held.effect = EffectInstance::lockHolder(*publicInterface, &held.holder);
+
+        return held;
+    }
+
     bool shouldUseGuiCurve() const
     {
-        if (!holder) {
+        KnobHolder* h = holder.load(std::memory_order_acquire);
+        if (!h) {
             return false;
         }
 
-        return !holder->isSetValueCurrentlyPossible() && gui.lock();
+        return !h->isSetValueCurrentlyPossible() && gui.lock();
     }
 };
 
@@ -792,9 +805,8 @@ KnobHelper::~KnobHelper()
 void
 KnobHelper::setHolder(KnobHolder* holder)
 {
-    KnobHolder* previous = _imp->holder;
+    KnobHolder* previous = _imp->holder.exchange(holder, std::memory_order_acq_rel);
 
-    _imp->holder = holder;
     // A holder-wide memo trusts only its own knobs' invalidations, so both holders re-check.
     if (previous) {
         previous->bumpKnobsContentGeneration(this);
@@ -936,6 +948,16 @@ KnobHelper::deleteKnob()
         }
     }
 
+    // A master lists this knob as a listener until it is unslaved, as clearing the expressions below
+    // does for their sources.
+    for (int i = 0; i < getDimension(); ++i) {
+        // Held until unSlave() returns: the master may otherwise expire while it is being detached.
+        const std::pair<int, KnobIPtr> master = getMaster(i);
+        if (master.second) {
+            unSlave(i, false);
+        }
+    }
+
     KnobHolder* holder = getHolder();
     if ( holder && holder->getApp() ) {
         std::set<std::string> names;
@@ -960,12 +982,12 @@ KnobHelper::deleteKnob()
         if (isGrp) {
             KnobsVec children = isGrp->getChildren();
             for (KnobsVec::iterator it = children.begin(); it != children.end(); ++it) {
-                _imp->holder->deleteKnob(it->get(), true);
+                holder->deleteKnob(it->get(), true);
             }
         } else if (isPage) {
             KnobsVec children = isPage->getChildren();
             for (KnobsVec::iterator it = children.begin(); it != children.end(); ++it) {
-                _imp->holder->deleteKnob(it->get(), true);
+                holder->deleteKnob(it->get(), true);
             }
         }
 
@@ -1076,8 +1098,9 @@ KnobHelper::setAsUserKnob(bool b)
 {
     _imp->userKnob = b;
     _imp->dynamicallyCreated = b;
-    if (b && _imp->holder && GraphEditRecorder::isActive()) {
-        GraphEditRecorder::onKnobListChanged(_imp->holder);
+    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
+    if (b && holder && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(holder);
     }
 }
 
@@ -2016,8 +2039,9 @@ KnobHelper::setGuiCurveHasChanged(ViewSpec /*view*/,
         _imp->guiCurveChangedOutsideLink[dimension] = true;
     }
     k.unlock();
-    if (changed && _imp->holder && !_imp->holder->isSetValueCurrentlyPossible()) {
-        _imp->holder->notifyValueQueued();
+    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
+    if (changed && holder && !holder->isSetValueCurrentlyPossible()) {
+        holder->notifyValueQueued();
     }
 }
 
@@ -2095,16 +2119,18 @@ KnobHelper::getDimension() const
 void
 KnobHelper::beginChanges()
 {
-    if (_imp->holder) {
-        _imp->holder->beginChanges();
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    if (held.holder) {
+        held.holder->beginChanges();
     }
 }
 
 void
 KnobHelper::endChanges()
 {
-    if (_imp->holder) {
-        _imp->holder->endChanges();
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    if (held.holder) {
+        held.holder->endChanges();
     }
 }
 
@@ -2164,9 +2190,13 @@ KnobHelper::evaluateValueChangeInternal(int dimension,
                                         ValueChangedReasonEnum originalReason)
 {
     AppInstancePtr app;
+    // Once, so the begin/end bracket below stays on one holder, which it keeps alive: a render thread
+    // setting a value reaches this.
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    KnobHolder* holder = held.holder;
 
-    if (_imp->holder) {
-        app = _imp->holder->getApp();
+    if (holder) {
+        app = holder->getApp();
     }
     KnobGuiIPtr hasGui = getKnobGuiPointer();
     bool refreshWidget = !app || hasAnimation() || time == app->getTimeLine()->currentFrame();
@@ -2182,16 +2212,15 @@ KnobHelper::evaluateValueChangeInternal(int dimension,
     }
 
     bool ret = false;
-    if ( ( (originalReason != eValueChangedReasonTimeChanged) || evaluateValueChangeOnTimeChange() ) && _imp->holder ) {
-        _imp->holder->beginChanges();
+    if (((originalReason != eValueChangedReasonTimeChanged) || evaluateValueChangeOnTimeChange()) && holder) {
+        holder->beginChanges();
         KnobIPtr thisShared = shared_from_this();
         assert(thisShared);
-        _imp->holder->appendValueChange(thisShared, dimension, refreshWidget, time, view, originalReason, reason);
-        ret |= _imp->holder->endChanges();
+        holder->appendValueChange(thisShared, dimension, refreshWidget, time, view, originalReason, reason);
+        ret |= holder->endChanges();
     }
 
-
-    if (!_imp->holder) {
+    if (!holder) {
         computeHasModifications();
         if (refreshWidget && _signalSlotHandler) {
             _signalSlotHandler->s_valueChanged(view, dimension, (int)reason);
@@ -2415,13 +2444,14 @@ KnobHelper::setSecret(bool b)
         _imp->IsSecret = b;
     }
 
+    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
     ///the knob was revealed , refresh its gui to the current time
-    if ( !b && _imp->holder && _imp->holder->getApp() ) {
-        onTimeChanged( false, _imp->holder->getApp()->getTimeLine()->currentFrame() );
+    if (!b && holder && holder->getApp()) {
+        onTimeChanged(false, holder->getApp()->getTimeLine()->currentFrame());
     }
     // Not through invalidateTimelineMarkers(): a knob just made secret no longer counts as shown,
     // and that is the change the timeline has to pick up.
-    invalidateMarkersOfEffect(_imp->holder);
+    invalidateMarkersOfEffect(holder);
     if (_signalSlotHandler) {
         _signalSlotHandler->s_secretChanged();
     }
@@ -3080,6 +3110,9 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
                                           int dim,
                                           const std::string& expression)
 {
+    // Compiling an expression, as a loop's stop condition does, runs on render threads.
+    const HeldHolder held = lockHolder();
+    KnobHolder* holder = held.holder;
     if (!holder) {
         throw std::runtime_error("This parameter cannot have an expression");
     }
@@ -3091,7 +3124,9 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
     NodeGroup* isParentGrp = nullptr;
     if (effect) {
         NodePtr node = effect->getNode();
-        assert(node);
+        if (!node) {
+            throw std::runtime_error("This parameter cannot have an expression");
+        }
 
         collection = node->getGroup();
         if (!collection) {
@@ -3336,6 +3371,7 @@ void
 KnobHelperPrivate::registerRFVListeners(int dimension,
                                         const RenderContextReadSet& reads)
 {
+    KnobHolder* holder = this->holder.load(std::memory_order_acquire);
     AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     if (!project || reads.empty()) {
@@ -3867,6 +3903,16 @@ KnobHelper::validateExpressionInternal(const std::string& expression,
 bool
 KnobHelper::checkInvalidExpressions()
 {
+    // A destroyed node's effect can outlive it while a render thread or a script still holds it.
+    // Its knobs have no node to declare in an expression's scope and nothing will run them again.
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    const EffectInstance* holderEffect = held.effect.get();
+    if (holderEffect) {
+        const NodePtr holderNode = holderEffect->getNode();
+        if (!holderNode || !holderNode->hostsEffect(holderEffect)) {
+            return true;
+        }
+    }
     int ndims = getDimension();
     std::vector<std::pair<std::string, bool> > exprToReapply(ndims);
     {
@@ -4031,9 +4077,12 @@ KnobHelper::setExpressionInvalid(int dimension,
         _imp->expressions[dimension].exprInvalid = error;
     }
     invalidateContentHash();
-    if ( getHolder() && getHolder()->getApp() ) {
+    // A failing expression read lands here on a render thread.
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    const AppInstancePtr app = held.holder ? held.holder->getApp() : AppInstancePtr();
+    if (app) {
         if (wasValid && !valid) {
-            getHolder()->getApp()->addInvalidExpressionKnob( std::const_pointer_cast<KnobI>( shared_from_this() ) );
+            app->addInvalidExpressionKnob(std::const_pointer_cast<KnobI>(shared_from_this()));
             if (_signalSlotHandler) {
                 _signalSlotHandler->s_expressionChanged(dimension);
             }
@@ -4051,7 +4100,7 @@ KnobHelper::setExpressionInvalid(int dimension,
                 }
             }
             if (!haveOtherExprInvalid) {
-                getHolder()->getApp()->removeInvalidExpressionKnob(this);
+                app->removeInvalidExpressionKnob(this);
             }
             if (_signalSlotHandler) {
                 _signalSlotHandler->s_expressionChanged(dimension);
@@ -4247,7 +4296,7 @@ KnobHelper::addMetadataDependency(int dimension,
     if (!node || (dimension < 0) || (dimension >= _imp->dimension)) {
         return;
     }
-    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder.load(std::memory_order_acquire));
     const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
     const bool ownNode = holderNode == node;
 
@@ -4387,7 +4436,7 @@ KnobHelper::appendHashedMetadataSources(int dimension,
         dependencies = expr.dependencies;
         metadataDependencies = expr.metadataDependencies;
     }
-    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder.load(std::memory_order_acquire));
     const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
     for (std::list<NodeWPtr>::const_iterator it = metadataDependencies.begin(); it != metadataDependencies.end(); ++it) {
         NodePtr source = it->lock();
@@ -4419,7 +4468,7 @@ KnobHelper::expressionReadClosesMetadataCycle(int dimension,
     if (sources.empty()) {
         return false;
     }
-    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder.load(std::memory_order_acquire));
     const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
     const Node* foldingNode = (holderNode && holderNode->knobMetadataReadsFoldIntoHash(*this)) ? holderNode.get() : 0;
     for (std::vector<NodePtr>::const_iterator it = sources.begin(); it != sources.end(); ++it) {
@@ -4467,7 +4516,8 @@ KnobHelper::unregisterDriverRFVListener(int dimension,
     if (sourceReads.readsAll() || sourceReads.contains(RenderContextName::plain(name))) {
         return;
     }
-    AppInstancePtr app = _imp->holder ? _imp->holder->getApp() : AppInstancePtr();
+    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     if (!project) {
         return;
@@ -4487,7 +4537,8 @@ KnobHelper::removeExpressionDependencies(int dimension,
     {
         std::list<std::pair<KnobIWPtr, int> > dependencies;
         {
-            QWriteLocker kk(&_imp->mastersMutex);
+            // The mutex addListener() and every reader of the list take.
+            QMutexLocker kk(&_imp->expressionMutex);
             std::list<std::pair<KnobIWPtr, int>>& all = _imp->expressions[dimension].dependencies;
             for (std::list<std::pair<KnobIWPtr, int>>::iterator it = all.begin(); it != all.end();) {
                 if (!dependency || (it->first.lock().get() == dependency)) {
@@ -5029,7 +5080,7 @@ KnobHelper::getExpression(int dimension) const
 KnobHolder*
 KnobHelper::getHolder() const
 {
-    return _imp->holder;
+    return _imp->holder.load(std::memory_order_acquire);
 }
 
 void
@@ -5038,7 +5089,8 @@ KnobHelper::setAnimationEnabled(bool val)
     if ( !canAnimate() ) {
         return;
     }
-    if ( _imp->holder && !_imp->holder->canKnobsAnimate() ) {
+    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
+    if (holder && !holder->canKnobsAnimate()) {
         return;
     }
     _imp->isAnimationEnabled = val;
@@ -5098,8 +5150,7 @@ KnobHelper::setName(const std::string & name,
         ++no;
     } while (foundItem);
 
-
-    EffectInstance* effect = dynamic_cast<EffectInstance*>(_imp->holder);
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(_imp->holder.load(std::memory_order_acquire));
     if (effect) {
         NodePtr node = effect->getNode();
         std::string effectScriptName = node->getScriptName_mt_safe();
@@ -5771,18 +5822,17 @@ KnobHelper::checkAnimationLevel(ViewSpec view,
                                 int dimension)
 {
     bool changed = false;
+    // Edits made from a render thread, and endChanges() there, reach this.
+    const KnobHelperPrivate::HeldHolder held = _imp->lockHolder();
+    const AppInstancePtr app = held.holder ? held.holder->getApp() : AppInstancePtr();
 
     for (int i = 0; i < _imp->dimension; ++i) {
         if ( (i == dimension) || (dimension == -1) ) {
             AnimationLevelEnum level = eAnimationLevelNone;
 
-
-            if ( canAnimate() &&
-                 isAnimated(i, view) &&
-                 getExpression(i).empty() &&
-                 getHolder() && getHolder()->getApp() ) {
+            if (canAnimate() && isAnimated(i, view) && getExpression(i).empty() && app) {
                 CurvePtr c = getCurve(view, i);
-                double time = getHolder()->getApp()->getTimeLine()->currentFrame();
+                double time = app->getTimeLine()->currentFrame();
                 if (c->getKeyFramesCount() > 0) {
                     KeyFrame kf;
                     int nKeys = c->getNKeyFramesInRange(time, time + 1);
@@ -6482,7 +6532,7 @@ KnobHelper::removeListener(KnobI* listener,
 
             bool hasDimensionListening = false;
             for (std::size_t i = 0; i < it->second.size(); ++i) {
-                if (it->second[listenerDimension].isListening) {
+                if (it->second[i].isListening) {
                     hasDimensionListening = true;
                     break;
                 }
@@ -7173,7 +7223,7 @@ KnobHelper::writeLinkCurveFrom(KnobI* state,
     if (!canAnimate()) {
         return false;
     }
-    if (!_imp->holder) {
+    if (!_imp->holder.load(std::memory_order_acquire)) {
         // Nothing renders with a knob that has no holder, and the key setters need one.
         return cloneCurvesAndCheckIfChanged(state, true, dimension, 0);
     }
@@ -7248,9 +7298,11 @@ KnobHelper::adoptLinkGroupState(const KnobLinkGroupPtr& group,
     bool changed = false;
     // Changes that no setter below evaluates.
     bool mustEvaluate = false;
+    // Loaded once so the begin/end bracket stays on one holder.
+    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
 
-    if (_imp->holder) {
-        _imp->holder->beginChanges();
+    if (holder) {
+        holder->beginChanges();
     }
 
     if (supportsExpressions()) {
@@ -7283,8 +7335,8 @@ KnobHelper::adoptLinkGroupState(const KnobLinkGroupPtr& group,
         evaluateValueChange(dimension, time, view, reason);
     }
 
-    if (_imp->holder) {
-        _imp->holder->endChanges();
+    if (holder) {
+        holder->endChanges();
     }
 
     return changed || mustEvaluate;
@@ -8077,7 +8129,7 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
     h.appendU64(own);
     h.appendBool(isVolatile);
     if (isVolatile) {
-        h.appendU64(ContentHasher::sessionSalt());
+        h.appendSessionSalt();
     }
     for (std::list<std::pair<KnobIWPtr, int>>::const_iterator it = dependencies.begin(); it != dependencies.end(); ++it) {
         KnobIPtr dep = it->first.lock();
@@ -8099,7 +8151,7 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
     // A node's metadata is a function of its hash, and of its revision when it changes under the
     // same hash. The holder's own node hash is left out: it folds this one in, and its metadata
     // already follows the rest of its hash. A revision only counts within this session.
-    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder);
+    const EffectInstance* holderEffect = dynamic_cast<const EffectInstance*>(_imp->holder.load(std::memory_order_acquire));
     const NodePtr holderNode = holderEffect ? holderEffect->getNode() : NodePtr();
     for (std::list<NodeWPtr>::const_iterator it = metadataDependencies.begin(); it != metadataDependencies.end(); ++it) {
         NodePtr source = it->lock();
@@ -8110,7 +8162,7 @@ KnobHelper::getDimensionContentHashRecursive(int dimension,
         const U64 revision = source->getMetadataRevision();
         h.appendU64(revision);
         if (revision != 0) {
-            h.appendU64(ContentHasher::sessionSalt());
+            h.appendSessionSalt();
         }
         if (source != holderNode) {
             h.appendU64(source->getHashValue());
@@ -8208,7 +8260,7 @@ KnobHelper::invalidateContentHash()
     if (_imp->contentGenerationObserver) {
         _imp->contentGenerationObserver->fetch_add(1, std::memory_order_acq_rel);
     }
-    KnobHolder* holder = _imp->holder;
+    KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
     if (holder) {
         holder->bumpKnobsContentGeneration(this);
         if (GraphEditRecorder::isActive()) {
@@ -8488,7 +8540,8 @@ KnobHelper::refreshRFVReads()
         _imp->rfvReads = reads;
         previous = _imp->rfvReadSource;
         if (!reads.empty()) {
-            const AppInstancePtr app = _imp->holder ? _imp->holder->getApp() : AppInstancePtr();
+            KnobHolder* holder = _imp->holder.load(std::memory_order_acquire);
+            const AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
             source = std::make_shared<RFVExpressionReadSource>(reads, app ? ProjectWPtr(app->getProject()) : ProjectWPtr());
         }
         _imp->rfvReadSource = source;
@@ -8504,7 +8557,7 @@ KnobHelper::refreshRFVReads()
 void
 KnobHelper::refreshRFVListeners()
 {
-    if (!_imp->holder) {
+    if (!_imp->holder.load(std::memory_order_acquire)) {
         return;
     }
     std::vector<std::pair<int, std::string>> expressions;
@@ -8906,13 +8959,24 @@ KnobHelper::getMemoizedValueContext(RenderContextReadSetConstPtr* reads,
             }
             if (contentHash) {
                 *contentHash = _imp->valueContextMemoContentHash;
+                if (ContentHasher::isSalted(*contentHash)) {
+                    ContentHasher::noteSalted();
+                }
             }
 
             return;
         }
     }
     const RenderContextReadSetConstPtr computedReads = std::make_shared<const RenderContextReadSet>(getValueContextReads());
-    const U64 computedHash = getContentHash();
+    U64 computedHash;
+    {
+        ContentHasher::SaltScope salt;
+        computedHash = getContentHash();
+        computedHash = ContentHasher::withSaltFlag(computedHash, salt.salted());
+    }
+    if (ContentHasher::isSalted(computedHash)) {
+        ContentHasher::noteSalted();
+    }
     {
         QMutexLocker k(&_imp->valueContextMemoMutex);
         _imp->valueContextMemoGeneration = generation;
@@ -9201,11 +9265,18 @@ KnobHolder::KnobHolder(const KnobHolder& other)
 
 KnobHolder::~KnobHolder()
 {
+    detachKnobs();
+}
+
+void
+KnobHolder::detachKnobs()
+{
     for (U32 i = 0; i < _imp->knobs.size(); ++i) {
         KnobHelper* helper = dynamic_cast<KnobHelper*>( _imp->knobs[i].get() );
         assert(helper);
-        if ( helper && (helper->_imp->holder == this) ) {
-            helper->_imp->holder = 0;
+        if (helper) {
+            KnobHolder* expected = this;
+            helper->_imp->holder.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
         }
     }
 }
@@ -9271,6 +9342,11 @@ KnobHolder::addKnob(const KnobIPtr& k)
         }
     }
     _imp->knobs.push_back(k);
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(k.get());
+    if (helper) {
+        KnobHolder* expected = 0;
+        helper->_imp->holder.compare_exchange_strong(expected, this, std::memory_order_acq_rel);
+    }
     _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
@@ -9299,6 +9375,11 @@ KnobHolder::insertKnob(int index,
         std::advance(it, index);
         _imp->knobs.insert(it, k);
     }
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(k.get());
+    if (helper) {
+        KnobHolder* expected = 0;
+        helper->_imp->holder.compare_exchange_strong(expected, this, std::memory_order_acq_rel);
+    }
     _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
@@ -9320,6 +9401,13 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
             KnobHelper::moveHashedMetadataSourcesGeneration();
             if (knob->isUserKnob() && GraphEditRecorder::isActive()) {
                 GraphEditRecorder::onKnobListChanged(this);
+            }
+            // ~KnobHolder only clears the knobs it still lists, and another owner may keep this one
+            // alive past it; insertKnob() and addKnob() attach it again.
+            const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knob);
+            if (helper) {
+                KnobHolder* expected = this;
+                helper->_imp->holder.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
             }
 
             return;
@@ -9448,6 +9536,14 @@ KnobHolder::deleteKnob(KnobI* knob,
 
     if (alsoDeleteGui && _imp->settingsPanel) {
         _imp->settingsPanel->deleteKnobGui(sharedKnob);
+    }
+
+    // ~KnobHolder only clears the knobs it still lists, and another owner may keep this one alive
+    // past it.
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(sharedKnob.get());
+    if (helper) {
+        KnobHolder* expected = this;
+        helper->_imp->holder.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
     }
 }
 
@@ -10095,6 +10191,26 @@ KnobHolder::endChanges(bool discardRendering)
         return true;
     }
 
+    // A caller holding the effect, or its node, may outlive the node's teardown. The effect's
+    // callbacks and evaluation assume a node that still has it, so the bracket only closes.
+    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
+    const NodePtr effectNode = isEffect ? isEffect->getNode() : NodePtr();
+    if (isEffect && (!effectNode || !effectNode->hasEffectAttached())) {
+        QMutexLocker l(&_imp->evaluationBlockedMutex);
+        _imp->knobChanged.clear();
+        if (_imp->evaluationBlocked > 0) {
+            --_imp->evaluationBlocked;
+        }
+        if (_imp->evaluationBlocked == 0) {
+            _imp->abortAtEndOfChanges = false;
+            _imp->nbSignificantChangesDuringEvaluationBlock = 0;
+            _imp->nbChangesDuringEvaluationBlock = 0;
+            _imp->nbChangesRequiringMetadataRefresh = 0;
+        }
+
+        return false;
+    }
+
     // Every holder the change reaches through its listeners ends its changes inside this one.
     Node::ValueChangeCascade cascade;
 
@@ -10139,15 +10255,7 @@ KnobHolder::endChanges(bool discardRendering)
     // If the node is currently modifying its input, do not ask for a render
     // because at then end of the inputChanged handler, it will ask for a refresh
     // and a rebuild of the inputs tree.
-    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
-    bool duringInputChangeAction = false;
-    if (isEffect) {
-        NodePtr node = isEffect->getNode();
-        if ( isMT && node->duringInputChangedAction() ) {
-            duringInputChangeAction = true;
-        }
-    }
-
+    const bool duringInputChangeAction = isMT && effectNode && effectNode->duringInputChangedAction();
 
     // Increment hash only if significant
     if (thisChangeSignificant && thisBracketHadChange && !isLoadingProject && !duringInputChangeAction && !isChangeDueToTimeChange) {

@@ -93,7 +93,7 @@ constexpr NodeSpec kZDefocusNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kZDefocusPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Passes,
 };
@@ -153,6 +153,7 @@ struct ZDefocusState {
     std::vector<ZDefocusLayer> layers;
     BokehHighlight highlight;
     RectI window;
+    EdgeMode edgeMode = EdgeMode::Black;
 
     // With lens aberrations: whether slice k leaves channel group g sharp, groupSharp[k][g]; the runs
     // of slice k's kernel for a group and a cell's clip; those of the band being composited; and a
@@ -340,7 +341,7 @@ compositeWorker(const ZDefocusStatePtr& state,
                 s->weightRow(*buffers, k, y, w);
                 std::copy(w + x1, w + x2, a);
             } else {
-                bokehGatherRow(tables + (std::size_t)nPlanes * planeSize, width, height, layer.runs, y, x1, x2, acc->data(), a);
+                bokehGatherRow(tables + (std::size_t)nPlanes * planeSize, width, height, layer.runs, y, x1, x2, s->edgeMode, acc->data(), a);
             }
             float* const cov = coverage + row + x1;
             for (int p = 0; p < nPlanes; ++p) {
@@ -350,7 +351,7 @@ compositeWorker(const ZDefocusStatePtr& state,
                         c[i] = (a[i] > 0.f && std::isfinite(src[i])) ? a[i] * src[i] : 0.f;
                     }
                 } else {
-                    bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, layer.runs, y, x1, x2, acc->data(), c);
+                    bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, layer.runs, y, x1, x2, s->edgeMode, acc->data(), c);
                 }
                 float* const dst = buffers->plane(2, p) + row + x1;
                 for (int i = 0; i < x2 - x1; ++i) {
@@ -489,7 +490,7 @@ lensCompositeWorker(const ZDefocusStatePtr& state,
                         continue;
                     }
                     lens.forEachSegment(rx1 + x1, rx1 + x2, [&](int xa, int xb, int i) {
-                        bokehGatherRow(tables + (std::size_t)nPlanes * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, acc->data(), a + (xa - rx1 - x1));
+                        bokehGatherRow(tables + (std::size_t)nPlanes * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, s->edgeMode, acc->data(), a + (xa - rx1 - x1));
                     });
                 }
                 for (int p = 0; p < nPlanes; ++p) {
@@ -502,7 +503,7 @@ lensCompositeWorker(const ZDefocusStatePtr& state,
                         }
                     } else {
                         lens.forEachSegment(rx1 + x1, rx1 + x2, [&](int xa, int xb, int i) {
-                            bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, acc->data(), c + (xa - rx1 - x1));
+                            bokehGatherRow(tables + (std::size_t)p * planeSize, width, height, s->band.at(b, g, i, j), y, xa - rx1, xb - rx1, s->edgeMode, acc->data(), c + (xa - rx1 - x1));
                         });
                     }
                     float* const dst = buffers->plane(2, p) + row + x1;
@@ -679,6 +680,7 @@ const uint32_t kGpuFirst = 4;
 const uint32_t kGpuInverseDistance = 8;
 const uint32_t kGpuHasDepth = 16;
 const uint32_t kGpuLens = 32;
+const uint32_t kGpuEdgeBlack = 64;
 const std::size_t kGpuMetaCocScale = 12;
 const std::size_t kGpuMetaGroups = 13;
 const std::size_t kGpuMetaCellColumns = 14;
@@ -1361,7 +1363,7 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
         return eStatusFailed;
     }
 
-    // The depth as the CPU reads it: 0, infinitely far, outside the input's image.
+    // The depth as the CPU reads it: past the input's image by the source's edge mode, 0 (infinitely far) under Black.
     const GpuLayerInput* depth = nullptr;
     for (const GpuLayerInput& layerInput : io.layerInputs) {
         if ((layerInput.inputNb == kZDefocusInputSource) && (layerInput.layer == depthLayer)) {
@@ -1580,6 +1582,9 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
     if (lensActive) {
         base.flags |= kGpuLens;
     }
+    if (io.edgeMode == EdgeMode::Black) {
+        base.flags |= kGpuEdgeBlack;
+    }
     base.threshold = params.highlight.threshold;
     base.gain = params.highlight.gain;
     if (depth->view.buffer) {
@@ -1743,6 +1748,11 @@ ZDefocus::opPasses(double time,
     // Every slice gathers its layer and its coverage, at most two reads per kernel row each.
     const std::size_t taps = (std::size_t)(2 * (2 * haloY + 1)) * sliceList.size();
     PassList list = resultPasses(haloX, haloY, taps, ZDefocusStatePtr(), std::vector<unsigned char>());
+    list.edgeMode = context.edgeMode;
+    // The depth is a layer of the source, so one gather of both reads past the scratch by
+    // repeating its edge rows and columns.
+    list.stretchReachX = 0;
+    list.stretchReachY = 0;
 
 #ifdef NATRON_HAVE_GPU
     ImageLayerDesc depthLayer;
@@ -2108,6 +2118,7 @@ ZDefocus::renderOp(const RenderActionArgs& args,
         state->cocRect = passListSourceRoI(args.roi, full);
         state->highlight = params.highlight;
         state->window = args.roi;
+        state->edgeMode = full.edgeMode;
     } else {
         sliceList = slices(params, context);
         std::vector<std::shared_ptr<const BokehKernel>> kernels;
@@ -2135,6 +2146,12 @@ ZDefocus::renderOp(const RenderActionArgs& args,
         state->cocRect = passListSourceRoI(args.roi, full);
         state->highlight = params.highlight;
         state->window = args.roi;
+        state->edgeMode = full.edgeMode;
+    }
+    // The slice planes cover the scratch the result passes run over, which under Stretch holds
+    // the source and the window rather than the whole halo.
+    if (!params.focalPlaneOutput && (full.edgeMode == EdgeMode::Stretch) && !passScratchRect(*this, plan, full, args.roi, args.time, args.mappedScale, args.view, &state->cocRect)) {
+        return eStatusFailed;
     }
     if (PassExec::isEmptyRect(state->cocRect)) {
         return runPassesCpu(*this, plan, args, PassList());
@@ -2182,7 +2199,7 @@ ZDefocus::renderOp(const RenderActionArgs& args,
         std::vector<unsigned char> chunkUsed(used.size(), 0);
         for (int r = first; r < end; ++r) {
             if (depth) {
-                PassExec::readChannelRow(depth.get(), access.get(), depthBounds, depthComps, depthChannel, cocRect.x1, cocRect.y1 + r, cocWidth, 0.f, row.data());
+                PassExec::readChannelRow(depth.get(), access.get(), depthBounds, depthComps, depthChannel, cocRect.x1, cocRect.y1 + r, cocWidth, full.edgeMode, row.data());
             }
             const std::size_t base = (std::size_t)r * cocWidth;
             for (int x = 0; x < cocWidth; ++x) {
@@ -2228,7 +2245,12 @@ ZDefocus::renderOp(const RenderActionArgs& args,
     const PassExtent extent = passListExtent(full);
     const Pass& first = full.passes.front();
 
-    return runPassesCpu(*this, plan, args, resultPasses(extent.haloX, extent.haloY, first.tapsPerSample, state, used));
+    PassList list = resultPasses(extent.haloX, extent.haloY, first.tapsPerSample, state, used);
+    list.edgeMode = full.edgeMode;
+    list.stretchReachX = full.stretchReachX;
+    list.stretchReachY = full.stretchReachY;
+
+    return runPassesCpu(*this, plan, args, list);
 } // ZDefocus::renderOp
 
 void

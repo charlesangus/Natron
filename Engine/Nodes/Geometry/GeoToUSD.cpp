@@ -47,6 +47,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
+#include "Engine/Geo/GeoGroupOps.h"
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -157,6 +159,14 @@ frameKey(double frame)
 }
 
 bool
+isBlank(const std::string& text)
+{
+    return text.find_first_not_of(" \t\r\n") == std::string::npos;
+}
+
+constexpr GeoGroupTypeEnum kGroupTypes[] = { eGeoGroupTypePoints, eGeoGroupTypePrimitives, eGeoGroupTypeGuess };
+
+bool
 isEmptyDetail(const GeoDetailConstPtr& detail)
 {
     return !detail || ((detail->pointCount() == 0) && (detail->primitiveCount() == 0));
@@ -172,6 +182,8 @@ struct Gathered {
 };
 
 struct NodeSettings {
+    std::string group;
+    GeoGroupTypeEnum groupType = eGeoGroupTypeGuess;
     GeoUsdConvertOptions options;
     bool copy = false;
     bool timeSamples = false;
@@ -256,7 +268,7 @@ struct GeoToUSD::Implementation {
                       std::string* errorMessage) const;
 
     /**
-     * The detail at frame and the Scene input captured where the detail names prims. inputScene,
+     * The part of the detail at frame the group selects and the Scene input captured where the detail names prims. inputScene,
      * when given, is the Scene input's payload, evaluated by a caller already reading scenes;
      * otherwise the input is evaluated here, under a ReadScope released on return. Any thread
      * of the render cancel was built for.
@@ -265,7 +277,7 @@ struct GeoToUSD::Implementation {
                             double frame,
                             ViewIdx view,
                             const ScenePayload* inputScene,
-                            const GeoUsdConvertOptions& options,
+                            const NodeSettings& settings,
                             RenderCancellation& cancel,
                             Gathered* out,
                             std::string* errorMessage) const;
@@ -333,6 +345,39 @@ void
 GeoToUSD::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls").toStdString());
+
+    KnobStringPtr group = createKnob<KnobString>(tr("Group"));
+    group->setName(kGeoToUSDParamGroup);
+    group->setHintToolTip(tr("The part of the geometry to put on the scene: element numbers and ranges (0-10, 0-20:2), "
+                             "group names or globs, * for everything, @attribute comparisons (@P.x<0), and the prefixes ! "
+                             "(everything the term does not select) and ^ (remove the term's elements). Blank means all "
+                             "of it. Prims keep the paths they have without a group.")
+                              .toStdString());
+    group->setAnimationEnabled(false);
+    page->addKnob(group);
+    _group = group;
+
+    KnobChoicePtr groupType = createKnob<KnobChoice>(tr("Group Type"));
+    groupType->setName(kGeoToUSDParamGroupType);
+    groupType->setHintToolTip(tr("Whether the group pattern selects points or primitives.").toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("points", tr("Points").toStdString(),
+                                       tr("The primitives whose points are all selected, and the selected points no "
+                                          "primitive uses.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption("primitives", tr("Primitives").toStdString(),
+                                       tr("The selected primitives and the points they use.").toStdString()));
+        options.push_back(ChoiceOption("guess", tr("Guess from Group").toStdString(),
+                                       tr("The class the group pattern names: a group name means the class that has it, "
+                                          "and plain numbers mean primitives.")
+                                           .toStdString()));
+        groupType->populateChoices(options);
+    }
+    groupType->setDefaultValue(2);
+    groupType->setAnimationEnabled(false);
+    page->addKnob(groupType);
+    _groupType = groupType;
 
     KnobStringPtr rootPath = createKnob<KnobString>(tr("Root Path"));
     rootPath->setName(kGeoToUSDParamRootPath);
@@ -449,6 +494,16 @@ GeoToUSD::Implementation::readSettings(GeoToUSD* node,
     }
     settings->options.rootPath = rootPath;
 
+    const KnobStringPtr group = node->_group.lock();
+    if (group) {
+        settings->group = group->getValue();
+    }
+    const KnobChoicePtr groupType = node->_groupType.lock();
+    const int typeIndex = groupType ? groupType->getValue() : -1;
+    if ((typeIndex >= 0) && (typeIndex < (int)(sizeof(kGroupTypes) / sizeof(kGroupTypes[0])))) {
+        settings->groupType = kGroupTypes[typeIndex];
+    }
+
     const KnobChoicePtr packed = node->_packedPrimitives.lock();
     switch (packed ? packed->getValue() : (int)ePackedPrimitivesPointInstancer) {
     case ePackedPrimitivesNativeInstances:
@@ -481,11 +536,12 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
                                  double frame,
                                  ViewIdx view,
                                  const ScenePayload* inputScene,
-                                 const GeoUsdConvertOptions& options,
+                                 const NodeSettings& settings,
                                  RenderCancellation& cancel,
                                  Gathered* out,
                                  std::string* errorMessage) const
 {
+    const GeoUsdConvertOptions& options = settings.options;
     out->frame = frame;
     const EffectInstancePtr geometry = node->getInput(kGeoToUSDInputGeometry);
     if (geometry && geometry->producesGeometryData()) {
@@ -496,6 +552,12 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
     }
     if (!out->detail) {
         out->detail = std::make_shared<const GeoDetail>();
+    }
+    if (cancel.check()) {
+        return eRenderRoIRetCodeAborted;
+    }
+    if (!selectGeometry(out->detail, settings.group, settings.groupType, &out->detail, errorMessage)) {
+        return eRenderRoIRetCodeFailed;
     }
     if (cancel.check()) {
         return eRenderRoIRetCodeAborted;
@@ -675,7 +737,7 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
 
     Gathered gathered;
     RenderCancellation cancel(this);
-    const RenderRoIRetCode code = _imp->gather(this, args.time, args.view, nullptr, settings.options, cancel, &gathered, &error);
+    const RenderRoIRetCode code = _imp->gather(this, args.time, args.view, nullptr, settings, cancel, &gathered, &error);
     if (code == eRenderRoIRetCodeAborted) {
         return code;
     }
@@ -690,6 +752,90 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
 
     return aborted() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
 }
+
+bool
+GeoToUSD::selectGeometry(const GeoDetailConstPtr& detail,
+                         const std::string& group,
+                         GeoGroupTypeEnum groupType,
+                         GeoDetailConstPtr* selected,
+                         std::string* error)
+{
+    *selected = detail;
+    if (!detail || isBlank(group)) {
+        return true;
+    }
+    const GeoDetail& d = *detail;
+    if (groupType == eGeoGroupTypeGuess) {
+        const GeoGroupTypeEnum allowed[] = { eGeoGroupTypePoints, eGeoGroupTypePrimitives };
+        if (!geoGuessGroupType(d, group, allowed, eGeoGroupTypePrimitives, &groupType, error)) {
+            return false;
+        }
+    }
+    if ((groupType != eGeoGroupTypePoints) && (groupType != eGeoGroupTypePrimitives)) {
+        if (error) {
+            *error = tr("The group selects points or primitives only.").toStdString();
+        }
+
+        return false;
+    }
+
+    GeoElementMask primitives;
+    GeoElementMask points;
+    if (groupType == eGeoGroupTypePrimitives) {
+        primitives.assign(d.elementOffsetSize(eGeoAttribClassPrimitive), 0);
+        if (!geoSelectElements(d, eGeoAttribClassPrimitive, group, &primitives, error)) {
+            return false;
+        }
+        points = geoPromotePrimitivesToPoints(d, primitives);
+    } else {
+        GeoElementMask picked(d.elementOffsetSize(eGeoAttribClassPoint), 0);
+        if (!geoSelectElements(d, eGeoAttribClassPoint, group, &picked, error)) {
+            return false;
+        }
+        primitives = geoPromotePointsToPrimitives(d, picked, true);
+        points = geoPromotePrimitivesToPoints(d, primitives);
+        // A selected point of a primitive that is dropped would otherwise come out as a loose point.
+        GeoElementMask used(d.elementOffsetSize(eGeoAttribClassPoint), 0);
+        d.vertexMap().forEachLive([&](GeoIndex /*index*/, GeoOffset v) {
+            const GeoOffset p = d.vertexPoint(v);
+            if ((p >= 0) && (std::size_t(p) < used.size())) {
+                used[std::size_t(p)] = 1;
+            }
+        });
+        points.resize(picked.size(), 0);
+        for (std::size_t p = 0; p < picked.size(); ++p) {
+            if (picked[p] && !used[p]) {
+                points[p] = 1;
+            }
+        }
+    }
+
+    const auto dropped = [](const GeoIndexMap& map, const GeoElementMask& kept) {
+        std::vector<GeoOffset> offsets;
+        map.forEachLive([&](GeoIndex /*index*/, GeoOffset offset) {
+            if ((std::size_t(offset) >= kept.size()) || !kept[std::size_t(offset)]) {
+                offsets.push_back(offset);
+            }
+        });
+
+        return offsets;
+    };
+    const std::vector<GeoOffset> droppedPrimitives = dropped(d.primitiveMap(), primitives);
+    const std::vector<GeoOffset> droppedPoints = dropped(d.pointMap(), points);
+    if (droppedPrimitives.empty() && droppedPoints.empty()) {
+        return true;
+    }
+    GeoDetailBuilder builder(d);
+    if (!droppedPrimitives.empty()) {
+        builder.deletePrimitives(droppedPrimitives, false);
+    }
+    if (!droppedPoints.empty()) {
+        builder.deletePoints(droppedPoints, eGeoPointDeleteKeepReferenced);
+    }
+    *selected = std::make_shared<const GeoDetail>(builder.finish());
+
+    return true;
+} // GeoToUSD::selectGeometry
 
 void
 GeoToUSD::setFrameGatheredHookForTests(const std::function<void(double frame)>& hook)
@@ -742,7 +888,7 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         SceneWriteBarrier::SharedReadScope shared(reading);
         // The Scene input's payload is evaluated at args.time; other frames evaluate their own.
         const ScenePayload* given = (frames[i] == args.time) ? &upstream : nullptr;
-        codes[i] = _imp->gather(this, frames[i], args.view, given, settings.options, cancel, &gathered[i], &errors[i]);
+        codes[i] = _imp->gather(this, frames[i], args.view, given, settings, cancel, &gathered[i], &errors[i]);
         if (codes[i] != eRenderRoIRetCodeOk) {
             failed = true;
         } else if (hook) {

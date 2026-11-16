@@ -23,13 +23,13 @@ Inserting a point on a Roto or SplineWarp curve becomes a click-and-drag gesture
 
 ## Phase 454.1: Gesture
 
-- [ ] M454.P1.T1 — Insert-then-drag state with live smoothing
+- [x] M454.P1.T1 — Insert-then-drag state with live smoothing
   - files: `Engine/RotoCurveInteract.cpp`, `Engine/RotoCurveInteract.h`, `Engine/RotoUndoCommand.cpp`, `Engine/RotoUndoCommand.h`
   - approach: after each `AddPointUndoCommand` site (Ctrl+Alt in the select-points and select-curves cases, and the Add Points tool), select the new control point and enter a new state (e.g. `eEventStateDraggingInsertedPoint`) that moves it through the same code path as `eEventStateDraggingSelectedControlPoints` (autokey, feather), then calls `smoothPointAtIndex` on that point only, at the current time, on each move. Make the gesture one undo step: have the add command record the drag's final position (merge the move into it, e.g. a `mergeWith` on the add command, or a macro), so undo removes the point and redo re-inserts and re-moves it.
   - verify: syntax-check; P1.T2's tests.
   - size: M
 
-- [ ] M454.P1.T2 — Tests for the gesture
+- [x] M454.P1.T2 — Tests for the gesture
   - files: `Tests/RotoInsertPointDrag_Test.cpp` (new, or the existing Roto interact test file if one exists), `Tests/CMakeLists.txt`, `Tests/gui/m454_insert_point_drag.py` (new)
   - approach: gtest at the `Bezier` level: insert at t, move the new point, smooth it — its handles are collinear through it and the neighbours' handles equal the split result. GUI script driving real mouse events on a Roto shape and on a SplineWarp curve: Ctrl+Alt+press on a segment, move, release → the point is at the release position with smooth handles; one undo removes it; plain click with no move matches today's result; the Add Points tool behaves the same.
   - verify: the tests pass in the remote gate and the GUI script fails on main.
@@ -44,3 +44,5 @@ Inserting a point on a Roto or SplineWarp curve becomes a click-and-drag gesture
 - 2026-11-16 — Smoothing is live only during the insert drag; afterwards the point is ordinary (user): no new saved per-point flag.
 - 2026-11-16 — One undo step for insert plus drag (user).
 - 2026-11-16 — SplineWarp is covered by the same change: `SplineWarpInteract` derives from `RotoCurveInteract` (code finding).
+
+- 2026-11-16 — Both tasks implemented (8ebae9897 on milestone/m454-roto-insert-point-drag). Deviations: reuses the control-point drag state plus a smoothing flag rather than a new state; the insert undo command absorbs the same gesture's drag (and any autokey) so insert + drag is one undo step; smoothing also smooths the feather point's handles. Gate run 43982263981 (RotoInsertPointDrag_Test, m454_insert_point_drag.py).

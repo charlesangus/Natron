@@ -28,19 +28,24 @@
 #include <atomic>
 #include <exception>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <QtCore/QEvent>
 #include <QtCore/QLocale>
+#include <QtCore/QMetaObject>
+#include <QtCore/QThread>
 #include <QtGui/QColor>
 #include <QtGui/QPalette>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QButtonGroup>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QStackedWidget>
 #include <QtWidgets/QTableView>
 #include <QtWidgets/QToolButton>
@@ -57,6 +62,11 @@
 #include "Gui/ScenePrimInspector.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct GeoSpreadsheetBuildResult {
+    GeoSpreadsheetModel::RowOrderPtr order;
+    QString error;
+};
 
 namespace {
 
@@ -91,6 +101,67 @@ compactCount(std::int64_t count)
     }
 
     return QString::number((double)count / 1e9, 'g', 3) + QLatin1Char('B');
+}
+
+QString
+groupHelp()
+{
+    return GeoSpreadsheetWidget::tr("Show only the elements of a group. Geometry also takes element numbers (0-9 14), "
+                                    "ranges with a step (0-99:2), attribute tests (@Cd > 0.5), ! to invert and ^ to remove.");
+}
+
+// Runs on the worker thread. A null order with no error is a cancelled build.
+GeoSpreadsheetBuildResult
+runBuild(const GeoSpreadsheetModel::SourcePtr& source,
+         GeoAttribClassEnum cls,
+         const std::string& pattern,
+         int sortColumn,
+         bool descending,
+         const std::atomic<bool>& cancelled)
+{
+    GeoSpreadsheetBuildResult result;
+
+    if (cancelled.load()) {
+        return result;
+    }
+    GeoElementMask mask;
+    bool filtered = false;
+    if ((cls != eGeoAttribClassDetail) && (pattern.find_first_not_of(" \t\r\n") != std::string::npos)) {
+        if (const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get())) {
+            std::string error;
+            if (!geoSelectElements(*geometry->detail(), cls, pattern, &mask, &error)) {
+                result.error = QString::fromStdString(error);
+
+                return result;
+            }
+            filtered = true;
+        } else if (const ScenePrimElementsSource* prim = dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
+            const std::string name = QString::fromStdString(pattern).trimmed().toStdString();
+            const ScenePrimElementGroup* found = nullptr;
+            for (const ScenePrimElementGroup& group : prim->groups()) {
+                if ((group.cls == cls) && (group.name == name)) {
+                    found = &group;
+                    break;
+                }
+            }
+            if (!found) {
+                result.error = GeoSpreadsheetWidget::tr("No group named \"%1\"").arg(QString::fromStdString(name));
+
+                return result;
+            }
+            const std::int64_t rows = source->rowCount(cls);
+            mask.assign((std::size_t)rows, 0);
+            for (const int index : found->indices) {
+                if ((index >= 0) && (index < rows)) {
+                    mask[(std::size_t)index] = 1;
+                }
+            }
+            filtered = true;
+        }
+    }
+    result.order = geoSpreadsheetBuildOrder(*source, cls, filtered ? &mask : nullptr, sortColumn, descending, cancelled);
+
+    return result;
 }
 
 class ScenePrimSpreadsheetTab
@@ -225,6 +296,11 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
     , _stack(new QStackedWidget(this))
     , _table(new QTableView(_stack))
     , _message(new QLabel(_stack))
+    , _group(nullptr)
+    , _busyLabel(nullptr)
+    , _error(nullptr)
+    , _thread(new QThread(this))
+    , _worker(new QObject)
 {
     setObjectName(objectName);
 
@@ -254,6 +330,12 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
     _table->setWordWrap(false);
     _table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     _table->horizontalHeader()->setStretchLastSection(false);
+    QHeaderView* header = _table->horizontalHeader();
+    header->setSectionsClickable(true);
+    header->setSortIndicatorShown(true);
+    // A header click sorts; it must not also select the column's millions of cells.
+    QObject::disconnect(header, SIGNAL(sectionPressed(int)), _table, nullptr);
+    QObject::connect(header, &QHeaderView::sectionClicked, this, [this](int column) { headerClicked(column); });
     _table->installEventFilter(this);
     QObject::connect(_table, &QTableView::doubleClicked, this, [this](const QModelIndex& index) { openFullValue(index); });
 
@@ -265,16 +347,58 @@ GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
     _stack->addWidget(_table);
     _stack->addWidget(_message);
 
+    QWidget* filterBar = new QWidget(this);
+    QHBoxLayout* filterLayout = new QHBoxLayout(filterBar);
+    filterLayout->setContentsMargins(0, 0, 0, 0);
+    filterLayout->setSpacing(4);
+    _group = new QComboBox(filterBar);
+    _group->setObjectName(objectName + QString::fromUtf8("Group"));
+    _group->setEditable(true);
+    _group->setInsertPolicy(QComboBox::NoInsert);
+    _group->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    _group->setMinimumContentsLength(8);
+    _group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    _group->lineEdit()->setPlaceholderText(tr("Group"));
+    _group->lineEdit()->setClearButtonEnabled(true);
+    _group->setToolTip(groupHelp());
+    QObject::connect(_group->lineEdit(), &QLineEdit::editingFinished, this, [this]() { groupSubmitted(); });
+    QObject::connect(_group, QOverload<int>::of(&QComboBox::activated), this, [this](int) { groupSubmitted(); });
+    _busyLabel = new QLabel(tr("Sorting…"), filterBar);
+    _busyLabel->setObjectName(objectName + QString::fromUtf8("Busy"));
+    _busyLabel->hide();
+    filterLayout->addWidget(_group, 1);
+    filterLayout->addWidget(_busyLabel);
+
+    _error = new QLabel(this);
+    _error->setObjectName(objectName + QString::fromUtf8("Error"));
+    _error->setWordWrap(true);
+    _error->setStyleSheet(QString::fromUtf8("QLabel { color: #e05a5a; }"));
+    _error->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    _error->hide();
+
+    _worker->moveToThread(_thread);
+    _thread->start();
+
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
     layout->addWidget(classBar);
+    layout->addWidget(filterBar);
+    layout->addWidget(_error);
     layout->addWidget(_stack, 1);
 
     updateClassBar();
 }
 
-GeoSpreadsheetWidget::~GeoSpreadsheetWidget() = default;
+GeoSpreadsheetWidget::~GeoSpreadsheetWidget()
+{
+    if (_cancel) {
+        _cancel->store(true);
+    }
+    _thread->quit();
+    _thread->wait();
+    delete _worker;
+}
 
 QStringList
 GeoSpreadsheetWidget::columnNames() const
@@ -293,6 +417,9 @@ GeoSpreadsheetWidget::setSnapshot(const GeoSpreadsheetModel::SourcePtr& source)
 {
     const GeoAttribClassEnum shownClass = _model->attribClass();
     GeoAttribClassEnum cls = shownClass;
+    QString wanted = wantedPattern();
+
+    cancelBuild();
 
     if (source && (source->rowCount(cls) == 0)) {
         for (int c = 0; c < kGeoAttribClassCount; ++c) {
@@ -311,6 +438,17 @@ GeoSpreadsheetWidget::setSnapshot(const GeoSpreadsheetModel::SourcePtr& source)
         widths.push_back(_table->columnWidth(c));
     }
     _model->setSnapshot(source, cls);
+    _shownValid = false;
+    if (!source || (cls != shownClass)) {
+        _sortColumn = -1;
+        _sortName.clear();
+        wanted.clear();
+        _pattern.clear();
+        _typed.clear();
+        setError(QString());
+    } else {
+        _sortColumn = _sortName.isEmpty() ? -1 : columnNames().indexOf(_sortName);
+    }
     _message->clear();
     _stack->setCurrentWidget(_table);
     updateClassBar();
@@ -321,12 +459,20 @@ GeoSpreadsheetWidget::setSnapshot(const GeoSpreadsheetModel::SourcePtr& source)
     } else {
         updateMetrics();
     }
+    populateGroups();
+    updateSortIndicator();
+    if (source) {
+        requestBuild(wanted);
+    }
 }
 
 void
 GeoSpreadsheetWidget::showMessage(const QString& text)
 {
+    cancelBuild();
+    _shownValid = false;
     _model->setSnapshot(GeoSpreadsheetModel::SourcePtr(), _model->attribClass());
+    populateGroups();
     _message->setText(text);
     _stack->setCurrentWidget(_message);
     updateClassBar();
@@ -385,8 +531,18 @@ void
 GeoSpreadsheetWidget::showClass(GeoAttribClassEnum cls)
 {
     if (cls != _model->attribClass()) {
+        cancelBuild();
         _model->setClass(cls);
+        _shownValid = false;
+        _sortColumn = -1;
+        _sortName.clear();
+        _pattern.clear();
+        _typed.clear();
+        setError(QString());
         updateMetrics();
+        populateGroups();
+        updateSortIndicator();
+        requestBuild(QString());
     }
     updateClassBar();
 }
@@ -433,6 +589,203 @@ GeoSpreadsheetWidget::openFullValue(const QModelIndex& index)
     openScenePrimFullValue(_table, [source, cls, column, element](const std::atomic<bool>* /*cancelled*/) {
         return QString::fromStdString(source->fullValue(cls, column, element));
     });
+}
+
+QString
+GeoSpreadsheetWidget::wantedPattern() const
+{
+    return _busy ? _pendingPattern : _pattern;
+}
+
+void
+GeoSpreadsheetWidget::populateGroups()
+{
+    const GeoSpreadsheetModel::SourcePtr& source = _model->source();
+    const GeoAttribClassEnum cls = _model->attribClass();
+    QStringList names;
+
+    if (source && (cls != eGeoAttribClassDetail)) {
+        if (const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get())) {
+            for (const std::string& name : geometry->detail()->groupNames(cls)) {
+                names << QString::fromStdString(name);
+            }
+        } else if (const ScenePrimElementsSource* prim = dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
+            for (const ScenePrimElementGroup& group : prim->groups()) {
+                if (group.cls == cls) {
+                    names << QString::fromStdString(group.name);
+                }
+            }
+        }
+    }
+    const QSignalBlocker blocker(_group);
+    _group->clear();
+    _group->addItem(QString());
+    _group->addItems(names);
+    _group->setEditText(_typed);
+    _group->setEnabled(source && (cls != eGeoAttribClassDetail));
+}
+
+void
+GeoSpreadsheetWidget::updateSortIndicator()
+{
+    _table->horizontalHeader()->setSortIndicator(_sortColumn, _descending ? Qt::DescendingOrder : Qt::AscendingOrder);
+}
+
+void
+GeoSpreadsheetWidget::setError(const QString& text)
+{
+    _error->setText(text);
+    _error->setVisible(!text.isEmpty());
+    _group->setToolTip(text.isEmpty() ? groupHelp() : text);
+}
+
+void
+GeoSpreadsheetWidget::headerClicked(int column)
+{
+    if (!_model->source() || (column < 0) || (column >= _model->columnCount())) {
+        return;
+    }
+    if (column == _sortColumn) {
+        _descending = !_descending;
+    } else {
+        _sortColumn = column;
+        _sortName = _model->headerData(column, Qt::Horizontal).toString();
+        _descending = false;
+    }
+    updateSortIndicator();
+    requestBuild(wantedPattern());
+}
+
+void
+GeoSpreadsheetWidget::groupSubmitted()
+{
+    const QString text = _group->currentText();
+
+    if (!_model->source() || (text == _typed)) {
+        return;
+    }
+    _typed = text;
+    requestBuild(text);
+}
+
+bool
+GeoSpreadsheetWidget::shownMatchesWanted() const
+{
+    return _shownValid && (_shownColumn == _sortColumn) && (_shownDescending == _descending) && (_shownPattern == _pattern);
+}
+
+void
+GeoSpreadsheetWidget::cancelBuild()
+{
+    if (_busy && _cancel) {
+        _cancel->store(true);
+        ++_sortsCancelled;
+    }
+    _cancel.reset();
+    _busy = false;
+    ++_generation;
+    _busyLabel->hide();
+}
+
+void
+GeoSpreadsheetWidget::requestBuild(const QString& pattern,
+                                   bool keepError)
+{
+    cancelBuild();
+    if (!_model->source()) {
+        return;
+    }
+    if ((_sortColumn < 0) && pattern.trimmed().isEmpty()) {
+        _pattern = pattern;
+        if (!keepError) {
+            setError(QString());
+        }
+        applyOrder(GeoSpreadsheetModel::RowOrderPtr());
+        _shownValid = true;
+        _shownPattern = _pattern;
+        _shownColumn = -1;
+        _shownDescending = _descending;
+
+        return;
+    }
+    launchBuild(pattern, keepError);
+}
+
+void
+GeoSpreadsheetWidget::launchBuild(const QString& pattern,
+                                  bool keepError)
+{
+    const GeoSpreadsheetModel::SourcePtr source = _model->source();
+    const GeoAttribClassEnum cls = _model->attribClass();
+    const std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);
+    const quint64 generation = ++_generation;
+    const std::string text = pattern.toStdString();
+    const int column = _sortColumn;
+    const bool descending = _descending;
+
+    _cancel = cancel;
+    _busy = true;
+    _pendingPattern = pattern;
+    ++_sortsStarted;
+    _busyLabel->show();
+    QMetaObject::invokeMethod(_worker, [this, source, cls, text, column, descending, cancel, generation, pattern, keepError]() {
+        GeoSpreadsheetBuildResult result = runBuild(source, cls, text, column, descending, *cancel);
+        // The destructor joins this thread before the widget goes, so the widget outlives this call.
+        QMetaObject::invokeMethod(this, [this, generation, result, pattern, keepError]() { finishBuild(generation, result, pattern, keepError); }, Qt::QueuedConnection); }, Qt::QueuedConnection);
+}
+
+void
+GeoSpreadsheetWidget::finishBuild(quint64 generation,
+                                  const GeoSpreadsheetBuildResult& result,
+                                  const QString& pattern,
+                                  bool keepError)
+{
+    if (generation != _generation) {
+        return;
+    }
+    _busy = false;
+    _cancel.reset();
+    _busyLabel->hide();
+    if (!result.error.isEmpty()) {
+        setError(result.error);
+        if (!shownMatchesWanted()) {
+            // A pattern that cannot be applied leaves the previous filter, or none when the snapshot cannot take it.
+            const QString fallback = (pattern == _pattern) ? QString() : _pattern;
+            requestBuild(fallback, true);
+        }
+
+        return;
+    }
+    if (!result.order) {
+        return;
+    }
+    _pattern = pattern;
+    if (!keepError) {
+        setError(QString());
+    }
+    applyOrder(result.order);
+    _shownValid = true;
+    _shownPattern = _pattern;
+    _shownColumn = _sortColumn;
+    _shownDescending = _descending;
+}
+
+// A model reset drops the column widths, which the user may have set.
+void
+GeoSpreadsheetWidget::applyOrder(const GeoSpreadsheetModel::RowOrderPtr& order)
+{
+    std::vector<int> widths;
+    const int columns = _model->columnCount();
+
+    for (int c = 0; c < columns; ++c) {
+        widths.push_back(_table->columnWidth(c));
+    }
+    _model->setRowOrder(order);
+    if (_model->columnCount() == columns) {
+        for (int c = 0; c < columns; ++c) {
+            _table->setColumnWidth(c, widths[(std::size_t)c]);
+        }
+    }
 }
 
 std::unique_ptr<ScenePrimInspectorTab>

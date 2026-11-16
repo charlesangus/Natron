@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <atomic>
 #include <memory>
 
 #include <QtCore/QString>
@@ -37,7 +38,9 @@
 
 #include "Gui/GeoSpreadsheetModel.h"
 
+class QComboBox;
 class QLabel;
+class QThread;
 class QStackedWidget;
 class QTableView;
 class QToolButton;
@@ -45,6 +48,7 @@ class QToolButton;
 NATRON_NAMESPACE_ENTER
 
 class ScenePrimInspectorTab;
+struct GeoSpreadsheetBuildResult;
 
 /**
  * @brief A class bar (Points, Vertices, Primitives, Detail, each with its row count) over a table of one
@@ -56,6 +60,16 @@ class ScenePrimInspectorTab;
  * Detail, Table and Message, and read natronGeoSpreadsheetRows (the rows of the class shown),
  * natronGeoSpreadsheetClass (its label) and natronGeoSpreadsheetCellReads (cells the table has read since the
  * snapshot or the class last changed) as properties.
+ *
+ * A Group box filters the rows to a group of the class shown (for geometry, any group pattern; for a USD
+ * prim, a subset name), and a click on a column header sorts by it, a second click reversing. The
+ * filtered and sorted order is built on the widget's own worker thread, one build at a time: a newer
+ * sort, filter, snapshot or class cancels the build under way. The table keeps its previous order, and
+ * stays usable, until the new one arrives. A new snapshot keeps the sort column and the filter. A
+ * malformed pattern shows its error under the Group box and leaves the previous filter applied.
+ * natronGeoSpreadsheetSortBusy is true while a build runs; natronGeoSpreadsheetSortsStarted and
+ * natronGeoSpreadsheetSortsCancelled count builds started and builds cancelled before they finished.
+ * Children Group, Busy and Error carry the widget's object name as prefix like the others.
  **/
 class GeoSpreadsheetWidget
     : public QWidget {
@@ -65,6 +79,9 @@ class GeoSpreadsheetWidget
     Q_PROPERTY(qlonglong natronGeoSpreadsheetRows READ getShownRows)
     Q_PROPERTY(QString natronGeoSpreadsheetClass READ getShownClassName)
     Q_PROPERTY(qulonglong natronGeoSpreadsheetCellReads READ getCellReads)
+    Q_PROPERTY(bool natronGeoSpreadsheetSortBusy READ getSortBusy)
+    Q_PROPERTY(int natronGeoSpreadsheetSortsStarted READ getSortsStarted)
+    Q_PROPERTY(int natronGeoSpreadsheetSortsCancelled READ getSortsCancelled)
 
 public:
     explicit GeoSpreadsheetWidget(const QString& objectName,
@@ -88,6 +105,21 @@ public:
 
     qulonglong getCellReads() const;
 
+    bool getSortBusy() const
+    {
+        return _busy;
+    }
+
+    int getSortsStarted() const
+    {
+        return _sortsStarted;
+    }
+
+    int getSortsCancelled() const
+    {
+        return _sortsCancelled;
+    }
+
 protected:
     bool eventFilter(QObject* watched, QEvent* e) override;
 
@@ -97,6 +129,23 @@ private:
     void updateMetrics();
     QStringList columnNames() const;
     void openFullValue(const QModelIndex& index);
+    void populateGroups();
+    void headerClicked(int column);
+    void groupSubmitted();
+    void updateSortIndicator();
+    void setError(const QString& text);
+    void cancelBuild();
+    void requestBuild(const QString& pattern,
+                      bool keepError = false);
+    void launchBuild(const QString& pattern,
+                     bool keepError);
+    void finishBuild(quint64 generation,
+                     const GeoSpreadsheetBuildResult& result,
+                     const QString& pattern,
+                     bool keepError);
+    void applyOrder(const GeoSpreadsheetModel::RowOrderPtr& order);
+    bool shownMatchesWanted() const;
+    QString wantedPattern() const;
 
     GeoSpreadsheetModel* _model;
     std::array<QToolButton*, kGeoAttribClassCount> _classButtons;
@@ -104,6 +153,32 @@ private:
     QTableView* _table;
     QLabel* _message;
     bool _metricsOwed = false;
+
+    QComboBox* _group;
+    QLabel* _busyLabel;
+    QLabel* _error;
+    QThread* _thread;
+    QObject* _worker;
+
+    // The filter applied, the sort wanted and, by name so it survives a new snapshot, its column.
+    QString _pattern;
+    QString _typed;
+    QString _pendingPattern;
+    QString _sortName;
+    int _sortColumn = -1;
+    bool _descending = false;
+
+    // What the model's order was built for.
+    bool _shownValid = false;
+    QString _shownPattern;
+    int _shownColumn = -1;
+    bool _shownDescending = false;
+
+    std::shared_ptr<std::atomic<bool>> _cancel;
+    quint64 _generation = 0;
+    bool _busy = false;
+    int _sortsStarted = 0;
+    int _sortsCancelled = 0;
 };
 
 /**

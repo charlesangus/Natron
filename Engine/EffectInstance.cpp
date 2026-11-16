@@ -3205,7 +3205,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
     if ( _publicInterface->isHostMaskingEnabled() ) {
-        foundMaskInput = rectToRender.imgs.find(_publicInterface->getNInputs() - 1);
+        foundMaskInput = rectToRender.imgs.find(_publicInterface->getHostMaskInputNb());
     }
 
     if ( ( foundMaskInput != rectToRender.imgs.end() ) && !foundMaskInput->second.empty() ) {
@@ -3803,7 +3803,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
     bool useMaskMix = _publicInterface->isHostMaskingEnabled() || _publicInterface->isHostMixingEnabled();
     double mix = useMaskMix ? _publicInterface->getNode()->getHostMixingValue(time, view) : 1.;
-    bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getNInputs() - 1) : false;
+    bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getHostMaskInputNb()) : false;
     const bool rendersUnprocessed = _publicInterface->rendersUnprocessedChannels();
 
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {

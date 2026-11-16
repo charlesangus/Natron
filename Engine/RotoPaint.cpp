@@ -179,6 +179,12 @@ RotoPaint::isInputMask(int inputNb) const
     return inputNb == ROTOPAINT_MASK_INPUT_INDEX;
 }
 
+int
+RotoPaint::getHostMaskInputNb() const
+{
+    return ROTOPAINT_MASK_INPUT_INDEX;
+}
+
 void
 RotoPaint::addAcceptedComponents(int inputNb,
                                  std::list<ImageLayerDesc>* comps)

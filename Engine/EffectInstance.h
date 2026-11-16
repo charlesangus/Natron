@@ -3056,11 +3056,19 @@ public:
      * Note that in this case this is expected that getNInputs returns the number of inputs *with* the mask.
      * The function getInputLabel should also return the appropriate label for the mask.
      * The function isInputMask should also return true for this mask index.
-     * The mask will be the last input, i.e its index will be getNInputs() - 1.
+     * The mask is the input getHostMaskInputNb() returns.
      **/
     virtual bool isHostMaskingEnabled() const
     {
         return false;
+    }
+
+    /**
+     * @brief The input host masking reads: the last one unless reimplemented.
+     **/
+    virtual int getHostMaskInputNb() const
+    {
+        return getNInputs() - 1;
     }
 
     /**

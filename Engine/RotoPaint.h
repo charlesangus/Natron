@@ -127,6 +127,9 @@ public:
     virtual void clearLastRenderedImage() OVERRIDE FINAL;
     virtual bool isHostMaskingEnabled() const OVERRIDE FINAL WARN_UNUSED_RETURN { return true; }
 
+    // The Vectors input follows the mask, so the mask is not the last input.
+    virtual int getHostMaskInputNb() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isHostMixingEnabled() const OVERRIDE FINAL WARN_UNUSED_RETURN  { return true; }
 
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN

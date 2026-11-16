@@ -299,6 +299,8 @@ def ensure_source(node, source):
     index = vectors_input(node)
     current = node.getInput(index)
     if current is None or current.getScriptName() != source.getScriptName():
+        if current is not None:
+            node.disconnectInput(index)
         require(node.connectInput(index, source), "connect %s to the %s input of %s" % (source.getScriptName(), VECTORS_INPUT_LABEL, node.getScriptName()))
     QApplication.processEvents()
 

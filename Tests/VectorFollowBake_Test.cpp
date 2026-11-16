@@ -786,7 +786,7 @@ TEST_F(VectorFollowBlendTest, OnlyTheKeysWithinTheRangeCount)
         bezier->movePointByIndex(i, before, -8., 0.);
     }
     std::map<int, FollowPoint> outside;
-    for (int frame = before; frame <= kStart; ++frame) {
+    for (int frame : { before, kStart }) {
         outside[frame] = positionAt(bezier, 0, frame);
     }
 
@@ -794,10 +794,16 @@ TEST_F(VectorFollowBlendTest, OnlyTheKeysWithinTheRangeCount)
     const VectorFollowReport report = context()->followVectors(blendParamsFor(bezier, VectorFollowModel::ePerPoint), &undo);
     ASSERT_TRUE(report.error.empty()) << report.error;
 
+    // Smooth interpolation still bends the frames between the two earlier keys towards the new
+    // ones after them, so only the keys themselves are compared.
     std::set<double> keys;
     bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), 12u);
-    for (int frame = before; frame <= kStart; ++frame) {
+    std::set<double> expected { (double)before };
+    for (int frame = kStart; frame <= later; ++frame) {
+        expected.insert((double)frame);
+    }
+    EXPECT_EQ(keys, expected);
+    for (int frame : { before, kStart }) {
         EXPECT_DOUBLE_EQ(positionAt(bezier, 0, frame).x, outside[frame].x) << frame;
         EXPECT_DOUBLE_EQ(positionAt(bezier, 0, frame).y, outside[frame].y) << frame;
     }

@@ -85,7 +85,14 @@ target_link_libraries(NatronGui
     PRIVATE
         qhttpserver
         ${NATRON_USD_GUI_LIBRARIES}
+        ${X11_LIBRARIES}
 )
+# SceneUnsharedGLContext calls GLX itself, on its own X connection.
+if(TARGET OpenGL::GLX)
+    target_link_libraries(NatronGui PRIVATE OpenGL::GLX)
+else()
+    target_link_libraries(NatronGui PRIVATE OpenGL::GL)
+endif()
 target_include_directories(NatronGui
     PRIVATE
         ${PYSIDE_INCLUDE_DIRS}/QtCore

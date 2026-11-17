@@ -52,6 +52,7 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFocusEvent>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHash>
 #include <QKeyEvent>
@@ -61,10 +62,12 @@
 #include <QMouseEvent>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QPointer>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
 #include <QUndoCommand>
@@ -102,6 +105,7 @@
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
+#include "Gui/SceneUnsharedGLContext.h"
 #include "Serialization/NodeSerialization.h"
 
 // See UsdIncludes.h: oneTBB, which these include too, declares members named emit().
@@ -181,6 +185,54 @@ const int kMaxRenderPasses = 8;
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
 const int kPresentPollMs = 2;
+// A render-thread job past this long holds the widget's paints under holdrepaint.
+const int kHoldRepaintAfterMs = 50;
+
+// How the render thread's context relates to the widget's, from NATRON_SCENE_RENDER_CONTEXT:
+// shared (the default) shares the widget's objects; unshared has its own X connection and no
+// share group, its frames read back to memory and uploaded in the widget's context; holdrepaint
+// shares, but the widget is not painted while a long render-thread job runs.
+enum class RenderContextMode {
+    shared,
+    unshared,
+    holdRepaint
+};
+
+RenderContextMode
+renderContextMode()
+{
+    static const RenderContextMode mode = []() {
+        const QByteArray value = qgetenv("NATRON_SCENE_RENDER_CONTEXT").trimmed().toLower();
+        if (value == "unshared") {
+            return RenderContextMode::unshared;
+        }
+        if (value == "holdrepaint") {
+            return RenderContextMode::holdRepaint;
+        }
+        if (!value.isEmpty() && (value != "shared")) {
+            qWarning("NATRON_SCENE_RENDER_CONTEXT=%s is not shared, unshared or holdrepaint; using shared", value.constData());
+        }
+
+        return RenderContextMode::shared;
+    }();
+
+    return mode;
+}
+
+const char*
+renderContextModeName(RenderContextMode mode)
+{
+    switch (mode) {
+    case RenderContextMode::unshared:
+        return "unshared";
+    case RenderContextMode::holdRepaint:
+        return "holdrepaint";
+    case RenderContextMode::shared:
+        break;
+    }
+
+    return "shared";
+}
 // The longest a sync's first frame waits for the graph policy its prims take: past it, the view
 // draws them as they are rather than seem stuck.
 const int kPolicyHoldMs = 500;
@@ -6415,6 +6467,8 @@ struct SceneViewport::Implementation {
         std::condition_variable changed;
         std::deque<std::function<void()>> jobs;
         bool quit = false;
+        // When the job running started, in steady_clock nanoseconds; 0 while the thread is idle.
+        std::atomic<long long> jobStartedNs { 0 };
         // Declared last: it starts in the constructor, on the members above.
         std::thread thread;
 
@@ -6438,7 +6492,9 @@ struct SceneViewport::Implementation {
                     job = std::move(jobs.front());
                     jobs.pop_front();
                 }
+                jobStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
                 job();
+                jobStartedNs = 0;
             }
         }
 
@@ -6494,6 +6550,33 @@ struct SceneViewport::Implementation {
     std::unique_ptr<QOffscreenSurface> renderSurface;
     // Render thread: its context, sharing the widget's.
     std::unique_ptr<QOpenGLContext> renderContext;
+    // Render thread: its context under unshared, in place of renderContext.
+    std::unique_ptr<SceneUnsharedGLContext> unsharedContext;
+    // Main thread: the mode the render thread's context was started in.
+    RenderContextMode activeContextMode = RenderContextMode::shared;
+    // A frame rendered in the unshared context, read back for the widget's context to upload.
+    struct FramePixels {
+        std::vector<unsigned char> color;
+        // GL_UNSIGNED_INT_24_8 depth and stencil.
+        std::vector<GLuint> depthStencil;
+        double readMs = 0.;
+    };
+    // The widget's context, under unshared: the shown frame's images, uploaded from FramePixels.
+    GLuint presentTexture = 0;
+    GLuint presentDepthTexture = 0;
+    int presentTextureWidth = 0;
+    int presentTextureHeight = 0;
+    struct HandoffStats {
+        int frames = 0;
+        double readMsTotal = 0.;
+        double readMsMax = 0.;
+        double uploadMsTotal = 0.;
+        double uploadMsMax = 0.;
+        QElapsedTimer sinceReport;
+    };
+    HandoffStats handoffStats;
+    // Main thread, under holdrepaint: asks for the paint held back once the long job is over.
+    QTimer* holdPoll = nullptr;
     // Render thread, but for readFence, which the main thread sets once it has copied the target
     // to the screen; presentPacer says which target each thread may touch.
     struct RenderTarget {
@@ -6517,6 +6600,8 @@ struct SceneViewport::Implementation {
         unsigned long long absorbed = 0;
         QVariantList view;
         std::chrono::steady_clock::time_point startedAt;
+        // Under unshared, until the widget's context has uploaded them.
+        std::shared_ptr<FramePixels> pixels;
     };
     // Main thread, and the render thread while the main thread waits for it.
     ScenePresentPacer<PresentFrame> presentPacer {
@@ -6699,6 +6784,10 @@ struct SceneViewport::Implementation {
         if (!QOpenGLContext::supportsThreadedOpenGL() || !AppManager::instance()->isOpenGLLoaded()) {
             return false;
         }
+        activeContextMode = (renderContextMode() == RenderContextMode::holdRepaint) ? RenderContextMode::holdRepaint : RenderContextMode::shared;
+        if ((renderContextMode() == RenderContextMode::unshared) && startUnsharedRenderContext(share->format())) {
+            return true;
+        }
         // A surface is created on the main thread and may be used from any.
         renderSurface.reset(new QOffscreenSurface());
         renderSurface->setFormat(share->format());
@@ -6725,6 +6814,155 @@ struct SceneViewport::Implementation {
         usesRenderThread = started;
 
         return started;
+    }
+
+    // Main thread. False, and the caller shares the widget's context instead, if there is no X
+    // display of its own to be had.
+    bool startUnsharedRenderContext(const QSurfaceFormat& format)
+    {
+        if (QGuiApplication::platformName() != QLatin1String("xcb")) {
+            qWarning() << "SceneViewport: an unshared render context needs X11, not" << QGuiApplication::platformName() << "; sharing the widget's";
+
+            return false;
+        }
+        SceneUnsharedGLContext::Request request;
+        request.majorVersion = format.majorVersion();
+        request.minorVersion = format.minorVersion();
+        request.coreProfile = (format.profile() == QSurfaceFormat::CoreProfile);
+        request.debug = format.testOption(QSurfaceFormat::DebugContext);
+        startRenderThread();
+        bool started = false;
+        std::string error;
+        callOnRenderThread([&]() {
+            unsharedContext = SceneUnsharedGLContext::create(request, &error);
+            started = unsharedContext && unsharedContext->makeCurrent();
+            if (!started) {
+                if (unsharedContext) {
+                    error = "it cannot be made current";
+                }
+                unsharedContext.reset();
+            }
+        });
+        if (!started) {
+            qWarning() << "SceneViewport: no unshared render context:" << error.c_str() << "; sharing the widget's";
+
+            return false;
+        }
+        activeContextMode = RenderContextMode::unshared;
+        usesRenderThread = true;
+        handoffStats = HandoffStats();
+
+        return true;
+    }
+
+    // Render thread, under unshared: target index's frame, which this waits for the GPU to finish.
+    std::shared_ptr<FramePixels> readRenderTarget(int index)
+    {
+        // The read back would wait for the render anyway; finishing it first keeps readMs the
+        // copy's own cost.
+        glFinish();
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        const RenderTarget& source = renderTargets[index];
+        std::shared_ptr<FramePixels> pixels = std::make_shared<FramePixels>();
+        pixels->color.resize(size_t(source.width) * size_t(source.height) * 4);
+        pixels->depthStencil.resize(size_t(source.width) * size_t(source.height));
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, source.fbo);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadPixels(0, 0, source.width, source.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels->color.data());
+        glReadPixels(0, 0, source.width, source.height, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, pixels->depthStencil.data());
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        pixels->readMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+
+        return pixels;
+    }
+
+    // Main thread, the widget's context current, under unshared: frontFrame's images, into
+    // presentTexture and presentDepthTexture, once.
+    void uploadFrontFrame()
+    {
+        if (!frontFrame || !frontFrame->pixels) {
+            return;
+        }
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        const FramePixels& pixels = *frontFrame->pixels;
+        const int width = frontFrame->width;
+        const int height = frontFrame->height;
+        const bool resized = (width != presentTextureWidth) || (height != presentTextureHeight);
+        if (!presentTexture) {
+            glGenTextures(1, &presentTexture);
+            glGenTextures(1, &presentDepthTexture);
+        }
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glBindTexture(GL_TEXTURE_2D, presentTexture);
+        if (resized) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.color.data());
+        } else {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.color.data());
+        }
+        glBindTexture(GL_TEXTURE_2D, presentDepthTexture);
+        if (resized) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, pixels.depthStencil.data());
+        } else {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, pixels.depthStencil.data());
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+        presentTextureWidth = width;
+        presentTextureHeight = height;
+        noteHandoff(pixels.readMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), width, height);
+        frontFrame->pixels.reset();
+    }
+
+    // Main thread. Logs the hand-over's cost at most once a second, for the bench's natron.log.
+    void noteHandoff(double readMs,
+                     double uploadMs,
+                     int width,
+                     int height)
+    {
+        HandoffStats& stats = handoffStats;
+        ++stats.frames;
+        stats.readMsTotal += readMs;
+        stats.readMsMax = std::max(stats.readMsMax, readMs);
+        stats.uploadMsTotal += uploadMs;
+        stats.uploadMsMax = std::max(stats.uploadMsMax, uploadMs);
+        if (stats.sinceReport.isValid() && (stats.sinceReport.elapsed() < 1000)) {
+            return;
+        }
+        qInfo("SceneViewport: unshared hand-over: %d frames, last %dx%d; read back mean %.2f max %.2f ms (render thread); upload mean %.2f max %.2f ms (main thread)",
+              stats.frames, width, height, stats.readMsTotal / stats.frames, stats.readMsMax, stats.uploadMsTotal / stats.frames, stats.uploadMsMax);
+        stats = HandoffStats();
+        stats.sinceReport.start();
+    }
+
+    // How long the render thread has been on its job, 0 when idle. Main thread.
+    double renderJobRunningMs() const
+    {
+        if (!renderLoop) {
+            return 0.;
+        }
+        const long long startedNs = renderLoop->jobStartedNs;
+        if (!startedNs) {
+            return 0.;
+        }
+        const long long nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+        return double(nowNs - startedNs) / 1e6;
+    }
+
+    // Under holdrepaint, whether the widget's context is kept from being made current now.
+    bool holdsPaints() const
+    {
+        return usesRenderThread && (activeContextMode == RenderContextMode::holdRepaint) && (renderJobRunningMs() >= kHoldRepaintAfterMs);
     }
 
     // Render thread. Target index of a width x height frame, reallocated when the size changes.
@@ -6783,13 +7021,16 @@ struct SceneViewport::Implementation {
     // Render thread: everything of the render context, the engine first.
     void releaseRenderContext()
     {
-        if (!renderContext) {
+        if (!renderContext && !unsharedContext) {
             return;
         }
         renderer.releaseGL();
         releaseRenderTargets();
-        renderContext->doneCurrent();
-        renderContext.reset();
+        if (renderContext) {
+            renderContext->doneCurrent();
+            renderContext.reset();
+        }
+        unsharedContext.reset();
     }
 
     // Main thread. Lets the render thread go with its context and the engine, without waiting for
@@ -6799,18 +7040,21 @@ struct SceneViewport::Implementation {
     {
         std::shared_ptr<void> engine;
         std::shared_ptr<QOpenGLContext> context;
+        std::shared_ptr<SceneUnsharedGLContext> unshared;
 
-        callOnRenderThread([this, &engine, &context]() {
+        callOnRenderThread([this, &engine, &context, &unshared]() {
             engine = renderer.releaseGLKeepingEngine();
             releaseRenderTargets();
             context = std::move(renderContext);
+            unshared = std::move(unsharedContext);
         });
-        renderLoop->post([engine = std::move(engine), context = std::move(context)]() mutable {
+        renderLoop->post([engine = std::move(engine), context = std::move(context), unshared = std::move(unshared)]() mutable {
             engine.reset();
             if (context) {
                 context->doneCurrent();
                 context.reset();
             }
+            unshared.reset();
         });
         std::shared_ptr<RetiredRenderLoop> retired = std::make_shared<RetiredRenderLoop>();
         retired->loop = std::move(renderLoop);
@@ -6842,8 +7086,17 @@ struct SceneViewport::Implementation {
             glDeleteFramebuffers(1, &presentFbo);
             presentFbo = 0;
         }
+        if (presentTexture) {
+            glDeleteTextures(1, &presentTexture);
+            glDeleteTextures(1, &presentDepthTexture);
+            presentTexture = 0;
+            presentDepthTexture = 0;
+            presentTextureWidth = 0;
+            presentTextureHeight = 0;
+        }
         renderSurface.reset();
         usesRenderThread = false;
+        activeContextMode = RenderContextMode::shared;
         backgroundFrameRunning = false;
         presentedScene = false;
     }
@@ -6880,8 +7133,15 @@ struct SceneViewport::Implementation {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, presentFbo);
         // Attached anew each time: a change made in another context is only seen after a bind, and
         // a resize has given the texture a new image.
-        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, source.texture, 0);
-        glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, sameView ? source.depth : 0);
+        const bool unshared = (activeContextMode == RenderContextMode::unshared);
+        if (unshared) {
+            uploadFrontFrame();
+            glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, presentTexture, 0);
+            glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, sameView ? presentDepthTexture : 0, 0);
+        } else {
+            glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, source.texture, 0);
+            glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, sameView ? source.depth : 0);
+        }
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_FRAMEBUFFER_SRGB);
@@ -6895,6 +7155,9 @@ struct SceneViewport::Implementation {
             glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
         }
         glBindFramebuffer(GL_FRAMEBUFFER, target);
+        if (unshared) {
+            return;
+        }
         // The render thread draws into this target again only after the copy, without waiting for it.
         if (source.readFence) {
             glDeleteSync(source.readFence);
@@ -7001,6 +7264,16 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->presentPoll->setTimerType(Qt::PreciseTimer);
     _imp->presentPoll->setInterval(kPresentPollMs);
     QObject::connect(_imp->presentPoll, &QTimer::timeout, this, [this]() { pollPresent(); });
+    _imp->holdPoll = new QTimer(this);
+    _imp->holdPoll->setSingleShot(true);
+    _imp->holdPoll->setInterval(10);
+    QObject::connect(_imp->holdPoll, &QTimer::timeout, this, [this]() {
+        if (_imp->holdsPaints()) {
+            _imp->holdPoll->start();
+        } else {
+            update();
+        }
+    });
     _imp->standInRefillTimer = new QTimer(this);
     _imp->standInRefillTimer->setSingleShot(true);
     _imp->standInRefillTimer->setTimerType(Qt::PreciseTimer);
@@ -7413,7 +7686,10 @@ SceneViewport::startBackgroundFrame()
         bool converged = false;
         const bool rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h), &converged);
         GLsync fence = nullptr;
-        if (rendered) {
+        std::shared_ptr<Implementation::FramePixels> pixels;
+        if (rendered && imp->unsharedContext) {
+            pixels = imp->readRenderTarget(target);
+        } else if (rendered) {
             fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         }
         // A fence another context polls has to reach the GPU first, and the commands must be on
@@ -7426,13 +7702,14 @@ SceneViewport::startBackgroundFrame()
         // Read here: draw changes posted after the frame are taken in by the render thread before
         // the main thread hears of the frame.
         finished.absorbed = imp->renderer.getDrawFilterStats().absorbed;
+        finished.pixels = std::move(pixels);
         const auto done = [this, rendered, converged, fence, generation, finished, startMs, costMs]() {
             if (rendered) {
                 publishStormFrame(this, startMs, costMs);
             }
-            if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
+            if ((fence || finished.pixels) && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
                 // Replacing a frame still on the GPU releases its fence, which needs a context.
-                const bool replaces = _imp->presentPacer.inFlight();
+                const bool replaces = fence && _imp->presentPacer.inFlight();
                 if (replaces) {
                     makeCurrent();
                 }
@@ -7500,9 +7777,20 @@ SceneViewport::pollPresent()
     if (!_imp->presentPacer.inFlight() || !context()) {
         return;
     }
-    makeCurrent();
+    if (_imp->holdsPaints()) {
+        _imp->presentPoll->start();
+
+        return;
+    }
+    // Unshared frames carry no fence: testing them needs no context.
+    const bool needsContext = (_imp->activeContextMode != RenderContextMode::unshared);
+    if (needsContext) {
+        makeCurrent();
+    }
     const bool ready = _imp->presentPacer.poll();
-    doneCurrent();
+    if (needsContext) {
+        doneCurrent();
+    }
     if (!ready) {
         _imp->presentPoll->start();
 
@@ -9459,6 +9747,7 @@ SceneViewport::initializeGL()
 {
     _imp->glInitialized = true;
     _imp->startRenderContext(context());
+    setProperty("natronSceneRenderContext", QString::fromUtf8(renderContextModeName(_imp->activeContextMode)));
     // A new context (the pane was floated or docked) cannot use the old one's engine, and the engine
     // context shared with the old one has to go with it.
     GLContextLoss::watch(this, [this]() {
@@ -9472,6 +9761,22 @@ SceneViewport::resizeGL(int /*w*/,
 {
     // Qt gave the widget a new framebuffer, with nothing of the old image in it.
     _imp->presentedScene = false;
+}
+
+void
+SceneViewport::paintEvent(QPaintEvent* e)
+{
+    if (_imp->holdsPaints()) {
+        // QOpenGLWidget's paint makes the widget's context current, which waits on the driver for
+        // as long as the render thread's context, of the same share group, is inside a render. The
+        // widget's framebuffer keeps the last image for the window to compose meanwhile.
+        if (!_imp->holdPoll->isActive()) {
+            _imp->holdPoll->start();
+        }
+
+        return;
+    }
+    QOpenGLWidget::paintEvent(e);
 }
 
 void

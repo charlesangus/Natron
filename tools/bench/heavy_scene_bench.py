@@ -133,7 +133,8 @@ first_boxes_ms runs from the change to the paint that first drew a box (natronSc
 orbit10k sets the Preferences' sceneStandInMode to Off for its duration and restores the previous value
 afterwards, also on failure, so orbit_fps measures Storm drawing the boxes rather than the stand-in
 (orbit_full covers that); stand_in_mode records the mode used and paint_count the natronScenePaintCount
-delta over the orbit, for diagnosis.
+delta over the orbit, for diagnosis. orbit and orbit10k count as frames the Storm frames new to the
+screen over the orbit (natronScenePresentedFrames), each made for some camera of the orbit.
 
 orbit_full clears every draw state, waits for the full scene on screen, and orbits it continuously for
 BENCH_ORBIT_S under the Preferences' scene stand-in settings. orbit_fps counts every main-thread paint
@@ -345,6 +346,7 @@ try:
             self.timer.timeout.connect(self._tick)
             self.last = None
             self.longest = 0.0
+            self.started_at = None
 
         def _tick(self):
             now = time.perf_counter()
@@ -353,6 +355,7 @@ try:
             self.last = now
 
         def start(self):
+            self.started_at = time.time()
             self.last = time.perf_counter()
             self.longest = 0.0
             self.timer.start()
@@ -551,7 +554,10 @@ try:
             event = QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.AltModifier)
             QApplication.sendEvent(v, event)
 
-        paints = set()
+        # natronSceneLastPaintMs only advances on the finished frame of the view, which a moving
+        # camera never has on the render thread: each frame shown was made for an earlier camera.
+        # natronScenePresentedFrames counts every Storm frame new to the screen.
+        presented_before = int(prop("natronScenePresentedFrames", 0))
         deadline = time.time() + orbit_s
         started = time.time()
         step = 0
@@ -561,15 +567,13 @@ try:
             offset = QPoint(int((step % 40) * 4 - 80), int((step % 20) * 2 - 20))
             mouse(QEvent.MouseMove, centre + offset, Qt.NoButton, Qt.LeftButton)
             yield ("sleep", POLL_MS)
-            painted = prop("natronSceneLastPaintMs")
-            if painted is not None:
-                paints.add(painted)
         mouse(QEvent.MouseButtonRelease, centre, Qt.LeftButton, Qt.NoButton)
         elapsed = time.time() - started
+        frames = int(prop("natronScenePresentedFrames", 0)) - presented_before
         navigation.setValue(original)
         m.values["orbit_s"] = round(elapsed, 2)
-        m.values["orbit_frames"] = len(paints)
-        m.values["orbit_fps"] = round(len(paints) / elapsed, 1) if elapsed > 0 else None
+        m.values["orbit_frames"] = frames
+        m.values["orbit_fps"] = round(frames / elapsed, 1) if elapsed > 0 else None
 
     def tumbling_until(done):
         """Tumbles the view until done() holds, or the wait times out; returns (moves, longest gap in ms)."""
@@ -1290,7 +1294,7 @@ try:
         return settled
 
     def action_orbit10k(m):
-        # orbit_fps counts distinct natronSceneLastPaintMs, which only a full Storm frame advances; the
+        # orbit_fps counts natronScenePresentedFrames, which only a Storm frame advances; the
         # stand-in would suppress those while the camera moves, so the stand-in is Off here (orbit_full
         # covers it) and the previous mode is restored on every exit.
         mode = NatronEngine.natron.getSettings().getParam("sceneStandInMode")
@@ -1666,8 +1670,12 @@ try:
         (docking the panel, reading a row's index) is not the work the budget is about."""
 
         def finish_step(name, ms, **extra):
+            # The window stall_ms was measured over, in epoch seconds, to find the step in stack samples.
+            started_at = heartbeat.started_at
             stall = heartbeat.stop()
-            m.steps[name] = dict(extra, applicable=True, ms=round(ms, 1), stall_ms=round(stall, 1))
+            m.steps[name] = dict(extra, applicable=True, ms=round(ms, 1), stall_ms=round(stall, 1),
+                                 started_at=round(started_at, 3) if started_at is not None else None,
+                                 ended_at=round(time.time(), 3))
             m.stall_floor_ms = max(m.stall_floor_ms, stall)
             heartbeat.start()
 

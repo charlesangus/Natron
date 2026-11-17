@@ -11,6 +11,8 @@
 # around 0.15 s a sample on the heavy scene whatever INTERVAL says (the "ms eu-stack took" field); a
 # couple of threads cost a fraction of that, which is what makes 20 Hz (INTERVAL 0.05) reachable. The
 # achieved period is the difference of consecutive start epochs, which heavy_scene_stack_window.py prints.
+# SAMPLE_TID_COMM='^$' walks the main thread alone, '.' every thread one at a time (each thread's stack
+# is taken at a slightly different moment), and unset is the whole-process eu-stack.
 # Exits 3 with eu-stack's reason and the remedy on stderr (also in OUT.err) when the first sample gets
 # no stacks; later failures go to OUT.err only.
 set -u

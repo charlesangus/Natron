@@ -122,7 +122,8 @@ against stand-in objects on the host and prints its node counts, without Natron.
 A whole-process eu-stack takes about 0.15 s on the heavy scene, so `SAMPLE_INTERVAL_S` below that does
 not raise the rate. `SAMPLE_TID_COMM=<regex of thread names>` makes `sample_stacks.sh` walk only the main
 thread and the matching threads (`eu-stack -1`), which is what allows 20 Hz (`SAMPLE_INTERVAL_S=0.04`);
-`heavy_scene_stack_window.py` prints the achieved sample period. `heavy_scene_fixture_check.py --rejudge
+`heavy_scene_stack_window.py` prints the achieved sample period. `SAMPLE_TID_COMM='^$'` walks the main
+thread alone and `SAMPLE_TID_COMM=.` every thread, each on its own; unset, one eu-stack takes the whole process. `heavy_scene_fixture_check.py --rejudge
 RESULTS OUT.jsonl` re-applies the fixture check to an existing results file, writing a copy.
 
 eu-stack stops the process while it walks stacks, so samples in which no thread looks busy are
@@ -618,7 +619,8 @@ is only needed while the fixtures are missing.
 Full on one asset, Full + Load on a block, a pattern node (a USDEditTransform with a `primPattern`,
 `BENCH_PATTERN` or the branch's descendants) inserted below USDRead and viewed, a switch to that node
 with the Scene Graph panel following the selection, a prim selected in the inspector, a project save,
-and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms` and numbers under
+and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms`, `started_at` and `ended_at` (the
+epoch seconds `stall_ms` was measured over, to find the step in stack samples) and numbers under
 `workflow_steps`, and its own budgets in the record: `<step>_stall_ms` (100 ms, the setup before a
 step not counted), `full_asset_picture_ms` (100 ms, valid with `NATRON_DRAW_STATE_TIMING=1` on a real
 GPU), `full_load_block_complete` and `full_load_block_worst_frame_ms` (the reveal finishes with no

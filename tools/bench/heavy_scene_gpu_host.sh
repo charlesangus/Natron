@@ -95,6 +95,8 @@
 #                      does not raise the rate. For 20 Hz or more set SAMPLE_TID_COMM to a regex of the
 #                      thread names (/proc comm) to walk besides the main thread, and SAMPLE_INTERVAL_S=0.04
 #                      (see sample_stacks.sh); check the achieved period in heavy_scene_stack_window.py's output.
+#                      SAMPLE_TID_COMM='^$' samples the main thread alone, '.' every thread, each walked on
+#                      its own; unset takes the whole process in one eu-stack.
 #   SYMBOLS            with SAMPLE=1: the symbols of the AppImage's bundle, the natron-symbols.tar.gz that
 #                      tools/ci/remote/build.sh --debug-symbols downloads with that AppImage, or the
 #                      directory it unpacks to. eu-stack reads the libraries' symbols from it; Natron.bin's
@@ -133,12 +135,6 @@
 #                      Each record's bisect names them (null without BISECT); the default results file
 #                      becomes heavy-scene-<mode>-<variants joined by +>.jsonl and the out/ files
 #                      <label>.<variants joined by +>.*, so variants never overwrite each other.
-#   VARIANTS           space or comma separated render-context modes of the 3D viewer, one or more of
-#                      shared, unshared and holdrepaint; needs ONLY_LABELS. Each chosen label runs once
-#                      per mode, in its own process with NATRON_SCENE_RENDER_CONTEXT set to it, into
-#                      <results without .jsonl>-ctx-<mode>.jsonl and out/<label>[.<bisect>].ctx-<mode>.*.
-#                      The warm-up runs once, into the results file itself. An unshared run says what
-#                      its frame hand-over costs in "unshared hand-over" lines of its natron.log.
 #                      Storm has no environment setting that turns materials off: unbound material
 #                      pruning and material primvar filtering are already on by default.
 #
@@ -264,33 +260,6 @@ mkdir -p "$(dirname "$RESULT")"
 make_fixtures || exit 1
 [ -s "$RESULT" ] && mv -f "$RESULT" "$RESULT.prev"
 : > "$RESULT"
-
-CONTEXT_VARIANTS="shared unshared holdrepaint"
-CONTEXT_LIST=()
-CONTEXT_VARIANT=""
-VARIANTS="${VARIANTS:-}"
-for variant in ${VARIANTS//,/ }; do
-    case " $CONTEXT_VARIANTS " in
-        *" $variant "*) CONTEXT_LIST+=("$variant") ;;
-        *)
-            echo "VARIANTS: unknown mode '$variant' (one or more of: $CONTEXT_VARIANTS)" >&2
-            exit 2
-            ;;
-    esac
-done
-if [ "${#CONTEXT_LIST[@]}" -gt 0 ] && [ -z "${ONLY_LABELS:-}" ]; then
-    echo "VARIANTS needs ONLY_LABELS: every run would repeat once per mode" >&2
-    exit 2
-fi
-context_result() {
-    printf '%s\n' "${RESULT%.jsonl}-ctx-$1.jsonl"
-}
-for variant in "${CONTEXT_LIST[@]}"; do
-    variant_result="$(context_result "$variant")"
-    [ -s "$variant_result" ] && mv -f "$variant_result" "$variant_result.prev"
-    : > "$variant_result"
-done
-[ "${#CONTEXT_LIST[@]}" -gt 0 ] && echo "render contexts: ${CONTEXT_LIST[*]}" >&2
 
 if [ -z "${SCENE_DIR:-}" ]; then
     SCENE_DIR="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.local"
@@ -575,7 +544,7 @@ record_wedged() {
 }
 
 # Runs a label with the shader cache in the state it is in, and marks its records so.
-launch_one() {
+launch() {
     local label="$1" fixture="$2" file="$3" scenarios="$4" rc bench sampler="" vram_sampler="" stem stacks vram extra=() warmup=0 warmup_flag=() cache
     shift 4
     if [ "$label" = "$WARMUP_LABEL" ]; then
@@ -588,12 +557,12 @@ launch_one() {
         record_wedged "$label"
         return 0
     fi
-    stem="$label${BISECT_TAG:+.$BISECT_TAG}${CONTEXT_VARIANT:+.ctx-$CONTEXT_VARIANT}"
+    stem="$label${BISECT_TAG:+.$BISECT_TAG}"
     stacks="$FIXTURE_DIR/out/$stem.stacks"
     vram="$FIXTURE_DIR/out/$stem.vram"
     [ -n "${ONLY_SCENARIOS:-}" ] && [ "$warmup" = 0 ] && scenarios="$ONLY_SCENARIOS"
-    extra=(BENCH_SHADER_CACHE="$cache" BENCH_WARMUP="$warmup" BENCH_RESULT="$RESULT")
-    echo "=== $label${BISECT:+ (bisect $BISECT)}${CONTEXT_VARIANT:+ (render context $CONTEXT_VARIANT)}"
+    extra=(BENCH_SHADER_CACHE="$cache" BENCH_WARMUP="$warmup")
+    echo "=== $label${BISECT:+ (bisect $BISECT)}"
     host_report
     rm -f -- "$vram"
     if [ -n "$SAMPLER" ]; then
@@ -645,24 +614,6 @@ launch_one() {
     fi
     # A run that lived to open a scene has compiled its shaders into the cache.
     [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] && SHADER_CACHE_STATE=warm
-    return 0
-}
-
-# Under VARIANTS, once per render-context mode, each into its own results file.
-launch() {
-    local label="$1" base_result="$RESULT" variant
-    if [ "${#CONTEXT_LIST[@]}" -eq 0 ] || [ "$label" = "$WARMUP_LABEL" ]; then
-        launch_one "$@"
-        return 0
-    fi
-    wanted "$label" || return 0
-    for variant in "${CONTEXT_LIST[@]}"; do
-        RESULT="$(context_result "$variant")"
-        CONTEXT_VARIANT="$variant"
-        launch_one "$@" NATRON_SCENE_RENDER_CONTEXT="$variant"
-    done
-    RESULT="$base_result"
-    CONTEXT_VARIANT=""
     return 0
 }
 
@@ -736,20 +687,11 @@ acceptance_runs() {
     fi
 }
 
-summarize_file() {
-    local file="$1"
-    if command -v python3 > /dev/null 2>&1 && grep -q '"scenario": "draw_budget"' "$file"; then
-        python3 -I tools/bench/heavy_scene_budget_table.py "$file"
-    fi
-    echo "results: $file ($(wc -l < "$file") lines: $(grep -c '"result": "pass"' "$file") pass, $(grep -c '"result": "fail"' "$file") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted|gpu_wedged|fixture_incomplete)"' "$file") did not finish ($(grep -c '"result": "fixture_incomplete"' "$file") fixture incomplete), $(grep -c '"result": "skipped"' "$file") skipped, $(grep -c '"result": "warmup"' "$file") warm-up)"
-}
-
 summarize() {
-    local variant
-    summarize_file "$RESULT"
-    for variant in "${CONTEXT_LIST[@]}"; do
-        summarize_file "$(context_result "$variant")"
-    done
+    if command -v python3 > /dev/null 2>&1 && grep -q '"scenario": "draw_budget"' "$RESULT"; then
+        python3 -I tools/bench/heavy_scene_budget_table.py "$RESULT"
+    fi
+    echo "results: $RESULT ($(wc -l < "$RESULT") lines: $(grep -c '"result": "pass"' "$RESULT") pass, $(grep -c '"result": "fail"' "$RESULT") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted|gpu_wedged|fixture_incomplete)"' "$RESULT") did not finish ($(grep -c '"result": "fixture_incomplete"' "$RESULT") fixture incomplete), $(grep -c '"result": "skipped"' "$RESULT") skipped, $(grep -c '"result": "warmup"' "$RESULT") warm-up)"
 }
 
 warm_shader_cache

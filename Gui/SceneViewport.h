@@ -814,9 +814,11 @@ public:
     /**
      * @brief Under Scene Default, renders with the renderer the stage's prim names from the next
      * render on; true if that changed the renderer. A change destroys the engine, so it needs the
-     * context of render() current.
+     * context of render() current. Never waits for the viewer lock: while a sync or a load holds
+     * it, nothing changes, busy (if given) is set, and the readEnded callback or the holder's own
+     * signal tells the viewport when to try again.
      **/
-    bool followSceneRenderer();
+    bool followSceneRenderer(bool* busy = nullptr);
 
     // Whether the last renderIfIdle() drew with a renderer Scene Default no longer names.
     bool hasPendingRendererSwitch() const;

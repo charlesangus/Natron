@@ -365,7 +365,6 @@ NodeGraph::onNodesCleared()
     invalidateNavigatorContent();
 
     _imp->_selection.clear();
-    _imp->_magnifiedNode.reset();
 }
 
 void

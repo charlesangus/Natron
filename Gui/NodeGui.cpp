@@ -1370,10 +1370,45 @@ NodeGui::removeSettingsPanel(NodeSettingsPanel* panel)
 void
 NodeGui::refreshSize()
 {
-    const QRectF bbox = bodyRect();
+    resizeToContent(!_nodeLabel.isEmpty(), _nameItemInputsSet);
+}
 
-    QString& label = _nodeLabel;
-    resize( bbox.width(), bbox.height(), false, !label.isEmpty() );
+void
+NodeGui::resizeToContent(bool adjustToTextSize,
+                         bool hadContentLayout)
+{
+    const int oldWidth = getSize().width();
+    const QPointF oldPos = pos();
+    NodePtr node = getNode();
+
+    const QRectF bbox = bodyRect();
+    int width = bbox.width();
+    int height = bbox.height();
+    const bool layoutFromDefaultSize = node && !node->hasSize() && !mustFrameName();
+    if (layoutFromDefaultSize) {
+        if (_previewPixmap && _previewPixmap->isVisible()) {
+            getSizeWithPreview(&width, &height);
+        } else {
+            getInitialSize(&width, &height);
+        }
+    }
+    // An explicitly sized node keeps its size as a minimum, so its label may only grow it.
+    resize(width, height, false, layoutFromDefaultSize && adjustToTextSize);
+
+    // Before the first name layout the width is a placeholder, and a project load or node-tree
+    // creation restores positions that were saved against the final size.
+    if (!hadContentLayout || oldWidth <= 0 || mustFrameName() || !node) {
+        return;
+    }
+    AppInstancePtr app = node->getApp();
+    if (!app || app->isCreatingNodeTree() || (app->getProject() && app->getProject()->isLoadingProject())) {
+        return;
+    }
+    const int newWidth = getSize().width();
+    if (newWidth == oldWidth) {
+        return;
+    }
+    refreshPosition(oldPos.x() - (newWidth - oldWidth) / 2.0, oldPos.y(), true);
 }
 
 int
@@ -4511,6 +4546,7 @@ NodeGui::setNameItemHtmlNow(const QString& name,
     const bool hasFontTag = finalText.indexOf(QString::fromUtf8(kFontSizeTag)) != -1;
 
     inputs.userFontColor = userFontColor;
+    const bool hadContentLayout = _nameItemInputsSet;
     _nameItemInputs = inputs;
     _nameItemInputsSet = true;
 
@@ -4533,8 +4569,7 @@ NodeGui::setNameItemHtmlNow(const QString& name,
     }
     _nameItem->adjustSize();
 
-    const QRectF bbox = bodyRect();
-    resize( bbox.width(), bbox.height(), false, !label.isEmpty() );
+    resizeToContent(!label.isEmpty(), hadContentLayout);
 } // setNameItemHtml
 
 void

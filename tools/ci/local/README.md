@@ -449,26 +449,6 @@ AppImage" steps, which only run on a tag push and drop their output in
 `/tmp/artifacts` instead of the build tree. Defaults to `release` (packaging
 a debug build is rarely useful, but supported).
 
-`appimagetool` needs a route to `upload.wikimedia.org` to validate the
-AppData screenshot URL; sandboxes without one can drop a wrapper at
-`build/appimagetool-wrapper/appimagetool` that execs the real tool with
-`-n`/`--no-appstream` (see that wrapper's own header for the full story) --
-`package.sh` puts it ahead of `PATH` when present, and does nothing when it
-isn't (e.g. CI, which has real network access).
-
-`make-appimagetool-wrapper.sh` creates that wrapper:
-
-```
-tools/ci/local/make-appimagetool-wrapper.sh <dir> [<real-appimagetool>]
-```
-
-`<dir>` receives `appimagetool` (the wrapper) and `appimagetool.real` (a
-copy of the real tool). The real tool is the path given, else the first
-`appimagetool` on `PATH`, else the `appimagetool.real` already in the main
-checkout's `build/appimagetool-wrapper/`; it exits 1 when none is found.
-`package.sh` calls it itself when the wrapper is missing but one of those
-sources exists, so you normally never run it by hand.
-
 ## 6. Verify a release bundle starts outside the dev container
 
 `tools/release/stage-bundle.sh` already runs `check-relocatable.sh` and
@@ -668,8 +648,6 @@ when its result is already there, so it is safe to re-run:
    shared dev container and a caller may not want to start a build there.
 3. `.natron-deps` linked to the main checkout's copy (not needed in the main
    checkout itself).
-4. `build/appimagetool-wrapper/` copied from the main checkout, or
-   regenerated with `make-appimagetool-wrapper.sh`.
 
 It prints a summary of what it did, what was already present, and notes. It
 never builds Natron.

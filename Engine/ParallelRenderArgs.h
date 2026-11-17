@@ -613,6 +613,9 @@ public:
      * relying on other nodes that do not belong in the tree through expressions.
      * When setUpstreamArgs is false only treeRoot gets TLS: callers that do not render use this to avoid walking the
      * whole graph, and EffectInstance::getImage installs args on an input lazily if it ends up being pulled.
+     * Such a setter attaches no OpenGL context either, so its args carry none: those callers run on the main
+     * thread, where creating the first context of the pool stalls the UI for over 100 ms, and a render they pull
+     * through getImage gets its context from the setter getImage installs.
      **/
     ParallelRenderArgsSetter(double time,
                              ViewIdx view,

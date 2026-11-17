@@ -68,6 +68,7 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
+    KnobChangeGLContext_Test.cpp
     GlobalModeKind_Test.cpp
     GlobalModeStroke_Test.cpp
     GpuContext_Test.cpp

@@ -112,3 +112,6 @@ Note: M435 - Overlays Deform Through Warps benchmarks how the chain is applied t
 
 - 2026-11-14 — Own point-map API now, separate from M153 - Distortion Concatenation (user, grill, after first asking for M153 first and then re-asking): overlays don't wait on the larger render-side change, and M153 may reuse the per-node math.
 - 2026-11-14 — Image-driven warps map through an async low-res map fetch, unmapped with a cue until it arrives (user, grill): exact enough for handles and never stalls the viewer.
+- 2026-11-17 — All six tasks' code is committed in the lane; the gate is running (OverlayPointMap_Test plus the node suites).
+  - Deviations: LensCorrect round-trips within 1e-3, since lensfun works in single precision. SplineWarp's Mix scales the displacement. ICornerPin and ITransform report a matrix with Map disconnected and nonlinear with it connected. A Transform with mix < 1 or a mask maps as identity. Numeric inverses take an optional seed. The background map fetch counts itself finished only after the node is notified.
+  - PM call: STMap's point map follows wrap and UV Alpha (no source where alpha is 0), as a follow-up in this lane after the gate.

@@ -58,6 +58,7 @@
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -500,6 +501,6 @@ TEST_F(NativeWriteLayersTest, MotionVectorLayersRoundTripAsTheBuiltinLayers)
         }
     }
     for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-        EXPECT_EQ(std::string::npos, it->getLayerID().find("thefoundry")) << it->getLayerID();
+        EXPECT_EQ(std::string::npos, it->getLayerID().find(OfxLayerMapping::colourPlane())) << it->getLayerID();
     }
 }

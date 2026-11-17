@@ -68,6 +68,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/PyNode.h"
@@ -75,7 +76,6 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
-#include <nuke/fnOfxExtensions.h>
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
 
@@ -122,7 +122,7 @@ void
 expectNoUserFacingColor(const std::string& text)
 {
     EXPECT_EQ(std::string::npos, text.find("Color")) << text;
-    EXPECT_EQ(std::string::npos, text.find("thefoundry")) << text;
+    EXPECT_EQ(std::string::npos, text.find(OfxLayerMapping::colourPlane())) << text;
 }
 
 int
@@ -874,9 +874,9 @@ TEST_F(ColorViewsRenderTest, IDistortReadsAMissingUVAlphaChannelAsZero)
     KnobChoice* channelA = dynamic_cast<KnobChoice*>(idistort->getKnobByName("channelA").get());
     ASSERT_TRUE(channelA != NULL);
     hostChannelA->set(std::string(kNatronColorViewRGBA) + ".R");
-    EXPECT_EQ(std::string(kFnOfxImagePlaneColour) + ".R", channelA->getActiveEntry().id);
+    EXPECT_EQ(OfxLayerMapping::colourPlane() + ".R", channelA->getActiveEntry().id);
     hostChannelA->set(std::string(kNatronColorViewRGBA) + ".A");
-    EXPECT_EQ(std::string(kFnOfxImagePlaneColour) + ".A", channelA->getActiveEntry().id);
+    EXPECT_EQ(OfxLayerMapping::colourPlane() + ".A", channelA->getActiveEntry().id);
 
     FlatExrImage image;
     std::string error;

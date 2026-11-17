@@ -52,11 +52,11 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
-#include <nuke/fnOfxExtensions.h>
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
 
@@ -791,7 +791,7 @@ TEST_F(LayerKnobsRenderTest, PlaneChoiceTwinDrivesTheChannelQuad)
 
     KnobChoice* pluginPlane = dynamic_cast<KnobChoice*>(multiPlane->getKnobByName("inputPlane").get());
     ASSERT_TRUE(pluginPlane != NULL);
-    EXPECT_EQ(std::string(kFnOfxImagePlaneColour), pluginPlane->getActiveEntry().id);
+    EXPECT_EQ(OfxLayerMapping::colourPlane(), pluginPlane->getActiveEntry().id);
 }
 
 // The UV input carries diffuse and the Source input does not, so diffuse turning up in the twin's
@@ -868,7 +868,7 @@ TEST_F(LayerKnobsRenderTest, NoneChannelTwinsPushTheNeutralPluginConstant)
         EXPECT_EQ(std::string(cases[i].neutral), plugin->getActiveEntry().id) << cases[i].twin;
 
         twin->set(std::string(kNatronColorViewRGBA) + ".G");
-        EXPECT_EQ(std::string(kFnOfxImagePlaneColour) + ".G", plugin->getActiveEntry().id) << cases[i].twin;
+        EXPECT_EQ(OfxLayerMapping::colourPlane() + ".G", plugin->getActiveEntry().id) << cases[i].twin;
     }
 }
 

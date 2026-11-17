@@ -35,8 +35,6 @@
 
 #include <gtest/gtest.h>
 
-#include <nuke/fnOfxExtensions.h>
-
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
@@ -46,6 +44,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/Node.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/OfxMultiplaneChoice.h"
 
 #include "Serialization/KnobSerialization.h"
@@ -601,7 +600,7 @@ TEST(OfxMultiplaneChoice, ChannelValueRoundTripsColourViews)
         const std::string value = cases[i].view + "." + cases[i].channel;
         const std::string pluginOption = OfxMultiplaneChoice::channelValueToPluginOption(value);
 
-        EXPECT_EQ(std::string(kFnOfxImagePlaneColour) + "." + cases[i].pluginChannel, pluginOption);
+        EXPECT_EQ(OfxLayerMapping::colourPlane() + "." + cases[i].pluginChannel, pluginOption);
 
         const std::string back = OfxMultiplaneChoice::pluginOptionToChannelValue(pluginOption);
         EXPECT_EQ(cases[i].back, back);
@@ -633,15 +632,15 @@ TEST(OfxMultiplaneChoice, NoneChannelOptionIsTheNeutralConstantPerParam)
 
 TEST(OfxMultiplaneChoice, BuiltinPlaneChannelsAreUpperCaseForThePlugin)
 {
-    EXPECT_EQ(std::string(kFnOfxImagePlaneForwardMotionVector) + ".U", OfxMultiplaneChoice::channelValueToPluginOption("forward.u"));
-    EXPECT_EQ(std::string(kFnOfxImagePlaneBackwardMotionVector) + ".V", OfxMultiplaneChoice::channelValueToPluginOption("backward.v"));
-    EXPECT_EQ(std::string(kFnOfxImagePlaneStereoDisparityLeft) + ".X", OfxMultiplaneChoice::channelValueToPluginOption("disparityL.x"));
-    EXPECT_EQ(std::string(kFnOfxImagePlaneStereoDisparityRight) + ".Y", OfxMultiplaneChoice::channelValueToPluginOption("disparityR.y"));
+    EXPECT_EQ(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronForwardMotionVectorsLayerID) + ".U", OfxMultiplaneChoice::channelValueToPluginOption("forward.u"));
+    EXPECT_EQ(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronBackwardMotionVectorsLayerID) + ".V", OfxMultiplaneChoice::channelValueToPluginOption("backward.v"));
+    EXPECT_EQ(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronDisparityLeftLayerID) + ".X", OfxMultiplaneChoice::channelValueToPluginOption("disparityL.x"));
+    EXPECT_EQ(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronDisparityRightLayerID) + ".Y", OfxMultiplaneChoice::channelValueToPluginOption("disparityR.y"));
 
-    EXPECT_EQ(std::string("forward.u"), OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kFnOfxImagePlaneForwardMotionVector) + ".U"));
-    EXPECT_EQ(std::string("backward.v"), OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kFnOfxImagePlaneBackwardMotionVector) + ".V"));
-    EXPECT_EQ(std::string("disparityL.x"), OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kFnOfxImagePlaneStereoDisparityLeft) + ".X"));
-    EXPECT_EQ(std::string("disparityR.y"), OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kFnOfxImagePlaneStereoDisparityRight) + ".Y"));
+    EXPECT_EQ(std::string("forward.u"), OfxMultiplaneChoice::pluginOptionToChannelValue(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronForwardMotionVectorsLayerID) + ".U"));
+    EXPECT_EQ(std::string("backward.v"), OfxMultiplaneChoice::pluginOptionToChannelValue(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronBackwardMotionVectorsLayerID) + ".V"));
+    EXPECT_EQ(std::string("disparityL.x"), OfxMultiplaneChoice::pluginOptionToChannelValue(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronDisparityLeftLayerID) + ".X"));
+    EXPECT_EQ(std::string("disparityR.y"), OfxMultiplaneChoice::pluginOptionToChannelValue(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronDisparityRightLayerID) + ".Y"));
 }
 
 TEST(OfxMultiplaneChoice, PlaneValueRoundTripsColourViewsAndOtherLayers)
@@ -649,13 +648,13 @@ TEST(OfxMultiplaneChoice, PlaneValueRoundTripsColourViewsAndOtherLayers)
     const char* const views[] = { kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY };
 
     for (std::size_t i = 0; i < sizeof(views) / sizeof(views[0]); ++i) {
-        EXPECT_EQ(std::string(kFnOfxImagePlaneColour), OfxMultiplaneChoice::layerValueToPluginPlaneOption(views[i]));
+        EXPECT_EQ(OfxLayerMapping::colourPlane(), OfxMultiplaneChoice::layerValueToPluginPlaneOption(views[i]));
     }
 
-    EXPECT_EQ(std::string(kNatronColorViewRGBA), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(kFnOfxImagePlaneColour));
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(OfxLayerMapping::colourPlane()));
 
-    EXPECT_EQ(std::string(kFnOfxImagePlaneForwardMotionVector), OfxMultiplaneChoice::layerValueToPluginPlaneOption(kNatronForwardMotionVectorsLayerID));
-    EXPECT_EQ(std::string(kNatronForwardMotionVectorsLayerID), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(kFnOfxImagePlaneForwardMotionVector));
+    EXPECT_EQ(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronForwardMotionVectorsLayerID), OfxMultiplaneChoice::layerValueToPluginPlaneOption(kNatronForwardMotionVectorsLayerID));
+    EXPECT_EQ(std::string(kNatronForwardMotionVectorsLayerID), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(OfxLayerMapping::layerIDToPlugInPlaneID(kNatronForwardMotionVectorsLayerID)));
 
     EXPECT_EQ(std::string("diffuse"), OfxMultiplaneChoice::layerValueToPluginPlaneOption("diffuse"));
     EXPECT_EQ(std::string("diffuse"), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue("diffuse"));
@@ -666,9 +665,9 @@ TEST(OfxMultiplaneChoice, PlaneValueRoundTripsColourViewsAndOtherLayers)
 
 TEST(OfxMultiplaneChoice, PlaneReverseNeverYieldsAnOfxPlaneString)
 {
-    const std::string back = OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(kFnOfxImagePlaneColour);
+    const std::string back = OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(OfxLayerMapping::colourPlane());
 
-    EXPECT_EQ(std::string::npos, back.find("thefoundry"));
+    EXPECT_EQ(std::string::npos, back.find(OfxLayerMapping::colourPlane()));
     EXPECT_EQ(std::string(kNatronColorViewRGBA), back);
 }
 
@@ -677,10 +676,10 @@ TEST(OfxMultiplaneChoice, DetectsIDistortChannelChoice)
     // IDistort's/STMap's channelU/V/A: describeInContextAddPlaneChannelChoice() over a single
     // "UV" clip, colour-plane-only (the host supports dynamic choices) with constants.
     std::vector<std::string> entries;
-    entries.push_back("uk.co.thefoundry.OfxImagePlaneColour.R");
-    entries.push_back("uk.co.thefoundry.OfxImagePlaneColour.G");
-    entries.push_back("uk.co.thefoundry.OfxImagePlaneColour.B");
-    entries.push_back("uk.co.thefoundry.OfxImagePlaneColour.A");
+    entries.push_back(OfxLayerMapping::colourPlane() + ".R");
+    entries.push_back(OfxLayerMapping::colourPlane() + ".G");
+    entries.push_back(OfxLayerMapping::colourPlane() + ".B");
+    entries.push_back(OfxLayerMapping::colourPlane() + ".A");
     entries.push_back("0");
     entries.push_back("1");
 
@@ -695,10 +694,10 @@ TEST(OfxMultiplaneChoice, DetectsPremultChannelChoice)
     // over the single "Source" clip -- unlike every other openfx-misc filter, whose same-named
     // param is ofxsMaskMix.h's plain R/G/B/A choice (see RejectsPlainRGBAChannelChoice below).
     std::vector<std::string> entries;
-    entries.push_back("uk.co.thefoundry.OfxImagePlaneColour.R");
-    entries.push_back("uk.co.thefoundry.OfxImagePlaneColour.G");
-    entries.push_back("uk.co.thefoundry.OfxImagePlaneColour.B");
-    entries.push_back("uk.co.thefoundry.OfxImagePlaneColour.A");
+    entries.push_back(OfxLayerMapping::colourPlane() + ".R");
+    entries.push_back(OfxLayerMapping::colourPlane() + ".G");
+    entries.push_back(OfxLayerMapping::colourPlane() + ".B");
+    entries.push_back(OfxLayerMapping::colourPlane() + ".A");
     entries.push_back("0");
     entries.push_back("1");
 

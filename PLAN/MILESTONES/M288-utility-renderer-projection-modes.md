@@ -31,13 +31,13 @@ is the shaded bake.
 
 ## Phase 288.1: Projections
 
-- [ ] M288.P1.T1 — Spherical and cylindrical ray generation with overscan
+- [x] M288.P1.T1 — Spherical and cylindrical ray generation with overscan
   - files: `Engine/Nodes/Scene/Utility/Kernels/RayGen.slang`, `Engine/Nodes/Scene/Utility/UtilityRenderDelegate.cpp`, `Engine/Nodes/Scene/USDRender.cpp`, `Tests/Scene/NatronUtilityProjection_Test.cpp`
   - approach: RayGen switches on the Projection setting; spherical maps pixel → (longitude, latitude) in camera space, cylindrical → (angle, height); overscan offsets pixel coordinates and USDRender enlarges its RoD by the overscan. Register Projection and Overscan.
   - verify: gtest — a camera inside a cube with six coloured faces renders the expected face colours at the lat-long's analytic positions; cylindrical wraps 360°; 16 px overscan grows the output by 32 px in each dimension with the centre unchanged.
   - size: M
 
-- [ ] M288.P1.T2 — UV Unwrap ray generation
+- [x] M288.P1.T2 — UV Unwrap ray generation
   - files: `Engine/Nodes/Scene/Utility/UtilityUvUnwrap.{h,cpp}`, `Engine/Nodes/Scene/Utility/Kernels/RayGenUv.slang`, `Engine/Nodes/Scene/Utility/UtilityRenderPass.cpp`, `Tests/Scene/NatronUtilityProjection_Test.cpp`
   - approach: rasterise the prim's triangles in UV space (CPU, reuse `HdMeshUtil` face-varying remap) into a texel → (triangle, barycentrics) map for the chosen tile; RayGenUv emits for each covered texel a ray starting just off the surface along the normal and aimed back at it, so the existing shading and AOVs run unchanged.
   - verify: gtest — a lit quad with full 0–1 UVs bakes the same shading as a head-on camera render; a quad in tile 1002 bakes empty at 1001 and full at 1002; a missing primvar is a node error.
@@ -48,3 +48,4 @@ is the shaded bake.
 ## Decisions
 
 - 2026-11-01 — **Spherical, cylindrical and UV unwrap (user);** M53's SceneRaster keeps the geometry/projection bake.
+- 2026-11-17 — T1 and T2 code (90ca9b64b, with F7 merges) green on gate 44096205569 (release ctest, both legs). Deviations: overscan goes through Hydra camera framing, applies only with an active render settings prim, and the viewer gets none; F9 projection code didn't overlap ray generation; depth in the spherical and cylindrical modes is distance along the ray, and a bake's depth is the near plane. Screenshots for the user come from a new GUI script run against this build.

@@ -1068,13 +1068,20 @@ Gui::createNewViewer()
 
 std::string
 Gui::popOpenFileDialog(bool sequenceDialog,
-                       const std::vector<std::string> & initialfilters,
-                       const std::string & initialDir,
-                       bool allowRelativePaths)
+                       const std::vector<std::string>& initialfilters,
+                       const std::string& initialDir,
+                       bool allowRelativePaths,
+                       std::optional<std::pair<int, int>>* frameRange)
 {
     SequenceFileDialog dialog(this, initialfilters, sequenceDialog, SequenceFileDialog::eFileDialogModeOpen, initialDir, this, allowRelativePaths);
 
+    if (frameRange) {
+        frameRange->reset();
+    }
     if ( dialog.exec() ) {
+        if (frameRange) {
+            *frameRange = dialog.selectedSequenceRange();
+        }
         if (sequenceDialog) {
             _imp->_lastLoadSequenceOpenedDir = dialog.currentDirectory().absolutePath();
         } else {
@@ -1087,13 +1094,13 @@ Gui::popOpenFileDialog(bool sequenceDialog,
 }
 
 std::string
-Gui::openImageSequenceDialog()
+Gui::openImageSequenceDialog(std::optional<std::pair<int, int>>* frameRange)
 {
     std::vector<std::string> filters;
 
     appPTR->getSupportedReaderFileFormats(&filters);
 
-    return popOpenFileDialog(true, filters, _imp->_lastLoadSequenceOpenedDir.toStdString(), true);
+    return popOpenFileDialog(true, filters, _imp->_lastLoadSequenceOpenedDir.toStdString(), true, frameRange);
 }
 
 std::string

@@ -150,7 +150,7 @@ public:
     virtual void connectViewersToViewerCache() OVERRIDE FINAL;
     virtual void disconnectViewersFromViewerCache() OVERRIDE FINAL;
     FileDialogPreviewProviderPtr getPreviewProvider() const;
-    virtual std::string openImageFileDialog() OVERRIDE FINAL;
+    virtual std::string openImageFileDialog(std::optional<std::pair<int, int>>* frameRange = nullptr) OVERRIDE FINAL;
     virtual std::string saveImageFileDialog() OVERRIDE FINAL;
     virtual int chooseItemDialog(const std::string& title, const std::string& label, const std::vector<std::string>& items) OVERRIDE FINAL;
     virtual void clearViewersLastRenderedTexture() OVERRIDE FINAL;

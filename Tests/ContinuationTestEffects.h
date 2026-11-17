@@ -79,6 +79,21 @@ public:
     {
         probes() = 0;
         continuations() = 0;
+        claimsGpu() = false;
+    }
+
+    /**
+     * @brief Makes ProbeTestEffect claim a GPU path until the next reset. Off by default, so that the registered test
+     * plugin keeps to the capability invariant of the built-in nodes.
+     **/
+    static void setProbeClaimsGpu(bool claims)
+    {
+        claimsGpu() = claims;
+    }
+
+    static bool probeClaimsGpu()
+    {
+        return claimsGpu().load();
     }
 
     static void noteProbe()
@@ -102,6 +117,13 @@ public:
     }
 
 private:
+    static std::atomic<bool>& claimsGpu()
+    {
+        static std::atomic<bool> b(false);
+
+        return b;
+    }
+
     static std::atomic<int>& probes()
     {
         static std::atomic<int> n(0);
@@ -363,15 +385,18 @@ public:
         return true;
     }
 
-    // Claims a GPU path, so that only its continuation keeps placement from taking it.
+    // Claims a GPU path only when a test asks, so that only its continuation keeps placement from taking it.
     virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return OpKind::Custom;
+        if (ContinuationTestRegistry::probeClaimsGpu()) {
+            return OpKind::Custom;
+        }
+        return std::nullopt;
     }
 
     virtual bool canRenderOnGpu(const GpuQuery& /*query*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return true;
+        return ContinuationTestRegistry::probeClaimsGpu();
     }
 
     virtual bool getRenderContinuation(const RenderContinuationArgs& args,

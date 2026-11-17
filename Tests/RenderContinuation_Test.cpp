@@ -701,6 +701,7 @@ TEST_F(RenderContinuation, BudgetLimitedFrameWithAnExtensionCompletes)
 // probed.
 TEST_F(RenderContinuation, ContinuationNodeStaysOnTheCpuAndProbes)
 {
+    ContinuationTestRegistry::setProbeClaimsGpu(true);
     NodePtr source, control, probe;
     ASSERT_NO_FATAL_FAILURE(buildProbe(kSubsetMask, 0, &source, &control, &probe));
 
@@ -729,6 +730,7 @@ TEST_F(RenderContinuation, ContinuationNodeStaysOnTheCpuAndProbes)
     EXPECT_TRUE(found);
 
     resetCounters();
+    ContinuationTestRegistry::setProbeClaimsGpu(true);
     std::vector<float> values;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderScheduled(probe, &values));
     EXPECT_GT(ContinuationTestRegistry::probeCount(), 0);

@@ -359,18 +359,40 @@ public:
     /**
      * @brief Copies what renderBackgroundFrame() needs for a width x height frame. False when no
      * such frame is needed, or a sync holds the viewer lock; the sync's end is the time to retry.
-     * Not to be called while a background frame runs.
+     * A frame is needed when needsBackgroundFrame() holds, or when the view (camera, size, render
+     * params, background or display transform) is not that of the last frame prepared; *viewOnly
+     * tells the latter alone. Not to be called while a background frame runs. Main thread.
      **/
-    bool prepareBackgroundFrame(int width, int height);
+    bool prepareBackgroundFrame(int width, int height, bool* viewOnly = nullptr);
+
+    /**
+     * @brief The last frame prepared did not leave a finished image, and the next
+     * prepareBackgroundFrame() prepares another even for the same view. Main thread.
+     **/
+    void forgetBackgroundView();
 
     /**
      * @brief Makes the engine if needed and renders the prepared frame into fbo, without overlays.
      * If the next render() is of the same view into the same fbo with nothing changed, it keeps this
      * image and only draws the overlays. Needs the context of render() current. Renders up to a
      * few passes, and after the first ends early for stopBackgroundFrame() or a thread waiting to
-     * edit the stage; then it keeps nothing for render() to reuse. True if it rendered a pass.
+     * edit the stage; then it keeps nothing for render() to reuse. True if it rendered a pass;
+     * *finished, if given, tells whether the image converged.
      **/
-    bool renderBackgroundFrame(unsigned int fbo);
+    bool renderBackgroundFrame(unsigned int fbo, bool* finished = nullptr);
+
+    /**
+     * @brief Draws the overlays (grid, boxes, guides, transform handles) into fbo of the current
+     * context, width x height, with the current camera, over an image already there and
+     * depth-tested against the depth buffer fbo has. Main thread, in any context sharing the one of
+     * render(), for frames rendered elsewhere: it never waits for the viewer lock, and when a sync
+     * holds it draws what it last read of the stage. The GL objects it makes belong to that context
+     * and go with releaseOverlayGL(). Leaves the GL state as it found it.
+     **/
+    void drawOverlays(unsigned int fbo, int width, int height);
+
+    // Frees what drawOverlays() made, in its context. Main thread.
+    void releaseOverlayGL();
 
     /**
      * @brief Ends the background frame running, or the one prepared, after its current pass, and
@@ -1336,11 +1358,12 @@ private:
 
     void onBackgroundFrameDone();
 
+    // Main thread: the render thread took in draw changes posted to it.
+    void onDrawChangesTakenIn();
+
     // Main thread: whether the GPU has finished the frame on it, asking for the paint that shows it
     // if so and polling again later if not. Never waits for the GPU.
     void pollPresent();
-    // Main thread: a paint has a frame on the GPU and nothing new to show.
-    void holdPresent();
 
     // Main thread: the render thread has switched to the renderer id for the switch numbered serial.
     void onRendererSwitched(const QString& id, U64 serial);

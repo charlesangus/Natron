@@ -820,6 +820,9 @@ struct SceneViewportRenderer::Implementation {
     // Background frames take the reveal steps then, so a render the main thread waits for takes none.
     std::atomic<bool> backgroundFramesUsed { false };
     SceneDrawFilter::Rules drawRules;
+    // Held by the thread taking draw deltas in while it changes drawRules and drawRulesVersion, and
+    // by any other that reads them: the guides are built on the main thread while frames render.
+    mutable std::mutex rulesMutex;
     SceneDrawFilter::WeakPtr drawFilter;
     // The list the box buffer holds, and how many of its boxes the last frame drew.
     SceneDrawBoxes::ListPtr uploadedBoxes;
@@ -941,6 +944,30 @@ struct SceneViewportRenderer::Implementation {
         U64 cancels = 0;
     };
     BackgroundFrame backgroundFrame;
+    // Main thread: the view of the last background frame prepared, which the render thread's copy
+    // in backgroundFrame is not, as it is read and changed while that frame runs.
+    struct BackgroundView {
+        bool valid = false;
+        int width = 0;
+        int height = 0;
+        GfMatrix4d viewMatrix;
+        GfMatrix4d projection;
+        UsdImagingGLRenderParams params;
+        LightingModeEnum lightingMode = eLightingModeScene;
+        OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
+        double gain = 1.;
+        double gamma = 1.;
+        float background[3] = { 0.f, 0.f, 0.f };
+
+        bool operator==(const BackgroundView& other) const
+        {
+            return valid && other.valid && (width == other.width) && (height == other.height) && (viewMatrix == other.viewMatrix)
+                && (projection == other.projection) && (params == other.params) && (lightingMode == other.lightingMode)
+                && (displayProcessor == other.displayProcessor) && (gain == other.gain) && (gamma == other.gamma)
+                && std::equal(background, background + 3, other.background);
+        }
+    };
+    BackgroundView backgroundView;
 
     // What a traversal of the stage found, as of an edit count. The threads that change the stage
     // publish it before anyone is told of the change, and nothing else traverses, so no frame or
@@ -967,6 +994,12 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<double> guideSize { 1. };
     std::vector<DrawnGuide> drawnGuides;
     bool recordDrawnGuides = false;
+    // Main thread: what drawOverlays() last read of the stage, drawn again when it cannot read it.
+    GfFrustum overlayFrustum;
+    bool overlayThroughCamera = false;
+    bool overlayHandlesShown = false;
+    SceneGizmo::Frame overlayHandleFrame;
+    bool overlayHandleSelection = false;
     // Indices into guides, unselected cameras, unselected lights and selected ones, without the
     // look-through camera's.
     std::vector<int> guideBatches[3];
@@ -1240,7 +1273,9 @@ struct SceneViewportRenderer::Implementation {
         const std::shared_ptr<const StageSummary> summary = getStageSummary();
         const double time = timeCode();
         const double length = guideLength();
-        if (!guidesValid || (guidesSummary != summary) || (guidesTimeCode != time) || (guidesLength != length) || (guidesRulesVersion != drawRulesVersion)) {
+        std::unique_lock<std::mutex> rulesLock(rulesMutex);
+        const U64 rulesVersion = drawRulesVersion;
+        if (!guidesValid || (guidesSummary != summary) || (guidesTimeCode != time) || (guidesLength != length) || (guidesRulesVersion != rulesVersion)) {
             const UsdStageRefPtr stage = currentStage();
             guides.clear();
             if (stage && summary) {
@@ -1252,9 +1287,10 @@ struct SceneViewportRenderer::Implementation {
                         shown.push_back(prim);
                     }
                 }
+                rulesLock.unlock();
                 guides = SceneGuides::buildGuides(stage, shown, UsdTimeCode(time), length);
             }
-            guidesRulesVersion = drawRulesVersion;
+            guidesRulesVersion = rulesVersion;
             guidesSummary = summary;
             guidesTimeCode = time;
             guidesLength = length;
@@ -1267,7 +1303,12 @@ struct SceneViewportRenderer::Implementation {
 
     const std::vector<int>* currentGuideBatches()
     {
-        const std::vector<SceneGuides::Guide>& all = currentGuides();
+        return guideBatchesOf(currentGuides());
+    }
+
+    // The batches of guides as last built, without building them again.
+    const std::vector<int>* guideBatchesOf(const std::vector<SceneGuides::Guide>& all)
+    {
         if (!guideBatchesValid) {
             for (std::vector<int>& batch : guideBatches) {
                 batch.clear();
@@ -1837,13 +1878,16 @@ struct SceneViewportRenderer::Implementation {
         // at all if it ends where it started.
         std::vector<const SceneDrawDelta*> deltas;
         deltas.reserve(queued.size());
-        for (const QueuedDrawDelta& entry : queued) {
-            SceneDrawFilter::applyToRules(entry.delta, &drawRules);
-            drawRevealBatch = entry.revealBatch;
-            deltas.push_back(&entry.delta);
-        }
-        if (!queued.empty()) {
-            ++drawRulesVersion;
+        {
+            std::lock_guard<std::mutex> rulesLock(rulesMutex);
+            for (const QueuedDrawDelta& entry : queued) {
+                SceneDrawFilter::applyToRules(entry.delta, &drawRules);
+                drawRevealBatch = entry.revealBatch;
+                deltas.push_back(&entry.delta);
+            }
+            if (!queued.empty()) {
+                ++drawRulesVersion;
+            }
         }
         // A delegate rendering everything draws every row, so no box stands in for one.
         const bool boxesBlank = renderEverything && (rendererId != kRenderDelegateStormId);
@@ -2361,18 +2405,14 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
-    // The handles in X red, Y green and Z blue, the highlighted or dragged one yellow, drawn over
-    // everything. Needs stageMutex.
-    void drawTransformHandles(const GfFrustum& frustum,
+    // The handles at frame, from computeHandleFrame(), in X red, Y green and Z blue, the
+    // highlighted or dragged one yellow, drawn over everything.
+    void drawTransformHandles(const SceneGizmo::Frame& frame,
+                              bool selection,
+                              const GfFrustum& frustum,
                               int width,
                               int height) const
     {
-        SceneGizmo::Frame frame;
-        bool selection = false;
-
-        if (!computeHandleFrame(&frame, &selection)) {
-            return;
-        }
         const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
         const double length = SceneGizmo::getHandleLength(view, frame);
         if (!(length > 0.) || !std::isfinite(length)) {
@@ -2446,12 +2486,13 @@ struct SceneViewportRenderer::Implementation {
 
     // A grid on the ground plane through the origin, with lines a power of ten metres apart, about
     // a tenth to half the camera's distance, and the two ground axes coloured. Depth-tested against
-    // Storm's presented depth.
-    void drawGrid(const GfFrustum& frustum) const
+    // Storm's presented depth. throughCamera: the frustum is a stage camera's.
+    void drawGrid(const GfFrustum& frustum,
+                  bool throughCamera) const
     {
         const double mpu = (metersPerUnit.load() > 0.) ? metersPerUnit.load() : 0.01;
         // An orthographic view's eye is backed far off: measure from where it would be.
-        const GfVec3d eye = lookThroughCamera() ? frustum.GetPosition() : freeEye();
+        const GfVec3d eye = throughCamera ? frustum.GetPosition() : freeEye();
         const double distance = std::max(eye.GetLength(), freeCamera.distance);
         const double distanceMeters = std::max(distance * mpu, 1e-6);
         const double spacing = std::pow(10., std::floor(std::log10(distanceMeters * 0.5))) / mpu;
@@ -2540,17 +2581,18 @@ struct SceneViewportRenderer::Implementation {
 
     // The camera and light guides, but the camera looked through's, as one batch of lines per
     // colour, depth-tested against Storm's presented depth; selected ones in the selection colour.
-    // Needs stageMutex.
+    // Builds them again for a changed stage only if stageReadable, which needs stageMutex.
     void drawGuides(const GfFrustum& frustum,
                     int width,
-                    int height)
+                    int height,
+                    bool stageReadable)
     {
         drawnGuides.clear();
-        const std::vector<SceneGuides::Guide>& all = currentGuides();
+        const std::vector<SceneGuides::Guide>& all = stageReadable ? currentGuides() : guides;
         if (all.empty()) {
             return;
         }
-        const std::vector<int>* batches = currentGuideBatches();
+        const std::vector<int>* batches = guideBatchesOf(all);
         if (recordDrawnGuides) {
             const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
             for (int pass = 0; pass < 3; ++pass) {
@@ -2824,6 +2866,46 @@ struct SceneViewportRenderer::Implementation {
         drawnBoxList.reset();
         boxInstances = 0;
         markerInstances = 0;
+    }
+
+    // The overlays over the image in fbo. handleFrame is null when no handles are drawn.
+    // stageReadable: stageMutex is held, and the guides may be built again.
+    void drawOverlayPass(unsigned int fbo,
+                         const GfFrustum& frustum,
+                         int width,
+                         int height,
+                         bool held,
+                         const SceneGizmo::Frame* handleFrame,
+                         bool handleSelection,
+                         bool throughCamera,
+                         bool stageReadable)
+    {
+        drawnGuides.clear();
+        boxesDrawn = 0;
+        markersDrawn = 0;
+        drawnBoxList.reset();
+        drawnBoxes.clear();
+        if (!showGrid && !showGuides && !hasHandles && !hasBoxes()) {
+            return;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, width, height);
+        glUseProgram(0);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        if (showGrid) {
+            drawGrid(frustum, throughCamera);
+        }
+        if (!held) {
+            drawBoxes(frustum, width, height);
+        }
+        if (showGuides) {
+            drawGuides(frustum, width, height, stageReadable);
+        }
+        if (handleFrame) {
+            drawTransformHandles(*handleFrame, handleSelection, frustum, width, height);
+        }
     }
 
     // The drawn box or marker under the pixel (x, y) of the frustum's width x height view, -1 for
@@ -3310,10 +3392,19 @@ SceneViewportRenderer::drawTiming() const
 
 bool
 SceneViewportRenderer::prepareBackgroundFrame(int width,
-                                              int height)
+                                              int height,
+                                              bool* viewOnly)
 {
     _imp->backgroundFramesUsed = true;
-    if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded() || !needsBackgroundFrame()) {
+    if (viewOnly) {
+        *viewOnly = false;
+    }
+    if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()) {
+        return false;
+    }
+    const bool stageChanged = needsBackgroundFrame();
+    // needsBackgroundFrame()'s own reasons for no frame at all.
+    if (!stageChanged && (_imp->stageHeld || !_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty() || (getActiveRendererId() != kRenderDelegateStormId))) {
         return false;
     }
     // A camera looked through is a prim of the stage.
@@ -3328,11 +3419,31 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     if (_imp->currentStage() && (!summary || (summary->editCount != _imp->sceneStage->getEditCount() + _imp->sceneStage->getLoadEditCount()))) {
         return false;
     }
+    Implementation::BackgroundView view;
+    view.valid = true;
+    view.width = width;
+    view.height = height;
+    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    view.viewMatrix = frustum.ComputeViewMatrix();
+    view.projection = frustum.ComputeProjectionMatrix();
+    view.params = _imp->currentRenderParams();
+    view.lightingMode = _imp->lightingMode;
+    view.displayProcessor = _imp->displayProcessor;
+    view.gain = _imp->displayTransform.gain;
+    view.gamma = _imp->displayTransform.gamma;
+    std::copy(_imp->backgroundShown, _imp->backgroundShown + 3, view.background);
+    if (!stageChanged && (view == _imp->backgroundView)) {
+        return false;
+    }
+    _imp->backgroundView = view;
+    if (viewOnly) {
+        *viewOnly = !stageChanged;
+    }
     Implementation::BackgroundFrame& frame = _imp->backgroundFrame;
     frame.width = width;
     frame.height = height;
-    frame.frustum = _imp->computeFrustum(width, height);
-    frame.params = _imp->currentRenderParams();
+    frame.frustum = frustum;
+    frame.params = view.params;
     frame.lightingMode = _imp->lightingMode;
     frame.displayProcessor = _imp->displayProcessor;
     frame.gain = _imp->displayTransform.gain;
@@ -3345,9 +3456,19 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     return true;
 }
 
-bool
-SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
+void
+SceneViewportRenderer::forgetBackgroundView()
 {
+    _imp->backgroundView.valid = false;
+}
+
+bool
+SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
+                                             bool* finished)
+{
+    if (finished) {
+        *finished = false;
+    }
     Implementation::BackgroundFrame& frame = _imp->backgroundFrame;
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
@@ -3441,6 +3562,9 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     frame.loadEditCount = _imp->sceneStage->getLoadEditCount();
     frame.previewGeneration = _imp->sceneStage->getPreviewGeneration();
     frame.imageKept = converged;
+    if (finished) {
+        *finished = converged;
+    }
 
     return true;
 }
@@ -4749,33 +4873,64 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         _imp->noteStageAbsorbed(params);
     }
 
-    _imp->drawnGuides.clear();
     _imp->feedBoxes();
-    _imp->boxesDrawn = 0;
-    _imp->markersDrawn = 0;
-    _imp->drawnBoxList.reset();
-    _imp->drawnBoxes.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, width, height);
-        glUseProgram(0);
-        glBindVertexArray(0);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        glDisable(GL_FRAMEBUFFER_SRGB);
-        if (_imp->showGrid) {
-            _imp->drawGrid(frustum);
-        }
-        if (!held) {
-            _imp->drawBoxes(frustum, width, height);
-        }
-        if (_imp->showGuides) {
-            _imp->drawGuides(frustum, width, height);
-        }
-        _imp->drawTransformHandles(frustum, width, height);
-    }
+    SceneGizmo::Frame handleFrame;
+    bool handleSelection = false;
+    const bool handlesShown = (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && _imp->computeHandleFrame(&handleFrame, &handleSelection);
+    _imp->drawOverlayPass(fbo, frustum, width, height, held, handlesShown ? &handleFrame : nullptr, handleSelection, bool(_imp->lookThroughCamera()), true);
 
     return converged ? eRenderStatusDone : eRenderStatusRefining;
 } // renderLocked
+
+void
+SceneViewportRenderer::drawOverlays(unsigned int fbo,
+                                    int width,
+                                    int height)
+{
+    Implementation& imp = *_imp;
+
+    if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
+        return;
+    }
+    bool readable = false;
+    {
+        // A sync or a load holding the lock edits the stage for as long as it takes; the overlays
+        // then show the stage as last read, at the current camera, rather than wait.
+        std::shared_lock<std::shared_mutex> lock(imp.stageMutex, std::try_to_lock);
+        if (lock.owns_lock()) {
+            readable = true;
+            imp.feedBoxes();
+            imp.overlayThroughCamera = bool(imp.lookThroughCamera());
+            imp.overlayFrustum = imp.computeFrustum(width, height);
+            imp.overlayHandlesShown = imp.computeHandleFrame(&imp.overlayHandleFrame, &imp.overlayHandleSelection);
+            if (imp.showGuides) {
+                imp.currentGuides();
+            }
+        }
+    }
+    if (readable && imp.exclusiveOwed.exchange(false) && imp.readEnded) {
+        imp.readEnded();
+    }
+    if (!readable) {
+        if (imp.lookThrough.empty()) {
+            // The free camera is the main thread's own, and needs no stage.
+            imp.overlayThroughCamera = false;
+            imp.overlayFrustum = imp.computeFrustum(width, height);
+        }
+        if (!imp.hasHandles) {
+            imp.overlayHandlesShown = false;
+        }
+    }
+    StormGLStateGuard guard;
+    imp.drawOverlayPass(fbo, imp.overlayFrustum, width, height, imp.stageHeld,
+                        imp.overlayHandlesShown ? &imp.overlayHandleFrame : nullptr, imp.overlayHandleSelection, imp.overlayThroughCamera, false);
+}
+
+void
+SceneViewportRenderer::releaseOverlayGL()
+{
+    _imp->releaseBoxesGL();
+}
 
 SceneViewportRenderer::RenderStatusEnum
 SceneViewportRenderer::renderProgressive(unsigned int fbo,
@@ -6134,13 +6289,20 @@ struct SceneViewport::Implementation {
         [](void* fence) { return glClientWaitSync(static_cast<GLsync>(fence), 0, 0) != GL_TIMEOUT_EXPIRED; },
         [](void* fence) { glDeleteSync(static_cast<GLsync>(fence)); }
     };
+    // Main thread: the frame in presentPacer's front target, which every paint shows until a newer
+    // one is finished, whatever the camera or size has become since.
+    std::optional<PresentFrame> frontFrame;
     // Asks the GPU, without waiting, whether the frame on it is done.
     QTimer* presentPoll = nullptr;
-    // The poll found the frame done and asked for the paint that shows it.
-    bool presentWoken = false;
+    // Bumped when the render context goes: a frame rendered in the old one is never shown.
+    U64 renderContextGeneration = 0;
 
     // Main thread.
     bool backgroundFrameRunning = false;
+    // The frame running is for a camera, size or display change alone, which shows no composing status.
+    bool backgroundFrameViewOnly = false;
+    // Draw changes posted to the render thread and not yet taken in there.
+    int drawJobsQueued = 0;
     // A renderer switch posted to the render thread, whose engine it drops, has not come back. The
     // switch numbered rendererSwitchLatest is the one asked for last: the render thread skips the
     // others, and the main thread waits for that one.
@@ -6151,7 +6313,23 @@ struct SceneViewport::Implementation {
     // behind.
     bool renderThreadBusy() const
     {
-        return backgroundFrameRunning || rendererSwitchRunning;
+        return backgroundFrameRunning || rendererSwitchRunning || (drawJobsQueued > 0);
+    }
+
+    // What a frame is drawn for, as scripts see it and as a paint tells a frame of an older view by.
+    QVariantList paintedView(int w,
+                             int h) const
+    {
+        const SceneViewportRenderer::FreeCamera& camera = renderer.getFreeCamera();
+
+        return QVariantList { camera.pivot[0], camera.pivot[1], camera.pivot[2], camera.distance, camera.azimuth, camera.elevation, camera.fovY,
+                              int(camera.viewMode), QString::fromStdString(renderer.getLookThroughCamera()), w, h };
+    }
+
+    // Whether the render thread is taking in a change of the stage or of the renderer.
+    bool composesScene() const
+    {
+        return (backgroundFrameRunning && !backgroundFrameViewOnly) || rendererSwitchRunning;
     }
     // The load edit count the main thread has had onStageLoadsServiced() for.
     U64 takenLoadEditCount = 0;
@@ -6321,9 +6499,13 @@ struct SceneViewport::Implementation {
 
             return;
         }
+        // The overlays are drawn in the widget's context, not the render thread's.
+        renderer.releaseOverlayGL();
         callOnRenderThread([this]() { releaseRenderContext(); });
+        ++renderContextGeneration;
+        frontFrame.reset();
+        renderer.forgetBackgroundView();
         presentPoll->stop();
-        presentWoken = false;
         if (presentFbo) {
             glDeleteFramebuffers(1, &presentFbo);
             presentFbo = 0;
@@ -6348,17 +6530,22 @@ struct SceneViewport::Implementation {
         renderThread.join();
     }
 
-    // Main thread, the widget's context current. The front target's frame, which the GPU has
-    // finished: the copy never waits for the render thread's work.
+    // Main thread, the widget's context current. The front target's frame, frontFrame, which the
+    // GPU has finished: the copy never waits for the render thread's work. A frame of another size
+    // is stretched over the view, and its depth, which would not line up, is left out: the overlays
+    // then go over it all.
     void presentRenderTarget(GLuint target,
                              int width,
                              int height)
     {
         const int front = presentPacer.frontTarget();
-        if (front < 0) {
+        if ((front < 0) || !frontFrame) {
             return;
         }
         RenderTarget& source = renderTargets[front];
+        const int sourceWidth = frontFrame->width;
+        const int sourceHeight = frontFrame->height;
+        const bool sameSize = (sourceWidth == width) && (sourceHeight == height);
         if (!presentFbo) {
             glGenFramebuffers(1, &presentFbo);
         }
@@ -6366,11 +6553,19 @@ struct SceneViewport::Implementation {
         // Attached anew each time: a change made in another context is only seen after a bind, and
         // a resize has given the texture a new image.
         glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, source.texture, 0);
+        glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, sameSize ? source.depth : 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_FRAMEBUFFER_SRGB);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glDepthMask(GL_TRUE);
+        glClearDepth(1.);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glBlitFramebuffer(0, 0, sourceWidth, sourceHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, sameSize ? GL_NEAREST : GL_LINEAR);
+        if (sameSize) {
+            // The grid, guides and boxes hide behind what the frame shows, as when Storm drew them.
+            glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        }
         glBindFramebuffer(GL_FRAMEBUFFER, target);
         // The render thread draws into this target again only after the copy, without waiting for it.
         if (source.readFence) {
@@ -6835,25 +7030,61 @@ SceneViewport::startBackgroundFrame()
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
-    if (!_imp->renderer.prepareBackgroundFrame(w, h)) {
+    bool viewOnly = false;
+    if (!_imp->renderer.prepareBackgroundFrame(w, h, &viewOnly)) {
         return;
     }
     _imp->backgroundFrameRunning = true;
-    _imp->composingClock.start();
-    _imp->composingTimer->start();
+    _imp->backgroundFrameViewOnly = viewOnly;
+    if (!viewOnly) {
+        _imp->composingClock.start();
+        _imp->composingTimer->start();
+    }
     Implementation* imp = _imp.get();
     const int target = _imp->presentPacer.backTarget();
-    _imp->postToRenderThread([this, imp, target, w, h]() {
+    const U64 generation = _imp->renderContextGeneration;
+    Implementation::PresentFrame frame;
+    frame.width = w;
+    frame.height = h;
+    frame.view = _imp->paintedView(w, h);
+    _imp->postToRenderThread([this, imp, target, w, h, generation, frame]() {
         const double startMs = epochMs();
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-        const bool rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h));
-        // The widget's context reads the image only after a later fence, but the commands must be
-        // on their way before this thread goes idle.
+        bool converged = false;
+        const bool rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h), &converged);
+        GLsync fence = nullptr;
+        if (rendered) {
+            fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        }
+        // A fence another context polls has to reach the GPU first, and the commands must be on
+        // their way before this thread goes idle.
         glFlush();
         const double costMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        const auto done = [this, rendered, startMs, costMs]() {
+        Implementation::PresentFrame finished = frame;
+        finished.status = converged ? SceneViewportRenderer::eRenderStatusDone : SceneViewportRenderer::eRenderStatusRefining;
+        // Read here: draw changes posted after the frame are taken in by the render thread before
+        // the main thread hears of the frame.
+        finished.absorbed = imp->renderer.getDrawFilterStats().absorbed;
+        const auto done = [this, rendered, converged, fence, generation, finished, startMs, costMs]() {
             if (rendered) {
                 publishStormFrame(this, startMs, costMs);
+            }
+            if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
+                // Replacing a frame still on the GPU releases its fence, which needs a context.
+                const bool replaces = _imp->presentPacer.inFlight();
+                if (replaces) {
+                    makeCurrent();
+                }
+                _imp->presentPacer.submitted(fence, finished);
+                if (replaces) {
+                    doneCurrent();
+                }
+                if (!_imp->presentPoll->isActive()) {
+                    _imp->presentPoll->start();
+                }
+            }
+            if (!rendered || !converged) {
+                _imp->renderer.forgetBackgroundView();
             }
             onBackgroundFrameDone();
         };
@@ -6870,6 +7101,7 @@ SceneViewport::onBackgroundFrameDone()
         timing->frameDone(std::chrono::steady_clock::now());
     }
     _imp->backgroundFrameRunning = false;
+    _imp->backgroundFrameViewOnly = false;
     if (!_imp->rendererSwitchRunning) {
         _imp->composingTimer->stop();
     }
@@ -6877,6 +7109,24 @@ SceneViewport::onBackgroundFrameDone()
         followSceneRenderer();
     }
     // The stage may have changed again while the frame ran.
+    startBackgroundFrame();
+    serviceDeferredInput();
+    publishState();
+    update();
+}
+
+void
+SceneViewport::onDrawChangesTakenIn()
+{
+    if (_imp->drawJobsQueued > 0) {
+        --_imp->drawJobsQueued;
+    }
+    if (_imp->renderThreadBusy()) {
+        return;
+    }
+    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
+        followSceneRenderer();
+    }
     startBackgroundFrame();
     serviceDeferredInput();
     publishState();
@@ -6897,21 +7147,8 @@ SceneViewport::pollPresent()
 
         return;
     }
-    _imp->presentWoken = true;
     serviceDeferredInput();
     update();
-}
-
-void
-SceneViewport::holdPresent()
-{
-    if (!_imp->presentPoll->isActive()) {
-        _imp->presentPoll->start();
-    }
-    // Otherwise the framebuffer keeps the last frame shown.
-    if (!_imp->presentedScene) {
-        paintComposingStatus();
-    }
 }
 
 void
@@ -7042,7 +7279,7 @@ SceneViewport::runWithEngineContext(const std::function<void()>& fn)
 bool
 SceneViewport::isComposing() const
 {
-    return _imp->renderThreadBusy() || ((_imp->syncedSerial < _imp->requestedSerial) && !_imp->requestedPayload.isEmpty() && !_imp->renderer.hasScene());
+    return _imp->composesScene() || ((_imp->syncedSerial < _imp->requestedSerial) && !_imp->requestedPayload.isEmpty() && !_imp->renderer.hasScene());
 }
 
 void
@@ -7250,7 +7487,12 @@ SceneViewport::deliverDrawChange(const SceneDrawChange& change)
 {
     if (_imp->renderer.postDrawChange(change, _imp->drawRevealBatch) && _imp->usesRenderThread) {
         Implementation* imp = _imp.get();
-        _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
+        ++_imp->drawJobsQueued;
+        _imp->postToRenderThread([this, imp]() {
+            imp->renderer.applyPendingDrawDeltas();
+            // Dropped by Qt if the widget is gone by then.
+            QMetaObject::invokeMethod(this, [this]() { onDrawChangesTakenIn(); }, Qt::QueuedConnection);
+        });
     }
     if (!change.delta.loads.empty()) {
         // Taking the mutex keeps the wake-up from falling between the thread's check and its wait.
@@ -8819,6 +9061,12 @@ SceneViewport::releaseEngine()
     if (_imp->glInitialized && context()) {
         // A background frame would keep the main thread waiting for the rest of its passes.
         _imp->renderer.cancelBackgroundFrame();
+        if (storm && _imp->usesRenderThread) {
+            // The overlays' GL objects are the widget's context's.
+            makeCurrent();
+            _imp->renderer.releaseOverlayGL();
+            doneCurrent();
+        }
         runWithEngineContext([this, storm]() {
             if (storm) {
                 _imp->renderer.releaseGL();
@@ -8873,56 +9121,36 @@ SceneViewport::paintGL()
     const int h = int(height() * dpr);
     Implementation* imp = _imp.get();
     const bool stormOnRenderThread = imp->usesRenderThread && (imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
-    const auto paintedView = [imp, w, h]() {
-        const SceneViewportRenderer::FreeCamera& camera = imp->renderer.getFreeCamera();
-
-        return QVariantList { camera.pivot[0], camera.pivot[1], camera.pivot[2], camera.distance, camera.azimuth, camera.elevation, camera.fovY,
-                              int(camera.viewMode), QString::fromStdString(imp->renderer.getLookThroughCamera()), w, h };
-    };
-    // Qt merges paint requests: the one the poll asked for may also carry a change's, which shows
-    // as a view other than the frame's.
-    const bool woken = std::exchange(imp->presentWoken, false);
-    // The render thread's frame this paint shows, which the GPU has finished.
-    std::optional<Implementation::PresentFrame> shown;
+    // A frame the render thread finished since the last paint, which this one is the first to show.
+    std::optional<Implementation::PresentFrame> fresh;
+    // Nothing of a frame to show: no scene, a renderer that failed, or a stage held out of frames.
+    const bool blank = (w <= 0) || (h <= 0) || !imp->renderer.hasScene() || imp->renderer.isStageHeld() || !imp->renderer.getRendererError().empty();
     if (!stormOnRenderThread) {
         imp->presentPacer.clear();
+        imp->frontFrame.reset();
     } else if ((w > 0) && (h > 0)) {
         imp->presentPacer.poll();
-        if (imp->presentPacer.inFlight()) {
-            // What asked for this paint is drawn by the frame after the one on the GPU.
-            imp->presentPacer.markOwed();
-            holdPresent();
+        fresh = imp->presentPacer.takeReady();
+        if (fresh) {
+            imp->frontFrame = fresh;
+        }
+        // The paint never renders: a frame for this camera and size starts on the render thread,
+        // and the poll that finds it finished asks for the paint that shows it. Until then the last
+        // frame stays up, whatever camera or size it was made for.
+        startBackgroundFrame();
+        if (imp->presentPacer.inFlight() && !imp->presentPoll->isActive()) {
+            imp->presentPoll->start();
+        }
+        if (!imp->renderThreadBusy() && !imp->presentPacer.inFlight() && !imp->stageAwaitsTakeIn() && imp->renderer.needsBackgroundFrame()) {
+            // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
+            update();
+        }
+        if (!imp->frontFrame && !blank) {
+            if (!imp->presentedScene || (imp->composingClock.isValid() && (imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
+                paintComposingStatus();
+            }
 
             return;
-        }
-        shown = imp->presentPacer.takeReady();
-        if (shown && ((shown->width != w) || (shown->height != h))) {
-            shown.reset();
-        } else if (shown) {
-            imp->presentRenderTarget(defaultFramebufferObject(), w, h);
-            if (!woken || (shown->view != paintedView())) {
-                imp->presentPacer.markOwed();
-            }
-        }
-    }
-    // A paint that shows a finished frame renders the next only if something asked for it.
-    bool renders = !shown || imp->presentPacer.takeOwed();
-    if (imp->usesRenderThread && (w > 0) && (h > 0)) {
-        startBackgroundFrame();
-        if (imp->renderThreadBusy() || imp->renderer.needsBackgroundFrame()) {
-            if (!imp->renderThreadBusy() && !imp->stageAwaitsTakeIn()) {
-                // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
-                update();
-            }
-            if (!shown) {
-                if (!imp->presentedScene || (imp->composingClock.isValid() && (imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
-                    paintComposingStatus();
-                }
-
-                return;
-            }
-            // The background frame's end asks for the paint that renders after it.
-            renders = false;
         }
     }
     const bool stormPaint = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
@@ -8955,42 +9183,26 @@ SceneViewport::paintGL()
         // wake-ups on processors the delegate keeps busy, at every frame it refines.
         status = _imp->renderer.renderRefinementIfIdle(defaultFramebufferObject(), w, h);
     } else if (_imp->usesRenderThread) {
-        if (renders) {
-            SceneViewportRenderer::RenderStatusEnum rendered = SceneViewportRenderer::eRenderStatusBusy;
-            GLsync fence = nullptr;
-            const int target = imp->presentPacer.backTarget();
-            imp->callOnRenderThread([imp, target, w, h, &rendered, &fence]() {
-                rendered = imp->renderer.renderIfIdle(imp->ensureRenderTarget(target, w, h), w, h);
-                if (rendered != SceneViewportRenderer::eRenderStatusBusy) {
-                    fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-                    // A fence another context polls has to reach the GPU first.
-                    glFlush();
-                }
-            });
-            if (rendered != SceneViewportRenderer::eRenderStatusBusy) {
-                publishPaintedStormFrame();
-                Implementation::PresentFrame frame;
-                frame.width = w;
-                frame.height = h;
-                frame.status = rendered;
-                frame.absorbed = imp->renderer.getDrawFilterStats().absorbed;
-                frame.view = paintedView();
-                imp->presentPacer.submitted(fence, std::move(frame));
-                if (!shown && imp->presentPacer.poll()) {
-                    shown = imp->presentPacer.takeReady();
-                    imp->presentRenderTarget(defaultFramebufferObject(), w, h);
-                }
-            }
+        const GLuint fbo = defaultFramebufferObject();
+        if (imp->frontFrame && !blank) {
+            imp->presentRenderTarget(fbo, w, h);
+            status = imp->frontFrame->status;
+        } else {
+            float background[3];
+            imp->renderer.getBackgroundColor(background);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glDisable(GL_SCISSOR_TEST);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glDepthMask(GL_TRUE);
+            glClearColor(background[0], background[1], background[2], 1.f);
+            glClearDepth(1.);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            status = SceneViewportRenderer::eRenderStatusDone;
         }
-        if (shown) {
-            status = shown->status;
-            if (imp->presentPacer.inFlight() && !imp->presentPoll->isActive()) {
-                imp->presentPoll->start();
-            }
-        } else if (imp->presentPacer.inFlight()) {
-            holdPresent();
-
-            return;
+        if (imp->renderer.hasScene() && imp->renderer.getRendererError().empty()) {
+            // Drawn here at the camera of this paint, not into the frame, so that they keep up with
+            // the pointer however long the frame takes.
+            imp->renderer.drawOverlays(fbo, w, h);
         }
     } else {
         status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
@@ -9013,7 +9225,8 @@ SceneViewport::paintGL()
         return;
     }
     _imp->presentedScene = _imp->renderer.hasScene() && !_imp->renderer.isStageHeld();
-    if (_imp->renderer.isDrawRevealing()) {
+    // Only a paint showing a frame newer than the last one shows more of a reveal.
+    if (_imp->renderer.isDrawRevealing() && (!stormOnRenderThread || fresh)) {
         _imp->renderer.noteDrawRevealPresented();
         const int yieldMs = _imp->renderer.getRevealYieldMs();
         if (yieldMs > 0) {
@@ -9027,14 +9240,20 @@ SceneViewport::paintGL()
         // A sync landed between the last one followed and this paint.
         QTimer::singleShot(0, this, [this]() { followSceneRenderer(); });
     }
-    const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    if (stormOnRenderThread && imp->frontFrame && !blank) {
+        // A frame for an older camera, size or stage is shown until the newer one lands, but is not
+        // the frame of the state now.
+        converged = converged && (imp->frontFrame->view == imp->paintedView(w, h)) && !imp->renderer.needsBackgroundFrame() && !imp->composesScene()
+            && (imp->drawJobsQueued == 0) && !imp->presentPacer.inFlight();
+    }
     const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
     publishRefineState();
     publishTransformState();
     publishDrawStats();
     // A render-thread frame is shown after its render, once the GPU has finished it, and shows
     // the changes it took in then.
-    const unsigned long long absorbed = shown ? shown->absorbed : _imp->renderer.getDrawFilterStats().absorbed;
+    const unsigned long long absorbed = (stormOnRenderThread && imp->frontFrame) ? imp->frontFrame->absorbed : _imp->renderer.getDrawFilterStats().absorbed;
     if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
         if (timing->presented(absorbed, std::chrono::steady_clock::now())) {
             setProperty("natronSceneDrawTimings", timing->records());
@@ -9146,7 +9365,7 @@ SceneViewport::paintGL()
     if (converged) {
         // When the last finished frame was drawn, for benchmarks and scripts.
         setProperty("natronSceneLastPaintMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
-    } else if (status == SceneViewportRenderer::eRenderStatusRefining) {
+    } else if ((status == SceneViewportRenderer::eRenderStatusRefining) && !stormOnRenderThread) {
         update();
     }
     // eRenderStatusWaiting: the background render's listener asks for the next paint.

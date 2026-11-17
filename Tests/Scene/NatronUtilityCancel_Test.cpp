@@ -40,7 +40,11 @@
 #include <pxr/imaging/hd/renderBuffer.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdx/tokens.h>
+#include <pxr/usd/sdf/attributeSpec.h>
+#include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/sdf/types.h>
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/timeCode.h>
@@ -72,6 +76,8 @@
 #include "BaseTest.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
@@ -94,6 +100,7 @@ const int kManyGridSize = 100;
 const int kLatencyWindow = 4096;
 const int kViewWindow = 1024;
 const double kCameraZ = 30.;
+const int kEndMs = 60000;
 
 // A material emitting the display colour, which the scenes here show without lights.
 UsdShadeMaterial
@@ -191,6 +198,39 @@ manyMeshesStage(const GfVec3f& color)
     }
 
     return stage;
+}
+
+// The scene the node layer layer authors, as a node upstream hands it on.
+ScenePayload
+payloadOf(const SdfLayerRefPtr& layer,
+          U64 hash)
+{
+    return SceneOps::appendLayer(ScenePayload(), layer, hash);
+}
+
+SdfLayerRefPtr
+hugeMeshLayer(const GfVec3f& color)
+{
+    SdfLayerRefPtr layer = SceneOps::createNodeLayer("NatronUtilityCancelHuge");
+
+    defineGrid(UsdStage::Open(layer), "/Huge", kHugeGrid, color);
+
+    return layer;
+}
+
+// base with the display colour of the prim at path overridden by color, as a node downstream would.
+ScenePayload
+recoloured(const ScenePayload& base,
+           const std::string& path,
+           const GfVec3f& color,
+           U64 hash)
+{
+    SdfLayerRefPtr layer = SceneOps::createNodeLayer("NatronUtilityCancelRecolour");
+    SdfPrimSpecHandle prim = SdfCreatePrimInLayer(layer, SdfPath(path));
+
+    SdfAttributeSpec::New(prim, "primvars:displayColor", SdfValueTypeNames->Color3fArray)->SetDefaultValue(VtValue(VtVec3fArray(1, color)));
+
+    return SceneOps::appendLayer(base, layer, hash);
 }
 
 GfFrustum
@@ -366,21 +406,57 @@ protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
+        _stage.reset(new SceneStage);
+        _passes = 0;
         HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
     }
 
     virtual void TearDown() OVERRIDE
     {
+        ProgressiveRender::setPassHook(std::function<void()>());
         _render.reset();
+        EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
+        _stage.reset();
         HydraRender::setRendererSettings(kRenderDelegateUtilityId, std::map<std::string, PXR_NS::VtValue>());
         BaseTest::TearDown();
     }
 
-    void start(const UsdStageRefPtr& stage,
+    // Syncs payload into the stage under the stage lock, and restarts the render if that edited it,
+    // as the viewer's sync does. The restart the edit brings, or 0 if it changed nothing.
+    std::uint64_t sync(const ScenePayload& payload)
+    {
+        std::lock_guard<std::mutex> l(_stageLock);
+
+        if (!_stage->sync(payload)) {
+            return 0;
+        }
+
+        const std::uint64_t restart = _render ? _render->getRestartCount() + 1 : 0;
+
+        if (_render) {
+            _render->invalidate();
+        }
+
+        return restart;
+    }
+
+    void start(const ScenePayload& payload,
                bool showRender = false)
     {
         RenderDelegates::list();
-        _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage; }, std::function<void()>(), 0.05f));
+        sync(payload);
+        ASSERT_TRUE(_stage->isValid());
+
+        SceneStage* stage = _stage.get();
+        std::atomic<int>* passes = &_passes;
+        const std::function<bool(SceneStageSnapshot*)> snapshot = [stage](SceneStageSnapshot* into) {
+            *into = stage->getSnapshot();
+
+            return true;
+        };
+
+        ProgressiveRender::setPassHook([passes]() { ++*passes; });
+        _render.reset(new ProgressiveRender(&_stageLock, snapshot, std::function<void()>(), 0.05f));
         _render->setRenderer(kRenderDelegateUtilityId);
         _render->setThreads([]() { return 0; });
         _render->setView(viewOf(showRender));
@@ -415,18 +491,17 @@ protected:
         return false;
     }
 
-    // The worker holds the stage lock across its Render(), which starts the frame. Once it has started
-    // that pass, taking the lock waits for the frame to be under way.
+    // The pass hook runs just before the delegate renders, so a while after it the frame is under way.
     void waitForFrameUnderWay()
     {
         const Clock::time_point end = Clock::now() + kTimeout;
 
-        while (!_render->getStatus().active && Clock::now() < end) {
+        while (_passes.load() == 0 && Clock::now() < end) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
+        ASSERT_GT(_passes.load(), 0) << "the worker started no pass in " << kTimeout.count() << " s";
         ASSERT_TRUE(_render->getStatus().active);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        std::lock_guard<std::mutex> l(_stageLock);
     }
 
     static GfVec4f centreOf(const ProgressiveRender::Frame& frame)
@@ -437,6 +512,8 @@ protected:
     }
 
     std::mutex _stageLock;
+    std::unique_ptr<SceneStage> _stage;
+    std::atomic<int> _passes { 0 };
     std::unique_ptr<ProgressiveRender> _render;
 };
 } // anon namespace
@@ -521,20 +598,15 @@ TEST(NatronUtilityCancel, AStopCutsATileShortBetweenItsLights)
 
 TEST_F(NatronUtilityCancelTest, AnEditDuringAFrameRestartsItAndTheOldFrameNeverLands)
 {
-    const UsdStageRefPtr stage = hugeMeshStage(GfVec3f(1.f, 0.f, 0.f));
+    const ScenePayload red = payloadOf(hugeMeshLayer(GfVec3f(1.f, 0.f, 0.f)), 0x4e0c01ULL);
 
-    start(stage);
+    start(red);
     waitForFrameUnderWay();
     ASSERT_FALSE(_render->getFrame()) << "the scene is too light to test this";
 
-    std::uint64_t editedRestart = 0;
-    {
-        std::lock_guard<std::mutex> l(_stageLock);
+    const std::uint64_t editedRestart = sync(recoloured(red, "/Huge", GfVec3f(0.f, 1.f, 0.f), 0x4e0c02ULL));
 
-        UsdGeomMesh(stage->GetPrimAtPath(SdfPath("/Huge"))).GetDisplayColorAttr().Set(VtVec3fArray(1, GfVec3f(0.f, 1.f, 0.f)));
-        editedRestart = _render->getRestartCount() + 1;
-    }
-    _render->invalidate();
+    ASSERT_GT(editedRestart, 0u) << "the recolour did not edit the stage";
 
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
 
@@ -550,7 +622,7 @@ TEST_F(NatronUtilityCancelTest, AnEditDuringAFrameRestartsItAndTheOldFrameNeverL
 
 TEST_F(NatronUtilityCancelTest, StopDuringAFramePublishesNothingAndResumeFinishesIt)
 {
-    start(hugeMeshStage(GfVec3f(1.f, 0.f, 0.f)));
+    start(payloadOf(hugeMeshLayer(GfVec3f(1.f, 0.f, 0.f)), 0x4e0c03ULL));
     waitForFrameUnderWay();
     ASSERT_FALSE(_render->getFrame()) << "the scene is too light to test this";
 
@@ -577,13 +649,14 @@ TEST_F(NatronUtilityCancelTest, StopDuringAFramePublishesNothingAndResumeFinishe
 
 TEST_F(NatronUtilityCancelTest, TheViewsPurposesDecideWhatIsDrawn)
 {
-    const UsdStageRefPtr stage = UsdStage::CreateInMemory();
+    const SdfLayerRefPtr layer = SceneOps::createNodeLayer("NatronUtilityCancelPurposes");
+    const UsdStageRefPtr authoring = UsdStage::Open(layer);
 
-    defineGrid(stage, "/Default", 1, GfVec3f(1.f, 0.f, 0.f));
-    defineGrid(stage, "/RenderOnly", 1, GfVec3f(0.f, 1.f, 0.f), GfVec3f(0.f, 0.f, 1.f));
-    UsdGeomMesh(stage->GetPrimAtPath(SdfPath("/RenderOnly"))).CreatePurposeAttr(VtValue(UsdGeomTokens->render));
+    defineGrid(authoring, "/Default", 1, GfVec3f(1.f, 0.f, 0.f));
+    defineGrid(authoring, "/RenderOnly", 1, GfVec3f(0.f, 1.f, 0.f), GfVec3f(0.f, 0.f, 1.f));
+    UsdGeomMesh(authoring->GetPrimAtPath(SdfPath("/RenderOnly"))).CreatePurposeAttr(VtValue(UsdGeomTokens->render));
 
-    start(stage);
+    start(payloadOf(layer, 0x4e0c04ULL));
 
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
 

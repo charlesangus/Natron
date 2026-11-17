@@ -31,6 +31,7 @@
 #include <bitset>
 #include <list>
 #include <mutex>
+#include <optional>
 
 #include "Global/GlobalDefines.h"
 #include "Global/KeySymbols.h"
@@ -335,6 +336,13 @@ public:
     // dtor
     virtual ~EffectInstance();
 
+    /**
+     * @brief Sets holder to knob's holder and returns it held when it is an effect. An effect being
+     * destroyed sets holder to null. Any other kind of holder is set but not held: the caller's context
+     * keeps it alive. An effect's last owner may be a render thread, so a knob's holder read
+     * on its own may already be freed by the time it is dereferenced.
+     **/
+    static EffectInstancePtr lockHolder(const KnobI& knob, KnobHolder** holder);
 
     virtual bool canHandleEvaluateOnChangeInOtherThread() const OVERRIDE
     {
@@ -905,6 +913,33 @@ public:
     RenderRoIRetCode renderRoI(const RenderRoIArgs& args,
                                std::map<ImageLayerDesc, ImagePtr>* outputLayers) WARN_UNUSED_RETURN;
 
+    enum RenderCacheStateEnum {
+        eRenderCacheStateBypass = 0, // rendered with no entry involved: byPassCache, an unadmitted output nothing was stored for, or nothing to render
+        eRenderCacheStateMiss, // the whole RoI was rendered
+        eRenderCacheStatePartial, // part of the RoI was already in the cache
+        eRenderCacheStateHit // the cache held the whole RoI
+    };
+
+    /**
+     * @brief The cache state of the last renderRoI that finished on the calling thread, which is reset to
+     * eRenderCacheStateBypass. A nested renderRoI finishes before its caller, so the outermost call wins.
+     **/
+    static RenderCacheStateEnum takeLastRenderCacheState();
+
+    /**
+     * @brief Whether the last renderRoI that finished on the calling thread ran the effect's render action on pixels
+     * neither a cache nor an identity served, which is reset to false. Published like takeLastRenderCacheState(): an
+     * identity or a pass-through computes nothing and leaves it false, whatever its input did.
+     **/
+    static bool takeLastRenderExecuted();
+
+    /**
+     * @brief Whether the output of the last renderRoI(), renderDeepRoI() or evaluateScene() that finished on the
+     * calling thread was computed during it, by the effect or by the nodes an identity passed through, rather than
+     * taken from a cache or from layers authored earlier; reset to false. Published like takeLastRenderCacheState().
+     **/
+    static bool takeLastPullFresh();
+
     /**
      * @brief Whether what this effect puts on its output is deep data, as the graph around it
      * resolves it: eDataKindDeep and unambiguously so. This is the predicate that decides which
@@ -1056,23 +1091,6 @@ public:
         ~NotifyRenderingStarted_RAII();
     };
     typedef std::shared_ptr<NotifyRenderingStarted_RAII> NotifyRenderingStarted_RAIIPtr;
-
-    class NotifyInputNRenderingStarted_RAII
-    {
-        Node* _node;
-        int _inputNumber;
-        bool _didEmit;
-
-public:
-
-        NotifyInputNRenderingStarted_RAII(Node* node,
-                                          int inputNumber);
-
-        ~NotifyInputNRenderingStarted_RAII();
-    };
-    typedef std::shared_ptr<NotifyInputNRenderingStarted_RAII> NotifyInputNRenderingStarted_RAIIPtr;
-
-
 
     /**
      * @brief Sets render preferences for the rendering of a frame for the current thread.
@@ -1226,13 +1244,17 @@ public:
      * renderRoI() in args->inputImagesList under inputNb, where it finds them by key.
      * The input renders under the context consumer pulls it under (see InputContextArgs), which
      * inputContext gives when the caller already resolved it.
+     * A render the cache did not serve counts as an execution of the input's node on the CPU and as a fresh output of
+     * the frame (see FrameRenderContext::noteFreshOutput()). When freshInput is given, it says whether the pixels
+     * returned were computed for this frame rather than taken from a cache.
      **/
     static RenderRoIRetCode renderInputOrTakeFromStore(const EffectInstancePtr& input,
                                                        int inputNb,
                                                        RenderRoIArgs* args,
                                                        std::map<ImageLayerDesc, ImagePtr>* layers,
                                                        const EffectInstance* consumer,
-                                                       InputContextArgs* inputContext = 0);
+                                                       InputContextArgs* inputContext = 0,
+                                                       bool* freshInput = 0);
 
     /**
      * @brief Count, in the stats of the frame installed on this thread, an input taken from the store or one rendered
@@ -1537,6 +1559,12 @@ public:
     virtual bool tryLock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual void unlock(const std::shared_ptr<Image> & entry) OVERRIDE FINAL;
     virtual bool canSetValue() const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Makes a background application queue the knob writes made while a node renders, as an
+     * interactive one does, so that tests can reproduce what an edit during a render does.
+     **/
+    static void setQueuesWritesDuringBackgroundRendersForTesting(bool queues);
     virtual void abortViewerRendersForEdit() OVERRIDE FINAL;
     virtual void abortAllRendersReadingThis() OVERRIDE FINAL;
     virtual void notifyValueQueued() OVERRIDE FINAL;
@@ -1913,6 +1941,99 @@ public:
     virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
     /**
+     * @brief Whether this frame stores the effect's output in the cache. The one question renderRoI and the scheduler ask,
+     * so that a planned reuse never assumes an entry that renderRoI would not store. caller is the effect pulling this one,
+     * and may be null where nothing pulls it yet. Says nothing of a lookup: an entry stored earlier serves regardless.
+     **/
+    bool admitsOutputToCache(const RenderContextPtr& context,
+                             const ParallelRenderArgs& frameArgs,
+                             bool isFrameVaryingOrAnimated,
+                             double time,
+                             ViewIdx view,
+                             const EffectInstance* caller) const;
+
+    enum class OutputCacheCoverage {
+        // Nothing can be counted on, including a region another render is working on right now.
+        None,
+        Partial,
+        Full
+    };
+
+    // Where a probe found the entries it counted on.
+    enum class OutputCacheTier {
+        Memory,
+        // At least one layer is a stub of a file, whose pixels are not read until renderRoI promotes it.
+        Disk,
+        // Every layer is held by a device tier only.
+        Device
+    };
+
+    /**
+     * @brief Of entries a cache lookup returned for one key, the one leaving the least of atLevel, in pixels at level,
+     * still to render. An entry another render is working on loses to any other. Between entries leaving as much, a
+     * device entry comes first, as it is read in place, then a RAM entry, then a disk stub, whose file is only read once
+     * promoted. Null for no entries.
+     **/
+    static ImagePtr mostCompleteCacheEntry(const std::list<ImagePtr>& entries,
+                                           unsigned int level,
+                                           const RectI& atLevel,
+                                           const RectD& rod,
+                                           double par);
+
+    /**
+     * @brief What the cache holds of this effect's output for region, in pixels at mipmapLevel, asking what renderRoI's
+     * lookup would: the same keys in the same order and the same bitmap and being-rendered state. Nothing is counted as a
+     * use, so a plan can ask without changing the eviction order.
+     *
+     * The answer is only a forecast, since the entries found aren't held: a later renderRoI may find less and renders
+     * what is then missing.
+     *
+     * @param rendersFullScale Whether renderRoI renders at level 0 and downscales: an entry at mipmapLevel then only
+     * counts in full, as there.
+     * @param probesDraft Whether renderRoI would also accept a draft entry.
+     * @param acceptsPartial Whether the effect can render a part of its output.
+     * @param missing Set for OutputCacheCoverage::Partial: an enclosing rectangle of what is missing, in canonical
+     * coordinates.
+     * @param servedBy Set, when not null, to where the entries counted on were found. A device entry is only counted at
+     * the exact level, as it has no pixels to downscale from.
+     **/
+    OutputCacheCoverage probeOutputInCache(U64 nodeHash,
+                                           bool isFrameVaryingOrAnimated,
+                                           double time,
+                                           ViewIdx view,
+                                           unsigned int mipmapLevel,
+                                           bool rendersFullScale,
+                                           bool probesDraft,
+                                           bool acceptsPartial,
+                                           const RectI& region,
+                                           const RectD& rod,
+                                           double par,
+                                           const std::list<ImageLayerDesc>& layers,
+                                           ImageBitDepthEnum bitdepth,
+                                           RectD* missing,
+                                           OutputCacheTier* servedBy = nullptr);
+
+    /**
+     * @brief Whether renderRoI pulls this effect's inputs at level 0 whatever level it is asked for. The request pass,
+     * renderRoI and getImage all ask the inputs at the level this returns.
+     *
+     * An effect that renders at full scale below 100% overrides this when its inputs must not be downscaled at all,
+     * such as a stage reading camera photosites, which a downscale would mix across colour filters.
+     **/
+    virtual bool pullsInputsAtScaleOne() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The key renderRoI caches this effect's output under when it renders at renderMappedMipmapLevel, before
+     * layer, depth and level are bound by ImageKey::forEachServingKey.
+     **/
+    ImageKey outputCacheKey(U64 nodeHash,
+                            bool isFrameVaryingOrAnimated,
+                            double time,
+                            ViewIdx view,
+                            bool draft,
+                            unsigned int renderMappedMipmapLevel) const;
+
+    /**
      * @brief Can be derived to get the region that the plugin is capable of filling.
      * This is meaningful for plugins that generate images or transform images.
      * By default it returns in rod the union of all inputs RoD and eStatusReplyDefault is returned.
@@ -1952,6 +2073,34 @@ protected:
                                       ViewIdx view,
                                       RoIMap* ret);
 
+    /**
+     * @brief Called by getRegionsOfInterest_public() on what getRegionsOfInterest() returned, so
+     * a node can adjust every input's region whatever its subclasses' getRegionsOfInterest() do.
+     * When transforms is set, ret is already keyed by the effects the concatenated inputs fetch
+     * from, in their space, as transformInputRois() leaves it. Does nothing by default.
+     **/
+    virtual void adjustInputRegionsOfInterest(double /*time*/,
+                                              const RenderScale& /*scale*/,
+                                              ViewIdx /*view*/,
+                                              const InputMatrixMap* /*transforms*/,
+                                              RoIMap* /*ret*/)
+    {
+    }
+
+public:
+    /**
+     * @brief The edge mode this node resamples its concatenated chain under at time and view,
+     * when it offers its transform; none when it has no say. tryConcatenateTransforms() stops at
+     * an upstream node whose mode differs from this node's, since a chain samples its source under
+     * one mode.
+     **/
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double /*time*/,
+                                                             ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return std::nullopt;
+    }
+
+protected:
     /**
      * @brief Can be derived to indicate for each input node what is the frame range(s) (which can be discontinuous)
      * that this effects need in order to render the frame at the given time.
@@ -2000,14 +2149,19 @@ public:
     bool hasComponentsNeededInCache(U64 hash, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
 public:
-
-
+    /**
+     * @brief getRegionsOfInterest(), then, when transforms and reroutesMap are set,
+     * transformInputRois() with par, then adjustInputRegionsOfInterest().
+     **/
     void getRegionsOfInterest_public(double time,
-                                     const RenderScale & scale,
-                                     const RectD & outputRoD,
-                                     const RectD & renderWindow,   //!< the region to be rendered in the output image, in Canonical Coordinates
+                                     const RenderScale& scale,
+                                     const RectD& outputRoD,
+                                     const RectD& renderWindow, //!< the region to be rendered in the output image, in Canonical Coordinates
                                      ViewIdx view,
-                                     RoIMap* ret);
+                                     RoIMap* ret,
+                                     const InputMatrixMapPtr& transforms = InputMatrixMapPtr(),
+                                     double par = 1.,
+                                     std::map<int, EffectInstancePtr>* reroutesMap = nullptr);
 
     FramesNeededMap getFramesNeeded_public(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel) WARN_UNUSED_RETURN;
 
@@ -2299,6 +2453,13 @@ public:
     virtual bool supportsRenderQuality() const { return false; }
 
     /**
+     * @brief Whether each output pixel depends only on the input pixels at the same place. Drafting such a node
+     * gains little, since it costs about as much per pixel at any level, so editing it never drafts. False unless
+     * the node declares it: an OFX plug-in cannot.
+     **/
+    virtual bool isPointOp() const { return false; }
+
+    /**
      * @brief Does this effect can support multiple clips PAR ?
      * http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#kOfxImageEffectPropSupportsMultipleClipPARs
      * If a plugin does not accept clips of differing PARs, then the host must resample all images fed to that effect to agree with the output's PAR.
@@ -2362,6 +2523,15 @@ public:
      * @brief Called everytimes an input connection is changed
      **/
     virtual void onInputChanged(int inputNo);
+
+    /**
+     * @brief Called when deleting the node named sourceName left input inputNo empty. Disconnecting
+     * the input, and deleting a node whose input takes its place, do not call it.
+     **/
+    virtual void onInputSourceDeleted(int /*inputNo*/,
+                                      const std::string& /*sourceName*/)
+    {
+    }
 
     /**
      * @brief If the plug-in calls timelineGoTo and we're during a render/instance changed action,
@@ -3607,16 +3777,17 @@ private:
                                              StorageModeEnum renderStorageMode,
                                              double time,
                                              ViewIdx view,
-                                             const RectD & rod,
-                                             const RectD & canonicalRenderWindow,
-                                             const InputMatrixMapPtr & transformMatrix,
+                                             const RectD& rod,
+                                             const RectD& canonicalRenderWindow,
+                                             const InputMatrixMapPtr& transformMatrix,
                                              unsigned int mipmapLevel,
-                                             const RenderScale & renderMappedScale,
+                                             const RenderScale& renderMappedScale,
                                              bool useScaleOneInputImages,
                                              bool byPassCache,
-                                             const FramesNeededMap & framesNeeded,
-                                             const EffectInstance::ComponentsNeededMap & compsNeeded,
-                                             EffectInstance::InputImagesMap *inputImages,
+                                             bool renderWindowIsPartOfRoI,
+                                             const FramesNeededMap& framesNeeded,
+                                             const EffectInstance::ComponentsNeededMap& compsNeeded,
+                                             EffectInstance::InputImagesMap* inputImages,
                                              RoIMap* inputsRoI);
 
     static ImagePtr convertLayersFormatsIfNeeded(const ImagePtr& inputImage,

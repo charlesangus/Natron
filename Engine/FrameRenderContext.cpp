@@ -26,9 +26,11 @@
 #include "FrameRenderContext.h"
 
 #include <cassert>
+#include <cstring>
 #include <functional>
 #include <utility>
 
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/IsolatedJob.h"
@@ -109,6 +111,25 @@ FrameStore::putDevice(const TaskKey& key,
 }
 
 void
+FrameStore::put(const TaskKey& key,
+                std::map<ImageLayerDesc, ImagePtr> layers,
+                std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers,
+                const RectI& renderedRoI,
+                int consumers)
+{
+    if (consumers <= 0) {
+        return;
+    }
+
+    std::shared_ptr<Entry> entry = std::make_shared<Entry>();
+    entry->layers = std::move(layers);
+    entry->deviceLayers = std::move(deviceLayers);
+    entry->renderedRoI = renderedRoI;
+    entry->consumersLeft = consumers;
+    putEntry(key, entry);
+}
+
+void
 FrameStore::putEntry(const TaskKey& key,
                      const std::shared_ptr<Entry>& entry)
 {
@@ -130,7 +151,9 @@ FrameStore::putEntry(const TaskKey& key,
     for (std::map<ImageLayerDesc, DeviceImagePtr>::const_iterator it = entry->deviceLayers.begin(); it != entry->deviceLayers.end(); ++it) {
         if (it->second) {
             addBounds(it->second->bounds());
-            entry->deviceBytes += it->second->bytes();
+            const std::size_t bytes = it->second->bytes();
+            entry->deviceLayerBytes[it->first] = bytes;
+            entry->deviceBytes += bytes;
         }
     }
 
@@ -305,7 +328,8 @@ FrameStore::findDevice(const TaskKey& key,
 }
 
 std::size_t
-FrameStore::evictToRam(const TaskKey& key)
+FrameStore::evictToRam(const TaskKey& key,
+                       const DeviceImage* only)
 {
     std::shared_ptr<Entry> entry;
     {
@@ -321,10 +345,19 @@ FrameStore::evictToRam(const TaskKey& key)
     std::size_t freed = 0;
     std::map<ImageLayerDesc, DeviceImagePtr>::iterator it = entry->deviceLayers.begin();
     while (it != entry->deviceLayers.end()) {
-        const std::size_t bytes = it->second ? it->second->bytes() : 0;
+        if (only && (it->second.get() != only)) {
+            ++it;
+            continue;
+        }
+        const std::map<ImageLayerDesc, std::size_t>::const_iterator stored = entry->deviceLayerBytes.find(it->first);
+        const std::size_t bytes = (stored != entry->deviceLayerBytes.end()) ? stored->second : 0;
         // A layer already downloaded keeps the RAM image it has.
         const bool inRam = entry->layers.find(it->first) != entry->layers.end();
         ImagePtr image = inRam ? ImagePtr() : (it->second ? it->second->evictToRam() : ImagePtr());
+        if (!inRam && !image && it->second) {
+            // The device tier may hold the image too, and have moved its pixels to RAM already.
+            image = it->second->downloadToRam();
+        }
         if (!inRam && !image) {
             // A failed eviction leaves the device image valid.
             ++it;
@@ -336,6 +369,7 @@ FrameStore::evictToRam(const TaskKey& key)
             entry->layers[it->first] = image;
         }
         freed += bytes;
+        entry->deviceLayerBytes.erase(it->first);
         it = entry->deviceLayers.erase(it);
     }
     if (!entry->retired) {
@@ -407,10 +441,33 @@ FrameStore::clear()
     }
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+std::uint64_t
+nextFreshOutputFrameId()
+{
+    static std::atomic<std::uint64_t> next(1);
+
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t
+mixFreshOutputKey(std::uint64_t x)
+{
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+
+    return x ^ (x >> 31);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 FrameRenderContext::FrameRenderContext()
     : _argsMap()
     , _argsByHolder()
     , _rotoPaintTreeNodes()
+    , _freshOutputFrameId(nextFreshOutputFrameId())
     , _request()
     , _abortInfo()
     , _stats()
@@ -425,6 +482,7 @@ FrameRenderContext::FrameRenderContext()
     , _wantsRootOnDevice(false)
     , _rootDeviceMutex()
     , _rootDevicePlanes()
+    , _deviceTierGeneration(CacheDeviceTier::purgeGeneration())
 #endif
 {
 }
@@ -601,6 +659,39 @@ bool
 FrameRenderContext::isRotoPaintTreeNode(const Node* node) const
 {
     return node && (_rotoPaintTreeNodes.find(node) != _rotoPaintTreeNodes.end());
+}
+
+std::uint64_t
+FrameRenderContext::freshOutputKey(double time,
+                                   ViewIdx view) const
+{
+    std::uint64_t timeBits = 0;
+    static_assert(sizeof(timeBits) == sizeof(time), "a double is 64 bits");
+    std::memcpy(&timeBits, &time, sizeof(time));
+    std::uint64_t key = mixFreshOutputKey(_freshOutputFrameId);
+    key = mixFreshOutputKey(key ^ timeBits);
+    key = mixFreshOutputKey(key ^ (std::uint64_t)(std::int64_t)view.value());
+
+    // An empty slot holds 0.
+    return key ? key : 1;
+}
+
+void
+FrameRenderContext::noteFreshOutput(const Node* node,
+                                    double time,
+                                    ViewIdx view) const
+{
+    if (node) {
+        node->stampFreshOutput(freshOutputKey(time, view));
+    }
+}
+
+bool
+FrameRenderContext::hasFreshOutput(const Node* node,
+                                   double time,
+                                   ViewIdx view) const
+{
+    return node && node->hasFreshOutputStamp(freshOutputKey(time, view));
 }
 
 NATRON_NAMESPACE_EXIT

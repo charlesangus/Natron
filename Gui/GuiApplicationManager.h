@@ -325,7 +325,7 @@ private:
 
     virtual void onLoadCompleted() OVERRIDE FINAL;
     virtual void clearLastRenderedTextures() OVERRIDE FINAL;
-    virtual void releaseSceneViewEngines() OVERRIDE FINAL;
+    virtual void releaseSceneViewEngines(bool keptOnly) OVERRIDE FINAL;
     /**
      * @brief Load shortcuts from QSettings
      **/

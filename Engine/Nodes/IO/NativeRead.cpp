@@ -67,6 +67,7 @@
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/RawDecodeSupport.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Raw/RawDevelop.h"
 #include "Engine/PoolParallelFor.h"
@@ -354,6 +355,8 @@ NativeRead::initializeKnobs()
     availableViews->setSecret(true);
     page->addKnob(availableViews);
     _availableViews = availableViews;
+
+    _blackOutside = createBlackOutsideKnob(this, page);
 
     OcioSpaceKnobs::Description inputSpace;
     inputSpace.name = kNatronReadParamColorspace;
@@ -1117,6 +1120,7 @@ NativeRead::getPreferredMetadataAt(double time,
     metadata.setNComps(-1, 4);
 
     metadata.setIsFrameVarying(true);
+    metadata.setEdgeMode(readBlackOutside(_blackOutside, time, view));
 
     // The frame's own file, or the held one when the missing-frame mode holds. A frame that renders
     // black or an error has no file, so it reports the sequence's representative frame.

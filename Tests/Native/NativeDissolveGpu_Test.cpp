@@ -198,6 +198,7 @@ protected:
             EXPECT_TRUE(bool(setup.sources[k]));
             if (setup.sources[k] && setup.dissolve) {
                 setParitySourceOrigin(setup.sources[k], origins[k][0], origins[k][1]);
+                setBlackOutside(setup.sources[k], true);
                 connectNodes(setup.sources[k], setup.dissolve, dissolveSourceInput(k), true);
             }
         }
@@ -206,6 +207,7 @@ protected:
             EXPECT_TRUE(bool(setup.mask));
             if (setup.mask) {
                 setParitySourceOrigin(setup.mask, 12, 6);
+                setBlackOutside(setup.mask, true);
                 connectNodes(setup.mask, setup.dissolve, kDissolveMaskInput, true);
                 KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(setup.dissolve->getKnobByName("maskChannel_Mask").get());
                 EXPECT_TRUE(maskChannel != NULL);

@@ -299,9 +299,6 @@ public:
     QPoint _pressPos;
     QPointF _lastSelectionStartPointScene;
     EventStateEnum _evtState;
-    NodeGuiPtr _magnifiedNode;
-    double _nodeSelectedScaleBeforeMagnif;
-    bool _magnifOn;
     Edge* _arrowSelected;
     mutable QMutex _nodesMutex;
     IndexedNodeGuiList _nodes;

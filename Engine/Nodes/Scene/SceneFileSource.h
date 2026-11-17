@@ -30,6 +30,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -92,16 +94,20 @@ public:
      **/
     void load(const std::string& path);
 
+    typedef std::function<void(bool ok, const std::string& errorMessage, const std::vector<std::string>& reloadedFiles)> ReloadDoneFunction;
+
     /**
      * @brief Reads again every file layer the last walk found or, before any walk, those of the
-     * file at path if another consumer has it open, then walks afresh, which also finds files
-     * that were missing. Drops the stamps of every file that was in the closure before or is
-     * after, and appends them to *reloadedFiles. Returns false with *errorMessage set when the
-     * reload fails; the walk is taken either way.
+     * file at path if another consumer has it open (SceneOps::requestFileLayerReload()), then
+     * walks afresh, which also finds files that were missing, and drops the stamps of every file
+     * that was in the closure before or is after. Then calls done with whether the reload worked,
+     * the error if not, and those files; the walk is taken either way. On the main thread done
+     * may run later, from the event loop, and neither runs once owner, which owns this source,
+     * is gone. A load() meanwhile keeps its own walk.
      **/
-    bool reload(const std::string& path,
-                std::string* errorMessage,
-                std::vector<std::string>* reloadedFiles);
+    void reload(const std::string& path,
+                const std::weak_ptr<const void>& owner,
+                const ReloadDoneFunction& done);
 
     /**
      * @brief EffectInstance::refreshFileDependencies() for the node: when the closure holds one of
@@ -151,6 +157,8 @@ private:
     // Taken only when the files are read, never by an evaluation, so an evaluation cannot re-key
     // the node while the layers still hold what was read before.
     std::atomic<U64> _digest;
+    // Bumped by each load(), so a reload that ends after one leaves its walk alone.
+    std::atomic<U64> _loads;
 };
 
 /**

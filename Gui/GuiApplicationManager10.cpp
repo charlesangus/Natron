@@ -974,6 +974,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionPauseViewerInputA, kShortcutDescActionPauseViewerInputA, Qt::NoModifier, Qt::Key_P);
 
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionProxyEnabled, kShortcutDescActionProxyEnabled, Qt::ControlModifier, Qt::Key_P);
+    registerKeybind(kShortcutGroupViewer, kShortcutIDActionAutoProxyScrubbing, kShortcutDescActionAutoProxyScrubbing, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_P);
     registerKeybindWithMask(kShortcutGroupViewer, kShortcutIDActionProxyLevel2, kShortcutDescActionProxyLevel2, Qt::AltModifier, Qt::Key_1,
                             Qt::ShiftModifier);
     registerKeybindWithMask(kShortcutGroupViewer, kShortcutIDActionProxyLevel4, kShortcutDescActionProxyLevel4, Qt::AltModifier, Qt::Key_2,
@@ -1261,7 +1262,7 @@ GuiApplicationManager::clearLastRenderedTextures()
 }
 
 void
-GuiApplicationManager::releaseSceneViewEngines()
+GuiApplicationManager::releaseSceneViewEngines(bool keptOnly)
 {
     const AppInstanceVec& instances = getAppInstances();
 
@@ -1278,10 +1279,13 @@ GuiApplicationManager::releaseSceneViewEngines()
                 continue;
             }
             const std::string renderer = view->getRenderer().getActiveRendererId();
-            // The delegates other than Storm and Natron Utility hold host memory, not the GPU's.
-            if (RenderDelegates::isStorm(renderer)) {
+            // The delegates other than Storm and Natron Utility hold host memory, not the GPU's, but
+            // the Storm engine kept behind one does.
+            const bool storm = RenderDelegates::isStorm(renderer);
+            if ((!storm || !keptOnly) && (storm || view->getRenderer().hasEngine())) {
                 view->releaseEngine();
-            } else if (renderer == kRenderDelegateUtilityId) {
+            }
+            if (!keptOnly && (renderer == kRenderDelegateUtilityId)) {
                 // Its engine gives its GPU memory back on its own worker; the hand-off lives in this view's context.
                 view->releaseDeviceUpload();
             }

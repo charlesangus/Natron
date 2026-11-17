@@ -111,6 +111,7 @@ struct ViewerTabPrivate
     QIcon iconRefreshOff, iconRefreshOn;
     Button* activateRenderScale;
     ComboBox* renderScaleCombo;
+    Button* autoProxyButton;
     Label* firstInputLabel;
     ComboBox* firstInputImage;
     Label* compositingOperatorLabel;

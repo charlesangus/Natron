@@ -133,6 +133,23 @@ public:
     std::string getUserFacingLabel() const;
 
     /**
+     * @brief The layer name an image file stores this layer's channels under, as
+     * "<name>.<channel>": the label for the built-in motion vector and disparity layers, whose
+     * IDs are OpenFX plane identifiers, and the ID for any other layer.
+     **/
+    std::string getFileLayerName() const;
+
+    /**
+     * @brief The inverse of getFileLayerName() for the built-in motion vector and disparity
+     * layers: the built-in layer a file stores under `fileLayerName`, or, when the file holds
+     * only some of its channels, a layer of the built-in's ID and label with those channels
+     * alone, in the built-in's order.
+     * @return getNoneComponents() when `fileLayerName` is no built-in's file name, or when a
+     * channel is not one of the built-in's.
+     **/
+    static ImageLayerDesc mapFileLayerToBuiltinLayer(const std::string& fileLayerName, const std::vector<std::string>& channels);
+
+    /**
      * @brief Returns the channels composing this layer.
      **/
     const std::vector<std::string>& getChannels() const;

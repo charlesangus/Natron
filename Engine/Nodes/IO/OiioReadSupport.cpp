@@ -527,8 +527,10 @@ fileLayers(const Header& header,
 
         std::vector<bool> used(flat.size(), false);
         for (std::size_t g = 0; g < grouped.size(); ++g) {
-            const ImageLayerDesc& desc = grouped[g];
-            if (desc.isColorLayer() || !LayerRegistry::validate(desc, true, NULL) || seen.count(desc.getLayerID()) > 0) {
+            const std::string& fileName = grouped[g].getLayerID();
+            const ImageLayerDesc builtin = ImageLayerDesc::mapFileLayerToBuiltinLayer(fileName, grouped[g].getChannels());
+            const ImageLayerDesc& desc = builtin ? builtin : grouped[g];
+            if (desc.isColorLayer() || !LayerRegistry::validate(grouped[g], true, NULL) || seen.count(desc.getLayerID()) > 0) {
                 continue;
             }
 
@@ -538,7 +540,7 @@ fileLayers(const Header& header,
             const std::vector<std::string>& channels = desc.getChannels();
             for (std::size_t c = 0; c < channels.size(); ++c) {
                 for (std::size_t f = 0; f < flat.size(); ++f) {
-                    if (!used[f] && isChannelOf(flat[f], desc.getLayerID(), channels[c])) {
+                    if (!used[f] && isChannelOf(flat[f], fileName, channels[c])) {
                         used[f] = true;
                         layer.channels.push_back(fileIndex[f]);
                         break;

@@ -554,7 +554,7 @@ layerChannels(const ImageLayerDesc& layer,
             continue;
         }
         ret.source.push_back((int)c);
-        ret.names.push_back(layer.getLayerID() + "." + all[c]);
+        ret.names.push_back(layer.getFileLayerName() + "." + all[c]);
     }
 
     return ret;
@@ -655,7 +655,7 @@ planFile(const std::vector<ImageLayerDesc>& candidates,
     // A format that cannot hold more than four channels keeps the colour row alone.
     if (!caps.nChannels) {
         while (plan.planes.size() > 1 || (plan.planes.size() == 1 && !haveColor)) {
-            plan.dropped.push_back(candidates[(std::size_t)plan.planes.back()].getLayerID());
+            plan.dropped.push_back(candidates[(std::size_t)plan.planes.back()].getFileLayerName());
             plan.planes.pop_back();
             plan.channels.pop_back();
             plan.outputs.pop_back();
@@ -2342,7 +2342,7 @@ NativeWrite::render(const RenderActionArgs& args)
                 plane.names = plan.channels[p].names;
                 const ImageLayerDesc& layer = plan.outputs[p];
                 frame.colour = layer.isColorLayer();
-                plane.label = layer.isColorLayer() ? std::string(kNatronColorStorageLabel) : layer.getLayerID();
+                plane.label = layer.isColorLayer() ? std::string(kNatronColorStorageLabel) : layer.getFileLayerName();
                 planes.planes.push_back(plane);
             }
             viewPlanes.push_back(planes);

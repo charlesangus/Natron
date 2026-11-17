@@ -79,23 +79,29 @@ const SourceChannel kSourceChannels[] = {
     { "R", 0.125f }, { "G", 0.25f }, { "B", 0.375f }, { "A", 1.f }, { "diffuse.R", 0.5f }, { "diffuse.G", 0.625f }, { "diffuse.B", 0.75f }, { "specular.R", 0.0625f }, { "specular.G", 0.1875f }, { "specular.B", 0.3125f }, { "mask.A", 0.875f }
 };
 
+const SourceChannel kMotionChannels[] = {
+    { "R", 0.125f }, { "G", 0.25f }, { "B", 0.375f }, { "A", 1.f }, { "Forward.U", 1.5f }, { "Forward.V", -2.25f }, { "Backward.U", -1.5f }, { "Backward.V", 2.75f }
+};
+
+template <std::size_t N>
 bool
 writeSource(const std::string& path,
+            const SourceChannel (&channels)[N],
             std::string* error)
 {
-    const int n = (int)(sizeof(kSourceChannels) / sizeof(kSourceChannels[0]));
+    const int n = (int)N;
     OIIO::ImageSpec spec(kSize, kSize, n, OIIO::TypeDesc::FLOAT);
 
     spec.channelnames.clear();
     for (int c = 0; c < n; ++c) {
-        spec.channelnames.push_back(kSourceChannels[c].name);
+        spec.channelnames.push_back(channels[c].name);
     }
     spec.alpha_channel = 3;
     spec.attribute("compression", "none");
     std::vector<float> pixels((std::size_t)kSize * kSize * n);
     for (int p = 0; p < kSize * kSize; ++p) {
         for (int c = 0; c < n; ++c) {
-            pixels[(std::size_t)p * n + c] = kSourceChannels[c].value;
+            pixels[(std::size_t)p * n + c] = channels[c].value;
         }
     }
     std::unique_ptr<OIIO::ImageOutput> output = OIIO::ImageOutput::create(path);
@@ -170,7 +176,7 @@ protected:
         ASSERT_TRUE(_dir.isValid());
         _source = pathOf("source.exr");
         std::string error;
-        ASSERT_TRUE(writeSource(_source, &error)) << error;
+        ASSERT_TRUE(writeSource(_source, kSourceChannels, &error)) << error;
 
         NodePtr reader = createRead(_source);
         ASSERT_TRUE(bool(reader));
@@ -440,4 +446,60 @@ TEST_F(NativeWriteLayersTest, FormatWithoutExtraChannelsWritesColorAndWarns)
     _channels->setRows(rows);
     renderTo(pathOf("color_only.png"));
     EXPECT_FALSE(_writer->hasPersistentMessage());
+}
+
+// The built-in motion layers have OpenFX plane identifiers as IDs; a file names them by their
+// labels, and the Read takes those names back to the built-in layers.
+TEST_F(NativeWriteLayersTest, MotionVectorLayersRoundTripAsTheBuiltinLayers)
+{
+    const std::string source = pathOf("motion_source.exr");
+    std::string error;
+    ASSERT_TRUE(writeSource(source, kMotionChannels, &error)) << error;
+    NodePtr motionReader = createRead(source);
+    ASSERT_TRUE(bool(motionReader));
+    disconnectNodes(_reader, _writer, true);
+    connectNodes(motionReader, _writer, 0, true);
+    _channels->setAll();
+    const std::string path = pathOf("motion.exr");
+
+    renderTo(path);
+    EXPECT_EQ(names({ "R", "G", "B", "A", "Forward.U", "Forward.V", "Backward.U", "Backward.V" }), fileChannelNames(path));
+
+    NodePtr read = createRead(path);
+    ASSERT_TRUE(bool(read));
+    std::list<ImageLayerDesc> present;
+    read->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
+    const ImageLayerDesc* const builtins[] = { &ImageLayerDesc::getForwardMotionComponents(), &ImageLayerDesc::getBackwardMotionComponents() };
+    for (std::size_t b = 0; b < sizeof(builtins) / sizeof(builtins[0]); ++b) {
+        const ImageLayerDesc& builtin = *builtins[b];
+        SCOPED_TRACE(builtin.getLayerLabel());
+        std::list<ImageLayerDesc>::const_iterator found = present.begin();
+        while (found != present.end() && found->getLayerID() != builtin.getLayerID()) {
+            ++found;
+        }
+        ASSERT_TRUE(found != present.end()) << "the layer did not read back as the built-in one";
+        EXPECT_EQ(builtin.getLayerLabel(), found->getLayerLabel());
+        EXPECT_EQ(builtin.getChannels(), found->getChannels());
+        EXPECT_EQ(builtin.getLayerLabel() + "." + kNatronMotionComponentsLabel, found->getLayerOption().label);
+
+        std::list<ImageLayerDesc> request(1, *found);
+        std::vector<RenderedPlane> planes;
+        ASSERT_TRUE(renderNodePlanesDirect(read, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), request, &planes, &error)) << error;
+        ASSERT_EQ(1u, planes.size());
+        const RenderedPlane& plane = planes.front();
+        ASSERT_EQ((std::size_t)kSize * kSize * plane.channels.size(), plane.pixels.size());
+        for (std::size_t c = 0; c < plane.channels.size(); ++c) {
+            const std::string name = builtin.getLayerLabel() + "." + plane.channels[c];
+            float expected = 0.f;
+            for (std::size_t i = 0; i < sizeof(kMotionChannels) / sizeof(kMotionChannels[0]); ++i) {
+                if (name == kMotionChannels[i].name) {
+                    expected = kMotionChannels[i].value;
+                }
+            }
+            EXPECT_NEAR(expected, plane.pixels[c], 1e-6f) << name;
+        }
+    }
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        EXPECT_EQ(std::string::npos, it->getLayerLabel().find("thefoundry")) << it->getLayerID();
+    }
 }

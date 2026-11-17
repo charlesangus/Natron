@@ -177,6 +177,70 @@ ImageLayerDesc::getUserFacingLabel() const
     return kNatronColorViewRGBA;
 }
 
+static const ImageLayerDesc* const*
+fileNamedBuiltinLayers(std::size_t* count)
+{
+    static const ImageLayerDesc* const layers[] = {
+        &ImageLayerDesc::getBackwardMotionComponents(),
+        &ImageLayerDesc::getForwardMotionComponents(),
+        &ImageLayerDesc::getDisparityLeftComponents(),
+        &ImageLayerDesc::getDisparityRightComponents()
+    };
+    *count = sizeof(layers) / sizeof(layers[0]);
+
+    return layers;
+}
+
+std::string
+ImageLayerDesc::getFileLayerName() const
+{
+    std::size_t count = 0;
+    const ImageLayerDesc* const* builtins = fileNamedBuiltinLayers(&count);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (_layerID == builtins[i]->getLayerID()) {
+            return builtins[i]->getLayerLabel();
+        }
+    }
+
+    return _layerID;
+}
+
+ImageLayerDesc
+ImageLayerDesc::mapFileLayerToBuiltinLayer(const std::string& fileLayerName,
+                                           const std::vector<std::string>& channels)
+{
+    std::size_t count = 0;
+    const ImageLayerDesc* const* builtins = fileNamedBuiltinLayers(&count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const ImageLayerDesc& builtin = *builtins[i];
+        if (fileLayerName != builtin.getLayerLabel()) {
+            continue;
+        }
+        const std::vector<std::string>& all = builtin.getChannels();
+        for (std::size_t c = 0; c < channels.size(); ++c) {
+            if (std::find(all.begin(), all.end(), channels[c]) == all.end()) {
+                return getNoneComponents();
+            }
+        }
+        std::vector<std::string> ordered;
+        for (std::size_t c = 0; c < all.size(); ++c) {
+            if (std::find(channels.begin(), channels.end(), all[c]) != channels.end()) {
+                ordered.push_back(all[c]);
+            }
+        }
+        if (ordered.empty()) {
+            return getNoneComponents();
+        }
+        if (ordered.size() == all.size()) {
+            return builtin;
+        }
+
+        return ImageLayerDesc(builtin.getLayerID(), builtin.getLayerLabel(), std::string(), ordered);
+    }
+
+    return getNoneComponents();
+}
+
 const std::string&
 ImageLayerDesc::getChannelsLabel() const
 {

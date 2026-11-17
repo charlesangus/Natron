@@ -85,3 +85,4 @@ The milestone has three steps. First it separates **when** the cue shows (a debo
 - 2026-11-16 — A toolbar spinner is one of the styles (user): added to the drafted outline, subtle outline, corner dot and edge line styles.
 
 **Verification gate:** full ctest passes, including the GuiTests timing gtest and ViewerStaleState_Test. `Tests/gui/m451_stale_cue.py` passes in the remote GUI gate. The user has accepted the kept style on an AppImage (P3.T2) and confirmed the final build.
+- 2026-11-17 — P1.T1-P3.T1 code in 586cac225 (lane .worktrees/m451); gate running. Deviations: StaleCueStyleEnum sits at namespace scope with an int base so ViewerGL.h can forward-declare it; ViewerGL exposes natronViewerStale for the GUI script; the Corner Dot's edge is 10 px from both edges.

@@ -589,7 +589,7 @@ struct BezierPrivate
             Transform::Point3D p;
             p.z = 1;
             (*it)->getPositionAtTime(true, time, view, &p.x, &p.y);
-            p = Transform::matApply(transform, p);
+            p = Transform::matApplyProjected(transform, p);
             if ( ( p.x >= (x - acceptance) ) && ( p.x <= (x + acceptance) ) && ( p.y >= (y - acceptance) ) && ( p.y <= (y + acceptance) ) ) {
                 *index = i;
 
@@ -615,7 +615,7 @@ struct BezierPrivate
             Transform::Point3D p;
             p.z = 1;
             (*it)->getPositionAtTime(true, time, view, &p.x, &p.y);
-            p = Transform::matApply(transform, p);
+            p = Transform::matApplyProjected(transform, p);
             if ( ( p.x >= (x - acceptance) ) && ( p.x <= (x + acceptance) ) && ( p.y >= (y - acceptance) ) && ( p.y <= (y + acceptance) ) ) {
                 *index = i;
 

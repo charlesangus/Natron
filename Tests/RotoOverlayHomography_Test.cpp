@@ -31,6 +31,7 @@
 #include <list>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -292,6 +293,133 @@ TEST_F(RotoOverlayHomographyTest, DraggedPointMovesByTheMouseDeltaOnScreen)
     const Point after = shown(0, ePartPosition);
     EXPECT_NEAR(after.x, before.x + 3., kTolerance);
     EXPECT_NEAR(after.y, before.y - 2., kTolerance);
+}
+
+TEST_F(RotoOverlayHomographyTest, ControlPointsArePickedWhereTheyAreDrawn)
+{
+    const double acceptance = 0.5;
+    const Bezier::ControlPointSelectionPrefEnum prefs[2] = {
+        Bezier::eControlPointSelectionPrefWhateverFirst, Bezier::eControlPointSelectionPrefFeatherFirst
+    };
+
+    for (int i = 0; i < _square->getControlPointsCount(); ++i) {
+        const Point stored = storedPoint(*cpAt(i), ePartPosition, _time);
+        const Point drawn = shown(i, ePartPosition);
+        // Without the divide by w the pick would look here instead.
+        const double undividedX = _matrix.a * stored.x + _matrix.b * stored.y + _matrix.c;
+        const double undividedY = _matrix.d * stored.x + _matrix.e * stored.y + _matrix.f;
+        ASSERT_GT(std::hypot(undividedX - drawn.x, undividedY - drawn.y), 4. * acceptance) << "point " << i;
+        for (int k = 0; k < 2; ++k) {
+            int index = -1;
+            const PointPair hit = _square->isNearbyControlPoint(drawn.x, drawn.y, acceptance, prefs[k], &index);
+            EXPECT_EQ(index, i) << "point " << i << ", preference " << k;
+            EXPECT_TRUE((hit.first == cpAt(i)) || (hit.second == cpAt(i))) << "point " << i << ", preference " << k;
+        }
+    }
+}
+
+TEST_F(RotoOverlayHomographyTest, PressOnADrawnPointDragsOnlyThatPoint)
+{
+    const int dragged = 2;
+    const int count = _square->getControlPointsCount();
+    std::vector<Point> before;
+    for (int i = 0; i < count; ++i) {
+        before.push_back(shown(i, ePartPosition));
+    }
+    const Point stored = storedPoint(*cpAt(dragged), ePartPosition, _time);
+    const Point target = before[dragged];
+    const double undividedX = _matrix.a * stored.x + _matrix.b * stored.y + _matrix.c;
+    const double undividedY = _matrix.d * stored.x + _matrix.e * stored.y + _matrix.f;
+    // Farther than the pick tolerance, so a pick that skips the divide misses the point and drags
+    // the whole shape from its curve.
+    ASSERT_GT(std::max(std::fabs(undividedX - target.x), std::fabs(undividedY - target.y)), 1.5 * kControlPointSelectionTolerance);
+
+    _ui->selectedTool = eRotoToolSelectAll;
+    _ui->selectedCps.clear();
+    double timestamp = 0.;
+    ASSERT_TRUE(_ui->onOverlayPenDown(_time, QPointF(target.x, target.y), 1., ++timestamp, ePenTypeLMB));
+    ASSERT_EQ(eEventStateDraggingControlPoint, _ui->state);
+    ASSERT_EQ(cpAt(dragged), _ui->cpBeingDragged.first);
+    _ui->onOverlayPenMotion(_time, QPointF(target.x + 2., target.y - 1.), 1., ++timestamp);
+    _ui->onOverlayPenMotion(_time, QPointF(target.x + 3., target.y - 2.), 1., ++timestamp);
+    _ui->onOverlayPenUp();
+
+    for (int i = 0; i < count; ++i) {
+        const Point p = shown(i, ePartPosition);
+        const double wantX = (i == dragged) ? before[i].x + 3. : before[i].x;
+        const double wantY = (i == dragged) ? before[i].y - 2. : before[i].y;
+        EXPECT_NEAR(p.x, wantX, kTolerance) << "point " << i;
+        EXPECT_NEAR(p.y, wantY, kTolerance) << "point " << i;
+    }
+}
+
+TEST_F(RotoOverlayHomographyTest, PressOnADrawnHandleDragsOnlyThatHandle)
+{
+    const int index = 2;
+    const Point stored = storedPoint(*cpAt(index), ePartPosition, _time);
+    const double reach = 20.;
+    _square->setPointAtIndex(false, index, _time, stored.x, stored.y, stored.x - reach, stored.y, stored.x + reach, stored.y);
+    const Point pos = shown(index, ePartPosition);
+    const Point right = shown(index, ePartRight);
+    ASSERT_GT(std::hypot(right.x - pos.x, right.y - pos.y), 1.5 * kControlPointSelectionTolerance);
+
+    _ui->selectedTool = eRotoToolSelectAll;
+    _ui->selectedCps.clear();
+    double timestamp = 0.;
+    ASSERT_TRUE(_ui->onOverlayPenDown(_time, QPointF(pos.x, pos.y), 1., ++timestamp, ePenTypeLMB));
+    _ui->onOverlayPenUp();
+    ASSERT_EQ(1u, _ui->selectedCps.size());
+    ASSERT_EQ(cpAt(index), _ui->selectedCps.front().first);
+
+    // Along the handle, which keeps it lined up with the other one: a homography keeps lines.
+    const double dx = 0.25 * (right.x - pos.x);
+    const double dy = 0.25 * (right.y - pos.y);
+    ASSERT_TRUE(_ui->onOverlayPenDown(_time, QPointF(right.x, right.y), 1., ++timestamp, ePenTypeLMB));
+    ASSERT_EQ(eEventStateDraggingRightTangent, _ui->state);
+    ASSERT_EQ(cpAt(index), _ui->tangentBeingDragged);
+    _ui->onOverlayPenMotion(_time, QPointF(right.x + dx, right.y + dy), 1., ++timestamp);
+    _ui->onOverlayPenUp();
+
+    const Point rightAfter = shown(index, ePartRight);
+    EXPECT_NEAR(rightAfter.x, right.x + dx, 1e-4);
+    EXPECT_NEAR(rightAfter.y, right.y + dy, 1e-4);
+    const Point posAfter = shown(index, ePartPosition);
+    EXPECT_NEAR(posAfter.x, pos.x, kTolerance);
+    EXPECT_NEAR(posAfter.y, pos.y, kTolerance);
+}
+
+TEST_F(RotoOverlayHomographyTest, SelectionBoxScaleStretchesTheShownPointsAboutItsCentre)
+{
+    selectAll();
+    const int count = _square->getControlPointsCount();
+    const PartEnum parts[3] = { ePartPosition, ePartLeft, ePartRight };
+    const QRectF box = _ui->selectedCpsBbox;
+    // The box's left edge stands in for the pivot a Shift drag of the mid-right handle uses.
+    const double pivots[2] = { box.center().x(), box.left() };
+    const double ratio = 1.2;
+    for (int pass = 0; pass < 2; ++pass) {
+        const double cx = pivots[pass];
+        const double cy = box.center().y();
+        std::vector<Point> start;
+        for (int i = 0; i < count; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                start.push_back(shown(i, parts[k]));
+            }
+        }
+        _ui->undoGesture.begin();
+        std::shared_ptr<TransformUndoCommand> cmd = std::make_shared<TransformUndoCommand>(_ui, cx, cy, 0., 0., 0., 0., 0., ratio, 1., _time);
+        cmd->redo();
+        _ui->undoGesture.end();
+
+        for (int i = 0; i < count; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                const Point& q = start[i * 3 + k];
+                const Point p = shown(i, parts[k]);
+                EXPECT_NEAR(p.x, cx + ratio * (q.x - cx), 1e-6) << "pivot " << pass << ", point " << i << ", part " << k;
+                EXPECT_NEAR(p.y, q.y, 1e-6) << "pivot " << pass << ", point " << i << ", part " << k;
+            }
+        }
+    }
 }
 
 TEST_F(RotoOverlayHomographyTest, SelectionBoxTranslateMovesTheShownPointsByTheDelta)

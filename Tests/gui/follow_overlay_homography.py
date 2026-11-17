@@ -15,7 +15,7 @@ For each node:
            the drag moves it by the mouse delta on screen
   box      a rubber band over the drawn shape selects its points, and a drag of the selection
            box's mid-right handle stretches the drawn points and handles in x about the box's
-           left edge by the drag's ratio
+           centre by the ratio of the handle's distances from it
 
 The box is drawn around the points, and their handles hit, where the viewer shows them; before
 that, every press missed and started a rubber band. Screenshots of each node with its points
@@ -132,8 +132,8 @@ try:
         check(near(after[0][0], end, tol),
               "%s point: point 0 drawn at (%.1f, %.1f) was picked and dragged to (%.1f, %.1f) (now at (%.1f, %.1f), tolerance %.2f)"
               % (label, start[0], start[1], end[0], end[1], after[0][0][0], after[0][0][1], tol))
-        check(all(near(after[i][0], before[i][0], 1e-6) for i in range(1, len(after))),
-              "%s point: the other points stay where they were" % label)
+        moved = max(math.hypot(after[i][0][0] - before[i][0][0], after[i][0][1] - before[i][0][1]) for i in range(1, len(after)))
+        check(moved <= 1e-6, "%s point: the other points stay where they were (largest move %.3g)" % (label, moved))
 
         gt.section(label + " handle")
         p, _, right = shown(bez, 1)
@@ -147,7 +147,8 @@ try:
         check(near(right_after, end, tol),
               "%s handle: the right handle of point 1 drawn at (%.1f, %.1f) was picked and dragged to (%.1f, %.1f) (now at (%.1f, %.1f), tolerance %.2f)"
               % (label, right[0], right[1], end[0], end[1], right_after[0], right_after[1], tol))
-        check(near(p_after, p, 1e-6), "%s handle: point 1 stays where it was" % label)
+        check(near(p_after, p, 1e-6),
+              "%s handle: point 1 stays where it was (moved by %.3g)" % (label, math.hypot(p_after[0] - p[0], p_after[1] - p[1])))
 
         gt.section(label + " box")
         before = shown_all(bez)
@@ -157,8 +158,9 @@ try:
         yield ("sleep", SETTLE_MS)
         gt.shot("follow-overlay-%s.png" % label.lower())
         report("NOTE caption follow-overlay-%s.png: %s with every point selected; the box, points and handles sit on the drawn curve" % (label.lower(), label))
-        cy = (b + t) / 2.0
-        ratio = (r - l + BOX_DRAG) / (r - l)
+        cx, cy = (l + r) / 2.0, (b + t) / 2.0
+        # Without Shift a mid handle scales about the box's centre; Shift pins the opposite edge.
+        ratio = (r + BOX_DRAG - cx) / (r - cx)
         rg.drag(gl, vmap.to_widget(r, cy), vmap.to_widget(r + BOX_DRAG, cy))
         yield ("sleep", SETTLE_MS)
         after = shown_all(bez)
@@ -166,11 +168,11 @@ try:
         for i in range(len(before)):
             for k in range(3):
                 q = before[i][k]
-                want = (l + ratio * (q[0] - l), q[1])
+                want = (cx + ratio * (q[0] - cx), q[1])
                 worst = max(worst, math.hypot(after[i][k][0] - want[0], after[i][k][1] - want[1]))
         check(worst <= 2.0 * tol,
-              "%s box: the drawn points and handles stretched by %.3f in x about the box's left edge x = %.1f (largest error %.2f, tolerance %.2f)"
-              % (label, ratio, l, worst, 2.0 * tol))
+              "%s box: the drawn points and handles stretched by %.3f in x about the box's centre x = %.1f (largest error %.2f, tolerance %.2f)"
+              % (label, ratio, cx, worst, 2.0 * tol))
 
     def open_node(viewer, plugin_id, plate):
         gt.close_all_panels()

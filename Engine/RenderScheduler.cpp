@@ -781,7 +781,8 @@ missingPartReads(const FrameGraph::Task& dep,
 
 void
 RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
-                                      const FrameRenderContextPtr& context)
+                                      const FrameRenderContextPtr& context,
+                                      int rootCount)
 {
     if (graph.tasks.empty() || !context || !context->getRequest() || !appPTR) {
         return;
@@ -811,7 +812,9 @@ RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
     }
 
     std::vector<char> needed(count, 0);
-    needed[0] = 1;
+    for (int i = 0; (i < rootCount) && (i < count); ++i) {
+        needed[i] = 1;
+    }
     // Edge positions rather than task indices, so that dependencyInputNbs is filtered alongside dependencies.
     std::vector<std::vector<int>> keptEdges(count);
     bool droppedAny = false;
@@ -1315,6 +1318,7 @@ RenderScheduler::runOneTask()
     if (popped) {
         executeTask(frame, task, budget, &finished);
     }
+    destroyRetiredContinuations();
     if (!finished.empty()) {
         finalizeFrames(finished);
         reevaluate();
@@ -2054,16 +2058,18 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
     {
         AppTLS::FrameContextScope extensionScope(extensionContext.get(), budget, runnablePriorityOf(frame->priority));
         graph = buildGraph(extensionContext, rootKeys);
-    }
-    if (graph.tasks.size() < rootKeys.size()) {
-        failTaskWithReason(effect, "asked its render continuation for outputs the request pass did not reach");
+        if (graph.tasks.size() < rootKeys.size()) {
+            failTaskWithReason(effect, "asked its render continuation for outputs the request pass did not reach");
 
-        return ProbeOutcome::Failed;
-    }
-    for (std::size_t i = 0; i < rootKeys.size(); ++i) {
-        FrameGraph::Task& root = graph.tasks[i];
-        root.components = rootComponents[i];
-        root.estimatedBytes = estimateBytes(root.renderedRoI, root.components, root.bitdepth);
+            return ProbeOutcome::Failed;
+        }
+        for (std::size_t i = 0; i < rootKeys.size(); ++i) {
+            FrameGraph::Task& root = graph.tasks[i];
+            root.components = rootComponents[i];
+            root.estimatedBytes = estimateBytes(root.renderedRoI, root.components, root.bitdepth);
+        }
+        // A task served from the cache is not probed, as renderRoI returns a full hit before its probe.
+        pruneBehindCacheHits(graph, extensionContext, (int)rootKeys.size());
     }
     made->context = extensionContext;
     planExtensionReuse(graph, rootReads, *extensionContext, &made->rootKeys);
@@ -2111,7 +2117,11 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
             releaseSharedOutputLocked(task);
         }
         ++frame->pendingExtensions;
-        frame->continuations[taskIndex] = std::move(made);
+        std::unique_ptr<Continuation>& slot = frame->continuations[taskIndex];
+        if (slot) {
+            retireContinuationLocked(std::move(slot));
+        }
+        slot = std::move(made);
         _activeFrames.push_back(extension);
         if (abortInfo) {
             _framesByAbortInfo.emplace(abortInfo.get(), extension);
@@ -2736,6 +2746,7 @@ RenderScheduler::finishLocked(const FramePtr& frame,
     // The store is cleared by finalizeFrames(), so the inputs of the purged tasks need no release.
     std::vector<int> purged;
     purgeQueuedLocked(frame, &purged);
+    retireContinuationsLocked(frame.get());
 
     if (frame->parent) {
         finishExtensionLocked(frame, finished);
@@ -2749,6 +2760,33 @@ bool
 RenderScheduler::canFinishLocked(const Frame& frame)
 {
     return (frame.runningTasks == 0) && (frame.pendingExtensions == 0);
+}
+
+void
+RenderScheduler::retireContinuationLocked(std::unique_ptr<Continuation> continuation)
+{
+    if (continuation) {
+        _retiredContinuations.push_back(std::move(continuation));
+    }
+}
+
+void
+RenderScheduler::retireContinuationsLocked(Frame* frame)
+{
+    for (std::pair<const int, std::unique_ptr<Continuation>>& waiting : frame->continuations) {
+        retireContinuationLocked(std::move(waiting.second));
+    }
+    frame->continuations.clear();
+}
+
+void
+RenderScheduler::destroyRetiredContinuations()
+{
+    std::vector<std::unique_ptr<Continuation>> retired;
+    {
+        QMutexLocker k(&_mutex);
+        retired.swap(_retiredContinuations);
+    }
 }
 
 void
@@ -2776,6 +2814,7 @@ RenderScheduler::finishExtensionLocked(const FramePtr& extension,
         return;
     }
     if (ours) {
+        retireContinuationLocked(std::move(waiting->second));
         parent->continuations.erase(waiting);
     }
     if (parent->finished) {
@@ -2820,7 +2859,7 @@ RenderScheduler::restartOnCpuLocked(const FramePtr& frame,
     frame->context->getStore().clear();
     frame->gpuLease.reset();
     frame->rootPlanes.clear();
-    frame->continuations.clear();
+    retireContinuationsLocked(frame.get());
 
     FrameGraph& graph = frame->graph;
     graph.tasks.resize(frame->regionTasksBegin);
@@ -2937,6 +2976,7 @@ RenderScheduler::finishAbort(const std::vector<ReadyRef>& purged,
                              const std::vector<FramePtr>& finished)
 {
     releasePurgedInputs(purged);
+    destroyRetiredContinuations();
     if (!finished.empty()) {
         finalizeFrames(finished);
     }

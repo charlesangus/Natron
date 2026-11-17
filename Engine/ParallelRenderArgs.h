@@ -472,8 +472,9 @@ struct RequestPassRoot {
 };
 
 /**
- * @brief A region an incremental request pass added to an entry's final RoI: the entry is new or
- * roi was not inside its final RoI before. A region already inside it is not reported.
+ * @brief A region an incremental request pass added to an entry's final RoI: the whole request when
+ * the entry is new, otherwise one of the disjoint rectangles the merged final RoI covers and the
+ * previous one did not. A region already inside it is not reported.
  **/
 struct RequestPassNewWork {
     NodeCtxKey key;

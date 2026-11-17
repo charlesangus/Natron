@@ -29,8 +29,11 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 #include <list>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -56,36 +59,27 @@
 
 NATRON_NAMESPACE_ENTER
 
-/**
- * @brief The number of contexts a ProbeTestEffect may request its source under.
- **/
 const int kProbeTestContexts = 16;
 
-/**
- * @brief The context variable a RecursiveProbeTestEffect counts its depth in.
- **/
 inline RenderContextName
 recursiveProbeVariable()
 {
     return RenderContextName::plain("d");
 }
 
-/**
- * @brief The probes and continuations of the continuation test effects since the last reset.
- **/
 class ContinuationTestRegistry {
 public:
+    typedef std::function<std::shared_ptr<void>()> CaptureFactory;
+
     static void reset()
     {
         probes() = 0;
         continuations() = 0;
         claimsGpu() = false;
+        setContinuationCapture(CaptureFactory());
     }
 
-    /**
-     * @brief Makes ProbeTestEffect claim a GPU path until the next reset. Off by default, so that the registered test
-     * plugin keeps to the capability invariant of the built-in nodes.
-     **/
+    // Off by default, so that the registered test plugin keeps to the capability invariant of the built-in nodes.
     static void setProbeClaimsGpu(bool claims)
     {
         claimsGpu() = claims;
@@ -116,7 +110,38 @@ public:
         return continuations().load();
     }
 
+    static void setContinuationCapture(const CaptureFactory& factory)
+    {
+        std::lock_guard<std::mutex> lock(captureMutex());
+        captureFactory() = factory;
+    }
+
+    static std::shared_ptr<void> makeContinuationCapture()
+    {
+        CaptureFactory factory;
+        {
+            std::lock_guard<std::mutex> lock(captureMutex());
+            factory = captureFactory();
+        }
+
+        return factory ? factory() : std::shared_ptr<void>();
+    }
+
 private:
+    static std::mutex& captureMutex()
+    {
+        static std::mutex m;
+
+        return m;
+    }
+
+    static CaptureFactory& captureFactory()
+    {
+        static CaptureFactory f;
+
+        return f;
+    }
+
     static std::atomic<bool>& claimsGpu()
     {
         static std::atomic<bool> b(false);
@@ -139,9 +164,6 @@ private:
     }
 };
 
-/**
- * @brief An uncached, tiled RGBA float effect of kCountingTestSize square that fills its output with a constant.
- **/
 class ContinuationTestEffectBase
     : public NativeEffectBase {
 public:
@@ -169,7 +191,7 @@ public:
     virtual bool shouldCacheOutput(bool /*isFrameVaryingOrAnimated*/,
                                    double /*time*/,
                                    ViewIdx /*view*/,
-                                   int /*visitsCount*/) const OVERRIDE FINAL
+                                   int /*visitsCount*/) const OVERRIDE
     {
         return false;
     }
@@ -246,7 +268,6 @@ protected:
         return request;
     }
 
-    // The first pixel's red of node's whole output under context.
     bool pullFirstPixel(const NodePtr& node,
                         const RenderContextPtr& context,
                         double time,
@@ -273,11 +294,6 @@ protected:
     }
 };
 
-/**
- * @brief Reads the test variable: its output is the variable's value plus its value knob. Counts its renders in
- * CountingTestRegistry, which calls the render hook, and sleeps for its delayMs knob first, so that the renders of
- * concurrent tasks overlap.
- **/
 class ContinuationSourceTestEffect
     : public ContinuationTestEffectBase {
 public:
@@ -316,6 +332,13 @@ private:
         delayMs->setDefaultValue(0);
         page->addKnob(delayMs);
         _delayMs = delayMs;
+
+        KnobBoolPtr varying = createKnob<KnobBool>(std::string("Varying"));
+        varying->setName("varying");
+        varying->setAnimationEnabled(false);
+        varying->setDefaultValue(false);
+        page->addKnob(varying);
+        _varying = varying;
     }
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -325,10 +348,15 @@ private:
 
         KnobIntPtr delayKnob = _delayMs.lock();
         if (delayKnob && (delayKnob->getValue() > 0)) {
+            // Lets the renders of concurrent tasks overlap.
             QThread::msleep((unsigned long)delayKnob->getValue());
         }
         KnobDoublePtr valueKnob = _value.lock();
-        const double value = (valueKnob ? valueKnob->getValue() : 0.) + contextTestValue(renderContext(getParallelRenderArgsTLS()));
+        double value = (valueKnob ? valueKnob->getValue() : 0.) + contextTestValue(renderContext(getParallelRenderArgsTLS()));
+        KnobBoolPtr varyingKnob = _varying.lock();
+        if (varyingKnob && varyingKnob->getValue()) {
+            value *= CountingTestRegistry::renders(getNode());
+        }
 
         return fill(args, (float)value);
     }
@@ -346,14 +374,9 @@ private:
 
     KnobDoubleWPtr _value;
     KnobIntWPtr _delayMs;
+    KnobBoolWPtr _varying;
 };
 
-/**
- * @brief Reads a bitmask from the first pixel of its Control input, then sums its Source input under the contexts
- * setting the test variable to each bit set in it, out of kProbeTestContexts. Only Control is planned: Source is
- * requested by the render continuation, under every context when the full knob is set, and Control with it when the
- * requestControl knob is set. The render sums the masked contexts either way.
- **/
 class ProbeTestEffect
     : public ContinuationTestEffectBase {
 public:
@@ -367,6 +390,7 @@ public:
     {
     }
 
+    // Source is left out, so that only the render continuation requests it.
     virtual FramesNeededMap getFramesNeeded(double time,
                                             ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -420,7 +444,9 @@ public:
         if (requestControlKnob && requestControlKnob->getValue()) {
             continuation->requests.push_back(wholeOutputRequest(control, args.context, args.time, args.view));
         }
-        continuation->continuation = []() {
+        const std::shared_ptr<void> capture = ContinuationTestRegistry::makeContinuationCapture();
+        continuation->continuation = [capture]() {
+            (void)capture;
             ContinuationTestRegistry::noteContinuation();
 
             return eStatusOK;
@@ -524,11 +550,6 @@ private:
     KnobBoolWPtr _requestControl;
 };
 
-/**
- * @brief Under a context setting d to k below its depth knob, requests its own output under d = k + 1 from its render
- * continuation and adds it to k, so that rendered under the empty context it holds 0 + 1 + ... + depth and asks for
- * extensions depth levels deep.
- **/
 class RecursiveProbeTestEffect
     : public ContinuationTestEffectBase {
 public:
@@ -553,6 +574,16 @@ public:
     virtual bool offersRenderContinuation() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;
+    }
+
+    virtual bool shouldCacheOutput(bool /*isFrameVaryingOrAnimated*/,
+                                   double /*time*/,
+                                   ViewIdx /*view*/,
+                                   int /*visitsCount*/) const OVERRIDE FINAL
+    {
+        KnobBoolPtr cacheKnob = _cacheOutput.lock();
+
+        return cacheKnob && cacheKnob->getValue();
     }
 
     virtual bool getRenderContinuation(const RenderContinuationArgs& args,
@@ -596,6 +627,13 @@ private:
         depthKnob->setDefaultValue(EffectInstance::kMaxRenderContinuationDepth);
         page->addKnob(depthKnob);
         _depth = depthKnob;
+
+        KnobBoolPtr cacheOutput = createKnob<KnobBool>(std::string("Cache Output"));
+        cacheOutput->setName("cacheOutput");
+        cacheOutput->setAnimationEnabled(false);
+        cacheOutput->setDefaultValue(false);
+        page->addKnob(cacheOutput);
+        _cacheOutput = cacheOutput;
     }
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -627,6 +665,7 @@ private:
     }
 
     KnobIntWPtr _depth;
+    KnobBoolWPtr _cacheOutput;
 };
 
 NATRON_NAMESPACE_EXIT

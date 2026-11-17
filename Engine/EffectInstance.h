@@ -2397,16 +2397,41 @@ public:
     };
 
     /**
-     * @brief Runs the render continuation of this effect at time/view over roi on the calling thread, unless the
-     * scheduler already ran it: the probe, each request pulled in turn, then the continuation. The outputs pulled stay
-     * held from heldBegin on for the render that follows, until releaseRenderContinuationResults(heldBegin).
+     * @brief Whether renderRoI() runs the render continuation of this effect at time/view on the calling thread: the
+     * effect offers one and the scheduler did not already run it.
+     **/
+    bool probesRenderContinuationInline(double time,
+                                        ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Holds, for its lifetime, every output consumer pulls on the calling thread through the frame store or a
+     * render, from the pre-render of its planned inputs through its probe, continuation and render, so that a later
+     * pullRenderContinuationRequest() of the same output reads the same image, as the task graph reads one stored
+     * image. A null consumer holds nothing, and keeps a consumer that an enclosing scope names from holding the pulls
+     * of the inputs it renders.
+     **/
+    class RenderContinuationHoldScope {
+    public:
+        explicit RenderContinuationHoldScope(const EffectInstance* consumer);
+        ~RenderContinuationHoldScope();
+
+        RenderContinuationHoldScope(const RenderContinuationHoldScope&) = delete;
+        RenderContinuationHoldScope& operator=(const RenderContinuationHoldScope&) = delete;
+
+    private:
+        std::size_t _heldBegin;
+        const Node* _previousConsumer;
+    };
+
+    /**
+     * @brief Runs the render continuation of this effect at time/view over roi on the calling thread: the probe, each
+     * request pulled in turn, then the continuation. For when probesRenderContinuationInline(), under a
+     * RenderContinuationHoldScope naming this effect.
      **/
     RenderRoIRetCode runRenderContinuationInline(double time,
                                                  ViewIdx view,
                                                  unsigned int mipmapLevel,
-                                                 const RectI& roi,
-                                                 std::size_t* heldBegin);
-    static void releaseRenderContinuationResults(std::size_t heldBegin);
+                                                 const RectI& roi);
 
     /**
      * @brief Sets the error a probe asking for an extension deeper than kMaxRenderContinuationDepth leaves on this

@@ -508,8 +508,9 @@ public:
     /**
      * @brief Removes from a graph buildGraph returned the tasks only a cache hit's render would have read: a task whose
      * output is cached in full loses its dependencies, one cached in part those its missing part doesn't read, and tasks
-     * left without a consumer go with them. Must run before placeRenderGraph, on the thread buildGraph ran on, and after
-     * the caller has settled the root's region, layers and depth.
+     * left without a consumer go with them; the first rootCount tasks are the roots and stay, in their order. Must run
+     * before placeRenderGraph, on the thread buildGraph ran on, and after the caller has settled the roots' regions,
+     * layers and depths.
      *
      * At most one probe per task, none on a task behind a hit, and the cache lock is only held per key. Nothing is pinned:
      * an entry evicted before its task runs is rendered again, its inputs then being pulled as unplanned reads, which is
@@ -517,7 +518,8 @@ public:
      * by bytes in flight.
      **/
     static void pruneBehindCacheHits(FrameGraph& graph,
-                                     const FrameRenderContextPtr& context);
+                                     const FrameRenderContextPtr& context,
+                                     int rootCount = 1);
 
     /**
      * @brief Renders graph.tasks[task] with renderRoI as the scheduler runs a task outside every region, its images
@@ -708,6 +710,12 @@ private:
 
     static bool canFinishLocked(const Frame& frame);
 
+    // A continuation's callback holds captures of the effect's own, whose destructors may call into the scheduler: the
+    // locked paths hand it here, and destroyRetiredContinuations() destroys it once the mutex is released.
+    void retireContinuationLocked(std::unique_ptr<Continuation> continuation);
+    void retireContinuationsLocked(Frame* frame);
+    void destroyRetiredContinuations();
+
     // An extension frame finished: resumes the task it was made for, or ends that task's frame when either died.
     void finishExtensionLocked(const FramePtr& extension, std::vector<FramePtr>* finished);
 
@@ -812,6 +820,9 @@ private:
 
     // The store generation the next extension writes under: 0 is the planned graphs'.
     std::atomic<int> _nextStoreGeneration;
+
+    // Guarded by _mutex.
+    std::vector<std::unique_ptr<Continuation>> _retiredContinuations;
 };
 
 NATRON_NAMESPACE_EXIT

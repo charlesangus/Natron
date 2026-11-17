@@ -167,7 +167,6 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<ContextUnionTestEffect>();
     registerTestBuiltInPlugin<ContextSetTestEffect>();
     registerTestBuiltInPlugin<ContextLoopFrameShiftTestEffect>();
-    // Registered to ask for render continuations, which no shipped node does yet.
     registerTestBuiltInPlugin<ContinuationSourceTestEffect>();
     registerTestBuiltInPlugin<ProbeTestEffect>();
     registerTestBuiltInPlugin<RecursiveProbeTestEffect>();

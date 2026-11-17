@@ -31,6 +31,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -76,7 +77,6 @@ const qint64 kDrainDeadlineMs = 2000;
 const int kSourceDelayMs = 40;
 const int kRecursiveSum = 36;
 
-// Bits 1, 3, 4, 7, 10 and 15.
 const unsigned int kSubsetMask = (1u << 1) | (1u << 3) | (1u << 4) | (1u << 7) | (1u << 10) | (1u << 15);
 const int kSubsetSize = 6;
 const float kSubsetSum = 1.f + 3.f + 4.f + 7.f + 10.f + 15.f;
@@ -169,7 +169,6 @@ countNewWork(const std::vector<RequestPassNewWork>& newWork,
     return count;
 }
 
-// The whole frame's red values, row by row, or empty when the image does not cover it.
 std::vector<float>
 readFrame(const ImagePtr& image)
 {
@@ -256,7 +255,6 @@ protected:
         knob->setValue(value);
     }
 
-    // A probe whose Control holds mask, and whose Source sleeps for delayMs per render.
     void buildProbe(unsigned int mask,
                     int delayMs,
                     NodePtr* source,
@@ -345,7 +343,6 @@ protected:
         return true;
     }
 
-    // Renders root as one frame of the scheduler and returns its code; values gets the frame's red values on success.
     EffectInstance::RenderRoIRetCode renderScheduled(const NodePtr& root,
                                                      std::vector<float>* values,
                                                      FrameRun* run = 0)
@@ -373,7 +370,6 @@ protected:
         return code;
     }
 
-    // Renders root in Legacy mode and returns the first pixel's red, or -1 on failure.
     float renderLegacyFirstPixel(const NodePtr& root)
     {
         std::vector<RenderedPlane> planes;
@@ -417,12 +413,42 @@ protected:
         return node->hasPersistentMessage();
     }
 
+    void planThenExtend(const NodePtr& root,
+                        const RectD& planned,
+                        const RectD& extended,
+                        FrameRequestMap* request,
+                        std::vector<RequestPassNewWork>* newWork)
+    {
+        const double time = 1.;
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+        ParallelRenderArgsSetter frameArgs(time,
+                                           ViewIdx(0),
+                                           false /*isRenderUserInteraction*/,
+                                           false /*isSequential*/,
+                                           abortInfo,
+                                           root,
+                                           0 /*textureIndex*/,
+                                           getApp()->getTimeLine().get(),
+                                           NodePtr(),
+                                           false /*isAnalysis*/,
+                                           false /*draftMode*/,
+                                           RenderStatsPtr());
+        ASSERT_NE(eStatusFailed, EffectInstance::computeRequestPass(time, ViewIdx(0), 0 /*mipmapLevel*/, planned, root, *request));
+        frameArgs.updateNodesRequest(*request);
+
+        RequestPassRoot extension;
+        extension.node = root;
+        extension.time = time;
+        extension.view = ViewIdx(0);
+        extension.mipmapLevel = 0;
+        extension.roi = extended;
+        ASSERT_NE(eStatusFailed, EffectInstance::extendRequestPass(std::vector<RequestPassRoot>(1, extension), *request, newWork));
+    }
+
     RenderScheduler* _scheduler;
     std::size_t _savedBudget;
 };
 
-// An incremental pass against a planned map grows each entry it reaches to the union of the regions and reports only
-// what it added: a disjoint region on the root and its input, nothing for a region already planned.
 TEST_F(RenderContinuation, IncrementalRequestPassUnionsAndReportsOnlyNewWork)
 {
     NodePtr leaf = createNode(QString::fromUtf8(kTestPluginIDCounting));
@@ -487,8 +513,6 @@ TEST_F(RenderContinuation, IncrementalRequestPassUnionsAndReportsOnlyNewWork)
     }
 }
 
-// The probe reads which of its 16 contexts the frame needs from Control: only those render, as tasks of the frame in
-// parallel, and the output matches the render that requests all 16.
 TEST_F(RenderContinuation, ProbeRendersOnlyTheDataDependentSubset)
 {
     NodePtr source, control, probe;
@@ -523,8 +547,6 @@ TEST_F(RenderContinuation, ProbeRendersOnlyTheDataDependentSubset)
     }
 }
 
-// Under the legacy scheduler the requests render one after the other on the probing thread, and the output is the
-// task graph's bit for bit.
 TEST_F(RenderContinuation, LegacyRunsTheContinuationInlineAndMatchesTheTaskGraph)
 {
     NodePtr source, control, probe;
@@ -550,8 +572,6 @@ TEST_F(RenderContinuation, LegacyRunsTheContinuationInlineAndMatchesTheTaskGraph
     EXPECT_FALSE(mismatch.any) << describe(mismatch);
 }
 
-// Aborting while the extension renders drops its pending tasks: the continuation never runs, and the frame leaves no
-// task, runnable or reservation behind.
 TEST_F(RenderContinuation, AbortDuringTheExtensionSkipsTheContinuation)
 {
     NodePtr source, control, probe;
@@ -597,8 +617,6 @@ TEST_F(RenderContinuation, AbortDuringTheExtensionSkipsTheContinuation)
     }
 }
 
-// Extensions nest to kMaxRenderContinuationDepth levels; a probe asking for one more fails the frame with a message
-// on the node, under either scheduler.
 TEST_F(RenderContinuation, RecursionReachesTheDepthLimitAndFailsPastIt)
 {
     ASSERT_EQ(8, EffectInstance::kMaxRenderContinuationDepth);
@@ -639,8 +657,6 @@ TEST_F(RenderContinuation, RecursionReachesTheDepthLimitAndFailsPastIt)
     EXPECT_TRUE(waitForPersistentMessage(recursive));
 }
 
-// An extension naming only work the frame planned and rendered reuses it from the store: nothing renders again, and
-// the continuation still runs.
 TEST_F(RenderContinuation, ExtensionOfPlannedWorkOnlyReusesIt)
 {
     NodePtr source, control, probe;
@@ -665,8 +681,6 @@ TEST_F(RenderContinuation, ExtensionOfPlannedWorkOnlyReusesIt)
     }
 }
 
-// Under a budget of one output the parked probe holds no reservation while its extension renders, so the frame
-// completes with the subset's sum.
 TEST_F(RenderContinuation, BudgetLimitedFrameWithAnExtensionCompletes)
 {
     NodePtr source, control, probe;
@@ -697,8 +711,6 @@ TEST_F(RenderContinuation, BudgetLimitedFrameWithAnExtensionCompletes)
     }
 }
 
-// A node that offers a continuation and claims a GPU path is refused for the GPU, so it stays a CPU task and is
-// probed.
 TEST_F(RenderContinuation, ContinuationNodeStaysOnTheCpuAndProbes)
 {
     ContinuationTestRegistry::setProbeClaimsGpu(true);
@@ -736,4 +748,187 @@ TEST_F(RenderContinuation, ContinuationNodeStaysOnTheCpuAndProbes)
     EXPECT_GT(ContinuationTestRegistry::probeCount(), 0);
     EXPECT_EQ(1, ContinuationTestRegistry::continuationCount());
     expectPoolDrained();
+}
+
+TEST_F(RenderContinuation, IncrementalRequestPassReportsOnlyTheUncoveredPartOfAnOverlap)
+{
+    NodePtr leaf = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr root = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    ASSERT_TRUE(leaf && root);
+    connectNodes(leaf, root, 0, true);
+
+    const double size = kCountingTestSize;
+    {
+        SCOPED_TRACE("overlapping on one side");
+        FrameRequestMap request;
+        std::vector<RequestPassNewWork> newWork;
+        ASSERT_NO_FATAL_FAILURE(planThenExtend(root, RectD(0., 0., size / 2, size), RectD(size / 4, 0., 3 * size / 4, size), &request, &newWork));
+        for (const NodePtr& node : { root, leaf }) {
+            const FrameViewRequest* fv = frameViewOf(request, node);
+            ASSERT_TRUE(fv != NULL);
+            EXPECT_EQ(RectD(0., 0., 3 * size / 4, size), fv->finalData.finalRoi);
+            EXPECT_EQ(1, countNewWork(newWork, node, RectD(size / 2, 0., 3 * size / 4, size)));
+        }
+        EXPECT_EQ(2u, newWork.size());
+    }
+    {
+        SCOPED_TRACE("enclosing the planned region");
+        const RectD centre(size / 4, size / 4, 3 * size / 4, 3 * size / 4);
+        FrameRequestMap request;
+        std::vector<RequestPassNewWork> newWork;
+        ASSERT_NO_FATAL_FAILURE(planThenExtend(root, centre, RectD(0., 0., size, size), &request, &newWork));
+        for (const NodePtr& node : { root, leaf }) {
+            const FrameViewRequest* fv = frameViewOf(request, node);
+            ASSERT_TRUE(fv != NULL);
+            EXPECT_EQ(RectD(0., 0., size, size), fv->finalData.finalRoi);
+            EXPECT_EQ(1, countNewWork(newWork, node, RectD(0., 0., size, centre.y1)));
+            EXPECT_EQ(1, countNewWork(newWork, node, RectD(0., centre.y2, size, size)));
+            EXPECT_EQ(1, countNewWork(newWork, node, RectD(0., centre.y1, centre.x1, centre.y2)));
+            EXPECT_EQ(1, countNewWork(newWork, node, RectD(centre.x2, centre.y1, size, centre.y2)));
+        }
+        EXPECT_EQ(8u, newWork.size());
+    }
+}
+
+// Each render of a varying control yields another mask, so the outputs match only when the probe and the render read
+// the control from one render, as the task graph does.
+TEST_F(RenderContinuation, LegacyProbeAndRenderReadTheOneRenderOfAVaryingControl)
+{
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDContinuationSource));
+    NodePtr control = createNode(QString::fromUtf8(kTestPluginIDContinuationSource));
+    NodePtr probe = createNode(QString::fromUtf8(kTestPluginIDProbe));
+    ASSERT_TRUE(source && control && probe);
+    ASSERT_NO_FATAL_FAILURE(setDouble(control, "value", 2.));
+    ASSERT_NO_FATAL_FAILURE(setBool(control, "varying", true));
+    connectNodes(source, probe, 0, true);
+    connectNodes(control, probe, 1, true);
+
+    resetCounters();
+    const float legacy = renderLegacyFirstPixel(probe);
+    EXPECT_EQ(1.f, legacy);
+    EXPECT_EQ(1, CountingTestRegistry::renders(control));
+    EXPECT_EQ(1, ContinuationTestRegistry::continuationCount());
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+        resetCounters();
+
+        std::vector<float> values;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderScheduled(probe, &values));
+        ASSERT_FALSE(values.empty());
+        EXPECT_EQ(legacy, values.front());
+        EXPECT_EQ(1, CountingTestRegistry::renders(control));
+        expectPoolDrained();
+    }
+}
+
+TEST_F(RenderContinuation, CachedContinuationNodeIsNotProbedInAnExtension)
+{
+    NodePtr recursive = createNode(QString::fromUtf8(kTestPluginIDRecursiveProbe));
+    NodePtr control = createNode(QString::fromUtf8(kTestPluginIDCounting));
+    NodePtr probe = createNode(QString::fromUtf8(kTestPluginIDProbe));
+    ASSERT_TRUE(recursive && control && probe);
+    ASSERT_NO_FATAL_FAILURE(setInt(recursive, "depth", 1));
+    ASSERT_NO_FATAL_FAILURE(setBool(recursive, "cacheOutput", true));
+    ASSERT_NO_FATAL_FAILURE(setDouble(control, "value", 1.));
+    connectNodes(recursive, probe, 0, true);
+    connectNodes(control, probe, 1, true);
+
+    std::vector<float> uncached;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderScheduled(probe, &uncached));
+    ASSERT_FALSE(uncached.empty());
+    EXPECT_EQ(1.f, uncached.front());
+    expectPoolDrained();
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+        resetCounters();
+
+        std::vector<float> values;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderScheduled(probe, &values));
+        EXPECT_EQ(uncached, values);
+        EXPECT_EQ(0, CountingTestRegistry::renders(recursive));
+        EXPECT_EQ(1, ContinuationTestRegistry::probeCount());
+        EXPECT_EQ(1, ContinuationTestRegistry::continuationCount());
+        expectPoolDrained();
+    }
+
+    resetCounters();
+    EXPECT_EQ(uncached.front(), renderLegacyFirstPixel(probe));
+    EXPECT_EQ(0, CountingTestRegistry::renders(recursive));
+    EXPECT_EQ(1, ContinuationTestRegistry::probeCount());
+}
+
+TEST_F(RenderContinuation, ContinuationCaptureCallingTheSchedulerOnDestructionSurvivesAnAbort)
+{
+    NodePtr source, control, probe;
+    ASSERT_NO_FATAL_FAILURE(buildProbe(kSubsetMask, 0, &source, &control, &probe));
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        const int poolSize = kPoolSizes[p];
+        SCOPED_TRACE("pool size " + std::to_string(poolSize));
+        PoolSizeGuard pool(poolSize);
+        resetCounters();
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(probe, true, &run, &error)) << error;
+
+        std::shared_ptr<AbortState> state = std::make_shared<AbortState>();
+        state->source = source.get();
+        state->scheduler = _scheduler;
+        state->context = run.context;
+        state->abortInfo = run.abortInfo;
+        CountingTestRegistry::setRenderHook([state](const Node* node) {
+            if (node != state->source) {
+                return;
+            }
+            bool expected = false;
+            if (state->abortClaimed.compare_exchange_strong(expected, true)) {
+                state->abortInfo->setAborted();
+                state->scheduler->abort(state->context);
+            }
+        });
+
+        // The call runs on a thread of its own, so that a destructor run under the scheduler's mutex fails the test
+        // after the deadline instead of deadlocking it.
+        std::shared_ptr<std::atomic<int>> destroyed = std::make_shared<std::atomic<int>>(0);
+        std::shared_ptr<std::atomic<int>> calledBack = std::make_shared<std::atomic<int>>(0);
+        RenderScheduler* scheduler = _scheduler;
+        AbortableRenderInfoPtr abortInfo = run.abortInfo;
+        ContinuationTestRegistry::setContinuationCapture([scheduler, abortInfo, destroyed, calledBack]() {
+            return std::shared_ptr<void>(new int(0), [scheduler, abortInfo, destroyed, calledBack](void* p) {
+                delete static_cast<int*>(p);
+                std::shared_ptr<std::atomic<bool>> returned = std::make_shared<std::atomic<bool>>(false);
+                std::thread([scheduler, abortInfo, returned]() {
+                    (void)scheduler->getFramesInFlight(abortInfo);
+                    returned->store(true);
+                }).detach();
+                QElapsedTimer timer;
+                timer.start();
+                while (!returned->load() && (timer.elapsed() < kDrainDeadlineMs)) {
+                    QThread::msleep(1);
+                }
+                if (returned->load()) {
+                    ++*calledBack;
+                }
+                ++*destroyed;
+            });
+        });
+
+        run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+        ASSERT_TRUE(waitOrAbort(&run)) << "the frame did not finish within " << kFrameTimeoutMs << " ms";
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, run.future->wait());
+        CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+        ContinuationTestRegistry::setContinuationCapture(ContinuationTestRegistry::CaptureFactory());
+
+        EXPECT_TRUE(state->abortClaimed.load()) << "no extension task rendered";
+        expectPoolDrained();
+        EXPECT_EQ(1, destroyed->load());
+        EXPECT_EQ(1, calledBack->load());
+        EXPECT_EQ(0, ContinuationTestRegistry::continuationCount());
+        EXPECT_EQ(0, _scheduler->getFramesInFlight(run.abortInfo));
+    }
 }

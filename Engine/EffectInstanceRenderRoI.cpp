@@ -1513,19 +1513,11 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Pre-render input images ////////////////////////////////////////////////////////////////
 
-    struct HeldContinuationResultsGuard {
-        std::size_t begin = 0;
-        ~HeldContinuationResultsGuard()
-        {
-            EffectInstance::releaseRenderContinuationResults(begin);
-        }
-    } heldContinuationResults;
-    if (std::any_of(layersToRender->rectsToRender.begin(), layersToRender->rectsToRender.end(), [](const RectToRender& rect) { return !rect.isIdentity; })) {
-        const RenderRoIRetCode continuationCode = runRenderContinuationInline(args.time, args.view, args.mipmapLevel, args.roi, &heldContinuationResults.begin);
-        if (continuationCode != eRenderRoIRetCodeOk) {
-            return continuationCode;
-        }
-    }
+    const bool probesContinuation = std::any_of(layersToRender->rectsToRender.begin(), layersToRender->rectsToRender.end(), [](const RectToRender& rect) { return !rect.isIdentity; })
+        && probesRenderContinuationInline(args.time, args.view);
+    // The probe runs after the pre-render, as a task's probe runs after its dependencies, and reads what the pre-render
+    // pulled: an input rendered twice could differ, and the task graph renders it once.
+    RenderContinuationHoldScope heldContinuationResults(probesContinuation ? this : 0);
 
     /// Pre-render input images before allocating the image if we need to render
     for (std::list<RectToRender>::iterator it = layersToRender->rectsToRender.begin(); it != layersToRender->rectsToRender.end(); ++it) {
@@ -1558,6 +1550,13 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         //Render was aborted
         if (inputCode != eRenderRoIRetCodeOk) {
             return inputCode;
+        }
+    }
+
+    if (probesContinuation) {
+        const RenderRoIRetCode continuationCode = runRenderContinuationInline(args.time, args.view, args.mipmapLevel, args.roi);
+        if (continuationCode != eRenderRoIRetCodeOk) {
+            return continuationCode;
         }
     }
 

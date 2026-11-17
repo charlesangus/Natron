@@ -889,6 +889,34 @@ planDeferredContextRequests(const DeferredContextRequest& request,
     return eStatusOK;
 }
 
+// Appends to pieces up to four disjoint rectangles covering a less b.
+void
+appendRectDifference(const RectD& a,
+                     const RectD& b,
+                     std::vector<RectD>* pieces)
+{
+    if (a.isNull()) {
+        return;
+    }
+    const RectD cut = a.intersect(b);
+    if (cut.isNull()) {
+        pieces->push_back(a);
+
+        return;
+    }
+    const RectD candidates[] = {
+        RectD(a.x1, a.y1, a.x2, cut.y1),
+        RectD(a.x1, cut.y2, a.x2, a.y2),
+        RectD(a.x1, cut.y1, cut.x1, cut.y2),
+        RectD(cut.x2, cut.y1, a.x2, cut.y2),
+    };
+    for (const RectD& piece : candidates) {
+        if (!piece.isNull()) {
+            pieces->push_back(piece);
+        }
+    }
+}
+
 StatusEnum
 visitRequestPassItem(bool useTransforms,
                      const RequestPassItem& item,
@@ -1055,6 +1083,7 @@ visitRequestPassItem(bool useTransforms,
         // Do not recurse if the roi did not add anything new to render
         return eStatusOK;
     }
+    const RectD previousFinalRoI = fvRequest->finalData.finalRoi;
     if (finalRoIEmpty) {
         fvRequest->finalData.finalRoi = canonicalRenderWindow;
     } else {
@@ -1065,8 +1094,19 @@ visitRequestPassItem(bool useTransforms,
         added.key = nodeKey;
         added.time = time;
         added.view = view;
-        added.roi = canonicalRenderWindow;
-        newWork->push_back(added);
+        if (finalRoIEmpty) {
+            added.roi = canonicalRenderWindow;
+            newWork->push_back(added);
+        } else {
+            // The final RoI is one bounding rectangle, so what the entry renders anew is the merged rectangle less the
+            // previous one, the corner fill of a merge included.
+            std::vector<RectD> pieces;
+            appendRectDifference(fvRequest->finalData.finalRoi, previousFinalRoI, &pieces);
+            for (const RectD& piece : pieces) {
+                added.roi = piece;
+                newWork->push_back(added);
+            }
+        }
     }
 
     if (fvRequest->globalData.identityInputNb == -2) {

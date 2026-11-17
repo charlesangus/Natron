@@ -635,6 +635,8 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **Viewer toolbar overflows at 1920x1080 (found in M451 - Viewer Stale Cue Experiments' UAT, 2026-11-17):** the first viewer toolbar row is wider than the default viewer pane at the minimum screen size, so the B-input label is overlapped and anything after the B combo is clipped. It needs its own fix (a milestone via /cat-plan, or a small fix PR).
+
 - **Storm primId on projected cards (2026-11-14, found in M281 - Utility Materials And Lights):** `natronProject3D.glslfx` is tagged translucent, and Storm's transparency passes write colour only, so USDRender's primId (and picking) misses every card carrying a projection under Storm. Fix options: make the projection material opaque when its plate and outside mode are opaque, or write ids in Storm's OIT passes. Add a follow-up milestone?
 
 

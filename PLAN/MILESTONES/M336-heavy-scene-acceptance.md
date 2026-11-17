@@ -87,6 +87,12 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - verify: `reopen_stall_ms` ≤100 (flat 21.3 s, city 395, Lobby 680, Island 997).
   - size: M
 
+- [ ] M336.P3.T8 — GPU texture budget: textures past it are not loaded
+  - files: `Gui/StormPtexBudget.cpp` and the Storm texture registry hooks it uses, Settings
+  - approach: a total GPU texture budget (default a fraction of the card's VRAM, adjustable in Preferences) across ptex and UV textures. A texture that would go past it is not loaded; the material uses its fallback. Warn once per scene with the count left out. The data on disk and in the scene is never touched. CPU rendering as a fallback is a separate, later option.
+  - verify: Island-loaded load_all on the 24 GB VM no longer saturates VRAM (vram_peak below the budget) and its `stall_ms` drops; the warning names the skipped count.
+  - size: M
+
 **Verification gate:** end-to-end run passes every budget on the GPU host; the user accepts the behaviour on a real production scene.
 - 2026-11-14 — Claimed by bosley-native-nodes. P1.T1's `workflow` scenario written (code on milestone/m336-heavy-scene-acceptance); `heavy_scene_gpu_host.sh acceptance` runs it on flat, city, Lobby and Island. PM calls: save is judged as a main-thread stall over 100 ms, reopen as the stall after `loadProject` plus first frame under 2 s; the pattern is `<branch>//*`. The run itself is on the GPU host (benches stay off the dev host), so P1.T1 stays open until its JSON is recorded here.
 - 2026-11-15 — F4 (all other members) merged in (e8c3fd624); release build run 43688632970 produced `build/appimages/Natron-m336-heavy-scene-acceptance.AppImage` + steps .md for the user's GPU-host `heavy_scene_gpu_host.sh acceptance` run. ctest: the task-graph leg failed ProgressiveRenderTest.ACapLoweredAboveTheSamplesLastReadEndsAtIt (precondition cap<kSamples, 257 vs 256), being diagnosed.
@@ -141,3 +147,7 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - Island: Full + Load on a block, worst frame 5.9 s. Loaded: load_all stall 16.8 s at 61 GB RSS with VRAM saturated (24.1 of 24.6 GB); time to picture 2.5-2.7 s; populate, reveal and cancel stalls ~250 ms.
   - Island-loaded records are tagged fixture_incomplete by two HwPtexTexture_1 lines, probably a false positive.
   - A sampled Island pass (1412 stacks) is with a consultant for stall locations and the M336.P3 task scope.
+- 2026-11-17 — **City time-to-picture and reveal-frame budgets are not judged for now (user):** "Ok for now. Will revisit later with different techniques." M336 judges UI stalls on the city; the 1M-prim change cost is left for later work.
+- 2026-11-17 — **Island's ~2 s GPU frame is accepted (user):** M336 judges Island on UI stalls only; the frame cost goes to the Houdini-style viewer-budgets milestone.
+- 2026-11-17 — **VRAM is a real limit (user):** if the textures won't fit, don't load the ones past the cap (or render on the CPU). The rule against size caps is about trimming user data, not GPU memory. This becomes P3.T8, with not loading past the budget as the mechanism.
+- 2026-11-17 — **Stand-in looks (user):** wireframe boxes over a cleared view. The other defaults stand as proposed (33 ms budget, one box per model-kind prim else per draw-state row, refill after 250 ms idle, default mode During interaction), each a Preference.

@@ -29,6 +29,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <QString>
@@ -43,6 +44,7 @@
 #include "Engine/Nodes/Scene/SceneFileSource.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
@@ -156,6 +158,11 @@ struct USDRead::Implementation {
         : sourceDigest(0)
         , sourceTimeCodesPerSecond(0.)
     {
+    }
+
+    ~Implementation()
+    {
+        SceneTeardown::release(std::make_tuple(std::move(sourceFileLayer), std::move(correctionSource)));
     }
 
     RootPrims getRootPrims(const std::string& path)

@@ -89,6 +89,7 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormPtexBindingFilter.h"
@@ -2925,6 +2926,9 @@ SceneViewportRenderer::~SceneViewportRenderer()
     if (_imp->engine) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its Storm engine";
         (void)_imp->engine.release();
+    }
+    if (_imp->sceneStage) {
+        SceneTeardown::release(std::move(_imp->sceneStage));
     }
 }
 

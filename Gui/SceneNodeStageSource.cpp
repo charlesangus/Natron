@@ -36,6 +36,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/ViewIdx.h"
@@ -84,9 +85,9 @@ struct Reaper {
             busy = true;
             lock.unlock();
             source->stop();
-            // Dropped here, unless another owner still holds it, so that destroying the stage
-            // happens off the thread that let it go too.
-            source.reset();
+            // Not destroyed here: joinReaped() waits for this loop, and the main thread for
+            // joinReaped(), but only for the worker to stop, not for its stage to close.
+            SceneTeardown::release(std::move(source));
             lock.lock();
             busy = false;
             changed.notify_all();

@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cmath>
 #include <random>
+#include <tuple>
 
 #include <QFileInfo>
 #include <QString>
@@ -37,6 +38,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/FileStampRegistry.h"
 #include "Engine/KnobFile.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Project.h"
 
@@ -95,6 +97,7 @@ SceneFileSource::SceneFileSource()
 
 SceneFileSource::~SceneFileSource()
 {
+    SceneTeardown::release(std::make_tuple(std::move(_stage), std::move(_stageLayer), std::move(_layer), std::move(_closure), std::move(_retired)));
 }
 
 PXR_NS::SdfLayerRefPtr

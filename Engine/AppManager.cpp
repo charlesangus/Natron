@@ -168,6 +168,7 @@
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -815,6 +816,10 @@ AppManager::~AppManager()
     // QApplication torn down below. Bounded: a job stuck past it is left to the process exit.
     setTeardownStage("waiting for the scene workers");
     SceneWorker::joinAll(5000);
+
+    // What the closed projects let go of still uses OpenUSD, the caches and the plug-ins' libraries.
+    setTeardownStage("closing the released scenes");
+    SceneTeardown::shutdown();
 
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {

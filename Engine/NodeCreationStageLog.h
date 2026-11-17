@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <string>
 
 NATRON_NAMESPACE_ENTER
 
@@ -63,10 +64,25 @@ public:
         {
         }
 
+        /**
+         * @brief A stage named prefix followed by suffix, e.g. one per knob type. The name is only
+         * built while logging runs.
+         **/
+        Scope(const char* prefix,
+              const std::string& suffix)
+            : _stage(enabled() ? prefix : nullptr)
+            , _startMs(_stage ? nowMs() : 0.)
+        {
+            if (_stage) {
+                _name.assign(prefix);
+                _name.append(suffix);
+            }
+        }
+
         ~Scope()
         {
             if (_stage) {
-                write(_stage, _startMs, nowMs());
+                write(_name.empty() ? _stage : _name.c_str(), _startMs, nowMs());
             }
         }
 
@@ -76,6 +92,7 @@ public:
     private:
         const char* _stage;
         double _startMs;
+        std::string _name;
     };
 
 private:

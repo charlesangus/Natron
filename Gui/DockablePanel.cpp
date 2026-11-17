@@ -767,15 +767,6 @@ DockablePanel::onLineEditNameEditingFinished()
 }
 
 void
-DockablePanel::onKnobBuildStarted()
-{
-    // Pages are filled while the panel is shown, so the tab widget must already be laid out.
-    if (_imp->_tabWidget && (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0)) {
-        _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
-    }
-}
-
-void
 DockablePanel::onKnobsInitialized()
 {
     assert(_imp->_tabWidget);

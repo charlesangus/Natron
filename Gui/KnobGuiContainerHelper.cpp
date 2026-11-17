@@ -26,6 +26,7 @@
 #include "KnobGuiContainerHelper.h"
 
 #include <list>
+#include <optional>
 #include <unordered_set>
 
 CLANG_DIAG_OFF(deprecated)
@@ -200,6 +201,7 @@ KnobGuiContainerHelperPrivate::createKnobGui(const KnobIPtr &knob)
         return found->second;
     }
 
+    NodeCreationStageLog::Scope stage("panelKnobInit");
     KnobGuiPtr ret( appPTR->createGuiForKnob(knob, _p) );
     assert(ret);
     if (!ret) {
@@ -435,10 +437,14 @@ KnobGuiContainerHelper::getKnobsMapping() const
 void
 KnobGuiContainerHelper::initializeKnobs()
 {
-    initializeKnobVector( _imp->holder->getKnobs() );
-    _imp->refreshPagesEnabledness();
-    refreshCurrentPage();
+    {
+        NodeCreationStageLog::Scope stage("panelBuildKnobs");
+        initializeKnobVector(_imp->holder->getKnobs());
+        _imp->refreshPagesEnabledness();
+        refreshCurrentPage();
+    }
 
+    NodeCreationStageLog::Scope stage("panelKnobsInitialized");
     onKnobsInitialized();
 }
 
@@ -448,7 +454,7 @@ KnobGuiContainerHelper::initializeKnobsIncrementally(const std::function<void()>
     std::unique_ptr<PendingKnobBuild> build(new PendingKnobBuild);
     build->onDone = onDone;
     _imp->pendingBuild = std::move(build);
-    // Two hops: what the caller queued for the next pass, docking the panel say, gets that pass to itself.
+    // Two hops: what the caller queued for the next pass gets that pass to itself.
     QTimer::singleShot(0, _imp->signals.get(), [this]() {
         QTimer::singleShot(0, _imp->signals.get(), [this]() {
             runKnobBuildStep();
@@ -714,7 +720,10 @@ KnobGuiContainerHelper::finishKnobBuild()
 
     _imp->refreshPagesEnabledness();
     refreshCurrentPage();
-    onKnobsInitialized();
+    {
+        NodeCreationStageLog::Scope stage("panelKnobsInitialized");
+        onKnobsInitialized();
+    }
     if (build->onDone) {
         build->onDone();
     }
@@ -894,6 +903,10 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
         return KnobGuiPtr();
     }
 
+    // Ends before a group's children are built, so that each knob type's stage holds its own row only.
+    std::optional<NodeCreationStageLog::Scope> knobStage;
+    knobStage.emplace("panelKnob:", knob->typeName());
+
     // Create the actual knob gui object
     KnobGuiPtr ret = _imp->createKnobGui(knob);
     if (!ret) {
@@ -1048,6 +1061,7 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
         QHBoxLayout *labelLayout = 0;
         const bool hasLabel = ret->shouldCreateLabel();
         if (hasLabel) {
+            NodeCreationStageLog::Scope labelStage("panelKnobLabel");
             if (makeNewLine) {
                 labelContainer = new QWidget(page->tab);
                 labelLayout = new QHBoxLayout(labelContainer);
@@ -1161,7 +1175,10 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
         }
 
         // Fill the fieldLayout with the widgets
-        ret->createGUI(fieldContainer, labelContainer, label, warningLabel, fieldLayout, makeNewLine, lastKnobLineSpacing, knobsOnSameLine);
+        {
+            NodeCreationStageLog::Scope widgetStage("panelKnobWidgets");
+            ret->createGUI(fieldContainer, labelContainer, label, warningLabel, fieldLayout, makeNewLine, lastKnobLineSpacing, knobsOnSameLine);
+        }
 
         ret->setEnabledSlot();
 
@@ -1169,6 +1186,7 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
 
         // Must add the row to the layout before calling setSecret()
         if (makeNewLine) {
+            NodeCreationStageLog::Scope layoutStage("panelKnobLayout");
             int rowIndex;
             if (closestParentGroupTab) {
                 rowIndex = layout->rowCount();
@@ -1229,7 +1247,10 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
             workAroundGridLayoutBug(layout);
         } // makeNewLine
 
-        ret->setSecret();
+        {
+            NodeCreationStageLog::Scope secretStage("panelKnobSecret");
+            ret->setSecret();
+        }
 
         if ( knob->isNewLineActivated() && ret->shouldAddStretch() ) {
             fieldLayout->addStretch();
@@ -1247,6 +1268,7 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
         }
     } //  if ( !ret->hasWidgetBeenCreated() && ( !isGroup || !isGroup->isTab() ) ) {
 
+    knobStage.reset();
 
     // If the knob is a group, create all the children
     if (isGroup) {

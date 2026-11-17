@@ -35,6 +35,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Project.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
@@ -698,6 +699,7 @@ KnobGui::getScriptNameHtml() const
 QString
 KnobGui::toolTip() const
 {
+    NodeCreationStageLog::Scope stage("knobToolTip");
     KnobIPtr knob = getKnob();
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
     bool isMarkdown = knob.get()->isHintInMarkdown();

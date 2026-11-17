@@ -139,6 +139,43 @@ The `tabMenu*` stages are timed by wrapping the Python functions from the bench 
 need no Natron support and only exist while the op's setup has run. `launch`'s time does not
 include the C++ side of `TabMenuBridge::launch`: building the context and calling it.
 
+## Panel build
+
+```
+tools/bench/gui/run.sh --xvfb --preset create --ops open_panel --sizes 0 --stages [--appimage PATH]
+tools/bench/gui/run.sh --host --appimage PATH --preset create --ops open_panel --sizes 0 --stages
+```
+
+`open_panel` runs only when named. For each plug-in of `GUI_BENCH_PANEL_PLUGINS` (default Blur,
+Merge, Grade, Roto, Transform, USDCamera and USDRenderSettings, the last holding the Cycles
+delegate's settings), `GUI_BENCH_PANEL_REPS` times (default 10), a rep creates the node through
+Python, which builds no panel (untimed, checked), closes every panel and selects the node. It then
+invokes `showSelectedNodeSettingsPanel` on the graph and waits for a paint inside the shown
+`NodeSettingsPanel`, settling as the creation ops do. The rep destroys the node afterwards, so every
+open builds a new panel. A plug-in that is not registered is listed in `missing_plugins`.
+
+The record's `panels` holds per plug-in `build_ms` (the open call itself, median and max),
+`paint_ms` (from the open to the settled paint, the figure `budget_ms`, 16, applies to), and with
+`--stages` `stages_ms` (each stage in that span) and `knob_types` (per knob type: rows in the
+panel, the median total over reps and the median per row). `knob_types_ms` pools every row of
+every panel per knob type with its per-row median and 90th percentile. The run's log prints the
+same, each panel's stages and knob types sorted by cost. The record's own `median_ms` mixes the
+plug-ins and is not the figure to read.
+
+| Stage | Span |
+|---|---|
+| `panelBuildKnobs` | Every knob row and the pages' enabledness and current page, in `initializeKnobs`. |
+| `panelKnob:<type>` | One knob row of that type (`KnobDouble`, `KnobChoice`, ...), without a group's children. |
+| `panelKnobInit` | Creating the row's `KnobGui`, inside `panelKnob:<type>`. |
+| `panelKnobLabel` | The row's label. |
+| `panelKnobWidgets` | The row's widgets, `KnobGui::createGUI`. |
+| `panelKnobLayout` | Putting the row in its page's layout. |
+| `panelKnobSecret` | Hiding a secret row. |
+| `panelKnobsInitialized` | `onKnobsInitialized`: the tab widget and the pages after the rows. |
+| `knobToolTip` | Building one row's tooltip text, wherever it is asked for. |
+| `panelDock` | Adding the complete panel to the properties bin and showing it. |
+| `panelBuildTail` | What the panel build runs after the rows and the dock: the viewer interface, curve and dope sheet editors. |
+
 ## The two modes
 
 **`--xvfb`: regressions only.** This runs `build/release/App/Natron`, or `--appimage PATH`, in the

@@ -37,8 +37,15 @@ Configured by the environment:
                           tab_menu_create, create_then_key), which run only when named: 20 reps each,
                           timed from the key event to the end of the event-loop pass that painted the
                           result
+    GUI_BENCH_OPS         also selects open_panel, which runs only when named: for each plug-in of
+                          GUI_BENCH_PANEL_PLUGINS, GUI_BENCH_PANEL_REPS times (default 10), it creates the
+                          node without a panel (untimed) and times opening its panel, from the open to the
+                          end of the event-loop pass that painted the complete panel
+    GUI_BENCH_PANEL_PLUGINS  comma-separated plug-in IDs for open_panel (default Blur, Merge, Grade, Roto,
+                          Transform, USDCamera, USDRenderSettings)
     NATRON_NODE_CREATION_STAGE_LOG  a file Natron appends engine and GUI stage spans of node creation to
-                          (see README.md); the node-creation ops then also report a per-stage split
+                          (see README.md); the node-creation ops then also report a per-stage split, and
+                          open_panel a per-stage and per-knob-type split of each panel's build
     GUI_BENCH_SELF_CHECK  1 adds an op that blocks the main thread for 300 ms once and checks
                           that the stall log attributes exactly one stall to it
     GUI_BENCH_OUT         JSON-lines output (default $NATRON_GUI_TEST_OUT/gui_bench.jsonl)
@@ -121,6 +128,8 @@ AUTO_MAX_SAMPLES = 5
 AUTO_MAX_S = 3.0
 AUTO_ONE_REP_EVENTS = 10
 ONLY_OPS = set(env_list("GUI_BENCH_OPS", ""))
+PANEL_PLUGINS = env_list("GUI_BENCH_PANEL_PLUGINS", "Blur,Merge,Grade,Roto,Transform,USDCamera,USDRenderSettings")
+PANEL_REPS = int(os.environ.get("GUI_BENCH_PANEL_REPS", "10"))
 OP_TIMEOUT_S = float(os.environ.get("GUI_BENCH_OP_TIMEOUT_S", "120"))
 GRAPH_CACHE = os.environ.get("GUI_BENCH_GRAPH_CACHE", "")
 BASELINE_PATH = os.environ.get("GUI_BENCH_BASELINE", "")
@@ -1591,6 +1600,147 @@ try:
         return {"setup": create_setup(True), "before": prepare_keys, "events": events, "after": after,
                 "teardown": teardown, "reps": reps}
 
+    # ---- panel build op ------------------------------------------------------------------------
+
+    PANEL_KNOB_STAGE = "panelKnob:"
+    PANEL_BUDGET_MS = 16.0
+
+    def settings_panels():
+        return gt.widgets_of("NodeSettingsPanel")
+
+    def in_visible_panel(obj):
+        """Whether obj is a widget inside a shown NodeSettingsPanel: setup closes every other panel."""
+        if not obj.isWidgetType():
+            return False
+        w = obj
+        while w is not None:
+            if gt.class_name(w) == "NodeSettingsPanel":
+                return w.isVisible()
+            w = w.parentWidget()
+        return False
+
+    def knob_type_spans(spans, t0, t1):
+        """{knob type: [ms of each row of that type]} from the panelKnob:<type> stages inside [t0, t1]."""
+        found = {}
+        for stage, start, end in spans:
+            if start >= t0 and end <= t1 and stage.startswith(PANEL_KNOB_STAGE):
+                found.setdefault(stage[len(PANEL_KNOB_STAGE):], []).append(end - start)
+        return found
+
+    def ms_summary(values):
+        return {"median": round(statistics.median(values), 3), "max": round(max(values), 3)} if values else None
+
+    def panel_record(entry):
+        rec = {"reps": len(entry["paint"]), "build_ms": ms_summary(entry["build"]),
+               "paint_ms": ms_summary(entry["paint"])}
+        if entry["stages"]:
+            rec["stages_ms"] = stage_summary(entry["stages"])
+        if entry["knobs"]:
+            types = sorted(set(t for rep in entry["knobs"] for t in rep))
+            knob_types = {}
+            for t in types:
+                per_rep = [rep.get(t, []) for rep in entry["knobs"]]
+                rows = [v for r in per_rep for v in r]
+                knob_types[t] = {"rows": int(statistics.median(len(r) for r in per_rep)),
+                                 "total_median_ms": round(statistics.median(sum(r) for r in per_rep), 3),
+                                 "per_row_median_ms": round(statistics.median(rows), 3) if rows else 0.0}
+            rec["knob_types"] = knob_types
+        return rec
+
+    def op_open_panel():
+        """One rep per panel opened: each plug-in in turn, PANEL_REPS times. The node is created through
+        Python, which builds no panel, so each open builds a fresh one on the synchronous path."""
+        def setup(ctx, st):
+            gt.close_all_panels()
+            st["plugins"] = []
+            st["panels"] = {}
+            missing = []
+            for pid in PANEL_PLUGINS:
+                if pid in gt._plugin_ids:
+                    st["plugins"].append(pid)
+                    st["panels"][pid] = {"build": [], "paint": [], "stages": [], "knobs": []}
+                else:
+                    missing.append(pid)
+            if not st["plugins"]:
+                raise RuntimeError("none of the panel plug-ins is registered: %s" % ", ".join(PANEL_PLUGINS))
+            st["record"] = {"headline": "panels", "budget_ms": PANEL_BUDGET_MS, "missing_plugins": missing}
+            st["all_knobs"] = {}
+
+        def before(ctx, st, rep):
+            pid = st["plugins"][rep % len(st["plugins"])]
+            st["pid"] = pid
+            gt.close_all_panels()
+            clear_selection()
+            panels_before = len(settings_panels())
+            node = app.createNode(pid)
+            if node is None:
+                raise RuntimeError("createNode(%s) returned None: %s" % (pid, gt.plugin_problem(pid)))
+            st["node"] = node.getScriptName()
+            node = None
+            if len(settings_panels()) != panels_before:
+                raise RuntimeError("creating %s from Python built a panel; open_panel would time no build" % pid)
+            select([st["node"]])
+            drain_events()
+
+        def events(ctx, st, rep):
+            graph = root_graph()
+            panels_before = len(settings_panels())
+            st["offset"] = stage_offset()
+            built = {}
+
+            def send():
+                b0 = mono_ms()
+                QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
+                built["ms"] = mono_ms() - b0
+            t0, t1 = measure_paint(None, in_visible_panel, send, drain=False)
+            if len(settings_panels()) != panels_before + 1:
+                raise RuntimeError("opening %s's panel did not build exactly one panel" % st["pid"])
+            entry = st["panels"][st["pid"]]
+            entry["build"].append(built["ms"])
+            entry["paint"].append(t1 - t0)
+            st["window"] = (t0, t1)
+            yield None
+
+        def after(ctx, st, rep):
+            QApplication.processEvents()
+            entry = st["panels"][st["pid"]]
+            if STAGE_LOG:
+                spans = read_stage_spans(st["offset"])
+                entry["stages"].append(split_spans(spans, *st["window"])[0])
+                knobs = knob_type_spans(spans, *st["window"])
+                entry["knobs"].append(knobs)
+                for t, rows in knobs.items():
+                    st["all_knobs"].setdefault(t, []).extend(rows)
+            gt.close_all_panels()
+            node = app.getNode(st["node"])
+            if node is not None:
+                node.destroy(False)
+            node = None
+            drain_events()
+
+        def teardown(ctx, st):
+            panels = dict((pid, panel_record(entry)) for pid, entry in st["panels"].items())
+            st["record"]["panels"] = panels
+            if st["all_knobs"]:
+                st["record"]["knob_types_ms"] = dict(
+                    (t, {"rows": len(v), "per_row_median_ms": round(statistics.median(v), 3),
+                         "per_row_p90_ms": round(percentile(v, 0.9), 3)})
+                    for t, v in st["all_knobs"].items())
+            for pid in st["plugins"]:
+                rec = panels[pid]
+                report("PANEL %-20s paint median %s ms max %s ms, build median %s ms (%d opens)" % (
+                    pid, (rec["paint_ms"] or {}).get("median"), (rec["paint_ms"] or {}).get("max"),
+                    (rec["build_ms"] or {}).get("median"), rec["reps"]))
+                for stage, v in sorted((rec.get("stages_ms") or {}).items(), key=lambda kv: -kv[1]["median"]):
+                    report("PANEL %-20s   stage %-28s median %8.3f ms" % (pid, stage, v["median"]))
+                for t, v in sorted((rec.get("knob_types") or {}).items(), key=lambda kv: -kv[1]["total_median_ms"]):
+                    report("PANEL %-20s   knob  %-28s %3d rows, %8.3f ms, %6.3f ms/row" % (
+                        pid, t, v["rows"], v["total_median_ms"], v["per_row_median_ms"]))
+        return {"setup": setup, "before": before, "events": events, "after": after, "teardown": teardown,
+                "reps": PANEL_REPS * len(PANEL_PLUGINS)}
+
+    PANEL_OPS = [("open_panel", op_open_panel)]
+
     CREATE_OPS = [("create_by_shortcut", op_create_by_shortcut), ("tab_menu_open", op_tab_menu_open),
                   ("tab_menu_create", op_tab_menu_create), ("create_then_key", op_create_then_key)]
 
@@ -1924,6 +2074,7 @@ try:
             elif selected(name):
                 plan.append((name, make, "edit", None, None))
         plan.extend((name, make, "edit", None, None) for name, make in CREATE_OPS if name in ONLY_OPS)
+        plan.extend((name, make, "edit", None, None) for name, make in PANEL_OPS if name in ONLY_OPS)
         if selected("load"):
             plan.append(("load", op_load, "interaction", None, None))
         if SELF_CHECK:

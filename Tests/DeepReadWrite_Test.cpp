@@ -1008,8 +1008,17 @@ TEST_F(DeepReadWriteTest, ARunPickedFromAGappedSequenceLimitsTheDeepReadToIt)
     effect->getFrameRange_public(read->getHashValue(), &first, &last, true);
     EXPECT_EQ(10., first);
     EXPECT_EQ(22., last);
+    // A missing frame errors by default, as on Read: the RoD fails with a persistent message, and
+    // renderDeepRoI reports a failed RoD as an empty image rather than a failed render.
     DeepImagePtr image;
-    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 15., fullFrame(), &image)) << "frame 15 is in the gap";
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 15., fullFrame(), &image));
+    ASSERT_TRUE(bool(image));
+    EXPECT_TRUE(image->getBounds().isNull()) << "frame 15 is in the gap";
+    EXPECT_EQ(0u, image->getSampleTable().getTotalSampleCount());
+    QString message;
+    int type = 0;
+    read->getPersistentMessage(&message, &type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Missing frame 15"))) << message.toStdString();
 
     ReadTimeDomainKnobs::limitToFrames(effect.get(), 20, 22);
     EXPECT_EQ(20, firstFrame->getValue());

@@ -14,6 +14,7 @@ natronCanonicalToWidget property [origin x, origin y, pixels per unit x, pixels 
 pixels are read from screen grabs: a widget grab of the GL viewer can come out blank under llvmpipe.
 The overlay geometry checked here is the node's (Engine/Nodes/Test/OverlayTestNode.cpp).
 """
+import math
 import os
 import sys
 import traceback
@@ -104,7 +105,9 @@ try:
         return QGuiApplication.primaryScreen().grabWindow(0).toImage()
 
     def pixel(image, wx, wy):
-        g = held["viewer"].mapToGlobal(QPoint(int(round(wx)), int(round(wy))))
+        # Pixel i covers [i, i + 1): rounding a half-integer coordinate (the viewer origin sits on
+        # one when the viewport has an odd size) can step over the row a 1-pixel line lights.
+        g = held["viewer"].mapToGlobal(QPoint(math.floor(wx), math.floor(wy)))
         if not (0 <= g.x() < image.width() and 0 <= g.y() < image.height()):
             return (0, 0, 0)
         c = image.pixelColor(g.x(), g.y())
@@ -118,6 +121,10 @@ try:
 
     def is_grey_bright(p):
         return min(p) > 150 and max(p) - min(p) < 50
+
+    def is_text_grey(p):
+        # Glyphs anchored between pixel centres are filtered across two pixels and stay dimmer than lines.
+        return min(p) > 90 and max(p) - min(p) < 50
 
     def is_red(p):
         return p[0] > 150 and p[1] < 90 and p[2] < 90
@@ -222,7 +229,7 @@ try:
         text = 0
         for ty in range(int(hy) - 24, int(hy) - 7):
             for tx in range(int(hx) + 8, int(hx) + 60):
-                if is_grey_bright(pixel(img, tx, ty)):
+                if is_text_grey(pixel(img, tx, ty)):
                     text += 1
         check(text >= 15, "the 'center' label is drawn up and right of the handle (%d bright pixels)" % text)
         report("NOTE %.3f widget pixels per canonical unit" % sx)

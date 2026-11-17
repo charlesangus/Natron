@@ -16,7 +16,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 ## Scope
 
 **In:**
-- Per-viewer settings, with defaults in Preferences > Viewers:
+- Knobs on the Viewer node, saved with the project, scriptable and undoable, with initial values for new Viewers in Preferences > Viewers:
   - Polygon Budget (on by default)
   - Polygon Limit (default 20M)
   - Count Whole Scene (default off)
@@ -41,7 +41,6 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 - Interaction-time stand-ins (Off / During interaction / Always) and paint-never-waits: M336 - Heavy
   Scene Acceptance.
 - Budget badges in the Scene Graph panel's Draw column: none.
-- Saving budget settings in the project: none.
 - Counting refined triangles or subdivision levels: none.
 
 **Edge cases:**
@@ -118,9 +117,9 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
     - a delegate-engine filter is unaffected.
   - size: L
 
-- [ ] M481.P3.T2 — Settings and Preferences defaults
-  - files: `Engine/Settings.cpp`, `Engine/Settings.h`, `Gui/SceneViewport.cpp` (right-click viewer menu, ~9818-9949), `Gui/SceneViewport.h`
-  - approach: add Preferences > Viewers knobs next to `viewer3DGuideSize`:
+- [ ] M481.P3.T2 — Viewer node knobs and Preferences defaults
+  - files: `Engine/ViewerInstance.cpp`, `Engine/ViewerInstance.h`, `Engine/Settings.cpp`, `Engine/Settings.h`, `Gui/SceneViewport.cpp` (right-click viewer menu, ~9818-9949), `Gui/SceneViewport.h`, `Tests/ViewerInstance_Test.cpp` (or the existing Viewer knob test)
+  - approach: add the knobs to the Viewer node in `ViewerInstance::initializeKnobs` (beside the M164 - Viewer Node Knobs knobs), on a "Polygon Budget" group, so they save in `project.yaml`, script, link and undo like other Viewer knobs. Matching Preferences > Viewers knobs next to `viewer3DGuideSize` give a newly created Viewer node its initial values; loading a project uses the saved values. Knobs:
     - `viewer3DPolygonBudget` (bool, on)
     - `viewer3DPolygonLimit` (int, 20,000,000)
     - `viewer3DCountWholeScene` (bool, off)
@@ -129,8 +128,8 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
     - `viewer3DFractionPercent` (double, 25)
     - `viewer3DStandIn` (choice: Box Wire, Box Shaded, Marker, Off)
 
-    Labels are readable script names. Tooltips say what each does and never mention other applications. Each viewer copies the defaults when it is created, and a "Polygon Budget" submenu in the right-click menu edits that viewer's values. Values are not saved in the project.
-  - verify: a new viewer reads the Preferences defaults; a menu edit changes only that viewer; the knobs appear in Preferences.
+    Viewer knob script names drop the `viewer3D` prefix (`polygonBudget`, `polygonLimit`, …). Labels are readable script names. Tooltips say what each does and never mention other applications. A "Polygon Budget" submenu in the 3D viewer's right-click menu is a view of the Viewer node's knobs (edits go through the knobs, so they undo). The viewport reads the knobs, never a copy.
+  - verify: a test creates a Viewer node and reads the Preferences values; sets a knob, saves, reloads and reads it back; and checks that a second Viewer is unaffected. A menu edit changes the knob and undoes.
   - size: M
 
 - [ ] M481.P3.T3 — Camera-idle evaluation, stand-ins and HUD
@@ -182,7 +181,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 - 2026-11-17 — The budget may demote an explicit Full row (user): the limit is a hard viewport ceiling, as in Houdini, and the budget tint shows why.
 - 2026-11-17 — The unit is the gprim, with each PointInstancer instance counted separately (user): finest control, matching Houdini's packed-primitive behaviour. The existing instance mask carries it.
 - 2026-11-17 — Instance stand-ins are a setting (user). One Stand-in setting covers gprims and instances: Box Wire, Box Shaded, Marker, Off. Default Box Wire, in a budget tint (user).
-- 2026-11-17 — Settings are per viewer, with defaults in Preferences > Viewers, and are not saved in the project (user).
+- 2026-11-17 — Settings are knobs on the Viewer node and travel with the project (user, revised the same day): scriptable, linkable and undoable like the M164 - Viewer Node Knobs knobs. Preferences > Viewers give a new Viewer's initial values.
 - 2026-11-17 — On by default with a generous limit (user): 20M polygons, with distance cull and fraction off.
 - 2026-11-17 — Count authored faces in the frustum, times instances, with a Count Whole Scene option (user).
 - 2026-11-17 — Fractions apply beyond a distance (user): a hashed, stable subset of instances, and of each mesh's faces. Faces are omitted, never decimated into a new low-polygon mesh.

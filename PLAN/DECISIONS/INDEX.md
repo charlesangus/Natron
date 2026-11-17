@@ -142,3 +142,4 @@
 - 2026-11-16 — follow-stomps-keys: follow overwrites keys on followed frames; Blend Between Keys and Reduce Keyframes are separate actions → DECISIONS/2026-11-16-follow-stomps-keys.md
 - [2026-11-16 F29 - UI Polish Batch](2026-11-16-f29-ui-polish-batch.md) — five small UI milestones ship as one Feature (user)
 - [2026-11-16 Shared lens optics base](2026-11-16-shared-lens-optics-base.md) — one Engine/Optics library, bundled OpticsDatabase and aperture model for bokeh and flares; three Features (F30 base, F13 bokeh, F31 flares)
+- [2026-11-17 Layer IDs are names](2026-11-17-layer-ids-are-names.md) — every layer ID is its plain lowercase name (rgba, forward, backward, disparityL/R); no channels label; OFX plane strings only at the OFX plugin boundary; files round-trip verbatim (user)

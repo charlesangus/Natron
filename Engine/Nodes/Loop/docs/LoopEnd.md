@@ -110,6 +110,40 @@ within 1e-6 relative, from the device's division (mean) and rounding.
   `singlePassIteration / (n - 1)`. Under Feedback it is that iteration's output, after the
   iterations before it. Past the last iteration is an error. `operation`, `reverseOrder` and
   `stopCondition` do not apply.
+- `mode` Map Blend: see [Map Blend](#map-blend).
+
+## Map Blend
+
+- `mode` Map Blend blends the iterations per pixel by the LoopEnd's Map input instead of folding
+  them. Iteration k sits at Map value `k / (n - 1)`, the same as its `loop.t`: a pixel whose Map
+  value m, clamped to [0,1], lands on an iteration reads that iteration alone, and one between two
+  reads both by `interpolation`:
+  - Linear: the two iterations around m, weighted by where m lies between them.
+  - Cubic: Catmull-Rom over the four around m, the first and last iterations held at the ends.
+    Smoother across levels; it can overshoot between them.
+  - Nearest: the iteration closest to m, unblended.
+- The recipe: drive any knob of the body from `loop.t` (see [Drivers](#drivers)); Map black then
+  gives the knob's start value and white its end value, so any body, a Blur, a Grade or a plug-in,
+  varies per pixel with the Map. A driver's easing shapes how its values are spread across the
+  iterations, which are always evenly spaced in `loop.t`.
+- The Map knobs: `mapChannel` picks the channel, of any of the Map's layers (default the alpha);
+  `mapInvert` swaps black and white; `mapResponse` and `mapGamma` reshape the values between them.
+  Past the Map's region of definition the Map reads black (white with `mapInvert`). A NaN reads as
+  black.
+- `levelSpacing` shows how far apart in Map value the iterations are, and how many levels there
+  are. Each level is one render of the body, so the iteration count trades smoothness between
+  levels against time: a body that changes little across the range needs few, a large blur range
+  more. With one iteration the Map has no effect.
+- No Map connected: the Map reads 0, so the output is the first iteration, with a warning.
+- Culling: the output is cut into 64-pixel tiles, and each tile renders only the iterations its
+  Map values read. A tile all black renders one iteration; a tile whose values span the range
+  renders all of them. The result is the same as rendering every iteration everywhere. Each
+  iteration renders over the bounding box of the tiles that read it, so culling saves most where
+  large areas of the Map are flat.
+- The node's own I-variants (IBlur, IDefocus, IErodeDilate) vary their size continuously per
+  pixel and render once. They are exact and faster: use them when one exists, and Map Blend for
+  any other body or several knobs at once.
+- `singlePass`, `operation`, `reverseOrder`, `stopCondition` and `crossFrame` do not apply.
 
 ## Feedback
 
@@ -278,3 +312,4 @@ within 1e-6 relative, from the device's division (mean) and rounding.
   when a feedback tail's layer differs from the LoopBegin's (the CPU conforms it), and under the
   legacy scheduler, where one render folds every iteration. A depth other than float also keeps
   it on the CPU.
+- Map Blend blends on the CPU; the body's iterations still render wherever their nodes do.

@@ -65,6 +65,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QThread>
 #include <QTimer>
 #include <QUndoCommand>
 #include <QWheelEvent>
@@ -1780,6 +1781,23 @@ struct SceneViewportRenderer::Implementation {
         everyLightHidden = false;
         engineHeld = false;
         backgroundFrame.imageKept = false;
+    }
+
+    // Needs stageMutex and a current GL context. Every GL object, the engine first.
+    void releaseHeldGL()
+    {
+        dropEngine();
+        releaseGrade();
+        releaseBoxesGL();
+        if (refineTexture) {
+            glDeleteTextures(1, &refineTexture);
+            glDeleteBuffers(1, &refineDepthBuffer);
+            refineTexture = 0;
+            refineDepthBuffer = 0;
+        }
+        refineWidth = 0;
+        refineHeight = 0;
+        uploadedFrame.reset();
     }
 
     // Needs stageMutex.
@@ -5413,23 +5431,30 @@ SceneViewportRenderer::pickRect(int x0,
     return paths;
 }
 
+std::shared_ptr<void>
+SceneViewportRenderer::releaseGLKeepingEngine()
+{
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+    std::shared_ptr<void> kept;
+
+    if (UsdImagingGLEngine* engine = _imp->engine.release()) {
+        kept = std::shared_ptr<void>(engine, [](void* held) {
+            StormGLSection section;
+
+            delete static_cast<UsdImagingGLEngine*>(held);
+        });
+    }
+    _imp->releaseHeldGL();
+
+    return kept;
+}
+
 void
 SceneViewportRenderer::releaseGL()
 {
     const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
 
-    _imp->dropEngine();
-    _imp->releaseGrade();
-    _imp->releaseBoxesGL();
-    if (_imp->refineTexture) {
-        glDeleteTextures(1, &_imp->refineTexture);
-        glDeleteBuffers(1, &_imp->refineDepthBuffer);
-        _imp->refineTexture = 0;
-        _imp->refineDepthBuffer = 0;
-    }
-    _imp->refineWidth = 0;
-    _imp->refineHeight = 0;
-    _imp->uploadedFrame.reset();
+    _imp->releaseHeldGL();
 }
 
 void
@@ -6383,12 +6408,87 @@ struct SceneViewport::Implementation {
     // Also read by the load batch, which gives up on its files when it turns true.
     std::atomic<bool> loadQuit { false };
 
-    // The thread the engine lives on, running jobs in order.
-    std::thread renderThread;
-    std::mutex renderJobsMutex;
-    std::condition_variable renderJobsChanged;
-    std::deque<std::function<void()>> renderJobs;
-    bool renderQuit = false;
+    // The thread the engine lives on, running jobs in order. Owned apart from the view, as a
+    // closed view leaves it to finish destroying the engine on its own.
+    struct RenderLoop {
+        std::mutex mutex;
+        std::condition_variable changed;
+        std::deque<std::function<void()>> jobs;
+        bool quit = false;
+        // Declared last: it starts in the constructor, on the members above.
+        std::thread thread;
+
+        RenderLoop()
+            : thread([this]() { run(); })
+        {
+        }
+
+        ~RenderLoop() { stop(); }
+
+        void run()
+        {
+            for (;;) {
+                std::function<void()> job;
+                {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    changed.wait(lock, [this]() { return quit || !jobs.empty(); });
+                    if (jobs.empty()) {
+                        return;
+                    }
+                    job = std::move(jobs.front());
+                    jobs.pop_front();
+                }
+                job();
+            }
+        }
+
+        void post(std::function<void()> job)
+        {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                jobs.push_back(std::move(job));
+            }
+            changed.notify_one();
+        }
+
+        // Runs the jobs posted so far, then joins the thread.
+        void stop()
+        {
+            if (!thread.joinable()) {
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                quit = true;
+            }
+            changed.notify_one();
+            thread.join();
+        }
+    };
+
+    // A closed view's render thread, destroying the engine in its own context. Destroying this
+    // waits for it.
+    struct RetiredRenderLoop {
+        std::unique_ptr<RenderLoop> loop;
+        // Kept until the context made current on it is gone.
+        std::unique_ptr<QOffscreenSurface> surface;
+
+        ~RetiredRenderLoop()
+        {
+            {
+                PythonUnlockedWhileWaiting unlocked;
+                loop.reset();
+            }
+            if (surface && (QThread::currentThread() != surface->thread())) {
+                // A platform surface is only destroyed on the thread that made it.
+                surface.release()->deleteLater();
+            }
+        }
+    };
+
+    std::unique_ptr<RenderLoop> renderLoop;
+    // Main thread: the view is going, so the engine may finish going after it.
+    bool closing = false;
     // Whether the engine's context is the render thread's right now. Main thread.
     bool usesRenderThread = false;
     std::unique_ptr<QOffscreenSurface> renderSurface;
@@ -6563,11 +6663,7 @@ struct SceneViewport::Implementation {
 
     void postToRenderThread(std::function<void()> job)
     {
-        {
-            std::lock_guard<std::mutex> lock(renderJobsMutex);
-            renderJobs.push_back(std::move(job));
-        }
-        renderJobsChanged.notify_one();
+        renderLoop->post(std::move(job));
     }
 
     // Waits for job, after any job before it. The caller's own state is safe for job to read, as
@@ -6591,24 +6687,9 @@ struct SceneViewport::Implementation {
 
     void startRenderThread()
     {
-        if (renderThread.joinable()) {
-            return;
+        if (!renderLoop) {
+            renderLoop.reset(new RenderLoop());
         }
-        renderThread = std::thread([this]() {
-            for (;;) {
-                std::function<void()> job;
-                {
-                    std::unique_lock<std::mutex> lock(renderJobsMutex);
-                    renderJobsChanged.wait(lock, [this]() { return renderQuit || !renderJobs.empty(); });
-                    if (renderJobs.empty()) {
-                        return;
-                    }
-                    job = std::move(renderJobs.front());
-                    renderJobs.pop_front();
-                }
-                job();
-            }
-        });
     }
 
     // Main thread, the widget's context current. False if this platform cannot, and the engine
@@ -6684,13 +6765,9 @@ struct SceneViewport::Implementation {
         return target.fbo;
     }
 
-    // Render thread: everything of the render context, the engine first.
-    void releaseRenderContext()
+    // Render thread.
+    void releaseRenderTargets()
     {
-        if (!renderContext) {
-            return;
-        }
-        renderer.releaseGL();
         presentPacer.clear();
         for (RenderTarget& target : renderTargets) {
             glDeleteFramebuffers(1, &target.fbo);
@@ -6701,8 +6778,44 @@ struct SceneViewport::Implementation {
             }
             target = RenderTarget();
         }
+    }
+
+    // Render thread: everything of the render context, the engine first.
+    void releaseRenderContext()
+    {
+        if (!renderContext) {
+            return;
+        }
+        renderer.releaseGL();
+        releaseRenderTargets();
         renderContext->doneCurrent();
         renderContext.reset();
+    }
+
+    // Main thread. Lets the render thread go with its context and the engine, without waiting for
+    // the engine to be destroyed: the scene teardown joins the thread once it has destroyed it.
+    // That keeps readers' scopes held meanwhile, so no layer reload edits the stage it listens to.
+    void retireRenderLoop()
+    {
+        std::shared_ptr<void> engine;
+        std::shared_ptr<QOpenGLContext> context;
+
+        callOnRenderThread([this, &engine, &context]() {
+            engine = renderer.releaseGLKeepingEngine();
+            releaseRenderTargets();
+            context = std::move(renderContext);
+        });
+        renderLoop->post([engine = std::move(engine), context = std::move(context)]() mutable {
+            engine.reset();
+            if (context) {
+                context->doneCurrent();
+                context.reset();
+            }
+        });
+        std::shared_ptr<RetiredRenderLoop> retired = std::make_shared<RetiredRenderLoop>();
+        retired->loop = std::move(renderLoop);
+        retired->surface = std::move(renderSurface);
+        SceneTeardown::releaseHeld(std::move(retired));
     }
 
     // Main thread, the widget's context current, with the engine's context dying or the widget going.
@@ -6715,7 +6828,12 @@ struct SceneViewport::Implementation {
         }
         // The overlays are drawn in the widget's context, not the render thread's.
         renderer.releaseOverlayGL();
-        callOnRenderThread([this]() { releaseRenderContext(); });
+        // A view that stays keeps editing the stage the engine listens to, so its engine goes now.
+        if (closing) {
+            retireRenderLoop();
+        } else {
+            callOnRenderThread([this]() { releaseRenderContext(); });
+        }
         ++renderContextGeneration;
         frontFrame.reset();
         renderer.forgetBackgroundView();
@@ -6732,16 +6850,11 @@ struct SceneViewport::Implementation {
 
     void stopRenderThread()
     {
-        if (!renderThread.joinable()) {
+        if (!renderLoop) {
             return;
         }
         postToRenderThread([this]() { releaseRenderContext(); });
-        {
-            std::lock_guard<std::mutex> lock(renderJobsMutex);
-            renderQuit = true;
-        }
-        renderJobsChanged.notify_one();
-        renderThread.join();
+        renderLoop.reset();
     }
 
     // Main thread, the widget's context current. The front target's frame, frontFrame, which the
@@ -7080,6 +7193,7 @@ SceneViewport::~SceneViewport()
         _imp->loadThread.join();
     }
     _imp->renderer.setLoadsWakeCallback(std::function<void()>());
+    _imp->closing = true;
     GLContextLoss::releaseNow(this);
     _imp->stopRenderThread();
 }

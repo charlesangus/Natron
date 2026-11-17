@@ -838,6 +838,14 @@ public:
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
+    /**
+     * @brief releaseGL(), but the engine is handed back instead of destroyed: on a stage of a
+     * million prims its destruction takes seconds. Whoever drops the last reference destroys it,
+     * and must have that context current then; nothing else may still edit the stage it listens
+     * to. Null if no engine was held. Needs the context of render() current.
+     **/
+    std::shared_ptr<void> releaseGLKeepingEngine();
+
     // Destroys the Storm engine alone, leaving what draws another delegate's frames. Needs the
     // context of render() current.
     void releaseStormEngine();

@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -71,6 +72,7 @@
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
@@ -1103,6 +1105,28 @@ TEST_F(SceneViewportStorm, TheHeadlightLightsTheShadedSceneOnlyWhenChosen)
     const Rgb offAgain = pixel(render(), 128, 128);
     EXPECT_TRUE((offAgain.r < 40) && (offAgain.g < 40) && (offAgain.b < 40)) << "shaded box, scene lights again: " << offAgain;
     EXPECT_EQ(U64(1), _renderer.getEngineCount()) << "changing the lighting keeps the engine";
+}
+
+TEST_F(SceneViewportStorm, HandsTheEngineBackForItsHolderToDestroy)
+{
+    if (_skip) {
+        return;
+    }
+    EXPECT_EQ(nullptr, _renderer.releaseGLKeepingEngine()) << "no engine is held before the first render";
+    ASSERT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+
+    std::shared_ptr<void> kept = _renderer.releaseGLKeepingEngine();
+    ASSERT_NE(nullptr, kept) << "the engine is handed back, not destroyed";
+    EXPECT_EQ(1, kept.use_count());
+    EXPECT_FALSE(_renderer.hasEngine());
+
+    EXPECT_GT(countNonBackground(render()), 0) << "the next render makes an engine of its own";
+    EXPECT_EQ(U64(2), _renderer.getEngineCount());
+
+    const std::uint64_t sections = StormGLSection::getSectionCount();
+    kept.reset();
+    EXPECT_GT(StormGLSection::getSectionCount(), sections) << "the kept engine is destroyed inside a Storm section";
 }
 
 // The 3D views' lighting is the Viewer 3D Lighting preference: Scene Lights (no headlight) by

@@ -158,17 +158,6 @@ try:
         rg.activate()
         yield ("sleep", SETTLE_MS)
 
-    def dock_panel(node):
-        panel = panel_of(node)
-        require(panel is not None and is_floating(node), "the settings panel of %s floats" % node.getLabel())
-        QMetaObject.invokeMethod(panel, "floatPanel")
-        ok = yield ("until", lambda: panel_of(node) is not None and not is_floating(node), POLL_TIMEOUT_S)
-        require(ok, "docked the settings panel of " + node.getLabel())
-        rg.activate()
-        yield ("sleep", SETTLE_MS)
-        check(bin_order()[:1] == [node.getLabel()], "the docked panel of %s is on top (%r)" %
-              (node.getLabel(), bin_order()))
-
     def bin_order():
         """Labels of the docked panels in properties-bin order, top first."""
         win = rg.main_window()
@@ -338,10 +327,17 @@ try:
         yield from expect("floating Transform expanded", sorted(SHAPE_KEYS + TRANSFORM_KEYS))
 
         gt.section("close")
-        # Closing a floating panel docks it back open on top of the bin, so the Transform is docked
-        # explicitly before it is closed.
-        yield from dock_panel(transform)
-        yield from expect("the Transform docked back on top", TRANSFORM_KEYS)
+        yield from close_panel(transform)
+        check(panel_of(transform) is None, "the floating Transform's panel is not visible")
+        check(transform.getLabel() not in bin_order(), "the closed Transform is not in the properties bin (%r)" %
+              (bin_order(),))
+        check(bin_order()[:1] == [roto.getLabel()], "the Roto's panel is on top (%r)" % (bin_order(),))
+        yield from expect("the floating Transform closed: the Roto's visible page", SHAPE_KEYS)
+        yield from open_panel(transform)
+        check(not is_floating(transform), "the reopened Transform's panel is docked")
+        check(bin_order()[:1] == [transform.getLabel()], "the reopened Transform's panel is on top (%r)" %
+              (bin_order(),))
+        yield from expect("the Transform reopened on top", TRANSFORM_KEYS)
         yield from close_panel(transform)
         yield from expect("the Transform closed", SHAPE_KEYS)
         yield from close_panel(roto)

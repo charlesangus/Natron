@@ -994,14 +994,6 @@ DockablePanel::showHelp()
 void
 DockablePanel::setClosed(bool c)
 {
-    // setClosedInternal() docks a floating panel back open, which suits the user closing its window
-    // but would leave the panel of a deleted node open on top of the properties bin.
-    if (c && _imp->_floating) {
-        releaseFloatingWindow();
-        if (_imp->_container) {
-            setParent(_imp->_container->parentWidget());
-        }
-    }
     setVisible(!c);
 
     setClosedInternal(c);
@@ -1052,9 +1044,16 @@ DockablePanel::setClosedInternal(bool c)
 
 
     if (_imp->_floating) {
-        floatPanel();
+        if (!c) {
+            floatPanel();
 
-        return;
+            return;
+        }
+        // Docking the panel back would reopen it on top of the bin and could evict another panel.
+        releaseFloatingWindow();
+        if (_imp->_container) {
+            setParent(_imp->_container->parentWidget());
+        }
     }
 
     if (!c) {

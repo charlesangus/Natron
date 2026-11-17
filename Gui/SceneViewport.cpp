@@ -182,10 +182,9 @@ const int kMaxRenderPasses = 8;
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
 const int kPresentPollMs = 2;
-// A render-thread job past this long holds the widget's paints until it is over: making the
-// widget's context current waits on the driver while the render thread's context, of the same
-// share group, is inside a render.
-const int kHoldRepaintAfterMs = 50;
+// The longest a frame waits after the paint that asked for it for the window's composition, which
+// a window not shown on screen never does.
+const int kFrameStartFallbackMs = 50;
 // The longest a sync's first frame waits for the graph policy its prims take: past it, the view
 // draws them as they are rather than seem stuck.
 const int kPolicyHoldMs = 500;
@@ -1258,6 +1257,19 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
+    // Needs stageMutex.
+    void chooseRenderer(const std::string& id)
+    {
+        {
+            std::lock_guard<std::mutex> idLock(rendererIdMutex);
+            rendererChoice = id.empty() ? std::string(kRenderDelegateStormId) : id;
+        }
+        // The error is cleared even for the same id, so that choosing it again retries it.
+        setRendererErrorCopy(std::string());
+        setRefineErrorCopy(std::string());
+        switchRenderer(effectiveRenderer());
+    }
+
     std::shared_ptr<const StageSummary> getStageSummary() const
     {
         std::lock_guard<std::mutex> lock(summaryMutex);
@@ -1813,9 +1825,15 @@ struct SceneViewportRenderer::Implementation {
     // Needs stageMutex and a current GL context. Every GL object, the engine first.
     void releaseHeldGL()
     {
+        releaseBoxesGL();
+        releaseEngineHeldGL();
+    }
+
+    // Needs stageMutex and a current GL context. Every GL object but the overlays', the engine first.
+    void releaseEngineHeldGL()
+    {
         dropEngine();
         releaseGrade();
-        releaseBoxesGL();
         if (refineTexture) {
             glDeleteTextures(1, &refineTexture);
             glDeleteBuffers(1, &refineDepthBuffer);
@@ -4454,6 +4472,19 @@ SceneViewportRenderer::releaseStormEngine()
     _imp->dropEngine();
 }
 
+bool
+SceneViewportRenderer::tryReleaseStormEngine()
+{
+    std::unique_lock<std::shared_mutex> lock;
+
+    if (!_imp->tryLockExclusive(&lock)) {
+        return false;
+    }
+    _imp->dropEngine();
+
+    return true;
+}
+
 void
 SceneViewportRenderer::pan(double dxPixels,
                            double dyPixels,
@@ -5498,18 +5529,45 @@ SceneViewportRenderer::releaseGL()
 }
 
 void
+SceneViewportRenderer::releaseEngineGL()
+{
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+
+    _imp->releaseEngineHeldGL();
+}
+
+bool
+SceneViewportRenderer::tryReleaseGL()
+{
+    std::unique_lock<std::shared_mutex> lock;
+
+    if (!_imp->tryLockExclusive(&lock)) {
+        return false;
+    }
+    _imp->releaseHeldGL();
+
+    return true;
+}
+
+void
 SceneViewportRenderer::setRendererId(const std::string& id)
 {
     const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
 
-    {
-        std::lock_guard<std::mutex> idLock(_imp->rendererIdMutex);
-        _imp->rendererChoice = id.empty() ? std::string(kRenderDelegateStormId) : id;
+    _imp->chooseRenderer(id);
+}
+
+bool
+SceneViewportRenderer::trySetRendererId(const std::string& id)
+{
+    std::unique_lock<std::shared_mutex> lock;
+
+    if (!_imp->tryLockExclusive(&lock)) {
+        return false;
     }
-    // The error is cleared even for the same id, so that choosing it again retries it.
-    _imp->setRendererErrorCopy(std::string());
-    _imp->setRefineErrorCopy(std::string());
-    _imp->switchRenderer(_imp->effectiveRenderer());
+    _imp->chooseRenderer(id);
+
+    return true;
 }
 
 bool
@@ -6463,8 +6521,11 @@ struct SceneViewport::Implementation {
         std::condition_variable changed;
         std::deque<std::function<void()>> jobs;
         bool quit = false;
-        // When the job running started, in steady_clock nanoseconds; 0 while the thread is idle.
-        std::atomic<long long> jobStartedNs { 0 };
+        // Jobs posted and not yet over, the one running included.
+        std::atomic<int> outstanding { 0 };
+        // Called with mutex held when the last job outstanding is over, so that clearing it under
+        // the mutex leaves no call in flight to a view that has gone.
+        std::function<void()> idle;
         // Declared last: it starts in the constructor, on the members above.
         std::thread thread;
 
@@ -6488,9 +6549,11 @@ struct SceneViewport::Implementation {
                     job = std::move(jobs.front());
                     jobs.pop_front();
                 }
-                jobStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
                 job();
-                jobStartedNs = 0;
+                std::lock_guard<std::mutex> lock(mutex);
+                if ((--outstanding == 0) && idle) {
+                    idle();
+                }
             }
         }
 
@@ -6498,9 +6561,16 @@ struct SceneViewport::Implementation {
         {
             {
                 std::lock_guard<std::mutex> lock(mutex);
+                ++outstanding;
                 jobs.push_back(std::move(job));
             }
             changed.notify_one();
+        }
+
+        void setIdle(std::function<void()> callback)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            idle = std::move(callback);
         }
 
         // Runs the jobs posted so far, then joins the thread.
@@ -6546,6 +6616,38 @@ struct SceneViewport::Implementation {
     std::unique_ptr<QOffscreenSurface> renderSurface;
     // Render thread: its context, sharing the widget's.
     std::unique_ptr<QOpenGLContext> renderContext;
+    // Main thread: the share group of renderContext once made, null while it is being made again.
+    // A widget context of this group, after a reparent, uses the render thread as it is.
+    QOpenGLContextGroup* renderShareGroup = nullptr;
+    // The widget's context is gone and no new one has come: no frame starts meanwhile.
+    bool widgetContextLost = false;
+    // Render contexts being made again, for a widget context of another share group.
+    int renderContextRebuilds = 0;
+    // The context a render context being made again shares with. The render thread makes it under
+    // the mutex, and the main thread, before that context dies, takes it away and bumps the
+    // generation under it, so the render thread never shares with a dead context.
+    std::mutex rebuildShareMutex;
+    QOpenGLContext* rebuildShare = nullptr;
+    U64 rebuildShareGeneration = 0;
+    // Main thread. The widget's updates are off while the render thread has work, so that neither
+    // a paint nor the window's composition it would bring waits on the driver for that work.
+    bool paintsHeld = false;
+    // A resize came while paints were held: QOpenGLWidget's own makes its context current.
+    bool resizeOwed = false;
+    QSize resizeOwedFrom;
+    // A paint asked for a frame, which starts once the window has composed that paint.
+    bool frameStartOwed = false;
+    QTimer* frameStartFallback = nullptr;
+    // The overlays' GL objects go at the next paint, in the widget's context.
+    bool overlayGLReleaseOwed = false;
+    // An engine release posted to the render thread has not come back.
+    bool engineReleaseRunning = false;
+    // Without a render thread, an engine release or a renderer switch that found the viewer lock
+    // held, carried out when it is let go.
+    bool engineReleaseOwed = false;
+    bool engineReleaseOwedStorm = false;
+    std::optional<std::string> rendererIdOwed;
+    QString rendererIdOwedName;
     // Main thread: asks for the paint held back once the long render-thread job is over.
     QTimer* holdPoll = nullptr;
     // Render thread, but for readFence, which the main thread sets once it has copied the target
@@ -6575,8 +6677,19 @@ struct SceneViewport::Implementation {
     // Main thread, and the render thread while the main thread waits for it.
     ScenePresentPacer<PresentFrame> presentPacer {
         [](void* fence) { return glClientWaitSync(static_cast<GLsync>(fence), 0, 0) != GL_TIMEOUT_EXPIRED; },
-        [](void* fence) { glDeleteSync(static_cast<GLsync>(fence)); }
+        [this](void* fence) { releaseFence(static_cast<GLsync>(fence)); }
     };
+
+    // Main thread. A sync object belongs to the share group, so the render thread can delete one
+    // when no context is current here, and making the widget's current could wait out a render.
+    void releaseFence(GLsync fence)
+    {
+        if (QOpenGLContext::currentContext()) {
+            glDeleteSync(fence);
+        } else if (renderLoop) {
+            postToRenderThread([fence]() { glDeleteSync(fence); });
+        }
+    }
     // Main thread: the frame in presentPacer's front target, which every paint shows until a newer
     // one is finished, whatever the camera or size has become since.
     std::optional<PresentFrame> frontFrame;
@@ -6681,7 +6794,12 @@ struct SceneViewport::Implementation {
     // behind.
     bool renderThreadBusy() const
     {
-        return backgroundFrameRunning || rendererSwitchRunning || (drawJobsQueued > 0);
+        return backgroundFrameRunning || rendererSwitchRunning || (drawJobsQueued > 0) || (renderContextRebuilds > 0) || engineReleaseRunning;
+    }
+
+    bool engineReleasePending() const
+    {
+        return engineReleaseRunning || engineReleaseOwed;
     }
 
     // What a frame is drawn for, as scripts see it and as a paint tells a frame of an older view by.
@@ -6715,9 +6833,15 @@ struct SceneViewport::Implementation {
     QElapsedTimer composingClock;
     QTimer* composingTimer = nullptr;
 
+    // Main thread: holds the paints from now, before any update() after the post can compose.
+    std::function<void()> renderJobPosted;
+
     void postToRenderThread(std::function<void()> job)
     {
         renderLoop->post(std::move(job));
+        if (renderJobPosted) {
+            renderJobPosted();
+        }
     }
 
     // Waits for job, after any job before it. The caller's own state is safe for job to read, as
@@ -6728,7 +6852,8 @@ struct SceneViewport::Implementation {
         std::condition_variable doneChanged;
         bool done = false;
 
-        postToRenderThread([&]() {
+        // The main thread paints nothing while it waits, so the paints need no hold.
+        renderLoop->post([&]() {
             job();
             std::lock_guard<std::mutex> lock(doneMutex);
             done = true;
@@ -6739,10 +6864,14 @@ struct SceneViewport::Implementation {
         doneChanged.wait(lock, [&done]() { return done; });
     }
 
+    // Main thread: asked on the render thread once it has no job left.
+    std::function<void()> renderLoopIdle;
+
     void startRenderThread()
     {
         if (!renderLoop) {
             renderLoop.reset(new RenderLoop());
+            renderLoop->setIdle(renderLoopIdle);
         }
     }
 
@@ -6763,43 +6892,42 @@ struct SceneViewport::Implementation {
             return false;
         }
         startRenderThread();
-        bool started = false;
-        callOnRenderThread([&]() {
-            renderContext.reset(new QOpenGLContext());
-            renderContext->setFormat(share->format());
-            renderContext->setShareContext(share);
-            started = renderContext->create() && QOpenGLContext::areSharing(renderContext.get(), share) && renderContext->makeCurrent(renderSurface.get());
-            if (!started) {
-                renderContext.reset();
-            }
-        });
-        if (!started) {
+        QOpenGLContextGroup* group = nullptr;
+        callOnRenderThread([&]() { group = makeRenderContext(share); });
+        if (!group) {
             renderSurface.reset();
         }
-        usesRenderThread = started;
+        renderShareGroup = group;
+        usesRenderThread = bool(group);
+        widgetContextLost = false;
 
-        return started;
+        return usesRenderThread;
     }
 
-    // How long the render thread has been on its job, 0 when idle. Main thread.
-    double renderJobRunningMs() const
+    // Render thread, renderSurface made. The new context's share group, null if it could not be made.
+    QOpenGLContextGroup* makeRenderContext(QOpenGLContext* share)
     {
-        if (!renderLoop) {
-            return 0.;
-        }
-        const long long startedNs = renderLoop->jobStartedNs;
-        if (!startedNs) {
-            return 0.;
-        }
-        const long long nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        renderContext.reset(new QOpenGLContext());
+        renderContext->setFormat(share->format());
+        renderContext->setShareContext(share);
+        if (!renderContext->create() || !QOpenGLContext::areSharing(renderContext.get(), share) || !renderContext->makeCurrent(renderSurface.get())) {
+            renderContext.reset();
 
-        return double(nowNs - startedNs) / 1e6;
+            return nullptr;
+        }
+
+        return renderContext->shareGroup();
     }
 
-    // Whether the widget's context is kept from being made current now.
+    /**
+     * Whether the widget's context is kept from being made current now: while the render thread
+     * has any job, from the moment it is posted. The driver serialises making a context current
+     * against the work of another context of the share group, so a paint inside a job, however
+     * short, would wait for it on the main thread; held, it waits on the event loop instead.
+     **/
     bool holdsPaints() const
     {
-        return usesRenderThread && (renderJobRunningMs() >= kHoldRepaintAfterMs);
+        return usesRenderThread && renderLoop && (renderLoop->outstanding.load() > 0);
     }
 
     // Render thread. Target index of a width x height frame, reallocated when the size changes.
@@ -6843,7 +6971,6 @@ struct SceneViewport::Implementation {
     // Render thread.
     void releaseRenderTargets()
     {
-        presentPacer.clear();
         for (RenderTarget& target : renderTargets) {
             glDeleteFramebuffers(1, &target.fbo);
             glDeleteTextures(1, &target.texture);
@@ -6855,13 +6982,18 @@ struct SceneViewport::Implementation {
         }
     }
 
-    // Render thread: everything of the render context, the engine first.
-    void releaseRenderContext()
+    // Render thread: everything of the render context, the engine first. The overlays' GL objects
+    // too unless overlays is false, for when the widget's context may have made them anew.
+    void releaseRenderContext(bool overlays = true)
     {
         if (!renderContext) {
             return;
         }
-        renderer.releaseGL();
+        if (overlays) {
+            renderer.releaseGL();
+        } else {
+            renderer.releaseEngineGL();
+        }
         releaseRenderTargets();
         renderContext->doneCurrent();
         renderContext.reset();
@@ -6870,11 +7002,15 @@ struct SceneViewport::Implementation {
     // Main thread. Lets the render thread go with its context and the engine, without waiting for
     // the engine to be destroyed: the scene teardown joins the thread once it has destroyed it.
     // That keeps readers' scopes held meanwhile, so no layer reload edits the stage it listens to.
+    // The wait here is for the job running, whose frame is cancelled: the worker and the load
+    // thread are joined by then, and the widget's own context, going next, would wait out that
+    // job's GL work on the driver all the same.
     void retireRenderLoop()
     {
         std::shared_ptr<void> engine;
         std::shared_ptr<QOpenGLContext> context;
 
+        renderLoop->setIdle(std::function<void()>());
         callOnRenderThread([this, &engine, &context]() {
             engine = renderer.releaseGLKeepingEngine();
             releaseRenderTargets();
@@ -6893,9 +7029,19 @@ struct SceneViewport::Implementation {
         SceneTeardown::releaseHeld(std::move(retired));
     }
 
-    // Main thread, the widget's context current, with the engine's context dying or the widget going.
+    /**
+     * Main thread, the widget's context current, with that context dying or the widget going.
+     * A view that stays keeps its render thread, context and engine: the next widget context
+     * usually shares with them, and otherwise the render thread makes its context again, the engine
+     * going first under the viewer lock, without the main thread waiting for either.
+     **/
     void releaseGLResources()
     {
+        {
+            std::lock_guard<std::mutex> lock(rebuildShareMutex);
+            rebuildShare = nullptr;
+            ++rebuildShareGeneration;
+        }
         if (!usesRenderThread) {
             renderer.releaseGL();
 
@@ -6903,12 +7049,10 @@ struct SceneViewport::Implementation {
         }
         // The overlays are drawn in the widget's context, not the render thread's.
         renderer.releaseOverlayGL();
-        // A view that stays keeps editing the stage the engine listens to, so its engine goes now.
-        if (closing) {
-            retireRenderLoop();
-        } else {
-            callOnRenderThread([this]() { releaseRenderContext(); });
-        }
+        overlayGLReleaseOwed = false;
+        // A frame of the old widget context's share group is never shown.
+        renderer.cancelBackgroundFrame();
+        presentPacer.clear();
         ++renderContextGeneration;
         frontFrame.reset();
         renderer.forgetBackgroundView();
@@ -6917,10 +7061,16 @@ struct SceneViewport::Implementation {
             glDeleteFramebuffers(1, &presentFbo);
             presentFbo = 0;
         }
+        presentedScene = false;
+        if (!closing) {
+            widgetContextLost = true;
+
+            return;
+        }
+        retireRenderLoop();
         renderSurface.reset();
         usesRenderThread = false;
         backgroundFrameRunning = false;
-        presentedScene = false;
     }
 
     void stopRenderThread()
@@ -6928,7 +7078,9 @@ struct SceneViewport::Implementation {
         if (!renderLoop) {
             return;
         }
-        postToRenderThread([this]() { releaseRenderContext(); });
+        renderLoop->setIdle(std::function<void()>());
+        presentPacer.clear();
+        renderLoop->post([this]() { releaseRenderContext(); });
         renderLoop.reset();
     }
 
@@ -7085,13 +7237,17 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->holdPoll = new QTimer(this);
     _imp->holdPoll->setSingleShot(true);
     _imp->holdPoll->setInterval(10);
-    QObject::connect(_imp->holdPoll, &QTimer::timeout, this, [this]() {
-        if (_imp->holdsPaints()) {
-            _imp->holdPoll->start();
-        } else {
-            update();
-        }
-    });
+    QObject::connect(_imp->holdPoll, &QTimer::timeout, this, [this]() { refreshPaintHold(); });
+    _imp->renderJobPosted = [this]() { refreshPaintHold(); };
+    // Queued: it runs on the render thread, under the loop's mutex.
+    _imp->renderLoopIdle = [this]() { QMetaObject::invokeMethod(this, [this]() { refreshPaintHold(); }, Qt::QueuedConnection); };
+    _imp->frameStartFallback = new QTimer(this);
+    _imp->frameStartFallback->setSingleShot(true);
+    _imp->frameStartFallback->setInterval(kFrameStartFallbackMs);
+    QObject::connect(_imp->frameStartFallback, &QTimer::timeout, this, [this]() { startOwedFrame(); });
+    // Emitted once the window has composed: a frame started before would hold the driver while the
+    // composition makes the window's context current.
+    QObject::connect(this, &QOpenGLWidget::frameSwapped, this, [this]() { startOwedFrame(); });
     _imp->standInRefillTimer = new QTimer(this);
     _imp->standInRefillTimer->setSingleShot(true);
     _imp->standInRefillTimer->setTimerType(Qt::PreciseTimer);
@@ -7475,8 +7631,9 @@ epochMs()
 void
 SceneViewport::startBackgroundFrame()
 {
-    // One frame on the GPU at a time: its target is the one this frame would draw into.
-    if (!_imp->usesRenderThread || _imp->renderThreadBusy() || _imp->presentPacer.inFlight() || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn() || _imp->policyHeld()) {
+    // One frame on the GPU at a time: its target is the one this frame would draw into. A finished
+    // frame is shown first, as the paint that shows it would be held behind the next.
+    if (!_imp->usesRenderThread || _imp->widgetContextLost || _imp->renderThreadBusy() || _imp->presentPacer.pending() || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn() || _imp->policyHeld()) {
         return;
     }
     const qreal dpr = devicePixelRatio();
@@ -7529,15 +7686,7 @@ SceneViewport::startBackgroundFrame()
                 publishStormFrame(this, startMs, costMs);
             }
             if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
-                // Replacing a frame still on the GPU releases its fence, which needs a context.
-                const bool replaces = _imp->presentPacer.inFlight();
-                if (replaces) {
-                    makeCurrent();
-                }
                 _imp->presentPacer.submitted(fence, finished);
-                if (replaces) {
-                    doneCurrent();
-                }
                 if (!_imp->presentPoll->isActive()) {
                     _imp->presentPoll->start();
                 }
@@ -7571,7 +7720,165 @@ SceneViewport::onBackgroundFrameDone()
     startBackgroundFrame();
     serviceDeferredInput();
     publishState();
+    refreshPaintHold();
     update();
+}
+
+void
+SceneViewport::refreshPaintHold()
+{
+    const bool hold = _imp->holdsPaints();
+
+    if (hold != _imp->paintsHeld) {
+        _imp->paintsHeld = hold;
+        // With its updates off, an update() asks the window for no composition either.
+        setUpdatesEnabled(!hold);
+        if (!hold) {
+            if (_imp->resizeOwed) {
+                _imp->resizeOwed = false;
+                QResizeEvent resize(size(), _imp->resizeOwedFrom);
+                QOpenGLWidget::resizeEvent(&resize);
+            }
+            update();
+        }
+    }
+    if (hold && !_imp->holdPoll->isActive()) {
+        _imp->holdPoll->start();
+    }
+}
+
+void
+SceneViewport::startOwedFrame()
+{
+    if (!_imp->frameStartOwed) {
+        return;
+    }
+    _imp->frameStartOwed = false;
+    _imp->frameStartFallback->stop();
+    Implementation* imp = _imp.get();
+    startBackgroundFrame();
+    if (imp->presentPacer.inFlight() && !imp->presentPoll->isActive()) {
+        imp->presentPoll->start();
+    }
+    if (!imp->renderThreadBusy() && !imp->presentPacer.inFlight() && !imp->stageAwaitsTakeIn() && imp->renderer.needsBackgroundFrame() && !imp->standInHoldsFrames()) {
+        // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
+        update();
+    }
+}
+
+void
+SceneViewport::rebuildRenderContext()
+{
+    Implementation* imp = _imp.get();
+    U64 shareGeneration = 0;
+
+    ++imp->renderContextGeneration;
+    imp->renderShareGroup = nullptr;
+    ++imp->renderContextRebuilds;
+    {
+        std::lock_guard<std::mutex> lock(imp->rebuildShareMutex);
+        imp->rebuildShare = context();
+        shareGeneration = ++imp->rebuildShareGeneration;
+    }
+    imp->postToRenderThread([this, imp, shareGeneration]() {
+        // The viewer lock is taken here, not on the main thread: a sync may hold it for seconds.
+        imp->releaseRenderContext(false);
+        QOpenGLContextGroup* group = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(imp->rebuildShareMutex);
+            if (imp->rebuildShare && (imp->rebuildShareGeneration == shareGeneration)) {
+                group = imp->makeRenderContext(imp->rebuildShare);
+            }
+        }
+        // Dropped by Qt if the widget is gone by then.
+        QMetaObject::invokeMethod(this, [this, shareGeneration, group]() { onRenderContextRebuilt(shareGeneration, group); }, Qt::QueuedConnection);
+    });
+}
+
+void
+SceneViewport::onRenderContextRebuilt(U64 shareGeneration,
+                                      QOpenGLContextGroup* group)
+{
+    --_imp->renderContextRebuilds;
+    bool latest = false;
+    {
+        std::lock_guard<std::mutex> lock(_imp->rebuildShareMutex);
+        latest = (shareGeneration == _imp->rebuildShareGeneration);
+    }
+    // A later rebuild, or the next initializeGL(), answers for the newer widget context.
+    if (latest) {
+        if (group) {
+            _imp->renderShareGroup = group;
+        } else {
+            // The loop stays, idle, until the widget goes: joining it here could wait on the viewer
+            // lock for draw changes still queued. The engine is made again in the widget's context.
+            _imp->usesRenderThread = false;
+            _imp->backgroundFrameRunning = false;
+            _imp->renderSurface.reset();
+        }
+    }
+    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
+        followSceneRenderer();
+    }
+    startBackgroundFrame();
+    serviceDeferredInput();
+    publishState();
+    refreshPaintHold();
+    update();
+}
+
+void
+SceneViewport::onEngineReleased()
+{
+    _imp->engineReleaseRunning = false;
+    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
+        followSceneRenderer();
+    }
+    startBackgroundFrame();
+    serviceDeferredInput();
+    publishState();
+    refreshPaintHold();
+    update();
+}
+
+void
+SceneViewport::serviceOwedEngineWork()
+{
+    if (_imp->usesRenderThread) {
+        return;
+    }
+    if (_imp->engineReleaseOwed) {
+        const bool storm = _imp->engineReleaseOwedStorm;
+        bool released = true;
+        if (_imp->glInitialized && context()) {
+            runWithEngineContext([this, storm, &released]() { released = storm ? _imp->renderer.tryReleaseGL() : _imp->renderer.tryReleaseStormEngine(); });
+        }
+        if (released) {
+            _imp->engineReleaseOwed = false;
+            publishState();
+            update();
+        }
+    }
+    if (_imp->rendererIdOwed) {
+        bool switched = false;
+        const std::string renderer = *_imp->rendererIdOwed;
+        runWithEngineContext([this, &renderer, &switched]() { switched = _imp->renderer.trySetRendererId(renderer); });
+        if (!switched) {
+            return;
+        }
+        const QString id = _imp->rendererIdOwedName;
+        _imp->rendererIdOwed.reset();
+        publishState();
+        _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
+        const QSize before = size();
+        Q_EMIT rendererChanged(id);
+        // The render row shown or hidden lays the view out at once, and QOpenGLWidget paints in its
+        // resize: a repaint asked for as well would draw the frame twice, a whole Storm frame on
+        // software GL.
+        if (!isVisible() || (size() == before)) {
+            update();
+        }
+    }
 }
 
 void
@@ -7589,6 +7896,7 @@ SceneViewport::onDrawChangesTakenIn()
     startBackgroundFrame();
     serviceDeferredInput();
     publishState();
+    refreshPaintHold();
     update();
 }
 
@@ -7642,6 +7950,7 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
 void
 SceneViewport::serviceDeferredInput()
 {
+    serviceOwedEngineWork();
     if (_imp->previewClearOwed) {
         _imp->clearPreview();
         if (!_imp->previewClearOwed) {
@@ -8456,7 +8765,8 @@ SceneViewport::publishState()
     setProperty("natronSceneSyncRequests", QVariant::fromValue<qulonglong>(_imp->requestedSerial));
     setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
-    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    // A release posted or owed has let go of the engine, as far as anyone may use it.
+    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine() && !_imp->engineReleasePending());
     // The free camera's view (perspective, front, back, right, left, top or bottom), its clip
     // planes (automatic, near, far), whether the view is locked to the camera looked through, and
     // why the last move of a locked camera could not be made.
@@ -8594,17 +8904,10 @@ SceneViewport::setRendererId(const QString& id)
     if (!_imp->usesRenderThread) {
         ++_imp->rendererSwitchLatest;
         _imp->rendererSwitchRunning = false;
-        runWithEngineContext([this, &renderer]() { _imp->renderer.setRendererId(renderer); });
-        publishState();
-        _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
-        const QSize before = size();
-        Q_EMIT rendererChanged(id);
-        // The render row shown or hidden lays the view out at once, and QOpenGLWidget paints in its
-        // resize: a repaint asked for as well would draw the frame twice, a whole Storm frame on
-        // software GL.
-        if (!isVisible() || (size() == before)) {
-            update();
-        }
+        // A sync may hold the viewer lock for seconds: the switch waits for it to let go instead.
+        _imp->rendererIdOwed = renderer;
+        _imp->rendererIdOwedName = id;
+        serviceOwedEngineWork();
 
         return;
     }
@@ -9529,22 +9832,28 @@ SceneViewport::releaseEngine()
     // Another delegate's render holds host memory and keeps going; only the Storm engine kept
     // behind it goes.
     const bool storm = RenderDelegates::isStorm(_imp->renderer.getActiveRendererId());
-    if (_imp->glInitialized && context()) {
-        // A background frame would keep the main thread waiting for the rest of its passes.
+    if (_imp->glInitialized && context() && _imp->usesRenderThread) {
+        // A background frame would hold the render thread for the rest of its passes.
         _imp->renderer.cancelBackgroundFrame();
-        if (storm && _imp->usesRenderThread) {
-            // The overlays' GL objects are the widget's context's.
-            makeCurrent();
-            _imp->renderer.releaseOverlayGL();
-            doneCurrent();
-        }
-        runWithEngineContext([this, storm]() {
+        // The overlays' GL objects are the widget's context's, which the next paint has current:
+        // making it current here would wait out a render on the driver.
+        _imp->overlayGLReleaseOwed = _imp->overlayGLReleaseOwed || storm;
+        _imp->engineReleaseRunning = true;
+        Implementation* imp = _imp.get();
+        // The render thread waits for the viewer lock, which a sync may hold for seconds.
+        _imp->postToRenderThread([this, imp, storm]() {
             if (storm) {
-                _imp->renderer.releaseGL();
+                imp->renderer.releaseEngineGL();
             } else {
-                _imp->renderer.releaseStormEngine();
+                imp->renderer.releaseStormEngine();
             }
+            // Dropped by Qt if the widget is gone by then.
+            QMetaObject::invokeMethod(this, [this]() { onEngineReleased(); }, Qt::QueuedConnection);
         });
+    } else if (_imp->glInitialized && context()) {
+        _imp->engineReleaseOwed = true;
+        _imp->engineReleaseOwedStorm = storm;
+        serviceOwedEngineWork();
     }
     if (storm) {
         _imp->renderer.releaseRefinement();
@@ -9564,9 +9873,17 @@ void
 SceneViewport::initializeGL()
 {
     _imp->glInitialized = true;
-    _imp->startRenderContext(context());
-    // A new context (the pane was floated or docked) cannot use the old one's engine, and the engine
-    // context shared with the old one has to go with it.
+    if (_imp->usesRenderThread && _imp->renderLoop) {
+        // The pane was floated or docked. A widget context of the render context's share group
+        // sees the engine's objects and the frames as they are; another needs both made again.
+        _imp->widgetContextLost = false;
+        if (context()->shareGroup() != _imp->renderShareGroup) {
+            rebuildRenderContext();
+        }
+        update();
+    } else {
+        _imp->startRenderContext(context());
+    }
     GLContextLoss::watch(this, [this]() {
         _imp->releaseGLResources();
     });
@@ -9587,9 +9904,7 @@ SceneViewport::paintEvent(QPaintEvent* e)
         // QOpenGLWidget's paint makes the widget's context current, which waits on the driver for
         // as long as the render thread's context, of the same share group, is inside a render. The
         // widget's framebuffer keeps the last image for the window to compose meanwhile.
-        if (!_imp->holdPoll->isActive()) {
-            _imp->holdPoll->start();
-        }
+        refreshPaintHold();
 
         return;
     }
@@ -9597,8 +9912,46 @@ SceneViewport::paintEvent(QPaintEvent* e)
 }
 
 void
+SceneViewport::resizeEvent(QResizeEvent* e)
+{
+    if (_imp->holdsPaints()) {
+        // QOpenGLWidget's resize makes the widget's context current to make its framebuffer anew,
+        // and paints. The window composes the old framebuffer stretched meanwhile.
+        if (!_imp->resizeOwed) {
+            _imp->resizeOwed = true;
+            _imp->resizeOwedFrom = e->oldSize();
+        }
+        refreshPaintHold();
+
+        return;
+    }
+    if (_imp->resizeOwed) {
+        _imp->resizeOwed = false;
+        QResizeEvent resize(e->size(), _imp->resizeOwedFrom);
+        QOpenGLWidget::resizeEvent(&resize);
+
+        return;
+    }
+    QOpenGLWidget::resizeEvent(e);
+}
+
+void
 SceneViewport::paintGL()
 {
+    if (_imp->overlayGLReleaseOwed) {
+        _imp->overlayGLReleaseOwed = false;
+        _imp->renderer.releaseOverlayGL();
+    }
+    if (_imp->usesRenderThread && ((_imp->renderContextRebuilds > 0) || _imp->engineReleaseRunning)) {
+        // A paint outside the hold, as a framebuffer grab: the render thread is releasing GL objects
+        // the overlays and the refinement share, and the next paint after it shows the scene.
+        float background[3];
+        _imp->renderer.getBackgroundColor(background);
+        glClearColor(background[0], background[1], background[2], 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        return;
+    }
     if (_imp->syncedSerial < _imp->paintHeldUntilSerial) {
         // onSynced asks for the repaint.
         return;
@@ -9632,16 +9985,13 @@ SceneViewport::paintGL()
         imp->updateStandInLatch(view);
         imp->renderer.setStandIn(imp->standInWanted(), imp->standInByModel);
         standInShown = !blank && ((imp->standInMode == Settings::eSceneStandInModeAlways) || imp->standInLatched);
-        // The paint never renders: a frame for this camera and size starts on the render thread,
-        // and the poll that finds it finished asks for the paint that shows it. Until then the last
-        // frame stays up, whatever camera or size it was made for.
-        startBackgroundFrame();
-        if (imp->presentPacer.inFlight() && !imp->presentPoll->isActive()) {
-            imp->presentPoll->start();
-        }
-        if (!imp->renderThreadBusy() && !imp->presentPacer.inFlight() && !imp->stageAwaitsTakeIn() && imp->renderer.needsBackgroundFrame() && !imp->standInHoldsFrames()) {
-            // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
-            update();
+        // The paint never renders: a frame for this camera and size starts on the render thread
+        // once the window has composed this paint, and the poll that finds it finished asks for
+        // the paint that shows it. Until then the last frame stays up, whatever camera or size it
+        // was made for.
+        if (!imp->frameStartOwed) {
+            imp->frameStartOwed = true;
+            imp->frameStartFallback->start();
         }
         if (imp->standInLatched && imp->viewMoving()) {
             // The camera's moves ask for paints until it stops; this one is for the refill after.
@@ -9786,7 +10136,8 @@ SceneViewport::paintGL()
     setProperty("natronSceneSynced", isSceneSynced());
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
-    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    // A release posted or owed has let go of the engine, as far as anyone may use it.
+    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine() && !_imp->engineReleasePending());
     const QString renderError = QString::fromStdString(_imp->renderer.takeRenderError());
     if (!renderError.isEmpty()) {
         _imp->error = renderError;

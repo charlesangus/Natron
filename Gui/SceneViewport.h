@@ -55,6 +55,8 @@
 class QContextMenuEvent;
 class QKeyEvent;
 class QMouseEvent;
+class QOpenGLContextGroup;
+class QResizeEvent;
 class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
@@ -840,6 +842,14 @@ public:
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
+    // releaseGL() but for the overlays' GL objects, which releaseOverlayGL() frees in the context
+    // they are drawn in. Needs the context of render() current.
+    void releaseEngineGL();
+
+    // releaseGL(), unless the viewer lock is held: false then, doing nothing. Whoever holds it
+    // lets the viewport know when it lets go, as for followSceneRenderer().
+    bool tryReleaseGL();
+
     /**
      * @brief releaseGL(), but the engine is handed back instead of destroyed: on a stage of a
      * million prims its destruction takes seconds. Whoever drops the last reference destroys it,
@@ -852,6 +862,9 @@ public:
     // context of render() current.
     void releaseStormEngine();
 
+    // releaseStormEngine(), unless the viewer lock is held, as tryReleaseGL().
+    bool tryReleaseStormEngine();
+
     /**
      * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
      * empty id. kRenderDelegateSceneDefaultId renders with the renderer the stage's active render
@@ -861,6 +874,9 @@ public:
      * releaseGL() or releaseStormEngine() frees it.
      **/
     void setRendererId(const std::string& id);
+
+    // setRendererId(), unless the viewer lock is held, as tryReleaseGL().
+    bool trySetRendererId(const std::string& id);
 
     // The renderer chosen: a delegate's id, or kRenderDelegateSceneDefaultId.
     std::string getRendererId() const;
@@ -1143,7 +1159,7 @@ public:
      * again would mean syncing the whole scene again. While another delegate renders, only the
      * Storm engine kept behind it goes, and that render goes on. A scene showing live textures is
      * requested again, as the store they live in is emptied alongside, and the repaint waits for
-     * that sync. Main thread; waits for a sync under way.
+     * that sync. Main thread; never waits for a sync under way, the engine going once it ends.
      **/
     void releaseEngine();
 
@@ -1280,6 +1296,7 @@ protected:
     void resizeGL(int w, int h) override;
     void paintGL() override;
     void paintEvent(QPaintEvent* e) override;
+    void resizeEvent(QResizeEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
@@ -1388,6 +1405,28 @@ private:
     void publishDrawStats();
 
     void onBackgroundFrameDone();
+
+    // Main thread: turns the widget's updates off while the render thread has work, and back on,
+    // asking for the paint held back and carrying out a resize held back, once it has none.
+    void refreshPaintHold();
+
+    // Main thread: starts the frame a paint asked for, once the window has composed that paint.
+    void startOwedFrame();
+
+    // Main thread, the widget's new context current: has the render thread make its context again
+    // sharing that one, the old engine going first, without waiting for it.
+    void rebuildRenderContext();
+
+    // Main thread: the render thread made its context again for the widget context numbered
+    // shareGeneration, of share group group, or could not if group is null.
+    void onRenderContextRebuilt(U64 shareGeneration, QOpenGLContextGroup* group);
+
+    // Main thread: the render thread released the engine for releaseEngine().
+    void onEngineReleased();
+
+    // Main thread, without a render thread: an engine release or a renderer switch that found the
+    // viewer lock held, tried again.
+    void serviceOwedEngineWork();
 
     // Main thread: the render thread took in draw changes posted to it.
     void onDrawChangesTakenIn();

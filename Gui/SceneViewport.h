@@ -231,6 +231,12 @@ public:
      **/
     void setReadEndedCallback(const std::function<void()>& callback);
 
+    /**
+     * @brief Called, on any thread, when stage loads held back for a scene being torn down can
+     * run. Cleared by the owner before it is destroyed.
+     **/
+    void setLoadsWakeCallback(const std::function<void()>& callback);
+
     // The shown stage's edit count, without the lock: 0 before the first sync.
     U64 getStageEditCount() const;
 

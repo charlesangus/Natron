@@ -858,6 +858,19 @@ isStalePendingLayer(const PXR_NS::SdfLayerRefPtr& layer)
     return !FileStampRegistry::instance().matchesDisk(path);
 }
 
+std::vector<PXR_NS::SdfLayerRefPtr>
+withoutStalePendingLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers)
+{
+    std::vector<PXR_NS::SdfLayerRefPtr> kept;
+    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+        if (!isStalePendingLayer(layer)) {
+            kept.push_back(layer);
+        }
+    }
+
+    return kept;
+}
+
 double
 frameToTimeCode(const ScenePayload& payload,
                 double frame,

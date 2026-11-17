@@ -648,6 +648,15 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> exclusiveOwed { false };
     std::function<void()> readEnded;
 
+    // A deferred stage load can become ready on the teardown thread after the renderer is gone, so
+    // the stage's wake goes through this shared gate and clearing the callback waits out a call
+    // in flight.
+    struct LoadsWakeGate {
+        std::mutex mutex;
+        std::function<void()> wake;
+    };
+    std::shared_ptr<LoadsWakeGate> loadsWakeGate { std::make_shared<LoadsWakeGate>() };
+
     // For the main thread, and for work it waits on. Whoever made this fail lets the viewport know
     // when it lets go: edits and frames by their signals, other readers by readEnded.
     bool tryLockExclusive(std::unique_lock<std::shared_mutex>* lock)
@@ -3105,6 +3114,7 @@ SceneViewportRenderer::~SceneViewportRenderer()
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its Storm engine";
         (void)_imp->engine.release();
     }
+    setLoadsWakeCallback(std::function<void()>());
     if (_imp->sceneStage) {
         SceneTeardown::release(std::move(_imp->sceneStage));
     }
@@ -3160,6 +3170,13 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         if (!_imp->sceneStage) {
             // The viewer shows what was asked for: nothing loads until a load is requested.
             _imp->sceneStage.reset(new SceneStage(UsdStage::LoadNone));
+            const std::shared_ptr<Implementation::LoadsWakeGate> gate = _imp->loadsWakeGate;
+            _imp->sceneStage->setLoadsWake([gate]() {
+                std::lock_guard<std::mutex> lock(gate->mutex);
+                if (gate->wake) {
+                    gate->wake();
+                }
+            });
             std::lock_guard<std::mutex> earlyLock(_imp->earlyLoadsMutex);
             _imp->loadStage = _imp->sceneStage.get();
             for (const SceneDrawLoadRequest& load : _imp->earlyLoads) {
@@ -3295,6 +3312,14 @@ void
 SceneViewportRenderer::setReadEndedCallback(const std::function<void()>& callback)
 {
     _imp->readEnded = callback;
+}
+
+void
+SceneViewportRenderer::setLoadsWakeCallback(const std::function<void()>& callback)
+{
+    std::lock_guard<std::mutex> lock(_imp->loadsWakeGate->mutex);
+
+    _imp->loadsWakeGate->wake = callback;
 }
 
 U64
@@ -6835,6 +6860,15 @@ SceneViewport::SceneViewport(QWidget* parent)
         update();
     });
     // Queued: it runs on the reader's thread, and readers end before the viewport goes.
+    {
+        Implementation* wakeImp = _imp.get();
+        _imp->renderer.setLoadsWakeCallback([wakeImp]() {
+            {
+                std::lock_guard<std::mutex> lock(wakeImp->loadWakeMutex);
+            }
+            wakeImp->loadWake.notify_one();
+        });
+    }
     _imp->renderer.setReadEndedCallback([this]() { QMetaObject::invokeMethod(this, [this]() { serviceDeferredInput(); }, Qt::QueuedConnection); });
 
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
@@ -7061,6 +7095,7 @@ SceneViewport::~SceneViewport()
     if (_imp->loadThread.joinable()) {
         _imp->loadThread.join();
     }
+    _imp->renderer.setLoadsWakeCallback(std::function<void()>());
     GLContextLoss::releaseNow(this);
     _imp->stopRenderThread();
 }

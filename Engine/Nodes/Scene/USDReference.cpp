@@ -270,7 +270,7 @@ USDReference::reloadFile()
     };
     // A file no stage has open yet is read fresh when it is first composed.
     if (open) {
-        SceneOps::requestFileLayerReload(SceneOps::getOpenFileLayers(PXR_NS::SdfLayerRefPtr(open)), finish);
+        SceneOps::requestFileLayerReload(SceneOps::withoutStalePendingLayers(SceneOps::getOpenFileLayers(PXR_NS::SdfLayerRefPtr(open))), finish);
     } else {
         finish(true, std::string());
     }

@@ -457,6 +457,12 @@ std::uint64_t getFileLayerReloadCount();
 bool isStalePendingLayer(const PXR_NS::SdfLayerRefPtr& layer);
 
 /**
+ * @brief layers without those isStalePendingLayer() is true of: what a reload that found its
+ * layers by path may reload.
+ **/
+std::vector<PXR_NS::SdfLayerRefPtr> withoutStalePendingLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers);
+
+/**
  * @brief The timecode of payload's composed stage at frame of a project running at
  * framesPerSecond: the same instant in seconds, frame x the stage's time codes per second /
  * framesPerSecond. Identical to frame when the rates match.

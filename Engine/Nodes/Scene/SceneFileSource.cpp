@@ -392,7 +392,9 @@ SceneFileSource::reload(const std::string& path,
     } else if (!path.empty()) {
         root = PXR_NS::SdfLayerRefPtr(PXR_NS::SdfLayer::Find(path));
     }
-    const std::vector<PXR_NS::SdfLayerRefPtr> open = SceneOps::getOpenFileLayers(root);
+    // A closed scene's copy of a file that changed on disk is not reloaded, which would make the
+    // stages still composing it recompose: the next walk reads the file anew.
+    const std::vector<PXR_NS::SdfLayerRefPtr> open = SceneOps::withoutStalePendingLayers(SceneOps::getOpenFileLayers(root));
     layers.insert(layers.end(), open.begin(), open.end());
     for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
         before.push_back(layer->GetRealPath());

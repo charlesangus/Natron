@@ -112,3 +112,9 @@ Scouted 2026-11-14 on `origin/main`:
 - 2026-11-14 — Time ops invert where possible; a FrameHold shows the overlay only on the held frame (user, grill).
 - 2026-11-14 — Off-path overlays are fully editable and drawn the same as on-path ones (user, grill): editing on the plate is the point.
 - 2026-11-14 — Sibling mapping has a per-viewer toolbar toggle with a shortcut, on by default (user, grill: "as 1, but with a toggle", "and a shortcut").
+- 2026-11-17 — P1.T1, P2.T1, P2.T2 and P3.T1 code in the lane (.worktrees/m432); gate running.
+  - Each node on the path maps time at its own mapped time; the forward walk remembers visited nodes; "singular" is |det| < 1e-24.
+  - Pen-down passes the pen's timestamp, key events use the current view, and a retimed overlay on pen-up or key-up skips that node only.
+  - The toggle is viewer knob mapSiblingOverlays ("Map Sibling Overlays", default on), with a "Siblings" text button and Shift+O. The viewerOverlaysPath Preference is removed.
+  - PM calls: retimed overlays stay locked (dimmed, no edits, double-click included); the FrameHold rule goes in Engine/Nodes/Time/docs/FrameHold.md (P3.T2), since there is no viewer docs page; the button stays text-labelled until the user sees the screenshots.
+  - Seen, not touched: key repeat never fills its node list, so overlays get no key-repeat events (predates this milestone).

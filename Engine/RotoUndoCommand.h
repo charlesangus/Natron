@@ -266,8 +266,9 @@ private:
     std::shared_ptr<RotoCurveContextHostState> _hostBefore;
     std::shared_ptr<RotoCurveContextHostState> _hostAfter;
     std::shared_ptr<MoveControlPointsUndoCommand> _insertDrag;
-    // Copies of every point of the curve without and with the dragged insertion. Once undone, they
-    // stand in for the drag, which refers to the inserted point objects a redo no longer brings back.
+    // Copies of every point of the curve before the insertion, which the split changed at every
+    // keyframe, and after the dragged insertion. Once undone, the after copies stand in for the
+    // drag, which refers to the inserted point objects a redo no longer brings back.
     std::vector<BezierCPPtr> _cpsBefore, _fpsBefore, _cpsAfter, _fpsAfter;
     bool _restoresPoints;
     double _dragTime;

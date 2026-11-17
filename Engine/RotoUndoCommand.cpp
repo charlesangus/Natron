@@ -513,16 +513,15 @@ AddPointUndoCommand::undo()
         _insertDrag->undo();
         _insertDrag.reset();
         _curve->removeControlPointByIndex(_index + 1);
+        restoreCurvePoints(_curve, _cpsBefore, _fpsBefore);
         _dragKeyedShape = keyedAfter && !shapeHasKeyframeAt(_curve, _dragTime);
-        copyCurvePoints(_curve, &_cpsBefore, &_fpsBefore);
         _restoresPoints = true;
     } else {
         _curve->removeControlPointByIndex(_index + 1);
-        if (_restoresPoints) {
-            restoreCurvePoints(_curve, _cpsBefore, _fpsBefore);
-            if (_dragKeyedShape) {
-                Q_EMIT _curve->keyframeRemoved(_dragTime);
-            }
+        // Removing the point leaves its neighbours' handles shortened by the split.
+        restoreCurvePoints(_curve, _cpsBefore, _fpsBefore);
+        if (_restoresPoints && _dragKeyedShape) {
+            Q_EMIT _curve->keyframeRemoved(_dragTime);
         }
     }
     if (_hostBefore) {
@@ -542,6 +541,7 @@ AddPointUndoCommand::redo()
     }
     if (!_firstRedoCalled) {
         _hostBefore = roto->getCurveContext()->saveHostState();
+        copyCurvePoints(_curve, &_cpsBefore, &_fpsBefore);
     }
     BezierCPPtr cp = _curve->addControlPointAfterIndex(_index, _t);
     BezierCPPtr newFp = _curve->getFeatherPointAtIndex(_index + 1);

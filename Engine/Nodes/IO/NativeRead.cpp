@@ -84,9 +84,6 @@ const int kMinBandRows = 32;
 // Upper bound on the decoded bytes one band holds at a time.
 const std::size_t kStagingBytes = std::size_t(16) << 20;
 
-// Past this many frames a still image's valid range is no longer enumerated.
-const int kMaxStillFrames = 1 << 16;
-
 using OiioReadSupport::ColourChannels;
 using OiioReadSupport::colourPartOf;
 using OiioReadSupport::pixelAspectOf;
@@ -103,28 +100,6 @@ colourSubimageOf(const OiioReadSupport::Header& header,
 const char* const kKnobProxyThreshold = "proxyThreshold";
 const char* const kKnobOriginalProxyScale = "originalProxyScale";
 const char* const kKnobCustomProxyScale = "customProxyScale";
-const char* const kKnobOriginalFrameRange = "originalFrameRange";
-const char* const kKnobFirstFrame = "firstFrame";
-const char* const kKnobLastFrame = "lastFrame";
-const char* const kKnobBefore = "beforeFirstFrame";
-const char* const kKnobAfter = "afterLastFrame";
-const char* const kKnobOnMissingFrame = "onMissingFrame";
-const char* const kKnobFrameMode = "frameOffsetMode";
-const char* const kKnobStartingTime = "startAt";
-const char* const kKnobTimeOffset = "frameOffset";
-const char* const kKnobTimeDomainUserEdited = "timeDomainUserEdited";
-
-bool
-timeDomainAtDefaults(const KnobIntPtr& firstFrame,
-                     const KnobIntPtr& lastFrame,
-                     const KnobIntPtr& startingTime,
-                     const KnobIntPtr& timeOffset)
-{
-    return firstFrame->getValue() == firstFrame->getDefaultValue(0)
-        && lastFrame->getValue() == lastFrame->getDefaultValue(0)
-        && startingTime->getValue() == startingTime->getDefaultValue(0)
-        && timeOffset->getValue() == timeOffset->getDefaultValue(0);
-}
 } // anonymous namespace
 
 NativeRead::NativeRead(NodePtr node)
@@ -135,16 +110,7 @@ NativeRead::NativeRead(NodePtr node)
     , _proxyThreshold()
     , _originalProxyScale()
     , _customProxyScale()
-    , _originalFrameRange()
-    , _firstFrame()
-    , _lastFrame()
-    , _before()
-    , _after()
-    , _onMissingFrame()
-    , _frameMode()
-    , _startingTime()
-    , _timeOffset()
-    , _timeDomainUserEdited()
+    , _timeDomain()
     , _inputSpace()
     , _availableViews()
     , _listingMutex()
@@ -236,117 +202,7 @@ NativeRead::initializeKnobs()
     page->addKnob(originalProxyScale);
     _originalProxyScale = originalProxyScale;
 
-    const std::vector<ChoiceOption> beforeAfterChoices = {
-        ChoiceOption("hold", tr("Hold").toStdString(), tr("While outside the sequence, load the nearest end frame.").toStdString()),
-        ChoiceOption("loop", tr("Loop").toStdString(), tr("Repeat the sequence outside its range.").toStdString()),
-        ChoiceOption("bounce", tr("Bounce").toStdString(), tr("Repeat the sequence in reverse outside its range.").toStdString()),
-        ChoiceOption("black", tr("Black").toStdString(), tr("Render a black image.").toStdString()),
-        ChoiceOption("error", tr("Error").toStdString(), tr("Report an error.").toStdString()),
-    };
-
-    KnobIntPtr firstFrame = createKnob<KnobInt>(tr("First Frame"));
-    firstFrame->setName(kKnobFirstFrame);
-    firstFrame->setHintToolTip(tr("The first frame number to read from this image sequence. It cannot be less than the first "
-                                  "frame of the sequence or greater than its last. With Frame Offset at 0, or Start At equal to it, "
-                                  "this is also the first output frame."));
-    firstFrame->setDefaultValue(0);
-    firstFrame->setAnimationEnabled(false);
-    firstFrame->disableSlider();
-    firstFrame->setAddNewLine(false);
-    page->addKnob(firstFrame);
-    _firstFrame = firstFrame;
-
-    KnobChoicePtr before = createKnob<KnobChoice>(tr("Before First Frame"));
-    before->setName(kKnobBefore);
-    before->setHintToolTip(tr("What to do before the first frame of the sequence."));
-    before->populateChoices(beforeAfterChoices);
-    before->setDefaultValue((int)ReadTimeDomain::eBeforeAfterHold);
-    page->addKnob(before);
-    _before = before;
-
-    KnobIntPtr lastFrame = createKnob<KnobInt>(tr("Last Frame"));
-    lastFrame->setName(kKnobLastFrame);
-    lastFrame->setHintToolTip(tr("The last frame number to read from this image sequence. It cannot be less than the first "
-                                 "frame of the sequence or greater than its last. With Frame Offset at 0, or Start At equal to First Frame, "
-                                 "this is also the last output frame."));
-    lastFrame->setDefaultValue(0);
-    lastFrame->setAnimationEnabled(false);
-    lastFrame->disableSlider();
-    lastFrame->setAddNewLine(false);
-    page->addKnob(lastFrame);
-    _lastFrame = lastFrame;
-
-    KnobChoicePtr after = createKnob<KnobChoice>(tr("After Last Frame"));
-    after->setName(kKnobAfter);
-    after->setHintToolTip(tr("What to do after the last frame of the sequence."));
-    after->populateChoices(beforeAfterChoices);
-    after->setDefaultValue((int)ReadTimeDomain::eBeforeAfterHold);
-    page->addKnob(after);
-    _after = after;
-
-    KnobChoicePtr onMissing = createKnob<KnobChoice>(tr("On Missing Frame"));
-    onMissing->setName(kKnobOnMissingFrame);
-    onMissing->setHintToolTip(tr("What to do when a frame is missing from the sequence."));
-    std::vector<ChoiceOption> missingChoices;
-    missingChoices.push_back(ChoiceOption("previous", tr("Hold previous").toStdString(), tr("Try to load the previous frame in the sequence, if any.").toStdString()));
-    missingChoices.push_back(ChoiceOption("next", tr("Load next").toStdString(), tr("Try to load the next frame in the sequence, if any.").toStdString()));
-    missingChoices.push_back(ChoiceOption("nearest", tr("Load nearest").toStdString(), tr("Try to load the nearest frame in the sequence, if any.").toStdString()));
-    missingChoices.push_back(ChoiceOption("error", tr("Error").toStdString(), tr("Report an error.").toStdString()));
-    missingChoices.push_back(ChoiceOption("black", tr("Black").toStdString(), tr("Render a black image.").toStdString()));
-    onMissing->populateChoices(missingChoices);
-    onMissing->setDefaultValue((int)ReadTimeDomain::eMissingError);
-    page->addKnob(onMissing);
-    _onMissingFrame = onMissing;
-
-    KnobChoicePtr frameMode = createKnob<KnobChoice>(tr("Frame Offset Mode"));
-    frameMode->setName(kKnobFrameMode);
-    std::vector<ChoiceOption> modeChoices;
-    modeChoices.push_back(ChoiceOption("startAt", tr("Start At").toStdString(), tr("Start At sets the output frame of the sequence frame designated by First Frame.").toStdString()));
-    modeChoices.push_back(ChoiceOption("offset", tr("Offset").toStdString(), tr("Frame Offset is added to every frame number: the sequence frame designated by First Frame is output at First Frame + Frame Offset.").toStdString()));
-    frameMode->populateChoices(modeChoices);
-    frameMode->setDefaultValue((int)ReadTimeDomain::eFrameModeStartingTime);
-    frameMode->setAnimationEnabled(false);
-    frameMode->setAddNewLine(false);
-    page->addKnob(frameMode);
-    _frameMode = frameMode;
-
-    KnobIntPtr startingTime = createKnob<KnobInt>(tr("Start At"));
-    startingTime->setName(kKnobStartingTime);
-    startingTime->setHintToolTip(tr("The output frame of the sequence frame designated by First Frame, when Frame Offset Mode is Start At."));
-    startingTime->setDefaultValue(0);
-    startingTime->setAnimationEnabled(false);
-    startingTime->setAddNewLine(false);
-    page->addKnob(startingTime);
-    _startingTime = startingTime;
-
-    KnobIntPtr timeOffset = createKnob<KnobInt>(tr("Frame Offset"));
-    timeOffset->setName(kKnobTimeOffset);
-    timeOffset->setHintToolTip(tr("The number of frames added to every frame number of the sequence, when Frame Offset Mode is Offset."));
-    timeOffset->setDefaultValue(0);
-    timeOffset->setAnimationEnabled(false);
-    page->addKnob(timeOffset);
-    _timeOffset = timeOffset;
-
-    KnobBoolPtr userEdited = createKnob<KnobBool>(tr("Time Domain User Edited"));
-    userEdited->setName(kKnobTimeDomainUserEdited);
-    userEdited->setDefaultValue(false);
-    userEdited->setAnimationEnabled(false);
-    userEdited->setEvaluateOnChange(false);
-    userEdited->setSecret(true);
-    page->addKnob(userEdited);
-    _timeDomainUserEdited = userEdited;
-
-    KnobIntPtr originalRange = createKnob<KnobInt>(tr("Original Range"), 2);
-    originalRange->setName(kKnobOriginalFrameRange);
-    originalRange->setDimensionName(0, "min");
-    originalRange->setDimensionName(1, "max");
-    originalRange->setDefaultValue(std::numeric_limits<int>::min(), 0);
-    originalRange->setDefaultValue(std::numeric_limits<int>::max(), 1);
-    originalRange->setAnimationEnabled(false);
-    originalRange->setIsPersistent(false);
-    originalRange->setSecret(true);
-    page->addKnob(originalRange);
-    _originalFrameRange = originalRange;
+    _timeDomain.create(this, page);
 
     KnobStringPtr availableViews = createKnob<KnobString>(tr("Available Views"));
     availableViews->setName(kReadOIIOAvailableViewsKnobName);
@@ -388,7 +244,7 @@ NativeRead::initializeKnobs()
         });
     }
 
-    refreshTimeKnobState();
+    _timeDomain.refreshKnobState();
     refreshProxyKnobState();
     refreshRawKnobState();
 }
@@ -399,7 +255,7 @@ NativeRead::onKnobsLoaded()
     refreshOutputDataKind();
     _inputSpace.refreshMenu();
     _inputSpace.refreshProjectDefault();
-    refreshTimeKnobState();
+    _timeDomain.refreshKnobState();
     refreshProxyKnobState();
     refreshRawKnobState();
     refreshAvailableViews(true);
@@ -449,29 +305,6 @@ NativeRead::projectViewName(ViewIdx view) const
 }
 
 void
-NativeRead::setTimeDomainToFrames(EffectInstance* effect,
-                                  int first,
-                                  int last)
-{
-    if (!effect) {
-        return;
-    }
-    KnobBoolPtr userEdited = effect->getKnobByNameAndType<KnobBool>(kKnobTimeDomainUserEdited);
-    KnobIntPtr firstFrame = effect->getKnobByNameAndType<KnobInt>(kKnobFirstFrame);
-    KnobIntPtr lastFrame = effect->getKnobByNameAndType<KnobInt>(kKnobLastFrame);
-    KnobIntPtr startingTime = effect->getKnobByNameAndType<KnobInt>(kKnobStartingTime);
-    KnobIntPtr timeOffset = effect->getKnobByNameAndType<KnobInt>(kKnobTimeOffset);
-    if (!userEdited || !firstFrame || !lastFrame || !startingTime || !timeOffset) {
-        return;
-    }
-    userEdited->setValue(true);
-    firstFrame->setValue(first);
-    lastFrame->setValue(last);
-    startingTime->setValue(first);
-    timeOffset->setValue(0);
-}
-
-void
 NativeRead::onEffectCreated(bool mayCreateFileDialog,
                             const CreateNodeArgs& args)
 {
@@ -485,7 +318,7 @@ NativeRead::onEffectCreated(bool mayCreateFileDialog,
         }
         filename->setValue(path);
         if (frameRange) {
-            setTimeDomainToFrames(this, frameRange->first, frameRange->second);
+            ReadTimeDomainKnobs::limitToFrames(this, frameRange->first, frameRange->second);
         }
     }
     _inputSpace.refreshProjectDefault();
@@ -545,20 +378,6 @@ NativeRead::rejectUnsupportedFormat(const std::string& path)
     setPersistentMessage(eMessageTypeError, tr("Unsupported format: %1").arg(QString::fromStdString(path)).toStdString());
 
     return true;
-}
-
-void
-NativeRead::refreshTimeKnobState()
-{
-    KnobChoicePtr frameMode = _frameMode.lock();
-    KnobIntPtr startingTime = _startingTime.lock();
-    KnobIntPtr timeOffset = _timeOffset.lock();
-
-    if (frameMode && startingTime && timeOffset) {
-        const bool byStartingTime = frameMode->getValue() == (int)ReadTimeDomain::eFrameModeStartingTime;
-        startingTime->setSecret(!byStartingTime);
-        timeOffset->setSecret(byStartingTime);
-    }
 }
 
 namespace {
@@ -710,34 +529,6 @@ NativeRead::purgeCachesKeepingFileStamps()
     clearActionsCache();
 }
 
-ReadTimeDomain::Settings
-NativeRead::settingsAt(double time) const
-{
-    ReadTimeDomain::Settings settings;
-    KnobIntPtr firstFrame = _firstFrame.lock();
-    KnobIntPtr lastFrame = _lastFrame.lock();
-    KnobChoicePtr before = _before.lock();
-    KnobChoicePtr after = _after.lock();
-    KnobChoicePtr onMissing = _onMissingFrame.lock();
-    KnobChoicePtr frameMode = _frameMode.lock();
-    KnobIntPtr startingTime = _startingTime.lock();
-    KnobIntPtr timeOffset = _timeOffset.lock();
-
-    if (!firstFrame || !lastFrame || !before || !after || !onMissing || !frameMode || !startingTime || !timeOffset) {
-        return settings;
-    }
-    settings.firstFrame = firstFrame->getValue();
-    settings.lastFrame = lastFrame->getValue();
-    settings.before = (ReadTimeDomain::BeforeAfter)before->getValueAtTime(time);
-    settings.after = (ReadTimeDomain::BeforeAfter)after->getValueAtTime(time);
-    settings.onMissingFrame = (ReadTimeDomain::MissingFrame)onMissing->getValueAtTime(time);
-    settings.frameMode = (ReadTimeDomain::FrameMode)frameMode->getValue();
-    settings.startingTime = startingTime->getValue();
-    settings.timeOffset = timeOffset->getValue();
-
-    return settings;
-}
-
 std::string
 NativeRead::pathOf(const FrameListing& listing,
                    const KnobFilePtr& filename,
@@ -766,24 +557,8 @@ NativeRead::targetAtTime(double time,
     }
 
     const std::shared_ptr<const FrameListing> listing = frameListing(proxy);
-    const ReadTimeDomain::Settings settings = settingsAt(time);
-    ReadTimeDomain::Result result;
-    if (listing->singleImage) {
-        // A still image answers every frame of the range, so the range itself stands for the
-        // frames on disk.
-        std::set<int> inRange;
-        if ((long long)settings.lastFrame - settings.firstFrame < kMaxStillFrames) {
-            for (int f = settings.firstFrame; f <= settings.lastFrame; ++f) {
-                inRange.insert(inRange.end(), f);
-            }
-        } else {
-            inRange.insert(settings.firstFrame);
-            inRange.insert(settings.lastFrame);
-        }
-        result = ReadTimeDomain::resolve(time, settings, inRange);
-    } else {
-        result = ReadTimeDomain::resolve(time, settings, listing->frames);
-    }
+    const ReadTimeDomain::Settings settings = _timeDomain.settingsAt(time);
+    const ReadTimeDomain::Result result = listing->singleImage ? ReadTimeDomain::resolveStill(time, settings) : ReadTimeDomain::resolve(time, settings, listing->frames);
 
     target.kind = result.kind;
     target.message = result.message;
@@ -950,7 +725,7 @@ NativeRead::getFrameRange(double* first,
 
         return;
     }
-    const ReadTimeDomain::FrameRange range = ReadTimeDomain::outputRange(settingsAt(0.));
+    const ReadTimeDomain::FrameRange range = ReadTimeDomain::outputRange(_timeDomain.settingsAt(0.));
     *first = range.min;
     *last = range.max;
 }
@@ -1045,19 +820,6 @@ NativeRead::knobChanged(KnobI* k,
         return true;
     }
     KnobFilePtr filename = _filename.lock();
-    KnobIntPtr originalRange = _originalFrameRange.lock();
-    KnobIntPtr firstFrame = _firstFrame.lock();
-    KnobIntPtr lastFrame = _lastFrame.lock();
-    KnobChoicePtr frameMode = _frameMode.lock();
-    KnobIntPtr startingTime = _startingTime.lock();
-    KnobIntPtr timeOffset = _timeOffset.lock();
-    KnobBoolPtr userEdited = _timeDomainUserEdited.lock();
-
-    if (!filename || !originalRange || !firstFrame || !lastFrame || !frameMode || !startingTime || !timeOffset || !userEdited) {
-        return false;
-    }
-    const bool byUser = reason == eValueChangedReasonUserEdited;
-
     if (k == filename.get()) {
         if (reason != eValueChangedReasonTimeChanged) {
             refreshOutputDataKind();
@@ -1071,71 +833,8 @@ NativeRead::knobChanged(KnobI* k,
 
         return true;
     }
-    if (k == originalRange.get()) {
-        const int originalFirst = originalRange->getValue(0);
-        const int originalLast = originalRange->getValue(1);
-        if (originalFirst == std::numeric_limits<int>::min() || originalLast == std::numeric_limits<int>::max() || originalFirst > originalLast) {
-            return true;
-        }
-        firstFrame->setDisplayMinimum(originalFirst);
-        firstFrame->setDisplayMaximum(originalLast);
-        lastFrame->setDisplayMinimum(originalFirst);
-        lastFrame->setDisplayMaximum(originalLast);
-        // The defaults follow the file even under an edit, so that resetting it adopts this file.
-        firstFrame->setDefaultValueWithoutApplying(originalFirst);
-        lastFrame->setDefaultValueWithoutApplying(originalLast);
-        startingTime->setDefaultValueWithoutApplying(originalFirst);
-        if (!userEdited->getValue()) {
-            firstFrame->setValue(originalFirst);
-            lastFrame->setValue(originalLast);
-            startingTime->setValue(originalFirst);
-            timeOffset->setValue(0);
-        }
 
-        return true;
-    }
-    // Resetting a knob reaches here twice with the restore reason, so every step below is a pure
-    // function of the knob values.
-    const bool restored = reason == eValueChangedReasonRestoreDefault;
-    const bool edited = byUser || restored;
-
-    // A time domain back at its defaults follows the file again.
-    const auto markEdited = [&]() {
-        userEdited->setValue(!restored || !timeDomainAtDefaults(firstFrame, lastFrame, startingTime, timeOffset));
-    };
-
-    if (k == firstFrame.get() && edited) {
-        lastFrame->setDisplayMinimum(firstFrame->getValue());
-        startingTime->setValue(firstFrame->getValue() + timeOffset->getValue());
-        markEdited();
-
-        return true;
-    }
-    if (k == lastFrame.get() && edited) {
-        firstFrame->setDisplayMaximum(lastFrame->getValue());
-        markEdited();
-
-        return true;
-    }
-    if (k == frameMode.get() && edited) {
-        refreshTimeKnobState();
-
-        return true;
-    }
-    if (k == startingTime.get() && edited) {
-        timeOffset->setValue(startingTime->getValue() - firstFrame->getValue());
-        markEdited();
-
-        return true;
-    }
-    if (k == timeOffset.get() && edited) {
-        startingTime->setValue(timeOffset->getValue() + firstFrame->getValue());
-        markEdited();
-
-        return true;
-    }
-
-    return false;
+    return _timeDomain.knobChanged(k, reason);
 }
 
 StatusEnum

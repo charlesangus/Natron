@@ -62,6 +62,7 @@
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepRecolor.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/Nodes/IO/ReadTimeDomainKnobs.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -982,6 +983,59 @@ TEST_F(DeepReadWriteTest, EachFrameOfASequenceRendersItsOwnFileThroughTheCache)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 2., fullFrame(), &fresh));
     ASSERT_TRUE(bool(fresh));
     EXPECT_EQ(channelNamesOf(*fresh), secondChannels);
+}
+
+TEST_F(DeepReadWriteTest, ARunPickedFromAGappedSequenceLimitsTheDeepReadToIt)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pattern = (tmp.path() + QString::fromUtf8("/deep-gaps.####.exr")).toStdString();
+    for (int frame : { 10, 11, 12, 20, 21, 22 }) {
+        ASSERT_TRUE(QFile::copy(fixturePath("deep-scanline.exr"), QString::fromUtf8(sequenceFrameFile(pattern, frame).c_str()))) << frame;
+    }
+
+    NodePtr read = createDeepRead(QString::fromUtf8(pattern.c_str()));
+    ASSERT_TRUE(bool(read));
+    EffectInstancePtr effect = read->getEffectInstance();
+    KnobIntPtr firstFrame = effect->getKnobByNameAndType<KnobInt>("firstFrame");
+    KnobIntPtr lastFrame = effect->getKnobByNameAndType<KnobInt>("lastFrame");
+    KnobChoicePtr before = effect->getKnobByNameAndType<KnobChoice>("beforeFirstFrame");
+    ASSERT_TRUE(firstFrame && lastFrame && before);
+
+    double first = 0.;
+    double last = 0.;
+    effect->getFrameRange_public(read->getHashValue(), &first, &last, true);
+    EXPECT_EQ(10., first);
+    EXPECT_EQ(22., last);
+    DeepImagePtr image;
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 15., fullFrame(), &image)) << "frame 15 is in the gap";
+
+    ReadTimeDomainKnobs::limitToFrames(effect.get(), 20, 22);
+    EXPECT_EQ(20, firstFrame->getValue());
+    EXPECT_EQ(22, lastFrame->getValue());
+    effect->getFrameRange_public(read->getHashValue(), &first, &last, true);
+    EXPECT_EQ(20., first);
+    EXPECT_EQ(22., last);
+
+    DeepImagePtr held;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 15., fullFrame(), &held));
+    ASSERT_TRUE(bool(held));
+    EXPECT_GT(held->getSampleTable().getTotalSampleCount(), 0u) << "before the run holds its first frame";
+
+    before->setValue((int)ReadTimeDomain::eBeforeAfterBlack);
+    DeepImagePtr black;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 15., fullFrame(), &black));
+    ASSERT_TRUE(bool(black));
+    EXPECT_EQ(0u, black->getSampleTable().getTotalSampleCount());
+    EXPECT_EQ(channelNamesOf(*held), channelNamesOf(*black));
+
+    KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
+    ASSERT_TRUE(knob != NULL);
+    knob->setValue(std::string());
+    knob->setValue(pattern);
+    EXPECT_EQ(20, firstFrame->getValue());
+    EXPECT_EQ(22, lastFrame->getValue());
 }
 
 TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlaceOnReload)

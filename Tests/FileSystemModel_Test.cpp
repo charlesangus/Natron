@@ -319,7 +319,6 @@ writeFrames(const QString& dir, int first, int last)
     }
 }
 
-// The items the gatherer listed in dir, once there are `count` of them; fewer after a timeout.
 std::vector<ListedItem>
 waitForItems(const FileSystemModelPtr& model, const QString& dir, std::size_t count)
 {

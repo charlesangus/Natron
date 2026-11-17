@@ -1,20 +1,3 @@
-"""The file dialog's two toolbar rows, and Split on gaps: a sequence with missing frames lists one
-item per contiguous run, and opening a run limits the Read to its frames.
-
-The script writes empty frames plate.0010-0020.exr and plate.0030-0040.exr to a folder under
-$NATRON_GUI_TEST_OUT (build/gui-test-out/ by default), creates a Read on one of them, opens its
-settings panel and calls the File parameter's openFile(). In the dialog it checks:
-- the first row runs back, forward, up, home, separator, path, New Folder, separator, list and
-  detail view; the second row holds Sequences, Split on gaps and, right-aligned, Show hidden;
-- the sequence is one item joined, and two items, `plate.####.exr 10-20` and
-  `plate.####.exr 30-40`, with Split on gaps checked;
-- Split on gaps is still checked when the dialog is opened again;
-- opening the 30-40 item sets the Read's first and last frame to 30 and 40;
-- with Split on gaps unchecked, the item's context menu splits that sequence alone.
-
-Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT.
-Exit status 0 only if every check passed.
-"""
 import os
 import sys
 import traceback
@@ -25,7 +8,6 @@ POLL_TIMEOUT_S = 20.0
 SETTLE_MS = 500
 STARTUP_TIMEOUT_S = 60.0
 
-# FileSystemModel's UserFriendlyNameRole and ChunkRangeRole.
 USER_FRIENDLY_NAME_ROLE = 0x0100 + 3
 CHUNK_RANGE_ROLE = 0x0100 + 4
 

@@ -373,10 +373,6 @@ public:
 
     double getProjectFrameRate() const;
 
-    /**
-     * @brief Asks for an image file or sequence to read. frameRange, when given, receives the frames
-     * of the run picked from a sequence split on its gaps, and is left empty for a whole sequence.
-     **/
     virtual std::string openImageFileDialog(std::optional<std::pair<int, int>>* frameRange = nullptr)
     {
         (void)frameRange;

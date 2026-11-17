@@ -41,6 +41,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/IO/ReadTimeDomain.h"
+#include "Engine/Nodes/IO/ReadTimeDomainKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGIN_MAJOR_NATRON_READ 1
@@ -139,13 +140,6 @@ public:
     static void setFrameListingScannedHookForTests(const std::function<void()>& hook);
 
     /**
-     * @brief Limits the Read effect to the frames first to last of its file, at their own time, as an
-     * edit of its time domain so that a new file does not reset it. Effects without those knobs are
-     * left alone.
-     **/
-    static void setTimeDomainToFrames(EffectInstance* effect, int first, int last);
-
-    /**
      * @brief The colourspace the file is converted from: the one chosen, or the one Project
      * default stands for now.
      **/
@@ -235,11 +229,9 @@ private:
 
     std::shared_ptr<const FrameListing> frameListing(bool proxy = false) const;
     void invalidateFrameListing();
-    ReadTimeDomain::Settings settingsAt(double time) const;
     static std::string pathOf(const FrameListing& listing, const KnobFilePtr& filename, int frame, ViewIdx view);
     Target targetAtTime(double time, ViewIdx view, bool proxy = false) const;
     std::string representativePath(ViewIdx view, bool proxy = false) const;
-    void refreshTimeKnobState();
     void refreshProxyScale();
     void refreshProxyKnobState();
     bool proxyKnobChanged(KnobI* k,
@@ -259,16 +251,7 @@ private:
     KnobDoubleWPtr _proxyThreshold;
     KnobDoubleWPtr _originalProxyScale;
     KnobBoolWPtr _customProxyScale;
-    KnobIntWPtr _originalFrameRange;
-    KnobIntWPtr _firstFrame;
-    KnobIntWPtr _lastFrame;
-    KnobChoiceWPtr _before;
-    KnobChoiceWPtr _after;
-    KnobChoiceWPtr _onMissingFrame;
-    KnobChoiceWPtr _frameMode;
-    KnobIntWPtr _startingTime;
-    KnobIntWPtr _timeOffset;
-    KnobBoolWPtr _timeDomainUserEdited;
+    ReadTimeDomainKnobs _timeDomain;
     OcioSpaceKnobs _inputSpace;
 
     KnobStringWPtr _availableViews;

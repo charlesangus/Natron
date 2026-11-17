@@ -203,7 +203,6 @@ struct FileSystemModelPrivate
     bool sequenceModeEnabled;
     mutable QMutex splitMutex;
     bool splitOnGaps;
-    // Sequences split or joined one by one, by pattern path, against splitOnGaps.
     std::map<QString, bool> splitOverrides;
     Qt::SortOrder ordering;
     int sortSection;
@@ -574,7 +573,6 @@ FileSystemItem::addChild(const SequenceParsing::SequenceFromFilesPtr& sequence,
         if (run->second != run->first) {
             name += QLatin1Char('-') + QString::number(run->second);
         }
-        // Each run gets its share of the sequence's estimated size.
         const qint64 runSize = (qint64)((double)size * (run->second - run->first + 1) / fileCount);
         FileSystemItemPtr child = std::make_shared<FileSystemItem::MakeSharedEnabler>(model,
                                                                                       false,

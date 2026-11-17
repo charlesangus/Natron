@@ -1913,23 +1913,20 @@ SequenceFileDialog::history() const
     return currentHistory;
 }
 
-bool
-SequenceFileDialog::selectedSequenceRange(int* first,
-                                          int* last) const
+std::optional<std::pair<int, int>>
+SequenceFileDialog::selectedSequenceRange() const
 {
     QModelIndexList indexes = _view->selectionModel()->selectedRows();
 
     if (indexes.count() != 1) {
-        return false;
+        return std::nullopt;
     }
     FileSystemItem* item = _model->getFileSystemItem(indexes[0]);
     if (!item || !item->isSequenceChunk()) {
-        return false;
+        return std::nullopt;
     }
-    *first = item->getChunkFirstFrame();
-    *last = item->getChunkLastFrame();
 
-    return true;
+    return std::make_pair(item->getChunkFirstFrame(), item->getChunkLastFrame());
 }
 
 std::string

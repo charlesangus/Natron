@@ -108,10 +108,6 @@ public:
 
     quint64 getSize() const;
 
-    /**
-     * @brief True for one contiguous run of frames of a sequence that has gaps, listed as an item of
-     * its own when the sequence is split. Its frames are getChunkFirstFrame() to getChunkLastFrame().
-     **/
     bool isSequenceChunk() const;
     int getChunkFirstFrame() const;
     int getChunkLastFrame() const;
@@ -217,7 +213,6 @@ public:
         FilePathRole = Qt::UserRole + 1,
         FileNameRole = Qt::UserRole + 2,
         UserFriendlyNameRole = Qt::UserRole + 3,
-        // The first and last frame of a sequence chunk, as a two-int list; invalid for other items.
         ChunkRangeRole = Qt::UserRole + 4,
     };
 
@@ -316,26 +311,14 @@ public:
      **/
     bool isSequenceModeEnabled() const;
 
-    /**
-     * @brief In sequence mode, lists every contiguous run of frames of a sequence with gaps as an
-     * item of its own. Clears the per-sequence choices of setSequenceSplit() and re-gathers.
-     **/
     void setSplitSequencesOnGaps(bool split);
 
     bool isSplitSequencesOnGapsEnabled() const;
 
-    /**
-     * @brief Splits or joins the one sequence whose pattern is sequencePath (an item's
-     * absoluteFilePath()), whatever setSplitSequencesOnGaps() says, and re-gathers.
-     **/
     void setSequenceSplit(const QString& sequencePath, bool split);
 
     bool isSequenceSplit(const QString& sequencePath) const;
 
-    /**
-     * @brief The contiguous runs of frames of sequence, as first and last frame, in ascending order.
-     * Any missing frame starts a new run.
-     **/
     static std::vector<std::pair<int, int>> contiguousFrameRuns(const SequenceParsing::SequenceFromFiles& sequence);
 
     /*

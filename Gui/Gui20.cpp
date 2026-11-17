@@ -1079,9 +1079,8 @@ Gui::popOpenFileDialog(bool sequenceDialog,
         frameRange->reset();
     }
     if ( dialog.exec() ) {
-        int first, last;
-        if (frameRange && dialog.selectedSequenceRange(&first, &last)) {
-            *frameRange = std::make_pair(first, last);
+        if (frameRange) {
+            *frameRange = dialog.selectedSequenceRange();
         }
         if (sequenceDialog) {
             _imp->_lastLoadSequenceOpenedDir = dialog.currentDirectory().absolutePath();

@@ -28,12 +28,13 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
-#include <string>
-#include <map>
-#include <utility>
-#include <set>
 #include <list>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -329,8 +330,7 @@ public:
     ///Works only in eFileDialogModeOpen mode.
     std::string selectedFiles();
 
-    /// True when the selection is one run of a sequence split on its gaps; first and last get its frames.
-    bool selectedSequenceRange(int* first, int* last) const;
+    std::optional<std::pair<int, int>> selectedSequenceRange() const;
 
     /// Returns  the content of the selection line edit.
     /// Works only in eFileDialogModeSave mode.

@@ -82,6 +82,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/Nodes/IO/ReadTimeDomainKnobs.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/Switch.h"
@@ -1642,7 +1643,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
         return NodePtr();
     }
     if (pickedFrameRange) {
-        NativeRead::setTimeDomainToFrames(node->getEffectInstance().get(), pickedFrameRange->first, pickedFrameRange->second);
+        ReadTimeDomainKnobs::limitToFrames(node->getEffectInstance().get(), pickedFrameRange->first, pickedFrameRange->second);
     }
 
     NodePtr multiInstanceParent = node->getParentMultiInstance();

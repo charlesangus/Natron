@@ -20,7 +20,6 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
 
 **Out:**
 - Image-driven providers (IDistort, STMap and IWarp feeding a downstream consumer): a follow-up milestone.
-- GPU sampling of map chains: a follow-up milestone.
 - LensCorrect (per-channel coordinates): a follow-up.
 - OFX `getInverseDistortion`: none.
 - Overlay point maps: M433 - Overlay Point Maps.
@@ -90,8 +89,46 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
   - verify: Transform → LensDistortion → Transform renders one resample within 1e-4. SplineWarp → LensDistortion matches its reference.
   - size: M
 
+## Phase 153.4: GPU
+
+- [ ] M153.P4.T1 — Chains reach GPU tasks
+  - files: `Engine/Nodes/Image/GpuRender.h` (`GpuQuery`, `GpuRenderArgs`), `Engine/GpuPlacement.cpp`, `Engine/GpuRegionTask.cpp` (`setInputs`), `Engine/InverseWarpChain.{h,cpp}`, `Tests/GpuRegionFallback_Test.cpp`
+  - approach: next to `hasConcatenatedInput`, `GpuQuery` gains a per-input mask of the step kinds in the chain (matrix, SplineWarp, lens), filled by placement from `globalData.transforms`. `GpuRenderArgs` gains `inputChains[k]`, which the region task builds from the FrameViewRequest over its output rect at `mappedScale`, not from TLS. The edges already point at the redirected source, so `inputs[k]` is the original source. ChannelCopy, LoopBegin and LoopEnd keep refusing any concatenated input.
+  - verify: gtest. The mask and the chain arrive for a test provider → test consumer. A consumer that declines falls back to the CPU with a result identical to today's. Redirected inputs reach `setInputs` for context and timed inputs.
+  - size: M
+- [ ] M153.P4.T2 — warpchain.slang and step packing
+  - files: new `Engine/Gpu/Kernels/warpchain.slang`, `warpchain_test.slang` and its `.cmake`, `InverseWarpChain.{h,cpp}` (`packGpu`), `SplineWarpField.{h,cpp}` (the `getGpuTables` layout gains the grid origin and spacing), `LensModelsGpu.h` (read-only), new `Tests/Native/WarpChainGpu_Test.cpp`
+  - approach: one word buffer holds a header (step count, then a tag and offset per step) followed by the step blocks.
+    - Matrix steps are 3x3 matrices in float pairs, with the projective divide.
+    - SplineWarp steps do a scattered-point lookup mirroring P2.T1's `mapPoints`: lattice coordinates from the grid origin and spacing, the same two-float `lerpFF` as `fieldAt`, and the feather bit of the containing pixel.
+    - Lens steps call `lensMap` between the node's normalisation affines; no solution gives NaN.
+    `warpChainMap(inout FF x, y, inout float4 J, bool jac)` walks the steps downstream to upstream, with J ← D·J. A chain whose tables exceed `maxScratchBytes` declines and renders on the CPU.
+  - verify: the test kernel against CPU `mapRow` on the P1.T1 swirl ∘ matrix ∘ barrel and on real SplineWarp and lens steps. Coordinates match within 1e-6 px, J within 1e-4 relative, and NaN survives every step.
+  - size: L
+- [ ] M153.P4.T3 — Resample consumers on the GPU
+  - files: `Engine/Nodes/Image/ResampleExecutor.cpp` (`canRecordResampleGpu`, `recordResampleGpu`), `Engine/Gpu/GpuResample.{h,cpp}`, `Engine/Gpu/Kernels/resample.slang`, `Tests/Native/NativeTransformGpu_Test.cpp`, `NativeCornerPinGpu_Test.cpp`, `NativeReformatGpu_Test.cpp`, `NativeAutoStraightenGpu_Test.cpp`
+  - approach: all-matrix chains fold `cat` into `gpuSamplingTransforms`, so they keep the exact and blur kernels; this removes the GPU refusal for concatenated inputs. Map chains use a new `resample_chain_main`: pixel centre → inverse matrix → `warpChainMap` → `sampleAt` (`coordmap.slang`) with `kWrapNone`, the same path the CPU's `resampleRowFromCoords` takes. Blur and the Offset form take matrix chains only, as on the CPU.
+  - verify: GPU-vs-CPU parity at `ParityTolerance::resampling()` in the interior for Transform → Transform, Transform(blur) → Transform, and Transform → SplineWarp → Transform. Tests that now expect `hasConcatenatedInput` → false expect true for matrix chains.
+  - size: L
+- [ ] M153.P4.T4 — SplineWarp and LensDistortion consume on the GPU
+  - files: `SplineWarp.cpp` (`renderOpGpu`), `splinewarp.slang`, `LensDistortion.cpp` (`renderOpGpu`), `lensdistortion.slang`, `NativeSplineWarpGpu_Test.cpp`, `NativeLensDistortionGpu_Test.cpp`
+  - approach: the chain is applied after the node's own coordinate, replacing `plane.concatenated`, and goes in as an extra storage binding. SplineWarp with sub-frames takes matrix chains only.
+  - verify: parity for Transform → SplineWarp, test provider → SplineWarp, Transform → LensDistortion → Transform, and SplineWarp → LensDistortion.
+  - size: M
+- [ ] M153.P4.T5 — IDistort, STMap and IWarp consume on the GPU
+  - files: `IDistort.cpp`, `STMap.cpp`, `IWarp.cpp`, `stmap.slang`, `iwarp.slang`, `NativeWarpGpu_Test.cpp`, `NativeIWarpGpu_Test.cpp`
+  - approach: the kernels wrap in the node's own source space with `wrapCoord`, zeroing J rows on clamp as P3.T1 does, then call `warpChainMap` and sample with `kWrapNone`. ITransform and ICornerPin go through `iwarp.slang`.
+  - verify: parity for SplineWarp → IDistort, STMap repeat and mirror after a test provider, and ITransform after a test provider.
+  - size: L
+- [ ] M153.P4.T6 — Chains run on the GPU end to end
+  - files: `SplineWarp.cpp` and `LensDistortion.cpp` (`gpuWeight`), new `Tests/WarpChainGpuPlacement_Test.cpp`
+  - approach: a consumer's `gpuWeight` adds the weight of the map steps it absorbs (SplineWarp's displacement weight, for example), so placement does not under-weigh a chain.
+  - verify: Transform → SplineWarp → Transform, SplineWarp → IDistort and Transform → LensDistortion → Transform each render through the scheduler with the GPU placed. The report shows the consumer on the GPU, the providers not rendered, and no CPU fallback; the image matches the CPU chain render at resampling tolerance in the interior.
+  - size: M
+
 **Verification gate:**
 - New and existing concatenation gtests pass: Transform, SplineWarp, StagedResample, IDistort, STMap, IWarp, LensDistortion, FrameGraphBuild, SchedulerEquivalence.
+- GPU gtests pass on lavapipe with `NATRON_TEST_REQUIRE_GPU`: WarpChainGpu, WarpChainGpuPlacement, TransformGpu, CornerPinGpu, ReformatGpu, SplineWarpGpu, LensDistortionGpu, WarpGpu, IWarpGpu and GpuRegionFallback. When placement chooses the GPU, matrix-only and map chains render on it with no fallback.
 - Full ctest and PR CI are green on a remote release build.
 - Render and GUI benches show no regression against main.
 - A UAT AppImage plus steps .md covers Transform → SplineWarp → Transform sharpness and SplineWarp → IDistort.
@@ -108,3 +145,4 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
 - 2026-11-17 — **GPU phase in M153 (user):** map chains sample on the GPU inside this milestone, not as a follow-up; a Phase 153.4 is being drafted.
 - 2026-11-17 — **Waits for M433 and M179 (user):** M153 reuses M433 - Overlay Point Maps' per-node maps, and its RoI task (P1.T3) builds on M179 - Render Graph Continuation's incremental request pass.
 - 2026-11-17 — **Image-driven providers are a follow-up on M179 (user):** IDistort, STMap and IWarp as chain providers need M179's probe → extend → continue, since their source footprint is known only after their UV image renders. They go to /cat-plan as a new milestone; in M153 they are consumers only.
+- 2026-11-17 — Phase 153.4 GPU (consultant): chains reach GPU tasks through their render arguments, built over the task rect, not through TLS. Matrix-only chains fold into the existing resample matrices and keep the exact and blur kernels. Map chains sample through `coordmap.slang`'s `sampleAt`, mirroring the CPU `resampleRowFromCoords`. Step maths uses the same two-float arithmetic as splinewarp.slang and lensmodels.slang. Node kernels are extended, not replaced, keeping mask, mix and premult. PM call: map chains ending in impulse or box follow `resampleRowFromCoords` rather than the matrix path's exact floor rule, as on the CPU. A chain over the scratch limit renders on the CPU.

@@ -396,7 +396,6 @@ public:
 
     Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
     bool viewerNumberKeys() const;
-    bool viewerOverlaysPath() const;
 
     RotoShapeDragRenderEnum getRotoShapeDragRender() const;
 
@@ -705,7 +704,6 @@ private:
     KnobChoicePtr _zoomedOutDemosaic;
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
-    KnobBoolPtr _viewerOverlaysPath;
     KnobChoicePtr _rotoShapeDragRender;
     KnobChoicePtr _viewer3DNavigation;
     KnobDoublePtr _viewer3DGuideSize;

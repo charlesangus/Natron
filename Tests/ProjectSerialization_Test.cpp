@@ -59,6 +59,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
@@ -567,8 +568,8 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
     EXPECT_EQ(std::string("diffuse.R"), channelU->get());
     EXPECT_TRUE(channelA->isNone());
 
-    EXPECT_EQ(std::string(kNatronColorLayerID), activeOptionID(premult, "inputPlane"));
-    EXPECT_EQ(std::string(kNatronColorLayerID ".R"), activeOptionID(premult, "unPremultByChannel"));
+    EXPECT_EQ(OfxLayerMapping::colourPlane(), activeOptionID(premult, "inputPlane"));
+    EXPECT_EQ(OfxLayerMapping::colourPlane() + ".R", activeOptionID(premult, "unPremultByChannel"));
     EXPECT_EQ(std::string("diffuse.R"), activeOptionID(idistort, "channelU"));
     EXPECT_EQ(std::string("1"), activeOptionID(idistort, "channelA"));
 

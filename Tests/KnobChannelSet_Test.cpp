@@ -191,18 +191,6 @@ TEST(KnobChannelSet, RgbAndAlphaRowsResolveToOneColorEntry)
     EXPECT_EQ(std::string("depth"), resolved[1].desc.getLayerID());
 }
 
-TEST(KnobChannelSet, StorageIDRowResolvesToNothing)
-{
-    KnobChannelSetPtr knob = makeKnob();
-
-    knob->setLayer(0, kNatronColorLayerID, 0);
-    EXPECT_TRUE(knob->resolve(presentLayers()).empty());
-
-    std::vector<std::string> red = channels("R");
-    knob->setLayer(0, kNatronColorLayerID, &red);
-    EXPECT_TRUE(knob->resolve(presentLayers()).empty());
-}
-
 TEST(KnobChannelSet, ViewRowWithoutColorStorageResolvesToNothing)
 {
     KnobChannelSetPtr knob = makeKnob();

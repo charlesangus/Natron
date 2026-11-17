@@ -110,7 +110,7 @@ bool
 containsColorViewID(const std::list<ImageLayerDesc>& layers)
 {
     for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
-        if (ImageLayerDesc::isColorViewID(it->getLayerID())) {
+        if (!it->isColorStorage() && ImageLayerDesc::isColorViewID(it->getLayerID())) {
             return true;
         }
     }
@@ -814,7 +814,7 @@ TEST_F(ColorViewsRenderTest, NoUserFacingColor)
 
 // The viewer's info bar (Image::getFormatString()) and a node's Info tab read the image or the
 // layer list at the storage level, so each names the colour storage plane after the view whose
-// channels it carries: an RGB-only stream reads rgb.RGB, not rgba.
+// channels it carries: an RGB-only stream reads rgb, not rgba.
 TEST_F(ColorViewsRenderTest, InfoTextsNameTheStorageView)
 {
     EXPECT_EQ(std::string("rgba.RGBA32f"), Image::getFormatString(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat));
@@ -837,7 +837,8 @@ TEST_F(ColorViewsRenderTest, InfoTextsNameTheStorageView)
 
     refreshInfo->trigger();
     const std::string text = nodeInfos->getValue();
-    EXPECT_NE(std::string::npos, text.find("rgb.RGB")) << text;
+    EXPECT_NE(std::string::npos, text.find(" rgb, ")) << text;
+    EXPECT_EQ(std::string::npos, text.find("rgba")) << text;
     expectNoUserFacingColor(text);
 }
 

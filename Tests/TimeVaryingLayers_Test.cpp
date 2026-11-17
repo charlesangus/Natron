@@ -106,14 +106,14 @@ containsColorLayer(const std::list<ImageLayerDesc>& layers)
     return false;
 }
 
-// Engine layer lists name the colour plane by its storage ID only; the colour views are for the
-// GUI and Python (Node::listLayerViewsForKnob()), and a view ID leaking in here would be masked by
-// isColorLayer() accepting view IDs too.
+// Engine layer lists carry the colour storage plane only; the colour views are for the GUI and
+// Python (Node::listLayerViewsForKnob()). The storage plane shares the rgba view's ID, so only
+// isColorStorage() tells a leaked view apart, which isColorLayer() would also accept.
 bool
 containsColorViewID(const std::list<ImageLayerDesc>& layers)
 {
     for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
-        if (ImageLayerDesc::isColorViewID(it->getLayerID())) {
+        if (!it->isColorStorage() && ImageLayerDesc::isColorViewID(it->getLayerID())) {
             return true;
         }
     }

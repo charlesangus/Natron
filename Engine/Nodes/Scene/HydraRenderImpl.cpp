@@ -103,6 +103,7 @@
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormPtexBindingFilter.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
+#include "Engine/Nodes/Scene/StormTextureBudget.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -1377,6 +1378,7 @@ RenderThread::makeEngine(EngineEntry& entry,
     CyclesAovs::registerSceneIndices();
     MoonRayAovs::registerSceneIndices();
     StormPtexBindingFilter::registerForStorm();
+    StormTextureBudget::registerForStorm();
     LiveTextureSceneIndex::registerSceneIndices();
     int threads = 0;
     if (cycles && !openCyclesSession(cancel, &threads, error)) {

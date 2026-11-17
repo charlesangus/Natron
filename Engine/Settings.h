@@ -443,6 +443,8 @@ public:
     // The UUID id of the chosen GPU device, or "" for automatic.
     std::string getGpuDevice() const;
     std::uint64_t getGpuMemoryBudgetMB() const;
+    // 0 for half the memory of the graphics card.
+    std::uint64_t getGpuTextureBudgetMB() const;
 
     bool isAutoTurboEnabled() const;
 
@@ -614,6 +616,7 @@ private:
     KnobChoicePtr _gpuComputeMode;
     KnobChoicePtr _gpuDevice;
     KnobIntPtr _gpuMemoryBudgetMB;
+    KnobIntPtr _gpuTextureBudget;
     KnobStringPtr _gpuStatus;
 
     // AI

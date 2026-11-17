@@ -66,6 +66,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
+#include "Engine/Nodes/Scene/StormTextureBudget.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -490,6 +491,16 @@ Settings::initializeKnobsGPU()
     _gpuMemoryBudgetMB->setMinimum(0);
     _gpuMemoryBudgetMB->disableSlider();
     _gpuPage->addKnob(_gpuMemoryBudgetMB);
+
+    _gpuTextureBudget = AppManager::createKnob<KnobInt>(this, tr("GPU Texture Budget"));
+    _gpuTextureBudget->setName("gpuTextureBudget");
+    _gpuTextureBudget->setHintToolTip(tr("The most GPU memory, in megabytes, that the textures of the 3D viewers and renders may take together. "
+                                         "A texture that would take them past it is not loaded, and its material uses the texture's fallback value. "
+                                         "0 chooses half the memory of the graphics card. "
+                                         "Changing this applies to the textures loaded from then on."));
+    _gpuTextureBudget->setMinimum(0);
+    _gpuTextureBudget->disableSlider();
+    _gpuPage->addKnob(_gpuTextureBudget);
 
     _gpuStatus = AppManager::createKnob<KnobString>(this, tr("GPU status"));
     _gpuStatus->setName("gpuStatus");
@@ -1861,6 +1872,7 @@ Settings::setDefaultValues()
     _gpuComputeMode->setDefaultValue((int)eGpuComputeModeAuto);
     _gpuDevice->setDefaultValue(0);
     _gpuMemoryBudgetMB->setDefaultValue(0);
+    _gpuTextureBudget->setDefaultValue(0);
 
     // General/Projects setup
     _firstReadSetProjectFormat->setDefaultValue(true);
@@ -2586,11 +2598,13 @@ Settings::onKnobValueChanged(KnobI* k,
     Q_EMIT settingChanged(k);
     bool ret = true;
 
-    if ( k == _maxViewerDiskCacheGB.get() ) {
+    if (k == _gpuTextureBudget.get()) {
+        StormTextureBudget::setConfiguredBudgetMB(getGpuTextureBudgetMB());
+    } else if (k == _maxViewerDiskCacheGB.get()) {
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumViewerDiskSpace( getMaximumViewerDiskCacheSize() );
         }
-    } else if ( k == _maxDiskCacheNodeGB.get() ) {
+    } else if (k == _maxDiskCacheNodeGB.get()) {
         if (!_restoringSettings) {
             appPTR->setNodeCachePinBudget(getMaximumDiskCacheNodeSize());
         }
@@ -2876,6 +2890,12 @@ std::uint64_t
 Settings::getGpuMemoryBudgetMB() const
 {
     return (std::uint64_t)std::max(0, _gpuMemoryBudgetMB->getValue());
+}
+
+std::uint64_t
+Settings::getGpuTextureBudgetMB() const
+{
+    return (std::uint64_t)std::max(0, _gpuTextureBudget->getValue());
 }
 
 ///////////////////////////////////////////////////////

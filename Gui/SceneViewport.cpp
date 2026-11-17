@@ -94,6 +94,7 @@
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormPtexBindingFilter.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
+#include "Engine/Nodes/Scene/StormTextureBudget.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -1667,6 +1668,7 @@ struct SceneViewportRenderer::Implementation {
             SceneDrawFilter::registerForAllRenderers();
             CyclesAovs::registerSceneIndices();
             StormPtexBindingFilter::registerForStorm();
+            StormTextureBudget::registerForStorm();
             LiveTextureSceneIndex::registerSceneIndices();
             {
                 TfErrorMark mark;

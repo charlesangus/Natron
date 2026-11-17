@@ -48,3 +48,5 @@ User request (2026-11-16): keyframes from a background tab must not show on the 
 - 2026-11-16 — Both rules apply (user): only an open, foreground panel's visible page contributes markers.
 
 - 2026-11-16 — All three tasks implemented (fb16ad0e2 on milestone/m455-keyframe-markers-for-visible-pages). Panels report foreground/page changes to the main window, which sends one combined refresh; Roto item-knob keys filter by the page of the same-named node knob (changes M421's list, as the Roto example requires); m305 and m421 GUI scripts updated to the new rule. Gate run 43982776533. Open for the user: Tracker user keys hidden with the panel (Out says user keys unchanged); a minimised top panel shows no keys rather than the next expanded panel stepping in.
+- 2026-11-16 — **Tracker user keys hide with the panel (user):** they follow the same foreground/visible-page rule as every other key; this overrides the Scope's "user keys unchanged" for the Tracker.
+- 2026-11-16 — **A minimised top panel is skipped (user):** the topmost expanded panel of a bin counts as foreground.

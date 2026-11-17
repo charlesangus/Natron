@@ -91,6 +91,11 @@ std::atomic<std::uint64_t> g_configuredBytes(0);
 std::atomic<std::uint64_t> g_videoMemoryBytes(0);
 std::atomic<std::uint64_t> g_nextScope(1);
 
+// What one frame may add to the textures it streams in: Storm reads and uploads a texture in the
+// render that first draws it, so a frame taking many would stall on the files.
+const std::uint64_t kStreamBatchBytes = std::uint64_t(512) << 20;
+const std::size_t kStreamBatchCount = 64;
+
 void
 refreshLimit()
 {
@@ -220,9 +225,15 @@ report()
 
         return;
     }
+    GpuTextureBudget& budget = StormTextureBudget::budget();
+    // What a held texture comes to is still open, so the count would soon be out of date.
+    if (budget.getPendingCount() > 0) {
+        armReport(quiet);
+
+        return;
+    }
     g_reportPending = false;
     std::size_t refused = 0;
-    GpuTextureBudget& budget = StormTextureBudget::budget();
     if (!budget.takeReport(&refused)) {
         return;
     }
@@ -527,7 +538,8 @@ replaceWithFallback(HdMaterialNetworkInterface* network,
 
 void
 filterNetwork(HdMaterialNetworkInterface* network,
-              std::uint64_t scope)
+              std::uint64_t scope,
+              bool defer)
 {
     static const TfToken textureMemoryInput("textureMemory");
     struct Texture {
@@ -567,15 +579,14 @@ filterNetwork(HdMaterialNetworkInterface* network,
         requests.push_back(std::move(request));
     }
     // Called with no textures too, so an edited material lets go of the ones it no longer reads.
-    const std::vector<bool> admitted = budget.claim(scope, network->GetMaterialPrimPath().GetString(), requests);
-    bool refused = false;
+    const std::size_t refusedBefore = budget.getRefusedCount();
+    const std::vector<bool> admitted = budget.claim(scope, network->GetMaterialPrimPath().GetString(), requests, defer);
     for (std::size_t i = 0; i < admitted.size(); ++i) {
         if (!admitted[i]) {
             replaceWithFallback(network, textures[i].node, textures[i].fallback);
-            refused = true;
         }
     }
-    if (refused) {
+    if (budget.getRefusedCount() > refusedBefore) {
         scheduleReport();
     }
 } // filterNetwork
@@ -627,41 +638,90 @@ private:
 class TextureBudgetSceneIndex;
 typedef TfRefPtr<TextureBudgetSceneIndex> TextureBudgetSceneIndexRefPtr;
 
+// Held while a scene index is used through it, so it cannot be destroyed meanwhile.
+std::mutex g_indicesMutex;
+std::map<std::string, TextureBudgetSceneIndex*> g_indices;
+
 class TextureBudgetSceneIndex
     : public HdMaterialFilteringSceneIndexBase {
 public:
-    static TextureBudgetSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input)
+    static TextureBudgetSceneIndexRefPtr New(const std::string& renderInstanceId,
+                                             const HdSceneIndexBaseRefPtr& input)
     {
-        return TfCreateRefPtr(new TextureBudgetSceneIndex(input));
+        return TfCreateRefPtr(new TextureBudgetSceneIndex(renderInstanceId, input));
     }
 
     ~TextureBudgetSceneIndex() override
     {
+        {
+            std::lock_guard<std::mutex> lock(g_indicesMutex);
+            const std::map<std::string, TextureBudgetSceneIndex*>::iterator found = g_indices.find(_instanceId);
+            if ((found != g_indices.end()) && (found->second == this)) {
+                g_indices.erase(found);
+            }
+        }
         _GetInputSceneIndex()->RemoveObserver(HdSceneIndexObserverPtr(&_changes));
         StormTextureBudget::budget().releaseScope(_scope);
+    }
+
+    std::uint64_t getScope() const
+    {
+        return _scope;
+    }
+
+    // On the thread that renders with this index, between renders.
+    void stream()
+    {
+        *_defers = true;
+        GpuTextureBudget& budget = StormTextureBudget::budget();
+        const GpuTextureBudget::Decided decided = budget.decidePending(_scope, kStreamBatchBytes, kStreamBatchCount);
+        if (decided.refused > 0) {
+            scheduleReport();
+        }
+        const std::vector<std::string> owners = budget.takeOwnersToReread(_scope);
+        if (owners.empty()) {
+            return;
+        }
+        HdSceneIndexObserver::DirtiedPrimEntries entries;
+        entries.reserve(owners.size());
+        for (const std::string& owner : owners) {
+            entries.push_back(HdSceneIndexObserver::DirtiedPrimEntry(SdfPath(owner), HdDataSourceLocatorSet(HdMaterialSchema::GetDefaultLocator())));
+        }
+        _SendPrimsDirtied(entries);
     }
 
 protected:
     FilteringFnc _GetFilteringFunction() const override
     {
         const std::uint64_t scope = _scope;
+        // Shared rather than read through this, which the material data sources can outlive.
+        const std::shared_ptr<std::atomic<bool>> defers = _defers;
 
-        return [scope](HdMaterialNetworkInterface* network) {
-            filterNetwork(network, scope);
+        return [scope, defers](HdMaterialNetworkInterface* network) {
+            filterNetwork(network, scope, defers->load());
         };
     }
 
 private:
-    explicit TextureBudgetSceneIndex(const HdSceneIndexBaseRefPtr& input)
+    TextureBudgetSceneIndex(const std::string& renderInstanceId,
+                            const HdSceneIndexBaseRefPtr& input)
         : HdMaterialFilteringSceneIndexBase(input)
         , _scope(g_nextScope++)
+        , _instanceId(renderInstanceId)
+        , _defers(std::make_shared<std::atomic<bool>>(false))
         , _changes(_scope)
     {
         // The base class's observer of the input cannot be overridden, so this one is added beside it.
         _GetInputSceneIndex()->AddObserver(HdSceneIndexObserverPtr(&_changes));
+        std::lock_guard<std::mutex> lock(g_indicesMutex);
+        g_indices[_instanceId] = this;
     }
 
     const std::uint64_t _scope;
+    const std::string _instanceId;
+    // Set once something renders with this index and so will read its materials again: only then
+    // can a texture be held without being left out for good.
+    const std::shared_ptr<std::atomic<bool>> _defers;
     MaterialChanges _changes;
 };
 } // anonymous namespace
@@ -674,8 +734,8 @@ registerForStorm()
     std::call_once(once, []() {
         HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
             kStormDisplayName,
-            [](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& /*args*/) -> HdSceneIndexBaseRefPtr {
-                return TextureBudgetSceneIndex::New(input);
+            [](const std::string& renderInstanceId, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& /*args*/) -> HdSceneIndexBaseRefPtr {
+                return TextureBudgetSceneIndex::New(renderInstanceId, input);
             },
             HdContainerDataSourceHandle(),
             0,
@@ -707,7 +767,45 @@ noteCurrentGLContext()
 void
 sampleFreeVideoMemory()
 {
-    noteFreeMemory(queryVideoMemory(false));
+    const VideoMemory memory = queryVideoMemory(false);
+    if (memory.freeBytes == 0) {
+        budget().noteFreeMemoryUnchanged();
+
+        return;
+    }
+    noteFreeMemory(memory);
+}
+
+void
+streamTextures(const std::string& renderInstanceId)
+{
+    if (renderInstanceId.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_indicesMutex);
+    const std::map<std::string, TextureBudgetSceneIndex*>::const_iterator found = g_indices.find(renderInstanceId);
+    if (found != g_indices.end()) {
+        found->second->stream();
+    }
+}
+
+bool
+texturesPending(const std::string& renderInstanceId)
+{
+    if (renderInstanceId.empty()) {
+        return false;
+    }
+    std::uint64_t scope = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_indicesMutex);
+        const std::map<std::string, TextureBudgetSceneIndex*>::const_iterator found = g_indices.find(renderInstanceId);
+        if (found == g_indices.end()) {
+            return false;
+        }
+        scope = found->second->getScope();
+    }
+
+    return budget().hasPending(scope);
 }
 
 GpuTextureBudget&

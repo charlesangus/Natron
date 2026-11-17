@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
+#include <string>
 
 NATRON_NAMESPACE_ENTER
 
@@ -47,6 +48,13 @@ class GpuTextureBudget;
  * from the file's header, what the upload will take, by Storm's own sizing: mip chains for UV and
  * UDIM textures, the packed pages for Ptex. A texture left out has its node taken out of the
  * network, which keeps Storm from opening the file at all.
+ *
+ * Under the automatic budget, an engine that streams its textures has them come in after its
+ * geometry: its first frame reads every material before any geometry is on the card, so free
+ * memory sampled before it would admit textures the geometry then has no room beside. A texture
+ * that engine's materials first ask for is held, drawn with its fallback, and decided over the
+ * following frames, a batch a frame, by free memory sampled after the frame that held it. A fixed
+ * budget does not depend on what else is on the card, and decides each texture as it comes.
  *
  * Kept free of OpenUSD's headers so the settings can include it.
  **/
@@ -71,6 +79,18 @@ void noteCurrentGLContext();
  * as neither free nor taken. Cheap enough for every frame.
  **/
 void sampleFreeVideoMemory();
+
+/**
+ * @brief Has the Storm engine whose render index is renderInstanceId stream its textures, and
+ * decides a batch of those it holds: the materials using the textures admitted are read again by
+ * its next render. Call it on the engine's render thread, with its context current, after
+ * sampleFreeVideoMemory() and before the first render of each frame; the first call must come
+ * before the engine's first render. An unknown or empty id does nothing.
+ **/
+void streamTextures(const std::string& renderInstanceId);
+
+// Whether that engine holds textures still to decide or materials still to read again.
+bool texturesPending(const std::string& renderInstanceId);
 
 GpuTextureBudget& budget();
 } // namespace StormTextureBudget

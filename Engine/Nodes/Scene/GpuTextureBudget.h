@@ -60,6 +60,12 @@ NATRON_NAMESPACE_ENTER
  * admitted since count against it and bytes forgotten since give back to it. Until a first sample,
  * the automatic limit is a fixed fallback. A fixed limit never looks at free memory: it bounds the
  * textures alone, whatever else is on the card.
+ *
+ * A claim can defer its new textures instead, under an automatic limit with free memory known: a
+ * sample taken before the claim's render has uploaded that render's geometry would make the card
+ * look emptier than it is. A deferred texture is held, not admitted, until decidePending() judges
+ * it by a sample taken after that render; the owners whose textures it admits are then owed a
+ * second read, which is what puts the texture into their materials.
  **/
 class GpuTextureBudget {
 public:
@@ -83,6 +89,8 @@ public:
     void setLimit(std::uint64_t limitBytes);
     void setAutomatic(std::uint64_t fallbackLimitBytes, std::uint64_t headroomBytes);
     void noteFreeMemory(std::uint64_t freeBytes);
+    // A sample was due and the driver gave none: the last one stands, as if taken again.
+    void noteFreeMemoryUnchanged();
 
     // The most the admitted textures may take together, as of now.
     std::uint64_t getLimit() const;
@@ -91,10 +99,35 @@ public:
     // The bytes of a texture some owner claims, so its size need not be measured again.
     bool findBytes(const std::string& key, std::uint64_t* bytes) const;
 
-    // One flag per request, true where the texture is admitted.
+    /**
+     * @brief One flag per request, true where the texture is admitted. With defer, a texture not
+     * yet decided is held for decidePending() rather than decided now, while the limit is automatic
+     * and free memory known; without, a held one is decided now.
+     **/
     std::vector<bool> claim(std::uint64_t scope,
                             const std::string& owner,
-                            const std::vector<Request>& requests);
+                            const std::vector<Request>& requests,
+                            bool defer = false);
+
+    struct Decided {
+        std::size_t admitted = 0;
+        std::size_t refused = 0;
+    };
+
+    /**
+     * @brief Decides held textures that an owner in scope claims and that were claimed before the
+     * last sample, in the order they were first claimed: each is admitted if it fits, refused
+     * otherwise. Stops before a texture that would take the textures admitted by this call past
+     * batchBytes or batchCount, though the first that fits is always admitted.
+     **/
+    Decided decidePending(std::uint64_t scope, std::uint64_t batchBytes, std::size_t batchCount);
+
+    // The owners in scope that hold a texture admitted since it was held, each given once.
+    std::vector<std::string> takeOwnersToReread(std::uint64_t scope);
+
+    // Whether an owner in scope claims a held texture or is owed a second read.
+    bool hasPending(std::uint64_t scope) const;
+    std::size_t getPendingCount() const;
 
     // Owners matching prefix are the path itself and the paths under it, as with SdfPath::HasPrefix.
     void markStale(std::uint64_t scope, const std::string& prefix);
@@ -111,18 +144,24 @@ public:
     bool takeReport(std::size_t* refused);
 
 private:
+    typedef std::pair<std::uint64_t, std::string> OwnerId;
     struct Entry {
         std::uint64_t bytes = 0;
-        std::size_t owners = 0;
+        std::set<OwnerId> owners;
         bool admitted = false;
+        bool pending = false;
+        // The sample count when it was held, and its place in _pending.
+        std::uint64_t heldAtSample = 0;
+        std::uint64_t pendingOrder = 0;
     };
     struct Owner {
         std::set<std::string> keys;
         bool stale = false;
     };
-    typedef std::pair<std::uint64_t, std::string> OwnerId;
 
-    void unrefLocked(const std::string& key);
+    static bool ownedIn(const Entry& entry, std::uint64_t scope);
+    void unrefLocked(const std::string& key, const OwnerId& owner);
+    bool decideLocked(Entry& entry, std::uint64_t limit);
     std::uint64_t limitLocked() const;
     template <typename Visit>
     void forEachOwnerLocked(std::uint64_t scope, const std::string& prefix, Visit visit);
@@ -138,8 +177,12 @@ private:
     std::uint64_t _used = 0;
     std::size_t _refused = 0;
     std::size_t _reported = 0;
+    std::uint64_t _samples = 0;
+    std::uint64_t _nextPendingOrder = 0;
     std::map<std::string, Entry> _entries;
     std::map<OwnerId, Owner> _owners;
+    std::map<std::uint64_t, std::string> _pending;
+    std::map<std::uint64_t, std::set<std::string>> _rereads;
 };
 
 // Half the card's memory, for drivers that tell only how much it has; 4 GiB when unknown.

@@ -123,6 +123,9 @@ renderGuarded(UsdImagingGLEngine* engine,
 {
     try {
         RenderDelegates::runRenderFaultHook();
+        if (RenderDelegates::isStorm(engine->GetCurrentRendererId().GetString())) {
+            StormTextureBudget::sampleFreeVideoMemory();
+        }
         engine->Render(root, params);
     } catch (const std::exception& e) {
         *what = e.what();

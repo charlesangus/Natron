@@ -60,6 +60,16 @@ GpuTextureBudget::noteFreeMemory(std::uint64_t freeBytes)
     std::lock_guard<std::mutex> lock(_mutex);
     _freeWithoutTextures = freeBytes + _used;
     _freeKnown = true;
+    ++_samples;
+}
+
+void
+GpuTextureBudget::noteFreeMemoryUnchanged()
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_freeKnown) {
+        ++_samples;
+    }
 }
 
 std::uint64_t
@@ -107,32 +117,71 @@ GpuTextureBudget::findBytes(const std::string& key,
     return true;
 }
 
+bool
+GpuTextureBudget::ownedIn(const Entry& entry,
+                          std::uint64_t scope)
+{
+    const std::set<OwnerId>::const_iterator first = entry.owners.lower_bound(OwnerId(scope, std::string()));
+
+    return (first != entry.owners.end()) && (first->first == scope);
+}
+
+bool
+GpuTextureBudget::decideLocked(Entry& entry,
+                               std::uint64_t limit)
+{
+    entry.admitted = (entry.bytes <= limit) && (_used <= limit - entry.bytes);
+    if (entry.admitted) {
+        _used += entry.bytes;
+    } else {
+        ++_refused;
+    }
+
+    return entry.admitted;
+}
+
 std::vector<bool>
 GpuTextureBudget::claim(std::uint64_t scope,
                         const std::string& owner,
-                        const std::vector<Request>& requests)
+                        const std::vector<Request>& requests,
+                        bool defer)
 {
     std::vector<bool> admitted;
     admitted.reserve(requests.size());
     std::lock_guard<std::mutex> lock(_mutex);
-    Owner& state = _owners[OwnerId(scope, owner)];
+    const OwnerId id(scope, owner);
+    Owner& state = _owners[id];
     std::set<std::string> claimed;
     const std::uint64_t limit = limitLocked();
+    const bool holds = defer && _automatic && _freeKnown;
     for (const Request& request : requests) {
         std::map<std::string, Entry>::iterator it = _entries.find(request.key);
         if (it == _entries.end()) {
             it = _entries.emplace(request.key, Entry()).first;
             Entry& entry = it->second;
             entry.bytes = request.bytes;
-            entry.admitted = (request.bytes <= limit) && (_used <= limit - request.bytes);
-            if (entry.admitted) {
-                _used += entry.bytes;
+            if (holds) {
+                entry.pending = true;
+                entry.heldAtSample = _samples;
+                entry.pendingOrder = _nextPendingOrder++;
+                _pending.emplace(entry.pendingOrder, request.key);
             } else {
-                ++_refused;
+                decideLocked(entry, limit);
+            }
+        } else if (it->second.pending && !holds) {
+            Entry& entry = it->second;
+            entry.pending = false;
+            _pending.erase(entry.pendingOrder);
+            if (decideLocked(entry, limit)) {
+                for (const OwnerId& other : entry.owners) {
+                    if (other != id) {
+                        _rereads[other.first].insert(other.second);
+                    }
+                }
             }
         }
         if (state.keys.insert(request.key).second) {
-            ++it->second.owners;
+            it->second.owners.insert(id);
         }
         claimed.insert(request.key);
         admitted.push_back(it->second.admitted);
@@ -145,26 +194,106 @@ GpuTextureBudget::claim(std::uint64_t scope,
                 ++it;
                 continue;
             }
-            unrefLocked(*it);
+            unrefLocked(*it, id);
             it = state.keys.erase(it);
         }
         state.stale = false;
     }
     if (state.keys.empty()) {
-        _owners.erase(OwnerId(scope, owner));
+        _owners.erase(id);
     }
 
     return admitted;
+} // GpuTextureBudget::claim
+
+GpuTextureBudget::Decided
+GpuTextureBudget::decidePending(std::uint64_t scope,
+                                std::uint64_t batchBytes,
+                                std::size_t batchCount)
+{
+    Decided decided;
+    std::lock_guard<std::mutex> lock(_mutex);
+    const std::uint64_t limit = limitLocked();
+    std::uint64_t batch = 0;
+    std::map<std::uint64_t, std::string>::iterator it = _pending.begin();
+    while (it != _pending.end()) {
+        Entry& entry = _entries.find(it->second)->second;
+        if (!ownedIn(entry, scope) || (entry.heldAtSample >= _samples)) {
+            ++it;
+            continue;
+        }
+        const bool fits = (entry.bytes <= limit) && (_used <= limit - entry.bytes);
+        if (fits && (decided.admitted > 0) && ((decided.admitted >= batchCount) || (batch + entry.bytes > batchBytes))) {
+            break;
+        }
+        entry.pending = false;
+        it = _pending.erase(it);
+        if (decideLocked(entry, limit)) {
+            batch += entry.bytes;
+            ++decided.admitted;
+            for (const OwnerId& owner : entry.owners) {
+                _rereads[owner.first].insert(owner.second);
+            }
+        } else {
+            ++decided.refused;
+        }
+    }
+
+    return decided;
+}
+
+std::vector<std::string>
+GpuTextureBudget::takeOwnersToReread(std::uint64_t scope)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const std::map<std::uint64_t, std::set<std::string>>::iterator found = _rereads.find(scope);
+    if (found == _rereads.end()) {
+        return std::vector<std::string>();
+    }
+    std::vector<std::string> owners(found->second.begin(), found->second.end());
+    _rereads.erase(found);
+
+    return owners;
+}
+
+bool
+GpuTextureBudget::hasPending(std::uint64_t scope) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_rereads.count(scope)) {
+        return true;
+    }
+    for (const std::pair<const std::uint64_t, std::string>& held : _pending) {
+        if (ownedIn(_entries.find(held.second)->second, scope)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::size_t
+GpuTextureBudget::getPendingCount() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _pending.size();
 }
 
 void
-GpuTextureBudget::unrefLocked(const std::string& key)
+GpuTextureBudget::unrefLocked(const std::string& key,
+                              const OwnerId& owner)
 {
     const std::map<std::string, Entry>::iterator it = _entries.find(key);
-    if ((it == _entries.end()) || (--it->second.owners > 0)) {
+    if (it == _entries.end()) {
         return;
     }
-    if (it->second.admitted) {
+    it->second.owners.erase(owner);
+    if (!it->second.owners.empty()) {
+        return;
+    }
+    if (it->second.pending) {
+        _pending.erase(it->second.pendingOrder);
+    } else if (it->second.admitted) {
         _used -= it->second.bytes;
     } else if (--_refused == 0) {
         _reported = 0;
@@ -184,7 +313,7 @@ GpuTextureBudget::forEachOwnerLocked(std::uint64_t scope,
         const std::string& path = it->first.second;
         // "/a.b" sorts between "/a" and "/a/b" without being under "/a".
         if (root || (path.size() == prefix.size()) || (path[prefix.size()] == '/')) {
-            if (!visit(it->second)) {
+            if (!visit(it->first, it->second)) {
                 it = _owners.erase(it);
                 continue;
             }
@@ -198,7 +327,7 @@ GpuTextureBudget::markStale(std::uint64_t scope,
                             const std::string& prefix)
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    forEachOwnerLocked(scope, prefix, [](Owner& owner) {
+    forEachOwnerLocked(scope, prefix, [](const OwnerId& /*id*/, Owner& owner) {
         owner.stale = true;
 
         return true;
@@ -210,13 +339,20 @@ GpuTextureBudget::release(std::uint64_t scope,
                           const std::string& prefix)
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    forEachOwnerLocked(scope, prefix, [this](Owner& owner) {
+    const std::map<std::uint64_t, std::set<std::string>>::iterator rereads = _rereads.find(scope);
+    forEachOwnerLocked(scope, prefix, [this, &rereads](const OwnerId& id, Owner& owner) {
         for (const std::string& key : owner.keys) {
-            unrefLocked(key);
+            unrefLocked(key, id);
+        }
+        if (rereads != _rereads.end()) {
+            rereads->second.erase(id.second);
         }
 
         return false;
     });
+    if ((rereads != _rereads.end()) && rereads->second.empty()) {
+        _rereads.erase(rereads);
+    }
 }
 
 void
@@ -226,10 +362,11 @@ GpuTextureBudget::releaseScope(std::uint64_t scope)
     std::map<OwnerId, Owner>::iterator it = _owners.lower_bound(OwnerId(scope, std::string()));
     while ((it != _owners.end()) && (it->first.first == scope)) {
         for (const std::string& key : it->second.keys) {
-            unrefLocked(key);
+            unrefLocked(key, it->first);
         }
         it = _owners.erase(it);
     }
+    _rereads.erase(scope);
 }
 
 std::uint64_t

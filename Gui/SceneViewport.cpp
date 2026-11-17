@@ -887,6 +887,11 @@ struct SceneViewportRenderer::Implementation {
     // by any other that reads them: the guides are built on the main thread while frames render.
     mutable std::mutex rulesMutex;
     SceneDrawFilter::WeakPtr drawFilter;
+    // The engine's render index, which its texture budget filter is found by; empty without one.
+    std::string engineInstanceId;
+    // Set by the render thread after a render, read by the main thread to ask for the frames that
+    // bring the held textures in.
+    std::atomic<bool> texturesOwed { false };
     // What the last frame drew, which is what a click picks from.
     SceneDrawBoxes::ListPtr drawnBoxList;
     // Cleared by the main thread when the selection changes, as the buffers colour the boxes
@@ -1701,15 +1706,30 @@ struct SceneViewportRenderer::Implementation {
     void discardFailedEngine(const std::string& what)
     {
         engine.reset();
+        forgetEngineInstance();
         engineHeld = false;
         backgroundFrame.imageKept = false;
         setRenderErrorCopy("The " + rendererId + " render failed: " + what);
+    }
+
+    void forgetEngineInstance()
+    {
+        engineInstanceId.clear();
+        texturesOwed = false;
+    }
+
+    // Needs stageMutex and a current GL context, before the frame's first render.
+    void streamTextures()
+    {
+        StormTextureBudget::sampleFreeVideoMemory();
+        StormTextureBudget::streamTextures(engineInstanceId);
     }
 
     // Nothing above a paint catches what a delegate throws.
     void engineFailedToStart(const std::string& what)
     {
         engine.reset();
+        forgetEngineInstance();
         engineHeld = false;
         setRendererErrorCopy("The renderer " + rendererId + " could not be started: " + what + ".");
     }
@@ -1788,6 +1808,7 @@ struct SceneViewportRenderer::Implementation {
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
             filter->seedRules(drawRules);
         }
+        engineInstanceId = filterInstanceId;
         engineHeld = true;
 
         return true;
@@ -1829,6 +1850,7 @@ struct SceneViewportRenderer::Implementation {
 
         engine.reset();
         drawFilter = SceneDrawFilter::WeakPtr();
+        forgetEngineInstance();
         drawRevealing = false;
         everyLightHidden = false;
         engineHeld = false;
@@ -3439,7 +3461,7 @@ SceneViewportRenderer::needsBackgroundFrame() const
 
     return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
         || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()))
-        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue && !_imp->yieldsToCamera());
+        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed;
 }
 
 void
@@ -3711,6 +3733,11 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         _imp->setCamera(frame.frustum, frame.width, frame.height, frame.params.enableSceneLights);
         for (; (passes < kMaxRenderPasses) && !converged && !ended(passes); ++passes) {
             RenderDelegates::runRenderFaultHook();
+            if (passes == 0) {
+                _imp->streamTextures();
+            } else {
+                StormTextureBudget::sampleFreeVideoMemory();
+            }
             _imp->engine->Render(stage->GetPseudoRoot(), frame.params);
             converged = _imp->engine->IsConverged();
             // The first render is what puts the stage's lights into Hydra, and so into the filter.
@@ -3736,6 +3763,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         return false;
     }
     _imp->noteDrawFilterRendered(passes != 0);
+    _imp->texturesOwed = StormTextureBudget::texturesPending(_imp->engineInstanceId);
     if (passes == 0) {
         return false;
     }
@@ -5030,6 +5058,11 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
             bool failed = false;
             try {
                 RenderDelegates::runRenderFaultHook();
+                if (i == 0) {
+                    _imp->streamTextures();
+                } else {
+                    StormTextureBudget::sampleFreeVideoMemory();
+                }
                 _imp->engine->Render(stage->GetPseudoRoot(), params);
             } catch (const std::exception& e) {
                 failed = true;
@@ -5055,6 +5088,8 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
                 converged = false;
             }
         }
+        _imp->texturesOwed = StormTextureBudget::texturesPending(_imp->engineInstanceId);
+        converged = converged && !_imp->texturesOwed;
         if (timed) {
             // The main thread waits for this render, so the GPU is left to finish on its own.
             timing->frameEnded(std::chrono::steady_clock::now(), passes, -1., true);

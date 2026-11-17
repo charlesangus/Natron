@@ -350,6 +350,211 @@ TEST(GpuTextureBudget, ConcurrentAutomaticClaimsKeepTheHeadroom)
     EXPECT_EQ(0u, budget.getUsedBytes());
 }
 
+namespace {
+// An automatic budget whose card has freeBytes free before anything is on it.
+void
+startAutomatic(GpuTextureBudget* budget,
+               std::uint64_t freeBytes,
+               std::uint64_t headroomBytes)
+{
+    budget->setAutomatic(1000000 * kMB, headroomBytes);
+    budget->noteFreeMemory(freeBytes);
+}
+
+const bool kDefer = true;
+const std::uint64_t kAnyBatch = 1000000 * kMB;
+} // anonymous namespace
+
+TEST(GpuTextureBudget, DeferredTextureIsHeldUntilASampleTakenAfterItsClaim)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 100 * kMB, 10 * kMB);
+    EXPECT_FALSE(budget.claim(1, "/m", requests({ { "a", 20 * kMB } }), kDefer)[0]);
+    EXPECT_EQ(1u, budget.getPendingCount());
+    EXPECT_TRUE(budget.hasPending(1));
+    EXPECT_EQ(0u, budget.getUsedBytes());
+    EXPECT_EQ(0u, budget.getRefusedCount());
+
+    // The sample that held it was taken before the claim's render.
+    EXPECT_EQ(0u, budget.decidePending(1, kAnyBatch, 100).admitted);
+    EXPECT_TRUE(budget.takeOwnersToReread(1).empty());
+
+    budget.noteFreeMemory(80 * kMB);
+    const GpuTextureBudget::Decided decided = budget.decidePending(1, kAnyBatch, 100);
+    EXPECT_EQ(1u, decided.admitted);
+    EXPECT_EQ(0u, decided.refused);
+    EXPECT_EQ(20 * kMB, budget.getUsedBytes());
+    EXPECT_TRUE(budget.hasPending(1));
+    EXPECT_EQ(std::vector<std::string>({ "/m" }), budget.takeOwnersToReread(1));
+    EXPECT_TRUE(budget.takeOwnersToReread(1).empty());
+    EXPECT_FALSE(budget.hasPending(1));
+
+    EXPECT_TRUE(budget.claim(1, "/m", requests({ { "a", 20 * kMB } }), kDefer)[0]);
+    EXPECT_EQ(20 * kMB, budget.getUsedBytes());
+}
+
+TEST(GpuTextureBudget, DeferredTexturesAreJudgedByFreeMemoryAfterTheGeometry)
+{
+    GpuTextureBudget budget(0);
+    // An empty card: deciding now would admit all three.
+    startAutomatic(&budget, 200 * kMB, 10 * kMB);
+    const std::vector<bool> held = budget.claim(1, "/m", requests({ { "a", 40 * kMB }, { "b", 40 * kMB }, { "c", 40 * kMB } }), kDefer);
+    EXPECT_EQ(std::vector<bool>({ false, false, false }), held);
+
+    // The frame's geometry took 100 MB.
+    budget.noteFreeMemory(100 * kMB);
+    const GpuTextureBudget::Decided decided = budget.decidePending(1, kAnyBatch, 100);
+    EXPECT_EQ(2u, decided.admitted);
+    EXPECT_EQ(1u, decided.refused);
+    EXPECT_EQ(80 * kMB, budget.getUsedBytes());
+    EXPECT_EQ(1u, budget.getRefusedCount());
+    EXPECT_EQ(0u, budget.getPendingCount());
+
+    const std::vector<bool> read = budget.claim(1, "/m", requests({ { "a", 40 * kMB }, { "b", 40 * kMB }, { "c", 40 * kMB } }), kDefer);
+    EXPECT_EQ(std::vector<bool>({ true, true, false }), read);
+}
+
+TEST(GpuTextureBudget, DeferredTexturesComeInBatchesInTheOrderFirstClaimed)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 1000 * kMB, 10 * kMB);
+    budget.claim(1, "/a", requests({ { "a", 30 * kMB } }), kDefer);
+    budget.claim(1, "/b", requests({ { "b", 30 * kMB } }), kDefer);
+    budget.claim(1, "/c", requests({ { "c", 30 * kMB } }), kDefer);
+    budget.claim(1, "/d", requests({ { "d", 10 * kMB } }), kDefer);
+    budget.noteFreeMemory(1000 * kMB);
+
+    EXPECT_EQ(2u, budget.decidePending(1, 70 * kMB, 100).admitted);
+    EXPECT_EQ(std::vector<std::string>({ "/a", "/b" }), budget.takeOwnersToReread(1));
+    EXPECT_TRUE(budget.hasPending(1));
+
+    // The batch stops at a count too, and holds back what comes after.
+    EXPECT_EQ(1u, budget.decidePending(1, kAnyBatch, 1).admitted);
+    EXPECT_EQ(std::vector<std::string>({ "/c" }), budget.takeOwnersToReread(1));
+    EXPECT_EQ(1u, budget.decidePending(1, kAnyBatch, 1).admitted);
+    EXPECT_EQ(std::vector<std::string>({ "/d" }), budget.takeOwnersToReread(1));
+    EXPECT_FALSE(budget.hasPending(1));
+}
+
+TEST(GpuTextureBudget, BatchAlwaysAdmitsOneTextureThatFits)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 1000 * kMB, 10 * kMB);
+    budget.claim(1, "/a", requests({ { "big", 600 * kMB } }), kDefer);
+    budget.noteFreeMemory(1000 * kMB);
+    EXPECT_EQ(1u, budget.decidePending(1, 100 * kMB, 10).admitted);
+    EXPECT_EQ(600 * kMB, budget.getUsedBytes());
+}
+
+TEST(GpuTextureBudget, BatchCountsWhatEarlierBatchesAdmittedAgainstTheSample)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 1000 * kMB, 10 * kMB);
+    budget.claim(1, "/a", requests({ { "a", 50 * kMB } }), kDefer);
+    budget.claim(1, "/b", requests({ { "b", 50 * kMB } }), kDefer);
+    budget.noteFreeMemory(110 * kMB);
+    EXPECT_EQ(1u, budget.decidePending(1, kAnyBatch, 1).admitted);
+
+    // "a" is on the card now, and something else took 20 MB: 110 - 50 - 20.
+    budget.noteFreeMemory(40 * kMB);
+    const GpuTextureBudget::Decided decided = budget.decidePending(1, kAnyBatch, 1);
+    EXPECT_EQ(0u, decided.admitted);
+    EXPECT_EQ(1u, decided.refused);
+    EXPECT_EQ(50 * kMB, budget.getUsedBytes());
+}
+
+TEST(GpuTextureBudget, FixedLimitDecidesDeferredClaimsAtOnce)
+{
+    GpuTextureBudget budget(100 * kMB);
+    budget.noteFreeMemory(10 * kMB);
+    EXPECT_TRUE(budget.claim(1, "/m", requests({ { "a", 60 * kMB } }), kDefer)[0]);
+    EXPECT_FALSE(budget.claim(1, "/m", requests({ { "b", 60 * kMB } }), kDefer)[0]);
+    EXPECT_EQ(0u, budget.getPendingCount());
+    EXPECT_EQ(1u, budget.getRefusedCount());
+}
+
+TEST(GpuTextureBudget, AutomaticWithoutFreeMemoryDecidesDeferredClaimsAtOnce)
+{
+    GpuTextureBudget budget(0);
+    budget.setAutomatic(50 * kMB, 10 * kMB);
+    EXPECT_TRUE(budget.claim(1, "/m", requests({ { "a", 40 * kMB } }), kDefer)[0]);
+    EXPECT_EQ(0u, budget.getPendingCount());
+}
+
+TEST(GpuTextureBudget, UnchangedSampleStillLetsHeldTexturesBeDecided)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 100 * kMB, 10 * kMB);
+    budget.claim(1, "/m", requests({ { "a", 20 * kMB } }), kDefer);
+    budget.noteFreeMemoryUnchanged();
+    EXPECT_EQ(1u, budget.decidePending(1, kAnyBatch, 100).admitted);
+}
+
+TEST(GpuTextureBudget, OnlyTheHoldersScopeDecidesAndEveryOwnerIsReadAgain)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 1000 * kMB, 10 * kMB);
+    budget.claim(2, "/x", requests({ { "a", 20 * kMB } }), kDefer);
+    budget.noteFreeMemory(1000 * kMB);
+    EXPECT_FALSE(budget.hasPending(1));
+    EXPECT_EQ(0u, budget.decidePending(1, kAnyBatch, 100).admitted);
+    EXPECT_TRUE(budget.hasPending(2));
+
+    budget.claim(1, "/m", requests({ { "a", 20 * kMB } }), kDefer);
+    EXPECT_TRUE(budget.hasPending(1));
+    EXPECT_EQ(1u, budget.decidePending(1, kAnyBatch, 100).admitted);
+    EXPECT_EQ(std::vector<std::string>({ "/m" }), budget.takeOwnersToReread(1));
+    EXPECT_EQ(std::vector<std::string>({ "/x" }), budget.takeOwnersToReread(2));
+}
+
+TEST(GpuTextureBudget, ClaimThatDoesNotDeferDecidesAHeldTextureForItsHolders)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 1000 * kMB, 10 * kMB);
+    budget.claim(1, "/m", requests({ { "a", 20 * kMB } }), kDefer);
+    EXPECT_TRUE(budget.claim(2, "/n", requests({ { "a", 20 * kMB } }))[0]);
+    EXPECT_EQ(0u, budget.getPendingCount());
+    EXPECT_EQ(20 * kMB, budget.getUsedBytes());
+    EXPECT_EQ(std::vector<std::string>({ "/m" }), budget.takeOwnersToReread(1));
+    EXPECT_TRUE(budget.takeOwnersToReread(2).empty());
+}
+
+TEST(GpuTextureBudget, ReleasingAHeldTextureForgetsItAndItsRereads)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 1000 * kMB, 10 * kMB);
+    budget.claim(1, "/m", requests({ { "a", 20 * kMB } }), kDefer);
+    budget.release(1, "/m");
+    EXPECT_EQ(0u, budget.getPendingCount());
+    EXPECT_FALSE(budget.hasPending(1));
+
+    budget.claim(1, "/m", requests({ { "b", 20 * kMB } }), kDefer);
+    budget.noteFreeMemory(1000 * kMB);
+    EXPECT_EQ(1u, budget.decidePending(1, kAnyBatch, 100).admitted);
+    budget.release(1, "/m");
+    EXPECT_FALSE(budget.hasPending(1));
+    EXPECT_TRUE(budget.takeOwnersToReread(1).empty());
+    EXPECT_EQ(0u, budget.getUsedBytes());
+
+    budget.claim(3, "/m", requests({ { "c", 20 * kMB } }), kDefer);
+    budget.releaseScope(3);
+    EXPECT_EQ(0u, budget.getPendingCount());
+}
+
+TEST(GpuTextureBudget, HeldTexturesAreNotReportedAsRefused)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 100 * kMB, 10 * kMB);
+    budget.claim(1, "/m", requests({ { "a", 200 * kMB } }), kDefer);
+    std::size_t refused = 0;
+    EXPECT_FALSE(budget.takeReport(&refused));
+
+    budget.noteFreeMemory(100 * kMB);
+    EXPECT_EQ(1u, budget.decidePending(1, kAnyBatch, 100).refused);
+    EXPECT_TRUE(budget.takeReport(&refused));
+    EXPECT_EQ(1u, refused);
+}
+
 TEST(GpuTextureBudget, PtexSingleFaceTakesOneMinimumPage)
 {
     const std::uint64_t layoutBytes = 5461 * 3 * 4;

@@ -208,7 +208,9 @@ future core work has solid ground to build on.
 | M255 | Delegate Output Spikes | done | M251, M252 | bosley-executor | E9 | | | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
 | M256 | Delegate AOV Selection | todo | M255 |  | E9 | | | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255, M286 |  | E8 | F24 | | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
-| M258 | MoonRay Deep Output | todo | M255, M286 |  | E8 | F24 | | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
+| M460 | MoonRay True Deep Patch | todo | M255 |  | E8 | F24 | | [M460-moonray-true-deep-patch.md](PLAN/MILESTONES/M460-moonray-true-deep-patch.md) |
+| M461 | MoonRay DeepFrame Over Arras | todo | M255, M286 |  | E8 | F24 | | [M461-moonray-deepframe-over-arras.md](PLAN/MILESTONES/M461-moonray-deepframe-over-arras.md) |
+| M258 | MoonRay Deep Output | todo | M255, M286, M460, M461 |  | E8 | F24 | | [M258-moonray-deep-output.md](PLAN/MILESTONES/M258-moonray-deep-output.md) |
 | M259 | GPU Placement Under Render Contexts | done | M180, M181, M182 | bosley-native-nodes | E15 | | | [M259-gpu-placement-under-render-contexts.md](PLAN/MILESTONES/M259-gpu-placement-under-render-contexts.md) |
 | M52 | USD Layer-Stack Completion | done | M226 | bosley-native-nodes | E9 | | | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
 | M53 | Projected Texture Painting | done | M52, M233, M311 | bosley-native-nodes | E9 | F11 | | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |

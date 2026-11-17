@@ -736,3 +736,7 @@ ProgressiveRenderTest.ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverThem is f
 ### 2026-11-16T03:32:00-05:00 — change-request
 - refs: none
 - Fold the project-wide decision `DECISIONS/2026-11-16-deep-opacity-output.md` (deep opacity, alpha-only deep output) into the scope of M286 - Utility Renderer Deep Output, M257 - Cycles Deep Output and M258 - MoonRay Deep Output. Also fold `DECISIONS/2026-11-16-moonray-deep-over-arras.md` (MoonRay deep over banded Arras DeepFrame messages) into M258, and the M255 - Delegate Output Spikes findings (Cycles kernel 2 KB/px slab, merge threshold, flatten mismatch, empty flattened AOV, no ids) into M257.
+
+### 2026-11-16T11:00:00-05:00 — change-request
+- refs: none
+- Elaborate M256 - Delegate AOV Selection, M257 - Cycles Deep Output and M258 - MoonRay Deep Output from M255 - Delegate Output Spikes' drafts: `spike/m255/REPORT-P2T3-drafts.md` on branch `spike/m255-delegate-output` (a1e0d29fd). Apply the user decisions recorded in M255's Decisions (2026-11-16, P2.T3), including colour plus alpha deep volume segments on both delegates. Also apply the true-deep MoonRay patch (`spike/m255/moonray/moonray-true-deep.patch`) to M258's phase 258.1, and the deep opacity decision. Consider splitting M258's phases 258.1 and 258.2 into their own milestones.

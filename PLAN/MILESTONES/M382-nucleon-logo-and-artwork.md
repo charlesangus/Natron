@@ -146,3 +146,4 @@ Context:
 - 2026-11-12 — Round 10 feedback (user):
   - Short list now: pyramid-key-sunk, pyramid-key-stack, nucleon-pinwheel-key, nucleon-pinwheel-nucleus, nucleon-inward-key, nucleon-inward-socket.
   - Back to the original trefoil (rings-trefoil, round 6): go maximum Bauhaus, simplify and exaggerate the basic visual idea; it may stray far from the trefoil-knot look. A few of those. Round 11 goes to an Opus agent. Marks at cb462ba8f: trefoil-bauhaus-clamps, -jhooks, -grip, -frame.
+- 2026-11-17 — Round 12 request (user): add a blue electron to each of the six short-listed marks, like the electron of a helium atom. Ring treatments to try: flat, in depth (passing behind and in front of the mark), constant thickness, and with a bulge. Also try other electron representations, such as a small circle. Drafted by a Fable agent in `Gui/Resources/Branding/concepts/electron-*.svg`; sheets under `build/branding/round12/`.

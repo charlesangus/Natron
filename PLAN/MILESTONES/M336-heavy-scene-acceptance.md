@@ -75,3 +75,11 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 - 2026-11-16 — Round-5 gate run 43972140070 on 95e978bd8 green. The acceptance bench runs next on a rented Vast.ai NVIDIA VM (cloud-gpu skill) instead of the user's GPU host.
 - 2026-11-17 — Vast.ai acceptance attempt on the round-5 AppImage produced no numbers: the first VM run lacked Tests/gui (run-gui-test.sh), so every run exited 127; a rerun was cancelled by the user and the VM destroyed. P1.T1 still needs the round-5 run (user's GPU host, or a VM on request).
 - 2026-11-17 — VM runs, all on Vast.ai RTX 4090 / 98 GB with inputs staged through R2. Earlier exit 127s were the image lacking libOpenGL.so.0, not the missing Tests/gui. The 30-minute workflow stalls on flat and city came from the VM's screen having no monitor attached (`UseDisplayDevice None`): the window was 678x353 and the scene never painted, and after two kills GLX was dead for the remaining labels. Harness changes in e2fd5ceb5: BENCH_TIMEOUT_S can be set, a failed open dumps the viewer and screen state, and a GPU wedged after a label stops the batch. With a connected 1920x1080 monitor the city open probe paints (first frame 922.7 ms; its stall was sampled, so it isn't judged). The full unsampled acceptance run is going on the same VM.
+- 2026-11-17 — **Round-5 acceptance run, complete, on the VM** (Vast.ai RTX 4090, driver 580.95.05, 98 GB, unsampled; .local/vast/runs/cloud-gpu-20261117T041339Z/out/heavy-scene-acceptance.jsonl): 7 pass / 13 fail / 4 skipped.
+  - Passing: load_all on city, Lobby and Island; draw_budget on city and Island; city reveal_cancel_paced; Island orbit10k.
+  - Every open and populate_full stall is 200-265 ms, against a 100 ms limit, on every scene.
+  - flat: pattern_node 623 ms, reopen 604 ms, inspect 124 ms, 20.8 GB RSS.
+  - city: reveal_wide worst frame 427 ms, reveal_load_all worst frame 456 ms, orbit10k stall 294 ms.
+  - Island: full_load_block worst frame 3.6 s; reveal_wide 5.4 s stall and 10.9 s worst frame; reveal_cancel_paced 5.4 s stall.
+  - Lobby: its loaded scenarios are skipped ("no such row").
+  - A consultant is classifying each failure as product, environment or bench before fix tasks are filed.

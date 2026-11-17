@@ -25,6 +25,8 @@
 
 #include "UtilitySettings.h"
 
+#include <string>
+
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
@@ -197,6 +199,55 @@ make()
         s.defaultValue = VtValue(true);
         c.settings.push_back(s);
     }
+
+    RenderSettingsKnobs::CuratedSetting projection;
+
+    projection.key = kUtilitySettingProjection;
+    projection.name = "projection";
+    projection.tooltip = "How the frame's pixels see the scene. Camera renders through the camera, perspective or orthographic. Spherical renders a 360 by 180 degree lat-long and Cylindrical a 360 degree band of the camera's vertical view, both from the camera's position in its orientation: the frame's centre looks where the camera looks and its right side turns to the camera's right. UV Unwrap bakes the shaded surface of UV Prim into the UDIM Tile of its UV Primvar, the format being the texture's size; texels no triangle covers stay empty, and where UV islands overlap the later triangles win.";
+    projection.defaultValue = VtValue(TfToken(kUtilityProjectionCamera));
+    projection.choices = { { "camera", "Camera", VtValue(TfToken(kUtilityProjectionCamera)) }, { "spherical", "Spherical", VtValue(TfToken(kUtilityProjectionSpherical)) }, { "cylindrical", "Cylindrical", VtValue(TfToken(kUtilityProjectionCylindrical)) }, { "uvUnwrap", "UV Unwrap", VtValue(TfToken(kUtilityProjectionUvUnwrap)) } };
+    c.settings.push_back(projection);
+
+    RenderSettingsKnobs::CuratedSetting overscan;
+
+    overscan.key = kUtilitySettingOverscan;
+    overscan.name = "overscan";
+    overscan.tooltip = "How many pixels the frame grows by beyond the format on every side, the projection carrying on there, so that later distortion or blur has image to pull in. The render's region grows to match. UV Unwrap ignores it.";
+    overscan.defaultValue = VtValue(int(0));
+    overscan.hasRange = true;
+    overscan.minimum = 0;
+    overscan.displayMaximum = 256;
+    c.settings.push_back(overscan);
+
+    RenderSettingsKnobs::CuratedSetting uvPrim;
+
+    uvPrim.key = kUtilitySettingUvPrim;
+    uvPrim.name = "uvPrim";
+    uvPrim.tooltip = "With Projection UV Unwrap, the path of the mesh to bake, such as /World/geo/body. The render fails naming it if the scene has no such mesh.";
+    uvPrim.defaultValue = VtValue(std::string());
+    c.settings.push_back(uvPrim);
+
+    RenderSettingsKnobs::CuratedSetting uvPrimvar;
+
+    uvPrimvar.key = kUtilitySettingUvPrimvar;
+    uvPrimvar.name = "uvPrimvar";
+    uvPrimvar.tooltip = "With Projection UV Unwrap, the texture coordinate primvar of UV Prim that lays out the bake. The render fails naming the prim and primvar if the mesh does not have it.";
+    uvPrimvar.defaultValue = VtValue(std::string(kUtilityDefaultUvPrimvar));
+    c.settings.push_back(uvPrimvar);
+
+    RenderSettingsKnobs::CuratedSetting udimTile;
+
+    udimTile.key = kUtilitySettingUdimTile;
+    udimTile.name = "udimTile";
+    udimTile.tooltip = "With Projection UV Unwrap, the UDIM tile baked: 1001 holds UVs from 0 to 1, 1002 the next tile along u, 1011 the tile above 1001 in v.";
+    udimTile.defaultValue = VtValue(int(kUtilityDefaultUdimTile));
+    udimTile.hasRange = true;
+    udimTile.minimum = 1001;
+    udimTile.displayMaximum = 1100;
+    udimTile.maximum = 9999;
+    udimTile.hasMaximum = true;
+    c.settings.push_back(udimTile);
 
     return c;
 }

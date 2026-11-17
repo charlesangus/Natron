@@ -33,6 +33,8 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -76,11 +78,47 @@ struct WavefrontSampling {
     }
 };
 
+// How pixels map to rays. Camera is the USD camera's frustum. Spherical is a 360 by 180 degree
+// lat-long and Cylindrical a 360 degree band of the camera's vertical view, both about the camera's
+// position in its orientation, the display window's centre looking along the camera. UvUnwrap gives
+// each texel of one prim's UV tile a ray onto the surface at it.
+enum class WavefrontMapping {
+    Camera,
+    Spherical,
+    Cylindrical,
+    UvUnwrap,
+};
+
+// The floats per pixel of WavefrontUnwrap::texels, as Kernels/RayGenUv.slang reads them: the surface's
+// world position at the pixel's centre and 1 where the prim covers the pixel, else 0; how the position
+// moves per pixel along x, and how far either side of the surface its ray starts and ends; how it moves
+// per pixel along y; and the surface's unit normal.
+const std::size_t kWavefrontUnwrapFloats = 16;
+
+// Where a UV unwrap's pixels lie on its prim, at one time.
+struct WavefrontUnwrap {
+    WavefrontRect window;
+    std::vector<float> texels;
+    // The world size of a pixel on the surface, averaged over the prim.
+    double footprint = 0.;
+};
+typedef std::shared_ptr<const WavefrontUnwrap> WavefrontUnwrapConstPtr;
+
 // What one render draws.
 struct WavefrontFrame {
     PXR_NS::GfMatrix4d worldToView = PXR_NS::GfMatrix4d(1.);
     PXR_NS::GfMatrix4d projection = PXR_NS::GfMatrix4d(1.);
     WavefrontRect window;
+    // The part of the window the image's format covers, in the window's pixels; the rest is overscan.
+    // Empty means all of it. The projection already maps the window, so only the other mappings use it.
+    WavefrontRect display;
+    WavefrontMapping mapping = WavefrontMapping::Camera;
+    // A UvUnwrap's prim, the primvar its geometry's unwrapSt came from and its UDIM tile; the display
+    // window spans the tile's 0 to 1. wavefrontDrawSamples() fills in unwrap from the scene it draws.
+    PXR_NS::SdfPath unwrapPrim;
+    std::string unwrapPrimvar;
+    int udimTile = 1001;
+    WavefrontUnwrapConstPtr unwrap;
     // The most holes a ray goes on through, in surfaces under their opacityThreshold, Project3D discards
     // and casters a shadow ray's light ignores; past them the ray ends as a miss.
     std::uint32_t maxCutouts = kWavefrontDefaultMaxCutouts;
@@ -222,6 +260,7 @@ WavefrontFrame wavefrontFrameAt(const WavefrontFrame& frame,
  * snapshot, evaluated at each bucket's time, and the camera at it trace that bucket's samples.
  * progress, when set, hears how many samples are done after each. bucketSeconds, when not null,
  * receives how long each bucket took, its scene's evaluation included. Returns false when stop ended it.
+ * Throws std::runtime_error when a UvUnwrap frame's prim cannot be unwrapped.
  **/
 bool wavefrontDrawSamples(WavefrontExecutor& executor,
                           const UtilityScene::Snapshot& snapshot,
@@ -232,6 +271,16 @@ bool wavefrontDrawSamples(WavefrontExecutor& executor,
                           int threads,
                           const std::function<void(std::size_t)>& progress,
                           std::vector<double>* bucketSeconds);
+
+/**
+ * @brief Lays the frame's window out over the UV tile of frame.unwrapPrim, as the scene places its first
+ * instance. Where triangles overlap in UV the later one wins. Returns null with *error set when the
+ * scene has no such prim or the prim has no frame.unwrapPrimvar, and null when stop ended it.
+ **/
+WavefrontUnwrapConstPtr wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
+                                        const WavefrontFrame& frame,
+                                        const std::atomic<bool>& stop,
+                                        std::string* error);
 
 /**
  * @brief Appends to data the importance table of a lat-long dome image, sized width by height bins over

@@ -59,6 +59,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 
 #include "utility_raygen_spirv.h"
+#include "utility_raygen_uv_spirv.h"
 #include "utility_resolve_hits_spirv.h"
 #include "utility_shade_lights_spirv.h"
 #include "utility_shade_surface_spirv.h"
@@ -128,7 +129,8 @@ utilityGpuBudget()
 #ifdef NATRON_HAVE_GPU
 
 namespace {
-static_assert(sizeof(KernelRayGenParams) == utility_raygen_push_bytes);
+static_assert(sizeof(KernelRayGenParams) == utility_raygen_push_bytes && sizeof(KernelRayGenParams) == utility_raygen_uv_push_bytes);
+static_assert(utility_raygen_uv_storage_buffers == 3);
 static_assert(sizeof(KernelShadeParams) == utility_shade_surface_push_bytes);
 static_assert(sizeof(KernelShadeLightsParams) == utility_shade_lights_push_bytes);
 static_assert(sizeof(KernelResolveParams) == utility_resolve_hits_push_bytes);
@@ -167,6 +169,14 @@ rayGenDesc()
 {
     return gpu::GpuKernelDesc {
         utility_raygen_spirv, utility_raygen_spirv_words, utility_raygen_entry, utility_raygen_storage_buffers, utility_raygen_push_bytes, { utility_raygen_group_size[0], utility_raygen_group_size[1], utility_raygen_group_size[2] }
+    };
+}
+
+gpu::GpuKernelDesc
+rayGenUvDesc()
+{
+    return gpu::GpuKernelDesc {
+        utility_raygen_uv_spirv, utility_raygen_uv_spirv_words, utility_raygen_uv_entry, utility_raygen_uv_storage_buffers, utility_raygen_uv_push_bytes, { utility_raygen_uv_group_size[0], utility_raygen_uv_group_size[1], utility_raygen_uv_group_size[2] }
     };
 }
 
@@ -410,6 +420,7 @@ struct WavefrontGpu::Implementation {
 
     bool warm(const std::atomic<bool>& stop);
     bool uploadTables(std::uint64_t version);
+    bool uploadUnwrap(const WavefrontUnwrapConstPtr& unwrap);
     bool reserveReadback(std::size_t rays,
                          const WavefrontAovs& aovs);
     struct ResolveScratch {
@@ -446,6 +457,7 @@ struct WavefrontGpu::Implementation {
     gpu::GpuDevice& device;
     GpuTracer tracer;
     std::shared_ptr<gpu::GpuKernel> rayGenKernel;
+    std::shared_ptr<gpu::GpuKernel> rayGenUvKernel;
     std::shared_ptr<gpu::GpuKernel> shadeKernel;
     std::shared_ptr<gpu::GpuKernel> shadeLightsKernel;
     std::shared_ptr<gpu::GpuKernel> resolveKernel;
@@ -463,6 +475,9 @@ struct WavefrontGpu::Implementation {
     WavefrontShadeTables shadeTables;
     ShadeTableBuffers tables;
     BatchReadback readback;
+    // The UV unwrap on the device, kept while the frames draw the same one.
+    WavefrontUnwrapConstPtr unwrap;
+    gpu::GpuBufferHandle unwrapTexels;
 };
 
 /**
@@ -478,7 +493,7 @@ WavefrontGpu::Implementation::warm(const std::atomic<bool>& stop)
     if (!warmUp) {
         std::vector<std::shared_ptr<gpu::GpuKernel>> kernels = tracer.kernels();
 
-        kernels.insert(kernels.end(), { rayGenKernel, shadeKernel, shadeLightsKernel, resolveKernel });
+        kernels.insert(kernels.end(), { rayGenKernel, rayGenUvKernel, shadeKernel, shadeLightsKernel, resolveKernel });
         // Made here rather than with the first film on the device, so that the film's kernels compile too.
         if (!filmKernelsTried) {
             filmKernelsTried = true;
@@ -591,6 +606,35 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
     tables = std::move(next);
     tables.version = version;
     tables.valid = true;
+
+    return true;
+}
+
+bool
+WavefrontGpu::Implementation::uploadUnwrap(const WavefrontUnwrapConstPtr& next)
+{
+    if (next == unwrap && unwrapTexels) {
+        return true;
+    }
+    unwrap.reset();
+    unwrapTexels = gpu::GpuBufferHandle();
+
+    std::unique_ptr<gpu::GpuRecordContext> ctx;
+
+    if (gpu::GpuStatus s = gpu::GpuRecordContext::create(registry, ctx, &pool); !s) {
+        return fail("WavefrontGpu could not create a record context", s);
+    }
+
+    gpu::GpuBufferHandle texels;
+
+    if (!upload(*ctx, next->texels.data(), next->texels.size() * sizeof(float), "UV unwrap texels", texels)) {
+        return false;
+    }
+    if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
+        return fail("WavefrontGpu could not upload its UV unwrap", s);
+    }
+    unwrap = next;
+    unwrapTexels = std::move(texels);
 
     return true;
 }
@@ -841,13 +885,22 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     }
 
     const KernelRayGenParams rayGenParams = makeRayGenParams(frame, rect);
-    const std::array<gpu::GpuBinding, 2> rayGenBindings = { gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights) };
 
     if (!rec.reserve(2 * count)) {
         return false;
     }
-    if (gpu::GpuStatus s = rec.ctx().dispatchBindings(rayGenKernel, rayGenBindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
-        return fail("WavefrontGpu could not generate rays", s);
+    if (frame.mapping == WavefrontMapping::UvUnwrap) {
+        const std::array<gpu::GpuBinding, 3> bindings = { gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights), gpu::GpuBinding::storage(2, unwrapTexels.buffer()) };
+
+        if (gpu::GpuStatus s = rec.ctx().dispatchBindings(rayGenUvKernel, bindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
+            return fail("WavefrontGpu could not generate rays", s);
+        }
+    } else {
+        const std::array<gpu::GpuBinding, 2> bindings = { gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights) };
+
+        if (gpu::GpuStatus s = rec.ctx().dispatchBindings(rayGenKernel, bindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
+            return fail("WavefrontGpu could not generate rays", s);
+        }
     }
     rec.ctx().computeBarrier();
     if (gpu::GpuStatus s = tracer.recordIntersect(rec.ctx(), *rays, static_cast<std::uint32_t>(count), *hitValues, *hitIds); !s) {
@@ -1077,6 +1130,12 @@ WavefrontGpu::WavefrontGpu(gpu::GpuKernelRegistry& registry,
         return;
     }
     imp.rayGenKernel = std::move(kernel);
+    if (gpu::GpuStatus s = gpu::GpuKernel::create(imp.device, rayGenUvDesc(), kernel); !s) {
+        imp.unusable = Tracer::Outcome { Tracer::Status::Unsupported, "WavefrontGpu could not create its UV ray generation kernel: " + s.message };
+
+        return;
+    }
+    imp.rayGenUvKernel = std::move(kernel);
     if (gpu::GpuStatus s = gpu::GpuKernel::create(imp.device, shadeSurfaceDesc(), kernel); !s) {
         imp.unusable = Tracer::Outcome { Tracer::Status::Unsupported, "WavefrontGpu could not create its shading kernel: " + s.message };
 
@@ -1141,6 +1200,9 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     }
     if (!imp.uploadTables(snapshot.version)) {
         return false;
+    }
+    if (frame.mapping == WavefrontMapping::UvUnwrap && (!frame.unwrap || !imp.uploadUnwrap(frame.unwrap))) {
+        return frame.unwrap ? false : imp.stopped();
     }
 
     const WavefrontRect& window = frame.window;

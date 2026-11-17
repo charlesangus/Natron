@@ -41,6 +41,14 @@ enum KernelPixelFilter : std::uint32_t {
     eKernelPixelFilterBlackmanHarris = 3,
 };
 
+// Mirrors the kMapping constants in Kernels/RayGen.slang.
+enum KernelRayMapping : std::uint32_t {
+    eKernelRayMappingCamera = 0,
+    eKernelRayMappingSpherical = 1,
+    eKernelRayMappingCylindrical = 2,
+    eKernelRayMappingUvUnwrap = 3,
+};
+
 // Mirrors RayGenParams in Kernels/RayGen.slang, where each position is a float3 with the scalar after
 // it in the same 16 bytes.
 struct KernelRayGenParams {
@@ -55,7 +63,7 @@ struct KernelRayGenParams {
     float farPerX[3];
     std::uint32_t filter;
     float farPerY[3];
-    std::uint32_t padding;
+    std::uint32_t mapping;
     std::int32_t windowX;
     std::int32_t windowY;
     std::int32_t windowWidth;
@@ -250,6 +258,16 @@ struct KernelResolveBuffers {
 void runRayGenKernel(const KernelRayGenParams& params,
                      float* rays,
                      float* weights = nullptr);
+
+/**
+ * @brief Runs the C++ build of RayGenUv.slang for one tile, as runRayGenKernel() does, reading texelFloats
+ * floats of WavefrontUnwrap::texels laid out over the params' window. MT-safe.
+ **/
+void runRayGenUvKernel(const KernelRayGenParams& params,
+                       const float* texels,
+                       std::size_t texelFloats,
+                       float* rays,
+                       float* weights = nullptr);
 
 /**
  * @brief Runs the C++ build of ShadeSurface.slang over params.count hits. MT-safe.

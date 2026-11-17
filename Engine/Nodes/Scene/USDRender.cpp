@@ -100,6 +100,36 @@ primIdKey(std::uint32_t hash)
 
     return std::string(kUSDRenderMetadataPrimIdPrefix) + hex;
 }
+
+// A UV Unwrap render's pixels are the texture's texels, so it has nothing beyond them to grow into.
+int
+utilityOverscan(const std::string& renderer,
+                const RenderSettingsPrim::Values& values)
+{
+    if (renderer != kRenderDelegateUtilityId) {
+        return 0;
+    }
+    const RenderSettingsPrim::Values::const_iterator projection = values.find(kUtilitySettingProjection);
+    if ((projection != values.end()) && projection->second.IsHolding<PXR_NS::TfToken>() && (projection->second.UncheckedGet<PXR_NS::TfToken>() == kUtilityProjectionUvUnwrap)) {
+        return 0;
+    }
+    const RenderSettingsPrim::Values::const_iterator found = values.find(kUtilitySettingOverscan);
+    if (found == values.end()) {
+        return 0;
+    }
+    const PXR_NS::VtValue pixels = PXR_NS::VtValue::Cast<int>(found->second);
+
+    return pixels.IsHolding<int>() ? std::max(0, pixels.UncheckedGet<int>()) : 0;
+}
+
+// The overscan's pixels added to the canonical format; x is in pixels of the pixel aspect ratio.
+RectD
+withOverscan(const RectD& canonical,
+             int overscan,
+             double par)
+{
+    return RectD(canonical.x1 - overscan * par, canonical.y1 - overscan, canonical.x2 + overscan * par, canonical.y2 + overscan);
+}
 } // anon namespace
 
 USDRender::USDRender(NodePtr node)
@@ -471,15 +501,22 @@ void
 USDRender::outputFormat(double time,
                         ViewIdx view,
                         RectI* format,
-                        double* par) const
+                        double* par,
+                        int* overscan) const
 {
     ActiveSettings active;
     std::string error;
 
+    if (overscan) {
+        *overscan = 0;
+    }
     if (readActiveSettings(time, view, &active, &error) && active.prim) {
         const int width = active.standard.resolution[0];
         const int height = active.standard.resolution[1];
         const double aspect = active.standard.pixelAspectRatio;
+        if (overscan) {
+            *overscan = utilityOverscan(active.renderer, RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time));
+        }
         if ((width > 0) && (height > 0) && (aspect > 0.)) {
             *format = RectI(0, 0, width, height);
             *par = aspect;
@@ -520,9 +557,10 @@ USDRender::getRegionOfDefinition(U64 /*hash*/,
 {
     RectI format;
     double par;
+    int overscan;
 
-    outputFormat(time, view, &format, &par);
-    *rod = Format(format, par).toCanonicalFormat();
+    outputFormat(time, view, &format, &par, &overscan);
+    *rod = withOverscan(Format(format, par).toCanonicalFormat(), overscan, par);
 
     return eStatusOK;
 }
@@ -718,10 +756,19 @@ USDRender::prepareRender(double time,
                       "format with the renderer's own settings.")
                        .toStdString());
     }
-    setup->pixels = Format(format, par).toCanonicalFormat().toPixelEnclosing(level, par);
-    if (setup->pixels.isNull()) {
+    if (active.prim) {
+        setup->request.settings = RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time);
+    }
+    const RectD canonical = Format(format, par).toCanonicalFormat();
+    const RectI shown = canonical.toPixelEnclosing(level, par);
+    setup->pixels = withOverscan(canonical, utilityOverscan(active.renderer, setup->request.settings), par).toPixelEnclosing(level, par);
+    if (shown.isNull()) {
         return failWith(tr("The format is empty.").toStdString());
     }
+    setup->request.overscanLeft = shown.x1 - setup->pixels.x1;
+    setup->request.overscanBottom = shown.y1 - setup->pixels.y1;
+    setup->request.overscanRight = setup->pixels.x2 - shown.x2;
+    setup->request.overscanTop = setup->pixels.y2 - shown.y2;
 
     PXR_NS::SdfPath cameraPath = active.prim ? active.standard.camera : PXR_NS::SdfPath();
     if (cameraPath.IsEmpty()) {
@@ -754,9 +801,6 @@ USDRender::prepareRender(double time,
     setup->request.showProxy = proxyPurposeKnob && proxyPurposeKnob->getValue();
     setup->request.showGuides = guidePurposeKnob && guidePurposeKnob->getValue();
     setup->request.renderer = active.renderer;
-    if (active.prim) {
-        setup->request.settings = RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time);
-    }
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;

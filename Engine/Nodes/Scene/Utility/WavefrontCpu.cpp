@@ -185,7 +185,14 @@ renderTile(const WavefrontFrame& frame,
     std::vector<std::int32_t> primId(count);
     std::vector<std::int32_t> instanceId(count);
 
-    runRayGenKernel(makeRayGenParams(frame, rect), rays.data(), weights.data());
+    if (frame.mapping == WavefrontMapping::UvUnwrap) {
+        if (!frame.unwrap) {
+            return;
+        }
+        runRayGenUvKernel(makeRayGenParams(frame, rect), frame.unwrap->texels.data(), frame.unwrap->texels.size(), rays.data(), weights.data());
+    } else {
+        runRayGenKernel(makeRayGenParams(frame, rect), rays.data(), weights.data());
+    }
 
     const Tracer::HitBatch hits = hitBatchOf(hitSurface.data(), hitIds.data(), count);
 

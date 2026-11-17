@@ -71,6 +71,7 @@
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -78,6 +79,7 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -926,6 +928,39 @@ TEST_F(USDRenderRendererTest, TheRendererKnobBeatsThePrimWhichBeatsStorm)
     ASSERT_TRUE(makeActive);
     makeActive->setValue(false);
     EXPECT_EQ(std::string(kRenderDelegateStormId), activeRendererOf(node, &error)) << error;
+}
+
+// Natron Utility's overscan widens the output by its pixels on every side, and only while Natron
+// Utility renders; a UV Unwrap's texels have nothing beyond them.
+TEST_F(USDRenderRendererTest, UtilityOverscanGrowsTheOutputOnEverySide)
+{
+    NodePtr settings;
+    NodePtr node = createRender(kFixture, &settings);
+    ASSERT_TRUE(node != nullptr);
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(settings->getEffectInstance().get());
+    ASSERT_TRUE(effect && effect->renderSettings());
+    KnobInt* overscan = dynamic_cast<KnobInt*>(effect->renderSettings()->knob(kRenderDelegateUtilityId, kUtilitySettingOverscan).get());
+    KnobChoice* projection = dynamic_cast<KnobChoice*>(effect->renderSettings()->knob(kRenderDelegateUtilityId, kUtilitySettingProjection).get());
+    ASSERT_TRUE(overscan && projection);
+    overscan->setValue(16);
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateStormId));
+    RectD rod = rodOf(node);
+    EXPECT_EQ(0., rod.x1);
+    EXPECT_EQ((double)kWidth, rod.x2);
+
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
+    rod = rodOf(node);
+    EXPECT_EQ(-16., rod.x1);
+    EXPECT_EQ(-16., rod.y1);
+    EXPECT_EQ(kWidth + 16., rod.x2);
+    EXPECT_EQ(kHeight + 16., rod.y2);
+    EXPECT_EQ(kWidth + 32., rod.width());
+    EXPECT_EQ(kHeight + 32., rod.height());
+
+    (void)projection->setValueFromID(kUtilityProjectionUvUnwrap, 0);
+    rod = rodOf(node);
+    EXPECT_EQ(0., rod.x1);
+    EXPECT_EQ((double)kWidth, rod.x2);
 }
 
 // The Settings Prim knob beats the stage's renderSettingsPrimPath metadata.

@@ -98,7 +98,19 @@ private:
                        UtilityScene* scene);
     // The primvar the bound material reads its texture coordinates from.
     PXR_NS::TfToken stPrimvarName(PXR_NS::HdSceneDelegate* sceneDelegate) const;
-    // The texture coordinates of that primvar.
+    // The primvar a uvUnwrap render lays this prim out by, empty when it bakes another prim or none.
+    PXR_NS::TfToken unwrapPrimvarName(PXR_NS::HdSceneDelegate* sceneDelegate) const;
+    struct Coordinates {
+        bool found = false;
+        UtilityScene::ColorBinding binding = UtilityScene::eColorBindingConstant;
+        PXR_NS::VtVec2fArray values;
+    };
+    // A primvar's coordinates, bound like the colours; false when stopped.
+    bool pullCoordinates(PXR_NS::HdSceneDelegate* sceneDelegate,
+                         const PXR_NS::TfToken& name,
+                         const UtilitySubdivRefinement::StopCheck& stopped,
+                         Coordinates* out) const;
+    // The texture coordinates of that primvar, and of the unwrap's.
     bool syncMaterial(PXR_NS::HdSceneDelegate* sceneDelegate,
                       UtilityScene* scene,
                       const UtilitySubdivRefinement::StopCheck& stopped);

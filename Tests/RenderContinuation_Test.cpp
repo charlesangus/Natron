@@ -52,6 +52,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
+#include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -694,4 +695,43 @@ TEST_F(RenderContinuation, BudgetLimitedFrameWithAnExtensionCompletes)
         EXPECT_EQ(1, ContinuationTestRegistry::continuationCount());
         expectPoolDrained();
     }
+}
+
+// A node that offers a continuation and claims a GPU path is refused for the GPU, so it stays a CPU task and is
+// probed.
+TEST_F(RenderContinuation, ContinuationNodeStaysOnTheCpuAndProbes)
+{
+    NodePtr source, control, probe;
+    ASSERT_NO_FATAL_FAILURE(buildProbe(kSubsetMask, 0, &source, &control, &probe));
+
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(probe->getEffectInstance().get());
+    ASSERT_TRUE(native != nullptr);
+    ASSERT_TRUE(bool(native->opKind()));
+    ASSERT_TRUE(native->canRenderOnGpu(GpuQuery()));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(probe, true, &run, &error)) << error;
+    const PlacementInputs inputs = makeRenderPlacementInputs(run.context);
+    ASSERT_TRUE(bool(inputs.canRenderOnGpu));
+    bool found = false;
+    for (const FrameGraph::Task& task : run.graph.tasks) {
+        if (task.key.node != probe) {
+            continue;
+        }
+        found = true;
+        GpuRefusal refusal;
+        refusal.reason = FrameGraph::PlacementReason::None;
+        EXPECT_FALSE(inputs.canRenderOnGpu(task, &refusal));
+        EXPECT_EQ(FrameGraph::PlacementReason::NoGpuPath, refusal.reason);
+        EXPECT_FALSE(refusal.detail.empty());
+    }
+    EXPECT_TRUE(found);
+
+    resetCounters();
+    std::vector<float> values;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderScheduled(probe, &values));
+    EXPECT_GT(ContinuationTestRegistry::probeCount(), 0);
+    EXPECT_EQ(1, ContinuationTestRegistry::continuationCount());
+    expectPoolDrained();
 }

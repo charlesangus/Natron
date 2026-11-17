@@ -1479,6 +1479,8 @@ returns `true` and fills `continuation->requests` with the outputs it needs
 next -- node, context, time, view, canonical region and layers -- and
 `continuation->continuation`, run once they are rendered.
 
+A node that overrides `offersRenderContinuation()` to return `true` is never placed on the GPU, because only CPU tasks are probed.
+
 - **Task-graph scheduler.** The requests go through an incremental request
   pass of their own, are built into an extension graph that shares the frame's
   store, abort info and bytes budget, and render as tasks in parallel. An

@@ -2349,6 +2349,15 @@ public:
     }
 
     /**
+     * @brief Whether getRenderContinuation() may return true for some frame. GPU placement keeps such an effect on the
+     * CPU, since only CPU tasks are probed and the answer depends on pixels placement cannot read.
+     **/
+    virtual bool offersRenderContinuation() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
      * @brief Pulls the output request names from the render the calling thread runs for this effect: a store hit
      * when the frame or an extension holds it, otherwise rendered on this thread. For the probe and continuation
      * of getRenderContinuation(), and the render action after them.

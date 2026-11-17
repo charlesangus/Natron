@@ -358,6 +358,22 @@ public:
         return frames;
     }
 
+    virtual bool offersRenderContinuation() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    // Claims a GPU path, so that only its continuation keeps placement from taking it.
+    virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return OpKind::Custom;
+    }
+
+    virtual bool canRenderOnGpu(const GpuQuery& /*query*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     virtual bool getRenderContinuation(const RenderContinuationArgs& args,
                                        RenderContinuation* continuation) OVERRIDE FINAL
     {
@@ -507,6 +523,11 @@ public:
         reads.add(recursiveProbeVariable());
 
         return reads;
+    }
+
+    virtual bool offersRenderContinuation() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
     }
 
     virtual bool getRenderContinuation(const RenderContinuationArgs& args,

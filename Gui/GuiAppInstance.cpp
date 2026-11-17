@@ -719,13 +719,13 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
 } // createNodeGui
 
 std::string
-GuiAppInstance::openImageFileDialog()
+GuiAppInstance::openImageFileDialog(std::optional<std::pair<int, int>>* frameRange)
 {
     {
         QMutexLocker l(&_imp->_showingDialogMutex);
         ++_imp->_showingDialog;
     }
-    std::string ret = _imp->_gui->openImageSequenceDialog();
+    std::string ret = _imp->_gui->openImageSequenceDialog(frameRange);
     {
         QMutexLocker l(&_imp->_showingDialogMutex);
         --_imp->_showingDialog;

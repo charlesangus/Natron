@@ -60,3 +60,6 @@ Neither scheduler can add work once a frame starts rendering: the request pass r
 - 2026-10-25 — **Public to native nodes (user):** documented in `Engine/Nodes/README.md` so later adaptive or tile-skipping nodes can use it; not exposed to OpenFX or Python.
 
 **Verification gate:** the full build and ctest pass, including `RenderContinuation` and the existing scheduler suites unchanged; `tools/ci/remote/build.sh debug --tests` passes; `tools/bench` shows no regression on ordinary graphs.
+- 2026-11-17 — All five tasks' code is committed in the lane (unbuilt; syntax check clean).
+  - Deviations: an extension is a child frame with its own request map and FrameRenderContext, sharing the parent's store under a new generation, so the live graph and planned map are never mutated. Only work already in the store is reused; planned-but-unrendered work renders again under the new generation. The continuation runs before the node's own render, reading the requested outputs back as store hits. Extension graphs skip pruneBehindCacheHits. Partial cache hits and GPU regions that fall back to the CPU probe inline.
+  - PM call: a node that offers a continuation is not placed on the GPU, since a GPU task is never probed (implementer running). The gate follows: debug --tests plus the scheduler regression suites.

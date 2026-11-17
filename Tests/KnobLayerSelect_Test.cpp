@@ -35,6 +35,8 @@
 
 #include <gtest/gtest.h>
 
+#include <nuke/fnOfxExtensions.h>
+
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
@@ -78,7 +80,7 @@ ImageLayerDesc
 makeLayer(const std::string& name,
           const std::vector<std::string>& channels)
 {
-    return ImageLayerDesc(name, name, "", channels);
+    return ImageLayerDesc(name, channels);
 }
 
 std::vector<std::string>
@@ -180,22 +182,17 @@ TEST(KnobLayerSelect, DefaultIsRGBAAllChannels)
     EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved.channels);
 }
 
-TEST(KnobLayerSelect, RetiredStorageIDResolvesToFalse)
+TEST(KnobLayerSelect, ResolvedColourLayerIsTheStoragePlane)
 {
     KnobLayerSelectPtr knob = makeLayerSelectKnob();
 
-    knob->setLayer(kNatronColorLayerID);
+    knob->setLayer(kNatronColorViewRGB);
 
     ResolvedLayer resolved;
-    EXPECT_FALSE(knob->resolve(presentLayers(), &resolved));
-}
-
-TEST(KnobLayerSelect, SummaryMapsRetiredStorageIDToRGBALabel)
-{
-    KnobLayerSelectPtr knob = makeLayerSelectKnob();
-
-    knob->setLayer(kNatronColorLayerID);
-    EXPECT_EQ(std::string(kNatronColorViewRGBA), knob->getSummary());
+    ASSERT_TRUE(knob->resolve(presentLayers(), &resolved));
+    EXPECT_TRUE(resolved.desc.isColorStorage());
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved.desc.getLayerID());
+    EXPECT_EQ(std::string(kNatronColorViewRGB), knob->getSummary());
 }
 
 TEST(KnobLayerSelect, AlphaViewResolvesToBit3)
@@ -586,22 +583,28 @@ TEST(OfxMultiplaneChoice, ChannelValueRoundTripsColourViews)
 {
     // Every colour view shares the one storage plane the plugin sees, so the forward direction
     // collapses all of them to the same option ID, and the reverse direction always comes back
-    // as the canonical rgba view, whichever view produced the option in the first place.
-    const std::pair<std::string, std::string> cases[] = {
-        std::make_pair(std::string(kNatronColorViewRGBA), std::string("A")),
-        std::make_pair(std::string(kNatronColorViewRGB), std::string("B")),
-        std::make_pair(std::string(kNatronColorViewAlpha), std::string("A")),
-        std::make_pair(std::string(kNatronColorViewXY), std::string("X")),
+    // as the canonical rgba view (xy for X and Y), whichever view produced the option.
+    struct Case {
+        std::string view;
+        std::string channel;
+        std::string pluginChannel;
+        std::string back;
+    };
+    const Case cases[] = {
+        { kNatronColorViewRGBA, "A", "A", std::string(kNatronColorViewRGBA) + ".A" },
+        { kNatronColorViewRGB, "B", "B", std::string(kNatronColorViewRGBA) + ".B" },
+        { kNatronColorViewAlpha, "A", "A", std::string(kNatronColorViewRGBA) + ".A" },
+        { kNatronColorViewXY, "x", "X", std::string(kNatronColorViewXY) + ".x" },
     };
 
     for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
-        const std::string value = cases[i].first + "." + cases[i].second;
+        const std::string value = cases[i].view + "." + cases[i].channel;
         const std::string pluginOption = OfxMultiplaneChoice::channelValueToPluginOption(value);
 
-        EXPECT_EQ(std::string(kNatronColorLayerID) + "." + cases[i].second, pluginOption);
+        EXPECT_EQ(std::string(kFnOfxImagePlaneColour) + "." + cases[i].pluginChannel, pluginOption);
 
         const std::string back = OfxMultiplaneChoice::pluginOptionToChannelValue(pluginOption);
-        EXPECT_EQ(std::string(kNatronColorViewRGBA) + "." + cases[i].second, back);
+        EXPECT_EQ(cases[i].back, back);
     }
 }
 
@@ -628,15 +631,17 @@ TEST(OfxMultiplaneChoice, NoneChannelOptionIsTheNeutralConstantPerParam)
     EXPECT_EQ(std::string("1"), OfxMultiplaneChoice::noneChannelOption("unPremultByChannel"));
 }
 
-TEST(OfxMultiplaneChoice, ChannelReverseAcceptsLegacyColorLabelAndNeverYieldsStorageID)
+TEST(OfxMultiplaneChoice, BuiltinPlaneChannelsAreUpperCaseForThePlugin)
 {
-    const std::string fromStorageID = OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kNatronColorLayerID) + ".R");
-    const std::string fromLegacyLabel = OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kNatronColorStorageLabel) + ".R");
+    EXPECT_EQ(std::string(kFnOfxImagePlaneForwardMotionVector) + ".U", OfxMultiplaneChoice::channelValueToPluginOption("forward.u"));
+    EXPECT_EQ(std::string(kFnOfxImagePlaneBackwardMotionVector) + ".V", OfxMultiplaneChoice::channelValueToPluginOption("backward.v"));
+    EXPECT_EQ(std::string(kFnOfxImagePlaneStereoDisparityLeft) + ".X", OfxMultiplaneChoice::channelValueToPluginOption("disparityL.x"));
+    EXPECT_EQ(std::string(kFnOfxImagePlaneStereoDisparityRight) + ".Y", OfxMultiplaneChoice::channelValueToPluginOption("disparityR.y"));
 
-    EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".R", fromStorageID);
-    EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".R", fromLegacyLabel);
-    EXPECT_EQ(std::string::npos, fromStorageID.find(kNatronColorLayerID));
-    EXPECT_EQ(std::string::npos, fromLegacyLabel.find(kNatronColorLayerID));
+    EXPECT_EQ(std::string("forward.u"), OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kFnOfxImagePlaneForwardMotionVector) + ".U"));
+    EXPECT_EQ(std::string("backward.v"), OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kFnOfxImagePlaneBackwardMotionVector) + ".V"));
+    EXPECT_EQ(std::string("disparityL.x"), OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kFnOfxImagePlaneStereoDisparityLeft) + ".X"));
+    EXPECT_EQ(std::string("disparityR.y"), OfxMultiplaneChoice::pluginOptionToChannelValue(std::string(kFnOfxImagePlaneStereoDisparityRight) + ".Y"));
 }
 
 TEST(OfxMultiplaneChoice, PlaneValueRoundTripsColourViewsAndOtherLayers)
@@ -644,11 +649,13 @@ TEST(OfxMultiplaneChoice, PlaneValueRoundTripsColourViewsAndOtherLayers)
     const char* const views[] = { kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY };
 
     for (std::size_t i = 0; i < sizeof(views) / sizeof(views[0]); ++i) {
-        EXPECT_EQ(std::string(kNatronColorLayerID), OfxMultiplaneChoice::layerValueToPluginPlaneOption(views[i]));
+        EXPECT_EQ(std::string(kFnOfxImagePlaneColour), OfxMultiplaneChoice::layerValueToPluginPlaneOption(views[i]));
     }
 
-    EXPECT_EQ(std::string(kNatronColorViewRGBA), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(kNatronColorLayerID));
-    EXPECT_EQ(std::string(kNatronColorViewRGBA), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(kNatronColorStorageLabel));
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(kFnOfxImagePlaneColour));
+
+    EXPECT_EQ(std::string(kFnOfxImagePlaneForwardMotionVector), OfxMultiplaneChoice::layerValueToPluginPlaneOption(kNatronForwardMotionVectorsLayerID));
+    EXPECT_EQ(std::string(kNatronForwardMotionVectorsLayerID), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(kFnOfxImagePlaneForwardMotionVector));
 
     EXPECT_EQ(std::string("diffuse"), OfxMultiplaneChoice::layerValueToPluginPlaneOption("diffuse"));
     EXPECT_EQ(std::string("diffuse"), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue("diffuse"));
@@ -657,11 +664,11 @@ TEST(OfxMultiplaneChoice, PlaneValueRoundTripsColourViewsAndOtherLayers)
     EXPECT_EQ(std::string(), OfxMultiplaneChoice::pluginPlaneOptionToLayerValue("none"));
 }
 
-TEST(OfxMultiplaneChoice, PlaneReverseNeverYieldsStorageID)
+TEST(OfxMultiplaneChoice, PlaneReverseNeverYieldsAnOfxPlaneString)
 {
-    const std::string back = OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(kNatronColorLayerID);
+    const std::string back = OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(kFnOfxImagePlaneColour);
 
-    EXPECT_NE(std::string(kNatronColorLayerID), back);
+    EXPECT_EQ(std::string::npos, back.find("thefoundry"));
     EXPECT_EQ(std::string(kNatronColorViewRGBA), back);
 }
 

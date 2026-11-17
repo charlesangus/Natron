@@ -47,37 +47,26 @@ GCC_DIAG_ON(unused-parameter)
 #endif
 
 #define IMAGELAYERDESC_SERIALIZATION_RENAMES_TAGS 3
-#define IMAGELAYERDESC_SERIALIZATION_VERSION IMAGELAYERDESC_SERIALIZATION_RENAMES_TAGS
+#define IMAGELAYERDESC_SERIALIZATION_LAYER_NAMES 4
+#define IMAGELAYERDESC_SERIALIZATION_VERSION IMAGELAYERDESC_SERIALIZATION_LAYER_NAMES
 
 #include "Engine/ChoiceOption.h"
 #include "Engine/EngineFwd.h"
-#include <nuke/fnOfxExtensions.h>
 
-#define kNatronColorLayerID kFnOfxImagePlaneColour
-#define kNatronColorStorageLabel "Color"
+// The colour storage plane shares its ID with the rgba view; isColorStorage() tells them apart.
+#define kNatronColorLayerID "rgba"
 
 // A colour view is (the colour storage plane, a channel mask): rgba/rgb/alpha are always
-// present on any colour storage, xy only on the 2-channel XY storage layout. Each view's
-// label equals its ID.
+// present on any colour storage, xy only on the 2-channel XY storage layout.
 #define kNatronColorViewRGBA "rgba"
 #define kNatronColorViewRGB "rgb"
 #define kNatronColorViewAlpha "alpha"
 #define kNatronColorViewXY "xy"
 
-#define kNatronBackwardMotionVectorsLayerID kFnOfxImagePlaneBackwardMotionVector
-#define kNatronBackwardMotionVectorsLayerLabel "Backward"
-
-#define kNatronForwardMotionVectorsLayerID kFnOfxImagePlaneForwardMotionVector
-#define kNatronForwardMotionVectorsLayerLabel "Forward"
-
-#define kNatronDisparityLeftLayerID kFnOfxImagePlaneStereoDisparityLeft
-#define kNatronDisparityLeftLayerLabel "DisparityLeft"
-
-#define kNatronDisparityRightLayerID kFnOfxImagePlaneStereoDisparityRight
-#define kNatronDisparityRightLayerLabel "DisparityRight"
-
-#define kNatronDisparityComponentsLabel "Disparity"
-#define kNatronMotionComponentsLabel "Motion"
+#define kNatronBackwardMotionVectorsLayerID "backward"
+#define kNatronForwardMotionVectorsLayerID "forward"
+#define kNatronDisparityLeftLayerID "disparityL"
+#define kNatronDisparityRightLayerID "disparityR"
 
 NATRON_NAMESPACE_ENTER
 
@@ -85,15 +74,15 @@ class ImageLayerDesc {
 public:
     ImageLayerDesc();
 
+    /**
+     * @brief A desc whose ID is kNatronColorLayerID is the colour storage plane; the colour views
+     * come from getColorView() only.
+     **/
     ImageLayerDesc(const std::string& layerID,
-                   const std::string& layerLabel,
-                   const std::string& channelsLabel,
                    const std::vector<std::string>& channels);
 
     ImageLayerDesc(const std::string& layerID,
-                   const std::string& layerLabel,
-                   const std::string& channelsLabel,
-                   const char** chanels,
+                   const char** channels,
                    int count);
 
     ImageLayerDesc(const ImageLayerDesc& other);
@@ -108,57 +97,32 @@ public:
     static bool isColorLayer(const std::string& layerID);
 
     /**
+     * @brief The colour storage plane an image carries, as opposed to a colour view of it, though
+     * the rgba view shares its ID.
+     **/
+    bool isColorStorage() const;
+
+    /**
      * @brief Returns the number of channels in this layer.
      **/
     int getNumComponents() const;
 
     /**
-     * @brief Returns the layer unique identifier. This should be used to compare ImageLayerDesc together.
-     * This is not supposed to be used for display purpose, use getLayerLabel() instead.
+     * @brief The layer's name: what menus show, files store and projects save.
      **/
     const std::string& getLayerID() const;
 
     /**
-     * @brief Returns the layer label.
-     * This is what is used to display to the user.
-     **/
-    const std::string& getLayerLabel() const;
-
-    /**
      * @brief The layer name for text built from a desc that may be the colour storage plane:
      * the storage plane is named after the colour view whose channels it carries (see
-     * colorViewForNComps()), since its own label never reaches the user. Any other layer,
-     * colour views included, returns getLayerLabel().
+     * colorViewForNComps()). Any other layer, colour views included, returns getLayerID().
      **/
     std::string getUserFacingLabel() const;
-
-    /**
-     * @brief The layer name an image file stores this layer's channels under, as
-     * "<name>.<channel>": the label for the built-in motion vector and disparity layers, whose
-     * IDs are OpenFX plane identifiers, and the ID for any other layer.
-     **/
-    std::string getFileLayerName() const;
-
-    /**
-     * @brief The inverse of getFileLayerName() for the built-in motion vector and disparity
-     * layers: the built-in layer a file stores under `fileLayerName`, or, when the file holds
-     * only some of its channels, a layer of the built-in's ID and label with those channels
-     * alone, in the built-in's order.
-     * @return getNoneComponents() when `fileLayerName` is no built-in's file name, or when a
-     * channel is not one of the built-in's.
-     **/
-    static ImageLayerDesc mapFileLayerToBuiltinLayer(const std::string& fileLayerName, const std::vector<std::string>& channels);
 
     /**
      * @brief Returns the channels composing this layer.
      **/
     const std::vector<std::string>& getChannels() const;
-
-    /**
-     * @brief Returns a label used to better represent the type of components used by this layer.
-     * e.g: "Motion" can be used to better label "XY" component types.
-     **/
-    const std::string& getChannelsLabel() const;
 
     bool operator==(const ImageLayerDesc& other) const;
 
@@ -187,45 +151,6 @@ public:
      * @brief Maps the given nComps to the color layer
      **/
     static const ImageLayerDesc& mapNCompsToColorLayer(int nComps);
-
-    /**
-     * @brief Maps the given OpenFX plane to a ImageLayerDesc.
-     * @param ofxPlane Can be
-
-     *  kFnOfxImagePlaneBackwardMotionVector
-     *  kFnOfxImagePlaneForwardMotionVector
-     *  kFnOfxImagePlaneStereoDisparityLeft
-     *  kFnOfxImagePlaneStereoDisparityRight
-     *  Or any plane encoded in the format specified by the Natron multi-plane extension.
-     * @note kFnOfxImagePlaneColour carries no channel count, so the color layer must go through
-     * mapNCompsToColorLayer instead.
-     * @return getNoneComponents() when ofxPlane cannot be decoded.
-     **/
-    static ImageLayerDesc mapOFXPlaneStringToLayer(const std::string& ofxPlane);
-
-    /**
-     * @brief Maps OpenFX components string to a layer, optionnally also to a paired layer in the case of disparity/motion vectors.
-     * @param ofxComponents Must be a string between
-     * kOfxImageComponentRGBA, kOfxImageComponentRGB, kOfxImageComponentAlpha, kNatronOfxImageComponentXY, kOfxImageComponentNone
-     * or kFnOfxImageComponentStereoDisparity or kFnOfxImageComponentMotionVectors
-     * Or any plane encoded in the format specified by the Natron multi-plane extension.
-     **/
-    static void mapOFXComponentsTypeStringToLayers(const std::string& ofxComponents, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer);
-
-    /**
-     * @brief Does the inverse of mapOFXPlaneStringToLayer, except that it can also be used for
-     * the color layer.
-     **/
-    static std::string mapLayerToOFXPlaneString(const ImageLayerDesc& layer);
-
-    /**
-     * @brief Returns an OpenFX encoded string representing the components type of the layer.
-     * @returns One of the following strings:
-     * kOfxImageComponentRGBA, kOfxImageComponentRGB, kOfxImageComponentAlpha, kNatronOfxImageComponentXY, kOfxImageComponentNone
-     * or kFnOfxImageComponentStereoDisparity or kFnOfxImageComponentMotionVectors
-     * Or any plane encoded in the format specified by the Natron multi-plane extension.
-     **/
-    static std::string mapLayerToOFXComponentsTypeString(const ImageLayerDesc& layer);
 
     /**
      * @brief Find a layer equivalent to this layer in the other layers container.
@@ -275,7 +200,7 @@ public:
     static bool isColorViewID(const std::string& layerID);
 
     /**
-     * @brief The view's own ID, label and channel names; getNoneComponents() for any other ID.
+     * @brief The view's own ID and channel names; getNoneComponents() for any other ID.
      **/
     static const ImageLayerDesc& getColorView(const std::string& viewID);
 
@@ -344,9 +269,13 @@ public:
     void load(Archive& ar, const unsigned int version);
 
 private:
-    std::string _layerID, _layerLabel;
+    struct ColorViewTag { };
+
+    ImageLayerDesc(ColorViewTag, const std::string& viewID, const std::vector<std::string>& channels);
+
+    std::string _layerID;
     std::vector<std::string> _channels;
-    std::string _channelsLabel;
+    bool _colorStorage;
 
     friend class boost::serialization::access;
 

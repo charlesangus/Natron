@@ -2881,7 +2881,7 @@ RotoContextPrivate::renderInternalShape(double time,
     Transform::Point3D initCp;
     (*point)->getPositionAtTime(false, time, ViewIdx(0), &initCp.x, &initCp.y);
     initCp.z = 1.;
-    initCp = Transform::matApply(transform, initCp);
+    initCp = Transform::matApplyProjected(transform, initCp);
 
     adjustToPointToScale(mipmapLevel, initCp.x, initCp.y);
 
@@ -2900,9 +2900,9 @@ RotoContextPrivate::renderInternalShape(double time,
         (*nextPoint)->getPositionAtTime(false, time, ViewIdx(0), &next.x, &next.y);
         next.z = 1;
 
-        right = Transform::matApply(transform, right);
-        nextLeft = Transform::matApply(transform, nextLeft);
-        next = Transform::matApply(transform, next);
+        right = Transform::matApplyProjected(transform, right);
+        nextLeft = Transform::matApplyProjected(transform, nextLeft);
+        next = Transform::matApplyProjected(transform, next);
 
         adjustToPointToScale(mipmapLevel, right.x, right.y);
         adjustToPointToScale(mipmapLevel, next.x, next.y);

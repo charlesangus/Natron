@@ -74,8 +74,8 @@
 #define kVectorGeneratorOutputsBackward "backward"
 
 #define kVectorGeneratorConfidenceLayerID "vectorConfidence"
-#define kVectorGeneratorConfidenceChannelForward "Forward"
-#define kVectorGeneratorConfidenceChannelBackward "Backward"
+#define kVectorGeneratorConfidenceChannelForward "forward"
+#define kVectorGeneratorConfidenceChannelBackward "backward"
 
 #define kVectorGeneratorOverlayPlaneLowForward "lowConfidenceForward"
 #define kVectorGeneratorOverlayPlaneLowBackward "lowConfidenceBackward"

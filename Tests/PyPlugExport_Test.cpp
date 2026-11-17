@@ -119,7 +119,7 @@ TEST_F(PyPlugExportTest, CustomLayerReferenceEmitsAddProjectLayerBeforeNodeCreat
 
     std::vector<std::string> channels(1, "A");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", channels), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", channels), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     NodeGroupPtr group = buildGroupWithRotoTargeting("mask");
     ASSERT_TRUE(bool(group));
@@ -177,7 +177,7 @@ TEST_F(PyPlugExportTest, ExportedAddProjectLayerCallRepopulatesRegistryOnLoad)
 
     std::vector<std::string> channels(1, "A");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", channels), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", channels), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     NodeGroupPtr group = buildGroupWithRotoTargeting("mask");
     ASSERT_TRUE(bool(group));
@@ -437,14 +437,14 @@ TEST_F(PyPlugExportTest, ShuffleMappingRoundTripsThroughPyPlugExport)
     diffuseChannels.push_back("G");
     diffuseChannels.push_back("B");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", "diffuse", "", diffuseChannels), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", diffuseChannels), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     std::vector<std::string> spec2Channels;
     spec2Channels.push_back("R");
     spec2Channels.push_back("G");
     spec2Channels.push_back("B");
     spec2Channels.push_back("A");
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("spec2", "spec2", "", spec2Channels), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("spec2", spec2Channels), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
     NodePtr groupNode = getApp()->createNode(groupArgs);
@@ -657,7 +657,7 @@ TEST_F(PyPlugExportTest, ShuffleRowOnANoneOrNarrowerSlotRoundTripsByIndex)
     diffuseChannels.push_back("G");
     diffuseChannels.push_back("B");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", "diffuse", "", diffuseChannels), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", diffuseChannels), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
     NodePtr groupNode = getApp()->createNode(groupArgs);
@@ -742,7 +742,7 @@ TEST_F(PyPlugExportTest, ShuffleIndexFormIsDistinctFromANumericChannelName)
     numberedChannels.push_back("1");
     numberedChannels.push_back("0");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("numbered", "numbered", "", numberedChannels), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("numbered", numberedChannels), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     CreateNodeArgs shuffleArgs(PLUGINID_NATRON_SHUFFLE, project);
     NodePtr shuffle = getApp()->createNode(shuffleArgs);
@@ -969,7 +969,7 @@ TEST_F(PyPlugExportTest, AddLayersExportRecreatesItsProjectLayerAndRoundTrips)
 
     std::vector<std::string> channels(1, "A");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", channels), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", channels), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
     NodePtr groupNode = getApp()->createNode(groupArgs);

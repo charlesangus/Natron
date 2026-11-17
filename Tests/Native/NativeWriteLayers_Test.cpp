@@ -80,7 +80,7 @@ const SourceChannel kSourceChannels[] = {
 };
 
 const SourceChannel kMotionChannels[] = {
-    { "R", 0.125f }, { "G", 0.25f }, { "B", 0.375f }, { "A", 1.f }, { "Forward.U", 1.5f }, { "Forward.V", -2.25f }, { "Backward.U", -1.5f }, { "Backward.V", 2.75f }
+    { "R", 0.125f }, { "G", 0.25f }, { "B", 0.375f }, { "A", 1.f }, { "forward.u", 1.5f }, { "forward.v", -2.25f }, { "backward.u", -1.5f }, { "backward.v", 2.75f }
 };
 
 template <std::size_t N>
@@ -448,8 +448,8 @@ TEST_F(NativeWriteLayersTest, FormatWithoutExtraChannelsWritesColorAndWarns)
     EXPECT_FALSE(_writer->hasPersistentMessage());
 }
 
-// The built-in motion layers have OpenFX plane identifiers as IDs; a file names them by their
-// labels, and the Read takes those names back to the built-in layers.
+// A file names the built-in motion layers' channels verbatim, layer.channel, and the Read takes
+// those names back to the built-in layers.
 TEST_F(NativeWriteLayersTest, MotionVectorLayersRoundTripAsTheBuiltinLayers)
 {
     const std::string source = pathOf("motion_source.exr");
@@ -463,7 +463,7 @@ TEST_F(NativeWriteLayersTest, MotionVectorLayersRoundTripAsTheBuiltinLayers)
     const std::string path = pathOf("motion.exr");
 
     renderTo(path);
-    EXPECT_EQ(names({ "R", "G", "B", "A", "Forward.U", "Forward.V", "Backward.U", "Backward.V" }), fileChannelNames(path));
+    EXPECT_EQ(names({ "R", "G", "B", "A", "forward.u", "forward.v", "backward.u", "backward.v" }), fileChannelNames(path));
 
     NodePtr read = createRead(path);
     ASSERT_TRUE(bool(read));
@@ -472,15 +472,15 @@ TEST_F(NativeWriteLayersTest, MotionVectorLayersRoundTripAsTheBuiltinLayers)
     const ImageLayerDesc* const builtins[] = { &ImageLayerDesc::getForwardMotionComponents(), &ImageLayerDesc::getBackwardMotionComponents() };
     for (std::size_t b = 0; b < sizeof(builtins) / sizeof(builtins[0]); ++b) {
         const ImageLayerDesc& builtin = *builtins[b];
-        SCOPED_TRACE(builtin.getLayerLabel());
+        SCOPED_TRACE(builtin.getLayerID());
         std::list<ImageLayerDesc>::const_iterator found = present.begin();
         while (found != present.end() && found->getLayerID() != builtin.getLayerID()) {
             ++found;
         }
         ASSERT_TRUE(found != present.end()) << "the layer did not read back as the built-in one";
-        EXPECT_EQ(builtin.getLayerLabel(), found->getLayerLabel());
         EXPECT_EQ(builtin.getChannels(), found->getChannels());
-        EXPECT_EQ(builtin.getLayerLabel() + "." + kNatronMotionComponentsLabel, found->getLayerOption().label);
+        EXPECT_EQ(std::vector<std::string>({ "u", "v" }), found->getChannels());
+        EXPECT_EQ(builtin.getLayerID(), found->getLayerOption().label);
 
         std::list<ImageLayerDesc> request(1, *found);
         std::vector<RenderedPlane> planes;
@@ -489,7 +489,7 @@ TEST_F(NativeWriteLayersTest, MotionVectorLayersRoundTripAsTheBuiltinLayers)
         const RenderedPlane& plane = planes.front();
         ASSERT_EQ((std::size_t)kSize * kSize * plane.channels.size(), plane.pixels.size());
         for (std::size_t c = 0; c < plane.channels.size(); ++c) {
-            const std::string name = builtin.getLayerLabel() + "." + plane.channels[c];
+            const std::string name = builtin.getLayerID() + "." + plane.channels[c];
             float expected = 0.f;
             for (std::size_t i = 0; i < sizeof(kMotionChannels) / sizeof(kMotionChannels[0]); ++i) {
                 if (name == kMotionChannels[i].name) {
@@ -500,6 +500,6 @@ TEST_F(NativeWriteLayersTest, MotionVectorLayersRoundTripAsTheBuiltinLayers)
         }
     }
     for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-        EXPECT_EQ(std::string::npos, it->getLayerLabel().find("thefoundry")) << it->getLayerID();
+        EXPECT_EQ(std::string::npos, it->getLayerID().find("thefoundry")) << it->getLayerID();
     }
 }

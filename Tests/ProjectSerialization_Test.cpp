@@ -318,7 +318,7 @@ makeThreeChannelLayer(const std::string& id)
     channels.push_back("R");
     channels.push_back("G");
     channels.push_back("B");
-    return ImageLayerDesc(id, id, "", channels);
+    return ImageLayerDesc(id, channels);
 }
 
 // Exercises the project-level LayerRegistry (Project::addLayer/removeLayer/findLayer/

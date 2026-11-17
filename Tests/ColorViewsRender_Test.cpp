@@ -75,6 +75,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
+#include <nuke/fnOfxExtensions.h>
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
 
@@ -120,8 +121,8 @@ containsColorViewID(const std::list<ImageLayerDesc>& layers)
 void
 expectNoUserFacingColor(const std::string& text)
 {
-    EXPECT_EQ(std::string::npos, text.find(kNatronColorStorageLabel)) << text;
-    EXPECT_EQ(std::string::npos, text.find(kNatronColorLayerID)) << text;
+    EXPECT_EQ(std::string::npos, text.find("Color")) << text;
+    EXPECT_EQ(std::string::npos, text.find("thefoundry")) << text;
 }
 
 int
@@ -308,6 +309,7 @@ TEST_F(ColorViewsRenderTest, ListLayerViewsForKnobOnRgbOnlyInputListsRgbaRgbAlph
     grade->listLayersForKnob(grade->getLayerKnob(), 1, ViewIdx(0), &storage);
     ASSERT_EQ(1u, storage.size()) << layerIDsString(storage);
     EXPECT_EQ(std::string(kNatronColorLayerID), storage.front().getLayerID());
+    EXPECT_TRUE(storage.front().isColorStorage());
 }
 
 TEST_F(ColorViewsRenderTest, ListChannelViewsForKnobOnRgbOnlyInputListsOnlyRgb)
@@ -603,6 +605,7 @@ TEST_F(ColorViewsRenderTest, ListLayerViewsForKnobOnAlphaOnlyInputListsRgbaRgbAl
     grade->listLayersForKnob(grade->getLayerKnob(), 1, ViewIdx(0), &storage);
     ASSERT_EQ(1u, storage.size()) << layerIDsString(storage);
     EXPECT_EQ(std::string(kNatronColorLayerID), storage.front().getLayerID());
+    EXPECT_TRUE(storage.front().isColorStorage());
 }
 
 // Grade's rgb view writes bits {0, 1, 2}, which is not a subset of the alpha-only storage's bit
@@ -739,16 +742,16 @@ TEST_F(ColorViewsRenderTest, ExpandColorViewsOnXYStorageListsAllFourViews)
     EXPECT_EQ(expected, ids) << layerIDsString(storage);
 }
 
-// The storage plane's raw ID/label (kNatronColorLayerID / kNatronColorStorageLabel, "Color")
-// must never reach a surface the user reads: the registry snapshot, listLayerViewsForKnob, the
-// three colour-naming knobs' summaries at their defaults, Shuffle's sublabel, and Python's
-// Effect.getAvailableLayers(). Every one of these must speak in views (rgba/rgb/alpha/xy).
+// The colour storage plane must never reach a surface the user reads as anything but a view: the
+// registry snapshot, listLayerViewsForKnob, the three colour-naming knobs' summaries at their
+// defaults, Shuffle's sublabel, and Python's Effect.getAvailableLayers(). Every one of these must
+// speak in views (rgba/rgb/alpha/xy), never in a "Color" name or an OFX plane string.
 TEST_F(ColorViewsRenderTest, NoUserFacingColor)
 {
     std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = getApp()->getProject()->getLayerRegistrySnapshot();
     for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
-        EXPECT_NE(std::string(kNatronColorLayerID), it->desc.getLayerID());
-        expectNoUserFacingColor(it->desc.getLayerLabel());
+        EXPECT_FALSE(it->desc.isColorStorage()) << it->desc.getLayerID();
+        expectNoUserFacingColor(it->desc.getLayerID());
     }
 
     const char* fixtures[] = { "flat-three-layers.exr", "flat-rgb-only.exr" };
@@ -763,8 +766,8 @@ TEST_F(ColorViewsRenderTest, NoUserFacingColor)
         grade->listLayerViewsForKnob(grade->getLayerKnob(), 1, ViewIdx(0), &views);
         EXPECT_FALSE(views.empty());
         for (std::list<ImageLayerDesc>::const_iterator it = views.begin(); it != views.end(); ++it) {
-            EXPECT_NE(std::string(kNatronColorLayerID), it->getLayerID());
-            expectNoUserFacingColor(it->getLayerLabel());
+            EXPECT_FALSE(it->isColorStorage()) << it->getLayerID();
+            expectNoUserFacingColor(it->getLayerID());
         }
     }
 
@@ -816,11 +819,11 @@ TEST_F(ColorViewsRenderTest, InfoTextsNameTheStorageView)
 {
     EXPECT_EQ(std::string("rgba.RGBA32f"), Image::getFormatString(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat));
     EXPECT_EQ(std::string("rgb.RGB16f"), Image::getFormatString(ImageLayerDesc::getRGBComponents(), eImageBitDepthHalf));
-    EXPECT_EQ(std::string("alpha.Alpha8u"), Image::getFormatString(ImageLayerDesc::getAlphaComponents(), eImageBitDepthByte));
-    EXPECT_EQ(std::string("xy.XY32f"), Image::getFormatString(ImageLayerDesc::getXYComponents(), eImageBitDepthFloat));
+    EXPECT_EQ(std::string("alpha.A8u"), Image::getFormatString(ImageLayerDesc::getAlphaComponents(), eImageBitDepthByte));
+    EXPECT_EQ(std::string("xy.xy32f"), Image::getFormatString(ImageLayerDesc::getXYComponents(), eImageBitDepthFloat));
 
     const std::vector<std::string> z(1, "Z");
-    const ImageLayerDesc depth("depth", "depth", "", z);
+    const ImageLayerDesc depth("depth", z);
     EXPECT_EQ(std::string("depth.Z32f"), Image::getFormatString(depth, eImageBitDepthFloat));
     EXPECT_EQ(std::string(kNatronColorViewAlpha), ImageLayerDesc::getColorView(kNatronColorViewAlpha).getUserFacingLabel());
 
@@ -840,7 +843,7 @@ TEST_F(ColorViewsRenderTest, InfoTextsNameTheStorageView)
 
 // IDistort's channelU/V/A pickers are Natron's hostChannelU/V/A twins, which push the SupportExt
 // library's own option ID into the hidden plugin menu: every colour view shares that library's
-// single colour plane, so rgba.A arrives as kNatronColorLayerID + ".A".
+// single colour plane, so rgba.A arrives as the OFX colour plane's ".A".
 TEST_F(ColorViewsRenderTest, IDistortReadsAMissingUVAlphaChannelAsZero)
 {
     NodePtr source = createReader("flat-three-layers.exr");
@@ -870,9 +873,9 @@ TEST_F(ColorViewsRenderTest, IDistortReadsAMissingUVAlphaChannelAsZero)
     KnobChoice* channelA = dynamic_cast<KnobChoice*>(idistort->getKnobByName("channelA").get());
     ASSERT_TRUE(channelA != NULL);
     hostChannelA->set(std::string(kNatronColorViewRGBA) + ".R");
-    EXPECT_EQ(std::string(kNatronColorLayerID) + ".R", channelA->getActiveEntry().id);
+    EXPECT_EQ(std::string(kFnOfxImagePlaneColour) + ".R", channelA->getActiveEntry().id);
     hostChannelA->set(std::string(kNatronColorViewRGBA) + ".A");
-    EXPECT_EQ(std::string(kNatronColorLayerID) + ".A", channelA->getActiveEntry().id);
+    EXPECT_EQ(std::string(kFnOfxImagePlaneColour) + ".A", channelA->getActiveEntry().id);
 
     FlatExrImage image;
     std::string error;

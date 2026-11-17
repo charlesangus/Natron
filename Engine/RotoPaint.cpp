@@ -747,7 +747,7 @@ RotoPaint::getPreferredMetadataAt(double /*time*/,
                                   NodeMetadata& metadata)
 {
     metadata.setNComps( -1, 4 );
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
 
     return eStatusOK;
 }

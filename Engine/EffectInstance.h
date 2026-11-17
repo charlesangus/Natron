@@ -3265,7 +3265,10 @@ public:
     // getPresentLayers() plus, for inputNb == -1 only, every layer registered at the project level.
     void getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers);
 
-    const std::vector<std::string>& getUserLayers() const;
+    /**
+     * @brief The project's registered layers, each one through encode(), into a per-thread vector.
+     **/
+    const std::vector<std::string>& getUserLayers(std::string (*encode)(const ImageLayerDesc&)) const;
 
     /**
      * @brief The input whose layers pass through this effect at (time, view), and the time and

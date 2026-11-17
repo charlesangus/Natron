@@ -350,8 +350,6 @@ const ImageLayerDesc&
 VectorGenerator::confidenceLayer()
 {
     static const ImageLayerDesc layer(kVectorGeneratorConfidenceLayerID,
-                                      kVectorGeneratorConfidenceLayerID,
-                                      "ForwardBackward",
                                       std::vector<std::string> { kVectorGeneratorConfidenceChannelForward, kVectorGeneratorConfidenceChannelBackward });
 
     return layer;

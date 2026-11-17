@@ -8,7 +8,7 @@ y-up pixels. Ahead of the square the background is about to be covered (low Forw
 confidence); behind it the background was just uncovered (low Backward confidence).
 
 Checks, each with a screenshot of the viewer (m217-*.png in the output directory):
-  the Forward layer, chosen from the viewer's layer menu, shows the square brighter than the
+  the forward layer, chosen from the viewer's layer menu, shows the square brighter than the
   background and both non-zero, and the vectors exported to EXR match the known motion;
   the vectorConfidence layer is high on the background and the square and low in the strips
   the square covers and uncovers, on the screen and in the exported values;
@@ -45,8 +45,8 @@ RESTORE_SETTLE_S = 10.0
 PLUGIN_VECTORGENERATOR = "VectorGenerator"
 PLUGIN_SHUFFLE = "Shuffle"
 VIEW_NAME = "Un-tone-mapped"
-FORWARD_LAYER = "uk.co.thefoundry.OfxImagePlaneForwardMotionVector"
-BACKWARD_LAYER = "uk.co.thefoundry.OfxImagePlaneBackMotionVector"
+FORWARD_LAYER = "forward"
+BACKWARD_LAYER = "backward"
 CONFIDENCE_LAYER = "vectorConfidence"
 COLOUR_LAYER = "rgba"
 ZOOM_TEXT = "100%"
@@ -446,7 +446,7 @@ try:
             method.setValue(0 if method_text == "dis" else 1)
             check(method.get() == (0 if method_text == "dis" else 1), "Method is %s (%r)" % (method_name, method.get()))
 
-            forward = yield from show_layer(node, "Forward", "m217-forward-%s.png" % method_text)
+            forward = yield from show_layer(node, FORWARD_LAYER, "m217-forward-%s.png" % method_text)
             shots[(method_text, "forward")] = forward
             sq = screen_colour(forward, *points["square"])
             bg = screen_colour(forward, *points["background"])

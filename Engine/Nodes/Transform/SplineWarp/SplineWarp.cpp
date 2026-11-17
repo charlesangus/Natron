@@ -292,7 +292,7 @@ outputMaskLayerOf(const std::string& value,
     if (ImageLayerDesc::isColorLayer(layerID)) {
         return false;
     }
-    *layer = ImageLayerDesc(layerID, layerID, "", std::vector<std::string>(1, value.substr(dot + 1)));
+    *layer = ImageLayerDesc(layerID, std::vector<std::string>(1, value.substr(dot + 1)));
 
     return true;
 }

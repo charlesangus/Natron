@@ -64,7 +64,7 @@ ImageLayerDesc
 makeLayer(const std::string& name,
           const std::vector<std::string>& channels)
 {
-    return ImageLayerDesc(name, name, "", channels);
+    return ImageLayerDesc(name, channels);
 }
 
 std::vector<std::string>
@@ -288,7 +288,7 @@ TEST(KnobChannelSet, RegexMatchingSeveralViewsYieldsOneColorEntry)
     EXPECT_EQ(std::string("rgb"), knob->getSummary(presentLayers()));
 }
 
-TEST(KnobChannelSet, RegexMatchesViewLabelsNotTheStorageLabel)
+TEST(KnobChannelSet, RegexMatchesLayerIDs)
 {
     KnobChannelSetPtr knob = makeKnob();
 

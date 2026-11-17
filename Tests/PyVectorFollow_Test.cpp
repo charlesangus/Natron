@@ -691,9 +691,9 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsControlsOnlyW
         const char* name;
         std::string layer;
     } layerKnobs[] = {
-        { "followForwardLayer", kNatronForwardMotionVectorsLayerID },
-        { "followBackwardLayer", kNatronBackwardMotionVectorsLayerID },
-        { "followConfidenceLayer", kVectorGeneratorConfidenceLayerID },
+        { "followForwardLayer", "forward" },
+        { "followBackwardLayer", "backward" },
+        { "followConfidenceLayer", "vectorConfidence" },
     };
     for (const auto& expected : layerKnobs) {
         KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(_roto->getKnobByName(expected.name));

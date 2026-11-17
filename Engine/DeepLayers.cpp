@@ -149,9 +149,9 @@ DeepLayers::groupDeepChannels(const std::vector<std::string>& names,
         const std::string& id = desc.getLayerID();
         if (!id.empty() && id[0] == kBareMarker) {
             const std::string bare = id.substr(1);
-            layers->push_back(ImageLayerDesc(bare, bare, "", std::vector<std::string>(1, bare)));
+            layers->push_back(ImageLayerDesc(bare, std::vector<std::string>(1, bare)));
         } else {
-            layers->push_back(ImageLayerDesc(id, desc.getLayerLabel(), "", canonicalChannelOrder(desc.getChannels())));
+            layers->push_back(ImageLayerDesc(id, canonicalChannelOrder(desc.getChannels())));
         }
     }
 }
@@ -165,7 +165,7 @@ DeepLayers::channelName(const ImageLayerDesc& layer,
     }
 
     const std::vector<std::string>& channels = layer.getChannels();
-    if (layer.getLayerID() == kNatronColorLayerID) {
+    if (layer.isColorStorage()) {
         static const char* const kBitNames[4] = { "R", "G", "B", "A" };
         const int bit = layer.getNumComponents() == 1 ? 3 : index;
 
@@ -187,7 +187,7 @@ DeepLayers::findChannel(const std::string& name,
     const bool bareColor = bareColorBit(name) >= 0;
 
     for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
-        if ((it->getLayerID() == kNatronColorLayerID) != bareColor) {
+        if (it->isColorStorage() != bareColor) {
             continue;
         }
         for (int c = 0; c < it->getNumComponents(); ++c) {

@@ -185,7 +185,7 @@ protected:
         NodeMetadataConstPtr routedMetadata = routed->getEffectInstance()->getMetadata(frame, ViewIdx(0));
         NodeMetadataConstPtr metadata = switchNode->getEffectInstance()->getMetadata(frame, ViewIdx(0));
         ASSERT_TRUE(metadata && routedMetadata) << "frame=" << frame;
-        EXPECT_EQ(std::string(kNatronColorLayerID), metadata->getComponentsType(-1)) << "frame=" << frame;
+        EXPECT_EQ(eImageComponentsTypeColor, metadata->getComponentsType(-1)) << "frame=" << frame;
         EXPECT_EQ(routedMetadata->getComponentsType(-1), metadata->getComponentsType(-1)) << "frame=" << frame;
         EXPECT_EQ(routedMetadata->getNComps(-1), metadata->getNComps(-1)) << "frame=" << frame;
     }
@@ -277,7 +277,7 @@ public:
         ProjectPtr project = getApp()->getProject();
         std::string error;
         const std::vector<std::string> rgb = { "R", "G", "B" };
-        ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", "diffuse", "", rgb), LayerRegistryEntry::eOriginUser, &error)) << error;
+        ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", rgb), LayerRegistryEntry::eOriginUser, &error)) << error;
 
         NodePtr reader = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr");
         ASSERT_TRUE(bool(reader));
@@ -757,7 +757,7 @@ TEST_F(TimeVaryingLayersTest, AddLayersWidensEachFramesRoutedColourPlane)
         ASSERT_TRUE(routed && metadata) << "frame " << frame;
         // Guards against AddLayers passing because its input was already wrong.
         EXPECT_EQ(routedNComps[frame - 1], routed->getNComps(-1)) << "frame " << frame;
-        EXPECT_EQ(std::string(kNatronColorLayerID), metadata->getComponentsType(-1)) << "frame " << frame;
+        EXPECT_EQ(eImageComponentsTypeColor, metadata->getComponentsType(-1)) << "frame " << frame;
         EXPECT_EQ(4, metadata->getNComps(-1)) << "frame " << frame;
     }
 }
@@ -803,7 +803,7 @@ TEST_F(TimeVaryingLayersTest, AddLayersWidensEachFramesSwitchedColourPlane)
         ASSERT_TRUE(routed && metadata) << "frame " << frame;
         // Guards against AddLayers passing because its input was already wrong.
         EXPECT_EQ(routedNComps[frame - 1], routed->getNComps(-1)) << "frame " << frame;
-        EXPECT_EQ(std::string(kNatronColorLayerID), metadata->getComponentsType(-1)) << "frame " << frame;
+        EXPECT_EQ(eImageComponentsTypeColor, metadata->getComponentsType(-1)) << "frame " << frame;
         EXPECT_EQ(4, metadata->getNComps(-1)) << "frame " << frame;
 
         // The layers path must agree with the metadata on the routed colour layout.

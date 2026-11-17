@@ -61,7 +61,7 @@ makeTwoPlaneLayer(const std::string& layerID)
     channels.push_back("U");
     channels.push_back("V");
 
-    return ImageLayerDesc(layerID, layerID, "UV", channels);
+    return ImageLayerDesc(layerID, channels);
 }
 
 // The two layers have the same channels, and their IDs sort opposite to the order the effects list them in, so that

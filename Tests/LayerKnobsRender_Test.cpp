@@ -56,6 +56,7 @@
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
+#include <nuke/fnOfxExtensions.h>
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
 
@@ -346,9 +347,9 @@ TEST_F(LayerKnobsRenderTest, ChannelSetRowsSelectOutputAndInputPlanesWithPerPlan
 
     // Lookups go by layer ID, so a descriptor carrying another channel list still finds its entry.
     EffectInstancePtr effect = invert->getEffectInstance();
-    ImageLayerDesc diffuse("diffuse", "diffuse", "RG", rg);
+    ImageLayerDesc diffuse("diffuse", rg);
     EXPECT_EQ(bits(true, true, false, false), effect->getProcessChannelsForPlane(needed.hash, 0, ViewIdx(0), diffuse));
-    ImageLayerDesc specular("specular", "specular", "RG", rg);
+    ImageLayerDesc specular("specular", rg);
     EXPECT_EQ(bits(true, true, true, true), effect->getProcessChannelsForPlane(needed.hash, 0, ViewIdx(0), specular));
 }
 
@@ -790,7 +791,7 @@ TEST_F(LayerKnobsRenderTest, PlaneChoiceTwinDrivesTheChannelQuad)
 
     KnobChoice* pluginPlane = dynamic_cast<KnobChoice*>(multiPlane->getKnobByName("inputPlane").get());
     ASSERT_TRUE(pluginPlane != NULL);
-    EXPECT_EQ(std::string(kNatronColorLayerID), pluginPlane->getActiveEntry().id);
+    EXPECT_EQ(std::string(kFnOfxImagePlaneColour), pluginPlane->getActiveEntry().id);
 }
 
 // The UV input carries diffuse and the Source input does not, so diffuse turning up in the twin's
@@ -867,7 +868,7 @@ TEST_F(LayerKnobsRenderTest, NoneChannelTwinsPushTheNeutralPluginConstant)
         EXPECT_EQ(std::string(cases[i].neutral), plugin->getActiveEntry().id) << cases[i].twin;
 
         twin->set(std::string(kNatronColorViewRGBA) + ".G");
-        EXPECT_EQ(std::string(kNatronColorLayerID) + ".G", plugin->getActiveEntry().id) << cases[i].twin;
+        EXPECT_EQ(std::string(kFnOfxImagePlaneColour) + ".G", plugin->getActiveEntry().id) << cases[i].twin;
     }
 }
 

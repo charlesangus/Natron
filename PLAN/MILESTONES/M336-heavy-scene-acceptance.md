@@ -172,3 +172,11 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - Unchanged: flat reopen 20 s, Island VRAM ~24 GB despite the texture budget.
   - A consultant is diagnosing the regressions.
   - The first VM attempt failed in VM prep: apt upgraded NVIDIA user space past the kernel module. vm-prep now holds *nvidia* packages.
+- 2026-11-17 — Round-6 regressions (consultant):
+  - Island change stalls: the main thread is blocked in NVIDIA's GLX mutex while Qt makes the shared widget context current, with the render thread in a long Storm render. That is P3.T3's driver lock, made worse by a frame roughly 5x slower than round 5, probably VRAM residency at ~23.5 of 24.5 GB.
+  - The texture budget engages (266 textures refused at 12282 MB), but geometry takes another 9-11 GB.
+  - Flat reopen: the Storm engine release still runs through callOnRenderThread while the main thread waits; P3.T7 moved only the UsdStage. The reaper fix is with an implementer.
+  - orbit10k 0.2 fps is a bench artifact: it counts only full frames, which the stand-in suppresses. Fixed in the bench by running it with the stand-in off.
+  - Flat pattern_node 42.9 s is not settled; it needs a sampled flat run at ≥20 Hz.
+- 2026-11-17 — **P3.T3: prototype both and measure (user):** (a) a render context with no share group (own X connection or EGL) with the frame handed across, and (b) holding widget repaints while a long render-thread job runs. Both are measured on the Island-loaded VM run before choosing.
+- 2026-11-17 — **Texture budget is free memory minus headroom (user):** a texture is admitted only while the card's currently free VRAM stays above a headroom, so geometry is accounted for implicitly. This replaces half of total.

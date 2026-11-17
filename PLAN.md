@@ -432,10 +432,21 @@ future core work has solid ground to build on.
 | M289 | Utility Adaptive Subdivision | todo | M284 |  | E19 | | | [M289-utility-adaptive-subdivision.md](PLAN/MILESTONES/M289-utility-adaptive-subdivision.md) |
 | M287 | Utility Renderer Displacement | todo | M289 |  | E19 | | | [M287-utility-renderer-displacement.md](PLAN/MILESTONES/M287-utility-renderer-displacement.md) |
 | M291 | Defocus Reference Harness | todo | M131, M133 |  | E3 | F13 | | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
-| M292 | Traced Lens Bokeh | todo | M131, M133 |  | E3 | F13 | | [M292-traced-lens-bokeh.md](PLAN/MILESTONES/M292-traced-lens-bokeh.md) |
+| M292 | Traced Lens Bokeh | todo | M131, M133, M462, M463, M465 |  | E3 | F13 | | [M292-traced-lens-bokeh.md](PLAN/MILESTONES/M292-traced-lens-bokeh.md) |
 | M293 | ZDefocus Debug Outputs | done | M131, M133 | | E3 | F13 | | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
 | M294 | ZDefocus Engine Revisit | todo | M291, M292, M293 |  | E3 | F13 | | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | | | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
+| M462 | Shared Optics Library | todo | - |  | E3 | F30 | | [M462-shared-optics-library.md](PLAN/MILESTONES/M462-shared-optics-library.md) |
+| M463 | Bundled Lens Database | todo | M462 |  | E3 | F30 | | [M463-bundled-lens-database.md](PLAN/MILESTONES/M463-bundled-lens-database.md) |
+| M465 | Aperture Model | todo | - |  | E3 | F30 | | [M465-aperture-model.md](PLAN/MILESTONES/M465-aperture-model.md) |
+| M464 | FFT Library | todo | - |  | E3 | F31 | | [M464-fft-library.md](PLAN/MILESTONES/M464-fft-library.md) |
+| M472 | GPU Raster Pipelines | todo | - |  | E5 |  | | [M472-gpu-raster-pipelines.md](PLAN/MILESTONES/M472-gpu-raster-pipelines.md) |
+| M466 | LensFlare Ghost Tracing | todo | M462, M463, M464, M465 |  | E3 | F31 | | [M466-lensflare-ghost-tracing.md](PLAN/MILESTONES/M466-lensflare-ghost-tracing.md) |
+| M467 | LensFlare GPU Ghosts | todo | M466, M472 |  | E3 | F31 | | [M467-lensflare-gpu-ghosts.md](PLAN/MILESTONES/M467-lensflare-gpu-ghosts.md) |
+| M468 | LensFlare Starburst | todo | M464, M465, M466 |  | E3 | F31 | | [M468-lensflare-starburst.md](PLAN/MILESTONES/M468-lensflare-starburst.md) |
+| M469 | LensFlare Layers And Diagram | todo | M466, M468 |  | E3 | F31 | | [M469-lensflare-layers-and-diagram.md](PLAN/MILESTONES/M469-lensflare-layers-and-diagram.md) |
+| M470 | LensFlare From USD Lights | todo | M466, M468 |  | E3 | F31 | | [M470-lensflare-from-usd-lights.md](PLAN/MILESTONES/M470-lensflare-from-usd-lights.md) |
+| M471 | Lens Browser Previews | todo | M463, M466, M467, M468 |  | E3 | F31 | | [M471-lens-browser-previews.md](PLAN/MILESTONES/M471-lens-browser-previews.md) |
 | M296 | Raw Prepare Output Format | done | M80 | misty-marten | E3 | | | [M296-raw-prepare-output-format.md](PLAN/MILESTONES/M296-raw-prepare-output-format.md) |
 | M297 | Viewer Node Knobs Follow-ups | done | M164 | | E3 | | | [M297-viewer-node-knobs-followups.md](PLAN/MILESTONES/M297-viewer-node-knobs-followups.md) |
 | M298 | RenderIsolation Taskgraph Hang | done | M177 | bosley-native-nodes | E3 | | | [M298-renderisolation-taskgraph-hang.md](PLAN/MILESTONES/M298-renderisolation-taskgraph-hang.md) |
@@ -593,6 +604,8 @@ future core work has solid ground to build on.
 | F27 | USD Layer Authoring | open |  |  | feature/f27-usd-layer-authoring | Control which USD layers an export writes: layer breaks for delta-only files, named and nested layer files from one USDWrite, and a live preview of what will be written. |
 | F28 | Colour Warp | open |  |  | feature/f28-colour-warp | A ColorWarp node: pick colours in the viewer and push them through colour space like warp pins, with a 3D colour-space view. |
 | F29 | UI Polish Batch | open |  |  | feature/f29-ui-polish-batch | Ship five small UI fixes — snapped viewer zoom, node error and warning display, Roto insert-point drag, keyframe markers for visible pages and the file dialog toolbar — on one build and one merge. |
+| F30 | Lens Optics Base | open |  |  | feature/f30-lens-optics-base | One optics base for traced bokeh and lens flares: a shared lens library, the bundled lens database and browser, and a shared aperture model. |
+| F31 | Lens Flares | open |  |  | feature/f31-lens-flares | A physically based, ray-traced LensFlare node with ghosts, starburst, layers and USD lights on CPU and GPU, with lens browser previews. Waits for F30 - Lens Optics Base to land. |
 
 # Open questions
 

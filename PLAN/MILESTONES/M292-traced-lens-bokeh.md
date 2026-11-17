@@ -2,20 +2,28 @@
 
 Real camera lenses for ZDefocus and Defocus, ported from Niik-l's LensTrace (remote `niikl`, `niikl/RB-2.6:Engine/Dev/PostFX/LensTrace.{h,cpp}`, GPL2+, pure C++17). The user calls the lens tracing "the most interesting part" of Niik-l's defocus work (2026-11-01). LensTrace traces a spherical-surface prescription sequentially and bakes a table. For each signed relative defocus u, normalised field radius ρ and colour channel, the table gives a kernel: a 2×2 map (real blur size, astigmatic stretch), up to 4 rim clip discs (mechanical cat-eye), a coma shift and an 8-ring radial profile (spherical aberration). Field maps add distortion, breathing, lateral colour and illumination. This milestone rasterises those kernels into our `BokehKernel` and uses M133 - ZDefocus Lens Aberrations's format-anchored cell grid for per-position variation. It also adds the four image stages.
 
-Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKernel`, `BokehClip`, the cell grid and per-channel coverage).
+Since 2026-11-16 (user, lens flare planning) it builds on the shared lens base, F30 - Lens Optics Base: prescriptions, the `.zmx`/`.dat` parsers, catalogue Sellmeier dispersion, the sequential tracer and Niik-l's 9 built-in lenses come from M462 - Shared Optics Library; lens selection uses M463 - Bundled Lens Database's browser and knobs; the iris is drawn by M465 - Aperture Model. This milestone keeps LensTrace's bokeh-table baking, the kernels, the nodes' wiring and the image stages.
+
+Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKernel`, `BokehClip`, the cell grid and per-channel coverage), M462 - Shared Optics Library, M463 - Bundled Lens Database, M465 - Aperture Model.
 
 ## Scope
 
 **In:**
-- An engine-free LensTrace port: all 9 built-in lenses (Double-Gauss, 22mm wide, 250mm tele, fisheye, Cooke triplet, Tessar, Sonnar, Petzval, Planar) and pbrt/Kolb `.dat` lens files with an optional Abbe column.
+- LensTrace's bokeh-table baking (`LensTable::build/kernel/lookup/tracePoint`, field maps), ported engine-free onto M462 - Shared Optics Library's prescriptions and tracer. Every database lens works, including the 9 built-ins (Double-Gauss, 22mm wide, 250mm tele, fisheye, Cooke triplet, Tessar, Sonnar, Petzval, Planar) in its Classic Designs group, plus `.zmx` and pbrt/Kolb `.dat` files.
+- The iris drawn by M465 - Aperture Model, so grating, scratches, dust and an aperture image shape the bokeh; with those at 0 the kernel is bit-identical to today's polygon iris.
+- A live bokeh preview of the selected lens in M463 - Bundled Lens Database's browser.
 - A Lens menu on ZDefocus (Lens and Manual CoC modes) and on Defocus. Defocus also gets a Focus Side choice.
 - A **Lens tab on Defocus** (user, 2026-11-01). `size` stays the primary control. The tab holds `focalLength`, `fStop`, `filmBack`, `focusDistance` and `objectDistance`, plus a `sizeFromLens` toggle, default off. When it is on, the blur size and focus side are computed from those values with ZDefocus's Lens-mode CoC model (`DepthOfField.h`), and `size` is disabled. The same knobs feed a traced lens's table, whether or not the toggle is on.
 - Every Niik-l lens control:
 
   | Knob | Default | Notes |
   |---|---|---|
-  | `lensModel` | Procedural | Choice: Procedural, the 9 built-ins, From File |
-  | `lensFile` | | |
+  | `lensModel` | Procedural | Choice: Procedural, Database, From File (M463's shared lens knobs) |
+  | `lens` | Double-Gauss (Classic Designs) | Stable database lens id, with a Browse… button opening the lens browser |
+  | `lensFile` | | `.zmx` or `.dat` |
+  | `glassVendor` | Schott | Catalogue used to match each surface's glass (M462) |
+  | `abbeOffset` | 0 | Range ±20 |
+  | `useAspheric` | on | Off traces aspheres as spheres |
   | `lensCharacter` | 1 | |
   | `lensColour` | off | |
   | `clampToLens` | off | |
@@ -25,7 +33,7 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
   | `lensVignetting` | 0 | Range 0–1 |
   | `lensVignettingSpread` | 0 | Range 0–4 |
 
-  Labels follow the script names: "Lens Model", "Lens File", "Lens Character", "Lens Colour", "Clamp To Lens", "Lens Distortion", "Lens Breathing", "Lens Lateral CA", "Lens Vignetting", "Lens Vignetting Spread".
+  Labels follow the script names: "Lens Model", "Lens", "Lens File", "Glass Vendor", "Abbe Offset", "Use Aspheric", "Lens Character", "Lens Colour", "Clamp To Lens", "Lens Distortion", "Lens Breathing", "Lens Lateral CA", "Lens Vignetting", "Lens Vignetting Spread".
 - CPU and GPU, with parity tests, goldens, docs and a GUI check.
 
 **Out:**
@@ -58,10 +66,10 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
 
 ## Phase 292.1: LensTrace engine
 
-- [ ] M292.P1.T1 — Port LensTrace engine-free
-  - files: `Engine/Nodes/Filter/LensTrace.h`, `Engine/Nodes/Filter/LensTrace.cpp` (from `git show niikl/RB-2.6:Engine/Dev/PostFX/LensTrace.{h,cpp}`)
-  - approach: Keep the GPL header and the patent and book citations on every built-in lens. Namespace `Natron::LensTrace`. No Natron or Qt types, so it stays testable alone. Keep the whole public API: `builtinLensIds`, `builtinLens`, `parseLensFile`, `LensTable::build/kernel/lookup/tracePoint`, field maps. Drop nothing.
-  - verify: `Tests/Native/LensTrace_Test.cpp` (new) checks that each built-in focuses at 5 m and builds a table; that on axis at small aperture the traced blur radius matches the thin-lens CoC within 5%; that `kernel()` outlines agree with `tracePoint()` ray footprints (area IoU > 0.9 at ρ = 0 and ρ = 0.8); that `parseLensFile` rejects a file with no stop and accepts a pbrt Double-Gauss file. `ctest -R LensTrace` at the phase build.
+- [ ] M292.P1.T1 — Port LensTrace's table baking onto the shared optics library
+  - files: `Engine/Nodes/Filter/LensTable.h`, `Engine/Nodes/Filter/LensTable.cpp` (from `git show niikl/RB-2.6:Engine/Dev/PostFX/LensTrace.{h,cpp}`), `Engine/CMakeLists.txt`, `Tests/Native/LensTable_Test.cpp` (new)
+  - approach: Keep the GPL header and Niik-l's attribution. Port `LensTableParams`, `LensTable::build/kernel/lookup/tracePoint`, `TracedKernel`, `KernelLookup`, the field maps and `backFocusMm`/`effectiveFNumber`, but take prescriptions, focusing, per-wavelength refraction (catalogue Sellmeier, M462) and ray-surface intersection from `Engine/Optics` (M462) instead of LensTrace's own copies. No Natron or Qt types beyond `Engine/Optics`.
+  - verify: `Tests/Native/LensTable_Test.cpp` checks that each Classic Designs lens focuses at 5 m and builds a table; that on axis at small aperture the traced blur radius matches the thin-lens CoC within 5%; that `kernel()` outlines agree with `tracePoint()` ray footprints (area IoU > 0.9 at ρ = 0 and ρ = 0.8); that a database aspheric lens builds a table. `ctest -R LensTable` at the phase build.
   - size: L
 
 ## Phase 292.2: Traced kernels in BokehKernel
@@ -78,17 +86,23 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
   - verify: `Tests/Native/LensTrace_Test.cpp` case: the same key returns the same pointer; a different f-stop builds a new table; 8 threads requesting one key build it once.
   - size: M
 
+- [ ] M292.P2.T3 — Iris from the aperture model
+  - files: `Engine/Nodes/Filter/BokehKernel.h`, `Engine/Nodes/Filter/BokehKernel.cpp`, `Engine/Nodes/Filter/ZDefocus.{h,cpp}`, `Engine/Nodes/Filter/Defocus.{h,cpp}`
+  - approach: Add M465 - Aperture Model's knob group (prefix `aperture`, minus the blade and rotation knobs the nodes already have, which drive it) to the Bokeh tab. When any grating, scratch, dust or image strength is non-zero, rasterise the iris with M465's CPU mask at the kernel's size and quantise as M133 does; otherwise keep today's polygon path. Parallax is ignored (bokeh has no light position).
+  - verify: `Tests/Native/BokehKernel_Test.cpp` cases: all extras at 0 is bit-identical to the existing kernels; dust strength 1 changes the kernel and keeps its sum at 1 within 1e-6.
+  - size: M
+
 ## Phase 292.3: Lens menu on ZDefocus and Defocus (CPU)
 
 - [ ] M292.P3.T1 — ZDefocus Lens knobs and traced kernels (CPU)
   - files: `Engine/Nodes/Filter/ZDefocus.h`, `Engine/Nodes/Filter/ZDefocus.cpp`
-  - approach: Add `lensModel`, `lensFile`, `lensCharacter`, `lensColour` and `clampToLens` to the Bokeh tab, with labels from their script names. With a traced lens, disable M133's procedural catEye, swirl, CA and spherical knobs. Per slice × cell × channel, compute u from the slice's signed CoC divided by the CoC at infinity, and ρ from the cell centre. Fetch the kernel through `LensTableCache`, then `BokehKernel::fromTraced`. Apply `clampToLens`. A lens error sets a node error and passes the input through.
+  - approach: Add M463's shared lens knobs (`lensModel`, `lens`, `lensFile`, `glassVendor`, `abbeOffset`, `useAspheric`) plus `lensCharacter`, `lensColour` and `clampToLens` to the Bokeh tab, with labels from their script names. With a traced lens, disable M133's procedural catEye, swirl, CA and spherical knobs. Per slice × cell × channel, compute u from the slice's signed CoC divided by the CoC at infinity, and ρ from the cell centre. Fetch the kernel through `LensTableCache`, then `BokehKernel::fromTraced`. Apply `clampToLens`. A lens error sets a node error and passes the input through.
   - verify: `Tests/Native/NativeZDefocus_Test.cpp` cases: Procedural is bit-identical to the existing goldens; Double-Gauss renders differ between centre and corner cells; a bad lens file gives a persistent node error and identity output.
   - size: L
 
 - [ ] M292.P3.T2 — Defocus Lens knobs and traced kernels (CPU)
   - files: `Engine/Nodes/Filter/Defocus.h`, `Engine/Nodes/Filter/Defocus.cpp`
-  - approach: Add the same five lens knobs to the Bokeh tab, and `focusSide` (Behind/In Front) and `relativeDefocus` (default 1). The table parameters come from the Lens tab knobs that M292.P3.T3 adds; until that task lands, use 50 mm, f/2.8, 36 mm film back and 5 m focus as constants. u = ±relativeDefocus, and the radius comes from `size`. Use M133's cell grid for ρ, with kernels cached per cell and channel.
+  - approach: Add the same lens knobs to the Bokeh tab, and `focusSide` (Behind/In Front) and `relativeDefocus` (default 1). The table parameters come from the Lens tab knobs that M292.P3.T3 adds; until that task lands, use 50 mm, f/2.8, 36 mm film back and 5 m focus as constants. u = ±relativeDefocus, and the radius comes from `size`. Use M133's cell grid for ρ, with kernels cached per cell and channel.
   - verify: `Tests/Native/NativeDefocus_Test.cpp` cases: Procedural is bit-identical to the goldens; Behind and In Front give different kernels for a Petzval lens; a corner cell shows a cat-eye.
   - size: M
 
@@ -134,9 +148,15 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
   - verify: every Bokeh-tab lens control in Niik-l's source appears in the table, with no MISSING rows.
   - size: S
 
+- [ ] M292.P6.T3 — Bokeh preview in the lens browser
+  - files: `Gui/LensBrowser.{h,cpp}` (from M463), `Engine/Nodes/Filter/LensTable.{h,cpp}`
+  - approach: Register a bokeh preview provider with M463's browser: for the selected lens, render the traced kernel at centre and corner (ρ = 0 and 0.8) with the calling node's f-stop and lens colour, on a worker thread, cancelled when the selection changes.
+  - verify: the GUI script in P6.T2 opens the browser from ZDefocus, selects two lenses and screenshots a visible, differing bokeh preview for each.
+  - size: M
+
 - [ ] M292.P6.T2 — Goldens, docs and GUI check
   - files: `Tests/Native/goldens/ZDefocus/`, `Tests/Native/goldens/Defocus/` (new traced-lens goldens), `Engine/Nodes/Filter/docs/ZDefocus.md`, `Engine/Nodes/Filter/docs/Defocus.md`, `Tests/gui/m292_traced_lens.py`
-  - approach: Goldens on the parity source for Double-Gauss, Petzval with lensColour on, and the stages at 1, as ≤256 px half-float crops. Docs list each built-in lens with its citation, the lens-file format, and how traced and procedural knobs interact. The GUI script also toggles Defocus's Size From Lens and checks that `size` is disabled. It renders a point-light grid with a depth ramp under Xvfb through each built-in lens, centre and corner, and takes screenshots.
+  - approach: Goldens on the parity source for Double-Gauss, Petzval with lensColour on, and the stages at 1, as ≤256 px half-float crops. Docs list the Classic Designs lenses with their citations, point to the lens browser, the lens-file format, and how traced and procedural knobs interact. The GUI script also toggles Defocus's Size From Lens and checks that `size` is disabled. It renders a point-light grid with a depth ramp under Xvfb through each built-in lens, centre and corner, and takes screenshots.
   - verify: `ctest -R "NativeZDefocus|NativeDefocus"` passes; the GUI script passes; screenshots are shared with the user.
   - size: M
 
@@ -150,3 +170,7 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (`BokehKern
 - 2026-11-01 — **Defocus keeps `size` as the primary control, plus an optional Lens tab (user):** "a second tab that optionally sets the size from lens/f-stop/filmback/focus distance would actually be really nice." `objectDistance` was added because a CoC needs the subject's distance as well as the focus distance.
 - 2026-11-01 — **A traced lens replaces the overlapping procedural aberrations, and the extras stack (user):** blades/rotation shape the iris; onion rings, catadioptric, filter shape and highlight gain stack on top.
 - 2026-11-01 — **GPU residency (user):** the user asked for fully GPU-resident defocus, so traced kernels and image stages run on the GPU with no CPU round-trip.
+- 2026-11-16 — **Built on the shared lens base (user, lens flare planning):** prescriptions, parsers, dispersion and tracing come from M462 - Shared Optics Library, lens selection from M463 - Bundled Lens Database, the iris from M465 - Aperture Model; this milestone stays in F13 - ZDefocus Rework and waits for F30 - Lens Optics Base to land.
+- 2026-11-16 — **Catalogue Sellmeier dispersion for bokeh too (user):** each surface's glass is matched to the nearest catalogue glass, replacing LensTrace's Cauchy estimate, so bokeh and flares agree.
+- 2026-11-16 — **Lens Model is Procedural / Database / From File (user):** the 9 built-ins move into the database's Classic Designs group.
+- 2026-11-16 — **Iris from the aperture model, and a bokeh preview in the lens browser (user).**

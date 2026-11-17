@@ -1,0 +1,5 @@
+# Shared lens optics base for bokeh and flares (user, 2026-11-16)
+
+Physically based lens flares (ported from realflare, GPL-3.0-or-later) and traced lens bokeh (M292 - Traced Lens Bokeh, from Niik-l's LensTrace) share one engine-free optics library, `Engine/Optics` (M462 - Shared Optics Library): prescriptions with aspheres and cylinders, `.zmx`/`.dat` parsers, catalogue Sellmeier dispersion, sequential and ghost tracing, coatings and spectral colour. The full MIT OpticsDatabase (1,041 photographic lenses) ships bundled with a lens browser (M463 - Bundled Lens Database), and both nodes draw their apertures with one model (M465 - Aperture Model).
+
+The work is three Features: F30 - Lens Optics Base (M462, M463, M465), F13 - ZDefocus Rework (bokeh, now depending on F30) and F31 - Lens Flares (M464 and M466–M471, depending on F30). M472 - GPU Raster Pipelines extends the compute-only GPU layer with hardware raster for the flare ghosts and ships on its own. The user asked to "synergize this work" rather than keep two tracers. Answers the lens flare planning run's grill.

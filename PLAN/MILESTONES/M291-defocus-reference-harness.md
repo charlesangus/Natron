@@ -25,7 +25,8 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (ZDefocus m
   - a blurred foreground over a sharp background (the case where a gather shows holes);
   - an aliased depth edge (a pixel-coverage mix of two depths);
   - a grazing floor plane (where P/N should help);
-  - emissive highlight points behind a foreground edge.
+  - emissive highlight points behind a foreground edge;
+  - eclipsed bokeh: a defocused foreground edge in front of defocused emissive points, so the truth shows discs with a bite taken out where the foreground blocks part of the aperture, rather than discs blending through it (user, 2026-11-16).
 - **LFS:** scenes are generated at test time and nothing large is committed. Reference crops in the report are ≤256 px half-float.
 - **P/N test (user):** the user suspects P/N rarely helps, so the report states the per-scene edge-error difference with and without P/N.
 
@@ -43,7 +44,7 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (ZDefocus m
 
 - [ ] M291.P1.T2 — Define the fixture scenes
   - files: `Tests/Native/DefocusReference/Scenes.h`, `Tests/Native/DefocusReference/Scenes.cpp`
-  - approach: Five named scenes per the Scope edge cases (sharpFgBlurBg, blurFgSharpBg, aliasedEdge, grazingFloor, highlightsBehindEdge). Each returns an `AnalyticScene` plus camera settings; aliasedEdge supersamples the pinhole depth 4x4 and averages it, as a renderer would.
+  - approach: Six named scenes per the Scope edge cases (sharpFgBlurBg, blurFgSharpBg, aliasedEdge, grazingFloor, highlightsBehindEdge, eclipsedBokeh). eclipsedBokeh puts the focus between the two, so both the foreground card and the emissive points behind it blur. Each returns an `AnalyticScene` plus camera settings; aliasedEdge supersamples the pinhole depth 4x4 and averages it, as a renderer would.
   - verify: a test in `DefocusReference_Test.cpp` renders each scene's pinhole pass at 64×36 and checks that depth has the expected near/far range and that the alpha coverage is non-trivial.
   - size: M
 
@@ -77,7 +78,7 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (ZDefocus m
 
 - [ ] M291.P3.T2 — Run the full harness and write up the results
   - files: `docs/defocus/harness-results.md`, plus at most 10 crops under `docs/defocus/harness/` (half-float, ≤256 px)
-  - approach: Run the full mode in natron-dev. Write a table per scene: ZDefocus at each layer count against Niik-l with Unmix, Snap and Off, fill on/off, and P/N on/off. Add a short reading: where each engine wins, whether P/N helps beyond the grazing floor, which ideas (edge split, forced slice boundaries, fill, scatter itself) account for the gap, and a note on GPU-residency feasibility for each idea (user requires GPU residency). End with a recommendation for M294 - ZDefocus Engine Revisit.
+  - approach: Run the full mode in natron-dev. Write a table per scene: ZDefocus at each layer count against Niik-l with Unmix, Snap and Off, fill on/off, and P/N on/off. Add a short reading: where each engine wins, how closely each reproduces the eclipsedBokeh truth's bitten discs, whether P/N helps beyond the grazing floor, which ideas (edge split, forced slice boundaries, fill, scatter itself) account for the gap, and a note on GPU-residency feasibility for each idea (user requires GPU residency). End with a recommendation for M294 - ZDefocus Engine Revisit.
   - verify: the report exists, its numbers match `results.csv`, and the crops are within the LFS limits (`du -sh docs/defocus/harness`).
   - size: M
 
@@ -88,3 +89,4 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (ZDefocus m
 - 2026-11-01 — **Measure first, then revisit (user, /cat-plan grill):** score ZDefocus and a Niik-l prototype against a ground truth before choosing an engine.
 - 2026-11-01 — **Analytic in-tree renderer for the truth (user):** deterministic, fast and LFS-free, preferred over Cycles renders.
 - 2026-11-01 — **Test P/N (user):** "Would be interested to see if the P/N thing actually helps much in many cases. I suspect not, but worth testing."
+- 2026-11-16 — **Eclipsed-bokeh scene (user, Higx Optics parity grill):** an out-of-focus foreground must eclipse the discs behind it; the harness scores it and M294 - ZDefocus Engine Revisit is held to it.

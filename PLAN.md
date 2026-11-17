@@ -13,6 +13,8 @@ future core work has solid ground to build on.
 
 # Context and constraints
 
+- **No Higx in the repo (user, 2026-11-16):** Higx Optics is the parity reference for traced defocus (M479 - Lens Bokeh Parity Audit), but, like Nuke, it is never named in docs, tooltips, comments or committed files; audits go to the user and PR bodies only.
+
 - **Licence: GPLv3-or-later (user, 2026-11-03).** Natron moves to GPLv3-or-later before release, so Apache-2.0 and GPLv3 code may be integrated (bundled Cycles with Blender's GPL deep files, darktable ports, etc.).
 
 - **Mind the Git LFS quota (user, 2026-10-27):** reference images store only the compared region (≤256 px crops, half-float, zip-compressed); prefer small synthetic sources; no new camera raws without asking.
@@ -434,7 +436,14 @@ future core work has solid ground to build on.
 | M291 | Defocus Reference Harness | todo | M131, M133 |  | E24 | F13 | | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
 | M292 | Traced Lens Bokeh | todo | M131, M133, M462, M463, M465 |  | E24 | F13 | | [M292-traced-lens-bokeh.md](PLAN/MILESTONES/M292-traced-lens-bokeh.md) |
 | M293 | ZDefocus Debug Outputs | done | M131, M133 | | E3 | F13 | | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
-| M294 | ZDefocus Engine Revisit | todo | M291, M292, M293 |  | E24 | F13 | | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
+| M473 | Lens Camera And Focus Controls | todo | M292 |  | E24 | F13 | | [M473-lens-camera-and-focus-controls.md](PLAN/MILESTONES/M473-lens-camera-and-focus-controls.md) |
+| M474 | Traced Lens Creative Aberrations | todo | M292 |  | E24 | F13 | | [M474-traced-lens-creative-aberrations.md](PLAN/MILESTONES/M474-traced-lens-creative-aberrations.md) |
+| M475 | Aperture Maps And Front Filter | todo | M292, M474 |  | E24 | F13 | | [M475-aperture-maps-and-front-filter.md](PLAN/MILESTONES/M475-aperture-maps-and-front-filter.md) |
+| M476 | Traced Anamorphic Bokeh | todo | M292 |  | E24 | F13 | | [M476-traced-anamorphic-bokeh.md](PLAN/MILESTONES/M476-traced-anamorphic-bokeh.md) |
+| M477 | Lens Cross-Section Panel | todo | M292, M473, M474, M476 |  | E24 | F13 | | [M477-lens-cross-section-panel.md](PLAN/MILESTONES/M477-lens-cross-section-panel.md) |
+| M478 | Cinema And Vintage Lens Prescriptions | todo | M462, M463 |  | E24 | F13 | | [M478-cinema-and-vintage-lens-prescriptions.md](PLAN/MILESTONES/M478-cinema-and-vintage-lens-prescriptions.md) |
+| M294 | ZDefocus Engine Revisit | todo | M291, M292, M293, M473, M474, M475, M476 |  | E24 | F13 | | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
+| M479 | Lens Bokeh Parity Audit | todo | M292, M294, M473, M474, M475, M476, M477, M478 |  | E24 | F13 | | [M479-lens-bokeh-parity-audit.md](PLAN/MILESTONES/M479-lens-bokeh-parity-audit.md) |
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | | | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
 | M462 | Shared Optics Library | todo | - |  | E24 | F30 | | [M462-shared-optics-library.md](PLAN/MILESTONES/M462-shared-optics-library.md) |
 | M463 | Bundled Lens Database | todo | M462 |  | E24 | F30 | | [M463-bundled-lens-database.md](PLAN/MILESTONES/M463-bundled-lens-database.md) |
@@ -447,6 +456,7 @@ future core work has solid ground to build on.
 | M469 | LensFlare Layers And Diagram | todo | M466, M468 |  | E24 | F31 | | [M469-lensflare-layers-and-diagram.md](PLAN/MILESTONES/M469-lensflare-layers-and-diagram.md) |
 | M470 | LensFlare From USD Lights | todo | M466, M468 |  | E24 | F31 | | [M470-lensflare-from-usd-lights.md](PLAN/MILESTONES/M470-lensflare-from-usd-lights.md) |
 | M471 | Lens Browser Previews | todo | M463, M466, M467, M468 |  | E24 | F31 | | [M471-lens-browser-previews.md](PLAN/MILESTONES/M471-lens-browser-previews.md) |
+| M480 | LensFlare Creative Aberrations | todo | M474, M466, M467, M468 |  | E24 |  | | [M480-lensflare-creative-aberrations.md](PLAN/MILESTONES/M480-lensflare-creative-aberrations.md) |
 | M296 | Raw Prepare Output Format | done | M80 | misty-marten | E3 | | | [M296-raw-prepare-output-format.md](PLAN/MILESTONES/M296-raw-prepare-output-format.md) |
 | M297 | Viewer Node Knobs Follow-ups | done | M164 | | E3 | | | [M297-viewer-node-knobs-followups.md](PLAN/MILESTONES/M297-viewer-node-knobs-followups.md) |
 | M298 | RenderIsolation Taskgraph Hang | done | M177 | bosley-native-nodes | E3 | | | [M298-renderisolation-taskgraph-hang.md](PLAN/MILESTONES/M298-renderisolation-taskgraph-hang.md) |
@@ -588,7 +598,7 @@ future core work has solid ground to build on.
 | F10 | Viewer Polish | landed | bosley-native-nodes |  | feature/f10-viewer-polish | Ship a batch of small viewer and properties-panel fixes on one build and one UAT. |
 | F11 | Texture Painting | open |  |  | feature/f11-texture-painting | Paint directly on meshes in the 3D view with UDIM textures, layering over existing materials, baking and paint-through inputs, including painting native geometry with its own UV operators, attribute painting, and a Viewer 2D/3D switch. |
 | F12 | Expression Speed | open |  |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |
-| F13 | ZDefocus Rework | open |  |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, and revisit its engine from the results. |
+| F13 | ZDefocus Rework | open |  |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, match or exceed Higx Optics' traced bokeh, and revisit its engine from the results. |
 | F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
 | F15 | Native Geometry | open |  |  | feature/f15-native-geometry | A SOP-style native geometry context: a Houdini-like detail, bridges to USD, operators, Python and VEX-like wrangles, point editing and a geometry spreadsheet. |
 | F16 | User Knob Editor | open |  |  | feature/f16-user-knob-editor | Create and manage user knobs in place on the properties panel, with type changes, undo, button scripts, drag-in links and copy/paste. |

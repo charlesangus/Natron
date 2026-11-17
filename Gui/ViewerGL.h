@@ -126,6 +126,8 @@ public:
      **/
     double getZoomFactor() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    void stepZoomPresets(int steps, const QPointF& pivot);
+
     /**
      * @brief Returns the rectangle of the image displayed by the viewer
      **/

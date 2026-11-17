@@ -22,25 +22,25 @@ Neither scheduler can add work once a frame starts rendering: the request pass r
 
 ## Phase 179.1: API
 
-- [ ] M179.P1.T1 — Design and document the continuation API
+- [x] M179.P1.T1 — Design and document the continuation API
   - files: `Engine/RenderScheduler.h`, `Engine/EffectInstance.h`, `Engine/Nodes/README.md`
   - approach: A node opts in with `EffectInstance::getRenderContinuation(args)`; its planned task (the probe) returns a list of `(node, ctxKey, RoI)` requests and a continuation callback. Document the lifetime, threading and abort rules in the header and README. No implementation in this task beyond declarations and a stub that rejects use.
   - verify: reviewed at the gate; the tree builds.
   - size: M
 
-- [ ] M179.P1.T2 — Extend a frame's request map from a finished task
+- [x] M179.P1.T2 — Extend a frame's request map from a finished task
   - files: `Engine/ParallelRenderArgs.h`, `Engine/ParallelRenderArgs.cpp`, `Engine/FrameRenderContext.cpp`
   - approach: Factor the request-pass visit so it can run incrementally against an existing frame's `FrameRequestMap` and args map: new entries are added under the frame's lock, existing entries' RoIs are unioned, and only newly needed regions produce new requests.
   - verify: gtest runs a planned pass, then an extension over a node already in the map with a disjoint RoI: the map holds the union and only the new region is reported as new work.
   - size: L
 
-- [ ] M179.P1.T3 — Schedule extension tasks and the continuation task
+- [x] M179.P1.T3 — Schedule extension tasks and the continuation task
   - files: `Engine/RenderScheduler.h`, `Engine/RenderScheduler.cpp`
   - approach: When a probe task finishes, build tasks for the new requests into the live `FrameGraph` (new nodes and edges only), plus a continuation task depending on them and on the probe's output; enqueue under the frame's budget and priority. Abort drops pending extension tasks.
   - verify: gtest with a `ProbeTestEffect` that requests a data-dependent subset of 16 contexts of its input: only that subset renders (counter), in parallel on N threads, and the result matches a full render.
   - size: L
 
-- [ ] M179.P1.T4 — Degrade to serial pulls on the legacy path
+- [x] M179.P1.T4 — Degrade to serial pulls on the legacy path
   - files: `Engine/EffectInstance.cpp` (`renderInputOrTakeFromStore`), `Engine/RenderScheduler.cpp`
   - approach: Where the task graph is not in use, run the probe, then pull each requested `(node, ctxKey, RoI)` serially through the existing render-time pull, then run the continuation inline.
   - verify: `renderBothWays` on the `ProbeTestEffect` graph is bit-identical across both schedulers.
@@ -48,7 +48,7 @@ Neither scheduler can add work once a frame starts rendering: the request pass r
 
 ## Phase 179.2: Robustness
 
-- [ ] M179.P2.T1 — Abort, recursion and budget tests
+- [x] M179.P2.T1 — Abort, recursion and budget tests
   - files: `Tests/RenderContinuation_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: Cover abort during extension (no continuation runs, no leak), recursion to depth 8 and the depth-9 failure, an extension that only reuses planned work, and a bytes-budget-limited frame that still completes.
   - verify: the new suite passes, under the debug build's asserts (`tools/ci/remote/build.sh debug --tests`).
@@ -63,3 +63,4 @@ Neither scheduler can add work once a frame starts rendering: the request pass r
 - 2026-11-17 — All five tasks' code is committed in the lane (unbuilt; syntax check clean).
   - Deviations: an extension is a child frame with its own request map and FrameRenderContext, sharing the parent's store under a new generation, so the live graph and planned map are never mutated. Only work already in the store is reused; planned-but-unrendered work renders again under the new generation. The continuation runs before the node's own render, reading the requested outputs back as store hits. Extension graphs skip pruneBehindCacheHits. Partial cache hits and GPU regions that fall back to the CPU probe inline.
   - PM call: a node that offers a continuation is not placed on the GPU, since a GPU task is never probed (implementer running). The gate follows: debug --tests plus the scheduler regression suites.
+- 2026-11-17 — All tasks done; debug gate 44095319605 green. The probe test effect claims a GPU path only while the placement test asks it to. PR #303 is open; Codex is reviewing.

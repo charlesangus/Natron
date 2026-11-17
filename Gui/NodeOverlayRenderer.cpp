@@ -106,6 +106,14 @@ private:
 
 NodeOverlayRenderer::NodeOverlayRenderer()
     : _vbo(0)
+    , _uploads(0)
+    , _uploaded(false)
+    , _uploadedBuildId(0)
+    , _uploadedState()
+    , _uploadedPixelScaleX(0.)
+    , _uploadedPixelScaleY(0.)
+    , _uploadedPositionBytes(0)
+    , _uploadedColorBytes(0)
 {
 }
 
@@ -121,11 +129,14 @@ NodeOverlayRenderer::releaseGLResources()
         glDeleteBuffers(1, &id);
         _vbo = 0;
     }
+    _uploaded = false;
 }
 
 void
 NodeOverlayRenderer::tessellate(const OverlayDrawList& list,
                                 const OverlayDrawState& state,
+                                double pixelScaleX,
+                                double pixelScaleY,
                                 std::vector<float>* positions,
                                 std::vector<float>* colors,
                                 std::vector<float>* shadowColors,
@@ -138,51 +149,53 @@ NodeOverlayRenderer::tessellate(const OverlayDrawList& list,
 
     Tessellator t(positions, colors, shadowColors, batches);
     const std::vector<OverlayDrawList::Point>& pts = list.points();
+    const std::vector<OverlayDrawList::Primitive>& primitives = list.primitives();
     std::vector<std::size_t> triangles;
+    std::vector<OverlayDrawList::Point> segments;
+    std::vector<OverlayDrawList::Point> filled;
 
-    for (const OverlayDrawList::Primitive& p : list.primitives()) {
+    for (std::size_t index : list.drawOrder()) {
+        const OverlayDrawList::Primitive& p = primitives[index];
         const Rgba color = resolveColor(p.color, state);
         switch (p.type) {
         case OverlayDrawList::ePrimitiveTypePoints:
-            t.begin(GL_POINTS, p.width, true, true);
+            t.begin(GL_POINTS, p.width, p.smooth, p.shadow);
             for (std::size_t i = p.first; i < p.first + p.count; ++i) {
                 t.vertex(pts[i], color);
             }
             break;
         case OverlayDrawList::ePrimitiveTypeLines:
-            t.begin(GL_LINES, p.width, true, true);
-            for (std::size_t i = p.first; i < p.first + p.count; ++i) {
-                t.vertex(pts[i], color);
-            }
-            break;
         case OverlayDrawList::ePrimitiveTypePolyline:
-        case OverlayDrawList::ePrimitiveTypeStroke: {
-            const std::size_t end = p.first + p.count;
-            if (p.count > 1) {
-                t.begin(GL_LINES, p.width, true, true);
-                for (std::size_t i = p.first; i + 1 < end; ++i) {
-                    t.vertex(pts[i], color);
-                    t.vertex(pts[i + 1], color);
-                }
-                if (p.closed && p.count > 2) {
-                    t.vertex(pts[end - 1], color);
-                    t.vertex(pts[p.first], color);
+        case OverlayDrawList::ePrimitiveTypeStroke:
+        case OverlayDrawList::ePrimitiveTypeAnchoredShape:
+            segments.clear();
+            filled.clear();
+            OverlayDrawList::expandGeometry(p, pts, pixelScaleX, pixelScaleY, &segments, &filled);
+            if (!segments.empty()) {
+                t.begin(GL_LINES, p.width, p.smooth, p.shadow);
+                for (const OverlayDrawList::Point& v : segments) {
+                    t.vertex(v, color);
                 }
             }
-            if (p.type == OverlayDrawList::ePrimitiveTypeStroke) {
+            if (!filled.empty()) {
+                t.begin(GL_TRIANGLES, 0.f, false, p.shadow);
+                for (const OverlayDrawList::Point& v : filled) {
+                    t.vertex(v, color);
+                }
+            }
+            if ((p.type == OverlayDrawList::ePrimitiveTypeStroke) && (p.count > 0)) {
                 // Wide GL lines have square ends and gaps at the joins; a round point the line's
                 // width on every vertex rounds both.
-                t.begin(GL_POINTS, p.width, true, true);
-                for (std::size_t i = p.first; i < end; ++i) {
+                t.begin(GL_POINTS, p.width, true, p.shadow);
+                for (std::size_t i = p.first; i < p.first + p.count; ++i) {
                     t.vertex(pts[i], color);
                 }
             }
             break;
-        }
         case OverlayDrawList::ePrimitiveTypePolygon:
             triangles.clear();
             if (OverlayDrawList::triangulate(pts, p.first, p.count, &triangles) && !triangles.empty()) {
-                t.begin(GL_TRIANGLES, 0.f, false, false);
+                t.begin(GL_TRIANGLES, 0.f, false, p.shadow);
                 for (std::size_t i : triangles) {
                     t.vertex(pts[i], color);
                 }
@@ -195,7 +208,7 @@ NodeOverlayRenderer::tessellate(const OverlayDrawList& list,
                 c.g = 1.f;
                 c.b = 0.f;
             }
-            t.begin(GL_POINTS, p.width, p.handleShape == OverlayDrawList::eHandleShapeCircle, true);
+            t.begin(GL_POINTS, p.width, p.handleShape == OverlayDrawList::eHandleShapeCircle, p.shadow);
             t.vertex(pts[p.first], c);
             break;
         }
@@ -205,6 +218,15 @@ NodeOverlayRenderer::tessellate(const OverlayDrawList& list,
     }
 } // NodeOverlayRenderer::tessellate
 
+bool
+NodeOverlayRenderer::isUploaded(const OverlayDrawList& list,
+                                const OverlayDrawState& state,
+                                double pixelScaleX,
+                                double pixelScaleY) const
+{
+    return _uploaded && _vbo && (_uploadedBuildId == list.buildId()) && (_uploadedPixelScaleX == pixelScaleX) && (_uploadedPixelScaleY == pixelScaleY) && (_uploadedState.hoveredHandle == state.hoveredHandle) && (_uploadedState.pressedHandle == state.pressedHandle) && (_uploadedState.nodeR == state.nodeR) && (_uploadedState.nodeG == state.nodeG) && (_uploadedState.nodeB == state.nodeB);
+}
+
 void
 NodeOverlayRenderer::draw(const OverlayDrawList& list,
                           const OverlayDrawState& state,
@@ -213,8 +235,6 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
     if (list.empty() || !viewport) {
         return;
     }
-
-    tessellate(list, state, &_positions, &_colors, &_shadowColors, &_batches);
 
     double pixelScaleX, pixelScaleY;
     viewport->getPixelScale(pixelScaleX, pixelScaleY);
@@ -241,20 +261,33 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    const std::size_t vertexCount = _positions.size() / 2;
-    const std::size_t positionBytes = _positions.size() * sizeof(float);
-    const std::size_t colorBytes = _colors.size() * sizeof(float);
-    if (vertexCount > 0) {
-        if (!_vbo) {
-            GLuint id = 0;
-            glGenBuffers(1, &id);
-            _vbo = id;
+    if (!isUploaded(list, state, pixelScaleX, pixelScaleY)) {
+        tessellate(list, state, pixelScaleX, pixelScaleY, &_positions, &_colors, &_shadowColors, &_batches);
+        _uploadedPositionBytes = _positions.size() * sizeof(float);
+        _uploadedColorBytes = _colors.size() * sizeof(float);
+        if (!_positions.empty()) {
+            if (!_vbo) {
+                GLuint id = 0;
+                glGenBuffers(1, &id);
+                _vbo = id;
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, _vbo);
+            glBufferData(GL_ARRAY_BUFFER, _uploadedPositionBytes + 2 * _uploadedColorBytes, 0, GL_DYNAMIC_DRAW);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, _uploadedPositionBytes, _positions.data());
+            glBufferSubData(GL_ARRAY_BUFFER, _uploadedPositionBytes, _uploadedColorBytes, _colors.data());
+            glBufferSubData(GL_ARRAY_BUFFER, _uploadedPositionBytes + _uploadedColorBytes, _uploadedColorBytes, _shadowColors.data());
+            ++_uploads;
         }
+        _uploaded = true;
+        _uploadedBuildId = list.buildId();
+        _uploadedState = state;
+        _uploadedPixelScaleX = pixelScaleX;
+        _uploadedPixelScaleY = pixelScaleY;
+    }
+
+    const bool hasVertices = (_uploadedPositionBytes > 0) && _vbo;
+    if (hasVertices) {
         glBindBuffer(GL_ARRAY_BUFFER, _vbo);
-        glBufferData(GL_ARRAY_BUFFER, positionBytes + 2 * colorBytes, 0, GL_STREAM_DRAW);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, positionBytes, _positions.data());
-        glBufferSubData(GL_ARRAY_BUFFER, positionBytes, colorBytes, _colors.data());
-        glBufferSubData(GL_ARRAY_BUFFER, positionBytes + colorBytes, colorBytes, _shadowColors.data());
         glEnableClientState(GL_VERTEX_ARRAY);
         glEnableClientState(GL_COLOR_ARRAY);
         glVertexPointer(2, GL_FLOAT, 0, (const GLvoid*)0);
@@ -263,6 +296,10 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glMatrixMode(GL_MODELVIEW);
+
+    const std::vector<OverlayDrawList::Point>& pts = list.points();
+    const std::vector<OverlayDrawList::Primitive>& primitives = list.primitives();
+    const std::vector<std::size_t> order = list.drawOrder();
 
     for (int l = 0; l < 2; ++l) {
         const bool shadowPass = (l == 0);
@@ -274,8 +311,8 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
         }
         glMatrixMode(GL_MODELVIEW);
 
-        if (vertexCount > 0) {
-            const std::uintptr_t colorOffset = positionBytes + (shadowPass ? colorBytes : 0);
+        if (hasVertices) {
+            const std::uintptr_t colorOffset = _uploadedPositionBytes + (shadowPass ? _uploadedColorBytes : 0);
             glColorPointer(4, GL_FLOAT, 0, (const GLvoid*)colorOffset);
             for (const Batch& b : _batches) {
                 if ((shadowPass && !b.shadow) || (b.count == 0)) {
@@ -289,15 +326,20 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
                     }
                     glPointSize(b.width * (float)screenPixelRatio);
                 } else if (b.mode == GL_LINES) {
+                    if (b.smooth) {
+                        glEnable(GL_LINE_SMOOTH);
+                    } else {
+                        glDisable(GL_LINE_SMOOTH);
+                    }
                     glLineWidth(b.width * (float)screenPixelRatio);
                 }
                 glDrawArrays(b.mode, b.first, b.count);
             }
         }
 
-        const std::vector<OverlayDrawList::Point>& pts = list.points();
-        for (const OverlayDrawList::Primitive& p : list.primitives()) {
-            if (p.type != OverlayDrawList::ePrimitiveTypeText) {
+        for (std::size_t index : order) {
+            const OverlayDrawList::Primitive& p = primitives[index];
+            if ((p.type != OverlayDrawList::ePrimitiveTypeText) || (shadowPass && !p.shadow)) {
                 continue;
             }
             const Rgba c = resolveColor(p.color, state);
@@ -315,7 +357,7 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
 
-    if (vertexCount > 0) {
+    if (hasVertices) {
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
     glPopClientAttrib();

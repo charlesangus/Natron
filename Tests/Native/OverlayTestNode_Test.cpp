@@ -57,6 +57,8 @@ class FakeViewport
 public:
     int redraws = 0;
     int listDraws = 0;
+    double scaleX = 1.;
+    double scaleY = 1.;
 
     virtual void swapOpenGLBuffers() OVERRIDE FINAL { }
 
@@ -70,8 +72,8 @@ public:
 
     virtual void getPixelScale(double& xScale, double& yScale) const OVERRIDE FINAL
     {
-        xScale = 1.;
-        yScale = 1.;
+        xScale = scaleX;
+        yScale = scaleY;
     }
 
 #ifdef OFX_EXTENSIONS_NATRON
@@ -208,6 +210,128 @@ TEST_F(OverlayTestNodeTest, DraggingTheHandleMovesTheKnob)
     // The marker handle declines the press, so the pen falls through.
     EXPECT_FALSE(penDown(effect, 180., 180.));
     EXPECT_EQ(OverlayDrawList::kNoHandle, effect->getOverlayDrawState().pressedHandle);
+
+    effect->setCurrentViewportForOverlays_public(NULL);
+}
+
+TEST_F(OverlayTestNodeTest, CachedListIsReusedUntilItsKeyChanges)
+{
+    NodePtr node = createNode(QString::fromUtf8(kTestPluginIDOverlay));
+    ASSERT_TRUE(bool(node));
+    EffectInstancePtr effect = node->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+    std::shared_ptr<OverlayTestNode> overlayNode = std::dynamic_pointer_cast<OverlayTestNode>(effect);
+    ASSERT_TRUE(bool(overlayNode));
+    EXPECT_TRUE(effect->isOverlayDrawListCached());
+
+    FakeViewport viewport;
+    effect->setCurrentViewportForOverlays_public(&viewport);
+    const RenderScale half = RenderScale::fromMipmapLevel(1);
+
+    const unsigned long long builds = effect->getOverlayBuildCount();
+    const OverlayDrawList& first = effect->buildOverlay_public(1., RenderScale::identity, ViewIdx(0));
+    const unsigned long long firstId = first.buildId();
+    EXPECT_EQ(builds + 1, effect->getOverlayBuildCount());
+
+    const OverlayDrawList& again = effect->buildOverlay_public(1., RenderScale::identity, ViewIdx(0));
+    EXPECT_EQ(&first, &again);
+    EXPECT_EQ(firstId, again.buildId());
+    EXPECT_EQ(builds + 1, effect->getOverlayBuildCount());
+
+    effect->buildOverlay_public(2., RenderScale::identity, ViewIdx(0));
+    EXPECT_EQ(builds + 2, effect->getOverlayBuildCount());
+    EXPECT_NE(firstId, effect->getOverlayDrawList().buildId());
+
+    effect->buildOverlay_public(2., half, ViewIdx(0));
+    EXPECT_EQ(builds + 3, effect->getOverlayBuildCount());
+
+    // Within an eighth of an octave the zoom bucket holds; a doubling leaves it.
+    viewport.scaleX = viewport.scaleY = 0.5 * 1.04;
+    effect->buildOverlay_public(2., half, ViewIdx(0));
+    EXPECT_EQ(builds + 4, effect->getOverlayBuildCount());
+    viewport.scaleX = viewport.scaleY = 0.5 * 1.06;
+    effect->buildOverlay_public(2., half, ViewIdx(0));
+    EXPECT_EQ(builds + 4, effect->getOverlayBuildCount());
+    viewport.scaleX = viewport.scaleY = 1.;
+    effect->buildOverlay_public(2., half, ViewIdx(0));
+    EXPECT_EQ(builds + 5, effect->getOverlayBuildCount());
+
+    effect->invalidateOverlayDrawList();
+    effect->buildOverlay_public(2., half, ViewIdx(0));
+    EXPECT_EQ(builds + 6, effect->getOverlayBuildCount());
+    effect->buildOverlay_public(2., half, ViewIdx(0));
+    EXPECT_EQ(builds + 6, effect->getOverlayBuildCount());
+
+    KnobDoublePtr center = overlayNode->getCenterKnob();
+    ASSERT_TRUE(bool(center));
+    const unsigned long long version = effect->getOverlayContentVersion();
+    center->setValues(40., 50., ViewSpec::all(), eValueChangedReasonUserEdited);
+    EXPECT_NE(version, effect->getOverlayContentVersion());
+    const OverlayDrawList& moved = effect->buildOverlay_public(2., half, ViewIdx(0));
+    EXPECT_EQ(builds + 7, effect->getOverlayBuildCount());
+    double x = 0., y = 0.;
+    ASSERT_TRUE(moved.getHandlePosition(OverlayTestNode::eHandleCenter, &x, &y));
+    EXPECT_DOUBLE_EQ(40., x);
+    EXPECT_DOUBLE_EQ(50., y);
+
+    effect->setCurrentViewportForOverlays_public(NULL);
+}
+
+TEST_F(OverlayTestNodeTest, ZoomBucketsAreEighthsOfAnOctave)
+{
+    EXPECT_EQ(0, EffectInstance::overlayZoomBucket(1.));
+    EXPECT_EQ(0, EffectInstance::overlayZoomBucket(1.08));
+    EXPECT_EQ(1, EffectInstance::overlayZoomBucket(1.1));
+    EXPECT_EQ(8, EffectInstance::overlayZoomBucket(2.));
+    EXPECT_EQ(-8, EffectInstance::overlayZoomBucket(0.5));
+    EXPECT_EQ(0, EffectInstance::overlayZoomBucket(0.));
+    EXPECT_EQ(0, EffectInstance::overlayZoomBucket(-1.));
+}
+
+TEST_F(OverlayTestNodeTest, HoverDrawsInItsOwnList)
+{
+    NodePtr node = createNode(QString::fromUtf8(kTestPluginIDOverlay));
+    ASSERT_TRUE(bool(node));
+    EffectInstancePtr effect = node->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+    std::shared_ptr<OverlayTestNode> overlayNode = std::dynamic_pointer_cast<OverlayTestNode>(effect);
+    ASSERT_TRUE(bool(overlayNode));
+    KnobBoolPtr interactPrimitives = overlayNode->getInteractPrimitivesKnob();
+    ASSERT_TRUE(bool(interactPrimitives));
+
+    FakeViewport viewport;
+    effect->setCurrentViewportForOverlays_public(&viewport);
+    const std::size_t plain = effect->buildOverlay_public(1., RenderScale::identity, ViewIdx(0)).primitives().size();
+    interactPrimitives->setValue(true);
+    const OverlayDrawList& list = effect->buildOverlay_public(1., RenderScale::identity, ViewIdx(0));
+    EXPECT_GT(list.primitives().size(), plain);
+    std::set<int> types;
+    bool dashed = false, arrow = false, layered = false;
+    for (const OverlayDrawList::Primitive& p : list.primitives()) {
+        types.insert((int)p.type);
+        dashed = dashed || (p.dashOn > 0.);
+        arrow = arrow || (p.arrow != OverlayDrawList::eArrowNone);
+        layered = layered || (p.layer != 0);
+    }
+    EXPECT_EQ(8u, types.size());
+    EXPECT_TRUE(dashed);
+    EXPECT_TRUE(arrow);
+    EXPECT_TRUE(layered);
+    EXPECT_TRUE(effect->buildOverlayHover_public(1., RenderScale::identity, ViewIdx(0)).empty());
+
+    const unsigned long long builds = effect->getOverlayBuildCount();
+    EXPECT_TRUE(penMotion(effect, 101., 101.));
+    EXPECT_EQ(OverlayTestNode::eHandleCenter, effect->getOverlayDrawState().hoveredHandle);
+    effect->buildOverlay_public(1., RenderScale::identity, ViewIdx(0));
+    const OverlayDrawList& hover = effect->buildOverlayHover_public(1., RenderScale::identity, ViewIdx(0));
+    ASSERT_EQ(1u, hover.primitives().size());
+    EXPECT_EQ(OverlayDrawList::ePrimitiveTypeAnchoredShape, hover.primitives()[0].type);
+    EXPECT_EQ(builds, effect->getOverlayBuildCount());
+
+    viewport.listDraws = 0;
+    effect->drawOverlay_public(1., RenderScale::identity, ViewIdx(0));
+    EXPECT_EQ(2, viewport.listDraws);
+    EXPECT_EQ(builds, effect->getOverlayBuildCount());
 
     effect->setCurrentViewportForOverlays_public(NULL);
 }

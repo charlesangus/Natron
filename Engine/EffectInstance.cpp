@@ -4427,8 +4427,13 @@ EffectInstance::drawOverlay_public(double time,
     drawOverlay(time, actualScale, view);
     if (hasOverlayDrawList() && _imp->overlaysViewport) {
         const OverlayDrawList& list = buildOverlay_public(time, actualScale, view);
+        const OverlayDrawState state = getOverlayDrawState();
         if (!list.empty()) {
-            _imp->overlaysViewport->drawOverlayDrawList(list, getOverlayDrawState());
+            _imp->overlaysViewport->drawOverlayDrawList(list, state);
+        }
+        const OverlayDrawList& hover = buildOverlayHover_public(time, actualScale, view);
+        if (!hover.empty()) {
+            _imp->overlaysViewport->drawOverlayDrawList(hover, state);
         }
     }
     if (drawHostOverlay) {
@@ -4443,9 +4448,28 @@ EffectInstance::buildOverlay_public(double time,
                                     ViewIdx view)
 {
     assert(QThread::currentThread() == qApp->thread());
-    _imp->overlayDrawList.clear();
-    if (hasOverlayDrawList()) {
-        buildOverlay(time, renderScale, view, &_imp->overlayDrawList);
+    double pixelScaleX = 1., pixelScaleY = 1.;
+    if (_imp->overlaysViewport) {
+        _imp->overlaysViewport->getPixelScale(pixelScaleX, pixelScaleY);
+    }
+    const unsigned long long version = _imp->overlayContentVersion.load();
+    const int zoomX = overlayZoomBucket(pixelScaleX);
+    const int zoomY = overlayZoomBucket(pixelScaleY);
+    const bool cached = hasOverlayDrawList() && isOverlayDrawListCached();
+    const bool reuse = cached && _imp->overlayCacheValid && (_imp->overlayCachedVersion == version) && (_imp->overlayCachedTime == time) && (_imp->overlayCachedView == (int)view) && (_imp->overlayCachedMipmapLevel == renderScale.toMipmapLevel()) && (_imp->overlayCachedZoomX == zoomX) && (_imp->overlayCachedZoomY == zoomY);
+    if (!reuse) {
+        _imp->overlayDrawList.clear();
+        if (hasOverlayDrawList()) {
+            ++_imp->overlayBuildCount;
+            buildOverlay(time, renderScale, view, &_imp->overlayDrawList);
+        }
+        _imp->overlayCacheValid = cached;
+        _imp->overlayCachedVersion = version;
+        _imp->overlayCachedTime = time;
+        _imp->overlayCachedView = (int)view;
+        _imp->overlayCachedMipmapLevel = renderScale.toMipmapLevel();
+        _imp->overlayCachedZoomX = zoomX;
+        _imp->overlayCachedZoomY = zoomY;
     }
     double x, y;
     if ((_imp->overlayHoveredHandle != OverlayDrawList::kNoHandle) && !_imp->overlayDrawList.getHandlePosition(_imp->overlayHoveredHandle, &x, &y)) {
@@ -4459,6 +4483,48 @@ const OverlayDrawList&
 EffectInstance::getOverlayDrawList() const
 {
     return _imp->overlayDrawList;
+}
+
+const OverlayDrawList&
+EffectInstance::buildOverlayHover_public(double time,
+                                         const RenderScale& renderScale,
+                                         ViewIdx view)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    _imp->overlayHoverDrawList.clear();
+    if (hasOverlayDrawList()) {
+        buildOverlayHover(time, renderScale, view, &_imp->overlayHoverDrawList);
+    }
+
+    return _imp->overlayHoverDrawList;
+}
+
+void
+EffectInstance::invalidateOverlayDrawList()
+{
+    ++_imp->overlayContentVersion;
+}
+
+unsigned long long
+EffectInstance::getOverlayContentVersion() const
+{
+    return _imp->overlayContentVersion.load();
+}
+
+unsigned long long
+EffectInstance::getOverlayBuildCount() const
+{
+    return _imp->overlayBuildCount;
+}
+
+int
+EffectInstance::overlayZoomBucket(double pixelScale)
+{
+    if (!(pixelScale > 0.) || !std::isfinite(pixelScale)) {
+        return 0;
+    }
+
+    return (int)std::floor(std::log2(pixelScale) * 8.);
 }
 
 OverlayDrawState
@@ -6827,6 +6893,10 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
     ///trigger an analysis
     if ( (reason == eValueChangedReasonUserEdited) && dynamic_cast<KnobButton*>(k) && node->isNodeDisabled() ) {
         return false;
+    }
+
+    if (reason != eValueChangedReasonTimeChanged) {
+        invalidateOverlayDrawList();
     }
 
     // for image readers, image writers, and video writers, frame range must be updated before kOfxActionInstanceChanged is called on kOfxImageEffectFileParamName

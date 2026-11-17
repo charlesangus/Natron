@@ -35,7 +35,8 @@
 #   --wait                   --xvfb only: run in the foreground rather than detached
 #
 # --sizes, --topologies and --self-check apply to the gui driver; the roto driver reads its
-# ROTO_BENCH_* variables (see roto_bench.py) and also writes NATRON_ROTO_LATENCY_LOG beside the result.
+# ROTO_BENCH_* variables (see roto_bench.py) and also writes NATRON_ROTO_LATENCY_LOG and
+# NATRON_OVERLAY_DRAW_LOG beside the result.
 #
 # --xvfb runs detached (setsid, immune to the caller exiting): it prints the result path and
 # writes the exit code to <result>.done when it finishes. --host runs in the foreground.
@@ -266,10 +267,10 @@ fi
 timeout_s=${GUI_BENCH_TIMEOUT:-21600}
 script="$repo/tools/bench/gui/${driver}_bench.py"
 if [ "$driver" = roto ]; then
-    export NATRON_ROTO_LATENCY_LOG="$work/latency.jsonl"
-    rm -f "$NATRON_ROTO_LATENCY_LOG"
+    export NATRON_ROTO_LATENCY_LOG="$work/latency.jsonl" NATRON_OVERLAY_DRAW_LOG="$work/overlay-draw.jsonl"
+    rm -f "$NATRON_ROTO_LATENCY_LOG" "$NATRON_OVERLAY_DRAW_LOG"
 else
-    unset NATRON_ROTO_LATENCY_LOG
+    unset NATRON_ROTO_LATENCY_LOG NATRON_OVERLAY_DRAW_LOG
 fi
 if [ "$stages" -eq 1 ]; then
     export NATRON_NODE_CREATION_STAGE_LOG="$work/node-creation-stages.jsonl"

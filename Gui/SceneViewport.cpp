@@ -5210,29 +5210,11 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         _imp->drawnSamples = -1;
     }
 
-    _imp->drawnGuides.clear();
     _imp->feedBoxes();
-    _imp->boxesDrawn = 0;
-    _imp->markersDrawn = 0;
-    _imp->drawnBoxList.reset();
-    _imp->drawnBoxes.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, width, height);
-        glUseProgram(0);
-        glBindVertexArray(0);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        if (_imp->showGrid) {
-            _imp->drawGrid(frustum);
-        }
-        if (!held) {
-            _imp->drawBoxes(frustum, width, height);
-        }
-        if (_imp->showGuides) {
-            _imp->drawGuides(frustum, width, height);
-        }
-        _imp->drawTransformHandles(frustum, width, height);
-    }
+    SceneGizmo::Frame handleFrame;
+    bool handleSelection = false;
+    const bool handlesShown = (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && _imp->computeHandleFrame(&handleFrame, &handleSelection);
+    _imp->drawOverlayPass(fbo, frustum, width, height, held, handlesShown ? &handleFrame : nullptr, handleSelection, bool(_imp->lookThroughCamera()), true, false);
     if (held) {
         return eRenderStatusDone;
     }

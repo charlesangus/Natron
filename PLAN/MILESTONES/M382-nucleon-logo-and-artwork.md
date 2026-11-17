@@ -149,3 +149,7 @@ Context:
 - 2026-11-17 — Round 12 request (user): add a blue electron to each of the six short-listed marks, like the electron of a helium atom. Ring treatments to try: flat, in depth (passing behind and in front of the mark), constant thickness, and with a bulge. Also try other electron representations, such as a small circle. Drafted by a Fable agent in `Gui/Resources/Branding/concepts/electron-*.svg`; sheets under `build/branding/round12/`. Dark background only for this round; no light renders (user).
 - 2026-11-17 — Short list (user): rings-trefoil (round 6, the trefoil knot) is added to the short list and to round 12.
 - 2026-11-17 — Round 12 delivered at 1f389c342: eight treatments (ring-flat, ring-flat-bulge, ring-depth, ring-depth-bulge, dot, dot-orbit, crescent, pair) on the seven short-listed marks, 56 dark-only sheets. Awaiting feedback.
+- 2026-11-17 — Round 12 feedback (user):
+  - electron-ring-depth-bulge-rings-trefoil is interesting, but the ring's alignment with the knot isn't quite right. Try variations of it.
+  - For the six non-trefoil marks, try a blue ring or outline around the orange circle that passes behind the grey pieces. On the pyramid marks it shows only on the orange circle's side.
+  - Round 13 goes to a Fable agent. Dark-only sheets under `build/branding/round13/`.

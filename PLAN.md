@@ -431,22 +431,22 @@ future core work has solid ground to build on.
 | M290 | Native Cryptomatte Keyer | todo | M285 |  | E19 | | | [M290-native-cryptomatte-keyer.md](PLAN/MILESTONES/M290-native-cryptomatte-keyer.md) |
 | M289 | Utility Adaptive Subdivision | todo | M284 |  | E19 | | | [M289-utility-adaptive-subdivision.md](PLAN/MILESTONES/M289-utility-adaptive-subdivision.md) |
 | M287 | Utility Renderer Displacement | todo | M289 |  | E19 | | | [M287-utility-renderer-displacement.md](PLAN/MILESTONES/M287-utility-renderer-displacement.md) |
-| M291 | Defocus Reference Harness | todo | M131, M133 |  | E3 | F13 | | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
-| M292 | Traced Lens Bokeh | todo | M131, M133, M462, M463, M465 |  | E3 | F13 | | [M292-traced-lens-bokeh.md](PLAN/MILESTONES/M292-traced-lens-bokeh.md) |
+| M291 | Defocus Reference Harness | todo | M131, M133 |  | E24 | F13 | | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
+| M292 | Traced Lens Bokeh | todo | M131, M133, M462, M463, M465 |  | E24 | F13 | | [M292-traced-lens-bokeh.md](PLAN/MILESTONES/M292-traced-lens-bokeh.md) |
 | M293 | ZDefocus Debug Outputs | done | M131, M133 | | E3 | F13 | | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
-| M294 | ZDefocus Engine Revisit | todo | M291, M292, M293 |  | E3 | F13 | | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
+| M294 | ZDefocus Engine Revisit | todo | M291, M292, M293 |  | E24 | F13 | | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | | | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
-| M462 | Shared Optics Library | todo | - |  | E3 | F30 | | [M462-shared-optics-library.md](PLAN/MILESTONES/M462-shared-optics-library.md) |
-| M463 | Bundled Lens Database | todo | M462 |  | E3 | F30 | | [M463-bundled-lens-database.md](PLAN/MILESTONES/M463-bundled-lens-database.md) |
-| M465 | Aperture Model | todo | - |  | E3 | F30 | | [M465-aperture-model.md](PLAN/MILESTONES/M465-aperture-model.md) |
-| M464 | FFT Library | todo | - |  | E3 | F31 | | [M464-fft-library.md](PLAN/MILESTONES/M464-fft-library.md) |
+| M462 | Shared Optics Library | todo | - |  | E24 | F30 | | [M462-shared-optics-library.md](PLAN/MILESTONES/M462-shared-optics-library.md) |
+| M463 | Bundled Lens Database | todo | M462 |  | E24 | F30 | | [M463-bundled-lens-database.md](PLAN/MILESTONES/M463-bundled-lens-database.md) |
+| M465 | Aperture Model | todo | - |  | E24 | F30 | | [M465-aperture-model.md](PLAN/MILESTONES/M465-aperture-model.md) |
+| M464 | FFT Library | todo | - |  | E24 | F31 | | [M464-fft-library.md](PLAN/MILESTONES/M464-fft-library.md) |
 | M472 | GPU Raster Pipelines | todo | - |  | E5 |  | | [M472-gpu-raster-pipelines.md](PLAN/MILESTONES/M472-gpu-raster-pipelines.md) |
-| M466 | LensFlare Ghost Tracing | todo | M462, M463, M464, M465 |  | E3 | F31 | | [M466-lensflare-ghost-tracing.md](PLAN/MILESTONES/M466-lensflare-ghost-tracing.md) |
-| M467 | LensFlare GPU Ghosts | todo | M466, M472 |  | E3 | F31 | | [M467-lensflare-gpu-ghosts.md](PLAN/MILESTONES/M467-lensflare-gpu-ghosts.md) |
-| M468 | LensFlare Starburst | todo | M464, M465, M466 |  | E3 | F31 | | [M468-lensflare-starburst.md](PLAN/MILESTONES/M468-lensflare-starburst.md) |
-| M469 | LensFlare Layers And Diagram | todo | M466, M468 |  | E3 | F31 | | [M469-lensflare-layers-and-diagram.md](PLAN/MILESTONES/M469-lensflare-layers-and-diagram.md) |
-| M470 | LensFlare From USD Lights | todo | M466, M468 |  | E3 | F31 | | [M470-lensflare-from-usd-lights.md](PLAN/MILESTONES/M470-lensflare-from-usd-lights.md) |
-| M471 | Lens Browser Previews | todo | M463, M466, M467, M468 |  | E3 | F31 | | [M471-lens-browser-previews.md](PLAN/MILESTONES/M471-lens-browser-previews.md) |
+| M466 | LensFlare Ghost Tracing | todo | M462, M463, M464, M465 |  | E24 | F31 | | [M466-lensflare-ghost-tracing.md](PLAN/MILESTONES/M466-lensflare-ghost-tracing.md) |
+| M467 | LensFlare GPU Ghosts | todo | M466, M472 |  | E24 | F31 | | [M467-lensflare-gpu-ghosts.md](PLAN/MILESTONES/M467-lensflare-gpu-ghosts.md) |
+| M468 | LensFlare Starburst | todo | M464, M465, M466 |  | E24 | F31 | | [M468-lensflare-starburst.md](PLAN/MILESTONES/M468-lensflare-starburst.md) |
+| M469 | LensFlare Layers And Diagram | todo | M466, M468 |  | E24 | F31 | | [M469-lensflare-layers-and-diagram.md](PLAN/MILESTONES/M469-lensflare-layers-and-diagram.md) |
+| M470 | LensFlare From USD Lights | todo | M466, M468 |  | E24 | F31 | | [M470-lensflare-from-usd-lights.md](PLAN/MILESTONES/M470-lensflare-from-usd-lights.md) |
+| M471 | Lens Browser Previews | todo | M463, M466, M467, M468 |  | E24 | F31 | | [M471-lens-browser-previews.md](PLAN/MILESTONES/M471-lens-browser-previews.md) |
 | M296 | Raw Prepare Output Format | done | M80 | misty-marten | E3 | | | [M296-raw-prepare-output-format.md](PLAN/MILESTONES/M296-raw-prepare-output-format.md) |
 | M297 | Viewer Node Knobs Follow-ups | done | M164 | | E3 | | | [M297-viewer-node-knobs-followups.md](PLAN/MILESTONES/M297-viewer-node-knobs-followups.md) |
 | M298 | RenderIsolation Taskgraph Hang | done | M177 | bosley-native-nodes | E3 | | | [M298-renderisolation-taskgraph-hang.md](PLAN/MILESTONES/M298-renderisolation-taskgraph-hang.md) |
@@ -570,6 +570,7 @@ future core work has solid ground to build on.
 | E21 | Nucleon 1.0 Release | Ship Nucleon 1.0 with a public landing site, versioned online and bundled reference docs, release notes and an honest versioning and beta channel. |
 | E22 | Simulation And Solvers | Loop, solve and simulate native geometry and images: For-Each and Solver blocks, a POP-style particle system, and 2D fluids. |
 | E23 | Overlay Flow | Show node overlays wherever their image goes: off the render path, deformed through warps, and on projected or textured geometry. |
+| E24 | Lens Optics | Trace real lens prescriptions for physically based bokeh and lens flares from one shared optics library, lens database and aperture model. |
 
 # Features
 

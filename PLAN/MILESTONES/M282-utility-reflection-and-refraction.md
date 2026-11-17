@@ -57,3 +57,4 @@ through transmissive surfaces. No GI and no caustics.
 - 2026-11-01 — **Tinted transparent shadows, no caustics (user).**
 - 2026-11-01 — **Depends on sampling:** glossy lobes need M283 - Utility Renderer Sampling And Motion Blur's pixel samples to converge.
 - 2026-11-17 — Code in the lane, gate running. **Glass untinted unless coloured (user):** UsdPreviewSurface has no transmission colour, so refraction and transmissive shadows are untinted (1 - opacity). **Light highlights on glass (user):** refractive surfaces take scene-light highlights like an opaque surface of the same ior and roughness. PM call: tests about other features render with Max Ray Depth 0, so no golden is re-recorded. Rough glass still reflects as a mirror.
+- 2026-11-17 — **Glass alpha stays noisy (user):** alpha through refractive surfaces converges with samples; no change.

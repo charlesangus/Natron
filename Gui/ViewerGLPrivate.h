@@ -42,6 +42,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Image.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/Settings.h"
 
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeOverlayRenderer.h"
@@ -230,6 +231,8 @@ struct ViewerGL::Implementation
     double _screenPixelRatio;
     std::unique_ptr<QFont> _textFont;
     bool overlay; /*!< True if the user enabled overlay display*/
+    StaleCueStyleEnum staleCueStyle = eStaleCueStyleOff;
+    bool staleCueVisible = false;
     bool updatingTexture;
     QColor clearColor;
     QMenu* menu;

@@ -25,10 +25,13 @@
 
 #include "ViewerTabPrivate.h"
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
 
 #include <QDebug>
+#include <QPainter>
+#include <QPen>
 
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
@@ -49,6 +52,62 @@
 
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+constexpr int kStaleSpinnerFrameMs = 83;
+constexpr int kStaleSpinnerFrames = 12;
+} // namespace
+
+ViewerStaleSpinner::ViewerStaleSpinner(const QSize& size,
+                                       int arcDiameter,
+                                       QWidget* parent)
+    : QWidget(parent)
+    , _arcDiameter(arcDiameter)
+{
+    setObjectName(QString::fromUtf8("viewerStaleSpinner"));
+    setFixedSize(size);
+    QSizePolicy policy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    policy.setRetainSizeWhenHidden(true);
+    setSizePolicy(policy);
+    setToolTip(QObject::tr("The viewer image is out of date: a newer one is rendering."));
+    _frameTimer.setInterval(kStaleSpinnerFrameMs);
+    QObject::connect(&_frameTimer, &QTimer::timeout, this, [this]() {
+        _frame = (_frame + 1) % kStaleSpinnerFrames;
+        update();
+    });
+    hide();
+}
+
+void
+ViewerStaleSpinner::setSpinning(bool spinning)
+{
+    if (spinning) {
+        if (!_frameTimer.isActive()) {
+            _frame = 0;
+            _frameTimer.start();
+        }
+        show();
+    } else {
+        _frameTimer.stop();
+        hide();
+    }
+}
+
+void
+ViewerStaleSpinner::paintEvent(QPaintEvent* /*e*/)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    const qreal penWidth = std::max<qreal>(1.5, _arcDiameter / 8.);
+    QPen pen(QColor(255, 179, 0));
+    pen.setWidthF(penWidth);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    const qreal d = _arcDiameter - penWidth;
+    const QRectF arc((width() - d) / 2., (height() - d) / 2., d, d);
+    const int startAngle16 = -_frame * (360 / kStaleSpinnerFrames) * 16;
+    p.drawArc(arc, startAngle16, 270 * 16);
+}
 
 ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
                                    ViewerInstance* node)

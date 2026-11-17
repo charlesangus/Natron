@@ -76,6 +76,7 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
@@ -2052,6 +2053,41 @@ typedef HydraRender::ProgressiveRender ProgressiveRender;
 
 const std::chrono::seconds kProgressiveTimeout(60);
 
+// A progressive render of stage's root layer synced into a SceneStage, as the 3D viewer drives one. Its
+// worker outlives the render, holding the GPU runtime, so the destructor waits for it to end before the
+// test's GPU context goes.
+class StageProgressiveRender {
+public:
+    explicit StageProgressiveRender(const PXR_NS::UsdStageRefPtr& stage)
+    {
+        EXPECT_TRUE(_stage.isValid());
+        _stage.sync(SceneOps::appendLayer(ScenePayload(), stage->GetRootLayer(), 1));
+
+        SceneStage* sceneStage = &_stage;
+
+        _render.reset(new ProgressiveRender(&_stageLock, [sceneStage](SceneStageSnapshot* into) {
+            *into = sceneStage->getSnapshot();
+
+            return true; }, std::function<void()>(), 0.05f));
+    }
+
+    ~StageProgressiveRender()
+    {
+        _render.reset();
+        EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(int(std::chrono::milliseconds(kProgressiveTimeout).count())));
+    }
+
+    ProgressiveRender& render()
+    {
+        return *_render;
+    }
+
+private:
+    SceneStage _stage;
+    std::mutex _stageLock;
+    std::unique_ptr<ProgressiveRender> _render;
+};
+
 // Renders the reference scene through the 3D viewer's progressive engine with Natron Utility forced onto the GPU,
 // its colour left on the device as the viewer asks for it.
 void
@@ -2119,8 +2155,8 @@ TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesAProgressiveNatronUtilityRendersG
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
     ASSERT_TRUE(stage);
     const int owner = 0;
-    std::mutex stageLock;
-    ProgressiveRender render(&stageLock, [stage]() { return stage; }, std::function<void()>(), 0.05f);
+    StageProgressiveRender progressive(stage);
+    ProgressiveRender& render = progressive.render();
     std::string error;
 
     HydraRender::releaseAll();
@@ -2180,8 +2216,8 @@ TEST_F(USDRenderNodeTest, AConvergedProgressiveNatronUtilityRenderLetsALostGpuRe
     PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
     ASSERT_TRUE(stage);
     const int owner = 0;
-    std::mutex stageLock;
-    ProgressiveRender render(&stageLock, [stage]() { return stage; }, std::function<void()>(), 0.05f);
+    StageProgressiveRender progressive(stage);
+    ProgressiveRender& render = progressive.render();
     std::string error;
 
     HydraRender::releaseAll();

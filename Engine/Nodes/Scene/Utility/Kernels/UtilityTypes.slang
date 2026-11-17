@@ -100,6 +100,22 @@ public struct MaterialRecord
     public int4 textures2;
 };
 
+// Whether a surface's ior bends the rays through it; at an ior of 1 it is plain transparency.
+public bool bendsLight(float ior)
+{
+    return abs(ior - 1.0) >= 1e-4;
+}
+
+// KernelPathState in UtilityKernels.h mirrors this: what a ray after the camera's carries to its pixel.
+// throughput scales the light the ray finds, w the share of the pixel's alpha what it hits adds.
+// counters: the pixel's index in the batch, then the bounces taken in all, by reflection and by
+// refraction.
+public struct PathState
+{
+    public float4 throughput;
+    public uint4 counters;
+};
+
 // UtilityTextureRef::Wrap
 public static const int kWrapBlack = 0;
 public static const int kWrapClamp = 1;

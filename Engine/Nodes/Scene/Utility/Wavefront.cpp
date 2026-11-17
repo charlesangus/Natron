@@ -393,6 +393,25 @@ makeLightRecord(const UtilityLightDesc& desc,
 
     return record;
 }
+
+// Whether a geometry's material may let light through it somewhere, as Kernels/Surface.slang's
+// surfaceTransmission() decides it per hit.
+bool
+mayTransmit(const KernelMaterialRecord& material,
+            const UtilityScene::Geometry& geometry)
+{
+    if (material.kind[0] != static_cast<std::uint32_t>(UtilityMaterialDesc::eKindPreviewSurface) || material.coverage[1] > 0.f) {
+        return false;
+    }
+    if (material.textures[UtilityMaterialDesc::eSlotOpacity] >= 0) {
+        return true;
+    }
+    if ((material.kind[2] & kKernelMaterialOpacityFromDisplayOpacity) != 0 && geometry.hasDisplayOpacity) {
+        return std::any_of(geometry.colors.cbegin(), geometry.colors.cend(), [](const GfVec4f& color) { return color[3] < 1.f; });
+    }
+
+    return material.coverage[0] < 1.f;
+}
 } // anon namespace
 
 bool
@@ -489,8 +508,20 @@ makeShadeParams(const WavefrontFrame& frame,
     params.pixels[2] = static_cast<std::uint32_t>(std::max(1, frame.window.width));
     // Each pixel sample draws its own light samples, so that a pixel's samples average over the lights' areas too.
     params.pixels[3] = frame.sampling.seed * 0x9e3779b9u + static_cast<std::uint32_t>(std::max(0, frame.sampling.sampleIndex));
+    // No bounces until an executor sets how many the frame traces, wavefrontBounceLimit().
+    params.bounce[0] = 0;
+    params.bounce[1] = 0;
+    params.bounce[2] = frame.reflectionDepth;
+    params.bounce[3] = frame.refractionDepth;
 
     return params;
+}
+
+std::uint32_t
+wavefrontBounceLimit(const WavefrontFrame& frame,
+                     bool transmission)
+{
+    return transmission ? frame.maxRayDepth : std::min(frame.maxRayDepth, frame.reflectionDepth);
 }
 
 void
@@ -680,6 +711,7 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
     }
     _geometries.clear();
     _geometries.reserve(snapshot.geometries.size());
+    _transmission = false;
 
     std::uint32_t colorOffset = 0;
     std::uint32_t triangleOffset = 0;
@@ -718,6 +750,7 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
         };
 
         _geometries.push_back(record);
+        _transmission = _transmission || mayTransmit(_materials[record.materialIndex], geometry);
         if (recopy) {
             if (fits) {
                 _colors.insert(_colors.end(), geometry.colors.cbegin(), geometry.colors.cend());
@@ -1014,6 +1047,12 @@ bool
 WavefrontShadeTables::hasHoles() const
 {
     return _holes;
+}
+
+bool
+WavefrontShadeTables::hasTransmission() const
+{
+    return _transmission;
 }
 
 std::uint32_t

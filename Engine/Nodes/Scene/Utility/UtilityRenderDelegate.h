@@ -78,6 +78,11 @@
 
 // The most cutout or projection-discard surfaces a ray goes through before it is a miss: an int.
 #define kUtilitySettingMaxCutouts "maxCutouts"
+// The most bounces a path from the camera takes after its first hit, in all, by reflection and by
+// refraction: ints.
+#define kUtilitySettingMaxRayDepth "maxRayDepth"
+#define kUtilitySettingReflectionDepth "reflectionDepth"
+#define kUtilitySettingRefractionDepth "refractionDepth"
 // How pixels are sampled. Pixel Samples, an int, is the side of the grid of samples a pixel takes; it
 // is not named samples, which the progressive viewer would take for its sample cap. Pixel Filter is a
 // TfToken, one of the four values below. Filter Width, a float, is in pixels. Seed is an int.

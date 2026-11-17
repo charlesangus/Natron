@@ -101,6 +101,39 @@ make()
     maxCutouts.displayMaximum = 32;
     c.settings.push_back(maxCutouts);
 
+    RenderSettingsKnobs::CuratedSetting maxRayDepth;
+
+    maxRayDepth.key = kUtilitySettingMaxRayDepth;
+    maxRayDepth.name = "maxRayDepth";
+    maxRayDepth.tooltip = "How many times in all a ray from the camera goes on after the surface it first meets, by reflection, refraction or straight through a transparent surface. A ray with no depth left ends black. 0 shades only what the camera sees directly, with no reflections or refractions.";
+    maxRayDepth.defaultValue = VtValue(static_cast<int>(kWavefrontDefaultMaxRayDepth));
+    maxRayDepth.hasRange = true;
+    maxRayDepth.minimum = 0;
+    maxRayDepth.displayMaximum = 16;
+    c.settings.push_back(maxRayDepth);
+
+    RenderSettingsKnobs::CuratedSetting reflectionDepth;
+
+    reflectionDepth.key = kUtilitySettingReflectionDepth;
+    reflectionDepth.name = "reflectionDepth";
+    reflectionDepth.tooltip = "How many reflections a ray from the camera takes, Max Ray Depth permitting. 1 shows what a surface reflects, 2 also what the reflection reflects. At 0 surfaces reflect only the lights, and dome lights as highlights.";
+    reflectionDepth.defaultValue = VtValue(static_cast<int>(kWavefrontDefaultReflectionDepth));
+    reflectionDepth.hasRange = true;
+    reflectionDepth.minimum = 0;
+    reflectionDepth.displayMaximum = 8;
+    c.settings.push_back(reflectionDepth);
+
+    RenderSettingsKnobs::CuratedSetting refractionDepth;
+
+    refractionDepth.key = kUtilitySettingRefractionDepth;
+    refractionDepth.name = "refractionDepth";
+    refractionDepth.tooltip = "How many refractions a ray from the camera takes through surfaces with an opacity below 1 and an ior other than 1, Max Ray Depth permitting; a total internal reflection counts as one. Going into a solid and out again takes 2. Light through surfaces with an ior of 1 goes on straight and counts against Max Ray Depth only.";
+    refractionDepth.defaultValue = VtValue(static_cast<int>(kWavefrontDefaultRefractionDepth));
+    refractionDepth.hasRange = true;
+    refractionDepth.minimum = 0;
+    refractionDepth.displayMaximum = 8;
+    c.settings.push_back(refractionDepth);
+
     RenderSettingsKnobs::CuratedSetting overrideShutter;
 
     overrideShutter.key = kUtilitySettingOverrideShutter;

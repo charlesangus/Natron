@@ -1001,6 +1001,9 @@ SplineWarp::onKnobsLoaded()
     updateCookieKnobsEnabled();
     registerOutputMaskLayer();
     selectDefaultTool();
+    if (_vectorFollow) {
+        _vectorFollow->onKnobsLoaded();
+    }
 }
 
 bool

@@ -130,8 +130,8 @@ handle where they overlap.
 
 **Follow Vectors:** the viewer's follow row and the Follow Vectors group (Follow Model, Follow
 Range Backward, Follow Backward To Start, Follow Backward One, Follow Forward One, Follow Forward
-To End, Follow Range Forward, Blend Between Keys, Follow Range, Follow In, Follow Out, Reduce
-Keyframes, Reduce Tolerance, Follow Confidence Threshold) key the selection along the motion
+To End, Follow Range Forward, Blend Between Keys, Follow Range, Follow In, Follow Out, Follow
+Confidence Threshold) key the selection along the motion
 vectors connected to the Vectors input, such as a VectorGenerator's, as in Roto. The Vectors input
 needs the forward motion layer, and the backward one for following backward; only the follow reads
 it, so it never changes the render. The viewer shows the follow row only while the Vectors input is
@@ -158,8 +158,9 @@ before the first key and after the last alone, and leaves alone any curve or cor
 fewer than two keys in the range. It needs the backward motion layer too; without it the frames
 are followed forward and the report says so.
 
-Reduce Keyframes, on the panel, removes the keys of the selected curves within Follow Range that
-the rest of their animation can do without, so that no point moves further than Reduce Tolerance
+Reduce Keyframes, on the panel below the Follow Vectors group, removes the keys of the selected
+curves within Reduce Range (All Keyframes, or Frame Range from Reduce In to Reduce Out) that the
+rest of their animation can do without, so that no point moves further than Reduce Tolerance
 (pixels, default 0.5) on any frame. The keys of a curve's points and of its own transform both
 count. It needs no vectors, works on keys set by hand as well as followed ones, and is one undo
 step. Correspondences keep their keys.

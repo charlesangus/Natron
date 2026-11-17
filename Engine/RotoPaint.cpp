@@ -700,6 +700,9 @@ RotoPaint::onKnobsLoaded()
     _imp->ui->setCurrentTool(defaultAction);
     _imp->ui->onRoleChangedInternal(defaultRole);
     _imp->ui->onToolChangedInternal(defaultAction);
+    if (_vectorFollow) {
+        _vectorFollow->onKnobsLoaded();
+    }
 }
 
 bool

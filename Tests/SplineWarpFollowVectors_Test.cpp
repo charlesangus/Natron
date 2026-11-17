@@ -341,13 +341,26 @@ TEST_F(SplineWarpFollowVectorsTest, TheVectorsInputFeedsOnlyTheFollowAndShowsIts
         EXPECT_EQ(knob->getParentKnob(), group) << name;
     }
     // Reduction needs no vectors, so it stays on the panel, outside the group, while the group hides.
-    for (const char* name : { "reduceKeyframes", "reduceTolerance" }) {
+    for (const char* name : { "reduceKeyframes", "reduceTolerance", "reduceRange", "reduceIn", "reduceOut" }) {
         KnobIPtr knob = _warpNode->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_FALSE(effect->isInViewerUIKnob(knob)) << name;
-        EXPECT_FALSE(knob->getIsSecret()) << name;
         EXPECT_NE(knob->getParentKnob(), group) << name;
+        EXPECT_EQ(knob->getTopLevelPage(), group->getTopLevelPage()) << name;
     }
+    for (const char* name : { "reduceKeyframes", "reduceTolerance", "reduceRange" }) {
+        EXPECT_FALSE(_warpNode->getKnobByName(name)->getIsSecret()) << name;
+    }
+    for (const char* name : { "reduceIn", "reduceOut" }) {
+        EXPECT_TRUE(_warpNode->getKnobByName(name)->getIsSecret()) << name;
+    }
+    KnobChoicePtr reduceRange = std::dynamic_pointer_cast<KnobChoice>(_warpNode->getKnobByName("reduceRange"));
+    ASSERT_TRUE(bool(reduceRange));
+    reduceRange->setValue(1, ViewSpec::all(), 0);
+    for (const char* name : { "reduceIn", "reduceOut" }) {
+        EXPECT_FALSE(_warpNode->getKnobByName(name)->getIsSecret()) << name;
+    }
+    reduceRange->setValue(0, ViewSpec::all(), 0);
 
     ASSERT_TRUE(_warpNode->connectInput(_vectors, kSplineWarpInputVectors));
     expectViewerSecret(false);

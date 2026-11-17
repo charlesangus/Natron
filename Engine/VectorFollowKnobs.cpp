@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 
@@ -90,7 +91,7 @@
 
 #define kFollowParamRange "followRange"
 #define kFollowParamRangeLabel "Follow Range"
-#define kFollowParamRangeHint "The frames a follow stays within, and those Blend Between Keys and Reduce Keyframes work on: the project's frame range, or Follow In to Follow Out."
+#define kFollowParamRangeHint "The frames a follow stays within, and those Blend Between Keys works on: the project's frame range, or Follow In to Follow Out."
 
 #define kFollowParamIn "followIn"
 #define kFollowParamInLabel "Follow In"
@@ -102,11 +103,23 @@
 
 #define kFollowParamReduceKeyframes "reduceKeyframes"
 #define kFollowParamReduceKeyframesLabel "Reduce Keyframes"
-#define kFollowParamReduceKeyframesHint "Removes the keys of the selected shapes within the range that the rest of their animation can do without, so no point moves further than Reduce Tolerance on any frame. The keys of a shape's points and of its own transform both count. It needs no vectors and works on any keys, followed or set by hand. Follow Range sets the range; keys outside it stay."
+#define kFollowParamReduceKeyframesHint "Removes the keys of the selected shapes within the range that the rest of their animation can do without, so no point moves further than Reduce Tolerance on any frame. The keys of a shape's points and of its own transform both count. It needs no vectors and works on any keys, followed or set by hand. Reduce Range sets the range; keys outside it stay."
 
 #define kFollowParamReduceTolerance "reduceTolerance"
 #define kFollowParamReduceToleranceLabel "Reduce Tolerance"
 #define kFollowParamReduceToleranceHint "How far, in pixels, Reduce Keyframes may move any point of a shape on any frame."
+
+#define kFollowParamReduceRange "reduceRange"
+#define kFollowParamReduceRangeLabel "Reduce Range"
+#define kFollowParamReduceRangeHint "The keys Reduce Keyframes works on: all of them, or those from Reduce In to Reduce Out."
+
+#define kFollowParamReduceIn "reduceIn"
+#define kFollowParamReduceInLabel "Reduce In"
+#define kFollowParamReduceInHint "The first frame whose keys Reduce Keyframes may remove when Reduce Range is Frame Range."
+
+#define kFollowParamReduceOut "reduceOut"
+#define kFollowParamReduceOutLabel "Reduce Out"
+#define kFollowParamReduceOutHint "The last frame whose keys Reduce Keyframes may remove when Reduce Range is Frame Range."
 
 #define kFollowParamConfidenceThreshold "followConfidenceThreshold"
 #define kFollowParamConfidenceThresholdLabel "Follow Confidence Threshold"
@@ -122,6 +135,11 @@ namespace {
 enum RangeEnum {
     eRangeProject,
     eRangeInOut
+};
+
+enum ReduceRangeEnum {
+    eReduceRangeAllKeyframes,
+    eReduceRangeFrameRange
 };
 
 enum class FollowSpan {
@@ -171,6 +189,9 @@ public:
     KnobIntPtr out;
     KnobButtonPtr reduceKeyframes;
     KnobDoublePtr reduceTolerance;
+    KnobChoicePtr reduceRange;
+    KnobIntPtr reduceIn;
+    KnobIntPtr reduceOut;
     KnobDoublePtr confidenceThreshold;
     std::vector<KnobIWPtr> viewerKnobs;
     QMetaObject::Connection inputConnection;
@@ -235,6 +256,29 @@ public:
         host->getApp()->getFrameRange(&projectFirst, &projectLast);
         *first = (int)projectFirst;
         *last = (int)projectLast;
+    }
+
+    void refreshRangeKnobs()
+    {
+        const bool inOut = range->getValue() == eRangeInOut;
+        in->setAllDimensionsEnabled(inOut);
+        out->setAllDimensionsEnabled(inOut);
+        const bool frameRange = reduceRange->getValue() == eReduceRangeFrameRange;
+        reduceIn->setSecret(!frameRange);
+        reduceOut->setSecret(!frameRange);
+    }
+
+    void reduceBounds(int* first,
+                      int* last) const
+    {
+        if (reduceRange->getValue() == eReduceRangeFrameRange) {
+            *first = reduceIn->getValue();
+            *last = reduceOut->getValue();
+
+            return;
+        }
+        *first = std::numeric_limits<int>::min();
+        *last = std::numeric_limits<int>::max();
     }
 
     void follow(const VectorFollowParams& shapes,
@@ -351,7 +395,12 @@ VectorFollowControls::Imp::reduce(const std::list<RotoDrawableItemPtr>& items)
     }
     int first;
     int last;
-    rangeBounds(&first, &last);
+    reduceBounds(&first, &last);
+    if (first > last) {
+        warn(tr("Reduce In must not be after Reduce Out.").toStdString());
+
+        return;
+    }
     const std::vector<RotoReducedItem> reduced = reduceRotoKeyframes(node->getCurveContext(), items, first, last, reduceTolerance->getValue());
     std::size_t keys = 0;
     for (const RotoReducedItem& item : reduced) {
@@ -525,6 +574,33 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page,
     reducePage->addKnob(reduceTolerance);
     _imp->reduceTolerance = reduceTolerance;
 
+    KnobChoicePtr reduceRange = AppManager::createKnob<KnobChoice>(host, std::string(kFollowParamReduceRangeLabel));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("allKeyframes", "All Keyframes", "Every key of the selected shapes."));
+        options.push_back(ChoiceOption("frameRange", "Frame Range", "The keys from Reduce In to Reduce Out."));
+        reduceRange->populateChoices(options);
+    }
+    reduceRange->setAddNewLine(false);
+    setUp(reduceRange, kFollowParamReduceRange, kFollowParamReduceRangeHint);
+    reducePage->addKnob(reduceRange);
+    _imp->reduceRange = reduceRange;
+
+    KnobIntPtr reduceIn = AppManager::createKnob<KnobInt>(host, std::string(kFollowParamReduceInLabel));
+    reduceIn->setDefaultValue(1);
+    reduceIn->setAddNewLine(false);
+    reduceIn->setSecretByDefault(true);
+    setUp(reduceIn, kFollowParamReduceIn, kFollowParamReduceInHint);
+    reducePage->addKnob(reduceIn);
+    _imp->reduceIn = reduceIn;
+
+    KnobIntPtr reduceOut = AppManager::createKnob<KnobInt>(host, std::string(kFollowParamReduceOutLabel));
+    reduceOut->setDefaultValue(100);
+    reduceOut->setSecretByDefault(true);
+    setUp(reduceOut, kFollowParamReduceOut, kFollowParamReduceOutHint);
+    reducePage->addKnob(reduceOut);
+    _imp->reduceOut = reduceOut;
+
     if (node) {
         Imp* imp = _imp.get();
         _imp->inputConnection = QObject::connect(node.get(), &Node::inputChanged, host, [imp](int inputNb) {
@@ -540,10 +616,8 @@ bool
 VectorFollowControls::onKnobChanged(KnobI* k)
 {
     Imp& imp = *_imp;
-    if (k == imp.range.get()) {
-        const bool inOut = imp.range->getValue() == eRangeInOut;
-        imp.in->setAllDimensionsEnabled(inOut);
-        imp.out->setAllDimensionsEnabled(inOut);
+    if ((k == imp.range.get()) || (k == imp.reduceRange.get())) {
+        imp.refreshRangeKnobs();
 
         return true;
     }
@@ -573,12 +647,18 @@ VectorFollowControls::onKnobChanged(KnobI* k)
     } else if (k == imp.rangeForward.get()) {
         span = FollowSpan::eWholeRange;
     } else if (k != imp.forwardOne.get()) {
-        return k == imp.forwardLayer.get() || k == imp.backwardLayer.get() || k == imp.confidenceLayer.get() || k == imp.model.get() || k == imp.reduceTolerance.get() || k == imp.confidenceThreshold.get() || k == imp.in.get() || k == imp.out.get();
+        return k == imp.forwardLayer.get() || k == imp.backwardLayer.get() || k == imp.confidenceLayer.get() || k == imp.model.get() || k == imp.reduceTolerance.get() || k == imp.reduceIn.get() || k == imp.reduceOut.get() || k == imp.confidenceThreshold.get() || k == imp.in.get() || k == imp.out.get();
     }
 
     imp.follow(imp.selection(), mode, direction, span);
 
     return true;
+}
+
+void
+VectorFollowControls::onKnobsLoaded()
+{
+    _imp->refreshRangeKnobs();
 }
 
 NodePtr

@@ -572,7 +572,41 @@ TEST_F(PyVectorFollowTest, BlendBetweenKeysFillsBetweenTheKeysInTheFollowRange)
     EXPECT_TRUE(isCleanVectorFollowReport(report)) << formatVectorFollowReport(report);
 }
 
-TEST_F(PyVectorFollowTest, ReduceKeyframesWorksOverTheFollowRangeWithNoVectors)
+TEST_F(PyVectorFollowTest, ReduceKeyframesWithFrameRangeOnlyRemovesKeysFromReduceInToReduceOut)
+{
+    for (int frame = 6; frame <= 20; ++frame) {
+        _bezier->setKeyframe(frame);
+        for (int i = 0; i < 4; ++i) {
+            _bezier->movePointByIndex(i, frame, 1., 0.5);
+        }
+    }
+    const std::set<double> before = keyTimes();
+    KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(_roto->getKnobByName("reduceKeyframes"));
+    KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("reduceRange"));
+    KnobIntPtr inKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("reduceIn"));
+    KnobIntPtr outKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("reduceOut"));
+    ASSERT_TRUE(button && range && inKnob && outKnob);
+    EXPECT_EQ(range->getValue(), 0);
+    EXPECT_TRUE(inKnob->getIsSecret());
+    EXPECT_TRUE(outKnob->getIsSecret());
+    range->setValue(1, ViewSpec::all(), 0);
+    EXPECT_FALSE(inKnob->getIsSecret());
+    EXPECT_FALSE(outKnob->getIsSecret());
+    inKnob->setValue(10, ViewSpec::all(), 0);
+    outKnob->setValue(15, ViewSpec::all(), 0);
+    _roto->getCurveContext()->select(_bezier, RotoItem::eSelectionReasonSettingsPanel);
+    button->trigger();
+
+    const std::set<double> keys = keyTimes();
+    EXPECT_LT(keys.size(), before.size());
+    for (double frame : before) {
+        if ((frame < 10.) || (frame > 15.)) {
+            EXPECT_EQ(keys.count(frame), 1u) << frame;
+        }
+    }
+}
+
+TEST_F(PyVectorFollowTest, ReduceKeyframesWithAllKeyframesReducesEveryKey)
 {
     for (int frame = 6; frame <= 20; ++frame) {
         _bezier->setKeyframe(frame);
@@ -581,22 +615,28 @@ TEST_F(PyVectorFollowTest, ReduceKeyframesWorksOverTheFollowRangeWithNoVectors)
         }
     }
     KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(_roto->getKnobByName("reduceKeyframes"));
-    KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followRange"));
-    KnobIntPtr inKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followIn"));
-    KnobIntPtr outKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followOut"));
+    KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("reduceRange"));
+    KnobIntPtr inKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("reduceIn"));
+    KnobIntPtr outKnob = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("reduceOut"));
     ASSERT_TRUE(button && range && inKnob && outKnob);
     range->setValue(1, ViewSpec::all(), 0);
     inKnob->setValue(10, ViewSpec::all(), 0);
-    outKnob->setValue(20, ViewSpec::all(), 0);
+    outKnob->setValue(15, ViewSpec::all(), 0);
+    range->setValue(0, ViewSpec::all(), 0);
+    EXPECT_TRUE(inKnob->getIsSecret());
+    EXPECT_TRUE(outKnob->getIsSecret());
     _roto->getCurveContext()->select(_bezier, RotoItem::eSelectionReasonSettingsPanel);
     button->trigger();
 
     const std::set<double> keys = keyTimes();
-    EXPECT_LT(keys.size(), 16u);
-    for (int frame = 5; frame < 10; ++frame) {
-        EXPECT_EQ(keys.count(frame), 1u) << frame;
+    std::size_t lowKeys = 0;
+    std::size_t highKeys = 0;
+    for (double frame : keys) {
+        lowKeys += (frame > 5.) && (frame < 10.);
+        highKeys += (frame > 15.) && (frame < 20.);
     }
-    EXPECT_EQ(keys.count(20.), 1u);
+    EXPECT_LT(lowKeys, 4u);
+    EXPECT_LT(highKeys, 4u);
 }
 
 TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsControlsOnlyWhileConnected)
@@ -667,16 +707,30 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsControlsOnlyW
     EXPECT_EQ(chosen.confidence, kVectorGeneratorConfidenceLayerID);
 
     // Reduction needs no vectors, so it stays on the Shape tab whether or not the input is connected.
-    for (const char* name : { "reduceKeyframes", "reduceTolerance" }) {
+    const struct
+    {
+        const char* name;
+        const char* label;
+    } reduceKnobs[] = {
+        { "reduceKeyframes", "Reduce Keyframes" },
+        { "reduceTolerance", "Reduce Tolerance" },
+        { "reduceRange", "Reduce Range" },
+        { "reduceIn", "Reduce In" },
+        { "reduceOut", "Reduce Out" },
+    };
+    for (const auto& expected : reduceKnobs) {
+        const char* name = expected.name;
         KnobIPtr knob = _roto->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;
+        EXPECT_EQ(knob->getLabel(), expected.label) << name;
         EXPECT_FALSE(_roto->getEffectInstance()->isInViewerUIKnob(knob)) << name;
-        EXPECT_FALSE(knob->getIsSecret()) << name;
         EXPECT_NE(knob->getParentKnob(), group) << name;
         KnobPagePtr page = knob->getTopLevelPage();
         ASSERT_TRUE(bool(page)) << name;
         EXPECT_EQ(page->getName(), "Shape") << name;
     }
+    EXPECT_FALSE(_roto->getKnobByName("reduceRange")->isNewLineActivated());
+    EXPECT_FALSE(_roto->getKnobByName("reduceIn")->isNewLineActivated());
 
     expectViewerSecret(true);
     EXPECT_FALSE(follow->getVectorsSource());
@@ -697,7 +751,7 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsControlsOnlyW
     _roto->disconnectInput(vectors);
     expectViewerSecret(true);
     EXPECT_FALSE(follow->getVectorsSource());
-    for (const char* name : { "reduceKeyframes", "reduceTolerance" }) {
+    for (const char* name : { "reduceKeyframes", "reduceTolerance", "reduceRange" }) {
         EXPECT_FALSE(_roto->getKnobByName(name)->getIsSecret()) << name;
     }
 }

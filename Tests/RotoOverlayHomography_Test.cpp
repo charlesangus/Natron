@@ -42,11 +42,15 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
 #include "Engine/Transform.h"
 #include "Engine/UndoGesture.h"
@@ -326,4 +330,63 @@ TEST_F(RotoOverlayHomographyTest, RubberBandSelectsThePointsItIsDrawnOver)
 
     ASSERT_EQ(hits.size(), 1u);
     EXPECT_EQ(hits.front().first, cpAt(0));
+}
+
+TEST_F(RotoOverlayHomographyTest, StrokeIsDrawnAndBoundedThroughTheProjectedPoints)
+{
+    RotoContextPtr context = _node->getRotoContext();
+    RotoLayerPtr layer = context->getOrCreateBaseLayer();
+    ASSERT_NE(layer, nullptr);
+    RotoStrokeItemPtr stroke(new RotoStrokeItem(eRotoStrokeTypeSolid, context, "stroke", RotoLayerPtr()));
+    stroke->createNodes();
+    context->addItem(layer, 0, stroke, RotoItem::eSelectionReasonOther);
+    std::list<Point> drawnPoints;
+    for (int i = 0; i < 12; ++i) {
+        const double x = 60. + 8. * i;
+        const double y = 80. + 5. * i;
+        stroke->appendPoint(i == 0, RotoPoint(x, y, 1., i));
+        drawnPoints.push_back(project(_matrix, x, y));
+    }
+    stroke->setStrokeFinished();
+    stroke->setExtraMatrix(true, _time, _matrix);
+
+    std::list<std::list<std::pair<Point, double>>> strokes;
+    RectD evaluatedBox;
+    stroke->evaluateStroke(0, _time, &strokes, &evaluatedBox);
+    ASSERT_EQ(strokes.size(), 1u);
+    const std::list<std::pair<Point, double>>& samples = strokes.front();
+    ASSERT_FALSE(samples.empty());
+
+    double l = std::numeric_limits<double>::infinity(), r = -l, b = l, t = -l;
+    for (const Point& expected : drawnPoints) {
+        bool found = false;
+        for (const std::pair<Point, double>& sample : samples) {
+            if ((std::abs(sample.first.x - expected.x) < kTolerance) && (std::abs(sample.first.y - expected.y) < kTolerance)) {
+                found = true;
+                break;
+            }
+        }
+        EXPECT_TRUE(found) << "no sample at (" << expected.x << ", " << expected.y << ")";
+        l = std::min(l, expected.x);
+        r = std::max(r, expected.x);
+        b = std::min(b, expected.y);
+        t = std::max(t, expected.y);
+    }
+
+    // The bounds pad the stroke by its brush radius on every side.
+    const double padding = stroke->getBrushSizeKnob()->getValueAtTime(_time) / 2. + 2.;
+    const RectD boxes[2] = { stroke->getBoundingBox(_time), evaluatedBox };
+    for (int k = 0; k < 2; ++k) {
+        const RectD& box = boxes[k];
+        EXPECT_LE(box.x1, l) << "box " << k;
+        EXPECT_GE(box.x1, l - padding) << "box " << k;
+        EXPECT_GE(box.x2, r) << "box " << k;
+        EXPECT_LE(box.x2, r + padding) << "box " << k;
+        EXPECT_LE(box.y1, b) << "box " << k;
+        EXPECT_GE(box.y1, b - padding) << "box " << k;
+        EXPECT_GE(box.y2, t) << "box " << k;
+        EXPECT_LE(box.y2, t + padding) << "box " << k;
+    }
+
+    context->removeItem(stroke, RotoItem::eSelectionReasonOther);
 }

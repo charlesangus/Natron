@@ -64,8 +64,11 @@ public:
 
     virtual ~VectorFollowControls();
 
-    // The Follow Vectors group goes on page, Reduce Keyframes and Reduce Tolerance on reducePage.
+    // The Follow Vectors group goes on page, Reduce Keyframes and its tolerance and range on reducePage.
     void createKnobs(const KnobPagePtr& page, const KnobPagePtr& reducePage);
+
+    // Shows and enables the range knobs as the loaded range choices ask.
+    void onKnobsLoaded();
 
     // True when k is one of this group's knobs.
     bool onKnobChanged(KnobI* k);

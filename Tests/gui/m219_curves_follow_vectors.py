@@ -313,6 +313,7 @@ try:
         before = snapshot(bez, frames)
         keys_before = keys_of(bez)
         tolerance = param(scene.roto, "reduceTolerance").getValue()
+        set_choice(scene.roto, "reduceRange", "allKeyframes")
         yield from disconnect_vectors(scene.roto)
         select_shapes([bez])
         press(scene.roto, "reduceKeyframes")

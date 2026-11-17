@@ -1,25 +1,3 @@
-"""GUI check of how the node graph shows a node's error or warning: a small severity badge at the
-node's top-right corner, a 2 px border in the severity colour and a one-line caption under the
-node with the first line of the message, elided to twice the node's width. The big centred
-"ERROR" / "WARNING" word over the node body must be gone.
-
-Graph: a Read of a missing file (error), Constant -> SlitScan with a retime gain spanning more
-than 64 frames (warning), and a Read of a missing file whose long name holds a newline (a long,
-multi-line error). The Viewer is wired to each in turn so that it renders it and the node posts
-its message.
-
-The message items are found among the graph view's items by their data(0) role
-("nodeMessageBadge", "nodeMessageBorder", "nodeMessageCaption"); data(1) holds the severity
-colour each was drawn in. Each node's items are the ones nearest its centre. Zoomed out past the
-graph's low level of detail, the caption must leave no pixel of its colour under the node while
-the badge keeps some.
-
-Screenshots (graph viewport crops): m452_error.png, m452_warning.png, m452_long_message.png,
-m452_zoomed_out.png.
-
-Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
-(default build/gui-test-out/). Exit status 0 only if every check passed.
-"""
 import os
 import sys
 import traceback
@@ -35,11 +13,13 @@ ROLES = ("nodeMessageBadge", "nodeMessageBorder", "nodeMessageCaption")
 COLOUR_TOLERANCE = 40
 SHOT_ZOOM = 1.5
 LOW_DETAIL_FACTOR = 0.8
+DRAG_STEPS = 6
+BAND_MARGIN = 6.0
 
 try:
-    from PySide6.QtCore import QPointF, QRectF
-    from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QEvent, QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QMouseEvent
+    from PySide6.QtWidgets import QApplication, QMainWindow
 
     import guitest as gt
     from guitest import check, plugin_problem, report, require, run, section, widgets_of
@@ -88,7 +68,6 @@ try:
         return str(value) if value is not None else None
 
     def message_items(node):
-        """The message items nearest node's centre, as a dict role -> item."""
         cx, cy = node_centre(node)
         best = {}
         for item in graph_items():
@@ -116,7 +95,6 @@ try:
             return ""
 
     def centred_tags():
-        """Visible text items reading ERROR or WARNING: the old overlay."""
         found = []
         for item in graph_items():
             try:
@@ -155,7 +133,6 @@ try:
         report(("SHOT " if crop.save(path) else "NOTE could not save ") + path)
 
     def count_colour(img, scene_rect, colour_name):
-        """Pixels of the viewport grab within scene_rect close to colour_name."""
         view = graph_view()
         target = QColor(colour_name)
         tl = view.mapFromScene(scene_rect.topLeft())
@@ -172,6 +149,31 @@ try:
                     count += 1
         return count
 
+    def activate_main_window():
+        for w in QApplication.topLevelWidgets():
+            if isinstance(w, QMainWindow) and w.isVisible():
+                w.activateWindow()
+                w.raise_()
+                return hold(w)
+        return None
+
+    def send_mouse(etype, scene_pos, button, buttons):
+        view = graph_view()
+        pos = view.mapFromScene(scene_pos)
+        QApplication.sendEvent(view.viewport(), QMouseEvent(etype, QPointF(pos), button, buttons, Qt.NoModifier))
+        QApplication.processEvents()
+
+    def rubber_band(scene_rect):
+        start, end = scene_rect.topLeft(), scene_rect.bottomRight()
+        send_mouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+        for i in range(1, DRAG_STEPS + 1):
+            f = i / float(DRAG_STEPS)
+            send_mouse(QEvent.MouseMove, start + (end - start) * f, Qt.NoButton, Qt.LeftButton)
+        send_mouse(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
+
+    def selected_names():
+        return sorted(n.getScriptName() for n in app.getSelectedNodes())
+
     def show_on_viewer(viewer, node):
         if viewer.getInput(0) is not None:
             viewer.disconnectInput(0)
@@ -181,7 +183,7 @@ try:
         items = message_items(node)
         message = message_of(node)
         report("NOTE %s: message %r" % (label, message))
-        first_line = message.strip().split("\n")[0].strip()
+        first_line = message.split("\n")[0].strip()
         if multi_line:
             check("\n" in message.strip(), "%s: the message spans several lines" % label)
         for role in ROLES:
@@ -274,6 +276,33 @@ try:
         view_on(read_long, SHOT_ZOOM)
         yield ("sleep", SETTLE_MS)
         save_crop(read_long, "m452_long_message.png")
+
+        section("rubber band")
+        win = activate_main_window()
+        ok = yield ("until", lambda: win is not None and win.isActiveWindow(), 10.0)
+        check(ok, "rubber band: the main window is active")
+        items = message_items(read_long)
+        if check("nodeMessageCaption" in items, "rubber band: the long-message node has a caption"):
+            view_on(read_long, SHOT_ZOOM)
+            yield ("sleep", SETTLE_MS)
+            name = read_long.getScriptName()
+            x, y, w, h = node_box(read_long)
+            caption_rect = QRectF(items["nodeMessageCaption"].sceneBoundingRect())
+            check(caption_rect.top() > y + h + 3.0, "rubber band: the caption leaves room under the body (top %g, body bottom %g)" % (caption_rect.top(), y + h))
+            m = BAND_MARGIN
+            body_only = QRectF(QPointF(x - m, y - m), QPointF(x + w + m, y + h + 2.5))
+            app.clearSelection()
+            rubber_band(body_only)
+            yield ("sleep", SETTLE_MS)
+            got = selected_names()
+            check(name not in got, "rubber band: enclosing the body without its caption leaves the node unselected (got %r)" % got)
+            whole = QRectF(QPointF(x, y), QPointF(x + w, y + h)).united(caption_rect).adjusted(-m, -m, m, m)
+            app.clearSelection()
+            rubber_band(whole)
+            yield ("sleep", SETTLE_MS)
+            got = selected_names()
+            check(name in got, "rubber band: enclosing the body and its caption selects the node (got %r)" % got)
+            app.clearSelection()
 
         section("zoomed out")
         items = message_items(read_long)

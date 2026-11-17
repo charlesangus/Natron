@@ -2339,7 +2339,7 @@ NodeGui::intersects(const QRectF & rect) const
 {
     QRectF mapped = mapRectFromScene(rect);
 
-    return boundingRect().intersects(mapped);
+    return withMessageCaption(boundingRect()).intersects(mapped);
 }
 
 QPainterPath
@@ -2437,10 +2437,8 @@ NodeGui::refreshEdgesVisility()
 QRectF
 NodeGui::boundingRectWithEdges() const
 {
-    QRectF ret;
-    QRectF bbox = boundingRect();
+    QRectF ret = sceneFootprint();
 
-    ret = mapToScene(bbox).boundingRect();
     for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
         if ( !(*it)->hasSource() ) {
             ret = ret.united( (*it)->mapToScene( (*it)->boundingRect() ).boundingRect() );
@@ -2619,14 +2617,21 @@ NodeGui::refreshMessageGeometry(const QRectF& bbox)
 }
 
 QRectF
-NodeGui::sceneFootprint() const
+NodeGui::withMessageCaption(const QRectF& localRect) const
 {
-    QRectF rect = mapToScene(boundingRect()).boundingRect();
-    if (_messageCaption && _messageCaption->isVisible()) {
-        rect |= _messageCaption->sceneBoundingRect();
+    // isVisible() rather than the level of detail: the caption is only skipped when painted
+    // zoomed out, and a node's footprint must not change with the zoom.
+    if (!_messageCaption || !_messageCaption->isVisible()) {
+        return localRect;
     }
 
-    return rect;
+    return localRect | mapRectFromItem(_messageCaption, _messageCaption->boundingRect());
+}
+
+QRectF
+NodeGui::sceneFootprint() const
+{
+    return mapToScene(withMessageCaption(boundingRect())).boundingRect();
 }
 
 bool
@@ -3037,7 +3042,7 @@ NodeGui::onPersistentMessageChanged()
             _messageBorder->setPen(borderPen);
             _messageBorder->setData(1, colorName);
 
-            _messageCaptionLine = bareMessage.trimmed().section(QLatin1Char('\n'), 0, 0).trimmed();
+            _messageCaptionLine = bareMessage.section(QLatin1Char('\n'), 0, 0).trimmed();
             _messageCaption->setBrush(color);
             _messageCaption->setToolTip(message);
             _messageCaption->setData(1, colorName);
@@ -4436,6 +4441,9 @@ NodeGuiMessageBadge::setSeverity(bool isError,
 {
     if ((isError == _isError) && (fill == _fill)) {
         return;
+    }
+    if (isError != _isError) {
+        prepareGeometryChange();
     }
     _isError = isError;
     _fill = fill;

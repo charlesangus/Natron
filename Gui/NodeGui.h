@@ -193,10 +193,6 @@ private:
     std::vector<QPainterPath> _partsWithoutText;
 };
 
-/**
- * @brief The error or warning badge at a node's top-right corner: a disc (error) or a triangle
- * (warning) in the severity colour, with an exclamation mark. Drawn at every level of detail.
- **/
 class NodeGuiMessageBadge
     : public QGraphicsItem {
 public:
@@ -376,6 +372,11 @@ public:
        hit-testing use this so they reach past the border rather than stopping at the node
        it wraps.*/
     QRectF outlineBoundingRect() const;
+
+    /*The message caption hangs below the body, outside boundingRect(), so that edges keep
+       attaching to the body; collision, placement and selection go through these instead.*/
+    QRectF withMessageCaption(const QRectF& localRect) const;
+    QRectF sceneFootprint() const;
 
     /*this function does the painting, using QPainter, you can overload it to change the aspect of
        the node.*/
@@ -908,12 +909,7 @@ private:
 
     void refreshUserColorBorderGeometry();
 
-    // Places the message badge, border and caption around the body rect bbox, re-eliding the
-    // caption to the body's width.
     void refreshMessageGeometry(const QRectF& bbox);
-
-    // The node's scene rect including its message caption, which hangs below the body.
-    QRectF sceneFootprint() const;
 
     void refreshNameItemTextColor();
 
@@ -967,7 +963,6 @@ private:
     NodeGuiMessageBadge* _messageBadge;
     QGraphicsRectItem* _messageBorder;
     QGraphicsSimpleTextItem* _messageCaption;
-    // The first line of the error or warning shown, before eliding.
     QString _messageCaptionLine;
     NodeGraphRectItem* _stateIndicator;
     bool _stateIndicatorSelected; //< the selection refreshStateIndicator() last showed

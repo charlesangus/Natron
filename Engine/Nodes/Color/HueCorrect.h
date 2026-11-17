@@ -124,9 +124,7 @@ struct HueCorrectOp {
                        "The 'Luminance Mix' parameter may be used to restore partially or fully the original luminance (luminance is computed using the 'Luminance Math' parameter).\n"
                        "\n"
                        "Saturation is chroma divided by the largest of R, G and B, and no value is clamped unless "
-                       "Clamp Black or Clamp White is on, so HDR colours are scaled rather than clipped.\n"
-                       "\n"
-                       "See also: https://web.archive.org/web/20220627022150/http://www.opticalenquiry.com/nuke/index.php?title=HueCorrect",
+                       "Clamp Black or Clamp White is on, so HDR colours are scaled rather than clipped.",
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_HUECORRECT,
         .minorVersion = 0,

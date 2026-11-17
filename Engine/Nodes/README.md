@@ -36,7 +36,7 @@ Every node, whatever kind of data it produces or consumes, is an
 doesn't -- render deep data, evaluate a scene -- gets a capability virtual
 added to `EffectInstance` (in the shape of `renderDeep()` alongside `render()`,
 once deep rendering lands), not a new parallel base class in the shape of
-Nuke's `Iop`/`DeepOp`/`GeoOp` split. `EffectInstance` is where the knob
+separate image, deep and geometry operator hierarchies. `EffectInstance` is where the knob
 system, hashing, undo/redo, serialization, and the render scheduler all
 attach; a second hierarchy would have to either duplicate all of that or
 awkwardly share it, for no isolation benefit. If a task seems to call for a

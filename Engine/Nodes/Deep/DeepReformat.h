@@ -46,8 +46,8 @@ inline constexpr InputSpec kDeepReformatInputs[] = {
  * @brief Repositions the deep input within a new output format, without filtering it: the input
  * is translated by a whole number of pixels and every sample is copied across untouched -- its
  * depths, its channels, and the order and count of the samples of a pixel all preserved -- so
- * the output is as tidy as the input and a round trip through this node is exact. This is Nuke's
- * Reformat with its resize type set to none.
+ * the output is as tidy as the input and a round trip through this node is exact. This is a Reformat
+ * with its resize type set to none.
  *
  * The new format is the one Format names, or Custom Size's width and height when Use Custom Size
  * is on. With Centre on, the input's format is placed in the middle of the new one, the offset

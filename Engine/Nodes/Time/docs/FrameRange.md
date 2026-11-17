@@ -22,17 +22,8 @@ range.
 | `before` | Black | What frames before the range show |
 | `after` | Black | What frames after the range show |
 
-Port audit (every OFX and Nuke control):
-
-| OFX (net.sf.openfx.FrameRange) | Nuke (FrameRange) | Natron knob | Default | Status |
-|---|---|---|---|---|
-| `frameRange` (2D int, default 1, 1) | `first_frame` (1), `last_frame` (100) | `firstFrame`, `lastFrame` | 1, 100 | mapped, Nuke's split and defaults |
-| `reset` | `reset` | `reset` | | mapped |
-| `before` | (none) | `before` | Black | mapped |
-| `after` | (none) | `after` | Black | mapped |
-
 Differences: OFX sets the range from the input when it is first connected; here the range keeps
-its defaults until `reset`, as in Nuke. OFX's Bounce option shares Loop's id, so it never bounced;
+its defaults until `reset`. OFX's Bounce option shares Loop's id, so it never bounced;
 here it has its own id.
 
 Tolerance:

@@ -33,23 +33,6 @@ Count render on the CPU. The output frame range is the input's.
 | `outputCount` | off | Writes the number of frames read to alpha |
 | `channels`, `maskInvert`, `mix` | RGBA, off, 1 | Stage knobs |
 
-Port audit (every OFX and Nuke control):
-
-| OFX (net.sf.openfx.FrameBlend) | Nuke (FrameBlend) | Natron knob | Default | Status |
-|---|---|---|---|---|
-| `frameRange` (2 ints) | `startframe`, `endframe` | `startFrame`, `endFrame` | -5, 0 | mapped; two knobs |
-| `absolute` | `userange` (Custom) | `absolute` | off | mapped |
-| (none) | `numframes` | `startFrame` | -5 | mapped: n frames is `startFrame = 1 - n`, `endFrame = 0` |
-| `inputRange` | `getinputrange` | `inputRange` | | mapped |
-| `frameInterval` | (none) | `frameInterval` | 1 | mapped |
-| `operation` | (none) | `operation` | Average | mapped; all six kept |
-| `decay` | (none) | `decay` | 0 | mapped |
-| `outputCount` | output Image count to | `outputCount` | off | mapped; to alpha only |
-| `processR/G/B/A` | `channels` | `channels` | RGBA | mapped |
-| FgM input (`inputmask`) | Foreground matte | Mask input | | mapped to the host mask |
-| `maskApply`, `maskInvert`, `mix` | `mask`, `invert_mask`, `mix` | Mask input, `maskInvert`, `mix` | | mapped |
-| (none) | `inject`, `fringe` | (none) | | N/A: no native node has them |
-
 Differences: OFX reads no frame when the range is shorter than the interval; here `endFrame` is
 always read. The fold starts from the oldest frame rather than black, so Product decays one step
 less than OFX when `decay` is not 0. OFX lists frames it never reads in its frames needed; here

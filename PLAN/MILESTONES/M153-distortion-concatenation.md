@@ -105,3 +105,6 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
   - D2: maps are built per window at render or RoI time, not in `tryConcatenateTransforms`, because SplineWarp fields depend on the window. Concatenation decides from knobs only.
   - D3: consumers opt in. OFX and unconverted consumers never receive a map chain, and `cat` is untouched for matrix-only chains.
   - D4: the consumer's filter and clamp apply once, with J composed by the chain rule, as in matrix concatenation.
+- 2026-11-17 — **GPU phase in M153 (user):** map chains sample on the GPU inside this milestone, not as a follow-up; a Phase 153.4 is being drafted.
+- 2026-11-17 — **Waits for M433 and M179 (user):** M153 reuses M433 - Overlay Point Maps' per-node maps, and its RoI task (P1.T3) builds on M179 - Render Graph Continuation's incremental request pass.
+- 2026-11-17 — **Image-driven providers are a follow-up on M179 (user):** IDistort, STMap and IWarp as chain providers need M179's probe → extend → continue, since their source footprint is known only after their UV image renders. They go to /cat-plan as a new milestone; in M153 they are consumers only.

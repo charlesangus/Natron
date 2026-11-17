@@ -348,8 +348,7 @@ protected:
     {
         gNextPrimId = 1;
         if (GetParam() == Backend::Cpu) {
-            _cpu.reset(new WavefrontCpu());
-            _executor = _cpu.get();
+            resetExecutor();
 
             return;
         }
@@ -365,9 +364,7 @@ protected:
         }
         _registry.reset(new gpu::GpuKernelRegistry(*_device));
         _pool.reset(new gpu::GpuBufferPool(*_device));
-        // A device film without a runtime hold counts as released, so the colour could not stay on the GPU.
-        _gpu.reset(new WavefrontGpu(*_registry, *_pool, std::make_shared<int>(0)));
-        _executor = _gpu.get();
+        resetExecutor();
 #else
         std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU executor\n");
 #endif
@@ -393,10 +390,33 @@ protected:
         return _executor != nullptr;
     }
 
+    // A fresh executor, holding nothing of an earlier scene.
+    void resetExecutor()
+    {
+        _executor = nullptr;
+        if (GetParam() == Backend::Cpu) {
+            _cpu.reset(new WavefrontCpu());
+            _executor = _cpu.get();
+
+            return;
+        }
+#ifdef NATRON_HAVE_GPU
+        _device->waitIdle();
+        _gpu.reset();
+        // A device film without a runtime hold counts as released, so the colour could not stay on the GPU.
+        _gpu.reset(new WavefrontGpu(*_registry, *_pool, std::make_shared<int>(0)));
+        _executor = _gpu.get();
+#endif
+    }
+
     // Every sample of the frame, filtered, as the render pass draws them.
     std::vector<GfVec4f> render(const UtilityScene& scene,
                                 WavefrontFrame frame)
     {
+        // An executor keeps what it built for a snapshot by the snapshot's version, and two scenes built
+        // the same way count to the same version, so each render starts from a fresh one.
+        resetExecutor();
+
         ColorFilm film(GetParam() == Backend::GpuFilm);
         const UtilityScene::Snapshot snapshot = scene.snapshot();
         const std::atomic<bool> stop(false);
@@ -623,7 +643,8 @@ TEST_P(NatronUtilityReflect, ARoughReflectionOfTheDomeConvergesToItsIntegral)
         expected += f * g * d / 4. * 2. * M_PI * std::sin(theta) * (0.5 * M_PI) / steps;
     }
 
-    const std::vector<GfVec4f> colors = render(scene, makeFrame(16));
+    // At 32 x 32 samples a pixel's noise is about 1% of the integral.
+    const std::vector<GfVec4f> colors = render(scene, makeFrame(32));
 
     ASSERT_EQ(static_cast<std::size_t>(kSize * kSize), colors.size());
 
@@ -743,6 +764,8 @@ TEST_P(NatronUtilityReflect, AHalfOpaqueRedPaneCastsAnUntintedHalfShadow)
 
     sun.type = UtilityLightDesc::eTypeDistant;
     sun.transform.SetRotate(GfRotation(GfVec3d(0., 1., 0.), 45.));
+    // A sun of no angular size gives its emission as irradiance, from one direction for every pixel.
+    sun.angleDegrees = 0.f;
 
     // The pane, at a height of 10, casts its shadow 10 across towards the light's side.
     const GfVec3d toLight = sun.transform.TransformDir(GfVec3d(0., 0., 1.));

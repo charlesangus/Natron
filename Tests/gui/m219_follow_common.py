@@ -243,10 +243,13 @@ def shape_tree(label):
     return None
 
 def tree_item(tree, label):
+    """The row's wrapper must not outlive the row. Shiboken cannot see a QTreeWidgetItem's deletion, so a
+    wrapper kept past it stays registered at the freed address and is handed back for whatever object
+    lands there next, such as a Param from getParam()."""
     it = QTreeWidgetItemIterator(tree)
     while it.value():
         if it.value().text(0) == label:
-            return keep(it.value())
+            return it.value()
         it += 1
     return None
 

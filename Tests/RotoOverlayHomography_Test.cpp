@@ -79,8 +79,8 @@ perspectiveMatrix()
     m.d = -0.03;
     m.e = 0.95;
     m.f = -7.;
-    m.g = 0.012;
-    m.h = 0.008;
+    m.g = 0.001;
+    m.h = 0.001;
     m.i = 1.;
 
     return m;
@@ -151,7 +151,7 @@ protected:
         RotoContextPtr context = node->getRotoContext();
         ASSERT_NE(context, nullptr);
         _time = context->getTimelineCurrentTime();
-        _square = context->makeSquare(10., 20., 40., _time);
+        _square = context->makeSquare(100., 140., 80., _time);
         ASSERT_NE(_square, nullptr);
         ASSERT_GE(_square->getControlPointsCount(), 4);
         // A square's corners have no handles; smoothing gives each point two.
@@ -357,7 +357,7 @@ TEST_F(RotoOverlayHomographyTest, PressOnADrawnHandleDragsOnlyThatHandle)
 {
     const int index = 2;
     const Point stored = storedPoint(*cpAt(index), ePartPosition, _time);
-    const double reach = 20.;
+    const double reach = 40.;
     _square->setPointAtIndex(false, index, _time, stored.x, stored.y, stored.x - reach, stored.y, stored.x + reach, stored.y);
     const Point pos = shown(index, ePartPosition);
     const Point right = shown(index, ePartRight);

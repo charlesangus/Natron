@@ -155,8 +155,9 @@ try:
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
         tree = select_shapes([bez])
-        item = tree_item(tree, bez.getLabel())
         yield from go_to(START)
+        item = tree_item(tree, bez.getLabel())
+        require(item is not None, "the panel lists %s" % bez.getLabel())
         seen = {"labels": [], "enabled": False, "triggered": False, "fresh": False}
 
         def pick():
@@ -178,6 +179,7 @@ try:
         QTimer.singleShot(PANEL_MENU_DELAY_MS, pick)
         if not right_click_item(tree, item):
             return
+        del item
         check(any(s.startswith("Follow Vectors") for s in seen["labels"]), "the panel menu has a Follow Vectors entry (entries %r)" % (seen["labels"],))
         check(seen["enabled"] and seen["triggered"], "the Follow Vectors entry is enabled for a shape and was triggered")
         check(seen["fresh"], "the entry started a follow, which drops the previous report (previous %r)"

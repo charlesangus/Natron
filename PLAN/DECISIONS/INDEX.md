@@ -141,4 +141,4 @@
 - 2026-11-16 — deep-opacity-output: every deep render path offers an alpha-only (deep opacity) output → DECISIONS/2026-11-16-deep-opacity-output.md
 - 2026-11-16 — follow-stomps-keys: follow overwrites keys on followed frames; Blend Between Keys and Reduce Keyframes are separate actions → DECISIONS/2026-11-16-follow-stomps-keys.md
 - [2026-11-16 F29 - UI Polish Batch](2026-11-16-f29-ui-polish-batch.md) — five small UI milestones ship as one Feature (user)
-- 2026-11-16 — shared-lens-optics-base: one Engine/Optics library, bundled OpticsDatabase and aperture model for bokeh and flares; three Features (F30 base, F13 bokeh, F31 flares) → DECISIONS/2026-11-16-shared-lens-optics-base.md
+- [2026-11-16 Shared lens optics base](2026-11-16-shared-lens-optics-base.md) — one Engine/Optics library, bundled OpticsDatabase and aperture model for bokeh and flares; three Features (F30 base, F13 bokeh, F31 flares)

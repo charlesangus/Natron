@@ -2,7 +2,7 @@ User reviewed M18.P2.T3's hover/tooltip deep-sample probe after the milestone's
 manual GUI checklist passed and judged the design wrong: a tooltip that only
 appears on hover-pause and vanishes the instant the mouse leaves the image is
 hard to discover and impossible to park on one pixel while scrubbing frames.
-Chose to mimic Nuke's model instead — a `DeepSample` node the user places and
+Chose a node-based model instead — a `DeepSample` node the user places and
 leaves connected, with a position picker and a settings-panel table of raw
 per-sample values — and to replace the hover probe outright rather than keep
 both.

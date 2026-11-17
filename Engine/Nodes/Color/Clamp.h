@@ -88,9 +88,7 @@ struct ClampOp {
                        "mask image. To create a non-binary mask, with softer edges, either blur the output "
                        "of Clamp, or use the Grade plugin instead, setting the \"Black Point\" and \"White Point\" "
                        "to values close to the threshold, and checking the \"Clamp Black\" and \"Clamp "
-                       "White\" options.\n"
-                       "\n"
-                       "See also: https://web.archive.org/web/20220627024614/http://www.opticalenquiry.com/nuke/index.php?title=Clamp",
+                       "White\" options.",
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_CLAMP,
         .minorVersion = 0,

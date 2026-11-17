@@ -322,21 +322,20 @@ ViewerGL::paintGL()
         // Note: the OFX spec says that the GL_MODELVIEW should be the identity matrix
         // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#ImageEffectOverlays
         // However,
-        // - Nuke uses a different matrix (RoD.width is the width of the RoD of the displayed image)
-        // - Nuke transforms the interacts using the modelview if there are Transform nodes between the viewer and the interact.
-
+        // - some hosts use a different matrix (RoD.width is the width of the RoD of the displayed image)
+        // - some hosts transform the interacts using the modelview if there are Transform nodes between the viewer and the interact.
 
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
         glOrtho(zoomLeft, zoomRight, zoomBottom, zoomTop, -1, 1);
         _imp->glShadow.setX( (zoomRight - zoomLeft) / width() );
         _imp->glShadow.setY( (zoomTop - zoomBottom) / height() );
-        //glScalef(RoD.width, RoD.width, 1.0); // for compatibility with Nuke
-        //glTranslatef(1, 1, 0);     // for compatibility with Nuke
+        // glScalef(RoD.width, RoD.width, 1.0); // for compatibility with such hosts
+        // glTranslatef(1, 1, 0);     // for compatibility with such hosts
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
-        //glTranslatef(-1, -1, 0);        // for compatibility with Nuke
-        //glScalef(1/RoD.width, 1./RoD.width, 1.0); // for compatibility with Nuke
+        // glTranslatef(-1, -1, 0);        // for compatibility with such hosts
+        // glScalef(1/RoD.width, 1./RoD.width, 1.0); // for compatibility with such hosts
 
         glCheckError();
 
@@ -966,7 +965,7 @@ ViewerGL::drawWipeControl(double screenPixelRatio)
             int direction = (l == 0) ? 1 : -1;
             // translate (1,-1) pixels
             glTranslated(direction * _imp->glShadow.x(), -direction * _imp->glShadow.x(), 0);
-            glMatrixMode(GL_MODELVIEW); // Modelview should be used on Nuke
+            glMatrixMode(GL_MODELVIEW); // Modelview should be used
 
             if (l == 0) {
                 // Draw a shadow for the cross hair

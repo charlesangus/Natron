@@ -16,17 +16,6 @@ a fractional `firstFrame`. `setToCurrentFrame` copies the timeline's current fra
 | `setToCurrentFrame` | (button) | Set `firstFrame` to the current frame |
 | `increment` | 0 | Hold every `increment`-th frame for `increment` frames; 0 holds one frame |
 
-Port audit (every OFX and Nuke control):
-
-| OFX (net.sf.openfx.FrameHold) | Nuke (FrameHold) | Natron knob | Default | Status |
-|---|---|---|---|---|
-| `firstFrame` (default 0) | `firstFrame` (default 1) | `firstFrame` | 1 | mapped, Nuke's default |
-| `increment` | `increment` | `increment` | 0 | mapped; at least 0 (OFX's negative increment is dropped) |
-| (none) | `setToCurrentFrame` | `setToCurrentFrame` | | mapped |
-| (none) | `rounding_mode` | `roundingMode` | Whole Frames | mapped |
-| sublabel (secret) | (none) | (none) | | N/A: host label detail |
-| (none) | path mask (3D scene paths) | (none) | | N/A: no 3D scene graph on this input |
-
 Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |

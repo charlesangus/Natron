@@ -43,4 +43,4 @@ Smears each pixel of the Source along its own motion vector, read from a layer o
   and the standard channel, mask and mix knobs. Mask and mix are
   the host's stages; as a filter, VectorBlur has no "(Un)premult by".
 
-There is no OFX VectorBlur to port; the controls follow the milestone and Nuke's VectorBlur.
+There is no OFX VectorBlur to port; the controls follow the milestone.

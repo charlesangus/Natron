@@ -94,15 +94,18 @@ public:
     bool isInForeground() const;
 
     /**
-     * @brief True when the page is the one the panel shows. A null page is never shown, except on a
-     * panel without tabs, which shows everything at once.
+     * @brief True when the knob's page is the one the panel shows and every tab group enclosing the
+     * knob shows its tab. A knob on no page is never shown, except on a panel without pages, which
+     * shows everything at once.
      **/
-    bool isPageVisible(const KnobPagePtr& page) const;
+    bool isKnobOnVisiblePage(const KnobIPtr& knob) const;
 
     /**
      * @brief True when the widget is on the page the panel shows, or outside the pages altogether.
      **/
     bool isWidgetOnVisiblePage(const QWidget* widget) const;
+
+    void notifyForegroundChanged() const;
 
     /*Creates a new button and inserts it in the header
        at position headerPosition. You can then take
@@ -302,10 +305,9 @@ private:
 
     void setClosedInternal(bool c);
 
-    // Takes the panel out of its floating window without docking it in the properties bin.
     void releaseFloatingWindow();
 
-    void notifyForegroundChanged() const;
+    bool isPageVisible(const KnobPagePtr& page) const;
 
     void initializeKnobsInternal();
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL

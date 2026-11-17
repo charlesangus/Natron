@@ -263,7 +263,6 @@ struct GuiAppInstancePrivate
         return nodeGui ? nodeGui->getSettingPanel() : 0;
     }
 
-    // Only a panel in the foreground contributes, and only with the knobs of the page it shows.
     static void collectShownKnobKeyframes(const NodePtr& node,
                                           std::list<SequenceTime>* keys)
     {
@@ -279,7 +278,7 @@ struct GuiAppInstancePrivate
             return;
         }
         node->getAllKnobsKeyframes(keys, [panel](const KnobIPtr& knob) {
-            return panel->isPageVisible(knob->getTopLevelPage());
+            return panel->isKnobOnVisiblePage(knob);
         });
     }
 

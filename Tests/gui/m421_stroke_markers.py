@@ -147,7 +147,6 @@ try:
         return None
 
     def show_page(st, page_label):
-        """Item knob keys show only while their page is the visible one."""
         panel = panel_of_node(st.node)
         require(panel is not None, "the settings panel of %s is open" % st.node.getLabel())
         for tabs in panel.findChildren(QTabWidget):

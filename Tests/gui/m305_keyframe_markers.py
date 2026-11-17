@@ -143,7 +143,6 @@ try:
         return None
 
     def bin_order():
-        """Labels of the docked panels in properties-bin order, top first."""
         win = main_window()
         out = []
         for panel in gt.widgets_of("NodeSettingsPanel"):
@@ -341,7 +340,6 @@ try:
             return sorted(times)
 
         def expect(label, frames=None):
-            """Markers match the foreground panels' keys, and the literal frames when the step knows them."""
             ok = yield ("until", lambda: markers() == expected() and (frames is None or markers() == frames),
                         POLL_TIMEOUT_S)
             # A late refresh must not bring back frames the timeline has dropped.

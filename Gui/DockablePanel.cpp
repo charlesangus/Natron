@@ -1444,6 +1444,12 @@ DockablePanel::isPageVisible(const KnobPagePtr& page) const
 }
 
 bool
+DockablePanel::isKnobOnVisiblePage(const KnobIPtr& knob) const
+{
+    return knob && isPageVisible(knob->getTopLevelPage()) && areEnclosingTabsCurrent(knob);
+}
+
+bool
 DockablePanel::isWidgetOnVisiblePage(const QWidget* widget) const
 {
     if (!widget || !_imp->_tabWidget || !_imp->_tabWidget->isAncestorOf(widget)) {

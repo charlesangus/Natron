@@ -11,7 +11,9 @@ TimeLineGui::keyframeMarkerTimes() and, after every step, compares them with the
     back to the top swaps them;
   - floating: a floating panel shows its keys alongside the top docked panel's, and still follows
     its own visible page;
-  - close: closing the panels clears the markers.
+  - close: closing the panels clears the markers;
+  - sub-tabs: a CornerPin keyed on its To and From sub-tabs, which share one page, shows only the
+    keys of the sub-tab in view, and none while another page is shown.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots of the timeline and results.txt go to
 $NATRON_GUI_TEST_OUT (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -32,6 +34,8 @@ SHAPE_KEYS = [1, 20]
 ITEM_TRANSLATE_KEYS = [9, 30]
 TRANSFORM_KEYS = [5, 15]
 ROTO_ALL = sorted(SHAPE_KEYS + ITEM_TRANSLATE_KEYS)
+PIN_TO_KEYS = [3, 12]
+PIN_FROM_KEYS = [7, 18]
 
 try:
     import NatronEngine
@@ -58,7 +62,6 @@ try:
         return visible[0] if visible else None
 
     def markers():
-        """The frames that show a marker, or None when there is no timeline to ask."""
         w = timeline()
         if w is None:
             return None
@@ -80,7 +83,6 @@ try:
             report("NOTE could not save screenshot " + path)
 
     def panel_of(node):
-        """The node's visible settings panel, found by the label in its header's name field."""
         label = node.getLabel()
         for panel in gt.widgets_of("NodeSettingsPanel"):
             try:
@@ -94,7 +96,6 @@ try:
         return None
 
     def page_tabs(node):
-        """The panel's page tab widget: the one with a Node page, which every node panel has."""
         panel = panel_of(node)
         require(panel is not None, "the settings panel of %s is open" % node.getLabel())
         for tabs in panel.findChildren(QTabWidget):
@@ -113,6 +114,18 @@ try:
                 return
         require(False, "the panel of %s has a %s page" % (node.getLabel(), page_label))
 
+    def show_subtab(node, tab_label):
+        panel = panel_of(node)
+        require(panel is not None, "the settings panel of %s is open" % node.getLabel())
+        for tabs in panel.findChildren(QTabWidget):
+            labels = [tabs.tabText(i).replace("&", "") for i in range(tabs.count())]
+            if "Node" in labels or tab_label not in labels:
+                continue
+            tabs.setCurrentIndex(labels.index(tab_label))
+            QApplication.processEvents()
+            return
+        require(False, "the panel of %s has a %s sub-tab" % (node.getLabel(), tab_label))
+
     def show_first_page(node):
         tabs = page_tabs(node)
         require(tabs is not None and tabs.count() > 0, "the panel of %s has pages" % node.getLabel())
@@ -121,7 +134,6 @@ try:
         return tabs.tabText(0).replace("&", "")
 
     def open_panel(node):
-        """Opens the panel, or brings it to the top of the properties bin when it is already open."""
         graphs = gt.widgets_of("NodeGraph")
         require(graphs, "found the node graph")
         app.setSelection([node])
@@ -159,7 +171,6 @@ try:
         yield ("sleep", SETTLE_MS)
 
     def bin_order():
-        """Labels of the docked panels in properties-bin order, top first."""
         win = rg.main_window()
         out = []
         for panel in gt.widgets_of("NodeSettingsPanel"):
@@ -342,6 +353,38 @@ try:
         yield from expect("the Transform closed", SHAPE_KEYS)
         yield from close_panel(roto)
         yield from expect("every panel closed", [])
+
+        gt.section("sub-tabs")
+        pin = app.createNode("CornerPin", -1, None, props)
+        require(pin is not None, "create a CornerPin", gt.plugin_problem("CornerPin"))
+        to1 = pin.getParam("to1")
+        from1 = pin.getParam("from1")
+        require(to1 is not None and from1 is not None, "the CornerPin has to1 and from1 knobs")
+        for t in PIN_TO_KEYS:
+            to1.setValueAtTime(float(t), t, 0)
+        for t in PIN_FROM_KEYS:
+            from1.setValueAtTime(float(t), t, 0)
+        ok = yield ("until", lambda: key_times(to1) == PIN_TO_KEYS and key_times(from1) == PIN_FROM_KEYS,
+                    POLL_TIMEOUT_S)
+        require(ok, "the CornerPin keys are set", "%r, %r" % (key_times(to1), key_times(from1)))
+        yield from open_panel(pin)
+        pin_page = show_first_page(pin)
+        show_subtab(pin, "To")
+        yield from expect("CornerPin on its To sub-tab", PIN_TO_KEYS)
+        timeline_shot("m455-cornerpin-to-subtab.png")
+        show_subtab(pin, "From")
+        yield from expect("CornerPin on its From sub-tab", PIN_FROM_KEYS)
+        timeline_shot("m455-cornerpin-from-subtab.png")
+        show_subtab(pin, "To")
+        yield from expect("CornerPin back on its To sub-tab", PIN_TO_KEYS)
+        show_page(pin, "Node")
+        yield from expect("CornerPin on its Node page", [])
+        show_subtab(pin, "From")
+        yield from expect("CornerPin's From sub-tab switched while its Node page shows", [])
+        show_page(pin, pin_page)
+        yield from expect("CornerPin back on its %s page, on the From sub-tab" % pin_page, PIN_FROM_KEYS)
+        yield from close_panel(pin)
+        yield from expect("the CornerPin closed", [])
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

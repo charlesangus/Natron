@@ -535,10 +535,7 @@ public:
                                          const std::function<bool(const KnobIPtr&)>& accept,
                                          std::set<double>* times);
 
-    // The node's settings panel, which holds this one below its pages.
     DockablePanel* hostPanel() const;
-
-    // The panel's markers show only while its host is in the foreground with this list in view.
     bool markersInView() const;
 
     // An item knob is shown on the node's page of the same-named proxy knob.
@@ -2546,7 +2543,7 @@ RotoPanelPrivate::isItemKnobOnVisiblePage(const KnobIPtr& itemKnob) const
     }
     KnobIPtr proxy = nodeGui->getNode()->getEffectInstance()->getKnobByName(itemKnob->getName());
 
-    return proxy && panel->isPageVisible(proxy->getTopLevelPage());
+    return proxy && panel->isKnobOnVisiblePage(proxy);
 }
 
 void

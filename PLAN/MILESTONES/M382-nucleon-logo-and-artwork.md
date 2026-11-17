@@ -152,4 +152,4 @@ Context:
 - 2026-11-17 — Round 12 feedback (user):
   - electron-ring-depth-bulge-rings-trefoil is interesting, but the ring's alignment with the knot isn't quite right. Try variations of it.
   - For the six non-trefoil marks, try a blue ring or outline around the orange circle that passes behind the grey pieces. On the pyramid marks it shows only on the orange circle's side.
-  - Round 13 goes to a Fable agent. Dark-only sheets under `build/branding/round13/`.
+  - Round 13 goes to a Fable agent. Dark-only sheets under `build/branding/round13/`. Delivered at e5aef65be: trefoil depth-bulge low, holes, tight, tilt, orange-up, wide, threaded; electron-halo outline, ring, bulge, tilt on the six other marks. The round 12 orbit was already on the knot's three-fold centre; `low` uses the bounding-box centre instead.

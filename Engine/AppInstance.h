@@ -31,6 +31,7 @@
 #include <cstddef> // for NULL
 #include <limits>
 #include <list>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -372,7 +373,11 @@ public:
 
     double getProjectFrameRate() const;
 
-    virtual std::string openImageFileDialog() { return std::string(); }
+    virtual std::string openImageFileDialog(std::optional<std::pair<int, int>>* frameRange = nullptr)
+    {
+        (void)frameRange;
+        return std::string();
+    }
 
     virtual std::string saveImageFileDialog() { return std::string(); }
 

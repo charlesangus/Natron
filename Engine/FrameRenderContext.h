@@ -67,6 +67,10 @@ public:
         // The context key the node renders under (see NodeCtxKey).
         U64 contextKey = 0;
 
+        // Nonzero for the tasks of a render continuation's extension, which share the frame's store: an extension
+        // may render a frame/view the planned graph renders too, over another region, without replacing its entry.
+        int generation = 0;
+
         bool operator==(const TaskKey& other) const;
     };
 
@@ -169,6 +173,14 @@ public:
     void release(const TaskKey& key);
 
     /**
+     * @brief If an entry is stored for key whose layers include every needed one and whose bounds and rendered RoI
+     * contain pixelRoI, adds count consumers to it and returns true; returns false and changes nothing otherwise.
+     * Checked and counted under the store's lock, so an entry found is never erased before its new consumers
+     * released it.
+     **/
+    bool retain(const TaskKey& key, const std::list<ImageLayerDesc>& needed, const RectI& pixelRoI, int count);
+
+    /**
      * @brief The bytes of the stored images the image cache does not already account for, each image counted once
      * however many keys it is stored under.
      **/
@@ -231,6 +243,8 @@ private:
 class FrameRenderContext {
     FrameRenderContext();
 
+    explicit FrameRenderContext(const FrameRenderContextPtr& parent);
+
 public:
     /**
      * @brief Takes the same arguments as the ParallelRenderArgsSetter walking upstream of treeRoot, and builds the
@@ -258,6 +272,35 @@ public:
                                                   const RenderStatsPtr& stats,
                                                   double time,
                                                   ViewIdx view);
+
+    /**
+     * @brief The context the tasks of a render continuation's extension run under: a copy of parent's frame args
+     * pointed at request, the extension's own request pass, sharing parent's store, abort info, stats, isolated job
+     * and fresh-output marks. The frame args parent's request planned under nonzero context keys stay reachable
+     * from the copies for the keys request does not plan. generation is the one the extension's tasks store their
+     * outputs under, nonzero and unique among the extensions sharing the store. Built on the thread running the
+     * probe, before any task uses it; parent's own args and request are only read.
+     **/
+    static FrameRenderContextPtr createExtension(const FrameRenderContextPtr& parent,
+                                                 const std::shared_ptr<FrameRequestMap>& request,
+                                                 int generation);
+
+    /**
+     * @brief The context this one extends, or null for a frame's own.
+     **/
+    const FrameRenderContextPtr& getParent() const
+    {
+        return _parent;
+    }
+
+    /**
+     * @brief The store generations a task under this context reads from, its own first and then those of the
+     * contexts it extends, ending with 0, the planned graph's.
+     **/
+    const std::vector<int>& getStoreGenerations() const
+    {
+        return _storeGenerations;
+    }
 
     ~FrameRenderContext();
 
@@ -334,7 +377,7 @@ public:
 
     FrameStore& getStore() const
     {
-        return _store;
+        return *_store;
     }
 
     /**
@@ -409,7 +452,11 @@ private:
     RenderStatsPtr _stats;
     double _time;
     ViewIdx _view;
-    mutable FrameStore _store;
+
+    // Null for a frame's own context; an extension's keeps the one it extends, whose store it shares, alive.
+    FrameRenderContextPtr _parent;
+    std::vector<int> _storeGenerations;
+    std::shared_ptr<FrameStore> _store;
     const IsolatedJob* _isolatedJob;
     std::atomic<bool> _recordsRenderedNodes;
     mutable std::mutex _renderedMutex;

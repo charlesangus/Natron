@@ -302,6 +302,9 @@ private:
 
     void setClosedInternal(bool c);
 
+    // Takes the panel out of its floating window without docking it in the properties bin.
+    void releaseFloatingWindow();
+
     void notifyForegroundChanged() const;
 
     void initializeKnobsInternal();

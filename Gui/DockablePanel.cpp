@@ -994,6 +994,14 @@ DockablePanel::showHelp()
 void
 DockablePanel::setClosed(bool c)
 {
+    // setClosedInternal() docks a floating panel back open, which suits the user closing its window
+    // but would leave the panel of a deleted node open on top of the properties bin.
+    if (c && _imp->_floating) {
+        releaseFloatingWindow();
+        if (_imp->_container) {
+            setParent(_imp->_container->parentWidget());
+        }
+    }
     setVisible(!c);
 
     setClosedInternal(c);
@@ -1278,12 +1286,12 @@ DockablePanel::restoreMinimizedState(bool minimized)
 FloatingWidget*
 DockablePanel::floatPanel()
 {
-    _imp->_floating = !_imp->_floating;
     {
         QMutexLocker k(&_imp->_isClosedMutex);
         _imp->_isClosed = false;
     }
-    if (_imp->_floating) {
+    if (!_imp->_floating) {
+        _imp->_floating = true;
         assert(!_imp->_floatingWidget);
 
         QSize curSize = sizeHint();
@@ -1296,14 +1304,8 @@ DockablePanel::floatPanel()
         _imp->_floatingWidget->resize(curSize);
         _imp->_gui->registerFloatingWindow(_imp->_floatingWidget);
     } else {
-        assert(_imp->_floatingWidget);
-        _imp->_gui->unregisterFloatingWindow(_imp->_floatingWidget);
-        _imp->_floatingWidget->removeEmbeddedWidget();
-        //setParent( _imp->_container->parentWidget() );
-        //_imp->_container->insertWidget(0, this);
+        releaseFloatingWindow();
         _imp->_gui->addVisibleDockablePanel(this);
-        _imp->_floatingWidget->deleteLater();
-        _imp->_floatingWidget = 0;
     }
     Gui* gui = getGui();
     if (gui) {
@@ -1312,6 +1314,17 @@ DockablePanel::floatPanel()
     notifyForegroundChanged();
 
     return _imp->_floatingWidget;
+}
+
+void
+DockablePanel::releaseFloatingWindow()
+{
+    assert(_imp->_floating && _imp->_floatingWidget);
+    _imp->_floating = false;
+    _imp->_gui->unregisterFloatingWindow(_imp->_floatingWidget);
+    _imp->_floatingWidget->removeEmbeddedWidget();
+    _imp->_floatingWidget->deleteLater();
+    _imp->_floatingWidget = 0;
 }
 
 void

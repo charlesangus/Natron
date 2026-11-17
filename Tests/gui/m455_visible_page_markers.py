@@ -158,6 +158,17 @@ try:
         rg.activate()
         yield ("sleep", SETTLE_MS)
 
+    def dock_panel(node):
+        panel = panel_of(node)
+        require(panel is not None and is_floating(node), "the settings panel of %s floats" % node.getLabel())
+        QMetaObject.invokeMethod(panel, "floatPanel")
+        ok = yield ("until", lambda: panel_of(node) is not None and not is_floating(node), POLL_TIMEOUT_S)
+        require(ok, "docked the settings panel of " + node.getLabel())
+        rg.activate()
+        yield ("sleep", SETTLE_MS)
+        check(bin_order()[:1] == [node.getLabel()], "the docked panel of %s is on top (%r)" %
+              (node.getLabel(), bin_order()))
+
     def bin_order():
         """Labels of the docked panels in properties-bin order, top first."""
         win = rg.main_window()
@@ -327,8 +338,11 @@ try:
         yield from expect("floating Transform expanded", sorted(SHAPE_KEYS + TRANSFORM_KEYS))
 
         gt.section("close")
+        # Closing a floating panel docks it back open on top of the bin, so the Transform is docked
+        # explicitly before it is closed.
+        yield from dock_panel(transform)
+        yield from expect("the Transform docked back on top", TRANSFORM_KEYS)
         yield from close_panel(transform)
-        rg.activate()
         yield from expect("the Transform closed", SHAPE_KEYS)
         yield from close_panel(roto)
         yield from expect("every panel closed", [])

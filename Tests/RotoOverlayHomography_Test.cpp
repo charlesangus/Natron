@@ -79,8 +79,8 @@ perspectiveMatrix()
     m.d = -0.03;
     m.e = 0.95;
     m.f = -7.;
-    m.g = 0.004;
-    m.h = -0.003;
+    m.g = 0.012;
+    m.h = 0.008;
     m.i = 1.;
 
     return m;

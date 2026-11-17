@@ -323,3 +323,29 @@ TEST(RenderDelegates, AbortingAMoonRayRenderMidPassReturnsWithinASecond)
     EXPECT_EQ(0u, HydraRender::getCpuEngineCount());
     HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
 }
+
+// An aborted MoonRay render destroys its engine while frames still stream in over Arras. The
+// client's message delivery thread must be stopped before the endpoints it reads through are
+// freed, which only shows up as a crash some of the time, so the teardown is repeated.
+TEST(RenderDelegates, AbortingMoonRayRendersMidPassRepeatedlyTearsDownCleanly)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["moonray:sceneVariable:pixel_samples"] = PXR_NS::VtValue(4096);
+    HydraRender::setRendererSettings(kMoonRayRendererId, settings);
+    static const int owner = 0;
+    HydraRender::Request request;
+    if (referenceRequest(&owner, kMoonRayRendererId, 64, &request)) {
+        static const int kRounds = 8;
+        for (int round = 0; round < kRounds; ++round) {
+            const std::uint64_t builds = HydraRender::getEngineBuildCount();
+            expectAbortReturnsPromptly("MoonRay", request, 2, 0);
+            EXPECT_LT(builds, HydraRender::getEngineBuildCount()) << "round " << round << " did not make a new MoonRay session";
+        }
+    }
+    HydraRender::release(&owner);
+    EXPECT_EQ(0u, HydraRender::getCpuEngineCount());
+    HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
+}

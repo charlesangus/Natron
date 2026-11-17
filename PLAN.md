@@ -547,7 +547,7 @@ future core work has solid ground to build on.
 | M451 | Viewer Stale Cue Experiments | doing | M302 | bosley-executor | E10 | | | [M451-viewer-stale-cue-experiments.md](PLAN/MILESTONES/M451-viewer-stale-cue-experiments.md) |
 | M452 | Node Error And Warning Display | doing | M397 | bosley-executor | E10 |  F29 | | [M452-node-error-and-warning-display.md](PLAN/MILESTONES/M452-node-error-and-warning-display.md) |
 | M453 | Follow Animation Layer | todo | M220 |  | E10 | | | [M453-follow-animation-layer.md](PLAN/MILESTONES/M453-follow-animation-layer.md) |
-| M454 | Roto Insert Point Drag | doing | - | bosley-executor | E10 |  F29 | | [M454-roto-insert-point-drag.md](PLAN/MILESTONES/M454-roto-insert-point-drag.md) |
+| M454 | Roto Insert Point Drag | done | - | bosley-executor | E10 |  F29 | | [M454-roto-insert-point-drag.md](PLAN/MILESTONES/M454-roto-insert-point-drag.md) |
 | M455 | Keyframe Markers For Visible Pages | doing | M421 | bosley-executor | E10 |  F29 | | [M455-keyframe-markers-for-visible-pages.md](PLAN/MILESTONES/M455-keyframe-markers-for-visible-pages.md) |
 | M456 | File Dialog Toolbar And Split | doing | - | bosley-executor | E10 |  F29 | | [M456-file-dialog-toolbar-and-split.md](PLAN/MILESTONES/M456-file-dialog-toolbar-and-split.md) |
 | M457 | ColorWarp Space Spike | todo | - |  | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |

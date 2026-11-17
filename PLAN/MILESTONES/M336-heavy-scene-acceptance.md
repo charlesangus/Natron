@@ -92,3 +92,12 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 - 2026-11-17 — Viewer heavy-frame research (consultant; build/m336-heavy-viewport-research.md, sent to the user): the other tools limit work by what is loaded, expanded or counted (Houdini's Scene Polygon Limit and distance culling to boxes; Katana and Gaffer expansion), and none uses a time-budget fallback. Recommended: paint never waits, plus a box stand-in drawn on the main thread over the last frame (Natron's own instanced boxes, no Storm switch, since render-tag and visibility switches re-gather batches), plus an all-at-once refill after idle.
 - 2026-11-17 — **Stand-in mode is a setting (user):** Off / During interaction / Always.
 - 2026-11-17 — **Explore Houdini-style viewer budgets (user):** user-controllable polygon budgets, distance-based culling or reduction to bounding boxes, and drawing only a fraction of the polygons beyond a distance. These are new features outside M336's Scope ("New features the UAT suggests: new milestones"), so they go to /cat-plan as a new milestone. M336 keeps the paint wait and the stand-in once the sampled Island profile scopes them.
+- 2026-11-17 — **First valid round-5 baseline** (VM RTX 4090 24 GB / 98 GB; complete Lobby, textured Island, warm shader cache; bench b956b3777; .local/vast/runs/cloud-gpu-20261117T045608Z): 8 pass / 15 fail, plus the warm-up.
+  - Every Lobby loaded scenario passes.
+  - The open stall is still 200-250 ms with a warm cache, so it is not shader compiles.
+  - flat: pattern_node 610 ms; reopen 21.3 s, now including the project reset; 21 GB RSS.
+  - city: wide time to picture 2.2 s; reveal worst frames ~0.5 s; orbit stall 293 ms.
+  - Lobby and Island workflows: twirl 0.6-1 s, pattern_node ~0.7 s.
+  - Island: Full + Load on a block, worst frame 5.9 s. Loaded: load_all stall 16.8 s at 61 GB RSS with VRAM saturated (24.1 of 24.6 GB); time to picture 2.5-2.7 s; populate, reveal and cancel stalls ~250 ms.
+  - Island-loaded records are tagged fixture_incomplete by two HwPtexTexture_1 lines, probably a false positive.
+  - A sampled Island pass (1412 stacks) is with a consultant for stall locations and the M336.P3 task scope.

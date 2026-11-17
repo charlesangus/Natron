@@ -215,8 +215,9 @@ public bool surfaceAbsent(StructuredBuffer<float4> colors,
 
 /**
  * @brief The share of a shadow ray's light that goes on through a hit, with no caustics: none through
- * an opaque surface or one with an opacityThreshold, 1 - opacity through the rest, tinted by the
- * diffuseColor where the ior bends light.
+ * an opaque surface or one with an opacityThreshold, 1 - opacity through the rest. UsdPreviewSurface
+ * has no transmission colour, and its diffuseColor is what the opaque part scatters, so the light
+ * through is untinted.
  **/
 public float3 surfaceTransmission(StructuredBuffer<float4> colors,
                                   StructuredBuffer<int> triangles,
@@ -250,18 +251,5 @@ public float3 surfaceTransmission(StructuredBuffer<float4> colors,
 
     if (!(opacity < 1.0))
         return float3(0.0);
-
-    const int iorTexture = textureOf(material, kSlotIor);
-    const float ior = iorTexture == kNoTexture ? material.coverage.z : readTexture(bindings, images, texels, iorTexture, hasSt, st, kFinestLevel).x;
-    const float transparency = 1.0 - max(opacity, 0.0);
-
-    if (!(ior > 0.0) || !bendsLight(ior))
-        return float3(transparency);
-
-    const bool fromDisplay = (material.kind.z & kMaterialDiffuseFromDisplayColor) != 0 && hasDisplayColor(geometry);
-    const int diffuseTexture = textureOf(material, kSlotDiffuseColor);
-    const float3 diffuse = diffuseTexture == kNoTexture ? (fromDisplay ? display.xyz : material.diffuseColor.xyz)
-                                                        : readTexture(bindings, images, texels, diffuseTexture, hasSt, st, kFinestLevel).xyz;
-
-    return transparency * max(diffuse, float3(0.0));
+    return float3(1.0 - max(opacity, 0.0));
 }

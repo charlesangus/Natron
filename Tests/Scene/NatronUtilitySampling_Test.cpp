@@ -205,6 +205,7 @@ makeFrame(int samplesPerSide,
     frame.sampling.filter = filter;
     frame.sampling.filterWidth = filterWidth;
     frame.sampling.seed = 7;
+    frame.maxRayDepth = 0;
 
     return frame;
 }
@@ -627,6 +628,7 @@ public:
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color }));
         setting(kUtilitySettingDevice, VtValue(TfToken(kUtilityDeviceCpu)));
         setting(kUtilitySettingSubdivLevel, VtValue(0));
+        setting(kUtilitySettingMaxRayDepth, VtValue(0));
     }
 
     void setting(const char* key,

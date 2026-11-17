@@ -261,6 +261,8 @@ public:
         // The default grid of samples traces the 4096-pixel frame that many times over, which a debug
         // build cannot finish within the suite's limit; one pass keeps the frame heavy but finishable.
         _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(1));
+        // Nor does it trace reflections, whose extra bounces the limit was not set for.
+        _engine->SetRendererSetting(TfToken(kUtilitySettingMaxRayDepth), VtValue(0));
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
     }
 
@@ -408,7 +410,7 @@ protected:
         BaseTest::SetUp();
         _stage.reset(new SceneStage);
         _passes = 0;
-        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) } });
     }
 
     virtual void TearDown() OVERRIDE
@@ -572,6 +574,7 @@ TEST(NatronUtilityCancel, AStopCutsATileShortBetweenItsLights)
     frame.window.width = 64;
     frame.window.height = 64;
     frame.sampling.samplesPerSide = 1;
+    frame.maxRayDepth = 0;
 
     const UtilityScene::Snapshot snapshot = scene.snapshot();
     WavefrontCpu cpu;

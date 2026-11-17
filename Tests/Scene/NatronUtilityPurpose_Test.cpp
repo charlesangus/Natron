@@ -92,6 +92,7 @@ public:
         _engine.reset(new UsdImagingGLEngine(parameters));
         _engine->SetEnablePresentation(false);
         _engine->SetRendererSetting(TfToken(kUtilitySettingSubdivLevel), VtValue(0));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingMaxRayDepth), VtValue(0));
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
     }
 

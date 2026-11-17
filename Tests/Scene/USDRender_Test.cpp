@@ -1189,7 +1189,7 @@ TEST_F(USDRenderRendererTest, TheShutterReachesNatronUtilityAndTheHash)
     ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
     KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
     ASSERT_TRUE(file);
-    HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) } });
+    HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) } });
 
     std::set<U64> hashes;
     for (std::size_t i = 0; i < cases.size(); ++i) {
@@ -1233,8 +1233,8 @@ protected:
     {
         USDRenderRendererTest::SetUp();
         // Natron Utility too traces one ray through each pixel's centre, and Storm renders the cage,
-        // which a level above 0 would refine on the Utility side.
-        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) } });
+        // which a level above 0 would refine on the Utility side. Storm has no reflections.
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) } });
         const char* samples = std::getenv("HDX_MSAA_SAMPLE_COUNT");
         ASSERT_TRUE(samples && (std::strcmp(samples, "1") == 0)) << "run this suite alone with HDX_MSAA_SAMPLE_COUNT=1, as ctest does";
     }

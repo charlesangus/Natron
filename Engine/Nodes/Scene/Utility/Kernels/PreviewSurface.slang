@@ -111,6 +111,29 @@ public float3 evaluatePreviewSurfaceLobes(PreviewSurfaceSample s, float3 V, floa
     return NdotL * (d + s1 + s2);
 }
 
+/**
+ * @brief The specular lobe of a refractive surface's transmissive part, per unit incoming radiance from
+ * L towards V, cosine included: GGX at the surface's roughness with the Fresnel of an uncoloured
+ * dielectric of its ior, the reflectance its reflection rays carry, so that lights show highlights on
+ * glass as on opaque surfaces.
+ **/
+public float3 evaluateDielectricSpecular(PreviewSurfaceSample s, float3 V, float3 L)
+{
+    const float3 N = s.normal;
+    const float NdotL = max(0.0, dot(N, L));
+
+    if (NdotL <= 0.0)
+        return float3(0.0, 0.0, 0.0);
+
+    const float NdotE = max(0.0, dot(N, V));
+    const float3 H = normalize(L + V);
+    const float NdotH = max(0.0, dot(N, H));
+    const float EdotH = max(0.0, dot(V, H));
+    const float R = (1.0 - s.ior) / (1.0 + s.ior);
+
+    return NdotL * directSpecular(float3(R * R), float3(1.0, 1.0, 1.0), max(0.001, s.roughness), schlickFresnel(EdotH), NdotL, NdotE, NdotH);
+}
+
 // Below this roughness a specular lobe reflects as a mirror.
 public static const float kMirrorRoughness = 0.01;
 

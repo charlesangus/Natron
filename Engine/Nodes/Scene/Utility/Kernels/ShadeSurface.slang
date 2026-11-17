@@ -205,6 +205,12 @@ bool linked(uint instance, uint light, uint mask)
     return ((linkMasks[(2 * instance + mask) * words + light / 32] >> (light % 32)) & 1) != 0;
 }
 
+// Whether what goes through the surface bends at it, rather than going on straight.
+bool refracts(PreviewSurfaceSample surface)
+{
+    return surface.ior > 0.0 && bendsLight(surface.ior);
+}
+
 // One sample of each of the pass's lights, each queued with the shadow ray that decides whether it
 // arrives.
 void sampleLights(uint index, PathState path, uint instance, PreviewSurfaceSample surface, float3 position, float3 geometric, float3 toViewer)
@@ -215,6 +221,7 @@ void sampleLights(uint index, PathState path, uint instance, PreviewSurfaceSampl
     const uint pixel = pixelKey(path);
     const uint seed = bounceSeed();
     const bool domeSpecular = !mayReflect(path);
+    const float transmissive = refracts(surface) ? 1.0 - saturate(surface.opacity) : 0.0;
     const float3 scaled = abs(position);
     const float offset = 1e-4 * max(1.0, max(scaled.x, max(scaled.y, scaled.z)));
 
@@ -230,7 +237,10 @@ void sampleLights(uint index, PathState path, uint instance, PreviewSurfaceSampl
         const LightRecord light = lights[l];
         const LightSample s = sampleLight(light, lightData, textureBindings, images, texels, position, surface.normal, lightRandom(pixel, l, seed));
         const bool specular = domeSpecular || light.kind.x != kLightDome;
-        const float3 contribution = s.weight * evaluatePreviewSurfaceLobes(surface, toViewer, s.direction, specular) * surface.opacity * path.throughput.xyz;
+        float3 lobes = evaluatePreviewSurfaceLobes(surface, toViewer, s.direction, specular) * surface.opacity;
+        if (specular && transmissive > 0.0)
+            lobes += transmissive * evaluateDielectricSpecular(surface, toViewer, s.direction);
+        const float3 contribution = s.weight * lobes * path.throughput.xyz;
 
         if (!any(contribution > float3(0.0)) || any(isnan(contribution)) || any(isinf(contribution))) {
             writeUnshadowed(slot, l, float3(0.0));
@@ -302,7 +312,7 @@ void continuePath(uint index, PathState path, PreviewSurfaceSample surface, floa
     const bool canRefract = totalLeft && path.counters.w < params.bounce.w;
     const float opacity = saturate(surface.opacity);
     const float transparency = 1.0 - opacity;
-    const bool bends = surface.ior > 0.0 && bendsLight(surface.ior);
+    const bool bends = refracts(surface);
     const float eta = bends ? (entering ? 1.0 / surface.ior : surface.ior) : 1.0;
     float cosT = 1.0;
     const float fresnel = bends ? dielectricFresnel(NdotV, eta, cosT) : 0.0;
@@ -314,13 +324,12 @@ void continuePath(uint index, PathState path, PreviewSurfaceSample surface, floa
 
     const float facing = pow(max(0.0, 1.0 - NdotV), 5.0);
     const float R = (1.0 - surface.ior) / (1.0 + surface.ior);
-    const float3 tint = bends ? surface.diffuseColor : float3(1.0);
     float q[4];
 
     q[0] = canReflect ? opacity * largest(lerp(F0, F90, facing)) : 0.0;
     q[1] = canReflect && surface.clearcoat > 0.0 ? opacity * surface.clearcoat * lerp(R * R, 1.0, facing) : 0.0;
     q[2] = (total ? canRefract : canReflect) ? transparency * fresnel : 0.0;
-    q[3] = (bends ? canRefract : totalLeft) && !total ? transparency * (1.0 - fresnel) * max(1.0, largest(tint)) : 0.0;
+    q[3] = (bends ? canRefract : totalLeft) && !total ? transparency * (1.0 - fresnel) : 0.0;
 
     const float sum = q[0] + q[1] + q[2] + q[3];
 
@@ -366,7 +375,7 @@ void continuePath(uint index, PathState path, PreviewSurfaceSample surface, floa
         kind = total ? kBounceRefraction : kBounceReflection;
     } else {
         next = bends ? normalize(eta * I + (eta * NdotV - cosT) * N) : I;
-        weight = transparency * (1.0 - fresnel) * tint;
+        weight = float3(transparency * (1.0 - fresnel));
         alpha = transparency;
         kind = bends ? kBounceRefraction : kBounceStraight;
     }

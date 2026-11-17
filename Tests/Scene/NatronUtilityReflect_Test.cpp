@@ -733,7 +733,7 @@ TEST_P(NatronUtilityReflect, LeavingGlassPastTheCriticalAngleReflectsEverything)
     }
 }
 
-TEST_P(NatronUtilityReflect, AHalfOpaqueRedPaneCastsAHalfRedShadow)
+TEST_P(NatronUtilityReflect, AHalfOpaqueRedPaneCastsAnUntintedHalfShadow)
 {
     if (!available()) {
         return;
@@ -773,15 +773,84 @@ TEST_P(NatronUtilityReflect, AHalfOpaqueRedPaneCastsAHalfRedShadow)
     const int shadowed = side > 0. ? 13 : 2;
     const int lit = side > 0. ? 2 : 13;
 
+    // UsdPreviewSurface has no transmission colour, so the pane's red diffuseColor does not tint the
+    // light through it.
     for (int y = 0; y < kSize; y += 3) {
         const GfVec4f& dark = colors[y * kSize + shadowed];
         const GfVec4f& bright = colors[y * kSize + lit];
 
-        ASSERT_GT(bright[0], 0.01f);
-        EXPECT_NEAR(0.5, dark[0] / bright[0], kTolerance) << "row " << y;
-        EXPECT_NEAR(0., dark[1], kTolerance) << "row " << y;
-        EXPECT_NEAR(0., dark[2], kTolerance) << "row " << y;
+        for (int c = 0; c < 3; ++c) {
+            ASSERT_GT(bright[c], 0.01f) << "channel " << c;
+            EXPECT_NEAR(0.5, dark[c] / bright[c], kTolerance) << "row " << y << ", channel " << c;
+        }
     }
+}
+
+TEST_P(NatronUtilityReflect, AGlassSphereShowsAPointLightsHighlight)
+{
+    if (!available()) {
+        return;
+    }
+
+    // Seen along -z, a light at 30 degrees from the camera has its mirror direction where the sphere's
+    // normal is at 15 degrees: the centre is placed so that point is pixel (8, 9)'s centre.
+    const double radius = 6.;
+    const GfVec3d normal = toward(15.);
+    const GfVec3d centre = GfVec3d(pixelCentre(8), pixelCentre(9), 0.) - radius * normal;
+    const double distance = 1000.;
+    UtilityLightDesc point;
+
+    point.type = UtilityLightDesc::eTypeSphere;
+    point.treatAsPoint = true;
+    point.emission = GfVec3f(static_cast<float>(100. * distance * distance));
+    point.transform.SetTranslate(centre + distance * toward(30.));
+    // Near the terminator the opaque facets shadow one another where the glass ones let the light through.
+    point.shadowEnable = false;
+
+    // An opaque dielectric of the same ior and roughness, with no diffuse, has the same specular lobe.
+    UtilityMaterialDesc opaque;
+
+    opaque.diffuseColor = GfVec3f(0.f);
+
+    UtilityMaterialDesc clear = glass();
+
+    clear.diffuseColor = GfVec3f(1.f, 0.f, 0.f);
+    clear.roughness = opaque.roughness;
+
+    std::vector<GfVec4f> renders[2];
+
+    for (int i = 0; i < 2; ++i) {
+        UtilityScene scene;
+
+        scene.setLight(SdfPath("/Point"), std::make_shared<const UtilityLightDesc>(point));
+        addSphere(scene, "Ball", centre, radius, materialNamed(scene, i == 0 ? "Glass" : "Opaque", i == 0 ? clear : opaque));
+        WavefrontFrame frame = makeFrame(1);
+
+        // Without refraction the glass shows no highlights off the inside of its far side, which the
+        // opaque sphere has no counterpart of.
+        frame.refractionDepth = 0;
+        renders[i] = render(scene, frame);
+        ASSERT_EQ(static_cast<std::size_t>(kSize * kSize), renders[i].size());
+    }
+
+    const std::vector<GfVec4f>& colors = renders[0];
+    int brightest = 0;
+
+    for (int i = 0; i < kSize * kSize; ++i) {
+        if (colors[i][1] > colors[brightest][1]) {
+            brightest = i;
+        }
+        expectColor(colors[i], GfVec3d(renders[1][i][0], renders[1][i][1], renders[1][i][2]), kTolerance, "pixel " + std::to_string(i));
+    }
+
+    const GfVec4f& highlight = colors[brightest];
+
+    EXPECT_LE(std::hypot(brightest % kSize - 8., brightest / kSize - 9.), 1.5) << "brightest pixel " << brightest;
+    EXPECT_GT(highlight[1], 0.5f);
+    EXPECT_NEAR(highlight[1], highlight[0], kTolerance);
+    EXPECT_NEAR(highlight[1], highlight[2], kTolerance);
+    // Three pixels lower the normal is nearly 30 degrees from the half vector.
+    EXPECT_GT(highlight[1], 10.f * colors[6 * kSize + 8][1]);
 }
 
 INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityReflect, ::testing::Values(Backend::Cpu, Backend::GpuTiles, Backend::GpuFilm));

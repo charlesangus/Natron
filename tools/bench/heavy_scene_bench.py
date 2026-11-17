@@ -130,6 +130,11 @@ from its coverage). It needs geometry on screen, so it skips with payloads unloa
 boxes_shot need a viewer that publishes natronSceneDrawBoxes, and skip without one; boxes_shot's
 first_boxes_ms runs from the change to the paint that first drew a box (natronSceneFirstBoxesMs).
 
+orbit10k sets the Preferences' sceneStandInMode to Off for its duration and restores the previous value
+afterwards, also on failure, so orbit_fps measures Storm drawing the boxes rather than the stand-in
+(orbit_full covers that); stand_in_mode records the mode used and paint_count the natronScenePaintCount
+delta over the orbit, for diagnosis.
+
 orbit_full clears every draw state, waits for the full scene on screen, and orbits it continuously for
 BENCH_ORBIT_S under the Preferences' scene stand-in settings. orbit_fps counts every main-thread paint
 (natronScenePaintCount), stand-in or full frame; stand_in_shown says whether any paint showed the
@@ -1285,6 +1290,22 @@ try:
         return settled
 
     def action_orbit10k(m):
+        # orbit_fps counts distinct natronSceneLastPaintMs, which only a full Storm frame advances; the
+        # stand-in would suppress those while the camera moves, so the stand-in is Off here (orbit_full
+        # covers it) and the previous mode is restored on every exit.
+        mode = NatronEngine.natron.getSettings().getParam("sceneStandInMode")
+        previous = mode.getValue() if mode is not None else None
+        off = 0
+        m.values["stand_in_mode"] = list(mode.getOptions())[off] if mode is not None else None
+        if mode is not None:
+            mode.setValue(off)
+        try:
+            yield from orbit10k_body(m)
+        finally:
+            if mode is not None and previous is not None:
+                mode.setValue(previous)
+
+    def orbit10k_body(m):
         yield from clear_draw_states()
         v = view()
         depth = rows.get("box_depth")
@@ -1311,7 +1332,9 @@ try:
         m.values["boxes_drawn"] = boxes_drawn()
         m.values["boxes_presented_ms"] = round(time.time() * 1000.0 - sent_ms, 1)
         heartbeat.start()
+        paints_before = prop("natronScenePaintCount", 0)
         yield from action_orbit(m)
+        m.values["paint_count"] = prop("natronScenePaintCount", 0) - paints_before
 
     def action_orbit_full(m):
         yield from clear_draw_states()

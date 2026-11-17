@@ -65,6 +65,21 @@ def require(ok, label, detail=""):
         finish()
 
 
+def _disable_scene_stand_in():
+    """Under llvmpipe a Storm frame often exceeds the stand-in budget, so a camera move would show
+    boxes instead of the frame the script waits on. GUI_TEST_KEEP_STAND_IN=1 keeps the product default."""
+    if os.environ.get("GUI_TEST_KEEP_STAND_IN"):
+        return
+    param = NatronEngine.natron.getSettings().getParam("sceneStandInMode")
+    if param is None:
+        report("NOTE Preferences have no sceneStandInMode; the stand-in stays at its default")
+        return
+    param.setValue(0)
+
+
+_disable_scene_stand_in()
+
+
 _plugin_ids = set(NatronEngine.natron.getPluginIDs())
 
 

@@ -38,6 +38,8 @@ MODE_OFF, MODE_INTERACTION, MODE_ALWAYS = 0, 1, 2
 BOXES_MODELS, BOXES_ROWS = 0, 1
 
 try:
+    # The script sets the mode itself and checks the product default, so guitest must not turn it off.
+    os.environ["GUI_TEST_KEEP_STAND_IN"] = "1"
     import NatronEngine
     from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
     from PySide6.QtGui import QGuiApplication, QImage, QMouseEvent

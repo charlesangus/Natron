@@ -504,7 +504,7 @@ run_bench() {
     out="$FIXTURE_DIR/out/$stem"
     mkdir -p "$out"
     : > "$out/natron.log"
-    nice -n 5 env BENCH_FIXTURE="$fixture" BENCH_FILE="$file" BENCH_SCENARIOS="$scenarios" BENCH_LABEL="$label" \
+    nice -n 5 env GUI_TEST_KEEP_STAND_IN=1 BENCH_FIXTURE="$fixture" BENCH_FILE="$file" BENCH_SCENARIOS="$scenarios" BENCH_LABEL="$label" \
         BENCH_BISECT="$BISECT" NATRON_GUI_TEST_OUT="$out" "${SHADER_CACHE_ENV[@]}" "${BISECT_ENV[@]}" "${LINEBUF_ENV[@]}" "$@" \
         Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py "$APPIMAGE" > >(stamp_lines > "$out.log") 2>&1 &
     runner=$!

@@ -156,3 +156,4 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
 - 2026-11-16 — A blank USDToGeo Prim Pattern stays "nothing imported", and the USD nodes keep blank = no prims (user: "USD nodes should keep their current behaviour. It's ok that usdtogeo does nothing until a prim selection is made"). Scripts that use USDToGeo must set primPattern.
 
 - 2026-11-16 — GeoToUSD Group (b8170f9c6), accepted as proposed (user: "Sounds good"): blank converts all; a point group keeps primitives whose points are all selected, plus selected loose points as a point cloud; the three path-shift cases (single-type collapse to <path>, instance_<i> and proto_<k> renumbering) are left as documented, no converter change.
+- 2026-11-16 — Gate green at b8170f9c6 (run 43965560661). P2.T2's geo_scale bench runs on a rented Vast.ai NVIDIA VM after F4's acceptance bench (one VM on the tunnel at a time).

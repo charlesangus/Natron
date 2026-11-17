@@ -42,7 +42,7 @@ The universal I-mode (user, 2026-10-24): LoopEnd's **Map blend** mode. LoopEnd g
   - verify: at the phase build, `ctest -R NativeLoopMapBlend` passes.
   - size: M
 
-- [ ] M183.P1.T4 — Map blend on the GPU
+- [x] M183.P1.T4 — Map blend on the GPU
   - files: `Engine/Gpu/Kernels/loopmapblend.slang`, `Engine/Gpu/Kernels/loopmapblend.cmake`, `Engine/Nodes/Loop/LoopMapBlend.cpp`, `Tests/Native/NativeLoopMapBlendGpu_Test.cpp`
   - approach: A point kernel over the two bracketing iterations per pixel; iterations for a tile are bound as an array of resident buffers.
   - verify: at the phase build, `ctest -R NativeLoopMapBlendGpu` passes on lavapipe within 1e-6 relative.
@@ -62,3 +62,4 @@ The universal I-mode (user, 2026-10-24): LoopEnd's **Map blend** mode. LoopEnd g
 **Verification gate:** the full build and ctest pass, including `NativeLoopMapBlend` and its GPU suite; a `tools/bench` case with a half-black Map shows the culled render taking at most 60% of the unculled one. Under Xvfb an eye-blur (Blur driven by a roto Map) and a Map-driven Grade are rendered; screenshots shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
 - 2026-11-17 — T1, T2, T3, T5 and the bench in b740eb862 (CPU); gate running. The probe is `getRenderContinuation`; iterations are pulled through `pullRenderContinuationRequest`, which also covers the legacy scheduler. M184's MapInput has Invert and Gamma, not black/white points, so the Map uses those.
 - 2026-11-17 — **Continuation on GPU (user):** GPU placement kept every node offering a render continuation on the CPU, so T4's kernel could never run. Placement is extended so continuation nodes run on the GPU (probe, then the blend kernel over GPU-resident iteration tiles); this also serves later continuation nodes such as M153's GPU phase.
+- 2026-11-17 — T4 in e37a66f01: `supportsRenderContinuationOnGpu()` opts a node in; a continuation task starts its own GPU region and two never merge; the probe runs on the CPU before the region (a GPU-rendered Map is downloaded once); pulled iterations reach `renderGpu` as GPU images. The kernel adds one iteration per dispatch (the fold kernel's pattern; no kernel binds buffer arrays). Pulled iterations still render on the CPU and are uploaded; putting the iteration graphs on the GPU is the next step in this lane after the gate.

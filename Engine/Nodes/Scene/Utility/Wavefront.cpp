@@ -1286,6 +1286,11 @@ wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
 
         return WavefrontUnwrapConstPtr();
     }
+    if (geometry->unwrapStBinding != UtilityScene::eColorBindingVertex && geometry->unwrapStBinding != UtilityScene::eColorBindingCorner) {
+        *error = "The Utility renderer's UV Prim " + prim + " has a constant or uniform UV Primvar \"" + frame.unwrapPrimvar + "\": a bake needs it per vertex or face-varying";
+
+        return WavefrontUnwrapConstPtr();
+    }
 
     const WavefrontRect window = frame.window;
     const WavefrontRect display = displayOf(frame);
@@ -1309,11 +1314,6 @@ wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
     };
     const auto cross2 = [](const GfVec2d& a, const GfVec2d& b) { return a[0] * b[1] - a[1] * b[0]; };
 
-    if (binding != UtilityScene::eColorBindingVertex && binding != UtilityScene::eColorBindingCorner) {
-        unwrap->footprint = 0.;
-
-        return unwrap;
-    }
     for (std::size_t t = 0; t < triangles.size(); ++t) {
         if (stop.load(std::memory_order_relaxed)) {
             return WavefrontUnwrapConstPtr();

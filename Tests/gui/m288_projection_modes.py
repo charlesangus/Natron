@@ -15,10 +15,12 @@ Each case is rendered through a Write to a PNG in the output directory (<name>-r
 checked, and the viewer is then shot (<name>.png):
   1. m288-spherical:   Ring, Projection Spherical, 1024x512 format (2:1); the whole surround is in frame.
   2. m288-cylindrical: Ring, Projection Cylindrical, same format.
-  3. m288-overscan:    Ring, Projection Camera, 960x540 format, Overscan 96 px: the render is 192 px wider
-                       and taller than the format.
+  3. m288-overscan:    Ring, Projection Camera, 960x540 format, Overscan 96 px: the USDRender's region of
+                       definition is 192 px wider and taller than the format. The PNG stays the format's
+                       size, as a Write renders its input's format and PNG has no data window.
   4. m288-uv-unwrap:   UvCube, Projection UV Unwrap, UV Prim /World/Cube, 512x512 format: the cube's
                        shaded faces fill their cross in the 1001 tile and the rest of the tile stays empty.
+                       UvCube has no camera: the settings still name /World/Cam, which a bake ignores.
 Each render must write its file (no node error), and the image must not be empty: at least 5% of its
 pixels coloured, in at least 4 distinct colours.
 
@@ -242,6 +244,10 @@ try:
         app.renderBlocking(writer, 1, 1)
         report("NOTE render %s -> %s" % (name, path))
         if not os.path.isfile(path):
+            for node in (render, settings, writer):
+                message = node.getPersistentMessage() or ""
+                if message:
+                    report("NOTE %s: %s" % (node.getScriptName(), message))
             return None
         report("SHOT " + path)
         return analyse(path)
@@ -324,11 +330,13 @@ try:
         yield ("sleep", SETTLE_MS)
         result = render_to_png("m288-overscan")
         check_image("m288-overscan", result)
+        rod = render.getRegionOfDefinition(1, 0)
+        check((rod.x1, rod.y1, rod.x2, rod.y2) == (-OVERSCAN_PX, -OVERSCAN_PX, PERSPECTIVE[0] + OVERSCAN_PX, PERSPECTIVE[1] + OVERSCAN_PX),
+              "the USDRender's region of definition is the format grown by %d px on every side (got %g,%g to %g,%g)"
+              % (OVERSCAN_PX, rod.x1, rod.y1, rod.x2, rod.y2))
         if result is not None:
-            expected = (PERSPECTIVE[0] + 2 * OVERSCAN_PX, PERSPECTIVE[1] + 2 * OVERSCAN_PX)
-            check((result[0], result[1]) == expected,
-                  "the overscanned render is %dx%d, the format grown by %d px on every side (got %dx%d)"
-                  % (expected + (OVERSCAN_PX, result[0], result[1])))
+            check((result[0], result[1]) == PERSPECTIVE,
+                  "the Write renders the format, %dx%d (got %dx%d)" % (PERSPECTIVE + (result[0], result[1])))
         yield from show_and_shoot("m288-overscan")
 
         section("uv unwrap")

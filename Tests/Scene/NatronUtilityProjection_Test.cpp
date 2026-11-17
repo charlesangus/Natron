@@ -861,14 +861,14 @@ bakeLayer(bool withCoordinates)
 
 bool
 bakeThroughTheHost(const void* owner,
-                   bool withCoordinates,
+                   const SdfLayerRefPtr& layer,
                    HydraRender::Result* result,
                    std::string* error)
 {
     HydraRender::Request request;
 
     request.owner = owner;
-    request.scene = SceneOps::appendLayer(ScenePayload(), bakeLayer(withCoordinates), 1);
+    request.scene = SceneOps::appendLayer(ScenePayload(), layer, 1);
     request.time = UsdTimeCode(1.);
     request.width = kBakeSize;
     request.height = kBakeSize;
@@ -892,7 +892,7 @@ TEST(NatronUtilityProjectionHost, AUvUnwrapBakesThePrimItNamesAndFailsWithoutIts
     HydraRender::Result baked;
     std::string error;
 
-    ASSERT_TRUE(bakeThroughTheHost(&owner, true, &baked, &error)) << error;
+    ASSERT_TRUE(bakeThroughTheHost(&owner, bakeLayer(true), &baked, &error)) << error;
     ASSERT_EQ(static_cast<std::size_t>(kBakeSize * kBakeSize), baked.primId.size());
 
     int elsewhere = 0;
@@ -907,8 +907,24 @@ TEST(NatronUtilityProjectionHost, AUvUnwrapBakesThePrimItNamesAndFailsWithoutIts
     HydraRender::Result failed;
 
     error.clear();
-    EXPECT_FALSE(bakeThroughTheHost(&owner, false, &failed, &error));
+    EXPECT_FALSE(bakeThroughTheHost(&owner, bakeLayer(false), &failed, &error));
     EXPECT_NE(std::string::npos, error.find("/Baked")) << error;
     EXPECT_NE(std::string::npos, error.find("\"uv\"")) << error;
+    HydraRender::releaseAll();
+}
+
+// A scene that draws nothing at all still bakes far enough to fail naming the prim it lacks.
+TEST(NatronUtilityProjectionHost, AUvUnwrapInASceneThatDrawsNothingFailsNamingThePrim)
+{
+    const int owner = 0;
+    SdfLayerRefPtr layer = SceneOps::createNodeLayer("NatronUtilityProjectionEmptyBake");
+
+    UsdStage::Open(layer)->DefinePrim(SdfPath("/Empty"), TfToken("Xform"));
+
+    HydraRender::Result result;
+    std::string error;
+
+    EXPECT_FALSE(bakeThroughTheHost(&owner, layer, &result, &error));
+    EXPECT_NE(std::string::npos, error.find("/Baked")) << error;
     HydraRender::releaseAll();
 }

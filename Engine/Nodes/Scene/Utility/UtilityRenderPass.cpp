@@ -616,7 +616,10 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     _frameKey = key;
     _hasFrame = true;
 
-    if (!hasCamera || frame.window.width <= 0 || frame.window.height <= 0 || (snapshot->instances.empty() && !hasDomeLight(*snapshot)) || !wavefrontCameraIsUsable(frame)) {
+    // A bake of a prim the scene does not draw goes on to fail naming it.
+    const bool nothingToSee = snapshot->instances.empty() && !hasDomeLight(*snapshot) && frame.mapping != WavefrontMapping::UvUnwrap;
+
+    if (!hasCamera || frame.window.width <= 0 || frame.window.height <= 0 || nothingToSee || !wavefrontCameraIsUsable(frame)) {
         const std::lock_guard<std::mutex> l(_landingMutex);
 
         _frameFinished = true;

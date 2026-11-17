@@ -101,16 +101,24 @@ primIdKey(std::uint32_t hash)
     return std::string(kUSDRenderMetadataPrimIdPrefix) + hex;
 }
 
+bool
+utilityUvUnwrap(const std::string& renderer,
+                const RenderSettingsPrim::Values& values)
+{
+    if (renderer != kRenderDelegateUtilityId) {
+        return false;
+    }
+    const RenderSettingsPrim::Values::const_iterator projection = values.find(kUtilitySettingProjection);
+
+    return (projection != values.end()) && projection->second.IsHolding<PXR_NS::TfToken>() && (projection->second.UncheckedGet<PXR_NS::TfToken>() == kUtilityProjectionUvUnwrap);
+}
+
 // A UV Unwrap render's pixels are the texture's texels, so it has nothing beyond them to grow into.
 int
 utilityOverscan(const std::string& renderer,
                 const RenderSettingsPrim::Values& values)
 {
-    if (renderer != kRenderDelegateUtilityId) {
-        return 0;
-    }
-    const RenderSettingsPrim::Values::const_iterator projection = values.find(kUtilitySettingProjection);
-    if ((projection != values.end()) && projection->second.IsHolding<PXR_NS::TfToken>() && (projection->second.UncheckedGet<PXR_NS::TfToken>() == kUtilityProjectionUvUnwrap)) {
+    if ((renderer != kRenderDelegateUtilityId) || utilityUvUnwrap(renderer, values)) {
         return 0;
     }
     const RenderSettingsPrim::Values::const_iterator found = values.find(kUtilitySettingOverscan);
@@ -770,13 +778,20 @@ USDRender::prepareRender(double time,
     setup->request.overscanRight = setup->pixels.x2 - shown.x2;
     setup->request.overscanTop = setup->pixels.y2 - shown.y2;
 
+    // A bake's texels look at the surface along its normals, so it needs no camera: one the scene
+    // lacks is left out rather than failing an asset that has none.
+    const bool bake = utilityUvUnwrap(active.renderer, setup->request.settings);
     PXR_NS::SdfPath cameraPath = active.prim ? active.standard.camera : PXR_NS::SdfPath();
     if (cameraPath.IsEmpty()) {
         const std::vector<PXR_NS::SdfPath> cameras = HydraRender::cameraPaths(stage);
-        if (cameras.empty()) {
+        if (!cameras.empty()) {
+            cameraPath = cameras.front();
+        } else if (!bake) {
             return failWith(tr("The input scene has no camera to render through.").toStdString());
         }
-        cameraPath = cameras.front();
+    }
+    if (bake && !cameraPath.IsEmpty() && !PXR_NS::UsdGeomCamera(stage->GetPrimAtPath(cameraPath))) {
+        cameraPath = PXR_NS::SdfPath();
     }
     HydraRender::FitModeEnum fit = HydraRender::eFitModeExpand;
     if (active.prim && !fitModeForPolicy(active.standard.aspectRatioConformPolicy, &fit)) {
@@ -801,6 +816,11 @@ USDRender::prepareRender(double time,
     setup->request.showProxy = proxyPurposeKnob && proxyPurposeKnob->getValue();
     setup->request.showGuides = guidePurposeKnob && guidePurposeKnob->getValue();
     setup->request.renderer = active.renderer;
+    if (cameraPath.IsEmpty()) {
+        setup->request.frustum = PXR_NS::GfFrustum();
+
+        return true;
+    }
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;

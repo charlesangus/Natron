@@ -853,10 +853,6 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->secondRowLayout->addStretch();
 
-    // The first row has no slack at 1920x1080 with the default panes: a widget at its end is clipped.
-    _imp->staleSpinner = new ViewerStaleSpinner(buttonSize, buttonIconSize.width(), _imp->secondSettingsRow);
-    _imp->secondRowLayout->addWidget(_imp->staleSpinner);
-
     QIcon colorPickerIcon;
     appPTR->getIcon(NATRON_PIXMAP_COLOR_PICKER, pixmapIconSize, &colorPickerIcon);
 
@@ -871,6 +867,10 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->pickerButton, SIGNAL(clicked(bool)), this, SLOT(onPickerButtonClicked(bool)) );
 
     _imp->secondRowLayout->addWidget(_imp->pickerButton);
+
+    // Last widget of the row, pinned to the right end by the stretch; its slot is reserved while hidden.
+    _imp->staleSpinner = new ViewerStaleSpinner(buttonSize, buttonIconSize.width(), _imp->secondSettingsRow);
+    _imp->secondRowLayout->addWidget(_imp->staleSpinner);
 
     /*Progressive render row*/
     _imp->sceneRenderRow = new QWidget(this);

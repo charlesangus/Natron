@@ -100,6 +100,13 @@ try:
             return False, "visible region %r of rect %r" % (unclipped, s.rect())
         top = s.window()
         rect = QRect(s.mapTo(top, QPoint(0, 0)), s.size())
+        lay = s.parentWidget().layout()
+        last = lay.count() - 1 if lay is not None else -1
+        if last < 1 or lay.itemAt(last).widget() is not s:
+            return False, "the spinner is not the last widget of its toolbar row"
+        picker = lay.itemAt(last - 1).widget()
+        if picker is None or picker.mapTo(top, QPoint(0, 0)).x() + picker.width() > rect.x():
+            return False, "the spinner is not to the right of the colour-picker button"
         w = s.parentWidget()
         while w is not None:
             area = QRect(w.mapTo(top, QPoint(0, 0)), w.size()) if w is not top else top.rect()

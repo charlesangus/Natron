@@ -25,9 +25,10 @@
 
 #include "FileSystemModel.h"
 
-#include <vector>
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
+#include <vector>
 
 #ifdef __NATRON_WIN32__
 #include <windows.h>
@@ -200,6 +201,9 @@ struct FileSystemModelPrivate
     mutable QMutex filtersMutex;
     mutable QMutex sequenceModeEnabledMutex;
     bool sequenceModeEnabled;
+    mutable QMutex splitMutex;
+    bool splitOnGaps;
+    std::map<QString, bool> splitOverrides;
     Qt::SortOrder ordering;
     int sortSection;
     mutable QMutex sortMutex;
@@ -221,6 +225,9 @@ struct FileSystemModelPrivate
         , filtersMutex()
         , sequenceModeEnabledMutex()
         , sequenceModeEnabled(false)
+        , splitMutex()
+        , splitOnGaps(false)
+        , splitOverrides()
         , ordering(Qt::AscendingOrder)
         , sortSection(0)
         , sortMutex()
@@ -267,6 +274,9 @@ struct FileSystemItemPrivate
     quint64 size;
     QString fileExtension;
     QString absoluteFilePath;
+    bool isChunk;
+    int chunkFirstFrame;
+    int chunkLastFrame;
 
     FileSystemItemPrivate(const FileSystemModelPtr& model,
                           bool isDir,
@@ -275,7 +285,7 @@ struct FileSystemItemPrivate
                           const SequenceParsing::SequenceFromFilesPtr& sequence,
                           const QDateTime& dateModified,
                           quint64 size,
-                          const FileSystemItemPtr &parent)
+                          const FileSystemItemPtr& parent)
         : model(model)
         , parent(parent)
         , children()
@@ -288,6 +298,9 @@ struct FileSystemItemPrivate
         , size(size)
         , fileExtension()
         , absoluteFilePath()
+        , isChunk(false)
+        , chunkFirstFrame(0)
+        , chunkLastFrame(0)
     {
         if (!isDir) {
             int lastDotPos = filename.lastIndexOf( QChar::fromLatin1('.') );
@@ -460,6 +473,24 @@ FileSystemItem::getSize() const
     return _imp->size;
 }
 
+bool
+FileSystemItem::isSequenceChunk() const
+{
+    return _imp->isChunk;
+}
+
+int
+FileSystemItem::getChunkFirstFrame() const
+{
+    return _imp->chunkFirstFrame;
+}
+
+int
+FileSystemItem::getChunkLastFrame() const
+{
+    return _imp->chunkLastFrame;
+}
+
 void
 FileSystemItem::addChild(const FileSystemItemPtr& child)
 {
@@ -478,7 +509,6 @@ FileSystemItem::addChild(const SequenceParsing::SequenceFromFilesPtr& sequence,
         return;
     }
     QMutexLocker l(&_imp->childrenMutex);
-    ///Does the child exist already ?
     QString filename;
     QString userFriendlyFilename;
     if (!sequence) {
@@ -494,14 +524,25 @@ FileSystemItem::addChild(const SequenceParsing::SequenceFromFilesPtr& sequence,
         userFriendlyFilename = QString::fromUtf8( pattern.c_str() );
     }
 
-
-    for (std::vector<FileSystemItemPtr>::iterator it = _imp->children.begin(); it != _imp->children.end(); ++it) {
-        if ( (*it)->fileName() == filename ) {
-            _imp->children.erase(it);
-            break;
+    std::vector<std::pair<int, int>> runs;
+    if (sequence && !sequence->isSingleFile() && model->isSequenceSplit(generateChildAbsoluteName(this, filename))) {
+        runs = FileSystemModel::contiguousFrameRuns(*sequence);
+        if (runs.size() < 2) {
+            runs.clear();
+        } else if (model->sortIndicatorOrder() == Qt::DescendingOrder) {
+            std::reverse(runs.begin(), runs.end());
         }
     }
 
+    // A re-gathered item replaces the ones listed before it, every chunk of a split sequence included.
+    for (std::vector<FileSystemItemPtr>::iterator it = _imp->children.begin(); it != _imp->children.end();) {
+        if ( (*it)->fileName() == filename ) {
+            it = _imp->children.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    const bool isChunk = !runs.empty();
 
     bool isDir = sequence ? false : info.isDir();
     qint64 size;
@@ -511,18 +552,42 @@ FileSystemItem::addChild(const SequenceParsing::SequenceFromFilesPtr& sequence,
         size = isDir ? 0 : info.size();
     }
 
+    if (!isChunk) {
+        FileSystemItemPtr child = std::make_shared<FileSystemItem::MakeSharedEnabler>(model,
+                                                                                      isDir,
+                                                                                      filename,
+                                                                                      userFriendlyFilename,
+                                                                                      sequence,
+                                                                                      info.lastModified(),
+                                                                                      size,
+                                                                                      shared_from_this());
+        model->_imp->registerItem(child);
+        _imp->children.push_back(child);
 
-    ///Create the child
-    FileSystemItemPtr child = std::make_shared<FileSystemItem::MakeSharedEnabler>( model,
-                                                                                                    isDir,
-                                                                                                    filename,
-                                                                                                    userFriendlyFilename,
-                                                                                                    sequence,
-                                                                                                    info.lastModified(),
-                                                                                                    size,
-                                                                                                    shared_from_this() );
-    model->_imp->registerItem(child);
-    _imp->children.push_back(child);
+        return;
+    }
+
+    const int fileCount = std::max(1, sequence->count());
+    for (std::vector<std::pair<int, int>>::const_iterator run = runs.begin(); run != runs.end(); ++run) {
+        QString name = filename + QLatin1Char(' ') + QString::number(run->first);
+        if (run->second != run->first) {
+            name += QLatin1Char('-') + QString::number(run->second);
+        }
+        const qint64 runSize = (qint64)((double)size * (run->second - run->first + 1) / fileCount);
+        FileSystemItemPtr child = std::make_shared<FileSystemItem::MakeSharedEnabler>(model,
+                                                                                      false,
+                                                                                      filename,
+                                                                                      name,
+                                                                                      sequence,
+                                                                                      info.lastModified(),
+                                                                                      runSize,
+                                                                                      shared_from_this());
+        child->_imp->isChunk = true;
+        child->_imp->chunkFirstFrame = run->first;
+        child->_imp->chunkLastFrame = run->second;
+        model->_imp->registerItem(child);
+        _imp->children.push_back(child);
+    }
 } // FileSystemItem::addChild
 
 void
@@ -825,6 +890,16 @@ FileSystemModel::data(const QModelIndex &index,
         return item->absoluteFilePath();
     } else if ( (role == FileNameRole) && (col == Name) ) {
         return item->fileName();
+    } else if ((role == UserFriendlyNameRole) && (col == Name)) {
+        return item->getUserFriendlyFilename();
+    } else if ((role == ChunkRangeRole) && (col == Name)) {
+        if (!item->isSequenceChunk()) {
+            return QVariant();
+        }
+        QVariantList range;
+        range << item->getChunkFirstFrame() << item->getChunkLastFrame();
+
+        return range;
     }
 
     if ( (role == Qt::DecorationRole) && (col == Name) ) {
@@ -1174,6 +1249,73 @@ FileSystemModel::isSequenceModeEnabled() const
     QMutexLocker l(&_imp->sequenceModeEnabledMutex);
 
     return _imp->sequenceModeEnabled;
+}
+
+void
+FileSystemModel::setSplitSequencesOnGaps(bool split)
+{
+    {
+        QMutexLocker l(&_imp->splitMutex);
+        if ((_imp->splitOnGaps == split) && _imp->splitOverrides.empty()) {
+            return;
+        }
+        _imp->splitOnGaps = split;
+        _imp->splitOverrides.clear();
+    }
+
+    resetCompletly(true);
+    setRootPath(_imp->currentRootPath);
+}
+
+bool
+FileSystemModel::isSplitSequencesOnGapsEnabled() const
+{
+    QMutexLocker l(&_imp->splitMutex);
+
+    return _imp->splitOnGaps;
+}
+
+void
+FileSystemModel::setSequenceSplit(const QString& sequencePath,
+                                  bool split)
+{
+    {
+        QMutexLocker l(&_imp->splitMutex);
+        if (split == _imp->splitOnGaps) {
+            _imp->splitOverrides.erase(sequencePath);
+        } else {
+            _imp->splitOverrides[sequencePath] = split;
+        }
+    }
+
+    resetCompletly(true);
+    setRootPath(_imp->currentRootPath);
+}
+
+bool
+FileSystemModel::isSequenceSplit(const QString& sequencePath) const
+{
+    QMutexLocker l(&_imp->splitMutex);
+    std::map<QString, bool>::const_iterator found = _imp->splitOverrides.find(sequencePath);
+
+    return found != _imp->splitOverrides.end() ? found->second : _imp->splitOnGaps;
+}
+
+std::vector<std::pair<int, int>>
+FileSystemModel::contiguousFrameRuns(const SequenceParsing::SequenceFromFiles& sequence)
+{
+    std::vector<std::pair<int, int>> runs;
+    const std::map<int, SequenceParsing::FileNameContent>& frames = sequence.getFrameIndexes();
+
+    for (std::map<int, SequenceParsing::FileNameContent>::const_iterator it = frames.begin(); it != frames.end(); ++it) {
+        if (!runs.empty() && ((long long)it->first == (long long)runs.back().second + 1)) {
+            runs.back().second = it->first;
+        } else {
+            runs.push_back(std::make_pair(it->first, it->first));
+        }
+    }
+
+    return runs;
 }
 
 FileSystemItemPtr

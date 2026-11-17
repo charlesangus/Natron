@@ -766,8 +766,10 @@ RotoPaint::getRegionOfDefinition(U64 /*hash*/,
                                  ViewIdx view,
                                  RectD* rod)
 {
-    // The background inputs' union, as EffectInstance::getRegionOfDefinition() makes it, without
-    // the Vectors input: only the follow tools read it.
+    // The background inputs' union, without the Vectors input: only the follow tools read it.
+    // An input whose region fails adds nothing instead of failing the whole union: an empty
+    // region (a disabled node, an unconnected Read, an empty Roto) answers as a failure, and
+    // one such extra Bg would otherwise drop the main Bg and leave only the shapes' region.
     rod->clear();
     bool first = true;
     for (int i = 0; i < getNInputs(); ++i) {
@@ -787,9 +789,8 @@ RotoPaint::getRegionOfDefinition(U64 /*hash*/,
             ActionContextScope acting(overlaid, inputContext);
             st = input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &inputRod, &isProjectFormat);
         }
-        if (st == eStatusFailed) {
-            rod->clear();
-            break;
+        if ((st == eStatusFailed) || inputRod.isNull()) {
+            continue;
         }
         if (first) {
             *rod = inputRod;

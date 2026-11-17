@@ -130,7 +130,7 @@ utilityGpuBudget()
 
 namespace {
 static_assert(sizeof(KernelRayGenParams) == utility_raygen_push_bytes && sizeof(KernelRayGenParams) == utility_raygen_uv_push_bytes);
-static_assert(utility_raygen_uv_storage_buffers == 3);
+static_assert(utility_raygen_uv_storage_buffers == 6);
 static_assert(sizeof(KernelShadeParams) == utility_shade_surface_push_bytes);
 static_assert(sizeof(KernelShadeLightsParams) == utility_shade_lights_push_bytes);
 static_assert(sizeof(KernelResolveParams) == utility_resolve_hits_push_bytes);
@@ -477,7 +477,8 @@ struct WavefrontGpu::Implementation {
     BatchReadback readback;
     // The UV unwrap on the device, kept while the frames draw the same one.
     WavefrontUnwrapConstPtr unwrap;
-    gpu::GpuBufferHandle unwrapTexels;
+    gpu::GpuBufferHandle unwrapGrid;
+    gpu::GpuBufferHandle unwrapTriangles;
 };
 
 /**
@@ -613,11 +614,12 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
 bool
 WavefrontGpu::Implementation::uploadUnwrap(const WavefrontUnwrapConstPtr& next)
 {
-    if (next == unwrap && unwrapTexels) {
+    if (next == unwrap && unwrapGrid && unwrapTriangles) {
         return true;
     }
     unwrap.reset();
-    unwrapTexels = gpu::GpuBufferHandle();
+    unwrapGrid = gpu::GpuBufferHandle();
+    unwrapTriangles = gpu::GpuBufferHandle();
 
     std::unique_ptr<gpu::GpuRecordContext> ctx;
 
@@ -625,16 +627,19 @@ WavefrontGpu::Implementation::uploadUnwrap(const WavefrontUnwrapConstPtr& next)
         return fail("WavefrontGpu could not create a record context", s);
     }
 
-    gpu::GpuBufferHandle texels;
+    gpu::GpuBufferHandle grid;
+    gpu::GpuBufferHandle triangles;
 
-    if (!upload(*ctx, next->texels.data(), next->texels.size() * sizeof(float), "UV unwrap texels", texels)) {
+    if (!upload(*ctx, next->grid.data(), next->grid.size() * sizeof(std::int32_t), "UV unwrap grid", grid)
+        || !upload(*ctx, next->triangles.data(), next->triangles.size() * sizeof(float), "UV unwrap triangles", triangles)) {
         return false;
     }
     if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
         return fail("WavefrontGpu could not upload its UV unwrap", s);
     }
     unwrap = next;
-    unwrapTexels = std::move(texels);
+    unwrapGrid = std::move(grid);
+    unwrapTriangles = std::move(triangles);
 
     return true;
 }
@@ -890,7 +895,10 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         return false;
     }
     if (frame.mapping == WavefrontMapping::UvUnwrap) {
-        const std::array<gpu::GpuBinding, 3> bindings = { gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights), gpu::GpuBinding::storage(2, unwrapTexels.buffer()) };
+        const std::array<gpu::GpuBinding, 6> bindings = {
+            gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights), gpu::GpuBinding::storage(2, *hitValues),
+            gpu::GpuBinding::storage(3, *hitIds), gpu::GpuBinding::storage(4, unwrapGrid.buffer()), gpu::GpuBinding::storage(5, unwrapTriangles.buffer())
+        };
 
         if (gpu::GpuStatus s = rec.ctx().dispatchBindings(rayGenUvKernel, bindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
             return fail("WavefrontGpu could not generate rays", s);
@@ -901,10 +909,10 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         if (gpu::GpuStatus s = rec.ctx().dispatchBindings(rayGenKernel, bindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
             return fail("WavefrontGpu could not generate rays", s);
         }
-    }
-    rec.ctx().computeBarrier();
-    if (gpu::GpuStatus s = tracer.recordIntersect(rec.ctx(), *rays, static_cast<std::uint32_t>(count), *hitValues, *hitIds); !s) {
-        return fail("WavefrontGpu could not intersect", s);
+        rec.ctx().computeBarrier();
+        if (gpu::GpuStatus s = tracer.recordIntersect(rec.ctx(), *rays, static_cast<std::uint32_t>(count), *hitValues, *hitIds); !s) {
+            return fail("WavefrontGpu could not intersect", s);
+        }
     }
     rec.ctx().computeBarrier();
 

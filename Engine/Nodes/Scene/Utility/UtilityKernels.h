@@ -260,13 +260,18 @@ void runRayGenKernel(const KernelRayGenParams& params,
                      float* weights = nullptr);
 
 /**
- * @brief Runs the C++ build of RayGenUv.slang for one tile, as runRayGenKernel() does, reading texelFloats
- * floats of WavefrontUnwrap::texels laid out over the params' window. MT-safe.
+ * @brief Runs the C++ build of RayGenUv.slang for one tile, as runRayGenKernel() does, reading the gridInts
+ * ints and triangleFloats floats of a WavefrontUnwrap's grid and triangles. It writes each ray's hit
+ * too, in the three-array layouts of Tracer::HitBatch, as the bake traces no primary rays. MT-safe.
  **/
 void runRayGenUvKernel(const KernelRayGenParams& params,
-                       const float* texels,
-                       std::size_t texelFloats,
+                       const std::int32_t* grid,
+                       std::size_t gridInts,
+                       const float* triangles,
+                       std::size_t triangleFloats,
                        float* rays,
+                       float* hitSurface,
+                       std::uint32_t* hitIds,
                        float* weights = nullptr);
 
 /**

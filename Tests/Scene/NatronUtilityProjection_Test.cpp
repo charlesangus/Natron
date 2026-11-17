@@ -612,6 +612,43 @@ hitsIn(const ProjectionFilm& film)
 
     return hits;
 }
+
+// Counts per pixel the passes whose sample hit something.
+class CoverageFilm : public ProjectionFilm {
+public:
+    CoverageFilm(int width,
+                 int height)
+        : ProjectionFilm(width, height)
+        , _width(width)
+        , _hits(static_cast<std::size_t>(width * height), 0)
+    {
+    }
+
+    virtual void writeTile(const WavefrontTile& tile) OVERRIDE
+    {
+        ProjectionFilm::writeTile(tile);
+
+        std::size_t index = 0;
+
+        for (int row = 0; row < tile.rect.height; ++row) {
+            for (int column = 0; column < tile.rect.width; ++column, ++index) {
+                if (tile.hitGeometry[index] != Tracer::kNoHit) {
+                    ++_hits[static_cast<std::size_t>((tile.rect.y + row) * _width + tile.rect.x + column)];
+                }
+            }
+        }
+    }
+
+    int hitsAt(int x,
+               int y) const
+    {
+        return _hits[static_cast<std::size_t>(y * _width + x)];
+    }
+
+private:
+    int _width;
+    std::vector<int> _hits;
+};
 } // anon namespace
 
 // A quad whose UVs span its tile bakes, texel for texel, what a camera square on to it sees.
@@ -725,6 +762,69 @@ TEST_P(NatronUtilityProjection, AUvUnwrapLeavesTheTexelsItsLayoutMissesEmptyUnde
     }
     EXPECT_EQ(0, filled);
     EXPECT_EQ((high - low - 2) * (high - low - 2), lit);
+}
+
+// A surface just above the baked prim, nearer than a texel, neither shows in the bake nor hides it.
+TEST_P(NatronUtilityProjection, AUvUnwrapBakesItsPrimThroughASurfaceJustAboveIt)
+{
+    UtilityScene scene;
+
+    addBakedQuad(scene, 0.f);
+    addFace(scene, "/cover", eFaceTop, GfVec3f(0.f, 0.f, 0.05f), GfVec3f(2.f * kBakeHalf, 0.f, 0.f), GfVec3f(0.f, 2.f * kBakeHalf, 0.f));
+
+    ProjectionFilm baked(kBakeSize, kBakeSize);
+
+    if (!draw(scene, bakeFrame(1001), baked)) {
+        return;
+    }
+    EXPECT_EQ(kBakeSize * kBakeSize, hitsIn(baked));
+}
+
+// A UV island narrower than a texel and clear of every texel's centre still covers part of each texel
+// it crosses, and nothing of those beside it.
+TEST_P(NatronUtilityProjection, AUvIslandNarrowerThanATexelPartlyCoversTheTexelsItCrosses)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addBakedQuad(scene, 0.f);
+    const int column = kBakeSize / 2;
+    const float left = (column + 0.05f) / kBakeSize;
+    const float right = (column + 0.45f) / kBakeSize;
+
+    scene.setUnwrapSt(id, true, UtilityScene::eColorBindingVertex,
+                      VtVec2fArray { GfVec2f(left, 0.f), GfVec2f(right, 0.f), GfVec2f(right, 1.f), GfVec2f(left, 1.f) });
+
+    const int side = 4;
+    const int samples = side * side;
+    WavefrontFrame frame = bakeFrame(1001);
+    CoverageFilm film(kBakeSize, kBakeSize);
+
+    frame.sampling.samplesPerSide = side;
+    for (int sample = 0; sample < samples; ++sample) {
+        frame.sampling.sampleIndex = sample;
+        if (!draw(scene, frame, film)) {
+            return;
+        }
+    }
+
+    int crossing = 0;
+
+    for (int y = 0; y < kBakeSize; ++y) {
+        for (int x = 0; x < kBakeSize; ++x) {
+            const int hits = film.hitsAt(x, y);
+
+            if (x != column) {
+                EXPECT_EQ(0, hits) << "texel " << x << ", " << y;
+                continue;
+            }
+            EXPECT_LT(hits, samples) << "texel " << x << ", " << y << " is only partly under the island";
+            crossing += hits;
+        }
+    }
+
+    const double covered = static_cast<double>(crossing) / (kBakeSize * samples);
+
+    EXPECT_GT(covered, 0.2) << "the island spans 0.4 of its texels";
+    EXPECT_LT(covered, 0.6) << "the island spans 0.4 of its texels";
 }
 
 INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityProjection, ::testing::Values(Backend::Cpu, Backend::Gpu));

@@ -1012,7 +1012,7 @@ TEST_F(USDRenderRendererTest, AUvUnwrapBakesWithoutACameraAndFailsWithItsReasonO
         { "a camera the scene lacks", bakeScene(missingCamera, kBakeFaceVaryingSt, "/World/Quad"), {} },
         { "no camera", bakeScene(std::string(), kBakeFaceVaryingSt, "/World/Quad"), {} },
         { "no primvar", bakeScene(missingCamera, std::string(), "/World/Quad"), { "/World/Quad", "\"st\"" } },
-        { "a uniform primvar", bakeScene(missingCamera, "        texCoord2f[] primvars:st = [(0.5, 0.5)] (\n            interpolation = \"uniform\"\n        )\n", "/World/Quad"), { "/World/Quad", "\"st\"" } },
+        { "a uniform primvar", bakeScene(missingCamera, "        texCoord2f[] primvars:st = [(0.5, 0.5)] (\n            interpolation = \"uniform\"\n        )\n", "/World/Quad"), { "/World/Quad", "\"st\"", "constant or uniform" } },
         { "no prim", bakeScene(missingCamera, kBakeFaceVaryingSt, "/World/Gone"), { "/World/Gone" } },
     };
     std::vector<std::string> paths;
@@ -1038,6 +1038,8 @@ TEST_F(USDRenderRendererTest, AUvUnwrapBakesWithoutACameraAndFailsWithItsReasonO
         const Case& c = cases[i];
         file->setValue(paths[i]);
         appPTR->clearAllCaches();
+        node->clearPersistentMessage(false);
+        ASSERT_FALSE(node->hasPersistentMessage()) << c.name;
         std::vector<RenderedPlane> planes;
         std::string error;
         const bool rendered = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kBakeTexels, kBakeTexels), allPlanes(), &planes, &error, false);

@@ -89,16 +89,34 @@ enum class WavefrontMapping {
     UvUnwrap,
 };
 
-// The floats per pixel of WavefrontUnwrap::texels, as Kernels/RayGenUv.slang reads them: the surface's
-// world position at the pixel's centre and 1 where the prim covers the pixel, else 0; how the position
-// moves per pixel along x, and how far either side of the surface its ray starts and ends; how it moves
-// per pixel along y; and the surface's unit normal.
-const std::size_t kWavefrontUnwrapFloats = 16;
+// The layout of WavefrontUnwrap::grid, as Kernels/RayGenUv.slang reads it: a header, then for each cell
+// in rows from the bottom the offset of its first candidate, one more offset ending the last cell's, and
+// then the candidates, each a triangle's index in Geometry::triangles.
+enum WavefrontUnwrapGridField {
+    eWavefrontUnwrapGridX = 0,
+    eWavefrontUnwrapGridY,
+    eWavefrontUnwrapGridColumns,
+    eWavefrontUnwrapGridRows,
+    eWavefrontUnwrapGridCellSize,
+    eWavefrontUnwrapGridGeometry,
+    eWavefrontUnwrapGridInstance,
+    eWavefrontUnwrapGridReserved,
+    eWavefrontUnwrapGridHeader,
+};
 
-// Where a UV unwrap's pixels lie on its prim, at one time.
+// The floats per triangle of WavefrontUnwrap::triangles: its corners' pixel positions in the window,
+// then how far off the surface its rays start, a spare float, and its corners' world positions, each
+// followed by one component of its unit normal.
+const std::size_t kWavefrontUnwrapTriangleFloats = 20;
+
+// Where a UV unwrap's pixels lie on its prim, at one time. Every sample finds the triangle under it among
+// the candidates of the grid cell it lands in, so that coverage and the surface position are the
+// sample's own rather than its pixel centre's.
 struct WavefrontUnwrap {
     WavefrontRect window;
-    std::vector<float> texels;
+    std::vector<std::int32_t> grid;
+    // Indexed by triangle; those no cell lists are zero.
+    std::vector<float> triangles;
     // The world size of a pixel on the surface, averaged over the prim.
     double footprint = 0.;
 };
@@ -275,7 +293,8 @@ bool wavefrontDrawSamples(WavefrontExecutor& executor,
 /**
  * @brief Lays the frame's window out over the UV tile of frame.unwrapPrim, as the scene places its first
  * instance. Where triangles overlap in UV the later one wins. Returns null with *error set when the
- * scene has no such prim or the prim has no frame.unwrapPrimvar, and null when stop ended it.
+ * scene has no such prim, the prim has no frame.unwrapPrimvar or its layout has more grid entries than
+ * an int indexes, and null when stop ended it.
  **/
 WavefrontUnwrapConstPtr wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
                                         const WavefrontFrame& frame,

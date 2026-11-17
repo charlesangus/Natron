@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -1272,6 +1273,7 @@ wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
 
     const UtilityScene::Geometry* geometry = nullptr;
     UtilityScene::GeometryId id = 0;
+    std::size_t geometryIndex = 0;
 
     for (const auto& entry : snapshot.geometries) {
         if (entry.second.path == frame.unwrapPrim) {
@@ -1279,6 +1281,7 @@ wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
             id = entry.first;
             break;
         }
+        ++geometryIndex;
     }
 
     const auto instance = std::find_if(snapshot.instances.begin(), snapshot.instances.end(), [id](const UtilityScene::Instance& candidate) { return candidate.geometry == id; });
@@ -1310,16 +1313,29 @@ wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
     const VtVec3iArray& triangles = geometry->triangles;
     const UtilityScene::ColorBinding binding = geometry->unwrapStBinding;
     auto unwrap = std::make_shared<WavefrontUnwrap>();
-    double footprintSum = 0.;
-    std::size_t covered = 0;
 
     unwrap->window = window;
-    unwrap->texels.assign(static_cast<std::size_t>(std::max(0, window.width)) * std::max(0, window.height) * kWavefrontUnwrapFloats, 0.f);
+    unwrap->triangles.assign(triangles.size() * kWavefrontUnwrapTriangleFloats, 0.f);
+
+    // A sample lands up to half the filter's width from its pixel's centre.
+    const int margin = static_cast<int>(std::ceil(std::max(1.f, frame.sampling.filterWidth) * 0.5f)) + 1;
+    const double gridLeft = window.x - margin;
+    const double gridBottom = window.y - margin;
+    const double gridRight = window.x + std::max(0, window.width) + margin;
+    const double gridTop = window.y + std::max(0, window.height) + margin;
 
     const auto texelOf = [&](const GfVec2f& uv) {
         return GfVec2d(display.x + (uv[0] - tileOrigin[0]) * texelsPerU, display.y + (uv[1] - tileOrigin[1]) * texelsPerV);
     };
     const auto cross2 = [](const GfVec2d& a, const GfVec2d& b) { return a[0] * b[1] - a[1] * b[0]; };
+
+    struct Placed {
+        std::uint32_t triangle;
+        GfVec4d bounds;
+    };
+    std::vector<Placed> placed;
+    double footprintSum = 0.;
+    double areaSum = 0.;
 
     for (std::size_t t = 0; t < triangles.size(); ++t) {
         if (stop.load(std::memory_order_relaxed)) {
@@ -1349,58 +1365,129 @@ wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
             continue;
         }
 
+        const GfVec4d bounds(std::min({ uv[0][0], uv[1][0], uv[2][0] }), std::min({ uv[0][1], uv[1][1], uv[2][1] }),
+                             std::max({ uv[0][0], uv[1][0], uv[2][0] }), std::max({ uv[0][1], uv[1][1], uv[2][1] }));
+
+        if (!(bounds[2] >= gridLeft && bounds[0] < gridRight && bounds[3] >= gridBottom && bounds[1] < gridTop)) {
+            continue;
+        }
+
         const GfVec2d ab = uv[1] - uv[0];
         const GfVec2d ac = uv[2] - uv[0];
         const GfVec3d perX = ((p[1] - p[0]) * ac[1] - (p[2] - p[0]) * ab[1]) / area;
         const GfVec3d perY = ((p[2] - p[0]) * ab[0] - (p[1] - p[0]) * ac[0]) / area;
-        const double size = std::sqrt(GfCross(perX, perY).GetLength());
-        const int left = std::max(window.x, static_cast<int>(std::floor(std::min({ uv[0][0], uv[1][0], uv[2][0] }) - 0.5)));
-        const int right = std::min(window.x + window.width - 1, static_cast<int>(std::ceil(std::max({ uv[0][0], uv[1][0], uv[2][0] }) - 0.5)));
-        const int bottom = std::max(window.y, static_cast<int>(std::floor(std::min({ uv[0][1], uv[1][1], uv[2][1] }) - 0.5)));
-        const int top = std::min(window.y + window.height - 1, static_cast<int>(std::ceil(std::max({ uv[0][1], uv[1][1], uv[2][1] }) - 0.5)));
-        const double tolerance = 1e-9;
+        double magnitude = 0.;
 
-        for (int y = bottom; y <= top; ++y) {
-            for (int x = left; x <= right; ++x) {
-                const GfVec2d centre(x + 0.5, y + 0.5);
-                const double towardB = cross2(centre - uv[0], ac) / area;
-                const double towardC = cross2(ab, centre - uv[0]) / area;
+        for (const GfVec3d& corner : p) {
+            magnitude = std::max({ magnitude, std::abs(corner[0]), std::abs(corner[1]), std::abs(corner[2]) });
+        }
 
-                if (towardB < -tolerance || towardC < -tolerance || towardB + towardC > 1. + tolerance) {
-                    continue;
-                }
+        // Nothing is traced to the surface, so the ray's start need only stay clear of its float error.
+        const double reach = 1e-4 * (1. + magnitude);
+        float* record = unwrap->triangles.data() + t * kWavefrontUnwrapTriangleFloats;
+        const double values[kWavefrontUnwrapTriangleFloats] = {
+            uv[0][0],
+            uv[0][1],
+            uv[1][0],
+            uv[1][1],
+            uv[2][0],
+            uv[2][1],
+            reach,
+            0.,
+            p[0][0],
+            p[0][1],
+            p[0][2],
+            normal[0],
+            p[1][0],
+            p[1][1],
+            p[1][2],
+            normal[1],
+            p[2][0],
+            p[2][1],
+            p[2][2],
+            normal[2],
+        };
 
-                const GfVec3d position = p[0] + (p[1] - p[0]) * towardB + (p[2] - p[0]) * towardC;
-                const double magnitude = std::max({ std::abs(position[0]), std::abs(position[1]), std::abs(position[2]) });
-                // Far enough to clear the surface's float error, near enough to hit nothing else.
-                const double reach = 2. * std::max(perX.GetLength(), perY.GetLength()) + 1e-4 * (1. + magnitude);
-                float* texel = unwrap->texels.data() + (static_cast<std::size_t>(y - window.y) * window.width + (x - window.x)) * kWavefrontUnwrapFloats;
-                const float values[kWavefrontUnwrapFloats] = {
-                    static_cast<float>(position[0]),
-                    static_cast<float>(position[1]),
-                    static_cast<float>(position[2]),
-                    1.f,
-                    static_cast<float>(perX[0]),
-                    static_cast<float>(perX[1]),
-                    static_cast<float>(perX[2]),
-                    static_cast<float>(reach),
-                    static_cast<float>(perY[0]),
-                    static_cast<float>(perY[1]),
-                    static_cast<float>(perY[2]),
-                    0.f,
-                    static_cast<float>(normal[0]),
-                    static_cast<float>(normal[1]),
-                    static_cast<float>(normal[2]),
-                    0.f,
-                };
+        for (std::size_t v = 0; v < kWavefrontUnwrapTriangleFloats; ++v) {
+            record[v] = static_cast<float>(values[v]);
+        }
+        placed.push_back(Placed { static_cast<std::uint32_t>(t), bounds });
+        footprintSum += std::sqrt(GfCross(perX, perY).GetLength()) * std::abs(area);
+        areaSum += std::abs(area);
+    }
 
-                std::copy(values, values + kWavefrontUnwrapFloats, texel);
-                footprintSum += size;
-                ++covered;
+    // About a triangle a cell, so that a sample tests few candidates whether the mesh is coarse or dense.
+    const int cellSize = placed.empty() ? 1 : static_cast<int>(std::clamp(std::round(std::sqrt(areaSum / placed.size())), 1., 16.));
+    const int columns = static_cast<int>((gridRight - gridLeft + cellSize - 1) / cellSize);
+    const int rows = static_cast<int>((gridTop - gridBottom + cellSize - 1) / cellSize);
+    const std::size_t cells = static_cast<std::size_t>(columns) * rows;
+    const std::size_t offsets = eWavefrontUnwrapGridHeader;
+    const auto cellRange = [&](double low, double high, double origin, int count) {
+        const int first = static_cast<int>(std::floor((low - origin) / cellSize));
+        const int last = static_cast<int>(std::floor((high - origin) / cellSize));
+
+        return std::make_pair(std::max(0, first), std::min(count - 1, last));
+    };
+    std::vector<std::int32_t>& grid = unwrap->grid;
+    std::size_t candidates = 0;
+
+    grid.assign(offsets + cells + 1, 0);
+    grid[eWavefrontUnwrapGridX] = static_cast<std::int32_t>(gridLeft);
+    grid[eWavefrontUnwrapGridY] = static_cast<std::int32_t>(gridBottom);
+    grid[eWavefrontUnwrapGridColumns] = columns;
+    grid[eWavefrontUnwrapGridRows] = rows;
+    grid[eWavefrontUnwrapGridCellSize] = cellSize;
+    grid[eWavefrontUnwrapGridGeometry] = static_cast<std::int32_t>(geometryIndex);
+    grid[eWavefrontUnwrapGridInstance] = static_cast<std::int32_t>(std::distance(snapshot.instances.begin(), instance));
+
+    // Counts each cell's candidates into its offset, so that the running sum leaves every offset at its
+    // cell's end, and filling from the last triangle back walks it down to the start in triangle order.
+    for (const Placed& triangle : placed) {
+        const std::pair<int, int> across = cellRange(triangle.bounds[0], triangle.bounds[2], gridLeft, columns);
+        const std::pair<int, int> up = cellRange(triangle.bounds[1], triangle.bounds[3], gridBottom, rows);
+
+        for (int row = up.first; row <= up.second; ++row) {
+            if (stop.load(std::memory_order_relaxed)) {
+                return WavefrontUnwrapConstPtr();
+            }
+            for (int column = across.first; column <= across.second; ++column) {
+                ++grid[offsets + static_cast<std::size_t>(row) * columns + column];
+            }
+            candidates += static_cast<std::size_t>(across.second - across.first + 1);
+        }
+    }
+    if (offsets + cells + 1 + candidates > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+        *error = "The Utility renderer's UV Prim " + prim + " lays " + std::to_string(candidates) + " triangle entries over the bake's " + std::to_string(cells) + " cells, more than a bake can index";
+
+        return WavefrontUnwrapConstPtr();
+    }
+    for (std::size_t cell = 1; cell < cells; ++cell) {
+        if (cell % static_cast<std::size_t>(columns) == 0 && stop.load(std::memory_order_relaxed)) {
+            return WavefrontUnwrapConstPtr();
+        }
+        grid[offsets + cell] += grid[offsets + cell - 1];
+    }
+    grid[offsets + cells] = static_cast<std::int32_t>(candidates);
+    grid.resize(offsets + cells + 1 + candidates);
+
+    const std::size_t listed = offsets + cells + 1;
+
+    for (auto triangle = placed.rbegin(); triangle != placed.rend(); ++triangle) {
+        const std::pair<int, int> across = cellRange(triangle->bounds[0], triangle->bounds[2], gridLeft, columns);
+        const std::pair<int, int> up = cellRange(triangle->bounds[1], triangle->bounds[3], gridBottom, rows);
+
+        for (int row = up.first; row <= up.second; ++row) {
+            if (stop.load(std::memory_order_relaxed)) {
+                return WavefrontUnwrapConstPtr();
+            }
+            for (int column = across.first; column <= across.second; ++column) {
+                std::int32_t& offset = grid[offsets + static_cast<std::size_t>(row) * columns + column];
+
+                grid[listed + static_cast<std::size_t>(--offset)] = static_cast<std::int32_t>(triangle->triangle);
             }
         }
     }
-    unwrap->footprint = covered ? footprintSum / covered : 0.;
+    unwrap->footprint = areaSum > 0. ? footprintSum / areaSum : 0.;
 
     return unwrap;
 }

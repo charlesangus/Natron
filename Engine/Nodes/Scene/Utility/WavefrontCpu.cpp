@@ -185,18 +185,20 @@ renderTile(const WavefrontFrame& frame,
     std::vector<std::int32_t> primId(count);
     std::vector<std::int32_t> instanceId(count);
 
+    const Tracer::HitBatch hits = hitBatchOf(hitSurface.data(), hitIds.data(), count);
+
     if (frame.mapping == WavefrontMapping::UvUnwrap) {
         if (!frame.unwrap) {
             return;
         }
-        runRayGenUvKernel(makeRayGenParams(frame, rect), frame.unwrap->texels.data(), frame.unwrap->texels.size(), rays.data(), weights.data());
+
+        const WavefrontUnwrap& unwrap = *frame.unwrap;
+
+        runRayGenUvKernel(makeRayGenParams(frame, rect), unwrap.grid.data(), unwrap.grid.size(), unwrap.triangles.data(), unwrap.triangles.size(), rays.data(), hitSurface.data(), hitIds.data(), weights.data());
     } else {
         runRayGenKernel(makeRayGenParams(frame, rect), rays.data(), weights.data());
+        tracer.intersect(rayBatchOf(rays.data(), count), hits);
     }
-
-    const Tracer::HitBatch hits = hitBatchOf(hitSurface.data(), hitIds.data(), count);
-
-    tracer.intersect(rayBatchOf(rays.data(), count), hits);
 
     KernelShadeBuffers buffers = tables.buffers();
     KernelShadeParams params = makeShadeParams(frame, static_cast<std::uint32_t>(count));

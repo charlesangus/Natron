@@ -49,7 +49,10 @@ struct RayGenGlobals {
 struct RayGenUvGlobals {
     KernelBuffer rays;
     KernelBuffer weights;
-    KernelBuffer texels;
+    KernelBuffer hitSurface;
+    KernelBuffer hitIds;
+    KernelBuffer grid;
+    KernelBuffer triangles;
     const NATRON_NAMESPACE::KernelRayGenParams* params;
 };
 
@@ -157,9 +160,13 @@ runRayGenKernel(const KernelRayGenParams& params,
 
 void
 runRayGenUvKernel(const KernelRayGenParams& params,
-                  const float* texels,
-                  std::size_t texelFloats,
+                  const std::int32_t* grid,
+                  std::size_t gridInts,
+                  const float* triangles,
+                  std::size_t triangleFloats,
                   float* rays,
+                  float* hitSurface,
+                  std::uint32_t* hitIds,
                   float* weights)
 {
     const std::size_t count = static_cast<std::size_t>(params.tileWidth) * params.tileHeight;
@@ -175,7 +182,7 @@ runRayGenUvKernel(const KernelRayGenParams& params,
         weights = unwanted.data();
     }
     KernelVarying varying = varyingFor(count);
-    RayGenUvGlobals globals { { rays, count * 8 }, { weights, count }, { texels, texelFloats / 4 }, &params };
+    RayGenUvGlobals globals { { rays, count * 8 }, { weights, count }, { hitSurface, count * 3 }, { hitIds, count * 3 }, { grid, gridInts }, { triangles, triangleFloats / 4 }, &params };
 
     utilityRayGenUv(&varying, nullptr, &globals);
 }

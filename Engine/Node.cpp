@@ -8723,6 +8723,12 @@ Node::onRefreshIdentityStateRequestReceived()
 } // Node::onRefreshIdentityStateRequestReceived
 
 void
+Node::notifyOverlayMapChanged()
+{
+    Q_EMIT overlayMapChanged();
+}
+
+void
 Node::refreshIdentityState()
 {
     assert( QThread::currentThread() == qApp->thread() );

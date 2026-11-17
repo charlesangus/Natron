@@ -42,6 +42,7 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/OverlayMapFetch.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -352,6 +353,40 @@ MapInput::resolveChannel(EffectInstance* effect,
     effect->getPresentLayers(time, view, inputNb, &present);
 
     return knob->resolve(present, layer, channel) && (*channel >= 0);
+}
+
+OverlayPointMap::Result
+MapInput::overlayValue(const EffectInstancePtr& effect,
+                       int inputNb,
+                       double time,
+                       ViewIdx view,
+                       const Point& p,
+                       double* value) const
+{
+    if (!effect || !effect->getInput(inputNb)) {
+        *value = 1.;
+
+        return OverlayPointMap::eMapped;
+    }
+    const MapInputParams params = bake(KnobReader(time, view));
+    OverlayMapFetch::Channel channel;
+    if (!resolveChannel(effect.get(), inputNb, time, view, &channel.layer, &channel.index)) {
+        *value = params.remap(0.f);
+
+        return OverlayPointMap::eMapped;
+    }
+    OverlayPointMap::Result result = OverlayPointMap::eUnmappable;
+    const OverlayMapFetch::MapImageConstPtr image = OverlayMapFetch::fetch(effect, inputNb, time, view, std::vector<OverlayMapFetch::Channel>(1, channel), &result);
+    if (!image) {
+        return result;
+    }
+    float raw = 0.f;
+    if (!image->sample(p.x, p.y, &raw)) {
+        raw = 0.f;
+    }
+    *value = params.remap(raw);
+
+    return OverlayPointMap::eMapped;
 }
 
 bool

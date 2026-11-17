@@ -29,6 +29,8 @@
 #include <bitset>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -47,6 +49,7 @@
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/OverlayMapFetch.h"
 #include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -425,6 +428,157 @@ STMap::getSourceDomain(double time,
     *domain = rod.toPixelEnclosing(scale, sourceMetadata->getPixelAspectRatio(-1));
 
     return !domain->isNull();
+}
+
+namespace {
+U64
+mixHash(U64 h,
+        U64 v)
+{
+    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+
+    return h;
+}
+
+U64
+mixHash(U64 h,
+        double v)
+{
+    U64 bits = 0;
+
+    std::memcpy(&bits, &v, sizeof(bits));
+
+    return mixHash(h, bits);
+}
+} // anon namespace
+
+OverlayPointMap::Result
+STMap::mapOverlayPoint(double time,
+                       ViewIdx view,
+                       int inputNb,
+                       OverlayPointMap::Direction direction,
+                       const Point& in,
+                       Point* out)
+{
+    if ((inputNb != kSTMapInputSource) || !getInput(kSTMapInputSource) || !getInput(kSTMapInputUV)) {
+        return OverlayPointMap::eIdentity;
+    }
+    RectI domain;
+    if (!getSourceDomain(time, view, RenderScale::identity, &domain)) {
+        return OverlayPointMap::eUnmappable;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    UVChannel uvChannels[2];
+    resolveUVChannels(time, view, &uvChannels[0], &uvChannels[1]);
+    std::vector<OverlayMapFetch::Channel> channels;
+    int uIndex = -1;
+    int vIndex = -1;
+    for (int i = 0; i < 2; ++i) {
+        if (!uvChannels[i].valid) {
+            continue;
+        }
+        OverlayMapFetch::Channel c;
+        c.layer = uvChannels[i].layer;
+        c.index = uvChannels[i].channel;
+        (i == 0 ? uIndex : vIndex) = (int)channels.size();
+        channels.push_back(c);
+    }
+    const EffectInstancePtr self = shared_from_this();
+    OverlayPointMap::Result fetched = OverlayPointMap::eMapped;
+    OverlayMapFetch::MapImageConstPtr uv;
+    if (!channels.empty()) {
+        uv = OverlayMapFetch::fetch(self, kSTMapInputUV, time, view, channels, &fetched);
+        if (!uv) {
+            return fetched;
+        }
+    }
+    const NodeMetadataConstPtr metadata = getMetadata(time, view);
+    const double outputPar = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    const double sourcePar = metadata ? metadata->getPixelAspectRatio(kSTMapInputSource) : 1.;
+    const bool mapped = (bool)getInput(kSTMapInputMap);
+
+    // A pending Map leaves the point unmoved until its copy arrives.
+    bool mapPending = false;
+    const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
+        float values[2] = { 0.f, 0.f };
+        if (uv && !uv->sample(p.x, p.y, values)) {
+            return OverlayPointMap::eUnmappable;
+        }
+        const double uRaw = (uIndex >= 0) ? values[uIndex] : 0.;
+        const double vRaw = (vIndex >= 0) ? values[vIndex] : 0.;
+        const double u = (uRaw - settings.uOffset) * settings.uScale;
+        const double v = (vRaw - settings.vOffset) * settings.vScale;
+        double px = domain.x1 + u * domain.width();
+        double py = domain.y1 + v * domain.height();
+        if (mapped) {
+            double m = 1.;
+            const OverlayPointMap::Result r = _map.overlayValue(self, kSTMapInputMap, time, view, p, &m);
+            if (r == OverlayPointMap::ePending) {
+                mapPending = true;
+                m = 1.;
+            } else if (r != OverlayPointMap::eMapped) {
+                return r;
+            }
+            const double cx = p.x / outputPar;
+            const double cy = p.y;
+            px = cx + (px - cx) * m;
+            py = cy + (py - cy) * m;
+        }
+        s->x = px * sourcePar;
+        s->y = py;
+        if (!std::isfinite(s->x) || !std::isfinite(s->y)) {
+            return OverlayPointMap::eUnmappable;
+        }
+
+        return OverlayPointMap::eMapped;
+    };
+    OverlayPointMap::Result result = OverlayPointMap::eUnmappable;
+    if (direction == OverlayPointMap::eDirectionInverse) {
+        result = toSource(in, out);
+    } else if (uv) {
+        U64 key = mixHash((U64)0, (U64)(std::uintptr_t)this);
+        for (const double v : { settings.uOffset, settings.vOffset, settings.uScale, settings.vScale, outputPar, sourcePar,
+                                (double)domain.x1, (double)domain.y1, (double)domain.x2, (double)domain.y2 }) {
+            key = mixHash(key, v);
+        }
+        key = mixHash(key, (U64)(mapped ? getInput(kSTMapInputMap)->getHash() : 0));
+        const RectD sourceRegion(domain.x1 * sourcePar, domain.y1, domain.x2 * sourcePar, domain.y2);
+        const std::shared_ptr<const OverlayPointMap::SeedGrid> seeds = uv->seedGrid(key, [&]() {
+            std::shared_ptr<OverlayPointMap::SeedGrid> grid = std::make_shared<OverlayPointMap::SeedGrid>(sourceRegion, uv->bounds.width(), uv->bounds.height());
+            for (int y = uv->bounds.y1; y < uv->bounds.y2; ++y) {
+                for (int x = uv->bounds.x1; x < uv->bounds.x2; ++x) {
+                    const Point c = uv->pixelCentre(x, y);
+                    Point s;
+                    if (toSource(c, &s) == OverlayPointMap::eMapped) {
+                        grid->add(s, c);
+                    }
+                }
+            }
+            grid->fillHoles();
+
+            return std::shared_ptr<const OverlayPointMap::SeedGrid>(grid);
+        });
+        Point seed = *out;
+        if (seeds && !seeds->lookup(in, &seed)) {
+            return OverlayPointMap::eUnmappable;
+        }
+        OverlayPointMap::InvertOptions options;
+        // The UV copy holds floats, which bounds how closely the polish can land.
+        options.tolerance = 1e-4;
+        result = OverlayPointMap::invertNumerically(toSource, in, seed, out, options);
+    } else {
+        return OverlayPointMap::eUnmappable;
+    }
+
+    return mapPending ? OverlayPointMap::ePending : result;
+} // STMap::mapOverlayPoint
+
+OverlayPointMap::Kind
+STMap::overlayMapKind(double /*time*/,
+                      ViewIdx /*view*/)
+{
+    return (getInput(kSTMapInputSource) && getInput(kSTMapInputUV)) ? OverlayPointMap::eKindNonLinear : OverlayPointMap::eKindNone;
 }
 
 Route

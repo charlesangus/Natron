@@ -41,6 +41,7 @@
 #include "Engine/ImageLocker.h"
 #include "Engine/Knob.h" // for KnobHolder
 #include "Engine/NodeMetadata.h"
+#include "Engine/OverlayPointMap.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/RectD.h"
@@ -1850,6 +1851,26 @@ protected:
         return eStatusReplyDefault;
     }
 
+    /**
+     * @brief Maps an overlay point between input inputNb and the output, in canonical coordinates
+     * at scale 1. On entry *out holds a seed for numeric inverses. The default applies the
+     * draft-mode getTransform matrix, or its inverse, and is the identity for an input the matrix
+     * does not apply to or a node with no matrix.
+     **/
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether mapOverlayPoint is the identity, a matrix or a non-linear map. The default
+     * answers matrix when getTransform gives one in draft mode.
+     **/
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) WARN_UNUSED_RETURN;
+
 public:
 
 
@@ -1860,6 +1881,30 @@ public:
                                    ViewIdx view,
                                    EffectInstancePtr* inputToTransform,
                                    Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief mapOverlayPoint, with a disabled node mapping every point to itself. The seed, when
+     * given, starts numeric inverses; otherwise they start at in.
+     **/
+    OverlayPointMap::Result mapOverlayPoint_public(double time,
+                                                   ViewIdx view,
+                                                   int inputNb,
+                                                   OverlayPointMap::Direction direction,
+                                                   const Point& in,
+                                                   Point* out,
+                                                   const Point* seed = 0) WARN_UNUSED_RETURN;
+    OverlayPointMap::Kind overlayMapKind_public(double time,
+                                                ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The canonical forward matrix getTransform gives at scale 1 in draft mode when it
+     * applies to input inputNb. The pixel matrix is converted with the input's pixel aspect ratio
+     * on the source side and the output's on the destination side.
+     **/
+    bool getOverlayCanonicalMatrix(double time,
+                                   ViewIdx view,
+                                   int inputNb,
+                                   Transform::Matrix3x3* forward) WARN_UNUSED_RETURN;
 
 protected:
 /**

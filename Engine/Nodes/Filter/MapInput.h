@@ -38,6 +38,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/OverlayPointMap.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
@@ -235,6 +236,18 @@ public:
                     const RenderScale& scale,
                     const RectI& window,
                     MapPlane* plane) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The remapped Map value at canonical point p for an overlay, from the small copy of
+     * the Map OverlayMapFetch renders off the calling thread: 1 with the Map disconnected, as in
+     * read(), and black past the Map's image. ePending while the copy is fetched.
+     **/
+    OverlayPointMap::Result overlayValue(const EffectInstancePtr& effect,
+                                         int inputNb,
+                                         double time,
+                                         ViewIdx view,
+                                         const Point& p,
+                                         double* value) const WARN_UNUSED_RETURN;
 
     /// A size held to [0, kMapInputMaxSize]; NaN is 0.
     static double clampSize(double size) WARN_UNUSED_RETURN;

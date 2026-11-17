@@ -231,6 +231,21 @@ private:
     // format, or its region of definition when it has no format. False when it has neither.
     bool getSourceDomain(double time, ViewIdx view, const RenderScale& scale, RectI* domain);
 
+    /**
+     * @brief Inverse: the U and V of a small copy of the UV input at the point, bilinearly, moved
+     * by the Map. Forward: seeded from that copy scattered onto a grid over the Source, then
+     * polished by Newton. Wrap and UV Alpha are not followed.
+     **/
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     KnobChannelSelectWPtr _channelU;
     KnobChannelSelectWPtr _channelV;
     KnobDoubleWPtr _uvOffset;

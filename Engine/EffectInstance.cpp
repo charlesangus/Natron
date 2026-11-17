@@ -5259,6 +5259,115 @@ EffectInstance::getTransform_public(double time,
 }
 
 bool
+EffectInstance::getOverlayCanonicalMatrix(double time,
+                                          ViewIdx view,
+                                          int inputNb,
+                                          Transform::Matrix3x3* forward)
+{
+    EffectInstancePtr input;
+    Transform::Matrix3x3 pixel;
+
+    // Draft mode answers the matrix even where a full render would motion blur.
+    const StatusEnum stat = getTransform_public(time, RenderScale::identity, /*draftRender=*/true, view, &input, &pixel);
+    if ((stat != eStatusOK) || !input || (input != getInput(inputNb))) {
+        return false;
+    }
+    const NodeMetadataConstPtr metadata = getMetadata(time, view);
+    const double sourcePar = metadata ? metadata->getPixelAspectRatio(inputNb) : 1.;
+    const double outputPar = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    Transform::Matrix3x3 mat = Transform::matMul(Transform::matPixelToCanonical(outputPar, 1., 1., false), pixel);
+    mat = Transform::matMul(mat, Transform::matCanonicalToPixel(sourcePar, 1., 1., false));
+    *forward = mat;
+
+    return true;
+}
+
+OverlayPointMap::Result
+EffectInstance::mapOverlayPoint(double time,
+                                ViewIdx view,
+                                int inputNb,
+                                OverlayPointMap::Direction direction,
+                                const Point& in,
+                                Point* out)
+{
+    Transform::Matrix3x3 forward;
+
+    if (!getOverlayCanonicalMatrix(time, view, inputNb, &forward)) {
+        return OverlayPointMap::eIdentity;
+    }
+    if (forward.isIdentity()) {
+        return OverlayPointMap::eIdentity;
+    }
+    if (direction == OverlayPointMap::eDirectionForward) {
+        return OverlayPointMap::applyMatrix(forward, in, out);
+    }
+    const double det = Transform::matDeterminant(forward);
+    if (!std::isfinite(det) || (std::fabs(det) < 1e-12)) {
+        return OverlayPointMap::eUnmappable;
+    }
+
+    return OverlayPointMap::applyMatrix(Transform::matInverse(forward, det), in, out);
+}
+
+OverlayPointMap::Kind
+EffectInstance::overlayMapKind(double time,
+                               ViewIdx view)
+{
+    for (int i = 0; i < getNInputs(); ++i) {
+        Transform::Matrix3x3 forward;
+        if (getInput(i) && getOverlayCanonicalMatrix(time, view, i, &forward)) {
+            return OverlayPointMap::eKindMatrix;
+        }
+    }
+
+    return OverlayPointMap::eKindNone;
+}
+
+OverlayPointMap::Result
+EffectInstance::mapOverlayPoint_public(double time,
+                                       ViewIdx view,
+                                       int inputNb,
+                                       OverlayPointMap::Direction direction,
+                                       const Point& in,
+                                       Point* out,
+                                       const Point* seed)
+{
+    RECURSIVE_ACTION();
+    if (getNode()->isNodeDisabled(time)) {
+        *out = in;
+
+        return OverlayPointMap::eIdentity;
+    }
+    Point result = seed ? *seed : in;
+    const OverlayPointMap::Result answer = mapOverlayPoint(time, view, inputNb, direction, in, &result);
+    switch (answer) {
+    case OverlayPointMap::eMapped:
+        *out = result;
+        break;
+    case OverlayPointMap::eIdentity:
+        *out = in;
+        break;
+    case OverlayPointMap::eUnmappable:
+    case OverlayPointMap::ePending:
+        break;
+    }
+
+    return answer;
+}
+
+OverlayPointMap::Kind
+EffectInstance::overlayMapKind_public(double time,
+                                      ViewIdx view)
+{
+    RECURSIVE_ACTION();
+    if (getNode()->isNodeDisabled(time)) {
+        return OverlayPointMap::eKindNone;
+    }
+
+    return overlayMapKind(time, view);
+}
+
+bool
 EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true when calling for the whole image (not for a subrect)
                                   U64 hash,
                                   double time,

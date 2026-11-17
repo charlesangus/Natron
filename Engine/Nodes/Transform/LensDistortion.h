@@ -362,6 +362,18 @@ private:
     // The model the knobs give at (time, view) over the reference format.
     LensModels::Model buildModel(double time, ViewIdx view, const Geometry& geometry) const WARN_UNUSED_RETURN;
 
+    // The point under the lens model, in the direction the render moves pixels when forward. STMap
+    // output moves no pixels, so it maps every point to itself.
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     double paramValue(ModelParam param, double time, ViewIdx view, int dimension = 0) const WARN_UNUSED_RETURN;
 
     // Shows the knobs of the selected model and hides the others.

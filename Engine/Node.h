@@ -1812,9 +1812,11 @@ public:
 
     /**
      * @brief Fills keyframes with all different keyframes time that all parameters of this
-     * node have. Some keyframes might appear several times.
+     * node have. Some keyframes might appear several times. When accept is set, only the knobs it
+     * accepts contribute.
      **/
-    void getAllKnobsKeyframes(std::list<SequenceTime>* keyframes);
+    void getAllKnobsKeyframes(std::list<SequenceTime>* keyframes,
+                              const std::function<bool(const KnobIPtr&)>& accept = std::function<bool(const KnobIPtr&)>());
 
     bool hasAnimatedKnob() const;
 

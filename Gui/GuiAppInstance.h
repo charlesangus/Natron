@@ -214,6 +214,12 @@ Q_SIGNALS:
 
     void keyframeIndicatorsChanged();
 
+    /**
+     * @brief Emitted once per event-loop turn after onPanelForegroundChanged(), for the panels that
+     * publish their own markers to re-check whether they may show them.
+     **/
+    void panelForegroundChanged();
+
 public:
 
     virtual void* getOfxHostOSHandle() const OVERRIDE FINAL;
@@ -251,6 +257,13 @@ public:
     virtual void removeNodeKeyframesFromTimeline(Node* node) OVERRIDE FINAL;
     virtual void setNodeShownOnTimeline(const NodePtr& node, bool shown) OVERRIDE FINAL;
     virtual void invalidateNodeKeyframeIndicators() OVERRIDE FINAL;
+
+    /**
+     * @brief Called when a panel opens, closes, is minimised, expanded, floated, reordered in its
+     * properties bin or switches page: node markers are rebuilt from the panels now in the
+     * foreground, and panelForegroundChanged() follows.
+     **/
+    void onPanelForegroundChanged();
     virtual void setPanelKeyframeIndicators(const void* owner, const std::vector<SequenceTime>& keys) OVERRIDE FINAL;
     virtual void clearPanelKeyframeIndicators(const void* owner) OVERRIDE FINAL;
     virtual void getKeyframes(std::list<SequenceTime>* keys) const OVERRIDE FINAL;

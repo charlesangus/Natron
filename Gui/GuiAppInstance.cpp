@@ -82,6 +82,7 @@
 #include "Gui/MultiInstancePanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
+#include "Gui/NodeSettingsPanel.h"
 #include "Gui/ProgressPanel.h"
 #include "Gui/PythonUndoRecorder.h"
 #include "Gui/ScriptEditor.h"
@@ -224,6 +225,7 @@ struct GuiAppInstancePrivate
     std::atomic<bool> nodeKeysDirty;
     std::atomic<bool> nodeKeysRefreshQueued;
     bool nodeKeysChangedSinceSignal;
+    bool panelForegroundRefreshQueued;
     KnobDnDData knobDnd;
 
     GuiAppInstancePrivate()
@@ -247,10 +249,37 @@ struct GuiAppInstancePrivate
         , nodeKeysDirty(false)
         , nodeKeysRefreshQueued(false)
         , nodeKeysChangedSinceSignal(false)
+        , panelForegroundRefreshQueued(false)
         , knobDnd()
     {
         _previewProvider = std::make_shared<FileDialogPreviewProvider>();
         rotoData.turboAlreadyActiveBeforePainting = false;
+    }
+
+    static DockablePanel* settingsPanelOf(const NodePtr& node)
+    {
+        NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(node->getNodeGui());
+
+        return nodeGui ? nodeGui->getSettingPanel() : 0;
+    }
+
+    static void collectShownKnobKeyframes(const NodePtr& node,
+                                          std::list<SequenceTime>* keys)
+    {
+        NodePtr parent = node->getParentMultiInstance();
+        DockablePanel* panel = settingsPanelOf(parent ? parent : node);
+        if (!panel || !panel->isInForeground()) {
+            return;
+        }
+        if (parent) {
+            // A child instance's knobs are edited through its parent's table, not on a page.
+            node->getAllKnobsKeyframes(keys);
+
+            return;
+        }
+        node->getAllKnobsKeyframes(keys, [panel](const KnobIPtr& knob) {
+            return panel->isKnobOnVisiblePage(knob);
+        });
     }
 
     void refreshNodeKeysIfDirty()
@@ -266,7 +295,7 @@ struct GuiAppInstancePrivate
                 continue;
             }
             if (node->isActivated()) {
-                node->getAllKnobsKeyframes(&keys);
+                collectShownKnobKeyframes(node, &keys);
             }
             ++it;
         }
@@ -1744,6 +1773,27 @@ GuiAppInstance::invalidateNodeKeyframeIndicators()
             _imp->nodeKeysChangedSinceSignal = false;
             Q_EMIT keyframeIndicatorsChanged();
         } }, Qt::QueuedConnection);
+}
+
+void
+GuiAppInstance::onPanelForegroundChanged()
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    if (_imp->panelForegroundRefreshQueued) {
+        return;
+    }
+    _imp->panelForegroundRefreshQueued = true;
+    // Queued, so that the panel layout has settled when the foreground panels are read.
+    QMetaObject::invokeMethod(this, [this]() {
+        _imp->panelForegroundRefreshQueued = false;
+        _imp->nodeKeysDirty.store(true);
+        _imp->refreshNodeKeysIfDirty();
+        if (_imp->nodeKeysChangedSinceSignal) {
+            _imp->nodeKeysChangedSinceSignal = false;
+            Q_EMIT keyframeIndicatorsChanged();
+        }
+        Q_EMIT panelForegroundChanged(); }, Qt::QueuedConnection);
 }
 
 void

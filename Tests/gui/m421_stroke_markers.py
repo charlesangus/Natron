@@ -61,7 +61,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QPoint, QPointF, QRect, Q_ARG, Q_RETURN_ARG, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QLineEdit, QTreeWidget, QWidget
+    from PySide6.QtWidgets import QApplication, QLineEdit, QTabWidget, QTreeWidget, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -145,6 +145,17 @@ try:
             except RuntimeError:
                 continue
         return None
+
+    def show_page(st, page_label):
+        panel = panel_of_node(st.node)
+        require(panel is not None, "the settings panel of %s is open" % st.node.getLabel())
+        for tabs in panel.findChildren(QTabWidget):
+            for i in range(tabs.count()):
+                if tabs.tabText(i).replace("&", "") == page_label:
+                    tabs.setCurrentIndex(i)
+                    QApplication.processEvents()
+                    return
+        require(False, "the panel of %s has a %s page" % (st.node.getLabel(), page_label))
 
     def curve_tree(st):
         """(the RotoPanel's tree, the RotoPanel) of the open panel, or (None, None)."""
@@ -369,6 +380,7 @@ try:
         gt.section(tag + "-setup")
         ok = yield ("until", lambda: panel_of_node(st.node) is not None, POLL_TIMEOUT_S)
         require(ok, "the settings panel of %s is open" % label)
+        show_page(st, "General")
         st.node.getParam("multiStrokeEnabledButton").setValue(False)
         st.node.getParam("sizeSpinbox").setValue(30.0)
         yield ("sleep", SETTLE_MS)
@@ -925,8 +937,7 @@ try:
         top_only, group_only = derived(st), derived(gst)
         check(top_only and group_only and not set(top_only) & set(group_only),
               "the two panels' strokes sit on different frames (%r, %r)" % (top_only, group_only))
-        yield from expect("two RotoPaint panels open: both owners' markers merged",
-                          sorted(set(top_only) | set(group_only)), st)
+        yield from expect("two RotoPaint panels open: only the top panel's markers", top_only, st)
         timeline_shot("m421-two-panels-timeline.png")
         yield from close_panel(st)
         yield from expect("the top-level panel closed: only the grouped RotoPaint's markers", group_only, gst)

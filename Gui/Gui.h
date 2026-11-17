@@ -405,6 +405,8 @@ public:
     void addVisibleDockablePanel(DockablePanel* panel);
     void removeVisibleDockablePanel(DockablePanel* panel);
 
+    void notifyPanelForegroundChanged() const;
+
     const std::list<DockablePanel*>& getVisiblePanels() const;
     std::list<DockablePanel*> getVisiblePanels_mt_safe() const;
     void setToolButtonMenuOpened(QToolButton* button);

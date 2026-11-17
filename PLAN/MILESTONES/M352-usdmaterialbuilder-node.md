@@ -1,6 +1,6 @@
 # M352 - USDMaterialBuilder Node
 
-Make `USDMaterialBuilder` author real materials. In the main graph it is one ordinary node with a Scene output, Image inputs and promoted controls, connecting into `USDAssignMaterial` like `USDMaterial`, which stays for simple cases. Inside, one Output node holds surface, displacement and volume terminals per renderer plus a preview. One builder holds networks for several renderers on one `UsdShadeMaterial` (`outputs:cycles:surface`, `outputs:moonray:surface`, universal `outputs:surface`), and scene emission goes through `emitSceneLayer` and `SceneNodeAuthoring::openLayerStage`.
+Make `USDMaterialBuilder` author real materials. In the main graph it is one ordinary node with a Scene output, Image inputs and promoted controls, connecting into `USDAssignMaterial` like `USDMaterial`, which stays for simple cases. Inside, one Output node holds surface, displacement and volume terminals per renderer plus a preview. One builder holds networks for several renderers on one `UsdShadeMaterial` (`outputs:cycles:surface`, `outputs:moonray:surface`, universal `outputs:surface`), and scene emission goes through `emitSceneLayer` and `SceneNodeAuthoring::openLayerStage`. It derives from M351 - Shader Graph Presentation's generic `NetworkBuilder` with targets `cycles` and `moonray`; M446 - MaterialX Builder Nodes adds MaterialX's.
 
 ## Scope
 

@@ -1,6 +1,6 @@
 # M350 - Shader Manifest And Nodes
 
-Generate one Natron shader node for each shader the bundled Cycles and MoonRay offer, with every attribute as a knob. Natron owns a JSON manifest generated from each renderer: Cycles' `NodeType` registry (sockets, types, defaults, enums, LINKABLE) and MoonRay's class JSON (name, type, default, group, label, comment, flags such as `FLAGS_BINDABLE`, including `lib/material/dwabase/json` includes). Sdr is skipped, because `moonray_sdr_plugins` uses the removed Ndr and is dropped in `build-moonray.sh`. Shader nodes output a new `eDataKindShader`, so they can only connect inside shader networks and are never rendered, viewed or cached. Applies M349 - Shader Node Spike's results on inputs, named outputs and registration; re-check this brief against its design note at claim.
+Generate one Natron shader node for each shader the bundled Cycles and MoonRay offer, with every attribute as a knob. Natron owns a JSON manifest generated from each renderer: Cycles' `NodeType` registry (sockets, types, defaults, enums, LINKABLE) and MoonRay's class JSON (name, type, default, group, label, comment, flags such as `FLAGS_BINDABLE`, including `lib/material/dwabase/json` includes). Sdr is skipped, because `moonray_sdr_plugins` uses the removed Ndr and is dropped in `build-moonray.sh`. Shader nodes are instances of the one generic network node (M349 - Shader Node Spike; `PLAN/DECISIONS/2026-11-17-generic-port-networks.md`), built from a spec. Every network node outputs the one new `eDataKindNetwork`, which keeps network nodes off comp inputs and out of rendering, viewing and caching; which ports inside a network connect is decided by port types alone (`PortTypes`, M351 - Shader Graph Presentation). The manifest schema is the network node spec for every context: shader manifests are its first content, and M482 - Geometry VOP Node and F32 - Channel Networks add theirs. Applies M349 - Shader Node Spike's results on inputs, named outputs and registration; re-check this brief against its design note at claim.
 
 ## Scope
 
@@ -32,7 +32,7 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
 
 - [ ] M350.P1.T1 — Define the manifest and generate MoonRay's
   - files: `tools/shaders/generate_moonray_manifest.py`, `Engine/Nodes/Scene/Shaders/manifest/moonray.json`, `Engine/Nodes/docs/shader-manifest.md`
-  - approach: define the schema: renderer, shader ID (`info:id`, the rdl2 class name), kind, attributes (name, type, default, enum values, linkable, group, comment), outputs. Generate from the MoonRay source's class JSON including its includes. Skip `dso/displayfilter`. The manifest is committed, so builds need no renderer.
+  - approach: define the schema: renderer, shader ID (`info:id`, the rdl2 class name), kind, attributes (name, type, default, enum values, linkable, group, comment), outputs, and `targets` (the targets a node supports, `cycles` or `moonray` here; generic kernel nodes later declare `kernel`). Nothing in the schema is shader-only: a kernel node's code template and a channel node's cook entry are later optional fields. Generate from the MoonRay source's class JSON including its includes. Skip `dso/displayfilter`. The manifest is committed, so builds need no renderer.
   - verify: a Python check run from `Tests/` loads the output; `DwaBaseMaterial` has about 170 attributes with its groups; no display filter is present; regeneration is byte-stable.
   - size: M
 
@@ -58,24 +58,24 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
 
 - [ ] M350.P2.T1 — Add the Shader data kind
   - files: `Global/Enums.h`, `Engine/Node.cpp`, `Engine/Settings.cpp`, `Gui/Edge.cpp`, `Gui/TabMenuBridge.cpp`
-  - approach: add `eDataKindShader`, following the `eDataKindRaw` precedent at each site (about 21 in `Node.cpp`). Connection checks accept shader to shader only. Output scheduling, viewers and caches never touch it. Tab menu kind filtering (`Gui/TabMenuBridge.cpp:127`) excludes it everywhere except shader graphs.
+  - approach: add `eDataKindNetwork`, following the `eDataKindRaw` precedent at each site (about 21 in `Node.cpp`). Connection checks accept network to network only; which network ports may join is left to `PortTypes`. Output scheduling, viewers and caches never touch it. Tab menu kind filtering (`Gui/TabMenuBridge.cpp:127`) excludes it everywhere except shader graphs.
   - verify: gtest following `Tests/Native/RawKindFramework_Test.cpp` — shader output refused by image and scene inputs and by a Viewer; a shader node never reaches `render`; the existing kind tests pass.
   - size: M
 
 - [ ] M350.P2.T2 — Build a shader node from the manifest
-  - files: `Engine/Nodes/Scene/Shaders/ShaderNode.{h,cpp}`, `Engine/Nodes/Scene/Shaders/ShaderManifest.{h,cpp}`, `Tests/Scene/ShaderNode_Test.cpp`
-  - approach: load the manifest once. For one entry, create knobs by type (part of M253 - Delegate Render Settings' `RenderSettingsKnobs` type mapping applies, plus enums, assets and parametric arrays), pages by group, and inputs for key ports, using M349 - Shader Node Spike's mechanism. Named outputs come from the same results. Hash covers knobs and connections only.
+  - files: `Engine/Nodes/Network/NetworkNode.{h,cpp}`, `Engine/Nodes/Scene/Shaders/ShaderManifest.{h,cpp}`, `Tests/Scene/ShaderNode_Test.cpp`
+  - approach: load the manifest once into network node specs. `NetworkNode` is the one generic class: nothing in it names shaders or renderers. For one entry, create knobs by type (part of M253 - Delegate Render Settings' `RenderSettingsKnobs` type mapping applies, plus enums, assets and parametric arrays), pages by group, and inputs for key ports, using M349 - Shader Node Spike's mechanism. Named outputs come from the same results. Hash covers knobs and connections only.
   - verify: gtest — Principled BSDF and `DwaBaseMaterial` have every manifest attribute as a knob with the right default and type; a save and load round trip restores edited values; animation and expressions work on a shader knob.
   - size: L
 
 - [ ] M350.P2.T3 — Register every shader
-  - files: `Engine/AppManager.cpp`, `Engine/Nodes/Scene/Shaders/ShaderNode.cpp`, `Tests/Scene/ShaderRegistration_Test.cpp`
+  - files: `Engine/AppManager.cpp`, `Engine/Nodes/Network/NetworkNode.cpp`, `Tests/Scene/ShaderRegistration_Test.cpp`
   - approach: register per M349 - Shader Node Spike's choice, grouped per renderer and hidden from the Nodes menu, toolbar and main-graph Tab. Python's `createNode` works by ID. Startup stays lazy in the manifest load if the cost shows.
   - verify: gtest — every manifest entry creates a node by ID; none appears in the main-graph menu listing; startup time compared with `tools/bench` is unchanged within noise.
   - size: M
 
 - [ ] M350.P2.T4 — Promote attributes to ports in the engine
-  - files: `Engine/Nodes/Scene/Shaders/ShaderNode.{h,cpp}`, `Tests/Scene/ShaderPromote_Test.cpp`, Python bindings for the shader node
+  - files: `Engine/Nodes/Network/NetworkNode.{h,cpp}`, `Tests/Scene/ShaderPromote_Test.cpp`, Python bindings for the shader node
   - approach: promote and demote an attribute by script name, creating or removing its input. A connected port disables its knob. Demoting a connected port disconnects it. Promotions save with the node and are scriptable. Port-only attributes can't be demoted, and knob-only ones can't be promoted.
   - verify: gtest — promote, connect, save, load restores port and connection; demoting disconnects and re-enables the knob; a non-linkable attribute refuses promotion; undo restores the state.
   - size: M
@@ -95,3 +95,5 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
 - 2026-11-05 — **Knob-first attributes (user):** every value attribute is a knob; ports only for key and promoted ones.
 - 2026-11-05 — **Key-port lists for shaders over 12 ports (user chose key ports; threshold cat-plan):** small shaders show all of theirs.
 - 2026-11-05 — **Committed manifest with a drift check (cat-plan):** builds and GUI tests need no renderer, and diffs are reviewable at each upgrade.
+- 2026-11-17 — **One network data kind, compatibility at the port layer (user):** `eDataKindNetwork` replaces `eDataKindShader`; contexts add no new kinds. Generic ops such as Add are one node usable in any container whose target it supports.
+- 2026-11-17 — **Houdini's target model, no lowering (user):** nodes declare supported targets; renderer builders show only renderer-native nodes (Cycles Math, not a generic Add), and nothing translates generic nodes into renderer nodes.

@@ -143,3 +143,5 @@
 - [2026-11-16 F29 - UI Polish Batch](2026-11-16-f29-ui-polish-batch.md) — five small UI milestones ship as one Feature (user)
 - [2026-11-16 Shared lens optics base](2026-11-16-shared-lens-optics-base.md) — one Engine/Optics library, bundled OpticsDatabase and aperture model for bokeh and flares; three Features (F30 base, F13 bokeh, F31 flares)
 - [2026-11-17 Layer IDs are names](2026-11-17-layer-ids-are-names.md) — every layer ID is its plain lowercase name (rgba, forward, backward, disparityL/R); no channels label; OFX plane strings only at the OFX plugin boundary; files round-trip verbatim (user)
+- [2026-11-17 Generic port networks](2026-11-17-generic-port-networks.md) — one network node and container class for shaders, VOPs and channels; port-type wiring; nodes declare targets (Houdini render mask), no lowering; kernel networks generate kernel source (user)
+- [2026-11-17 Channel networks](2026-11-17-channel-networks.md) — CHOP-model driver: whole-range cooked channel networks, export overrides knobs, chop() in expressions, animation layers on channels, one Feature F32 (user)

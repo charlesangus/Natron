@@ -1,6 +1,6 @@
 # M349 - Shader Node Spike
 
-Prove that real Natron nodes are affordable and workable as shader nodes before any shader GUI is built, as the first member of F2 - Native Shader Networks. A network is a Group of shader nodes (design decision `PLAN/DECISIONS/2026-11-05-native-shader-networks.md`). Each shader carries about 170 knobs at the top end (MoonRay's `DwaBaseMaterial`), but only its key and promoted attributes are ports, so only those need to be Natron inputs. Three things are unproven: the knob cost at that scale, changing a node's inputs while it is live, and connections that name one of several outputs. Natron stores a connection as input label to node name (`connectSerializedInputs`, `Engine/NodeGroupSerialization.cpp:63`), so a node has one output today, while Cycles shaders have several.
+Prove that real Natron nodes are affordable and workable as shader nodes before any shader GUI is built, as the first member of F2 - Native Shader Networks. A network is a Group of shader nodes (design decision `PLAN/DECISIONS/2026-11-05-native-shader-networks.md`). Each shader carries about 170 knobs at the top end (MoonRay's `DwaBaseMaterial`), but only its key and promoted attributes are ports, so only those need to be Natron inputs. Three things are unproven: the knob cost at that scale, changing a node's inputs while it is live, and connections that name one of several outputs. Natron stores a connection as input label to node name (`connectSerializedInputs`, `Engine/NodeGroupSerialization.cpp:63`), so a node has one output today, while Cycles shaders have several. The network core is generic (user, 2026-11-17; `PLAN/DECISIONS/2026-11-17-generic-port-networks.md`): one network node class and one container class for every context, typed ports, compatibility checked on port types alone, and each node declaring the targets it supports, as Houdini's render mask does. Shader targets come first; M482 - Geometry VOP Node and F32 - Channel Networks reuse the core unchanged, so the spike measures and prototypes that shape rather than a shader-only one.
 
 ## Scope
 
@@ -10,6 +10,7 @@ Prove that real Natron nodes are affordable and workable as shader nodes before 
 - A connection naming which output it uses, saved and restored.
 - A throwaway drawing prototype, settling whether `Edge` can draw port to port or needs a sibling class.
 - Whether shaders register as one plug-in each or as one class with a runtime spec.
+- A port-type and target model the note specifies for every planned context: shader targets (Cycles, MoonRay, later MaterialX), the kernel target (geometry, particle, image and channel VOPs) and channel sets (F32 - Channel Networks). The note sketches one example network per context to show nothing shader-specific leaks into the core.
 - A design note carrying all of this, landed with the bench and tests.
 
 **Out:**
@@ -35,7 +36,7 @@ Prove that real Natron nodes are affordable and workable as shader nodes before 
 
 - [ ] M349.P1.T2 — Prove live inputs on an existing node
   - files: `Tests/Scene/ShaderNodeInputs_Test.cpp`, `Engine/Nodes/docs/shader-nodes.md`, test-only effect beside the test
-  - approach: starting from `MissingPluginNode`'s runtime spec and Group input handling, add and remove named inputs on a live node. Exercise connected and unconnected inputs, undo, cycle checks and `getInputNumberFromLabel`. Also compare one plug-in per shader with one class and a runtime spec, by registration cost and by tab menu and Python consequences.
+  - approach: starting from `MissingPluginNode`'s runtime spec and Group input handling, add and remove named inputs on a live node. Exercise connected and unconnected inputs, undo, cycle checks and `getInputNumberFromLabel`. Also compare one plug-in per shader with one class and a runtime spec, by registration cost and by tab menu and Python consequences. The class must be the single network node class every context uses (shaders, generic kernel nodes, channel nodes), so a runtime spec is the expected outcome unless the numbers rule it out; a miss goes to the user.
   - verify: gtest — adding an input keeps existing connections; a save and load round trip restores promoted inputs and their connections; removing a connected input disconnects it cleanly. The note names the registration choice.
   - size: L
 
@@ -47,7 +48,7 @@ Prove that real Natron nodes are affordable and workable as shader nodes before 
 
 - [ ] M349.P1.T4 — Prototype port drawing and report
   - files: scratch `NodeGui` subclass and edge (not landed), `Engine/Nodes/docs/shader-nodes.md`
-  - approach: dispatch a prototype `NodeGui` subclass in `NodeGraph.cpp:468` beside `DotGui` and `BackdropGui`. Draw left-to-right named ports and one port-to-port edge. Decide whether `Edge` (`Gui/Edge.h`, tied to an input number and an angle around the node) can be extended or needs a sibling. Finish the note with every result, and put any missed bar to the user.
+  - approach: dispatch a prototype generic port node (`PortNodeGui`, nothing shader-specific in it) as a `NodeGui` subclass in `NodeGraph.cpp:468` beside `DotGui` and `BackdropGui`. Draw left-to-right named ports and one port-to-port edge. Decide whether `Edge` (`Gui/Edge.h`, tied to an input number and an angle around the node) can be extended or needs a sibling. Finish the note with every result, and put any missed bar to the user.
   - verify: an Xvfb screenshot at 1920x1080 shows two prototype nodes joined port to port, sent to the user as one file. The note states pass or fail for every bar and a recommendation.
   - size: L
 
@@ -59,3 +60,4 @@ Prove that real Natron nodes are affordable and workable as shader nodes before 
 - 2026-11-05 — **Measured with knob-first nodes (user):** most attributes are knobs and only key and promoted ones are ports, so about 10 inputs per node is the case that must pass.
 - 2026-11-05 — **Named outputs added (cat-plan):** Natron's connection model holds one output per node, and Cycles shaders have several.
 - 2026-11-05 — **Lands bench, tests and note:** as a Feature member the spike needs a mergeable PR, and those keep measuring later work.
+- 2026-11-17 — **Generic port-network core (user):** one network node class and one container class for shaders, VOPs and channels; wiring checked on port types only; nodes declare supported targets. Chosen over shipping shader-only and refactoring later, which would have changed saved projects with no back-compat path.

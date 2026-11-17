@@ -740,3 +740,11 @@ ProgressiveRenderTest.ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverThem is f
 ### 2026-11-16T11:00:00-05:00 — change-request
 - refs: none
 - Elaborate M256 - Delegate AOV Selection, M257 - Cycles Deep Output and M258 - MoonRay Deep Output from M255 - Delegate Output Spikes' drafts: `spike/m255/REPORT-P2T3-drafts.md` on branch `spike/m255-delegate-output` (a1e0d29fd). Apply the user decisions recorded in M255's Decisions (2026-11-16, P2.T3), including colour plus alpha deep volume segments on both delegates. Also apply the true-deep MoonRay patch (`spike/m255/moonray/moonray-true-deep.patch`) to M258's phase 258.1, and the deep opacity decision. Consider splitting M258's phases 258.1 and 258.2 into their own milestones.
+
+### 2026-11-17T06:30:00Z — change-request
+- refs: none
+- New milestone (user, F8 - Motion Vectors UAT): easier access to a node's "extra" or hidden inputs. Today the user has to move the other inputs to reach an extra input such as RotoPaint's Vectors. For /cat-plan to plan; it is not part of F8.
+
+### 2026-11-17T08:00:00Z — change-request
+- refs: M153, M179
+- New milestone (user): image-driven warp providers for distortion concatenation. IDistort, STMap and IWarp feeding a downstream warp provide their inverse map to the chain M153 - Distortion Concatenation builds. Their UV image renders over the pulled-back window as a probe (M179 - Render Graph Continuation's probe → extend → continue), then the frame is extended to request only the source footprint those UVs point at, then the continuation samples it. Deps: M153, M179.

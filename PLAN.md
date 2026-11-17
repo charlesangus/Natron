@@ -546,13 +546,24 @@ future core work has solid ground to build on.
 | M450 | USDWrite Export Preview | todo | M448, M449 |  | E9 | F27 | | [M450-usdwrite-export-preview.md](PLAN/MILESTONES/M450-usdwrite-export-preview.md) |
 | M451 | Viewer Stale Cue Experiments | doing | M302 | bosley-executor | E10 | | | [M451-viewer-stale-cue-experiments.md](PLAN/MILESTONES/M451-viewer-stale-cue-experiments.md) |
 | M452 | Node Error And Warning Display | doing | M397 | bosley-executor | E10 |  F29 | | [M452-node-error-and-warning-display.md](PLAN/MILESTONES/M452-node-error-and-warning-display.md) |
-| M453 | Follow Animation Layer | todo | M220 |  | E10 | | | [M453-follow-animation-layer.md](PLAN/MILESTONES/M453-follow-animation-layer.md) |
+| M453 | Follow Animation Layer | todo | M220, M486, M487, M488, M489 |  | E26 | F32 | | [M453-follow-animation-layer.md](PLAN/MILESTONES/M453-follow-animation-layer.md) |
 | M454 | Roto Insert Point Drag | done | - | bosley-executor | E10 |  F29 | | [M454-roto-insert-point-drag.md](PLAN/MILESTONES/M454-roto-insert-point-drag.md) |
 | M455 | Keyframe Markers For Visible Pages | doing | M421 | bosley-executor | E10 |  F29 | | [M455-keyframe-markers-for-visible-pages.md](PLAN/MILESTONES/M455-keyframe-markers-for-visible-pages.md) |
 | M456 | File Dialog Toolbar And Split | doing | - | bosley-executor | E10 |  F29 | | [M456-file-dialog-toolbar-and-split.md](PLAN/MILESTONES/M456-file-dialog-toolbar-and-split.md) |
 | M457 | ColorWarp Space Spike | todo | - |  | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |
 | M458 | ColorWarp Node | todo | M457 |  | E3 | F28 | | [M458-colorwarp-node.md](PLAN/MILESTONES/M458-colorwarp-node.md) |
 | M459 | ColorWarp 3D View | todo | M458 |  | E3 | F28 | | [M459-colorwarp-3d-view.md](PLAN/MILESTONES/M459-colorwarp-3d-view.md) |
+| M482 | Geometry VOP Node | todo | M351, M360 |  | E25 | | | [M482-geometry-vop-node.md](PLAN/MILESTONES/M482-geometry-vop-node.md) |
+| M483 | Particle VOP Node | todo | M482, M406 |  | E25 | | | [M483-particle-vop-node.md](PLAN/MILESTONES/M483-particle-vop-node.md) |
+| M484 | Image Kernel Binding And Wrangle | todo | M360, M408 |  | E25 | | | [M484-image-kernel-binding-and-wrangle.md](PLAN/MILESTONES/M484-image-kernel-binding-and-wrangle.md) |
+| M485 | Image VOP Node | todo | M482, M484 |  | E25 | | | [M485-image-vop-node.md](PLAN/MILESTONES/M485-image-vop-node.md) |
+| M486 | Channel Network Core | todo | M351 |  | E26 | F32 | | [M486-channel-network-core.md](PLAN/MILESTONES/M486-channel-network-core.md) |
+| M487 | Channel Export And chop() | todo | M486 |  | E26 | F32 | | [M487-channel-export-and-chop.md](PLAN/MILESTONES/M487-channel-export-and-chop.md) |
+| M488 | Channel Operators And Channel VOP | todo | M486, M482 |  | E26 | F32 | | [M488-channel-operators-and-channel-vop.md](PLAN/MILESTONES/M488-channel-operators-and-channel-vop.md) |
+| M489 | Channel Sources From Shapes, Tracks And Cameras | todo | M486, M487 |  | E26 | F32 | | [M489-channel-sources-shapes-tracks-cameras.md](PLAN/MILESTONES/M489-channel-sources-shapes-tracks-cameras.md) |
+| M490 | Channel Sources From Images And Audio | todo | M486 |  | E26 | F32 | | [M490-channel-sources-images-and-audio.md](PLAN/MILESTONES/M490-channel-sources-images-and-audio.md) |
+| M491 | Extra Input Picker | todo | - |  | E10 | | | [M491-extra-input-picker.md](PLAN/MILESTONES/M491-extra-input-picker.md) |
+| M492 | Image-Driven Warp Providers | todo | M153, M179 |  | E14 | | | [M492-image-driven-warp-providers.md](PLAN/MILESTONES/M492-image-driven-warp-providers.md) |
 
 # Epics
 
@@ -582,6 +593,8 @@ future core work has solid ground to build on.
 | E22 | Simulation And Solvers | Loop, solve and simulate native geometry and images: For-Each and Solver blocks, a POP-style particle system, and 2D fluids. |
 | E23 | Overlay Flow | Show node overlays wherever their image goes: off the render path, deformed through warps, and on projected or textured geometry. |
 | E24 | Lens Optics | Trace real lens prescriptions for physically based bokeh and lens flares from one shared optics library, lens database and aperture model. |
+| E25 | Kernel Networks | Build kernel code as node graphs: geometry, particle and image VOPs on the generic port-network core, plus an image wrangle. |
+| E26 | Channel Networks | Drive animation from channel networks: cooked channel graphs exported onto knobs and shapes, with sources and animation layers. |
 
 # Features
 
@@ -618,6 +631,7 @@ future core work has solid ground to build on.
 | F29 | UI Polish Batch | open |  |  | feature/f29-ui-polish-batch | Ship five small UI fixes — snapped viewer zoom, node error and warning display, Roto insert-point drag, keyframe markers for visible pages and the file dialog toolbar — on one build and one merge. |
 | F30 | Lens Optics Base | open |  |  | feature/f30-lens-optics-base | One optics base for traced bokeh and lens flares: a shared lens library, the bundled lens database and browser, and a shared aperture model. |
 | F31 | Lens Flares | open |  |  | feature/f31-lens-flares | A physically based, ray-traced LensFlare node with ghosts, starburst, layers and USD lights on CPU and GPU, with lens browser previews. Waits for F30 - Lens Optics Base to land. |
+| F32 | Channel Networks | open |  |  | feature/f32-channel-networks | CHOP-style channel networks that drive knobs and shapes, with operators, Channel VOP, every source and channel-based animation layers. |
 
 # Open questions
 

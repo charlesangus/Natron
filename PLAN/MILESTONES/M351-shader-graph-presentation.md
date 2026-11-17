@@ -1,6 +1,6 @@
 # M351 - Shader Graph Presentation
 
-Give shader networks their own presentation inside a builder's graph tab: left-to-right nodes with labelled, colour-coded ports, typed connection dragging and a Tab menu limited to one renderer. The main graph doesn't change. It is drawn by a new `NodeGui` subclass dispatched in `Gui/NodeGraph.cpp:468` beside `DotGui` and `BackdropGui`, with a port-to-port edge per M349 - Shader Node Spike's result. A `USDMaterialBuilder` shell (a `NodeGroup` subclass with no authoring) lands here, so that the shader graph has a real home; M352 - USDMaterialBuilder Node gives it its output and authoring.
+Give shader networks their own presentation inside a builder's graph tab: left-to-right nodes with labelled, colour-coded ports, typed connection dragging and a Tab menu limited to one renderer. The main graph doesn't change. It is drawn by a new `NodeGui` subclass dispatched in `Gui/NodeGraph.cpp:468` beside `DotGui` and `BackdropGui`, with a port-to-port edge per M349 - Shader Node Spike's result. A `USDMaterialBuilder` shell (a `NodeGroup` subclass with no authoring) lands here, so that the shader graph has a real home; M352 - USDMaterialBuilder Node gives it its output and authoring. Every piece is the generic port-network presentation (`PLAN/DECISIONS/2026-11-17-generic-port-networks.md`): `PortNodeGui`, `PortEdge`, `PortTypes` and a `NetworkBuilder` base, a `NodeGroup` subclass holding a set of targets, from which `USDMaterialBuilder` derives. Shader targets are the first client; M482 - Geometry VOP Node and F32 - Channel Networks reuse it unchanged, so nothing here names shaders or renderers outside the shader target registrations.
 
 ## Scope
 
@@ -11,13 +11,13 @@ Give shader networks their own presentation inside a builder's graph tab: left-t
 - Type colour per port. While dragging, incompatible ports grey out and can't accept. Compatibility follows each renderer's real rules, including Cycles' implicit conversions, and bars crossing renderers.
 - Promote and demote control beside each promotable knob in the panel; a connected port's knob greys out.
 - Dropping a connection anywhere on a node opens a filterable list of its compatible attributes, grouped; picking one promotes and connects it.
-- Tab lists one renderer's shaders, starting with the default, plus Backdrop. Shift+Tab switches renderer.
+- Tab lists the nodes of one of the container's targets, starting with the default, plus Backdrop. Shift+Tab switches target. A builder's targets are Cycles and MoonRay.
 - Gestures inside: drag a port to connect, selection, copy and paste, delete, undo, Backdrops. A `MissingPluginNode` draws with ports from its stored inputs.
 
 **Out:**
 - Kiss connect, shake disconnect and insert: off inside shader graphs for now (M194 - Kiss Connections, M195 - Shake And Cut Disconnect, M277 - Graph Creation And Insert keep the main graph).
 - Dots inside shader graphs, which would need typed pass-through: none yet.
-- Nested sub-networks: none yet.
+- Nested sub-networks: M482 - Geometry VOP Node adds subnets. `NetworkBuilder` must stay nestable inside itself; nothing here may assume a top-level container.
 - Viewing an intermediate shader or a shader ball: none.
 - Any change to main-graph drawing: none.
 
@@ -34,19 +34,19 @@ Give shader networks their own presentation inside a builder's graph tab: left-t
 ## Phase 351.1: Drawing
 
 - [ ] M351.P1.T1 — Add the builder shell and shader node drawing
-  - files: `Engine/Nodes/Scene/USDMaterialBuilder.{h,cpp}`, `Gui/ShaderNodeGui.{h,cpp}`, `Gui/NodeGraph.cpp`, `Tests/gui/shader_graph_nodes.py`
-  - approach: a `NodeGroup` subclass with `isSubGraphUserVisible` true, a Scene output and dive-in to its own tab. Dispatch `ShaderNodeGui` for shader nodes. Draw stripe, title, ports, labels and type colours from the manifest. Laid out left to right.
+  - files: `Engine/Nodes/Network/NetworkBuilder.{h,cpp}`, `Engine/Nodes/Scene/USDMaterialBuilder.{h,cpp}`, `Gui/PortNodeGui.{h,cpp}`, `Gui/NodeGraph.cpp`, `Tests/gui/shader_graph_nodes.py`
+  - approach: `NetworkBuilder`, a `NodeGroup` subclass with `isSubGraphUserVisible` true, a target set, and dive-in to its own tab; `USDMaterialBuilder` derives from it with targets `cycles` and `moonray` and a Scene output. Dispatch `PortNodeGui` for shader nodes. Draw stripe, title, ports, labels and type colours from the manifest. Laid out left to right.
   - verify: an Xvfb script at 1920x1080 creates a builder, dives in, and creates Principled BSDF and `DwaBaseMaterial`; screenshots go to the user, one file each.
   - size: L
 
 - [ ] M351.P1.T2 — Draw port-to-port edges
-  - files: `Gui/ShaderEdge.{h,cpp}` or `Gui/Edge.{h,cpp}` per the spike, `Gui/ShaderNodeGui.cpp`, `Tests/gui/shader_graph_edges.py`
+  - files: `Gui/PortEdge.{h,cpp}` or `Gui/Edge.{h,cpp}` per the spike, `Gui/PortNodeGui.cpp`, `Tests/gui/shader_graph_edges.py`
   - approach: edges run from a named output to a named input port with type colour, and follow node moves. Saved projects restore them, including named outputs. No per-input edge is created for an unconnected port.
   - verify: an Xvfb script connects Color and Alpha outputs of one image texture to two inputs, moves nodes, saves and reloads, and asserts the same connections; a screenshot goes to the user.
   - size: L
 
 - [ ] M351.P1.T3 — Collapse groups on the node
-  - files: `Gui/ShaderNodeGui.cpp`, `Engine/Nodes/Scene/Shaders/ShaderNode.cpp`, `Tests/gui/shader_graph_groups.py`
+  - files: `Gui/PortNodeGui.cpp`, `Engine/Nodes/Network/NetworkNode.cpp`, `Tests/gui/shader_graph_groups.py`
   - approach: group rows from the manifest, holding the node's visible ports. A collapsed row shrinks the node, and edges to its ports land on the row. Saved with the node.
   - verify: an Xvfb script collapses a group with a connected port, asserts the edge end sits on the row, saves, reloads and asserts it's still collapsed; a screenshot goes to the user.
   - size: M
@@ -54,8 +54,8 @@ Give shader networks their own presentation inside a builder's graph tab: left-t
 ## Phase 351.2: Connecting
 
 - [ ] M351.P2.T1 — Typed connection dragging
-  - files: `Gui/ShaderNodeGui.cpp`, `Gui/NodeGraph10.cpp`, `Engine/Nodes/Scene/Shaders/ShaderTypes.{h,cpp}`, `Tests/Scene/ShaderTypes_Test.cpp`
-  - approach: `ShaderTypes` answers whether an output can connect to an input, per renderer rules, and bars crossing renderers. The drag greys incompatible ports. A refused drop leaves things unchanged. Kiss, shake and insert don't run inside shader graphs.
+  - files: `Gui/PortNodeGui.cpp`, `Gui/NodeGraph10.cpp`, `Engine/Nodes/Network/PortTypes.{h,cpp}`, `Tests/Network/PortTypes_Test.cpp`
+  - approach: `PortTypes` answers whether an output port can connect to an input port. Each target registers its type table and implicit conversions (Cycles' and MoonRay's here); ports of different targets never connect. The drag greys incompatible ports. A refused drop leaves things unchanged. Kiss, shake and insert don't run inside shader graphs.
   - verify: gtest — float to colour on Cycles allowed, closure to float refused, Cycles to MoonRay refused; an Xvfb script drags onto a compatible and an incompatible port, with a screenshot of greying to the user.
   - size: M
 
@@ -66,26 +66,26 @@ Give shader networks their own presentation inside a builder's graph tab: left-t
   - size: M
 
 - [ ] M351.P2.T3 — Drop list of compatible attributes
-  - files: `Gui/ShaderAttributeList.{h,cpp}`, `Gui/ShaderNodeGui.cpp`, `Tests/gui/shader_graph_drop_list.py`
+  - files: `Gui/PortAttributeList.{h,cpp}`, `Gui/PortNodeGui.cpp`, `Tests/gui/shader_graph_drop_list.py`
   - approach: on dropping a connection on a node's body, open a popup grouped by attribute group, with a filter field, listing only compatible attributes including hidden ones. Picking promotes and connects as one undo step.
   - verify: an Xvfb script drops on `DwaBaseMaterial`, filters to one attribute, picks it, asserts the port and connection, then undoes once and asserts both are gone; a screenshot goes to the user.
   - size: M
 
 ## Phase 351.3: Menu
 
-- [ ] M351.P3.T1 — Limit Tab to one renderer
+- [ ] M351.P3.T1 — Limit Tab to one target
   - files: `Gui/TabMenuBridge.cpp`, `Gui/NodeGraph25.cpp`, `Tests/gui/shader_graph_tab.py`
-  - approach: inside a builder's graph, Tab lists the current renderer's shaders plus Backdrop. Shift+Tab switches renderer, with the menu showing which is current. The main graph's Tab offers `USDMaterialBuilder` and no shader.
+  - approach: inside a builder's graph, Tab lists the nodes supporting the current target plus Backdrop. Shift+Tab switches among the container's targets, with the menu showing which is current. The main graph's Tab offers `USDMaterialBuilder` and no shader.
   - verify: an Xvfb script opens Tab in both graphs and asserts the entries; Shift+Tab swaps shader lists; a screenshot goes to the user.
   - size: M
 
 - [ ] M351.P3.T2 — Draw missing shaders with ports
-  - files: `Gui/NodeGraph.cpp`, `Gui/ShaderNodeGui.cpp`, `Tests/gui/shader_graph_missing.py`
+  - files: `Gui/NodeGraph.cpp`, `Gui/PortNodeGui.cpp`, `Tests/gui/shader_graph_missing.py`
   - approach: a `MissingPluginNode` inside a shader graph draws with its stored inputs as ports, marked with Natron's usual missing look, so its connections stay visible.
   - verify: an Xvfb script loads a project naming an unknown shader, asserts its connections are drawn and that saving keeps them; a screenshot goes to the user.
   - size: M
 
-**Verification gate:** release gate green per `.local/build-mode`; `ShaderTypes_Test` passes; every `Tests/gui/shader_graph_*.py` passes under Xvfb at 1920x1080; the user OKs each screenshot.
+**Verification gate:** release gate green per `.local/build-mode`; `PortTypes_Test` passes; every `Tests/gui/shader_graph_*.py` passes under Xvfb at 1920x1080; the user OKs each screenshot.
 
 ## Decisions
 
@@ -93,3 +93,4 @@ Give shader networks their own presentation inside a builder's graph tab: left-t
 - 2026-11-05 — **Knob-first with promotion and a drop list (user):** most attributes are knobs; promote from the panel, or drop on the node and pick from a filterable list.
 - 2026-11-05 — **Key ports plus collapsible groups on the node (user):** "have groups to manage complexity". Taken as group rows on the node as well as in the panel and list; a collapsed group's edges land on its row (cat-plan).
 - 2026-11-05 — **Minimal gestures at first (user):** port drag, selection, copy and paste; kiss and shake later if missed.
+- 2026-11-17 — **Generic presentation (user):** port node, edge, type registry and builder base are context-neutral so VOP and channel containers reuse them; shader-specific code lives only in the shader target registrations.

@@ -186,8 +186,8 @@ try:
         return None
 
     def graph_point(dx=0, dy=0):
-        vp = root_graph().viewport()
-        c = vp.mapToGlobal(vp.rect().center())
+        view = root_graph()
+        c = view.viewport().mapToGlobal(view.viewport().rect().center())
         return QPoint(c.x() + dx, c.y() + dy)
 
     def visible_panels():
@@ -270,7 +270,8 @@ try:
         ok = yield from activate()
         if not ok:
             report("NOTE the main window did not report active before the key")
-        root_graph().viewport().setFocus()
+        view = root_graph()
+        view.viewport().setFocus()
         yield ("sleep", KEY_MS)
 
     def quiet():

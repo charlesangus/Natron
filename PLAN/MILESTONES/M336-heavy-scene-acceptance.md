@@ -83,3 +83,9 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
   - Island: full_load_block worst frame 3.6 s; reveal_wide 5.4 s stall and 10.9 s worst frame; reveal_cancel_paced 5.4 s stall.
   - Lobby: its loaded scenarios are skipped ("no such row").
   - A consultant is classifying each failure as product, environment or bench before fix tasks are filed.
+- 2026-11-17 — Round-5 VM triage (consultant): the run is not valid for acceptance.
+  - Lobby `Source/` and Island `textures/` were not staged (PM staging error), so Lobby had 0 gprims and its loaded scenarios skipped, and Island ran without ptex.
+  - load_all and draw_budget "pass" while Full + Load is still queuing payloads (loads_settled reports early).
+  - Main finding: paint still blocks the main thread until the render thread's Storm render returns (SceneViewport.cpp:8958 callOnRenderThread → renderIfIdle). Round 5 removed only the wait on GPU completion. This is the likely cause of Island's 5.4 s stalls and part of the ~230 ms open stall. It goes to the user with the trade-offs.
+- 2026-11-17 — **Open budget is judged warm (user):** the judged open runs with an already-populated GL shader cache after a warm-up; the cold first-ever open is recorded, not judged.
+- 2026-11-17 — **Island acceptance includes its textures (user):** the full Island, `textures/` included, is staged for the VM run.

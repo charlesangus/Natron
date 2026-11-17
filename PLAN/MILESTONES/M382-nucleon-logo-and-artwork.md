@@ -157,4 +157,4 @@ Context:
   - Halo ring (bold) and halo outline: try each with its radius centred in the grey pieces' band, once passing behind the grey and once in front of it.
   - Grey squares: try rounding only each piece's outside corner, as if clipped by a circle of that radius.
   - Trefoil orange-up (fifth trefoil sheet sent) has promise: try it with a fatter ring at the front that tapers to nothing at the back.
-  - Round 14 goes to a Fable agent. Dark-only sheets under `build/branding/round14/`.
+  - Round 14 goes to a Fable agent. Dark-only sheets under `build/branding/round14/`. Delivered at 0e4c22e86: electron-halo-{ring,outline}-mid-{behind,front}, the same with -round (grey clipped by a radius-230 circle on the nucleus), electron-halo-round-ring, and electron-ring-taper-rings-trefoil-orange-up-{even,bold,slim-sides,full-sides}.

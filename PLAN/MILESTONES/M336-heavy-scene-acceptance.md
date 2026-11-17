@@ -165,3 +165,4 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - orbit_full bench scenario; Tests/gui/m336_stand_in.py.
   - PM calls: Per Model boxes every model-kind prim. Under Always, a pick still takes in pending stage changes with the main thread waiting; that is a follow-up, since Always never renders.
   - The GUI harness defaults the stand-in to Off, so llvmpipe scripts aren't affected; scripts and the bench opt in (implementer running).
+- 2026-11-17 — Round-6 code complete on 26d84f773: P3.T2, T4, T5, T7 (with the stale-layer deferral, 89a8ac725 and 89bee6a6e) and T8, plus the GUI harness stand-in default. Syntax check clean. Gate run 44032201649 (release, --tests, --debug-symbols, every scene_draw_*, scene_viewer_* and m336_* GUI script). VM acceptance rerun next; P3.T3 (driver-lock spike) and P3.T6 (pattern_node) wait for its numbers.

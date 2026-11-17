@@ -58,6 +58,9 @@
 #
 # Environment:
 #   BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB  see below
+#   BENCH_TIMEOUT_S    the bench's own limit on a wait for the scene view (default 1800, the open limit;
+#                      set it lower and the bench reports what the viewport looked like before the
+#                      watchdog kills the run)
 #   FIXTURE_DIR        where fixtures and per-run output go (default build/bench-gpu)
 #   FIXTURE_MAKE_ARGS  extra heavy_scene_make.py arguments, split on spaces (default none: 1M prims)
 #   DEV_IMAGE          image that makes the fixtures (default what tools/ci/local/dev-image-tag.sh prints)
@@ -295,7 +298,7 @@ export GUI_TEST_HOST_DISPLAY="$DISPLAY"
 export BENCH_GPU=1
 export BENCH_RESULT="$RESULT"
 export BENCH_ROWS_DIR="$FIXTURE_DIR/rows"
-export BENCH_TIMEOUT_S=1800
+export BENCH_TIMEOUT_S="${BENCH_TIMEOUT_S:-1800}"
 export GUI_TEST_TIMEOUT=7200
 
 SAMPLER=""
@@ -474,10 +477,39 @@ run_bench() {
     return "$rc"
 }
 
+# After a run, what the kernel and the GPU say, into the run's log, and whether GL still answers.
+# A wedged GPU makes every later run abort at start, so launch records the rest instead of running them.
+GPU_WEDGED_AFTER=""
+probe_gpu_after() {
+    local log="$FIXTURE_DIR/out/$2.log"
+    {
+        echo "--- gpu state after $1"
+        dmesg 2> /dev/null | grep -iE 'NVRM|Xid' | tail -20
+        if command -v nvidia-smi > /dev/null 2>&1; then
+            nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader
+        fi
+    } >> "$log" 2>&1
+    command -v glxinfo > /dev/null 2>&1 || return 0
+    if ! timeout 10 glxinfo -B 2>> "$log" | tee -a "$log" | grep -q 'OpenGL renderer string: *[^ ]'; then
+        GPU_WEDGED_AFTER="$1"
+    fi
+}
+
+record_wedged() {
+    local reason="GL renderer gone after $GPU_WEDGED_AFTER"
+    printf '{"label": "%s", "scenario": "*", "result": "gpu_wedged", "reason": "%s", "peak_rss_mb": null, "gl_renderer": "%s", "bisect": %s}\n' \
+        "$1" "$reason" "$HOST_GPU" "$BISECT_JSON" >> "$RESULT"
+    echo "=== $1: gpu_wedged: $reason"
+}
+
 launch() {
     local label="$1" fixture="$2" file="$3" scenarios="$4" rc bench sampler="" vram_sampler="" stem stacks vram extra=()
     shift 4
     wanted "$label" || return 0
+    if [ -n "$GPU_WEDGED_AFTER" ]; then
+        record_wedged "$label"
+        return 0
+    fi
     stem="$label${BISECT_TAG:+.$BISECT_TAG}"
     stacks="$FIXTURE_DIR/out/$stem.stacks"
     vram="$FIXTURE_DIR/out/$stem.vram"
@@ -516,6 +548,7 @@ launch() {
         fi
         [ -s "$stacks.err" ] && echo "    stacks: sampler said: $(head -n 3 "$stacks.err" | tr '\n' ' ')"
     fi
+    probe_gpu_after "$label" "$stem"
     # The bench's watchdog starts once the scene's rows are picked; a process lost before then has
     # told the results file nothing.
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ] && ! grep -q "\"label\": \"$label\"" "$RESULT"; then
@@ -593,7 +626,7 @@ summarize() {
     if command -v python3 > /dev/null 2>&1 && grep -q '"scenario": "draw_budget"' "$RESULT"; then
         python3 -I tools/bench/heavy_scene_budget_table.py "$RESULT"
     fi
-    echo "results: $RESULT ($(wc -l < "$RESULT") lines: $(grep -c '"result": "pass"' "$RESULT") pass, $(grep -c '"result": "fail"' "$RESULT") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted)"' "$RESULT") did not finish, $(grep -c '"result": "skipped"' "$RESULT") skipped)"
+    echo "results: $RESULT ($(wc -l < "$RESULT") lines: $(grep -c '"result": "pass"' "$RESULT") pass, $(grep -c '"result": "fail"' "$RESULT") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted|gpu_wedged)"' "$RESULT") did not finish, $(grep -c '"result": "skipped"' "$RESULT") skipped)"
 }
 
 if [ "$MODE" = acceptance ]; then

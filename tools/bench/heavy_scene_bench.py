@@ -409,6 +409,29 @@ try:
     def shown():
         return bool(prop("natronSceneShown", False)) and not prop("natronSceneError")
 
+    def report_view_state(label):
+        """One NOTE line of what the viewport and the screen look like, for a wait that expired."""
+        parts = []
+        v = view()
+        parts.append("viewport=%s" % ("none" if v is None else "visible=%s size=%dx%d dpr=%s" % (
+            v.isVisible(), v.width(), v.height(), v.devicePixelRatioF())))
+        if v is not None:
+            names = sorted(bytes(n).decode("utf-8", "replace") for n in v.dynamicPropertyNames())
+            props = ["natronSceneShown", "natronSceneError", "natronSceneSyncedAtMs", "natronSceneLastPaintMs"]
+            props += [n for n in names if n.startswith("natronScene") and n not in props]
+            parts.append("props " + " ".join("%s=%r" % (n, v.property(n)) for n in props))
+        for w in QApplication.topLevelWidgets():
+            if w.metaObject().className() == "Gui":
+                g = w.geometry()
+                parts.append("main window %dx%d+%d+%d visible=%s" % (g.width(), g.height(), g.x(), g.y(), w.isVisible()))
+                break
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            g = screen.geometry()
+            parts.append("screen %dx%d+%d+%d dpr=%s dpi=%s" % (
+                g.width(), g.height(), g.x(), g.y(), screen.devicePixelRatio(), screen.logicalDotsPerInch()))
+        report("NOTE %s: %s" % (label, "; ".join(parts)))
+
     class Measure(object):
         """What an action reports: its numbers."""
 
@@ -448,6 +471,8 @@ try:
             return shown() and synced_at >= t0_ms and prop("natronSceneLastPaintMs", 0) >= synced_at
 
         ok = yield ("until", scene_frame_drawn, TIMEOUT_S)
+        if not ok:
+            report_view_state("open: the scene view never showed the scene")
         check(ok, "open: the scene view shows the scene (%r)" % (prop("natronSceneError"),))
         painted = prop("natronSceneLastPaintMs")
         m.values["first_frame_ms"] = round((painted if painted is not None else time.time() * 1000.0) - t0 * 1000.0, 1)

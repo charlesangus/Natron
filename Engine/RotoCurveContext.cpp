@@ -2524,7 +2524,7 @@ RotoCurveContext::followVectors(const VectorFollowParams& params,
         return report;
     }
 
-    VectorSampler sampler(params.source);
+    VectorSampler sampler(params.source, params.layers);
     const std::function<bool()> aborted = [&params]() {
         return params.shouldAbort && params.shouldAbort();
     };

@@ -686,6 +686,15 @@ public:
         return false;
     }
 
+    /**
+     * @brief Whether the node graph draws inputNb on the node's left side, ahead of its other
+     * side inputs, so it can be reached without connecting the inputs that come before it.
+     **/
+    virtual bool isInputFirstOnSide(int /*inputNb*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
     virtual int getRotoBrushInputIndex() const WARN_UNUSED_RETURN
     {
         return -1;

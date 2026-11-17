@@ -36,6 +36,21 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief The layers of a vector source a follow reads, by layer ID: the forward and the backward
+ * vectors in the first two channels of theirs, and the confidence of each in the first and second
+ * channels of the confidence layer, or in its only channel for both. By default the motion layers
+ * and the confidence layer a VectorGenerator outputs. An empty backward or confidence ID reads no
+ * such layer.
+ **/
+struct VectorFollowLayers {
+    VectorFollowLayers();
+
+    std::string forward;
+    std::string backward;
+    std::string confidence;
+};
+
+/**
  * @brief Reads a node's motion layers, in canonical coordinates, at scale 1 over its region of
  * definition. A few frames stay in memory: a follow only moves one frame at a time, in one direction.
  *
@@ -50,6 +65,7 @@ class VectorSampler
     : public VectorField {
 public:
     explicit VectorSampler(const NodePtr& source, int maxFrames = 6);
+    VectorSampler(const NodePtr& source, const VectorFollowLayers& layers, int maxFrames = 6);
 
     virtual ~VectorSampler();
 
@@ -71,13 +87,15 @@ public:
     std::string lastError() const;
 
     /**
-     * @brief Both motion layers are among the node's outputs. Layers offered by the project alone
-     * do not count: there would be nothing in them.
+     * @brief Both motion layers, the default ones or those of layers, are among the node's
+     * outputs. Layers offered by the project alone do not count: there would be nothing in them.
      **/
     static bool hasMotionLayers(const NodePtr& node, double time);
+    static bool hasMotionLayers(const NodePtr& node, double time, const VectorFollowLayers& layers);
 
     // The forward motion layer is among the node's outputs, in the same sense.
     static bool hasForwardMotionLayer(const NodePtr& node, double time);
+    static bool hasForwardMotionLayer(const NodePtr& node, double time, const VectorFollowLayers& layers);
 
     /**
      * @brief Whether host's shapes may follow source in that direction: it must have the layer of
@@ -85,6 +103,7 @@ public:
      * the follow writes. On false, error says why. Main thread.
      **/
     static bool checkSource(const NodePtr& source, const NodePtr& host, double time, VectorFollowDirection direction, std::string* error);
+    static bool checkSource(const NodePtr& source, const NodePtr& host, double time, VectorFollowDirection direction, const VectorFollowLayers& layers, std::string* error);
 
     // For a forward follow.
     static bool checkSource(const NodePtr& source, const NodePtr& host, double time, std::string* error);

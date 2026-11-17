@@ -30,6 +30,7 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/PluginActionShortcut.h"
@@ -42,6 +43,18 @@
 
 #define kFollowParamGroup "followVectors"
 #define kFollowParamGroupLabel "Follow Vectors"
+
+#define kFollowParamForwardLayer "followForwardLayer"
+#define kFollowParamForwardLayerLabel "Follow Forward Layer"
+#define kFollowParamForwardLayerHint "The layer of the Vectors input holding the forward vectors, the motion to the next frame, in its first two channels."
+
+#define kFollowParamBackwardLayer "followBackwardLayer"
+#define kFollowParamBackwardLayerLabel "Follow Backward Layer"
+#define kFollowParamBackwardLayerHint "The layer of the Vectors input holding the backward vectors, the motion to the previous frame, in its first two channels. With None, or a layer the input lacks, the shapes can only follow forward."
+
+#define kFollowParamConfidenceLayer "followConfidenceLayer"
+#define kFollowParamConfidenceLayerLabel "Follow Confidence Layer"
+#define kFollowParamConfidenceLayerHint "The layer of the Vectors input holding how far each vector can be trusted, from 0 to 1: the forward vector's in its first channel and the backward vector's in its second, or both in a one-channel layer. With None, or a layer the input lacks, every vector is trusted fully."
 
 #define kFollowParamModel "followModel"
 #define kFollowParamModelLabel "Follow Model"
@@ -141,6 +154,10 @@ public:
     EffectInstance* host;
     RotoCurveInteract* interact;
     const int vectorsInput;
+    KnobGroupPtr group;
+    KnobLayerSelectPtr forwardLayer;
+    KnobLayerSelectPtr backwardLayer;
+    KnobLayerSelectPtr confidenceLayer;
     KnobChoicePtr model;
     KnobButtonPtr rangeBackward;
     KnobButtonPtr backwardToStart;
@@ -176,8 +193,8 @@ public:
         return node ? node->getGuiInput(vectorsInput) : NodePtr();
     }
 
-    // Hidden rather than disabled: without vectors the row would only take up the viewer.
-    void refreshViewerKnobs()
+    // Hidden rather than disabled: without vectors the row and the group would only take up room.
+    void refreshVisibility()
     {
         const bool connected = bool(vectorsSource());
         for (const KnobIWPtr& weak : viewerKnobs) {
@@ -185,6 +202,19 @@ public:
                 knob->setInViewerContextSecret(!connected);
             }
         }
+        if (group) {
+            group->setSecret(!connected);
+        }
+    }
+
+    VectorFollowLayers layers() const
+    {
+        VectorFollowLayers chosen;
+        chosen.forward = forwardLayer->getLayer();
+        chosen.backward = backwardLayer->getLayer();
+        chosen.confidence = confidenceLayer->getLayer();
+
+        return chosen;
     }
 
     void warn(const std::string& message) const
@@ -262,6 +292,7 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
         params.first = (span == FollowSpan::eToRangeEnd) ? rangeFirst : current - 1;
         params.last = current;
     }
+    params.layers = layers();
     params.model = modelFromIndex(model->getValue());
     params.confidenceThreshold = confidenceThreshold->getValue();
 
@@ -349,27 +380,34 @@ VectorFollowControls::setSelectedPointsProvider(const std::function<std::list<Ve
 }
 
 void
-VectorFollowControls::createKnobs(const KnobPagePtr& page)
+VectorFollowControls::createKnobs(const KnobPagePtr& page,
+                                  const KnobPagePtr& reducePage)
 {
     EffectInstance* host = _imp->host;
 
     KnobGroupPtr group = AppManager::createKnob<KnobGroup>(host, std::string(kFollowParamGroupLabel));
     group->setName(kFollowParamGroup);
     page->addKnob(group);
+    _imp->group = group;
 
+    const auto setUp = [&](const KnobIPtr& knob,
+                           const char* name,
+                           const char* hint) {
+        knob->setName(name);
+        knob->setHintToolTip(std::string(hint));
+        knob->setEvaluateOnChange(false);
+        knob->setAnimationEnabled(false);
+        knob->setHashExempt(true);
+    };
     const auto addToGroup = [&](const KnobIPtr& knob,
                                 const char* name,
                                 const char* viewerLabel,
                                 const char* hint,
                                 bool inViewer) {
-        knob->setName(name);
+        setUp(knob, name, hint);
         if (viewerLabel) {
             knob->setInViewerContextLabel(QString::fromUtf8(viewerLabel));
         }
-        knob->setHintToolTip(std::string(hint));
-        knob->setEvaluateOnChange(false);
-        knob->setAnimationEnabled(false);
-        knob->setHashExempt(true);
         group->addKnob(knob);
         if (inViewer) {
             knob->setInViewerContextSecret(true);
@@ -381,15 +419,40 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
     const auto makeButton = [&](const char* name,
                                 const char* label,
                                 const char* hint,
-                                const char* icon) {
+                                const char* icon,
+                                bool lastOnLine) {
         KnobButtonPtr button = AppManager::createKnob<KnobButton>(host, std::string(label));
         button->setIconLabel(icon);
         button->setIsPersistent(false);
         button->setInViewerContextCanHaveShortcut(true);
+        button->setAddNewLine(lastOnLine);
         addToGroup(button, name, nullptr, hint, true);
 
         return button;
     };
+    const NodePtr node = host->getNode();
+    const auto makeLayer = [&](const char* name,
+                               const char* label,
+                               const char* hint,
+                               const std::string& defaultLayer,
+                               bool allowNone) {
+        KnobLayerSelectPtr layer = AppManager::createKnob<KnobLayerSelect>(host, std::string(label));
+        layer->setWithChannelButtons(false);
+        layer->setAllowNone(allowNone);
+        layer->setAllowAll(false);
+        layer->setDefaultValue(layer->encode(defaultLayer, std::vector<std::string>()));
+        addToGroup(layer, name, nullptr, hint, false);
+        if (node) {
+            node->declareLayerKnob(layer, _imp->vectorsInput, LayerKnobSpec::eRoleInputBound);
+        }
+
+        return layer;
+    };
+
+    const VectorFollowLayers defaults;
+    _imp->forwardLayer = makeLayer(kFollowParamForwardLayer, kFollowParamForwardLayerLabel, kFollowParamForwardLayerHint, defaults.forward, false);
+    _imp->backwardLayer = makeLayer(kFollowParamBackwardLayer, kFollowParamBackwardLayerLabel, kFollowParamBackwardLayerHint, defaults.backward, true);
+    _imp->confidenceLayer = makeLayer(kFollowParamConfidenceLayer, kFollowParamConfidenceLayerLabel, kFollowParamConfidenceLayerHint, defaults.confidence, true);
 
     KnobChoicePtr model = AppManager::createKnob<KnobChoice>(host, std::string(kFollowParamModelLabel));
     {
@@ -403,13 +466,13 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
     addToGroup(model, kFollowParamModel, kFollowParamModelLabel, kFollowParamModelHint, true);
     _imp->model = model;
 
-    _imp->rangeBackward = makeButton(kFollowParamRangeBackward, kFollowParamRangeBackwardLabel, kFollowParamRangeBackwardHint, NATRON_ICONS_PATH "lucide/arrow-left-from-line.svg");
-    _imp->backwardToStart = makeButton(kFollowParamBackwardToStart, kFollowParamBackwardToStartLabel, kFollowParamBackwardToStartHint, NATRON_ICONS_PATH "lucide/skip-back.svg");
-    _imp->backwardOne = makeButton(kFollowParamBackwardOne, kFollowParamBackwardOneLabel, kFollowParamBackwardOneHint, NATRON_ICONS_PATH "lucide/step-back.svg");
-    _imp->forwardOne = makeButton(kFollowParamForwardOne, kFollowParamForwardOneLabel, kFollowParamForwardOneHint, NATRON_ICONS_PATH "lucide/step-forward.svg");
-    _imp->forwardToEnd = makeButton(kFollowParamForwardToEnd, kFollowParamForwardToEndLabel, kFollowParamForwardToEndHint, NATRON_ICONS_PATH "lucide/skip-forward.svg");
-    _imp->rangeForward = makeButton(kFollowParamRangeForward, kFollowParamRangeForwardLabel, kFollowParamRangeForwardHint, NATRON_ICONS_PATH "lucide/arrow-right-from-line.svg");
-    _imp->blendBetweenKeys = makeButton(kFollowParamBlendBetweenKeys, kFollowParamBlendBetweenKeysLabel, kFollowParamBlendBetweenKeysHint, NATRON_ICONS_PATH "lucide/blend.svg");
+    _imp->rangeBackward = makeButton(kFollowParamRangeBackward, kFollowParamRangeBackwardLabel, kFollowParamRangeBackwardHint, NATRON_ICONS_PATH "lucide/arrow-left-from-line.svg", false);
+    _imp->backwardToStart = makeButton(kFollowParamBackwardToStart, kFollowParamBackwardToStartLabel, kFollowParamBackwardToStartHint, NATRON_ICONS_PATH "lucide/skip-back.svg", false);
+    _imp->backwardOne = makeButton(kFollowParamBackwardOne, kFollowParamBackwardOneLabel, kFollowParamBackwardOneHint, NATRON_ICONS_PATH "lucide/step-back.svg", false);
+    _imp->forwardOne = makeButton(kFollowParamForwardOne, kFollowParamForwardOneLabel, kFollowParamForwardOneHint, NATRON_ICONS_PATH "lucide/step-forward.svg", false);
+    _imp->forwardToEnd = makeButton(kFollowParamForwardToEnd, kFollowParamForwardToEndLabel, kFollowParamForwardToEndHint, NATRON_ICONS_PATH "lucide/skip-forward.svg", false);
+    _imp->rangeForward = makeButton(kFollowParamRangeForward, kFollowParamRangeForwardLabel, kFollowParamRangeForwardHint, NATRON_ICONS_PATH "lucide/arrow-right-from-line.svg", false);
+    _imp->blendBetweenKeys = makeButton(kFollowParamBlendBetweenKeys, kFollowParamBlendBetweenKeysLabel, kFollowParamBlendBetweenKeysHint, NATRON_ICONS_PATH "lucide/blend.svg", true);
 
     KnobDoublePtr confidence = AppManager::createKnob<KnobDouble>(host, std::string(kFollowParamConfidenceThresholdLabel));
     confidence->setDefaultValue(kVectorFollowDefaultConfidenceThreshold);
@@ -428,6 +491,7 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
         options.push_back(ChoiceOption("inOut", "In Out", "From Follow In to Follow Out."));
         range->populateChoices(options);
     }
+    range->setAddNewLine(false);
     addToGroup(range, kFollowParamRange, kFollowParamRangeLabel, kFollowParamRangeHint, false);
     _imp->range = range;
 
@@ -444,11 +508,12 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
     out->setDefaultAllDimensionsEnabled(false);
     _imp->out = out;
 
-    // In the panel only, where the follow row's hiding without vectors does not reach it.
+    // Outside the group: reduction needs no vectors, so it stays while the group hides.
     KnobButtonPtr reduceKeyframes = AppManager::createKnob<KnobButton>(host, std::string(kFollowParamReduceKeyframesLabel));
     reduceKeyframes->setIsPersistent(false);
     reduceKeyframes->setAddNewLine(false);
-    addToGroup(reduceKeyframes, kFollowParamReduceKeyframes, kFollowParamReduceKeyframesLabel, kFollowParamReduceKeyframesHint, false);
+    setUp(reduceKeyframes, kFollowParamReduceKeyframes, kFollowParamReduceKeyframesHint);
+    reducePage->addKnob(reduceKeyframes);
     _imp->reduceKeyframes = reduceKeyframes;
 
     KnobDoublePtr reduceTolerance = AppManager::createKnob<KnobDouble>(host, std::string(kFollowParamReduceToleranceLabel));
@@ -456,18 +521,19 @@ VectorFollowControls::createKnobs(const KnobPagePtr& page)
     reduceTolerance->setMinimum(0.);
     reduceTolerance->setDisplayMinimum(0.);
     reduceTolerance->setDisplayMaximum(5.);
-    addToGroup(reduceTolerance, kFollowParamReduceTolerance, kFollowParamReduceToleranceLabel, kFollowParamReduceToleranceHint, false);
+    setUp(reduceTolerance, kFollowParamReduceTolerance, kFollowParamReduceToleranceHint);
+    reducePage->addKnob(reduceTolerance);
     _imp->reduceTolerance = reduceTolerance;
 
-    if (const NodePtr node = host->getNode()) {
+    if (node) {
         Imp* imp = _imp.get();
         _imp->inputConnection = QObject::connect(node.get(), &Node::inputChanged, host, [imp](int inputNb) {
             if (inputNb == imp->vectorsInput) {
-                imp->refreshViewerKnobs();
+                imp->refreshVisibility();
             }
         });
     }
-    _imp->refreshViewerKnobs();
+    _imp->refreshVisibility();
 }
 
 bool
@@ -507,7 +573,7 @@ VectorFollowControls::onKnobChanged(KnobI* k)
     } else if (k == imp.rangeForward.get()) {
         span = FollowSpan::eWholeRange;
     } else if (k != imp.forwardOne.get()) {
-        return k == imp.model.get() || k == imp.reduceTolerance.get() || k == imp.confidenceThreshold.get() || k == imp.in.get() || k == imp.out.get();
+        return k == imp.forwardLayer.get() || k == imp.backwardLayer.get() || k == imp.confidenceLayer.get() || k == imp.model.get() || k == imp.reduceTolerance.get() || k == imp.confidenceThreshold.get() || k == imp.in.get() || k == imp.out.get();
     }
 
     imp.follow(imp.selection(), mode, direction, span);
@@ -519,6 +585,12 @@ NodePtr
 VectorFollowControls::getVectorsSource() const
 {
     return _imp->vectorsSource();
+}
+
+VectorFollowLayers
+VectorFollowControls::getLayers() const
+{
+    return _imp->layers();
 }
 
 void

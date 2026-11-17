@@ -309,6 +309,8 @@ TEST_F(SplineWarpFollowVectorsTest, TheVectorsInputFeedsOnlyTheFollowAndShowsIts
     EffectInstancePtr effect = _warpNode->getEffectInstance();
     EXPECT_TRUE(effect->isInputOptional(kSplineWarpInputVectors));
     EXPECT_FALSE(effect->isInputMask(kSplineWarpInputVectors));
+    EXPECT_TRUE(effect->isInputFirstOnSide(kSplineWarpInputVectors));
+    EXPECT_FALSE(effect->isInputFirstOnSide(kSplineWarpInputSource));
     EXPECT_FALSE(bool(_warpNode->getKnobByName("followSource")));
 
     const char* viewerKnobs[] = {
@@ -322,19 +324,29 @@ TEST_F(SplineWarpFollowVectorsTest, TheVectorsInputFeedsOnlyTheFollowAndShowsIts
         "blendBetweenKeys",
         "followConfidenceThreshold",
     };
+    KnobIPtr group = _warpNode->getKnobByName("followVectors");
+    ASSERT_TRUE(bool(group));
     const auto expectViewerSecret = [&](bool secret) {
         for (const char* name : viewerKnobs) {
             KnobIPtr knob = _warpNode->getKnobByName(name);
             ASSERT_TRUE(bool(knob)) << name;
             EXPECT_EQ(knob->getInViewerContextSecret(), secret) << name;
         }
+        EXPECT_EQ(group->getIsSecret(), secret);
     };
     expectViewerSecret(true);
+    for (const char* name : { "followForwardLayer", "followBackwardLayer", "followConfidenceLayer" }) {
+        KnobIPtr knob = _warpNode->getKnobByName(name);
+        ASSERT_TRUE(bool(knob)) << name;
+        EXPECT_EQ(knob->getParentKnob(), group) << name;
+    }
+    // Reduction needs no vectors, so it stays on the panel, outside the group, while the group hides.
     for (const char* name : { "reduceKeyframes", "reduceTolerance" }) {
         KnobIPtr knob = _warpNode->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_FALSE(effect->isInViewerUIKnob(knob)) << name;
         EXPECT_FALSE(knob->getIsSecret()) << name;
+        EXPECT_NE(knob->getParentKnob(), group) << name;
     }
 
     ASSERT_TRUE(_warpNode->connectInput(_vectors, kSplineWarpInputVectors));

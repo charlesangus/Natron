@@ -116,9 +116,10 @@ copyPlane(const ImagePtr& image,
         return false;
     }
     const int nComps = (int)image->getComponentsCount();
-    if (nComps < 2) {
+    if (nComps < 1) {
         return false;
     }
+    const int second = std::min(1, nComps - 1);
     out->x1 = window.x1;
     out->y1 = window.y1;
     out->width = window.width();
@@ -133,7 +134,7 @@ copyPlane(const ImagePtr& image,
         }
         for (int x = 0; x < out->width; ++x) {
             dst[0] = src[0];
-            dst[1] = src[1];
+            dst[1] = src[second];
             dst += 2;
             src += nComps;
         }
@@ -147,6 +148,9 @@ findLayer(const std::list<ImageLayerDesc>& layers,
           const std::string& layerID,
           ImageLayerDesc* out = nullptr)
 {
+    if (layerID.empty()) {
+        return false;
+    }
     for (const ImageLayerDesc& layer : layers) {
         if (layer.getLayerID() == layerID) {
             if (out) {
@@ -215,6 +219,7 @@ private:
 
 struct VectorSampler::Imp {
     NodeWPtr source;
+    VectorFollowLayers layers;
     int maxFrames;
     std::atomic<bool> aborted;
 
@@ -227,8 +232,10 @@ struct VectorSampler::Imp {
     std::list<SampledFramePtr> frames;
 
     Imp(const NodePtr& source_,
+        const VectorFollowLayers& layers_,
         int maxFrames_)
         : source(source_)
+        , layers(layers_)
         , maxFrames(std::max(1, maxFrames_))
         , aborted(false)
     {
@@ -325,17 +332,29 @@ VectorSampler::Imp::render(int frame)
 
     std::list<ImageLayerDesc> present;
     effect->getPresentLayers(frame, ViewIdx(0), -1, &present);
+    ImageLayerDesc forwardLayer;
+    if (!findLayer(present, layers.forward, &forwardLayer)) {
+        setError("The vector source has no forward motion layer at this frame.");
+
+        return SampledFramePtr();
+    }
+    ImageLayerDesc backwardLayer;
     ImageLayerDesc confidenceLayer;
-    out->hasConfidence = findLayer(present, kVectorGeneratorConfidenceLayerID, &confidenceLayer);
-    out->hasBackward = findLayer(present, ImageLayerDesc::getBackwardMotionComponents().getLayerID());
+    out->hasConfidence = findLayer(present, layers.confidence, &confidenceLayer);
+    out->hasBackward = findLayer(present, layers.backward, &backwardLayer);
 
     std::list<ImageLayerDesc> components;
-    components.push_back(ImageLayerDesc::getForwardMotionComponents());
+    const auto request = [&components](const ImageLayerDesc& layer) {
+        if (std::find(components.begin(), components.end(), layer) == components.end()) {
+            components.push_back(layer);
+        }
+    };
+    request(forwardLayer);
     if (out->hasBackward) {
-        components.push_back(ImageLayerDesc::getBackwardMotionComponents());
+        request(backwardLayer);
     }
     if (out->hasConfidence) {
-        components.push_back(confidenceLayer);
+        request(confidenceLayer);
     }
 
     EffectInstance::RenderRoIArgs args(frame,
@@ -351,17 +370,17 @@ VectorSampler::Imp::render(int frame)
                                        effect.get(),
                                        eStorageModeRAM,
                                        frame);
-    std::map<ImageLayerDesc, ImagePtr> layers;
-    const EffectInstance::RenderRoIRetCode status = effect->renderRoI(args, &layers);
-    if ((status != EffectInstance::eRenderRoIRetCodeOk) || layers.empty()) {
+    std::map<ImageLayerDesc, ImagePtr> rendered;
+    const EffectInstance::RenderRoIRetCode status = effect->renderRoI(args, &rendered);
+    if ((status != EffectInstance::eRenderRoIRetCodeOk) || rendered.empty()) {
         setError(aborted.load() ? "Aborted." : "The vector source failed to render.");
 
         return SampledFramePtr();
     }
-    bool copied = copyPlane(layers[ImageLayerDesc::getForwardMotionComponents()], roi, &out->forward)
-        && (!out->hasBackward || copyPlane(layers[ImageLayerDesc::getBackwardMotionComponents()], roi, &out->backward));
+    bool copied = copyPlane(rendered[forwardLayer], roi, &out->forward)
+        && (!out->hasBackward || copyPlane(rendered[backwardLayer], roi, &out->backward));
     if (copied && out->hasConfidence) {
-        copied = copyPlane(layers[confidenceLayer], roi, &out->confidence);
+        copied = copyPlane(rendered[confidenceLayer], roi, &out->confidence);
     }
     if (!copied) {
         setError("The vector source did not render its motion layers.");
@@ -372,9 +391,23 @@ VectorSampler::Imp::render(int frame)
     return out;
 }
 
+VectorFollowLayers::VectorFollowLayers()
+    : forward(ImageLayerDesc::getForwardMotionComponents().getLayerID())
+    , backward(ImageLayerDesc::getBackwardMotionComponents().getLayerID())
+    , confidence(kVectorGeneratorConfidenceLayerID)
+{
+}
+
 VectorSampler::VectorSampler(const NodePtr& source,
                              int maxFrames)
-    : _imp(new Imp(source, maxFrames))
+    : _imp(new Imp(source, VectorFollowLayers(), maxFrames))
+{
+}
+
+VectorSampler::VectorSampler(const NodePtr& source,
+                             const VectorFollowLayers& layers,
+                             int maxFrames)
+    : _imp(new Imp(source, layers, maxFrames))
 {
 }
 
@@ -486,17 +519,32 @@ bool
 VectorSampler::hasMotionLayers(const NodePtr& node,
                                double time)
 {
+    return hasMotionLayers(node, time, VectorFollowLayers());
+}
+
+bool
+VectorSampler::hasMotionLayers(const NodePtr& node,
+                               double time,
+                               const VectorFollowLayers& layers)
+{
     const std::list<ImageLayerDesc> present = presentLayersOf(node, time);
 
-    return findLayer(present, ImageLayerDesc::getForwardMotionComponents().getLayerID())
-        && findLayer(present, ImageLayerDesc::getBackwardMotionComponents().getLayerID());
+    return findLayer(present, layers.forward) && findLayer(present, layers.backward);
 }
 
 bool
 VectorSampler::hasForwardMotionLayer(const NodePtr& node,
                                      double time)
 {
-    return findLayer(presentLayersOf(node, time), ImageLayerDesc::getForwardMotionComponents().getLayerID());
+    return hasForwardMotionLayer(node, time, VectorFollowLayers());
+}
+
+bool
+VectorSampler::hasForwardMotionLayer(const NodePtr& node,
+                                     double time,
+                                     const VectorFollowLayers& layers)
+{
+    return findLayer(presentLayersOf(node, time), layers.forward);
 }
 
 bool
@@ -504,6 +552,17 @@ VectorSampler::checkSource(const NodePtr& source,
                            const NodePtr& host,
                            double time,
                            VectorFollowDirection direction,
+                           std::string* error)
+{
+    return checkSource(source, host, time, direction, VectorFollowLayers(), error);
+}
+
+bool
+VectorSampler::checkSource(const NodePtr& source,
+                           const NodePtr& host,
+                           double time,
+                           VectorFollowDirection direction,
+                           const VectorFollowLayers& layers,
                            std::string* error)
 {
     if (!source || !source->isActivated()) {
@@ -517,12 +576,12 @@ VectorSampler::checkSource(const NodePtr& source,
 
         return false;
     }
-    if (!hasForwardMotionLayer(source, time)) {
+    if (!hasForwardMotionLayer(source, time, layers)) {
         *error = source->getScriptName() + " has no forward motion layer.";
 
         return false;
     }
-    if ((direction == VectorFollowDirection::eBackward) && !hasMotionLayers(source, time)) {
+    if ((direction == VectorFollowDirection::eBackward) && !hasMotionLayers(source, time, layers)) {
         *error = source->getScriptName() + " has no backward motion layer, so it can only be followed forward.";
 
         return false;

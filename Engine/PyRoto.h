@@ -204,8 +204,9 @@ public:
     BezierCurve* createRectangle(double x, double y, double size, double time);
 
     /**
-     * @brief Moves each item with the motion vectors connected to the node's Vectors input over
-     * first..last, and returns once done, as one undo step. direction is "forward" or "backward",
+     * @brief Moves each item with the motion vectors connected to the node's Vectors input, read
+     * from the layers its Follow Forward Layer, Follow Backward Layer and Follow Confidence Layer
+     * parameters pick, over first..last, and returns once done, as one undo step. direction is "forward" or "backward",
      * model is "perPoint", "translate", "affine" or "perspective". The follow starts from each item
      * as it shows at first going forward, or at last going backward, and keys every frame of
      * first..last, the start frame too, over any key already there; keys on other frames stay. A

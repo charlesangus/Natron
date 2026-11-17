@@ -939,8 +939,9 @@ Roto::runFollow(const char* function,
     if (!params.source) {
         return raiseValueError("Connect the " kVectorFollowInputLabel " input first.");
     }
+    params.layers = running->getLayers();
     std::string error;
-    if (!VectorSampler::checkSource(params.source, host, first, params.direction, &error)) {
+    if (!VectorSampler::checkSource(params.source, host, first, params.direction, params.layers, &error)) {
         return raiseValueError(params.source->getFullyQualifiedName() + ": " + error);
     }
     params.first = first;

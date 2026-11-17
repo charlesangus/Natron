@@ -37,6 +37,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/VectorFollow.h"
+#include "Engine/VectorSampler.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -92,6 +93,7 @@ struct VectorFollowParams {
     // one and the rest stays put, whatever the model. A curve not listed follows as a whole.
     std::map<RotoDrawableItem*, std::set<int>> selectedPoints;
     NodePtr source;
+    VectorFollowLayers layers;
     int first = 0;
     int last = 0;
     VectorFollowMode mode = VectorFollowMode::eFollow;

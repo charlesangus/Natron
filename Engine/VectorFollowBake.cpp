@@ -803,10 +803,10 @@ VectorFollowRun::prepare(std::string* error)
 
         return false;
     }
-    if (!VectorSampler::checkSource(params.source, _imp->context->getNode(), params.first, params.direction, error)) {
+    if (!VectorSampler::checkSource(params.source, _imp->context->getNode(), params.first, params.direction, params.layers, error)) {
         return false;
     }
-    _imp->forwardOnly = !VectorSampler::hasMotionLayers(params.source, params.first);
+    _imp->forwardOnly = !VectorSampler::hasMotionLayers(params.source, params.first, params.layers);
 
     _imp->tieSuspension.reset(new RotoCurveContext::TransformTieSuspension(_imp->context));
     std::list<RotoDrawableItemPtr> items;

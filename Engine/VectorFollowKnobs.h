@@ -35,9 +35,10 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/RotoCurvePanelHook.h"
+#include "Engine/VectorSampler.h"
 
 #define kVectorFollowInputLabel "Vectors"
-#define kVectorFollowInputHint "The motion vectors the shapes follow, such as a VectorGenerator's. The node must output the forward motion layer, and the backward one too for following backward. Only the follow tools read this input; it does not change the render."
+#define kVectorFollowInputHint "The motion vectors the shapes follow, such as a VectorGenerator's. The node must output the layer Follow Forward Layer picks, and the one Follow Backward Layer picks too for following backward. Only the follow tools read this input; it does not change the render."
 
 NATRON_NAMESPACE_ENTER
 
@@ -51,8 +52,8 @@ struct VectorFollowReport;
 /**
  * @brief The Follow Vectors group of a curve host: its knobs, what its buttons do with the host's
  * selection, the context menu entry of its curve panel and the follow they run. The vectors come
- * from the host's Vectors input, and the viewer shows the group's controls only while that input
- * is connected. Main thread.
+ * from the layers the group picks of the host's Vectors input, and the group and its viewer
+ * controls show only while that input is connected. Main thread.
  **/
 class VectorFollowControls
     : public RotoCurvePanelHook {
@@ -63,13 +64,17 @@ public:
 
     virtual ~VectorFollowControls();
 
-    void createKnobs(const KnobPagePtr& page);
+    // The Follow Vectors group goes on page, Reduce Keyframes and Reduce Tolerance on reducePage.
+    void createKnobs(const KnobPagePtr& page, const KnobPagePtr& reducePage);
 
     // True when k is one of this group's knobs.
     bool onKnobChanged(KnobI* k);
 
     // The node connected to the host's Vectors input, or null.
     NodePtr getVectorsSource() const;
+
+    // The layers of the Vectors input the follow reads, as the group's layer knobs pick them.
+    VectorFollowLayers getLayers() const;
 
     // The shortcut editor entries of the follow buttons, which have no default keys.
     static void getShortcuts(std::list<PluginActionShortcut>* shortcuts);

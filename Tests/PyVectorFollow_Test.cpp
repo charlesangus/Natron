@@ -47,6 +47,8 @@
 #include "Engine/BezierCP.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
@@ -597,7 +599,7 @@ TEST_F(PyVectorFollowTest, ReduceKeyframesWorksOverTheFollowRangeWithNoVectors)
     EXPECT_EQ(keys.count(20.), 1u);
 }
 
-TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnlyWhileConnected)
+TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsControlsOnlyWhileConnected)
 {
     VectorFollowControls* follow = followControlsOf(_roto);
     ASSERT_TRUE(follow);
@@ -606,6 +608,9 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnly
     EXPECT_EQ(vectors, _roto->getNInputs() - 1);
     EXPECT_TRUE(_roto->getEffectInstance()->isInputOptional(vectors));
     EXPECT_FALSE(_roto->getEffectInstance()->isInputMask(vectors));
+    for (int i = 0; i < _roto->getNInputs(); ++i) {
+        EXPECT_EQ(_roto->getEffectInstance()->isInputFirstOnSide(i), i == vectors) << i;
+    }
     EXPECT_FALSE(bool(_roto->getKnobByName("followSource")));
 
     const char* viewerKnobs[] = {
@@ -619,6 +624,8 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnly
         "blendBetweenKeys",
         "followConfidenceThreshold",
     };
+    KnobIPtr group = _roto->getKnobByName("followVectors");
+    ASSERT_TRUE(bool(group));
     const auto expectViewerSecret = [&](bool secret) {
         for (const char* name : viewerKnobs) {
             KnobIPtr knob = _roto->getKnobByName(name);
@@ -626,16 +633,49 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnly
             EXPECT_TRUE(_roto->getEffectInstance()->isInViewerUIKnob(knob)) << name;
             EXPECT_EQ(knob->getInViewerContextSecret(), secret) << name;
         }
+        EXPECT_EQ(group->getIsSecret(), secret);
     };
     for (const char* name : { "followRangeBackward", "followBackwardToStart", "followBackwardOne", "followForwardOne", "followForwardToEnd", "followRangeForward", "blendBetweenKeys" }) {
         EXPECT_TRUE(_roto->getKnobByName(name)->getInViewerContextLabel().empty()) << name;
+        EXPECT_EQ(_roto->getKnobByName(name)->getParentKnob(), group) << name;
     }
-    // Reduction needs no vectors, so it stays on the panel whether or not the input is connected.
+    for (const char* name : { "followRangeBackward", "followBackwardToStart", "followBackwardOne", "followForwardOne", "followForwardToEnd", "followRangeForward" }) {
+        EXPECT_FALSE(_roto->getKnobByName(name)->isNewLineActivated()) << name;
+    }
+    EXPECT_TRUE(_roto->getKnobByName("blendBetweenKeys")->isNewLineActivated());
+    EXPECT_FALSE(_roto->getKnobByName("followRange")->isNewLineActivated());
+    EXPECT_FALSE(_roto->getKnobByName("followIn")->isNewLineActivated());
+
+    const struct
+    {
+        const char* name;
+        std::string layer;
+    } layerKnobs[] = {
+        { "followForwardLayer", kNatronForwardMotionVectorsLayerID },
+        { "followBackwardLayer", kNatronBackwardMotionVectorsLayerID },
+        { "followConfidenceLayer", kVectorGeneratorConfidenceLayerID },
+    };
+    for (const auto& expected : layerKnobs) {
+        KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(_roto->getKnobByName(expected.name));
+        ASSERT_TRUE(bool(layer)) << expected.name;
+        EXPECT_EQ(layer->getParentKnob(), group) << expected.name;
+        EXPECT_EQ(layer->getLayer(), expected.layer) << expected.name;
+    }
+    const VectorFollowLayers chosen = follow->getLayers();
+    EXPECT_EQ(chosen.forward, kNatronForwardMotionVectorsLayerID);
+    EXPECT_EQ(chosen.backward, kNatronBackwardMotionVectorsLayerID);
+    EXPECT_EQ(chosen.confidence, kVectorGeneratorConfidenceLayerID);
+
+    // Reduction needs no vectors, so it stays on the Shape tab whether or not the input is connected.
     for (const char* name : { "reduceKeyframes", "reduceTolerance" }) {
         KnobIPtr knob = _roto->getKnobByName(name);
         ASSERT_TRUE(bool(knob)) << name;
         EXPECT_FALSE(_roto->getEffectInstance()->isInViewerUIKnob(knob)) << name;
         EXPECT_FALSE(knob->getIsSecret()) << name;
+        EXPECT_NE(knob->getParentKnob(), group) << name;
+        KnobPagePtr page = knob->getTopLevelPage();
+        ASSERT_TRUE(bool(page)) << name;
+        EXPECT_EQ(page->getName(), "Shape") << name;
     }
 
     expectViewerSecret(true);
@@ -657,6 +697,9 @@ TEST_F(PyVectorFollowTest, TheFollowReadsTheVectorsInputAndShowsItsViewerRowOnly
     _roto->disconnectInput(vectors);
     expectViewerSecret(true);
     EXPECT_FALSE(follow->getVectorsSource());
+    for (const char* name : { "reduceKeyframes", "reduceTolerance" }) {
+        EXPECT_FALSE(_roto->getKnobByName(name)->getIsSecret()) << name;
+    }
 }
 
 // A headless test has no node GUI, so the viewer never hands RotoPaint a press: the host lock is

@@ -251,6 +251,12 @@ SplineWarp::getInputHint(int inputNb) const
     return EffectInstance::getInputHint(inputNb);
 }
 
+bool
+SplineWarp::isInputFirstOnSide(int inputNb) const
+{
+    return inputNb == kSplineWarpInputVectors;
+}
+
 EffectInstance::CurveContextKindEnum
 SplineWarp::getCurveContextKind() const
 {
@@ -589,7 +595,7 @@ SplineWarp::initializeKnobs()
     _ui->createViewerButtonKnobs(page);
     _ui->createDisplayKnobs(page);
     _vectorFollow.reset(new VectorFollowControls(this, _ui.get(), kSplineWarpInputVectors));
-    _vectorFollow->createKnobs(page);
+    _vectorFollow->createKnobs(page, page);
     _vectorFollow->setSelectedPointsProvider([this]() {
         std::list<VectorFollowPointsPtr> points;
         SplineWarpLinkPtr link;

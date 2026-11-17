@@ -179,6 +179,12 @@ RotoPaint::isInputMask(int inputNb) const
     return inputNb == ROTOPAINT_MASK_INPUT_INDEX;
 }
 
+bool
+RotoPaint::isInputFirstOnSide(int inputNb) const
+{
+    return inputNb == ROTOPAINT_VECTORS_INPUT_INDEX;
+}
+
 int
 RotoPaint::getHostMaskInputNb() const
 {
@@ -449,7 +455,9 @@ RotoPaint::initializeKnobs()
     addKnobToViewerUI(resetCloneOffset);
 
     _vectorFollow.reset(new VectorFollowControls(this, _imp->ui.get(), ROTOPAINT_VECTORS_INPUT_INDEX));
-    _vectorFollow->createKnobs(generalPage);
+    KnobPagePtr shapePage = std::dynamic_pointer_cast<KnobPage>(getKnobByName("Shape"));
+    assert(shapePage);
+    _vectorFollow->createKnobs(generalPage, shapePage ? shapePage : generalPage);
 
     KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect);
     _imp->ui->createObjectSelectKnobs(generalPage);

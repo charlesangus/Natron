@@ -26,6 +26,7 @@
 
 #include <cmath>
 #include <string>
+#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -165,6 +166,77 @@ TEST_F(VectorSamplerTest, AForwardOnlySourceReadsWithNoBackwardConfidence)
     EXPECT_EQ(s.backwardX, 0.);
     EXPECT_EQ(s.backwardY, 0.);
     EXPECT_EQ(s.backwardConfidence, 0.);
+}
+
+TEST_F(VectorSamplerTest, ReadsTheChosenLayers)
+{
+    NodePtr generator = createGenerator(createTexture());
+    ASSERT_TRUE(bool(generator));
+
+    VectorFollowLayers swapped;
+    std::swap(swapped.forward, swapped.backward);
+    VectorSampler sampler(generator, swapped);
+    ASSERT_TRUE(sampler.prepareFrame(10)) << sampler.lastError();
+
+    const VectorSample s = sampler.sample(10, kWidth / 2.25, kHeight / 2.25);
+    EXPECT_NEAR(s.forwardX, -kShiftX, kTolerance);
+    EXPECT_NEAR(s.forwardY, -kShiftY, kTolerance);
+    EXPECT_NEAR(s.backwardX, kShiftX, kTolerance);
+    EXPECT_NEAR(s.backwardY, kShiftY, kTolerance);
+}
+
+TEST_F(VectorSamplerTest, WithNoBackwardLayerChosenTheSourceIsForwardOnly)
+{
+    NodePtr generator = createGenerator(createTexture());
+    ASSERT_TRUE(bool(generator));
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+
+    VectorFollowLayers layers;
+    layers.backward.clear();
+    EXPECT_FALSE(VectorSampler::hasMotionLayers(generator, 10., layers));
+    EXPECT_TRUE(VectorSampler::hasForwardMotionLayer(generator, 10., layers));
+    std::string error;
+    EXPECT_TRUE(VectorSampler::checkSource(generator, roto, 10., VectorFollowDirection::eForward, layers, &error)) << error;
+    EXPECT_FALSE(VectorSampler::checkSource(generator, roto, 10., VectorFollowDirection::eBackward, layers, &error));
+
+    VectorSampler sampler(generator, layers);
+    ASSERT_TRUE(sampler.prepareFrame(10)) << sampler.lastError();
+    const VectorSample s = sampler.sample(10, kWidth / 2.25, kHeight / 2.25);
+    EXPECT_NEAR(s.forwardX, kShiftX, kTolerance);
+    EXPECT_EQ(s.backwardX, 0.);
+    EXPECT_EQ(s.backwardConfidence, 0.);
+}
+
+TEST_F(VectorSamplerTest, WithNoConfidenceLayerChosenEveryVectorIsTrusted)
+{
+    NodePtr generator = createGenerator(createTexture());
+    ASSERT_TRUE(bool(generator));
+
+    VectorFollowLayers layers;
+    layers.confidence.clear();
+    VectorSampler sampler(generator, layers);
+    ASSERT_TRUE(sampler.prepareFrame(10)) << sampler.lastError();
+
+    const VectorSample s = sampler.sample(10, kWidth / 2.25, kHeight / 2.25);
+    EXPECT_EQ(s.forwardConfidence, 1.);
+    EXPECT_EQ(s.backwardConfidence, 1.);
+}
+
+TEST_F(VectorSamplerTest, RefusesAChosenForwardLayerTheSourceLacks)
+{
+    NodePtr generator = createGenerator(createTexture());
+    ASSERT_TRUE(bool(generator));
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+
+    VectorFollowLayers layers;
+    layers.forward = "noSuchLayer";
+    EXPECT_FALSE(VectorSampler::hasForwardMotionLayer(generator, 10., layers));
+    std::string error;
+    EXPECT_FALSE(VectorSampler::checkSource(generator, roto, 10., VectorFollowDirection::eForward, layers, &error));
+    VectorSampler sampler(generator, layers);
+    EXPECT_FALSE(sampler.prepareFrame(10));
 }
 
 TEST_F(VectorSamplerTest, RefusesASourceWithoutLayers)

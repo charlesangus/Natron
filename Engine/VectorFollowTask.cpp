@@ -167,7 +167,7 @@ VectorFollowTask::startFollow(const VectorFollowParams& params,
         std::lock_guard<std::mutex> locker(_imp->workMutex);
         _imp->params = params;
         _imp->run = std::move(run);
-        _imp->sampler.reset(new VectorSampler(params.source));
+        _imp->sampler.reset(new VectorSampler(params.source, params.layers));
         _imp->job.reset(new IsolatedJob(params.source, "vector follow"));
         _imp->hostJob.reset(new IsolatedJob(host, "vector follow"));
         _imp->aborted = false;

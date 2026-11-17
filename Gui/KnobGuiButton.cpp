@@ -229,7 +229,7 @@ void
 KnobGuiButton::_show()
 {
     if (_button) {
-        _button->show();
+        KnobGui::showWidget(_button);
     }
 }
 

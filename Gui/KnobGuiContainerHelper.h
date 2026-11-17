@@ -53,6 +53,8 @@ public:
     TabGroup* groupAsTab; //< to gather group knobs that are set as a tab
     KnobPageWPtr pageKnob;
     QGridLayout* gridLayout;
+    // Set once the page has been current: until then its rows are left unbuilt.
+    bool shown;
 
     KnobPageGui()
         : tab(0)
@@ -60,6 +62,7 @@ public:
         , groupAsTab(0)
         , pageKnob()
         , gridLayout(0)
+        , shown(false)
     {
     }
 };
@@ -205,6 +208,15 @@ public:
     virtual bool isPagingEnabled() const
     {
         return true;
+    }
+
+    /**
+     * @brief Returns whether a row hidden at build time, or on a page not yet shown, may be left unbuilt until it
+     * is first shown.
+     **/
+    virtual bool canDeferKnobRows() const
+    {
+        return false;
     }
 
     /**
@@ -356,6 +368,19 @@ private:
                                    int lastKnobLineSpacing,
                                    QWidget* lastRowWidget,
                                    const KnobsVec& knobsOnSameLine);
+
+    void buildKnobRow(const KnobGuiPtr& ret,
+                      const KnobPageGuiPtr& page,
+                      QGridLayout* layout,
+                      bool inGroupTab,
+                      KnobGuiGroup* parentGui,
+                      bool makeNewLine,
+                      int lastKnobLineSpacing,
+                      QWidget* lastRowWidget,
+                      const KnobsVec& knobsOnSameLine,
+                      int keptRow);
+
+    void buildShownDeferredRows();
 
     void initializeKnobVectorInternal(const KnobsVec& siblingsVec, KnobsVec* regularKnobsVec);
 

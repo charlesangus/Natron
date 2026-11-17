@@ -25,6 +25,7 @@
 
 #include "DockablePanel.h"
 
+#include <optional>
 #include <stdexcept>
 
 #include <QApplication> // qApp
@@ -48,6 +49,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Image.h" // Image::clamp
 #include "Engine/KnobTypes.h" // KnobButton
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
@@ -419,6 +421,9 @@ DockablePanel::DockablePanel(Gui* gui,
         _imp->_tabWidget->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     }
     QObject::connect( _imp->_tabWidget, SIGNAL(currentChanged(int)), this, SLOT(onPageIndexChanged(int)) );
+    // In its place before the pages are built: moving it there afterwards re-resolves the fonts, palettes and
+    // style of every row.
+    _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
     _imp->_horizLayout->addWidget(_imp->_rightContainer);
     _imp->_mainLayout->addWidget(_imp->_horizContainer);
 }
@@ -432,6 +437,12 @@ bool
 DockablePanel::isPagingEnabled() const
 {
     return _imp->_pagesEnabled;
+}
+
+bool
+DockablePanel::canDeferKnobRows() const
+{
+    return true;
 }
 
 bool
@@ -770,17 +781,24 @@ void
 DockablePanel::onKnobsInitialized()
 {
     assert(_imp->_tabWidget);
-    if (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0) {
-        _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
+    {
+        NodeCreationStageLog::Scope stage("panelInitTabs");
+        if (_imp->_tabWidget && (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0)) {
+            _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
+        }
     }
 
-    RotoPanel* roto = initializeRotoPanel();
-    if (roto) {
-        _imp->_rightContainerLayout->addWidget(roto);
+    {
+        NodeCreationStageLog::Scope stage("panelInitRoto");
+        RotoPanel* roto = initializeRotoPanel();
+        if (roto) {
+            _imp->_rightContainerLayout->addWidget(roto);
+        }
     }
-
 
     assert(!_imp->_trackerPanel);
+    std::optional<NodeCreationStageLog::Scope> trackerStage;
+    trackerStage.emplace("panelInitTracker");
     _imp->_trackerPanel = initializeTrackerPanel();
 
     if (_imp->_trackerPanel) {
@@ -797,9 +815,14 @@ DockablePanel::onKnobsInitialized()
             }
         }
     }
+    trackerStage.reset();
 
-    initializeExtraGui(_imp->_rightContainerLayout);
+    {
+        NodeCreationStageLog::Scope stage("panelInitExtra");
+        initializeExtraGui(_imp->_rightContainerLayout);
+    }
 
+    NodeCreationStageLog::Scope pyPlugStage("panelInitPyPlug");
     NodeSettingsPanel* isNodePanel = dynamic_cast<NodeSettingsPanel*>(this);
     if (isNodePanel) {
         NodeGuiPtr nodeGui = isNodePanel->getNode();

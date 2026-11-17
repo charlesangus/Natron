@@ -1827,11 +1827,11 @@ KnobGuiValue::_show()
     _imp->refreshFullWidthRowVisibility();
     for (std::size_t i = 0; i < _imp->spinBoxes.size(); ++i) {
         if ( !_imp->dimensionSwitchButton || ( (i > 0) && _imp->dimensionSwitchButton->isChecked() ) || (i == 0) ) {
-            _imp->spinBoxes[i].first->show();
+            KnobGui::showWidget(_imp->spinBoxes[i].first);
         }
         if ( !_imp->dimensionSwitchButton || _imp->dimensionSwitchButton->isChecked() ) {
             if (_imp->spinBoxes[i].second) {
-                _imp->spinBoxes[i].second->show();
+                KnobGui::showWidget(_imp->spinBoxes[i].second);
             }
         } else if ((i == 0) && wantsFixedDimensionLabelSlot()) {
             setDimensionLabelVisible(0, false);
@@ -1841,20 +1841,20 @@ KnobGuiValue::_show()
         double sliderMax = _imp->slider->maximum();
         double sliderMin = _imp->slider->minimum();
         if ( (sliderMax > sliderMin) && ( (sliderMax - sliderMin) < SLIDER_MAX_RANGE ) && (sliderMax < std::numeric_limits<int>::max()) && (sliderMin > std::numeric_limits<int>::min()) ) {
-            _imp->slider->show();
+            KnobGui::showWidget(_imp->slider);
         }
     }
     if (_imp->dimensionSwitchButton) {
-        _imp->dimensionSwitchButton->show();
+        KnobGui::showWidget(_imp->dimensionSwitchButton);
     }
     if (_imp->rectangleFormatButton) {
-        _imp->rectangleFormatButton->show();
+        KnobGui::showWidget(_imp->rectangleFormatButton);
     }
     if (_imp->matrixGrid) {
-        _imp->matrixGrid->show();
+        KnobGui::showWidget(_imp->matrixGrid);
     }
     if (_imp->dimensionLines && _imp->dimensionSwitchButton && _imp->dimensionSwitchButton->isChecked()) {
-        _imp->dimensionLines->show();
+        KnobGui::showWidget(_imp->dimensionLines);
     }
 }
 

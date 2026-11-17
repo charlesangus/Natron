@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <limits>
 
 CLANG_DIAG_OFF(deprecated)
@@ -120,6 +121,25 @@ public:
     int getSpacingBetweenItems() const;
 
     bool hasWidgetBeenCreated() const;
+
+    /**
+     * @brief Leaves the row unbuilt until it is first shown, on a page that has been shown: build then makes
+     * its widgets in the grid rows kept for it from firstRow.
+     **/
+    void setDeferredRow(const KnobPageGuiPtr& page, int firstRow, const std::function<void()>& build);
+
+    bool isRowDeferred() const;
+
+    /**
+     * @brief Builds an unbuilt row that should now be visible, and shows it.
+     **/
+    void buildDeferredRowIfShown();
+
+    /**
+     * @brief Shows w unless it is a child of a hidden widget that has never been shown or hidden explicitly:
+     * such a child appears with its parent, and an explicit show() would polish it now for nothing.
+     **/
+    static void showWidget(QWidget* w);
 
     void createGUI(QWidget* fieldContainer,
                    QWidget* labelContainer,

@@ -1350,16 +1350,16 @@ KnobGuiString::_show()
 
     if ( knob->isMultiLine() ) {
         assert(_textEdit);
-        _textEdit->show();
+        KnobGui::showWidget(_textEdit);
     } else if ( knob->isLabel() ) {
         if (_label) {
-            _label->show();
+            KnobGui::showWidget(_label);
         }
     } else {
         assert(_lineEdit);
-        _lineEdit->show();
+        KnobGui::showWidget(_lineEdit);
         if (_pickPrimsButton) {
-            _pickPrimsButton->show();
+            KnobGui::showWidget(_pickPrimsButton);
         }
     }
 }

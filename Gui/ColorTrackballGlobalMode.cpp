@@ -930,7 +930,7 @@ ColorTrackballGlobalMode::setTarget(const std::shared_ptr<GlobalModeTarget>& tar
 bool
 ColorTrackballGlobalMode::engage(const KnobGuiColorPtr& target)
 {
-    if (!target || !target->getAdjustPanel()) {
+    if (!target || !target->hasAdjustPanel()) {
         return false;
     }
     if (_engaged && (getTarget() == target.get())) {

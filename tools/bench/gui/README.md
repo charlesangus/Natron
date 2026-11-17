@@ -172,6 +172,11 @@ plug-ins and is not the figure to read.
 | `panelKnobLayout` | Putting the row in its page's layout. |
 | `panelKnobSecret` | Hiding a secret row. |
 | `panelKnobsInitialized` | `onKnobsInitialized`: the tab widget and the pages after the rows. |
+| `panelInitTabs` | Putting the tab widget in the panel, inside `panelKnobsInitialized`. |
+| `panelInitRoto` | The Roto panel, inside `panelKnobsInitialized`. |
+| `panelInitTracker` | The Tracker panel. |
+| `panelInitExtra` | The multi-instance interface. |
+| `panelInitPyPlug` | Disabling the interface of a node inside an unedited PyPlug. |
 | `knobToolTip` | Building one row's tooltip text, wherever it is asked for. |
 | `panelDock` | Adding the complete panel to the properties bin and showing it. |
 | `panelBuildTail` | What the panel build runs after the rows and the dock: the viewer interface, curve and dope sheet editors. |

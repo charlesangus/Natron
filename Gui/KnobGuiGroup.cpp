@@ -125,7 +125,9 @@ KnobGuiGroup::removeTabWidget()
 void
 KnobGuiGroup::removeSpecificGui()
 {
-    _button->deleteLater();
+    if (_button) {
+        _button->deleteLater();
+    }
 }
 
 void
@@ -137,7 +139,14 @@ KnobGuiGroup::addKnob(const KnobGuiPtr& child)
 bool
 KnobGuiGroup::isChecked() const
 {
-    return hasWidgetBeenCreated() ? _button->isChecked() : true;
+    // setCheckedInternal() shows the children before the button takes the new state, and a child that is still
+    // unbuilt is built only if its group reads as open.
+    if (_button) {
+        return _checked;
+    }
+    KnobGroupPtr knob = _knob.lock();
+
+    return knob ? knob->getValue() : true;
 }
 
 void
@@ -256,18 +265,16 @@ KnobGuiGroup::_show()
 //    if ( _knob->getIsSecret() ) {
 //        return;
 //    }
-    if (_button) {
-        _button->show();
-    }
+KnobGui::showWidget(_button);
 
-    if (_checked) {
-        for (std::list<KnobGuiWPtr>::iterator it = _children.begin(); it != _children.end(); ++it) {
-            KnobGuiPtr k = it->lock();
-            if (!k) {
-                continue;
-            }
-            k->show();
+if (_checked) {
+    for (std::list<KnobGuiWPtr>::iterator it = _children.begin(); it != _children.end(); ++it) {
+        KnobGuiPtr k = it->lock();
+        if (!k) {
+            continue;
         }
+        k->show();
+    }
     }
     if (_tabGroup) {
         _tabGroup->show();

@@ -159,7 +159,10 @@ KnobGui::removeGui()
             _imp->descriptionLabel = 0;
         }
     }
-    removeSpecificGui();
+    if (_imp->widgetCreated) {
+        removeSpecificGui();
+    }
+    _imp->deferredRowBuild = std::function<void()>();
     _imp->guiRemoved = true;
 }
 
@@ -221,6 +224,10 @@ KnobGui::createGUI(QWidget* fieldContainer,
                    const std::vector<KnobIPtr> & knobsOnSameLine)
 {
     _imp->guiRemoved = false;
+    _imp->buildingWidgets = true;
+    _imp->deferredRowBuild = std::function<void()>();
+    _imp->deferredRowPage.reset();
+    _imp->deferredRowIndex = -1;
     KnobIPtr knob = getKnob();
 
     _imp->fieldLayout = layout;
@@ -285,6 +292,7 @@ KnobGui::createGUI(QWidget* fieldContainer,
     }
 
     _imp->widgetCreated = true;
+    _imp->buildingWidgets = false;
 
     for (int i = 0; i < knob->getDimension(); ++i) {
         onExprChanged(i);
@@ -887,7 +895,7 @@ KnobGui::createAnimationMenu(QMenu* menu,
 void
 KnobGui::reflectDriverState(bool driven)
 {
-    if (_imp->customInteract || _imp->guiRemoved) {
+    if (_imp->customInteract || _imp->guiRemoved || !_imp->hasWidgets()) {
         return;
     }
     if (driven) {

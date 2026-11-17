@@ -241,8 +241,8 @@ KnobGuiFile::_hide()
 void
 KnobGuiFile::_show()
 {
-    _openFileButton->show();
-    _lineEdit->show();
+    KnobGui::showWidget(_openFileButton);
+    KnobGui::showWidget(_lineEdit);
 }
 
 void
@@ -553,8 +553,8 @@ KnobGuiOutputFile::_hide()
 void
 KnobGuiOutputFile::_show()
 {
-    _openFileButton->show();
-    _lineEdit->show();
+    KnobGui::showWidget(_openFileButton);
+    KnobGui::showWidget(_lineEdit);
 }
 
 void

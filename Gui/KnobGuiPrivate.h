@@ -32,8 +32,9 @@
 
 #include <cassert>
 #include <cfloat>
-#include <stdexcept>
+#include <functional>
 #include <map>
+#include <stdexcept>
 
 #include <QFileDialog>
 #include <QFormLayout>
@@ -125,8 +126,20 @@ struct KnobGuiPrivate
     bool isInViewerUIKnob;
     // The row standing in for the knob's widgets while it is driven; null for a knob that cannot be.
     KnobDriverRow* driverRow;
+    // Set while createGUI() runs, as the slots it calls must reach the widgets before widgetCreated is set.
+    bool buildingWidgets;
+    // Builds the row's widgets into the grid rows kept for it; empty once they are built.
+    std::function<void()> deferredRowBuild;
+    // While the row is unbuilt: its page, which must have been shown before it is built, and its first grid row.
+    std::weak_ptr<KnobPageGui> deferredRowPage;
+    int deferredRowIndex;
 
     KnobGuiPrivate(KnobGuiContainerI* container);
+
+    bool hasWidgets() const
+    {
+        return widgetCreated || buildingWidgets;
+    }
 
     void removeFromKnobsOnSameLineVector(const std::shared_ptr<KnobI>& knob);
 };

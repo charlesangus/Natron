@@ -159,6 +159,7 @@ public:
 
     virtual void refreshTabWidgetMaxHeight() OVERRIDE FINAL;
     virtual bool isPagingEnabled() const OVERRIDE FINAL;
+    virtual bool canDeferKnobRows() const OVERRIDE FINAL;
     virtual bool useScrollAreaForTabs() const OVERRIDE FINAL;
     virtual void onKnobsInitialized() OVERRIDE FINAL;
 

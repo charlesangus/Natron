@@ -261,6 +261,9 @@ void
 KnobGui::setReadOnly_(bool readOnly,
                       int dimension)
 {
+    if (!_imp->hasWidgets()) {
+        return;
+    }
     if (!_imp->customInteract) {
         setReadOnly(readOnly, dimension);
     }
@@ -339,7 +342,7 @@ KnobGui::onSetValueUsingUndoStack(const Variant & v,
 void
 KnobGui::onSetDirty(bool d)
 {
-    if (!_imp->customInteract) {
+    if (_imp->hasWidgets() && !_imp->customInteract) {
         setDirty(d);
     }
 }
@@ -529,7 +532,7 @@ void
 KnobGui::onAnimationLevelChanged(ViewSpec /*idx*/,
                                  int dimension)
 {
-    if (!_imp->customInteract) {
+    if (_imp->hasWidgets() && !_imp->customInteract) {
         KnobIPtr knob = getKnob();
         int dim = knob->getDimension();
         for (int i = 0; i < dim; ++i) {
@@ -650,9 +653,15 @@ KnobGui::onExprChanged(int dimension)
     }
     KnobIPtr knob = getKnob();
     std::string exp = knob->getExpression(dimension);
-    reflectExpressionState( dimension, !exp.empty() );
+    // An unbuilt row reads the expression state when it is built.
+    const bool hasWidgets = _imp->hasWidgets();
+    if (hasWidgets) {
+        reflectExpressionState(dimension, !exp.empty());
+    }
     if ( exp.empty() ) {
-        reflectAnimationLevel( dimension, knob->getAnimationLevel(dimension) );
+        if (hasWidgets) {
+            reflectAnimationLevel(dimension, knob->getAnimationLevel(dimension));
+        }
     } else {
         NodeSettingsPanel* isNodeSettings = dynamic_cast<NodeSettingsPanel*>(_imp->container);
         if (isNodeSettings) {
@@ -694,13 +703,18 @@ KnobGui::onExprChanged(int dimension)
         }
         Q_EMIT expressionChanged();
     }
-    onHelpChanged();
-    updateGUI(dimension);
+    if (hasWidgets) {
+        onHelpChanged();
+        updateGUI(dimension);
+    }
 } // KnobGui::onExprChanged
 
 void
 KnobGui::onHelpChanged()
 {
+    if (!_imp->hasWidgets()) {
+        return;
+    }
     if (_imp->descriptionLabel) {
         _imp->descriptionLabel->setToolTip( toolTip() );
     }
@@ -710,7 +724,7 @@ KnobGui::onHelpChanged()
 void
 KnobGui::onHasModificationsChanged()
 {
-    if (_imp->guiRemoved) {
+    if (_imp->guiRemoved || !_imp->hasWidgets()) {
         return;
     }
     if (_imp->descriptionLabel) {
@@ -727,6 +741,9 @@ KnobGui::onHasModificationsChanged()
 void
 KnobGui::onLabelChanged()
 {
+    if (!_imp->hasWidgets()) {
+        return;
+    }
     if (_imp->descriptionLabel) {
         KnobIPtr knob = getKnob();
         if (!knob) {
@@ -753,6 +770,9 @@ KnobGui::onLabelChanged()
 void
 KnobGui::onDimensionNameChanged(int dimension)
 {
+    if (!_imp->hasWidgets()) {
+        return;
+    }
     refreshDimensionName(dimension);
 }
 

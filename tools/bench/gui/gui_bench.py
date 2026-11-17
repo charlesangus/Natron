@@ -1217,11 +1217,13 @@ try:
             drain_events()
         watch = PaintWatch(accepts)
         targets = list(hosts) if hosts is not None else [QApplication.instance()]
-        for target in targets:
-            target.installEventFilter(watch)
         t0 = mono_ms()
         try:
             send()
+            # Installed once send() returns: an app-wide Python filter sees every event a synchronous step
+            # sends, which would add its own cost to the step.
+            for target in targets:
+                target.installEventFilter(watch)
             watch.armed = True
             deadline = t0 + CREATE_PAINT_TIMEOUT_S * 1000.0
             while not watch.fired and mono_ms() < deadline:

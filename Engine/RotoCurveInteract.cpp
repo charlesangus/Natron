@@ -2226,6 +2226,35 @@ RotoCurveInteract::insertPointAndDrag(const BezierPtr& curve,
 }
 
 void
+RotoCurveInteract::closeDragGesture()
+{
+    smoothingInsertedPoint = false;
+    undoGesture.end();
+    _openDragCommand.reset();
+    endDragRender();
+}
+
+bool
+RotoCurveInteract::abandonInsertedPointDrag()
+{
+    if (!smoothingInsertedPoint || (state != eEventStateDraggingControlPoint)) {
+        return false;
+    }
+    closeDragGesture();
+    if (evaluateOnPenUp) {
+        getCurveContext()->evaluateChange();
+        _host->getApp()->triggerAutoSave();
+        redrawOverlays();
+        evaluateOnPenUp = false;
+    }
+    cpBeingDragged.first.reset();
+    cpBeingDragged.second.reset();
+    state = eEventStateNone;
+
+    return true;
+}
+
+void
 RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& cp)
 {
     KnobChoicePtr menu = rightClickMenuKnob.lock();
@@ -4733,13 +4762,10 @@ RotoCurveInteract::onOverlayPenUp()
     }
     sketchSamples.clear();
     closingTangentDrag = false;
-    smoothingInsertedPoint = false;
     // A claimed Alt press that another overlay took first must not make the next press an Alt one.
     altPressClaimed = false;
 
-    undoGesture.end();
-    _openDragCommand.reset();
-    endDragRender();
+    closeDragGesture();
 
     if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
         return objectSelect->penUp();
@@ -4804,6 +4830,11 @@ RotoCurveInteract::onOverlayKeyDown(Key key)
         ++ctrlDown;
     } else if ((key == Key_Alt_L) || (key == Key_Alt_R)) {
         ++altDown;
+    }
+
+    // The point stays where the last motion put it; undo removes it.
+    if ((key == Key_Escape) && abandonInsertedPointDrag()) {
+        return true;
     }
 
     if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
@@ -4887,6 +4918,7 @@ RotoCurveInteract::onOverlayFocusLost()
     shiftDown = 0;
     ctrlDown = 0;
     altDown = 0;
+    abandonInsertedPointDrag();
 
     return true;
 } // onOverlayFocusLost

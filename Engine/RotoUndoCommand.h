@@ -160,10 +160,6 @@ public:
      **/
     void addDelta(double dx, double dy);
 
-    /**
-     * @brief Makes every move re-smooth the handles of the moved control points, and lets the
-     * move happen whatever tool is selected. Called before the command is pushed.
-     **/
     void setSmoothsMovedPoints(const std::pair<double, double>& pixelScale);
 
     bool movesControlPoint(const BezierCPPtr& cp) const;
@@ -250,10 +246,6 @@ public:
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
 
-    /**
-     * @brief Takes in the drag of the inserted point that the same gesture started, so that one
-     * undo removes the point wherever it was dragged to.
-     **/
     virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
 
 private:
@@ -267,12 +259,10 @@ private:
     std::shared_ptr<RotoCurveContextHostState> _hostAfter;
     std::shared_ptr<MoveControlPointsUndoCommand> _insertDrag;
     // Copies of every point of the curve before the insertion, which the split changed at every
-    // keyframe, and after the dragged insertion. Once undone, the after copies stand in for the
-    // drag, which refers to the inserted point objects a redo no longer brings back.
+    // keyframe, and after the insertion and its drag. Once undone, the after copies stand in for
+    // the drag, which refers to the inserted point objects a redo no longer brings back.
     std::vector<BezierCPPtr> _cpsBefore, _fpsBefore, _cpsAfter, _fpsAfter;
     bool _restoresPoints;
-    double _dragTime;
-    bool _dragKeyedShape;
 };
 
 class RemovePointUndoCommand

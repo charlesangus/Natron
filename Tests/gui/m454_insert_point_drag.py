@@ -1,20 +1,4 @@
-"""Inserting a point on a curve is a click-and-drag: the new point follows the pen with smooth handles.
-
-On a Roto and then on a SplineWarp, each holding a four-point curve keyed at frame 1:
-  1. Ctrl+Alt press on the middle of the first segment, drag, release: the curve has one point
-     more, the new point sits at the release position with smooth handles (both handles on one
-     line through it, on either side), its neighbours keep the handles the insert gave them, and
-     one undo gives back the curve from before the press.
-  2. Ctrl+Alt click with no motion: the new point keeps the position and handles of the insert.
-  3. The Add Points tool: a plain press on a selected curve inserts and drags the same way, and one
-     undo removes the point.
-Saves a screenshot after each drag.
-
-Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
-    docker exec -e NATRON_GUI_TEST_OUT=build/m454-shots -e GUI_TEST_TIMEOUT=300 \\
-        -w /home/bosley/git/Natron natron-dev \\
-        Tests/gui/run-gui-test.sh Tests/gui/m454_insert_point_drag.py build/fast/App/Natron
-"""
+"""Inserting a point on a curve is a click-and-drag: the new point follows the pen with smooth handles."""
 import math
 import os
 import sys
@@ -23,7 +7,6 @@ import traceback
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 STARTUP_TIMEOUT_S = 120.0
-POLL_TIMEOUT_S = 20.0
 WATCHDOG_S = 300
 SETTLE_MS = 500
 RENDER_MS = 1500
@@ -88,7 +71,6 @@ try:
         return len(a) == len(b) and all(same(p, q) for p, q in zip(a, b))
 
     def smooth(p):
-        """Both handles have length and lie on one line through the point, on either side of it."""
         left, right = rg.left_off(p), rg.right_off(p)
         ll, rl = rg.length(left), rg.length(right)
         if ll <= TOL or rl <= TOL:
@@ -105,8 +87,6 @@ try:
         return rg.segment(start, end, DRAG_STEPS)
 
     def gesture(gl, points, modifiers, mid_press):
-        """Presses on points[0], moves through the rest and releases, with modifiers held, calling
-        mid_press() between the press and the first motion."""
         rg.hold(gl, modifiers)
         try:
             rg.press(gl, points[0], modifiers)
@@ -118,7 +98,6 @@ try:
             rg.unhold(gl, modifiers)
 
     def insert_drag(tag, bez, gl, vmap, modifiers, what):
-        """Inserts on the first segment by a press there and drags; keeps the pose from before the press for undo_restores."""
         before = pose(bez)
         mx, my = segment_middle()
         points = drag_points(vmap.to_widget(mx, my))

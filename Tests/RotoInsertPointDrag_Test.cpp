@@ -32,6 +32,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -92,7 +93,6 @@ expectSameState(const PointState& a,
     EXPECT_DOUBLE_EQ(a.ry, b.ry) << what;
 }
 
-// Smooth: both handles have length and lie on one line through the point, on either side of it.
 void
 expectSmooth(const PointState& s)
 {
@@ -106,7 +106,6 @@ expectSmooth(const PointState& s)
     EXPECT_LT(lx * rx + ly * ry, 0.);
 }
 
-// Every point of the shape, control and feather, at each of its keyframes and at time.
 std::string
 dumpShape(const BezierPtr& shape,
           double time)
@@ -190,8 +189,6 @@ protected:
         _ui->onOverlayPenUp();
     }
 
-    // Presses on the top edge, drags by (dx, dy) in two motions and releases, checking that the
-    // inserted point moved by the drag with smooth handles while its neighbours kept the split.
     void expectInsertDrag(double dx,
                           double dy)
     {
@@ -227,10 +224,65 @@ protected:
         EXPECT_NEAR(dragged.y, featherDragged.y, 1e-9) << "the feather follows the point";
     }
 
+    void spyOnKeyframes()
+    {
+        QObject::connect(_square.get(), &Bezier::keyframeSet, [this](double time) { _keysSet.push_back(time); });
+        QObject::connect(_square.get(), &Bezier::keyframeRemoved, [this](double time) { _keysRemoved.push_back(time); });
+    }
+
+    void expectKeyframeSignals(const std::vector<double>& set,
+                               const std::vector<double>& removed,
+                               const char* what)
+    {
+        EXPECT_EQ(set, _keysSet) << what;
+        EXPECT_EQ(removed, _keysRemoved) << what;
+        _keysSet.clear();
+        _keysRemoved.clear();
+    }
+
+    // With auto-keying on and no key at the current time, the insertion itself keys the shape
+    // there before any drag of the inserted point exists.
+    void expectInsertKeySignalled(bool drag)
+    {
+        _node->getRotoContext()->setAutoKeyingEnabled(true);
+        _square->setKeyframe(_time + 10.);
+        _square->removeKeyframe(_time);
+        ASSERT_FALSE(_square->getControlPointAtIndex(0)->hasKeyFrameAtTime(true, _time));
+        spyOnKeyframes();
+        const std::string before = dumpShape(_square, _time);
+
+        _ui->undoGesture.begin();
+        std::shared_ptr<AddPointUndoCommand> add = std::make_shared<AddPointUndoCommand>(_ui, _square, 0, 0.5);
+        add->redo();
+        expectKeyframeSignals(std::vector<double>(1, _time), std::vector<double>(), "insert");
+        if (drag) {
+            PointList toDrag;
+            toDrag.push_back(std::make_pair(_square->getControlPointAtIndex(1), _square->getFeatherPointAtIndex(1)));
+            std::shared_ptr<MoveControlPointsUndoCommand> move = std::make_shared<MoveControlPointsUndoCommand>(_ui, toDrag, 4., 6., _time);
+            move->setSmoothsMovedPoints(kPixelScale);
+            move->redo();
+            ASSERT_TRUE(add->mergeWith(move));
+            expectKeyframeSignals(std::vector<double>(), std::vector<double>(), "drag");
+        }
+        _ui->undoGesture.end();
+
+        const std::string after = dumpShape(_square, _time);
+        for (int i = 0; i < 2; ++i) {
+            add->undo();
+            EXPECT_EQ(before, dumpShape(_square, _time)) << "undo " << i;
+            EXPECT_FALSE(_square->getControlPointAtIndex(0)->hasKeyFrameAtTime(true, _time)) << "undo " << i;
+            expectKeyframeSignals(std::vector<double>(), std::vector<double>(1, _time), "undo");
+            add->redo();
+            EXPECT_EQ(after, dumpShape(_square, _time)) << "redo " << i;
+            expectKeyframeSignals(std::vector<double>(1, _time), std::vector<double>(), "redo");
+        }
+    }
+
     NodePtr _node;
     RotoPaintInteractPtr _ui;
     double _time;
     double _timestamp = 0.;
+    std::vector<double> _keysSet, _keysRemoved;
     BezierPtr _square;
 };
 
@@ -372,4 +424,89 @@ TEST_F(RotoInsertPointDragTest, OnlyTheSameGesturesDragOfTheInsertedPointMerges)
     std::shared_ptr<MoveControlPointsUndoCommand> laterDrag = std::make_shared<MoveControlPointsUndoCommand>(_ui, inserted, 1., 1., _time);
     EXPECT_FALSE(add->mergeWith(laterDrag)) << "a drag of a later gesture";
     _ui->undoGesture.end();
+}
+
+TEST_F(RotoInsertPointDragTest, AutoKeyedInsertDragSignalsTheInsertsKeyOnUndoAndRedo)
+{
+    expectInsertKeySignalled(true);
+}
+
+TEST_F(RotoInsertPointDragTest, AutoKeyedInsertSignalsItsKeyOnUndoAndRedo)
+{
+    expectInsertKeySignalled(false);
+}
+
+TEST_F(RotoInsertPointDragTest, EscapeEndsTheInsertDragWhereTheLastMotionLeftIt)
+{
+    bendTopEdge();
+    _ui->selectedTool = eRotoToolSelectAll;
+    _ui->ctrlDown = 1;
+    _ui->altDown = 1;
+    const QPointF click(30., 20.);
+
+    press(click);
+    ASSERT_EQ(5, _square->getControlPointsCount());
+    const BezierCPPtr inserted = _square->getControlPointAtIndex(1);
+    moveTo(QPointF(click.x() + 4., click.y() + 10.));
+    const PointState dragged = stateOf(inserted, _time);
+
+    EXPECT_TRUE(_ui->onOverlayKeyDown(Key_Escape));
+    EXPECT_EQ(eEventStateNone, _ui->state);
+    EXPECT_FALSE(_ui->undoGesture.isOpen());
+    EXPECT_FALSE(_ui->smoothingInsertedPoint);
+    EXPECT_EQ(nullptr, _ui->cpBeingDragged.first);
+
+    moveTo(QPointF(click.x() + 20., click.y() + 30.));
+    expectSameState(dragged, stateOf(inserted, _time), "a motion after Escape");
+    release();
+    ASSERT_EQ(5, _square->getControlPointsCount());
+    expectSameState(dragged, stateOf(inserted, _time), "the release after Escape");
+}
+
+TEST_F(RotoInsertPointDragTest, FocusLossEndsTheInsertDragWhereTheLastMotionLeftIt)
+{
+    _ui->selectedTool = eRotoToolAddPoints;
+    _ui->handleBezierSelection(_square);
+    const QPointF click(30., 20.);
+
+    press(click);
+    ASSERT_EQ(5, _square->getControlPointsCount());
+    const BezierCPPtr inserted = _square->getControlPointAtIndex(1);
+    moveTo(QPointF(click.x() - 3., click.y() + 8.));
+    const PointState dragged = stateOf(inserted, _time);
+
+    _ui->onOverlayFocusLost();
+    EXPECT_EQ(eEventStateNone, _ui->state);
+    EXPECT_FALSE(_ui->undoGesture.isOpen());
+
+    moveTo(QPointF(click.x() + 20., click.y() + 30.));
+    expectSameState(dragged, stateOf(inserted, _time), "a motion after focus loss");
+}
+
+// The test host has no undo stack, so the gesture's commands are driven here the way the stack
+// and the interact drive them, with the gesture closed by Escape between the drag's motions.
+TEST_F(RotoInsertPointDragTest, OneUndoRemovesAPointWhoseDragEscapeEnded)
+{
+    bendTopEdge();
+    const std::string before = dumpShape(_square, _time);
+
+    _ui->undoGesture.begin();
+    std::shared_ptr<AddPointUndoCommand> add = std::make_shared<AddPointUndoCommand>(_ui, _square, 0, 0.5);
+    add->redo();
+    PointList toDrag;
+    toDrag.push_back(std::make_pair(_square->getControlPointAtIndex(1), _square->getFeatherPointAtIndex(1)));
+    std::shared_ptr<MoveControlPointsUndoCommand> drag = std::make_shared<MoveControlPointsUndoCommand>(_ui, toDrag, 2., 7., _time);
+    drag->setSmoothsMovedPoints(kPixelScale);
+    drag->redo();
+    ASSERT_TRUE(add->mergeWith(drag));
+    _ui->smoothingInsertedPoint = true;
+    _ui->state = eEventStateDraggingControlPoint;
+    ASSERT_TRUE(_ui->onOverlayKeyDown(Key_Escape));
+    EXPECT_FALSE(_ui->undoGesture.isOpen());
+    EXPECT_FALSE(drag->isOpenIn(_ui->undoGesture.key()));
+
+    ASSERT_NE(before, dumpShape(_square, _time));
+    add->undo();
+    EXPECT_EQ(4, _square->getControlPointsCount());
+    EXPECT_EQ(before, dumpShape(_square, _time));
 }

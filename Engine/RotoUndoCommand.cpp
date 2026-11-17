@@ -78,13 +78,34 @@ guiStateCopy(const BezierCPPtr& point)
     return copy;
 }
 
-bool
-shapeHasKeyframeAt(const BezierPtr& curve,
-                   double time)
+std::set<double>
+shapeKeyframes(const BezierPtr& curve)
 {
-    const std::list<BezierCPPtr>& cps = curve->getControlPoints();
+    std::set<double> times;
 
-    return !cps.empty() && cps.front()->hasKeyFrameAtTime(true, time);
+    curve->getKeyframeTimes(&times);
+
+    return times;
+}
+
+// Restoring point snapshots adds and removes keys without the signals the curve editor and the
+// timeline learn of them from.
+void
+notifyKeyframeChanges(const BezierPtr& curve,
+                      const std::set<double>& previous)
+{
+    const std::set<double> current = shapeKeyframes(curve);
+
+    for (std::set<double>::const_iterator it = previous.begin(); it != previous.end(); ++it) {
+        if (current.find(*it) == current.end()) {
+            Q_EMIT curve->keyframeRemoved(*it);
+        }
+    }
+    for (std::set<double>::const_iterator it = current.begin(); it != current.end(); ++it) {
+        if (previous.find(*it) == previous.end()) {
+            Q_EMIT curve->keyframeSet(*it);
+        }
+    }
 }
 
 void
@@ -487,8 +508,6 @@ AddPointUndoCommand::AddPointUndoCommand(const RotoCurveInteractPtr& roto,
     , _index(index)
     , _t(t)
     , _restoresPoints(false)
-    , _dragTime(0.)
-    , _dragKeyedShape(false)
 {
     setGestureKey(roto->undoGesture.key());
     setText( tr("Add control point").toStdString() );
@@ -506,24 +525,18 @@ AddPointUndoCommand::undo()
     if (!roto) {
         return;
     }
+    copyCurvePoints(_curve, &_cpsAfter, &_fpsAfter);
+    _restoresPoints = true;
     if (_insertDrag) {
-        _dragTime = _insertDrag->getTime();
-        const bool keyedAfter = shapeHasKeyframeAt(_curve, _dragTime);
-        copyCurvePoints(_curve, &_cpsAfter, &_fpsAfter);
+        // The drag notifies the removal of a key it made itself.
         _insertDrag->undo();
         _insertDrag.reset();
-        _curve->removeControlPointByIndex(_index + 1);
-        restoreCurvePoints(_curve, _cpsBefore, _fpsBefore);
-        _dragKeyedShape = keyedAfter && !shapeHasKeyframeAt(_curve, _dragTime);
-        _restoresPoints = true;
-    } else {
-        _curve->removeControlPointByIndex(_index + 1);
-        // Removing the point leaves its neighbours' handles shortened by the split.
-        restoreCurvePoints(_curve, _cpsBefore, _fpsBefore);
-        if (_restoresPoints && _dragKeyedShape) {
-            Q_EMIT _curve->keyframeRemoved(_dragTime);
-        }
     }
+    const std::set<double> keys = shapeKeyframes(_curve);
+    _curve->removeControlPointByIndex(_index + 1);
+    // Removing the point leaves its neighbours' handles shortened by the split.
+    restoreCurvePoints(_curve, _cpsBefore, _fpsBefore);
+    notifyKeyframeChanges(_curve, keys);
     if (_hostBefore) {
         roto->getCurveContext()->restoreHostState(_hostBefore);
     }
@@ -553,10 +566,10 @@ AddPointUndoCommand::redo()
         roto->getCurveContext()->restoreHostState(_hostAfter);
     }
     if (_restoresPoints) {
+        // The insertion notified any key its auto-keying made.
+        const std::set<double> keys = shapeKeyframes(_curve);
         restoreCurvePoints(_curve, _cpsAfter, _fpsAfter);
-        if (_dragKeyedShape) {
-            Q_EMIT _curve->keyframeSet(_dragTime);
-        }
+        notifyKeyframeChanges(_curve, keys);
     }
     roto->setSelection( _curve, std::make_pair(cp, newFp) );
     if (_firstRedoCalled) {

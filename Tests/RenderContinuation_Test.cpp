@@ -370,12 +370,13 @@ protected:
         return code;
     }
 
-    float renderLegacyFirstPixel(const NodePtr& root)
+    float renderLegacyFirstPixel(const NodePtr& root,
+                                 bool byPassCache = true)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!renderNodePlanesInMode(root, 1., ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), eRenderSchedulerModeLegacy, true /*byPassCache*/, &planes, &error)) {
+        if (!renderNodePlanesInMode(root, 1., ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), eRenderSchedulerModeLegacy, byPassCache, &planes, &error)) {
             return -1.f;
         }
         if (planes.empty() || planes.front().pixels.empty()) {
@@ -856,7 +857,7 @@ TEST_F(RenderContinuation, CachedContinuationNodeIsNotProbedInAnExtension)
     }
 
     resetCounters();
-    EXPECT_EQ(uncached.front(), renderLegacyFirstPixel(probe));
+    EXPECT_EQ(uncached.front(), renderLegacyFirstPixel(probe, false /*byPassCache*/));
     EXPECT_EQ(0, CountingTestRegistry::renders(recursive));
     EXPECT_EQ(1, ContinuationTestRegistry::probeCount());
 }

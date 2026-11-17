@@ -58,6 +58,10 @@
                          stored in each record as stack_sampled, as its timings are then not the viewer's own
         BENCH_BISECT     the bisect variant the run's environment was set up for, stored in each record as
                          bisect (null without one)
+        BENCH_SHADER_CACHE  warm or cold: whether the GL shader cache the run uses was filled before it,
+                         stored in each record as shader_cache (null when unset)
+        BENCH_WARMUP     1 when the run only fills the shader cache; stored in each record as warmup
+        BENCH_SETTLE_S   seconds the load counts have to hold still before loads count as over (default 2)
         BENCH_SCENARIO_LIMIT_S  wall-clock limit of a scenario, from outside Natron (default 300)
         BENCH_OPEN_LIMIT_S      the same for one that opens or loads the whole file (default 1800)
         BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB  see heavy_scene_watchdog.sh
@@ -86,10 +90,18 @@ scenario). heavy_scene_watchdog.sh writes those last three from outside Natron, 
 a record. Every record has started_at and ended_at (epoch seconds), and the log a "SCENARIO start" and
 "SCENARIO end" line for each, so that stack samples can be lined up with them.
 
-Full + Load keeps loading payloads after the first frame, so after an open with it load_all waits for
-the loads still pending and composing to end (load_ms), and the payloads it loads were all requested.
-The reveal, orbit and draw_budget scenarios first wait for every pending load to end
-(loads_settle_wait_ms; action_started_at is when the action itself began).
+Full + Load keeps loading payloads after the first frame, and queues the payloads a landed payload
+reveals only once it lands. Loads count as over when nothing is pending or composing, every posted draw
+change is presented, no reveal runs, and the loaded layers, load edits, prims added and posted changes
+have not moved for BENCH_SETTLE_S; *_settle fields hold the counts before and after and the wait. After
+an open with it load_all waits for that (load_ms, up to the start of the still window), and the payloads
+it loads were all requested. The reveal, orbit and draw_budget scenarios first wait for it
+(loads_settle_wait_ms; action_started_at is when the action itself began), and reveal_load_all and the
+workflow's block and reopen wait for it after their first commit.
+
+With NATRON_DRAW_STATE_TIMING=1 the paced reveals (reveal_wide, reveal_load_all, reveal_cancel_paced and
+the workflow's block) add <name>_draw_steps: the viewer's timing record of every frame presented during
+the reveal, as percentiles of each part of the critical path and the 20 worst frames by picture_ms.
 
 The draw state scenarios drive SceneViewport's setDrawState, clearDrawState and setDrawRevealBatch, and
 wait for natronSceneDrawPresented, which a paint sets only once its image has taken in every change so
@@ -153,6 +165,14 @@ HEARTBEAT_MS = 10
 POLL_MS = 5
 REVEAL_MIN_S = 120.0
 REVEAL_S_PER_PRIM = 500e-6
+# Full + Load queues the payloads a landed payload reveals only after it lands, so an empty queue for
+# one poll is not the end of the loads: the counts have to hold still for a window.
+SETTLE_S = float(os.environ.get("BENCH_SETTLE_S", "2"))
+SETTLE_POLL_MS = 250
+# Reading natronSceneDrawTimings converts every kept record, so it is read at this pace, well inside
+# the time the viewer takes to replace its 256 kept records.
+DRAW_STEPS_POLL_S = 0.5
+DRAW_STEPS_KEPT = 20
 SWITCH_NODES = int(os.environ.get("BENCH_SWITCH_NODES", "4"))
 TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
 EDIT_POST_WAIT_S = 10.0
@@ -456,14 +476,18 @@ try:
     def open_file(m, connected=False):
         t0 = time.time()
         t0_ms = int(t0 * 1000.0)
+        marks = [time.perf_counter()]
         # Full or Full + Load; the default boxes the top-level prims, which would leave later box edits nothing to change.
         usd.getParam("initialDraw").setValue(4 if load_state == "all" else 3)
         if load_state == "all":
             m.all_payloads_requested = True
             project_state["loaded_at_open"] = True
+        marks.append(time.perf_counter())
         usd.getParam("filename").setValue(path)
+        marks.append(time.perf_counter())
         if not connected:
             require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
+        marks.append(time.perf_counter())
 
         def scene_frame_drawn():
             # A view with nothing synced yet also finishes frames, so the scene has to have reached it.
@@ -476,6 +500,12 @@ try:
         check(ok, "open: the scene view shows the scene (%r)" % (prop("natronSceneError"),))
         painted = prop("natronSceneLastPaintMs")
         m.values["first_frame_ms"] = round((painted if painted is not None else time.time() * 1000.0) - t0 * 1000.0, 1)
+        m.values["open_substeps_ms"] = {
+            "initial_draw": round((marks[1] - marks[0]) * 1000.0, 1),
+            "filename": round((marks[2] - marks[1]) * 1000.0, 1),
+            "connect": None if connected else round((marks[3] - marks[2]) * 1000.0, 1),
+            "to_first_frame": round((painted if painted is not None else time.time() * 1000.0) - (t0 * 1000.0 + (marks[3] - marks[0]) * 1000.0), 1),
+        }
         return t0_ms
 
     def action_open(m):
@@ -719,25 +749,58 @@ try:
         m.values["twirl_move_gap_ms"] = longest_gap
         load_results(m, v, "load", edits_before)
 
-    def loads_settled():
+    def load_snapshot():
+        """(counts, idle): the counts that grow while loads land, and whether every queue the viewer
+        publishes is empty; (None, False) without a view."""
         v = view()
-        return v is not None and not v.property("natronSceneLoadsPending") and not v.property("natronSceneComposing")
+        if v is None:
+            return None, False
+        stats = draw_stats()
+        posted = int(stats.get("posted", 0))
+        counts = {
+            "layers": len(Sdf.Layer.GetLoadedLayers()) if Sdf is not None else None,
+            "load_edits": int(v.property("natronSceneLoadEdits") or 0),
+            "stage_load_edits": int(stats.get("stageLoadEdits", 0)),
+            "prims_added": int(stats.get("inputAdded", 0)),
+            "posted": posted,
+        }
+        idle = (not v.property("natronSceneLoadsPending") and not v.property("natronSceneComposing")
+                and not stats.get("revealing") and int(v.property("natronSceneDrawPresented") or 0) >= posted)
+        return counts, idle
 
     def wait_loads_settled(label):
-        """Waits until no load is pending or composing, twice in a row 500 ms apart, since a load can queue
-        the next one as it lands; returns the wait in ms."""
+        """Waits until no load is pending or composing, no draw change is unpresented, and the loaded
+        layers, load edits, prims added and posted changes have held still for SETTLE_S; returns
+        {"ms": time to the start of that window, "wait_ms": the whole wait, "stable_at": its
+        perf_counter, the counts before and at the end, the polls}."""
         t0 = time.perf_counter()
         deadline = time.time() + TIMEOUT_S
+        first, last, stable_since, polls, ok = None, None, None, 0, False
         while True:
-            ok = yield ("until", loads_settled, max(1.0, deadline - time.time()))
-            if not ok:
+            counts, idle = load_snapshot()
+            polls += 1
+            now = time.perf_counter()
+            if first is None:
+                first = counts
+            if not idle or counts is None:
+                stable_since = None
+            elif stable_since is None or counts != last:
+                stable_since = now
+            last = counts
+            if stable_since is not None and now - stable_since >= SETTLE_S:
+                ok = True
                 break
-            yield ("sleep", 500)
-            if loads_settled():
+            if time.time() >= deadline:
                 break
-        check(ok, "%s: the scene's loads are over (pending %r, composing %r)"
-              % (label, prop("natronSceneLoadsPending"), prop("natronSceneComposing")))
-        return round((time.perf_counter() - t0) * 1000.0, 1)
+            yield ("sleep", SETTLE_POLL_MS)
+        check(ok, "%s: the scene's loads are over (pending %r, composing %r, counts %r)"
+              % (label, prop("natronSceneLoadsPending"), prop("natronSceneComposing"), last))
+        stable_at = stable_since if ok else time.perf_counter()
+        return {"ms": round((stable_at - t0) * 1000.0, 1), "wait_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+                "stable_at": stable_at, "settled": ok, "window_s": SETTLE_S, "polls": polls, "before": first, "after": last}
+
+    def settle_fields(info):
+        return {k: v for k, v in info.items() if k != "stable_at"}
 
     def action_load_all(m):
         require(view() is not None and shown(), "load_all: a scene view is visible and showing the scene")
@@ -747,7 +810,9 @@ try:
             edits_before = int(v.property("natronSceneLoadEdits") or 0)
             m.all_payloads_requested = True
             m.values["loaded_at_open"] = True
-            m.values["load_ms"] = yield from wait_loads_settled("load_all")
+            settle = yield from wait_loads_settled("load_all")
+            m.values["load_ms"] = settle["ms"]
+            m.values["load_settle"] = settle_fields(settle)
             m.values["prims_added_upstream"] = draw_stats().get("inputAdded")
             m.values["prims_hidden_rules"] = draw_stats().get("ruleCount")
             load_results(m, v, "load", edits_before)
@@ -758,9 +823,13 @@ try:
         t0 = time.time() * 1000.0
         require(QMetaObject.invokeMethod(v, "requestLoad", Q_ARG("QStringList", [rows["root"]]), Q_ARG(bool, True)),
                 "load_all: the scene view takes load requests")
+        started = time.perf_counter()
         ok = yield ("until", committed, TIMEOUT_S)
         check(ok, "load_all: the loaded prims reached the screen (failures %r)" % (v.property("natronSceneLoadFailures"),))
-        m.values["load_ms"] = round(time.time() * 1000.0 - t0, 1)
+        m.values["load_first_commit_ms"] = round(time.time() * 1000.0 - t0, 1)
+        settle = yield from wait_loads_settled("load_all")
+        m.values["load_ms"] = round((settle["stable_at"] - started) * 1000.0, 1)
+        m.values["load_settle"] = settle_fields(settle)
         m.values["prims_added_upstream"] = draw_stats().get("inputAdded")
         m.values["prims_hidden_rules"] = draw_stats().get("ruleCount")
         load_results(m, v, "load", edits_before)
@@ -948,7 +1017,80 @@ try:
         outer = OPEN_LIMIT_S if current["name"] in LONG_SCENARIOS else SCENARIO_LIMIT_S
         return min(max(REVEAL_MIN_S, prims * REVEAL_S_PER_PRIM), max(REVEAL_MIN_S, 0.5 * outer))
 
-    def watch_reveal(done):
+    TIMING_KEY_FIELDS = ("firstPosted", "lastPosted", "applies", "queueMs", "applyMs", "renderStartMs", "renderMs", "presentedMs")
+    STEP_PERCENTILE_FIELDS = ("picture_ms", "queue_ms", "apply_ms", "wait_frame_ms", "render_ms", "gpu_tail_ms", "handoff_ms", "present_ms")
+
+    class DrawSteps(object):
+        """The viewer's timing records of the frames presented from its creation on, one per frame,
+        reveal steps included; collects nothing without NATRON_DRAW_STATE_TIMING=1."""
+
+        def __init__(self):
+            self.seen = set()
+            self.entries = []
+            self.read_at = 0.0
+            self.possibly_dropped = False
+            if DRAW_TIMING:
+                self.seen.update(self._key(r) for r in self._records())
+
+        @staticmethod
+        def _key(record):
+            return tuple(record.get(k) for k in TIMING_KEY_FIELDS)
+
+        @staticmethod
+        def _records():
+            v = view()
+            return [dict(r) for r in (v.property("natronSceneDrawTimings") or [])] if v is not None else []
+
+        def poll(self, force=False):
+            if not DRAW_TIMING:
+                return
+            now = time.perf_counter()
+            if not force and now - self.read_at < DRAW_STEPS_POLL_S:
+                return
+            self.read_at = now
+            records = self._records()
+            # The viewer keeps its last 256; a full list whose oldest is new may have lost some between reads.
+            if len(records) >= 256 and records and self._key(records[0]) not in self.seen:
+                self.possibly_dropped = True
+            for record in records:
+                key = self._key(record)
+                if key not in self.seen:
+                    self.seen.add(key)
+                    self.entries.append(record)
+
+        def summary(self):
+            if not DRAW_TIMING:
+                return {"unavailable": "NATRON_DRAW_STATE_TIMING is not 1 in this run"}
+            self.poll(force=True)
+            steps = []
+            for record in self.entries:
+                try:
+                    parts = critical_path(record)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                parts["reveal_step"] = bool(record.get("revealStep"))
+                parts["applies"] = record.get("applies")
+                steps.append(parts)
+
+            def percentiles(key):
+                values = sorted(s[key] for s in steps if s.get(key) is not None)
+                if not values:
+                    return None
+
+                def at(q):
+                    return values[min(len(values) - 1, int(round(q * (len(values) - 1))))]
+
+                return {"p50": at(0.5), "p90": at(0.9), "p99": at(0.99), "max": values[-1], "mean": round(sum(values) / len(values), 2)}
+
+            return {
+                "frames": len(steps),
+                "reveal_steps": sum(1 for s in steps if s["reveal_step"]),
+                "possibly_dropped": self.possibly_dropped,
+                "percentiles": {key: percentiles(key) for key in STEP_PERCENTILE_FIELDS},
+                "worst": sorted(steps, key=lambda s: s.get("picture_ms") or 0.0, reverse=True)[:DRAW_STEPS_KEPT],
+            }
+
+    def watch_reveal(done, steps=None):
         """Waits up to reveal_limit_s() for done; returns whether it held, the frames painted, the longest gap
         between two and the limit it ended with."""
         paints = set()
@@ -959,6 +1101,8 @@ try:
         limit_checked = started
         while not done() and time.time() < started + limit_s:
             yield ("sleep", POLL_MS)
+            if steps is not None:
+                steps.poll()
             painted = prop("natronSceneLastPaintMs")
             if painted is not None and painted not in paints:
                 paints.add(painted)
@@ -979,9 +1123,11 @@ try:
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, -1))
         heartbeat.start()
         before = draw_stats()
+        steps = DrawSteps()
         started = time.perf_counter()
         yield from set_draw_state(row, state)
-        complete, frames, worst, limit_s = yield from watch_reveal(lambda: not draw_stats().get("revealing") and (done is None or done()))
+        complete, frames, worst, limit_s = yield from watch_reveal(lambda: not draw_stats().get("revealing") and (done is None or done()),
+                                                                   steps)
         elapsed = (time.perf_counter() - started) * 1000.0
         after = draw_stats()
         if not complete:
@@ -998,6 +1144,7 @@ try:
         m.values[name + "_frames"] = frames
         m.values[name + "_ms"] = round(elapsed, 1)
         m.values[name + "_worst_frame_ms"] = round(worst, 1)
+        m.values[name + "_draw_steps"] = steps.summary()
 
     def action_reveal_load_all(m):
         v = view()
@@ -1006,6 +1153,9 @@ try:
         m.all_payloads_requested = True
         committed = commit_watch(v)
         yield from paced_reveal(m, "reveal_load_all", rows["root"], "bbox", "loadAll", committed)
+        # The reveal is judged up to the first commit; the payloads that commit reveals keep landing after it.
+        settle = yield from wait_loads_settled("reveal_load_all")
+        m.values["reveal_load_all_settle"] = settle_fields(settle)
         load_results(m, v, "load", edits_before)
 
     def action_reveal_wide(m):
@@ -1032,6 +1182,7 @@ try:
         yield from clear_draw_states()
         yield from set_draw_state(row, "bbox")
         v = view()
+        steps = DrawSteps()
         heartbeat.start()
         before, at_cancel, settled, cancelled = yield from cancel_reveal_attempt(row, -1)
         mode = "paced"
@@ -1057,6 +1208,7 @@ try:
         # A step under way when the change is posted may still finish; nothing after it may run.
         m.values["cancel_paced_overshoot_prims"] = settled.get("shownSent", 0) - at_cancel.get("shownSent", 0)
         m.values["cancel_paced_stopped"] = not settled.get("revealing")
+        m.values["cancel_paced_draw_steps"] = steps.summary()
 
     def action_reveal(m):
         row = rows["reveal_branch"]
@@ -1432,7 +1584,8 @@ try:
 
         t0 = time.perf_counter()
         yield from open_file(m)
-        finish_step("open", (time.perf_counter() - t0) * 1000.0, first_frame_ms=m.values["first_frame_ms"])
+        finish_step("open", (time.perf_counter() - t0) * 1000.0, first_frame_ms=m.values["first_frame_ms"],
+                    substeps_ms=m.values["open_substeps_ms"])
 
         if rows.get("twirl_row"):
             yield from action_twirl(m)
@@ -1456,9 +1609,12 @@ try:
             edits_before = int(v.property("natronSceneLoadEdits") or 0)
             add_request(m, [block], True)
             yield from paced_reveal(m, "workflow_block", block, "bbox", "loadAll", commit_watch(v), keep_states=True)
+            # The block's later payloads land after its first commit; the next step must not measure them.
+            settle = yield from wait_loads_settled("workflow: full_load_block")
             load_results(m, v, "workflow_block", edits_before)
             finish_step("full_load_block", m.values["workflow_block_ms"], path=block, complete=m.values["workflow_block_complete"],
-                        worst_frame_ms=m.values["workflow_block_worst_frame_ms"], prims=m.values["workflow_block_prims"])
+                        worst_frame_ms=m.values["workflow_block_worst_frame_ms"], prims=m.values["workflow_block_prims"],
+                        settle=settle_fields(settle))
         else:
             skip_step("full_load_block", "the scene has no payloads to load")
 
@@ -1471,11 +1627,15 @@ try:
         pattern_node.getParam("primPattern").setValue(pattern)
         pattern_node.getParam("translate").set(1.0, 0.0, 0.0)
         require(pattern_node.connectInput(0, usd), "workflow: connect the pattern node to USDRead")
+        created = time.perf_counter()
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, pattern_node), "workflow: view the pattern node")
+        reconnected = time.perf_counter()
         ok = yield ("until", scene_painted_since(t0_ms), TIMEOUT_S)
         check(ok, "workflow: the pattern node's scene reached the screen (%r)" % (prop("natronSceneError"),))
-        finish_step("pattern_node", (time.perf_counter() - t0) * 1000.0, pattern=pattern)
+        finish_step("pattern_node", (time.perf_counter() - t0) * 1000.0, pattern=pattern,
+                    create_ms=round((created - t0) * 1000.0, 1), reconnect_ms=round((reconnected - created) * 1000.0, 1),
+                    to_picture_ms=round((time.perf_counter() - reconnected) * 1000.0, 1))
 
         show_panel()
         ok = yield ("until", lambda: panel().isVisible() and hold(tree().model()).rowCount(QModelIndex()) > 0, TIMEOUT_S)
@@ -1525,6 +1685,8 @@ try:
         answer = QTimer()
         answer.timeout.connect(discard_save_question)
         answer.start(200)
+        # The reopen is judged from the reset on: closing the old project is part of what the user waits for.
+        heartbeat.start()
         t0 = time.perf_counter()
         try:
             reset = app.resetProject()
@@ -1537,20 +1699,23 @@ try:
         project_state["reopened"] = True
         forget_widgets()
         del held_widgets[:]
+        # The pause stands for the user picking the file, so it is left out of the step's times; the
+        # heartbeat keeps running through it, as an event loop left idle stalls nothing.
+        paused = time.perf_counter()
         yield ("sleep", 400)
-        t0_ms = int(time.time() * 1000.0)
-        t0 = time.perf_counter()
+        pause_ms = (time.perf_counter() - paused) * 1000.0
+        load_ms_epoch = int(time.time() * 1000.0)
+        load_t0 = time.perf_counter()
         require(app.loadProject(project_path) is not None, "workflow: reopen " + project_path)
-        load_call_ms = (time.perf_counter() - t0) * 1000.0
-        heartbeat.start()
-        ok = yield ("until", scene_painted_since(t0_ms), TIMEOUT_S)
+        load_call_ms = (time.perf_counter() - load_t0) * 1000.0
+        ok = yield ("until", scene_painted_since(load_ms_epoch), TIMEOUT_S)
         check(ok, "workflow: the reopened project shows the scene (%r)" % (prop("natronSceneError"),))
         painted = prop("natronSceneLastPaintMs")
-        first_frame_ms = round((painted if painted is not None else time.time() * 1000.0) - t0_ms, 1)
-        ok = yield ("until", lambda: view() is not None and not prop("natronSceneLoadsPending") and not prop("natronSceneComposing"), TIMEOUT_S)
-        check(ok, "workflow: the reopened project's loads are over")
-        finish_step("reopen", (time.perf_counter() - t0) * 1000.0, first_frame_ms=first_frame_ms, reset_ms=round(reset_ms, 1),
-                    load_call_ms=round(load_call_ms, 1))
+        after_load_ms = (painted if painted is not None else time.time() * 1000.0) - load_ms_epoch
+        settle = yield from wait_loads_settled("workflow: reopen")
+        finish_step("reopen", reset_ms + (settle["stable_at"] - load_t0) * 1000.0, first_frame_ms=round(reset_ms + after_load_ms, 1),
+                    reset_ms=round(reset_ms, 1), pause_ms=round(pause_ms, 1), load_call_ms=round(load_call_ms, 1),
+                    first_frame_after_load_ms=round(after_load_ms, 1), settle=settle_fields(settle))
         m.values["workflow_steps"] = m.steps
 
     def action_noedit(m):
@@ -1709,6 +1874,8 @@ try:
         "frame_rate": "valid" if gpu else "not valid on this display",
         "stack_sampled": os.environ.get("BENCH_STACK_SAMPLED") == "1",
         "bisect": os.environ.get("BENCH_BISECT") or None,
+        "shader_cache": os.environ.get("BENCH_SHADER_CACHE") or None,
+        "warmup": os.environ.get("BENCH_WARMUP") == "1",
         "rows_source": rows["source"],
         "rows": {key: rows[key] for key in ROW_RECORD_KEYS if key in rows},
     }
@@ -1796,7 +1963,9 @@ try:
             current["name"], current["m"] = name, m
             scenario_checks["failed"] = m.failed_checks
             if name in SETTLED_SCENARIOS and view() is not None:
-                m.values["loads_settle_wait_ms"] = yield from wait_loads_settled(name)
+                settle = yield from wait_loads_settled(name)
+                m.values["loads_settle_wait_ms"] = settle["wait_ms"]
+                m.values["loads_settle"] = settle_fields(settle)
                 m.values["action_started_at"] = round(time.time(), 3)
             before = loaded_layers()
             heartbeat.start()

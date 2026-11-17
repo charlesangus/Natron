@@ -479,7 +479,20 @@ unrequested-payload checks are valid under llvmpipe. The scenarios are the harne
 and orders them.
 
 `open` reports `first_frame_ms`, from setting the file to the first frame finished after the scene
-reached the viewer.
+reached the viewer, and `open_substeps_ms`: `initial_draw`, `filename` and `connect` (the knob sets and
+the viewer connection) and `to_first_frame` (from the connection to that frame).
+
+Loads count as over when nothing is pending or composing, every posted draw change is presented, no
+reveal runs, and the loaded layer count, load edits, prims added and posted changes have held still for
+`BENCH_SETTLE_S` (2 s). `load_all`, `reveal_load_all`, the scenarios that start from a settled scene and
+the workflow's Full + Load block and reopen wait for that, bounded by the scenario limit, and keep the
+counts before and after and the wait in a `*_settle` field; the time judged ends where the still window
+began.
+
+With `NATRON_DRAW_STATE_TIMING=1`, `reveal_wide`, `reveal_load_all`, `reveal_cancel_paced` and the
+workflow's block add `<name>_draw_steps`: every frame the viewer presented during the reveal, as
+percentiles (p50, p90, p99, max, mean) of each part of its critical path and the 20 worst by
+`picture_ms`.
 
 `load`, after `open`, asks the viewer to load `BENCH_LOAD_PATHS` (one building by default;
 `/World/BlockN` with `BENCH_LOAD_DESCENDANTS=1` is a larger load, and the paths can name several)
@@ -603,7 +616,10 @@ and a reset and reopen of the saved project. Each step has its own `ms`, `stall_
 `workflow_steps`, and its own budgets in the record: `<step>_stall_ms` (100 ms, the setup before a
 step not counted), `full_asset_picture_ms` (100 ms, valid with `NATRON_DRAW_STATE_TIMING=1` on a real
 GPU), `full_load_block_complete` and `full_load_block_worst_frame_ms` (the reveal finishes with no
-gap over 100 ms between painted frames), `reopen_first_frame_ms` (2 s, on a scene with payloads), and
+gap over 100 ms between painted frames), `reopen_first_frame_ms` (2 s, on a scene with payloads, from the
+project reset on, with `reset_ms` and `first_frame_after_load_ms` beside it; the reopen's stall covers the
+reset, the load and the loads that follow), `pattern_node`'s `create_ms` and `reconnect_ms` (its stall
+still the whole step), and
 the first-frame and unrequested-payload budgets over the whole run. The save is judged as a stall: a
 `saveProjectAs` call that blocks the main thread over 100 ms fails. A scene with nothing for a step
 (flat has no payloads to twirl or load) gets `not_applicable` there. The reopen leaves the process's
@@ -636,7 +652,25 @@ Every GPU-host run also records GPU memory and stamps its logs. `sample_vram.sh`
 card's `mem_info_vram_used` and `mem_info_gtt_used` (the card with the most VRAM, or `VRAM_CARD`) every
 0.25 s, or every `SAMPLE_INTERVAL_S` with `SAMPLE=1`, into `out/<label>.vram`, and `heavy_scene_vram.py`
 adds `vram_peak_mb`, `gtt_peak_mb`, `vram_delta_mb`, `gtt_delta_mb` (and the start, end and total) to each
-record and prints them in the run log. The counters are the device's, the desktop's use included.
+record and prints them in the run log. With no amdgpu card it samples `nvidia-smi`'s `memory.used` for
+the NVIDIA GPU with the most memory (`VRAM_CARD=nvidia<index>` picks one) into the same file; the gtt
+fields are null there. The counters are the device's, the desktop's use included.
+
+The GL drivers' shader caches live in `SHADER_CACHE_DIR` (default `<fixture dir>/shader-cache`) for every
+run, through `__GL_SHADER_DISK_CACHE`, `__GL_SHADER_DISK_CACHE_PATH`, `__GL_SHADER_DISK_CACHE_SKIP_CLEANUP`
+and `MESA_SHADER_CACHE_DIR`; `run-gui-test.sh` and the AppImage pass them through. Each run's HOME is
+thrown away, so without it every open would compile its shaders again. Every mode first runs
+`warmup-city` (the city's `open`) to fill the cache; its record says `result` `warmup`, `warmup` true and
+`shader_cache` `cold` when the cache was empty before it, and counts toward neither pass nor fail. The
+other records say `shader_cache` `warm`. With `ONLY_LABELS` the warm-up runs only on an empty cache or
+when the labels name it.
+
+After each run `heavy_scene_fixture_check.py` reads its `natron.log` for the scene's files failing to
+open: `Could not load sublayer`, `Could not open asset` (a reference or payload that did not resolve or
+open), `Unable to open ptex`, `Unable to read Texture` and `Cannot open image`. Any of them makes the run's
+`pass` and `fail` records `fixture_incomplete` (the judged result kept as `judged_result`), counted as did
+not finish, and every record of the run gets `fixture_check`: the count of each kind and the first five
+paths.
 `out/<label>/natron.ts.log` is `natron.log` with each line prefixed by its epoch seconds; Natron's stdout
 is made line buffered for it through coreutils' `libstdbuf.so` (`LOG_LINEBUF=0` turns that off).
 

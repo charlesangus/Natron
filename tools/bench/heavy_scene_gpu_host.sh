@@ -96,12 +96,24 @@
 #                      directory it unpacks to. eu-stack reads the libraries' symbols from it; Natron.bin's
 #                      it cannot use (see heavy_scene_stack_window.py --symbols, which names those frames
 #                      afterwards from the same directory). A tarball is unpacked into FIXTURE_DIR/symbols.
-#   VRAM_CARD          the card whose memory is sampled (card1, say; default the one with the most VRAM).
-#                      sample_vram.sh reads its mem_info_vram_used and mem_info_gtt_used every
-#                      VRAM_INTERVAL_S (default SAMPLE_INTERVAL_S with SAMPLE=1, else 0.25 s) while each run
-#                      lives, into out/<label>.vram. heavy_scene_vram.py then adds vram_peak_mb, gtt_peak_mb,
-#                      vram_start_mb, vram_end_mb, vram_delta_mb, gtt_delta_mb and the totals to each of the
-#                      run's records, and prints them. The counters are the device's, the desktop's included.
+#   VRAM_CARD          the card whose memory is sampled (card1, say, or nvidia0 for nvidia-smi's GPU 0;
+#                      default the amdgpu card with the most VRAM, or with none, the NVIDIA GPU with the
+#                      most). sample_vram.sh reads an amdgpu card's mem_info_vram_used and mem_info_gtt_used,
+#                      or nvidia-smi's memory.used, every VRAM_INTERVAL_S (default SAMPLE_INTERVAL_S with
+#                      SAMPLE=1, else 0.25 s) while each run lives, into out/<label>.vram.
+#                      heavy_scene_vram.py then adds vram_peak_mb, gtt_peak_mb, vram_start_mb, vram_end_mb,
+#                      vram_delta_mb, gtt_delta_mb and the totals to each of the run's records, and prints
+#                      them; the gtt fields are null on NVIDIA. The counters are the device's, the desktop's
+#                      included.
+#   SHADER_CACHE_DIR   where the GL drivers keep compiled shaders for every run (default
+#                      FIXTURE_DIR/shader-cache): NVIDIA's through __GL_SHADER_DISK_CACHE_PATH, Mesa's
+#                      through MESA_SHADER_CACHE_DIR. Each run gets a throwaway HOME, so without it every
+#                      open would compile its shaders afresh. The open budgets are judged with a warm
+#                      cache: a warm-up run (label warmup-city: the city's open) goes first and fills it,
+#                      and its record says result warmup, shader_cache cold when the directory was empty
+#                      before it, and counts toward neither pass nor fail. Every other record says
+#                      shader_cache warm, or cold when the warm-up did not run on an empty cache. With
+#                      ONLY_LABELS set the warm-up runs only when the cache is empty or the labels name it.
 #   LOG_LINEBUF=0      leaves Natron's stdout block buffered. By default libstdbuf.so (coreutils) makes it
 #                      line buffered, so the stamps of out/<label>/natron.ts.log, a copy of natron.log with
 #                      each line prefixed by the epoch seconds it was written at, are the lines' own.
@@ -119,6 +131,13 @@
 #                      <label>.<variants joined by +>.*, so variants never overwrite each other.
 #                      Storm has no environment setting that turns materials off: unbound material
 #                      pruning and material primvar filtering are already on by default.
+#
+# Fixture guard: after each run heavy_scene_fixture_check.py reads its natron.log. Any "Could not load
+# sublayer", "Could not open asset" (a reference or payload that did not resolve or open), "Unable to open
+# ptex", "Unable to read Texture" or "Cannot open image" means the scene under test was not all there: the
+# run's pass and fail records become fixture_incomplete (their own result kept as judged_result), counted
+# as did not finish, and every record of the run gets fixture_check with the count of each kind and the
+# first paths that failed.
 #
 # Memory guard: heavy_scene_watchdog.sh polls once a second and kills the run with SIGKILL when
 # MemAvailable falls under BENCH_MEM_FLOOR_GB (default the larger of 4 and 10% of MemTotal), when the
@@ -362,8 +381,20 @@ fi
 if [ -n "$VRAM_DEVICE" ]; then
     echo "vram: $VRAM_DEVICE every $VRAM_INTERVAL_S s into $FIXTURE_DIR/out/<label>.vram" >&2
 else
-    echo "vram: no amdgpu mem_info_vram_used under /sys/class/drm (or not VRAM_CARD's); running without VRAM samples" >&2
+    echo "vram: no amdgpu mem_info_vram_used under /sys/class/drm and no GPU from nvidia-smi (or not VRAM_CARD's); running without VRAM samples" >&2
 fi
+
+SHADER_CACHE_DIR="$(readlink -m "${SHADER_CACHE_DIR:-$FIXTURE_DIR/shader-cache}")"
+mkdir -p "$SHADER_CACHE_DIR/nvidia" "$SHADER_CACHE_DIR/mesa"
+# SKIP_CLEANUP keeps NVIDIA's driver from trimming the cache between runs once it passes its size limit.
+SHADER_CACHE_ENV=(__GL_SHADER_DISK_CACHE=1 __GL_SHADER_DISK_CACHE_PATH="$SHADER_CACHE_DIR/nvidia"
+    __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1 MESA_SHADER_CACHE_DIR="$SHADER_CACHE_DIR/mesa")
+if [ -n "$(find "$SHADER_CACHE_DIR" -type f -print -quit 2> /dev/null)" ]; then
+    SHADER_CACHE_STATE=warm
+else
+    SHADER_CACHE_STATE=cold
+fi
+echo "shader cache: $SHADER_CACHE_DIR ($SHADER_CACHE_STATE at start)" >&2
 
 # Samples the Natron process of the run whose launcher is $1 until the run ends; never fails the run.
 sample_run() {
@@ -426,6 +457,10 @@ vram_report() {
         echo "$(($(cat "$card") / 1048576)) MB ($card)"
         return
     done
+    if command -v nvidia-smi > /dev/null 2>&1; then
+        total="$(timeout 5 nvidia-smi --query-gpu=memory.total --format=csv,noheader 2> /dev/null | head -n 1)"
+        [ -n "$total" ] && { echo "$total (nvidia-smi)"; return; }
+    fi
     echo "unknown"
 }
 
@@ -466,7 +501,7 @@ run_bench() {
     mkdir -p "$out"
     : > "$out/natron.log"
     nice -n 5 env BENCH_FIXTURE="$fixture" BENCH_FILE="$file" BENCH_SCENARIOS="$scenarios" BENCH_LABEL="$label" \
-        BENCH_BISECT="$BISECT" NATRON_GUI_TEST_OUT="$out" "${BISECT_ENV[@]}" "${LINEBUF_ENV[@]}" "$@" \
+        BENCH_BISECT="$BISECT" NATRON_GUI_TEST_OUT="$out" "${SHADER_CACHE_ENV[@]}" "${BISECT_ENV[@]}" "${LINEBUF_ENV[@]}" "$@" \
         Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py "$APPIMAGE" > >(stamp_lines > "$out.log") 2>&1 &
     runner=$!
     tail -n +1 -F -s 0.1 --pid="$runner" "$out/natron.log" 2> /dev/null | stamp_lines > "$out/natron.ts.log" &
@@ -502,10 +537,16 @@ record_wedged() {
     echo "=== $1: gpu_wedged: $reason"
 }
 
+# Runs a label with the shader cache in the state it is in, and marks its records so.
 launch() {
-    local label="$1" fixture="$2" file="$3" scenarios="$4" rc bench sampler="" vram_sampler="" stem stacks vram extra=()
+    local label="$1" fixture="$2" file="$3" scenarios="$4" rc bench sampler="" vram_sampler="" stem stacks vram extra=() warmup=0 warmup_flag=() cache
     shift 4
-    wanted "$label" || return 0
+    if [ "$label" = "$WARMUP_LABEL" ]; then
+        warmup=1
+    else
+        wanted "$label" || return 0
+    fi
+    cache="$SHADER_CACHE_STATE"
     if [ -n "$GPU_WEDGED_AFTER" ]; then
         record_wedged "$label"
         return 0
@@ -513,13 +554,14 @@ launch() {
     stem="$label${BISECT_TAG:+.$BISECT_TAG}"
     stacks="$FIXTURE_DIR/out/$stem.stacks"
     vram="$FIXTURE_DIR/out/$stem.vram"
-    [ -n "${ONLY_SCENARIOS:-}" ] && scenarios="$ONLY_SCENARIOS"
+    [ -n "${ONLY_SCENARIOS:-}" ] && [ "$warmup" = 0 ] && scenarios="$ONLY_SCENARIOS"
+    extra=(BENCH_SHADER_CACHE="$cache" BENCH_WARMUP="$warmup")
     echo "=== $label${BISECT:+ (bisect $BISECT)}"
     host_report
     rm -f -- "$vram"
     if [ -n "$SAMPLER" ]; then
         rm -f -- "$stacks" "$stacks.err" "$stacks.pid"
-        extra=(BENCH_PID_FILE="$stacks.pid" BENCH_STACK_SAMPLED=1)
+        extra+=(BENCH_PID_FILE="$stacks.pid" BENCH_STACK_SAMPLED=1)
     fi
     if [ -n "$BISECT_HUD" ]; then
         mkdir -p "$FIXTURE_DIR/out/$stem.hud"
@@ -555,10 +597,27 @@ launch() {
         printf '{"label": "%s", "scenario": "*", "result": "aborted", "exit_code": %d, "reason": "ended before any scenario; see %s", "peak_rss_mb": null, "gl_renderer": "%s", "bisect": %s}\n' \
             "$label" "$rc" "$FIXTURE_DIR/out/$stem.log" "$HOST_GPU" "$BISECT_JSON" >> "$RESULT"
     fi
+    warmup_flag=()
+    [ "$warmup" = 1 ] && warmup_flag=(--warmup)
     if command -v python3 > /dev/null 2>&1; then
         python3 -I tools/bench/heavy_scene_vram.py "$vram" "$RESULT" "$label" --bisect "$BISECT" \
             || echo "    vram: could not add the samples to the records"
+        python3 -I tools/bench/heavy_scene_fixture_check.py "$FIXTURE_DIR/out/$stem/natron.log" "$RESULT" "$label" \
+            --shader-cache "$cache" "${warmup_flag[@]}" \
+            || echo "    fixture: could not check the log or mark the records"
     fi
+    # A run that lived to open a scene has compiled its shaders into the cache.
+    [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] && SHADER_CACHE_STATE=warm
+    return 0
+}
+
+WARMUP_LABEL=warmup-city
+# The warm-up is the city's open, the scene the first-frame budget is set on.
+warm_shader_cache() {
+    if [ -n "${ONLY_LABELS:-}" ] && [ "$SHADER_CACHE_STATE" = warm ] && ! wanted "$WARMUP_LABEL"; then
+        return 0
+    fi
+    launch "$WARMUP_LABEL" city "$CITY" open
 }
 
 CITY="$FIXTURE_DIR/heavy_city.usda"
@@ -626,8 +685,10 @@ summarize() {
     if command -v python3 > /dev/null 2>&1 && grep -q '"scenario": "draw_budget"' "$RESULT"; then
         python3 -I tools/bench/heavy_scene_budget_table.py "$RESULT"
     fi
-    echo "results: $RESULT ($(wc -l < "$RESULT") lines: $(grep -c '"result": "pass"' "$RESULT") pass, $(grep -c '"result": "fail"' "$RESULT") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted|gpu_wedged)"' "$RESULT") did not finish, $(grep -c '"result": "skipped"' "$RESULT") skipped)"
+    echo "results: $RESULT ($(wc -l < "$RESULT") lines: $(grep -c '"result": "pass"' "$RESULT") pass, $(grep -c '"result": "fail"' "$RESULT") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted|gpu_wedged|fixture_incomplete)"' "$RESULT") did not finish ($(grep -c '"result": "fixture_incomplete"' "$RESULT") fixture incomplete), $(grep -c '"result": "skipped"' "$RESULT") skipped, $(grep -c '"result": "warmup"' "$RESULT") warm-up)"
 }
+
+warm_shader_cache
 
 if [ "$MODE" = acceptance ]; then
     acceptance_runs

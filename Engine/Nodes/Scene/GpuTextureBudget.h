@@ -53,6 +53,13 @@ NATRON_NAMESPACE_ENTER
  * Materials are owners: a path within a scope, one scope per scene index. Claims add to what an
  * owner holds, as one material can be read once per render context; the first claim after
  * markStale() replaces it instead. Every member is thread-safe.
+ *
+ * The limit is either fixed, set by setLimit(), or automatic, set by setAutomatic(): a texture is
+ * then admitted only while the card keeps a headroom free with it loaded. The card's free memory
+ * is a sample, noteFreeMemory(), that already counts what was admitted when it was taken; bytes
+ * admitted since count against it and bytes forgotten since give back to it. Until a first sample,
+ * the automatic limit is a fixed fallback. A fixed limit never looks at free memory: it bounds the
+ * textures alone, whatever else is on the card.
  **/
 class GpuTextureBudget {
 public:
@@ -61,10 +68,25 @@ public:
         std::uint64_t bytes;
     };
 
+    struct Basis {
+        bool automatic = false;
+        bool freeMemoryKnown = false;
+        std::uint64_t limitBytes = 0;
+        std::uint64_t headroomBytes = 0;
+        // What the card has free now by the last sample and what was admitted or forgotten since.
+        std::uint64_t freeBytes = 0;
+        std::uint64_t usedBytes = 0;
+    };
+
     explicit GpuTextureBudget(std::uint64_t limitBytes);
 
     void setLimit(std::uint64_t limitBytes);
+    void setAutomatic(std::uint64_t fallbackLimitBytes, std::uint64_t headroomBytes);
+    void noteFreeMemory(std::uint64_t freeBytes);
+
+    // The most the admitted textures may take together, as of now.
     std::uint64_t getLimit() const;
+    Basis getBasis() const;
 
     // The bytes of a texture some owner claims, so its size need not be measured again.
     bool findBytes(const std::string& key, std::uint64_t* bytes) const;
@@ -101,11 +123,18 @@ private:
     typedef std::pair<std::uint64_t, std::string> OwnerId;
 
     void unrefLocked(const std::string& key);
+    std::uint64_t limitLocked() const;
     template <typename Visit>
     void forEachOwnerLocked(std::uint64_t scope, const std::string& prefix, Visit visit);
 
     mutable std::mutex _mutex;
     std::uint64_t _limit;
+    bool _automatic = false;
+    std::uint64_t _headroom = 0;
+    bool _freeKnown = false;
+    // The sample's free bytes plus what was admitted when it was taken: what the card would have
+    // free with no texture of this budget on it.
+    std::uint64_t _freeWithoutTextures = 0;
     std::uint64_t _used = 0;
     std::size_t _refused = 0;
     std::size_t _reported = 0;
@@ -113,8 +142,19 @@ private:
     std::map<OwnerId, Owner> _owners;
 };
 
-// Half the card's memory, leaving the rest to geometry and render targets; 4 GiB when unknown.
+// Half the card's memory, for drivers that tell only how much it has; 4 GiB when unknown.
 std::uint64_t automaticGpuTextureBudget(std::uint64_t videoMemoryBytes);
+
+/**
+ * @brief What the automatic budget leaves free on a card of videoMemoryBytes (0 when unknown):
+ * a sixteenth of it, and never under 1 GiB.
+ *
+ * What a frame allocates beside the textures, its render targets, AOVs and the driver's own
+ * scratch, is mostly set by the resolution rather than the card, so small cards get a floor that
+ * still holds a few 4K float targets; larger cards, which run larger scenes and more viewers,
+ * keep proportionally more. A 24 GiB card keeps 1.5 GiB.
+ **/
+std::uint64_t automaticGpuTextureHeadroom(std::uint64_t videoMemoryBytes);
 
 /**
  * @brief False for an asset path Ar hands to a URI resolver, as it does any path that starts with

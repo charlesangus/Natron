@@ -236,10 +236,118 @@ TEST(GpuTextureBudget, ConcurrentClaimsNeverExceedTheLimit)
     EXPECT_EQ(0u, budget.getRefusedCount());
 }
 
-TEST(GpuTextureBudget, AutomaticBudgetIsHalfTheCard)
+TEST(GpuTextureBudget, FallbackBudgetIsHalfTheCard)
 {
     EXPECT_EQ(std::uint64_t(12) << 30, automaticGpuTextureBudget(std::uint64_t(24) << 30));
     EXPECT_EQ(std::uint64_t(4) << 30, automaticGpuTextureBudget(0));
+}
+
+TEST(GpuTextureBudget, HeadroomIsASixteenthOfTheCardAndAtLeastOneGiB)
+{
+    EXPECT_EQ(std::uint64_t(1536) * kMB, automaticGpuTextureHeadroom(std::uint64_t(24) << 30));
+    EXPECT_EQ(std::uint64_t(3) << 30, automaticGpuTextureHeadroom(std::uint64_t(48) << 30));
+    EXPECT_EQ(std::uint64_t(1) << 30, automaticGpuTextureHeadroom(std::uint64_t(8) << 30));
+    EXPECT_EQ(std::uint64_t(1) << 30, automaticGpuTextureHeadroom(0));
+}
+
+TEST(GpuTextureBudget, AutomaticUsesTheFallbackUntilFreeMemoryIsKnown)
+{
+    GpuTextureBudget budget(0);
+    budget.setAutomatic(50 * kMB, 10 * kMB);
+    EXPECT_EQ(50 * kMB, budget.getLimit());
+    EXPECT_FALSE(budget.getBasis().freeMemoryKnown);
+    EXPECT_TRUE(budget.claim(1, "/a", requests({ { "a", 40 * kMB } }))[0]);
+    EXPECT_FALSE(budget.claim(1, "/b", requests({ { "b", 20 * kMB } }))[0]);
+}
+
+TEST(GpuTextureBudget, AutomaticAdmitsWhileTheHeadroomStaysFree)
+{
+    GpuTextureBudget budget(0);
+    budget.setAutomatic(1000 * kMB, 10 * kMB);
+    budget.noteFreeMemory(100 * kMB);
+    EXPECT_EQ(90 * kMB, budget.getLimit());
+
+    const std::vector<bool> admitted = budget.claim(1, "/m", requests({ { "a", 60 * kMB }, { "b", 40 * kMB }, { "c", 30 * kMB } }));
+    EXPECT_TRUE(admitted[0]);
+    EXPECT_FALSE(admitted[1]);
+    EXPECT_TRUE(admitted[2]);
+
+    const GpuTextureBudget::Basis basis = budget.getBasis();
+    EXPECT_TRUE(basis.automatic);
+    EXPECT_TRUE(basis.freeMemoryKnown);
+    EXPECT_EQ(10 * kMB, basis.headroomBytes);
+    EXPECT_EQ(90 * kMB, basis.usedBytes);
+    EXPECT_EQ(10 * kMB, basis.freeBytes);
+}
+
+TEST(GpuTextureBudget, AutomaticCountsWhatWasAdmittedBeforeASampleAsAlreadyTaken)
+{
+    GpuTextureBudget budget(0);
+    budget.setAutomatic(1000 * kMB, 10 * kMB);
+    budget.noteFreeMemory(100 * kMB);
+    EXPECT_TRUE(budget.claim(1, "/a", requests({ { "a", 50 * kMB } }))[0]);
+
+    // Uploaded by now, and other buffers took 30 MB more: 100 - 50 - 30.
+    budget.noteFreeMemory(20 * kMB);
+    EXPECT_EQ(60 * kMB, budget.getLimit());
+    EXPECT_FALSE(budget.claim(1, "/b", requests({ { "b", 15 * kMB } }))[0]);
+    EXPECT_TRUE(budget.claim(1, "/c", requests({ { "c", 10 * kMB } }))[0]);
+
+    // Forgetting a texture gives its bytes back before the next sample sees them freed.
+    budget.release(1, "/a");
+    EXPECT_EQ(60 * kMB, budget.getBasis().freeBytes);
+    EXPECT_TRUE(budget.claim(1, "/d", requests({ { "d", 40 * kMB } }))[0]);
+}
+
+TEST(GpuTextureBudget, AutomaticRefusesEverythingWhenTheCardIsAlreadyFull)
+{
+    GpuTextureBudget budget(0);
+    budget.setAutomatic(1000 * kMB, 10 * kMB);
+    budget.noteFreeMemory(5 * kMB);
+    EXPECT_EQ(0u, budget.getLimit());
+    EXPECT_FALSE(budget.claim(1, "/a", requests({ { "a", kMB } }))[0]);
+}
+
+TEST(GpuTextureBudget, FixedLimitIgnoresFreeMemory)
+{
+    GpuTextureBudget budget(0);
+    budget.setAutomatic(1000 * kMB, 10 * kMB);
+    budget.noteFreeMemory(20 * kMB);
+    budget.setLimit(100 * kMB);
+    EXPECT_EQ(100 * kMB, budget.getLimit());
+    EXPECT_FALSE(budget.getBasis().automatic);
+    EXPECT_TRUE(budget.claim(1, "/a", requests({ { "a", 80 * kMB } }))[0]);
+
+    budget.setAutomatic(1000 * kMB, 10 * kMB);
+    EXPECT_EQ(10 * kMB, budget.getLimit());
+    EXPECT_FALSE(budget.claim(1, "/b", requests({ { "b", kMB } }))[0]);
+}
+
+TEST(GpuTextureBudget, ConcurrentAutomaticClaimsKeepTheHeadroom)
+{
+    GpuTextureBudget budget(0);
+    budget.setAutomatic(1000 * kMB, 20 * kMB);
+    budget.noteFreeMemory(120 * kMB);
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 8; ++t) {
+        threads.emplace_back([&budget, t]() {
+            for (int i = 0; i < 200; ++i) {
+                const std::string owner = "/t" + std::to_string(t) + "/m" + std::to_string(i % 10);
+                budget.claim((std::uint64_t)(t % 2), owner, requests({ { "k" + std::to_string(i % 37), 7 * kMB } }));
+                if ((i % 5) == 4) {
+                    budget.release((std::uint64_t)(t % 2), "/t" + std::to_string(t));
+                }
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    EXPECT_LE(budget.getUsedBytes(), 100 * kMB);
+
+    budget.releaseScope(0);
+    budget.releaseScope(1);
+    EXPECT_EQ(0u, budget.getUsedBytes());
 }
 
 TEST(GpuTextureBudget, PtexSingleFaceTakesOneMinimumPage)

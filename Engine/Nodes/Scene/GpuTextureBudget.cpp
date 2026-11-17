@@ -41,13 +41,57 @@ GpuTextureBudget::setLimit(std::uint64_t limitBytes)
 {
     std::lock_guard<std::mutex> lock(_mutex);
     _limit = limitBytes;
+    _automatic = false;
+}
+
+void
+GpuTextureBudget::setAutomatic(std::uint64_t fallbackLimitBytes,
+                               std::uint64_t headroomBytes)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _limit = fallbackLimitBytes;
+    _headroom = headroomBytes;
+    _automatic = true;
+}
+
+void
+GpuTextureBudget::noteFreeMemory(std::uint64_t freeBytes)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _freeWithoutTextures = freeBytes + _used;
+    _freeKnown = true;
+}
+
+std::uint64_t
+GpuTextureBudget::limitLocked() const
+{
+    if (!_automatic || !_freeKnown) {
+        return _limit;
+    }
+
+    return (_freeWithoutTextures > _headroom) ? (_freeWithoutTextures - _headroom) : 0;
 }
 
 std::uint64_t
 GpuTextureBudget::getLimit() const
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    return _limit;
+    return limitLocked();
+}
+
+GpuTextureBudget::Basis
+GpuTextureBudget::getBasis() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    Basis basis;
+    basis.automatic = _automatic;
+    basis.freeMemoryKnown = _freeKnown;
+    basis.limitBytes = limitLocked();
+    basis.headroomBytes = _automatic ? _headroom : 0;
+    basis.freeBytes = (_freeKnown && (_freeWithoutTextures > _used)) ? (_freeWithoutTextures - _used) : 0;
+    basis.usedBytes = _used;
+
+    return basis;
 }
 
 bool
@@ -73,13 +117,14 @@ GpuTextureBudget::claim(std::uint64_t scope,
     std::lock_guard<std::mutex> lock(_mutex);
     Owner& state = _owners[OwnerId(scope, owner)];
     std::set<std::string> claimed;
+    const std::uint64_t limit = limitLocked();
     for (const Request& request : requests) {
         std::map<std::string, Entry>::iterator it = _entries.find(request.key);
         if (it == _entries.end()) {
             it = _entries.emplace(request.key, Entry()).first;
             Entry& entry = it->second;
             entry.bytes = request.bytes;
-            entry.admitted = (request.bytes <= _limit) && (_used <= _limit - request.bytes);
+            entry.admitted = (request.bytes <= limit) && (_used <= limit - request.bytes);
             if (entry.admitted) {
                 _used += entry.bytes;
             } else {
@@ -222,6 +267,12 @@ automaticGpuTextureBudget(std::uint64_t videoMemoryBytes)
     }
 
     return videoMemoryBytes / 2;
+}
+
+std::uint64_t
+automaticGpuTextureHeadroom(std::uint64_t videoMemoryBytes)
+{
+    return std::max(std::uint64_t(1) << 30, videoMemoryBytes / 16);
 }
 
 bool

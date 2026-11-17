@@ -35,9 +35,13 @@ NATRON_NAMESPACE_ENTER
 class GpuTextureBudget;
 
 /**
- * @brief Keeps Storm's textures within a share of the GPU's memory: a texture whose upload would
- * take the textures of every Storm scene past the budget is not loaded, and the material reads the
- * texture node's fallback value in its place. Nothing on disk or in the scene changes.
+ * @brief Keeps Storm's textures within the GPU's memory: a texture whose upload would take the
+ * textures of every Storm scene past the budget is not loaded, and the material reads the texture
+ * node's fallback value in its place. Nothing on disk or in the scene changes.
+ *
+ * The automatic budget admits a texture only while the card keeps a headroom free with it loaded,
+ * by the card's free memory as last sampled; drivers that do not report free memory get half the
+ * card's memory instead. A configured budget is a fixed cap on the textures alone.
  *
  * Storm offers no hook between reading a texture and uploading it, so a material filter decides,
  * from the file's header, what the upload will take, by Storm's own sizing: mip chains for UV and
@@ -58,6 +62,15 @@ void setConfiguredBudgetMB(std::uint64_t megabytes);
  * draws with, and the budget the preferences ask for. Applies to textures claimed from then on.
  **/
 void noteCurrentGLContext();
+
+/**
+ * @brief Samples what the GPU behind the current GL context has free, for the automatic budget.
+ *
+ * Call it on Storm's thread, with its context current, before each render: textures a render
+ * admits are uploaded only once its sync is done, so a sample taken in between would count them
+ * as neither free nor taken. Cheap enough for every frame.
+ **/
+void sampleFreeVideoMemory();
 
 GpuTextureBudget& budget();
 } // namespace StormTextureBudget

@@ -494,9 +494,12 @@ Settings::initializeKnobsGPU()
 
     _gpuTextureBudget = AppManager::createKnob<KnobInt>(this, tr("GPU Texture Budget"));
     _gpuTextureBudget->setName("gpuTextureBudget");
-    _gpuTextureBudget->setHintToolTip(tr("The most GPU memory, in megabytes, that the textures of the 3D viewers and renders may take together. "
-                                         "A texture that would take them past it is not loaded, and its material uses the texture's fallback value. "
-                                         "0 chooses half the memory of the graphics card. "
+    _gpuTextureBudget->setHintToolTip(tr("How much GPU memory the textures of the 3D viewers and renders may take together. "
+                                         "A texture that does not fit is not loaded, and its material uses the texture's fallback value.\n"
+                                         "0 is automatic: textures load while the graphics card keeps a sixteenth of its memory free, and never less than 1024 MB "
+                                         "(1536 MB on a 24 GB card), whatever else takes up the rest. "
+                                         "Where the driver does not tell how much is free, the textures are kept within half the card's memory.\n"
+                                         "Any other value is a fixed budget in megabytes for the textures alone: it does not look at what else is on the card.\n"
                                          "Changing this applies to the textures loaded from then on."));
     _gpuTextureBudget->setMinimum(0);
     _gpuTextureBudget->disableSlider();

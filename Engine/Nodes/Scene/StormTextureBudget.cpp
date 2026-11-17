@@ -95,7 +95,13 @@ void
 refreshLimit()
 {
     const std::uint64_t configured = g_configuredBytes.load();
-    StormTextureBudget::budget().setLimit(configured ? configured : automaticGpuTextureBudget(g_videoMemoryBytes.load()));
+    if (configured) {
+        StormTextureBudget::budget().setLimit(configured);
+
+        return;
+    }
+    const std::uint64_t videoMemory = g_videoMemoryBytes.load();
+    StormTextureBudget::budget().setAutomatic(automaticGpuTextureBudget(videoMemory), automaticGpuTextureHeadroom(videoMemory));
 }
 
 bool
@@ -113,26 +119,47 @@ hasGLExtension(const char* name)
     return false;
 }
 
-std::uint64_t
-queryVideoMemoryBytes(bool* freeOnly)
+bool
+hasATIMeminfo()
 {
-    *freeOnly = false;
-    std::uint64_t bytes = 0;
-    // Mesa's radeonsi answers the NVIDIA query too, with the card's VRAM.
+    // Looked up once: walking the extension list on every frame is a few hundred GL calls.
+    static std::atomic<int> known(-1);
+    int has = known.load();
+    if (has < 0) {
+        has = hasGLExtension("GL_ATI_meminfo") ? 1 : 0;
+        known = has;
+    }
+
+    return has != 0;
+}
+
+struct VideoMemory {
+    std::uint64_t totalBytes = 0;
+    std::uint64_t freeBytes = 0;
+};
+
+VideoMemory
+queryVideoMemory(bool withTotal)
+{
+    VideoMemory memory;
+    // Mesa's radeonsi answers the NVIDIA query too.
     if (GARCH_GLAPI_HAS(NVX_gpu_memory_info)) {
         GLint kilobytes = 0;
-        glGetIntegerv(GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX, &kilobytes);
-        bytes = (std::uint64_t)std::max(0, kilobytes) * 1024;
+        if (withTotal) {
+            glGetIntegerv(GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX, &kilobytes);
+            memory.totalBytes = (std::uint64_t)std::max(0, kilobytes) * 1024;
+        }
+        kilobytes = 0;
+        glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &kilobytes);
+        memory.freeBytes = (std::uint64_t)std::max(0, kilobytes) * 1024;
     }
-    if ((bytes == 0) && hasGLExtension("GL_ATI_meminfo")) {
-        // The extension has only what is free, which shrinks as scenes load their textures.
+    if ((memory.freeBytes == 0) && hasATIMeminfo()) {
         const GLenum textureFreeMemoryATI = 0x87FC;
         GLint free[4] = { 0, 0, 0, 0 };
         glGetIntegerv(textureFreeMemoryATI, free);
-        bytes = (std::uint64_t)std::max(0, free[0]) * 1024;
-        *freeOnly = (bytes != 0);
+        memory.freeBytes = (std::uint64_t)std::max(0, free[0]) * 1024;
     }
-    if (bytes == 0) {
+    if (withTotal && (memory.totalBytes == 0)) {
         typedef void* (*GetProcAddress)(const GLubyte*);
         typedef int (*QueryRendererInteger)(int, unsigned int*);
         const GetProcAddress getProcAddress = reinterpret_cast<GetProcAddress>(dlsym(RTLD_DEFAULT, "glXGetProcAddressARB"));
@@ -140,13 +167,34 @@ queryVideoMemoryBytes(bool* freeOnly)
         const int videoMemoryMESA = 0x8187;
         unsigned int megabytes = 0;
         if (query && query(videoMemoryMESA, &megabytes)) {
-            bytes = (std::uint64_t)megabytes << 20;
+            memory.totalBytes = (std::uint64_t)megabytes << 20;
         }
     }
     while (glGetError() != GL_NO_ERROR) {
     }
 
-    return bytes;
+    return memory;
+}
+
+void
+noteFreeMemory(const VideoMemory& memory)
+{
+    if (memory.freeBytes == 0) {
+        return;
+    }
+    StormTextureBudget::budget().noteFreeMemory(memory.freeBytes);
+    if (memory.totalBytes != 0) {
+        return;
+    }
+    // With only the free memory to go by, the most ever seen free stands in for the card's size,
+    // which sizes the headroom.
+    std::uint64_t seen = g_videoMemoryBytes.load();
+    bool grew = false;
+    while ((memory.freeBytes > seen) && !(grew = g_videoMemoryBytes.compare_exchange_weak(seen, memory.freeBytes))) {
+    }
+    if (grew && !g_configuredBytes.load()) {
+        refreshLimit();
+    }
 }
 
 // The refused count keeps changing while a scene loads; it is reported once it has held still.
@@ -178,15 +226,32 @@ report()
     if (!budget.takeReport(&refused)) {
         return;
     }
-    const qulonglong limitMB = (qulonglong)(budget.getLimit() >> 20);
-    const QString message = (refused == 1)
-        ? QCoreApplication::translate("StormTextureBudget", "1 texture is not loaded: it does not fit in the GPU texture budget of %1 MB. "
-                                                            "Its material uses the texture's fallback value. The GPU Texture Budget preference sets the budget.")
-              .arg(limitMB)
-        : QCoreApplication::translate("StormTextureBudget", "%1 textures are not loaded: they do not fit in the GPU texture budget of %2 MB. "
-                                                            "Their materials use the textures' fallback values. The GPU Texture Budget preference sets the budget.")
-              .arg((qulonglong)refused)
-              .arg(limitMB);
+    const GpuTextureBudget::Basis basis = budget.getBasis();
+    const qulonglong usedMB = (qulonglong)(basis.usedBytes >> 20);
+    QString message = (refused == 1)
+        ? QCoreApplication::translate("StormTextureBudget", "1 texture is not loaded, and its material uses the texture's fallback value.")
+        : QCoreApplication::translate("StormTextureBudget", "%1 textures are not loaded, and their materials use the textures' fallback values.")
+              .arg((qulonglong)refused);
+    message += QLatin1Char(' ');
+    if (basis.automatic && basis.freeMemoryKnown) {
+        message += QCoreApplication::translate("StormTextureBudget", "Loading more would leave less than %1 MB of the graphics card's memory free: "
+                                                                     "%2 MB of textures are loaded and about %3 MB is free. "
+                                                                     "A GPU Texture Budget preference other than 0 sets a fixed budget instead.")
+                       .arg((qulonglong)(basis.headroomBytes >> 20))
+                       .arg(usedMB)
+                       .arg((qulonglong)(basis.freeBytes >> 20));
+    } else if (basis.automatic) {
+        message += QCoreApplication::translate("StormTextureBudget", "The graphics card does not tell how much of its memory is free, so the textures are kept within "
+                                                                     "half its memory, %1 MB, of which %2 MB are loaded. "
+                                                                     "A GPU Texture Budget preference other than 0 sets a fixed budget instead.")
+                       .arg((qulonglong)(basis.limitBytes >> 20))
+                       .arg(usedMB);
+    } else {
+        message += QCoreApplication::translate("StormTextureBudget", "They do not fit in the GPU texture budget of %1 MB, of which %2 MB are loaded. "
+                                                                     "The GPU Texture Budget preference sets the budget.")
+                       .arg((qulonglong)(basis.limitBytes >> 20))
+                       .arg(usedMB);
+    }
     qWarning().noquote() << "Viewer:" << message;
     if (appPTR) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("Viewer"), QDateTime::currentDateTime(), message);
@@ -628,19 +693,21 @@ setConfiguredBudgetMB(std::uint64_t megabytes)
 void
 noteCurrentGLContext()
 {
-    bool freeOnly = false;
-    const std::uint64_t bytes = queryVideoMemoryBytes(&freeOnly);
-    if (freeOnly) {
-        std::uint64_t seen = g_videoMemoryBytes.load();
-        while ((bytes > seen) && !g_videoMemoryBytes.compare_exchange_weak(seen, bytes)) {
-        }
-    } else if (bytes) {
-        g_videoMemoryBytes = bytes;
+    const VideoMemory memory = queryVideoMemory(true);
+    if (memory.totalBytes) {
+        g_videoMemoryBytes = memory.totalBytes;
     }
     if (appPTR && appPTR->getCurrentSettings()) {
         g_configuredBytes = appPTR->getCurrentSettings()->getGpuTextureBudgetMB() << 20;
     }
     refreshLimit();
+    noteFreeMemory(memory);
+}
+
+void
+sampleFreeVideoMemory()
+{
+    noteFreeMemory(queryVideoMemory(false));
 }
 
 GpuTextureBudget&

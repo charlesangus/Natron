@@ -121,3 +121,6 @@ Scouted 2026-11-14 on `origin/main`:
 ## Decisions
 
 - 2026-11-14 — The ports must keep overlay draw cost within 10% of today's raw-GL drawing, measured by a dedicated benchmark recorded before any port, and the draw list is cached between redraws (user): raw GL is cheap to issue, so the draw list's per-redraw rebuild and upload must not cost more than it saves.
+- 2026-11-17 — P1.T1-P1.T4 and P2.T1 code in c01d83499 (unbuilt). Port map at docs/dev/overlay-draw-list-port.md. The list cache keys on content version, time, view, mipmap level and a zoom step of an eighth of an octave; hover gets its own list. The bench baseline is recorded from this branch before any port, since main has no probe. Next: record the bench baseline and the parity references on this build, then P2.T2-P2.T5.
+- 2026-11-17 — **RampInteract is ported too (user):** it joins the HostOverlay ports in P2.T5.
+- 2026-11-17 — **RotoPaint's stroke preview (GL_MAX against destination alpha), Tracker thumbnails and the magnifier stay on direct GL (user):** they draw beside the draw list, and M435 - Overlays Deform Through Warps gives them the same texture-warp fallback as OFX overlays.

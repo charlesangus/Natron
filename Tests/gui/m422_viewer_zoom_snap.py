@@ -1,20 +1,3 @@
-"""Checks that wheel and keyboard zoom in the 2D viewer land on the zoom menu's presets.
-
-Each wheel notch steps one preset (10, 25, 50, 75, 100, 125, 150, 200, 400, 800, 1600, 2400, 3200,
-6400%, halving below and doubling above) and keeps the image point under the cursor fixed. Smaller
-deltas add up to a notch, turning back discards them, and a level between presets steps to the next
-one in the wheel's direction. The viewer's Zoom In and Zoom Out keys and the menu's + and - entries
-step along the same presets about the viewer centre.
-
-Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
-    docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && \
-        NATRON_GUI_TEST_OUT=build/m422/out GUI_TEST_TIMEOUT=300 \
-        Tests/gui/run-gui-test.sh Tests/gui/m422_viewer_zoom_snap.py build/fast/App/Natron'
-
-Wheel events are synthetic QWheelEvents sent to the viewer's GL widget, keys are QKeyEvents sent to
-the viewer tab. The zoom level and the image point under the cursor are read through the viewer's
-natronCanonicalToWidget property, whose x scale is the zoom factor.
-"""
 import os
 import sys
 import traceback
@@ -112,7 +95,6 @@ try:
         QApplication.processEvents()
 
     def mapping():
-        """(ox, oy, sx, sy): widget = (ox + sx * x, oy + sy * y) for canonical (x, y), or None."""
         widget = viewer_gl()
         value = widget.property("natronCanonicalToWidget") if widget is not None else None
         if not value or len(value) != 4:
@@ -171,7 +153,6 @@ try:
             QApplication.processEvents()
 
     def ladder_above(level):
-        """The presets strictly above level, outside the on-preset tolerance."""
         return [p for p in PRESETS if p > level and abs(p - level) >= 0.005 * p]
 
     def expect_level(value, case, check_menu=True):
@@ -215,7 +196,6 @@ try:
         fit_level = percent()
         gt.require(fit_level is not None and fit_level < 100., "the image fits below 100%% (got %r)" % fit_level)
 
-        # ---- wheel notches from Fit, about the cursor -----------------------------------------
         gt.section("wheel")
         gl = viewer_gl()
         pivot = QPoint(int(gl.width() * 0.3), int(gl.height() * 0.6))
@@ -241,7 +221,6 @@ try:
                   and abs(before[0] - after[0]) < PIVOT_TOLERANCE and abs(before[1] - after[1]) < PIVOT_TOLERANCE,
                   "wheel out to %s keeps the image point under the cursor (%r then %r)" % (label(value), before, after))
 
-        # ---- small deltas add up to a notch; turning back discards them --------------------------
         gt.section("small-deltas")
         set_zoom(100)
         yield ("sleep", STEP_MS)
@@ -267,7 +246,6 @@ try:
         yield ("sleep", STEP_MS)
         expect_level(75., "one event of three notches out from 150%")
 
-        # ---- levels between presets and the ladder past its ends --------------------------------
         gt.section("off-ladder")
         set_zoom(87)
         yield ("sleep", STEP_MS)
@@ -300,7 +278,6 @@ try:
             check(before is not None and mapping() == before,
                   "a notch past %s leaves the view untouched (%r then %r)" % (label(start), before, mapping()))
 
-        # ---- Zoom In and Zoom Out keys and the menu's + and - -----------------------------------
         gt.section("keys")
         set_zoom(87)
         yield ("sleep", STEP_MS)

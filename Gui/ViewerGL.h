@@ -126,10 +126,6 @@ public:
      **/
     double getZoomFactor() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    /**
-     * @brief Zooms `steps` presets along the zoom menu's ladder (positive zooms in), keeping the
-     * widget point `pivot` fixed, and reports the new level through zoomChanged.
-     **/
     void stepZoomPresets(int steps, const QPointF& pivot);
 
     /**

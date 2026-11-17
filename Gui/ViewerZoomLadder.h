@@ -29,7 +29,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-/// The viewer's zoom menu presets, in percent, in menu order.
 inline constexpr int kViewerZoomPresetsPercent[] = {
     10, 25, 50, 75, 100, 125, 150, 200, 400, 800, 1600, 2400, 3200, 6400
 };
@@ -41,8 +40,6 @@ constexpr int kPresetCount = static_cast<int>(std::size(kViewerZoomPresetsPercen
 // in the zoom factor never makes a step land on the rung it started from.
 constexpr double kOnRungTolerance = 0.005;
 
-/// Rung i of the ladder as a zoom factor: the presets, halving below the first and doubling above
-/// the last.
 inline double
 rung(int i)
 {
@@ -66,11 +63,6 @@ isOnRung(double factor,
 }
 } // namespace ViewerZoomLadderDetail
 
-/**
- * @brief The zoom factor `steps` rungs away from `currentFactor` on the preset ladder, clamped to
- * [minFactor, maxFactor]. Positive steps zoom in. A level between rungs takes the next rung in the
- * step's direction as its first step.
- **/
 inline double
 stepZoomPreset(double currentFactor,
                int steps,
@@ -86,7 +78,6 @@ stepZoomPreset(double currentFactor,
     const double last = rung(kPresetCount - 1);
     int target;
     if (steps > 0) {
-        // Start on a rung safely below the current level, then climb to the first one above it.
         int i = -1;
         if (currentFactor < first) {
             i = static_cast<int>(std::floor(std::log2(currentFactor / first))) - 1;

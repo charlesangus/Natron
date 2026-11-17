@@ -3270,13 +3270,12 @@ ViewerGL::wheelEvent(QWheelEvent* e)
     if (steps != 0) {
         stepZoomPresets(steps, e->position());
     }
-} // ViewerGL::wheelEvent
+}
 
 void
 ViewerGL::stepZoomPresets(int steps,
                           const QPointF& pivot)
 {
-    // always running in the main thread
     assert(qApp && qApp->thread() == QThread::currentThread());
 
     double oldZoomFactor, zoomFactor;

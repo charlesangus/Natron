@@ -362,10 +362,21 @@ TransformUndoCommand::undo()
 void
 TransformUndoCommand::transformPoints(Transform::Matrix3x3 matrix)
 {
+    // matrix acts where the points are drawn, past their shape's own transform; the points are
+    // stored before that transform, so each shape gets matrix taken back through its own.
+    const Bezier* lastCurve = 0;
+    Transform::Matrix3x3 local;
     for (SelectedCpList::iterator it = _selectedPoints.begin(); it != _selectedPoints.end(); ++it) {
-        it->first->getBezier()->transformPoint(it->first, _time, &matrix);
+        const BezierPtr curve = it->first->getBezier();
+        if (curve.get() != lastCurve) {
+            Transform::Matrix3x3 shape;
+            curve->getTransformAtTime(_time, &shape);
+            local = Transform::matMul(Transform::matInverse(shape), Transform::matMul(matrix, shape));
+            lastCurve = curve.get();
+        }
+        curve->transformPoint(it->first, _time, &local);
         if (it->second) {
-            it->second->getBezier()->transformPoint(it->second, _time, &matrix);
+            curve->transformPoint(it->second, _time, &local);
         }
     }
 
@@ -866,9 +877,9 @@ getDeltaForPoint(const BezierCP& p,
     p.getRightBezierPointAtTime(true, time, ViewIdx(0), &rtan.x, &rtan.y);
     p.getPositionAtTime(true, time, ViewIdx(0), &pos.x, &pos.y);
 
-    pos = Transform::matApply(transform, pos);
-    ltan = Transform::matApply(transform, ltan);
-    rtan = Transform::matApply(transform, rtan);
+    pos = Transform::matApplyProjected(transform, pos);
+    ltan = Transform::matApplyProjected(transform, ltan);
+    rtan = Transform::matApplyProjected(transform, rtan);
 
     double dist = isLeft ?  sqrt( (rtan.x - pos.x) * (rtan.x - pos.x) + (rtan.y - pos.y) * (rtan.y - pos.y) )
                   : sqrt( (ltan.x - pos.x) * (ltan.x - pos.x) + (ltan.y - pos.y) * (ltan.y - pos.y) );
@@ -1160,7 +1171,7 @@ transformedPoint(double x,
     p.x = x;
     p.y = y;
     p.z = 1.;
-    p = Transform::matApply(transform, p);
+    p = Transform::matApplyProjected(transform, p);
     Point r;
     r.x = p.x;
     r.y = p.y;
@@ -1233,8 +1244,8 @@ computeFeatherBarDrag(const BezierCPPtr& cp,
     cp->getPositionAtTime(true, time, ViewIdx(0), &controlPoint.x, &controlPoint.y);
     drag->isOnKeyframe = fp->getPositionAtTime(true, time, ViewIdx(0), &featherPoint.x, &featherPoint.y);
 
-    controlPoint = Transform::matApply(transform, controlPoint);
-    featherPoint = Transform::matApply(transform, featherPoint);
+    controlPoint = Transform::matApplyProjected(transform, controlPoint);
+    featherPoint = Transform::matApplyProjected(transform, featherPoint);
 
     Point c, f, left, right;
     c.x = controlPoint.x;

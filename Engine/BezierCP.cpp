@@ -845,9 +845,9 @@ BezierCP::isNearbyTangent(bool useGuiCurves,
     getLeftBezierPointAtTime(useGuiCurves, time, view, &left.x, &left.y);
     getRightBezierPointAtTime(useGuiCurves, time, view, &right.x, &right.y);
 
-    p = Transform::matApply(transform, p);
-    left = Transform::matApply(transform, left);
-    right = Transform::matApply(transform, right);
+    p = Transform::matApplyProjected(transform, p);
+    left = Transform::matApplyProjected(transform, left);
+    right = Transform::matApplyProjected(transform, right);
 
     if ( (p.x != left.x) || (p.y != left.y) ) {
         if ( ( left.x >= (x - acceptance) ) && ( left.x <= (x + acceptance) ) && ( left.y >= (y - acceptance) ) && ( left.y <= (y + acceptance) ) ) {
@@ -928,7 +928,7 @@ smoothTangents(bool useGuiCurves,
         Transform::Point3D q;
         q.z = 1.;
         (*n)->getPositionAtTime(useGuiCurves, time, view, &q.x, &q.y);
-        q = Transform::matApply(transform, q);
+        q = Transform::matApplyProjected(transform, q);
         *nx = q.x;
         *ny = q.y;
     };
@@ -1057,9 +1057,9 @@ BezierCP::smoothPoint(bool useGuiCurves,
     getLeftBezierPointAtTime(useGuiCurves, time, view, &left.x, &left.y);
     bool isOnKeyframe = getRightBezierPointAtTime(useGuiCurves, time, view, &right.x, &right.y);
 
-    pos = Transform::matApply(transform, pos);
-    left = Transform::matApply(transform, left);
-    right = Transform::matApply(transform, right);
+    pos = Transform::matApplyProjected(transform, pos);
+    left = Transform::matApplyProjected(transform, left);
+    right = Transform::matApplyProjected(transform, right);
 
     smoothTangents(useGuiCurves, time, view, this, transform, pos.x, pos.y, &left.x, &left.y, &right.x, &right.y, pixelScale);
 
@@ -1067,8 +1067,8 @@ BezierCP::smoothPoint(bool useGuiCurves,
 
     // The handles were placed in the transformed space the user sees; the curves store them untransformed.
     const Transform::Matrix3x3 inverse = Transform::matInverse(transform);
-    left = Transform::matApply(inverse, left);
-    right = Transform::matApply(inverse, right);
+    left = Transform::matApplyProjected(inverse, left);
+    right = Transform::matApplyProjected(inverse, right);
 
     setBroken(false);
     if (autoKeying || isOnKeyframe) {

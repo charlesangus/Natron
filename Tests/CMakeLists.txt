@@ -125,6 +125,7 @@ set(Tests_SOURCES
     RippleEditModes_Test.cpp
     RotoUndoGesture_Test.cpp
     RotoDragUndo_Test.cpp
+    RotoOverlayHomography_Test.cpp
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
     StrokeRenderCoalescer_Test.cpp

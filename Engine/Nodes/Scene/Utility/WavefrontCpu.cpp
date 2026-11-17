@@ -296,7 +296,7 @@ renderTile(const WavefrontFrame& frame,
     tile.depth = depth.data();
     tile.primId = primId.data();
     tile.instanceId = instanceId.data();
-    tile.background = tables.hasBackground();
+    tile.background = wavefrontShowsBackground(frame, tables);
     film.writeTile(tile);
 }
 } // anon namespace

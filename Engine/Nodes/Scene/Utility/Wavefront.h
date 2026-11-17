@@ -395,6 +395,13 @@ private:
     bool _synced = false;
 };
 
+/**
+ * @brief Whether the frame's misses show the dome lights' background. A UV unwrap's misses are texels
+ * no surface covers, which a bake leaves empty rather than filling with the environment.
+ **/
+bool wavefrontShowsBackground(const WavefrontFrame& frame,
+                              const WavefrontShadeTables& tables);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Scene_Utility_Wavefront_h

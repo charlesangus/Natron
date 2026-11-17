@@ -1058,7 +1058,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         first += batch;
     } while (first < lightCount);
     if (deviceColor) {
-        if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(rec.ctx(), *hitIds, *color, *weights, rect.x, rect.y, rect.width, rect.height, shadeTables.hasBackground()); !s) {
+        if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(rec.ctx(), *hitIds, *color, *weights, rect.x, rect.y, rect.width, rect.height, wavefrontShowsBackground(frame, shadeTables)); !s) {
             return fail("WavefrontGpu could not write a batch's colours to the film", s);
         }
     }
@@ -1102,7 +1102,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     tile.depth = aovs.depth ? static_cast<const float*>(readback.depth.mapped()) : nullptr;
     tile.primId = aovs.primId ? static_cast<const std::int32_t*>(readback.primId.mapped()) : nullptr;
     tile.instanceId = aovs.instanceId ? static_cast<const std::int32_t*>(readback.instanceId.mapped()) : nullptr;
-    tile.background = shadeTables.hasBackground();
+    tile.background = wavefrontShowsBackground(frame, shadeTables);
     film.writeTile(tile);
 
     return true;

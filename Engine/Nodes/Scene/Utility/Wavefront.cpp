@@ -1108,6 +1108,13 @@ WavefrontShadeTables::hasBackground() const
 }
 
 bool
+wavefrontShowsBackground(const WavefrontFrame& frame,
+                         const WavefrontShadeTables& tables)
+{
+    return tables.hasBackground() && frame.mapping != WavefrontMapping::UvUnwrap;
+}
+
+bool
 WavefrontShadeTables::hasHoles() const
 {
     return _holes;

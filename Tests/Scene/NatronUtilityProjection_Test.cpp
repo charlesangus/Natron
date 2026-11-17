@@ -205,7 +205,8 @@ perspectiveCamera(double fieldOfViewHeight,
     return camera;
 }
 
-// Each pixel's prim id, depth and colour from its one sample, in rows from the bottom.
+// Each pixel's prim id, depth and colour from its one sample, in rows from the bottom. A miss keeps
+// the colour only where the tile says it shows the background, as the render pass's film does.
 class ProjectionFilm : public WavefrontFilm {
 public:
     ProjectionFilm(int width,
@@ -228,8 +229,8 @@ public:
 
                 _primIds[pixel] = hit ? tile.primId[index] : -1;
                 _depths[pixel] = (hit && tile.depth) ? tile.depth[index] : -1.f;
-                if (hit && tile.color) {
-                    _colors[pixel] = GfVec4f(tile.color + index * 4);
+                if (tile.color) {
+                    _colors[pixel] = (hit || tile.background) ? GfVec4f(tile.color + index * 4) : GfVec4f(0.f);
                 }
             }
         }
@@ -544,7 +545,7 @@ const int kBakePrimId = 7;
 
 // A quad facing +z, its colours a gradient over its corners, laid out over UV tile uOffset + 1001 so
 // that its corners take the tile's.
-void
+UtilityScene::GeometryId
 addBakedQuad(UtilityScene& scene,
              float uOffset,
              bool withCoordinates = true)
@@ -570,6 +571,8 @@ addBakedQuad(UtilityScene& scene,
     light->emission = GfVec3f(40.f);
     light->transform = GfMatrix4d(1.).SetTranslate(GfVec3d(2., 1., 3.));
     scene.setLight(SdfPath("/light"), light);
+
+    return id;
 }
 
 // Looks straight down at the quad, its frame exactly the quad, a pixel per texel of the bake.
@@ -663,6 +666,65 @@ TEST_P(NatronUtilityProjection, AUvUnwrapBakesOnlyTheUdimTileItNames)
     }
     EXPECT_EQ(0, hitsIn(first));
     EXPECT_EQ(kBakeSize * kBakeSize, hitsIn(second));
+}
+
+// Texels no triangle covers stay empty though a dome would show behind them in a camera's frame.
+TEST_P(NatronUtilityProjection, AUvUnwrapLeavesTheTexelsItsLayoutMissesEmptyUnderADome)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addBakedQuad(scene, 0.f);
+
+    scene.setUnwrapSt(id, true, UtilityScene::eColorBindingVertex,
+                      VtVec2fArray { GfVec2f(0.25f, 0.25f), GfVec2f(0.75f, 0.25f), GfVec2f(0.75f, 0.75f), GfVec2f(0.25f, 0.75f) });
+
+    std::shared_ptr<UtilityLightDesc> dome = std::make_shared<UtilityLightDesc>();
+
+    dome->type = UtilityLightDesc::eTypeDome;
+    dome->emission = GfVec3f(0.5f);
+    scene.setLight(SdfPath("/dome"), dome);
+
+    GfFrustum wide = bakeCamera();
+
+    wide.SetOrthographic(-2. * kBakeHalf, 2. * kBakeHalf, -2. * kBakeHalf, 2. * kBakeHalf, 1., 100.);
+
+    ProjectionFilm baked(kBakeSize, kBakeSize);
+    ProjectionFilm seen(kBakeSize, kBakeSize);
+
+    if (!draw(scene, bakeFrame(1001), baked) || !draw(scene, frameThrough(wide, kBakeSize, kBakeSize, WavefrontMapping::Camera), seen)) {
+        return;
+    }
+    EXPECT_EQ(-1, seen.primIdAt(0, 0));
+    EXPECT_GT(seen.colorAt(0, 0)[3], 0.99f) << "a camera's miss should show the dome";
+
+    const int low = kBakeSize / 4;
+    const int high = kBakeSize - kBakeSize / 4;
+    int filled = 0;
+    int lit = 0;
+
+    for (int y = 0; y < kBakeSize; ++y) {
+        for (int x = 0; x < kBakeSize; ++x) {
+            const GfVec4f color = baked.colorAt(x, y);
+            const bool outside = x < low - 1 || x > high || y < low - 1 || y > high;
+            const bool inside = x > low && x < high - 1 && y > low && y < high - 1;
+
+            if (outside) {
+                EXPECT_EQ(-1, baked.primIdAt(x, y)) << "texel " << x << ", " << y;
+                if (color != GfVec4f(0.f)) {
+                    if (filled == 0) {
+                        ADD_FAILURE() << "texel " << x << ", " << y << " outside the layout baked " << color;
+                    }
+                    ++filled;
+                }
+            } else if (inside) {
+                EXPECT_EQ(kBakePrimId, baked.primIdAt(x, y)) << "texel " << x << ", " << y;
+                if (color[3] > 0.99f && (color[0] > 0.f || color[1] > 0.f || color[2] > 0.f)) {
+                    ++lit;
+                }
+            }
+        }
+    }
+    EXPECT_EQ(0, filled);
+    EXPECT_EQ((high - low - 2) * (high - low - 2), lit);
 }
 
 INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityProjection, ::testing::Values(Backend::Cpu, Backend::Gpu));

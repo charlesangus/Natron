@@ -1280,11 +1280,10 @@ Settings::initializeKnobsViewers()
     {
         std::vector<ChoiceOption> entries;
         entries.push_back(ChoiceOption("off", "Off", tr("Nothing marks an out-of-date image.").toStdString()));
-        entries.push_back(ChoiceOption("outline", "Outline", tr("A 2 pixel amber outline around the whole viewer.").toStdString()));
         entries.push_back(ChoiceOption("subtleOutline", "Subtle Outline", tr("A 1 pixel faint amber outline around the whole viewer.").toStdString()));
         entries.push_back(ChoiceOption("cornerDot", "Corner Dot", tr("A small amber dot in the viewer's top-right corner.").toStdString()));
         entries.push_back(ChoiceOption("edgeLine", "Edge Line", tr("An amber line along the viewer's top edge.").toStdString()));
-        entries.push_back(ChoiceOption("toolbarSpinner", "Toolbar Spinner", tr("A turning amber arc at the right end of the viewer's top toolbar.").toStdString()));
+        entries.push_back(ChoiceOption("toolbarSpinner", "Toolbar Spinner", tr("A turning amber arc in the viewer toolbar, beside the color picker button.").toStdString()));
         _staleCueStyle->populateChoices(entries);
     }
     _staleCueStyle->setHintToolTip(tr("How a viewer marks an image that is out of date, while a newer one is rendering. "

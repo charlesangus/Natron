@@ -1,7 +1,7 @@
 """GUI check of the viewer's stale cue: each style shows while a slow render runs, and its timing.
 
-Graph: CheckerBoard -> IDefocus (white Map) -> Viewer. For each of Outline, Subtle Outline, Corner Dot,
-Edge Line and Toolbar Spinner, the preference staleCueStyle is set and the IDefocus size raised to a
+Graph: CheckerBoard -> IDefocus (white Map) -> Viewer. For each of Subtle Outline, Corner Dot, Edge Line
+and Toolbar Spinner, the preference staleCueStyle is set and the IDefocus size raised to a
 new value so a render runs for seconds. The cue must show once the viewer has been stale for the
 delay, and a screenshot is saved while it shows. Once the image is current the cue must clear within
 delay + hold + slack.
@@ -10,7 +10,9 @@ A short render must never show the cue: the delay is raised far above how long a
 takes, the viewer is watched until its image is current, and the cue must stay hidden throughout.
 
 The Toolbar Spinner must keep the toolbar's layout: the spinner's geometry and the toolbar row's
-size hint are the same shown and hidden.
+size hint are the same shown and hidden. While it shows, the spinner must be on screen: non-zero size,
+wholly inside every ancestor widget and the main window, and not clipped (its visible region is its
+whole rect). isVisible() alone passes for a spinner laid out past the clipped end of a full row.
 
 Visibility is read from the GL viewer's natronStaleCueVisible property and from the isVisible() of
 the toolbar widget named viewerStaleSpinner; whether the image is stale from natronViewerStale.
@@ -40,17 +42,18 @@ SLOW_DEFOCUS_SIZE = 500.0
 SLOW_DEFOCUS_STEP = 10.0
 INPUT_MAP = 3
 STYLES = [
-    (1, "outline"),
-    (2, "subtle-outline"),
-    (3, "corner-dot"),
-    (4, "edge-line"),
-    (5, "toolbar-spinner"),
+    (1, "subtle-outline"),
+    (2, "corner-dot"),
+    (3, "edge-line"),
+    (4, "toolbar-spinner"),
 ]
-SPINNER_STYLE = 5
-DEFAULT_STYLE = 3
+SPINNER_STYLE = 4
+DEFAULT_STYLE = 2
+STYLE_CHOICE_IDS = ["off", "subtleOutline", "cornerDot", "edgeLine", "toolbarSpinner"]
 
 try:
     import NatronEngine
+    from PySide6.QtCore import QPoint, QRect
     from PySide6.QtWidgets import QApplication
 
     import guitest as gt
@@ -85,6 +88,28 @@ try:
         s = spinner()
         return s is not None and s.isVisible()
 
+    def spinner_on_screen():
+        """(ok, detail): the spinner shows, has a size, and no ancestor clips any of it."""
+        s = spinner()
+        if s is None or not s.isVisible():
+            return False, "not visible"
+        if s.width() <= 0 or s.height() <= 0:
+            return False, "size %dx%d" % (s.width(), s.height())
+        unclipped = s.visibleRegion().boundingRect()
+        if unclipped != s.rect():
+            return False, "visible region %r of rect %r" % (unclipped, s.rect())
+        top = s.window()
+        rect = QRect(s.mapTo(top, QPoint(0, 0)), s.size())
+        w = s.parentWidget()
+        while w is not None:
+            area = QRect(w.mapTo(top, QPoint(0, 0)), w.size()) if w is not top else top.rect()
+            if not area.contains(rect):
+                return False, "%r in the window lies outside %s %r" % (rect, w.metaObject().className(), area)
+            if w is top:
+                break
+            w = w.parentWidget()
+        return True, "at %r in a %dx%d window" % (rect, top.width(), top.height())
+
     def any_cue_visible():
         return gl_cue_visible() or spinner_visible()
 
@@ -113,6 +138,8 @@ try:
         require(hold is not None, "Settings has a parameter named staleCueHold")
         check(style.getValue() == DEFAULT_STYLE, "the style defaults to Corner Dot (got %r)" % style.getValue())
         check(delay.getValue() == DELAY_MS, "the delay defaults to %d ms (got %r)" % (DELAY_MS, delay.getValue()))
+        options = [str(o) for o in style.getOptions()]
+        check(options == STYLE_CHOICE_IDS, "the style choices are %r (got %r)" % (STYLE_CHOICE_IDS, options))
         check(hold.getValue() == HOLD_MS, "the hold defaults to %d ms (got %r)" % (HOLD_MS, hold.getValue()))
 
         gt.section("setup")
@@ -187,6 +214,8 @@ try:
             check(viewer_stale(), "%s: the image is still stale while the cue shows" % name)
             if index == SPINNER_STYLE:
                 check(not gl_cue_visible(), "%s: the viewer draws no GL cue" % name)
+                on_screen, detail = spinner_on_screen()
+                check(on_screen, "%s: the spinner is on screen, sized and unclipped (%s)" % (name, detail))
                 check(toolbar_layout() == layout_hidden,
                       "%s: the toolbar keeps its layout with the spinner shown (%r, hidden %r)"
                       % (name, toolbar_layout(), layout_hidden))

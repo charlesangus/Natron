@@ -51,7 +51,6 @@ enum class AiModelTask;
 // How a viewer marks an image that is out of date, in the order of the staleCueStyle choices.
 enum StaleCueStyleEnum : int {
     eStaleCueStyleOff = 0,
-    eStaleCueStyleOutline,
     eStaleCueStyleSubtleOutline,
     eStaleCueStyleCornerDot,
     eStaleCueStyleEdgeLine,

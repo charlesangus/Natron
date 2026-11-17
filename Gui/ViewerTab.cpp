@@ -750,9 +750,6 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->firstRowLayout->addStretch();
 
-    _imp->staleSpinner = new ViewerStaleSpinner(buttonSize, buttonIconSize.width(), _imp->firstSettingsRow);
-    _imp->firstRowLayout->addWidget(_imp->staleSpinner);
-
     /*2nd row of buttons*/
     _imp->secondSettingsRow = new QWidget(this);
     _imp->secondRowLayout = new QHBoxLayout(_imp->secondSettingsRow);
@@ -855,6 +852,10 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     updateViewsMenu( gui->getApp()->getProject()->getProjectViewNames() );
 
     _imp->secondRowLayout->addStretch();
+
+    // The first row has no slack at 1920x1080 with the default panes: a widget at its end is clipped.
+    _imp->staleSpinner = new ViewerStaleSpinner(buttonSize, buttonIconSize.width(), _imp->secondSettingsRow);
+    _imp->secondRowLayout->addWidget(_imp->staleSpinner);
 
     QIcon colorPickerIcon;
     appPTR->getIcon(NATRON_PIXMAP_COLOR_PICKER, pixmapIconSize, &colorPickerIcon);

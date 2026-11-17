@@ -317,10 +317,6 @@ drawStaleCue(StaleCueStyleEnum style,
     const double px = pixel.x();
     const double py = pixel.y();
     switch (style) {
-    case eStaleCueStyleOutline:
-        glColor4d(1., 0.7, 0., 1.);
-        fillStaleCueFrame(left, right, bottom, top, 2. * px, 2. * py);
-        break;
     case eStaleCueStyleSubtleOutline:
         glColor4d(1., 0.7, 0., 0.4);
         fillStaleCueFrame(left, right, bottom, top, px, py);

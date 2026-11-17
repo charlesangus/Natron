@@ -37,6 +37,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -448,17 +449,44 @@ NativeRead::projectViewName(ViewIdx view) const
 }
 
 void
+NativeRead::setTimeDomainToFrames(EffectInstance* effect,
+                                  int first,
+                                  int last)
+{
+    if (!effect) {
+        return;
+    }
+    KnobBoolPtr userEdited = effect->getKnobByNameAndType<KnobBool>(kKnobTimeDomainUserEdited);
+    KnobIntPtr firstFrame = effect->getKnobByNameAndType<KnobInt>(kKnobFirstFrame);
+    KnobIntPtr lastFrame = effect->getKnobByNameAndType<KnobInt>(kKnobLastFrame);
+    KnobIntPtr startingTime = effect->getKnobByNameAndType<KnobInt>(kKnobStartingTime);
+    KnobIntPtr timeOffset = effect->getKnobByNameAndType<KnobInt>(kKnobTimeOffset);
+    if (!userEdited || !firstFrame || !lastFrame || !startingTime || !timeOffset) {
+        return;
+    }
+    userEdited->setValue(true);
+    firstFrame->setValue(first);
+    lastFrame->setValue(last);
+    startingTime->setValue(first);
+    timeOffset->setValue(0);
+}
+
+void
 NativeRead::onEffectCreated(bool mayCreateFileDialog,
                             const CreateNodeArgs& args)
 {
     KnobFilePtr filename = _filename.lock();
 
     if (mayCreateFileDialog && filename && filename->getValue().empty() && !getApp()->isBackground()) {
-        const std::string path = getApp()->openImageFileDialog();
+        std::optional<std::pair<int, int>> frameRange;
+        const std::string path = getApp()->openImageFileDialog(&frameRange);
         if (path.empty()) {
             throw std::runtime_error("");
         }
         filename->setValue(path);
+        if (frameRange) {
+            setTimeDomainToFrames(this, frameRange->first, frameRange->second);
+        }
     }
     _inputSpace.refreshProjectDefault();
     RawDevelop::onReadCreated(getNode(), args);

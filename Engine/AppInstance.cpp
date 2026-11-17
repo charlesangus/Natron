@@ -1462,13 +1462,14 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
     bool isSilentCreation = args.getProperty<bool>(kCreateNodeArgsPropSilent);
 
     // The file is picked before the node exists so that a deep image creates a DeepRead rather than a Read.
+    std::optional<std::pair<int, int>> pickedFrameRange;
     if (!serialization && !isSilentCreation && !isBackground() && (argsPluginID == QString::fromUtf8(PLUGINID_NATRON_READ)) && !args.getProperty<bool>(kCreateNodeArgsPropOutOfProject) && !args.getProperty<bool>(kCreateNodeArgsPropNoNodeGUI)) {
         const std::string fileParam(kOfxImageEffectFileParamName);
         const std::vector<std::string> defaultParams = args.getPropertyN<std::string>(kCreateNodeArgsPropNodeInitialParamValues);
         const std::string valueProp = std::string(kCreateNodeArgsPropParamValue) + "_" + fileParam;
         const bool hasFile = std::find(defaultParams.begin(), defaultParams.end(), fileParam) != defaultParams.end() && !args.getProperty<std::string>(valueProp).empty();
         if (!hasFile) {
-            const std::string picked = openImageFileDialog();
+            const std::string picked = openImageFileDialog(&pickedFrameRange);
             if (picked.empty()) {
                 return node;
             }
@@ -1639,6 +1640,9 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
         }
 
         return NodePtr();
+    }
+    if (pickedFrameRange) {
+        NativeRead::setTimeDomainToFrames(node->getEffectInstance().get(), pickedFrameRange->first, pickedFrameRange->second);
     }
 
     NodePtr multiInstanceParent = node->getParentMultiInstance();

@@ -139,6 +139,13 @@ public:
     static void setFrameListingScannedHookForTests(const std::function<void()>& hook);
 
     /**
+     * @brief Limits the Read effect to the frames first to last of its file, at their own time, as an
+     * edit of its time domain so that a new file does not reset it. Effects without those knobs are
+     * left alone.
+     **/
+    static void setTimeDomainToFrames(EffectInstance* effect, int first, int last);
+
+    /**
      * @brief The colourspace the file is converted from: the one chosen, or the one Project
      * default stands for now.
      **/

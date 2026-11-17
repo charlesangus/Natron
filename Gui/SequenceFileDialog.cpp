@@ -40,15 +40,16 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QMessageBox>
-#include <QPainter>
-#include <QListView>
-#include <QHeaderView>
 #include <QCheckBox>
 #include <QFileIconProvider>
 #include <QFileSystemModel>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QListView>
+#include <QMessageBox>
+#include <QPainter>
+#include <QVBoxLayout>
 //#include <QInputDialog>
 #include <QSplitter>
 #include <QIcon>
@@ -118,6 +119,16 @@ fileDialogGlyph(const char* lucideName)
 {
     return ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH "lucide/") + QString::fromUtf8(lucideName) + QString::fromUtf8(".svg"),
                             NATRON_MEDIUM_BUTTON_ICON_SIZE);
+}
+
+QFrame*
+makeToolbarSeparator(QWidget* parent)
+{
+    QFrame* separator = new QFrame(parent);
+    separator->setFrameShape(QFrame::VLine);
+    separator->setFrameShadow(QFrame::Sunken);
+
+    return separator;
 }
 
 // The default provider returns the desktop icon theme's glyphs, whose colours follow the
@@ -199,28 +210,30 @@ static QString bookmarkToUrlPath(const QUrl& bookmark) {
 
 ///////////////////////// SequenceFileDialog
 
-SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmit the stylesheet to the dialog
-                                        const std::vector<std::string> & filters, // the user accepted file types
-                                        bool isSequenceDialog, // true if this dialog can display sequences
-                                        FileDialogModeEnum mode, // if it is an open or save dialog
-                                        const std::string & currentDirectory, // the directory to show first
-                                        Gui* gui,
-                                        bool allowRelativePaths)
+SequenceFileDialog::SequenceFileDialog(QWidget* parent, // necessary to transmit the stylesheet to the dialog
+                                       const std::vector<std::string>& filters, // the user accepted file types
+                                       bool isSequenceDialog, // true if this dialog can display sequences
+                                       FileDialogModeEnum mode, // if it is an open or save dialog
+                                       const std::string& currentDirectory, // the directory to show first
+                                       Gui* gui,
+                                       bool allowRelativePaths)
     : QDialog(parent)
     , _filters()
     , _view(0)
-    , _itemDelegate( new SequenceItemDelegate(this) )
+    , _itemDelegate(new SequenceItemDelegate(this))
     , _model()
-    , _favoriteViewModel( new QFileSystemModel() )
-    , _lookinViewModel( new QFileSystemModel() )
+    , _favoriteViewModel(new QFileSystemModel())
+    , _lookinViewModel(new QFileSystemModel())
     , _mainLayout(0)
     , _requestedDir()
-    , _lookInLabel(0)
     , _lookInCombobox(0)
     , _previousButton(0)
     , _nextButton(0)
     , _upButton(0)
+    , _homeButton(0)
     , _createDirButton(0)
+    , _listViewButton(0)
+    , _detailViewButton(0)
     , _openButton(0)
     , _cancelButton(0)
     , _addFavoriteButton(0)
@@ -228,7 +241,10 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     , _selectionLineEdit(0)
     , _relativeLabel(0)
     , _relativeChoice(0)
-    , _sequenceButton(0)
+    , _togglesWidget(0)
+    , _sequencesCheckBox(0)
+    , _splitOnGapsCheckBox(0)
+    , _showHiddenCheckBox(0)
     , _filterLabel(0)
     , _filterLineEdit(0)
     , _filterDropDown(0)
@@ -260,6 +276,7 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     , _wasAutosetProjectFormatEnabled(false)
     , _gui(gui)
     , _relativePathsAllowed(allowRelativePaths)
+    , _isSequenceDialog(isSequenceDialog)
 {
     for (U32 i = 0; i < filters.size(); ++i) {
         _filters.push_back( QString::fromUtf8( filters[i].c_str() ) );
@@ -276,23 +293,8 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
 
     _buttonsWidget = new QWidget(this);
     _buttonsLayout = new QHBoxLayout(_buttonsWidget);
+    _buttonsLayout->setContentsMargins(0, 0, 0, 0);
     _buttonsWidget->setLayout(_buttonsLayout);
-    if (mode == eFileDialogModeOpen) {
-        _lookInLabel = new Label(tr("Look in:"), _buttonsWidget);
-    } else {
-        _lookInLabel = new Label(tr("Save in:"), _buttonsWidget);
-    }
-    _buttonsLayout->addWidget(_lookInLabel);
-
-    _lookInCombobox = new FileDialogComboBox(this, _buttonsWidget);
-    _lookInCombobox->setMinimumWidth(200);
-    _buttonsLayout->addWidget(_lookInCombobox);
-    QObject::connect(_lookInCombobox, &QComboBox::activated, this, &SequenceFileDialog::onLookingComboboxChanged);
-    _lookInCombobox->setInsertPolicy(QComboBox::NoInsert);
-    _lookInCombobox->setDuplicatesEnabled(false);
-
-    _buttonsLayout->addStretch();
-
 
     QSize buttonSize( TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );
     QSize buttonIconSize( TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_ICON_SIZE) );
@@ -314,20 +316,102 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     QObject::connect( _nextButton, SIGNAL(clicked()), this, SLOT(nextFolder()) );
 
     _upButton = new Button(fileDialogGlyph("arrow-up"), QString(), _buttonsWidget);
+    _upButton->setObjectName(QString::fromUtf8("SequenceFileDialogUpButton"));
     _upButton->setIconSize(buttonIconSize);
     _upButton->setFixedSize(buttonSize);
     _upButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Go to the parent directory."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _buttonsLayout->addWidget(_upButton);
     QObject::connect( _upButton, SIGNAL(clicked()), this, SLOT(parentFolder()) );
 
-    _createDirButton = new Button(fileDialogGlyph("folder-plus"), QString(), _buttonsWidget);
+    _homeButton = new Button(fileDialogGlyph("house"), QString(), _buttonsWidget);
+    _homeButton->setObjectName(QString::fromUtf8("SequenceFileDialogHomeButton"));
+    _homeButton->setIconSize(buttonIconSize);
+    _homeButton->setFixedSize(buttonSize);
+    _homeButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Go to the home directory."), NATRON_NAMESPACE::WhiteSpaceNormal));
+    _buttonsLayout->addWidget(_homeButton);
+    QObject::connect(_homeButton, SIGNAL(clicked()), this, SLOT(goHome()));
+
+    _buttonsLayout->addWidget(makeToolbarSeparator(_buttonsWidget));
+
+    _lookInCombobox = new FileDialogComboBox(this, _buttonsWidget);
+    _lookInCombobox->setObjectName(QString::fromUtf8("SequenceFileDialogLookInCombo"));
+    _lookInCombobox->setMinimumWidth(200);
+    _lookInCombobox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    _lookInCombobox->setToolTip(NATRON_NAMESPACE::convertFromPlainText(mode == eFileDialogModeSave ? tr("The directory to save in.") : tr("The directory to look in."), NATRON_NAMESPACE::WhiteSpaceNormal));
+    _buttonsLayout->addWidget(_lookInCombobox, 1);
+    QObject::connect(_lookInCombobox, &QComboBox::activated, this, &SequenceFileDialog::onLookingComboboxChanged);
+    _lookInCombobox->setInsertPolicy(QComboBox::NoInsert);
+    _lookInCombobox->setDuplicatesEnabled(false);
+
+    _createDirButton = new Button(fileDialogGlyph("folder-plus"), tr("New Folder"), _buttonsWidget);
+    _createDirButton->setObjectName(QString::fromUtf8("SequenceFileDialogNewFolderButton"));
     _createDirButton->setIconSize(buttonIconSize);
-    _createDirButton->setFixedSize(buttonSize);
+    _createDirButton->setFixedHeight(buttonSize.height());
     _createDirButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Create a new directory here."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _buttonsLayout->addWidget(_createDirButton);
     QObject::connect( _createDirButton, SIGNAL(clicked()), this, SLOT(createDir()) );
 
+    _buttonsLayout->addWidget(makeToolbarSeparator(_buttonsWidget));
+
+    _listViewButton = new Button(fileDialogGlyph("list"), QString(), _buttonsWidget);
+    _listViewButton->setObjectName(QString::fromUtf8("SequenceFileDialogListViewButton"));
+    _listViewButton->setIconSize(buttonIconSize);
+    _listViewButton->setFixedSize(buttonSize);
+    _listViewButton->setCheckable(true);
+    _listViewButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("List the names only."), NATRON_NAMESPACE::WhiteSpaceNormal));
+    _buttonsLayout->addWidget(_listViewButton);
+    QObject::connect(_listViewButton, SIGNAL(clicked()), this, SLOT(showListView()));
+
+    _detailViewButton = new Button(fileDialogGlyph("table"), QString(), _buttonsWidget);
+    _detailViewButton->setObjectName(QString::fromUtf8("SequenceFileDialogDetailViewButton"));
+    _detailViewButton->setIconSize(buttonIconSize);
+    _detailViewButton->setFixedSize(buttonSize);
+    _detailViewButton->setCheckable(true);
+    _detailViewButton->setChecked(true);
+    _detailViewButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("List the names with their size, type and date modified."), NATRON_NAMESPACE::WhiteSpaceNormal));
+    _buttonsLayout->addWidget(_detailViewButton);
+    QObject::connect(_detailViewButton, SIGNAL(clicked()), this, SLOT(showDetailView()));
+
     _mainLayout->addWidget(_buttonsWidget);
+
+    _togglesWidget = new QWidget(this);
+    QHBoxLayout* togglesLayout = new QHBoxLayout(_togglesWidget);
+    togglesLayout->setContentsMargins(0, 0, 0, 0);
+
+    _sequencesCheckBox = new QCheckBox(tr("Sequences"), _togglesWidget);
+    _sequencesCheckBox->setObjectName(QString::fromUtf8("SequenceFileDialogSequencesCheckBox"));
+    _sequencesCheckBox->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("When checked, the files of an image sequence are listed as one item that selects the whole sequence. "
+                                                                             "When unchecked, every file is listed on its own."),
+                                                                          NATRON_NAMESPACE::WhiteSpaceNormal));
+    _sequencesCheckBox->setChecked(true);
+    togglesLayout->addWidget(_sequencesCheckBox);
+    QObject::connect(_sequencesCheckBox, SIGNAL(toggled(bool)), this, SLOT(onSequencesToggled(bool)));
+
+    _splitOnGapsCheckBox = new QCheckBox(tr("Split on gaps"), _togglesWidget);
+    _splitOnGapsCheckBox->setObjectName(QString::fromUtf8("SequenceFileDialogSplitOnGapsCheckBox"));
+    _splitOnGapsCheckBox->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("When checked, a sequence with missing frames is listed as one item per contiguous run of frames, "
+                                                                               "and opening a run sets the Read's first and last frame to it. "
+                                                                               "Right-click a sequence to split or join it alone."),
+                                                                            NATRON_NAMESPACE::WhiteSpaceNormal));
+    _splitOnGapsCheckBox->setChecked(false);
+    togglesLayout->addWidget(_splitOnGapsCheckBox);
+    QObject::connect(_splitOnGapsCheckBox, SIGNAL(toggled(bool)), this, SLOT(onSplitOnGapsToggled(bool)));
+
+    togglesLayout->addStretch();
+
+    _showHiddenCheckBox = new QCheckBox(tr("Show hidden"), _togglesWidget);
+    _showHiddenCheckBox->setObjectName(QString::fromUtf8("SequenceFileDialogShowHiddenCheckBox"));
+    _showHiddenCheckBox->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("When checked, hidden files and directories are listed too."), NATRON_NAMESPACE::WhiteSpaceNormal));
+    togglesLayout->addWidget(_showHiddenCheckBox);
+    QObject::connect(_showHiddenCheckBox, SIGNAL(toggled(bool)), this, SLOT(onShowHiddenToggled(bool)));
+
+    if (!isSequenceDialog || (_dialogMode == eFileDialogModeDir)) {
+        _sequencesCheckBox->setVisible(false);
+        _splitOnGapsCheckBox->setVisible(false);
+    }
+    refreshSplitOnGapsEnabled();
+
+    _mainLayout->addWidget(_togglesWidget);
 
     _centerArea = new QWidget(this);
     _centerAreaLayout = new QHBoxLayout(_centerArea);
@@ -397,24 +481,6 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
     if (!allowRelativePaths) {
         _relativeLabel->hide();
         _relativeChoice->hide();
-    }
-
-    _sequenceButton = new ComboBox(_selectionWidget);
-    _sequenceButton->addItem( tr("Sequence:") );
-    _sequenceButton->addItem( tr("File:") );
-    _sequenceButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Control whether to select a file sequence or a single file."), NATRON_NAMESPACE::WhiteSpaceNormal) );
-
-
-    if (isSequenceDialog) {
-        _sequenceButton->setCurrentIndex(0);
-    } else {
-        _sequenceButton->setCurrentIndex(1);
-    }
-    QObject::connect( _sequenceButton, SIGNAL(currentIndexChanged(int)), this, SLOT(sequenceComboBoxSlot(int)) );
-    _selectionLayout->addWidget(_sequenceButton);
-
-    if ( !isSequenceDialog || (_dialogMode == eFileDialogModeDir) ) {
-        _sequenceButton->setVisible(false);
     }
 
     _view =  new SequenceDialogView(this);
@@ -601,9 +667,6 @@ SequenceFileDialog::SequenceFileDialog( QWidget* parent, // necessary to transmi
         setDirectory( QDir::rootPath() );
     }
 
-    if (!isSequenceDialog) {
-        enableSequenceMode(false);
-    }
     _selectionLineEdit->setFocus();
 
     setDefaultFilter();
@@ -653,7 +716,10 @@ SequenceFileDialog::saveState() const
     stream << currentDirectory().path();
     stream << _view->header()->saveState();
     stream << _relativeChoice->itemText( _relativeChoice->activeIndex() );
-    stream << _sequenceButton->activeIndex();
+    stream << _sequencesCheckBox->isChecked();
+    stream << _splitOnGapsCheckBox->isChecked();
+    stream << _showHiddenCheckBox->isChecked();
+    stream << _view->isListMode();
 
     return data;
 }
@@ -676,14 +742,23 @@ SequenceFileDialog::restoreState(const QByteArray & state,
     QStringList history;
     QString currentDirectory;
     QString relativeChoice;
-    int sequenceMode_i;
+    bool sequences = true;
+    bool splitOnGaps = false;
+    bool showHiddenFiles = false;
+    bool listMode = false;
     stream >> splitterState
-    >> bookmarks
-    >> history
-    >> currentDirectory
-    >> headerData
-    >> relativeChoice
-    >> sequenceMode_i;
+        >> bookmarks
+        >> history
+        >> currentDirectory
+        >> headerData
+        >> relativeChoice
+        >> sequences
+        >> splitOnGaps
+        >> showHiddenFiles
+        >> listMode;
+    if (stream.status() != QDataStream::Ok) {
+        return false;
+    }
     if ( !_centerSplitter->restoreState(splitterState) ) {
         return false;
     }
@@ -703,7 +778,9 @@ SequenceFileDialog::restoreState(const QByteArray & state,
         }
     }
 
-    _sequenceButton->setCurrentIndex(sequenceMode_i);
+    _sequencesCheckBox->setChecked(sequences);
+    _splitOnGapsCheckBox->setChecked(splitOnGaps);
+    _showHiddenCheckBox->setChecked(showHiddenFiles);
 
     std::map<std::string, std::string> envVar;
     _gui->getApp()->getProject()->getPathVariableTargets(envVar);
@@ -745,6 +822,11 @@ SequenceFileDialog::restoreState(const QByteArray & state,
     QHeaderView *headerView = _view->header();
     if ( !headerView->restoreState(headerData) ) {
         return false;
+    }
+    if (listMode) {
+        showListView();
+    } else {
+        showDetailView();
     }
     if (restoreDirectory) {
         *directoryRestored = setDirectory(currentDirectory);
@@ -805,13 +887,52 @@ SequenceFileDialog::setFileExtensionOnLineEdit(const QString & ext)
 }
 
 void
-SequenceFileDialog::sequenceComboBoxSlot(int index)
+SequenceFileDialog::onSequencesToggled(bool checked)
 {
-    if (index == 1) {
-        enableSequenceMode(false);
-    } else {
-        enableSequenceMode(true);
+    // Dialogs that cannot list sequences keep the shared preference without applying it.
+    if (_isSequenceDialog && (_dialogMode != eFileDialogModeDir)) {
+        enableSequenceMode(checked);
     }
+    refreshSplitOnGapsEnabled();
+}
+
+void
+SequenceFileDialog::refreshSplitOnGapsEnabled()
+{
+    _splitOnGapsCheckBox->setEnabled((_dialogMode == eFileDialogModeOpen) && _sequencesCheckBox->isChecked());
+}
+
+void
+SequenceFileDialog::onSplitOnGapsToggled(bool checked)
+{
+    if (_dialogMode == eFileDialogModeOpen) {
+        _model->setSplitSequencesOnGaps(checked);
+    }
+}
+
+void
+SequenceFileDialog::onShowHiddenToggled(bool checked)
+{
+    if (_showHiddenAction) {
+        _showHiddenAction->setChecked(checked);
+    }
+    showHidden();
+}
+
+void
+SequenceFileDialog::showListView()
+{
+    _view->setListMode(true);
+    _listViewButton->setChecked(true);
+    _detailViewButton->setChecked(false);
+}
+
+void
+SequenceFileDialog::showDetailView()
+{
+    _view->setListMode(false);
+    _listViewButton->setChecked(false);
+    _detailViewButton->setChecked(true);
 }
 
 void
@@ -819,6 +940,27 @@ SequenceFileDialog::showContextMenu(const QPoint & position)
 {
     Menu menu(_view);
 
+    if ((_dialogMode == eFileDialogModeOpen) && sequenceModeEnabled()) {
+        const QModelIndex index = _view->indexAt(position);
+        FileSystemItem* item = index.isValid() ? _model->getFileSystemItem(index) : 0;
+        const SequenceParsing::SequenceFromFilesPtr sequence = item ? item->getSequence() : SequenceParsing::SequenceFromFilesPtr();
+        if (item && sequence && !sequence->isSingleFile()) {
+            const QString sequencePath = item->absoluteFilePath();
+            if (item->isSequenceChunk()) {
+                QAction* join = menu.addAction(tr("Join sequence"));
+                QObject::connect(join, &QAction::triggered, this, [this, sequencePath]() {
+                    _model->setSequenceSplit(sequencePath, false);
+                });
+                menu.addSeparator();
+            } else if (FileSystemModel::contiguousFrameRuns(*sequence).size() > 1) {
+                QAction* split = menu.addAction(tr("Split sequence"));
+                QObject::connect(split, &QAction::triggered, this, [this, sequencePath]() {
+                    _model->setSequenceSplit(sequencePath, true);
+                });
+                menu.addSeparator();
+            }
+        }
+    }
     menu.addAction(_showHiddenAction);
     if ( _createDirButton->isVisible() ) {
         _newFolderAction->setEnabled( _createDirButton->isEnabled() );
@@ -1082,7 +1224,9 @@ SequenceFileDialog::setRootIndex(const QModelIndex & index)
 }
 
 SequenceDialogView::SequenceDialogView(SequenceFileDialog* fd)
-    : QTreeView(fd), _fd(fd)
+    : QTreeView(fd)
+    , _fd(fd)
+    , _listMode(false)
 {
     setSelectionBehavior(QAbstractItemView::SelectRows);
     setRootIsDecorated(false);
@@ -1163,8 +1307,23 @@ SequenceDialogView::resizeEvent(QResizeEvent* e)
 }
 
 void
+SequenceDialogView::setListMode(bool listMode)
+{
+    _listMode = listMode;
+    for (int i = 1; i < 4; ++i) {
+        setColumnHidden(i, listMode);
+    }
+    expandColumnsToFullWidth(viewport()->width());
+}
+
+void
 SequenceDialogView::expandColumnsToFullWidth(int w)
 {
+    if (_listMode) {
+        setColumnWidth(0, w);
+
+        return;
+    }
     setColumnWidth(0, w * 0.65);
     setColumnWidth(1, w * 0.1);
     setColumnWidth(2, w * 0.1);
@@ -1377,8 +1536,10 @@ SequenceFileDialog::showHidden()
         dirFilters &= ~QDir::Hidden;
     }
     _model->setFilter(dirFilters);
-    // options->setFilter(dirFilters);
     _showHiddenAction->setChecked( (dirFilters & QDir::Hidden) );
+    _showHiddenCheckBox->blockSignals(true);
+    _showHiddenCheckBox->setChecked((dirFilters & QDir::Hidden));
+    _showHiddenCheckBox->blockSignals(false);
 }
 
 void
@@ -1627,6 +1788,17 @@ SequenceFileDialog::autoCompleteFileName(const QString & text)
         QModelIndexList newFiles;
         for (int i = 0; i < multipleFiles.count(); ++i) {
             QModelIndex idx = _model->index( multipleFiles.at(i) );
+            if (!oldFiles.contains(idx)) {
+                // The chunks of a split sequence share one path, which only resolves to the first chunk.
+                FileSystemItem* typedItem = idx.isValid() ? _model->getFileSystemItem(idx) : 0;
+                for (int j = 0; typedItem && j < oldFiles.count(); ++j) {
+                    FileSystemItem* selectedItem = _model->getFileSystemItem(oldFiles.at(j));
+                    if (selectedItem && (selectedItem->absoluteFilePath() == typedItem->absoluteFilePath())) {
+                        idx = oldFiles.at(j);
+                        break;
+                    }
+                }
+            }
             if ( oldFiles.contains(idx) ) {
                 oldFiles.removeAll(idx);
             } else {
@@ -1739,6 +1911,25 @@ SequenceFileDialog::history() const
     }
 
     return currentHistory;
+}
+
+bool
+SequenceFileDialog::selectedSequenceRange(int* first,
+                                          int* last) const
+{
+    QModelIndexList indexes = _view->selectionModel()->selectedRows();
+
+    if (indexes.count() != 1) {
+        return false;
+    }
+    FileSystemItem* item = _model->getFileSystemItem(indexes[0]);
+    if (!item || !item->isSequenceChunk()) {
+        return false;
+    }
+    *first = item->getChunkFirstFrame();
+    *last = item->getChunkLastFrame();
+
+    return true;
 }
 
 std::string

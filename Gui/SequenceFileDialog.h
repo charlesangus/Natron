@@ -51,6 +51,8 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QSize>
 #include <QComboBox>
 #include <QListView>
+
+class QCheckBox;
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -216,6 +218,7 @@ class SequenceDialogView
     : public QTreeView
 {
     SequenceFileDialog* _fd;
+    bool _listMode;
 
 public:
     explicit SequenceDialogView(SequenceFileDialog* fd);
@@ -223,6 +226,9 @@ public:
     void updateNameMapping(const std::vector<std::pair<QString, std::pair<qint64, QString> > > & nameMapping);
 
     void expandColumnsToFullWidth(int w);
+
+    void setListMode(bool listMode);
+    bool isListMode() const { return _listMode; }
 
     void dropEvent(QDropEvent* e) OVERRIDE FINAL;
 
@@ -323,8 +329,11 @@ public:
     ///Works only in eFileDialogModeOpen mode.
     std::string selectedFiles();
 
-   ///Returns  the content of the selection line edit.
-    ///Works only in eFileDialogModeSave mode.
+    /// True when the selection is one run of a sequence split on its gaps; first and last get its frames.
+    bool selectedSequenceRange(int* first, int* last) const;
+
+    /// Returns  the content of the selection line edit.
+    /// Works only in eFileDialogModeSave mode.
     std::string filesToSave();
 
     /// Pre-fills the file name of a save dialog.
@@ -400,9 +409,11 @@ public Q_SLOTS:
     ///slot called when the sequence mode has changed
     void enableSequenceMode(bool);
 
-    ///combobox slot, it calls enableSequenceMode
-    void sequenceComboBoxSlot(int index);
-
+    void onSequencesToggled(bool checked);
+    void onSplitOnGapsToggled(bool checked);
+    void onShowHiddenToggled(bool checked);
+    void showListView();
+    void showDetailView();
 
     void onRelativeChoiceChanged(int index);
 
@@ -452,6 +463,8 @@ private:
     void addFavorite(const QString & name, const QString & path);
 
     bool sequenceModeEnabled() const;
+
+    void refreshSplitOnGapsEnabled();
 
     bool isDirectory(const QString & name) const;
 
@@ -581,12 +594,14 @@ private:
     std::unique_ptr<QFileSystemModel> _lookinViewModel;
     QVBoxLayout* _mainLayout;
     QString _requestedDir;
-    Label* _lookInLabel;
     FileDialogComboBox* _lookInCombobox;
     Button* _previousButton;
     Button* _nextButton;
     Button* _upButton;
+    Button* _homeButton;
     Button* _createDirButton;
+    Button* _listViewButton;
+    Button* _detailViewButton;
     Button* _openButton;
     Button* _cancelButton;
     Button* _addFavoriteButton;
@@ -594,7 +609,10 @@ private:
     FileDialogLineEdit* _selectionLineEdit;
     Label* _relativeLabel;
     ComboBox* _relativeChoice;
-    ComboBox* _sequenceButton;
+    QWidget* _togglesWidget;
+    QCheckBox* _sequencesCheckBox;
+    QCheckBox* _splitOnGapsCheckBox;
+    QCheckBox* _showHiddenCheckBox;
     Label* _filterLabel;
     FileDialogLineEdit* _filterLineEdit;
     Button* _filterDropDown;
@@ -628,6 +646,7 @@ private:
     bool _wasAutosetProjectFormatEnabled;
     Gui* _gui;
     bool _relativePathsAllowed;
+    bool _isSequenceDialog;
 };
 
 /**

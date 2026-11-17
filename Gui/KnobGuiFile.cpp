@@ -41,8 +41,10 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 
@@ -181,6 +183,13 @@ KnobGuiFile::open_file()
         updateLastOpened( QString::fromUtf8( path.c_str() ) );
 
         pushUndoCommand( new KnobUndoCommand<std::string>(shared_from_this(), oldPattern, originalSelectedFile) );
+
+        int first, last;
+        if (dialog.selectedSequenceRange(&first, &last)) {
+            EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+            UndoStepGuard undoStep(effect ? effect->getApp() : AppInstancePtr(), tr("Set Frame Range").toStdString());
+            NativeRead::setTimeDomainToFrames(effect, first, last);
+        }
     }
 }
 

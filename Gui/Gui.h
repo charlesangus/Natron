@@ -28,6 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <optional>
+#include <utility>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QtGlobal> // for Q_OS_*
@@ -278,12 +281,17 @@ public:
      * Mt-safe
      **/
     QWidget* getCentralWidget() const;
+    /**
+     * @brief frameRange, when given, receives the frames of the run picked from a sequence split on
+     * its gaps, and is left empty otherwise.
+     **/
     std::string popOpenFileDialog(bool sequenceDialog,
-                                  const std::vector<std::string> & initialfilters, const std::string & initialDir,
-                                  bool allowRelativePaths);
+                                  const std::vector<std::string>& initialfilters, const std::string& initialDir,
+                                  bool allowRelativePaths,
+                                  std::optional<std::pair<int, int>>* frameRange = nullptr);
     std::string popSaveFileDialog(bool sequenceDialog, const std::vector<std::string>& initialfilters, const std::string& initialDir,
                                   bool allowRelativePaths, const std::string& suggestedFileName = std::string());
-    std::string openImageSequenceDialog();
+    std::string openImageSequenceDialog(std::optional<std::pair<int, int>>* frameRange = nullptr);
     std::string saveImageSequenceDialog();
 
     void setDraftRenderEnabled(bool b);

@@ -19,9 +19,19 @@
 
 #include "Global/Macros.h"
 
+#include "Engine/FileSystemModel.h"
+
+#include <vector>
+
 #include <gtest/gtest.h>
 
-#include "Engine/FileSystemModel.h"
+#include <QCoreApplication>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QTemporaryDir>
+
+#include <SequenceParsing.h>
 
 NATRON_NAMESPACE_USING
 
@@ -289,4 +299,155 @@ TEST(FileSystemModelTest, RegexpFilters)
     model->setRegexpFilters(QString());
     EXPECT_TRUE(model->isAcceptedByRegexps(txt));
     EXPECT_TRUE(model->isAcceptedByRegexps(bare));
+}
+
+namespace {
+
+struct ListedItem {
+    QString name;
+    bool isChunk;
+    int first;
+    int last;
+};
+
+void
+writeFrames(const QString& dir, int first, int last)
+{
+    for (int f = first; f <= last; ++f) {
+        QFile file(dir + QString::asprintf("/plate.%04d.exr", f));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    }
+}
+
+// The items the gatherer listed in dir, once there are `count` of them; fewer after a timeout.
+std::vector<ListedItem>
+waitForItems(const FileSystemModelPtr& model, const QString& dir, std::size_t count)
+{
+    std::vector<ListedItem> items;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 10000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        FileSystemItemPtr parent = model->getFileSystemItem(dir);
+        if (!parent || parent == model->getFileSystemItem(QString()) || (std::size_t)parent->childCount() != count) {
+            continue;
+        }
+        items.clear();
+        for (int i = 0; i < parent->childCount(); ++i) {
+            FileSystemItemPtr child = parent->childAt(i);
+            if (child) {
+                items.push_back({ child->getUserFriendlyFilename(), child->isSequenceChunk(),
+                                  child->getChunkFirstFrame(), child->getChunkLastFrame() });
+            }
+        }
+        if (items.size() == count) {
+            return items;
+        }
+    }
+    return items;
+}
+
+class SplitOnGapsTest : public ::testing::Test {
+protected:
+    void SetUp() override
+    {
+        ASSERT_TRUE(_tmp.isValid());
+        _dir = QDir::cleanPath(_tmp.path());
+        _model = std::make_shared<FileSystemModel>();
+        _model->initialize(&_view);
+        _model->setSequenceModeEnabled(true);
+    }
+
+    MockSortableView _view;
+    QTemporaryDir _tmp;
+    QString _dir;
+    FileSystemModelPtr _model;
+};
+
+} // namespace
+
+TEST(FileSystemModelTest, ContiguousFrameRuns)
+{
+    SequenceParsing::SequenceFromFiles sequence(false);
+    for (int f : { 10, 11, 12, 20, 22, 23 }) {
+        ASSERT_TRUE(sequence.tryInsertFile(SequenceParsing::FileNameContent(
+            std::string("/shots/plate.") + QString::asprintf("%04d", f).toStdString() + ".exr")));
+    }
+    const std::vector<std::pair<int, int>> runs = FileSystemModel::contiguousFrameRuns(sequence);
+    const std::vector<std::pair<int, int>> expected { { 10, 12 }, { 20, 20 }, { 22, 23 } };
+    EXPECT_EQ(expected, runs);
+}
+
+TEST_F(SplitOnGapsTest, TwoRunsJoinedAndSplit)
+{
+    writeFrames(_dir, 10, 20);
+    writeFrames(_dir, 30, 40);
+    ASSERT_TRUE(_model->setRootPath(_dir));
+
+    std::vector<ListedItem> joined = waitForItems(_model, _dir, 1);
+    ASSERT_EQ(1u, joined.size());
+    EXPECT_FALSE(joined[0].isChunk);
+
+    _model->setSplitSequencesOnGaps(true);
+    std::vector<ListedItem> split = waitForItems(_model, _dir, 2);
+    ASSERT_EQ(2u, split.size());
+    EXPECT_TRUE(split[0].isChunk);
+    EXPECT_EQ(10, split[0].first);
+    EXPECT_EQ(20, split[0].last);
+    EXPECT_EQ(QString::fromUtf8("plate.####.exr 10-20"), split[0].name);
+    EXPECT_TRUE(split[1].isChunk);
+    EXPECT_EQ(30, split[1].first);
+    EXPECT_EQ(40, split[1].last);
+    EXPECT_EQ(QString::fromUtf8("plate.####.exr 30-40"), split[1].name);
+}
+
+TEST_F(SplitOnGapsTest, OneMissingFrameSplits)
+{
+    writeFrames(_dir, 10, 24);
+    writeFrames(_dir, 26, 40);
+    _model->setSplitSequencesOnGaps(true);
+    ASSERT_TRUE(_model->setRootPath(_dir));
+
+    std::vector<ListedItem> split = waitForItems(_model, _dir, 2);
+    ASSERT_EQ(2u, split.size());
+    EXPECT_EQ(10, split[0].first);
+    EXPECT_EQ(24, split[0].last);
+    EXPECT_EQ(26, split[1].first);
+    EXPECT_EQ(40, split[1].last);
+}
+
+TEST_F(SplitOnGapsTest, SingleFrameChunk)
+{
+    writeFrames(_dir, 10, 20);
+    writeFrames(_dir, 25, 25);
+    _model->setSplitSequencesOnGaps(true);
+    ASSERT_TRUE(_model->setRootPath(_dir));
+
+    std::vector<ListedItem> split = waitForItems(_model, _dir, 2);
+    ASSERT_EQ(2u, split.size());
+    EXPECT_EQ(25, split[1].first);
+    EXPECT_EQ(25, split[1].last);
+    EXPECT_EQ(QString::fromUtf8("plate.####.exr 25"), split[1].name);
+}
+
+TEST_F(SplitOnGapsTest, OneSequenceSplitWithTheToggleOff)
+{
+    writeFrames(_dir, 10, 20);
+    writeFrames(_dir, 30, 40);
+    ASSERT_TRUE(_model->setRootPath(_dir));
+    std::vector<ListedItem> joined = waitForItems(_model, _dir, 1);
+    ASSERT_EQ(1u, joined.size());
+
+    const QString sequencePath = _dir + QString::fromUtf8("/plate.####.exr");
+    _model->setSequenceSplit(sequencePath, true);
+    EXPECT_TRUE(_model->isSequenceSplit(sequencePath));
+    EXPECT_FALSE(_model->isSplitSequencesOnGapsEnabled());
+    std::vector<ListedItem> split = waitForItems(_model, _dir, 2);
+    ASSERT_EQ(2u, split.size());
+    EXPECT_TRUE(split[0].isChunk);
+
+    _model->setSequenceSplit(sequencePath, false);
+    joined = waitForItems(_model, _dir, 1);
+    ASSERT_EQ(1u, joined.size());
+    EXPECT_FALSE(joined[0].isChunk);
 }

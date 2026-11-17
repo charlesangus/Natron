@@ -238,7 +238,7 @@ future core work has solid ground to build on.
 | M420 | Spline Curve Primitive | todo | M358, M376 |  | E9 | F21 | | [M420-spline-curve-primitive.md](PLAN/MILESTONES/M420-spline-curve-primitive.md) |
 | M421 | Stroke Keyframe Indicators | done | M261, M305, M272 | bosley-executor | E10 | | | [M421-stroke-keyframe-indicators.md](PLAN/MILESTONES/M421-stroke-keyframe-indicators.md) |
 | M424 | Python setExpression Refreshes The Viewer | done | - | bosley-native-nodes | E10 | | | [M424-python-set-expression-refreshes-viewer.md](PLAN/MILESTONES/M424-python-set-expression-refreshes-viewer.md) |
-| M422 | Snap Viewer Wheel Zoom | doing | - | bosley-executor | E10 |  F29 | | [M422-snap-viewer-wheel-zoom.md](PLAN/MILESTONES/M422-snap-viewer-wheel-zoom.md) |
+| M422 | Snap Viewer Wheel Zoom | done | - | bosley-executor | E10 |  F29 | | [M422-snap-viewer-wheel-zoom.md](PLAN/MILESTONES/M422-snap-viewer-wheel-zoom.md) |
 | M413 | Geometry Modeling Ops | todo | M359, M420 |  | E9 | F21 | | [M413-geometry-modeling-ops.md](PLAN/MILESTONES/M413-geometry-modeling-ops.md) |
 | M415 | Geometry Attribute Ops | todo | M359, M360, M402 |  | E9 | F21 | | [M415-geometry-attribute-ops.md](PLAN/MILESTONES/M415-geometry-attribute-ops.md) |
 | M414 | Geometry Advanced Modeling | todo | M359, M415 |  | E9 | F21 | | [M414-geometry-advanced-modeling.md](PLAN/MILESTONES/M414-geometry-advanced-modeling.md) |

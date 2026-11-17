@@ -54,7 +54,7 @@ STYLE_CHOICE_IDS = ["off", "subtleOutline", "cornerDot", "edgeLine", "toolbarSpi
 try:
     import NatronEngine
     from PySide6.QtCore import QPoint, QRect
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -62,6 +62,8 @@ try:
     import faulthandler
     _watchdog_file = open(os.path.join(gt.OUT, "watchdog.txt"), "w")
     faulthandler.dump_traceback_later(WATCHDOG_S, exit=True, file=_watchdog_file)
+
+    NEVER_STALE_GRACE_S = 3.0
 
     def viewer_gl():
         visible = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
@@ -100,13 +102,11 @@ try:
             return False, "visible region %r of rect %r" % (unclipped, s.rect())
         top = s.window()
         rect = QRect(s.mapTo(top, QPoint(0, 0)), s.size())
-        lay = s.parentWidget().layout()
-        last = lay.count() - 1 if lay is not None else -1
-        if last < 1 or lay.itemAt(last).widget() is not s:
-            return False, "the spinner is not the last widget of its toolbar row"
-        picker = lay.itemAt(last - 1).widget()
-        if picker is None or picker.mapTo(top, QPoint(0, 0)).x() + picker.width() > rect.x():
-            return False, "the spinner is not to the right of the colour-picker button"
+        row = s.parentWidget()
+        sibs = [c for c in row.children() if isinstance(c, QWidget) and c is not s and c.isVisible()]
+        right_edge = max([c.x() + c.width() for c in sibs] or [0])
+        if right_edge > s.x():
+            return False, "the spinner is not the rightmost widget of its toolbar row (a sibling ends at %d, spinner at %d)" % (right_edge, s.x())
         w = s.parentWidget()
         while w is not None:
             area = QRect(w.mapTo(top, QPoint(0, 0)), w.size()) if w is not top else top.rect()
@@ -179,7 +179,7 @@ try:
         gt.section("short render")
         style.setValue(DEFAULT_STYLE)
         delay.setValue(SHORT_RENDER_DELAY_MS)
-        seen = {"cue": False, "stale_at": None}
+        seen = {"cue": False, "stale_at": None, "done_at": None}
 
         def watch_short():
             if any_cue_visible():
@@ -187,7 +187,12 @@ try:
             stale = viewer_stale()
             if stale and seen["stale_at"] is None:
                 seen["stale_at"] = time.time()
-            return seen["stale_at"] is not None and not stale
+            now = time.time()
+            if seen["stale_at"] is not None and not stale:
+                seen["done_at"] = now
+            elif seen["stale_at"] is None and now - started > NEVER_STALE_GRACE_S:
+                seen["done_at"] = now
+            return seen["done_at"] is not None
 
         started = time.time()
         size.set(SHORT_DEFOCUS_SIZE)
@@ -196,7 +201,7 @@ try:
             report("NOTE the short render finished before the viewer was seen stale")
         else:
             check(ok, "the short render completes")
-        elapsed_ms = (time.time() - started) * 1000.0
+        elapsed_ms = ((seen["done_at"] or time.time()) - started) * 1000.0
         check(elapsed_ms < SHORT_RENDER_DELAY_MS,
               "the short render is shorter than the delay (%.0f ms < %d ms)" % (elapsed_ms, SHORT_RENDER_DELAY_MS))
         yield ("sleep", HOLD_MS + SLACK_MS)

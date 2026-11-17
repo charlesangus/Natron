@@ -8,7 +8,7 @@
                          whose rows tools/bench/heavy_scene_rows.py picks
         BENCH_FILE       overrides the fixture path (the fixture kind still selects the budgets)
         BENCH_SCENARIOS  comma-separated actions run in order (default open,orbit)
-        BENCH_ORBIT_S    seconds the orbit action runs (default 5)
+        BENCH_ORBIT_S    seconds the orbit, orbit10k and orbit_full actions run (default 5)
         BENCH_LOAD_PATHS comma-separated prims the load action asks to load (default the fixture's
                          load_building row, or load_block with BENCH_LOAD_DESCENDANTS=1); on the city,
                          /World/BlockN with BENCH_LOAD_DESCENDANTS=1 is a larger load
@@ -130,6 +130,13 @@ from its coverage). It needs geometry on screen, so it skips with payloads unloa
 boxes_shot need a viewer that publishes natronSceneDrawBoxes, and skip without one; boxes_shot's
 first_boxes_ms runs from the change to the paint that first drew a box (natronSceneFirstBoxesMs).
 
+orbit_full clears every draw state, waits for the full scene on screen, and orbits it continuously for
+BENCH_ORBIT_S under the Preferences' scene stand-in settings. orbit_fps counts every main-thread paint
+(natronScenePaintCount), stand-in or full frame; stand_in_shown says whether any paint showed the
+stand-in boxes, last_full_frame_ms is the cost of the last full frame before the orbit
+(natronSceneLastFullFrameMs), and refill_ms runs from the release to the paint that shows a full frame
+of the view again. It needs a viewer that publishes natronScenePaintCount, and skips without one.
+
 Budgets: main-thread stall under 100 ms; time from a draw state change to the image that shows it under
 100 ms (time_to_picture_ms, worst untraced change of prune_restore, sibling_state and draw_budget, with
 draw_budget's rows also judged apart); a paced reveal of the root with Load All (reveal_load_all,
@@ -188,7 +195,7 @@ DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal",
 LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide", "workflow")
 PICTURE_SCENARIOS = ("prune_restore", "sibling_state", "draw_budget")
 # Payloads still landing from a Full + Load open would be measured along with these.
-SETTLED_SCENARIOS = ("reveal", "reveal_cancel", "reveal_wide", "reveal_cancel_paced", "orbit", "orbit10k", "draw_budget")
+SETTLED_SCENARIOS = ("reveal", "reveal_cancel", "reveal_wide", "reveal_cancel_paced", "orbit", "orbit10k", "orbit_full", "draw_budget")
 DRAW_TIMING = os.environ.get("NATRON_DRAW_STATE_TIMING") == "1"
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
 ROW_RECORD_KEYS = ("root", "branch", "branch_gprims", "widest_row", "widest_children", "sibling_row", "sibling_kind",
@@ -1306,6 +1313,70 @@ try:
         heartbeat.start()
         yield from action_orbit(m)
 
+    def action_orbit_full(m):
+        yield from clear_draw_states()
+        v = view()
+        require(v is not None and shown(), "orbit_full: a scene view is visible and showing the scene")
+        ok = yield ("until", draw_settled(v), TIMEOUT_S)
+        require(ok, "orbit_full: the full scene was presented")
+        settings = NatronEngine.natron.getSettings()
+        mode = settings.getParam("sceneStandInMode")
+        m.values["stand_in_mode"] = list(mode.getOptions())[mode.getValue()] if mode is not None else None
+        # Always never shows a full frame.
+        if m.values["stand_in_mode"] != "always":
+            ok = yield ("until", lambda: not v.property("natronSceneStandIn") and v.property("natronSceneSynced"), TIMEOUT_S)
+            check(ok, "orbit_full: a full frame of the scene is on screen before the orbit")
+        full_frame = v.property("natronSceneLastFullFrameMs")
+        m.values["last_full_frame_ms"] = round(full_frame, 1) if full_frame is not None else None
+        navigation = settings.getParam("viewer3DNavigation")
+        require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
+        original = navigation.getValue()
+        navigation.setValue(1)
+        v.activateWindow()
+        v.setFocus()
+        QApplication.processEvents()
+        centre = v.rect().center()
+
+        def mouse(kind, pos, button, buttons):
+            event = QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.AltModifier)
+            QApplication.sendEvent(v, event)
+
+        heartbeat.start()
+        stand_in_paints = 0
+        paints_before = int(v.property("natronScenePaintCount") or 0)
+        last_count = paints_before
+        started = time.time()
+        deadline = started + orbit_s
+        step = 0
+        mouse(QEvent.MouseButtonPress, centre, Qt.LeftButton, Qt.LeftButton)
+        while time.time() < deadline:
+            step += 1
+            offset = QPoint(int((step % 40) * 4 - 80), int((step % 20) * 2 - 20))
+            mouse(QEvent.MouseMove, centre + offset, Qt.NoButton, Qt.LeftButton)
+            yield ("sleep", POLL_MS)
+            count = int(v.property("natronScenePaintCount") or 0)
+            if count != last_count and v.property("natronSceneStandIn"):
+                stand_in_paints += 1
+            last_count = count
+        mouse(QEvent.MouseButtonRelease, centre, Qt.LeftButton, Qt.NoButton)
+        elapsed = time.time() - started
+        paints = int(v.property("natronScenePaintCount") or 0) - paints_before
+        released_ms = time.time() * 1000.0
+        navigation.setValue(original)
+        m.values["orbit_s"] = round(elapsed, 2)
+        m.values["orbit_frames"] = paints
+        m.values["orbit_fps"] = round(paints / elapsed, 1) if elapsed > 0 else None
+        m.values["stand_in_paints"] = stand_in_paints
+        m.values["stand_in_shown"] = stand_in_paints > 0
+        if m.values["stand_in_mode"] == "always":
+            m.values["refill_ms"] = None
+            return
+        ok = yield ("until", lambda: not v.property("natronSceneStandIn") and prop("natronSceneLastPaintMs", 0) >= released_ms, TIMEOUT_S)
+        check(ok, "orbit_full: a full frame replaced the stand-in after the orbit")
+        m.values["refill_ms"] = round(prop("natronSceneLastPaintMs", released_ms) - released_ms, 1) if ok else None
+        full_frame = v.property("natronSceneLastFullFrameMs")
+        m.values["refill_full_frame_ms"] = round(full_frame, 1) if full_frame is not None else None
+
     def action_boxes_shot(m):
         yield from clear_draw_states()
         ok = yield ("until", lambda: boxes_drawn() == 0, TIMEOUT_S)
@@ -1745,7 +1816,7 @@ try:
     ACTIONS = {"open": action_open, "edit": action_edit, "orbit": action_orbit, "load": action_load, "twirl": action_twirl,
                "load_all": action_load_all, "populate_pruned": action_populate_pruned, "populate_full": action_populate_full,
                "prune_restore": action_prune_restore, "reveal": action_reveal, "reveal_cancel": action_reveal_cancel,
-               "orbit10k": action_orbit10k, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
+               "orbit10k": action_orbit10k, "orbit_full": action_orbit_full, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
                "sibling_shot": action_sibling_shot, "noedit": action_noedit, "draw_budget": action_draw_budget,
                "reveal_load_all": action_reveal_load_all, "reveal_wide": action_reveal_wide,
                "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch,
@@ -1790,6 +1861,8 @@ try:
             return "needs BENCH_LOAD_ALL=1 and load_all: with payloads unloaded no row draws anything to compare"
         if name in ("orbit10k", "boxes_shot") and prop("natronSceneDrawBoxes") is None:
             return "this viewer does not publish natronSceneDrawBoxes: it draws no boxes"
+        if name == "orbit_full" and prop("natronScenePaintCount") is None:
+            return "this viewer does not publish natronScenePaintCount: its paints cannot be counted"
         return None
 
     scene_payload_layers = set(rows.get("payload_assets", ()))

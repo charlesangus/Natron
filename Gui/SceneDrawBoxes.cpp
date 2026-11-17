@@ -163,10 +163,12 @@ boundMightVary(const UsdPrim& prim)
 
 SceneDrawBoxes::SceneDrawBoxes(const StageReader& reader,
                                const std::function<bool()>& shouldYield,
-                               const std::function<void()>& published)
+                               const std::function<void()>& published,
+                               const RowLister& lister)
     : _reader(reader)
     , _shouldYield(shouldYield)
     , _published(published)
+    , _lister(lister)
 {
     _thread = std::thread([this]() { run(); });
 }
@@ -219,6 +221,17 @@ SceneDrawBoxes::setStageVersion(U64 version)
             return;
         }
         _stageVersion = version;
+        ++_generation;
+        ++_contentGeneration;
+    }
+    _changed.notify_all();
+}
+
+void
+SceneDrawBoxes::relist()
+{
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
         ++_generation;
         ++_contentGeneration;
     }
@@ -368,6 +381,66 @@ SceneDrawBoxes::boxedRows(const UsdStageRefPtr& stage,
     return rows;
 }
 
+std::vector<SdfPath>
+SceneDrawBoxes::standInRows(const UsdStageRefPtr& stage,
+                            const SceneDrawFilter::Rules& rules,
+                            bool byModel)
+{
+    std::vector<SdfPath> rows;
+
+    if (!stage) {
+        return rows;
+    }
+    if (byModel) {
+        // A prim is a model only below a chain of models, so the range never leaves the model
+        // hierarchy, which stays small however many prims lie below it.
+        UsdPrimRange range = stage->Traverse(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract && UsdPrimIsModel);
+        for (UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+            const SdfPath& path = it->GetPath();
+            const SceneDrawFilter::Rules::const_iterator rule = rules.find(path);
+            if (rule != rules.end()) {
+                if (rule->second == SceneDrawFilter::eRuleHidden) {
+                    it.PruneChildren();
+                    continue;
+                }
+                if (rule->second == SceneDrawFilter::eRuleHide) {
+                    it.PruneChildren();
+                }
+            }
+            rows.push_back(path);
+        }
+        if (!rows.empty()) {
+            return rows;
+        }
+    }
+    const Usd_PrimFlagsPredicate predicate = rowPredicate();
+    for (const SceneDrawFilter::Rules::value_type& rule : rules) {
+        if ((rule.second != SceneDrawFilter::eRuleShow) && (rule.second != SceneDrawFilter::eRuleExpand)) {
+            continue;
+        }
+        if (!rule.first.IsPrimPath() || !parentShown(rules, rule.first)) {
+            continue;
+        }
+        const UsdPrim prim = stage->GetPrimAtPath(rule.first);
+        if (prim && predicate(prim)) {
+            rows.push_back(rule.first);
+        }
+    }
+    const std::vector<SdfPath> boxed = boxedRows(stage, rules);
+    rows.insert(rows.end(), boxed.begin(), boxed.end());
+    if (!rows.empty()) {
+        return rows;
+    }
+    for (const UsdPrim& child : stage->GetPseudoRoot().GetFilteredChildren(predicate)) {
+        const SceneDrawFilter::Rules::const_iterator rule = rules.find(child.GetPath());
+        if ((rule == rules.end()) || (rule->second != SceneDrawFilter::eRuleHidden)) {
+            rows.push_back(child.GetPath());
+        }
+    }
+
+    return rows;
+} // SceneDrawBoxes::standInRows
+
 void
 SceneDrawBoxes::run()
 {
@@ -394,7 +467,7 @@ SceneDrawBoxes::compute(const Request& request)
 {
     std::vector<Box> boxes;
 
-    if (!boxesAnything(request.rules)) {
+    if (!_lister && !boxesAnything(request.rules)) {
         publish(request, std::move(boxes), true);
 
         return;
@@ -436,7 +509,7 @@ SceneDrawBoxes::compute(const Request& request)
                 _bboxCache->SetTime(time);
             }
             if (!listed) {
-                rows = boxedRows(stage, request.rules);
+                rows = _lister ? _lister(stage, request.rules) : boxedRows(stage, request.rules);
                 boxes.clear();
                 boxes.reserve(rows.size());
                 next = 0;

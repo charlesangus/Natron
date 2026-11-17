@@ -109,16 +109,22 @@ public:
     using StageRead = std::function<void(const PXR_NS::UsdStageRefPtr& stage, U64 version)>;
     // Calls read once, under the lock that keeps the stage from changing.
     using StageReader = std::function<void(const StageRead& read)>;
+    // The rows to box on a stage under rules, called under the reader's lock.
+    using RowLister = std::function<std::vector<PXR_NS::SdfPath>(const PXR_NS::UsdStageRefPtr& stage, const SceneDrawFilter::Rules& rules)>;
 
+    // Without a lister the rows are boxedRows().
     SceneDrawBoxes(const StageReader& reader,
                    const std::function<bool()>& shouldYield,
-                   const std::function<void()>& published);
+                   const std::function<void()>& published,
+                   const RowLister& lister = RowLister());
 
     ~SceneDrawBoxes();
 
     void setRules(const SceneDrawFilter::Rules& rules);
     void setTime(double time);
     void setStageVersion(U64 version);
+    // The lister now gives other rows for the same stage and rules.
+    void relist();
 
     ListPtr getList() const;
 
@@ -148,6 +154,17 @@ public:
     static std::vector<PXR_NS::SdfPath> boxedRows(const PXR_NS::UsdStageRefPtr& stage,
                                                   const SceneDrawFilter::Rules& rules);
 
+    /**
+     * @brief The rows a stand-in for the whole drawn scene boxes. With byModel, every model prim
+     * (kind component, assembly or group, as UsdModelAPI has it) the rules leave drawn, a BBox or
+     * Hidden row ending its branch; models nest, and so do their boxes. Without byModel, or on a
+     * stage with no model, every drawn row with a rule, and the rows boxedRows() gives; with no rule
+     * either, the top-level prims but Hidden ones. Instance proxies are not looked into.
+     */
+    static std::vector<PXR_NS::SdfPath> standInRows(const PXR_NS::UsdStageRefPtr& stage,
+                                                    const SceneDrawFilter::Rules& rules,
+                                                    bool byModel);
+
 private:
     struct Request {
         SceneDrawFilter::Rules rules;
@@ -176,6 +193,7 @@ private:
     const StageReader _reader;
     const std::function<bool()> _shouldYield;
     const std::function<void()> _published;
+    const RowLister _lister;
 
     mutable std::mutex _mutex;
     mutable std::condition_variable _changed;

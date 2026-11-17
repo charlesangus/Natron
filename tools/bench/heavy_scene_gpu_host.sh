@@ -42,7 +42,7 @@
 #             node switch, a prim in the inspector, save, reopen) on flat, the city, Lobby and Island, each
 #             step judged against its budget; then the time-to-picture budgets and reveal and cancel on
 #             the loaded city, Lobby and Island (populate_full, load_all, draw_budget, reveal_wide,
-#             reveal_cancel_paced, orbit10k), and reveal_load_all on the unloaded city. Ends with
+#             reveal_cancel_paced, orbit10k, orbit_full), and reveal_load_all on the unloaded city. Ends with
 #             heavy_scene_budget_table.py's table when there are draw_budget records. Island is skipped, with a record, when it is not found or under
 #             ISLAND_MIN_RAM_GB; its loaded run picks rows from the fully loaded scene, so
 #             BENCH_PICK_LIMIT_S is raised for it (default 3600).
@@ -665,7 +665,7 @@ budget_runs() {
 
 # The workflow reopens the project, so each one runs alone in its process.
 acceptance_runs() {
-    local reason loaded="populate_full,load_all,draw_budget,reveal_wide,reveal_cancel_paced,orbit10k"
+    local reason loaded="populate_full,load_all,draw_budget,reveal_wide,reveal_cancel_paced,orbit10k,orbit_full"
     launch accept-flat flat "$FIXTURE_DIR/heavy_flat.usdc" workflow NATRON_DRAW_STATE_TIMING=1
     launch accept-city city "$CITY" workflow NATRON_DRAW_STATE_TIMING=1
     launch accept-city-loaded city "$CITY" "$loaded" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1

@@ -389,7 +389,21 @@ public:
      * holds it draws what it last read of the stage. The GL objects it makes belong to that context
      * and go with releaseOverlayGL(). Leaves the GL state as it found it.
      **/
-    void drawOverlays(unsigned int fbo, int width, int height);
+    void drawOverlays(unsigned int fbo, int width, int height, bool standIn = false);
+
+    /**
+     * @brief Whether drawOverlays() keeps a stand-in for the scene ready: one box per model prim
+     * with byModel, see SceneDrawBoxes::standInRows(). The boxes are measured on a thread of their
+     * own only while enabled. drawOverlays() with standIn draws them first, as wireframe, for a view
+     * cleared beforehand. Main thread.
+     **/
+    void setStandIn(bool enabled, bool byModel);
+
+    // The stand-in boxes and markers the last drawOverlays() drew. Any thread.
+    int getStandInBoxCount() const;
+
+    // Whether the stand-in's boxes answer the stage, rules and time it was last given. Any thread.
+    bool isStandInListComplete() const;
 
     // Frees what drawOverlays() made, in its context. Main thread.
     void releaseOverlayGL();

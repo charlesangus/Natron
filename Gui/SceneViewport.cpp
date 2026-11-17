@@ -825,14 +825,12 @@ struct SceneViewportRenderer::Implementation {
     // by any other that reads them: the guides are built on the main thread while frames render.
     mutable std::mutex rulesMutex;
     SceneDrawFilter::WeakPtr drawFilter;
-    // The list the box buffer holds, and how many of its boxes the last frame drew.
-    SceneDrawBoxes::ListPtr uploadedBoxes;
     // What the last frame drew, which is what a click picks from.
     SceneDrawBoxes::ListPtr drawnBoxList;
-    // Cleared by the main thread when the selection changes, as the buffer colours the boxes
+    // Cleared by the main thread when the selection changes, as the buffers colour the boxes
     // holding a selected prim.
     std::atomic<bool> boxColoursValid { false };
-    std::vector<bool> boxHighlighted;
+    std::atomic<bool> standInColoursValid { false };
     bool recordDrawnBoxes = false;
     std::vector<DrawnBox> drawnBoxes;
     // Whether the box worker was last given no rules for Render Everything, not drawRules.
@@ -840,16 +838,32 @@ struct SceneViewportRenderer::Implementation {
     // Bumped with each change of drawRules, so the guides follow them.
     U64 drawRulesVersion = 0;
     GLuint boxProgram = 0;
-    GLuint boxVao = 0;
-    GLuint boxEdgeBuffer = 0;
-    GLuint boxInstanceBuffer = 0;
-    GLsizei boxInstances = 0;
-    GLuint markerVao = 0;
-    GLuint markerArmBuffer = 0;
-    GLuint markerInstanceBuffer = 0;
-    GLsizei markerInstances = 0;
+    // The instanced boxes and markers of one box list, in the context that draws them.
+    struct BoxBuffers {
+        GLuint boxVao = 0;
+        GLuint boxEdgeBuffer = 0;
+        GLuint boxInstanceBuffer = 0;
+        GLsizei boxInstances = 0;
+        GLuint markerVao = 0;
+        GLuint markerArmBuffer = 0;
+        GLuint markerInstanceBuffer = 0;
+        GLsizei markerInstances = 0;
+        // The list the buffers hold, and which of its boxes hold a selected prim.
+        SceneDrawBoxes::ListPtr uploaded;
+        std::vector<bool> highlighted;
+    };
+    BoxBuffers boxBuffers;
+    BoxBuffers standInBuffers;
     std::atomic<int> boxesDrawn { 0 };
     std::atomic<int> markersDrawn { 0 };
+    // Whether feedBoxes() feeds the stand-in's worker. Main thread.
+    bool standInEnabled = false;
+    // Which rows the stand-in's worker lists, read there.
+    std::atomic<bool> standInByModel { true };
+    // The drawRulesVersion the stand-in's worker was last given, if any.
+    U64 standInRulesVersion = 0;
+    bool standInRulesFed = false;
+    std::atomic<int> standInBoxesDrawn { 0 };
     std::atomic<bool> everyLightHidden { false };
     StageNoticeCounter stageNotices;
     bool stageNoticesRegistered = false;
@@ -2655,6 +2669,28 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
+    // Tells the stand-in's worker the rules, the time and the stage's version. Main thread, with
+    // stageMutex.
+    void feedStandInBoxes()
+    {
+        if (standInBoxes && standInEnabled) {
+            {
+                std::lock_guard<std::mutex> rulesLock(rulesMutex);
+                if (!standInRulesFed || (standInRulesVersion != drawRulesVersion)) {
+                    if (!standInRulesFed) {
+                        // Rules, time and version may all be those it starts with, which ask for nothing.
+                        standInBoxes->relist();
+                    }
+                    standInBoxes->setRules(drawRules);
+                    standInRulesVersion = drawRulesVersion;
+                    standInRulesFed = true;
+                }
+            }
+            standInBoxes->setTime(timeCode());
+            standInBoxes->setStageVersion(stageEditCount + stageLoadEditCount);
+        }
+    }
+
     bool hasBoxes() const
     {
         const SceneDrawBoxes::ListPtr list = boxes ? boxes->getList() : SceneDrawBoxes::ListPtr();
@@ -2687,6 +2723,14 @@ struct SceneViewportRenderer::Implementation {
             return false;
         }
         boxProgram = program;
+        makeBoxBuffers(&boxBuffers);
+        makeBoxBuffers(&standInBuffers);
+
+        return true;
+    } // ensureBoxProgram
+
+    static void makeBoxBuffers(BoxBuffers* buffers)
+    {
         const auto makeVao = [](GLuint* vao, GLuint* shape, GLuint* instances, const GLfloat* vertices, GLsizeiptr size) {
             glGenVertexArrays(1, vao);
             glGenBuffers(1, shape);
@@ -2703,20 +2747,31 @@ struct SceneViewportRenderer::Implementation {
                 glVertexAttribDivisor(attribute, 1);
             }
         };
-        makeVao(&boxVao, &boxEdgeBuffer, &boxInstanceBuffer, kBoxEdges, sizeof(kBoxEdges));
-        makeVao(&markerVao, &markerArmBuffer, &markerInstanceBuffer, kMarkerArms, sizeof(kMarkerArms));
+        makeVao(&buffers->boxVao, &buffers->boxEdgeBuffer, &buffers->boxInstanceBuffer, kBoxEdges, sizeof(kBoxEdges));
+        makeVao(&buffers->markerVao, &buffers->markerArmBuffer, &buffers->markerInstanceBuffer, kMarkerArms, sizeof(kMarkerArms));
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        uploadedBoxes.reset();
+        buffers->uploaded.reset();
+    }
 
-        return true;
-    } // ensureBoxProgram
-
-    // Which boxes hold a selected prim. Boxed rows never nest, so a selected prim deep in a boxed
-    // branch lights the one box drawn for its nearest boxed ancestor.
-    void findHighlightedBoxes(const SceneDrawBoxes::List& list)
+    static void releaseBoxBuffers(BoxBuffers* buffers)
     {
-        boxHighlighted.assign(list.boxes.size(), false);
+        if (buffers->boxVao) {
+            glDeleteVertexArrays(1, &buffers->boxVao);
+            glDeleteBuffers(1, &buffers->boxEdgeBuffer);
+            glDeleteBuffers(1, &buffers->boxInstanceBuffer);
+            glDeleteVertexArrays(1, &buffers->markerVao);
+            glDeleteBuffers(1, &buffers->markerArmBuffer);
+            glDeleteBuffers(1, &buffers->markerInstanceBuffer);
+        }
+        *buffers = BoxBuffers();
+    }
+
+    // Which boxes hold a selected prim: every box drawn for the prim or one of its ancestors.
+    void findHighlightedBoxes(const SceneDrawBoxes::List& list,
+                              std::vector<bool>* highlighted) const
+    {
+        highlighted->assign(list.boxes.size(), false);
         if (selected.empty()) {
             return;
         }
@@ -2732,7 +2787,7 @@ struct SceneViewportRenderer::Implementation {
             }
         }
         for (std::size_t index = 0; index < list.boxes.size(); ++index) {
-            boxHighlighted[index] = (lit.count(list.boxes[index].path) != 0);
+            (*highlighted)[index] = (lit.count(list.boxes[index].path) != 0);
         }
     }
 
@@ -2767,9 +2822,76 @@ struct SceneViewportRenderer::Implementation {
         drawnBoxes.push_back(drawn);
     }
 
+    // Puts list in buffers unless they hold it already with valid colours. Unloaded rows and markers
+    // are tinted; a pending row's marker is grey; a box holding a selected prim takes the guides'
+    // selection colour; any other is boxColour.
+    void uploadBoxes(BoxBuffers* buffers,
+                     const SceneDrawBoxes::ListPtr& list,
+                     bool coloursValid,
+                     const GfVec3f& boxColour)
+    {
+        if ((list == buffers->uploaded) && coloursValid) {
+            return;
+        }
+        findHighlightedBoxes(*list, &buffers->highlighted);
+        std::vector<GLfloat> boxData;
+        std::vector<GLfloat> markerData;
+        for (std::size_t index = 0; index < list->boxes.size(); ++index) {
+            const SceneDrawBoxes::Box& box = list->boxes[index];
+            GfVec3f colour = boxColour;
+            if (buffers->highlighted[index]) {
+                colour = GfVec3f(1.f, 0.8f, 0.1f);
+            } else if ((box.kind == SceneDrawBoxes::eKindUnloaded) || (box.kind == SceneDrawBoxes::eKindMarker)) {
+                colour = GfVec3f(0.95f, 0.7f, 0.35f);
+            } else if (box.kind == SceneDrawBoxes::eKindPending) {
+                colour = GfVec3f(0.6f, 0.6f, 0.6f);
+            }
+            std::vector<GLfloat>& data = ((box.kind == SceneDrawBoxes::eKindMarker) || (box.kind == SceneDrawBoxes::eKindPending)) ? markerData : boxData;
+            data.insert(data.end(), { box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2], colour[0], colour[1], colour[2] });
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, buffers->boxInstanceBuffer);
+        glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(boxData.size() * sizeof(GLfloat)), boxData.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, buffers->markerInstanceBuffer);
+        glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(markerData.size() * sizeof(GLfloat)), markerData.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        buffers->boxInstances = GLsizei(boxData.size() / kBoxFloats);
+        buffers->markerInstances = GLsizei(markerData.size() / kBoxFloats);
+        buffers->uploaded = list;
+    }
+
     // One draw call for the boxes and one for the markers, however many, depth-tested against the
-    // frame's depth like the guides. Unloaded rows are tinted; a pending row's marker is grey; a
-    // box holding a selected prim takes the guides' selection colour.
+    // depth buffer bound.
+    void drawBoxBuffers(const BoxBuffers& buffers,
+                        const GfFrustum& frustum,
+                        int width,
+                        int height) const
+    {
+        // GfMatrix4d is row-major with row vectors, so its memory is what GL reads as column-major
+        // with column vectors, and view * projection here is projection * view there.
+        const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
+        glUseProgram(boxProgram);
+        glUniformMatrix4fv(glGetUniformLocation(boxProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_BLEND);
+        glLineWidth(1.f);
+        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 0);
+        glBindVertexArray(buffers.boxVao);
+        glDrawArraysInstanced(GL_LINES, 0, 24, buffers.boxInstances);
+        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 1);
+        glUniform2f(glGetUniformLocation(boxProgram, "markerScale"), 2.f * kMarkerPixels / float(width), 2.f * kMarkerPixels / float(height));
+        glBindVertexArray(buffers.markerVao);
+        glDrawArraysInstanced(GL_LINES, 0, 4, buffers.markerInstances);
+        glBindVertexArray(0);
+        glUseProgram(0);
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_DEPTH_TEST);
+    }
+
+    // The boxes of the rows the draw states box, depth-tested against the frame's depth like the
+    // guides.
     void drawBoxes(const GfFrustum& frustum,
                    int width,
                    int height)
@@ -2783,95 +2905,52 @@ struct SceneViewportRenderer::Implementation {
         if (!list || list->boxes.empty() || !ensureBoxProgram()) {
             return;
         }
-        const bool coloursValid = boxColoursValid.exchange(true);
-        if ((list != uploadedBoxes) || !coloursValid) {
-            findHighlightedBoxes(*list);
-            std::vector<GLfloat> boxData;
-            std::vector<GLfloat> markerData;
-            for (std::size_t index = 0; index < list->boxes.size(); ++index) {
-                const SceneDrawBoxes::Box& box = list->boxes[index];
-                GfVec3f colour(0.55f, 0.75f, 0.95f);
-                if (boxHighlighted[index]) {
-                    colour = GfVec3f(1.f, 0.8f, 0.1f);
-                } else if ((box.kind == SceneDrawBoxes::eKindUnloaded) || (box.kind == SceneDrawBoxes::eKindMarker)) {
-                    colour = GfVec3f(0.95f, 0.7f, 0.35f);
-                } else if (box.kind == SceneDrawBoxes::eKindPending) {
-                    colour = GfVec3f(0.6f, 0.6f, 0.6f);
-                }
-                std::vector<GLfloat>& data = ((box.kind == SceneDrawBoxes::eKindMarker) || (box.kind == SceneDrawBoxes::eKindPending)) ? markerData : boxData;
-                data.insert(data.end(), { box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2], colour[0], colour[1], colour[2] });
-            }
-            glBindBuffer(GL_ARRAY_BUFFER, boxInstanceBuffer);
-            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(boxData.size() * sizeof(GLfloat)), boxData.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ARRAY_BUFFER, markerInstanceBuffer);
-            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(markerData.size() * sizeof(GLfloat)), markerData.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-            boxInstances = GLsizei(boxData.size() / kBoxFloats);
-            markerInstances = GLsizei(markerData.size() / kBoxFloats);
-            uploadedBoxes = list;
-        }
-        if ((boxInstances == 0) && (markerInstances == 0)) {
+        uploadBoxes(&boxBuffers, list, boxColoursValid.exchange(true), GfVec3f(0.55f, 0.75f, 0.95f));
+        if ((boxBuffers.boxInstances == 0) && (boxBuffers.markerInstances == 0)) {
             return;
         }
         drawnBoxList = list;
         if (recordDrawnBoxes) {
             const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
             for (std::size_t index = 0; index < list->boxes.size(); ++index) {
-                recordDrawnBox(view, list->boxes[index], boxHighlighted[index]);
+                recordDrawnBox(view, list->boxes[index], boxBuffers.highlighted[index]);
             }
         }
-        // GfMatrix4d is row-major with row vectors, so its memory is what GL reads as column-major
-        // with column vectors, and view * projection here is projection * view there.
-        const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
-        glUseProgram(boxProgram);
-        glUniformMatrix4fv(glGetUniformLocation(boxProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LEQUAL);
-        glDepthMask(GL_FALSE);
-        glDisable(GL_BLEND);
-        glLineWidth(1.f);
-        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 0);
-        glBindVertexArray(boxVao);
-        glDrawArraysInstanced(GL_LINES, 0, 24, boxInstances);
-        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 1);
-        glUniform2f(glGetUniformLocation(boxProgram, "markerScale"), 2.f * kMarkerPixels / float(width), 2.f * kMarkerPixels / float(height));
-        glBindVertexArray(markerVao);
-        glDrawArraysInstanced(GL_LINES, 0, 4, markerInstances);
-        glBindVertexArray(0);
-        glUseProgram(0);
-        glDepthMask(GL_TRUE);
-        glDepthFunc(GL_LESS);
-        glDisable(GL_DEPTH_TEST);
-        boxesDrawn = int(boxInstances);
-        markersDrawn = int(markerInstances);
+        drawBoxBuffers(boxBuffers, frustum, width, height);
+        boxesDrawn = int(boxBuffers.boxInstances);
+        markersDrawn = int(boxBuffers.markerInstances);
     } // drawBoxes
+
+    // The stand-in's wireframe boxes, in grey, over a view already cleared.
+    void drawStandInBoxes(const GfFrustum& frustum,
+                          int width,
+                          int height)
+    {
+        const SceneDrawBoxes::ListPtr list = standInBoxes ? standInBoxes->getList() : SceneDrawBoxes::ListPtr();
+
+        standInBoxesDrawn = 0;
+        if (!list || list->boxes.empty() || !ensureBoxProgram()) {
+            return;
+        }
+        uploadBoxes(&standInBuffers, list, standInColoursValid.exchange(true), GfVec3f(0.7f, 0.7f, 0.7f));
+        drawBoxBuffers(standInBuffers, frustum, width, height);
+        standInBoxesDrawn = int(standInBuffers.boxInstances + standInBuffers.markerInstances);
+    }
 
     void releaseBoxesGL()
     {
         if (boxProgram) {
             glDeleteProgram(boxProgram);
-            glDeleteVertexArrays(1, &boxVao);
-            glDeleteBuffers(1, &boxEdgeBuffer);
-            glDeleteBuffers(1, &boxInstanceBuffer);
-            glDeleteVertexArrays(1, &markerVao);
-            glDeleteBuffers(1, &markerArmBuffer);
-            glDeleteBuffers(1, &markerInstanceBuffer);
             boxProgram = 0;
-            boxVao = 0;
-            boxEdgeBuffer = 0;
-            boxInstanceBuffer = 0;
-            markerVao = 0;
-            markerArmBuffer = 0;
-            markerInstanceBuffer = 0;
         }
-        uploadedBoxes.reset();
+        releaseBoxBuffers(&boxBuffers);
+        releaseBoxBuffers(&standInBuffers);
         drawnBoxList.reset();
-        boxInstances = 0;
-        markerInstances = 0;
     }
 
     // The overlays over the image in fbo. handleFrame is null when no handles are drawn.
-    // stageReadable: stageMutex is held, and the guides may be built again.
+    // stageReadable: stageMutex is held, and the guides may be built again. standIn: the stand-in's
+    // boxes go first.
     void drawOverlayPass(unsigned int fbo,
                          const GfFrustum& frustum,
                          int width,
@@ -2880,14 +2959,16 @@ struct SceneViewportRenderer::Implementation {
                          const SceneGizmo::Frame* handleFrame,
                          bool handleSelection,
                          bool throughCamera,
-                         bool stageReadable)
+                         bool stageReadable,
+                         bool standIn)
     {
         drawnGuides.clear();
         boxesDrawn = 0;
         markersDrawn = 0;
+        standInBoxesDrawn = 0;
         drawnBoxList.reset();
         drawnBoxes.clear();
-        if (!showGrid && !showGuides && !hasHandles && !hasBoxes()) {
+        if (!standIn && !showGrid && !showGuides && !hasHandles && !hasBoxes()) {
             return;
         }
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -2896,6 +2977,9 @@ struct SceneViewportRenderer::Implementation {
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glDisable(GL_FRAMEBUFFER_SRGB);
+        if (standIn && !held) {
+            drawStandInBoxes(frustum, width, height);
+        }
         if (showGrid) {
             drawGrid(frustum, throughCamera);
         }
@@ -2927,8 +3011,9 @@ struct SceneViewportRenderer::Implementation {
                                     GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack, point);
     }
 
-    // Last, so that it goes first: its worker reads the members above.
+    // Last, so that they go first: their workers read the members above.
     std::unique_ptr<SceneDrawBoxes> boxes;
+    std::unique_ptr<SceneDrawBoxes> standInBoxes;
 };
 
 SceneViewportRenderer::SceneViewportRenderer()
@@ -2971,9 +3056,9 @@ SceneViewportRenderer::SceneViewportRenderer()
             listener();
         } }, kBackgroundLinear));
     _imp->progressive->setThreads(&refineThreads);
-    // Like any other reader, the box worker lets a failed try to edit know when it lets go, and
-    // ends its pass for a waiting edit.
-    _imp->boxes.reset(new SceneDrawBoxes([imp](const SceneDrawBoxes::StageRead& read) {
+    // Like any other reader, the box workers let a failed try to edit know when they let go, and
+    // end their pass for a waiting edit.
+    const SceneDrawBoxes::StageReader boxReader = [imp](const SceneDrawBoxes::StageRead& read) {
         SceneWriteBarrier::ReadScope readScope;
         {
             std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
@@ -2982,7 +3067,10 @@ SceneViewportRenderer::SceneViewportRenderer()
         }
         if (imp->exclusiveOwed.exchange(false) && imp->readEnded) {
             imp->readEnded();
-        } }, [imp]() { return (imp->exclusiveWaiting > 0) || imp->exclusiveOwed; }, [imp]() {
+        }
+    };
+    const std::function<bool()> boxYield = [imp]() { return (imp->exclusiveWaiting > 0) || imp->exclusiveOwed; };
+    const std::function<void()> boxPublished = [imp]() {
         std::function<void()> listener;
         {
             std::lock_guard<std::mutex> lock(imp->refineListenerMutex);
@@ -2990,7 +3078,12 @@ SceneViewportRenderer::SceneViewportRenderer()
         }
         if (listener) {
             listener();
-        } }));
+        }
+    };
+    _imp->boxes.reset(new SceneDrawBoxes(boxReader, boxYield, boxPublished));
+    _imp->standInBoxes.reset(new SceneDrawBoxes(boxReader, boxYield, boxPublished, [imp](const UsdStageRefPtr& stage, const SceneDrawFilter::Rules& rules) {
+        return SceneDrawBoxes::standInRows(stage, rules, imp->standInByModel);
+    }));
 }
 
 SceneViewportRenderer::~SceneViewportRenderer()
@@ -2998,6 +3091,7 @@ SceneViewportRenderer::~SceneViewportRenderer()
     // Ahead of the rest: until it returns its worker may call the snapshot, which reads
     // stageMutex and the stage. It does not wait for the delegate to stop.
     _imp->progressive.reset();
+    _imp->standInBoxes.reset();
     _imp->boxes.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
@@ -4359,6 +4453,7 @@ SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
     _imp->selected = paths;
     _imp->guideBatchesValid = false;
     _imp->boxColoursValid = false;
+    _imp->standInColoursValid = false;
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
     _imp->engineSelection = paths;
     _imp->engineSelectionDirty = true;
@@ -4879,7 +4974,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     SceneGizmo::Frame handleFrame;
     bool handleSelection = false;
     const bool handlesShown = (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && _imp->computeHandleFrame(&handleFrame, &handleSelection);
-    _imp->drawOverlayPass(fbo, frustum, width, height, held, handlesShown ? &handleFrame : nullptr, handleSelection, bool(_imp->lookThroughCamera()), true);
+    _imp->drawOverlayPass(fbo, frustum, width, height, held, handlesShown ? &handleFrame : nullptr, handleSelection, bool(_imp->lookThroughCamera()), true, false);
 
     return converged ? eRenderStatusDone : eRenderStatusRefining;
 } // renderLocked
@@ -4887,7 +4982,8 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
 void
 SceneViewportRenderer::drawOverlays(unsigned int fbo,
                                     int width,
-                                    int height)
+                                    int height,
+                                    bool standIn)
 {
     Implementation& imp = *_imp;
 
@@ -4902,6 +4998,7 @@ SceneViewportRenderer::drawOverlays(unsigned int fbo,
         if (lock.owns_lock()) {
             readable = true;
             imp.feedBoxes();
+            imp.feedStandInBoxes();
             imp.overlayThroughCamera = bool(imp.lookThroughCamera());
             imp.overlayFrustum = imp.computeFrustum(width, height);
             imp.overlayHandlesShown = imp.computeHandleFrame(&imp.overlayHandleFrame, &imp.overlayHandleSelection);
@@ -4925,7 +5022,32 @@ SceneViewportRenderer::drawOverlays(unsigned int fbo,
     }
     StormGLStateGuard guard;
     imp.drawOverlayPass(fbo, imp.overlayFrustum, width, height, imp.stageHeld,
-                        imp.overlayHandlesShown ? &imp.overlayHandleFrame : nullptr, imp.overlayHandleSelection, imp.overlayThroughCamera, false);
+                        imp.overlayHandlesShown ? &imp.overlayHandleFrame : nullptr, imp.overlayHandleSelection, imp.overlayThroughCamera, false, standIn);
+}
+
+void
+SceneViewportRenderer::setStandIn(bool enabled,
+                                  bool byModel)
+{
+    _imp->standInEnabled = enabled;
+    if (_imp->standInByModel.exchange(byModel) != byModel) {
+        // The next feed lists the rows again.
+        _imp->standInRulesFed = false;
+    }
+}
+
+int
+SceneViewportRenderer::getStandInBoxCount() const
+{
+    return _imp->standInBoxesDrawn;
+}
+
+bool
+SceneViewportRenderer::isStandInListComplete() const
+{
+    const SceneDrawBoxes::ListPtr list = _imp->standInBoxes->getList();
+
+    return list && list->complete && (list->generation >= _imp->standInBoxes->getGeneration());
 }
 
 void
@@ -6285,6 +6407,7 @@ struct SceneViewport::Implementation {
         // The draw changes the frame took in.
         unsigned long long absorbed = 0;
         QVariantList view;
+        std::chrono::steady_clock::time_point startedAt;
     };
     // Main thread, and the render thread while the main thread waits for it.
     ScenePresentPacer<PresentFrame> presentPacer {
@@ -6296,6 +6419,86 @@ struct SceneViewport::Implementation {
     std::optional<PresentFrame> frontFrame;
     // Asks the GPU, without waiting, whether the frame on it is done.
     QTimer* presentPoll = nullptr;
+
+    // Main thread. The stand-in preferences.
+    Settings::SceneStandInModeEnum standInMode = Settings::eSceneStandInModeInteraction;
+    double standInBudgetMs = 33.;
+    bool standInByModel = true;
+    int standInRefillDelayMs = 250;
+    // From its start to the GPU finishing it, the last full frame's cost, negative before any.
+    double lastFullFrameMs = -1.;
+    bool overBudget = false;
+    // The view the last paint or frame start saw, and since when.
+    QVariantList lastView;
+    QElapsedTimer viewStillClock;
+    // The stand-in is up until a full frame of the view now is shown.
+    bool standInLatched = false;
+    // Asks for the paint that starts the refill once the view has been still long enough.
+    QTimer* standInRefillTimer = nullptr;
+
+    void noteView(const QVariantList& view)
+    {
+        if (view != lastView) {
+            lastView = view;
+            viewStillClock.start();
+        }
+    }
+
+    bool viewMoving() const
+    {
+        return viewStillClock.isValid() && (viewStillClock.elapsed() < standInRefillDelayMs);
+    }
+
+    void noteFullFrame(double costMs)
+    {
+        lastFullFrameMs = costMs;
+        if (costMs > standInBudgetMs) {
+            overBudget = true;
+        } else if (costMs < 0.8 * standInBudgetMs) {
+            overBudget = false;
+        }
+    }
+
+    // Whether the stand-in's boxes are kept measured, ahead of the move that shows them.
+    bool standInWanted() const
+    {
+        return (standInMode == Settings::eSceneStandInModeAlways) || ((standInMode == Settings::eSceneStandInModeInteraction) && overBudget);
+    }
+
+    // Takes the stand-in up when the view starts moving over budget, and down once the full frame
+    // of the view now is shown.
+    void updateStandInLatch(const QVariantList& view)
+    {
+        if (standInMode != Settings::eSceneStandInModeInteraction) {
+            standInLatched = false;
+        } else if (overBudget && viewMoving()) {
+            standInLatched = true;
+        } else if (standInLatched && !viewMoving() && frontFrame && (frontFrame->view == view)) {
+            standInLatched = false;
+        }
+    }
+
+    // Whether no full frame may start: the stand-in stands for the scene.
+    bool standInHoldsFrames() const
+    {
+        return usesRenderThread && ((standInMode == Settings::eSceneStandInModeAlways) || (standInLatched && viewMoving()));
+    }
+
+    void readStandInSettings(const Settings& settings)
+    {
+        standInMode = settings.getSceneStandInMode();
+        standInBudgetMs = settings.getSceneStandInBudgetMs();
+        standInByModel = (settings.getSceneStandInBoxes() == Settings::eSceneStandInBoxesModels);
+        standInRefillDelayMs = settings.getSceneStandInRefillDelayMs();
+        if (standInMode != Settings::eSceneStandInModeInteraction) {
+            standInLatched = false;
+        }
+        if (overBudget && (lastFullFrameMs >= 0.) && (lastFullFrameMs < 0.8 * standInBudgetMs)) {
+            overBudget = false;
+        } else if (lastFullFrameMs > standInBudgetMs) {
+            overBudget = true;
+        }
+    }
     // Bumped when the render context goes: a frame rendered in the old one is never shown.
     U64 renderContextGeneration = 0;
 
@@ -6534,8 +6737,8 @@ struct SceneViewport::Implementation {
 
     // Main thread, the widget's context current. The front target's frame, frontFrame, which the
     // GPU has finished: the copy never waits for the render thread's work. A frame of another size
-    // is stretched over the view, and its depth, which would not line up, is left out: the overlays
-    // then go over it all.
+    // is stretched over the view. Its depth, which would not line up with the overlays unless the
+    // frame was rendered for this camera and size, is then left out: the overlays go over it all.
     void presentRenderTarget(GLuint target,
                              int width,
                              int height)
@@ -6548,6 +6751,7 @@ struct SceneViewport::Implementation {
         const int sourceWidth = frontFrame->width;
         const int sourceHeight = frontFrame->height;
         const bool sameSize = (sourceWidth == width) && (sourceHeight == height);
+        const bool sameView = sameSize && (frontFrame->view == paintedView(width, height));
         if (!presentFbo) {
             glGenFramebuffers(1, &presentFbo);
         }
@@ -6555,7 +6759,7 @@ struct SceneViewport::Implementation {
         // Attached anew each time: a change made in another context is only seen after a bind, and
         // a resize has given the texture a new image.
         glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, source.texture, 0);
-        glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, sameSize ? source.depth : 0);
+        glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, sameView ? source.depth : 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_FRAMEBUFFER_SRGB);
@@ -6564,7 +6768,7 @@ struct SceneViewport::Implementation {
         glClearDepth(1.);
         glClear(GL_DEPTH_BUFFER_BIT);
         glBlitFramebuffer(0, 0, sourceWidth, sourceHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, sameSize ? GL_NEAREST : GL_LINEAR);
-        if (sameSize) {
+        if (sameView) {
             // The grid, guides and boxes hide behind what the frame shows, as when Storm drew them.
             glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
         }
@@ -6638,8 +6842,14 @@ SceneViewport::SceneViewport(QWidget* parent)
         _imp->renderer.setGuideSize(settings->getViewer3DGuideSize());
         // The Viewer 3D Lighting preference is every 3D view's lighting mode.
         _imp->renderer.setLightingMode((SceneViewportRenderer::LightingModeEnum)settings->getViewer3DLighting());
+        _imp->readStandInSettings(*settings);
         QObject::connect(settings.get(), &Settings::settingChanged, this, [this]() {
             SettingsPtr current = appPTR->getCurrentSettings();
+            if (current) {
+                _imp->readStandInSettings(*current);
+                // Another mode may start a frame, and a frame held back is asked for by a paint.
+                update();
+            }
             const double size = current ? current->getViewer3DGuideSize() : _imp->renderer.getGuideSize();
             const SceneViewportRenderer::LightingModeEnum lighting = current ? (SceneViewportRenderer::LightingModeEnum)current->getViewer3DLighting() : _imp->renderer.getLightingMode();
             if ((size != _imp->renderer.getGuideSize()) || (lighting != _imp->renderer.getLightingMode())) {
@@ -6660,6 +6870,10 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->presentPoll->setTimerType(Qt::PreciseTimer);
     _imp->presentPoll->setInterval(kPresentPollMs);
     QObject::connect(_imp->presentPoll, &QTimer::timeout, this, [this]() { pollPresent(); });
+    _imp->standInRefillTimer = new QTimer(this);
+    _imp->standInRefillTimer->setSingleShot(true);
+    _imp->standInRefillTimer->setTimerType(Qt::PreciseTimer);
+    QObject::connect(_imp->standInRefillTimer, &QTimer::timeout, this, [this]() { update(); });
 
     _imp->policyHoldTimer = new QTimer(this);
     _imp->policyHoldTimer->setSingleShot(true);
@@ -6985,6 +7199,11 @@ SceneViewport::isSceneSynced() const
     // A view nobody sees takes nothing in until it is shown.
     const bool awaitsEngine = _imp->usesRenderThread && isVisible() && (width() > 0) && (height() > 0);
 
+    if (awaitsEngine && (_imp->standInMode == Settings::eSceneStandInModeAlways)) {
+        // No frame ever comes: the boxes are what shows the stage.
+        return !_imp->renderThreadBusy() && _imp->renderer.isStandInListComplete();
+    }
+
     return !awaitsEngine || (!_imp->renderThreadBusy() && !_imp->renderer.needsBackgroundFrame() && !_imp->presentPacer.pending());
 }
 
@@ -7032,6 +7251,12 @@ SceneViewport::startBackgroundFrame()
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
+    const QVariantList view = _imp->paintedView(w, h);
+    _imp->noteView(view);
+    _imp->updateStandInLatch(view);
+    if (_imp->standInHoldsFrames()) {
+        return;
+    }
     bool viewOnly = false;
     if (!_imp->renderer.prepareBackgroundFrame(w, h, &viewOnly)) {
         return;
@@ -7063,6 +7288,7 @@ SceneViewport::startBackgroundFrame()
         glFlush();
         const double costMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         Implementation::PresentFrame finished = frame;
+        finished.startedAt = start;
         finished.status = converged ? SceneViewportRenderer::eRenderStatusDone : SceneViewportRenderer::eRenderStatusRefining;
         // Read here: draw changes posted after the frame are taken in by the render thread before
         // the main thread hears of the frame.
@@ -7958,6 +8184,10 @@ SceneViewport::clearScene()
     // A viewer showing images hides this, and a hidden view is not painted to let its refinement
     // engine go.
     _imp->renderer.releaseRefinement();
+    // The next scene's cost is its own.
+    _imp->lastFullFrameMs = -1.;
+    _imp->overBudget = false;
+    _imp->standInLatched = false;
     requestSync(ScenePayload(), QString());
     update();
 }
@@ -8413,10 +8643,10 @@ SceneViewport::pickMustWait()
     // in would have the pick do that frame's work on the render thread, with the main thread
     // waiting for it. Asking for the frame here brings the retry that follows it. A pick behind a
     // frame still on the GPU would have the main thread wait for the GPU; the poll that finds it
-    // done retries.
+    // done retries. Under the Always stand-in no frame comes, and the pick takes the change in.
     startBackgroundFrame();
 
-    return _imp->renderThreadBusy() || _imp->presentPacer.inFlight() || (_imp->usesRenderThread && _imp->renderer.needsBackgroundFrame());
+    return _imp->renderThreadBusy() || _imp->presentPacer.inFlight() || (_imp->usesRenderThread && _imp->renderer.needsBackgroundFrame() && (_imp->standInMode != Settings::eSceneStandInModeAlways));
 }
 
 QString
@@ -9125,17 +9355,28 @@ SceneViewport::paintGL()
     const bool stormOnRenderThread = imp->usesRenderThread && (imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
     // A frame the render thread finished since the last paint, which this one is the first to show.
     std::optional<Implementation::PresentFrame> fresh;
+    // Boxes over a cleared view stand for the scene, in place of any frame.
+    bool standInShown = false;
     // Nothing of a frame to show: no scene, a renderer that failed, or a stage held out of frames.
     const bool blank = (w <= 0) || (h <= 0) || !imp->renderer.hasScene() || imp->renderer.isStageHeld() || !imp->renderer.getRendererError().empty();
     if (!stormOnRenderThread) {
         imp->presentPacer.clear();
         imp->frontFrame.reset();
+        imp->standInLatched = false;
+        imp->renderer.setStandIn(false, imp->standInByModel);
     } else if ((w > 0) && (h > 0)) {
         imp->presentPacer.poll();
         fresh = imp->presentPacer.takeReady();
         if (fresh) {
             imp->frontFrame = fresh;
+            imp->noteFullFrame(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fresh->startedAt).count());
+            setProperty("natronSceneLastFullFrameMs", imp->lastFullFrameMs);
         }
+        const QVariantList view = imp->paintedView(w, h);
+        imp->noteView(view);
+        imp->updateStandInLatch(view);
+        imp->renderer.setStandIn(imp->standInWanted(), imp->standInByModel);
+        standInShown = !blank && ((imp->standInMode == Settings::eSceneStandInModeAlways) || imp->standInLatched);
         // The paint never renders: a frame for this camera and size starts on the render thread,
         // and the poll that finds it finished asks for the paint that shows it. Until then the last
         // frame stays up, whatever camera or size it was made for.
@@ -9143,11 +9384,15 @@ SceneViewport::paintGL()
         if (imp->presentPacer.inFlight() && !imp->presentPoll->isActive()) {
             imp->presentPoll->start();
         }
-        if (!imp->renderThreadBusy() && !imp->presentPacer.inFlight() && !imp->stageAwaitsTakeIn() && imp->renderer.needsBackgroundFrame()) {
+        if (!imp->renderThreadBusy() && !imp->presentPacer.inFlight() && !imp->stageAwaitsTakeIn() && imp->renderer.needsBackgroundFrame() && !imp->standInHoldsFrames()) {
             // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
             update();
         }
-        if (!imp->frontFrame && !blank) {
+        if (imp->standInLatched && imp->viewMoving()) {
+            // The camera's moves ask for paints until it stops; this one is for the refill after.
+            imp->standInRefillTimer->start(std::max<int>(0, int(imp->standInRefillDelayMs - imp->viewStillClock.elapsed())) + 1);
+        }
+        if (!imp->frontFrame && !blank && !standInShown) {
             if (!imp->presentedScene || (imp->composingClock.isValid() && (imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
                 paintComposingStatus();
             }
@@ -9186,7 +9431,7 @@ SceneViewport::paintGL()
         status = _imp->renderer.renderRefinementIfIdle(defaultFramebufferObject(), w, h);
     } else if (_imp->usesRenderThread) {
         const GLuint fbo = defaultFramebufferObject();
-        if (imp->frontFrame && !blank) {
+        if (imp->frontFrame && !blank && !standInShown) {
             imp->presentRenderTarget(fbo, w, h);
             status = imp->frontFrame->status;
         } else {
@@ -9204,7 +9449,7 @@ SceneViewport::paintGL()
         if (imp->renderer.hasScene() && imp->renderer.getRendererError().empty()) {
             // Drawn here at the camera of this paint, not into the frame, so that they keep up with
             // the pointer however long the frame takes.
-            imp->renderer.drawOverlays(fbo, w, h);
+            imp->renderer.drawOverlays(fbo, w, h, standInShown);
         }
     } else {
         status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
@@ -9243,7 +9488,11 @@ SceneViewport::paintGL()
         QTimer::singleShot(0, this, [this]() { followSceneRenderer(); });
     }
     bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
-    if (stormOnRenderThread && imp->frontFrame && !blank) {
+    if (standInShown) {
+        // Always shows the boxes for good once they answer the stage; During Interaction's stand
+        // in for a frame still to come.
+        converged = (imp->standInMode == Settings::eSceneStandInModeAlways) && imp->renderer.isStandInListComplete() && !imp->renderThreadBusy();
+    } else if (stormOnRenderThread && imp->frontFrame && !blank) {
         // A frame for an older camera, size or stage is shown until the newer one lands, but is not
         // the frame of the state now.
         converged = converged && (imp->frontFrame->view == imp->paintedView(w, h)) && !imp->renderer.needsBackgroundFrame() && !imp->composesScene()
@@ -9263,6 +9512,11 @@ SceneViewport::paintGL()
     }
     // The deltas the frame on screen took in, unlike the stats, which also change on the way to it.
     setProperty("natronSceneDrawPresented", QVariant::fromValue<qulonglong>(absorbed));
+    // Whether this paint showed the stand-in, and how many boxes and markers it drew; and how many
+    // paints drew something, which a benchmark counts frames by while no full frame comes.
+    setProperty("natronSceneStandIn", standInShown);
+    setProperty("natronSceneStandInBoxes", standInShown ? _imp->renderer.getStandInBoxCount() : 0);
+    setProperty("natronScenePaintCount", QVariant::fromValue<qulonglong>(property("natronScenePaintCount").toULongLong() + 1));
     // Whatever published the state last may have seen a frame still on its way to the screen,
     // and the paint that shows it is the last thing to run.
     setProperty("natronSceneSynced", isSceneSynced());

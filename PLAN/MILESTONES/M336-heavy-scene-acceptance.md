@@ -47,6 +47,46 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
   - verify: the user's report is recorded here, with any fixes filed as tasks.
   - size: M
 
+## Phase 336.3: Round-6 fixes
+
+From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled Island pass. The thresholds in each verify are the acceptance budgets for the VM rerun.
+
+- [ ] M336.P3.T1 — Fixture check only matches file paths; the stack tool re-symbolizes every Natron frame
+  - files: `tools/bench/heavy_scene_fixture_check.py`, `tools/bench/heavy_scene_stack_window.py`, `tools/bench/heavy_scene_gpu_host.sh`
+  - approach: the ptex pattern only matches a path, as in `Unable to open ptex (\S*(?:/|\.ptx)\S*) : `, since Storm node names (`HwPtexTexture_1`) are not files. Re-symbolize every frame of a module that has a .syms file, not only `??` frames (eu-stack names Natron.bin frames after the nearest exported symbol). Add a ≥20 Hz sampling mode for stalls under 1 s.
+  - verify: re-checking the baseline's Island-loaded records gives judged results; a fixture with a renamed .ptx is still marked incomplete.
+  - size: M
+- [ ] M336.P3.T2 — Paint never waits; overlays are drawn on the main thread
+  - files: `Gui/SceneViewport.cpp` (paint ~8940-8990, picks ~8193/8221, overlay draw ~4760-4772)
+  - approach: camera, resize and expose paints post the frame through the background-frame path and show the last finished one. Queued draw deltas count as busy. Grid, guides, handles and boxes become a main-thread pass over the copied frame at the current camera. Picks stay asynchronous with the existing busy-and-retry.
+  - verify: orbit10k `stall_ms` ≤100 (city 293, Island 127); `twirl_stall_ms` ≤100 (Lobby 566, Island 996); scene_viewer_* and scene_draw_* GUI scripts green.
+  - size: L
+- [ ] M336.P3.T3 — NVIDIA driver-lock spike (result to the user before building)
+  - files: `Gui/SceneViewport.cpp` (render context creation ~6225-6245)
+  - approach: during Island load_all, the main thread's `QOpenGLWidget::makeCurrent` blocks on a mutex inside NVIDIA's GLX library while the render thread uploads ptex and draws with VRAM saturated. With dense samples, try a render context with no share group (own X connection or EGL) and flushes between passes. Bring the findings back first.
+  - verify: Island load_all `stall_ms` ≤100 (16.8 s); Island reveal, draw_budget and cancel stalls ≤100.
+  - size: M
+- [ ] M336.P3.T4 — Box stand-in with an Off / During interaction / Always setting
+  - files: `Gui/SceneViewport.cpp`, `Gui/SceneDrawBoxes.h`, Settings, `tools/bench/heavy_scene_bench.py` (new orbit_full scenario)
+  - approach: per build/m336-heavy-viewport-research.md. While the user interacts and the last full frame went over budget, draw Natron's instanced boxes on the main thread over the last frame. Start no full frame until idle, then refill all at once. No Storm visibility or render-tag switch. Depends on T2.
+  - verify: Island-loaded orbit_full in During interaction: `orbit_fps` ≥30 and `stall_ms` ≤100.
+  - size: L
+- [ ] M336.P3.T5 — Fixed cost of open and connect
+  - files: `Engine/EffectInstance.cpp` (~6863-6900), `Engine/GPUContextPool.cpp` (~194-274), `Engine/ParallelRenderArgs.cpp` (~2068)
+  - approach: `viewer.connectInput` → `InspectorNode::refreshActiveInputs` → `onKnobValueChanged_public` → `ParallelRenderArgsSetter` → `GPUContextPool::attachGLContextToRender` creates a GLX context on the main thread. Time the connect substeps, then create the context ahead of time or skip it for setters triggered by a knob change.
+  - verify: `open_stall_ms` and populate_full `stall_ms` ≤100 on all four scenes (now 200-260).
+  - size: M
+- [ ] M336.P3.T6 — pattern_node and panel reads off the main thread
+  - files: `Gui/SceneGraphModel.cpp` (~1003-1106), the viewer input switch
+  - approach: sample the synchronous viewer reconnect (683-700 ms on Lobby and Island) and fix what it shows. Gather `readEdits` and `readPrimData` on a worker.
+  - verify: `pattern_node_stall_ms` ≤100 everywhere (610-735); flat `inspect_stall_ms` ≤100 (121.5).
+  - size: M
+- [ ] M336.P3.T7 — Reopen tears the old stage down off the main thread
+  - files: the project reset path, SceneStage and viewer release
+  - approach: release the old UsdStage and engine on a worker or the render thread, without the main thread waiting.
+  - verify: `reopen_stall_ms` ≤100 (flat 21.3 s, city 395, Lobby 680, Island 997).
+  - size: M
+
 **Verification gate:** end-to-end run passes every budget on the GPU host; the user accepts the behaviour on a real production scene.
 - 2026-11-14 — Claimed by bosley-native-nodes. P1.T1's `workflow` scenario written (code on milestone/m336-heavy-scene-acceptance); `heavy_scene_gpu_host.sh acceptance` runs it on flat, city, Lobby and Island. PM calls: save is judged as a main-thread stall over 100 ms, reopen as the stall after `loadProject` plus first frame under 2 s; the pattern is `<branch>//*`. The run itself is on the GPU host (benches stay off the dev host), so P1.T1 stays open until its JSON is recorded here.
 - 2026-11-15 — F4 (all other members) merged in (e8c3fd624); release build run 43688632970 produced `build/appimages/Natron-m336-heavy-scene-acceptance.AppImage` + steps .md for the user's GPU-host `heavy_scene_gpu_host.sh acceptance` run. ctest: the task-graph leg failed ProgressiveRenderTest.ACapLoweredAboveTheSamplesLastReadEndsAtIt (precondition cap<kSamples, 257 vs 256), being diagnosed.

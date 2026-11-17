@@ -874,6 +874,38 @@ bezierSegmentMeetsPoint(bool useGuiCurves,
     }
 
     if (minSqDistance <= sqDistance) {
+        // The samples are about one acceptance apart along the curve, so the best of them can be
+        // that far from the pen; an insert there would not land under the click.
+        double lo = std::max(tForMin - incr, 0.);
+        double hi = std::min(tForMin + incr, 1.);
+        const double invPhi = (std::sqrt(5.) - 1.) / 2.;
+        double a = hi - invPhi * (hi - lo);
+        double b = lo + invPhi * (hi - lo);
+        Point pa, pb;
+        Bezier::bezierPoint(p02d, p12d, p22d, p32d, a, &pa);
+        Bezier::bezierPoint(p02d, p12d, p22d, p32d, b, &pb);
+        double da = (pa.x - x) * (pa.x - x) + (pa.y - y) * (pa.y - y);
+        double db = (pb.x - x) * (pb.x - x) + (pb.y - y) * (pb.y - y);
+        for (int i = 0; i < 60; ++i) {
+            if (da <= db) {
+                hi = b;
+                b = a;
+                db = da;
+                a = hi - invPhi * (hi - lo);
+                Bezier::bezierPoint(p02d, p12d, p22d, p32d, a, &pa);
+                da = (pa.x - x) * (pa.x - x) + (pa.y - y) * (pa.y - y);
+            } else {
+                lo = a;
+                a = b;
+                da = db;
+                b = lo + invPhi * (hi - lo);
+                Bezier::bezierPoint(p02d, p12d, p22d, p32d, b, &pb);
+                db = (pb.x - x) * (pb.x - x) + (pb.y - y) * (pb.y - y);
+            }
+        }
+        if (std::min(da, db) < minSqDistance) {
+            tForMin = (da <= db) ? a : b;
+        }
         *param = tForMin;
 
         return true;

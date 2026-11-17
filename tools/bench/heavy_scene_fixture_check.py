@@ -1,6 +1,7 @@
 """Marks a run's records with what its natron.log says about the scene's files and with its shader cache.
 
   heavy_scene_fixture_check.py NATRON_LOG RESULTS LABEL [--shader-cache warm|cold] [--warmup]
+  heavy_scene_fixture_check.py --rejudge RESULTS OUT.jsonl [--logs-dir DIR]
 
 NATRON_LOG is scanned for the scene's files failing to open: "Could not load sublayer", "Could not open
 asset" (a reference or payload that did not resolve or open), "Unable to open ptex", "Unable to read
@@ -13,6 +14,10 @@ Every record of LABEL without shader_cache gets the one given, as the watchdog's
 are written without it. With --warmup each record gets warmup true, and a pass, fail or
 fixture_incomplete becomes result warmup (judged_result keeps the judged one): the run only fills the
 shader cache. RESULTS is rewritten in place; the other lines are kept as they are. Prints one line.
+--rejudge re-scans, for every label in RESULTS, DIR/<label>/natron.log (DIR defaults to runs/ beside RESULTS)
+and writes the records to OUT.jsonl, leaving RESULTS alone: a fixture_incomplete record whose log no longer
+matches gets its judged_result back as result, and a pass or fail record whose log now matches becomes
+fixture_incomplete; warmup records keep their result and only get a fresh fixture_check.
 Standard library only, so it runs on the host's python3.
 """
 
@@ -25,12 +30,14 @@ import sys
 PATTERNS = (
     ("sublayer", re.compile(r"Could not load sublayer @([^@]*)@")),
     ("asset", re.compile(r"Could not open asset @([^@]*)@")),
-    ("ptex", re.compile(r"Unable to open ptex (.*?) : ")),
+    ("ptex", re.compile(r"Unable to open ptex (\S*(?:/|\.ptx)\S*) : ")),
     ("texture", re.compile(r"Unable to read Texture '([^']*)'")),
     ("image", re.compile(r"Cannot open image (\S+) for reading")),
 )
 MARKERS = ("Could not load sublayer", "Could not open asset", "Unable to open ptex", "Unable to read Texture", "Cannot open image")
 SAMPLE_PATHS = 5
+# Storm also names a material node's texture "ptex" or "HwPtexTexture_1" when it has no file; only a
+# value that is a path counts as a missing file.
 JUDGED = ("pass", "fail")
 
 
@@ -54,7 +61,52 @@ def scan(path):
     return {"counts": counts, "failed": sum(counts.values()), "paths": samples, "log": os.path.basename(path)}
 
 
+def rejudge(results, out, logs_dir):
+    logs_dir = logs_dir or os.path.join(os.path.dirname(os.path.abspath(results)), "runs")
+    cache = {}
+    changed = 0
+    out_lines = []
+    with open(results) as f:
+        lines = f.read().splitlines()
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            out_lines.append(line)
+            continue
+        label = record.get("label")
+        if label not in cache:
+            cache[label] = scan(os.path.join(logs_dir, str(label), "natron.log"))
+        found = cache[label]
+        if found is None or record.get("warmup") or record.get("result") == "warmup":
+            if found is not None:
+                record["fixture_check"] = found
+            out_lines.append(json.dumps(record))
+            continue
+        before = record.get("result")
+        record["fixture_check"] = found
+        if found["failed"]:
+            if before in JUDGED:
+                record["judged_result"] = before
+                record["result"] = "fixture_incomplete"
+        elif before == "fixture_incomplete" and record.get("judged_result"):
+            record["result"] = record.pop("judged_result")
+        changed += before != record.get("result")
+        out_lines.append(json.dumps(record))
+    with open(out, "w") as f:
+        f.write("".join(l + "\n" for l in out_lines))
+    print("    rejudged %d records, %d results changed -> %s" % (len(out_lines), changed, out))
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--rejudge":
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--rejudge")
+        parser.add_argument("out")
+        parser.add_argument("--logs-dir")
+        args = parser.parse_args()
+        rejudge(args.rejudge, args.out, args.logs_dir)
+        return 0
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("log")
     parser.add_argument("results")

@@ -12,7 +12,7 @@ The main thread is MAIN_TID, else the pid in SAMPLES.pid, else the lowest thread
 the other threads with a frame matching REGEX in any sample (default the scene viewer's render thread,
 startRenderThread); when none matches, the threads that run Hydra (HdEngine::Execute, a symbol the USD
 libraries export, so it resolves without Natron's symbols), and failing that the busiest other threads.
---symbols DIR names frames eu-stack left as "??" in a module from DIR/<module>.syms, an "nm -n -S -C"
+--symbols DIR names every frame in a module from DIR/<module>.syms, an "nm -n -S -C"
 listing of the unstripped file (stage-bundle.sh's NATRON_STAGE_SYMBOLS_DIR writes one per non-PIE
 executable). Addresses are taken as absolute, which holds only for non-PIE executables.
 Stacks are innermost first, DEPTH frames deep (default 12). --busy leaves out samples whose innermost
@@ -82,13 +82,15 @@ def frame_name(rest, address=None, symbols=None, outer=False):
     elif rest.startswith("- "):
         function, module = "", rest[2:]
     function = re.sub(r"\s+", " ", function).strip()
+    module = os.path.basename(module.strip()) or "?"
+    # eu-stack names a frame of a stripped executable after the nearest exported symbol before it, so a
+    # module with a symbol listing is resolved from the address whatever eu-stack printed.
+    if symbols is not None and address is not None and module in symbols.modules:
+        # An outer frame's address is a return address, which can already be past its caller's end.
+        found = symbols.name(module, address - 1 if outer else address)
+        if found:
+            return found
     if not function or function == "??":
-        module = os.path.basename(module.strip()) or "?"
-        if symbols is not None and address is not None:
-            # An outer frame's address is a return address, which can already be past its caller's end.
-            found = symbols.name(module, address - 1 if outer else address)
-            if found:
-                return found
         return "??@" + module
     return function
 

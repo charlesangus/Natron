@@ -119,6 +119,12 @@ its cache evicts, so there is no purge count.
 `BENCH_DRY_RUN=1 BENCH_TOPO=<topo> BENCH_N=<n> python3 tools/bench/graph_bench.py` builds a graph
 against stand-in objects on the host and prints its node counts, without Natron.
 
+A whole-process eu-stack takes about 0.15 s on the heavy scene, so `SAMPLE_INTERVAL_S` below that does
+not raise the rate. `SAMPLE_TID_COMM=<regex of thread names>` makes `sample_stacks.sh` walk only the main
+thread and the matching threads (`eu-stack -1`), which is what allows 20 Hz (`SAMPLE_INTERVAL_S=0.04`);
+`heavy_scene_stack_window.py` prints the achieved sample period. `heavy_scene_fixture_check.py --rejudge
+RESULTS OUT.jsonl` re-applies the fixture check to an existing results file, writing a copy.
+
 eu-stack stops the process while it walks stacks, so samples in which no thread looks busy are
 an artifact; take concurrency from `sample_states.sh` instead. perf is not installed in the
 container and the container has no package network.

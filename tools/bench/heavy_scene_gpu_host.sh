@@ -90,7 +90,11 @@
 #                      never stops the bench. heavy_scene_stack_window.py folds a scenario's samples into
 #                      the top stacks of the main and render threads. A sample eu-stack takes longer than
 #                      the interval to collect delays the next one; the period the samples actually kept
-#                      is the "sample period" line heavy_scene_stack_window.py prints.
+#                      is the "sample period" line heavy_scene_stack_window.py prints. A whole-process
+#                      eu-stack takes about 0.15 s on the heavy scene, so SAMPLE_INTERVAL_S below that
+#                      does not raise the rate. For 20 Hz or more set SAMPLE_TID_COMM to a regex of the
+#                      thread names (/proc comm) to walk besides the main thread, and SAMPLE_INTERVAL_S=0.04
+#                      (see sample_stacks.sh); check the achieved period in heavy_scene_stack_window.py's output.
 #   SYMBOLS            with SAMPLE=1: the symbols of the AppImage's bundle, the natron-symbols.tar.gz that
 #                      tools/ci/remote/build.sh --debug-symbols downloads with that AppImage, or the
 #                      directory it unpacks to. eu-stack reads the libraries' symbols from it; Natron.bin's

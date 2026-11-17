@@ -1404,7 +1404,7 @@ DockablePanel::isInForeground() const
     for (int i = 0; i < _imp->_container->count(); ++i) {
         QLayoutItem* item = _imp->_container->itemAt(i);
         DockablePanel* panel = item ? qobject_cast<DockablePanel*>(item->widget()) : 0;
-        if (panel && !panel->isHidden() && !panel->isClosed()) {
+        if (panel && !panel->isHidden() && !panel->isClosed() && !panel->isMinimized()) {
             return panel == this;
         }
     }

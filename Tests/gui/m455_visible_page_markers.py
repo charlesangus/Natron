@@ -5,7 +5,8 @@ Transform node whose translate is keyed on its first page. The script reads the 
 TimeLineGui::keyframeMarkerTimes() and, after every step, compares them with the expected frames:
   - pages: switching the Roto between its General and Transform pages drops and brings back the
     translate keys while the shape keys stay; the Transform node's keys go on its Node page;
-  - minimise: a minimised top panel shows nothing, expanding it brings its keys back;
+  - minimise: a minimised panel is skipped: alone it shows nothing, over another panel the next expanded
+    one shows, and expanding it brings its keys back;
   - order: opening a second panel puts it on top and only its keys show; bringing the first one
     back to the top swaps them;
   - floating: a floating panel shows its keys alongside the top docked panel's, and still follows
@@ -301,7 +302,7 @@ try:
         check(bin_order()[:1] == [roto.getLabel()], "the Roto's panel is back on top (%r)" % (bin_order(),))
         yield from expect("Roto back on top", ROTO_ALL)
         set_minimized(roto, True)
-        yield from expect("Roto minimised on top of the Transform", [])
+        yield from expect("Roto minimised on top of the Transform: the Transform shows", TRANSFORM_KEYS)
         set_minimized(roto, False)
         yield from expect("Roto expanded on top of the Transform", ROTO_ALL)
         yield from open_panel(transform)

@@ -64,3 +64,5 @@ Neither scheduler can add work once a frame starts rendering: the request pass r
   - Deviations: an extension is a child frame with its own request map and FrameRenderContext, sharing the parent's store under a new generation, so the live graph and planned map are never mutated. Only work already in the store is reused; planned-but-unrendered work renders again under the new generation. The continuation runs before the node's own render, reading the requested outputs back as store hits. Extension graphs skip pruneBehindCacheHits. Partial cache hits and GPU regions that fall back to the CPU probe inline.
   - PM call: a node that offers a continuation is not placed on the GPU, since a GPU task is never probed (implementer running). The gate follows: debug --tests plus the scheduler regression suites.
 - 2026-11-17 — All tasks done; debug gate 44095319605 green. The probe test effect claims a GPU path only while the placement test asks it to. PR #303 is open; Codex is reviewing.
+
+- 2026-11-17 — Debug gate 44163004494 and PR CI green; PR #303 squash-merged into main. Done.

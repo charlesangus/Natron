@@ -351,7 +351,7 @@ future core work has solid ground to build on.
 | M175 | Build Script Jobs And Test Legs | done | - | bosley-native-nodes | E2 | | | [M175-build-script-jobs-and-test-legs.md](PLAN/MILESTONES/M175-build-script-jobs-and-test-legs.md) |
 | M176 | Splice-Vertical Regression | done | - |  | E10 | | | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
 | M178 | Render Context Core | done | M167 |  | E13 | | | [M178-render-context-core.md](PLAN/MILESTONES/M178-render-context-core.md) |
-| M179 | Render Graph Continuation | doing | M178 | bosley-executor | E6 | | | [M179-render-graph-continuation.md](PLAN/MILESTONES/M179-render-graph-continuation.md) |
+| M179 | Render Graph Continuation | done | M178 | | E6 | | | [M179-render-graph-continuation.md](PLAN/MILESTONES/M179-render-graph-continuation.md) |
 | M180 | Loop Block Core | done | M178 | bosley-native-nodes | E15 | | | [M180-loop-block-core.md](PLAN/MILESTONES/M180-loop-block-core.md) |
 | M181 | Loop Drivers And UI | done | M180, M71 | bosley-native-nodes | E15 | | | [M181-loop-drivers-and-ui.md](PLAN/MILESTONES/M181-loop-drivers-and-ui.md) |
 | M182 | Loop Feedback | done | M180 | bosley-native-nodes | E15 | | | [M182-loop-feedback.md](PLAN/MILESTONES/M182-loop-feedback.md) |

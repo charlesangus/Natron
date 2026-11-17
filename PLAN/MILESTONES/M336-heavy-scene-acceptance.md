@@ -71,7 +71,7 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - approach: per build/m336-heavy-viewport-research.md. While the user interacts and the last full frame went over budget, draw Natron's instanced boxes on the main thread over the last frame. Start no full frame until idle, then refill all at once. No Storm visibility or render-tag switch. Depends on T2.
   - verify: Island-loaded orbit_full in During interaction: `orbit_fps` ≥30 and `stall_ms` ≤100.
   - size: L
-- [ ] M336.P3.T5 — Fixed cost of open and connect
+- [x] M336.P3.T5 — Fixed cost of open and connect
   - files: `Engine/EffectInstance.cpp` (~6863-6900), `Engine/GPUContextPool.cpp` (~194-274), `Engine/ParallelRenderArgs.cpp` (~2068)
   - approach: `viewer.connectInput` → `InspectorNode::refreshActiveInputs` → `onKnobValueChanged_public` → `ParallelRenderArgsSetter` → `GPUContextPool::attachGLContextToRender` creates a GLX context on the main thread. Time the connect substeps, then create the context ahead of time or skip it for setters triggered by a knob change.
   - verify: `open_stall_ms` and populate_full `stall_ms` ≤100 on all four scenes (now 200-260).
@@ -152,3 +152,4 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
 - 2026-11-17 — **VRAM is a real limit (user):** if the textures won't fit, don't load the ones past the cap (or render on the CPU). The rule against size caps is about trimming user data, not GPU memory. This becomes P3.T8, with not loading past the budget as the mechanism.
 - 2026-11-17 — **Stand-in looks (user):** wireframe boxes over a cleared view. The other defaults stand as proposed (33 ms budget, one box per model-kind prim else per draw-state row, refill after 250 ms idle, default mode During interaction), each a Preference.
 - 2026-11-17 — P3.T1 done (9cf673ce8). Re-judged baseline: 7 pass / 17 fail / 1 warm-up (heavy-scene-acceptance.rejudged.jsonl); the six Island-loaded records are plain fails. Dense sampling: eu-stack costs ~170 ms per whole-process sample; SAMPLE_TID_COMM samples named threads only.
+- 2026-11-17 — P3.T5 done (a1759cbfb): ParallelRenderArgsSetter with setUpstreamArgs=false (knob change, input change) attaches no GL context. Test KnobChangeGLContext_Test (needs GL; run-gl-tests.sh). Not covered: ~40 ms of USDRead initialDraw/filename setValue (computeFrameRangeForReader, the reader's knobChanged) and possible synchronous layer reads on layerListRefreshed.

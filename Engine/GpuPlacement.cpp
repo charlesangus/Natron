@@ -387,6 +387,7 @@ placeGraph(FrameGraph& graph,
 
     std::vector<bool> candidate(n, false);
     std::vector<bool> cached(n, false);
+    std::vector<bool> continuation(n, false);
     for (int t : order) {
         FrameGraph::Task& task = graph.tasks[t];
         if (identity[t]) {
@@ -403,6 +404,11 @@ placeGraph(FrameGraph& graph,
         if (!candidate[t]) {
             task.placementReason = refusal.reason;
             task.placementDetail = std::move(refusal.detail);
+        } else if (inputs.offersContinuation) {
+            continuation[t] = inputs.offersContinuation(task);
+        } else {
+            const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+            continuation[t] = effect && effect->offersRenderContinuation();
         }
     }
     if (inputs.readsRaw) {
@@ -427,6 +433,7 @@ placeGraph(FrameGraph& graph,
     // Labels are working region ids; a merge empties the regions it absorbs.
     std::vector<int> label(n, -1);
     std::vector<std::vector<int>> regionMembers;
+    std::vector<bool> holdsContinuation;
 
     const auto tryAssign = [&](int task, const std::vector<int>& absorbed, int into) -> bool {
         std::vector<int> trial = label;
@@ -476,11 +483,17 @@ placeGraph(FrameGraph& graph,
             continue;
         }
 
-        if (!depRegions.empty()) {
-            if (tryAssign(t, depRegions, depRegions.front())) {
-                continue;
+        if (!depRegions.empty() && !continuation[t]) {
+            bool mergesContinuation = false;
+            for (int r : depRegions) {
+                mergesContinuation = mergesContinuation || holdsContinuation[r];
             }
-            task.placementReason = FrameGraph::PlacementReason::WouldFormCycle;
+            if (!mergesContinuation || (depRegions.size() == 1)) {
+                if (tryAssign(t, depRegions, depRegions.front())) {
+                    continue;
+                }
+                task.placementReason = FrameGraph::PlacementReason::WouldFormCycle;
+            }
             std::stable_sort(depRegions.begin(), depRegions.end(), [&](int a, int b) {
                 return regionMembers[a].size() > regionMembers[b].size();
             });
@@ -496,6 +509,7 @@ placeGraph(FrameGraph& graph,
             }
         }
         regionMembers.push_back(std::vector<int>());
+        holdsContinuation.push_back(continuation[t]);
         const int fresh = (int)regionMembers.size() - 1;
         label[t] = fresh;
         regionMembers[fresh].push_back(t);
@@ -1045,9 +1059,9 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
             return false;
         }
         const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
-        if (effect && effect->offersRenderContinuation()) {
+        if (effect && effect->offersRenderContinuation() && !effect->supportsRenderContinuationOnGpu()) {
             refusal->reason = FrameGraph::PlacementReason::NoGpuPath;
-            refusal->detail = "the node offers a render continuation, which only CPU tasks are probed for";
+            refusal->detail = "the node offers a render continuation its GPU path cannot render after";
 
             return false;
         }

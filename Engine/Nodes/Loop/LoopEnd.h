@@ -661,21 +661,33 @@ private:
         return OpKind::Point;
     }
 
-    // Only a fold step task of the task-graph scheduler, which reads step k - 1 from the device.
+    // Under the task-graph scheduler only: a fold step task, which reads step k - 1 from the device,
+    // or a Map Blend of the layer its render continuation requests.
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The iteration on input 0 and step k - 1 under a context, both in plane.
+    // The iteration on input 0, step k - 1 under a context and the iterations a render continuation
+    // requested, all in plane; the Map in the layer of its channel.
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
                                   double time,
                                   ViewIdx view,
                                   ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // One loopfold dispatch folding the iteration into step k - 1, finishing a Mean at the last step.
+    // Map Blend reads its iterations from its render continuation rather than from the Source, and
+    // the Map only when its channel resolves.
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // One loopfold dispatch folding the iteration into step k - 1, finishing a Mean at the last step;
+    // for Map Blend one loopmapblend dispatch per iteration requested.
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     // Map Blend only: the iterations the Map reads over a region are requested there, no others.
     virtual bool offersRenderContinuation() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool supportsRenderContinuationOnGpu() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool getRenderContinuation(const RenderContinuationArgs& args,
                                        RenderContinuation* continuation) OVERRIDE FINAL;
@@ -706,6 +718,9 @@ private:
                       const RectI& window,
                       const RenderContextPtr& context,
                       MapPlane* plane) WARN_UNUSED_RETURN;
+
+    StatusEnum renderMapBlendGpu(const GpuRenderArgs& args,
+                                 const Resolved& resolved) WARN_UNUSED_RETURN;
 
     // Iteration's output over region, in layer, as getRenderContinuation() requests it and the render pulls it.
     RenderContinuationRequest mapBlendRequest(const Iteration& iteration,

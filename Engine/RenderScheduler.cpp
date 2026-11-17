@@ -153,6 +153,9 @@ struct RenderScheduler::Continuation {
 
     // One per read of a requested output by the continuation, released once the task rendered.
     std::vector<FrameStore::TaskKey> rootKeys;
+
+    // One per request, in their order, for a GPU region to read the outputs from.
+    std::vector<RenderScheduler::ContinuationInput> inputs;
     std::function<StatusEnum()> callback;
 
     // Guarded by the scheduler's mutex; null once the extension finished, or when nothing was left to render.
@@ -1806,7 +1809,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
             }
         }
         if (!continuation) {
-            switch (probeRenderContinuation(frame, taskIndex, budget, &continuation)) {
+            switch (probeRenderContinuation(frame, taskIndex, taskIndex, budget, &continuation)) {
             case ProbeOutcome::Render:
                 break;
             case ProbeOutcome::Parked:
@@ -1829,21 +1832,9 @@ RenderScheduler::executeTask(const FramePtr& frame,
         if (abortInfo && abortInfo->isAborted()) {
             renders = false;
             retCode = EffectInstance::eRenderRoIRetCodeAborted;
-        } else if (continuation->callback) {
-            AppTLS::FrameContextScope scope(continuation->context.get(), budget, runnablePriorityOf(frame->priority));
-            OpenMPThreadsScope openMPThreads(budget);
-            ContextFrameArgsScope contextArgs(effect, task.key.contextKey ? continuation->context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey)) : ParallelRenderArgsPtr());
-            EffectInstance::RenderContinuationHandledScope handled(task.key.node.get(), task.key.time, task.key.view, task.key.contextKey, frame->depth + 1);
-            StatusEnum status = eStatusFailed;
-            try {
-                status = continuation->callback();
-            } catch (...) {
-                status = eStatusFailed;
-            }
-            if (status != eStatusOK) {
-                renders = false;
-                retCode = EffectInstance::eRenderRoIRetCodeFailed;
-            }
+        } else if (!runContinuationCallback(frame, taskIndex, *continuation, budget)) {
+            renders = false;
+            retCode = EffectInstance::eRenderRoIRetCodeFailed;
         }
     }
 
@@ -1946,26 +1937,53 @@ RenderScheduler::executeTask(const FramePtr& frame,
     completeTask(frame, taskIndex, retCode, std::move(planes), finished);
 } // RenderScheduler::executeTask
 
+bool
+RenderScheduler::runContinuationCallback(const FramePtr& frame,
+                                         int probed,
+                                         const Continuation& continuation,
+                                         int budget)
+{
+    if (!continuation.callback) {
+        return true;
+    }
+    const FrameGraph::Task& task = frame->graph.tasks[probed];
+    const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+    AppTLS::FrameContextScope scope(continuation.context.get(), budget, runnablePriorityOf(frame->priority));
+    OpenMPThreadsScope openMPThreads(budget);
+    ContextFrameArgsScope contextArgs(effect, task.key.contextKey ? continuation.context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey)) : ParallelRenderArgsPtr());
+    EffectInstance::RenderContinuationHandledScope handled(task.key.node.get(), task.key.time, task.key.view, task.key.contextKey, frame->depth + 1);
+    StatusEnum status = eStatusFailed;
+    try {
+        status = continuation.callback();
+    } catch (...) {
+        status = eStatusFailed;
+    }
+
+    return status == eStatusOK;
+}
+
 RenderScheduler::ProbeOutcome
 RenderScheduler::probeRenderContinuation(const FramePtr& frame,
                                          int taskIndex,
+                                         int probedIndex,
                                          int budget,
                                          std::unique_ptr<Continuation>* continuation)
 {
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
-    const EffectInstancePtr effect = task.key.node->getEffectInstance();
+    const FrameGraph::Task& probedTask = frame->graph.tasks[probedIndex];
+    const EffectInstancePtr effect = probedTask.key.node->getEffectInstance();
     AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
     EffectInstance::RenderContinuation probed;
     bool hasContinuation = false;
     {
-        const ParallelRenderArgsPtr taskArgs = frame->context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey));
-        ContextFrameArgsScope contextArgs(effect, task.key.contextKey ? taskArgs : ParallelRenderArgsPtr());
-        EffectInstance::RenderContinuationHandledScope handled(task.key.node.get(), task.key.time, task.key.view, task.key.contextKey, frame->depth);
+        const ParallelRenderArgsPtr taskArgs = frame->context->getArgs(NodeCtxKey(probedTask.key.node, probedTask.key.contextKey));
+        ContextFrameArgsScope contextArgs(effect, probedTask.key.contextKey ? taskArgs : ParallelRenderArgsPtr());
+        EffectInstance::RenderContinuationHandledScope handled(probedTask.key.node.get(), probedTask.key.time, probedTask.key.view, probedTask.key.contextKey, frame->depth);
         EffectInstance::RenderContinuationArgs args;
-        args.time = task.key.time;
-        args.view = task.key.view;
-        args.mipmapLevel = task.key.mipmapLevel;
-        args.roi = task.roi;
+        args.time = probedTask.key.time;
+        args.view = probedTask.key.view;
+        args.mipmapLevel = probedTask.key.mipmapLevel;
+        args.roi = probedTask.roi;
         args.context = taskArgs ? taskArgs->context : RenderContextPtr();
         args.depth = frame->depth;
         try {
@@ -2008,14 +2026,14 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
         key.node = request.node;
         key.time = request.time;
         key.view = request.view;
-        key.mipmapLevel = task.key.mipmapLevel;
+        key.mipmapLevel = probedTask.key.mipmapLevel;
         key.contextKey = restrictContextToNode(request.context, request.node, &restricted);
         RequestPassRoot root;
         root.node = request.node;
         root.context = restricted;
         root.time = request.time;
         root.view = request.view;
-        root.mipmapLevel = task.key.mipmapLevel;
+        root.mipmapLevel = probedTask.key.mipmapLevel;
         root.roi = request.roi;
         passRoots.push_back(root);
         // Distinct keys in their first request's order, which is how buildGraph numbers its roots.
@@ -2035,15 +2053,18 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
         }
     }
     std::vector<int> rootReads(rootKeys.size(), 0);
+    std::vector<int> requestRoots;
+    requestRoots.reserve(probed.requests.size());
     for (const EffectInstance::RenderContinuationRequest& request : probed.requests) {
         RenderContextPtr restricted;
         FrameStore::TaskKey key;
         key.node = request.node;
         key.time = request.time;
         key.view = request.view;
-        key.mipmapLevel = task.key.mipmapLevel;
+        key.mipmapLevel = probedTask.key.mipmapLevel;
         key.contextKey = restrictContextToNode(request.context, request.node, &restricted);
-        ++rootReads[std::find(rootKeys.begin(), rootKeys.end(), key) - rootKeys.begin()];
+        requestRoots.push_back((int)(std::find(rootKeys.begin(), rootKeys.end(), key) - rootKeys.begin()));
+        ++rootReads[requestRoots.back()];
     }
 
     // The extension's own map: the planned one is read without a lock by the tasks running.
@@ -2073,6 +2094,16 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
     }
     made->context = extensionContext;
     planExtensionReuse(graph, rootReads, *extensionContext, &made->rootKeys);
+    // The reuse keeps every root, first and in its order, with the key the store holds it under.
+    for (std::size_t r = 0; r < probed.requests.size(); ++r) {
+        const FrameGraph::Task& root = graph.tasks[requestRoots[r]];
+        ContinuationInput input;
+        input.request = probed.requests[r];
+        input.key = root.key;
+        input.renderedRoI = root.renderedRoI;
+        input.components = root.components;
+        made->inputs.push_back(std::move(input));
+    }
 
     bool rendersAny = false;
     for (const FrameGraph::Task& extensionTask : graph.tasks) {
@@ -2113,6 +2144,10 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
         --_runningTasks;
         unreserveLocked(task);
         --frame->runningTasks;
+        if (taskIndex >= frame->regionTasksBegin) {
+            --_runningGpuTasks;
+            releaseGpuWaitingLocked();
+        }
         if (task.sharesCachedOutput) {
             releaseSharedOutputLocked(task);
         }
@@ -2272,7 +2307,62 @@ RenderScheduler::executeRegion(const FramePtr& frame,
     }
     bool deviceLost = false;
 
+    // Placement keeps the member's dependencies out of the region, so the probe finds them in the store as a CPU
+    // task's would.
+    int continuationMember = -1;
     if (body) {
+        const std::vector<int>& members = frame->graph.regions[region].members;
+        for (std::size_t i = 0; i < members.size(); ++i) {
+            const FrameGraph::Task& member = frame->graph.tasks[members[i]];
+            const EffectInstancePtr effect = member.key.node ? member.key.node->getEffectInstance() : EffectInstancePtr();
+            if (effect && !member.isIdentity && !member.servedFromCache && !member.reusesStore && effect->offersRenderContinuation()) {
+                continuationMember = (int)i;
+                break;
+            }
+        }
+    }
+    std::unique_ptr<Continuation> continuation;
+    bool runsBody = (bool)body;
+    if (continuationMember >= 0) {
+        const int probed = frame->graph.regions[region].members[continuationMember];
+        {
+            QMutexLocker k(&_mutex);
+            std::map<int, std::unique_ptr<Continuation>>::iterator resumed = frame->continuations.find(taskIndex);
+            if ((resumed != frame->continuations.end()) && !resumed->second->extension) {
+                continuation = std::move(resumed->second);
+                frame->continuations.erase(resumed);
+            }
+        }
+        if (!continuation) {
+            switch (probeRenderContinuation(frame, taskIndex, probed, budget, &continuation)) {
+            case ProbeOutcome::Render:
+                break;
+            case ProbeOutcome::Parked:
+
+                return;
+            case ProbeOutcome::Failed:
+                runsBody = false;
+                retCode = EffectInstance::eRenderRoIRetCodeFailed;
+                break;
+            case ProbeOutcome::Aborted:
+                runsBody = false;
+                retCode = EffectInstance::eRenderRoIRetCodeAborted;
+                break;
+            }
+        }
+        if (runsBody && continuation) {
+            const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
+            if (abortInfo && abortInfo->isAborted()) {
+                runsBody = false;
+                retCode = EffectInstance::eRenderRoIRetCodeAborted;
+            } else if (!runContinuationCallback(frame, probed, *continuation, budget)) {
+                runsBody = false;
+                retCode = EffectInstance::eRenderRoIRetCodeFailed;
+            }
+        }
+    }
+
+    if (runsBody) {
         AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
         OpenMPThreadsScope openMPThreads(budget);
         const int rendering = ++_tasksRendering;
@@ -2281,6 +2371,10 @@ RenderScheduler::executeRegion(const FramePtr& frame,
         }
         RegionReport report;
         report.recordTransfers = profileSink().isEnabled();
+        report.continuationMember = continuationMember;
+        if (continuation) {
+            report.continuationInputs = continuation->inputs;
+        }
         try {
             retCode = body(frame->context, frame->graph, region, [this](int* cpuBudget) { return leaseCpuFallback(cpuBudget); }, &planes, &report);
         } catch (const std::exception&) {
@@ -2384,9 +2478,16 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             QMutexLocker k(&_mutex);
             frame->fallbacks.push_back(std::move(fallback));
         }
-    } else if (appPTR) {
+    } else if (!body && appPTR) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("RenderScheduler"), QDateTime::currentDateTime(),
                                         QString::fromUtf8("Render task failed: a GPU region was scheduled with no region body set"));
+    }
+
+    if (continuation) {
+        FrameStore& store = frame->context->getStore();
+        for (const FrameStore::TaskKey& key : continuation->rootKeys) {
+            store.release(key);
+        }
     }
 
     if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !deviceLost) {

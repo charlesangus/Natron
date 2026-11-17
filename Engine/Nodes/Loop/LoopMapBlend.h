@@ -37,6 +37,8 @@ NATRON_NAMESPACE_ENTER
 
 class MapPlane;
 struct MapRange;
+struct GpuImageView;
+struct GpuRenderArgs;
 
 /**
  * @brief The per-pixel arithmetic of LoopEnd's Map Blend. The count iterations sit evenly along
@@ -114,6 +116,41 @@ void accumulate(const MapPlane& map,
                 const RectI& roi,
                 int nComps,
                 float* acc);
+
+/**
+ * @brief The Map as recordGpu() reads it: channel of view, remapped by invert, smooth and
+ * exponent as MapInputParams::remap() does, and outside wherever view holds no pixel. A null view
+ * reads outside everywhere.
+ **/
+struct GpuMap {
+    const GpuImageView* view = nullptr;
+    int channel = 0;
+    bool invert = false;
+    bool smooth = false;
+    float exponent = 1.f;
+    float outside = 0.f;
+};
+
+/// An iteration's image on the device; a null view adds nothing.
+struct GpuIteration {
+    int iteration = 0;
+    const GpuImageView* view = nullptr;
+};
+
+/// Whether this build carries recordGpu()'s kernel.
+bool hasGpuKernel() WARN_UNUSED_RETURN;
+
+/**
+ * @brief Records the blend of iterations, in increasing iteration order, into args.output over
+ * args.outputRect, each pixel summing what accumulate() adds for each of them onto zero. With no
+ * iterations the output is zero. The output holds args.query.nComps components; an iteration's
+ * are read by index. False when a view cannot be indexed or a dispatch fails.
+ **/
+bool recordGpu(const GpuRenderArgs& args,
+               const GpuMap& map,
+               const std::vector<GpuIteration>& iterations,
+               int count,
+               InterpolationEnum interpolation) WARN_UNUSED_RETURN;
 
 /**
  * @brief How many iterations iterationRegions() asked for each tile, recorded only while a test

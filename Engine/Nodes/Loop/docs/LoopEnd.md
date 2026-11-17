@@ -312,4 +312,9 @@ within 1e-6 relative, from the device's division (mean) and rounding.
   when a feedback tail's layer differs from the LoopBegin's (the CPU conforms it), and under the
   legacy scheduler, where one render folds every iteration. A depth other than float also keeps
   it on the CPU.
-- Map Blend blends on the CPU; the body's iterations still render wherever their nodes do.
+- Map Blend, under the task-graph scheduler, blends on the GPU in a region of its own: the
+  culling probe reads the Map on the host first, then the blend reads the Map and each iteration
+  the probe requested on the device, in iteration order, within 1e-6 relative of the CPU. The
+  iterations render wherever their nodes do and are uploaded when they rendered on the host. A
+  layer other than the one the node outputs, a depth other than float, and the legacy scheduler
+  keep the blend on the CPU.

@@ -28,10 +28,16 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <mutex>
 
 #include "Engine/Image.h"
 #include "Engine/Nodes/Filter/MapInput.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRecord.h"
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -283,6 +289,203 @@ accumulate(const MapPlane& map,
         }
     }
 }
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+    // Mirrors LoopMapBlendParams in Engine/Gpu/Kernels/loopmapblend.slang.
+    struct LoopMapBlendGpuParams {
+        uint32_t width;
+        uint32_t height;
+        uint32_t dstOffset;
+        uint32_t dstStride;
+        uint32_t nComps;
+        uint32_t flags;
+        uint32_t srcOffset;
+        uint32_t srcStride;
+        uint32_t srcComps;
+        uint32_t validX1;
+        uint32_t validY1;
+        uint32_t validX2;
+        uint32_t validY2;
+        uint32_t mapChannel;
+        uint32_t mapChannels;
+        uint32_t mapOffset;
+        uint32_t mapStride;
+        uint32_t mapX1;
+        uint32_t mapY1;
+        uint32_t mapX2;
+        uint32_t mapY2;
+        float exponent;
+        float outside;
+        int32_t iteration;
+        int32_t count;
+        uint32_t interpolation;
+    };
+    static_assert(sizeof(LoopMapBlendGpuParams) == 104, "must match LoopMapBlendParams in loopmapblend.slang");
+
+    constexpr uint32_t kBlendFirst = 1;
+    constexpr uint32_t kBlendSource = 2;
+    constexpr uint32_t kBlendMapRead = 4;
+    constexpr uint32_t kBlendMapInvert = 8;
+    constexpr uint32_t kBlendMapSmooth = 16;
+
+    // The float index of pixel (x, y) of view, false when the view is malformed or does not hold its
+    // whole bounds within 32-bit indexing.
+    bool
+    viewIndex(const GpuImageView& view,
+              int x,
+              int y,
+              uint32_t* index)
+    {
+        if (!view.buffer || ((view.byteOffset % sizeof(float)) != 0) || (view.nComps < 1) || (view.rowStrideFloats < view.bounds.width() * view.nComps)) {
+            return false;
+        }
+        const uint64_t base = view.byteOffset / sizeof(float);
+        if ((base + (uint64_t)view.bounds.height() * (uint64_t)view.rowStrideFloats) > UINT32_MAX) {
+            return false;
+        }
+        *index = (uint32_t)(base + (uint64_t)(y - view.bounds.y1) * (uint64_t)view.rowStrideFloats + (uint64_t)(x - view.bounds.x1) * (uint64_t)view.nComps);
+
+        return true;
+    }
+
+    uint32_t
+    clampedThreads(int64_t v,
+                   uint32_t n)
+    {
+        return (uint32_t)std::clamp<int64_t>(v, 0, (int64_t)n);
+    }
+
+    // The part of view over rect, as thread offsets from rect's origin, and the index of its first pixel;
+    // false for a view that cannot be indexed, an empty window for one outside rect.
+    bool
+    validWindow(const GpuImageView& view,
+                const RectI& rect,
+                uint32_t width,
+                uint32_t height,
+                uint32_t* x1,
+                uint32_t* y1,
+                uint32_t* x2,
+                uint32_t* y2,
+                uint32_t* offset)
+    {
+        *x1 = clampedThreads((int64_t)view.bounds.x1 - rect.x1, width);
+        *x2 = clampedThreads((int64_t)view.bounds.x2 - rect.x1, width);
+        *y1 = clampedThreads((int64_t)view.bounds.y1 - rect.y1, height);
+        *y2 = clampedThreads((int64_t)view.bounds.y2 - rect.y1, height);
+        if ((*x1 >= *x2) || (*y1 >= *y2)) {
+            *x1 = *x2 = *y1 = *y2 = 0;
+            *offset = 0;
+
+            return true;
+        }
+
+        return viewIndex(view, rect.x1 + (int)*x1, rect.y1 + (int)*y1, offset);
+    }
+} // anonymous namespace
+#endif // NATRON_HAVE_GPU
+
+bool
+hasGpuKernel()
+{
+#ifdef NATRON_HAVE_GPU
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool
+recordGpu(const GpuRenderArgs& args,
+          const GpuMap& map,
+          const std::vector<GpuIteration>& iterations,
+          int count,
+          InterpolationEnum interpolation)
+{
+#ifdef NATRON_HAVE_GPU
+    const GpuImageView& dst = args.output;
+    const RectI& rect = args.outputRect;
+    const int nComps = args.query.nComps;
+    if (rect.isNull() || (nComps < 1) || (nComps > 4) || (dst.nComps != nComps) || !dst.bounds.contains(rect)) {
+        return false;
+    }
+    LoopMapBlendGpuParams p {};
+    p.width = (uint32_t)rect.width();
+    p.height = (uint32_t)rect.height();
+    p.dstStride = (uint32_t)dst.rowStrideFloats;
+    p.nComps = (uint32_t)nComps;
+    p.exponent = map.exponent;
+    p.outside = map.outside;
+    p.count = count;
+    p.interpolation = (uint32_t)interpolation;
+    if (!viewIndex(dst, rect.x1, rect.y1, &p.dstOffset)) {
+        return false;
+    }
+
+    // An unbound Map or source is the output buffer, which the kernel then reads nothing of.
+    const gpu::GpuBuffer* mapBuffer = dst.buffer;
+    if (map.view && map.view->buffer && !map.view->bounds.isNull()) {
+        if ((map.channel < 0) || (map.channel >= map.view->nComps)) {
+            return false;
+        }
+        if (!validWindow(*map.view, rect, p.width, p.height, &p.mapX1, &p.mapY1, &p.mapX2, &p.mapY2, &p.mapOffset)) {
+            return false;
+        }
+        if (p.mapX1 < p.mapX2) {
+            p.flags |= kBlendMapRead;
+            p.mapChannel = (uint32_t)map.channel;
+            p.mapChannels = (uint32_t)map.view->nComps;
+            p.mapStride = (uint32_t)map.view->rowStrideFloats;
+            mapBuffer = map.view->buffer;
+        }
+    }
+    if (map.invert) {
+        p.flags |= kBlendMapInvert;
+    }
+    if (map.smooth) {
+        p.flags |= kBlendMapSmooth;
+    }
+
+    const uint32_t mapFlags = p.flags;
+    bool first = true;
+    for (const GpuIteration& iteration : iterations) {
+        if (!iteration.view || !iteration.view->buffer || iteration.view->bounds.isNull()) {
+            continue;
+        }
+        p.flags = mapFlags | kBlendSource | (first ? kBlendFirst : 0u);
+        p.iteration = iteration.iteration;
+        p.srcComps = (uint32_t)iteration.view->nComps;
+        p.srcStride = (uint32_t)iteration.view->rowStrideFloats;
+        if (!validWindow(*iteration.view, rect, p.width, p.height, &p.validX1, &p.validY1, &p.validX2, &p.validY2, &p.srcOffset)) {
+            return false;
+        }
+        const gpu::GpuBuffer* srcBuffer = (p.validX1 < p.validX2) ? iteration.view->buffer : dst.buffer;
+        if (!first) {
+            args.context.computeBarrier();
+        }
+        if (!args.context.dispatch(gpu::GpuKernelId::loopmapblend_accumulate, { mapBuffer, srcBuffer, dst.buffer }, p, { p.width, p.height, 1 })) {
+            return false;
+        }
+        first = false;
+    }
+    if (first) {
+        p.flags = mapFlags | kBlendFirst;
+        p.iteration = 0;
+
+        return bool(args.context.dispatch(gpu::GpuKernelId::loopmapblend_accumulate, { mapBuffer, dst.buffer, dst.buffer }, p, { p.width, p.height, 1 }));
+    }
+
+    return true;
+#else
+    (void)args;
+    (void)map;
+    (void)iterations;
+    (void)count;
+    (void)interpolation;
+
+    return false;
+#endif
+} // recordGpu
 
 namespace TileStats {
 

@@ -1479,7 +1479,14 @@ returns `true` and fills `continuation->requests` with the outputs it needs
 next -- node, context, time, view, canonical region and layers -- and
 `continuation->continuation`, run once they are rendered.
 
-A node that overrides `offersRenderContinuation()` to return `true` is never placed on the GPU, because only CPU tasks are probed.
+A node that overrides `offersRenderContinuation()` to return `true` stays on the CPU unless it
+also overrides `supportsRenderContinuationOnGpu()`. GPU placement then starts a region at it that
+holds none of the tasks it depends on and merges with no other region, so its inputs are rendered
+before the region runs. The scheduler probes it on the CPU (an input rendered on the device is
+downloaded for the probe), renders the extension, runs the continuation callback, and only then
+records the region. `renderGpu()` reads each requested output from
+`GpuRenderArgs::continuationInputs`, in request order, with the request's context and time;
+`getGpuInputRoI()` and `getGpuInputLayer()` are asked about them with `kGpuContinuationInputNb`.
 
 - **Task-graph scheduler.** The requests go through an incremental request
   pass of their own, are built into an extension graph that shares the frame's

@@ -67,6 +67,10 @@ struct PlacementInputs {
     // Whether the task's effect reads raw-kind data from an input. Unset: none does.
     std::function<bool(const FrameGraph::Task&)> readsRaw;
 
+    // Whether the task's effect offers a render continuation, whose probe the scheduler runs before the task's region.
+    // Unset: EffectInstance::offersRenderContinuation().
+    std::function<bool(const FrameGraph::Task&)> offersContinuation;
+
     // How much a candidate weighs. When set and regionGain is not, regions are judged by regionWeightGain() with it.
     std::function<GpuWeight(const FrameGraph::Task&)> taskWeight;
 
@@ -120,6 +124,10 @@ const int kMaxRegionShrinkSteps = 16;
  * does, else starts a region of its own. The invariant holds after every step, so each region is convex: no path leaves
  * it, through a CPU task or another region, and comes back, which is what lets a region run as one task. Each region is
  * then evaluated with regionGain, or by regionWeightGain() with taskWeight when only that is set, in topological order.
+ *
+ * A candidate that offers a render continuation always starts a region of its own, and that region never merges with
+ * another: its probe runs before the region and reads the task's dependencies from the frame store, so none of them
+ * may be a member, and the scheduler probes one continuation per region. Its consumers may still join it.
  *
  * A region that gains nothing is shrunk greedily: each step drops the member on its boundary (with a dependency or a
  * consumer outside it, or the root) whose removal leaves the most gain, among those whose removal keeps the

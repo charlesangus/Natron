@@ -330,6 +330,17 @@ foldStepOf(const RenderContextPtr& context,
     return (int)*step;
 }
 
+bool
+sameRenderContext(const RenderContextPtr& a,
+                  const RenderContextPtr& b)
+{
+    if (a == b) {
+        return true;
+    }
+
+    return a && b && (*a == *b);
+}
+
 RenderContextPtr
 withFoldStep(const RenderContextPtr& context,
              int step)
@@ -3853,21 +3864,55 @@ LoopEnd::canRenderOnGpu(const GpuQuery& query) const
         return false;
     }
     const Resolved resolved = resolveAt(query.time);
+    if (!resolved.message.empty() || (resolved.folded <= 0)) {
+        return false;
+    }
+    if (resolved.mapBlend) {
+        // The only layer the render continuation requests of the iterations.
+        return LoopMapBlend::hasGpuKernel() && (query.plane == mapBlendLayer(query.time, query.view));
+    }
 
-    return resolved.message.empty() && (resolved.folded > 0) && !resolved.mapBlend;
+    return true;
 }
 
 bool
 LoopEnd::getGpuInputLayer(int inputNb,
                           const ImageLayerDesc& plane,
-                          double /*time*/,
-                          ViewIdx /*view*/,
+                          double time,
+                          ViewIdx view,
                           ImageLayerDesc* layer) const
 {
-    if ((inputNb != 0) && (inputNb != FrameViewRequest::TaskEdge::kContextRequestInputNb)) {
+    if (inputNb == kLoopEndInputMap) {
+        int channel = -1;
+
+        return _map.resolveChannel(const_cast<LoopEnd*>(this), kLoopEndInputMap, time, view, layer, &channel);
+    }
+    if ((inputNb != 0) && (inputNb != FrameViewRequest::TaskEdge::kContextRequestInputNb) && (inputNb != kGpuContinuationInputNb)) {
         return false;
     }
     *layer = plane;
+
+    return true;
+}
+
+bool
+LoopEnd::readsGpuInput(int inputNb,
+                       const ImageLayerDesc& /*plane*/,
+                       double time,
+                       ViewIdx view) const
+{
+    if (!isMapBlend()) {
+        return inputNb != kLoopEndInputMap;
+    }
+    if (inputNb == kLoopEndInputSource) {
+        return false;
+    }
+    if (inputNb == kLoopEndInputMap) {
+        ImageLayerDesc layer;
+        int channel = -1;
+
+        return _map.resolveChannel(const_cast<LoopEnd*>(this), kLoopEndInputMap, time, view, &layer, &channel);
+    }
 
     return true;
 }
@@ -3881,6 +3926,9 @@ LoopEnd::renderGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     const Resolved resolved = resolveAt(query.time);
+    if (resolved.mapBlend) {
+        return renderMapBlendGpu(args, resolved);
+    }
     if (drivesFeedbackChain(resolved)) {
         return eStatusFailed;
     }
@@ -4030,6 +4078,61 @@ bool
 LoopEnd::offersRenderContinuation() const
 {
     return isMapBlend();
+}
+
+bool
+LoopEnd::supportsRenderContinuationOnGpu() const
+{
+    return isMapBlend() && LoopMapBlend::hasGpuKernel();
+}
+
+StatusEnum
+LoopEnd::renderMapBlendGpu(const GpuRenderArgs& args,
+                           const Resolved& resolved)
+{
+    const GpuQuery& query = args.query;
+    const int count = resolved.folded;
+    const std::vector<Iteration> iterations = foldedIterations(resolved, getCurrentRenderContext(), query.time);
+    std::vector<LoopMapBlend::GpuIteration> taps;
+
+    taps.reserve(args.continuationInputs.size());
+    for (const GpuContinuationInput& input : args.continuationInputs) {
+        int k = 0;
+        while ((k < count) && !((iterations[k].time == input.time) && sameRenderContext(iterations[k].context, input.context))) {
+            ++k;
+        }
+        if (k == count) {
+            return eStatusFailed;
+        }
+        LoopMapBlend::GpuIteration tap;
+        tap.iteration = k;
+        tap.view = &input.view;
+        taps.push_back(tap);
+    }
+    // A pixel sums its taps in iteration order, as the CPU does.
+    std::stable_sort(taps.begin(), taps.end(), [](const LoopMapBlend::GpuIteration& a, const LoopMapBlend::GpuIteration& b) {
+        return a.iteration < b.iteration;
+    });
+
+    LoopMapBlend::GpuMap map;
+    // As readMapPlane(): no Map reads 0, a Map reads its remapped black beyond its image or
+    // everywhere when its channel does not resolve.
+    if (getInput(kLoopEndInputMap)) {
+        const MapInputParams params = _map.bake(KnobReader(query.time, query.view));
+        map.invert = params.invert;
+        map.smooth = params.smooth;
+        map.exponent = params.exponent;
+        map.outside = params.remap(0.f);
+        ImageLayerDesc layer;
+        int channel = -1;
+        const bool resolves = _map.resolveChannel(this, kLoopEndInputMap, query.time, query.view, &layer, &channel);
+        if (resolves && ((int)args.inputs.size() > kLoopEndInputMap) && args.inputs[kLoopEndInputMap].buffer) {
+            map.view = &args.inputs[kLoopEndInputMap];
+            map.channel = channel;
+        }
+    }
+
+    return LoopMapBlend::recordGpu(args, map, taps, count, mapBlendInterpolation()) ? eStatusOK : eStatusFailed;
 }
 
 bool

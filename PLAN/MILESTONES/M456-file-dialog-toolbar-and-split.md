@@ -65,3 +65,4 @@ Two user requests (2026-11-16) for the file dialog (`Gui/SequenceFileDialog.cpp`
 
 - 2026-11-16 — All four tasks implemented (252336e01 on milestone/m456-file-dialog-toolbar-and-split). Notes: the file view allows one selection, so the several-runs case can't arise; from the File button the frame range is a second undo entry after the file change; the preview still plays the whole sequence; deep reads don't take the range. Gate run 43991079342.
 - 2026-11-17 — Review round 1 (Codex, PR #300) fixed in 44c0a1999: DeepRead gets Read's frame-range knobs through a shared ReadTimeDomainKnobs helper, so a picked run limits a DeepRead too (black frames keep the sequence's channels with no samples); narration comments removed; selectedSequenceRange returns std::optional. Gate re-running.
+- 2026-11-17 — Gate 44096165094 green (the DeepRead gap check expects Read's empty image with the missing-frame message). Merged into feature/f29-ui-polish-batch (PR #300).

@@ -185,12 +185,28 @@ try:
         return None
 
     def set_format(label, size):
+        """Puts the project format and the USDRenderSettings prim's resolution on size.
+
+        USDRender takes its resolution from the active RenderSettings prim, which the settings node's
+        hidden Size knob authors, so that knob is the one that matters; the project format and the
+        settings' Format menu are moved too. A size the project already lists under another name is
+        not added twice, so the menus are matched by size as well as by label.
+        """
         app.addFormat("%s %dx%d" % (label, size[0], size[1]))
-        fmt = app.getProjectParam("outputFormat")
-        ids = list(fmt.getOptions())
-        index = next((i for i, o in enumerate(ids) if label in str(o)), None)
-        require(index is not None, "the %s format is listed" % label)
-        fmt.setValue(index)
+        wanted = "%dx%d" % (size[0], size[1])
+        for fmt in (app.getProjectParam("outputFormat"), settings.getParam("NatronParamFormatChoice")):
+            if fmt is None:
+                continue
+            ids = [str(o) for o in fmt.getOptions()]
+            index = next((i for i, o in enumerate(ids) if label in o), None)
+            if index is None:
+                index = next((i for i, o in enumerate(ids) if wanted in o), None)
+            if index is not None:
+                fmt.setValue(index)
+        dims = settings.getParam("NatronParamFormatSize")
+        require(dims is not None, "the settings node has a format Size parameter")
+        dims.set(size[0], size[1])
+        report("NOTE %s: settings resolution now %s" % (label, [dims.get()[0], dims.get()[1]] if isinstance(dims.get(), (list, tuple)) else dims.get()))
 
     def analyse(path):
         """(width, height, coloured share, distinct colours) of the PNG at path."""

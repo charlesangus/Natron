@@ -43,7 +43,9 @@
 #include <pxr/usd/sdf/variantSpec.h>
 #include <pxr/usd/usd/primRange.h>
 
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -58,11 +60,15 @@ getAuthoredPayloads(const PXR_NS::SdfPrimSpecHandle& spec)
 // payload stays closed unless nested is set: its prim comes up unloaded unless it is asked for.
 // Returns the error opening asset itself gave; one of its dependencies failing is the stage's to
 // report when it composes. outcomes keeps each asset's result, so that assets are read once a batch.
+// An asset that is, or needs, a closed scene's stale layer goes in deferred, and that layer in
+// retired rather than held.
 std::string
 openPayloadClosure(const std::string& asset,
                    bool nested,
                    std::map<std::string, std::string>* outcomes,
                    std::vector<PXR_NS::SdfLayerRefPtr>* held,
+                   std::set<std::string>* deferred,
+                   std::vector<PXR_NS::SdfLayerRefPtr>* retired,
                    const std::function<bool()>& abandoned)
 {
     const std::map<std::string, std::string>::const_iterator known = outcomes->find(asset);
@@ -88,12 +94,23 @@ openPayloadClosure(const std::string& asset,
         return error;
     }
     (*outcomes)[asset] = std::string();
+    if (SceneOps::isStalePendingLayer(layer)) {
+        deferred->insert(asset);
+        retired->push_back(layer);
+        mark.Clear();
+
+        return std::string();
+    }
     held->push_back(layer);
 
     const std::set<std::string> closedPayloads = nested ? std::set<std::string>() : SceneOps::getAuthoredPayloadAssets(layer);
     for (const std::string& dependency : layer->GetCompositionAssetDependencies()) {
         if (!dependency.empty() && !closedPayloads.count(dependency)) {
-            openPayloadClosure(PXR_NS::SdfComputeAssetPathRelativeToLayer(layer, dependency), nested, outcomes, held, abandoned);
+            const std::string dependencyAsset = PXR_NS::SdfComputeAssetPathRelativeToLayer(layer, dependency);
+            openPayloadClosure(dependencyAsset, nested, outcomes, held, deferred, retired, abandoned);
+            if (deferred->count(dependencyAsset) != 0) {
+                deferred->insert(asset);
+            }
         }
     }
     mark.Clear();
@@ -113,12 +130,25 @@ struct OpenedBatch {
     std::map<PXR_NS::SdfPath, std::string> failures;
     PXR_NS::SdfPathSet ownPaths;
     PXR_NS::SdfPathSet descendantPaths;
+    std::set<std::string> deferredAssets;
+    std::vector<PXR_NS::SdfLayerRefPtr> retired;
+    std::vector<std::pair<std::string, PXR_NS::SdfLayerHandle>> stale;
+    // The loads that would compose a closed scene's stale layer, neither committed nor failed.
+    PXR_NS::SdfPathSet deferredPaths;
 
     void open(const std::function<bool()>& abandoned)
     {
         // Descendant loads first: an asset is read once a batch, and they open its nested payloads.
         openAll(descendantLoads, true, &descendantPaths, abandoned);
         openAll(ownLoads, false, &ownPaths, abandoned);
+        if (!retired.empty()) {
+            for (const PXR_NS::SdfLayerRefPtr& layer : retired) {
+                stale.push_back(std::make_pair(layer->GetRealPath(), PXR_NS::SdfLayerHandle(layer)));
+            }
+            // Ours may be the last reference, and destroying a layer takes as long as reading it.
+            SceneTeardown::release(std::move(retired));
+            retired.clear();
+        }
     }
 
 private:
@@ -132,13 +162,17 @@ private:
                 return;
             }
             std::string error;
+            bool deferred = false;
             for (const std::string& asset : load.second) {
-                const std::string assetError = openPayloadClosure(asset, nested, &outcomes, &held, abandoned);
+                const std::string assetError = openPayloadClosure(asset, nested, &outcomes, &held, &deferredAssets, &retired, abandoned);
                 if (!assetError.empty()) {
                     error += (error.empty() ? "" : "; ") + assetError;
                 }
+                deferred = deferred || (deferredAssets.count(asset) != 0);
             }
-            if (error.empty()) {
+            if (deferred) {
+                deferredPaths.insert(load.first);
+            } else if (error.empty()) {
                 paths->insert(load.first);
             } else {
                 failures[load.first] = error;
@@ -233,7 +267,20 @@ getPayloadAssets(const PXR_NS::UsdPrim& prim)
 }
 } // anonymous namespace
 
+// What the callback SceneTeardown runs once idle shares with the stage.
+struct SceneStage::DeferredLoadsWake {
+    std::mutex mutex;
+    std::function<void()> wake;
+    // The stale layers' files, whose stamps are dropped once nothing holds the layer, so that the
+    // file as read again is not taken for stale.
+    std::vector<std::pair<std::string, PXR_NS::SdfLayerHandle>> stale;
+    // Whether a callback is registered, and whether one has run since the loads were put off.
+    std::atomic<bool> waiting { false };
+    std::atomic<bool> ready { false };
+};
+
 SceneStage::SceneStage(PXR_NS::UsdStage::InitialLoadSet load)
+    : _deferredWake(std::make_shared<DeferredLoadsWake>())
 {
     if (!SceneOps::checkUsdRuntime(nullptr)) {
         return;
@@ -501,6 +548,8 @@ SceneStage::requestLoad(const PXR_NS::SdfPathVector& paths,
 
     for (const PXR_NS::SdfPath& path : paths) {
         if (path.IsAbsoluteRootOrPrimPath()) {
+            _deferredLoads.erase(path);
+            _deferredExclusions.erase(path);
             _pendingLoads[path] = withDescendants ? ePendingLoadWithDescendants : ePendingLoadOwn;
             if (withDescendants && !excluded.empty()) {
                 _pendingExclusions[path] = PXR_NS::SdfPathSet(excluded.begin(), excluded.end());
@@ -519,6 +568,8 @@ SceneStage::requestUnload(const PXR_NS::SdfPathVector& paths)
 
     for (const PXR_NS::SdfPath& path : paths) {
         if (path.IsAbsoluteRootOrPrimPath()) {
+            _deferredLoads.erase(path);
+            _deferredExclusions.erase(path);
             _pendingLoads[path] = ePendingUnload;
             _pendingExclusions.erase(path);
             _loadFailures.erase(path);
@@ -533,6 +584,8 @@ SceneStage::cancelPendingLoads()
 
     _pendingLoads.clear();
     _pendingExclusions.clear();
+    _deferredLoads.clear();
+    _deferredExclusions.clear();
     if (_servicingLoads) {
         _allCancelledWhileServicing = true;
     }
@@ -549,6 +602,8 @@ SceneStage::cancelPendingLoads(const PXR_NS::SdfPathVector& paths)
             _pendingLoads.erase(found);
             _pendingExclusions.erase(path);
         }
+        _deferredLoads.erase(path);
+        _deferredExclusions.erase(path);
         if (_servicingLoads) {
             _cancelledWhileServicing.insert(path);
         }
@@ -560,7 +615,7 @@ SceneStage::hasPendingLoads() const
 {
     std::lock_guard<std::mutex> lock(_loadMutex);
 
-    return !_pendingLoads.empty();
+    return !_pendingLoads.empty() || (!_deferredLoads.empty() && _deferredWake->ready);
 }
 
 bool
@@ -568,7 +623,34 @@ SceneStage::hasOutstandingLoads() const
 {
     std::lock_guard<std::mutex> lock(_loadMutex);
 
-    return !_pendingLoads.empty() || _servicingLoads;
+    return !_pendingLoads.empty() || !_deferredLoads.empty() || _servicingLoads;
+}
+
+void
+SceneStage::setLoadsWake(const std::function<void()>& wake)
+{
+    std::lock_guard<std::mutex> lock(_deferredWake->mutex);
+
+    _deferredWake->wake = wake;
+}
+
+void
+SceneStage::takeReadyDeferredLoads()
+{
+    if (_deferredLoads.empty() || !_deferredWake->ready.exchange(false)) {
+        return;
+    }
+    for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& load : _deferredLoads) {
+        if (!_pendingLoads.insert(load).second) {
+            continue;
+        }
+        const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet>::const_iterator excluded = _deferredExclusions.find(load.first);
+        if (excluded != _deferredExclusions.end()) {
+            _pendingExclusions[load.first] = excluded->second;
+        }
+    }
+    _deferredLoads.clear();
+    _deferredExclusions.clear();
 }
 
 bool
@@ -589,6 +671,7 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> exclusions;
     {
         std::lock_guard<std::mutex> lock(_loadMutex);
+        takeReadyDeferredLoads();
         if (_pendingLoads.empty()) {
             return false;
         }
@@ -627,6 +710,8 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     // The payloads loaded on their own for having an excluded subtree, with the exclusions below
     // each, which a request for their descendants takes once they are loaded.
     std::map<PXR_NS::SdfPath, SplitLoad> splitLoads;
+    // The request whose walk found each payload a load with descendants names.
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> foundBy;
     U64 composition = 0;
     bool walkCancelled = false;
     PXR_NS::UsdStageLoadRules rules;
@@ -671,6 +756,7 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                         for (PXR_NS::SdfPathSet::const_iterator candidate = excluded.upper_bound(path); (candidate != excluded.end()) && candidate->HasPrefix(path); ++candidate) {
                             below.insert(*candidate);
                         }
+                        foundBy[path] = request.first;
                         if (below.empty()) {
                             opened.descendantLoads[path] = getPayloadAssets(*it);
                         } else {
@@ -720,6 +806,58 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
             _loadFailures.erase(load.first);
         }
         _loadFailures.insert(opened.failures.begin(), opened.failures.end());
+    }
+    if (!opened.deferredPaths.empty()) {
+        {
+            std::lock_guard<std::mutex> lock(_loadMutex);
+            if (!_allCancelledWhileServicing) {
+                for (const PXR_NS::SdfPath& path : opened.deferredPaths) {
+                    const std::map<PXR_NS::SdfPath, PXR_NS::SdfPath>::const_iterator found = foundBy.find(path);
+                    const PXR_NS::SdfPath& request = (found != foundBy.end()) ? found->second : path;
+                    // A cancel of the payload or of the request that found it, or a newer request
+                    // for the payload, says otherwise.
+                    if ((_cancelledWhileServicing.count(path) != 0) || (_cancelledWhileServicing.count(request) != 0) || (_pendingLoads.count(path) != 0)) {
+                        continue;
+                    }
+                    const std::map<PXR_NS::SdfPath, SplitLoad>::const_iterator split = splitLoads.find(path);
+                    if (split != splitLoads.end()) {
+                        _deferredLoads[path] = ePendingLoadWithDescendants;
+                        _deferredExclusions[path] = split->second.excluded;
+                    } else {
+                        _deferredLoads[path] = (found != foundBy.end()) ? ePendingLoadWithDescendants : ePendingLoadOwn;
+                        _deferredExclusions.erase(path);
+                    }
+                }
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(_deferredWake->mutex);
+            _deferredWake->stale.insert(_deferredWake->stale.end(), opened.stale.begin(), opened.stale.end());
+        }
+        if (!_deferredWake->waiting.exchange(true)) {
+            const std::shared_ptr<DeferredLoadsWake> state = _deferredWake;
+            SceneTeardown::notifyWhenIdle([state]() {
+                std::function<void()> wake;
+                std::vector<std::pair<std::string, PXR_NS::SdfLayerHandle>> stale;
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    wake = state->wake;
+                    stale.swap(state->stale);
+                }
+                FileStampRegistry& stamps = FileStampRegistry::instance();
+                for (const std::pair<std::string, PXR_NS::SdfLayerHandle>& file : stale) {
+                    // A layer something still holds keeps its stamp, so the stamp names what it holds.
+                    if (!file.second) {
+                        stamps.invalidate(file.first);
+                    }
+                }
+                state->waiting = false;
+                state->ready = true;
+                if (wake) {
+                    wake();
+                }
+            });
+        }
     }
     PXR_NS::SdfPathSet& ownPaths = opened.ownPaths;
     PXR_NS::SdfPathSet& descendantPaths = opened.descendantPaths;

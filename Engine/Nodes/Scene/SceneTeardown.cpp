@@ -31,17 +31,43 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <vector>
+
+#include <QCoreApplication>
 
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
+void
+postToMainThread(const std::function<void()>& callback)
+{
+    QCoreApplication* app = QCoreApplication::instance();
+
+    if (!app) {
+        callback();
+
+        return;
+    }
+    QMetaObject::invokeMethod(app, callback, Qt::QueuedConnection);
+}
+
+void
+postAll(std::vector<std::function<void()>>* callbacks)
+{
+    for (const std::function<void()>& callback : *callbacks) {
+        postToMainThread(callback);
+    }
+    callbacks->clear();
+}
+
 struct TeardownState {
     std::atomic<bool> deferred { false };
     std::mutex mutex;
     std::condition_variable changed;
     std::deque<std::shared_ptr<void>> queue;
+    std::vector<std::function<void()>> idleCallbacks;
     bool busy = false;
     bool stopping = false;
     bool stopped = false;
@@ -64,6 +90,14 @@ struct TeardownState {
                 held.reset();
             }
             lock.lock();
+            // Posted while still busy, so that a waitIdle() that returns finds them posted.
+            while (queue.empty() && !idleCallbacks.empty()) {
+                std::vector<std::function<void()>> idle;
+                idle.swap(idleCallbacks);
+                lock.unlock();
+                postAll(&idle);
+                lock.lock();
+            }
             busy = false;
             changed.notify_all();
         }
@@ -142,6 +176,24 @@ waitIdle(int timeoutMs)
 }
 
 void
+notifyWhenIdle(const std::function<void()>& callback)
+{
+    if (!callback) {
+        return;
+    }
+    TeardownState& s = state();
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (!s.queue.empty() || s.busy) {
+            s.idleCallbacks.push_back(callback);
+
+            return;
+        }
+    }
+    postToMainThread(callback);
+}
+
+void
 shutdown()
 {
     TeardownState& s = state();
@@ -158,11 +210,14 @@ shutdown()
     if (thread.joinable()) {
         thread.join();
     }
+    std::vector<std::function<void()>> idle;
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         s.stopped = true;
+        idle.swap(s.idleCallbacks);
     }
     s.changed.notify_all();
+    postAll(&idle);
 }
 } // namespace SceneTeardown
 

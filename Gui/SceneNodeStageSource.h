@@ -160,6 +160,8 @@ private:
     std::mutex _queueMutex;
     std::condition_variable _queueChanged;
     bool _pending = false;
+    // Loads the stage put off for a closed scene's stale layer can be serviced again.
+    bool _loadsReady = false;
     bool _quit = false;
     double _pendingTime = 0.;
     std::vector<LoadRequest> _loadRequests;

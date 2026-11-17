@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -158,7 +159,15 @@ public:
      **/
     void cancelPendingLoads(const PXR_NS::SdfPathVector& paths);
 
+    // Counts a load put off for a closed scene's stale layer only once SceneTeardown is idle.
     bool hasPendingLoads() const;
+
+    /**
+     * @brief Sets what is called, on the main thread, when loads put off for a closed scene's stale
+     * layer become pending again: SceneTeardown has gone idle. Whoever waits on hasPendingLoads()
+     * wakes on it. MT-safe.
+     **/
+    void setLoadsWake(const std::function<void()>& wake);
 
     // Whether a request is still waiting or in a serviceLoads() that has not returned.
     bool hasOutstandingLoads() const;
@@ -182,6 +191,10 @@ public:
      * one load policy per LoadAndUnload, so a batch mixing own and descendant loads commits in two
      * calls. A prim whose payload file does not open stays unloaded and is reported by
      * getLoadFailures().
+     *
+     * A payload whose file, or a file it needs, is still open in a closed scene's layer that
+     * SceneTeardown has yet to destroy, and has changed on disk since, stays unloaded and is asked
+     * for again once SceneTeardown is idle: composing it would reuse that layer.
      **/
     bool serviceLoads(const LockedSection& readLocked,
                       const LockedSection& writeLocked,
@@ -245,6 +258,10 @@ public:
 private:
     void syncProjections();
 
+    // Under _loadMutex: moves the loads put off for a stale layer back to the pending ones once
+    // SceneTeardown has gone idle. A newer request for a path wins.
+    void takeReadyDeferredLoads();
+
     enum PendingLoadEnum {
         ePendingLoadOwn,
         ePendingLoadWithDescendants,
@@ -285,6 +302,12 @@ private:
     bool _allCancelledWhileServicing = false;
     std::map<PXR_NS::SdfPath, std::string> _loadFailures;
     bool _servicingLoads = false;
+    // The loads put off for a stale layer, until SceneTeardown is idle.
+    std::map<PXR_NS::SdfPath, PendingLoadEnum> _deferredLoads;
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> _deferredExclusions;
+    struct DeferredLoadsWake;
+    // Shared with the callback SceneTeardown runs once idle, which may outlive the stage.
+    std::shared_ptr<DeferredLoadsWake> _deferredWake;
     std::atomic<U64> _loadEditCount { 0 };
     std::atomic<double> _lastLoadHoldMs { 0. };
     SceneLoadSetPtr _appliedLoadSet;

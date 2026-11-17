@@ -471,7 +471,7 @@ SceneNodeStageSource::run()
         std::vector<LoadRequest> loads;
         {
             std::unique_lock<std::mutex> lock(_queueMutex);
-            _queueChanged.wait(lock, [this]() { return _quit || _pending || !_loadRequests.empty(); });
+            _queueChanged.wait(lock, [this]() { return _quit || _pending || _loadsReady || !_loadRequests.empty(); });
             if (_quit) {
                 _finished = true;
                 lock.unlock();
@@ -485,6 +485,7 @@ SceneNodeStageSource::run()
             }
             evaluate = _pending;
             _pending = false;
+            _loadsReady = false;
             time = _pendingTime;
             loads.swap(_loadRequests);
         }
@@ -504,6 +505,18 @@ SceneNodeStageSource::run()
             std::lock_guard<std::mutex> lock(_stageMutex);
             if (!_stage) {
                 _stage.reset(new SceneStage(_loadPayloads ? PXR_NS::UsdStage::LoadAll : PXR_NS::UsdStage::LoadNone));
+                const std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
+                _stage->setLoadsWake([self]() {
+                    const std::shared_ptr<SceneNodeStageSource> source = self.lock();
+                    if (!source) {
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(source->_queueMutex);
+                        source->_loadsReady = true;
+                    }
+                    source->_queueChanged.notify_one();
+                });
             }
             _stage->sync(ok ? payload : ScenePayload());
             _shown = ok && !payload.isEmpty();

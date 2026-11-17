@@ -92,12 +92,13 @@ SceneFileSource::SceneFileSource()
     , _walked(false)
     , _closureReloadCount(0)
     , _digest(0)
+    , _rekeyWaiting(false)
 {
 }
 
 SceneFileSource::~SceneFileSource()
 {
-    SceneTeardown::release(std::make_tuple(std::move(_stage), std::move(_stageLayer), std::move(_layer), std::move(_closure), std::move(_retired)));
+    SceneTeardown::release(std::make_tuple(std::move(_stage), std::move(_stageLayer), std::move(_layer), std::move(_closure), std::move(_retired), std::move(_stale)));
 }
 
 PXR_NS::SdfLayerRefPtr
@@ -242,22 +243,22 @@ SceneFileSource::load(const std::string& path)
     _digest = path.empty() ? 0 : makeUnwalkedDigest();
 }
 
-bool
+SceneFileSource::WalkResultEnum
 SceneFileSource::walk(const std::string& path)
 {
     {
         std::lock_guard<std::mutex> lock(_mutex);
         // A path load() no longer names is stale: the walk of the file now named sets the digest.
         if (_path != path) {
-            return false;
+            return eWalkUnchanged;
         }
         // File layers are never edited, so only a reload changes what they bring in.
         if (_walked && !_closure.empty() && (_closureReloadCount == SceneOps::getFileLayerReloadCount())) {
-            return false;
+            return eWalkUnchanged;
         }
     }
     if (!SceneOps::checkUsdRuntime(nullptr)) {
-        return false;
+        return eWalkUnchanged;
     }
     // Opens files: no layer reload may run meanwhile. Taken before the mutex, so a thread waiting
     // on it holds no write off.
@@ -268,10 +269,10 @@ SceneFileSource::walk(const std::string& path)
         std::lock_guard<std::mutex> lock(_mutex);
         loadCount = _loadCount;
         if (_path != path) {
-            return false;
+            return eWalkUnchanged;
         }
         if (_walked && !_closure.empty() && (_closureReloadCount == SceneOps::getFileLayerReloadCount())) {
-            return false;
+            return eWalkUnchanged;
         }
     }
     Closure closure;
@@ -280,6 +281,41 @@ SceneFileSource::walk(const std::string& path)
         PXR_NS::TfErrorMark mark;
         closure = computeClosure(PXR_NS::SdfLayer::FindOrOpen(path));
         mark.Clear();
+    }
+    std::vector<std::pair<std::string, PXR_NS::SdfLayerHandle>> stale;
+    if (SceneTeardown::getPendingCount() > 0) {
+        // A payload is not opened here, but a closed scene may have left its layer in the
+        // registry, where the stage composing it would find it.
+        std::vector<PXR_NS::SdfLayerRefPtr> found;
+        for (std::size_t i = closure.layers.size(); i < closure.paths.size(); ++i) {
+            const PXR_NS::SdfLayerHandle open = PXR_NS::SdfLayer::Find(closure.paths[i]);
+            if (open) {
+                found.push_back(PXR_NS::SdfLayerRefPtr(open));
+            }
+        }
+        const auto findStale = [&stale](const std::vector<PXR_NS::SdfLayerRefPtr>& layers) {
+            for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+                if (SceneOps::isStalePendingLayer(layer)) {
+                    stale.push_back(std::make_pair(layer->GetRealPath(), PXR_NS::SdfLayerHandle(layer)));
+                }
+            }
+        };
+        findStale(closure.layers);
+        findStale(found);
+        if (!stale.empty()) {
+            // The last reference to a closed scene's layer may be one of these, and destroying it
+            // takes as long as reading it.
+            SceneTeardown::release(std::make_pair(std::move(closure.layers), std::move(found)));
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_loadCount == loadCount) {
+                _stale.insert(_stale.end(), stale.begin(), stale.end());
+            }
+
+            return eWalkDeferred;
+        }
+        if (!found.empty()) {
+            SceneTeardown::release(std::move(found));
+        }
     }
     const U64 digest = stampPaths(closure.paths);
     if (_walkHook) {
@@ -293,13 +329,45 @@ SceneFileSource::walk(const std::string& path)
     if (_loadCount != loadCount) {
         retired.swap(closure.layers);
 
-        return false;
+        return eWalkUnchanged;
     }
     publishClosure(&closure);
     _walked = true;
     retired.swap(_retired);
 
-    return _digest.exchange(digest) != digest;
+    return (_digest.exchange(digest) != digest) ? eWalkDigestMoved : eWalkUnchanged;
+} // SceneFileSource::walk
+
+void
+SceneFileSource::rekeyWhenTeardownIdle(const std::weak_ptr<const void>& owner,
+                                       const std::function<void()>& rekey)
+{
+    if (_rekeyWaiting.exchange(true)) {
+        return;
+    }
+    SceneTeardown::notifyWhenIdle([this, owner, rekey]() {
+        const std::shared_ptr<const void> alive = owner.lock();
+        if (!alive) {
+            return;
+        }
+        _rekeyWaiting = false;
+        std::vector<std::pair<std::string, PXR_NS::SdfLayerHandle>> stale;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            stale.swap(_stale);
+        }
+        FileStampRegistry& stamps = FileStampRegistry::instance();
+        for (const std::pair<std::string, PXR_NS::SdfLayerHandle>& file : stale) {
+            // A layer something still holds keeps its stamp, so the digest names what it holds.
+            if (!file.second) {
+                stamps.invalidate(file.first);
+            }
+        }
+        takeDigest();
+        if (rekey) {
+            rekey();
+        }
+    });
 }
 
 void

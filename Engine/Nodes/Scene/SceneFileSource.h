@@ -34,6 +34,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -73,10 +74,29 @@ public:
      * arcs excepted, so it runs on evaluation, before the node's layer key is taken: that key and
      * the stack hash built on it then never hold the digest of an unwalked file. A walk of a path
      * load() no longer names, or overtaken by a load() before it publishes, changes nothing.
-     * Returns whether the digest moved, in which case the caller marks the node's hash dirty.
-     * Outside any SceneWriteBarrier::runExclusive().
+     * Returns eWalkDigestMoved when the digest moved, in which case the caller marks the node's
+     * hash dirty. Returns eWalkDeferred, publishing nothing, when a layer it found is a closed
+     * scene's copy of a file changed since (SceneOps::isStalePendingLayer()): the caller produces
+     * nothing from the file and calls rekeyWhenTeardownIdle(). Outside any
+     * SceneWriteBarrier::runExclusive().
      **/
-    bool walk(const std::string& path);
+    enum WalkResultEnum {
+        eWalkUnchanged,
+        eWalkDigestMoved,
+        eWalkDeferred
+    };
+
+    WalkResultEnum walk(const std::string& path);
+
+    /**
+     * @brief After walk() returned eWalkDeferred: once SceneTeardown is idle, on the main thread,
+     * drops the stamps of the stale files whose layers are gone, takes a new digest and calls
+     * rekey, which marks the node's hash dirty and renders it again, so that the next walk() reads
+     * the files. Waits once however many times it is called meanwhile; nothing runs once owner,
+     * which owns this source, is gone.
+     **/
+    void rekeyWhenTeardownIdle(const std::weak_ptr<const void>& owner,
+                               const std::function<void()>& rekey);
 
     /**
      * @brief Called by walk() once it has walked, with no mutex held, before it publishes. Set
@@ -207,6 +227,10 @@ private:
     // before.
     std::atomic<U64> _digest;
     std::function<void()> _walkHook;
+    // The files of the layers a deferred walk found stale, with those layers, which may outlive
+    // the teardown when something else still holds them.
+    std::vector<std::pair<std::string, PXR_NS::SdfLayerHandle>> _stale;
+    std::atomic<bool> _rekeyWaiting;
 };
 
 /**

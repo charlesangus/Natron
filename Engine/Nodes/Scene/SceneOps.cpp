@@ -49,6 +49,7 @@
 
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
@@ -56,6 +57,7 @@
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
 NATRON_NAMESPACE_ENTER
@@ -840,6 +842,20 @@ std::uint64_t
 getFileLayerReloadCount()
 {
     return fileLayerReloadCount.load();
+}
+
+bool
+isStalePendingLayer(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    if (!layer || layer->IsAnonymous() || (SceneTeardown::getPendingCount() == 0)) {
+        return false;
+    }
+    const std::string path = layer->GetRealPath();
+    if (path.empty()) {
+        return false;
+    }
+
+    return !FileStampRegistry::instance().matchesDisk(path);
 }
 
 double

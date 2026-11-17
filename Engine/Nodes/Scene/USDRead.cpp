@@ -178,7 +178,14 @@ struct USDRead::Implementation {
         {
             SceneWriteBarrier::ReadScope readScope;
             std::string error;
-            read = definedRootPrims(SceneFileSource::openLayer(path, &error));
+            PXR_NS::SdfLayerRefPtr layer = SceneFileSource::openLayer(path, &error);
+            if (SceneOps::isStalePendingLayer(layer)) {
+                // Not kept: the next evaluation, once the walk has re-keyed the node, reads the file.
+                SceneTeardown::release(std::move(layer));
+
+                return read;
+            }
+            read = definedRootPrims(layer);
         }
         std::lock_guard<std::mutex> lock(rootPrimsMutex);
         rootPrimsRead = true;
@@ -591,6 +598,25 @@ USDRead::refreshFileDependencies(const std::vector<std::string>& paths)
 }
 
 void
+USDRead::rekeyAfterTeardown()
+{
+    KnobFilePtr filename = _filename.lock();
+
+    // Its hash holds the stamp the file had when the closed scene read it.
+    if (filename) {
+        filename->invalidateContentHash();
+    }
+    invalidateSceneLayer();
+    clearActionsCache();
+    clearPersistentMessage(false);
+    NodePtr node = getNode();
+    if (node) {
+        node->markHashDirty();
+    }
+    evaluate(true, true);
+}
+
+void
 USDRead::onEffectCreated(bool /*mayCreateFileDialog*/,
                          const CreateNodeArgs& /*args*/)
 {
@@ -716,7 +742,16 @@ USDRead::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
 
-    if (_imp->source.walk(path)) {
+    const SceneFileSource::WalkResultEnum walked = _imp->source.walk(path);
+    if (walked == SceneFileSource::eWalkDeferred) {
+        // Nothing memoizes an empty scene under this hash: the layer memo is not reached, and
+        // the digest stays an unwalked one, which the re-key replaces.
+        setPersistentMessage(eMessageTypeWarning, tr("Waiting for the previous scene to close.").toStdString());
+        _imp->source.rekeyWhenTeardownIdle(weak_from_this(), [this]() { rekeyAfterTeardown(); });
+
+        return eStatusOK;
+    }
+    if (walked == SceneFileSource::eWalkDigestMoved) {
         NodePtr node = getNode();
         if (node) {
             node->markHashDirty();

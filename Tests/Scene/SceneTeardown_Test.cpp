@@ -37,6 +37,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -275,6 +276,21 @@ protected:
 
         BaseTest::TearDown();
     }
+
+    NodePtr createReader(const std::string& path)
+    {
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        if (!reader) {
+            return reader;
+        }
+        KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
+        if (!file) {
+            return NodePtr();
+        }
+        file->setValue(path);
+
+        return reader;
+    }
 };
 
 // Resetting a project that reads a USD file returns while the file's layer and the stages
@@ -317,4 +333,97 @@ TEST_F(SceneTeardownProjectTest, ResetReturnsBeforeTheReadSceneIsClosed)
     ASSERT_TRUE(SceneTeardown::waitIdle(60000));
     EXPECT_TRUE(stage.IsExpired()) << "the pooled stage outlived the teardown";
     EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(path))) << "the file's layer outlived the teardown";
+}
+
+namespace {
+// Evaluates reader and reports whether the scene it gives composes prim.
+::testing::AssertionResult
+composesPrim(const NodePtr& reader,
+             const std::string& prim)
+{
+    ScenePayload payload;
+    std::string error;
+    if (reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error) != EffectInstance::eRenderRoIRetCodeOk) {
+        return ::testing::AssertionFailure() << "the evaluation failed: " << error;
+    }
+    if (payload.isEmpty()) {
+        return ::testing::AssertionFailure() << "the scene is empty";
+    }
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
+    if (!lease.isValid()) {
+        return ::testing::AssertionFailure() << error;
+    }
+    if (!lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath(prim)).IsValid()) {
+        return ::testing::AssertionFailure() << prim << " is not in the scene";
+    }
+
+    return ::testing::AssertionSuccess();
+}
+} // anonymous namespace
+
+// A file changed on disk while a closed scene's layer of it waits for teardown: a reader of it
+// gives no scene rather than that layer's, and once the teardown is done reads the file anew,
+// keyed on a new hash.
+TEST_F(SceneTeardownProjectTest, ChangedFileWaitsForTheClosedSceneThenReadsItAnew)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("changed.usda")).toStdString();
+    writeFile(path, sceneOfXforms(2));
+    {
+        NodePtr reader = createReader(path);
+        ASSERT_TRUE(bool(reader));
+        ASSERT_TRUE(composesPrim(reader, "/World/X_1"));
+    }
+
+    DeferredScope deferred;
+    deferred.gate.close();
+    getApp()->getProject()->reset(false, true);
+    ASSERT_TRUE(bool(PXR_NS::SdfLayer::Find(path)));
+    writeFile(path, sceneOfXforms(3));
+
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+        << error;
+    EXPECT_TRUE(payload.isEmpty()) << "the reader gave the closed scene's stale layer";
+    EXPECT_TRUE(reader->hasPersistentMessage());
+    const U64 deferredHash = reader->getHashValue();
+
+    deferred.gate.open();
+    ASSERT_TRUE(SceneTeardown::waitIdle(60000));
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(path))) << "the stale layer outlived the teardown";
+
+    EXPECT_TRUE(composesPrim(reader, "/World/X_2"));
+    EXPECT_NE(reader->getHashValue(), deferredHash);
+    EXPECT_FALSE(reader->hasPersistentMessage());
+}
+
+// An unchanged file whose closed scene's layer waits for teardown is read from that layer at once.
+TEST_F(SceneTeardownProjectTest, UnchangedFileReusesTheClosedScenesLayer)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("unchanged.usda")).toStdString();
+    writeFile(path, sceneOfXforms(2));
+    {
+        NodePtr reader = createReader(path);
+        ASSERT_TRUE(bool(reader));
+        ASSERT_TRUE(composesPrim(reader, "/World/X_1"));
+    }
+
+    DeferredScope deferred;
+    deferred.gate.close();
+    getApp()->getProject()->reset(false, true);
+    ASSERT_TRUE(bool(PXR_NS::SdfLayer::Find(path)));
+    ASSERT_GT(SceneTeardown::getPendingCount(), (std::size_t)0);
+
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+    EXPECT_TRUE(composesPrim(reader, "/World/X_1"));
+    EXPECT_FALSE(reader->hasPersistentMessage());
 }

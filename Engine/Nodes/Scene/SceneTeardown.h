@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <utility>
 
@@ -71,6 +72,13 @@ std::size_t getPendingCount();
  * negative). Returns whether none is pending. Not from the teardown thread.
  **/
 bool waitIdle(int timeoutMs);
+
+/**
+ * @brief Calls callback once nothing released is pending, on the main thread, from its event loop:
+ * at the next idle when something is pending, else as soon as the event loop runs. Without an
+ * application object it runs on the thread that finds the queue idle. Never blocks. MT-safe.
+ **/
+void notifyWhenIdle(const std::function<void()>& callback);
 
 /**
  * @brief Destroys everything released so far, then stops the teardown thread: later releases

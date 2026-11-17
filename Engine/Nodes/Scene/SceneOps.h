@@ -447,6 +447,16 @@ void requestFileLayerReload(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
 std::uint64_t getFileLayerReloadCount();
 
 /**
+ * @brief Whether layer may be a closed scene's copy of a file that changed on disk since: true
+ * while SceneTeardown has something pending, for a file layer whose file is no longer the one
+ * FileStampRegistry recorded for it. Such a layer must be neither read nor reloaded: it goes once
+ * the teardown is done, and the next FindOrOpen() reads the file. A file whose identity was never
+ * recorded is taken as read now, so this misses a stale layer only a stage's composition opened.
+ * Stats the file when something is pending, so not for the main thread.
+ **/
+bool isStalePendingLayer(const PXR_NS::SdfLayerRefPtr& layer);
+
+/**
  * @brief The timecode of payload's composed stage at frame of a project running at
  * framesPerSecond: the same instant in seconds, frame x the stage's time codes per second /
  * framesPerSecond. Identical to frame when the rates match.

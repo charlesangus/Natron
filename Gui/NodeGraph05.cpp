@@ -248,7 +248,8 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
 
             ///actually move the created node where the selected node is
             position.setX(selectedNodeMiddlePos.x() - createdNodeSize.width() / 2);
-            position.setY(selectedNodeMiddlePos.y() + (selectedNodeSize.height() / 2) + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
+            const double captionDrop = selected->sceneFootprint().bottom() - selected->mapToScene(selected->boundingRect()).boundingRect().bottom();
+            position.setY(selectedNodeMiddlePos.y() + (selectedNodeSize.height() / 2) + captionDrop + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
 
             QRectF createdNodeRect( position.x(), position.y(), createdNodeSize.width(), createdNodeSize.height() );
 
@@ -320,8 +321,9 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
             QSize createdNodeSize = node->getSize();
             QRectF selectedBbox = selected->mapToScene(selected->bodyRect()).boundingRect();
             QPointF selectedCenter = selectedBbox.center();
-            double y = selectedCenter.y() + selectedBbox.height() / 2.
-                       + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES;
+            const double captionDrop = selected->sceneFootprint().bottom() - selected->mapToScene(selected->boundingRect()).boundingRect().bottom();
+            double y = selectedCenter.y() + selectedBbox.height() / 2. + captionDrop
+                + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES;
             double x = selectedCenter.x() + (int)outputs.size() * 150;
 
             position.setX(x  - createdNodeSize.width() / 2.);

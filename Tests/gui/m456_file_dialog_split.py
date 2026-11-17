@@ -118,10 +118,11 @@ try:
                 "SequenceFileDialogDetailViewButton"]
         back = child(dialog, QWidget, row1[0])
         require(back is not None, "the dialog has a back button")
-        layout = back.parentWidget().layout()
+        row = back.parentWidget()
+        require(row is not None and row.layout() is not None, "the first row has a layout")
         order = []
-        for i in range(layout.count()):
-            w = layout.itemAt(i).widget()
+        for i in range(row.layout().count()):
+            w = row.layout().itemAt(i).widget()
             if w is None:
                 order.append("stretch")
             elif isinstance(w, QFrame) and w.frameShape() == QFrame.VLine:

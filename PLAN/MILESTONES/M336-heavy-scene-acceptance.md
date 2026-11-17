@@ -66,7 +66,7 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - approach: during Island load_all, the main thread's `QOpenGLWidget::makeCurrent` blocks on a mutex inside NVIDIA's GLX library while the render thread uploads ptex and draws with VRAM saturated. With dense samples, try a render context with no share group (own X connection or EGL) and flushes between passes. Bring the findings back first.
   - verify: Island load_all `stall_ms` ≤100 (16.8 s); Island reveal, draw_budget and cancel stalls ≤100.
   - size: M
-- [ ] M336.P3.T4 — Box stand-in with an Off / During interaction / Always setting
+- [x] M336.P3.T4 — Box stand-in with an Off / During interaction / Always setting
   - files: `Gui/SceneViewport.cpp`, `Gui/SceneDrawBoxes.h`, Settings, `tools/bench/heavy_scene_bench.py` (new orbit_full scenario)
   - approach: per build/m336-heavy-viewport-research.md. While the user interacts and the last full frame went over budget, draw Natron's instanced boxes on the main thread over the last frame. Start no full frame until idle, then refill all at once. No Storm visibility or render-tag switch. Depends on T2.
   - verify: Island-loaded orbit_full in During interaction: `orbit_fps` ≥30 and `stall_ms` ≤100.
@@ -157,3 +157,11 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
 - 2026-11-17 — P3.T2 code in 39d5e2d24 (unbuilt): paintGL never renders. View, size and expose changes render as background frames, and the last frame is shown stretched until the matching one lands. Overlays are drawn on the main thread at the current camera, try-locking the viewer and falling back to the last read. Queued draw deltas count as busy. natronSceneLastPaintMs advances only for a converged frame of the current view. PM call: when the shown frame's camera differs from the current one, overlays skip the frame's depth (folded into P3.T4).
 - 2026-11-17 — Stale layer on reopen during pending teardown (consultant): never reload or reuse a stale pending layer in place. Reloading would send change notices that make the dying stages recompose on the writing thread (a main-thread stall), and every open path holds a ReadScope. Instead, the open path detects a stale pending layer (FileStampRegistry::matchesDisk), defers that node's evaluation with an uncached 'Waiting for the previous scene to close' result, and re-keys the node when the teardown queue drains. No main-thread wait. Implementer running.
 - 2026-11-17 — P3.T8 code in 5ed197d6d (unbuilt; the accounting unit test passes on the host): a Storm material filter sizes each texture from its file header with Storm's own sizing before Storm opens it. A texture past the budget has its node replaced by its fallback, and one warning gives the count and the budget. Preference gpuTextureBudget (MB, 0 = half the card's memory, read via the NVX, ATI or Mesa queries, 4 GiB if unknown). The budget is shared across the process; a change applies to textures loaded afterwards; a refused normal map falls back to the geometry normal.
+- 2026-11-17 — P3.T4 code in e755bb36d (unbuilt):
+  - Preferences: sceneStandInMode (Off / During Interaction / Always, default During Interaction), sceneStandInBudget (33 ms), sceneStandInBoxes (Per Model, or per draw-state row), sceneStandInRefillDelay (250 ms).
+  - A second box worker feeds instanced wireframe boxes from drawOverlays.
+  - A full frame's cost runs from its start to its fence being seen, with hysteresis at 0.8×.
+  - Properties: natronSceneStandIn, natronSceneLastFullFrameMs, natronSceneStandInBoxes, natronScenePaintCount.
+  - orbit_full bench scenario; Tests/gui/m336_stand_in.py.
+  - PM calls: Per Model boxes every model-kind prim. Under Always, a pick still takes in pending stage changes with the main thread waiting; that is a follow-up, since Always never renders.
+  - The GUI harness defaults the stand-in to Off, so llvmpipe scripts aren't affected; scripts and the bench opt in (implementer running).

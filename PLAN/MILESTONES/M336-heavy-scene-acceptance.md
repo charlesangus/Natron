@@ -51,7 +51,7 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled Island pass. The thresholds in each verify are the acceptance budgets for the VM rerun.
 
-- [ ] M336.P3.T1 — Fixture check only matches file paths; the stack tool re-symbolizes every Natron frame
+- [x] M336.P3.T1 — Fixture check only matches file paths; the stack tool re-symbolizes every Natron frame
   - files: `tools/bench/heavy_scene_fixture_check.py`, `tools/bench/heavy_scene_stack_window.py`, `tools/bench/heavy_scene_gpu_host.sh`
   - approach: the ptex pattern only matches a path, as in `Unable to open ptex (\S*(?:/|\.ptx)\S*) : `, since Storm node names (`HwPtexTexture_1`) are not files. Re-symbolize every frame of a module that has a .syms file, not only `??` frames (eu-stack names Natron.bin frames after the nearest exported symbol). Add a ≥20 Hz sampling mode for stalls under 1 s.
   - verify: re-checking the baseline's Island-loaded records gives judged results; a fixture with a renamed .ptx is still marked incomplete.
@@ -151,3 +151,4 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
 - 2026-11-17 — **Island's ~2 s GPU frame is accepted (user):** M336 judges Island on UI stalls only; the frame cost goes to the Houdini-style viewer-budgets milestone.
 - 2026-11-17 — **VRAM is a real limit (user):** if the textures won't fit, don't load the ones past the cap (or render on the CPU). The rule against size caps is about trimming user data, not GPU memory. This becomes P3.T8, with not loading past the budget as the mechanism.
 - 2026-11-17 — **Stand-in looks (user):** wireframe boxes over a cleared view. The other defaults stand as proposed (33 ms budget, one box per model-kind prim else per draw-state row, refill after 250 ms idle, default mode During interaction), each a Preference.
+- 2026-11-17 — P3.T1 done (9cf673ce8). Re-judged baseline: 7 pass / 17 fail / 1 warm-up (heavy-scene-acceptance.rejudged.jsonl); the six Island-loaded records are plain fails. Dense sampling: eu-stack costs ~170 ms per whole-process sample; SAMPLE_TID_COMM samples named threads only.

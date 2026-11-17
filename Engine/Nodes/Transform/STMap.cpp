@@ -123,6 +123,38 @@ uvEdgeBounds(const UVPlane& plane)
 {
     return (plane.access && (plane.edgeMode == EdgeMode::Stretch)) ? plane.bounds : RectI();
 }
+
+// One source-pixel coordinate folded into [lo, hi) the way the render's resampler does it; a
+// coordinate left non-finite is outside the source.
+double
+wrapSourceCoord(double s,
+                Resampler::WrapMode mode,
+                double lo,
+                double hi)
+{
+    const double w = hi - lo;
+    if (!(w > 0.)) {
+        return s;
+    }
+    switch (mode) {
+    case Resampler::eWrapClamp:
+        return std::min(std::max(s, lo + 0.5), hi - 0.5);
+    case Resampler::eWrapRepeat:
+        return std::isfinite(s) ? s - w * std::floor((s - lo) / w) : s;
+    case Resampler::eWrapMirror:
+        if (std::isfinite(s)) {
+            const double r = (s - lo) - 2. * w * std::floor((s - lo) / (2. * w));
+
+            return lo + ((r <= w) ? r : (2. * w - r));
+        }
+
+        return s;
+    case Resampler::eWrapNone:
+        break;
+    }
+
+    return s;
+}
 } // namespace
 
 STMap::STMap(NodePtr node)
@@ -484,6 +516,18 @@ STMap::mapOverlayPoint(double time,
         (i == 0 ? uIndex : vIndex) = (int)channels.size();
         channels.push_back(c);
     }
+    // UV Alpha gates on the alpha of the layer U (else V) reads from, as the render does.
+    int alphaIndex = -1;
+    if (settings.uvAlpha && !channels.empty()) {
+        const UVChannel alpha = uvAlphaChannel(uvChannels[0], uvChannels[1]);
+        if (alpha.valid) {
+            OverlayMapFetch::Channel c;
+            c.layer = alpha.layer;
+            c.index = alpha.channel;
+            alphaIndex = (int)channels.size();
+            channels.push_back(c);
+        }
+    }
     const EffectInstancePtr self = shared_from_this();
     OverlayPointMap::Result fetched = OverlayPointMap::eMapped;
     OverlayMapFetch::MapImageConstPtr uv;
@@ -501,9 +545,21 @@ STMap::mapOverlayPoint(double time,
     // A pending Map leaves the point unmoved until its copy arrives.
     bool mapPending = false;
     const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
-        float values[2] = { 0.f, 0.f };
+        float values[3] = { 0.f, 0.f, 1.f };
         if (uv && !uv->sample(p.x, p.y, values)) {
             return OverlayPointMap::eUnmappable;
+        }
+        float alpha = 1.f;
+        if (uv && (alphaIndex >= 0)) {
+            // The render gates per pixel, so the alpha is that of the pixel holding p.
+            const double scale = (double)(1u << uv->mipmapLevel);
+            const int ax = std::min(uv->bounds.x2 - 1, std::max(uv->bounds.x1, (int)std::floor(p.x / (scale * uv->par))));
+            const int ay = std::min(uv->bounds.y2 - 1, std::max(uv->bounds.y1, (int)std::floor(p.y / scale)));
+            const float* pix = uv->pixel(ax, ay);
+            if (!pix) {
+                return OverlayPointMap::eUnmappable;
+            }
+            alpha = pix[alphaIndex];
         }
         const double uRaw = (uIndex >= 0) ? values[uIndex] : 0.;
         const double vRaw = (vIndex >= 0) ? values[vIndex] : 0.;
@@ -511,6 +567,8 @@ STMap::mapOverlayPoint(double time,
         const double v = (vRaw - settings.vOffset) * settings.vScale;
         double px = domain.x1 + u * domain.width();
         double py = domain.y1 + v * domain.height();
+        bool pinned = false;
+        bool gated = true;
         if (mapped) {
             double m = 1.;
             const OverlayPointMap::Result r = _map.overlayValue(self, kSTMapInputMap, time, view, p, &m);
@@ -524,6 +582,17 @@ STMap::mapOverlayPoint(double time,
             const double cy = p.y;
             px = cx + (px - cx) * m;
             py = cy + (py - cy) * m;
+            // A Map of 0 or less is not gated by UV Alpha, and where it is 0 the pixel is the Source
+            // pixel itself, never wrapped.
+            pinned = (m == 0.);
+            gated = (m > 0.);
+        }
+        if (gated && !(alpha > 0.f)) {
+            return OverlayPointMap::eUnmappable;
+        }
+        if (!pinned) {
+            px = wrapSourceCoord(px, settings.wrapU, domain.x1, domain.x2);
+            py = wrapSourceCoord(py, settings.wrapV, domain.y1, domain.y2);
         }
         s->x = px * sourcePar;
         s->y = py;
@@ -542,6 +611,9 @@ STMap::mapOverlayPoint(double time,
                                 (double)domain.x1, (double)domain.y1, (double)domain.x2, (double)domain.y2 }) {
             key = mixHash(key, v);
         }
+        key = mixHash(key, (U64)settings.wrapU);
+        key = mixHash(key, (U64)settings.wrapV);
+        key = mixHash(key, (U64)(alphaIndex >= 0 ? 1 : 0));
         key = mixHash(key, (U64)(mapped ? getInput(kSTMapInputMap)->getHash() : 0));
         const RectD sourceRegion(domain.x1 * sourcePar, domain.y1, domain.x2 * sourcePar, domain.y2);
         const std::shared_ptr<const OverlayPointMap::SeedGrid> seeds = uv->seedGrid(key, [&]() {

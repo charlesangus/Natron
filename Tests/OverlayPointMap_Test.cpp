@@ -99,6 +99,10 @@ const int kHeight = 96;
 const int kFetchTimeoutMs = 30000;
 
 #define kTestPluginIDOverlayUV "net.natron.test.OverlayPointMapUV"
+#define kTestPluginIDOverlayUVMasked "net.natron.test.OverlayPointMapUVMasked"
+
+// The masked UV map has alpha 0 at canonical x below this, 1 from it on.
+const double kUVMaskEdge = 40.;
 
 // The STMap shift the UV test source encodes, in pixels.
 const double kUVShift = 10.;
@@ -124,17 +128,19 @@ dist(const Point& a,
 
 /**
  * @brief An RGBA UV map over the 128 x 96 format, U = (x - 10) / 128 and V = y / 96 at every
- * canonical pixel centre (x, y): an STMap reading it moves the Source 10 pixels right.
+ * canonical pixel centre (x, y): an STMap reading it moves the Source 10 pixels right. The
+ * masked variant has alpha 0 left of kUVMaskEdge.
  **/
-class OverlayUVTestEffect
+template <bool Masked>
+class OverlayUVTestEffectT
     : public NativeEffectBase {
 public:
     static EffectInstance* BuildEffect(NodePtr n)
     {
-        return new OverlayUVTestEffect(n);
+        return new OverlayUVTestEffectT(n);
     }
 
-    explicit OverlayUVTestEffect(NodePtr n)
+    explicit OverlayUVTestEffectT(NodePtr n)
         : NativeEffectBase(n)
     {
         setSupportsRenderScaleMaybe(eSupportsYes);
@@ -168,8 +174,8 @@ public:
 
 private:
     static constexpr NodeSpec kNodeSpec = {
-        .id = kTestPluginIDOverlayUV,
-        .label = "Test Overlay UV",
+        .id = Masked ? kTestPluginIDOverlayUVMasked : kTestPluginIDOverlayUV,
+        .label = Masked ? "Test Overlay UV Masked" : "Test Overlay UV",
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -209,7 +215,8 @@ private:
                 const float v = (float)((y * step + 0.5 * step) / kHeight);
                 for (int x = args.roi.x1; x < args.roi.x2; ++x) {
                     const float u = (float)((x * step + 0.5 * step - kUVShift) / kWidth);
-                    const float values[4] = { u, v, 0.f, 1.f };
+                    const float alpha = (Masked && ((x * step + 0.5 * step) < kUVMaskEdge)) ? 0.f : 1.f;
+                    const float values[4] = { u, v, 0.f, alpha };
                     float* pixel = reinterpret_cast<float*>(access.pixelAt(x, y));
                     if (!pixel) {
                         return eStatusFailed;
@@ -224,6 +231,9 @@ private:
         return eStatusOK;
     }
 };
+
+typedef OverlayUVTestEffectT<false> OverlayUVTestEffect;
+typedef OverlayUVTestEffectT<true> OverlayUVMaskedTestEffect;
 
 template <typename NODE>
 void
@@ -257,6 +267,7 @@ registerTestNodes()
 
     std::call_once(once, []() {
         registerNode<OverlayUVTestEffect>();
+        registerNode<OverlayUVMaskedTestEffect>();
     });
 }
 
@@ -843,6 +854,81 @@ TEST_F(OverlayPointMapTest, STMapShiftMapsAfterTheFetch)
     ASSERT_EQ(OverlayPointMap::eMapped, mapSettled(stmap, OverlayPointMap::eDirectionForward, p, &f, kSTMapInputSource));
     EXPECT_LE(dist(f, pt(p.x + kUVShift, p.y)), 0.5);
     expectDotFollowsMap(stmap, kDotCentre, 0.5, kSTMapInputSource);
+}
+
+// The shifted UV map reads U < 0 at x < 10, so its inverse lands left of the Source format.
+TEST_F(OverlayPointMapTest, STMapWrapFoldsUVsOutsideTheFormat)
+{
+    struct Case {
+        const char* mode;
+        double sourceX;
+    };
+    // The inverse at x = 5.5 reads U = -4.5 / 128, a source x of -4.5 before wrapping.
+    const Case cases[] = {
+        { "clamp", 0.5 },
+        { "repeat", 123.5 },
+        { "mirror", 4.5 },
+    };
+    for (const Case& c : cases) {
+        NodePtr source = dot(40, 30);
+        NodePtr uv = createNodeAtMajor(getApp(), kTestPluginIDOverlayUV, -1);
+        NodePtr stmap = node(PLUGINID_NATRON_STMAP, PLUGIN_MAJOR_NATRON_STMAP);
+        ASSERT_TRUE(source && uv && stmap) << c.mode;
+        connectNodes(uv, stmap, kSTMapInputUV, true);
+        connectNodes(source, stmap, kSTMapInputSource, true);
+        ASSERT_TRUE(setChannelSelect(stmap, kSTMapParamChannelU, "rgba.R"));
+        ASSERT_TRUE(setChannelSelect(stmap, kSTMapParamChannelV, "rgba.G"));
+        ASSERT_TRUE(setKnobValue(stmap, kSTMapParamWrapU, std::string(c.mode))) << c.mode;
+        bilinear(stmap);
+
+        const Point p = pt(5.5, 38.5);
+        Point q = p;
+        ASSERT_EQ(OverlayPointMap::eMapped, mapSettled(stmap, OverlayPointMap::eDirectionInverse, p, &q, kSTMapInputSource)) << c.mode;
+        EXPECT_LE(dist(q, pt(c.sourceX, p.y)), 0.5) << c.mode;
+
+        // A source point that only the wrap lands on maps forward to the sample it wraps from.
+        if (std::string(c.mode) == "repeat") {
+            Point f = pt(123.5, 38.5);
+            ASSERT_EQ(OverlayPointMap::eMapped, mapSettled(stmap, OverlayPointMap::eDirectionForward, pt(123.5, 38.5), &f, kSTMapInputSource));
+            EXPECT_LE(dist(f, p), 1.);
+        }
+    }
+}
+
+TEST_F(OverlayPointMapTest, STMapZeroUVAlphaHasNoSource)
+{
+    NodePtr source = dot(40, 30);
+    NodePtr uv = createNodeAtMajor(getApp(), kTestPluginIDOverlayUVMasked, -1);
+    NodePtr stmap = node(PLUGINID_NATRON_STMAP, PLUGIN_MAJOR_NATRON_STMAP);
+    ASSERT_TRUE(source && uv && stmap);
+    connectNodes(uv, stmap, kSTMapInputUV, true);
+    connectNodes(source, stmap, kSTMapInputSource, true);
+    ASSERT_TRUE(setChannelSelect(stmap, kSTMapParamChannelU, "rgba.R"));
+    ASSERT_TRUE(setChannelSelect(stmap, kSTMapParamChannelV, "rgba.G"));
+    bilinear(stmap);
+
+    // Inside the opaque part the inverse maps; inside the alpha 0 part it has no source.
+    const Point opaque = pt(70.5, 50.5);
+    const Point masked = pt(20.5, 50.5);
+    Point q = opaque;
+    ASSERT_EQ(OverlayPointMap::eMapped, mapSettled(stmap, OverlayPointMap::eDirectionInverse, opaque, &q, kSTMapInputSource));
+    EXPECT_LE(dist(q, pt(opaque.x - kUVShift, opaque.y)), 0.5);
+    Point none = masked;
+    EXPECT_EQ(OverlayPointMap::eUnmappable, mapSettled(stmap, OverlayPointMap::eDirectionInverse, masked, &none, kSTMapInputSource));
+
+    // The masked samples scatter nothing: source x 20.5, which only they reach, has no
+    // destination, while a point they do not reach still maps forward.
+    Point f = pt(60.5, 50.5);
+    ASSERT_EQ(OverlayPointMap::eMapped, mapSettled(stmap, OverlayPointMap::eDirectionForward, pt(60.5, 50.5), &f, kSTMapInputSource));
+    EXPECT_LE(dist(f, pt(70.5, 50.5)), 0.5);
+    Point g = pt(20.5, 50.5);
+    EXPECT_NE(OverlayPointMap::eMapped, mapSettled(stmap, OverlayPointMap::eDirectionForward, pt(20.5, 50.5), &g, kSTMapInputSource));
+
+    // With UV Alpha off the same point maps.
+    ASSERT_TRUE(setKnobValues(stmap, kSTMapParamUVAlpha, { 0. }));
+    Point open = masked;
+    ASSERT_EQ(OverlayPointMap::eMapped, mapSettled(stmap, OverlayPointMap::eDirectionInverse, masked, &open, kSTMapInputSource));
+    EXPECT_LE(dist(open, pt(masked.x - kUVShift, masked.y)), 0.5);
 }
 
 TEST_F(OverlayPointMapTest, IDistortConstantFieldMapsExactly)

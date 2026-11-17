@@ -261,11 +261,16 @@ texturePath(const VtValue& file)
 {
     if (file.IsHolding<SdfAssetPath>()) {
         const SdfAssetPath& asset = file.UncheckedGet<SdfAssetPath>();
+        if (!gpuTextureIsFile(asset.GetAssetPath()) || !gpuTextureIsFile(asset.GetResolvedPath())) {
+            return std::string();
+        }
 
         return asset.GetResolvedPath().empty() ? asset.GetAssetPath() : asset.GetResolvedPath();
     }
     if (file.IsHolding<std::string>()) {
-        return file.UncheckedGet<std::string>();
+        const std::string& path = file.UncheckedGet<std::string>();
+
+        return gpuTextureIsFile(path) ? path : std::string();
     }
 
     return std::string();
@@ -472,8 +477,9 @@ filterNetwork(HdMaterialNetworkInterface* network,
         if (!kind) {
             continue;
         }
-        // An SdfPath names a render buffer and an HdStTextureIdentifier a texture its client
-        // uploads: neither is Storm reading a file.
+        // An SdfPath names a render buffer, an HdStTextureIdentifier a texture its client uploads
+        // and a URI (a natron:// live texture) what its resolver serves: none is Storm reading a
+        // file, so each stays connected and uncounted.
         const std::string path = texturePath(network->GetNodeParameterValue(node, kind->fileInput));
         if (path.empty()) {
             continue;

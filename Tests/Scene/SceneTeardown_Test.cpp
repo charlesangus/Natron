@@ -182,7 +182,7 @@ writeFile(const std::string& path,
 std::string
 sceneOfXforms(int count)
 {
-    std::string scene = "#usda 1.0\n(\n    defaultPrim = \"World\"\n)\n\ndef Xform \"World\"\n{\n";
+    std::string scene = "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n    metersPerUnit = 1\n)\n\ndef Xform \"World\"\n{\n";
     for (int i = 0; i < count; ++i) {
         scene += "    def Xform \"X_" + std::to_string(i) + "\"\n    {\n    }\n";
     }

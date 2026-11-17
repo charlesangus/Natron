@@ -260,3 +260,21 @@ TEST(GpuTextureBudget, PtexTargetMemoryShrinksTheUpload)
     EXPECT_LT(reduced, full);
     EXPECT_GT(reduced, 0u);
 }
+
+TEST(GpuTextureBudget, UriAssetPathsAreNotFiles)
+{
+    EXPECT_FALSE(gpuTextureIsFile("natron://Constant1/rgba?v=0123456789abcdef"));
+    EXPECT_FALSE(gpuTextureIsFile("natron:Constant1/rgba"));
+    EXPECT_FALSE(gpuTextureIsFile("s3+tex.v-2://bucket/key.exr"));
+}
+
+TEST(GpuTextureBudget, PlainPathsAreFiles)
+{
+    EXPECT_TRUE(gpuTextureIsFile("/textures/brick.exr"));
+    EXPECT_TRUE(gpuTextureIsFile("textures/brick.<UDIM>.exr"));
+    EXPECT_TRUE(gpuTextureIsFile("./a:b.png"));
+    EXPECT_TRUE(gpuTextureIsFile("1abc:x.png"));
+    EXPECT_TRUE(gpuTextureIsFile(":x.png"));
+    EXPECT_TRUE(gpuTextureIsFile("/scene.usdz[textures/brick.png]"));
+    EXPECT_TRUE(gpuTextureIsFile(""));
+}

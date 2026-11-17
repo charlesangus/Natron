@@ -26,6 +26,7 @@
 #include "GpuTextureBudget.h"
 
 #include <algorithm>
+#include <cctype>
 #include <list>
 
 NATRON_NAMESPACE_ENTER
@@ -221,6 +222,24 @@ automaticGpuTextureBudget(std::uint64_t videoMemoryBytes)
     }
 
     return videoMemoryBytes / 2;
+}
+
+bool
+gpuTextureIsFile(const std::string& assetPath)
+{
+    // RFC 3986's scheme syntax, which Ar reads a path's scheme by when it picks a URI resolver.
+    const std::size_t colon = assetPath.find(':');
+    if ((colon == std::string::npos) || (colon == 0) || !std::isalpha((unsigned char)assetPath[0])) {
+        return true;
+    }
+    for (std::size_t i = 1; i < colon; ++i) {
+        const unsigned char c = (unsigned char)assetPath[i];
+        if (!std::isalnum(c) && (c != '+') && (c != '-') && (c != '.')) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 namespace {

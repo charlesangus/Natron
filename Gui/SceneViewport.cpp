@@ -893,7 +893,8 @@ struct SceneViewportRenderer::Implementation {
     bool showRender = false;
     bool showGuidePurpose = false;
     LightingModeEnum lightingMode = eLightingModeScene;
-    bool sceneLit = false;
+    // Whether the stage's lights lit the last frame rendered; written by the render thread.
+    std::atomic<bool> sceneLit { false };
     FreeCamera freeCamera;
     ClipPlanes clipPlanes;
     // Read by the threads that work out the first framing.
@@ -3668,6 +3669,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
     if (passes == 0) {
         return false;
     }
+    _imp->sceneLit = frame.params.enableSceneLights;
     if (timed) {
         // Only the render thread waits here, and the image could not be shown before the GPU is
         // done with it anyway; the wait separates GPU time left after submission from the CPU's.

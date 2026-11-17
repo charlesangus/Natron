@@ -117,6 +117,13 @@ private:
 std::uint64_t automaticGpuTextureBudget(std::uint64_t videoMemoryBytes);
 
 /**
+ * @brief False for an asset path Ar hands to a URI resolver, as it does any path that starts with
+ * a scheme ("natron://Node/rgba?v=..."): what such a path names has no file header to size it by,
+ * and opening it can make its resolver do work of its own.
+ **/
+bool gpuTextureIsFile(const std::string& assetPath);
+
+/**
  * @brief The bytes Storm uploads for a Ptex file: its texel pages and its per-face layout.
  *
  * Mirrors HdStPtexMipmapTextureLoader (v26.08 hdSt/ptexMipmapTextureLoader.cpp), which packs each

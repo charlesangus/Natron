@@ -4499,15 +4499,21 @@ NodeGuiMessageBadge::paint(QPainter* painter,
 {
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
-    QPen outlinePen(QColor(0, 0, 0, 160));
-    outlinePen.setCosmetic(true);
-    outlinePen.setJoinStyle(Qt::RoundJoin);
-    painter->setPen(outlinePen);
+    const double diameterPx = painter->worldTransform().map(QLineF(0., 0., 0., _diameter)).length();
+    // A one-pixel outline on a badge only a few pixels across would cover all of its fill and
+    // leave a dark speck instead of the severity colour.
+    if (diameterPx >= 8.) {
+        QPen outlinePen(QColor(0, 0, 0, 160));
+        outlinePen.setCosmetic(true);
+        outlinePen.setJoinStyle(Qt::RoundJoin);
+        painter->setPen(outlinePen);
+    } else {
+        painter->setPen(Qt::NoPen);
+    }
     painter->setBrush(_fill);
     painter->drawPath(_outline);
     // Skipped once too small to read; the coloured shape alone still marks the node.
-    const double markHeight = painter->worldTransform().map(QLineF(0., 0., 0., _diameter)).length();
-    if (markHeight >= 6. && !(_graph && _graph->isDoingNavigatorRender())) {
+    if (diameterPx >= 6. && !(_graph && _graph->isDoingNavigatorRender())) {
         painter->setPen(Qt::NoPen);
         painter->setBrush(_isError ? QColor(255, 255, 255) : QColor(30, 20, 0));
         painter->drawPath(_mark);

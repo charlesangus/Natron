@@ -181,6 +181,10 @@ struct FrameGraph {
         // What the node said about the refusal, when placementReason comes from asking it and it had something to say.
         std::string placementDetail;
 
+        // A task of a render continuation's extension whose output the store already holds under key, from a graph
+        // the extension extends: it renders nothing, and its consumers release that entry.
+        bool reusesStore = false;
+
         // Only read or written under the scheduler's mutex once the graph is submitted.
         int remainingDeps = 0;
         // Per edge, as consumerTasks counts them.
@@ -311,6 +315,18 @@ private:
  * ones returned, whatever they produced is dropped with the store, every task is placed on the CPU and the leaves are
  * queued again, the future still waiting. A frame with regions holds the GPU runtime from submit() until it finished
  * or was restarted, so that the runtime is not recreated under the device images in its store.
+ *
+ * A CPU task whose effect has a render continuation (EffectInstance::getRenderContinuation()) that names outputs is
+ * extended: the outputs are planned by an incremental request pass into a request map of the extension's own, which
+ * no planned task reads, and built into an extension frame. The extension shares the store, abort info, priority and
+ * sequence of the frame it extends, and its tasks go through the same admission under the bytes budget; its store
+ * keys carry a generation of their own so that its entries never collide with the planned ones, and an output the
+ * store already holds over the region is reused instead of rendered. While the extension runs, the probing task holds
+ * no thread and no reservation; once the extension finished, it is queued ahead of admission and runs its continuation
+ * and its render under the extension's context. An extension may itself be extended, up to
+ * EffectInstance::kMaxRenderContinuationDepth levels. Aborting the frame drops the extension's queued tasks, and the
+ * frame finishes, without running the continuation, once the extension's running tasks returned. A failed extension
+ * task fails the frame.
  **/
 class RenderScheduler {
 public:
@@ -483,6 +499,13 @@ public:
                                  unsigned int mipmapLevel);
 
     /**
+     * @brief As buildGraph(), from several roots: roots[i] is tasks[i], or the task of an earlier root with the same
+     * key. A root no other task reads has no consumer. Roots the request does not reach make an empty graph.
+     **/
+    static FrameGraph buildGraph(const FrameRenderContextPtr& context,
+                                 const std::vector<FrameStore::TaskKey>& roots);
+
+    /**
      * @brief Removes from a graph buildGraph returned the tasks only a cache hit's render would have read: a task whose
      * output is cached in full loses its dependencies, one cached in part those its missing part doesn't read, and tasks
      * left without a consumer go with them. Must run before placeRenderGraph, on the thread buildGraph ran on, and after
@@ -653,6 +676,41 @@ private:
 
     void executeTask(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
 
+    struct Continuation;
+    enum class ProbeOutcome {
+        // The effect has no render continuation here, or one with nothing left to render first.
+        Render,
+
+        // The task waits for its extension, on no thread.
+        Parked,
+        Failed,
+        Aborted
+    };
+
+    /**
+     * @brief Asks the effect of a CPU task for its render continuation and, when it names outputs, plans and submits the
+     * extension that renders them. On Render, continuation holds what to run before the render, if anything.
+     **/
+    ProbeOutcome probeRenderContinuation(const FramePtr& frame,
+                                         int task,
+                                         int budget,
+                                         std::unique_ptr<Continuation>* continuation);
+
+    /**
+     * @brief Marks the tasks of an extension graph whose outputs the store holds from a graph it extends as reusing
+     * them, drops the tasks only those read, and sets every remaining task's store generation. The continuation reads
+     * tasks[i] rootReads[i] times; rootKeys gets one key per read, as the store holds it.
+     **/
+    static void planExtensionReuse(FrameGraph& graph,
+                                   const std::vector<int>& rootReads,
+                                   const FrameRenderContext& extension,
+                                   std::vector<FrameStore::TaskKey>* rootKeys);
+
+    static bool canFinishLocked(const Frame& frame);
+
+    // An extension frame finished: resumes the task it was made for, or ends that task's frame when either died.
+    void finishExtensionLocked(const FramePtr& extension, std::vector<FramePtr>* finished);
+
     std::shared_ptr<void> leaseCpuFallback(int* budget);
 
     int cpuTaskBudgetLocked() const;
@@ -751,6 +809,9 @@ private:
 
     // The tasks inside renderRoI, counted without the mutex.
     std::atomic<int> _tasksRendering;
+
+    // The store generation the next extension writes under: 0 is the planned graphs'.
+    std::atomic<int> _nextStoreGeneration;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -896,7 +896,8 @@ visitRequestPassItem(bool useTransforms,
                      WarmedRoDSet* warmed,
                      ContextFrameArgsMap* passArgs,
                      DeferredContextRequests* deferred,
-                     std::vector<RequestPassItem>* stack)
+                     std::vector<RequestPassItem>* stack,
+                     std::vector<RequestPassNewWork>* newWork)
 {
     const NodePtr& node = item.node;
     const double time = item.time;
@@ -1058,6 +1059,14 @@ visitRequestPassItem(bool useTransforms,
         fvRequest->finalData.finalRoi = canonicalRenderWindow;
     } else {
         fvRequest->finalData.finalRoi.merge(canonicalRenderWindow);
+    }
+    if (newWork) {
+        RequestPassNewWork added;
+        added.key = nodeKey;
+        added.time = time;
+        added.view = view;
+        added.roi = canonicalRenderWindow;
+        newWork->push_back(added);
     }
 
     if (fvRequest->globalData.identityInputNb == -2) {
@@ -1226,16 +1235,13 @@ visitRequestPassItem(bool useTransforms,
 
 } // namespace
 
+namespace {
+
 StatusEnum
-EffectInstance::getInputsRoIsFunctor(bool useTransforms,
-                                     double time,
-                                     ViewIdx view,
-                                     unsigned originalMipmapLevel,
-                                     const NodePtr& node,
-                                     const NodePtr& /*callerNode*/,
-                                     const NodePtr& /*treeRoot*/,
-                                     const RectD& canonicalRenderWindow,
-                                     FrameRequestMap& requests)
+runRequestPass(bool useTransforms,
+               const std::vector<RequestPassItem>& roots,
+               FrameRequestMap& requests,
+               std::vector<RequestPassNewWork>* newWork)
 {
     // An explicit stack rather than recursion: the walk is as deep as the longest upstream chain, and request passes
     // run on pool threads with default-sized stacks.
@@ -1251,8 +1257,8 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
     DeferredContextRequests deferred;
 
-    // The root renders under the empty context.
-    stack.push_back(makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
+    // Reversed, so that the roots are walked in their order.
+    stack.assign(roots.rbegin(), roots.rend());
 
     for (;;) {
         if (stack.empty()) {
@@ -1272,7 +1278,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
         switch (item.kind) {
         case RequestPassItem::eKindVisit:
-            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &deferred, &stack) == eStatusFailed) {
+            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &deferred, &stack, newWork) == eStatusFailed) {
                 return eStatusFailed;
             }
             break;
@@ -1301,6 +1307,25 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     }
 
     return eStatusOK;
+} // runRequestPass
+
+} // namespace
+
+StatusEnum
+EffectInstance::getInputsRoIsFunctor(bool useTransforms,
+                                     double time,
+                                     ViewIdx view,
+                                     unsigned originalMipmapLevel,
+                                     const NodePtr& node,
+                                     const NodePtr& /*callerNode*/,
+                                     const NodePtr& /*treeRoot*/,
+                                     const RectD& canonicalRenderWindow,
+                                     FrameRequestMap& requests)
+{
+    // The root renders under the empty context.
+    const std::vector<RequestPassItem> roots(1, makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
+
+    return runRequestPass(useTransforms, roots, requests, 0);
 } // EffectInstance::getInputsRoIsFunctor
 
 namespace {
@@ -1532,6 +1557,27 @@ EffectInstance::computeRequestPass(double time,
     }*/
 
     return eStatusOK;
+}
+
+StatusEnum
+EffectInstance::extendRequestPass(const std::vector<RequestPassRoot>& roots,
+                                  FrameRequestMap& request,
+                                  std::vector<RequestPassNewWork>* newWork)
+{
+    if (roots.empty()) {
+        return eStatusOK;
+    }
+    std::vector<RequestPassItem> items;
+    items.reserve(roots.size());
+    for (const RequestPassRoot& root : roots) {
+        if (!root.node || !root.node->getEffectInstance()) {
+            return eStatusFailed;
+        }
+        items.push_back(makeVisitItem(root.node, root.context, root.time, root.view, root.mipmapLevel, root.roi));
+    }
+    const bool doTransforms = appPTR->getCurrentSettings()->isTransformConcatenationEnabled();
+
+    return runRequestPass(doTransforms, items, request, newWork);
 }
 
 const FrameViewRequest*

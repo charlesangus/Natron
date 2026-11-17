@@ -21,6 +21,7 @@
 #include "CacheDiskTierWorker.h"
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
+#include "ContinuationTestEffects.h"
 #include "CountingTestEffect.h"
 #include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
@@ -166,6 +167,10 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<ContextUnionTestEffect>();
     registerTestBuiltInPlugin<ContextSetTestEffect>();
     registerTestBuiltInPlugin<ContextLoopFrameShiftTestEffect>();
+    // Registered to ask for render continuations, which no shipped node does yet.
+    registerTestBuiltInPlugin<ContinuationSourceTestEffect>();
+    registerTestBuiltInPlugin<ProbeTestEffect>();
+    registerTestBuiltInPlugin<RecursiveProbeTestEffect>();
 }
 
 void

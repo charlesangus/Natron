@@ -1513,6 +1513,20 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Pre-render input images ////////////////////////////////////////////////////////////////
 
+    struct HeldContinuationResultsGuard {
+        std::size_t begin = 0;
+        ~HeldContinuationResultsGuard()
+        {
+            EffectInstance::releaseRenderContinuationResults(begin);
+        }
+    } heldContinuationResults;
+    if (std::any_of(layersToRender->rectsToRender.begin(), layersToRender->rectsToRender.end(), [](const RectToRender& rect) { return !rect.isIdentity; })) {
+        const RenderRoIRetCode continuationCode = runRenderContinuationInline(args.time, args.view, args.mipmapLevel, args.roi, &heldContinuationResults.begin);
+        if (continuationCode != eRenderRoIRetCodeOk) {
+            return continuationCode;
+        }
+    }
+
     /// Pre-render input images before allocating the image if we need to render
     for (std::list<RectToRender>::iterator it = layersToRender->rectsToRender.begin(); it != layersToRender->rectsToRender.end(); ++it) {
         if (it->isIdentity) {

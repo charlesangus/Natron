@@ -1472,7 +1472,16 @@ EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
         }
     }
 
-    return context->getStore().find(key, comps, neededRoI, out);
+    // An extension's tasks read its own outputs first, then those of the graphs it extends.
+    const std::vector<int>& generations = context->getStoreGenerations();
+    for (std::vector<int>::const_iterator it = generations.begin(); it != generations.end(); ++it) {
+        key.generation = *it;
+        if (context->getStore().find(key, comps, neededRoI, out)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool
@@ -1557,6 +1566,250 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
     }
 
     return code;
+}
+
+namespace {
+
+struct HeldContinuationResult {
+    const Node* consumer = 0;
+    NodePtr node;
+    U64 contextKey = 0;
+    double time = 0.;
+    ViewIdx view;
+    unsigned int mipmapLevel = 0;
+    std::map<ImageLayerDesc, ImagePtr> planes;
+};
+
+// The outputs a render continuation run inline pulled, kept for the render of the effect that asked for them on this
+// thread, which reads them again: with the cache bypassed it would otherwise render each one twice.
+thread_local std::vector<HeldContinuationResult> tHeldContinuationResults;
+
+// Depth of the extension the render running on this thread belongs to.
+thread_local int tRenderContinuationDepth = 0;
+
+thread_local const Node* tHandledContinuationNode = 0;
+thread_local double tHandledContinuationTime = 0.;
+thread_local ViewIdx tHandledContinuationView;
+thread_local U64 tHandledContinuationContextKey = 0;
+
+class RenderContinuationDepthScope {
+public:
+    explicit RenderContinuationDepthScope(int depth)
+        : _previous(tRenderContinuationDepth)
+    {
+        tRenderContinuationDepth = depth;
+    }
+
+    ~RenderContinuationDepthScope()
+    {
+        tRenderContinuationDepth = _previous;
+    }
+
+    RenderContinuationDepthScope(const RenderContinuationDepthScope&) = delete;
+    RenderContinuationDepthScope& operator=(const RenderContinuationDepthScope&) = delete;
+
+private:
+    int _previous;
+};
+
+std::list<ImageLayerDesc>
+continuationRequestComponents(const EffectInstance::RenderContinuationRequest& request)
+{
+    return request.comps.empty() ? std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()) : request.comps;
+}
+
+bool
+takeHeldContinuationResult(const Node* consumer,
+                           const NodePtr& node,
+                           U64 contextKey,
+                           double time,
+                           ViewIdx view,
+                           unsigned int mipmapLevel,
+                           const std::list<ImageLayerDesc>& comps,
+                           const RectI& pixelRoI,
+                           std::map<ImageLayerDesc, ImagePtr>* planes)
+{
+    for (std::vector<HeldContinuationResult>::const_reverse_iterator it = tHeldContinuationResults.rbegin(); it != tHeldContinuationResults.rend(); ++it) {
+        if ((it->consumer != consumer) || (it->node != node) || (it->contextKey != contextKey) || (it->time != time) || (it->view != view) || (it->mipmapLevel != mipmapLevel)) {
+            continue;
+        }
+        std::map<ImageLayerDesc, ImagePtr> found;
+        for (const ImageLayerDesc& comp : comps) {
+            std::map<ImageLayerDesc, ImagePtr>::const_iterator plane = it->planes.find(comp);
+            if ((plane == it->planes.end()) || !plane->second || !plane->second->getBounds().contains(pixelRoI)) {
+                found.clear();
+                break;
+            }
+            found.insert(*plane);
+        }
+        if (!found.empty()) {
+            planes->insert(found.begin(), found.end());
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
+EffectInstance::RenderContinuationHandledScope::RenderContinuationHandledScope(const Node* node,
+                                                                               double time,
+                                                                               ViewIdx view,
+                                                                               U64 contextKey,
+                                                                               int depth)
+    : _previousNode(tHandledContinuationNode)
+    , _previousTime(tHandledContinuationTime)
+    , _previousView(tHandledContinuationView)
+    , _previousContextKey(tHandledContinuationContextKey)
+    , _previousDepth(tRenderContinuationDepth)
+{
+    tHandledContinuationNode = node;
+    tHandledContinuationTime = time;
+    tHandledContinuationView = view;
+    tHandledContinuationContextKey = contextKey;
+    tRenderContinuationDepth = depth;
+}
+
+EffectInstance::RenderContinuationHandledScope::~RenderContinuationHandledScope()
+{
+    tHandledContinuationNode = _previousNode;
+    tHandledContinuationTime = _previousTime;
+    tHandledContinuationView = _previousView;
+    tHandledContinuationContextKey = _previousContextKey;
+    tRenderContinuationDepth = _previousDepth;
+}
+
+bool
+EffectInstance::RenderContinuationHandledScope::isHandled(const Node* node,
+                                                          double time,
+                                                          ViewIdx view,
+                                                          U64 contextKey)
+{
+    return node && (tHandledContinuationNode == node) && (tHandledContinuationTime == time) && (tHandledContinuationView == view)
+        && (tHandledContinuationContextKey == contextKey);
+}
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::pullRenderContinuationRequest(const RenderContinuationRequest& request,
+                                              unsigned int mipmapLevel,
+                                              std::map<ImageLayerDesc, ImagePtr>* planes)
+{
+    const EffectInstancePtr input = request.node ? request.node->getEffectInstance() : EffectInstancePtr();
+    if (!input || !planes) {
+        return eRenderRoIRetCodeFailed;
+    }
+    const std::list<ImageLayerDesc> comps = continuationRequestComponents(request);
+    InputContextScope scope(this, request.context);
+    InputContextArgs inputContext(this, input, -1, request.time, request.view);
+    double par = 1.;
+    ImageBitDepthEnum depth = eImageBitDepthFloat;
+    {
+        ActionContextScope actions(true, request.context);
+        const NodeMetadataConstPtr metadata = input->getRenderMetadata(request.time, request.view);
+        if (metadata) {
+            par = metadata->getPixelAspectRatio(-1);
+            depth = metadata->getBitDepth(-1);
+        }
+    }
+    const RectI pixelRoI = request.roi.toPixelEnclosing(mipmapLevel, par);
+    if (takeHeldContinuationResult(getNode().get(), request.node, inputContext.contextKey(), request.time, request.view, mipmapLevel, comps, pixelRoI, planes)) {
+        return eRenderRoIRetCodeOk;
+    }
+    RenderRoIArgs args(request.time,
+                       RenderScale::fromMipmapLevel(mipmapLevel),
+                       mipmapLevel,
+                       request.view,
+                       false /*byPassCache*/,
+                       pixelRoI,
+                       RectD(),
+                       comps,
+                       depth,
+                       false /*calledFromGetImage*/,
+                       this,
+                       eStorageModeRAM,
+                       request.time);
+
+    return renderInputOrTakeFromStore(input, -1, &args, planes, this, &inputContext);
+}
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::runRenderContinuationInline(double time,
+                                            ViewIdx view,
+                                            unsigned int mipmapLevel,
+                                            const RectI& roi,
+                                            std::size_t* heldBegin)
+{
+    *heldBegin = tHeldContinuationResults.size();
+    const NodePtr node = getNode();
+    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    if (!node || RenderContinuationHandledScope::isHandled(node.get(), time, view, frameArgs ? frameArgs->contextKey : 0)) {
+        return eRenderRoIRetCodeOk;
+    }
+    RenderContinuationArgs probeArgs;
+    probeArgs.time = time;
+    probeArgs.view = view;
+    probeArgs.mipmapLevel = mipmapLevel;
+    probeArgs.roi = roi;
+    probeArgs.context = frameArgs ? frameArgs->context : RenderContextPtr();
+    probeArgs.depth = tRenderContinuationDepth;
+    RenderContinuation continuation;
+    if (!getRenderContinuation(probeArgs, &continuation)) {
+        return eRenderRoIRetCodeOk;
+    }
+    if (!continuation.requests.empty()) {
+        if (probeArgs.depth >= kMaxRenderContinuationDepth) {
+            failRenderContinuationTooDeep();
+
+            return eRenderRoIRetCodeFailed;
+        }
+        // Pulled one after the other: no scheduler runs them in parallel here.
+        RenderContinuationDepthScope deeper(probeArgs.depth + 1);
+        for (const RenderContinuationRequest& request : continuation.requests) {
+            if (aborted()) {
+                return eRenderRoIRetCodeAborted;
+            }
+            HeldContinuationResult held;
+            const RenderRoIRetCode code = pullRenderContinuationRequest(request, mipmapLevel, &held.planes);
+            if (code != eRenderRoIRetCodeOk) {
+                return code;
+            }
+            const EffectInstancePtr input = request.node->getEffectInstance();
+            InputContextScope scope(this, request.context);
+            InputContextArgs inputContext(this, input, -1, request.time, request.view);
+            held.consumer = node.get();
+            held.node = request.node;
+            held.contextKey = inputContext.contextKey();
+            held.time = request.time;
+            held.view = request.view;
+            held.mipmapLevel = mipmapLevel;
+            tHeldContinuationResults.push_back(std::move(held));
+        }
+    }
+    if (aborted()) {
+        return eRenderRoIRetCodeAborted;
+    }
+    if (continuation.continuation && (continuation.continuation() != eStatusOK)) {
+        return eRenderRoIRetCodeFailed;
+    }
+
+    return eRenderRoIRetCodeOk;
+}
+
+void
+EffectInstance::releaseRenderContinuationResults(std::size_t heldBegin)
+{
+    if (heldBegin < tHeldContinuationResults.size()) {
+        tHeldContinuationResults.resize(heldBegin);
+    }
+}
+
+void
+EffectInstance::failRenderContinuationTooDeep()
+{
+    const std::string message = tr("%1 asks for a render continuation deeper than %2 levels.").arg(QString::fromUtf8(getScriptName_mt_safe().c_str())).arg(kMaxRenderContinuationDepth).toStdString();
+    setPersistentMessage(eMessageTypeError, message);
 }
 
 bool

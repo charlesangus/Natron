@@ -176,8 +176,8 @@ public:
                         int threads)
         = 0;
 
-    // The bounces after the camera rays' that the last render() traced: on the CPU the deepest any ray
-    // took, on a device every one the frame's depths allow, as it traces them whether rays are left.
+    // The bounces after the camera rays' that the last render() traced with any ray left: the deepest
+    // any ray took.
     std::uint32_t bouncesTraced() const
     {
         return _bouncesTraced.load(std::memory_order_relaxed);

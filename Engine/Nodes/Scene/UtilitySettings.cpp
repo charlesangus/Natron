@@ -94,7 +94,7 @@ make()
 
     maxCutouts.key = kUtilitySettingMaxCutouts;
     maxCutouts.name = "maxCutouts";
-    maxCutouts.tooltip = "How many cutout or projection-discard surfaces a ray passes through before it is treated as a miss. Camera rays then show the background and shadow rays reach the light. Higher shows more layers of cutouts stacked up and takes longer on scenes with them.";
+    maxCutouts.tooltip = "How many surfaces a ray passes through before it gives up: cutout and projection-discard surfaces, and for shadow rays also surfaces with an opacity below 1, which let some light through. Past the limit a camera or reflected ray is treated as a miss and shows the background, and a shadow ray is blocked, so the light is shadowed. Higher shows more layers stacked up and takes longer on scenes with them.";
     maxCutouts.defaultValue = VtValue(static_cast<int>(kWavefrontDefaultMaxCutouts));
     maxCutouts.hasRange = true;
     maxCutouts.minimum = 1;
@@ -127,7 +127,7 @@ make()
 
     refractionDepth.key = kUtilitySettingRefractionDepth;
     refractionDepth.name = "refractionDepth";
-    refractionDepth.tooltip = "How many refractions a ray from the camera takes through surfaces with an opacity below 1 and an ior other than 1, Max Ray Depth permitting; a total internal reflection counts as one. Going into a solid and out again takes 2. Light through surfaces with an ior of 1 goes on straight and counts against Max Ray Depth only.";
+    refractionDepth.tooltip = "How many refractions a ray from the camera takes through surfaces with an opacity below 1 and an ior other than 1, Max Ray Depth permitting; a total internal reflection counts as one. Going into a solid and out again takes 2. Light through surfaces with an ior of 1 goes on straight and counts against Max Ray Depth only. Each face is an interface on its own: which way its normal points, from its winding, decides which side is inside, so a closed solid needs its faces pointing outward.";
     refractionDepth.defaultValue = VtValue(static_cast<int>(kWavefrontDefaultRefractionDepth));
     refractionDepth.hasRange = true;
     refractionDepth.minimum = 0;

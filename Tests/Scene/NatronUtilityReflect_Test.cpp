@@ -540,6 +540,36 @@ TEST_P(NatronUtilityReflect, ABounceBetweenMirrorsEndsAtTheRayDepth)
     }
 }
 
+TEST_P(NatronUtilityReflect, ABounceOffAHalfOpaqueCardIsTheOnlyOneTraced)
+{
+    if (!available()) {
+        return;
+    }
+
+    // Every path reflects off the card or goes through it once, then leaves the scene.
+    UtilityMaterialDesc card;
+
+    card.diffuseColor = GfVec3f(0.5f);
+    card.opacity = 0.5f;
+    card.roughness = 0.f;
+
+    UtilityScene scene;
+
+    addDome(scene, GfVec3f(0.5f));
+    addPlane(scene, "Card", GfVec3d(0.), GfVec3d(0., 0., 1.), 100., materialNamed(scene, "Card", card));
+
+    WavefrontFrame frame = makeFrame(1);
+
+    frame.maxRayDepth = 10;
+    frame.reflectionDepth = 10;
+    frame.refractionDepth = 10;
+
+    const std::vector<GfVec4f> colors = render(scene, frame);
+
+    ASSERT_EQ(static_cast<std::size_t>(kSize * kSize), colors.size());
+    EXPECT_EQ(1u, bouncesTraced());
+}
+
 TEST_P(NatronUtilityReflect, ASmoothDielectricReflectsTheDomeByItsFresnel)
 {
     if (!available()) {

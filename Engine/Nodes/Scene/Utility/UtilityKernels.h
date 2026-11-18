@@ -104,7 +104,7 @@ struct KernelResolveParams {
     std::uint32_t count;
     std::uint32_t flags;
     std::uint32_t linkWords;
-    std::uint32_t padding;
+    std::uint32_t passIndex;
 };
 
 // ResolveParams::flags in Kernels/ResolveHits.slang.

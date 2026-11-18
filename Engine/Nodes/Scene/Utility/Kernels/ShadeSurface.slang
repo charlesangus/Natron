@@ -61,6 +61,9 @@ struct ShadeParams
 // it carries; written only when a bounce follows this one.
 [[vk::binding(27, 0)]] RWStructuredBuffer<float> nextRays;
 [[vk::binding(28, 0)]] RWStructuredBuffer<PathState> nextPaths;
+// Per bounce, set to 1 when the bounce queues any path that goes on, which the host reads to stop
+// tracing once no path is left. Every writer stores the same value, so the race between them is benign.
+[[vk::binding(29, 0)]] RWStructuredBuffer<uint> liveBounces;
 [[vk::push_constant]] ConstantBuffer<ShadeParams> params;
 
 static const float4 kUnsupportedColor = float4(1.0, 0.0, 1.0, 1.0);
@@ -406,6 +409,7 @@ void continuePath(uint index, PathState path, PreviewSurfaceSample surface, floa
     const float3 origin = position + (through ? -offset : offset) * geometric;
 
     writeContinuation(index, origin, next, kLightAtInfinity, continued);
+    liveBounces[params.bounce.x] = 1;
 }
 
 // Emission, premultiplied by coverage, and the shadow rays of the pass's lights, whose unblocked

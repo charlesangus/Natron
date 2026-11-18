@@ -104,7 +104,19 @@ try:
         except Exception:
             return False
 
+    fixtures_written = []
+
     def make_fixtures():
+        # Written once per run: a reader pins a file to the identity it first saw, so a fixture
+        # rewritten after an earlier section read it fails as changed on disk and renders black.
+        if fixtures_written:
+            return True
+        ok = write_fixtures()
+        if ok:
+            fixtures_written.append(True)
+        return ok
+
+    def write_fixtures():
         ok = make_image(os.path.join(FILES_DIR, PNG_NAME), (0.9, 0.1, 0.1))
         ok = ok and make_image(os.path.join(FILES_DIR, "sub", "m138-inner.png"), (0.1, 0.1, 0.9))
         # Sizes that are not a multiple of the tile size, so edge tiles are partial.

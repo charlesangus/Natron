@@ -2179,6 +2179,70 @@ public:
         return std::nullopt;
     }
 
+    /**
+     * @brief Whether this kind of node can ever offer an inverse warp map, cached by the node as
+     * getCanTransform() is.
+     **/
+    virtual bool getCanInverseWarp() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether this node offers its inverse warp to a consumer downstream at time and view,
+     * decided from its knobs only, before any window is known. A node that masks or mixes its
+     * output declines, since the chain skips its render. When it offers, *inputNb is the input
+     * its map samples.
+     **/
+    virtual bool canOfferInverseWarp(double /*time*/,
+                                     ViewIdx /*view*/,
+                                     bool /*draftRender*/,
+                                     int* /*inputNb*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The map canOfferInverseWarp() offered, covering window, a canonical region of this
+     * node's output, at scale. Null when it has none.
+     **/
+    virtual InverseWarpMapConstPtr getInverseWarpMap(double /*time*/,
+                                                     ViewIdx /*view*/,
+                                                     const RenderScale& /*scale*/,
+                                                     bool /*draftRender*/,
+                                                     const RectD& /*window*/) WARN_UNUSED_RETURN
+    {
+        return InverseWarpMapConstPtr();
+    }
+
+    /**
+     * @brief Whether this node samples inputNb through an InverseWarpChain, and so lets
+     * tryConcatenateTransforms() go through upstream map providers on that input.
+     **/
+    virtual bool acceptsInverseWarpChain(int /*inputNb*/,
+                                         double /*time*/,
+                                         ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The radius, in source pixels before the chain's stretch, of the filter this node
+     * samples a chain on inputNb with; transformInputRois() grows each map's pullback by it.
+     **/
+    virtual double getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                                    double /*time*/,
+                                                    ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return 0.;
+    }
+
+    /**
+     * @brief The chain the current render concatenated on inputNb, from the thread's transform
+     * redirections; null outside a render or when the input concatenated matrices only.
+     **/
+    InverseWarpChainConstPtr getConcatenatedWarpChain(int inputNb) const WARN_UNUSED_RETURN;
+
 protected:
     /**
      * @brief Can be derived to indicate for each input node what is the frame range(s) (which can be discontinuous)
@@ -3516,11 +3580,12 @@ public:
                                   const RenderScale & scale,
                                   InputMatrixMap* inputTransforms);
 
-
     static void transformInputRois(const EffectInstance* self,
                                    const InputMatrixMapPtr& inputTransforms,
+                                   double time,
+                                   ViewIdx view,
                                    double par,
-                                   const RenderScale & scale,
+                                   const RenderScale& scale,
                                    RoIMap* inputRois,
                                    std::map<int, EffectInstancePtr>* reroutesMap);
     struct RenderArgs

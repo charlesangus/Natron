@@ -42,6 +42,7 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -82,47 +83,6 @@ const std::size_t kTimeCacheSize = kSplineWarpMaxSubFrames + 4;
 
 // Where a coordinate lands outside every image, so it reads black.
 const float kOutsideCoord = -1e9f;
-
-// Maps pixel coordinates of this node's input through inv, the inverse of the concatenated
-// upstream transform, into the upstream image's pixels, and chains jacobian (when not null) with
-// the projective map's derivative.
-void
-mapRowThrough(const Mat3& inv,
-              int n,
-              float* sx,
-              float* sy,
-              float* jacobian)
-{
-    const double* m = inv.m;
-
-    for (int i = 0; i < n; ++i) {
-        const double x = sx[i];
-        const double y = sy[i];
-        const double w = m[6] * x + m[7] * y + m[8];
-        if (!(w > 0.)) {
-            sx[i] = kOutsideCoord;
-            sy[i] = kOutsideCoord;
-            continue;
-        }
-        const double qx = (m[0] * x + m[1] * y + m[2]) / w;
-        const double qy = (m[3] * x + m[4] * y + m[5]) / w;
-        sx[i] = (float)qx;
-        sy[i] = (float)qy;
-        if (!jacobian) {
-            continue;
-        }
-        const double d00 = (m[0] - qx * m[6]) / w;
-        const double d01 = (m[1] - qx * m[7]) / w;
-        const double d10 = (m[3] - qy * m[6]) / w;
-        const double d11 = (m[4] - qy * m[7]) / w;
-        float* J = &jacobian[(std::size_t)i * 4];
-        const double j0 = J[0], j1 = J[1], j2 = J[2], j3 = J[3];
-        J[0] = (float)(d00 * j0 + d01 * j2);
-        J[1] = (float)(d00 * j1 + d01 * j3);
-        J[2] = (float)(d10 * j0 + d11 * j2);
-        J[3] = (float)(d10 * j1 + d11 * j3);
-    }
-}
 
 void
 mergePoint(RectD* r,
@@ -2059,7 +2019,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                 if (crop) {
                     cropRowToFormat(formatPixels, settings.edgeMode, width, sx.data(), sy.data());
                 }
-                mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
+                InverseWarp::mapRowThroughMatrix(plane.inverse.m, (std::size_t)width, sx.data(), sy.data(), jac);
             }
             Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
                                              Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
@@ -2127,7 +2087,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                         J[3] = 1.f;
                     }
                 }
-                mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
+                InverseWarp::mapRowThroughMatrix(plane.inverse.m, (std::size_t)width, sx.data(), sy.data(), jac);
                 Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, &referenceRow[0], nComps);
             } else {

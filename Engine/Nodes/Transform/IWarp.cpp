@@ -76,6 +76,7 @@ const uint32_t kIWarpGpuMapRead = 32;
 const uint32_t kIWarpGpuMapInvert = 64;
 const uint32_t kIWarpGpuMapSmooth = 128;
 const uint32_t kIWarpGpuMapEdgeBlack = 256;
+const uint32_t kIWarpGpuChain = 512;
 
 bool
 rectIsEmpty(const RectD& r)
@@ -1216,7 +1217,8 @@ bool
 IWarp::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || query.hasConcatenatedInput || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+    const StagePlan plan = resolveGpuPlan(query);
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(plan, query) || (query.hasConcatenatedInput && !warpGpuTakesChain(plan, query))) {
         return false;
     }
     WarpSettings settings;
@@ -1321,6 +1323,17 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
         }
     }
     const bool hasSource = (sourceInput >= 0) && (sourceInput < (int)cropped.inputs.size()) && cropped.inputs[sourceInput].buffer;
+    // With warps concatenated into the Source, the Source staged is the image upstream of them
+    // and their chain is bound after the Map.
+    GpuImageView chainView;
+    if (hasSource) {
+        if (!stageGpuChainView(args, sourceInput, std::vector<uint32_t>(), &chainView)) {
+            return eStatusFailed;
+        }
+        if (!chainView.buffer && query.concatenatedStepsOf(sourceInput)) {
+            return eStatusFailed;
+        }
+    }
 
     GpuImageView mapView;
     if (!stageGpuInputView(*this, args, kIWarpInputMap, &mapView)) {
@@ -1329,7 +1342,7 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
 
     // The header, word for word as iwarp.slang loads it, then the curve.
     uint32_t header[kGpuHeaderWords] = {};
-    uint32_t flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kIWarpGpuClamp : 0u) | (settings.edgeMode == EdgeMode::Black ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u);
+    uint32_t flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kIWarpGpuClamp : 0u) | (settings.edgeMode == EdgeMode::Black ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u) | (chainView.buffer ? kIWarpGpuChain : 0u);
     int32_t mapComponent = -1;
     if (getInput(kIWarpInputMap)) {
         flags |= kIWarpGpuMapConnected;
@@ -1372,7 +1385,9 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
     std::memcpy(op.params.data(), header, sizeof(header));
     std::memcpy(op.params.data() + sizeof(header), lut.data(), lut.size() * sizeof(float));
 
-    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(&mapView, 1));
+    const GpuImageView views[2] = { mapView, chainView };
+
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(views, 2));
 #else
     Q_UNUSED(args);
 

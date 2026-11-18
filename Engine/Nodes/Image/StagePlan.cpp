@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <map>
@@ -2130,7 +2131,9 @@ stageGpuInputView(EffectInstance& effect,
         return true;
     }
     const GpuImageView& in = args.inputs[inputNb];
-    EffectInstancePtr input = effect.getInput(inputNb);
+    // Through concatenated nodes the view holds the image upstream of them.
+    const GpuInputChain* chain = args.chainOf(inputNb);
+    EffectInstancePtr input = chain ? chain->source : effect.getInput(inputNb);
     if (!input || !in.buffer) {
         return true;
     }
@@ -2144,13 +2147,58 @@ stageGpuInputView(EffectInstance& effect,
     if (input->getRegionOfDefinition_public(input->getRenderHash(), args.query.time, inputScale, args.query.view, &rod, &isProjectFormat) == eStatusFailed) {
         return false;
     }
-    const RectI crop = in.bounds.intersect(rod.toPixelEnclosing(scale, effect.getRenderMetadata(args.query.time, args.query.view)->getPixelAspectRatio(inputNb)));
+    const NodeMetadataConstPtr metadata = chain ? input->getRenderMetadata(args.query.time, args.query.view) : effect.getRenderMetadata(args.query.time, args.query.view);
+    const double par = metadata ? metadata->getPixelAspectRatio(chain ? -1 : inputNb) : 1.;
+    const RectI crop = in.bounds.intersect(rod.toPixelEnclosing(scale, par));
     if (crop.isNull()) {
         return true;
     }
     *view = PassExec::cropGpuView(in, crop);
 
     return true;
+}
+
+bool
+stageGpuChainView(const GpuRenderArgs& args,
+                  int inputNb,
+                  std::vector<uint32_t> words,
+                  GpuImageView* view)
+{
+    *view = GpuImageView();
+    const GpuInputChain* chain = args.chainOf(inputNb);
+    if (!chain) {
+        return true;
+    }
+#ifdef NATRON_HAVE_GPU
+    if (!chain->appendGpuWords(&words)) {
+        return false;
+    }
+    gpu::GpuRecordContext& ctx = args.context;
+    const std::size_t bytes = words.size() * sizeof(uint32_t);
+    if ((words.size() > (std::size_t)INT32_MAX) || (bytes > ctx.maxScratchBytes())) {
+        return false;
+    }
+    gpu::GpuBuffer* buffer = nullptr;
+    if (!ctx.scratch(bytes, buffer) || !buffer) {
+        return false;
+    }
+    // GpuRecordContext::updateBuffer() writes at most 64 KiB at a time.
+    const std::size_t chunk = 65536;
+    const std::span<const std::byte> all = std::as_bytes(std::span<const uint32_t>(words));
+    for (std::size_t offset = 0; offset < bytes; offset += chunk) {
+        if (!ctx.updateBuffer(*buffer, offset, all.subspan(offset, std::min(chunk, bytes - offset)))) {
+            return false;
+        }
+    }
+    view->buffer = buffer;
+    view->bounds = RectI(0, 0, (int)words.size(), 1);
+    view->rowStrideFloats = (int)words.size();
+    view->nComps = 1;
+
+    return true;
+#else
+    return false;
+#endif
 }
 
 NATRON_NAMESPACE_EXIT

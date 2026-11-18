@@ -2,6 +2,8 @@ import pixelwrap;
 import coordmap;
 import resamplecore;
 import edgesample;
+import lensmodels;
+import warpchain;
 
 // SplineWarp::renderOp per pixel, SplineWarpField::getRow() included. The wrap's push block
 // carries the Source, the image blended under the mask and mix, the destination and the mask;
@@ -10,10 +12,15 @@ import edgesample;
 // tables SplineWarpField::getGpuTables() builds, after a table of the fields to average with
 // motion blur; sampleBuf holds the image sampled: the Source cropped to its format, or the
 // cookie mask itself. SplineWarpGpuParams in
-// Engine/Nodes/Transform/SplineWarp/SplineWarpGpu.h mirrors the block's words.
+// Engine/Nodes/Transform/SplineWarp/SplineWarpGpu.h mirrors the block's words. Under
+// kSplineWarpChain the Source is upstream of nodes concatenated into it, and chainBuf holds the
+// format crop as kSplineWarpChainCropWords words, flags then the rect as warpchain.slang crops,
+// then the chain as InverseWarpChain::packGpu() writes it: each field coordinate is cropped and
+// mapped through it, as SplineWarp::renderOp maps a chained plane.
 
 [[vk::binding(4, 0)]] StructuredBuffer<uint> fieldBuf;
 [[vk::binding(5, 0)]] StructuredBuffer<float> sampleBuf;
+[[vk::binding(6, 0)]] StructuredBuffer<uint> chainBuf;
 
 static const uint kSplineWarpClamp = 1;
 static const uint kSplineWarpEdgeBlack = 2;
@@ -21,6 +28,8 @@ static const uint kSplineWarpJacobian = 4;
 static const uint kSplineWarpSample = 8;
 static const uint kSplineWarpField = 16;
 static const uint kSplineWarpFeathers = 32;
+static const uint kSplineWarpChain = 64;
+static const uint kSplineWarpChainCropWords = 5;
 
 // Words per grid point and per window column or row in fieldBuf.
 static const uint kNodeWords = 8;
@@ -125,9 +134,10 @@ bool insideFeather(SplineWarpParams s, int2 p)
 // (Jxx, Jxy, Jyx, Jyy), as SplineWarpField::getRow() gives them. The bilinear lookup runs in
 // two-float arithmetic so the coordinate rounds to the float the CPU's double expression rounds to,
 // which decides whether the pixel is left in place.
-void fieldAt(SplineWarpParams s, int2 p, out float2 coord, out float4 J)
+void fieldAt(SplineWarpParams s, int2 p, out FF cx, out FF cy, out float4 J)
 {
-    coord = float2(float(p.x) + 0.5, float(p.y) + 0.5);
+    cx = ffMake(float(p.x) + 0.5, 0.0);
+    cy = ffMake(float(p.y) + 0.5, 0.0);
     J = float4(1.0, 0.0, 0.0, 1.0);
     if ((s.flags & kSplineWarpField) == 0 || !insideWindow(s, p))
         return;
@@ -143,7 +153,8 @@ void fieldAt(SplineWarpParams s, int2 p, out float2 coord, out float4 J)
     const uint d = c + kNodeWords;
     const FF sx = lerpFF(lerpFF(fieldFF(a), fieldFF(b), fx), lerpFF(fieldFF(c), fieldFF(d), fx), fy);
     const FF sy = lerpFF(lerpFF(fieldFF(a + 2), fieldFF(b + 2), fx), lerpFF(fieldFF(c + 2), fieldFF(d + 2), fx), fy);
-    coord = float2(sx.hi, sy.hi);
+    cx = sx;
+    cy = sy;
     if ((s.flags & kSplineWarpJacobian) == 0)
         return;
     const float u = fx.hi + fx.lo;
@@ -193,16 +204,24 @@ float4 splineWarpSample(SplineWarpParams s, int2 p)
     const float4 zero = float4(0.0, 0.0, 0.0, 0.0);
     if ((s.flags & kSplineWarpSample) == 0)
         return zero;
-    float2 coord;
+    FF cx;
+    FF cy;
     float4 J;
-    fieldAt(s, p, coord, J);
-    if (coord.x == float(p.x) + 0.5 && coord.y == float(p.y) + 0.5)
+    fieldAt(s, p, cx, cy, J);
+    const bool jacobian = (s.flags & kSplineWarpJacobian) != 0;
+    float2 coord = float2(cx.hi, cy.hi);
+    if ((s.flags & kSplineWarpChain) != 0)
+    {
+        const bool mapped = warpChainCrop(chainBuf, 1, chainBuf[0], cx, cy) && warpChainMap(chainBuf, kSplineWarpChainCropWords, cx, cy, J, jacobian);
+        const float nan = asfloat(0x7fc00000u);
+        coord = mapped ? float2(ffToFloat(cx), ffToFloat(cy)) : float2(nan, nan);
+    }
+    else if (coord.x == float(p.x) + 0.5 && coord.y == float(p.y) + 0.5)
     {
         // A pixel the warp leaves in place is the Source pixel itself, which a filter would soften
         // with its neighbours.
         return readSample(s, p);
     }
-    const bool jacobian = (s.flags & kSplineWarpJacobian) != 0;
     const float4 v = sampleAt(splineWarpSource(s), coord.x, coord.y, J, jacobian, s.spec, (s.flags & kSplineWarpClamp) != 0, kWrapNone,
                               kWrapNone, int4(0, 0, 0, 0));
     if (s.sampleNComps == 1)

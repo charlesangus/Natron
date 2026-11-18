@@ -3,14 +3,18 @@ import coordmap;
 import resamplecore;
 import mapremap;
 import edgesample;
+import lensmodels;
+import warpchain;
 
 // IWarp::renderOp per pixel without motion blur, for ITransform and ICornerPin. The wrap's push
 // block carries the Source, which is both the image sampled and the image blended under the mask
 // and mix, the destination and the mask; the parameter block in wrapAux carries the settings, the
 // Map view, whose pixels are in mapBuf, and the matrix curve (TransformInterp::MatrixCurve::pack()).
-// IWarp::renderOpGpu writes the block's words.
+// With warps concatenated into the Source, chainBuf holds their chain and the Source is the image
+// upstream of them. IWarp::renderOpGpu writes the block's words.
 
 [[vk::binding(4, 0)]] StructuredBuffer<float> mapBuf;
+[[vk::binding(5, 0)]] StructuredBuffer<uint> chainBuf;
 
 static const uint kIWarpClamp = 1;
 static const uint kIWarpJacobian = 4;
@@ -20,6 +24,7 @@ static const uint kIWarpMapRead = 32;
 static const uint kIWarpMapInvert = 64;
 static const uint kIWarpMapSmooth = 128;
 static const uint kIWarpMapEdgeBlack = 256;
+static const uint kIWarpChain = 512;
 
 // The words before the curve, and the floats of one knot: its matrix's high floats, its matrix's
 // low floats, then its derivative in m.
@@ -154,6 +159,41 @@ FF iwarpCross(FF u, FF v, FF p, FF q, FF d)
     return ffDiv(ffAdd(ffMul(u, v), ffNeg(ffMul(p, q))), d);
 }
 
+ResampleSource iwarpSource(IWarp w)
+{
+    ResampleSource src;
+    src.buf = wrapSrc;
+    src.offset = wrap.srcOffset;
+    src.stride = wrap.srcStride;
+    src.x1 = wrap.srcX1;
+    src.y1 = wrap.srcY1;
+    src.x2 = wrap.srcX2;
+    src.y2 = wrap.srcY2;
+    src.nComps = wrap.nComps;
+    src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
+    src.edgeMode = edgeModeFromFlags(w.flags, kFlagEdgeBlack);
+    return src;
+}
+
+// The Source sampled at (sx, sy) with Jacobian J, taken first through the chain when there is
+// one, in channel-bit order.
+float4 iwarpSampleAt(IWarp w, float sx, float sy, float4 J, bool jacobian)
+{
+    if ((w.flags & kIWarpChain) != 0)
+    {
+        FF x = ffMake(sx, 0.0);
+        FF y = ffMake(sy, 0.0);
+        if (!warpChainMap(chainBuf, 0, x, y, J, jacobian))
+            return float4(0.0, 0.0, 0.0, 0.0);
+        sx = ffToFloat(x);
+        sy = ffToFloat(y);
+    }
+    const float4 v = sampleAt(iwarpSource(w), sx, sy, J, jacobian, w.spec, (w.flags & kIWarpClamp) != 0, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
+    if (wrap.nComps == 1)
+        return float4(0.0, 0.0, 0.0, v.x);
+    return v;
+}
+
 // The sample in channel-bit order, a one-channel pixel being alpha.
 float4 iwarpSample(IWarp w, int2 p)
 {
@@ -163,9 +203,14 @@ float4 iwarpSample(IWarp w, int2 p)
     const bool jacobian = (w.flags & kIWarpJacobian) != 0;
     const float m = iwarpMap(w, p.x, p.y);
     // Where the Map is 0 the output is the Source pixel itself, never filtered, which would soften
-    // a held pixel with its displaced neighbours.
+    // a held pixel with its displaced neighbours. Through a chain it is the Source upstream
+    // sampled where the chain takes the pixel's centre.
     if ((w.flags & kIWarpMapConnected) != 0 && m == 0.0)
-        return wrapReadSource(p);
+    {
+        if ((w.flags & kIWarpChain) == 0)
+            return wrapReadSource(p);
+        return iwarpSampleAt(w, float(p.x) + 0.5, float(p.y) + 0.5, float4(1.0, 0.0, 0.0, 1.0), jacobian);
+    }
     const FF none = ffMake(0.0, 0.0);
     // The central differences of the Map, exact as the CPU's doubles are.
     FF dmdx = none;
@@ -214,22 +259,7 @@ float4 iwarpSample(IWarp w, int2 p)
         }
         J = float4(Jxx.hi, Jxy.hi, Jyx.hi, Jyy.hi);
     }
-
-    ResampleSource src;
-    src.buf = wrapSrc;
-    src.offset = wrap.srcOffset;
-    src.stride = wrap.srcStride;
-    src.x1 = wrap.srcX1;
-    src.y1 = wrap.srcY1;
-    src.x2 = wrap.srcX2;
-    src.y2 = wrap.srcY2;
-    src.nComps = wrap.nComps;
-    src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.edgeMode = edgeModeFromFlags(w.flags, kFlagEdgeBlack);
-    const float4 v = sampleAt(src, sx, sy, J, jacobian, w.spec, (w.flags & kIWarpClamp) != 0, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
-    if (wrap.nComps == 1)
-        return float4(0.0, 0.0, 0.0, v.x);
-    return v;
+    return iwarpSampleAt(w, sx, sy, J, jacobian);
 }
 
 struct IWarpOp : IPixelOp

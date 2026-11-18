@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <bitset>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1661,6 +1662,58 @@ public:
         }
     }
 
+    // The block warpchain.slang's warpChainSplineWarp() reads; its table offsets count from the
+    // block's first word.
+    virtual uint32_t packGpu(std::vector<uint32_t>* words) const OVERRIDE FINAL
+    {
+        const bool mapped = _field && !_field->isIdentity();
+        std::vector<uint32_t> tables;
+        SplineWarpFieldGpuLayout layout;
+        if (mapped) {
+            _field->getGpuTables(&tables, &layout);
+            if (tables.empty()) {
+                return 0;
+            }
+        }
+        static constexpr uint32_t kFieldOn = 1;
+        static constexpr std::size_t kHeaderWords = 22;
+        uint32_t flags = 0;
+        if (mapped) {
+            flags |= kFieldOn;
+        }
+        if (_crop) {
+            flags |= InverseWarpChain::kGpuCropFlag;
+        }
+        if (_edgeMode == EdgeMode::Black) {
+            flags |= InverseWarpChain::kGpuEdgeBlackFlag;
+        }
+        const std::size_t start = words->size();
+        words->push_back(flags);
+        words->push_back((uint32_t)_format.x1);
+        words->push_back((uint32_t)_format.y1);
+        words->push_back((uint32_t)_format.x2);
+        words->push_back((uint32_t)_format.y2);
+        words->push_back((uint32_t)(kHeaderWords + layout.nodes));
+        words->push_back(layout.nx);
+        words->push_back(layout.ny);
+        words->push_back((uint32_t)layout.i0);
+        words->push_back((uint32_t)layout.j0);
+        InverseWarp::pushGpuDouble(words, layout.step);
+        InverseWarp::pushGpuDouble(words, layout.scaleX);
+        InverseWarp::pushGpuDouble(words, layout.scaleY);
+        words->push_back((layout.featherStride > 0) ? (uint32_t)(kHeaderWords + layout.feathers) : 0u);
+        words->push_back(layout.featherStride);
+        words->push_back((uint32_t)layout.window.x1);
+        words->push_back((uint32_t)layout.window.y1);
+        words->push_back((uint32_t)layout.window.width());
+        words->push_back((uint32_t)layout.window.height());
+        assert(words->size() - start == kHeaderWords);
+        Q_UNUSED(start);
+        words->insert(words->end(), tables.begin(), tables.end());
+
+        return InverseWarpChain::kGpuTagSplineWarp;
+    }
+
 private:
     SplineWarpFieldConstPtr _field;
     RectI _format;
@@ -2371,7 +2424,31 @@ bool
 SplineWarp::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    return (query.bitDepth == eImageBitDepthFloat) && !query.hasConcatenatedInput && canRunStagesGpu(resolveGpuPlan(query), query);
+    const StagePlan plan = resolveGpuPlan(query);
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(plan, query)) {
+        return false;
+    }
+    if (!query.hasConcatenatedInput) {
+        return true;
+    }
+    // The finishing stages would blend against the Source upstream of the concatenated nodes,
+    // where renderOp() blends against this node's immediate input.
+    if (plan.applyMask || (plan.mix != 1.) || !plan.processChannels.all()) {
+        return false;
+    }
+    if (!query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens)) {
+        return false;
+    }
+    if (!(query.concatenatedStepsOf(kSplineWarpInputSource) & ~(unsigned)InverseWarpChain::eGpuStepMatrix)) {
+        return true;
+    }
+    // Motion blur's fields each map through the chain; only a matrix chain is taken with them.
+    Settings settings;
+    readSettings(query.time, query.view, &settings, query.draftMode);
+    std::vector<TimedWarp> warps;
+    const_cast<SplineWarp*>(this)->computeShutterWarps(query.time, query.view, settings, &warps);
+
+    return warps.size() <= 1;
 #else
     Q_UNUSED(query);
 
@@ -2464,6 +2541,11 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     plan.blendSourceFollowsEdgeMode = true;
     GpuRenderArgs cropped = args;
     const int sourceInput = plan.sourceInput;
+    // The cookie mask plane never reads the Source.
+    const GpuInputChain* chain = maskPlane ? nullptr : args.chainOf(sourceInput);
+    if (!maskPlane && !chain && query.concatenatedStepsOf(sourceInput)) {
+        return eStatusFailed;
+    }
     GpuImageView sampleView;
     if (maskPlane) {
         if (query.nComps != 1) {
@@ -2476,7 +2558,8 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
         }
         const GpuImageView& source = cropped.inputs[sourceInput];
         if (source.buffer) {
-            sampleView = crop ? PassExec::cropGpuView(source, source.bounds.intersect(formatPixels)) : source;
+            // A chained Source is in upstream pixels, which the kernel crops by coordinate.
+            sampleView = (crop && !chain) ? PassExec::cropGpuView(source, source.bounds.intersect(formatPixels)) : source;
         }
     }
     if (sampleView.buffer && !sampleView.bounds.isNull()) {
@@ -2487,10 +2570,28 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     }
 
     GpuImageView fieldView;
+    GpuImageView chainView;
     if (params.flags & kSplineWarpGpuSample) {
         std::vector<TimedWarp> warps;
         computeShutterWarps(query.time, query.view, settings, &warps);
         const bool subFrames = warps.size() > 1;
+        if (chain) {
+            if (subFrames && chain->warpChain) {
+                return eStatusFailed;
+            }
+            std::vector<uint32_t> chainWords(kSplineWarpGpuChainCropWords, 0u);
+            if (crop) {
+                chainWords[0] = InverseWarpChain::kGpuCropFlag | ((settings.edgeMode == EdgeMode::Black) ? InverseWarpChain::kGpuEdgeBlackFlag : 0u);
+                chainWords[1] = (uint32_t)formatPixels.x1;
+                chainWords[2] = (uint32_t)formatPixels.y1;
+                chainWords[3] = (uint32_t)formatPixels.x2;
+                chainWords[4] = (uint32_t)formatPixels.y2;
+            }
+            if (!stageGpuChainView(args, sourceInput, std::move(chainWords), &chainView) || !chainView.buffer) {
+                return eStatusFailed;
+            }
+            params.flags |= kSplineWarpGpuChain;
+        }
         std::vector<uint32_t> words;
         SplineWarpFieldGpuLayout layout;
         SplineWarpFieldConstPtr field;
@@ -2542,9 +2643,9 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     op.kernel = (int)gpu::GpuKernelId::splinewarp;
     op.setParams(params);
 
-    const GpuImageView inputs[2] = { fieldView, sampleView };
+    const GpuImageView inputs[3] = { fieldView, sampleView, chainView };
 
-    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(inputs, 2));
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(inputs, 3));
 #else
     Q_UNUSED(args);
 

@@ -57,6 +57,16 @@ struct SplineWarpFieldGpuLayout {
     uint32_t featherStride = 0;
     // Grid points per grid row.
     uint32_t nx = 0;
+    // The grid for a scattered lookup: its rows, its first lattice index, the lattice step and
+    // the canonical-to-pixel scales, as cellOf() and mapPoints() use them.
+    uint32_t ny = 0;
+    int i0 = 0;
+    int j0 = 0;
+    double step = 1.;
+    double scaleX = 1.;
+    double scaleY = 1.;
+    // The window the column, row and feather tables cover, in pixels at the render scale.
+    RectI window;
 };
 
 /**
@@ -156,7 +166,9 @@ public:
      * their sources, the value getRow() gives at a pixel centre. When jacobian is not null it
      * holds four doubles per point in getRow()'s layout, each becoming D·J with D the field's
      * pixel Jacobian at the point. A NaN point stays NaN with its Jacobian untouched. Points
-     * should lie within the window.
+     * should lie within the window. With boundaries a point moves when the centre of the pixel
+     * containing it lies inside a feather, which is the bit getGpuTables() holds for that pixel,
+     * so a point in a window pixel moves as warpchain.slang moves it.
      **/
     void mapPoints(std::size_t n, double* sx, double* sy, double* jacobian) const;
 
@@ -185,6 +197,9 @@ private:
     bool insideAnyFeather(double x, double y) const;
     // Whether each pixel x1 to x2 - 1 of row y lies inside a boundary's feather, by the even-odd
     // crossings of the row with each feather, as splineWarpPointInPolygon() decides.
+    // Whether the window pixel containing the render-scale point (x, y) has its centre inside a
+    // boundary's feather; false outside the window.
+    bool containingPixelInsideFeathers(double x, double y) const;
     void rowInsideFeathers(int y, int x1, int x2, std::vector<unsigned char>* inside) const;
     double nodeWeight(double x, double y) const;
 

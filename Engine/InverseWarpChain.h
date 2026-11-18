@@ -29,12 +29,15 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/GpuWeight.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/Transform.h"
@@ -73,6 +76,13 @@ public:
      **/
     virtual RectD pullBack(const RectD& canonical,
                            double filterSupport) const;
+
+    /**
+     * @brief Appends the block warpchain.slang maps points through and returns its tag, one of
+     * InverseWarpChain's kGpuTag values, or 0, appending nothing, for a map with no GPU form.
+     * Offsets within the block are relative to its first word.
+     **/
+    virtual uint32_t packGpu(std::vector<uint32_t>* words) const;
 
     const RenderScale& getScale() const
     {
@@ -120,6 +130,12 @@ public:
     virtual RectD pullBack(const RectD& canonical,
                            double filterSupport) const OVERRIDE FINAL;
 
+    /**
+     * @brief The inverse as nine two-float pairs, row-major; all zero when singular, which the
+     * kernel's projective divide reads as no source.
+     **/
+    virtual uint32_t packGpu(std::vector<uint32_t>* words) const OVERRIDE FINAL;
+
     const Transform::Matrix3x3& getForward() const
     {
         return _forward;
@@ -152,6 +168,12 @@ double largestSingularValue(double a,
                             double b,
                             double c,
                             double d);
+
+/**
+ * @brief Appends v as the two floats, hi then lo, whose sum the GPU kernels compute with.
+ **/
+void pushGpuDouble(std::vector<uint32_t>* words,
+                   double v);
 } // namespace InverseWarp
 
 /**
@@ -165,6 +187,33 @@ public:
         eStepMatrix,
         eStepMap,
     };
+
+    /**
+     * @brief What a GPU consumer must sample to take a step, as bits of a mask: a step not
+     * known to have a GPU form is eGpuStepUnsupported.
+     **/
+    enum GpuStep : unsigned {
+        eGpuStepMatrix = 1u,
+        eGpuStepSplineWarp = 2u,
+        eGpuStepLens = 4u,
+        eGpuStepUnsupported = 8u,
+    };
+
+    // The tags of warpchain.slang's step blocks.
+    static constexpr uint32_t kGpuTagMatrix = 1;
+    static constexpr uint32_t kGpuTagSplineWarp = 2;
+    static constexpr uint32_t kGpuTagLens = 3;
+
+    // The flags of warpchain.slang's format crop: a crop rect is set, and a point outside it has
+    // no source rather than being clamped inside it.
+    static constexpr uint32_t kGpuCropFlag = 2;
+    static constexpr uint32_t kGpuEdgeBlackFlag = 4;
+
+    /**
+     * @brief Appends, as packGpu() writes a chain, the one-step chain of the inverse of forward.
+     **/
+    static void packGpuMatrix(const Transform::Matrix3x3& forward,
+                              std::vector<uint32_t>* words);
 
     typedef std::function<InverseWarpMapConstPtr(const RectD& window)> MapFactory;
 
@@ -181,14 +230,39 @@ public:
     void appendMatrix(const Transform::Matrix3x3& forward);
 
     /**
-     * @brief Appends a map that prepare() builds over its window.
+     * @brief Appends a map that prepare() builds over its window. gpuStep is the GpuStep bit of
+     * the maps the factory builds; gpuWeight is what the node providing them weighs in GPU
+     * placement, which the consumer taking the chain takes on, as that node does not render.
      **/
-    void appendMap(const MapFactory& factory);
+    void appendMap(const MapFactory& factory,
+                   unsigned gpuStep = eGpuStepUnsupported,
+                   const std::optional<GpuWeight>& gpuWeight = std::nullopt);
 
     /**
      * @brief Appends a map built already, which prepare() keeps whatever the window.
      **/
-    void appendMap(const InverseWarpMapConstPtr& map);
+    void appendMap(const InverseWarpMapConstPtr& map,
+                   unsigned gpuStep = eGpuStepUnsupported);
+
+    const RenderScale& getScale() const
+    {
+        return _scale;
+    }
+
+    double getPixelAspectRatio() const
+    {
+        return _par;
+    }
+
+    /**
+     * @brief The GpuStep bits of every entry.
+     **/
+    unsigned getGpuSteps() const;
+
+    /**
+     * @brief weight with the GPU weights of the map entries added, Heavy when one of them is.
+     **/
+    GpuWeight addMapGpuWeights(GpuWeight weight) const WARN_UNUSED_RETURN;
 
     std::size_t getStepCount() const
     {
@@ -270,9 +344,18 @@ public:
                 double* sy,
                 double* J) const;
 
+    /**
+     * @brief The prepared chain as warpchain.slang reads it: the entry count, a tag and a word
+     * offset per entry, then each entry's block. False, with words cleared, when an entry has no
+     * map or no GPU form.
+     **/
+    bool packGpu(std::vector<uint32_t>* words) const;
+
 private:
     struct Step {
         StepKind kind = eStepMatrix;
+        unsigned gpuStep = eGpuStepMatrix;
+        std::optional<GpuWeight> gpuWeight;
         Transform::Matrix3x3 forward;
         InverseWarpMapConstPtr map;
         MapFactory factory;

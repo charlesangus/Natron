@@ -157,6 +157,11 @@ public:
         return true;
     }
 
+    virtual unsigned getInverseWarpGpuStep() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return InverseWarpChain::eGpuStepSplineWarp;
+    }
+
     /**
      * @brief Offers the field on the Source unless the output is masked, mixed, limited to some
      * channels, produces the outputMask layer, or averages motion-blur sub-frames: a consumer

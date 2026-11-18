@@ -285,6 +285,11 @@ public:
         return true;
     }
 
+    virtual unsigned getInverseWarpGpuStep() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return InverseWarpChain::eGpuStepLens;
+    }
+
     /**
      * @brief Offers the lens model on the Source in Image output mode, unless the output is
      * masked, mixed or limited to some channels, which a consumer sampling through the model

@@ -44,6 +44,9 @@ whole displacement applies and the output is bit for bit the node's without the 
   crop the image above the warp.
 - The GPU reads the Map as an extra input and remaps it with `mapremap.slang`, the CPU's remap
   operation for operation.
+- The GPU samples through concatenated transforms and warps as the CPU does, the chain packed on
+  the host and evaluated per pixel by `warpchain.slang`.
+  With a mask, a mix below 1 or a partial channel selection the node renders on the CPU.
 
 Tolerance:
 

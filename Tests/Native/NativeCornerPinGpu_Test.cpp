@@ -50,6 +50,7 @@
 #include "Engine/Format.h"
 #include "Engine/GpuWeight.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -261,8 +262,12 @@ TEST_F(NativeCornerPinGpuTest, EligibilityFollowsTheSupportedSettings)
         EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << pin.name << " draft";
         q.draftMode = false;
         q.hasConcatenatedInput = true;
-        EXPECT_FALSE(effect->canRenderOnGpu(q)) << pin.name << " a transform concatenated from upstream";
+        q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+        EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << pin.name << " a transform concatenated from upstream";
+        q.concatenatedSteps = { InverseWarpChain::eGpuStepUnsupported };
+        EXPECT_FALSE(effect->canRenderOnGpu(q)) << pin.name << " a warp with no GPU form concatenated from upstream";
         q.hasConcatenatedInput = false;
+        q.concatenatedSteps.clear();
         q.hasMask = true;
         q.mix = 0.5;
         EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << pin.name << " mask and mix";

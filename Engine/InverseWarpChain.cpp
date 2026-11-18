@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 #include "Engine/OverlayPointMap.h"
@@ -99,6 +100,19 @@ largestSingularValue(double a,
 
     return std::sqrt(std::max(0., (sum + disc) / 2.));
 }
+
+void
+pushGpuDouble(std::vector<uint32_t>* words,
+              double v)
+{
+    const float hi = (float)v;
+    const float lo = (float)(v - (double)hi);
+    uint32_t u;
+    std::memcpy(&u, &hi, sizeof(u));
+    words->push_back(u);
+    std::memcpy(&u, &lo, sizeof(u));
+    words->push_back(u);
+}
 } // namespace InverseWarp
 
 InverseWarpMap::InverseWarpMap(const RenderScale& scale,
@@ -126,6 +140,12 @@ InverseWarpMap::pixelToCanonical(const RectD& pixel) const
     const OfxPointD s = _scale.toOfxPointD();
 
     return RectD(pixel.x1 * _par / s.x, pixel.y1 / s.y, pixel.x2 * _par / s.x, pixel.y2 / s.y);
+}
+
+uint32_t
+InverseWarpMap::packGpu(std::vector<uint32_t>* /*words*/) const
+{
+    return 0;
 }
 
 RectD
@@ -225,6 +245,16 @@ MatrixInverseWarpMap::mapRow(std::size_t n,
     InverseWarp::mapRowThroughMatrix(_m, n, sx, sy, J);
 }
 
+uint32_t
+MatrixInverseWarpMap::packGpu(std::vector<uint32_t>* words) const
+{
+    for (int k = 0; k < 9; ++k) {
+        InverseWarp::pushGpuDouble(words, _invertible ? _m[k] : 0.);
+    }
+
+    return InverseWarpChain::kGpuTagMatrix;
+}
+
 RectD
 MatrixInverseWarpMap::pullBack(const RectD& canonical,
                                double /*filterSupport*/) const
@@ -266,27 +296,62 @@ InverseWarpChain::appendMatrix(const Transform::Matrix3x3& forward)
     }
     Step step;
     step.kind = eStepMatrix;
+    step.gpuStep = eGpuStepMatrix;
     step.forward = forward;
     step.map = std::make_shared<MatrixInverseWarpMap>(forward, _scale, _par);
     _steps.push_back(step);
 }
 
 void
-InverseWarpChain::appendMap(const MapFactory& factory)
+InverseWarpChain::appendMap(const MapFactory& factory,
+                            unsigned gpuStep,
+                            const std::optional<GpuWeight>& gpuWeight)
 {
     Step step;
     step.kind = eStepMap;
+    step.gpuStep = gpuStep;
+    step.gpuWeight = gpuWeight;
     step.factory = factory;
     _steps.push_back(step);
 }
 
 void
-InverseWarpChain::appendMap(const InverseWarpMapConstPtr& map)
+InverseWarpChain::appendMap(const InverseWarpMapConstPtr& map,
+                            unsigned gpuStep)
 {
     Step step;
     step.kind = eStepMap;
+    step.gpuStep = gpuStep;
     step.map = map;
     _steps.push_back(step);
+}
+
+unsigned
+InverseWarpChain::getGpuSteps() const
+{
+    unsigned steps = 0;
+    for (const Step& step : _steps) {
+        steps |= step.gpuStep;
+    }
+
+    return steps;
+}
+
+GpuWeight
+InverseWarpChain::addMapGpuWeights(GpuWeight weight) const
+{
+    for (const Step& step : _steps) {
+        if ((step.kind != eStepMap) || !step.gpuWeight || weight.isHeavy()) {
+            continue;
+        }
+        if (step.gpuWeight->isHeavy()) {
+            weight = GpuWeight::heavy();
+            continue;
+        }
+        weight = GpuWeight::filter(weight.weight + step.gpuWeight->weight);
+    }
+
+    return weight;
 }
 
 bool
@@ -360,6 +425,39 @@ InverseWarpChain::mapRow(std::size_t n,
         }
         step.map->mapRow(n, sx, sy, J);
     }
+}
+
+void
+InverseWarpChain::packGpuMatrix(const Transform::Matrix3x3& forward,
+                                std::vector<uint32_t>* words)
+{
+    words->push_back(1u);
+    words->push_back(kGpuTagMatrix);
+    words->push_back(3u);
+    MatrixInverseWarpMap(forward, RenderScale(), 1.).packGpu(words);
+}
+
+bool
+InverseWarpChain::packGpu(std::vector<uint32_t>* words) const
+{
+    words->clear();
+    const std::size_t n = _steps.size();
+    words->assign(1 + 2 * n, 0u);
+    (*words)[0] = (uint32_t)n;
+    for (std::size_t i = 0; i < n; ++i) {
+        const Step& step = _steps[i];
+        const std::size_t offset = words->size();
+        const uint32_t tag = step.map ? step.map->packGpu(words) : 0u;
+        if ((tag == 0) || (offset > UINT32_MAX) || (words->size() > UINT32_MAX)) {
+            words->clear();
+
+            return false;
+        }
+        (*words)[1 + 2 * i] = tag;
+        (*words)[2 + 2 * i] = (uint32_t)offset;
+    }
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

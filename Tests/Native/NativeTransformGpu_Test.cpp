@@ -61,6 +61,7 @@
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuWeight.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
@@ -241,7 +242,15 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
             EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " draft";
             q.draftMode = false;
             q.hasConcatenatedInput = true;
-            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " a transform concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+            EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " a transform concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens };
+            EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " warps concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepUnsupported };
+            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " a warp with no GPU form concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+            q.mix = 0.5;
+            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " a mix over a transform concatenated from upstream";
         }
         if (masked) {
             GpuQuery q = eligibleQuery();
@@ -264,7 +273,10 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
         {
             GpuQuery q = eligibleQuery();
             q.hasConcatenatedInput = true;
-            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " directional blur with a transform concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+            EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " directional blur with a transform concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepSplineWarp };
+            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " directional blur with a warp concatenated from upstream";
         }
     }
 }

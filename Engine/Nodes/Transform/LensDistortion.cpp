@@ -26,8 +26,10 @@
 #include "LensDistortion.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -324,6 +326,31 @@ public:
                 j[3] = d2 * j1 + d3 * j3;
             }
         }
+    }
+
+    // The block warpchain.slang's warpChainLens() reads.
+    virtual uint32_t packGpu(std::vector<uint32_t>* words) const OVERRIDE FINAL
+    {
+        const OfxPointD s = getScale().toOfxPointD();
+        const std::size_t start = words->size();
+        words->push_back(InverseWarpChain::kGpuCropFlag | ((_edgeMode == EdgeMode::Black) ? InverseWarpChain::kGpuEdgeBlackFlag : 0u));
+        words->push_back((uint32_t)_crop.x1);
+        words->push_back((uint32_t)_crop.y1);
+        words->push_back((uint32_t)_crop.x2);
+        words->push_back((uint32_t)_crop.y2);
+        words->push_back((uint32_t)_direction);
+        InverseWarp::pushGpuDouble(words, s.x);
+        InverseWarp::pushGpuDouble(words, s.y);
+        InverseWarp::pushGpuDouble(words, _toSourceX);
+        assert(words->size() - start == 12);
+        Q_UNUSED(start);
+        const LensModelGpu model = packLensModelGpu(_model);
+        const std::size_t n = sizeof(model) / sizeof(uint32_t);
+        const std::size_t at = words->size();
+        words->resize(at + n);
+        std::memcpy(&(*words)[at], &model, sizeof(model));
+
+        return InverseWarpChain::kGpuTagLens;
     }
 
 private:
@@ -1407,13 +1434,33 @@ const uint32_t kLensDistortionGpuClamp = 1;
 const uint32_t kLensDistortionGpuJacobian = 4;
 const uint32_t kLensDistortionGpuSample = 8;
 const uint32_t kLensDistortionGpuSTMap = 16;
+const uint32_t kLensDistortionGpuChain = 32;
 } // namespace
 
 bool
 LensDistortion::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    return (query.bitDepth == eImageBitDepthFloat) && !query.hasConcatenatedInput && canRunStagesGpu(resolveGpuPlan(query), query);
+    const StagePlan plan = resolveGpuPlan(query);
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(plan, query)) {
+        return false;
+    }
+    if (!query.hasConcatenatedInput) {
+        return true;
+    }
+    // The finishing stages blend against the Source fetched, which is upstream of the
+    // concatenated nodes.
+    if (plan.applyMask || (plan.mix != 1.) || !plan.processChannels.all()) {
+        return false;
+    }
+    // An STMap output reads no Source pixel, so the CPU takes the Source unconcatenated.
+    Settings settings;
+    readSettings(query.time, query.view, &settings);
+    if (settings.stmap) {
+        return false;
+    }
+
+    return query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens);
 #else
     Q_UNUSED(query);
 
@@ -1508,12 +1555,23 @@ LensDistortion::renderOpGpu(const GpuRenderArgs& args)
     if (!sourceStaged || !cropped.inputs[sourceInput].buffer) {
         params.flags &= ~kLensDistortionGpuSample;
     }
+    GpuImageView chainView;
+    if (params.flags & kLensDistortionGpuSample) {
+        if (!stageGpuChainView(args, sourceInput, std::vector<uint32_t>(), &chainView)) {
+            return eStatusFailed;
+        }
+        if (chainView.buffer) {
+            params.flags |= kLensDistortionGpuChain;
+        } else if (query.concatenatedStepsOf(sourceInput)) {
+            return eStatusFailed;
+        }
+    }
 
     PixelKernelGpu op;
     op.kernel = (int)gpu::GpuKernelId::lensdistortion;
     op.setParams(params);
 
-    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>());
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(&chainView, 1));
 #else
     Q_UNUSED(args);
 

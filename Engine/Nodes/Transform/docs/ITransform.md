@@ -52,6 +52,7 @@ Smooth response inverted, motion blur, and mask and mix) are compared bit for bi
 
 GPU: `iwarp.slang` evaluates the same matrix curve from the same knots and reads the Map as an extra input, remapping
 it with `mapremap.slang` as the CPU does. Float images only, with or without a mask, never with motion or
-directional blur (`Tests/Native/NativeIWarpGpu_Test.cpp`).
+directional blur. Concatenated transforms and warps above it are sampled through by `warpchain.slang`; with a
+mask or a mix below 1 they render on the CPU (`Tests/Native/NativeIWarpGpu_Test.cpp`).
 
 It weighs as Heavy, the default for its op kind, so a region holding it always goes to the GPU.

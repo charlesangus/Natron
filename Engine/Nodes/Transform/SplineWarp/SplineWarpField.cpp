@@ -499,7 +499,7 @@ SplineWarpField::mapPoints(std::size_t n,
         }
         const double cx = sx[k] / _scaleX;
         const double cy = sy[k] / _scaleY;
-        if (feathers && !insideAnyFeather(cx, cy)) {
+        if (feathers && !containingPixelInsideFeathers(sx[k], sy[k])) {
             continue;
         }
         int i, j;
@@ -532,6 +532,19 @@ SplineWarpField::mapPoints(std::size_t n,
         J[3] = D[2] * j1 + D[3] * j3;
     }
 } // SplineWarpField::mapPoints
+
+bool
+SplineWarpField::containingPixelInsideFeathers(double x,
+                                               double y) const
+{
+    const double px = std::floor(x);
+    const double py = std::floor(y);
+    if (!(px >= _window.x1) || !(px < _window.x2) || !(py >= _window.y1) || !(py < _window.y2)) {
+        return false;
+    }
+
+    return insideAnyFeather((px + 0.5) / _scaleX, (py + 0.5) / _scaleY);
+}
 
 void
 SplineWarpField::rowInsideFeathers(int y,
@@ -589,6 +602,13 @@ SplineWarpField::getGpuTables(std::vector<uint32_t>* words,
     };
 
     layout->nx = (uint32_t)_nx;
+    layout->ny = (uint32_t)_ny;
+    layout->i0 = _i0;
+    layout->j0 = _j0;
+    layout->step = _step;
+    layout->scaleX = _scaleX;
+    layout->scaleY = _scaleY;
+    layout->window = _window;
     layout->nodes = (uint32_t)words->size();
     const double ratioXY = _scaleX / _scaleY;
     const double ratioYX = _scaleY / _scaleX;

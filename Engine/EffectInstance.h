@@ -40,6 +40,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/ImageLocker.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/Knob.h" // for KnobHolder
 #include "Engine/NodeMetadata.h"
 #include "Engine/OverlayPointMap.h"
@@ -2227,6 +2228,14 @@ public:
     }
 
     /**
+     * @brief The InverseWarpChain::GpuStep bit of the maps getInverseWarpMap() builds.
+     **/
+    virtual unsigned getInverseWarpGpuStep() const WARN_UNUSED_RETURN
+    {
+        return InverseWarpChain::eGpuStepUnsupported;
+    }
+
+    /**
      * @brief The radius, in source pixels before the chain's stretch, of the filter this node
      * samples a chain on inputNb with; transformInputRois() grows each map's pullback by it.
      **/
@@ -2253,6 +2262,17 @@ public:
      * withdraws it.
      **/
     InverseWarpChainConstPtr getPreparedWarpChain(int inputNb,
+                                                  double time,
+                                                  ViewIdx view,
+                                                  const RenderScale& scale,
+                                                  const RectD& renderWindow) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief getPreparedWarpChain() for chain, the warpChain of inputNb's InputMatrix, which a
+     * GPU render takes from its frame's request rather than the thread's redirections.
+     **/
+    InverseWarpChainConstPtr getPreparedWarpChain(const InverseWarpChainConstPtr& chain,
+                                                  int inputNb,
                                                   double time,
                                                   ViewIdx view,
                                                   const RenderScale& scale,

@@ -607,6 +607,16 @@ bool stageGpuInputView(EffectInstance& effect,
                        int inputNb,
                        GpuImageView* view) WARN_UNUSED_RETURN;
 
+/**
+ * @brief A one-row view of words followed by the chain of the nodes concatenated into input
+ * inputNb, as GpuInputChain::appendGpuWords() writes it, uploaded for a kernel to bind. An empty
+ * view when the input has none. False when its chain was not packed or the words cannot be bound.
+ **/
+bool stageGpuChainView(const GpuRenderArgs& args,
+                       int inputNb,
+                       std::vector<uint32_t> words,
+                       GpuImageView* view) WARN_UNUSED_RETURN;
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Image_StagePlan_h

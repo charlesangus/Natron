@@ -65,6 +65,7 @@
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
@@ -3285,11 +3286,15 @@ EffectInstance::tryConcatenateTransforms(double time,
                         }
                         // Weak, so a chain held by a render does not keep a deleted provider alive.
                         const EffectInstanceWPtr provider = step.provider;
+                        const unsigned gpuStep = step.provider->getInverseWarpGpuStep();
+                        const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(step.provider.get());
+                        const std::optional<GpuWeight> gpuWeight = native ? std::optional<GpuWeight>(native->gpuWeight(time, view, scale.toMipmapLevel())) : std::nullopt;
                         chain->appendMap(InverseWarpChain::MapFactory([provider, time, view, scale, draftRender](const RectD& window) {
-                            const EffectInstancePtr effect = provider.lock();
+                                             const EffectInstancePtr effect = provider.lock();
 
-                            return effect ? effect->getInverseWarpMap(time, view, scale, draftRender, window) : InverseWarpMapConstPtr();
-                        }));
+                                             return effect ? effect->getInverseWarpMap(time, view, scale, draftRender, window) : InverseWarpMapConstPtr();
+                                         }),
+                                         gpuStep, gpuWeight);
                     }
                     im.warpChain = chain;
                 }
@@ -3347,7 +3352,17 @@ EffectInstance::getPreparedWarpChain(int inputNb,
                                      const RenderScale& scale,
                                      const RectD& renderWindow)
 {
-    const InverseWarpChainConstPtr chain = getConcatenatedWarpChain(inputNb);
+    return getPreparedWarpChain(getConcatenatedWarpChain(inputNb), inputNb, time, view, scale, renderWindow);
+}
+
+InverseWarpChainConstPtr
+EffectInstance::getPreparedWarpChain(const InverseWarpChainConstPtr& chain,
+                                     int inputNb,
+                                     double time,
+                                     ViewIdx view,
+                                     const RenderScale& scale,
+                                     const RectD& renderWindow)
+{
     const EffectInstancePtr input = getInput(inputNb);
 
     if (!chain || !chain->hasMapStep() || !input) {

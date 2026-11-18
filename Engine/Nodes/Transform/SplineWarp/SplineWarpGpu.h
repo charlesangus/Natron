@@ -84,6 +84,10 @@ inline constexpr uint32_t kSplineWarpGpuSample = 8;
 // The field's tables are bound; without them every pixel is its own source.
 inline constexpr uint32_t kSplineWarpGpuField = 16;
 inline constexpr uint32_t kSplineWarpGpuFeathers = 32;
+// The Source is upstream of concatenated nodes, whose chain the third bound buffer holds after
+// kSplineWarpGpuChainCropWords words of format crop: warpchain.slang's crop flags, then the rect.
+inline constexpr uint32_t kSplineWarpGpuChain = 64;
+inline constexpr uint32_t kSplineWarpGpuChainCropWords = 5;
 
 // The image sampled: offset and stride in floats, bounds in pixels.
 inline void

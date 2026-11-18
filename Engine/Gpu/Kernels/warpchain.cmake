@@ -1,0 +1,1 @@
+slang_add_kernel(warpchain_test Kernels/warpchain_test.slang ENTRY warpchain_test_main REGISTRY NatronGpu)

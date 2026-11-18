@@ -31,12 +31,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <type_traits>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -96,8 +99,12 @@ struct GpuQuery {
     bool unPremultInPlane;
 
     // Whether an input is fetched through transforms concatenated from upstream nodes, which
-    // render() folds into its own sampling and renderGpu() cannot.
+    // render() folds into its own sampling; renderGpu() then finds them in inputChains.
     bool hasConcatenatedInput;
+
+    // Indexed by input number: the InverseWarpChain::GpuStep bits of the nodes concatenated into
+    // that input, 0 for an input fetched directly.
+    std::vector<unsigned> concatenatedSteps;
 
     // Whether the frame renders in draft quality.
     bool draftMode;
@@ -123,6 +130,7 @@ struct GpuQuery {
         , unPremultChannel(-1)
         , unPremultInPlane(false)
         , hasConcatenatedInput(false)
+        , concatenatedSteps()
         , draftMode(false)
         , maxScratchBytes(UINT64_MAX)
         , inputTimes()
@@ -130,6 +138,23 @@ struct GpuQuery {
         for (int i = 0; i < 4; ++i) {
             processChannels[i] = true;
         }
+    }
+
+    unsigned concatenatedStepsOf(int inputNb) const
+    {
+        return ((inputNb >= 0) && (inputNb < (int)concatenatedSteps.size())) ? concatenatedSteps[inputNb] : 0u;
+    }
+
+    // Whether every input's concatenated nodes have only the GpuStep bits in allowed.
+    bool concatenatedStepsWithin(unsigned allowed) const
+    {
+        for (unsigned steps : concatenatedSteps) {
+            if (steps & ~allowed) {
+                return false;
+            }
+        }
+
+        return true;
     }
 };
 
@@ -299,6 +324,45 @@ struct GpuTimedInput {
     }
 };
 
+// The nodes concatenated into one input, as EffectInstance::tryConcatenateTransforms() gave them.
+struct GpuInputChain {
+    // The node upstream of them whose output the input's view holds.
+    EffectInstancePtr source;
+
+    // When every one offered a matrix: their product, forward, in pixels at query.mappedScale.
+    Transform::Matrix3x3Ptr cat;
+
+    // Otherwise the chain, prepared over the output rect, and its InverseWarpChain::packGpu() words.
+    InverseWarpChainConstPtr warpChain;
+    std::shared_ptr<const std::vector<uint32_t>> gpuWords;
+
+    // What the node reads of source over an output rect, in source's pixels, as the CPU's
+    // request pass pulls the node's region of interest back through the concatenated nodes.
+    std::function<RectI(const RectI& rect)> sourceRoI;
+
+    bool empty() const
+    {
+        return !cat && !warpChain;
+    }
+
+    // Appends the chain as InverseWarpChain::packGpu() writes it, cat as a one-matrix chain;
+    // false when a map chain was not packed.
+    bool appendGpuWords(std::vector<uint32_t>* words) const
+    {
+        if (cat) {
+            InverseWarpChain::packGpuMatrix(*cat, words);
+
+            return true;
+        }
+        if (!gpuWords) {
+            return false;
+        }
+        words->insert(words->end(), gpuWords->begin(), gpuWords->end());
+
+        return true;
+    }
+};
+
 struct GpuRenderArgs {
     GpuQuery query;
     RectI outputRect;
@@ -316,6 +380,9 @@ struct GpuRenderArgs {
     // The inputs at the other times query.inputTimes lists, one entry per input and time, in the
     // layer getGpuInputLayer() names.
     std::vector<GpuTimedInput> timedInputs;
+
+    // Indexed by input number, one per input query.concatenatedSteps marks; empty otherwise.
+    std::vector<GpuInputChain> inputChains;
     GpuImageView output;
     gpu::GpuRecordContext& context;
 
@@ -326,6 +393,7 @@ struct GpuRenderArgs {
         , layerInputs()
         , contextInputs()
         , timedInputs()
+        , inputChains()
         , output()
         , context(ctx)
     {
@@ -348,6 +416,16 @@ struct GpuRenderArgs {
         }
 
         return nullptr;
+    }
+
+    // Null for an input fetched directly.
+    const GpuInputChain* chainOf(int inputNb) const
+    {
+        if ((inputNb < 0) || (inputNb >= (int)inputChains.size()) || inputChains[inputNb].empty()) {
+            return nullptr;
+        }
+
+        return &inputChains[inputNb];
     }
 };
 

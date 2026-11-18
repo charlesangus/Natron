@@ -940,7 +940,8 @@ bool
 IDistort::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || query.hasConcatenatedInput || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+    const StagePlan plan = resolveGpuPlan(query);
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(plan, query) || (query.hasConcatenatedInput && !warpGpuTakesChain(plan, query))) {
         return false;
     }
     ImageLayerDesc layer;

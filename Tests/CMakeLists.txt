@@ -230,6 +230,7 @@ set(Tests_SOURCES
     OverlayImage_Test.cpp
     OverlayPointMap_Test.cpp
     WarpChainConcat_Test.cpp
+    WarpChainGpuPlacement_Test.cpp
     wmain.cpp
 )
 # Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on

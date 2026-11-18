@@ -43,7 +43,7 @@ ALL_SECTIONS = ("file-dialog", "placement", "picker-defaults", "deep-read")
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMimeData, QMetaObject, QPoint, QPointF, Qt, QTimer, QUrl
-    from PySide6.QtGui import QDragEnterEvent, QDropEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
+    from PySide6.QtGui import QCursor, QDragEnterEvent, QDropEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QListView, QMainWindow, QTreeView, QWidget
 
@@ -177,10 +177,15 @@ try:
         """Tab menu -> Read, which opens the create-time file dialog. Returns the dialog."""
         view = node_graph_view()
         require(view is not None, "the node graph is on screen")
-        # The Tab shortcut only works while the pointer is over the graph, which the graph learns
-        # from its enter event; Xvfb has no pointer to move there.
+        # The Tab shortcut only works while the graph has the focus or the pointer is over it. A
+        # closed modal dialog leaves the focus elsewhere, so both are set here.
+        view.window().activateWindow()
+        view.setFocus(Qt.OtherFocusReason)
+        viewport = view.viewport()
+        QCursor.setPos(viewport.mapToGlobal(viewport.rect().center()))
         centre = QPointF(view.rect().center())
         QApplication.sendEvent(view, QEnterEvent(centre, centre, QPointF(view.mapToGlobal(view.rect().center()))))
+        QApplication.processEvents()
         QTest.keyClick(view, Qt.Key_Tab)
         ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         require(ok, "the Tab menu opens")

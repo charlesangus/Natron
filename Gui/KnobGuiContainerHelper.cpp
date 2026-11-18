@@ -37,6 +37,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QPixmap>
+#include <QPointer>
 #include <QScrollArea>
 #include <QTimer>
 #include <QUndoCommand>
@@ -48,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeCreationStageLog.h"
 #include "Gui/ClickableLabel.h"
+#include "Gui/FocusChain.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDensity.h"
 #include "Gui/KnobGui.h"
@@ -869,6 +871,18 @@ workAroundGridLayoutBug(QGridLayout* layout)
 }
 
 void
+KnobGuiContainerHelper::placeRowInFocusChain(const KnobGuiPtr& row,
+                                             const KnobPageGuiPtr& page,
+                                             QWidget* mark)
+{
+    QWidget* after = row->getFocusChainAnchor();
+    if (!after) {
+        after = FocusChain::focusableAtOrBefore(page->tab);
+    }
+    row->setLastFocusable(FocusChain::placeAfter(after, mark, page->tab));
+}
+
+void
 KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
                                      const KnobPageGuiPtr& page,
                                      QGridLayout* layout,
@@ -884,6 +898,25 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
     KnobGroupPtr isGroup = std::dynamic_pointer_cast<KnobGroup>(knob);
     KnobGroupPtr parentIsGroup = std::dynamic_pointer_cast<KnobGroup>(knob->getParentKnob());
     const bool rowKept = (keptRow >= 0);
+
+    // A row built after the panel's other rows, or in a build pass interleaved with another panel's, would
+    // otherwise follow in the focus chain whatever the window gained last.
+    const bool placeInFocusChain = canDeferKnobRows();
+    QPointer<QWidget> focusMark;
+    if (placeInFocusChain) {
+        focusMark = FocusChain::end(page->tab);
+        ret->setLastFocusable(0);
+        if (!rowKept) {
+            if (makeNewLine && !inGroupTab && parentGui && knob->isDynamicallyCreated()) {
+                const std::list<KnobGuiWPtr>& siblings = parentGui->getChildren();
+                KnobGuiPtr previous = siblings.empty() ? KnobGuiPtr() : siblings.back().lock();
+                ret->setPreviousFocusRow(previous ? previous : parentGui->shared_from_this());
+            } else {
+                ret->setPreviousFocusRow(page->lastFocusRow.lock());
+                page->lastFocusRow = ret;
+            }
+        }
+    }
 
     // If the knob has specified that it didn't want to trigger a new line, decrement the current row
     // index of the tab
@@ -1068,6 +1101,10 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
         }
     } // makeNewLine
 
+    if (placeInFocusChain && focusMark) {
+        placeRowInFocusChain(ret, page, focusMark.data());
+    }
+
     // The show() that builds a kept row shows it once built.
     if (!rowKept) {
         NodeCreationStageLog::Scope secretStage("panelKnobSecret");
@@ -1167,6 +1204,15 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
 
     // For group only create the widgets if it is not a tab, otherwise do a special case
     if ( isGroup  && isGroup->isTab() ) {
+        // The tab bar takes focus between the rows before the group and the group's own rows.
+        KnobPageGuiPtr focusPage = canDeferKnobRows() ? getOrCreatePage(knob->getTopLevelPage()) : KnobPageGuiPtr();
+        QPointer<QWidget> focusMark;
+        if (focusPage) {
+            focusMark = FocusChain::end(focusPage->tab);
+            ret->setPreviousFocusRow(focusPage->lastFocusRow.lock());
+            focusPage->lastFocusRow = ret;
+        }
+
         KnobPagePtr parentIsPage = std::dynamic_pointer_cast<KnobPage>(parentKnob);
         if (!parentKnob || parentIsPage) {
             KnobPageGuiPtr page = getOrCreatePage(parentIsPage);
@@ -1226,6 +1272,9 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
                     groupAsTab->refreshTabSecretNess( isGroup.get() );
                 }
             }
+        }
+        if (focusPage && focusMark) {
+            placeRowInFocusChain(ret, focusPage, focusMark.data());
         }
     }
     // If widgets for the KnobGui have already been created, don't do the following
@@ -1310,6 +1359,8 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
             if (parentIsGroup && parentGui) {
                 parentGui->addKnob(ret);
             }
+            ret->setPreviousFocusRow(page->lastFocusRow.lock());
+            page->lastFocusRow = ret;
             KnobGuiWPtr weakGui = ret;
             KnobPageGuiWPtr weakPage = page;
             const bool inGroupTab = (bool)closestParentGroupTab;

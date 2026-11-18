@@ -975,6 +975,39 @@ KnobGui::buildDeferredRowIfShown()
     }
 }
 
+void
+KnobGui::setPreviousFocusRow(const KnobGuiPtr& previous)
+{
+    if (_imp->focusRowLinked) {
+        return;
+    }
+    _imp->focusRowLinked = true;
+    _imp->previousFocusRow = previous;
+}
+
+void
+KnobGui::setLastFocusable(QWidget* w)
+{
+    _imp->lastFocusable = w;
+}
+
+QWidget*
+KnobGui::getFocusChainAnchor() const
+{
+    if (_imp->lastFocusable) {
+        return _imp->lastFocusable.data();
+    }
+    KnobGuiPtr row = _imp->previousFocusRow.lock();
+    while (row) {
+        if (row->_imp->lastFocusable) {
+            return row->_imp->lastFocusable.data();
+        }
+        row = row->_imp->previousFocusRow.lock();
+    }
+
+    return 0;
+}
+
 int
 KnobGui::getActualIndexInLayout() const
 {

@@ -2007,16 +2007,21 @@ try:
             check(make_tab_current(editors[0]), "brought the curve editor's tab to the front")
             yield ("sleep", SETTLE_MS)
             tree, knob_index = size_knob_index()
-            component_rows = tree.model().rowCount(knob_index) if knob_index is not None else None
-            if not check(component_rows == 2, "found the size knob's two component rows"):
+            # The knob's row also holds its loop-driver rows, hidden while it has no driver.
+            component_rows = None
+            if knob_index is not None:
+                kmodel = tree.model()
+                component_rows = [k for k in range(kmodel.rowCount(knob_index))
+                                  if not str(kmodel.index(k, 0, knob_index).data()).strip().lower().startswith("driver ")]
+            if not check(component_rows is not None and len(component_rows) == 2, "found the size knob's two component rows"):
                 switch = size_switch()
-                report("NOTE expanded-curve: size rows %r, visible %r, switch expanded %r"
+                report("NOTE expanded-curve: size component rows %r, visible %r, switch expanded %r"
                        % (component_rows, size_rows(), switch.isChecked() if switch is not None else None))
             else:
                 # Only X is selected, so the curve widget shows X's curve alone and the drag cannot
                 # land on Y's key, which sits on the same spot.
                 tree.clearSelection()
-                tree.selectionModel().select(tree.model().index(0, 0, knob_index),
+                tree.selectionModel().select(tree.model().index(component_rows[0], 0, knob_index),
                                              QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
                 QApplication.processEvents()
                 visible_cws = [w for w in gt.widgets_of("CurveWidget") if w.isVisible()]

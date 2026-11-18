@@ -52,6 +52,9 @@ KnobGuiPrivate::KnobGuiPrivate(KnobGuiContainerI* container)
     , deferredRowBuild()
     , deferredRowPage()
     , deferredRowIndex(-1)
+    , previousFocusRow()
+    , focusRowLinked(false)
+    , lastFocusable()
 {
     //copyRightClickMenu->setFont( QFont(appFont,appFontSize) );
 }

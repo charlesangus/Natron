@@ -136,6 +136,23 @@ public:
     void buildDeferredRowIfShown();
 
     /**
+     * @brief Records the row before this one in its page's focus order. Only the first call counts, so the
+     * rows link back to rows linked before them and never form a cycle.
+     **/
+    void setPreviousFocusRow(const KnobGuiPtr& previous);
+
+    /**
+     * @brief Records the last widget of this row that takes focus, or null if it has none.
+     **/
+    void setLastFocusable(QWidget* w);
+
+    /**
+     * @brief Returns the last widget that takes focus of this row or, failing that, of the nearest row before
+     * it in its page's focus order; null if no row there has one. A widget built for the row later goes after it.
+     **/
+    QWidget* getFocusChainAnchor() const;
+
+    /**
      * @brief Shows w unless it is a child of a hidden widget that has never been shown or hidden explicitly:
      * such a child appears with its parent, and an explicit show() would polish it now for nothing.
      **/

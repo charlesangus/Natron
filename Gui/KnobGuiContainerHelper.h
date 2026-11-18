@@ -55,6 +55,8 @@ public:
     QGridLayout* gridLayout;
     // Set once the page has been current: until then its rows are left unbuilt.
     bool shown;
+    // The row last added in layout order, which the next one follows in the focus chain.
+    KnobGuiWPtr lastFocusRow;
 
     KnobPageGui()
         : tab(0)
@@ -63,6 +65,7 @@ public:
         , pageKnob()
         , gridLayout(0)
         , shown(false)
+        , lastFocusRow()
     {
     }
 };
@@ -381,6 +384,12 @@ private:
                       int keptRow);
 
     void buildShownDeferredRows();
+
+    /**
+     * @brief Moves the widgets taking focus that row made after mark in the focus chain to follow the rows
+     * before it on page.
+     **/
+    void placeRowInFocusChain(const KnobGuiPtr& row, const KnobPageGuiPtr& page, QWidget* mark);
 
     void initializeKnobVectorInternal(const KnobsVec& siblingsVec, KnobsVec* regularKnobsVec);
 

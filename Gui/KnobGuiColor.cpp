@@ -74,6 +74,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ComboBox.h"
 #include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
+#include "Gui/FocusChain.h"
 #include "Gui/GroupBoxLabel.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
@@ -702,6 +703,7 @@ KnobGuiColor::ensureAdjustPanel()
 
     ProjectColorManagementPtr colorManagement = getColorManagement();
 
+    QPointer<QWidget> focusMark = FocusChain::end(_adjustPanelHost.data());
     _adjustPanel = new ColorAdjustPanel(_adjustPanelHost.data());
     _adjustPanel->setObjectName(QString::fromUtf8("ColorAdjustPanel"));
     _adjustPanel->setProperty(colorKnobTouchTagPropertyName(), touchTagFor(this));
@@ -729,6 +731,17 @@ KnobGuiColor::ensureAdjustPanel()
     }
 
     _adjustPanelHost->layout()->addWidget(_adjustPanel.data());
+    // Made after the row, the panel would otherwise follow in the focus chain whatever the window gained
+    // last, which Tab and the focus hand-off when the panel is hidden would then reach.
+    if (focusMark) {
+        QWidget* after = getFocusChainAnchor();
+        if (!after) {
+            after = FocusChain::focusableAtOrBefore(_adjustPanelHost.data());
+        }
+        if (QWidget* last = FocusChain::placeAfter(after, focusMark.data(), _adjustPanelHost.data())) {
+            setLastFocusable(last);
+        }
+    }
     refreshAdjustPanelState();
     KnobGui::showWidget(_adjustPanel.data());
 

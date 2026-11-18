@@ -133,6 +133,9 @@ struct KnobGuiPrivate
     // While the row is unbuilt: its page, which must have been shown before it is built, and its first grid row.
     std::weak_ptr<KnobPageGui> deferredRowPage;
     int deferredRowIndex;
+    KnobGuiWPtr previousFocusRow;
+    bool focusRowLinked;
+    QPointer<QWidget> lastFocusable;
 
     KnobGuiPrivate(KnobGuiContainerI* container);
 

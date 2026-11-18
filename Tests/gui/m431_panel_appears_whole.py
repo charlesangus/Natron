@@ -17,11 +17,18 @@ Screenshots of the Merge and Roto panels are saved as panel_Merge.png and panel_
 Two more cases create a Blur and undo at once, one before the node has painted and one right
 after: Natron must not crash, the node must be gone and no panel may be left open.
 
+A last case checks the focus order of rows built after the panel: a parameter hidden when the panel
+is built is shown, and Tab from the last focusable widget of the row above it must land in it;
+hiding it again while it has the focus must leave the focus in the same panel without scrolling the
+Properties bin; and Shift+Tab from the first widget of a page built when first shown must stay in
+the panel. A second panel is opened after the first, so a misplaced widget would lead into it.
+
 Widget wrappers are looked up again on every pass and never kept across a yield: a wrapper kept
 across one can outlive its C++ object.
 """
 import ctypes
 import os
+import re
 import sys
 import traceback
 
@@ -35,11 +42,20 @@ SETTLE_MS = 1000
 POINTER_MS = 250
 KEY_MS = 120
 DOUBLE_CLICK_GAP_MS = 60
+SCROLL_TOLERANCE_PX = 100
+FOCUS_CHAIN_STEPS = 5000
 
 SHORTCUT_PLUGINS = ("Blur", "Merge", "Roto")
 SHOT_PLUGINS = ("Merge", "Roto")
 DOUBLE_CLICK_PLUGIN = "Merge"
 UNDO_PLUGIN = "Blur"
+# Tried first for a parameter hidden at panel build; the other plug-ins follow, up to LAZY_SCAN_LIMIT.
+LAZY_PLUGINS = ("Merge", "Transform", "Grade", "ColorCorrect", "Blur", "Shuffle", "Constant", "Text")
+LAZY_SKIP = ("read", "write", "viewer", "group", "backdrop", "dot", "input", "output", "precomp",
+             "tracker", "roto", "cache", "disk")
+LAZY_SCAN_LIMIT = 60
+SECOND_PANEL_PLUGIN = "Blur"
+LABEL_CLASS = "ClickableLabel"
 
 PROP_ID = "natronPluginID"
 PROP_SHORTCUT = "natronShortcut"
@@ -47,11 +63,12 @@ ROW_CLASS = "RightClickableWidget"
 MODIFIER_KEYSYMS = {"shift": "Shift_L", "ctrl": "Control_L", "alt": "Alt_L", "meta": "Super_L"}
 
 try:
+    import NatronEngine
     import NatronGui
     import shiboken6
-    from PySide6.QtCore import QObject, QPoint, QPointF, QTimer
+    from PySide6.QtCore import QMetaObject, QObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QCursor, QGuiApplication
-    from PySide6.QtWidgets import QApplication, QMainWindow, QWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QScrollArea, QTabWidget, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -324,6 +341,262 @@ try:
         p = graph.mapFromScene(centre)
         return graph.viewport().mapToGlobal(p)
 
+    def hidden_row_param(node):
+        """The script name of a number parameter of node's first page that is hidden, sits on its own
+        line below a shown one, and has a shown number parameter somewhere below it; or None."""
+        params = node.getParams()
+        first_page = None
+        for p in params:
+            if isinstance(p, NatronEngine.PageParam):
+                first_page = p.getScriptName()
+                break
+        if first_page is None:
+            return None
+        siblings = []
+        for p in params:
+            parent = p.getParent()
+            if not isinstance(p, NatronEngine.PageParam) and parent is not None and parent.getScriptName() == first_page:
+                siblings.append(p)
+        numbers = (NatronEngine.DoubleParam, NatronEngine.IntParam)
+        for i in range(1, len(siblings) - 1):
+            p, prev = siblings[i], siblings[i - 1]
+            if p.getIsVisible() or not isinstance(p, numbers):
+                continue
+            if not prev.getIsVisible() or isinstance(prev, NatronEngine.GroupParam):
+                continue
+            if not (p.getAddNewLine() and prev.getAddNewLine()):
+                continue
+            if any(s.getIsVisible() and isinstance(s, numbers) for s in siblings[i + 1:]):
+                return p.getScriptName()
+        return None
+
+    def find_hidden_row_node():
+        """A new node with a parameter hidden at panel build, and that parameter's script name."""
+        ids = list(LAZY_PLUGINS)
+        for pid in sorted(str(i) for i in NatronEngine.natron.getPluginIDs()):
+            if pid not in ids and not any(k in pid.lower() for k in LAZY_SKIP):
+                ids.append(pid)
+        tried = []
+        for pid in ids[:LAZY_SCAN_LIMIT]:
+            node = app.createNode(pid)
+            if node is None:
+                continue
+            tried.append(pid)
+            name = hidden_row_param(node)
+            if name is not None:
+                return node, name, tried
+            node.destroy()
+        return None, None, tried
+
+    def open_panel(node):
+        app.clearSelection()
+        app.selectNode(node, True)
+        QMetaObject.invokeMethod(root_graph(), "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: panel_of(node) is not None, PANEL_TIMEOUT_S)
+        yield ("sleep", SETTLE_MS)
+        return ok
+
+    def label_text(w):
+        return re.sub(r"<[^>]+>", "", w.text()).strip()
+
+    def labels_named(panel, text):
+        return [w for w in panel.findChildren(QLabel) if gt.class_name(w) == LABEL_CLASS and label_text(w) == text]
+
+    def takes_tab(w):
+        return (bool(w.focusPolicy().value & Qt.FocusPolicy.TabFocus.value)
+                and w.isVisible() and w.isEnabled())
+
+    def tab_neighbour(w, forward):
+        """The widget Tab (or Shift+Tab) would move the focus to from w."""
+        n = w.nextInFocusChain() if forward else w.previousInFocusChain()
+        for _ in range(FOCUS_CHAIN_STEPS):
+            if n is None or n is w:
+                return None
+            if takes_tab(n):
+                return n
+            n = n.nextInFocusChain() if forward else n.previousInFocusChain()
+        return None
+
+    def grid_row_takers(layout, row):
+        found, seen = [], set()
+        for col in (0, 1):
+            item = layout.itemAtPosition(row, col)
+            w = item.widget() if item is not None else None
+            if w is None:
+                continue
+            for c in [w] + w.findChildren(QWidget):
+                if takes_tab(c) and ptr(c) not in seen:
+                    seen.add(ptr(c))
+                    found.append(c)
+        return found
+
+    def row_of_label(panel, label_ptr):
+        """The grid of the row whose label is at label_ptr, the row index, and its focusable widgets."""
+        if panel is None:
+            return None, -1, []
+        for w in panel.findChildren(QLabel):
+            if ptr(w) != label_ptr:
+                continue
+            container = w.parentWidget()
+            owner = container.parentWidget() if container is not None else None
+            layout = owner.layout() if owner is not None else None
+            if layout is None or not hasattr(layout, "itemAtPosition"):
+                return None, -1, []
+            row = layout.getItemPosition(layout.indexOf(container))[0]
+            return layout, row, grid_row_takers(layout, row)
+        return None, -1, []
+
+    def last_in_tab_order(widgets):
+        ptrs = set(ptr(w) for w in widgets)
+        for w in widgets:
+            n = tab_neighbour(w, True)
+            if n is None or ptr(n) not in ptrs:
+                return w
+        return None
+
+    def first_in_tab_order(widgets):
+        ptrs = set(ptr(w) for w in widgets)
+        for w in widgets:
+            n = tab_neighbour(w, False)
+            if n is None or ptr(n) not in ptrs:
+                return w
+        return None
+
+    def bin_scroll(panel):
+        w = panel.parentWidget() if panel is not None else None
+        while w is not None:
+            if isinstance(w, QScrollArea):
+                return w.verticalScrollBar().value()
+            w = w.parentWidget()
+        return None
+
+    def panel_tabs(panel):
+        """The panel's page tab widget, not the tab widget of a group shown as tabs."""
+        for t in panel.findChildren(QTabWidget):
+            w, in_group = t.parentWidget(), False
+            while w is not None and ptr(w) != ptr(panel):
+                if gt.class_name(w) == "TabGroup":
+                    in_group = True
+                    break
+                w = w.parentWidget()
+            if not in_group:
+                return t
+        return None
+
+    def focus_in(node):
+        fw = QApplication.focusWidget()
+        panel = panel_of(node)
+        inside = fw is not None and panel is not None and panel.isAncestorOf(fw)
+        name = "%s(%s)" % (gt.class_name(fw), fw.objectName()) if fw is not None else "none"
+        return inside, name
+
+    def lazy_focus_steps():
+        tag = "lazy focus"
+        gt.section(tag)
+        yield from quiet()
+        node, pname, tried = find_hidden_row_node()
+        require(node is not None, "%s: a plug-in has a number parameter hidden at panel build" % tag,
+                "tried %r" % tried)
+        report("NOTE %s: %s.%s is hidden at panel build" % (tag, node.getPluginID(), pname))
+        other = app.createNode(SECOND_PANEL_PLUGIN)
+        require(other is not None, "%s: create a %s" % (tag, SECOND_PANEL_PLUGIN), gt.plugin_problem(SECOND_PANEL_PLUGIN))
+        other.setPosition(400, 200)
+        ok = yield from open_panel(node)
+        require(ok, "%s: the panel of %s opens" % (tag, node.getLabel()))
+        ok = yield from open_panel(other)
+        require(ok and panel_of(node) is not None, "%s: the panels of %s and %s are open together" % (
+            tag, node.getLabel(), other.getLabel()))
+
+        param = node.getParam(pname)
+        text = param.getLabel()
+        panel = panel_of(node)
+        before = set(ptr(w) for w in labels_named(panel, text))
+        panel = None
+        param.setVisible(True)
+        yield ("sleep", SETTLE_MS)
+        panel = panel_of(node)
+        new = [ptr(w) for w in labels_named(panel, text) if ptr(w) not in before] if panel is not None else []
+        panel = None
+        if check(len(new) == 1, "%s: showing %s builds its row then (%d new labels)" % (tag, pname, len(new))):
+            ok = yield from activate()
+            if not ok:
+                report("NOTE %s: the main window did not report active before Tab" % tag)
+            panel = panel_of(node)
+            layout, row, takers = row_of_label(panel, new[0])
+            new_ptrs = set(ptr(w) for w in takers)
+            prev = []
+            for r in range(row - 1, -1, -1):
+                prev = grid_row_takers(layout, r) if layout is not None else []
+                if prev:
+                    break
+            last = last_in_tab_order(prev)
+            layout = None
+            ready = check(bool(takers) and last is not None, "%s: the shown row and a row above it take focus "
+                          "(%d and %d widgets)" % (tag, len(takers), len(prev)))
+            if ready:
+                last.setFocus(Qt.TabFocusReason)
+            last = None
+            prev = takers = []
+            panel = None
+            if ready:
+                yield ("sleep", KEY_MS)
+                xin.chord(["Tab"])
+                yield ("sleep", KEY_MS * 2)
+                fw = QApplication.focusWidget()
+                landed = fw is not None and ptr(fw) in new_ptrs
+                inside, name = focus_in(node)
+                check(landed, "%s: Tab from the row above lands in the shown row (went to %s, in panel %r)" % (
+                    tag, name, inside))
+                fw = None
+
+                panel = panel_of(node)
+                _, _, takers = row_of_label(panel, new[0])
+                first = first_in_tab_order(takers)
+                if first is not None:
+                    first.setFocus(Qt.TabFocusReason)
+                first = None
+                takers = []
+                scroll_before = bin_scroll(panel)
+                panel = None
+                yield ("sleep", KEY_MS)
+                param.setVisible(False)
+                yield ("sleep", SETTLE_MS)
+                inside, name = focus_in(node)
+                check(inside, "%s: hiding the focused row leaves the focus in its panel (went to %s)" % (tag, name))
+                scroll_after = bin_scroll(panel_of(node))
+                moved = abs(scroll_after - scroll_before) if None not in (scroll_before, scroll_after) else 0
+                check(moved <= SCROLL_TOLERANCE_PX, "%s: hiding the focused row does not scroll the Properties "
+                      "bin (%r -> %r)" % (tag, scroll_before, scroll_after))
+
+        panel = panel_of(node)
+        tabs = panel_tabs(panel) if panel is not None else None
+        if not check(tabs is not None and tabs.count() >= 2, "%s: %s's panel has a second page" % (tag, node.getLabel())):
+            return
+        page = tabs.widget(1)
+        built = [w for w in page.findChildren(QWidget) if w.focusPolicy().value & Qt.FocusPolicy.TabFocus.value]
+        report("NOTE %s: %d focusable widgets on page %r before it is shown" % (tag, len(built), tabs.tabText(1)))
+        tabs.setCurrentIndex(1)
+        page = tabs = panel = None
+        built = []
+        yield ("sleep", SETTLE_MS)
+        panel = panel_of(node)
+        tabs = panel_tabs(panel) if panel is not None else None
+        page_takers = [w for w in tabs.widget(1).findChildren(QWidget) if takes_tab(w)] if tabs is not None else []
+        first = first_in_tab_order(page_takers)
+        has_first = first is not None
+        if has_first:
+            first.setFocus(Qt.TabFocusReason)
+        first = None
+        page_takers = []
+        tabs = panel = None
+        if check(has_first, "%s: the page shown late has a widget taking focus" % tag):
+            yield ("sleep", KEY_MS)
+            xin.chord(["Shift_L", "Tab"])
+            yield ("sleep", KEY_MS * 2)
+            inside, name = focus_in(node)
+            check(inside, "%s: Shift+Tab from the first widget of the page shown late stays in its panel "
+                  "(went to %s)" % (tag, name))
+
     def steps():
         gt.section("setup")
         require(xin.error is None, "XTEST input is available", xin.error or "")
@@ -400,6 +673,8 @@ try:
             yield ("sleep", SETTLE_MS)
             check(root_names() == before, "%s: the node stays gone once settled" % tag)
             check(not visible_panels(), "%s: no panel is left open (%d open)" % (tag, len(visible_panels())))
+
+        yield from lazy_focus_steps()
 
         faulthandler.cancel_dump_traceback_later()
 

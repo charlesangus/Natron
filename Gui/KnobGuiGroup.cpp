@@ -145,8 +145,12 @@ KnobGuiGroup::isChecked() const
         return _checked;
     }
     KnobGroupPtr knob = _knob.lock();
+    // A group shown as a tab has no fold button: its children are shown whenever its tab is.
+    if (!knob || knob->isTab()) {
+        return true;
+    }
 
-    return knob ? knob->getValue() : true;
+    return knob->getValue();
 }
 
 void
@@ -262,19 +266,16 @@ KnobGuiGroup::_hide()
 void
 KnobGuiGroup::_show()
 {
-//    if ( _knob->getIsSecret() ) {
-//        return;
-//    }
-KnobGui::showWidget(_button);
+    KnobGui::showWidget(_button);
 
-if (_checked) {
-    for (std::list<KnobGuiWPtr>::iterator it = _children.begin(); it != _children.end(); ++it) {
-        KnobGuiPtr k = it->lock();
-        if (!k) {
-            continue;
+    if (_checked) {
+        for (std::list<KnobGuiWPtr>::iterator it = _children.begin(); it != _children.end(); ++it) {
+            KnobGuiPtr k = it->lock();
+            if (!k) {
+                continue;
+            }
+            k->show();
         }
-        k->show();
-    }
     }
     if (_tabGroup) {
         _tabGroup->show();

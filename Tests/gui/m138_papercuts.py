@@ -42,7 +42,7 @@ ALL_SECTIONS = ("file-dialog", "placement", "picker-defaults", "deep-read")
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QItemSelectionModel, QMimeData, QMetaObject, QPoint, QPointF, Qt, QUrl
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QMimeData, QMetaObject, QPoint, QPointF, Qt, QTimer, QUrl
     from PySide6.QtGui import QDragEnterEvent, QDropEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QListView, QMainWindow, QTreeView, QWidget
@@ -193,7 +193,9 @@ try:
                     if str(model.index(r, 0).data()).split("[")[0].strip() == "Read"), -1)
         require(row >= 0, "the Tab menu offers Read")
         entries.setCurrentIndex(model.index(row, 0))
-        QTest.keyClick(line_edit, Qt.Key_Return)
+        # Choosing Read runs the file dialog's modal loop before the key press returns, so the press
+        # is sent from the event loop and this step waits for the dialog inside that modal loop.
+        QTimer.singleShot(0, lambda: QTest.keyClick(line_edit, Qt.Key_Return))
         ok = yield ("until", lambda: bool(visible_of("SequenceFileDialog")), POLL_TIMEOUT_S)
         require(ok, "the create-time file dialog opened")
         yield ("sleep", SETTLE_MS)

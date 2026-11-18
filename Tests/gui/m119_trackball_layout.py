@@ -896,7 +896,8 @@ try:
                 row_left = ap.mapToGlobal(row.topLeft()).x()
                 row_right = ap.mapToGlobal(row.topRight()).x()
                 lines_area = hue.parentWidget()
-                area_layout = wheel.parentWidget().layout()
+                wheel_area = wheel.parentWidget()
+                area_layout = wheel_area.layout() if wheel_area is not None else None
                 spacing = area_layout.spacing() if area_layout is not None else 0
                 column = lines_area.sizeHint().height()
                 lines_min = lines_area.minimumSizeHint().width()

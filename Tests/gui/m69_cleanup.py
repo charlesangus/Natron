@@ -2007,7 +2007,12 @@ try:
             check(make_tab_current(editors[0]), "brought the curve editor's tab to the front")
             yield ("sleep", SETTLE_MS)
             tree, knob_index = size_knob_index()
-            if check(knob_index is not None and tree.model().rowCount(knob_index) == 2, "found the size knob's two component rows"):
+            component_rows = tree.model().rowCount(knob_index) if knob_index is not None else None
+            if not check(component_rows == 2, "found the size knob's two component rows"):
+                switch = size_switch()
+                report("NOTE expanded-curve: size rows %r, visible %r, switch expanded %r"
+                       % (component_rows, size_rows(), switch.isChecked() if switch is not None else None))
+            else:
                 # Only X is selected, so the curve widget shows X's curve alone and the drag cannot
                 # land on Y's key, which sits on the same spot.
                 tree.clearSelection()

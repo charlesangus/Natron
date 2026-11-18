@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <memory>
 
 #include <gtest/gtest.h>
@@ -37,10 +38,12 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/Nodes/Time/FrameHold.h"
 #include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/OverlayPath.h"
+#include "Engine/RenderScale.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 
@@ -204,6 +207,19 @@ TEST_F(OverlayPathTest, SingularInverseLegHidesTheOverlay)
     NodePtr rotoNode = roto(transform);
     NodePtr viewer = viewerOf(read);
     ASSERT_TRUE(rotoNode && viewer);
+
+    KnobDoublePtr scale = std::dynamic_pointer_cast<KnobDouble>(transform->getKnobByName(kTransformNodeParamScale));
+    ASSERT_TRUE(bool(scale));
+    EXPECT_EQ(0., scale->getValue(0));
+    EXPECT_EQ(0., scale->getValue(1));
+
+    EffectInstancePtr transformedInput;
+    Transform::Matrix3x3 matrix;
+    const StatusEnum status = transform->getEffectInstance()->getTransform_public(1., RenderScale::identity, true, ViewIdx(0), &transformedInput, &matrix);
+    ASSERT_EQ(eStatusOK, status);
+    EXPECT_EQ(read->getEffectInstance(), transformedInput);
+    const double collapsedArea = TransformMath::kScaleMin * TransformMath::kScaleMin;
+    EXPECT_NEAR(collapsedArea, std::fabs(Transform::matDeterminant(matrix)), collapsedArea * 1e-6);
 
     const OverlayPathResult result = resolve(viewer, rotoNode);
     EXPECT_EQ(OverlayPathRelation::eUpstream, result.relation);

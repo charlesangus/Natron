@@ -789,7 +789,7 @@ resampleTransform(EffectInstance& effect,
     }
     Mat3 canonical;
     if (!invCanonical.inverse(&canonical)) {
-        return eStatusFailed;
+        return eStatusReplyDefault;
     }
 
     EffectInstancePtr input = (sourceInput >= 0) ? effect.getInput(sourceInput) : EffectInstancePtr();

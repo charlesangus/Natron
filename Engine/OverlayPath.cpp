@@ -25,6 +25,7 @@
 
 #include "OverlayPath.h"
 
+#include <algorithm>
 #include <cmath>
 #include <deque>
 #include <map>
@@ -35,6 +36,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewerInstance.h"
@@ -43,9 +45,12 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-// Below this the matrix collapses the plane (a Transform scale of 0 still yields a tiny
-// non-zero scale), so inverting it would throw the overlay off to infinity.
+// Below this the matrix cannot be inverted in double precision.
 const double kSingularDeterminant = 1e-24;
+
+// A scale no larger than the smallest one a transform applies is a collapsed axis: a Transform
+// scale of 0 is applied as TransformMath::kScaleMin, which inverts to a huge but finite scale.
+const double kCollapsedScale = TransformMath::kScaleMin * (1. + 1e-6);
 
 const int kMaxRetimeIterations = 8;
 const double kRetimeTolerance = 1e-6;
@@ -411,6 +416,33 @@ isViewedNode(EffectInstance* viewed,
     return false;
 }
 
+// Whether m collapses the plane onto a line or a point: singular, or its derivative at the
+// origin has a singular value no larger than kCollapsedScale.
+bool
+collapsesPlane(const Transform::Matrix3x3& m)
+{
+    const double det = Transform::matDeterminant(m);
+    if (!std::isfinite(det) || (std::fabs(det) < kSingularDeterminant)) {
+        return true;
+    }
+    if (m.i == 0.) {
+        return false;
+    }
+    const double w2 = m.i * m.i;
+    const double a = (m.a * m.i - m.c * m.g) / w2;
+    const double b = (m.b * m.i - m.c * m.h) / w2;
+    const double d = (m.d * m.i - m.f * m.g) / w2;
+    const double e = (m.e * m.i - m.f * m.h) / w2;
+    const double jacobianDet = std::fabs(a * e - b * d);
+    const double sumSquares = a * a + b * b + d * d + e * e;
+    const double largest = std::sqrt((sumSquares + std::sqrt(std::max(0., sumSquares * sumSquares - 4. * jacobianDet * jacobianDet))) / 2.);
+    if (!std::isfinite(largest) || !(largest > 0.)) {
+        return true;
+    }
+
+    return (jacobianDet / largest) <= kCollapsedScale;
+}
+
 } // anonymous namespace
 
 OverlayPathResult
@@ -494,15 +526,14 @@ resolveOverlayPath(EffectInstance* viewed,
     double overlayTime = ancestorTime;
     const Transform::Matrix3x3 fromAncestor = resolver.composeBackward(OverlayPathResolver::pathTo(fromOverlay, ancestor), ancestorTime, &overlayTime, &visible);
 
-    const double det = Transform::matDeterminant(fromAncestor);
-    if (!std::isfinite(det) || (std::fabs(det) < kSingularDeterminant)) {
+    if (collapsesPlane(fromAncestor)) {
         result.matrix = Transform::Matrix3x3();
         result.time = overlayTime;
         result.visible = false;
 
         return result;
     }
-    result.matrix = Transform::matMul(toViewed, Transform::matInverse(fromAncestor, det));
+    result.matrix = Transform::matMul(toViewed, Transform::matInverse(fromAncestor, Transform::matDeterminant(fromAncestor)));
     result.time = overlayTime;
     result.visible = visible;
 

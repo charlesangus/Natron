@@ -51,8 +51,9 @@ enum class OverlayPathRelation {
  * @brief Where an overlay is drawn in a viewer and at which of its node's frames.
  * matrix maps the overlay node's canonical space to the viewed node's canonical space; time is
  * the overlay node's frame matching the viewer's; visible is false when the overlay cannot be
- * placed at this frame (a singular matrix on a leg that has to be inverted, or a frame hold
- * holding another frame), and then it is neither drawn nor sent events.
+ * placed at this frame (the legs that have to be inverted collapse the plane onto a line or a
+ * point, as a Transform scale of 0 does, or a frame hold holds another frame), and then it is
+ * neither drawn nor sent events.
  **/
 struct OverlayPathResult {
     OverlayPathRelation relation = OverlayPathRelation::eUnrelated;

@@ -53,8 +53,7 @@ struct ConstantOp {
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_CONSTANT,
         .label = "Constant",
-        .description = "Generate an image with a constant color.\n"
-                       "See also: https://web.archive.org/web/20220807183203/http://www.opticalenquiry.com/nuke/index.php?title=Constant,_CheckerBoard,_ColorBars,_ColorWheel",
+        .description = "Generate an image with a constant color.",
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_CONSTANT,
         .minorVersion = 0,

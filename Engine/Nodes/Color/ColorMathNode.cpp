@@ -184,7 +184,7 @@ ColorMathOp<KIND>::row(const Params& params,
                 dst[c] = src[c] * params.value[bit];
             } else {
                 const float v = src[c];
-                // pow of a negative base is NaN; such values pass through, as in Nuke.
+                // pow of a negative base is NaN; such values pass through.
                 dst[c] = ((v <= 0.f) || params.isUnit[bit]) ? v : std::pow(v, params.value[bit]);
             }
         }

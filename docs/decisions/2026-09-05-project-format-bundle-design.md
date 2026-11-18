@@ -37,9 +37,8 @@ compositor with pipeline users.
   (`Engine/Project.cpp`); load is eager and single-threaded via
   `NodeCollectionSerialization::restoreFromSerialization()`
   (`Engine/NodeGroupSerialization.cpp`).
-- *Nuke's documented failure mode* is not TCL parsing but heavy data inlined as
-  text plus whole-file rewrite on save/autosave: Foundry KB Q100199/Q100200
-  advise disabling autosave for tracker-heavy scripts. Its positional
+- *Heavy data inlined as text plus whole-file rewrite on save/autosave* is the
+  known failure mode of text script formats with tracker-heavy graphs. Positional
   push/stack wiring also makes rewire diffs non-local — Maya `.ma`'s explicit
   `connectAttr` diffs far better, hence explicit named connections here.
   (Natron's existing `Inputs_map` already uses input labels; this preserves

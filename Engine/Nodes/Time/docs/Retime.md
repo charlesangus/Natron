@@ -61,26 +61,10 @@ is shared with TimeWarp, which remaps time through a curve instead.
 | `filter` | Blend | Nearest, Blend, Fractional or Box |
 | `shutter` | 1 | Box: output frames each output frame averages over; animates |
 
-Port audit (every OFX and Nuke control):
-
-| OFX (net.sf.openfx.Retime) | Nuke (Retime) | Natron knob | Default | Status |
-|---|---|---|---|---|
-| (none) | `input.first`, `input.first_lock` | `originalIn`, `useInMapping` | input's first, on | mapped; the lock is the mapping toggle |
-| (none) | `input.last`, `input.last_lock` | `originalOut`, `useOutMapping` | input's last, off | mapped; the lock is the mapping toggle |
-| (none) | `output.first`, `output.first_lock` | `newIn` (toggled by `useInMapping`) | input's first | mapped |
-| (none) | `output.last`, `output.last_lock` | `newOut` (toggled by `useOutMapping`) | input's last | mapped |
-| `speed` | `speed` | `speed` | 1 | mapped |
-| `reverseInput` | `reverse` | `reverse` | off | mapped; animates, as in OFX |
-| (none) | `before`, `after` | `before`, `after` | Hold | mapped |
-| `filter` none / nearest / linear / box | `filter` none / nearest / box | `filter` Fractional / Nearest / Blend / Box | Blend | mapped |
-| `warp` (Time Warp page) | `warp` (TimeWarp tab) | (none) | | moved: TimeWarp's `lookup` |
-| `duration` (hosts without parametric params) | (none) | (none) | | N/A: Natron has parametric params |
-| (none; OFX's box option, commented out, names a shutter) | `shutter` | `shutter` | 1 | mapped |
-
 Differences: OFX integrates the speed from the input's first frame and has no ranges or locks;
-the integral here starts at the anchor, as the new range does. Nuke locks the input and output
-ends separately; here one toggle per end turns its whole mapping on. Nuke's "none" filter is
-Fractional and OFX's "linear" is Blend. The default filter is OFX's (Blend); Nuke's is Box.
+the integral here starts at the anchor, as the new range does. One toggle per end turns that
+end's whole mapping on. OFX's "none" filter is Fractional and its "linear" is Blend. The default
+filter is Blend.
 
 Tolerance:
 

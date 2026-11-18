@@ -23,17 +23,7 @@ the output is black.
 | `reverseInput` | off | Play the input range backwards |
 | `clipToInputRange` | off | Never read outside the input range |
 
-Port audit (every OFX and Nuke control):
-
-| OFX (net.sf.openfx.timeOffset) | Nuke (TimeOffset) | Natron knob | Default | Status |
-|---|---|---|---|---|
-| `timeOffset` | `time_offset` | `timeOffset` | 0 | mapped; animates, as Nuke's does (OFX's does not) |
-| `reverseInput` | `reverse_input` | `reverseInput` | off | mapped |
-| `clipToInputRange` | (none) | `clipToInputRange` | off | mapped |
-| (none) | `rounding_mode` | `roundingMode` | Whole Frames | mapped |
-| (none) | path mask (3D scene paths) | (none) | | N/A: no 3D scene graph on this input |
-
-Differences: OFX's offset does not animate; here it does, as in Nuke.
+Differences: OFX's offset does not animate; here it does.
 
 Tolerance:
 

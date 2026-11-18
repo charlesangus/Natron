@@ -60,7 +60,7 @@ gradeValue(double v,
     if (ch.gamma == 1.) {
         return x;
     }
-    // pow would give NaN; negatives pass through ungammaed, as in Nuke.
+    // pow would give NaN; negatives pass through ungammaed.
     if (x <= 0) {
         return x;
     }

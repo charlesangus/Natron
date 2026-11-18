@@ -78,8 +78,7 @@ inline constexpr NodeSpec kTransformNodeSpec = {
     .id = PLUGINID_NATRON_TRANSFORM,
     .label = "Transform",
     .description = "Translate / Rotate / Scale a 2D image, with an optional mask.\n"
-                   "Without a mask and at a mix of 1, it concatenates with the transforms around it.\n"
-                   "See also https://web.archive.org/web/20220627030948/http://www.opticalenquiry.com/nuke/index.php?title=Transform",
+                   "Without a mask and at a mix of 1, it concatenates with the transforms around it.",
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_TRANSFORM,
     .minorVersion = 0,

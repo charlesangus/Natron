@@ -4,7 +4,7 @@
 
 ---
 
-Natron is a free, open-source (GPLv2 license) video compositor, similar in functionality to Adobe After Effects, Foundry's Nuke, or Blackmagic Fusion. This fork targets Linux only, and is built with Qt 6.8, C++20, and CMake.
+Natron is a free, open-source (GPLv2 license) video compositor, similar in functionality to Adobe After Effects or Blackmagic Fusion. This fork targets Linux only, and is built with Qt 6.8, C++20, and CMake.
 
 - Website: https://natrongithub.github.io
 - Source code: https://github.com/charlesangus/Natron

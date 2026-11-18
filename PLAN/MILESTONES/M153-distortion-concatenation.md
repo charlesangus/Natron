@@ -60,17 +60,17 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
 
 ## Phase 153.2: SplineWarp and matrix consumers
 
-- [ ] M153.P2.T1 — SplineWarp provides its map
+- [x] M153.P2.T1 — SplineWarp provides its map
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.{h,cpp}`, `SplineWarpField.{h,cpp}` (add `mapPoints(n, sx, sy, J)` for scattered points), `Tests/Native/NativeSplineWarp_Test.cpp`
   - approach: decline under the edge cases. Otherwise build the field through `computeField` over the window (cached), crop with `cropRowToFormat`, and report `getConcatenationEdgeMode` from the settings.
   - verify: gtest. SplineWarp → test consumer at identity matches SplineWarp rendered alone within 1e-4 in the interior. A mask, mix 0.5 and sub-frames each decline.
   - size: L
-- [ ] M153.P2.T2 — SplineWarp consumes chains
+- [x] M153.P2.T2 — SplineWarp consumes chains
   - files: `SplineWarp.cpp` (`renderOp`), `NativeSplineWarp_Test.cpp`
   - approach: the chain replaces `plane.concatenated` / `plane.inverse` for the warped rows and the mask and mix reference row. A matrix-only chain gives identical results.
   - verify: ConcatenatesAPrecedingTransform passes unchanged. Test provider → SplineWarp matches a reference row built from composed coordinates within 1e-4.
   - size: M
-- [ ] M153.P2.T3 — Resample consumers take map chains
+- [x] M153.P2.T3 — Resample consumers take map chains
   - files: `Engine/Nodes/Image/ResampleExecutor.cpp`, `Tests/Native/StagedResample_Test.cpp`, `NativeTransform_Test.cpp`
   - approach: for the Matrix form with exactly one sampling matrix, make coordinates and J from the inverse matrix at pixel centres, apply the chain, and call `resampleRowFromCoords` with `eWrapNone`. The Offset form, blur and matrix-only chains keep their existing path.
   - verify: Transform → SplineWarp → Transform renders the source once (SplineWarp's render count stays 0) and matches a one-resample reference within 1e-4. A motion-blurred Transform falls back, with a result identical to today's.
@@ -148,3 +148,4 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
 - 2026-11-17 — Phase 153.4 GPU (consultant): chains reach GPU tasks through their render arguments, built over the task rect, not through TLS. Matrix-only chains fold into the existing resample matrices and keep the exact and blur kernels. Map chains sample through `coordmap.slang`'s `sampleAt`, mirroring the CPU `resampleRowFromCoords`. Step maths uses the same two-float arithmetic as splinewarp.slang and lensmodels.slang. Node kernels are extended, not replaced, keeping mask, mix and premult. PM call: map chains ending in impulse or box follow `resampleRowFromCoords` rather than the matrix path's exact floor rule, as on the CPU. A chain over the scratch limit renders on the CPU.
 - 2026-11-18 — Started: branch rebased onto feature/f25-overlay-flow (2ae2d807b = main + M433), since M153 reuses M433's maps; it PRs into main once F25 lands (or retargets onto F25 if F25 is still open when M153 is ready). Phase 153.1 dispatched as one unit.
 - 2026-11-18 — Phase 153.1 in 94faa7c24, gate running. Deviations: canOfferInverseWarp returns the input it samples (int* inputNb); added getCanInverseWarp() (cached capability) and getInverseWarpChainFilterSupport() (consumer filter support); mask/mix ≠ 1 declining is each provider's canOfferInverseWarp (P2). mapRowThroughMatrix replaces SplineWarp's local mapRowThrough; a point at or behind infinity now gives NaN (black) instead of -1e9, matching the matrix resample path. Only M433's OverlayPointMap::sampleGrid is reused (M433's maps are canonical, scale 1, no Jacobian).
+- 2026-11-18 — Phase 1 gate 44320537715 failed only DisabledNodeInBetweenIsSkipped: the test provider had no settings panel, so no Disable knob (ae133dabe; the walk already skips disabled nodes). Phase 153.2 in a8a4e4abb, gate running. Phase 153.3 dispatched with two Phase 1/2 loose ends: an infinite map window is an error, and the prepared chain and SplineWarp field are cached across tiles of one render.

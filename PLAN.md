@@ -526,7 +526,7 @@ future core work has solid ground to build on.
 | M425 | No ONNX Runtime Telemetry | done | - | bosley-native-nodes | E16 |  | | [M425-no-onnx-runtime-telemetry.md](PLAN/MILESTONES/M425-no-onnx-runtime-telemetry.md) |
 | M426 | UDIM Textures In Delegates | todo | M311, M343 |  | E9 |  | | [M426-udim-textures-in-delegates.md](PLAN/MILESTONES/M426-udim-textures-in-delegates.md) |
 | M432 | Overlays Off The Render Path | doing | - | bosley-executor | E23 |  | | [M432-overlays-off-the-render-path.md](PLAN/MILESTONES/M432-overlays-off-the-render-path.md) |
-| M433 | Overlay Point Maps | doing | - | bosley-executor | E23 | F25 | | [M433-overlay-point-maps.md](PLAN/MILESTONES/M433-overlay-point-maps.md) |
+| M433 | Overlay Point Maps | done | - | | E23 | F25 | | [M433-overlay-point-maps.md](PLAN/MILESTONES/M433-overlay-point-maps.md) |
 | M434 | Interacts On The Overlay Draw List | doing | - | bosley-executor | E23 | F25 | | [M434-interacts-on-the-overlay-draw-list.md](PLAN/MILESTONES/M434-interacts-on-the-overlay-draw-list.md) |
 | M435 | Overlays Deform Through Warps | todo | M432, M433, M434 |  | E23 | F25 | | [M435-overlays-deform-through-warps.md](PLAN/MILESTONES/M435-overlays-deform-through-warps.md) |
 | M436 | Overlays On Projected Geometry | todo | M435 |  | E23 | F25 | | [M436-overlays-on-projected-geometry.md](PLAN/MILESTONES/M436-overlays-on-projected-geometry.md) |

@@ -57,7 +57,43 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 std::atomic<int> gLiveDelegates { 0 };
+
+std::string
+settingText(const VtValue& value)
+{
+    if (value.IsHolding<TfToken>()) {
+        return value.UncheckedGet<TfToken>().GetString();
+    }
+    if (value.IsHolding<std::string>()) {
+        return value.UncheckedGet<std::string>();
+    }
+
+    return std::string();
+}
 } // anon namespace
+
+UtilityUnwrapTarget
+utilityUnwrapTarget(const HdRenderDelegate& delegate)
+{
+    UtilityUnwrapTarget target;
+
+    if (settingText(delegate.GetRenderSetting(TfToken(kUtilitySettingProjection))) != kUtilityProjectionUvUnwrap) {
+        return target;
+    }
+
+    const std::string prim = settingText(delegate.GetRenderSetting(TfToken(kUtilitySettingUvPrim)));
+    const VtValue primvar = delegate.GetRenderSetting(TfToken(kUtilitySettingUvPrimvar));
+    const VtValue tile = VtValue::Cast<int>(delegate.GetRenderSetting(TfToken(kUtilitySettingUdimTile)));
+    std::string error;
+
+    if (SdfPath::IsValidPathString(prim, &error)) {
+        target.prim = SdfPath(prim);
+    }
+    target.primvar = primvar.IsEmpty() ? std::string(kUtilityDefaultUvPrimvar) : settingText(primvar);
+    target.udimTile = tile.IsEmpty() ? kUtilityDefaultUdimTile : tile.UncheckedGet<int>();
+
+    return target;
+}
 
 UtilityRenderParam::UtilityRenderParam(UtilityScene* scene,
                                        WavefrontExecutor* executor)
@@ -668,6 +704,11 @@ UtilityRenderDelegate::GetRenderSettingDescriptors() const
         HdRenderSettingDescriptor { "Deformation Motion Blur", TfToken(kUtilitySettingDeformationMotionBlur), VtValue(true) },
         HdRenderSettingDescriptor { "Subdivision Level", TfToken(kUtilitySettingSubdivLevel), VtValue(UtilitySubdivRefinement::kDefaultLevel) },
         HdRenderSettingDescriptor { "Max Subdivided Triangles", TfToken(kUtilitySettingMaxSubdivTriangles), VtValue(static_cast<int>(UtilitySubdivRefinement::kDefaultMaxTriangles)) },
+        HdRenderSettingDescriptor { "Projection", TfToken(kUtilitySettingProjection), VtValue(TfToken(kUtilityProjectionCamera)) },
+        HdRenderSettingDescriptor { "Overscan", TfToken(kUtilitySettingOverscan), VtValue(int(0)) },
+        HdRenderSettingDescriptor { "UV Prim", TfToken(kUtilitySettingUvPrim), VtValue(std::string()) },
+        HdRenderSettingDescriptor { "UV Primvar", TfToken(kUtilitySettingUvPrimvar), VtValue(std::string(kUtilityDefaultUvPrimvar)) },
+        HdRenderSettingDescriptor { "UDIM Tile", TfToken(kUtilitySettingUdimTile), VtValue(int(kUtilityDefaultUdimTile)) },
     };
 }
 

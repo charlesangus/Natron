@@ -1,4 +1,5 @@
 import UtilityTypes;
+import PixelSampling;
 
 // KernelRayGenParams in UtilityKernels.h mirrors this. The frustum is given as world positions on the
 // near and far planes: each is the value at the window's centre plus how far it moves per unit of
@@ -6,6 +7,12 @@ import UtilityTypes;
 //
 // A pixel takes samplesPerSide squared samples, one per call, over a square filterWidth pixels wide
 // centred on it; sampleIndex says which.
+//
+// mapping picks the projection. The spherical and cylindrical ones reuse the frustum fields: nearAtCentre
+// is the camera's position, nearPerX, nearPerY and farAtCentre its unit right, up and forward axes,
+// farPerX holds the near and far distances, and farPerY the vertical range of a cylindrical projection,
+// as slopes for a perspective camera or heights for an orthographic one, with z set for orthographic.
+// Their window is the display window, which spans 0 to 1 of the projection; overscan lies beyond it.
 struct RayGenParams
 {
     float3 nearAtCentre;
@@ -19,7 +26,7 @@ struct RayGenParams
     float3 farPerX;
     uint filter;
     float3 farPerY;
-    uint padding;
+    uint mapping;
     int windowX;
     int windowY;
     int windowWidth;
@@ -30,104 +37,74 @@ struct RayGenParams
     int tileHeight;
 };
 
-// KernelPixelFilter in UtilityKernels.h.
-static const uint kFilterBox = 0;
-static const uint kFilterTriangle = 1;
-static const uint kFilterGaussian = 2;
-static const uint kFilterBlackmanHarris = 3;
-
 static const float kPi = 3.14159265358979;
+
+// KernelRayMapping in UtilityKernels.h.
+static const uint kMappingCamera = 0;
+static const uint kMappingSpherical = 1;
+static const uint kMappingCylindrical = 2;
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<float> rays;
 [[vk::binding(1, 0)]] RWStructuredBuffer<float> weights;
 [[vk::push_constant]] ConstantBuffer<RayGenParams> params;
 
-// Integer only, so the host and the device draw the same samples.
-uint pcgHash(uint value)
+struct CameraRay
 {
-    const uint state = value * 747796405u + 2891336453u;
-    const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-float unitFloat(uint bits)
-{
-    return float(bits >> 8u) * (1.0 / 16777216.0);
-}
-
-float filterWeight(float t)
-{
-    const float x = 2.0 * t - 1.0;
-    switch (params.filter) {
-    case kFilterTriangle:
-        return max(0.0, 1.0 - abs(x));
-    case kFilterGaussian:
-        return exp(-4.5 * x * x);
-    case kFilterBlackmanHarris:
-        return max(0.0, 0.35875 - 0.48829 * cos(2.0 * kPi * t) + 0.14128 * cos(4.0 * kPi * t) - 0.01168 * cos(6.0 * kPi * t));
-    default:
-        return 1.0;
-    }
-}
-
-// Kensler's hashed permutation of [0, length), different for each pattern.
-uint permute(uint index, uint length, uint pattern)
-{
-    uint mask = length - 1u;
-    mask |= mask >> 1u;
-    mask |= mask >> 2u;
-    mask |= mask >> 4u;
-    mask |= mask >> 8u;
-    mask |= mask >> 16u;
-    uint i = index;
-    do {
-        i ^= pattern;
-        i *= 0xe170893du;
-        i ^= pattern >> 16u;
-        i ^= (i & mask) >> 4u;
-        i ^= pattern >> 8u;
-        i *= 0x0929eb3fu;
-        i ^= pattern >> 23u;
-        i ^= (i & mask) >> 1u;
-        i *= 1u | pattern >> 27u;
-        i *= 0x6935fa69u;
-        i ^= (i & mask) >> 11u;
-        i *= 0x74dcb303u;
-        i ^= (i & mask) >> 2u;
-        i *= 0x9e501cc3u;
-        i ^= (i & mask) >> 2u;
-        i *= 0xc860a3dfu;
-        i &= mask;
-        i ^= i >> 5u;
-    } while (i >= length);
-    return (i + pattern) % length;
-}
-
-// Correlated multi-jitter: one sample per cell of the samplesPerSide grid, and one per column and row
-// of the grid's samplesPerSide squared subdivisions, so that an edge along either axis is covered to
-// within one sample. The subdivisions are shuffled: unshuffled, a sample's place within its cell
-// follows the cell's row, which ties x to y and biases any filter that weights them both. Each pixel
-// visits the cells in its own order, so a partial pass shows noise rather than a pattern.
-float2 samplePosition(int pixelX, int pixelY)
-{
-    const uint n = max(params.samplesPerSide, 1u);
-    if (n == 1u) {
-        return float2(0.5, 0.5);
-    }
-    const uint pixelHash = pcgHash(uint(pixelX) ^ pcgHash(uint(pixelY) ^ pcgHash(params.seed)));
-    const uint cell = (params.sampleIndex + pixelHash) % (n * n);
-    const uint i = cell % n;
-    const uint j = cell / n;
-    const uint jitterX = pcgHash(pixelHash ^ (params.sampleIndex * 2654435769u));
-    const uint jitterY = pcgHash(jitterX);
-    const uint subX = permute(j, n, pixelHash * 0xa511e9b3u);
-    const uint subY = permute(i, n, pixelHash * 0x63d83595u);
-    return float2((float(i) + (float(subX) + unitFloat(jitterX)) / float(n)) / float(n),
-                  (float(j) + (float(subY) + unitFloat(jitterY)) / float(n)) / float(n));
-}
+    float3 origin;
+    float3 direction;
+    float tMax;
+};
 
 // Rays start on the near plane and end on the far plane, so a hit is clipped to the camera's range
 // without a test, and its t over the ray's tMax gives the depth.
+CameraRay frustumRay(int pixelX, int pixelY, float2 offset)
+{
+    const float ndcX = 2.0 * (float(pixelX - params.windowX) + 0.5 + offset.x) / float(params.windowWidth) - 1.0;
+    const float ndcY = 2.0 * (float(pixelY - params.windowY) + 0.5 + offset.y) / float(params.windowHeight) - 1.0;
+    const float3 origin = params.nearAtCentre + ndcX * params.nearPerX + ndcY * params.nearPerY;
+    const float3 end = params.farAtCentre + ndcX * params.farPerX + ndcY * params.farPerY;
+    const float3 span = end - origin;
+    CameraRay ray;
+    ray.tMax = length(span);
+    ray.origin = origin;
+    ray.direction = span / ray.tMax;
+    return ray;
+}
+
+// The rays of the other projections run from the near to the far distance, measured along each ray,
+// so that the shading's depth reads as the distance from the camera.
+CameraRay mappedRay(int pixelX, int pixelY, float2 offset)
+{
+    const float u = (float(pixelX - params.windowX) + 0.5 + offset.x) / float(params.windowWidth);
+    const float v = (float(pixelY - params.windowY) + 0.5 + offset.y) / float(params.windowHeight);
+    const float longitude = 2.0 * kPi * (u - 0.5);
+    const float3 right = params.nearPerX;
+    const float3 up = params.nearPerY;
+    const float3 forward = params.farAtCentre;
+    const float3 around = sin(longitude) * right + cos(longitude) * forward;
+    float3 apex = params.nearAtCentre;
+    float3 direction;
+    if (params.mapping == kMappingSpherical) {
+        const float latitude = kPi * (v - 0.5);
+        direction = cos(latitude) * around + sin(latitude) * up;
+    } else {
+        const float height = lerp(params.farPerY.x, params.farPerY.y, v);
+        if (params.farPerY.z != 0.0) {
+            apex += height * up;
+            direction = around;
+        } else {
+            direction = normalize(around + height * up);
+        }
+    }
+    const float nearDistance = params.farPerX.x;
+    const float farDistance = params.farPerX.y;
+    CameraRay ray;
+    ray.origin = apex + nearDistance * direction;
+    ray.direction = direction;
+    ray.tMax = farDistance - nearDistance;
+    return ray;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void utilityRayGen(uint3 id : SV_DispatchThreadID)
@@ -138,24 +115,16 @@ void utilityRayGen(uint3 id : SV_DispatchThreadID)
         return;
     const int pixelX = params.tileX + int(id.x % width);
     const int pixelY = params.tileY + int(id.x / width);
-    const float2 t = samplePosition(pixelX, pixelY);
-    const float support = max(params.samplesPerSide, 1u) == 1u ? 1.0 : params.filterWidth;
-    const float offsetX = (t.x - 0.5) * support;
-    const float offsetY = (t.y - 0.5) * support;
-    const float ndcX = 2.0 * (float(pixelX - params.windowX) + 0.5 + offsetX) / float(params.windowWidth) - 1.0;
-    const float ndcY = 2.0 * (float(pixelY - params.windowY) + 0.5 + offsetY) / float(params.windowHeight) - 1.0;
-    const float3 origin = params.nearAtCentre + ndcX * params.nearPerX + ndcY * params.nearPerY;
-    const float3 end = params.farAtCentre + ndcX * params.farPerX + ndcY * params.farPerY;
-    const float3 span = end - origin;
-    const float tMax = length(span);
-    const float3 direction = span / tMax;
-    weights[id.x] = max(params.samplesPerSide, 1u) == 1u ? 1.0 : filterWeight(t.x) * filterWeight(t.y);
-    rays[kRayOriginX * count + id.x] = origin.x;
-    rays[kRayOriginY * count + id.x] = origin.y;
-    rays[kRayOriginZ * count + id.x] = origin.z;
-    rays[kRayDirectionX * count + id.x] = direction.x;
-    rays[kRayDirectionY * count + id.x] = direction.y;
-    rays[kRayDirectionZ * count + id.x] = direction.z;
+    const float2 t = samplePosition(pixelX, pixelY, params.samplesPerSide, params.sampleIndex, params.seed);
+    const float2 offset = sampleOffset(t, params.samplesPerSide, params.filterWidth);
+    const CameraRay ray = params.mapping == kMappingCamera ? frustumRay(pixelX, pixelY, offset) : mappedRay(pixelX, pixelY, offset);
+    weights[id.x] = sampleWeight(t, params.samplesPerSide, params.filter);
+    rays[kRayOriginX * count + id.x] = ray.origin.x;
+    rays[kRayOriginY * count + id.x] = ray.origin.y;
+    rays[kRayOriginZ * count + id.x] = ray.origin.z;
+    rays[kRayDirectionX * count + id.x] = ray.direction.x;
+    rays[kRayDirectionY * count + id.x] = ray.direction.y;
+    rays[kRayDirectionZ * count + id.x] = ray.direction.z;
     rays[kRayTMin * count + id.x] = 0.0;
-    rays[kRayTMax * count + id.x] = tMax;
+    rays[kRayTMax * count + id.x] = ray.tMax;
 }

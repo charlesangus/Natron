@@ -304,12 +304,14 @@ intValue(const VtValue& value,
 TfTokenVector
 faceVaryingChannelNames(HdSceneDelegate* sceneDelegate,
                         const SdfPath& id,
-                        const TfToken& stName)
+                        const TfToken& stName,
+                        const TfToken& unwrapName)
 {
     TfTokenVector names;
 
     for (const HdPrimvarDescriptor& pv : sceneDelegate->GetPrimvarDescriptors(id, HdInterpolationFaceVarying)) {
-        if (pv.name == HdTokens->displayColor || pv.name == HdTokens->displayOpacity || pv.name == stName) {
+        if (pv.name == HdTokens->displayColor || pv.name == HdTokens->displayOpacity || pv.name == stName
+            || (!unwrapName.IsEmpty() && pv.name == unwrapName)) {
             names.push_back(pv.name);
         }
     }
@@ -663,7 +665,7 @@ UtilityMesh::syncSubdivTopology(HdSceneDelegate* sceneDelegate,
     const SdfPath& id = GetId();
     const bool subdivides = _topology.GetScheme() != PxOsdOpenSubdivTokens->none;
     const int requested = subdivides ? subdivLevel(sceneDelegate) : 0;
-    TfTokenVector faceVaryingNames = requested > 0 ? faceVaryingChannelNames(sceneDelegate, id, stPrimvarName(sceneDelegate)) : TfTokenVector();
+    TfTokenVector faceVaryingNames = requested > 0 ? faceVaryingChannelNames(sceneDelegate, id, stPrimvarName(sceneDelegate), unwrapPrimvarName(sceneDelegate)) : TfTokenVector();
     std::vector<VtIntArray> faceVaryingIndices = faceVaryingChannelIndices(sceneDelegate, id, faceVaryingNames);
 
     // A malformed primvar loses its own channel only; the others are still refined.
@@ -1124,22 +1126,21 @@ UtilityMesh::stPrimvarName(HdSceneDelegate* sceneDelegate) const
 }
 
 bool
-UtilityMesh::syncMaterial(HdSceneDelegate* sceneDelegate,
-                          UtilityScene* scene,
-                          const UtilitySubdivRefinement::StopCheck& stopped)
+UtilityMesh::pullCoordinates(HdSceneDelegate* sceneDelegate,
+                             const TfToken& name,
+                             const UtilitySubdivRefinement::StopCheck& stopped,
+                             Coordinates* out) const
 {
     const SdfPath& id = GetId();
-    const TfToken name = stPrimvarName(sceneDelegate);
     bool found = false;
 
+    *out = Coordinates();
     for (int i = 0; i < HdInterpolationCount && !found; ++i) {
         for (const HdPrimvarDescriptor& pv : sceneDelegate->GetPrimvarDescriptors(id, static_cast<HdInterpolation>(i))) {
             found = found || pv.name == name;
         }
     }
     if (!found) {
-        scene->setSt(_geometry, false, UtilityScene::eColorBindingConstant, VtVec2fArray());
-
         return true;
     }
 
@@ -1150,48 +1151,74 @@ UtilityMesh::syncMaterial(HdSceneDelegate* sceneDelegate,
         return false;
     }
     if (!st.found) {
-        scene->setSt(_geometry, false, UtilityScene::eColorBindingConstant, VtVec2fArray());
-
         return true;
     }
 
-    VtVec2fArray values;
-    UtilityScene::ColorBinding binding = UtilityScene::eColorBindingConstant;
-
     switch (st.rate) {
     case eChannelRateConstant:
-        values = VtVec2fArray(1, st.values.cdata()[0]);
+        out->values = VtVec2fArray(1, st.values.cdata()[0]);
         break;
     case eChannelRateUniform:
-        binding = UtilityScene::eColorBindingTriangle;
-        values.resize(_kept.size());
+        out->binding = UtilityScene::eColorBindingTriangle;
+        out->values.resize(_kept.size());
         for (std::size_t t = 0; t < _kept.size(); ++t) {
             if (haltedAt(t, stopped)) {
                 return false;
             }
-            values[t] = sampleCorner(st, _kept[t], 0, HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(_allParams.cdata()[_kept[t]]), 0);
+            out->values[t] = sampleCorner(st, _kept[t], 0, HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(_allParams.cdata()[_kept[t]]), 0);
         }
         break;
     case eChannelRateVertex:
-        binding = UtilityScene::eColorBindingVertex;
-        values = st.values;
+        out->binding = UtilityScene::eColorBindingVertex;
+        out->values = st.values;
         break;
     case eChannelRateCorner:
-        binding = UtilityScene::eColorBindingCorner;
-        values.resize(_kept.size() * 3);
+        out->binding = UtilityScene::eColorBindingCorner;
+        out->values.resize(_kept.size() * 3);
         for (std::size_t t = 0; t < _kept.size(); ++t) {
             if (haltedAt(t, stopped)) {
                 return false;
             }
             for (int corner = 0; corner < 3; ++corner) {
-                values[t * 3 + corner] = sampleCorner(st, _kept[t], corner, 0, 0);
+                out->values[t * 3 + corner] = sampleCorner(st, _kept[t], corner, 0, 0);
             }
         }
         break;
     }
-    scene->setSt(_geometry, true, binding, values);
+    out->found = true;
 
     return true;
+}
+
+bool
+UtilityMesh::syncMaterial(HdSceneDelegate* sceneDelegate,
+                          UtilityScene* scene,
+                          const UtilitySubdivRefinement::StopCheck& stopped)
+{
+    Coordinates st;
+
+    if (!pullCoordinates(sceneDelegate, stPrimvarName(sceneDelegate), stopped, &st)) {
+        return false;
+    }
+
+    const TfToken unwrapName = unwrapPrimvarName(sceneDelegate);
+    Coordinates unwrap;
+
+    if (!unwrapName.IsEmpty() && !pullCoordinates(sceneDelegate, unwrapName, stopped, &unwrap)) {
+        return false;
+    }
+    scene->setSt(_geometry, st.found, st.binding, st.values);
+    scene->setUnwrapSt(_geometry, unwrap.found, unwrap.binding, unwrap.values);
+
+    return true;
+}
+
+TfToken
+UtilityMesh::unwrapPrimvarName(HdSceneDelegate* sceneDelegate) const
+{
+    const UtilityUnwrapTarget target = utilityUnwrapTarget(*sceneDelegate->GetRenderIndex().GetRenderDelegate());
+
+    return (target.prim == GetId() && !target.primvar.empty()) ? TfToken(target.primvar) : TfToken();
 }
 
 NATRON_NAMESPACE_EXIT

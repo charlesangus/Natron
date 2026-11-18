@@ -820,7 +820,7 @@ RenderSettingsKnobs::labelFromScriptName(const std::string& scriptName,
         }
         words.back() += c;
     }
-    static const char* const acronyms[] = { "AA", "AO", "BSDF", "BSSRDF", "FPS", "GI", "GPU", "ID", "MIS", "OIDN", "RDL" };
+    static const char* const acronyms[] = { "AA", "AO", "BSDF", "BSSRDF", "FPS", "GI", "GPU", "ID", "MIS", "OIDN", "RDL", "UDIM", "UV" };
     std::string label;
     for (const std::string& w : words) {
         std::string word = capitalized(w);

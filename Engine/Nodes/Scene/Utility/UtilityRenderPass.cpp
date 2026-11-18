@@ -90,6 +90,29 @@ renderWindow(const HdRenderPassState& state)
     return window;
 }
 
+// The framing's display window, which overscan leaves inside the data window, in the rows from the
+// bottom that the window counts; empty without a framing.
+WavefrontRect
+displayWindow(const HdRenderPassState& state,
+              const WavefrontRect& window)
+{
+    WavefrontRect display;
+    const CameraUtilFraming& framing = state.GetFraming();
+
+    if (!framing.IsValid()) {
+        return display;
+    }
+    const GfRange2f& shown = framing.displayWindow;
+    const int dataBottom = framing.dataWindow.GetMinY() + framing.dataWindow.GetHeight();
+
+    display.x = static_cast<int>(std::lround(shown.GetMin()[0]));
+    display.y = window.y + dataBottom - static_cast<int>(std::lround(shown.GetMax()[1]));
+    display.width = static_cast<int>(std::lround(shown.GetMax()[0])) - display.x;
+    display.height = static_cast<int>(std::lround(shown.GetMax()[1] - shown.GetMin()[1]));
+
+    return display;
+}
+
 bool
 sameWindow(const WavefrontRect& a,
            const WavefrontRect& b)
@@ -345,6 +368,26 @@ samplingSettings(const HdRenderDelegate& delegate)
     return sampling;
 }
 
+WavefrontMapping
+mappingSetting(const VtValue& value)
+{
+    const std::string projection = value.IsEmpty() ? std::string(kUtilityProjectionCamera) : deviceSettingText(value);
+
+    if (projection == kUtilityProjectionCamera) {
+        return WavefrontMapping::Camera;
+    }
+    if (projection == kUtilityProjectionSpherical) {
+        return WavefrontMapping::Spherical;
+    }
+    if (projection == kUtilityProjectionCylindrical) {
+        return WavefrontMapping::Cylindrical;
+    }
+    if (projection == kUtilityProjectionUvUnwrap) {
+        return WavefrontMapping::UvUnwrap;
+    }
+    throw std::runtime_error("The Utility renderer's projection must be " kUtilityProjectionCamera ", " kUtilityProjectionSpherical ", " kUtilityProjectionCylindrical " or " kUtilityProjectionUvUnwrap ", not \"" + projection + "\"");
+}
+
 WavefrontMotion
 motionSettings(const HdRenderDelegate& delegate)
 {
@@ -424,7 +467,8 @@ UtilityRenderPass::FrameKey::operator==(const FrameKey& other) const
 {
     return device == other.device && maxCutouts == other.maxCutouts && maxRayDepth == other.maxRayDepth && reflectionDepth == other.reflectionDepth
         && refractionDepth == other.refractionDepth && version == other.version && worldToView == other.worldToView && projection == other.projection
-        && sameWindow(window, other.window) && sameSampling(sampling, other.sampling) && motion == other.motion && bindings == other.bindings;
+        && sameWindow(window, other.window) && sameWindow(display, other.display) && mapping == other.mapping && unwrap == other.unwrap
+        && sameSampling(sampling, other.sampling) && motion == other.motion && bindings == other.bindings;
 }
 
 bool
@@ -447,6 +491,14 @@ UtilityRenderPass::_Sync()
     _subdivSettingsSeen = true;
     _subdivLevel = level;
     _subdivBudget = budget;
+
+    // A subdivided mesh refines its UVs with its topology.
+    const UtilityUnwrapTarget unwrap = utilityUnwrapTarget(*delegate);
+
+    if (unwrap.prim != _unwrapSeen.prim || unwrap.primvar != _unwrapSeen.primvar) {
+        index->GetChangeTracker().MarkAllRprimsDirty(HdChangeTracker::DirtyTopology | HdChangeTracker::DirtyPrimvar);
+    }
+    _unwrapSeen = unwrap;
     for (const std::pair<SdfPath, HdDirtyBits>& prim : _renderParam->takeSyncsAgain()) {
         if (index->HasRprim(prim.first)) {
             index->GetChangeTracker().MarkRprimDirty(prim.first, prim.second);
@@ -508,7 +560,15 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     frame.reflectionDepth = depthSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingReflectionDepth)), kWavefrontDefaultReflectionDepth);
     frame.refractionDepth = depthSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingRefractionDepth)), kWavefrontDefaultRefractionDepth);
     frame.window = renderWindow(*renderPassState);
+    frame.display = displayWindow(*renderPassState, frame.window);
+    frame.mapping = mappingSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingProjection)));
     frame.sampling = samplingSettings(*GetRenderIndex()->GetRenderDelegate());
+
+    const UtilityUnwrapTarget unwrap = utilityUnwrapTarget(*GetRenderIndex()->GetRenderDelegate());
+
+    frame.unwrapPrim = unwrap.prim;
+    frame.unwrapPrimvar = unwrap.primvar;
+    frame.udimTile = unwrap.udimTile;
 
     const WavefrontMotion motion = motionSettings(*GetRenderIndex()->GetRenderDelegate());
 
@@ -527,6 +587,9 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     key.worldToView = frame.worldToView;
     key.projection = frame.projection;
     key.window = frame.window;
+    key.display = frame.display;
+    key.mapping = frame.mapping;
+    key.unwrap = unwrap;
     key.maxCutouts = frame.maxCutouts;
     key.maxRayDepth = frame.maxRayDepth;
     key.reflectionDepth = frame.reflectionDepth;
@@ -575,7 +638,10 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     _frameKey = key;
     _hasFrame = true;
 
-    if (!hasCamera || frame.window.width <= 0 || frame.window.height <= 0 || (snapshot->instances.empty() && !hasDomeLight(*snapshot)) || !wavefrontCameraIsUsable(frame)) {
+    // A bake of a prim the scene does not draw goes on to fail naming it.
+    const bool nothingToSee = snapshot->instances.empty() && !hasDomeLight(*snapshot) && frame.mapping != WavefrontMapping::UvUnwrap;
+
+    if (!hasCamera || frame.window.width <= 0 || frame.window.height <= 0 || nothingToSee || !wavefrontCameraIsUsable(frame)) {
         const std::lock_guard<std::mutex> l(_landingMutex);
 
         _frameFinished = true;

@@ -117,6 +117,22 @@
 #define kUtilityDefaultShutter 0.5f
 #define kUtilityDefaultShutterSegments 8
 
+// How pixels map to rays: Projection, a TfToken, one of the four values below. Overscan, an int, is how
+// many pixels the frame grows by on every side, for each projection but uvUnwrap. A uvUnwrap render
+// bakes the prim at UV Prim, a std::string path, through its UV Primvar, a std::string, over the UDIM
+// Tile, an int, its texel grid the format.
+#define kUtilitySettingProjection "projection"
+#define kUtilitySettingOverscan "overscan"
+#define kUtilitySettingUvPrim "uvPrim"
+#define kUtilitySettingUvPrimvar "uvPrimvar"
+#define kUtilitySettingUdimTile "udimTile"
+#define kUtilityProjectionCamera "camera"
+#define kUtilityProjectionSpherical "spherical"
+#define kUtilityProjectionCylindrical "cylindrical"
+#define kUtilityProjectionUvUnwrap "uvUnwrap"
+#define kUtilityDefaultUvPrimvar "st"
+#define kUtilityDefaultUdimTile 1001
+
 // The renderer command that has the delegate give back what it keeps on the GPU, as Free GPU Memory asks.
 #define kUtilityCommandReleaseGpu "releaseGpu"
 // The renderer command that has the delegate drop what it keeps on a lost GPU, so that the device can recover.
@@ -326,6 +342,20 @@ private:
     std::unique_ptr<WavefrontExecutor> _executor;
     std::unique_ptr<UtilityRenderParam> _renderParam;
 };
+
+// What a uvUnwrap render bakes, as the delegate's settings give it; an empty prim for any other projection.
+struct UtilityUnwrapTarget {
+    PXR_NS::SdfPath prim;
+    std::string primvar;
+    int udimTile = kUtilityDefaultUdimTile;
+
+    bool operator==(const UtilityUnwrapTarget& other) const
+    {
+        return prim == other.prim && primvar == other.primvar && udimTile == other.udimTile;
+    }
+};
+
+UtilityUnwrapTarget utilityUnwrapTarget(const PXR_NS::HdRenderDelegate& delegate);
 
 NATRON_NAMESPACE_EXIT
 

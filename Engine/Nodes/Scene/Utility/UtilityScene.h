@@ -107,6 +107,11 @@ public:
         PXR_NS::VtVec2fArray st;
         ColorBinding stBinding = eColorBindingConstant;
         bool hasSt = false;
+        // The coordinates a UV unwrap lays the prim out by, bound like the colours; only the prim the
+        // unwrap names pulls them, and hasUnwrapSt is false when it has none of that name.
+        PXR_NS::VtVec2fArray unwrapSt;
+        ColorBinding unwrapStBinding = eColorBindingConstant;
+        bool hasUnwrapSt = false;
         // The light- and shadow-link categories the prim belongs to, and those of its instancer.
         PXR_NS::TfTokenVector categories;
         // Each counts the changes to that part, so a render can tell a refit from a rebuild.
@@ -188,6 +193,10 @@ public:
                bool hasSt,
                ColorBinding binding,
                const PXR_NS::VtVec2fArray& st);
+    void setUnwrapSt(GeometryId id,
+                     bool hasSt,
+                     ColorBinding binding,
+                     const PXR_NS::VtVec2fArray& st);
     void setMaterial(const PXR_NS::SdfPath& path,
                      const std::shared_ptr<const UtilityMaterialDesc>& material);
     void removeMaterial(const PXR_NS::SdfPath& path);

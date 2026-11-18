@@ -212,3 +212,44 @@ public bool surfaceAbsent(StructuredBuffer<float4> colors,
 
     return surfaceOpacity(bindings, images, texels, material, geometry, display, hasSt, st, footprint) < material.coverage.y;
 }
+
+/**
+ * @brief The share of a shadow ray's light that goes on through a hit, with no caustics: none through
+ * an opaque surface or one with an opacityThreshold, 1 - opacity through the rest. UsdPreviewSurface
+ * has no transmission colour, and its diffuseColor is what the opaque part scatters, so the light
+ * through is untinted.
+ **/
+public float3 surfaceTransmission(StructuredBuffer<float4> colors,
+                                  StructuredBuffer<int> triangles,
+                                  StructuredBuffer<float2> sts,
+                                  StructuredBuffer<TextureBinding> bindings,
+                                  StructuredBuffer<uint4> images,
+                                  StructuredBuffer<float4> texels,
+                                  GeometryRecord geometry,
+                                  MaterialRecord material,
+                                  uint primitive,
+                                  float u,
+                                  float v)
+{
+    if (material.kind.x != kMaterialPreviewSurface || material.coverage.y > 0.0)
+        return float3(0.0);
+
+    const bool hasSt = geometry.stBinding != kStBindingNone;
+    float2 st = float2(0.0, 0.0);
+
+    if (hasSt) {
+        float2 st0;
+        float2 st1;
+        float2 st2;
+
+        cornerSts(sts, triangles, geometry, primitive, st0, st1, st2);
+        st = (1.0 - u - v) * st0 + u * st1 + v * st2;
+    }
+
+    const float4 display = surfaceColor(colors, triangles, geometry, primitive, u, v);
+    const float opacity = surfaceOpacity(bindings, images, texels, material, geometry, display, hasSt, st, kFinestLevel);
+
+    if (!(opacity < 1.0))
+        return float3(0.0);
+    return float3(1.0 - max(opacity, 0.0));
+}

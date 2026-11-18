@@ -418,6 +418,8 @@ TEST(NatronUtilityProject3D, WhereCropDiscardsTheSurfaceBehindShows)
     frame.projection = wide.ComputeProjectionMatrix();
     frame.window.width = size;
     frame.window.height = size;
+    // The green card would otherwise reflect the projected one.
+    frame.maxRayDepth = 0;
 
     WavefrontCpu executor;
     PixelFilm film(size, size);

@@ -63,6 +63,10 @@ struct WavefrontRect {
 
 // The default for WavefrontFrame::maxCutouts.
 const std::uint32_t kWavefrontDefaultMaxCutouts = 16;
+// The defaults for WavefrontFrame's ray depths.
+const std::uint32_t kWavefrontDefaultMaxRayDepth = 10;
+const std::uint32_t kWavefrontDefaultReflectionDepth = 1;
+const std::uint32_t kWavefrontDefaultRefractionDepth = 2;
 // How a pixel is sampled: samplesPerSide squared samples over a filterWidth-pixel square, and which of
 // them a render draws. One sample per pixel goes through its centre with a weight of one.
 struct WavefrontSampling {
@@ -140,6 +144,12 @@ struct WavefrontFrame {
     // The most holes a ray goes on through, in surfaces under their opacityThreshold, Project3D discards
     // and casters a shadow ray's light ignores; past them the ray ends as a miss.
     std::uint32_t maxCutouts = kWavefrontDefaultMaxCutouts;
+    // The most bounces a path from the camera takes after its first hit: in all, by reflection and by
+    // refraction, a total internal reflection counting as refraction. Plain transparency, at an ior
+    // of 1, counts against the total only. A path with no depth left ends black.
+    std::uint32_t maxRayDepth = kWavefrontDefaultMaxRayDepth;
+    std::uint32_t reflectionDepth = kWavefrontDefaultReflectionDepth;
+    std::uint32_t refractionDepth = kWavefrontDefaultRefractionDepth;
     WavefrontSampling sampling;
 };
 
@@ -221,6 +231,30 @@ public:
                         const std::atomic<bool>& stop,
                         int threads)
         = 0;
+
+    // The bounces after the camera rays' that the last render() traced with any ray left: the deepest
+    // any ray took.
+    std::uint32_t bouncesTraced() const
+    {
+        return _bouncesTraced.load(std::memory_order_relaxed);
+    }
+
+protected:
+    void resetBouncesTraced()
+    {
+        _bouncesTraced.store(0, std::memory_order_relaxed);
+    }
+
+    void noteBounceTraced(std::uint32_t bounce)
+    {
+        std::uint32_t seen = _bouncesTraced.load(std::memory_order_relaxed);
+
+        while (seen < bounce && !_bouncesTraced.compare_exchange_weak(seen, bounce, std::memory_order_relaxed)) {
+        }
+    }
+
+private:
+    std::atomic<std::uint32_t> _bouncesTraced { 0 };
 };
 
 // The shutter a frame is drawn over, in frames relative to it, and the camera within it.
@@ -323,6 +357,13 @@ KernelShadeParams makeShadeParams(const WavefrontFrame& frame,
                                   std::uint32_t count);
 
 /**
+ * @brief The bounces after the camera rays' a frame traces at most: without transmissive surfaces only
+ * reflections continue a path, so no more than the reflection depth.
+ **/
+std::uint32_t wavefrontBounceLimit(const WavefrontFrame& frame,
+                                   bool transmission);
+
+/**
  * @brief The scene's shading data as the flat tables ShadeSurface binds. A geometry's position in the
  * tables is its position in the snapshot, the index Tracer reports. Per-geometry arrays are only
  * recopied when a geometry's colours, coordinates, points or topology changed, and texels only when
@@ -349,6 +390,9 @@ public:
     // Whether any material can leave holes in its surface, which rays then need ResolveHits to go
     // through.
     bool hasHoles() const;
+    // Whether any surface may let light through it, which then refracts camera rays, and shadow rays
+    // need ResolveHits to go on through.
+    bool hasTransmission() const;
     // The 32-bit words of each light-link and shadow-link mask.
     std::uint32_t linkWords() const;
     // What lets an occlusion query skip the casters a shadow ray's light is not shadow-linked to;
@@ -405,6 +449,7 @@ private:
     bool _shadowLinked = false;
     bool _background = false;
     bool _holes = false;
+    bool _transmission = false;
     std::vector<std::uint32_t> _linkMasks;
     // Material paths in the order of _materials from index 1.
     std::map<PXR_NS::SdfPath, std::uint32_t> _materialIndices;

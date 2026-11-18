@@ -246,6 +246,20 @@ maxCutoutsSetting(const VtValue& value)
     return static_cast<std::uint32_t>(std::max(1, asInt.UncheckedGet<int>()));
 }
 
+// A ray depth setting, never below 0.
+std::uint32_t
+depthSetting(const VtValue& value,
+             std::uint32_t fallback)
+{
+    const VtValue asInt = VtValue::Cast<int>(value);
+
+    if (asInt.IsEmpty()) {
+        return fallback;
+    }
+
+    return static_cast<std::uint32_t>(std::max(0, asInt.UncheckedGet<int>()));
+}
+
 std::string
 deviceSettingText(const VtValue& value)
 {
@@ -451,8 +465,10 @@ UtilityRenderPass::~UtilityRenderPass()
 bool
 UtilityRenderPass::FrameKey::operator==(const FrameKey& other) const
 {
-    return device == other.device && maxCutouts == other.maxCutouts && version == other.version && worldToView == other.worldToView && projection == other.projection
-        && sameWindow(window, other.window) && sameWindow(display, other.display) && mapping == other.mapping && unwrap == other.unwrap && sameSampling(sampling, other.sampling) && motion == other.motion && bindings == other.bindings;
+    return device == other.device && maxCutouts == other.maxCutouts && maxRayDepth == other.maxRayDepth && reflectionDepth == other.reflectionDepth
+        && refractionDepth == other.refractionDepth && version == other.version && worldToView == other.worldToView && projection == other.projection
+        && sameWindow(window, other.window) && sameWindow(display, other.display) && mapping == other.mapping && unwrap == other.unwrap
+        && sameSampling(sampling, other.sampling) && motion == other.motion && bindings == other.bindings;
 }
 
 bool
@@ -540,6 +556,9 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     WavefrontFrame frame;
 
     frame.maxCutouts = maxCutoutsSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingMaxCutouts)));
+    frame.maxRayDepth = depthSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingMaxRayDepth)), kWavefrontDefaultMaxRayDepth);
+    frame.reflectionDepth = depthSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingReflectionDepth)), kWavefrontDefaultReflectionDepth);
+    frame.refractionDepth = depthSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingRefractionDepth)), kWavefrontDefaultRefractionDepth);
     frame.window = renderWindow(*renderPassState);
     frame.display = displayWindow(*renderPassState, frame.window);
     frame.mapping = mappingSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingProjection)));
@@ -572,6 +591,9 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     key.mapping = frame.mapping;
     key.unwrap = unwrap;
     key.maxCutouts = frame.maxCutouts;
+    key.maxRayDepth = frame.maxRayDepth;
+    key.reflectionDepth = frame.reflectionDepth;
+    key.refractionDepth = frame.refractionDepth;
     key.sampling = frame.sampling;
     key.motion = motion;
     key.bindings = bindings;

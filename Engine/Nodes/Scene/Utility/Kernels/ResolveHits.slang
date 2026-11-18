@@ -9,13 +9,16 @@ struct ResolveParams
     uint flags;
     // The 32-bit words of each link mask.
     uint linkWords;
-    uint padding;
+    // The pass's slot in pending.
+    uint passIndex;
 };
 
 // ResolveParams::flags.
 // Pending rays take their hit from nextHitSurface and nextHitIds; otherwise every ray's hit is new.
 static const uint kResolveMerge = 1;
-// The last pass: a hit still on no surface becomes a miss rather than being traced past again.
+// The last pass: a hit still to be gone through is not traced past again. A camera or bounce ray takes it
+// as a miss; a shadow ray takes it as blocked, so that a wall behind more layers than the limit still casts
+// its shadow.
 static const uint kResolveLast = 2;
 // The rays are shadow rays, whose verdict goes to blocked.
 static const uint kResolveShadow = 4;
@@ -45,6 +48,11 @@ static const uint kResolveShadowLinked = 8;
 [[vk::binding(17, 0)]] StructuredBuffer<float4> instanceTransforms;
 [[vk::binding(18, 0)]] StructuredBuffer<float2> sts;
 [[vk::binding(19, 0)]] StructuredBuffer<uint> linkMasks;
+// For shadow rays, what each adds to its pixel unblocked, dimmed by each transmissive surface it goes through.
+[[vk::binding(20, 0)]] RWStructuredBuffer<float4> shadowContributions;
+// Per pass, set to 1 when the pass queues any ray to be traced again, which the host reads to stop the
+// passes early. Every writer stores the same value, so the race between them is benign.
+[[vk::binding(21, 0)]] RWStructuredBuffer<uint> pending;
 [[vk::push_constant]] ConstantBuffer<ResolveParams> params;
 
 float rayValue(uint array, uint ray)
@@ -110,8 +118,24 @@ bool passesThrough(uint ray, uint geometryIndex)
                          origin + t * direction, direction, width);
 }
 
+// For a shadow ray, whether its hit lets some of the light through, which then dims its contribution.
+bool transmits(uint ray, uint geometryIndex)
+{
+    const uint count = params.count;
+    const GeometryRecord geometry = geometries[geometryIndex];
+    const MaterialRecord material = materials[geometry.materialIndex];
+    const float3 transmission = surfaceTransmission(colors, triangles, sts, textureBindings, images, texels, geometry, material,
+                                                    hitIds[kHitPrimitive * count + ray], hitSurface[kHitU * count + ray], hitSurface[kHitV * count + ray]);
+
+    if (!any(transmission > float3(0.0)))
+        return false;
+    shadowContributions[ray] = float4(shadowContributions[ray].xyz * transmission, shadowContributions[ray].w);
+    return true;
+}
+
 // One pass over a batch's hits: each hit on a hole is queued to be traced again from just past it, so
-// that after a pass per hole the hits are those of the surfaces the rays really meet.
+// that after a pass per hole the hits are those of the surfaces the rays really meet. A shadow ray goes
+// on through transmissive surfaces too, its light dimmed by each.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void utilityResolveHits(uint3 id : SV_DispatchThreadID)
@@ -134,10 +158,8 @@ void utilityResolveHits(uint3 id : SV_DispatchThreadID)
     const bool shadow = (params.flags & kResolveShadow) != 0;
     const uint geometryIndex = hitIds[kHitGeometry * count + ray];
 
-    if (geometryIndex != kNoHit && passesThrough(ray, geometryIndex)) {
-        if ((params.flags & kResolveLast) != 0) {
-            writeMiss(ray);
-        } else {
+    if (geometryIndex != kNoHit && (passesThrough(ray, geometryIndex) || (shadow && transmits(ray, geometryIndex)))) {
+        if ((params.flags & kResolveLast) == 0) {
             const float t = hitSurface[kHitT * count + ray];
             const float3 origin = float3(rayValue(kRayOriginX, ray), rayValue(kRayOriginY, ray), rayValue(kRayOriginZ, ray));
             const float3 direction = float3(rayValue(kRayDirectionX, ray), rayValue(kRayDirectionY, ray), rayValue(kRayDirectionZ, ray));
@@ -146,10 +168,13 @@ void utilityResolveHits(uint3 id : SV_DispatchThreadID)
             const float step = 1e-5 * max(1.0, max(t, max(scaled.x, max(scaled.y, scaled.z))));
 
             copyRay(ray, t + step, rayValue(kRayTMax, ray));
+            pending[params.passIndex] = 1;
             if (shadow)
                 blocked[ray] = 0;
             return;
         }
+        if (!shadow)
+            writeMiss(ray);
     }
 
     retrace[kRayTMin * count + ray] = 0.0;

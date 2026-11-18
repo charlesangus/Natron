@@ -184,6 +184,8 @@ public:
         _engine.reset(new UsdImagingGLEngine(parameters));
         _engine->SetEnablePresentation(false);
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color }));
+        // Direct lighting only, which the expected values are worked out for.
+        _engine->SetRendererSetting(TfToken(kUtilitySettingMaxRayDepth), VtValue(0));
     }
 
     void setSetting(const char* key,

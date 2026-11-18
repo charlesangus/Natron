@@ -162,6 +162,7 @@ makeFrame(int samplesPerSide)
     frame.sampling.filter = eKernelPixelFilterBox;
     frame.sampling.filterWidth = 1.f;
     frame.sampling.seed = 7;
+    frame.maxRayDepth = 0;
 
     return frame;
 }
@@ -401,6 +402,7 @@ public:
         _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceCpu)));
         _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(pixelSamples));
         _engine->SetRendererSetting(TfToken(kUtilitySettingSubdivLevel), VtValue(0));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingMaxRayDepth), VtValue(0));
         _engine->SetRendererSetting(TfToken(kUtilitySettingPixelFilter), VtValue(TfToken(kUtilityFilterBox)));
         _engine->SetRendererSetting(TfToken(kUtilitySettingFilterWidth), VtValue(1.f));
         _engine->SetRendererSetting(TfToken(kUtilitySettingShutterSegments), VtValue(segments));

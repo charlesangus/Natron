@@ -83,6 +83,10 @@ struct ShadeSurfaceGlobals {
     KernelBuffer shadowContributions;
     KernelBuffer shadowLights;
     KernelBuffer normals;
+    KernelBuffer paths;
+    KernelBuffer nextRays;
+    KernelBuffer nextPaths;
+    KernelBuffer liveBounces;
     const NATRON_NAMESPACE::KernelShadeParams* params;
 };
 
@@ -107,6 +111,8 @@ struct ResolveHitsGlobals {
     KernelBuffer instanceTransforms;
     KernelBuffer sts;
     KernelBuffer linkMasks;
+    KernelBuffer shadowContributions;
+    KernelBuffer pending;
     const NATRON_NAMESPACE::KernelResolveParams* params;
 };
 
@@ -198,6 +204,10 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
     }
     KernelVarying varying = varyingFor(count);
     const std::size_t shadowCount = count * params.lighting[1];
+    const bool continues = params.lighting[0] == 0 && params.bounce[0] < params.bounce[1];
+    const std::size_t pathCount = params.bounce[0] > 0 ? count : 0;
+    // The tile's own scan of the continuations tells which paths go on, so the flags are not read.
+    std::vector<std::uint32_t> liveBounces(continues ? params.bounce[1] : 0);
     ShadeSurfaceGlobals globals {
         { buffers.rays, count * 8 },
         { buffers.hitSurface, count * 3 },
@@ -225,6 +235,10 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
         { buffers.shadowContributions, shadowCount },
         { buffers.shadowLights, shadowCount },
         { buffers.normals, buffers.normalCount },
+        { buffers.paths, pathCount },
+        { buffers.nextRays, continues ? count * 8 : 0 },
+        { buffers.nextPaths, continues ? count : 0 },
+        { liveBounces.data(), liveBounces.size() },
         &params,
     };
 
@@ -243,6 +257,8 @@ runResolveHitsKernel(const KernelResolveParams& params,
     }
     KernelVarying varying = varyingFor(count);
     const bool shadow = (params.flags & kKernelResolveShadow) != 0;
+    // The caller's own scan of the retraced rays tells which are pending, so the flags are not read.
+    std::vector<std::uint32_t> pending(params.passIndex + 1);
     ResolveHitsGlobals globals {
         { buffers.rays, count * 8 },
         { buffers.hitSurface, count * 3 },
@@ -264,6 +280,8 @@ runResolveHitsKernel(const KernelResolveParams& params,
         { tables.instanceTransforms, tables.instanceTransformRowCount },
         { tables.sts, tables.stCount },
         { tables.linkMasks, tables.linkMaskCount },
+        { buffers.shadowContributions, shadow ? count : 0 },
+        { pending.data(), pending.size() },
         &params,
     };
 

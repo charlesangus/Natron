@@ -266,11 +266,11 @@ class NatronUtilityGoldenTest
     : public BaseTest {
 protected:
     // The goldens hold one ray through each pixel's centre, and are the cage, which a level above 0
-    // would refine.
+    // would refine. They are of direct lighting, with no reflections.
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
-        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) } });
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) } });
     }
 
     virtual void TearDown() OVERRIDE
@@ -281,11 +281,11 @@ protected:
         BaseTest::TearDown();
     }
 
-    // On device, one ray through each pixel's centre, meshes refined to level.
+    // On device, one ray through each pixel's centre, meshes refined to level, direct lighting only.
     static void setUtilitySettings(const char* device,
                                    int level)
     {
-        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(level) }, { kUtilitySettingDevice, PXR_NS::VtValue(PXR_NS::TfToken(device)) } });
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(level) }, { kUtilitySettingDevice, PXR_NS::VtValue(PXR_NS::TfToken(device)) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) } });
         HydraRender::releaseAll();
     }
 

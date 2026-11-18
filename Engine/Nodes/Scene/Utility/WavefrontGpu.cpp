@@ -134,8 +134,9 @@ static_assert(utility_raygen_uv_storage_buffers == 6);
 static_assert(sizeof(KernelShadeParams) == utility_shade_surface_push_bytes);
 static_assert(sizeof(KernelShadeLightsParams) == utility_shade_lights_push_bytes);
 static_assert(sizeof(KernelResolveParams) == utility_resolve_hits_push_bytes);
-static_assert(utility_raygen_storage_buffers == 2 && utility_shade_surface_storage_buffers == 26 && utility_shade_lights_storage_buffers == 3);
-static_assert(utility_resolve_hits_storage_buffers == 20);
+static_assert(utility_raygen_storage_buffers == 2 && utility_shade_surface_storage_buffers == 30 && utility_shade_lights_storage_buffers == 3);
+static_assert(utility_resolve_hits_storage_buffers == 22);
+static_assert(sizeof(KernelPathState) == 32);
 static_assert(sizeof(KernelLightRecord) == 144);
 static_assert(sizeof(KernelGeometryRecord) == 40);
 static_assert(sizeof(KernelMaterialRecord) == 144 && sizeof(KernelTextureBinding) == 112 && sizeof(KernelProjectionRecord) == 256);
@@ -406,6 +407,9 @@ struct WavefrontGpu::Implementation {
         // Makes room for `work` more kernel threads, submitting what is recorded first when it would take the
         // submission past kMaxSubmitWork. False when the frame was stopped or a submission failed.
         bool reserve(std::uint64_t work);
+        // Submits what is recorded and waits for it, so that the host may read what it wrote, then goes on
+        // recording. False when the frame was stopped or the submission failed.
+        bool sync() { return next(); }
         bool finish(const std::string& what);
 
     private:
@@ -427,11 +431,21 @@ struct WavefrontGpu::Implementation {
         gpu::GpuBuffer* retrace = nullptr;
         gpu::GpuBuffer* nextHitValues = nullptr;
         gpu::GpuBuffer* nextHitIds = nullptr;
+        // One word per pass, ResolveHits.slang's pending.
+        gpu::GpuBuffer* pending = nullptr;
     };
 
     bool reserveResolve(gpu::GpuRecordContext& ctx,
                         std::size_t count,
+                        std::uint32_t maxCutouts,
                         ResolveScratch& out);
+    bool reserveFlagReadback(std::size_t words);
+    // Reads words of flags from first on, through flagReadback, which out then points into until the next read.
+    bool readFlags(Recorder& rec,
+                   const gpu::GpuBuffer& flags,
+                   std::size_t first,
+                   std::size_t words,
+                   const std::uint32_t*& out);
     bool recordResolve(Recorder& rec,
                        const ResolveScratch& scratch,
                        KernelResolveParams params,
@@ -441,12 +455,14 @@ struct WavefrontGpu::Implementation {
                        const gpu::GpuBuffer& hitValues,
                        const gpu::GpuBuffer& hitIds,
                        const gpu::GpuBuffer& blocked,
-                       const gpu::GpuBuffer& rayLights);
+                       const gpu::GpuBuffer& rayLights,
+                       const gpu::GpuBuffer& shadowContributions);
     bool renderBatch(const WavefrontFrame& frame,
                      const WavefrontRect& rect,
                      Recorder& rec,
                      WavefrontFilm& film,
-                     UtilityRenderBuffer* deviceColor);
+                     UtilityRenderBuffer* deviceColor,
+                     std::uint32_t& deepest);
     UtilityRenderBuffer* deviceColorOf(const WavefrontFilm& film);
 
     using Outcome = Tracer::Outcome;
@@ -475,6 +491,9 @@ struct WavefrontGpu::Implementation {
     WavefrontShadeTables shadeTables;
     ShadeTableBuffers tables;
     BatchReadback readback;
+    // The host-visible copy of the flags that tell whether rays go on, kept from frame to frame.
+    gpu::GpuBuffer flagReadback;
+    std::size_t flagReadbackWords = 0;
     // The UV unwrap on the device, kept while the frames draw the same one.
     WavefrontUnwrapConstPtr unwrap;
     gpu::GpuBufferHandle unwrapGrid;
@@ -671,6 +690,40 @@ WavefrontGpu::Implementation::reserveReadback(std::size_t rays,
     return true;
 }
 
+bool
+WavefrontGpu::Implementation::reserveFlagReadback(std::size_t words)
+{
+    if (flagReadbackWords >= words) {
+        return true;
+    }
+    flagReadback = gpu::GpuBuffer();
+    flagReadbackWords = 0;
+    if (!stage(words * sizeof(std::uint32_t), "ray flags", flagReadback)) {
+        return false;
+    }
+    flagReadbackWords = words;
+
+    return true;
+}
+
+bool
+WavefrontGpu::Implementation::readFlags(Recorder& rec,
+                                        const gpu::GpuBuffer& flags,
+                                        std::size_t first,
+                                        std::size_t words,
+                                        const std::uint32_t*& out)
+{
+    if (gpu::GpuStatus s = rec.ctx().copyBuffer(flags, first * sizeof(std::uint32_t), flagReadback, 0, words * sizeof(std::uint32_t)); !s) {
+        return fail("WavefrontGpu could not read back which rays go on", s);
+    }
+    if (!rec.sync()) {
+        return false;
+    }
+    out = static_cast<const std::uint32_t*>(flagReadback.mapped());
+
+    return true;
+}
+
 UtilityRenderBuffer*
 WavefrontGpu::Implementation::deviceColorOf(const WavefrontFilm& film)
 {
@@ -748,6 +801,7 @@ WavefrontGpu::Implementation::Recorder::finish(const std::string& what)
 bool
 WavefrontGpu::Implementation::reserveResolve(gpu::GpuRecordContext& ctx,
                                              std::size_t count,
+                                             std::uint32_t maxCutouts,
                                              ResolveScratch& out)
 {
     const std::string rayCount = std::to_string(count) + " rays";
@@ -761,15 +815,19 @@ WavefrontGpu::Implementation::reserveResolve(gpu::GpuRecordContext& ctx,
     if (gpu::GpuStatus s = ctx.scratch(kHitArrays * count * sizeof(std::uint32_t), out.nextHitIds); !s) {
         return fail("WavefrontGpu could not hold the hit ids past holes of " + rayCount, s);
     }
+    if (gpu::GpuStatus s = ctx.scratch((maxCutouts + 1) * sizeof(std::uint32_t), out.pending); !s) {
+        return fail("WavefrontGpu could not hold the pending flags of " + rayCount, s);
+    }
 
     return true;
 }
 
 /**
  * @brief Records the passes that take count rays' hits on through holes: every pass resolves the whole
- * batch and traces it again, the rays already on a surface skipped by the tracer, as a pass cannot ask
- * the host how many rays are still going on without waiting for the batch. ResolveHits.slang tells
- * what each pass does.
+ * batch and traces it again, the rays already on a surface skipped by the tracer. The passes end once
+ * one queues no ray, which the host learns only by waiting for the work so far, so it looks after
+ * passes 1, 3, 7 and so on: each wait stalls the device, while a pass with no ray left costs little.
+ * ResolveHits.slang tells what each pass does.
  **/
 bool
 WavefrontGpu::Implementation::recordResolve(Recorder& rec,
@@ -781,12 +839,14 @@ WavefrontGpu::Implementation::recordResolve(Recorder& rec,
                                             const gpu::GpuBuffer& hitValues,
                                             const gpu::GpuBuffer& hitIds,
                                             const gpu::GpuBuffer& blocked,
-                                            const gpu::GpuBuffer& rayLights)
+                                            const gpu::GpuBuffer& rayLights,
+                                            const gpu::GpuBuffer& shadowContributions)
 {
     gpu::GpuBuffer& retrace = *scratch.retrace;
     gpu::GpuBuffer& nextHitValues = *scratch.nextHitValues;
     gpu::GpuBuffer& nextHitIds = *scratch.nextHitIds;
-    const std::array<gpu::GpuBinding, 20> bindings = {
+    gpu::GpuBuffer& pending = *scratch.pending;
+    const std::array<gpu::GpuBinding, 22> bindings = {
         gpu::GpuBinding::storage(0, rays),
         gpu::GpuBinding::storage(1, hitValues),
         gpu::GpuBinding::storage(2, hitIds),
@@ -807,13 +867,19 @@ WavefrontGpu::Implementation::recordResolve(Recorder& rec,
         gpu::GpuBinding::storage(17, tables.instanceTransforms.buffer()),
         gpu::GpuBinding::storage(18, tables.sts.buffer()),
         gpu::GpuBinding::storage(19, tables.linkMasks.buffer()),
+        gpu::GpuBinding::storage(20, shadowContributions),
+        gpu::GpuBinding::storage(21, pending),
     };
     const std::array<std::uint32_t, 3> threads = { static_cast<std::uint32_t>(count), 1, 1 };
     const std::uint32_t flags = params.flags;
 
+    if (gpu::GpuStatus s = rec.ctx().fillBuffer(pending, (maxCutouts + 1) * sizeof(std::uint32_t), 0u); !s) {
+        return fail("WavefrontGpu could not clear the pending flags", s);
+    }
     params.count = static_cast<std::uint32_t>(count);
     for (std::uint32_t pass = 0; pass <= maxCutouts; ++pass) {
         params.flags = flags | (pass > 0 ? kKernelResolveMerge : 0u) | (pass == maxCutouts ? kKernelResolveLast : 0u);
+        params.passIndex = pass;
         if (!rec.reserve(count)) {
             return false;
         }
@@ -823,6 +889,16 @@ WavefrontGpu::Implementation::recordResolve(Recorder& rec,
         rec.ctx().computeBarrier();
         if (pass == maxCutouts) {
             break;
+        }
+        if (pass > 0 && ((pass + 1) & pass) == 0) {
+            const std::uint32_t* queued = nullptr;
+
+            if (!readFlags(rec, pending, pass, 1, queued)) {
+                return false;
+            }
+            if (queued[0] == 0) {
+                break;
+            }
         }
         if (!rec.reserve(count)) {
             return false;
@@ -841,7 +917,8 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
                                           const WavefrontRect& rect,
                                           Recorder& rec,
                                           WavefrontFilm& film,
-                                          UtilityRenderBuffer* deviceColor)
+                                          UtilityRenderBuffer* deviceColor,
+                                          std::uint32_t& deepest)
 {
     const std::size_t count = static_cast<std::size_t>(rect.width) * rect.height;
     const std::array<std::uint32_t, 3> threads = { static_cast<std::uint32_t>(count), 1, 1 };
@@ -918,16 +995,56 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
     KernelShadeParams shadeParams = makeShadeParams(frame, static_cast<std::uint32_t>(count));
     const bool holes = shadeTables.hasHoles();
+    const bool transmission = shadeTables.hasTransmission();
+    // Shadow rays then take closest hits, so that a hole or a transmissive surface lets them go on.
+    const bool resolveShadows = holes || transmission;
+    const std::uint32_t limit = wavefrontBounceLimit(frame, transmission);
     KernelResolveParams resolveParams {};
+    ResolveScratch scratch;
 
+    if ((limit > 0 || resolveShadows) && !reserveFlagReadback(std::max<std::size_t>(limit, 1))) {
+        return false;
+    }
+
+    resolveParams.linkWords = shadeTables.linkWords();
     if (holes) {
         std::copy(std::begin(shadeParams.pixelFootprint), std::end(shadeParams.pixelFootprint), std::begin(resolveParams.pixelFootprint));
-        resolveParams.linkWords = shadeTables.linkWords();
-
-        ResolveScratch scratch;
-
-        if (!reserveResolve(rec.ctx(), count, scratch) || !recordResolve(rec, scratch, resolveParams, count, frame.maxCutouts, *rays, *hitValues, *hitIds, *rays, *rays)) {
+        if (!reserveResolve(rec.ctx(), count, frame.maxCutouts, scratch) || !recordResolve(rec, scratch, resolveParams, count, frame.maxCutouts, *rays, *hitValues, *hitIds, *rays, *rays, *rays)) {
             return false;
+        }
+    }
+
+    // Each bounce reads its rays and paths from one queue and writes the next bounce's to the other.
+    std::array<gpu::GpuBuffer*, 2> queueRays = { rays, rays };
+    std::array<gpu::GpuBuffer*, 2> queuePaths = { rays, rays };
+    gpu::GpuBuffer* bounceHitValues = rays;
+    gpu::GpuBuffer* bounceHitIds = rays;
+    // One word per bounce, ShadeSurface.slang's liveBounces.
+    gpu::GpuBuffer* liveBounces = rays;
+
+    if (limit > 0) {
+        for (std::size_t q = 0; q < (limit > 1 ? 2u : 1u); ++q) {
+            if (gpu::GpuStatus s = rec.ctx().scratch(kRayArrays * count * sizeof(float), queueRays[q]); !s) {
+                return fail("WavefrontGpu could not hold the bounced rays of " + rayCount, s);
+            }
+            if (gpu::GpuStatus s = rec.ctx().scratch(count * sizeof(KernelPathState), queuePaths[q]); !s) {
+                return fail("WavefrontGpu could not hold the paths of " + rayCount, s);
+            }
+        }
+        if (gpu::GpuStatus s = rec.ctx().scratch(kHitArrays * count * sizeof(float), bounceHitValues); !s) {
+            return fail("WavefrontGpu could not hold the bounced hits of " + rayCount, s);
+        }
+        if (gpu::GpuStatus s = rec.ctx().scratch(kHitArrays * count * sizeof(std::uint32_t), bounceHitIds); !s) {
+            return fail("WavefrontGpu could not hold the bounced hit ids of " + rayCount, s);
+        }
+        if (holes && !scratch.retrace && !reserveResolve(rec.ctx(), count, frame.maxCutouts, scratch)) {
+            return false;
+        }
+        if (gpu::GpuStatus s = rec.ctx().scratch(limit * sizeof(std::uint32_t), liveBounces); !s) {
+            return fail("WavefrontGpu could not hold the live flags of " + rayCount, s);
+        }
+        if (gpu::GpuStatus s = rec.ctx().fillBuffer(*liveBounces, limit * sizeof(std::uint32_t), 0u); !s) {
+            return fail("WavefrontGpu could not clear the live flags", s);
         }
     }
 
@@ -958,14 +1075,14 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         if (gpu::GpuStatus s = rec.ctx().scratch(shadowCount * sizeof(std::uint32_t), blocked); !s) {
             return fail("WavefrontGpu could not hold the occlusion of " + shadowRayCount, s);
         }
-        if (holes) {
+        if (resolveShadows) {
             if (gpu::GpuStatus s = rec.ctx().scratch(kHitArrays * shadowCount * sizeof(float), shadowHitValues); !s) {
                 return fail("WavefrontGpu could not hold the hits of " + shadowRayCount, s);
             }
             if (gpu::GpuStatus s = rec.ctx().scratch(kHitArrays * shadowCount * sizeof(std::uint32_t), shadowHitIds); !s) {
                 return fail("WavefrontGpu could not hold the hit ids of " + shadowRayCount, s);
             }
-            if (!reserveResolve(rec.ctx(), shadowCount, shadowScratch)) {
+            if (!reserveResolve(rec.ctx(), shadowCount, frame.maxCutouts, shadowScratch)) {
                 return false;
             }
         }
@@ -977,34 +1094,46 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     shadeParams.pixels[0] = static_cast<std::uint32_t>(rect.x);
     shadeParams.pixels[1] = static_cast<std::uint32_t>(rect.y);
     shadeParams.pixels[2] = static_cast<std::uint32_t>(rect.width);
+    shadeParams.bounce[1] = limit;
 
-    const std::array<gpu::GpuBinding, 26> shadeBindings = {
-        gpu::GpuBinding::storage(0, *rays),
-        gpu::GpuBinding::storage(1, *hitValues),
-        gpu::GpuBinding::storage(2, *hitIds),
-        gpu::GpuBinding::storage(3, tables.geometries.buffer()),
-        gpu::GpuBinding::storage(4, tables.colors.buffer()),
-        gpu::GpuBinding::storage(5, tables.triangles.buffer()),
-        gpu::GpuBinding::storage(6, tables.instanceIds.buffer()),
-        gpu::GpuBinding::storage(7, *color),
-        gpu::GpuBinding::storage(8, *depth),
-        gpu::GpuBinding::storage(9, *primId),
-        gpu::GpuBinding::storage(10, *instanceId),
-        gpu::GpuBinding::storage(11, tables.materials.buffer()),
-        gpu::GpuBinding::storage(12, tables.textureBindings.buffer()),
-        gpu::GpuBinding::storage(13, tables.images.buffer()),
-        gpu::GpuBinding::storage(14, tables.texels.buffer()),
-        gpu::GpuBinding::storage(15, tables.projections.buffer()),
-        gpu::GpuBinding::storage(16, tables.points.buffer()),
-        gpu::GpuBinding::storage(17, tables.instanceTransforms.buffer()),
-        gpu::GpuBinding::storage(18, tables.sts.buffer()),
-        gpu::GpuBinding::storage(19, tables.lights.buffer()),
-        gpu::GpuBinding::storage(20, tables.lightData.buffer()),
-        gpu::GpuBinding::storage(21, tables.linkMasks.buffer()),
-        gpu::GpuBinding::storage(22, *shadowRays),
-        gpu::GpuBinding::storage(23, *contributions),
-        gpu::GpuBinding::storage(24, *shadowLights),
-        gpu::GpuBinding::storage(25, tables.normals.buffer()),
+    const auto shadeBindingsOf = [&](const gpu::GpuBuffer& bounceRays,
+                                     const gpu::GpuBuffer& bounceValues,
+                                     const gpu::GpuBuffer& bounceIds,
+                                     const gpu::GpuBuffer& paths,
+                                     const gpu::GpuBuffer& nextRays,
+                                     const gpu::GpuBuffer& nextPaths) {
+        return std::array<gpu::GpuBinding, 30> {
+            gpu::GpuBinding::storage(0, bounceRays),
+            gpu::GpuBinding::storage(1, bounceValues),
+            gpu::GpuBinding::storage(2, bounceIds),
+            gpu::GpuBinding::storage(3, tables.geometries.buffer()),
+            gpu::GpuBinding::storage(4, tables.colors.buffer()),
+            gpu::GpuBinding::storage(5, tables.triangles.buffer()),
+            gpu::GpuBinding::storage(6, tables.instanceIds.buffer()),
+            gpu::GpuBinding::storage(7, *color),
+            gpu::GpuBinding::storage(8, *depth),
+            gpu::GpuBinding::storage(9, *primId),
+            gpu::GpuBinding::storage(10, *instanceId),
+            gpu::GpuBinding::storage(11, tables.materials.buffer()),
+            gpu::GpuBinding::storage(12, tables.textureBindings.buffer()),
+            gpu::GpuBinding::storage(13, tables.images.buffer()),
+            gpu::GpuBinding::storage(14, tables.texels.buffer()),
+            gpu::GpuBinding::storage(15, tables.projections.buffer()),
+            gpu::GpuBinding::storage(16, tables.points.buffer()),
+            gpu::GpuBinding::storage(17, tables.instanceTransforms.buffer()),
+            gpu::GpuBinding::storage(18, tables.sts.buffer()),
+            gpu::GpuBinding::storage(19, tables.lights.buffer()),
+            gpu::GpuBinding::storage(20, tables.lightData.buffer()),
+            gpu::GpuBinding::storage(21, tables.linkMasks.buffer()),
+            gpu::GpuBinding::storage(22, *shadowRays),
+            gpu::GpuBinding::storage(23, *contributions),
+            gpu::GpuBinding::storage(24, *shadowLights),
+            gpu::GpuBinding::storage(25, tables.normals.buffer()),
+            gpu::GpuBinding::storage(26, paths),
+            gpu::GpuBinding::storage(27, nextRays),
+            gpu::GpuBinding::storage(28, nextPaths),
+            gpu::GpuBinding::storage(29, *liveBounces),
+        };
     };
     const std::array<gpu::GpuBinding, 3> lightsBindings = {
         gpu::GpuBinding::storage(0, *color),
@@ -1014,57 +1143,105 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     const KernelShadeLightsParams lightsParams { static_cast<std::uint32_t>(count), batch, { 0u, 0u } };
     const bool shadowLinked = shadeTables.occlusionFilter(nullptr).casterMasks != nullptr;
     const std::uint32_t linkWords = shadeTables.linkWords();
-    std::uint32_t first = 0;
+    // Shades a bounce's hits into the colour, every light batch, and on the first queues each path's next ray.
+    const auto shade = [&](KernelShadeParams params, const std::array<gpu::GpuBinding, 30>& shadeBindings) -> bool {
+        std::uint32_t first = 0;
 
-    do {
-        shadeParams.lighting[0] = first;
-        if (!rec.reserve(count)) {
-            return false;
-        }
-        if (gpu::GpuStatus s = rec.ctx().dispatchBindings(shadeKernel, shadeBindings, std::as_bytes(std::span(&shadeParams, 1)), threads); !s) {
-            return fail("WavefrontGpu could not shade", s);
-        }
-        if (batch == 0) {
-            break;
-        }
-        rec.ctx().computeBarrier();
-
-        const std::uint32_t shadows = static_cast<std::uint32_t>(shadowCount);
-
-        if (!rec.reserve(shadowCount)) {
-            return false;
-        }
-        if (holes) {
-            // A closest hit rather than any hit, so that a hole lets the ray go on to what is behind it.
-            KernelResolveParams shadowParams = resolveParams;
-
-            shadowParams.flags = kKernelResolveShadow | (shadowLinked ? kKernelResolveShadowLinked : 0u);
-            if (gpu::GpuStatus s = tracer.recordIntersect(rec.ctx(), *shadowRays, shadows, *shadowHitValues, *shadowHitIds); !s) {
-                return fail("WavefrontGpu could not trace shadow rays", s);
-            }
-            rec.ctx().computeBarrier();
-            if (!recordResolve(rec, shadowScratch, shadowParams, shadowCount, frame.maxCutouts, *shadowRays, *shadowHitValues, *shadowHitIds, *blocked, *shadowLights)) {
+        do {
+            params.lighting[0] = first;
+            if (!rec.reserve(count)) {
                 return false;
             }
-        } else {
-            const gpu::GpuStatus traced = shadowLinked
-                ? tracer.recordOccludedFiltered(rec.ctx(), *shadowRays, shadows, *blocked, *shadowLights, tables.linkMasks.buffer(), 2 * linkWords, linkWords)
-                : tracer.recordOccluded(rec.ctx(), *shadowRays, shadows, *blocked);
-
-            if (!traced) {
-                return fail("WavefrontGpu could not trace shadow rays", traced);
+            if (gpu::GpuStatus s = rec.ctx().dispatchBindings(shadeKernel, shadeBindings, std::as_bytes(std::span(&params, 1)), threads); !s) {
+                return fail("WavefrontGpu could not shade", s);
+            }
+            if (batch == 0) {
+                break;
             }
             rec.ctx().computeBarrier();
+
+            const std::uint32_t shadows = static_cast<std::uint32_t>(shadowCount);
+
+            if (!rec.reserve(shadowCount)) {
+                return false;
+            }
+            if (resolveShadows) {
+                KernelResolveParams shadowParams = resolveParams;
+
+                shadowParams.flags = kKernelResolveShadow | (shadowLinked ? kKernelResolveShadowLinked : 0u);
+                if (gpu::GpuStatus s = tracer.recordIntersect(rec.ctx(), *shadowRays, shadows, *shadowHitValues, *shadowHitIds); !s) {
+                    return fail("WavefrontGpu could not trace shadow rays", s);
+                }
+                rec.ctx().computeBarrier();
+                if (!recordResolve(rec, shadowScratch, shadowParams, shadowCount, frame.maxCutouts, *shadowRays, *shadowHitValues, *shadowHitIds, *blocked, *shadowLights, *contributions)) {
+                    return false;
+                }
+            } else {
+                const gpu::GpuStatus traced = shadowLinked
+                    ? tracer.recordOccludedFiltered(rec.ctx(), *shadowRays, shadows, *blocked, *shadowLights, tables.linkMasks.buffer(), 2 * linkWords, linkWords)
+                    : tracer.recordOccluded(rec.ctx(), *shadowRays, shadows, *blocked);
+
+                if (!traced) {
+                    return fail("WavefrontGpu could not trace shadow rays", traced);
+                }
+                rec.ctx().computeBarrier();
+            }
+            if (!rec.reserve(count)) {
+                return false;
+            }
+            if (gpu::GpuStatus s = rec.ctx().dispatchBindings(shadeLightsKernel, lightsBindings, std::as_bytes(std::span(&lightsParams, 1)), threads); !s) {
+                return fail("WavefrontGpu could not add the lights", s);
+            }
+            rec.ctx().computeBarrier();
+            first += batch;
+        } while (first < lightCount);
+        rec.ctx().computeBarrier();
+
+        return true;
+    };
+
+    if (!shade(shadeParams, shadeBindingsOf(*rays, *hitValues, *hitIds, *rays, *queueRays[0], *queuePaths[0]))) {
+        return false;
+    }
+
+    KernelResolveParams bounceResolve {};
+
+    bounceResolve.linkWords = shadeTables.linkWords();
+    // Bounce 1 goes ahead unread, so that a scene of one bounce waits only for the read after it.
+    std::uint32_t ran = 0;
+
+    for (std::uint32_t bounce = 1; bounce <= limit; ++bounce) {
+        const std::size_t from = (bounce - 1) % 2;
+        const std::size_t to = bounce % 2;
+        KernelShadeParams bounceParams = shadeParams;
+
+        if (bounce > 1) {
+            const std::uint32_t* live = nullptr;
+
+            if (!readFlags(rec, *liveBounces, bounce - 1, 1, live)) {
+                return false;
+            }
+            if (live[0] == 0) {
+                break;
+            }
         }
         if (!rec.reserve(count)) {
             return false;
         }
-        if (gpu::GpuStatus s = rec.ctx().dispatchBindings(shadeLightsKernel, lightsBindings, std::as_bytes(std::span(&lightsParams, 1)), threads); !s) {
-            return fail("WavefrontGpu could not add the lights", s);
+        // A path that has ended has a ray the tracer misses, and which the shading ends again.
+        if (gpu::GpuStatus s = tracer.recordIntersect(rec.ctx(), *queueRays[from], static_cast<std::uint32_t>(count), *bounceHitValues, *bounceHitIds); !s) {
+            return fail("WavefrontGpu could not trace bounced rays", s);
         }
         rec.ctx().computeBarrier();
-        first += batch;
-    } while (first < lightCount);
+        if (holes && !recordResolve(rec, scratch, bounceResolve, count, frame.maxCutouts, *queueRays[from], *bounceHitValues, *bounceHitIds, *rays, *rays, *rays)) {
+            return false;
+        }
+        bounceParams.bounce[0] = bounce;
+        if (!shade(bounceParams, shadeBindingsOf(*queueRays[from], *bounceHitValues, *bounceHitIds, *queuePaths[from], *queueRays[to], *queuePaths[to]))) {
+            return false;
+        }
+        ran = bounce;
+    }
     if (deviceColor) {
         if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(rec.ctx(), *hitIds, *color, *weights, rect.x, rect.y, rect.width, rect.height, wavefrontShowsBackground(frame, shadeTables)); !s) {
             return fail("WavefrontGpu could not write a batch's colours to the film", s);
@@ -1084,6 +1261,8 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         { aovs.depth, depth, &readback.depth, count * sizeof(float) },
         { aovs.primId, primId, &readback.primId, count * sizeof(std::int32_t) },
         { aovs.instanceId, instanceId, &readback.instanceId, count * sizeof(std::int32_t) },
+        // Which of the bounces that ran had a path to trace.
+        { ran > 0, liveBounces, &flagReadback, ran * sizeof(std::uint32_t) },
     };
 
     for (const auto& copy : copies) {
@@ -1096,6 +1275,13 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     }
     if (!rec.finish("WavefrontGpu could not render a batch of " + rayCount)) {
         return false;
+    }
+    deepest = 0;
+    for (std::uint32_t bounce = ran; bounce > 0; --bounce) {
+        if (static_cast<const std::uint32_t*>(flagReadback.mapped())[bounce - 1] != 0) {
+            deepest = bounce;
+            break;
+        }
     }
     if (!aovs.any()) {
         return true;
@@ -1186,6 +1372,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
 
     imp.outcome = Tracer::Outcome();
     imp.sceneFailed = false;
+    resetBouncesTraced();
     if (!imp.usable) {
         imp.outcome = imp.unusable;
 
@@ -1252,9 +1439,12 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
         rect.y = window.y + row;
         rect.width = window.width;
         rect.height = static_cast<int>(rows);
-        if (!imp.renderBatch(frame, rect, rec, film, deviceColor)) {
+        std::uint32_t deepest = 0;
+
+        if (!imp.renderBatch(frame, rect, rec, film, deviceColor, deepest)) {
             return false;
         }
+        noteBounceTraced(deepest);
         row += rect.height;
     }
 

@@ -166,8 +166,8 @@ resolveHits(const Tracer& tracer,
     }
 }
 
-// A tile stop ends early never reaches the film.
-void
+// A tile stop ends early never reaches the film. Returns the deepest bounce any of its rays took.
+std::uint32_t
 renderTile(const WavefrontFrame& frame,
            const WavefrontRect& rect,
            const Tracer& tracer,
@@ -189,7 +189,7 @@ renderTile(const WavefrontFrame& frame,
 
     if (frame.mapping == WavefrontMapping::UvUnwrap) {
         if (!frame.unwrap) {
-            return;
+            return 0;
         }
 
         const WavefrontUnwrap& unwrap = *frame.unwrap;
@@ -200,44 +200,48 @@ renderTile(const WavefrontFrame& frame,
         tracer.intersect(rayBatchOf(rays.data(), count), hits);
     }
 
-    KernelShadeBuffers buffers = tables.buffers();
+    const KernelShadeBuffers tableBuffers = tables.buffers();
+    KernelShadeBuffers buffers = tableBuffers;
     KernelShadeParams params = makeShadeParams(frame, static_cast<std::uint32_t>(count));
     const bool holes = tables.hasHoles();
+    const bool transmission = tables.hasTransmission();
+    // Shadow rays then take closest hits, so that a hole or a transmissive surface lets them go on.
+    const bool resolveShadows = holes || transmission;
+    const std::uint32_t limit = wavefrontBounceLimit(frame, transmission);
     KernelResolveParams resolveParams {};
 
+    resolveParams.linkWords = tables.linkWords();
     if (holes) {
         std::copy(std::begin(params.pixelFootprint), std::end(params.pixelFootprint), std::begin(resolveParams.pixelFootprint));
-        resolveParams.linkWords = tables.linkWords();
 
         KernelResolveBuffers primary;
 
         primary.rays = rays.data();
         primary.hitSurface = hitSurface.data();
         primary.hitIds = hitIds.data();
-        if (!resolveHits(tracer, buffers, resolveParams, primary, count, frame.maxCutouts, stop)) {
-            return;
+        if (!resolveHits(tracer, tableBuffers, resolveParams, primary, count, frame.maxCutouts, stop)) {
+            return 0;
         }
     }
 
-    buffers.rays = rays.data();
-    buffers.hitSurface = hitSurface.data();
-    buffers.hitIds = hitIds.data();
-    buffers.colorOut = color.data();
     buffers.depthOut = depth.data();
     buffers.primIdOut = primId.data();
     buffers.instanceIdOut = instanceId.data();
 
+    // The rays the paths go on with, as many as the batch last shaded and in its layout.
+    std::vector<float> nextRays(limit > 0 ? count * 8 : 0);
+    std::vector<KernelPathState> nextPaths(limit > 0 ? count : 0);
     const std::uint32_t lightCount = tables.lightCount();
     const std::uint32_t batch = std::min(lightCount, kLightBatch);
-    const std::size_t shadowCount = count * batch;
-    std::vector<float> shadowRays(shadowCount * 8);
-    std::vector<float> contributions(shadowCount * 4);
-    std::vector<std::uint32_t> shadowLights(shadowCount);
-    std::vector<std::uint8_t> blocked(holes ? 0 : shadowCount);
-    std::vector<std::uint32_t> blockedWords(shadowCount);
+    const std::size_t shadowCapacity = count * batch;
+    std::vector<float> shadowRays(shadowCapacity * 8);
+    std::vector<float> contributions(shadowCapacity * 4);
+    std::vector<std::uint32_t> shadowLights(shadowCapacity);
+    std::vector<std::uint8_t> blocked(resolveShadows ? 0 : shadowCapacity);
+    std::vector<std::uint32_t> blockedWords(shadowCapacity);
     const OcclusionFilter filter = tables.occlusionFilter(shadowLights.data());
-    std::vector<float> shadowSurface(holes ? shadowCount * 3 : 0);
-    std::vector<std::uint32_t> shadowIds(holes ? shadowCount * 3 : 0);
+    std::vector<float> shadowSurface(resolveShadows ? shadowCapacity * 3 : 0);
+    std::vector<std::uint32_t> shadowIds(resolveShadows ? shadowCapacity * 3 : 0);
 
     buffers.shadowRays = shadowRays.data();
     buffers.shadowContributions = contributions.data();
@@ -248,46 +252,141 @@ renderTile(const WavefrontFrame& frame,
     params.pixels[0] = static_cast<std::uint32_t>(rect.x);
     params.pixels[1] = static_cast<std::uint32_t>(rect.y);
     params.pixels[2] = static_cast<std::uint32_t>(rect.width);
+    params.bounce[1] = limit;
 
-    std::uint32_t first = 0;
+    // Shades n hits into colorOut, every light batch, and on the first queues each path's next ray.
+    const auto shade = [&](KernelShadeParams shadeParams, std::size_t n, float* colorOut) -> bool {
+        const std::size_t shadowCount = n * batch;
+        std::uint32_t first = 0;
 
-    do {
+        shadeParams.count = static_cast<std::uint32_t>(n);
+        buffers.colorOut = colorOut;
+        do {
+            if (stop.load(std::memory_order_relaxed)) {
+                return false;
+            }
+            shadeParams.lighting[0] = first;
+            runShadeSurfaceKernel(shadeParams, buffers);
+            if (batch == 0) {
+                break;
+            }
+
+            const Tracer::RayBatch shadows = rayBatchOf(shadowRays.data(), shadowCount);
+
+            if (resolveShadows) {
+                KernelResolveParams shadowParams = resolveParams;
+                KernelResolveBuffers shadowBuffers;
+
+                shadowParams.flags = kKernelResolveShadow | (filter.casterMasks ? kKernelResolveShadowLinked : 0u);
+                shadowBuffers.rays = shadowRays.data();
+                shadowBuffers.hitSurface = shadowSurface.data();
+                shadowBuffers.hitIds = shadowIds.data();
+                shadowBuffers.blocked = blockedWords.data();
+                shadowBuffers.rayLights = shadowLights.data();
+                shadowBuffers.shadowContributions = contributions.data();
+                tracer.intersect(shadows, hitBatchOf(shadowSurface.data(), shadowIds.data(), shadowCount));
+                if (!resolveHits(tracer, tableBuffers, shadowParams, shadowBuffers, shadowCount, frame.maxCutouts, stop)) {
+                    return false;
+                }
+            } else {
+                tracer.occluded(shadows, blocked.data(), filter.casterMasks ? &filter : nullptr);
+                std::copy(blocked.begin(), blocked.begin() + static_cast<std::ptrdiff_t>(shadowCount), blockedWords.begin());
+            }
+
+            const KernelShadeLightsParams lightsParams { static_cast<std::uint32_t>(n), batch, { 0u, 0u } };
+
+            runShadeLightsKernel(lightsParams, colorOut, contributions.data(), blockedWords.data());
+            first += batch;
+        } while (first < lightCount);
+
+        return true;
+    };
+
+    std::vector<float> bounceRays;
+    std::vector<KernelPathState> bouncePaths;
+    std::vector<float> bounceSurface;
+    std::vector<std::uint32_t> bounceIds;
+    std::vector<float> bounceColor;
+
+    buffers.rays = rays.data();
+    buffers.hitSurface = hitSurface.data();
+    buffers.hitIds = hitIds.data();
+    buffers.nextRays = nextRays.data();
+    buffers.nextPaths = nextPaths.data();
+    if (!shade(params, count, color.data())) {
+        return 0;
+    }
+
+    std::uint32_t deepest = 0;
+    std::size_t queued = count;
+
+    for (std::uint32_t bounce = 1; bounce <= limit; ++bounce) {
         if (stop.load(std::memory_order_relaxed)) {
-            return;
+            return 0;
         }
-        params.lighting[0] = first;
-        runShadeSurfaceKernel(params, buffers);
-        if (batch == 0) {
+
+        // Only the paths still going on are traced, gathered into a batch of their own.
+        const float* tMax = nextRays.data() + 7 * queued;
+        std::vector<std::size_t> active;
+
+        for (std::size_t ray = 0; ray < queued; ++ray) {
+            if (tMax[ray] >= 0.f) {
+                active.push_back(ray);
+            }
+        }
+        if (active.empty()) {
             break;
         }
+        deepest = bounce;
 
-        const Tracer::RayBatch shadows = rayBatchOf(shadowRays.data(), shadowCount);
+        const std::size_t n = active.size();
 
-        if (holes) {
-            // A closest hit rather than any hit, so that a hole lets the ray go on to what is behind it.
-            KernelResolveParams shadowParams = resolveParams;
-            KernelResolveBuffers shadowBuffers;
-
-            shadowParams.flags = kKernelResolveShadow | (filter.casterMasks ? kKernelResolveShadowLinked : 0u);
-            shadowBuffers.rays = shadowRays.data();
-            shadowBuffers.hitSurface = shadowSurface.data();
-            shadowBuffers.hitIds = shadowIds.data();
-            shadowBuffers.blocked = blockedWords.data();
-            shadowBuffers.rayLights = shadowLights.data();
-            tracer.intersect(shadows, hitBatchOf(shadowSurface.data(), shadowIds.data(), shadowCount));
-            if (!resolveHits(tracer, buffers, shadowParams, shadowBuffers, shadowCount, frame.maxCutouts, stop)) {
-                return;
+        bounceRays.resize(n * 8);
+        bouncePaths.resize(n);
+        bounceSurface.resize(n * 3);
+        bounceIds.resize(n * 3);
+        bounceColor.assign(n * 4, 0.f);
+        for (std::size_t a = 0; a < 8; ++a) {
+            for (std::size_t i = 0; i < n; ++i) {
+                bounceRays[a * n + i] = nextRays[a * queued + active[i]];
             }
-        } else {
-            tracer.occluded(shadows, blocked.data(), filter.casterMasks ? &filter : nullptr);
-            std::copy(blocked.begin(), blocked.end(), blockedWords.begin());
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            bouncePaths[i] = nextPaths[active[i]];
+        }
+        queued = n;
+        tracer.intersect(rayBatchOf(bounceRays.data(), n), hitBatchOf(bounceSurface.data(), bounceIds.data(), n));
+        if (holes) {
+            KernelResolveParams bounceResolve {};
+            KernelResolveBuffers bounceBuffers;
+
+            bounceResolve.linkWords = tables.linkWords();
+            bounceBuffers.rays = bounceRays.data();
+            bounceBuffers.hitSurface = bounceSurface.data();
+            bounceBuffers.hitIds = bounceIds.data();
+            if (!resolveHits(tracer, tableBuffers, bounceResolve, bounceBuffers, n, frame.maxCutouts, stop)) {
+                return 0;
+            }
         }
 
-        const KernelShadeLightsParams lightsParams { static_cast<std::uint32_t>(count), batch, { 0u, 0u } };
+        KernelShadeParams bounceParams = params;
 
-        runShadeLightsKernel(lightsParams, color.data(), contributions.data(), blockedWords.data());
-        first += batch;
-    } while (first < lightCount);
+        bounceParams.bounce[0] = bounce;
+        buffers.rays = bounceRays.data();
+        buffers.hitSurface = bounceSurface.data();
+        buffers.hitIds = bounceIds.data();
+        buffers.paths = bouncePaths.data();
+        if (!shade(bounceParams, n, bounceColor.data())) {
+            return 0;
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t pixel = bouncePaths[i].counters[0];
+
+            for (std::size_t c = 0; c < 4; ++c) {
+                color[pixel * 4 + c] += bounceColor[i * 4 + c];
+            }
+        }
+    }
 
     WavefrontTile tile;
 
@@ -300,6 +399,8 @@ renderTile(const WavefrontFrame& frame,
     tile.instanceId = instanceId.data();
     tile.background = wavefrontShowsBackground(frame, tables);
     film.writeTile(tile);
+
+    return deepest;
 }
 } // anon namespace
 
@@ -325,9 +426,10 @@ WavefrontCpu::render(const UtilityScene::Snapshot& snapshot,
 
     const std::vector<WavefrontRect> tiles = splitIntoTiles(frame.window);
 
+    resetBouncesTraced();
     parallelForOnGlobalPool(static_cast<int>(tiles.size()), threads, [&](int index) {
         if (!stop.load(std::memory_order_relaxed)) {
-            renderTile(frame, tiles[index], *_tracer, _shadeTables, film, stop);
+            noteBounceTraced(renderTile(frame, tiles[index], *_tracer, _shadeTables, film, stop));
         }
     });
 

@@ -87,6 +87,16 @@ struct KernelShadeParams {
     std::uint32_t lighting[4];
     // Frame x and y of the first hit's pixel, the width of the rows the hits cover, the sample seed.
     std::uint32_t pixels[4];
+    // The bounce shaded, 0 for camera rays; the bounces the frame traces; the most by reflection and by
+    // refraction.
+    std::uint32_t bounce[4];
+};
+
+// Mirrors PathState in Kernels/UtilityTypes.slang.
+struct KernelPathState {
+    float throughput[4];
+    // The pixel's index in the batch, then the bounces taken in all, by reflection and by refraction.
+    std::uint32_t counters[4];
 };
 
 // Mirrors ShadeLightsParams in Kernels/ShadeLights.slang.
@@ -102,7 +112,7 @@ struct KernelResolveParams {
     std::uint32_t count;
     std::uint32_t flags;
     std::uint32_t linkWords;
-    std::uint32_t padding;
+    std::uint32_t passIndex;
 };
 
 // ResolveParams::flags in Kernels/ResolveHits.slang.
@@ -235,6 +245,11 @@ struct KernelShadeBuffers {
     std::uint32_t* shadowLights = nullptr;
     const float* normals = nullptr; // four per value
     std::size_t normalCount = 0;
+    // Past the first bounce, each ray's path; when a bounce follows, each ray's continuation in the
+    // eight-array layout and its path.
+    const KernelPathState* paths = nullptr;
+    float* nextRays = nullptr;
+    KernelPathState* nextPaths = nullptr;
 };
 
 // The per-batch buffers ResolveHits reads and writes besides the scene's tables, count rays each.
@@ -245,9 +260,11 @@ struct KernelResolveBuffers {
     const float* nextHitSurface = nullptr;
     const std::uint32_t* nextHitIds = nullptr;
     float* retrace = nullptr; // eight arrays
-    // Shadow rays only: the verdict, and the light of each ray.
+    // Shadow rays only: the verdict, the light of each ray, and its contribution of four floats, which
+    // transmissive surfaces dim.
     std::uint32_t* blocked = nullptr;
     const std::uint32_t* rayLights = nullptr;
+    float* shadowContributions = nullptr;
 };
 
 /**

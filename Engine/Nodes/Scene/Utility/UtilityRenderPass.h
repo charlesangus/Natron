@@ -74,6 +74,9 @@ private:
     struct FrameKey {
         Device device = Device::Auto;
         std::uint32_t maxCutouts = 0;
+        std::uint32_t maxRayDepth = 0;
+        std::uint32_t reflectionDepth = 0;
+        std::uint32_t refractionDepth = 0;
         std::uint64_t version = 0;
         PXR_NS::GfMatrix4d worldToView;
         PXR_NS::GfMatrix4d projection;

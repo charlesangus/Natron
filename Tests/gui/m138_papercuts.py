@@ -177,11 +177,13 @@ try:
         """Tab menu -> Read, which opens the create-time file dialog. Returns the dialog."""
         # Cancelling the dialog leaves the Read it created, selected. With a node selected the Tab
         # menu lists only nodes that take that node's output as an input, which leaves Read out, so
-        # the Reads of an earlier round go before the menu opens.
+        # the Reads of an earlier round go and the selection is cleared before the menu opens.
         for n in app.getChildren():
             if "Read" in n.getPluginID():
                 n.destroy()
+        app.clearSelection()
         QApplication.processEvents()
+        require(len(app.getSelectedNodes()) == 0, "no node is selected before the Tab menu opens")
         view = node_graph_view()
         require(view is not None, "the node graph is on screen")
         # The Tab shortcut only works while the graph has the focus or the pointer is over it. A

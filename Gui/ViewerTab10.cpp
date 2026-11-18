@@ -342,6 +342,9 @@ ViewerTab::onViewerStaleChanged(bool stale)
 {
     const qint64 now = _imp->staleCueClock.elapsed();
     if (stale && !_imp->staleCueTiming.stale()) {
+        if (_imp->viewer) {
+            _imp->viewer->noteStaleTransition();
+        }
         const SettingsPtr settings = appPTR->getCurrentSettings();
         _imp->staleCueTiming.setDelayMs(settings->getStaleCueDelayMs());
         _imp->staleCueTiming.setHoldMs(settings->getStaleCueHoldMs());

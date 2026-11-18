@@ -233,6 +233,7 @@ struct ViewerGL::Implementation
     bool overlay; /*!< True if the user enabled overlay display*/
     StaleCueStyleEnum staleCueStyle = eStaleCueStyleOff;
     bool staleCueVisible = false;
+    int staleTransitions = 0;
     bool updatingTexture;
     QColor clearColor;
     QMenu* menu;

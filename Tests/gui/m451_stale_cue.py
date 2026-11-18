@@ -82,6 +82,10 @@ try:
         w = viewer_gl()
         return w is not None and bool(w.property("natronViewerStale"))
 
+    def stale_transitions():
+        w = viewer_gl()
+        return int(w.property("natronViewerStaleTransitions") or 0) if w is not None else 0
+
     def gl_cue_visible():
         w = viewer_gl()
         return w is not None and bool(w.property("natronStaleCueVisible"))
@@ -194,12 +198,15 @@ try:
                 seen["done_at"] = now
             return seen["done_at"] is not None
 
+        transitions_before = stale_transitions()
         started = time.time()
         size.set(SHORT_DEFOCUS_SIZE)
         ok = yield ("until", watch_short, RENDER_TIMEOUT_S)
-        if seen["stale_at"] is None:
-            report("NOTE the short render finished before the viewer was seen stale")
-        else:
+        went_stale = stale_transitions() - transitions_before
+        check(went_stale > 0,
+              "the viewer went stale during the short render (%d stale transitions); "
+              "the render is too fast to exercise the cue, raise SHORT_DEFOCUS_SIZE" % went_stale)
+        if seen["stale_at"] is not None:
             check(ok, "the short render completes")
         elapsed_ms = ((seen["done_at"] or time.time()) - started) * 1000.0
         check(elapsed_ms < SHORT_RENDER_DELAY_MS,

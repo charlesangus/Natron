@@ -664,6 +664,18 @@ ViewerGL::isStaleCueVisible() const
     return _imp->staleCueVisible;
 }
 
+void
+ViewerGL::noteStaleTransition()
+{
+    ++_imp->staleTransitions;
+}
+
+int
+ViewerGL::staleTransitionCount() const
+{
+    return _imp->staleTransitions;
+}
+
 bool
 ViewerGL::isViewerImageStale() const
 {

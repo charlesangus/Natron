@@ -1275,6 +1275,16 @@ Settings::initializeKnobsViewers()
     _checkerboardTileSize->setHintToolTip( tr("The size (in screen pixels) of one tile of the checkerboard.") );
     _viewersTab->addKnob(_checkerboardTileSize);
 
+    _checkerboardColor1 = AppManager::createKnob<KnobColor>(this, tr("Checkerboard color 1"), 4);
+    _checkerboardColor1->setName("checkerboardColor1");
+    _checkerboardColor1->setHintToolTip(tr("The first color used by the checkerboard."));
+    _viewersTab->addKnob(_checkerboardColor1);
+
+    _checkerboardColor2 = AppManager::createKnob<KnobColor>(this, tr("Checkerboard color 2"), 4);
+    _checkerboardColor2->setName("checkerboardColor2");
+    _checkerboardColor2->setHintToolTip(tr("The second color used by the checkerboard."));
+    _viewersTab->addKnob(_checkerboardColor2);
+
     _staleCueStyle = AppManager::createKnob<KnobChoice>(this, tr("Stale Cue Style"));
     _staleCueStyle->setName("staleCueStyle");
     {
@@ -1306,16 +1316,6 @@ Settings::initializeKnobsViewers()
     _staleCueHold->setHintToolTip(tr("The shortest time, in milliseconds, the stale cue stays up once shown, so a render that "
                                      "finishes just after the cue appears does not make it flicker. Nothing is drawn during playback."));
     _viewersTab->addKnob(_staleCueHold);
-
-    _checkerboardColor1 = AppManager::createKnob<KnobColor>(this, tr("Checkerboard color 1"), 4);
-    _checkerboardColor1->setName("checkerboardColor1");
-    _checkerboardColor1->setHintToolTip( tr("The first color used by the checkerboard.") );
-    _viewersTab->addKnob(_checkerboardColor1);
-
-    _checkerboardColor2 = AppManager::createKnob<KnobColor>(this, tr("Checkerboard color 2"), 4);
-    _checkerboardColor2->setName("checkerboardColor2");
-    _checkerboardColor2->setHintToolTip( tr("The second color used by the checkerboard.") );
-    _viewersTab->addKnob(_checkerboardColor2);
 
     _autoProxyWhenScrubbingTimeline = AppManager::createKnob<KnobBool>(this, tr("Auto Proxy Scrubbing"));
     _autoProxyWhenScrubbingTimeline->setName("autoProxyScrubbing");
@@ -1933,9 +1933,6 @@ Settings::setDefaultValues()
     _texturesMode->setDefaultValue(0, 0);
     _powerOf2Tiling->setDefaultValue(8, 0);
     _checkerboardTileSize->setDefaultValue(5);
-    _staleCueStyle->setDefaultValue((int)eStaleCueStyleCornerDot);
-    _staleCueDelay->setDefaultValue(400);
-    _staleCueHold->setDefaultValue(500);
     _checkerboardColor1->setDefaultValue(0.5, 0);
     _checkerboardColor1->setDefaultValue(0.5, 1);
     _checkerboardColor1->setDefaultValue(0.5, 2);
@@ -1944,6 +1941,9 @@ Settings::setDefaultValues()
     _checkerboardColor2->setDefaultValue(0., 1);
     _checkerboardColor2->setDefaultValue(0., 2);
     _checkerboardColor2->setDefaultValue(0., 3);
+    _staleCueStyle->setDefaultValue((int)eStaleCueStyleCornerDot);
+    _staleCueDelay->setDefaultValue(400);
+    _staleCueHold->setDefaultValue(500);
     _autoProxyWhenScrubbingTimeline->setDefaultValue(true);
     _autoProxyLevel->setDefaultValue(1);
     _viewerMipRounding->setDefaultValue(0);

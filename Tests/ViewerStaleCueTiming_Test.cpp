@@ -210,8 +210,24 @@ TEST(ViewerStaleCueTiming, SeparateInstancesKeepSeparateState)
     ViewerStaleCueTiming a(kDelay, kHold);
     ViewerStaleCueTiming b(kDelay, kHold);
     a.setStale(true, 0);
-    runUntil(a, kDelay);
+    b.setStale(true, 300);
+    ASSERT_TRUE(a.nextDeadlineMs().has_value());
+    ASSERT_TRUE(b.nextDeadlineMs().has_value());
+    EXPECT_EQ(kDelay, *a.nextDeadlineMs());
+    EXPECT_EQ(300 + kDelay, *b.nextDeadlineMs());
+
+    a.advance(kDelay);
     b.advance(kDelay);
     EXPECT_TRUE(a.visible());
     EXPECT_FALSE(b.visible());
+
+    b.advance(300 + kDelay);
+    EXPECT_TRUE(b.visible());
+
+    a.setStale(false, 300 + kDelay);
+    EXPECT_TRUE(a.visible());
+    EXPECT_TRUE(b.stale());
+    a.advance(kDelay + kHold);
+    EXPECT_FALSE(a.visible());
+    EXPECT_TRUE(b.visible());
 }

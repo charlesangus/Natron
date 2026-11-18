@@ -71,6 +71,7 @@ Q_PROPERTY(QVariantList natronCanonicalToWidget READ canonicalToWidget)
 // date, from these rather than from pixels.
 Q_PROPERTY(bool natronStaleCueVisible READ isStaleCueVisible)
 Q_PROPERTY(bool natronViewerStale READ isViewerImageStale)
+Q_PROPERTY(int natronViewerStaleTransitions READ staleTransitionCount)
 
 public:
     QVariantList canonicalToWidget() const;
@@ -287,6 +288,8 @@ public Q_SLOTS:
     void setStaleCue(StaleCueStyleEnum style, bool visible);
     bool isStaleCueVisible() const;
     bool isViewerImageStale() const;
+    void noteStaleTransition();
+    int staleTransitionCount() const;
 
     void toggleWipe();
 

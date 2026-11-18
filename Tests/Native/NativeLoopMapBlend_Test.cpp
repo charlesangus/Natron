@@ -329,7 +329,7 @@ TEST_F(NativeLoopMapBlendTest, TapsAndIterationRanges)
         sum += taps.taps[i].weight;
     }
     EXPECT_NEAR(1.f, sum, 1e-6f);
-    taps = tapsAt(0.4f, 6, eInterpolationCubic);
+    taps = tapsAt(0.45f, 6, eInterpolationCubic);
     ASSERT_EQ(4, taps.count);
     EXPECT_EQ(1, taps.taps[0].iteration);
     EXPECT_EQ(4, taps.taps[3].iteration);

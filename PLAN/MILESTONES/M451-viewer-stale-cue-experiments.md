@@ -30,12 +30,12 @@ The milestone has three steps. First it separates **when** the cue shows (a debo
 
 ## Phase 451.1: Timing and preferences
 
-- [ ] M451.P1.T1 — Add the stale-cue preferences
+- [x] M451.P1.T1 — Add the stale-cue preferences
   - files: Engine/Settings.cpp, Engine/Settings.h
   - approach: In `Settings::initializeKnobsViewers`, next to the checkerboard knobs, add three knobs. Each label is the readable form of its script name. (1) `staleCueStyle` ("Stale Cue Style"), a KnobChoice with entries Off, Outline, Subtle Outline, Corner Dot, Edge Line, Toolbar Spinner; default Corner Dot. (2) `staleCueDelay` ("Stale Cue Delay"), a KnobInt in ms, min 0, default 400. (3) `staleCueHold` ("Stale Cue Hold"), a KnobInt in ms, min 0, default 500. Tooltips say what each controls and that nothing is drawn during playback. Add getters `getStaleCueStyle()` (an enum `StaleCueStyleEnum` in Settings.h), `getStaleCueDelayMs()` and `getStaleCueHoldMs()`, and set the defaults in `setDefaultValues`. Mirror how `_checkerboardTileSize` is declared, created and read.
   - verify: the debug build compiles; the existing Settings/preferences ctest suite passes.
   - size: M
-- [ ] M451.P1.T2 — Add a pure stale-cue timing class with GuiTests
+- [x] M451.P1.T2 — Add a pure stale-cue timing class with GuiTests
   - files: Gui/ViewerStaleCueTiming.h, Gui/ViewerStaleCueTiming.cpp, Gui/CMakeLists.txt, Tests/ViewerStaleCueTiming_Test.cpp, Tests/CMakeLists.txt (GuiTests_SOURCES)
   - approach: A class with no Qt widgets and no timers. Its inputs are `setStale(bool, nowMs)`, `setPlayback(bool, nowMs)` and `advance(nowMs)`, plus delay and hold set at construction or through setters. It exposes `visible()` and `nextDeadlineMs()` (the time the caller should next call `advance`, or none). Rules: (1) visible once stale has lasted the delay with no playback; (2) once shown, it stays visible until stale is false *and* hold ms have passed since it was shown; (3) playback forces it hidden and resets both clocks. Edge cases are listed in this file's Scope. The caller drives it with a single-shot QTimer, so the logic can be tested without one.
   - verify: a new GuiTests gtest covers every Scope edge case: short stale is never visible; a fast stale→current→stale toggle inside the hold leaves no gap; playback hides it and resets the delay; delay 0 shows it at once; hold 0 clears it at once.
@@ -43,17 +43,17 @@ The milestone has three steps. First it separates **when** the cue shows (a debo
 
 ## Phase 451.2: Styles
 
-- [ ] M451.P2.T1 — Drive the cue from ViewerTab through the timing class
+- [x] M451.P2.T1 — Drive the cue from ViewerTab through the timing class
   - files: Gui/ViewerTab.cpp, Gui/ViewerTab.h, Gui/ViewerTab10.cpp, Gui/ViewerTabPrivate.h, Gui/ViewerTabPrivate.cpp, Gui/ViewerGL.h, Gui/ViewerGL.cpp, Gui/ViewerGLPrivate.h
   - approach: Connect `ViewerInstance::staleChanged` to a `ViewerTab` slot, as M302 did (see `65889b6cd` ViewerTab.cpp / ViewerTab10.cpp). Own a `ViewerStaleCueTiming` and one single-shot QTimer that fires at `nextDeadlineMs()`. Feed playback in from `onEngineStarted` / `onEngineStopped`. Read delay and hold from Settings each time the cue arms, so changing a preference takes effect without a restart. For the GL styles, push the result to `ViewerGL::setStaleCue(StaleCueStyleEnum style, bool visible)`, which stores both and calls `update()` only when either changed. For Toolbar Spinner, call a `ViewerTab::setStaleSpinnerVisible(bool)` stub that T3 fills in, and pass `visible = false` to ViewerGL. Style Off never arms the timer. Draw nothing yet; T2 and T3 add the drawing.
   - verify: compiles; GuiTests and ViewerStaleState_Test pass.
   - size: M
-- [ ] M451.P2.T2 — Draw the four styles in ViewerGL::paintGL
+- [x] M451.P2.T2 — Draw the four styles in ViewerGL::paintGL
   - files: Gui/ViewerGL.cpp, Gui/ViewerGLPrivate.h
   - approach: Draw in `paintGL` after the selection rectangle, under `GLProtectAttrib`, the same way M302's border did (`65889b6cd` ViewerGL.cpp). Size everything in screen pixels, converted through `glShadow` as M302 did. **Outline**: amber (1, 0.7, 0) quads on all four sides, 2 px, the M302 look with the new timing. **Subtle Outline**: 1 px on all four sides, amber at 40% alpha with blending on. **Corner Dot**: an amber filled circle (a GL_TRIANGLE_FAN), 8 px across, inset 10 px from the viewport's top-right corner. **Edge Line**: a single 3 px amber bar along the top edge only. Draw nothing for Off.
   - verify: compiles; the P3 GUI script screenshots each style.
   - size: M
-- [ ] M451.P2.T3 — Add the Toolbar Spinner style
+- [x] M451.P2.T3 — Add the Toolbar Spinner style
   - files: Gui/ViewerTab.cpp, Gui/ViewerTab10.cpp, Gui/ViewerTabPrivate.h, Gui/ViewerTabPrivate.cpp
   - approach: Add a small busy-spinner widget to the viewer's top toolbar, at its right end. Size it to the toolbar's icon size and keep its slot reserved when hidden (fixed size, or `QSizePolicy::setRetainSizeWhenHidden`) so the toolbar never reflows. Animate it with a QTimer only while it is shown: a rotating arc painted in amber in `paintEvent`, about 12 frames per second. `setStaleSpinnerVisible(bool)` shows or hides it and starts or stops the timer. Its tooltip says the viewer image is out of date. Nothing changes when another style is selected.
   - verify: compiles; GuiTests pass; the P3 GUI script screenshots it; the toolbar width is the same with the spinner shown and hidden.
@@ -61,7 +61,7 @@ The milestone has three steps. First it separates **when** the cue shows (a debo
 
 ## Phase 451.3: Screenshots and UAT
 
-- [ ] M451.P3.T1 — Add an Xvfb GUI script that screenshots each style and checks the timing
+- [x] M451.P3.T1 — Add an Xvfb GUI script that screenshots each style and checks the timing
   - files: Tests/gui/m451_stale_cue.py
   - approach: Follow the harness pattern of `Tests/gui/m302_device_dots.py`, with the window at 1920x1080. Use M302's removed `Tests/gui/m302_stale_border.py` (in `65889b6cd`) for how it held a render long enough to see the viewer stale. For each of Outline, Subtle Outline, Corner Dot, Edge Line and Toolbar Spinner: set `staleCueStyle`, make the viewer stale past the delay, then save one screenshot per style under the script's output dir. Also check (a) that a render shorter than the delay never shows the cue and (b) that the cue clears within delay + hold + slack after the image becomes current. Read visibility through a test-only accessor on ViewerGL, or on the spinner widget's `isVisible()`, not from pixels.
   - verify: the script passes in the remote GUI gate (`build.sh --from-run <id> --gui`) and produces five screenshots.
@@ -88,3 +88,4 @@ The milestone has three steps. First it separates **when** the cue shows (a debo
 - 2026-11-17 — P1.T1-P3.T1 code in 586cac225 (lane .worktrees/m451); gate running. Deviations: StaleCueStyleEnum sits at namespace scope with an int base so ViewerGL.h can forward-declare it; ViewerGL exposes natronViewerStale for the GUI script; the Corner Dot's edge is 10 px from both edges.
 - 2026-11-17 — **UAT style pick (user):** keep Corner Dot, Subtle Outline, Edge Line and Toolbar Spinner; remove Outline (P4.T1). Timing stays at a 400 ms delay and a 500 ms hold. The Toolbar Spinner was not visible in the gate screenshot (user: "where's the spinner?"): a bug, fixed before P4.
 - 2026-11-17 — Spinner fix: at 1920x1080 the first viewer toolbar row is wider than the pane, so the spinner sat past its edge and was clipped. It moves to the second row beside the colour picker; the GUI script checks it is wholly on screen. Outline removed (P4.T1). Gate re-running. The first row's overflow at 1920x1080 is a separate defect, logged under # Open questions.
+- 2026-11-17 — **Spinner placement OK for testing (user):** the second-row spot after the colour picker is fine to test against the other styles. If the Toolbar Spinner is the style kept, it gets a small margin, or a divider, between it and the eyedropper. Gate green (run 44180987607, f5dae26c7).

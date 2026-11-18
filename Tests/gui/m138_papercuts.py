@@ -175,6 +175,13 @@ try:
 
     def open_read_dialog():
         """Tab menu -> Read, which opens the create-time file dialog. Returns the dialog."""
+        # Cancelling the dialog leaves the Read it created, selected. With a node selected the Tab
+        # menu lists only nodes that take that node's output as an input, which leaves Read out, so
+        # the Reads of an earlier round go before the menu opens.
+        for n in app.getChildren():
+            if "Read" in n.getPluginID():
+                n.destroy()
+        QApplication.processEvents()
         view = node_graph_view()
         require(view is not None, "the node graph is on screen")
         # The Tab shortcut only works while the graph has the focus or the pointer is over it. A
@@ -196,7 +203,8 @@ try:
         model = entries.model()
         row = next((r for r in range(model.rowCount())
                     if str(model.index(r, 0).data()).split("[")[0].strip() == "Read"), -1)
-        require(row >= 0, "the Tab menu offers Read")
+        require(row >= 0, "the Tab menu offers Read (rows: %s)" % [
+            str(model.index(r, 0).data()) for r in range(min(model.rowCount(), 8))])
         entries.setCurrentIndex(model.index(row, 0))
         # Choosing Read runs the file dialog's modal loop before the key press returns, so the press
         # is sent from the event loop and this step waits for the dialog inside that modal loop.

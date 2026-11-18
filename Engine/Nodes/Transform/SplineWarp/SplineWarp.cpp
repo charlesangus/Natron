@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <list>
 #include <memory>
 #include <span>
@@ -44,6 +45,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -1601,6 +1603,165 @@ SplineWarp::getInputsHoldingTransform(std::list<int>* inputs) const
     return true;
 }
 
+namespace {
+
+// cropRowToFormat() for a chain, where no source is NaN.
+void
+cropPointsToFormat(const RectI& format,
+                   EdgeMode edgeMode,
+                   std::size_t n,
+                   double* sx,
+                   double* sy)
+{
+    for (std::size_t i = 0; i < n; ++i) {
+        if (std::isnan(sx[i]) || std::isnan(sy[i])) {
+            continue;
+        }
+        if ((sx[i] >= format.x1) && (sx[i] <= format.x2) && (sy[i] >= format.y1) && (sy[i] <= format.y2)) {
+            continue;
+        }
+        if ((edgeMode == EdgeMode::Black) || format.isNull()) {
+            sx[i] = std::numeric_limits<double>::quiet_NaN();
+            sy[i] = std::numeric_limits<double>::quiet_NaN();
+        } else {
+            sx[i] = std::min(std::max(sx[i], format.x1 + 0.5), format.x2 - 0.5);
+            sy[i] = std::min(std::max(sy[i], format.y1 + 0.5), format.y2 - 0.5);
+        }
+    }
+}
+
+class SplineWarpInverseMap
+    : public InverseWarpMap {
+public:
+    // A null field leaves every point in place; a null format does not crop.
+    SplineWarpInverseMap(const RenderScale& scale,
+                         double par,
+                         const SplineWarpFieldConstPtr& field,
+                         const RectI& format,
+                         bool crop,
+                         EdgeMode edgeMode)
+        : InverseWarpMap(scale, par)
+        , _field(field)
+        , _format(format)
+        , _crop(crop)
+        , _edgeMode(edgeMode)
+    {
+    }
+
+    virtual void mapRow(std::size_t n,
+                        double* sx,
+                        double* sy,
+                        double* J) const OVERRIDE FINAL
+    {
+        if (_field) {
+            _field->mapPoints(n, sx, sy, J);
+        }
+        if (_crop) {
+            cropPointsToFormat(_format, _edgeMode, n, sx, sy);
+        }
+    }
+
+private:
+    SplineWarpFieldConstPtr _field;
+    RectI _format;
+    bool _crop;
+    EdgeMode _edgeMode;
+};
+
+} // anonymous namespace
+
+bool
+SplineWarp::hasMotionBlur(double time,
+                          ViewIdx view) const
+{
+    KnobDoublePtr motionBlur = _motionBlur.lock();
+    KnobDoublePtr shutter = _shutter.lock();
+
+    return motionBlur && shutter && (motionBlur->getValueAtTime(time, 0, view) > 0.) && (shutter->getValueAtTime(time, 0, view) > 0.);
+}
+
+bool
+SplineWarp::canOfferInverseWarp(double time,
+                                ViewIdx view,
+                                bool /*draftRender*/,
+                                int* inputNb) const
+{
+    if (!getInput(kSplineWarpInputSource) || isMaskApplied() || (getMixValue(time, view) != 1.) || hasMotionBlur(time, view)) {
+        return false;
+    }
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(getKnobByName(kNodeParamChannelSet));
+    if (channels) {
+        bool all = false;
+        for (const ResolvedLayer& layer : channels->resolve(std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()))) {
+            if (layer.desc.isColorLayer()) {
+                all = layer.channels.all();
+                break;
+            }
+        }
+        if (!all) {
+            return false;
+        }
+    }
+    ImageLayerDesc maskLayer;
+    if (getOutputMaskLayer(time, view, &maskLayer)) {
+        return false;
+    }
+    if (inputNb) {
+        *inputNb = kSplineWarpInputSource;
+    }
+
+    return true;
+}
+
+InverseWarpMapConstPtr
+SplineWarp::getInverseWarpMap(double time,
+                              ViewIdx view,
+                              const RenderScale& scale,
+                              bool draftRender,
+                              const RectD& window)
+{
+    Settings settings;
+    readSettings(time, view, &settings, draftRender);
+    Warp warp;
+    computeWarp(time, view, settings, &warp);
+    const double par = getOutputPixelAspectRatio(time, view);
+    const OfxPointD s = scale.toOfxPointD();
+    SplineWarpFieldConstPtr field;
+    if (!window.isNull()) {
+        field = computeField(warp, time, settings, PassExec::toPixelEnclosing(window, scale, par), s.x / par, s.y, false);
+    }
+    if (field && field->isIdentity()) {
+        field.reset();
+    }
+    const bool crop = !settings.cropFormat.isNull();
+    const RectI format = crop ? settings.cropFormat.toPixelEnclosing(scale, par) : RectI();
+
+    return std::make_shared<const SplineWarpInverseMap>(scale, par, field, format, crop, settings.edgeMode);
+}
+
+bool
+SplineWarp::acceptsInverseWarpChain(int inputNb,
+                                    double time,
+                                    ViewIdx view) const
+{
+    return (inputNb == kSplineWarpInputSource) && !hasMotionBlur(time, view);
+}
+
+double
+SplineWarp::getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                             double time,
+                                             ViewIdx view) const
+{
+    return Resampler::filterRoIExpansion(_filterKnobs.read(time, view)) + 0.5;
+}
+
+std::optional<EdgeMode>
+SplineWarp::getConcatenationEdgeMode(double time,
+                                     ViewIdx view) const
+{
+    return resolvedEdgeMode(time, view);
+}
+
 StatusEnum
 SplineWarp::getRegionOfDefinition(U64 /*hash*/,
                                   double time,
@@ -1852,6 +2013,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         SplineWarpFieldConstPtr field = computeField(warps[i].warp, warps[i].time, settings, roi, s.x / par, s.y, subFrames);
         fields.push_back(field ? field : std::make_shared<const SplineWarpField>());
     }
+    const InverseWarpChainConstPtr chain = (sourceInput >= 0) ? getPreparedWarpChain(sourceInput, args.time, args.view, args.mappedScale, PassExec::toCanonical(roi, args.mappedScale, par)) : InverseWarpChainConstPtr();
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
     // into a cached image this render would otherwise already hold a read lock on.
@@ -1880,6 +2042,8 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         RectI srcBounds;
         Transform::Matrix3x3Ptr inputTransform;
         bool concatenated = false;
+        // The fetched image is the chain's source, which every warped coordinate maps into.
+        bool chained = false;
         // The outputMask plane, which warps the cookie mask instead of the Source.
         bool maskPlane = false;
         Mat3 inverse;
@@ -1918,6 +2082,8 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                 if (!plane->concatenated) {
                     plane->src.reset();
                 }
+            } else if (plane->src && chain) {
+                plane->chained = true;
             }
         }
         planes.push_back(std::move(plane));
@@ -1963,7 +2129,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             plane.srcNComps = srcNComps;
             plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             // A concatenated image is in upstream pixels, which the sampling crops by coordinate.
-            const RectI readBounds = (crop && !plane.concatenated) ? plane.srcBounds.intersect(formatPixels) : plane.srcBounds;
+            const RectI readBounds = (crop && !plane.concatenated && !plane.chained) ? plane.srcBounds.intersect(formatPixels) : plane.srcBounds;
             if (readBounds.isNull()) {
                 plane.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
             } else if (srcNComps == nComps) {
@@ -2013,7 +2179,49 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         std::vector<float> sy(width);
         std::vector<float> jacobian(impulse ? 0 : (std::size_t)width * 4);
         float* const jac = impulse ? NULL : jacobian.data();
+        std::vector<double> chainX(plane.chained ? width : 0);
+        std::vector<double> chainY(plane.chained ? width : 0);
+        std::vector<double> chainJ((plane.chained && !impulse) ? (std::size_t)width * 4 : 0);
+        double* const chainJac = chainJ.empty() ? NULL : chainJ.data();
+        // Row y's pixel centres through the field when given, the crop, then the chain, into sx, sy
+        // and jac.
+        const auto mapRowThroughChain = [&](const SplineWarpField* field, int y) {
+            for (int i = 0; i < width; ++i) {
+                chainX[i] = roi.x1 + i + 0.5;
+                chainY[i] = y + 0.5;
+                if (chainJac) {
+                    double* J = &chainJac[(std::size_t)i * 4];
+                    J[0] = 1.;
+                    J[1] = 0.;
+                    J[2] = 0.;
+                    J[3] = 1.;
+                }
+            }
+            if (field) {
+                field->mapPoints((std::size_t)width, chainX.data(), chainY.data(), chainJac);
+                if (crop) {
+                    cropPointsToFormat(formatPixels, settings.edgeMode, (std::size_t)width, chainX.data(), chainY.data());
+                }
+            }
+            chain->mapRow((std::size_t)width, chainX.data(), chainY.data(), chainJac);
+            for (int i = 0; i < width; ++i) {
+                sx[i] = (float)chainX[i];
+                sy[i] = (float)chainY[i];
+            }
+            if (chainJac) {
+                for (std::size_t k = 0; k < (std::size_t)width * 4; ++k) {
+                    jac[k] = (float)chainJac[k];
+                }
+            }
+        };
         const auto sampleField = [&](const SplineWarpField& field, int y, float* row) {
+            if (plane.chained) {
+                mapRowThroughChain(&field, y);
+                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
+                                                 Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
+
+                return;
+            }
             field.getRow(y, roi.x1, roi.x2, sx.data(), sy.data(), jac);
             if (plane.concatenated) {
                 if (crop) {
@@ -2072,7 +2280,13 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             if (direct) {
                 continue;
             }
-            if (plane.concatenated) {
+            if (plane.chained) {
+                // The reference is this node's immediate input: the chain's source through the
+                // chain alone.
+                mapRowThroughChain(NULL, y);
+                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
+                                                 Resampler::eWrapNone, Resampler::eWrapNone, &referenceRow[0], nComps);
+            } else if (plane.concatenated) {
                 // The reference is this node's immediate input: the fetched image through the
                 // concatenated transform alone, read past its region under this node's edge mode,
                 // which concatenation guarantees the transform resolves to as well.

@@ -482,6 +482,58 @@ SplineWarpField::getRow(int y,
 } // SplineWarpField::getRow
 
 void
+SplineWarpField::mapPoints(std::size_t n,
+                           double* sx,
+                           double* sy,
+                           double* jacobian) const
+{
+    if (_identity) {
+        return;
+    }
+    const bool feathers = !_boundaries.empty();
+    const double ratioXY = _scaleX / _scaleY;
+    const double ratioYX = _scaleY / _scaleX;
+    for (std::size_t k = 0; k < n; ++k) {
+        if (!std::isfinite(sx[k]) || !std::isfinite(sy[k])) {
+            continue;
+        }
+        const double cx = sx[k] / _scaleX;
+        const double cy = sy[k] / _scaleY;
+        if (feathers && !insideAnyFeather(cx, cy)) {
+            continue;
+        }
+        int i, j;
+        double fx, fy;
+        cellOf(cx, cy, &i, &j, &fx, &fy);
+        const std::size_t a = (std::size_t)j * _nx + i;
+        const std::size_t b = a + 1;
+        const std::size_t c = a + _nx;
+        const std::size_t d = c + 1;
+        sx[k] = _scaleX * ((1. - fy) * ((1. - fx) * _sourceX[a] + fx * _sourceX[b]) + fy * ((1. - fx) * _sourceX[c] + fx * _sourceX[d]));
+        sy[k] = _scaleY * ((1. - fy) * ((1. - fx) * _sourceY[a] + fx * _sourceY[b]) + fy * ((1. - fx) * _sourceY[c] + fx * _sourceY[d]));
+        if (!jacobian) {
+            continue;
+        }
+        const double* ja = &_jacobian[a * 4];
+        const double* jb = &_jacobian[b * 4];
+        const double* jc = &_jacobian[c * 4];
+        const double* jd = &_jacobian[d * 4];
+        double D[4];
+        for (int m = 0; m < 4; ++m) {
+            D[m] = (1. - fy) * ((1. - fx) * ja[m] + fx * jb[m]) + fy * ((1. - fx) * jc[m] + fx * jd[m]);
+        }
+        D[1] *= ratioXY;
+        D[2] *= ratioYX;
+        double* J = &jacobian[k * 4];
+        const double j0 = J[0], j1 = J[1], j2 = J[2], j3 = J[3];
+        J[0] = D[0] * j0 + D[1] * j2;
+        J[1] = D[0] * j1 + D[1] * j3;
+        J[2] = D[2] * j0 + D[3] * j2;
+        J[3] = D[2] * j1 + D[3] * j3;
+    }
+} // SplineWarpField::mapPoints
+
+void
 SplineWarpField::rowInsideFeathers(int y,
                                    int x1,
                                    int x2,

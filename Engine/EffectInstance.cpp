@@ -3291,6 +3291,28 @@ EffectInstance::getConcatenatedWarpChain(int inputNb) const
     return found->second.warpChain;
 }
 
+InverseWarpChainConstPtr
+EffectInstance::getPreparedWarpChain(int inputNb,
+                                     double time,
+                                     ViewIdx view,
+                                     const RenderScale& scale,
+                                     const RectD& renderWindow)
+{
+    const InverseWarpChainConstPtr chain = getConcatenatedWarpChain(inputNb);
+    const EffectInstancePtr input = getInput(inputNb);
+
+    if (!chain || !chain->hasMapStep() || !input) {
+        return InverseWarpChainConstPtr();
+    }
+    // The output region of definition is unused by the regions of interest a chain consumer gives.
+    RoIMap rois;
+    getRegionsOfInterest(time, scale, renderWindow, renderWindow, view, &rois);
+    RoIMap::const_iterator found = rois.find(input);
+    const RectD window = (found != rois.end()) ? found->second : RectD();
+
+    return std::make_shared<const InverseWarpChain>(chain->prepare(window, getInverseWarpChainFilterSupport(inputNb, time, view)));
+}
+
 bool
 EffectInstance::allocateImageLayer(const ImageKey& key,
                                    const RectD& rod,

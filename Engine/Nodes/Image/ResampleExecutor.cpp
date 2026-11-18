@@ -40,6 +40,7 @@
 #include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
@@ -86,6 +87,9 @@ struct ResamplePlane {
     bool resampleReference = false;
     Resampler::SamplingTransforms referenceTransforms;
     Resampler::ResampleParams referenceParams;
+    // The source is the chain's, sampled at each pixel centre through inverse then the chain.
+    bool chained = false;
+    TransformMath::Mat3 inverse;
 
     ResamplePlane() = default;
     ResamplePlane(const ResamplePlane&) = delete;
@@ -503,6 +507,7 @@ runResampleCpu(EffectInstance& effect,
     }
     const OfxPointD s = args.mappedScale.toOfxPointD();
     const double dstPar = effect.getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1);
+    const InverseWarpChainConstPtr chain = (matrix && (sourceInput >= 0)) ? effect.getPreparedWarpChain(sourceInput, args.time, args.view, args.mappedScale, PassExec::toCanonical(roi, args.mappedScale, dstPar)) : InverseWarpChainConstPtr();
     const PixelOffset offset = request.offset;
     const bool matted = !matrix && request.matte.isSet();
     MatteAxis matteColumns;
@@ -542,7 +547,14 @@ runResampleCpu(EffectInstance& effect,
             if (matrix) {
                 const double srcPar = plane.src->getPixelAspectRatio();
                 Resampler::buildSamplingTransforms(request.transform, args.time, request.settings.invert, blur, s.x, s.y, false, srcPar, dstPar, &plane.transforms);
-                if (plane.inputTransform) {
+                if (chain && !plane.inputTransform) {
+                    // acceptsInverseWarpChain() declines the blurs that average several matrices.
+                    if (plane.transforms.invTransforms.size() != 1) {
+                        return eStatusFailed;
+                    }
+                    plane.chained = true;
+                    plane.inverse = plane.transforms.invTransforms.front();
+                } else if (plane.inputTransform) {
                     const Mat3 inputTransform = TransformMath::fromEngineMatrix(*plane.inputTransform);
                     Resampler::concatenateInputTransform(inputTransform, &plane.transforms);
                     if (readsReference) {
@@ -579,6 +591,37 @@ runResampleCpu(EffectInstance& effect,
         std::vector<float> resampledRow(direct ? 0 : rowSize);
         std::vector<float> referenceRow(direct ? 0 : rowSize);
         std::vector<float> maskRow(doMask ? width : 0);
+        const bool impulse = filter.filter == Resampler::eFilterImpulse;
+        const std::size_t chainSize = plane.chained ? (std::size_t)width : 0;
+        std::vector<double> chainX(chainSize), chainY(chainSize), chainJ(impulse ? 0 : chainSize * 4);
+        std::vector<float> sx(chainSize), sy(chainSize), jacobian(impulse ? 0 : chainSize * 4);
+        // Row y through the chain into row, after this node's own inverse matrix when throughOp.
+        const auto resampleRowThroughChain = [&](int y, bool throughOp, float* row) {
+            double* const J = chainJ.empty() ? NULL : chainJ.data();
+            for (int i = 0; i < width; ++i) {
+                chainX[i] = roi.x1 + i + 0.5;
+                chainY[i] = y + 0.5;
+                if (J) {
+                    J[i * 4] = 1.;
+                    J[i * 4 + 1] = 0.;
+                    J[i * 4 + 2] = 0.;
+                    J[i * 4 + 3] = 1.;
+                }
+            }
+            if (throughOp) {
+                InverseWarp::mapRowThroughMatrix(plane.inverse.m, chainSize, chainX.data(), chainY.data(), J);
+            }
+            chain->mapRow(chainSize, chainX.data(), chainY.data(), J);
+            for (std::size_t i = 0; i < chainSize; ++i) {
+                sx[i] = (float)chainX[i];
+                sy[i] = (float)chainY[i];
+            }
+            for (std::size_t k = 0; k < chainJ.size(); ++k) {
+                jacobian[k] = (float)chainJ[k];
+            }
+            Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jacobian.empty() ? NULL : jacobian.data(), width, filter, request.settings.clamp,
+                                             request.settings.edgeMode, Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
+        };
 
         for (int y = band.y1; y < band.y2; ++y) {
             if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
@@ -592,6 +635,8 @@ runResampleCpu(EffectInstance& effect,
             float* const outRow = direct ? dstPix : resampledRow.data();
             if (!hasSource) {
                 std::fill(outRow, outRow + rowSize, 0.f);
+            } else if (plane.chained) {
+                resampleRowThroughChain(y, true, outRow);
             } else if (matrix) {
                 Resampler::resampleRow(plane.params, plane.source, y, roi.x1, roi.x2, outRow);
             } else {
@@ -605,7 +650,9 @@ runResampleCpu(EffectInstance& effect,
                 continue;
             }
             if (readsReference) {
-                if (plane.resampleReference) {
+                if (plane.chained) {
+                    resampleRowThroughChain(y, false, &referenceRow[0]);
+                } else if (plane.resampleReference) {
                     Resampler::resampleRow(plane.referenceParams, plane.source, y, roi.x1, roi.x2, &referenceRow[0]);
                 } else {
                     readSourceImageRow(plane.source, plane.readable, EdgeMode::Black, roi.x1, y, width, &referenceRow[0]);

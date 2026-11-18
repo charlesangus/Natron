@@ -2243,6 +2243,17 @@ public:
      **/
     InverseWarpChainConstPtr getConcatenatedWarpChain(int inputNb) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief getConcatenatedWarpChain() prepared over this node's region of interest on inputNb
+     * for renderWindow, a canonical region of its output, as transformInputRois() prepares it.
+     * Null when the input concatenated no map. With no such region, every map gives no source.
+     **/
+    InverseWarpChainConstPtr getPreparedWarpChain(int inputNb,
+                                                  double time,
+                                                  ViewIdx view,
+                                                  const RenderScale& scale,
+                                                  const RectD& renderWindow) WARN_UNUSED_RETURN;
+
 protected:
     /**
      * @brief Can be derived to indicate for each input node what is the frame range(s) (which can be discontinuous)

@@ -152,6 +152,15 @@ public:
     void getRow(int y, int x1, int x2, float* sx, float* sy, float* jacobian) const;
 
     /**
+     * @brief Maps the n points (sx[i], sy[i]), pixel coordinates at the render scale, in place to
+     * their sources, the value getRow() gives at a pixel centre. When jacobian is not null it
+     * holds four doubles per point in getRow()'s layout, each becoming D·J with D the field's
+     * pixel Jacobian at the point. A NaN point stays NaN with its Jacobian untouched. Points
+     * should lie within the window.
+     **/
+    void mapPoints(std::size_t n, double* sx, double* sy, double* jacobian) const;
+
+    /**
      * @brief The field over its window as splinewarp.slang reads it to give what getRow() gives:
      * per grid point, 8 words, its source in pixels at the render scale as two-float pairs (hi,
      * lo) for x then y, then its Jacobian in getRow()'s layout; per window column, 3 words, the

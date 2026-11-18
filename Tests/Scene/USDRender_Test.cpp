@@ -71,6 +71,7 @@
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -79,6 +80,7 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -927,6 +929,139 @@ TEST_F(USDRenderRendererTest, TheRendererKnobBeatsThePrimWhichBeatsStorm)
     ASSERT_TRUE(makeActive);
     makeActive->setValue(false);
     EXPECT_EQ(std::string(kRenderDelegateStormId), activeRendererOf(node, &error)) << error;
+}
+
+// Natron Utility's overscan widens the output by its pixels on every side, and only while Natron
+// Utility renders; a UV Unwrap's texels have nothing beyond them.
+TEST_F(USDRenderRendererTest, UtilityOverscanGrowsTheOutputOnEverySide)
+{
+    NodePtr settings;
+    NodePtr node = createRender(kFixture, &settings);
+    ASSERT_TRUE(node != nullptr);
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(settings->getEffectInstance().get());
+    ASSERT_TRUE(effect && effect->renderSettings());
+    KnobInt* overscan = dynamic_cast<KnobInt*>(effect->renderSettings()->knob(kRenderDelegateUtilityId, kUtilitySettingOverscan).get());
+    KnobChoice* projection = dynamic_cast<KnobChoice*>(effect->renderSettings()->knob(kRenderDelegateUtilityId, kUtilitySettingProjection).get());
+    ASSERT_TRUE(overscan && projection);
+    overscan->setValue(16);
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateStormId));
+    RectD rod = rodOf(node);
+    EXPECT_EQ(0., rod.x1);
+    EXPECT_EQ((double)kWidth, rod.x2);
+
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
+    rod = rodOf(node);
+    EXPECT_EQ(-16., rod.x1);
+    EXPECT_EQ(-16., rod.y1);
+    EXPECT_EQ(kWidth + 16., rod.x2);
+    EXPECT_EQ(kHeight + 16., rod.y2);
+    EXPECT_EQ(kWidth + 32., rod.width());
+    EXPECT_EQ(kHeight + 32., rod.height());
+
+    (void)projection->setValueFromID(kUtilityProjectionUvUnwrap, 0);
+    rod = rodOf(node);
+    EXPECT_EQ(0., rod.x1);
+    EXPECT_EQ((double)kWidth, rod.x2);
+}
+
+namespace {
+const int kBakeTexels = 16;
+
+// A quad with stLines for its UVs and no camera, baked over tile 1001 by a RenderSettings prim with
+// cameraLine, of the prim at uvPrim.
+std::string
+bakeScene(const std::string& cameraLine,
+          const std::string& stLines,
+          const std::string& uvPrim)
+{
+    const std::string id = kRenderDelegateUtilityId;
+
+    return std::string("#usda 1.0\n(\n    renderSettingsPrimPath = \"/Render/bake\"\n)\n\n"
+                       "def Xform \"World\"\n{\n    def Mesh \"Quad\"\n    {\n"
+                       "        uniform token subdivisionScheme = \"none\"\n"
+                       "        int[] faceVertexCounts = [4]\n        int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                       "        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]\n")
+        + stLines + "    }\n}\n\n"
+        + "def Scope \"Render\"\n{\n    def RenderSettings \"bake\"\n    {\n" + cameraLine
+        + "        uniform int2 resolution = (" + std::to_string(kBakeTexels) + ", " + std::to_string(kBakeTexels) + ")\n"
+        + "        token " + RenderSettingsPrim::attributeName(id, kUtilitySettingDevice) + " = \"" + kUtilityDeviceCpu + "\"\n"
+        + "        int " + RenderSettingsPrim::attributeName(id, kUtilitySettingPixelSamples) + " = 1\n"
+        + "        token " + RenderSettingsPrim::attributeName(id, kUtilitySettingProjection) + " = \"" + kUtilityProjectionUvUnwrap + "\"\n"
+        + "        string " + RenderSettingsPrim::attributeName(id, kUtilitySettingUvPrim) + " = \"" + uvPrim + "\"\n"
+        + "        string " + RenderSettingsPrim::attributeName(id, kUtilitySettingUvPrimvar) + " = \"st\"\n"
+        + "    }\n}\n";
+}
+
+const char* const kBakeFaceVaryingSt = "        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (\n"
+                                       "            interpolation = \"faceVarying\"\n        )\n";
+} // anon namespace
+
+// A bake needs no camera, so a scene without the one its settings name, or without any, still
+// bakes; a bake that cannot lay out its prim fails with the reason as the node's error.
+TEST_F(USDRenderRendererTest, AUvUnwrapBakesWithoutACameraAndFailsWithItsReasonOnTheNode)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    struct Case {
+        const char* name;
+        std::string text;
+        std::vector<std::string> named;
+    };
+    const std::string missingCamera = "        rel camera = </World/Cam>\n";
+    const std::vector<Case> cases = {
+        { "a camera the scene lacks", bakeScene(missingCamera, kBakeFaceVaryingSt, "/World/Quad"), {} },
+        { "no camera", bakeScene(std::string(), kBakeFaceVaryingSt, "/World/Quad"), {} },
+        { "no primvar", bakeScene(missingCamera, std::string(), "/World/Quad"), { "/World/Quad", "\"st\"" } },
+        { "a uniform primvar", bakeScene(missingCamera, "        texCoord2f[] primvars:st = [(0.5, 0.5)] (\n            interpolation = \"uniform\"\n        )\n", "/World/Quad"), { "/World/Quad", "\"st\"", "constant or uniform" } },
+        { "no prim", bakeScene(missingCamera, kBakeFaceVaryingSt, "/World/Gone"), { "/World/Gone" } },
+    };
+    std::vector<std::string> paths;
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const QString filePath = tmp.path() + QString::fromUtf8("/bake-%1.usda").arg((int)i);
+        QFile file(filePath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ASSERT_GT(file.write(cases[i].text.c_str()), 0);
+        paths.push_back(filePath.toStdString());
+    }
+    NodePtr reader = createReader(paths[0].c_str());
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(reader && node);
+    connectNodes(reader, node, 0, true);
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    effect->refreshSettingsPrimMenu();
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
+    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
+    ASSERT_TRUE(file);
+
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const Case& c = cases[i];
+        file->setValue(paths[i]);
+        appPTR->clearAllCaches();
+        node->clearPersistentMessage(false);
+        ASSERT_FALSE(node->hasPersistentMessage()) << c.name;
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const bool rendered = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kBakeTexels, kBakeTexels), allPlanes(), &planes, &error, false);
+        if (c.named.empty()) {
+            ASSERT_TRUE(rendered) << c.name << ": " << error;
+            ASSERT_EQ(3u, planes.size()) << c.name;
+            ASSERT_EQ((std::size_t)kBakeTexels * kBakeTexels, planes[2].pixels.size()) << c.name;
+            const std::ptrdiff_t empty = std::count(planes[2].pixels.begin(), planes[2].pixels.end(), 0.f);
+            EXPECT_EQ(0, empty) << c.name << ": the quad's UVs cover the whole tile";
+            continue;
+        }
+        EXPECT_FALSE(rendered) << c.name;
+        ASSERT_TRUE(node->hasPersistentMessage()) << c.name;
+        QString message;
+        int type = -1;
+        node->getPersistentMessage(&message, &type, false);
+        EXPECT_EQ((int)eMessageTypeError, type) << c.name;
+        for (const std::string& part : c.named) {
+            EXPECT_TRUE(message.contains(QString::fromStdString(part))) << c.name << ": " << message.toStdString();
+        }
+    }
+    HydraRender::releaseAllCpuEngines();
 }
 
 // The Settings Prim knob beats the stage's renderSettingsPrimPath metadata.

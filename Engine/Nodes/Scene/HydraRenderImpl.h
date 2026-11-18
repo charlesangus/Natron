@@ -43,6 +43,7 @@
 #include "Engine/ScenePayload.h"
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/imaging/cameraUtil/framing.h>
 
 PXR_NAMESPACE_OPEN_SCOPE
 class UsdImagingGLEngine;
@@ -175,6 +176,13 @@ struct Request {
     // The camera's frustum at times within shutterInterval(*this), relative to time and increasing.
     // Empty for a camera that does not blur: its frustum is frustum throughout.
     std::vector<std::pair<double, PXR_NS::GfFrustum>> cameraMotion;
+    // Pixels of width and height beyond the frustum's frame on each side. The frustum frames the
+    // image within them and the delegate carries its projection on into them, as a framing whose
+    // data window is larger than its display window asks.
+    int overscanLeft = 0;
+    int overscanBottom = 0;
+    int overscanRight = 0;
+    int overscanTop = 0;
 };
 
 /**
@@ -186,6 +194,10 @@ PXR_NS::GfVec2d shutterInterval(const Request& request) WARN_UNUSED_RETURN;
 
 // Whether request's delegate blurs the camera's motion within shutterInterval(request).
 bool cameraMotionBlur(const Request& request) WARN_UNUSED_RETURN;
+
+// The framing request's engine renders under: its width by height pixels, the frustum framing the
+// part within its overscan.
+PXR_NS::CameraUtilFraming framing(const Request& request) WARN_UNUSED_RETURN;
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
 struct Result {

@@ -29,11 +29,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3i.h>
 #include <pxr/base/tf/stringUtils.h>
@@ -393,6 +396,58 @@ makeLightRecord(const UtilityLightDesc& desc,
 
     return record;
 }
+
+// The camera as the spherical and cylindrical mappings see it.
+struct MappedCamera {
+    GfVec3d apex;
+    GfVec3d right;
+    GfVec3d up;
+    GfVec3d forward;
+    double nearDistance = 0.;
+    double farDistance = 0.;
+    // The display window's bottom and top: slopes off the forward axis for a perspective camera,
+    // heights above the apex for an orthographic one.
+    double bottom = 0.;
+    double top = 0.;
+    bool orthographic = false;
+    WavefrontRect display;
+};
+
+WavefrontRect
+displayOf(const WavefrontFrame& frame)
+{
+    return (frame.display.width > 0 && frame.display.height > 0) ? frame.display : frame.window;
+}
+
+MappedCamera
+mappedCamera(const WavefrontFrame& frame)
+{
+    MappedCamera camera;
+    const GfMatrix4d viewToWorld = frame.worldToView.GetInverse();
+    const GfMatrix4d viewFromNdc = frame.projection.GetInverse();
+
+    camera.apex = viewToWorld.Transform(GfVec3d(0.));
+    camera.right = viewToWorld.TransformDir(GfVec3d(1., 0., 0.)).GetNormalized();
+    camera.up = viewToWorld.TransformDir(GfVec3d(0., 1., 0.)).GetNormalized();
+    camera.forward = viewToWorld.TransformDir(GfVec3d(0., 0., -1.)).GetNormalized();
+    camera.nearDistance = -viewFromNdc.Transform(GfVec3d(0., 0., kNdcNear))[2];
+    camera.farDistance = -viewFromNdc.Transform(GfVec3d(0., 0., kNdcFar))[2];
+    camera.orthographic = frame.projection[2][3] == 0.;
+    camera.display = displayOf(frame);
+
+    const double height = std::max(1, frame.window.height);
+    const auto edge = [&](int row) {
+        const double ndcY = 2. * (row - frame.window.y) / height - 1.;
+        const GfVec3d p = viewFromNdc.Transform(GfVec3d(0., ndcY, kNdcNear));
+
+        return camera.orthographic ? p[1] : p[1] / -p[2];
+    };
+
+    camera.bottom = edge(camera.display.y);
+    camera.top = edge(camera.display.y + camera.display.height);
+
+    return camera;
+}
 } // anon namespace
 
 bool
@@ -422,28 +477,53 @@ KernelRayGenParams
 makeRayGenParams(const WavefrontFrame& frame,
                  const WavefrontRect& tile)
 {
-    const GfMatrix4d inverse = (frame.worldToView * frame.projection).GetInverse();
-    const GfVec3d nearAtCentre = inverse.Transform(GfVec3d(0., 0., kNdcNear));
-    const GfVec3d farAtCentre = inverse.Transform(GfVec3d(0., 0., kNdcFar));
     KernelRayGenParams params;
+    WavefrontRect window = frame.window;
 
-    storePosition(nearAtCentre, params.nearAtCentre);
-    storePosition(inverse.Transform(GfVec3d(1., 0., kNdcNear)) - nearAtCentre, params.nearPerX);
-    storePosition(inverse.Transform(GfVec3d(0., 1., kNdcNear)) - nearAtCentre, params.nearPerY);
-    storePosition(farAtCentre, params.farAtCentre);
-    storePosition(inverse.Transform(GfVec3d(1., 0., kNdcFar)) - farAtCentre, params.farPerX);
-    storePosition(inverse.Transform(GfVec3d(0., 1., kNdcFar)) - farAtCentre, params.farPerY);
+    if (frame.mapping == WavefrontMapping::Spherical || frame.mapping == WavefrontMapping::Cylindrical) {
+        const MappedCamera camera = mappedCamera(frame);
+
+        storePosition(camera.apex, params.nearAtCentre);
+        storePosition(camera.right, params.nearPerX);
+        storePosition(camera.up, params.nearPerY);
+        storePosition(camera.forward, params.farAtCentre);
+        storePosition(GfVec3d(camera.nearDistance, camera.farDistance, 0.), params.farPerX);
+        storePosition(GfVec3d(camera.bottom, camera.top, camera.orthographic ? 1. : 0.), params.farPerY);
+        params.mapping = (frame.mapping == WavefrontMapping::Spherical) ? eKernelRayMappingSpherical : eKernelRayMappingCylindrical;
+        window = camera.display;
+    } else if (frame.mapping == WavefrontMapping::UvUnwrap) {
+        const float zero[3] = { 0.f, 0.f, 0.f };
+
+        std::copy(zero, zero + 3, params.nearAtCentre);
+        std::copy(zero, zero + 3, params.nearPerX);
+        std::copy(zero, zero + 3, params.nearPerY);
+        std::copy(zero, zero + 3, params.farAtCentre);
+        std::copy(zero, zero + 3, params.farPerX);
+        std::copy(zero, zero + 3, params.farPerY);
+        params.mapping = eKernelRayMappingUvUnwrap;
+    } else {
+        const GfMatrix4d inverse = (frame.worldToView * frame.projection).GetInverse();
+        const GfVec3d nearAtCentre = inverse.Transform(GfVec3d(0., 0., kNdcNear));
+        const GfVec3d farAtCentre = inverse.Transform(GfVec3d(0., 0., kNdcFar));
+
+        storePosition(nearAtCentre, params.nearAtCentre);
+        storePosition(inverse.Transform(GfVec3d(1., 0., kNdcNear)) - nearAtCentre, params.nearPerX);
+        storePosition(inverse.Transform(GfVec3d(0., 1., kNdcNear)) - nearAtCentre, params.nearPerY);
+        storePosition(farAtCentre, params.farAtCentre);
+        storePosition(inverse.Transform(GfVec3d(1., 0., kNdcFar)) - farAtCentre, params.farPerX);
+        storePosition(inverse.Transform(GfVec3d(0., 1., kNdcFar)) - farAtCentre, params.farPerY);
+        params.mapping = eKernelRayMappingCamera;
+    }
     const WavefrontSampling& sampling = frame.sampling;
     params.filterWidth = sampling.filterWidth;
     params.sampleIndex = static_cast<std::uint32_t>(std::max(0, sampling.sampleIndex));
     params.seed = sampling.seed;
     params.samplesPerSide = static_cast<std::uint32_t>(std::max(1, sampling.samplesPerSide));
     params.filter = sampling.filter;
-    params.padding = 0;
-    params.windowX = frame.window.x;
-    params.windowY = frame.window.y;
-    params.windowWidth = frame.window.width;
-    params.windowHeight = frame.window.height;
+    params.windowX = window.x;
+    params.windowY = window.y;
+    params.windowWidth = window.width;
+    params.windowHeight = window.height;
     params.tileX = tile.x;
     params.tileY = tile.y;
     params.tileWidth = tile.width;
@@ -474,13 +554,31 @@ makeShadeParams(const WavefrontFrame& frame,
     const double width = std::max(1, frame.window.width);
     const double height = std::max(1, frame.window.height);
 
-    for (int plane = 0; plane < 2; ++plane) {
-        const double ndcZ = plane == 0 ? kNdcNear : kNdcFar;
-        const GfVec3d centre = toWorld.Transform(GfVec3d(0., 0., ndcZ));
-        const double perX = (toWorld.Transform(GfVec3d(1., 0., ndcZ)) - centre).GetLength() * 2. / width;
-        const double perY = (toWorld.Transform(GfVec3d(0., 1., ndcZ)) - centre).GetLength() * 2. / height;
+    if (frame.mapping == WavefrontMapping::UvUnwrap) {
+        // Every hit lies on the surface the texel looks at, so its depth is the near plane's.
+        params.viewZAtFar = params.viewZAtNear;
+        params.pixelFootprint[0] = static_cast<float>(frame.unwrap ? frame.unwrap->footprint : 0.);
+        params.pixelFootprint[1] = params.pixelFootprint[0];
+    } else if (frame.mapping == WavefrontMapping::Spherical || frame.mapping == WavefrontMapping::Cylindrical) {
+        const MappedCamera camera = mappedCamera(frame);
+        const double across = 2. * M_PI / std::max(1, camera.display.width);
+        const double down = ((frame.mapping == WavefrontMapping::Spherical) ? M_PI : std::abs(camera.top - camera.bottom)) / std::max(1, camera.display.height);
 
-        params.pixelFootprint[plane] = static_cast<float>(std::sqrt(perX * perY));
+        for (int plane = 0; plane < 2; ++plane) {
+            const double distance = std::max(0., plane == 0 ? camera.nearDistance : camera.farDistance);
+            const double vertical = (frame.mapping == WavefrontMapping::Cylindrical && camera.orthographic) ? down : distance * down;
+
+            params.pixelFootprint[plane] = static_cast<float>(std::sqrt(distance * across * vertical));
+        }
+    } else {
+        for (int plane = 0; plane < 2; ++plane) {
+            const double ndcZ = plane == 0 ? kNdcNear : kNdcFar;
+            const GfVec3d centre = toWorld.Transform(GfVec3d(0., 0., ndcZ));
+            const double perX = (toWorld.Transform(GfVec3d(1., 0., ndcZ)) - centre).GetLength() * 2. / width;
+            const double perY = (toWorld.Transform(GfVec3d(0., 1., ndcZ)) - centre).GetLength() * 2. / height;
+
+            params.pixelFootprint[plane] = static_cast<float>(std::sqrt(perX * perY));
+        }
     }
     params.pixelFootprint[2] = 0.f;
     params.pixelFootprint[3] = 0.f;
@@ -1011,6 +1109,13 @@ WavefrontShadeTables::hasBackground() const
 }
 
 bool
+wavefrontShowsBackground(const WavefrontFrame& frame,
+                         const WavefrontShadeTables& tables)
+{
+    return tables.hasBackground() && frame.mapping != WavefrontMapping::UvUnwrap;
+}
+
+bool
 WavefrontShadeTables::hasHoles() const
 {
     return _holes;
@@ -1152,6 +1257,241 @@ wavefrontFrameAt(const WavefrontFrame& frame,
     return out;
 }
 
+WavefrontUnwrapConstPtr
+wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
+                const WavefrontFrame& frame,
+                const std::atomic<bool>& stop,
+                std::string* error)
+{
+    const std::string prim = frame.unwrapPrim.GetAsString();
+
+    if (frame.unwrapPrim.IsEmpty()) {
+        *error = "The Utility renderer's uvUnwrap projection needs a UV Prim";
+
+        return WavefrontUnwrapConstPtr();
+    }
+
+    const UtilityScene::Geometry* geometry = nullptr;
+    UtilityScene::GeometryId id = 0;
+    std::size_t geometryIndex = 0;
+
+    for (const auto& entry : snapshot.geometries) {
+        if (entry.second.path == frame.unwrapPrim) {
+            geometry = &entry.second;
+            id = entry.first;
+            break;
+        }
+        ++geometryIndex;
+    }
+
+    const auto instance = std::find_if(snapshot.instances.begin(), snapshot.instances.end(), [id](const UtilityScene::Instance& candidate) { return candidate.geometry == id; });
+
+    if (!geometry || instance == snapshot.instances.end()) {
+        *error = "The Utility renderer's UV Prim " + prim + " is not a mesh the render draws";
+
+        return WavefrontUnwrapConstPtr();
+    }
+    if (!geometry->hasUnwrapSt) {
+        *error = "The Utility renderer's UV Prim " + prim + " has no UV Primvar \"" + frame.unwrapPrimvar + "\"";
+
+        return WavefrontUnwrapConstPtr();
+    }
+    if (geometry->unwrapStBinding != UtilityScene::eColorBindingVertex && geometry->unwrapStBinding != UtilityScene::eColorBindingCorner) {
+        *error = "The Utility renderer's UV Prim " + prim + " has a constant or uniform UV Primvar \"" + frame.unwrapPrimvar + "\": a bake needs it per vertex or face-varying";
+
+        return WavefrontUnwrapConstPtr();
+    }
+
+    const WavefrontRect window = frame.window;
+    const WavefrontRect display = displayOf(frame);
+    const int tile = std::max(0, frame.udimTile - 1001);
+    const GfVec2d tileOrigin(tile % 10, tile / 10);
+    const double texelsPerU = std::max(1, display.width);
+    const double texelsPerV = std::max(1, display.height);
+    const VtVec2fArray& st = geometry->unwrapSt;
+    const VtVec3fArray& points = geometry->points;
+    const VtVec3iArray& triangles = geometry->triangles;
+    const UtilityScene::ColorBinding binding = geometry->unwrapStBinding;
+    auto unwrap = std::make_shared<WavefrontUnwrap>();
+
+    unwrap->window = window;
+    unwrap->triangles.assign(triangles.size() * kWavefrontUnwrapTriangleFloats, 0.f);
+
+    // A sample lands up to half the filter's width from its pixel's centre.
+    const int margin = static_cast<int>(std::ceil(std::max(1.f, frame.sampling.filterWidth) * 0.5f)) + 1;
+    const double gridLeft = window.x - margin;
+    const double gridBottom = window.y - margin;
+    const double gridRight = window.x + std::max(0, window.width) + margin;
+    const double gridTop = window.y + std::max(0, window.height) + margin;
+
+    const auto texelOf = [&](const GfVec2f& uv) {
+        return GfVec2d(display.x + (uv[0] - tileOrigin[0]) * texelsPerU, display.y + (uv[1] - tileOrigin[1]) * texelsPerV);
+    };
+    const auto cross2 = [](const GfVec2d& a, const GfVec2d& b) { return a[0] * b[1] - a[1] * b[0]; };
+
+    struct Placed {
+        std::uint32_t triangle;
+        GfVec4d bounds;
+    };
+    std::vector<Placed> placed;
+    double footprintSum = 0.;
+    double areaSum = 0.;
+
+    for (std::size_t t = 0; t < triangles.size(); ++t) {
+        if (stop.load(std::memory_order_relaxed)) {
+            return WavefrontUnwrapConstPtr();
+        }
+
+        const GfVec3i& corners = triangles[t];
+        GfVec2d uv[3];
+        GfVec3d p[3];
+        bool usable = true;
+
+        for (int c = 0; c < 3 && usable; ++c) {
+            const std::size_t point = static_cast<std::size_t>(corners[c]);
+            const std::size_t coordinate = (binding == UtilityScene::eColorBindingVertex) ? point : t * 3 + c;
+
+            usable = corners[c] >= 0 && point < points.size() && coordinate < st.size();
+            if (usable) {
+                uv[c] = texelOf(st[coordinate]);
+                p[c] = instance->transform.Transform(GfVec3d(points[point]));
+            }
+        }
+
+        const double area = usable ? cross2(uv[1] - uv[0], uv[2] - uv[0]) : 0.;
+        GfVec3d normal = GfCross(p[1] - p[0], p[2] - p[0]);
+
+        if (!usable || std::abs(area) < 1e-12 || normal.Normalize() <= 0.) {
+            continue;
+        }
+
+        const GfVec4d bounds(std::min({ uv[0][0], uv[1][0], uv[2][0] }), std::min({ uv[0][1], uv[1][1], uv[2][1] }),
+                             std::max({ uv[0][0], uv[1][0], uv[2][0] }), std::max({ uv[0][1], uv[1][1], uv[2][1] }));
+
+        if (!(bounds[2] >= gridLeft && bounds[0] < gridRight && bounds[3] >= gridBottom && bounds[1] < gridTop)) {
+            continue;
+        }
+
+        const GfVec2d ab = uv[1] - uv[0];
+        const GfVec2d ac = uv[2] - uv[0];
+        const GfVec3d perX = ((p[1] - p[0]) * ac[1] - (p[2] - p[0]) * ab[1]) / area;
+        const GfVec3d perY = ((p[2] - p[0]) * ab[0] - (p[1] - p[0]) * ac[0]) / area;
+        double magnitude = 0.;
+
+        for (const GfVec3d& corner : p) {
+            magnitude = std::max({ magnitude, std::abs(corner[0]), std::abs(corner[1]), std::abs(corner[2]) });
+        }
+
+        // Nothing is traced to the surface, so the ray's start need only stay clear of its float error.
+        const double reach = 1e-4 * (1. + magnitude);
+        float* record = unwrap->triangles.data() + t * kWavefrontUnwrapTriangleFloats;
+        const double values[kWavefrontUnwrapTriangleFloats] = {
+            uv[0][0],
+            uv[0][1],
+            uv[1][0],
+            uv[1][1],
+            uv[2][0],
+            uv[2][1],
+            reach,
+            0.,
+            p[0][0],
+            p[0][1],
+            p[0][2],
+            normal[0],
+            p[1][0],
+            p[1][1],
+            p[1][2],
+            normal[1],
+            p[2][0],
+            p[2][1],
+            p[2][2],
+            normal[2],
+        };
+
+        for (std::size_t v = 0; v < kWavefrontUnwrapTriangleFloats; ++v) {
+            record[v] = static_cast<float>(values[v]);
+        }
+        placed.push_back(Placed { static_cast<std::uint32_t>(t), bounds });
+        footprintSum += std::sqrt(GfCross(perX, perY).GetLength()) * std::abs(area);
+        areaSum += std::abs(area);
+    }
+
+    // About a triangle a cell, so that a sample tests few candidates whether the mesh is coarse or dense.
+    const int cellSize = placed.empty() ? 1 : static_cast<int>(std::clamp(std::round(std::sqrt(areaSum / placed.size())), 1., 16.));
+    const int columns = static_cast<int>((gridRight - gridLeft + cellSize - 1) / cellSize);
+    const int rows = static_cast<int>((gridTop - gridBottom + cellSize - 1) / cellSize);
+    const std::size_t cells = static_cast<std::size_t>(columns) * rows;
+    const std::size_t offsets = eWavefrontUnwrapGridHeader;
+    const auto cellRange = [&](double low, double high, double origin, int count) {
+        const int first = static_cast<int>(std::floor((low - origin) / cellSize));
+        const int last = static_cast<int>(std::floor((high - origin) / cellSize));
+
+        return std::make_pair(std::max(0, first), std::min(count - 1, last));
+    };
+    std::vector<std::int32_t>& grid = unwrap->grid;
+    std::size_t candidates = 0;
+
+    grid.assign(offsets + cells + 1, 0);
+    grid[eWavefrontUnwrapGridX] = static_cast<std::int32_t>(gridLeft);
+    grid[eWavefrontUnwrapGridY] = static_cast<std::int32_t>(gridBottom);
+    grid[eWavefrontUnwrapGridColumns] = columns;
+    grid[eWavefrontUnwrapGridRows] = rows;
+    grid[eWavefrontUnwrapGridCellSize] = cellSize;
+    grid[eWavefrontUnwrapGridGeometry] = static_cast<std::int32_t>(geometryIndex);
+    grid[eWavefrontUnwrapGridInstance] = static_cast<std::int32_t>(std::distance(snapshot.instances.begin(), instance));
+
+    // Counts each cell's candidates into its offset, so that the running sum leaves every offset at its
+    // cell's end, and filling from the last triangle back walks it down to the start in triangle order.
+    for (const Placed& triangle : placed) {
+        const std::pair<int, int> across = cellRange(triangle.bounds[0], triangle.bounds[2], gridLeft, columns);
+        const std::pair<int, int> up = cellRange(triangle.bounds[1], triangle.bounds[3], gridBottom, rows);
+
+        for (int row = up.first; row <= up.second; ++row) {
+            if (stop.load(std::memory_order_relaxed)) {
+                return WavefrontUnwrapConstPtr();
+            }
+            for (int column = across.first; column <= across.second; ++column) {
+                ++grid[offsets + static_cast<std::size_t>(row) * columns + column];
+            }
+            candidates += static_cast<std::size_t>(across.second - across.first + 1);
+        }
+    }
+    if (offsets + cells + 1 + candidates > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+        *error = "The Utility renderer's UV Prim " + prim + " lays " + std::to_string(candidates) + " triangle entries over the bake's " + std::to_string(cells) + " cells, more than a bake can index";
+
+        return WavefrontUnwrapConstPtr();
+    }
+    for (std::size_t cell = 1; cell < cells; ++cell) {
+        if (cell % static_cast<std::size_t>(columns) == 0 && stop.load(std::memory_order_relaxed)) {
+            return WavefrontUnwrapConstPtr();
+        }
+        grid[offsets + cell] += grid[offsets + cell - 1];
+    }
+    grid[offsets + cells] = static_cast<std::int32_t>(candidates);
+    grid.resize(offsets + cells + 1 + candidates);
+
+    const std::size_t listed = offsets + cells + 1;
+
+    for (auto triangle = placed.rbegin(); triangle != placed.rend(); ++triangle) {
+        const std::pair<int, int> across = cellRange(triangle->bounds[0], triangle->bounds[2], gridLeft, columns);
+        const std::pair<int, int> up = cellRange(triangle->bounds[1], triangle->bounds[3], gridBottom, rows);
+
+        for (int row = up.first; row <= up.second; ++row) {
+            if (stop.load(std::memory_order_relaxed)) {
+                return WavefrontUnwrapConstPtr();
+            }
+            for (int column = across.first; column <= across.second; ++column) {
+                std::int32_t& offset = grid[offsets + static_cast<std::size_t>(row) * columns + column];
+
+                grid[listed + static_cast<std::size_t>(--offset)] = static_cast<std::int32_t>(triangle->triangle);
+            }
+        }
+    }
+    unwrap->footprint = areaSum > 0. ? footprintSum / areaSum : 0.;
+
+    return unwrap;
+}
+
 bool
 wavefrontDrawSamples(WavefrontExecutor& executor,
                      const UtilityScene::Snapshot& snapshot,
@@ -1183,7 +1523,19 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
             evaluated = UtilityScene::evaluateAt(snapshot, time);
         }
         const UtilityScene::Snapshot& scene = evaluate ? evaluated : snapshot;
-        const WavefrontFrame atTime = (time != 0.) ? wavefrontFrameAt(frame, motion, time) : frame;
+        WavefrontFrame atTime = (time != 0.) ? wavefrontFrameAt(frame, motion, time) : frame;
+
+        if (atTime.mapping == WavefrontMapping::UvUnwrap) {
+            std::string error;
+
+            atTime.unwrap = wavefrontUnwrap(scene, atTime, stop, &error);
+            if (!error.empty()) {
+                throw std::runtime_error(error);
+            }
+            if (!atTime.unwrap) {
+                return false;
+            }
+        }
 
         for (int i = first; i < last; ++i) {
             WavefrontFrame pass = atTime;

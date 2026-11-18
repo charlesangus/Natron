@@ -689,6 +689,7 @@ struct EngineEntry {
     GfMatrix4d projection;
     int width = 0;
     int height = 0;
+    CameraUtilFraming framing;
     bool showRender = false;
     bool showProxy = false;
     bool showGuides = false;
@@ -1636,6 +1637,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     }
     const int width = request.width;
     const int height = request.height;
+    const CameraUtilFraming framing = HydraRender::framing(request);
     const std::string renderer = request.renderer.empty() ? std::string(kRenderDelegateStormId) : request.renderer;
 
     EngineEntry& entry = _engines[request.owner];
@@ -1699,14 +1701,14 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
     const U64 writeCount = SceneWriteBarrier::getWriteCount();
     entry.lastUse = ++_useSerial;
-    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides) && (entry.cameraMotion == request.cameraMotion)) {
+    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.framing == framing) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides) && (entry.cameraMotion == request.cameraMotion)) {
         return &entry;
     }
     // Cycles shows a restart in its progress only once a change reaches it: a request changing
     // nothing it sees would wait out kRestartUnseen for one, then make the engine again.
     bool watchRestart = false;
     if (!freshEngine && RestartWatch::watches(renderer)) {
-        watchRestart = !entry.rendered || edited || (entry.writeCount != writeCount) || (entry.view != view) || (entry.projection != projection) || (entry.width != width) || (entry.height != height);
+        watchRestart = !entry.rendered || edited || (entry.writeCount != writeCount) || (entry.view != view) || (entry.projection != projection) || (entry.width != width) || (entry.height != height) || (entry.framing != framing);
         if (!watchRestart && (entry.time != request.time)) {
             const U64 edits = entry.stage->getEditCount();
             if (!entry.timeVaryingKnown || (entry.timeVaryingEdits != edits) || (entry.timeVaryingWrites != writeCount)) {
@@ -1727,7 +1729,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         bindFramebuffer(width, height);
     }
     engine->SetRenderBufferSize(GfVec2i(width, height));
-    engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
+    engine->SetFraming(framing);
     engine->SetCameraState(view, projection);
     if (renderer == kRenderDelegateUtilityId) {
         VtDoubleArray times;
@@ -1844,7 +1846,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                     }
                     engine = entry.engine.get();
                     engine->SetRenderBufferSize(GfVec2i(width, height));
-                    engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
+                    engine->SetFraming(framing);
                     engine->SetCameraState(view, projection);
                     HydraRender::setPurposes(engine, renderer, request.showRender, request.showProxy, request.showGuides, &params);
                     attachment.reset(new RenderCancel::Attachment(cancel, engine));
@@ -1960,6 +1962,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.projection = projection;
     entry.width = width;
     entry.height = height;
+    entry.framing = framing;
     entry.showRender = request.showRender;
     entry.showProxy = request.showProxy;
     entry.showGuides = request.showGuides;
@@ -2589,6 +2592,22 @@ namespace {
     }
 } // anon namespace
 
+CameraUtilFraming
+framing(const Request& request)
+{
+    const GfRect2i data(GfVec2i(0, 0), request.width, request.height);
+    const float left = static_cast<float>(request.overscanLeft);
+    const float top = static_cast<float>(request.overscanTop);
+    const float right = static_cast<float>(request.width - request.overscanRight);
+    const float bottom = static_cast<float>(request.height - request.overscanBottom);
+
+    if ((right <= left) || (bottom <= top)) {
+        return CameraUtilFraming(data);
+    }
+
+    return CameraUtilFraming(GfRange2f(GfVec2f(left, top), GfVec2f(right, bottom)), data);
+}
+
 GfVec2d
 shutterInterval(const Request& request)
 {
@@ -2952,6 +2971,7 @@ namespace {
         GfMatrix4d projection;
         int width = 0;
         int height = 0;
+        CameraUtilFraming framing;
         bool headlight = false;
         bool showRender = false;
         bool showProxy = false;
@@ -2962,7 +2982,7 @@ namespace {
 
         bool operator==(const DeviceFrameKey& other) const
         {
-            return (shutter == other.shutter) && (cameraMotion == other.cameraMotion) && (renderer == other.renderer) && (stackHash == other.stackHash) && (metadata == other.metadata) && (writeCount == other.writeCount) && (time == other.time) && (view == other.view) && (projection == other.projection) && (width == other.width) && (height == other.height) && (headlight == other.headlight) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (settings == other.settings);
+            return (shutter == other.shutter) && (cameraMotion == other.cameraMotion) && (renderer == other.renderer) && (stackHash == other.stackHash) && (metadata == other.metadata) && (writeCount == other.writeCount) && (time == other.time) && (view == other.view) && (projection == other.projection) && (width == other.width) && (height == other.height) && (framing == other.framing) && (headlight == other.headlight) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (settings == other.settings);
         }
     };
 
@@ -2979,6 +2999,7 @@ namespace {
         key.projection = request.frustum.ComputeProjectionMatrix();
         key.width = request.width;
         key.height = request.height;
+        key.framing = HydraRender::framing(request);
         key.headlight = request.headlight;
         key.showRender = request.showRender;
         key.showProxy = request.showProxy;

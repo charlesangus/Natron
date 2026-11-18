@@ -46,6 +46,16 @@ struct RayGenGlobals {
     const NATRON_NAMESPACE::KernelRayGenParams* params;
 };
 
+struct RayGenUvGlobals {
+    KernelBuffer rays;
+    KernelBuffer weights;
+    KernelBuffer hitSurface;
+    KernelBuffer hitIds;
+    KernelBuffer grid;
+    KernelBuffer triangles;
+    const NATRON_NAMESPACE::KernelRayGenParams* params;
+};
+
 struct ShadeSurfaceGlobals {
     KernelBuffer rays;
     KernelBuffer hitSurface;
@@ -118,6 +128,7 @@ varyingFor(std::size_t count)
 } // anon namespace
 
 extern "C" void utilityRayGen(KernelVarying*, void* entryPointParams, void* globalParams);
+extern "C" void utilityRayGenUv(KernelVarying*, void* entryPointParams, void* globalParams);
 extern "C" void utilityShadeSurface(KernelVarying*, void* entryPointParams, void* globalParams);
 extern "C" void utilityResolveHits(KernelVarying*, void* entryPointParams, void* globalParams);
 extern "C" void utilityShadeLights(KernelVarying*, void* entryPointParams, void* globalParams);
@@ -145,6 +156,35 @@ runRayGenKernel(const KernelRayGenParams& params,
     RayGenGlobals globals { { rays, count * 8 }, { weights, count }, &params };
 
     utilityRayGen(&varying, nullptr, &globals);
+}
+
+void
+runRayGenUvKernel(const KernelRayGenParams& params,
+                  const std::int32_t* grid,
+                  std::size_t gridInts,
+                  const float* triangles,
+                  std::size_t triangleFloats,
+                  float* rays,
+                  float* hitSurface,
+                  std::uint32_t* hitIds,
+                  float* weights)
+{
+    const std::size_t count = static_cast<std::size_t>(params.tileWidth) * params.tileHeight;
+
+    if (count == 0) {
+        return;
+    }
+
+    std::vector<float> unwanted;
+
+    if (!weights) {
+        unwanted.resize(count);
+        weights = unwanted.data();
+    }
+    KernelVarying varying = varyingFor(count);
+    RayGenUvGlobals globals { { rays, count * 8 }, { weights, count }, { hitSurface, count * 3 }, { hitIds, count * 3 }, { grid, gridInts }, { triangles, triangleFloats / 4 }, &params };
+
+    utilityRayGenUv(&varying, nullptr, &globals);
 }
 
 void

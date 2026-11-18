@@ -229,8 +229,9 @@ private:
     std::string utilityDevice(double time, ViewIdx view) const;
 
     // The output format in pixels and its pixel aspect ratio: the active prim's resolution and
-    // pixel aspect ratio, the project's format without one.
-    void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;
+    // pixel aspect ratio, the project's format without one. *overscan, when given, is the pixels a
+    // Natron Utility render adds on every side of it.
+    void outputFormat(double time, ViewIdx view, RectI* format, double* par, int* overscan = nullptr) const;
 
     KnobChoiceWPtr _settingsPrim;
     KnobBoolWPtr _headlight;

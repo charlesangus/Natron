@@ -40,6 +40,7 @@
 
 #include "Global/Macros.h"
 
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
 
 NATRON_NAMESPACE_ENTER
@@ -77,6 +78,9 @@ private:
         PXR_NS::GfMatrix4d worldToView;
         PXR_NS::GfMatrix4d projection;
         WavefrontRect window;
+        WavefrontRect display;
+        WavefrontMapping mapping = WavefrontMapping::Camera;
+        UtilityUnwrapTarget unwrap;
         WavefrontSampling sampling;
         WavefrontMotion motion;
         PXR_NS::HdRenderPassAovBindingVector bindings;
@@ -86,8 +90,8 @@ private:
 
     virtual void _Execute(const PXR_NS::HdRenderPassStateSharedPtr& renderPassState,
                           const PXR_NS::TfTokenVector& renderTags) OVERRIDE;
-    // Hydra syncs tasks before rprims, so a subdivision setting changed here re-syncs every mesh this frame,
-    // as it does the prims a stop cut short.
+    // Hydra syncs tasks before rprims, so a subdivision or UV unwrap setting changed here re-syncs every mesh
+    // this frame, as it does the prims a stop cut short.
     virtual void _Sync() OVERRIDE;
 
     UtilityRenderParam* _renderParam;
@@ -103,6 +107,7 @@ private:
     bool _subdivSettingsSeen = false;
     PXR_NS::VtValue _subdivLevel;
     PXR_NS::VtValue _subdivBudget;
+    UtilityUnwrapTarget _unwrapSeen;
 };
 
 NATRON_NAMESPACE_EXIT

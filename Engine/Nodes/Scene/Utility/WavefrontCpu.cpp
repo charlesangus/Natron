@@ -185,11 +185,20 @@ renderTile(const WavefrontFrame& frame,
     std::vector<std::int32_t> primId(count);
     std::vector<std::int32_t> instanceId(count);
 
-    runRayGenKernel(makeRayGenParams(frame, rect), rays.data(), weights.data());
-
     const Tracer::HitBatch hits = hitBatchOf(hitSurface.data(), hitIds.data(), count);
 
-    tracer.intersect(rayBatchOf(rays.data(), count), hits);
+    if (frame.mapping == WavefrontMapping::UvUnwrap) {
+        if (!frame.unwrap) {
+            return;
+        }
+
+        const WavefrontUnwrap& unwrap = *frame.unwrap;
+
+        runRayGenUvKernel(makeRayGenParams(frame, rect), unwrap.grid.data(), unwrap.grid.size(), unwrap.triangles.data(), unwrap.triangles.size(), rays.data(), hitSurface.data(), hitIds.data(), weights.data());
+    } else {
+        runRayGenKernel(makeRayGenParams(frame, rect), rays.data(), weights.data());
+        tracer.intersect(rayBatchOf(rays.data(), count), hits);
+    }
 
     KernelShadeBuffers buffers = tables.buffers();
     KernelShadeParams params = makeShadeParams(frame, static_cast<std::uint32_t>(count));
@@ -289,7 +298,7 @@ renderTile(const WavefrontFrame& frame,
     tile.depth = depth.data();
     tile.primId = primId.data();
     tile.instanceId = instanceId.data();
-    tile.background = tables.hasBackground();
+    tile.background = wavefrontShowsBackground(frame, tables);
     film.writeTile(tile);
 }
 } // anon namespace

@@ -283,6 +283,29 @@ UtilityScene::setSt(GeometryId id,
 }
 
 void
+UtilityScene::setUnwrapSt(GeometryId id,
+                          bool hasSt,
+                          ColorBinding binding,
+                          const VtVec2fArray& st)
+{
+    std::lock_guard<std::mutex> l(_mutex);
+    const auto it = _records.find(id);
+
+    if (!TF_VERIFY(it != _records.end())) {
+        return;
+    }
+    Geometry& geometry = it->second.geometry;
+
+    if (geometry.hasUnwrapSt == hasSt && geometry.unwrapStBinding == binding && geometry.unwrapSt == st) {
+        return;
+    }
+    geometry.hasUnwrapSt = hasSt;
+    geometry.unwrapStBinding = binding;
+    geometry.unwrapSt = st;
+    ++_version;
+}
+
+void
 UtilityScene::setMaterial(const SdfPath& path,
                           const std::shared_ptr<const UtilityMaterialDesc>& material)
 {

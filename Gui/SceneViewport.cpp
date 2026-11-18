@@ -881,6 +881,9 @@ struct SceneViewportRenderer::Implementation {
     // Set by the render thread after a render, read by the main thread to ask for the frames that
     // bring the held textures in.
     std::atomic<bool> texturesOwed { false };
+    // The passes the last Storm frame ran, and whether the fill was complete when it began.
+    std::atomic<int> lastFramePasses { 0 };
+    std::atomic<bool> lastFrameFillComplete { false };
     // What the last frame drew, which is what a click picks from.
     SceneDrawBoxes::ListPtr drawnBoxList;
     // Cleared by the main thread when the selection changes, as the buffers colour the boxes
@@ -3735,6 +3738,18 @@ SceneViewportRenderer::isFillComplete() const
     return !_imp->drawFilling && (_imp->fillPending == 0) && !_imp->texturesOwed;
 }
 
+int
+SceneViewportRenderer::getLastFramePasses() const
+{
+    return _imp->lastFramePasses;
+}
+
+bool
+SceneViewportRenderer::wasFillCompleteAtLastFrameStart() const
+{
+    return _imp->lastFrameFillComplete;
+}
+
 void
 SceneViewportRenderer::noteDrawRevealPresented()
 {
@@ -3924,6 +3939,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
     if (ended(0)) {
         return false;
     }
+    _imp->lastFrameFillComplete = isFillComplete();
     _imp->setFillPaced(true);
     if (!_imp->ensureEngine()) {
         return false;
@@ -3977,6 +3993,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
 
         return false;
     }
+    _imp->lastFramePasses = passes;
     _imp->noteDrawFilterRendered(passes != 0);
     _imp->paceTextures();
     _imp->texturesOwed = StormTextureBudget::texturesPending(_imp->engineInstanceId);
@@ -5239,6 +5256,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     StormGLStateGuard guard;
     StormGLSection section;
 
+    _imp->lastFrameFillComplete = isFillComplete();
     // render() is waited out, and nothing presents its image to let a next batch go.
     _imp->setFillPaced(!followScene);
     if (!_imp->ensureEngine()) {
@@ -5321,6 +5339,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
                 converged = false;
             }
         }
+        _imp->lastFramePasses = passes;
         _imp->paceTextures();
         _imp->texturesOwed = StormTextureBudget::texturesPending(_imp->engineInstanceId);
         converged = converged && !_imp->texturesOwed && !_imp->drawFilling;
@@ -7963,15 +7982,18 @@ SceneViewport::isStageSynced() const
 namespace {
 // Storm draws for most of a second a frame on software GL, and the GUI thread waits out such a
 // frame in a paint or, behind it on the GPU, when it next composes. Scripts need each frame's
-// start and cost to tell a stall around the frames from the frames themselves.
+// start and cost to tell a stall around the frames from the frames themselves, and the passes it
+// ran and whether the fill was complete when it began to tell work from contention.
 void
 publishStormFrame(QObject* view,
                   double startMs,
-                  double costMs)
+                  double costMs,
+                  int passes,
+                  bool fillCompleteAtStart)
 {
     // Several frames can begin between two polls; the list lets a poller find each of them.
     QVariantList frames = view->property("natronSceneStormFrames").toList();
-    frames.append(QVariant(QVariantList { startMs, costMs }));
+    frames.append(QVariant(QVariantList { startMs, costMs, passes, fillCompleteAtStart }));
     while (frames.size() > 16) {
         frames.removeFirst();
     }
@@ -8030,6 +8052,8 @@ SceneViewport::startBackgroundFrame()
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
         bool converged = false;
         const bool rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h), &converged);
+        const int passes = imp->renderer.getLastFramePasses();
+        const bool fillCompleteAtStart = imp->renderer.wasFillCompleteAtLastFrameStart();
         GLsync fence = nullptr;
         if (rendered) {
             fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -8044,9 +8068,9 @@ SceneViewport::startBackgroundFrame()
         // Read here: draw changes posted after the frame are taken in by the render thread before
         // the main thread hears of the frame.
         finished.absorbed = imp->renderer.getDrawFilterStats().absorbed;
-        const auto done = [this, rendered, converged, fence, generation, finished, startMs, costMs]() {
+        const auto done = [this, rendered, converged, fence, generation, finished, startMs, costMs, passes, fillCompleteAtStart]() {
             if (rendered) {
-                publishStormFrame(this, startMs, costMs);
+                publishStormFrame(this, startMs, costMs, passes, fillCompleteAtStart);
             }
             if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
                 _imp->presentPacer.submitted(fence, finished);
@@ -10374,7 +10398,7 @@ SceneViewport::paintGL()
     // background, is shown by a later paint, which costs next to nothing.
     const auto publishPaintedStormFrame = [this, stormPaint, paintStartMs, paintStart]() {
         if (stormPaint) {
-            publishStormFrame(this, paintStartMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count());
+            publishStormFrame(this, paintStartMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count(), _imp->renderer.getLastFramePasses(), _imp->renderer.wasFillCompleteAtLastFrameStart());
         }
     };
     refreshTransformHandles();

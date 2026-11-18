@@ -303,6 +303,10 @@ public:
     // No prim and no texture still to come in. Any thread.
     bool isFillComplete() const;
 
+    // The passes the last Storm frame ran, and whether the fill was complete when it began. Any thread.
+    int getLastFramePasses() const;
+    bool wasFillCompleteAtLastFrameStart() const;
+
     /** @brief The image of the last reveal step is on screen, so the next step may go. */
     void noteDrawRevealPresented();
 

@@ -356,6 +356,11 @@ try:
         """The view's latest drawn Storm frames, as (wall-clock start ms, cost ms)."""
         return [(float(f[0]), float(f[1])) for f in view_prop("natronSceneStormFrames", [])]
 
+    def storm_frame_details():
+        """Each of those frames as (start ms, cost ms, passes run, fill complete at its start)."""
+        return [(float(f[0]), float(f[1]), int(f[2]) if len(f) > 2 else -1, bool(f[3]) if len(f) > 3 else None)
+                for f in view_prop("natronSceneStormFrames", [])]
+
     def tick():
         now = time.perf_counter()
         now_wall_ms = time.time() * 1000.0
@@ -441,6 +446,10 @@ try:
                 if not ok:
                     break
                 costs.append(max(ms for start, ms in storm_frames() if start >= since))
+                for start, ms, passes, complete in storm_frame_details():
+                    if start >= since:
+                        report("NOTE steady frame %d: %.1f ms, %d pass(es), fill complete at start %r"
+                               % (i, ms, passes, complete))
         finally:
             if navigation is not None:
                 navigation.setValue(original)
@@ -516,6 +525,12 @@ try:
         if ok:
             after_switch = [ms for start, ms in storm_frames() if start >= switched_ms]
             first_ms = after_switch[0] if after_switch else None
+            first_details = [d for d in storm_frame_details() if d[0] >= switched_ms][:1]
+            for start, ms, passes, complete in first_details:
+                report("NOTE first Storm frame after the switch: %.1f ms, %d pass(es), fill complete at start %r"
+                       % (ms, passes, complete))
+            report("NOTE at that frame Cycles first sync %r, fill complete %r, fill progress %r"
+                   % (cycles_first_sync(), prop("natronSceneFillComplete"), prop("natronSceneFillProgress")))
             steady_ms = yield from steady_storm_frame_ms()
             settle()
             report("NOTE the switch's longest gap, frames included, was %.1f ms, and %d Storm frame(s) ran "

@@ -601,6 +601,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             range = std::min<uint64_t>(range, options.maxStorageBufferRange);
         }
         dev->info_.maxStorageBufferRange = range;
+        dev->info_.minStorageBufferOffsetAlignment = std::max<uint64_t>(p2.properties.limits.minStorageBufferOffsetAlignment, 1);
         dev->info_.copyChunkSize = std::max<uint64_t>(options.copyChunkSize, 1);
         dev->info_.maxMemoryAllocationSize = p11.maxMemoryAllocationSize;
         dev->info_.minImportedHostPointerAlignment

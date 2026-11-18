@@ -42,6 +42,7 @@
 #ifdef NATRON_HAVE_GPU
 #include <array>
 #include <limits>
+#include <numeric>
 #include <span>
 #include <utility>
 
@@ -182,6 +183,57 @@ gpu::GpuStatus
 failure(const std::string& message)
 {
     return gpu::GpuStatus { VK_ERROR_UNKNOWN, message };
+}
+
+// The rows of a film one dispatch binds: all of them when its accumulation, the larger of its buffers, fits the
+// storage buffer range, else the most that fit and start every band on the device's offset alignment. 0 when not
+// even one such band fits.
+std::uint32_t
+filmBandRows(const gpu::GpuRecordContext& context,
+             std::uint32_t width,
+             std::uint32_t height)
+{
+    const std::uint64_t pixelRowBytes = static_cast<std::uint64_t>(width) * kFilmPixelBytes;
+    const std::uint64_t fit = context.maxStorageBufferBytes() / (2 * pixelRowBytes);
+
+    if (fit >= height) {
+        return height;
+    }
+
+    const std::uint64_t alignment = context.device().info().minStorageBufferOffsetAlignment;
+    const std::uint64_t quantum = alignment / std::gcd(alignment, pixelRowBytes);
+
+    return static_cast<std::uint32_t>((fit / quantum) * quantum);
+}
+
+gpu::GpuStatus
+filmTooWide(std::uint32_t width)
+{
+    return failure("The Utility renderer's film, " + std::to_string(width) + " pixels wide, has rows too wide for the GPU's storage buffer range");
+}
+
+gpu::GpuBinding
+filmPixelsBand(std::uint32_t binding,
+               const gpu::GpuBuffer& pixels,
+               std::uint32_t width,
+               std::uint32_t firstRow,
+               std::uint32_t rows)
+{
+    const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(width) * kFilmPixelBytes;
+
+    return gpu::GpuBinding::storage(binding, pixels, firstRow * rowBytes, rows * rowBytes);
+}
+
+gpu::GpuBinding
+filmAccumulationBand(std::uint32_t binding,
+                     const gpu::GpuBuffer& accumulation,
+                     std::uint32_t width,
+                     std::uint32_t firstRow,
+                     std::uint32_t rows)
+{
+    const VkDeviceSize rowBytes = 2 * static_cast<VkDeviceSize>(width) * kFilmPixelBytes;
+
+    return gpu::GpuBinding::storage(binding, accumulation, firstRow * rowBytes, rows * rowBytes);
 }
 
 gpu::GpuStatus
@@ -397,15 +449,32 @@ recordPack(const std::shared_ptr<UtilityDeviceFilm>& film,
         return failure("The Utility renderer's film window does not fit the buffer it is copied to");
     }
 
-    const KernelFilmPackParams params = {
-        film->width, film->height, x1, y1, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), static_cast<std::uint32_t>(nComps), static_cast<std::uint32_t>(outOffset), outRowStride, 0, 0, 0
-    };
-    const std::array<gpu::GpuBinding, 2> bindings = { gpu::GpuBinding::storage(0, lease.pixels.buffer()), gpu::GpuBinding::storage(1, out) };
+    const std::uint32_t bandRows = filmBandRows(context, film->width, film->height);
 
+    if (bandRows == 0) {
+        return filmTooWide(film->width);
+    }
     // Orders the copy after the frame's writes, which earlier submissions on the queue made.
     context.computeBarrier();
-    if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->pack, bindings, std::as_bytes(std::span(&params, 1)), { params.width, params.height, 1 }); !s) {
-        return s;
+    for (std::uint32_t first = 0; first < film->height; first += bandRows) {
+        const std::uint32_t rows = std::min(bandRows, film->height - first);
+        const std::int64_t bandEnd = static_cast<std::int64_t>(first) + rows;
+        // The first band and the last also write the zeros of the window's rows below and above the film.
+        const std::int64_t lo = (first == 0) ? y1 : std::max<std::int64_t>(y1, first);
+        const std::int64_t hi = (bandEnd == film->height) ? y2 : std::min<std::int64_t>(y2, bandEnd);
+
+        if (lo >= hi) {
+            continue;
+        }
+
+        const KernelFilmPackParams params = {
+            film->width, rows, x1, static_cast<std::int32_t>(lo - static_cast<std::int64_t>(first)), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(hi - lo), static_cast<std::uint32_t>(nComps), static_cast<std::uint32_t>(outOffset + static_cast<std::uint64_t>(lo - y1) * outRowStride), outRowStride, 0, 0, 0
+        };
+        const std::array<gpu::GpuBinding, 2> bindings = { filmPixelsBand(0, lease.pixels.buffer(), film->width, first, rows), gpu::GpuBinding::storage(1, out) };
+
+        if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->pack, bindings, std::as_bytes(std::span(&params, 1)), { params.width, params.height, 1 }); !s) {
+            return s;
+        }
     }
     // The lease, not the film, so that a release while the copy is pending leaves its buffer alive.
     context.hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(lease)));
@@ -436,8 +505,9 @@ downloadFilm(const std::shared_ptr<UtilityDeviceFilm>& film,
     if (status) {
         status = gpu::GpuBuffer::createStaging(film->device, bytes, gpu::kGpuBufferDefaultUsage, staging);
     }
+    // A copy, not the pack kernel: the staging buffer, as large as the film, may be over the storage buffer range.
     if (status) {
-        status = recordPack(film, *context, 0, 0, static_cast<int>(film->width), static_cast<int>(film->height), 4, staging, 0, film->width * 4);
+        status = context->copyBuffer(lease.pixels.buffer(), 0, staging, 0, bytes);
     }
     if (status) {
         status = context->submitAndWait();
@@ -1240,14 +1310,22 @@ UtilityRenderBuffer::beginDeviceFrame(gpu::GpuRecordContext& context,
         return failure("The Utility renderer's film was released with its GPU");
     }
     if (restart) {
-        KernelFilmClearParams params = { { 0, 0, 0, 0 }, _width, _height, 0, 0 };
+        const std::uint32_t bandRows = filmBandRows(context, _width, _height);
 
-        std::memcpy(params.value, _clearPixel.data(), kFilmPixelBytes);
+        if (bandRows == 0) {
+            return filmTooWide(_width);
+        }
+        for (std::uint32_t first = 0; first < _height; first += bandRows) {
+            const std::uint32_t rows = std::min(bandRows, _height - first);
+            KernelFilmClearParams params = { { 0, 0, 0, 0 }, _width, rows, 0, 0 };
 
-        const std::array<gpu::GpuBinding, 2> bindings = { gpu::GpuBinding::storage(0, lease.pixels.buffer()), gpu::GpuBinding::storage(1, lease.accumulation.buffer()) };
+            std::memcpy(params.value, _clearPixel.data(), kFilmPixelBytes);
 
-        if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->clear, bindings, std::as_bytes(std::span(&params, 1)), { _width, _height, 1 }); !s) {
-            return s;
+            const std::array<gpu::GpuBinding, 2> bindings = { filmPixelsBand(0, lease.pixels.buffer(), _width, first, rows), filmAccumulationBand(1, lease.accumulation.buffer(), _width, first, rows) };
+
+            if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->clear, bindings, std::as_bytes(std::span(&params, 1)), { _width, rows, 1 }); !s) {
+                return s;
+            }
         }
     } else if (previous.pixels) {
         context.computeBarrier();
@@ -1301,25 +1379,40 @@ UtilityRenderBuffer::recordDeviceBatch(gpu::GpuRecordContext& context,
 
     const std::uint32_t count = static_cast<std::uint32_t>(width) * static_cast<std::uint32_t>(height);
 
+    const std::uint32_t bandRows = filmBandRows(context, film->width, film->height);
+
+    if (bandRows == 0) {
+        return filmTooWide(film->width);
+    }
+
     params.filmWidth = film->width;
-    params.filmHeight = film->height;
     params.x = x;
-    params.y = y;
     params.width = static_cast<std::uint32_t>(width);
     params.count = count;
     params.background = background ? 1u : 0u;
 
-    const std::array<gpu::GpuBinding, 5> bindings = {
-        gpu::GpuBinding::storage(0, hitIds),
-        gpu::GpuBinding::storage(1, color),
-        gpu::GpuBinding::storage(2, weights),
-        gpu::GpuBinding::storage(3, lease.pixels.buffer()),
-        gpu::GpuBinding::storage(4, lease.accumulation.buffer()),
-    };
-
     context.computeBarrier();
-    if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->scatter, bindings, std::as_bytes(std::span(&params, 1)), { count, 1, 1 }); !s) {
-        return s;
+    // Each band's dispatch skips the rays of the batch's pixels outside it, as the kernel skips those off the film.
+    for (std::uint32_t first = 0; first < film->height; first += bandRows) {
+        const std::uint32_t rows = std::min(bandRows, film->height - first);
+
+        if ((static_cast<std::int64_t>(y) + height <= first) || (y >= static_cast<std::int64_t>(first) + rows)) {
+            continue;
+        }
+        params.filmHeight = rows;
+        params.y = static_cast<std::int32_t>(static_cast<std::int64_t>(y) - first);
+
+        const std::array<gpu::GpuBinding, 5> bindings = {
+            gpu::GpuBinding::storage(0, hitIds),
+            gpu::GpuBinding::storage(1, color),
+            gpu::GpuBinding::storage(2, weights),
+            filmPixelsBand(3, lease.pixels.buffer(), film->width, first, rows),
+            filmAccumulationBand(4, lease.accumulation.buffer(), film->width, first, rows),
+        };
+
+        if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->scatter, bindings, std::as_bytes(std::span(&params, 1)), { count, 1, 1 }); !s) {
+            return s;
+        }
     }
     context.hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(lease)));
 

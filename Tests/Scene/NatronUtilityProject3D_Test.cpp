@@ -113,6 +113,35 @@ plateTexel(int x,
     return GfVec4f(60.f * x + 15.f, 60.f * rowFromTop + 15.f, 255.f - 30.f * (x + rowFromTop), 255.f) / 255.f;
 }
 
+// The premultiplied colour the plate's lookup gives at (u, v), in texels from its bottom left. The lookup
+// is bilinear over the straight colour; outside the plate the default wrap reads transparent black, so
+// past the outer texels' centres it fades, and the premultiply after the blend scales the colour again.
+GfVec3f
+platePremultipliedAt(double u,
+                     double v)
+{
+    const double x = u - 0.5;
+    const double y = v - 0.5;
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y0 = static_cast<int>(std::floor(y));
+    const double ax = x - x0;
+    const double ay = y - y0;
+    GfVec4d sum(0.);
+
+    for (int dy = 0; dy < 2; ++dy) {
+        for (int dx = 0; dx < 2; ++dx) {
+            const int column = x0 + dx;
+            const int row = y0 + dy;
+
+            if (column >= 0 && row >= 0 && column < kPlateSize && row < kPlateSize) {
+                sum += GfVec4d(plateTexel(column, kPlateSize - 1 - row)) * ((dx ? ax : 1. - ax) * (dy ? ay : 1. - ay));
+            }
+        }
+    }
+
+    return GfVec3f(GfVec3d(sum[0], sum[1], sum[2]) * sum[3]);
+}
+
 bool
 writePlate(const std::string& path)
 {
@@ -827,8 +856,8 @@ TEST_P(NatronUtilityProject3DBackend, APlateProjectedFromTheRenderCameraReproduc
 }
 
 // A mirror on z = 0 under the render camera reflects a card at z = 10 above it, the plate projected on
-// that card by a projector between them looking up. Each mirror pixel shows the texel its reflected ray
-// meets the card in, through the projector's frame.
+// that card by a projector between them looking up. Each mirror pixel shows the plate's lookup where its
+// reflected ray meets the card, through the projector's frame, over the mirror's opaque alpha.
 TEST_P(NatronUtilityProject3DBackend, AMirrorShowsTheProjectedCardItReflects)
 {
     if (!ready()) {
@@ -916,21 +945,13 @@ TEST_P(NatronUtilityProject3DBackend, AMirrorShowsTheProjectedCardItReflects)
             if (u <= 0. || v <= 0. || u >= kPlateSize || v >= kPlateSize) {
                 continue;
             }
-            // Only well inside a texel, where its neighbours hardly weigh in the lookup.
-            const double alongU = u - std::floor(u);
-            const double alongV = v - std::floor(v);
+            const GfVec3f reflection = platePremultipliedAt(u, v);
 
-            if (std::fabs(alongU - 0.5) > 0.15 || std::fabs(alongV - 0.5) > 0.15) {
-                continue;
-            }
-            const int column = static_cast<int>(u);
-            const int row = static_cast<int>(v);
-
-            expectNear(plateTexel(column, kPlateSize - 1 - row), film.colors[pixel], 0.05f, "pixel " + std::to_string(x) + ", " + std::to_string(y));
+            expectNear(GfVec4f(reflection[0], reflection[1], reflection[2], 1.f), film.colors[pixel], 1e-3f, "pixel " + std::to_string(x) + ", " + std::to_string(y));
             ++checked;
         }
     }
-    EXPECT_GE(checked, 4 * kPlateSize * kPlateSize) << "too few mirror pixels see the middle of a texel";
+    EXPECT_GE(checked, 4 * kPlateSize * kPlateSize) << "too few mirror pixels see the plate";
     EXPECT_TRUE(scene.warnings().empty());
 }
 

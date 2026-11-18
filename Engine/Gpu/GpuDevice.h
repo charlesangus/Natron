@@ -128,6 +128,7 @@ struct GpuDeviceInfo {
 
     // Effective values: the device limit, or the GpuDeviceOptions override when that is smaller.
     uint64_t maxStorageBufferRange = 0;
+    uint64_t minStorageBufferOffsetAlignment = 1;
     uint64_t copyChunkSize = 0;
     // 0 when VK_EXT_external_memory_host is absent.
     uint64_t minImportedHostPointerAlignment = 0;

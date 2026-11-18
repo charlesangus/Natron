@@ -38,13 +38,14 @@ void utilityFilmScatter(uint3 id : SV_DispatchThreadID)
     if (fx < 0 || fy < 0 || uint(fx) >= params.filmWidth || uint(fy) >= params.filmHeight)
         return;
     const uint pixel = uint(fy) * params.filmWidth + uint(fx);
-    const uint weightAt = params.filmWidth * params.filmHeight + pixel;
+    const uint sumAt = 2 * pixel;
+    const uint weightAt = sumAt + 1;
     const float weight = weights[id.x];
     const bool miss = hitIds[kHitGeometry * params.count + id.x] == kNoHit;
     const float4 sample = (miss && params.background == 0) ? asfloat(params.clearValue) : color[id.x];
-    const float4 sum = accumulation[pixel] + weight * sample;
+    const float4 sum = accumulation[sumAt] + weight * sample;
     const float total = accumulation[weightAt].x + weight;
-    accumulation[pixel] = sum;
+    accumulation[sumAt] = sum;
     accumulation[weightAt] = float4(total, 0.0, 0.0, 0.0);
     if (total > 0.0)
         film[pixel] = sum / total;

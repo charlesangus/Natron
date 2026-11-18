@@ -544,7 +544,7 @@ future core work has solid ground to build on.
 | M448 | USD Layer Break | todo | - |  | E9 | F27 | | [M448-usd-layer-break.md](PLAN/MILESTONES/M448-usd-layer-break.md) |
 | M449 | USD Layer Save Paths | todo | M448 |  | E9 | F27 | | [M449-usd-layer-save-paths.md](PLAN/MILESTONES/M449-usd-layer-save-paths.md) |
 | M450 | USDWrite Export Preview | todo | M448, M449 |  | E9 | F27 | | [M450-usdwrite-export-preview.md](PLAN/MILESTONES/M450-usdwrite-export-preview.md) |
-| M451 | Viewer Stale Cue Experiments | doing | M302 | bosley-executor | E10 | | | [M451-viewer-stale-cue-experiments.md](PLAN/MILESTONES/M451-viewer-stale-cue-experiments.md) |
+| M451 | Viewer Stale Cue Experiments | doing | M302 | bosley-executor | E10 | | uat | [M451-viewer-stale-cue-experiments.md](PLAN/MILESTONES/M451-viewer-stale-cue-experiments.md) |
 | M452 | Node Error And Warning Display | done | M397 | bosley-executor | E10 |  F29 | | [M452-node-error-and-warning-display.md](PLAN/MILESTONES/M452-node-error-and-warning-display.md) |
 | M453 | Follow Animation Layer | todo | M220, M486, M487, M488, M489 |  | E26 | F32 | | [M453-follow-animation-layer.md](PLAN/MILESTONES/M453-follow-animation-layer.md) |
 | M454 | Roto Insert Point Drag | done | - | bosley-executor | E10 |  F29 | | [M454-roto-insert-point-drag.md](PLAN/MILESTONES/M454-roto-insert-point-drag.md) |

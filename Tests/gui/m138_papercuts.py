@@ -585,10 +585,6 @@ try:
         toggle_eyedropper(dropper)
         check(icon_bytes(dropper) == icon_off, "clicking the label again turns the eyedropper off")
         gt.close_all_panels()
-        # A point pick stays drawn as an orange pixel at the viewer centre until a plain click,
-        # and later sections read the colour there
-        click(gl, mid)
-        yield ("sleep", SETTLE_MS)
         for n in (read, g2, c25):
             n.destroy()
         QApplication.processEvents()
@@ -629,7 +625,9 @@ try:
         def shows(node, channel, label):
             view(viewer, node)
             yield ("sleep", RENDER_MS)
-            colour = gt.viewer_centre_colour()
+            # Off-centre: a leftover point-pick marker (an orange pixel) sits exactly at the centre.
+            # The 300x200 fixtures reach at least 150x100 px from the centre at any zoom >= 1.
+            colour = gt.viewer_centre_colour(offset=(24, 16))
             check(colour is not None and all(colour[channel] > colour[i] + 30 for i in range(3) if i != channel),
                   label + " (centre " + repr(colour) + ")")
 

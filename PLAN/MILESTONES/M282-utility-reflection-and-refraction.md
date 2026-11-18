@@ -59,3 +59,4 @@ through transmissive surfaces. No GI and no caustics.
 - 2026-11-17 — Code in the lane, gate running. **Glass untinted unless coloured (user):** UsdPreviewSurface has no transmission colour, so refraction and transmissive shadows are untinted (1 - opacity). **Light highlights on glass (user):** refractive surfaces take scene-light highlights like an opaque surface of the same ior and roughness. PM call: tests about other features render with Max Ray Depth 0, so no golden is re-recorded. Rough glass still reflects as a mirror.
 - 2026-11-17 — **Glass alpha stays noisy (user):** alpha through refractive surfaces converges with samples; no change.
 - 2026-11-17 — Gate green (run 44181671650, code 7c85f6920); PR #309 into F7, in review.
+- 2026-11-18 — Merged into F7 as debf875f0 (#309), gate 44316226375 and PR CI green. The F7 merge (e28a6a7b6) sends UV bakes through the bounce loop, so reflection and refraction apply in UV bakes; no test covers that yet.

@@ -216,6 +216,14 @@ public:
     static void addLossReleaser(const LossReleaser& release);
 
     /**
+     * @brief Adds a function the destructor calls before it destroys the runtime, for work on threads of its own
+     * that may still use it. It waits, within a bound of its own, for that work to end, and returns false if some
+     * still runs: the runtime then stays for the process instead of going under it. Waiters stay for the process.
+     **/
+    typedef std::function<bool(const gpu::GpuRuntime& runtime)> TeardownWaiter;
+    static void addTeardownWaiter(const TeardownWaiter& wait);
+
+    /**
      * @brief Destroys the device buffers the runtime's pool keeps free for reuse. Buffers in use, by a render or a
      * frame waiting to be shown, stay: only those no handle holds go, so no running GPU work loses its memory. Does
      * nothing while unavailable. Thread-safe.

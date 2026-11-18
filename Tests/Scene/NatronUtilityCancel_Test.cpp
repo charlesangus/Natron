@@ -34,6 +34,7 @@
 #include <pxr/base/gf/vec3i.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/vt/array.h>
+#include <pxr/base/vt/dictionary.h>
 #include <pxr/base/vt/types.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/hd/aov.h>
@@ -62,11 +63,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <ostream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -79,10 +82,23 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/AppManager.h"
+#include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuKernelRegistry.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/GpuContext.h"
+#include "Engine/Nodes/Scene/Utility/GpuTracer.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Gpu/GpuTestDevice.h"
+#include "Gpu/GpuTestSelector.h"
+#endif
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -244,10 +260,71 @@ viewFrom(double x)
     return camera;
 }
 
+// The CPU, the GPU handing its colour over in tiles, and the GPU keeping it in a film on the device.
+enum class Backend {
+    Cpu,
+    GpuTiles,
+    GpuFilm,
+};
+
+void
+PrintTo(Backend backend,
+        std::ostream* os)
+{
+    *os << (backend == Backend::Cpu ? "Cpu" : (backend == Backend::GpuTiles ? "GpuTiles" : "GpuFilm"));
+}
+
+#ifdef NATRON_HAVE_GPU
+// Puts a GPU context, on the test's device, where the delegate looks for one, and the old one back after.
+class CancelGpuRuntime {
+public:
+    CancelGpuRuntime()
+    {
+        GpuContextOptions options;
+        std::shared_ptr<std::string> logged = std::make_shared<std::string>();
+
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        options.infoLog = [logged](const std::string& line) {
+            *logged = line;
+        };
+
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            unavailable = logged->empty() ? std::string("the GPU context did not come up") : *logged;
+
+            return;
+        }
+        _saved = appPTR->swapGpuContextForTests(std::move(own));
+        _swapped = true;
+    }
+
+    ~CancelGpuRuntime()
+    {
+        if (_swapped) {
+            appPTR->swapGpuContextForTests(std::move(_saved));
+        }
+    }
+
+    std::string missingSupport() const
+    {
+        return WavefrontGpu::missingSupport(*appPTR->getGpuContext()->runtime());
+    }
+
+    std::string unavailable;
+
+private:
+    std::unique_ptr<GpuContext> _saved;
+    bool _swapped = false;
+};
+#endif // NATRON_HAVE_GPU
+
 // The delegate through the same engine the node drives it with, at a size whose frame takes a while.
 class HeavyRender {
 public:
-    explicit HeavyRender(const UsdStageRefPtr& stage)
+    explicit HeavyRender(const UsdStageRefPtr& stage,
+                         Backend backend = Backend::Cpu)
         : _stage(stage)
     {
         RenderDelegates::list();
@@ -263,7 +340,19 @@ public:
         _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(1));
         // Nor does it trace reflections, whose extra bounces the limit was not set for.
         _engine->SetRendererSetting(TfToken(kUtilitySettingMaxRayDepth), VtValue(0));
-        EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(backend == Backend::Cpu ? kUtilityDeviceCpu : kUtilityDeviceGpu)));
+        if (backend == Backend::GpuFilm) {
+            // The colour alone is the one buffer the GPU may keep on the device.
+            EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color }));
+        } else {
+            EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color, HdAovTokens->depth, HdAovTokens->primId, HdAovTokens->instanceId }));
+        }
+    }
+
+    // The device the last frame rendered on, as the delegate reports it.
+    std::string device() const
+    {
+        return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatDevice, VtDefault = std::string());
     }
 
     void render(double cameraX = 0.)
@@ -348,9 +437,23 @@ private:
 // leaves it unfinished, and the render after it finishes correctly.
 void
 checkCancelLatency(const UsdStageRefPtr& stage,
-                   const char* name)
+                   const char* name,
+                   Backend backend)
 {
-    HeavyRender render(stage);
+    if (backend != Backend::Cpu) {
+        // The first GPU frame compiles the kernels, which is no stop point of the frame's; a small scene
+        // has them compiled before the frames whose stops are timed.
+        UsdStageRefPtr small = UsdStage::CreateInMemory();
+
+        defineGrid(small, "/Warm", 2, GfVec3f(1.f, 0.f, 0.f));
+
+        HeavyRender warm(small, backend);
+
+        ASSERT_TRUE(warm.renderToTheEnd());
+        ASSERT_EQ(0u, warm.device().find("GPU")) << warm.device();
+    }
+
+    HeavyRender render(stage, backend);
     int stopsOfARunningFrame = 0;
 
     for (const int delayMs : { 0, 20, 100, 300 }) {
@@ -373,6 +476,9 @@ checkCancelLatency(const UsdStageRefPtr& stage,
 
     ASSERT_TRUE(render.renderToTheEnd());
     EXPECT_FLOAT_EQ(1.f, render.centreColor()[0]);
+    if (backend != Backend::Cpu) {
+        EXPECT_EQ(0u, render.device().find("GPU")) << render.device();
+    }
 
     // Now that the scene is prepared, a new view spends its time on the tiles alone.
     render.render(0.5);
@@ -401,8 +507,10 @@ viewOf(bool showRender)
     return view;
 }
 
+// The progressive render asks for four AOVs, so on the GPU its colour comes in tiles.
 class NatronUtilityCancelTest
-    : public BaseTest {
+    : public BaseTest,
+      public ::testing::WithParamInterface<Backend> {
 protected:
     // One sample a pixel, so that every frame published is a finished one.
     virtual void SetUp() OVERRIDE
@@ -410,7 +518,26 @@ protected:
         BaseTest::SetUp();
         _stage.reset(new SceneStage);
         _passes = 0;
-        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) } });
+        if (GetParam() == Backend::Cpu) {
+            _ready = true;
+        } else {
+#ifdef NATRON_HAVE_GPU
+            _gpu.reset(new CancelGpuRuntime);
+            GPUTEST_DEVICE_OR_SKIP(_gpu->unavailable.empty(), _gpu->unavailable);
+
+            const std::string missing = _gpu->missingSupport();
+
+            if (!missing.empty()) {
+                GPUTEST_SKIP() << missing;
+            }
+            _ready = true;
+#else
+            std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU to render on\n");
+
+            return;
+#endif
+        }
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) }, { kUtilitySettingDevice, PXR_NS::VtValue(TfToken(GetParam() == Backend::Cpu ? kUtilityDeviceCpu : kUtilityDeviceGpu)) } });
     }
 
     virtual void TearDown() OVERRIDE
@@ -420,7 +547,15 @@ protected:
         EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
         _stage.reset();
         HydraRender::setRendererSettings(kRenderDelegateUtilityId, std::map<std::string, PXR_NS::VtValue>());
+#ifdef NATRON_HAVE_GPU
+        _gpu.reset();
+#endif
         BaseTest::TearDown();
+    }
+
+    bool ready() const
+    {
+        return _ready;
     }
 
     // Syncs payload into the stage under the stage lock, and restarts the render if that edited it,
@@ -517,37 +652,104 @@ protected:
     std::unique_ptr<SceneStage> _stage;
     std::atomic<int> _passes { 0 };
     std::unique_ptr<ProgressiveRender> _render;
+
+private:
+    bool _ready = false;
+#ifdef NATRON_HAVE_GPU
+    std::unique_ptr<CancelGpuRuntime> _gpu;
+#endif
+};
+
+// Brings the delegate's GPU context up for the GPU backends; ready() says whether the test can run.
+class NatronUtilityCancelLatency : public ::testing::TestWithParam<Backend> {
+protected:
+    void SetUp() OVERRIDE
+    {
+        if (GetParam() == Backend::Cpu) {
+            _ready = true;
+
+            return;
+        }
+#ifdef NATRON_HAVE_GPU
+        _gpu.reset(new CancelGpuRuntime);
+        GPUTEST_DEVICE_OR_SKIP(_gpu->unavailable.empty(), _gpu->unavailable);
+
+        const std::string missing = _gpu->missingSupport();
+
+        if (!missing.empty()) {
+            GPUTEST_SKIP() << missing;
+        }
+        _ready = true;
+#else
+        std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU to render on\n");
+#endif
+    }
+
+    bool ready() const
+    {
+        return _ready;
+    }
+
+private:
+    bool _ready = false;
+#ifdef NATRON_HAVE_GPU
+    std::unique_ptr<CancelGpuRuntime> _gpu;
+#endif
 };
 } // anon namespace
 
-TEST(NatronUtilityCancel, AStopCutsAHugeMeshsFrameShortWithinTheBound)
+TEST_P(NatronUtilityCancelLatency, AStopCutsAHugeMeshsFrameShortWithinTheBound)
 {
-    checkCancelLatency(hugeMeshStage(GfVec3f(1.f, 0.f, 0.f)), "one huge mesh");
+    if (!ready()) {
+        return;
+    }
+    checkCancelLatency(hugeMeshStage(GfVec3f(1.f, 0.f, 0.f)), "one huge mesh", GetParam());
 }
 
-TEST(NatronUtilityCancel, AStopCutsTheFrameOfManyMeshesShortWithinTheBound)
+TEST_P(NatronUtilityCancelLatency, AStopCutsTheFrameOfManyMeshesShortWithinTheBound)
 {
-    checkCancelLatency(manyMeshesStage(GfVec3f(1.f, 0.f, 0.f)), "many meshes");
+    if (!ready()) {
+        return;
+    }
+    checkCancelLatency(manyMeshesStage(GfVec3f(1.f, 0.f, 0.f)), "many meshes", GetParam());
 }
+
+INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityCancelLatency, ::testing::Values(Backend::Cpu, Backend::GpuTiles, Backend::GpuFilm));
 
 namespace {
 class CountingFilm : public WavefrontFilm {
 public:
+    CountingFilm(int size,
+                 bool colorOnDevice)
+        : _color(colorOnDevice ? new UtilityRenderBuffer(SdfPath("/color")) : nullptr)
+    {
+        if (_color) {
+            EXPECT_TRUE(_color->Allocate(GfVec3i(size, size, 1), HdFormatFloat32Vec4, false));
+            _color->clear(VtValue(GfVec4f(0.f, 0.f, 0.f, 0.f)));
+        }
+    }
+
     virtual void writeTile(const WavefrontTile&) OVERRIDE
     {
         ++tiles;
     }
 
-    std::atomic<int> tiles { 0 };
-};
-} // anon namespace
+    virtual UtilityRenderBuffer* deviceColor() const OVERRIDE
+    {
+        return _color.get();
+    }
 
-// One tile lit by so many lights that shading it alone takes far longer than the bound: a stop ends it
-// between batches of lights, and the tile never reaches the film.
-TEST(NatronUtilityCancel, AStopCutsATileShortBetweenItsLights)
+    std::atomic<int> tiles { 0 };
+
+private:
+    std::unique_ptr<UtilityRenderBuffer> _color;
+};
+
+// One card lit by lightCount lights, which add up to a white light.
+UtilityScene::Snapshot
+litCard(UtilityScene& scene,
+        int lightCount)
 {
-    const int lightCount = 8192;
-    UtilityScene scene;
     const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/Card"), 1);
 
     scene.setTopology(id,
@@ -562,6 +764,12 @@ TEST(NatronUtilityCancel, AStopCutsATileShortBetweenItsLights)
         scene.setLight(SdfPath("/Light" + std::to_string(i)), light);
     }
 
+    return scene.snapshot();
+}
+
+WavefrontFrame
+cardFrame(int size)
+{
     GfFrustum camera;
 
     camera.SetOrthographic(-10., 10., -10., 10., 1., 100.);
@@ -571,14 +779,98 @@ TEST(NatronUtilityCancel, AStopCutsATileShortBetweenItsLights)
 
     frame.worldToView = camera.ComputeViewMatrix();
     frame.projection = camera.ComputeProjectionMatrix();
-    frame.window.width = 64;
-    frame.window.height = 64;
+    frame.window.width = size;
+    frame.window.height = size;
     frame.sampling.samplesPerSide = 1;
     frame.maxRayDepth = 0;
 
-    const UtilityScene::Snapshot snapshot = scene.snapshot();
-    WavefrontCpu cpu;
-    CountingFilm film;
+    return frame;
+}
+
+// An executor of the backend's own, made on a device of the test's for the GPU backends.
+class NatronUtilityCancelTile : public ::testing::TestWithParam<Backend> {
+protected:
+    void SetUp() OVERRIDE
+    {
+        if (GetParam() == Backend::Cpu) {
+            _cpu.reset(new WavefrontCpu());
+            _executor = _cpu.get();
+
+            return;
+        }
+#ifdef NATRON_HAVE_GPU
+        const gpu::GpuStatus s = gputest::createDevice(_device);
+
+        GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+
+        const std::string missing = GpuTracer::missingRayQuerySupport(*_device);
+
+        if (!missing.empty()) {
+            GPUTEST_SKIP() << missing;
+        }
+        _registry.reset(new gpu::GpuKernelRegistry(*_device));
+        _pool.reset(new gpu::GpuBufferPool(*_device));
+        _gpu.reset(new WavefrontGpu(*_registry, *_pool, std::make_shared<int>(0)));
+        _executor = _gpu.get();
+#else
+        std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU executor\n");
+#endif
+    }
+
+    void TearDown() OVERRIDE
+    {
+        _executor = nullptr;
+#ifdef NATRON_HAVE_GPU
+        _gpu.reset();
+        if (_device) {
+            EXPECT_TRUE(WavefrontGpu::waitForWarmUps(*_device, std::chrono::milliseconds(60000)));
+            _device->waitIdle();
+        }
+        _pool.reset();
+        _registry.reset();
+        _device.reset();
+        _check.expectClean("the test");
+#endif
+    }
+
+    WavefrontExecutor* _executor = nullptr;
+
+private:
+    std::unique_ptr<WavefrontCpu> _cpu;
+#ifdef NATRON_HAVE_GPU
+    gputest::ValidationCheck _check;
+    std::unique_ptr<gpu::GpuDevice> _device;
+    std::unique_ptr<gpu::GpuKernelRegistry> _registry;
+    std::unique_ptr<gpu::GpuBufferPool> _pool;
+    std::unique_ptr<WavefrontGpu> _gpu;
+#endif
+};
+} // anon namespace
+
+// One tile lit by so many lights that shading it alone takes far longer than the bound: a stop ends it
+// between batches of lights, and the tile never reaches the film.
+TEST_P(NatronUtilityCancelTile, AStopCutsATileShortBetweenItsLights)
+{
+    if (!_executor) {
+        return;
+    }
+    const int lightCount = 8192;
+    const bool onGpu = GetParam() != Backend::Cpu;
+    // A device shades many pixels at once, so it gets more of them to keep it busy past the stop.
+    const int size = onGpu ? 256 : 64;
+    const std::atomic<bool> unstopped(false);
+
+    if (onGpu) {
+        // The first frame compiles the kernels, which is no stop point of the tile's.
+        UtilityScene warmScene;
+        CountingFilm warmFilm(8, GetParam() == Backend::GpuFilm);
+
+        ASSERT_TRUE(_executor->render(litCard(warmScene, 1), cardFrame(8), warmFilm, unstopped, 1));
+    }
+
+    UtilityScene scene;
+    const UtilityScene::Snapshot snapshot = litCard(scene, lightCount);
+    CountingFilm film(size, GetParam() == Backend::GpuFilm);
     std::atomic<bool> stop(false);
     Clock::time_point stopped;
     std::thread stopper([&stop, &stopped]() {
@@ -586,10 +878,13 @@ TEST(NatronUtilityCancel, AStopCutsATileShortBetweenItsLights)
         stopped = Clock::now();
         stop = true;
     });
-    const bool finished = cpu.render(snapshot, frame, film, stop, 1);
+    const bool finished = _executor->render(snapshot, cardFrame(size), film, stop, 1);
     const Clock::time_point returned = Clock::now();
 
     stopper.join();
+    if (finished && onGpu) {
+        GPUTEST_SKIP() << "the device shaded " << lightCount << " lights over the frame before the stop came";
+    }
 
     const std::chrono::milliseconds took = std::chrono::duration_cast<std::chrono::milliseconds>(returned - stopped);
 
@@ -599,8 +894,13 @@ TEST(NatronUtilityCancel, AStopCutsATileShortBetweenItsLights)
     EXPECT_EQ(0, film.tiles.load());
 }
 
-TEST_F(NatronUtilityCancelTest, AnEditDuringAFrameRestartsItAndTheOldFrameNeverLands)
+INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityCancelTile, ::testing::Values(Backend::Cpu, Backend::GpuTiles, Backend::GpuFilm));
+
+TEST_P(NatronUtilityCancelTest, AnEditDuringAFrameRestartsItAndTheOldFrameNeverLands)
 {
+    if (!ready()) {
+        return;
+    }
     const ScenePayload red = payloadOf(hugeMeshLayer(GfVec3f(1.f, 0.f, 0.f)), 0x4e0c01ULL);
 
     start(red);
@@ -623,8 +923,11 @@ TEST_F(NatronUtilityCancelTest, AnEditDuringAFrameRestartsItAndTheOldFrameNeverL
     }
 }
 
-TEST_F(NatronUtilityCancelTest, StopDuringAFramePublishesNothingAndResumeFinishesIt)
+TEST_P(NatronUtilityCancelTest, StopDuringAFramePublishesNothingAndResumeFinishesIt)
 {
+    if (!ready()) {
+        return;
+    }
     start(payloadOf(hugeMeshLayer(GfVec3f(1.f, 0.f, 0.f)), 0x4e0c03ULL));
     waitForFrameUnderWay();
     ASSERT_FALSE(_render->getFrame()) << "the scene is too light to test this";
@@ -650,8 +953,11 @@ TEST_F(NatronUtilityCancelTest, StopDuringAFramePublishesNothingAndResumeFinishe
     EXPECT_TRUE(frames[0]->converged);
 }
 
-TEST_F(NatronUtilityCancelTest, TheViewsPurposesDecideWhatIsDrawn)
+TEST_P(NatronUtilityCancelTest, TheViewsPurposesDecideWhatIsDrawn)
 {
+    if (!ready()) {
+        return;
+    }
     const SdfLayerRefPtr layer = SceneOps::createNodeLayer("NatronUtilityCancelPurposes");
     const UsdStageRefPtr authoring = UsdStage::Open(layer);
 
@@ -680,3 +986,5 @@ TEST_F(NatronUtilityCancelTest, TheViewsPurposesDecideWhatIsDrawn)
     centre = centreOf(*frames.back());
     EXPECT_GT(centre[0], centre[1]) << "the render-purpose prim stays with the purpose off again";
 }
+
+INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityCancelTest, ::testing::Values(Backend::Cpu, Backend::GpuTiles));

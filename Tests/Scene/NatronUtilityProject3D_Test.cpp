@@ -28,12 +28,15 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <ostream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -47,6 +50,7 @@
 #include <pxr/base/gf/frustum.h>
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/ray.h>
+#include <pxr/base/gf/rotation.h>
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec3i.h>
@@ -83,6 +87,13 @@
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuKernelRegistry.h"
+#include "Engine/Nodes/Scene/Utility/GpuTracer.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Gpu/GpuTestDevice.h"
+#endif
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -665,3 +676,262 @@ TEST_F(NatronUtilityProject3DTest, NatronUtilityMatchesStormOnInteriorPixels)
     EXPECT_GT(compared, 20u) << "of " << pixels << " pixels, Storm hits " << stormHits << " and covers " << stormCovered << ", Natron Utility hits " << utilityHits << " and covers " << utilityCovered;
     HydraRender::release(&owner);
 }
+
+namespace {
+enum class Backend {
+    Cpu,
+    Gpu,
+};
+
+void
+PrintTo(Backend backend,
+        std::ostream* os)
+{
+    *os << (backend == Backend::Cpu ? "Cpu" : "Gpu");
+}
+
+// The frame of a camera, one sample through each pixel's centre.
+WavefrontFrame
+cameraFrame(const GfFrustum& camera,
+            int size)
+{
+    WavefrontFrame frame;
+
+    frame.worldToView = camera.ComputeViewMatrix();
+    frame.projection = camera.ComputeProjectionMatrix();
+    frame.window.width = size;
+    frame.window.height = size;
+
+    return frame;
+}
+
+// The ray through the centre of pixel (x, y) of a size by size frame, y counted from the bottom.
+GfRay
+pixelRay(const GfFrustum& camera,
+         int x,
+         int y,
+         int size)
+{
+    return camera.ComputeRay(GfVec2d(2. * (x + 0.5) / size - 1., 2. * (y + 0.5) / size - 1.));
+}
+
+// The whole frame drawn by the CPU's executor, or by the GPU's on a device of the test's.
+class NatronUtilityProject3DBackend : public ::testing::TestWithParam<Backend> {
+protected:
+    void SetUp() OVERRIDE
+    {
+        if (GetParam() == Backend::Cpu) {
+            _cpu.reset(new WavefrontCpu());
+            _executor = _cpu.get();
+
+            return;
+        }
+#ifdef NATRON_HAVE_GPU
+        const gpu::GpuStatus s = gputest::createDevice(_device);
+
+        GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+
+        const std::string missing = GpuTracer::missingRayQuerySupport(*_device);
+
+        if (!missing.empty()) {
+            GPUTEST_SKIP() << missing;
+        }
+        _registry.reset(new gpu::GpuKernelRegistry(*_device));
+        _pool.reset(new gpu::GpuBufferPool(*_device));
+        _gpu.reset(new WavefrontGpu(*_registry, *_pool, std::make_shared<int>(0)));
+        _executor = _gpu.get();
+#else
+        std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU executor\n");
+#endif
+    }
+
+    void TearDown() OVERRIDE
+    {
+        _executor = nullptr;
+#ifdef NATRON_HAVE_GPU
+        _gpu.reset();
+        if (_device) {
+            EXPECT_TRUE(WavefrontGpu::waitForWarmUps(*_device, std::chrono::milliseconds(60000)));
+            _device->waitIdle();
+        }
+        _pool.reset();
+        _registry.reset();
+        _device.reset();
+        _check.expectClean("the test");
+#endif
+    }
+
+    bool ready() const
+    {
+        return _executor != nullptr;
+    }
+
+    void draw(const UtilityScene& scene,
+              const WavefrontFrame& frame,
+              PixelFilm& film)
+    {
+        const std::atomic<bool> stop(false);
+
+        ASSERT_TRUE(_executor->render(scene.snapshot(), frame, film, stop, 2));
+    }
+
+private:
+    WavefrontExecutor* _executor = nullptr;
+    std::unique_ptr<WavefrontCpu> _cpu;
+#ifdef NATRON_HAVE_GPU
+    gputest::ValidationCheck _check;
+    std::unique_ptr<gpu::GpuDevice> _device;
+    std::unique_ptr<gpu::GpuKernelRegistry> _registry;
+    std::unique_ptr<gpu::GpuBufferPool> _pool;
+    std::unique_ptr<WavefrontGpu> _gpu;
+#endif
+};
+} // anon namespace
+
+// Nine pixels a plate texel, so the middle pixel of each block looks up the texel's centre.
+TEST_P(NatronUtilityProject3DBackend, APlateProjectedFromTheRenderCameraReproducesThePlate)
+{
+    if (!ready()) {
+        return;
+    }
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("plate.png")).toStdString();
+    ASSERT_TRUE(writePlate(path));
+
+    const GfFrustum camera = renderCamera();
+    UtilityProjection projection;
+
+    projection.worldToProjector = worldToFrame(camera);
+    projection.projectorOrigin = GfVec4f(0.3f, -0.2f, 6.f, 1.f);
+
+    ProjectedCard card(projection, path);
+    const int perTexel = 9;
+    const int size = kPlateSize * perTexel;
+    WavefrontFrame frame = cameraFrame(camera, size);
+
+    frame.maxRayDepth = 0;
+
+    PixelFilm film(size, size);
+
+    draw(card.scene, frame, film);
+    for (int y = 0; y < kPlateSize; ++y) {
+        for (int x = 0; x < kPlateSize; ++x) {
+            const std::size_t pixel = (y * perTexel + perTexel / 2) * size + x * perTexel + perTexel / 2;
+
+            expectNear(plateTexel(x, kPlateSize - 1 - y), film.colors[pixel], 1e-3f, "texel " + std::to_string(x) + ", " + std::to_string(y));
+            EXPECT_EQ(7, film.primIds[pixel]);
+        }
+    }
+    EXPECT_TRUE(card.scene.warnings().empty());
+}
+
+// A mirror on z = 0 under the render camera reflects a card at z = 10 above it, the plate projected on
+// that card by a projector between them looking up. Each mirror pixel shows the texel its reflected ray
+// meets the card in, through the projector's frame.
+TEST_P(NatronUtilityProject3DBackend, AMirrorShowsTheProjectedCardItReflects)
+{
+    if (!ready()) {
+        return;
+    }
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("plate.png")).toStdString();
+    ASSERT_TRUE(writePlate(path));
+
+    const float cardZ = 10.f;
+    GfFrustum projector;
+
+    projector.SetPerspective(80., 1., 0.5, 100.);
+    projector.SetPosition(GfVec3d(0.3, -0.2, 4.));
+    projector.SetRotation(GfRotation(GfVec3d(0., 1., 0.), 180.));
+
+    UtilityProjection projection;
+
+    projection.worldToProjector = worldToFrame(projector);
+    projection.projectorOrigin = GfVec4f(0.3f, -0.2f, 4.f, 1.f);
+
+    UtilityScene scene;
+    UtilityTextureRef texture;
+
+    texture.asset = path;
+    texture.colorSpace = UtilityTextureRef::eColorSpaceRaw;
+
+    UtilityMaterialDesc projected;
+
+    projected.kind = UtilityMaterialDesc::eKindProject3D;
+    projected.projection = projection;
+    projected.projection.plate = 0;
+    projected.textureRefs.push_back(texture);
+
+    // Wound to face down, towards the projector and the mirror.
+    const UtilityScene::GeometryId card = scene.addGeometry(SdfPath("/Card"), 7);
+
+    scene.setTopology(card,
+                      VtVec3fArray { GfVec3f(-20.f, -20.f, cardZ), GfVec3f(20.f, -20.f, cardZ), GfVec3f(20.f, 20.f, cardZ), GfVec3f(-20.f, 20.f, cardZ) },
+                      VtVec3iArray { GfVec3i(0, 2, 1), GfVec3i(0, 3, 2) });
+    scene.setInstances(card, { GfMatrix4d(1.) });
+    scene.setMaterial(SdfPath("/Projection"), std::make_shared<const UtilityMaterialDesc>(projected));
+    scene.setMaterialId(card, SdfPath("/Projection"));
+
+    UtilityMaterialDesc mirror;
+
+    mirror.diffuseColor = GfVec3f(1.f);
+    mirror.metallic = 1.f;
+    mirror.roughness = 0.f;
+
+    const UtilityScene::GeometryId floor = scene.addGeometry(SdfPath("/Mirror"), 3);
+
+    scene.setTopology(floor,
+                      VtVec3fArray { GfVec3f(-20.f, -20.f, 0.f), GfVec3f(20.f, -20.f, 0.f), GfVec3f(20.f, 20.f, 0.f), GfVec3f(-20.f, 20.f, 0.f) },
+                      VtVec3iArray { GfVec3i(0, 1, 2), GfVec3i(0, 2, 3) });
+    scene.setInstances(floor, { GfMatrix4d(1.) });
+    scene.setMaterial(SdfPath("/Mirror"), std::make_shared<const UtilityMaterialDesc>(mirror));
+    scene.setMaterialId(floor, SdfPath("/Mirror"));
+
+    const GfFrustum camera = renderCamera();
+    const int size = 64;
+    PixelFilm film(size, size);
+
+    draw(scene, cameraFrame(camera, size), film);
+
+    const GfMatrix4d toFrame = worldToFrame(projector);
+    int checked = 0;
+
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const std::size_t pixel = y * size + x;
+
+            ASSERT_EQ(3, film.primIds[pixel]) << "pixel " << x << ", " << y << " is not on the mirror";
+
+            const GfRay ray = pixelRay(camera, x, y, size);
+            const GfVec3d direction = ray.GetDirection().GetNormalized();
+            const GfVec3d onMirror = ray.GetStartPoint() - direction * (ray.GetStartPoint()[2] / direction[2]);
+            const GfVec3d reflected(direction[0], direction[1], -direction[2]);
+            const GfVec3d onCard = onMirror + reflected * (cardZ / reflected[2]);
+            const GfVec3d inFrame = toFrame.Transform(onCard);
+            const double u = inFrame[0] * kPlateSize;
+            const double v = inFrame[1] * kPlateSize;
+
+            if (u <= 0. || v <= 0. || u >= kPlateSize || v >= kPlateSize) {
+                continue;
+            }
+            // Only well inside a texel, where its neighbours hardly weigh in the lookup.
+            const double alongU = u - std::floor(u);
+            const double alongV = v - std::floor(v);
+
+            if (std::fabs(alongU - 0.5) > 0.15 || std::fabs(alongV - 0.5) > 0.15) {
+                continue;
+            }
+            const int column = static_cast<int>(u);
+            const int row = static_cast<int>(v);
+
+            expectNear(plateTexel(column, kPlateSize - 1 - row), film.colors[pixel], 0.05f, "pixel " + std::to_string(x) + ", " + std::to_string(y));
+            ++checked;
+        }
+    }
+    EXPECT_GE(checked, 4 * kPlateSize * kPlateSize) << "too few mirror pixels see the middle of a texel";
+    EXPECT_TRUE(scene.warnings().empty());
+}
+
+INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityProject3DBackend, ::testing::Values(Backend::Cpu, Backend::Gpu));

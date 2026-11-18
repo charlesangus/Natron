@@ -28,6 +28,7 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <atomic>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -88,19 +89,22 @@ public:
     UtilityTexturePool();
     ~UtilityTexturePool();
 
-    // Null when the asset could not be read, which failures() then names.
+    // Null when the asset could not be read, which failures() then names, or when stop ended the load,
+    // which leaves the asset unloaded for the next acquire() to load.
     UtilityTextureAssetConstPtr acquire(const std::string& asset,
-                                        UtilityTextureRef::ColorSpace colorSpace);
+                                        UtilityTextureRef::ColorSpace colorSpace,
+                                        const std::atomic<bool>* stop = nullptr);
     // Drops every asset not in keys, failures included.
     void retainOnly(const std::set<Key>& keys);
     // One line per asset that could not be read, naming it.
     std::vector<std::string> failures() const;
     std::size_t size() const;
 
-    // Decodes one file, or returns null and says why in error.
+    // Decodes one file, or returns null and says why in error; null with error empty when stop ended it.
     static UtilityTextureImageConstPtr loadImage(const std::string& path,
                                                  UtilityTextureRef::ColorSpace colorSpace,
-                                                 std::string* error);
+                                                 std::string* error,
+                                                 const std::atomic<bool>* stop = nullptr);
 
 private:
     struct Entry {

@@ -48,6 +48,8 @@ namespace {
 // Scene versions count up from 0, so these never meet one.
 const std::uint64_t kEvaluatedVersionBit = std::uint64_t(1) << 63;
 std::atomic<std::uint64_t> gEvaluatedVersions(0);
+// Points interpolated between looks at the stop flag.
+const std::size_t kEvaluateChunk = std::size_t(1) << 16;
 
 GfMatrix3d
 upperLeft(const GfMatrix4d& m)
@@ -596,10 +598,30 @@ UtilityScene::Snapshot
 UtilityScene::evaluateAt(const Snapshot& snapshot,
                          double time)
 {
-    Snapshot out = snapshot;
+    const std::atomic<bool> never(false);
+    Snapshot out;
 
+    (void)evaluateAt(snapshot, time, never, &out);
+
+    return out;
+}
+
+bool
+UtilityScene::evaluateAt(const Snapshot& snapshot,
+                         double time,
+                         const std::atomic<bool>& stop,
+                         Snapshot* evaluated)
+{
+    const auto stopped = [&stop]() { return stop.load(std::memory_order_relaxed); };
+    Snapshot& out = *evaluated;
+
+    out = snapshot;
     out.version = kEvaluatedVersionBit | ++gEvaluatedVersions;
     for (auto& entry : out.geometries) {
+        if (stopped()) {
+            return false;
+        }
+
         Geometry& geometry = entry.second;
 
         if (!geometry.pointMotion) {
@@ -628,6 +650,9 @@ UtilityScene::evaluateAt(const Snapshot& snapshot,
         const float weight = static_cast<float>(u);
 
         for (std::size_t i = 0; i < a.size(); ++i) {
+            if (i % kEvaluateChunk == 0 && stopped()) {
+                return false;
+            }
             written[i] = a.cdata()[i] + (b.cdata()[i] - a.cdata()[i]) * weight;
         }
         geometry.points = points;
@@ -646,6 +671,10 @@ UtilityScene::evaluateAt(const Snapshot& snapshot,
         GfVec3f* blended = normals.data();
 
         for (std::size_t i = 0; i < na.size(); ++i) {
+            if (i % kEvaluateChunk == 0 && stopped()) {
+                return false;
+            }
+
             const GfVec3f n = na.cdata()[i] + (nb.cdata()[i] - na.cdata()[i]) * weight;
             const float length = n.GetLength();
 
@@ -654,7 +683,12 @@ UtilityScene::evaluateAt(const Snapshot& snapshot,
         geometry.normals = normals;
         geometry.normalsVersion = out.version;
     }
-    for (Instance& instance : out.instances) {
+    for (std::size_t i = 0; i < out.instances.size(); ++i) {
+        Instance& instance = out.instances[i];
+
+        if (i % kEvaluateChunk == 0 && stopped()) {
+            return false;
+        }
         if (!instance.motion) {
             continue;
         }
@@ -678,7 +712,7 @@ UtilityScene::evaluateAt(const Snapshot& snapshot,
         }
     }
 
-    return out;
+    return true;
 }
 
 GfMatrix4d

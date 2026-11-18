@@ -141,6 +141,8 @@ struct WavefrontFrame {
     std::string unwrapPrimvar;
     int udimTile = 1001;
     WavefrontUnwrapConstPtr unwrap;
+    // Whether a UvUnwrap's paths go on past the baked surface; off, wavefrontBounceLimit() is 0.
+    bool unwrapBounces = false;
     // The most holes a ray goes on through, in surfaces under their opacityThreshold, Project3D discards
     // and casters a shadow ray's light ignores; past them the ray ends as a miss.
     std::uint32_t maxCutouts = kWavefrontDefaultMaxCutouts;
@@ -223,7 +225,8 @@ public:
      * @brief Draws the frame into the film using at most threads threads, the caller included, polling
      * stop throughout, the scene's preparation included. Returns false when stop ended it early, leaving
      * the film partly written; the next call picks the scene up from a consistent state. Calls must not
-     * overlap.
+     * overlap. Throws std::runtime_error, through wavefrontRequireUnwrap(), for a UvUnwrap frame
+     * without its unwrap.
      **/
     virtual bool render(const UtilityScene::Snapshot& snapshot,
                         const WavefrontFrame& frame,
@@ -312,7 +315,8 @@ WavefrontFrame wavefrontFrameAt(const WavefrontFrame& frame,
  * snapshot, evaluated at each bucket's time, and the camera at it trace that bucket's samples.
  * progress, when set, hears how many samples are done after each. bucketSeconds, when not null,
  * receives how long each bucket took, its scene's evaluation included. Returns false when stop ended it.
- * Throws std::runtime_error when a UvUnwrap frame's prim cannot be unwrapped.
+ * A UvUnwrap frame ignores the camera's motion, and buckets that trace the snapshot as it stands share
+ * one unwrap. Throws std::runtime_error when a UvUnwrap frame's prim cannot be unwrapped.
  **/
 bool wavefrontDrawSamples(WavefrontExecutor& executor,
                           const UtilityScene::Snapshot& snapshot,
@@ -334,6 +338,9 @@ WavefrontUnwrapConstPtr wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
                                         const WavefrontFrame& frame,
                                         const std::atomic<bool>& stop,
                                         std::string* error);
+
+// Throws std::runtime_error when frame is a UvUnwrap without its unwrap, which it cannot draw.
+void wavefrontRequireUnwrap(const WavefrontFrame& frame);
 
 /**
  * @brief Appends to data the importance table of a lat-long dome image, sized width by height bins over
@@ -358,7 +365,8 @@ KernelShadeParams makeShadeParams(const WavefrontFrame& frame,
 
 /**
  * @brief The bounces after the camera rays' a frame traces at most: without transmissive surfaces only
- * reflections continue a path, so no more than the reflection depth.
+ * reflections continue a path, so no more than the reflection depth. None for a UvUnwrap without
+ * unwrapBounces.
  **/
 std::uint32_t wavefrontBounceLimit(const WavefrontFrame& frame,
                                    bool transmission);
@@ -381,8 +389,9 @@ public:
     std::uint64_t texelVersion() const;
     std::uint32_t lightCount() const;
     // Caps the texels at limitBytes, 0 for no cap, downsampling the largest textures to fit; returns
-    // false when they cannot fit even then.
-    bool fitTexels(std::uint64_t limitBytes);
+    // false when they cannot fit even then, or when stop ended it, leaving them for the next call to redo.
+    bool fitTexels(std::uint64_t limitBytes,
+                   const std::atomic<bool>* stop = nullptr);
     // One line per texture fitTexels() downsampled.
     const std::vector<std::string>& texelWarnings() const;
     // Whether a dome light shows where camera rays miss.
@@ -400,7 +409,8 @@ public:
     OcclusionFilter occlusionFilter(const std::uint32_t* rayLights) const;
 
 private:
-    void buildTexels();
+    // Returns false when stop ended it, leaving the texels incomplete.
+    bool buildTexels(const std::atomic<bool>* stop);
 
     struct SourceVersion {
         UtilityScene::GeometryId id;
@@ -433,6 +443,8 @@ private:
     std::uint64_t _texelVersion = 0;
     std::uint64_t _texelLimit = 0;
     bool _texelsFit = true;
+    // False while a stopped buildTexels() left the texels short of _textureAssets.
+    bool _texelsComplete = false;
     std::vector<std::string> _texelWarnings;
     std::vector<PXR_NS::GfVec4f> _points;
     std::vector<PXR_NS::GfVec4f> _instanceTransforms;
@@ -454,7 +466,9 @@ private:
     // Material paths in the order of _materials from index 1.
     std::map<PXR_NS::SdfPath, std::uint32_t> _materialIndices;
 
-    void updateMaterials(const UtilityScene::Snapshot& snapshot);
+    // Returns false when stop ended it, the textures it had not reached left unloaded.
+    bool updateMaterials(const UtilityScene::Snapshot& snapshot,
+                         const std::atomic<bool>* stop);
     std::uint64_t _version = 0;
     bool _synced = false;
 };

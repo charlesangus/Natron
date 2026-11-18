@@ -120,12 +120,14 @@
 // How pixels map to rays: Projection, a TfToken, one of the four values below. Overscan, an int, is how
 // many pixels the frame grows by on every side, for each projection but uvUnwrap. A uvUnwrap render
 // bakes the prim at UV Prim, a std::string path, through its UV Primvar, a std::string, over the UDIM
-// Tile, an int, its texel grid the format.
+// Tile, an int, its texel grid the format. UV Bake Bounces, a bool, off by default, lets a uvUnwrap
+// bake's paths go on past the surface by reflection, refraction and transparency.
 #define kUtilitySettingProjection "projection"
 #define kUtilitySettingOverscan "overscan"
 #define kUtilitySettingUvPrim "uvPrim"
 #define kUtilitySettingUvPrimvar "uvPrimvar"
 #define kUtilitySettingUdimTile "udimTile"
+#define kUtilitySettingUvBakeBounces "uvBakeBounces"
 #define kUtilityProjectionCamera "camera"
 #define kUtilityProjectionSpherical "spherical"
 #define kUtilityProjectionCylindrical "cylindrical"
@@ -158,7 +160,8 @@ public:
     /**
      * @brief The GPU's executor, made on the first call after none or a dropped one, so that a
      * delegate made only to list its settings never touches the device. Null when the GPU cannot
-     * render, with unavailable saying why. Only the frame thread may call this or dropGpuExecutor(),
+     * render, with unavailable saying why, and null too when cancelFlag() was set while the application's
+     * GPU was still starting, which the caller tells by the flag. Only the frame thread may call this or dropGpuExecutor(),
      * and the executor lives until dropGpuExecutor() or the param goes.
      **/
     WavefrontGpu* gpuExecutor(std::string* unavailable);
@@ -348,10 +351,11 @@ struct UtilityUnwrapTarget {
     PXR_NS::SdfPath prim;
     std::string primvar;
     int udimTile = kUtilityDefaultUdimTile;
+    bool bounces = false;
 
     bool operator==(const UtilityUnwrapTarget& other) const
     {
-        return prim == other.prim && primvar == other.primvar && udimTile == other.udimTile;
+        return prim == other.prim && primvar == other.primvar && udimTile == other.udimTile && bounces == other.bounces;
     }
 };
 

@@ -619,11 +619,16 @@ std::uint32_t
 wavefrontBounceLimit(const WavefrontFrame& frame,
                      bool transmission)
 {
+    if (frame.mapping == WavefrontMapping::UvUnwrap && !frame.unwrapBounces) {
+        return 0;
+    }
+
     return transmission ? frame.maxRayDepth : std::min(frame.maxRayDepth, frame.reflectionDepth);
 }
 
-void
-WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
+bool
+WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot,
+                                      const std::atomic<bool>* stop)
 {
     std::vector<UtilityTextureAssetConstPtr> assets;
     std::vector<std::string> assetNames;
@@ -642,7 +647,7 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
 
         if (!ref.asset.empty() && snapshot.textures) {
             keys.insert(UtilityTexturePool::Key(ref.asset, static_cast<int>(ref.colorSpace)));
-            asset = snapshot.textures->acquire(ref.asset, ref.colorSpace);
+            asset = snapshot.textures->acquire(ref.asset, ref.colorSpace, stop);
         }
         int image = -1;
 
@@ -708,8 +713,13 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
         _materials.push_back(record);
     };
 
+    const auto halted = [stop]() { return stop && stop->load(std::memory_order_relaxed); };
+
     addMaterial(UtilityMaterialDesc::fallback());
     for (const auto& entry : snapshot.materials) {
+        if (halted()) {
+            return false;
+        }
         if (entry.second) {
             _materialIndices[entry.first] = static_cast<std::uint32_t>(_materials.size());
             addMaterial(*entry.second);
@@ -722,6 +732,9 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
     _shadowLinked = false;
     _background = false;
     for (const auto& entry : snapshot.lights) {
+        if (halted()) {
+            return false;
+        }
         if (!entry.second) {
             continue;
         }
@@ -747,16 +760,22 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot)
         _shadowLinked = _shadowLinked || !desc.shadowLink.IsEmpty();
     }
 
+    // The last texture's load may have been the one stopped, and retainOnly() must not drop what the
+    // materials not reached still read.
+    if (halted()) {
+        return false;
+    }
     if (snapshot.textures) {
         snapshot.textures->retainOnly(keys);
     }
-    if (assets == _textureAssets && _texelVersion != 0) {
-        return;
+    if (assets == _textureAssets && _texelVersion != 0 && _texelsComplete) {
+        return true;
     }
 
     _textureAssets.swap(assets);
     _textureAssetNames.swap(assetNames);
-    buildTexels();
+
+    return buildTexels(stop);
 }
 
 bool
@@ -779,7 +798,9 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
     const bool recopy = !_synced || sources != _sources;
 
     _synced = false;
-    updateMaterials(snapshot);
+    if (!updateMaterials(snapshot, stop)) {
+        return false;
+    }
     if (recopy) {
         std::size_t colorTotal = 0;
         std::size_t triangleTotal = 0;
@@ -1026,11 +1047,14 @@ texelsFrom(const UtilityTextureImage& image,
 } // anon namespace
 
 bool
-WavefrontShadeTables::fitTexels(std::uint64_t limitBytes)
+WavefrontShadeTables::fitTexels(std::uint64_t limitBytes,
+                                const std::atomic<bool>* stop)
 {
-    if (limitBytes != _texelLimit) {
+    if (limitBytes != _texelLimit || !_texelsComplete) {
         _texelLimit = limitBytes;
-        buildTexels();
+        if (!buildTexels(stop)) {
+            return false;
+        }
     }
 
     return _texelsFit;
@@ -1044,8 +1068,8 @@ WavefrontShadeTables::texelWarnings() const
 
 // The texels go to the device as one buffer, so past its limit the largest images give up their
 // finest levels, already in their mip chains, until the whole set fits.
-void
-WavefrontShadeTables::buildTexels()
+bool
+WavefrontShadeTables::buildTexels(const std::atomic<bool>* stop)
 {
     struct Tile {
         const UtilityTextureImage* image;
@@ -1105,6 +1129,7 @@ WavefrontShadeTables::buildTexels()
 
     std::set<std::size_t> downsampled;
 
+    _texelsComplete = false;
     _images.clear();
     _texels.clear();
     _texelWarnings.clear();
@@ -1122,7 +1147,15 @@ WavefrontShadeTables::buildTexels()
         const std::size_t count = texelsFrom(*tile.image, tile.dropped, &offset, &width, &height);
 
         _images.insert(_images.end(), { static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), static_cast<std::uint32_t>(tile.image->levels - tile.dropped), static_cast<std::uint32_t>(_texels.size()) });
-        _texels.insert(_texels.end(), tile.image->texels.begin() + static_cast<std::ptrdiff_t>(offset), tile.image->texels.begin() + static_cast<std::ptrdiff_t>(offset + count));
+        for (std::size_t first = 0; first < count; first += kCopyChunk) {
+            if (stop && stop->load(std::memory_order_relaxed)) {
+                return false;
+            }
+
+            const auto from = tile.image->texels.begin() + static_cast<std::ptrdiff_t>(offset + first);
+
+            _texels.insert(_texels.end(), from, from + static_cast<std::ptrdiff_t>(std::min(kCopyChunk, count - first)));
+        }
         if (tile.dropped > 0 && downsampled.insert(tile.asset).second) {
             _texelWarnings.push_back(TfStringPrintf("Texture %s was downsampled from %dx%d to %dx%d to fit the GPU's largest storage buffer",
                                                     _textureAssetNames[tile.asset].c_str(), tile.image->width, tile.image->height, width, height));
@@ -1133,6 +1166,9 @@ WavefrontShadeTables::buildTexels()
                                                 static_cast<std::size_t>(total * sizeof(GfVec4f)), static_cast<unsigned long long>(_texelLimit)));
     }
     ++_texelVersion;
+    _texelsComplete = true;
+
+    return true;
 }
 
 bool
@@ -1531,6 +1567,14 @@ wavefrontUnwrap(const UtilityScene::Snapshot& snapshot,
     return unwrap;
 }
 
+void
+wavefrontRequireUnwrap(const WavefrontFrame& frame)
+{
+    if (frame.mapping == WavefrontMapping::UvUnwrap && !frame.unwrap) {
+        throw std::runtime_error("The Utility renderer was asked for a UV Unwrap frame of " + frame.unwrapPrim.GetString() + " without its unwrap");
+    }
+}
+
 bool
 wavefrontDrawSamples(WavefrontExecutor& executor,
                      const UtilityScene::Snapshot& snapshot,
@@ -1542,9 +1586,23 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
                      const std::function<void(std::size_t)>& progress,
                      std::vector<double>* bucketSeconds)
 {
+    const bool unwrapping = frame.mapping == WavefrontMapping::UvUnwrap;
+    WavefrontMotion counted;
+
+    // A bake's rays come from the unwrap, never the camera, so only the scene's motion splits it.
+    if (unwrapping) {
+        counted.open = motion.open;
+        counted.close = motion.close;
+        counted.segments = motion.segments;
+    }
+
+    const WavefrontMotion& bucketed = unwrapping ? counted : motion;
     const int samples = std::max(1, frame.sampling.samplesPerPixel());
-    const int buckets = wavefrontBucketCount(motion, snapshot, samples);
+    const int buckets = wavefrontBucketCount(bucketed, snapshot, samples);
     const std::vector<int> order = wavefrontSampleOrder(samples, buckets);
+    // The unwrap of the snapshot as it stands, kept for every bucket that does not evaluate it, so that
+    // the device copy of it is kept too.
+    WavefrontUnwrapConstPtr unevaluatedUnwrap;
     std::size_t done = 0;
 
     if (bucketSeconds) {
@@ -1554,26 +1612,34 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
         const auto start = std::chrono::steady_clock::now();
         const int first = static_cast<int>(static_cast<long long>(bucket) * samples / buckets);
         const int last = static_cast<int>(static_cast<long long>(bucket + 1) * samples / buckets);
-        const double time = wavefrontBucketTime(motion, bucket, buckets);
+        const double time = wavefrontBucketTime(bucketed, bucket, buckets);
         UtilityScene::Snapshot evaluated;
         const bool evaluate = time != 0. && UtilityScene::moves(snapshot);
 
-        if (evaluate) {
-            evaluated = UtilityScene::evaluateAt(snapshot, time);
+        if (evaluate && !UtilityScene::evaluateAt(snapshot, time, stop, &evaluated)) {
+            return false;
         }
         const UtilityScene::Snapshot& scene = evaluate ? evaluated : snapshot;
-        WavefrontFrame atTime = (time != 0.) ? wavefrontFrameAt(frame, motion, time) : frame;
+        WavefrontFrame atTime = (time != 0. && !unwrapping) ? wavefrontFrameAt(frame, motion, time) : frame;
 
-        if (atTime.mapping == WavefrontMapping::UvUnwrap) {
-            std::string error;
+        if (unwrapping) {
+            WavefrontUnwrapConstPtr unwrap = evaluate ? WavefrontUnwrapConstPtr() : unevaluatedUnwrap;
 
-            atTime.unwrap = wavefrontUnwrap(scene, atTime, stop, &error);
-            if (!error.empty()) {
-                throw std::runtime_error(error);
+            if (!unwrap) {
+                std::string error;
+
+                unwrap = wavefrontUnwrap(scene, atTime, stop, &error);
+                if (!error.empty()) {
+                    throw std::runtime_error(error);
+                }
+                if (!unwrap) {
+                    return false;
+                }
+                if (!evaluate) {
+                    unevaluatedUnwrap = unwrap;
+                }
             }
-            if (!atTime.unwrap) {
-                return false;
-            }
+            atTime.unwrap = unwrap;
         }
 
         for (int i = first; i < last; ++i) {

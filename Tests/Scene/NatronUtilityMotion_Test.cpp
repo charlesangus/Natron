@@ -88,6 +88,13 @@
 #include "Gpu/GpuTestDevice.h"
 #endif
 
+#ifdef NATRON_HAVE_GPU
+#include "Engine/AppManager.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/GpuContext.h"
+#include "Gpu/GpuTestSelector.h"
+#endif
+
 PXR_NAMESPACE_USING_DIRECTIVE
 NATRON_NAMESPACE_USING
 
@@ -305,6 +312,7 @@ protected:
 #ifdef NATRON_HAVE_GPU
         _gpu.reset();
         if (_device) {
+            EXPECT_TRUE(WavefrontGpu::waitForWarmUps(*_device, std::chrono::milliseconds(60000)));
             _device->waitIdle();
         }
         _pool.reset();
@@ -385,7 +393,9 @@ public:
     MotionRender(const std::string& usda,
                  const GfVec2d& shutterInterval,
                  int pixelSamples,
-                 int segments)
+                 int segments,
+                 int subdivLevel = 0,
+                 const char* device = kUtilityDeviceCpu)
     {
         RenderDelegates::list();
         _layer = SdfLayer::CreateAnonymous(".usda");
@@ -399,9 +409,9 @@ public:
         _engine.reset(new UsdImagingGLEngine(parameters));
         _engine->SetEnablePresentation(false);
         EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color }));
-        _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceCpu)));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(device)));
         _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(pixelSamples));
-        _engine->SetRendererSetting(TfToken(kUtilitySettingSubdivLevel), VtValue(0));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingSubdivLevel), VtValue(subdivLevel));
         _engine->SetRendererSetting(TfToken(kUtilitySettingMaxRayDepth), VtValue(0));
         _engine->SetRendererSetting(TfToken(kUtilitySettingPixelFilter), VtValue(TfToken(kUtilityFilterBox)));
         _engine->SetRendererSetting(TfToken(kUtilitySettingFilterWidth), VtValue(1.f));
@@ -411,7 +421,8 @@ public:
 
     void render(double frame)
     {
-        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        // The first GPU frame compiles the kernels, which takes far longer than a frame.
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(180);
 
         renderOnce(frame);
         while (!_engine->IsConverged() && std::chrono::steady_clock::now() < end) {
@@ -441,6 +452,30 @@ public:
     VtDictionary stats() const
     {
         return _engine->GetRenderStats();
+    }
+
+    std::size_t stat(const char* key) const
+    {
+        return VtDictionaryGet<std::size_t>(_engine->GetRenderStats(), key, VtDefault = std::size_t(0));
+    }
+
+    std::string device() const
+    {
+        return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatDevice, VtDefault = std::string());
+    }
+
+    // How many pixels of the middle row are partly covered.
+    int partialInMiddleRow() const
+    {
+        int partial = 0;
+
+        for (int x = 0; x < kSize; ++x) {
+            const float alpha = alphaAt(x);
+
+            partial += (alpha > 0.05f && alpha < 0.95f) ? 1 : 0;
+        }
+
+        return partial;
     }
 
 private:
@@ -826,3 +861,195 @@ TEST(NatronUtilityMotionDelegate, AClosedShutterRendersTheFrame)
     EXPECT_FLOAT_EQ(1.f, render.alphaAt(kRestPixel));
     EXPECT_EQ(1u, VtDictionaryGet<VtDoubleArray>(render.stats(), kUtilityStatBucketSeconds, VtDefault = VtDoubleArray()).size());
 }
+
+namespace {
+// A Catmull-Clark cube cage over eight points in cubePoints' order.
+std::string
+cubeMesh(const std::string& name,
+         const std::string& pointsLine)
+{
+    return "def Mesh \"" + name + "\" {\n"
+                                  "    uniform token subdivisionScheme = \"catmullClark\"\n"
+                                  "    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]\n"
+                                  "    int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]\n"
+                                  "    color3f[] primvars:displayColor = [(1, 1, 1)] (interpolation = \"constant\")\n"
+        + pointsLine + "}\n";
+}
+
+// The corners of a cube of side 2 * half about (x, 0, 0).
+std::string
+cubePoints(double x,
+           double half)
+{
+    const auto point = [](double px, double py, double pz) {
+        return "(" + std::to_string(px) + ", " + std::to_string(py) + ", " + std::to_string(pz) + ")";
+    };
+    const double l = x - half;
+    const double r = x + half;
+    const double h = half;
+
+    return "[" + point(l, -h, h) + ", " + point(r, -h, h) + ", " + point(l, h, h) + ", " + point(r, h, h) + ", "
+        + point(l, h, -h) + ", " + point(r, h, -h) + ", " + point(l, -h, -h) + ", " + point(r, -h, -h) + "]";
+}
+
+std::string
+cubeStage(const std::string& body)
+{
+    return std::string("#usda 1.0\n(\n    timeCodesPerSecond = 24\n)\n") + body;
+}
+
+#ifdef NATRON_HAVE_GPU
+// Puts a GPU context, on the test's device, where the delegate looks for one, and the old one back after.
+class MotionGpuRuntime {
+public:
+    MotionGpuRuntime()
+    {
+        GpuContextOptions options;
+        std::shared_ptr<std::string> logged = std::make_shared<std::string>();
+
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        options.infoLog = [logged](const std::string& line) {
+            *logged = line;
+        };
+
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            unavailable = logged->empty() ? std::string("the GPU context did not come up") : *logged;
+
+            return;
+        }
+        _saved = appPTR->swapGpuContextForTests(std::move(own));
+        _swapped = true;
+    }
+
+    ~MotionGpuRuntime()
+    {
+        if (_swapped) {
+            appPTR->swapGpuContextForTests(std::move(_saved));
+        }
+    }
+
+    std::string missingSupport() const
+    {
+        return WavefrontGpu::missingSupport(*appPTR->getGpuContext()->runtime());
+    }
+
+    std::string unavailable;
+
+private:
+    std::unique_ptr<GpuContext> _saved;
+    bool _swapped = false;
+};
+#endif // NATRON_HAVE_GPU
+
+// The delegate on the CPU, or on the GPU with its colour the one AOV, kept in a film on the device.
+class NatronUtilityMotionSubdiv : public ::testing::TestWithParam<Backend> {
+protected:
+    void SetUp() OVERRIDE
+    {
+        if (GetParam() == Backend::Cpu) {
+            _ready = true;
+
+            return;
+        }
+#ifdef NATRON_HAVE_GPU
+        _gpu.reset(new MotionGpuRuntime);
+        GPUTEST_DEVICE_OR_SKIP(_gpu->unavailable.empty(), _gpu->unavailable);
+
+        const std::string missing = _gpu->missingSupport();
+
+        if (!missing.empty()) {
+            GPUTEST_SKIP() << missing;
+        }
+        _ready = true;
+#else
+        std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU to render on\n");
+#endif
+    }
+
+    bool ready() const
+    {
+        return _ready;
+    }
+
+    const char* device() const
+    {
+        return GetParam() == Backend::Cpu ? kUtilityDeviceCpu : kUtilityDeviceGpu;
+    }
+
+    void expectDevice(const MotionRender& render) const
+    {
+        if (GetParam() == Backend::Cpu) {
+            EXPECT_EQ(0u, render.device().find("CPU")) << render.device();
+        } else {
+            EXPECT_EQ(0u, render.device().find("GPU")) << render.device();
+        }
+    }
+
+private:
+    bool _ready = false;
+#ifdef NATRON_HAVE_GPU
+    std::unique_ptr<MotionGpuRuntime> _gpu;
+#endif
+};
+} // anon namespace
+
+// A cube refined to level 1, its points moving 4 units within the shutter, smears its edges over the
+// pixels it sweeps; with the shutter closed only the pixels its silhouette cuts are partly covered.
+TEST_P(NatronUtilityMotionSubdiv, ADeformingCubeAtLevelOneBlurs)
+{
+    if (!ready()) {
+        return;
+    }
+    const std::string usda = cubeStage(cubeMesh("Cube", "    point3f[] points.timeSamples = { 1: " + cubePoints(0., 2.) + ", 2: " + cubePoints(4., 2.) + " }\n"));
+    MotionRender still(usda, GfVec2d(0., 0.), 4, 8, 1, device());
+    MotionRender moving(usda, GfVec2d(0., 1.), 4, 8, 1, device());
+
+    still.render(1.);
+    moving.render(1.);
+    expectDevice(still);
+    expectDevice(moving);
+    EXPECT_EQ(48u, still.stat(kUtilityStatTriangleCount)) << "the cube did not refine to level 1";
+    EXPECT_EQ(48u, moving.stat(kUtilityStatTriangleCount)) << "the cube did not refine to level 1";
+    EXPECT_LE(still.partialInMiddleRow(), 2);
+    EXPECT_GE(moving.partialInMiddleRow(), 4);
+    // Its middle at mid-shutter, 2 units on, is covered throughout the shutter's second half at least.
+    EXPECT_GT(moving.alphaAt(kSize / 2 + 2), 0.45f);
+    EXPECT_TRUE(VtDictionaryGet<std::string>(moving.stats(), kUtilityStatMotionWarning, VtDefault = std::string()).empty());
+}
+
+// Two instances of a level-1 cube under a point instancer moving 4 units within the shutter each smear
+// over the pixels they sweep, the prototype refined once for both.
+TEST_P(NatronUtilityMotionSubdiv, AnInstancedSubdividedCubeBlursWithItsInstancersTransform)
+{
+    if (!ready()) {
+        return;
+    }
+    const std::string usda = cubeStage("def PointInstancer \"Scatter\" {\n"
+                                       "    double3 xformOp:translate.timeSamples = { 1: (0, 0, 0), 2: (4, 0, 0) }\n"
+                                       "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                                       "    point3f[] positions = [(-6, 0, 0), (0, 0, 0)]\n"
+                                       "    int[] protoIndices = [0, 0]\n"
+                                       "    rel prototypes = </Scatter/Protos/Cube>\n"
+                                       "    def Scope \"Protos\" {\n"
+                                       + cubeMesh("Cube", "    point3f[] points = " + cubePoints(0., 1.) + "\n")
+                                       + "    }\n"
+                                         "}\n");
+    MotionRender still(usda, GfVec2d(0., 0.), 4, 8, 1, device());
+    MotionRender moving(usda, GfVec2d(0., 1.), 4, 8, 1, device());
+
+    still.render(1.);
+    moving.render(1.);
+    expectDevice(still);
+    expectDevice(moving);
+    EXPECT_EQ(1u, moving.stat(kUtilityStatGeometryCount));
+    EXPECT_EQ(2u, moving.stat(kUtilityStatInstanceCount));
+    EXPECT_EQ(48u, moving.stat(kUtilityStatTriangleCount)) << "the prototype did not refine to level 1";
+    EXPECT_LE(still.partialInMiddleRow(), 4);
+    EXPECT_GE(moving.partialInMiddleRow(), 8);
+    EXPECT_TRUE(VtDictionaryGet<std::string>(moving.stats(), kUtilityStatMotionWarning, VtDefault = std::string()).empty());
+}
+
+INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityMotionSubdiv, ::testing::Values(Backend::Cpu, Backend::GpuFilm));

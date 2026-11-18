@@ -28,6 +28,8 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -40,6 +42,7 @@
 
 namespace gpu {
 class GpuBufferPool;
+class GpuDevice;
 class GpuKernelRegistry;
 class GpuRuntime;
 }
@@ -48,16 +51,19 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The GPU the utility renderer may use: the application's runtime. runtime is null when there is
- * none, and unavailable then says why. hold keeps the application from recreating the runtime under
+ * none, and unavailable then says why, or when stopped is set, because cancel was set while the
+ * application's GPU was still starting. hold keeps the application from recreating the runtime under
  * whoever keeps it.
  **/
 struct UtilityGpu {
     gpu::GpuRuntime* runtime = nullptr;
     std::shared_ptr<void> hold;
     std::string unavailable;
+    bool stopped = false;
 };
 
-UtilityGpu acquireUtilityGpu();
+// Waits a while for the application's GPU to finish starting, returning as soon as cancel, when given, is set.
+UtilityGpu acquireUtilityGpu(const std::atomic<bool>* cancel = nullptr);
 
 // The memory the application's GPU pool may use; 0 while there is no usable GPU. Never waits for it.
 std::uint64_t utilityGpuBudget();
@@ -73,10 +79,12 @@ std::uint64_t utilityGpuBudget();
  *
  * Before its first frame the executor has the driver compile every kernel it dispatches, without the time
  * limit the frame's submissions have; a render stopped meanwhile returns at once and the next one waits for
- * the rest. Destroying the executor waits for the kernel being compiled.
+ * the rest. Destroying the executor does not wait for the kernel being compiled; the GpuContext going away
+ * does, for a while, and leaves its runtime alive if the compilation still runs.
  *
- * A device failure never throws: render() returns false and status() says why. The registry and the
- * pool must outlive the executor.
+ * A device failure never throws: render() returns false and status() says why. The pool must outlive
+ * the executor, and the registry and its device must outlive the executor and its warm-up, which
+ * waitForWarmUps() waits for; a GpuContext waits for it itself.
  **/
 class WavefrontGpu : public WavefrontExecutor {
 public:
@@ -85,6 +93,10 @@ public:
                  gpu::GpuBufferPool& pool,
                  const std::shared_ptr<void>& runtimeHold = std::shared_ptr<void>());
     virtual ~WavefrontGpu();
+
+    // Waits up to timeout for the warm-ups of executors gone before them to end on device; false if some still run.
+    static bool waitForWarmUps(const gpu::GpuDevice& device,
+                               std::chrono::milliseconds timeout);
 
     // Empty when the device can render, else the Vulkan extensions and features it lacks.
     static std::string missingSupport(const gpu::GpuRuntime& runtime);

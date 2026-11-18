@@ -55,7 +55,35 @@ Every render delegate the build has gets a tab, labelled with the delegate's
 name (Storm, Cycles, MoonRay, ...). Its knobs sit in groups, listed below. Each
 knob's tooltip says what it does, what it trades off and which values to try,
 and says so when the control has no effect in this build. The tab of a delegate
-with no settings, such as Natron Utility, says only that.
+with no settings says only that.
+
+### Natron Utility
+
+- Device: Auto, GPU or CPU (see USDRender).
+- Sampling: Pixel Samples (3, a 3 by 3 grid a pixel), Pixel Filter, Filter
+  Width and Seed.
+- Ray depths: Max Cutouts, the surfaces a ray passes through before it gives
+  up, and Max Ray Depth, Reflection Depth and Refraction Depth, how far rays go
+  on past the first surface they meet.
+- Motion blur: Override Shutter, Shutter, Shutter Offset, Shutter Custom Offset
+  and Shutter Segments, and Camera Motion Blur, Transform Motion Blur and
+  Deformation Motion Blur to turn each kind of motion off.
+- Subdivision: Subdiv Level (0, the cage as authored) and Max Subdiv
+  Triangles, the most one mesh refines to.
+- Projection: Camera, Spherical, Cylindrical or UV Unwrap, and Overscan, the
+  pixels the frame grows by on every side for each projection but UV Unwrap.
+  - Spherical renders a 360 by 180 degree lat-long and Cylindrical a 360
+    degree band of the camera's vertical view, both from the camera's position
+    in its orientation. Motion blur applies to them as to Camera.
+  - UV Unwrap bakes the mesh at UV Prim into the UDIM Tile of its UV Primvar,
+    the format being the texture's size. Texels no triangle covers stay empty.
+  - UV Bake Bounces, off by default, decides what a texel bakes. Off, it bakes
+    only the surface's own lit shading: no reflections, no refractions and
+    nothing behind a partly transparent surface. On, it bakes what a head-on
+    view along the surface's normal sees, within the ray depths: a mirror or a
+    metal bakes the environment reflected back along its normal, and a partly
+    transparent surface bakes what lies behind it blended with its own
+    shading.
 
 ### Cycles
 

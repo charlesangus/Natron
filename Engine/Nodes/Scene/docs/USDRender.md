@@ -12,14 +12,44 @@ application it shares the viewer's OpenGL. Without a window system
 which Mesa's llvmpipe software renderer provides. If neither is available, the
 node reports why instead of rendering, and image-only graphs are unaffected.
 
-Natron Utility, Natron's own renderer, draws with no lighting: `rgba`
-is each prim's display colour, and `depth.Z` and `primId.id` match Storm's.
-Cancelling stops it between tiles; a change of scene being taken in or a BVH
-being built finishes first. Its Device setting picks Auto, GPU or CPU: Auto uses
-the GPU when it supports ray queries and otherwise renders on the CPU, and the
-node says which device rendered and why a render fell back to the CPU. A frame
-rendered on the GPU keeps its `rgba` there, so GPU nodes downstream read it
-without a copy through host memory.
+Natron Utility is Natron's own ray tracer. It shades with the scene's materials
+and lights:
+
+- Materials: UsdPreviewSurface, its inputs constant, read from primvars or from
+  textures (UDIM textures included), and the surface USDProject3D authors. A
+  prim with no material shades as a UsdPreviewSurface of its display colour
+  and display opacity. A material it cannot read renders magenta.
+- Lights: the UsdLux distant, sphere, rect, disk, cylinder and dome lights,
+  with their light and shadow links, casting shadows that surfaces with an
+  opacity below 1 let some light through.
+- Reflection and refraction: rays go on from a surface by reflection,
+  refraction or straight through a transparent surface, as far as its Max Ray
+  Depth, Reflection Depth and Refraction Depth settings allow.
+- Sampling: a grid of samples a pixel, weighed by a pixel filter, and motion
+  blur of the camera, of transforms (instances included) and of deforming
+  meshes within the shutter.
+- Subdivision: subdivision-surface meshes refine to the Subdiv Level setting,
+  or to a mesh's own `natron:subdivLevel`.
+- Projection: the frame looks through the camera, as a spherical lat-long, as
+  a cylindrical band, or bakes one mesh's surface into a UV tile (UV Unwrap),
+  and Overscan grows the frame beyond the format. A bake takes only the
+  surface's own lit shading unless UV Bake Bounces is on.
+
+The settings for all of these are on the Natron Utility tab of
+USDRenderSettings. `depth.Z` and `primId.id` match Storm's.
+
+Its Device setting picks Auto, GPU or CPU: Auto uses the GPU when it supports
+ray queries and otherwise renders on the CPU, and the node says which device
+rendered and why a render fell back to the CPU. A frame rendered on the GPU
+keeps its `rgba` there, so GPU nodes downstream read it without a copy through
+host memory.
+
+Cancelling a Natron Utility render stops it within a fraction of a second, on
+either device: between tiles and within a tile between batches of lights, while
+the CPU builds the scene's acceleration structures, while the GPU updates its
+own, and while meshes are refined. A stopped frame is never shown, and the next
+render starts it again. An edit to the scene is taken in whole before the
+frame that shows it starts.
 
 The other delegates (Cycles, MoonRay) render on the CPU on their own threads.
 
@@ -87,8 +117,7 @@ The output has three layers, and a fourth with the renderers other than Storm
 and Natron Utility:
 
 - `rgba`: the colour as the renderer shades it, with the scene's materials and
-  lights except under Natron Utility, in the project's working space with no
-  colour transform. Where nothing was hit it is transparent black.
+  lights, in the project's working space with no colour transform. Where nothing was hit it is transparent black.
 - `depth.Z`: the distance from the camera along its view axis, in scene units,
   so a plane facing the camera has one depth throughout. Where nothing was hit
   it is +inf.

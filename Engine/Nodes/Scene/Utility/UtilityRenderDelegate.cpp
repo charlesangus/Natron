@@ -84,6 +84,7 @@ utilityUnwrapTarget(const HdRenderDelegate& delegate)
     const std::string prim = settingText(delegate.GetRenderSetting(TfToken(kUtilitySettingUvPrim)));
     const VtValue primvar = delegate.GetRenderSetting(TfToken(kUtilitySettingUvPrimvar));
     const VtValue tile = VtValue::Cast<int>(delegate.GetRenderSetting(TfToken(kUtilitySettingUdimTile)));
+    const VtValue bounces = VtValue::Cast<bool>(delegate.GetRenderSetting(TfToken(kUtilitySettingUvBakeBounces)));
     std::string error;
 
     if (SdfPath::IsValidPathString(prim, &error)) {
@@ -91,6 +92,7 @@ utilityUnwrapTarget(const HdRenderDelegate& delegate)
     }
     target.primvar = primvar.IsEmpty() ? std::string(kUtilityDefaultUvPrimvar) : settingText(primvar);
     target.udimTile = tile.IsEmpty() ? kUtilityDefaultUdimTile : tile.UncheckedGet<int>();
+    target.bounces = !bounces.IsEmpty() && bounces.UncheckedGet<bool>();
 
     return target;
 }
@@ -131,7 +133,7 @@ UtilityRenderParam::gpuExecutor(std::string* unavailable)
         dropGpuExecutor();
     }
 
-    UtilityGpu gpu = acquireUtilityGpu();
+    UtilityGpu gpu = acquireUtilityGpu(&_cancel);
 
     if (!gpu.runtime) {
         *unavailable = gpu.unavailable;
@@ -709,6 +711,7 @@ UtilityRenderDelegate::GetRenderSettingDescriptors() const
         HdRenderSettingDescriptor { "UV Prim", TfToken(kUtilitySettingUvPrim), VtValue(std::string()) },
         HdRenderSettingDescriptor { "UV Primvar", TfToken(kUtilitySettingUvPrimvar), VtValue(std::string(kUtilityDefaultUvPrimvar)) },
         HdRenderSettingDescriptor { "UDIM Tile", TfToken(kUtilitySettingUdimTile), VtValue(int(kUtilityDefaultUdimTile)) },
+        HdRenderSettingDescriptor { "UV Bake Bounces", TfToken(kUtilitySettingUvBakeBounces), VtValue(false) },
     };
 }
 

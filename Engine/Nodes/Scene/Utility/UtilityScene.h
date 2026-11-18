@@ -28,6 +28,7 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -247,6 +248,13 @@ public:
      **/
     static Snapshot evaluateAt(const Snapshot& snapshot,
                                double time);
+
+    // As evaluateAt(), into out, polling stop for each geometry and instance and within large meshes.
+    // Returns false when stop ended it, out then partly evaluated.
+    static bool evaluateAt(const Snapshot& snapshot,
+                           double time,
+                           const std::atomic<bool>& stop,
+                           Snapshot* out);
 
     // Between a and b by u in [0, 1]: translation and stretch linearly, rotation along the shortest arc.
     static PXR_NS::GfMatrix4d interpolate(const PXR_NS::GfMatrix4d& a,

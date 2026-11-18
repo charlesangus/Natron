@@ -282,6 +282,14 @@ make()
     udimTile.hasMaximum = true;
     c.settings.push_back(udimTile);
 
+    RenderSettingsKnobs::CuratedSetting uvBakeBounces;
+
+    uvBakeBounces.key = kUtilitySettingUvBakeBounces;
+    uvBakeBounces.name = "uvBakeBounces";
+    uvBakeBounces.tooltip = "With Projection UV Unwrap, whether a texel bakes what a head-on view along its surface's normal sees, reflections, refractions and what lies behind partly transparent surfaces included, within Max Ray Depth, Reflection Depth and Refraction Depth. Off, a texel bakes only the surface's own lit shading.";
+    uvBakeBounces.defaultValue = VtValue(false);
+    c.settings.push_back(uvBakeBounces);
+
     return c;
 }
 } // anon namespace

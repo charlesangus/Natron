@@ -113,6 +113,30 @@ GpuContext::addLossReleaser(const LossReleaser& release)
     list.releasers.push_back(release);
 }
 
+namespace {
+struct TeardownWaiters {
+    std::mutex mutex;
+    std::vector<GpuContext::TeardownWaiter> waiters;
+};
+
+TeardownWaiters&
+teardownWaiters()
+{
+    static TeardownWaiters* list = new TeardownWaiters;
+
+    return *list;
+}
+}
+
+void
+GpuContext::addTeardownWaiter(const TeardownWaiter& wait)
+{
+    TeardownWaiters& list = teardownWaiters();
+    std::lock_guard<std::mutex> l(list.mutex);
+
+    list.waiters.push_back(wait);
+}
+
 struct GpuContext::Shared {
     std::atomic<int> state { eInitPending };
     mutable std::mutex mutex;
@@ -210,6 +234,24 @@ GpuContext::~GpuContext()
     }
     if (_shared->hookId != 0) {
         HostImageMemory::removeFreeHook(_shared->hookId);
+    }
+    if (_shared->runtime) {
+        std::vector<TeardownWaiter> waiters;
+        bool idle = true;
+
+        {
+            TeardownWaiters& list = teardownWaiters();
+            std::lock_guard<std::mutex> l(list.mutex);
+
+            waiters = list.waiters;
+        }
+        for (const TeardownWaiter& wait : waiters) {
+            idle = wait(*_shared->runtime) && idle;
+        }
+        if (!idle) {
+            qWarning("GPU work still running at teardown: the GPU runtime is left alive.");
+            gpu::GpuDevice::parkForever(std::shared_ptr<gpu::GpuRuntime>(std::move(_shared->runtime)));
+        }
     }
     _shared->runtime.reset();
     if (_shared->alignmentChanged) {

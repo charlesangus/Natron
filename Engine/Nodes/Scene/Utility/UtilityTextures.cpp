@@ -118,8 +118,19 @@ expand(const float* c,
     }
 }
 
-void
-buildMips(UtilityTextureImage* image)
+bool
+stopped(const std::atomic<bool>* stop)
+{
+    return stop && stop->load(std::memory_order_relaxed);
+}
+
+// Texels converted between looks at the stop flag.
+const std::size_t kStopPollTexels = 1 << 18;
+
+// Returns false when stop ended it, between levels.
+bool
+buildMips(UtilityTextureImage* image,
+          const std::atomic<bool>* stop)
 {
     int width = image->width;
     int height = image->height;
@@ -127,6 +138,10 @@ buildMips(UtilityTextureImage* image)
 
     image->levels = 1;
     while (width > 1 || height > 1) {
+        if (stopped(stop)) {
+            return false;
+        }
+
         const int nextWidth = std::max(1, width / 2);
         const int nextHeight = std::max(1, height / 2);
         const std::size_t nextOffset = offset + static_cast<std::size_t>(width) * height;
@@ -150,6 +165,8 @@ buildMips(UtilityTextureImage* image)
         offset = nextOffset;
         ++image->levels;
     }
+
+    return true;
 }
 UtilityTextureRef::Wrap
 wrapOfAddressMode(HioAddressMode mode)
@@ -188,7 +205,8 @@ UtilityTexturePool::~UtilityTexturePool()
 UtilityTextureImageConstPtr
 UtilityTexturePool::loadImage(const std::string& path,
                               UtilityTextureRef::ColorSpace colorSpace,
-                              std::string* error)
+                              std::string* error,
+                              const std::atomic<bool>* stop)
 {
     const HioImage::SourceColorSpace source = colorSpace == UtilityTextureRef::eColorSpaceRaw ? HioImage::Raw
         : colorSpace == UtilityTextureRef::eColorSpaceSRGB                                    ? HioImage::SRGB
@@ -246,6 +264,10 @@ UtilityTexturePool::loadImage(const std::string& path,
     }
     image->texels.resize(pixelCount);
     for (std::size_t p = 0; p < pixelCount; ++p) {
+        if (p % kStopPollTexels == 0 && stopped(stop)) {
+            return UtilityTextureImageConstPtr();
+        }
+
         float c[4] = { 0.f, 0.f, 0.f, 1.f };
 
         for (int k = 0; k < components; ++k) {
@@ -261,14 +283,17 @@ UtilityTexturePool::loadImage(const std::string& path,
         }
         image->texels[p] = expand(c, components);
     }
-    buildMips(image.get());
+    if (!buildMips(image.get(), stop)) {
+        return UtilityTextureImageConstPtr();
+    }
 
     return image;
 }
 
 UtilityTextureAssetConstPtr
 UtilityTexturePool::acquire(const std::string& asset,
-                            UtilityTextureRef::ColorSpace colorSpace)
+                            UtilityTextureRef::ColorSpace colorSpace,
+                            const std::atomic<bool>* stop)
 {
     const Key key(asset, static_cast<int>(colorSpace));
 
@@ -290,7 +315,7 @@ UtilityTexturePool::acquire(const std::string& asset,
     if (asset.empty()) {
         entry.error = "is not set";
     } else if (udim == std::string::npos) {
-        UtilityTextureImageConstPtr image = loadImage(asset, colorSpace, &entry.error);
+        UtilityTextureImageConstPtr image = loadImage(asset, colorSpace, &entry.error, stop);
 
         if (image) {
             loaded->tiles.push_back(image);
@@ -299,18 +324,26 @@ UtilityTexturePool::acquire(const std::string& asset,
         loaded->udim = true;
         loaded->tiles.resize(UtilityTextureAsset::kUdimTileCount);
         for (int tile = 0; tile < UtilityTextureAsset::kUdimTileCount; ++tile) {
+            if (stopped(stop)) {
+                break;
+            }
+
             std::string path = asset;
 
             path.replace(udim, sizeof(kUdimToken) - 1, TfStringPrintf("%d", 1001 + tile));
             if (TfPathExists(path)) {
                 std::string ignored;
 
-                loaded->tiles[tile] = loadImage(path, colorSpace, &ignored);
+                loaded->tiles[tile] = loadImage(path, colorSpace, &ignored, stop);
             }
         }
         if (!loaded->loaded()) {
             entry.error = "has no readable UDIM tiles";
         }
+    }
+    // A stopped load is not kept: neither its tiles so far as the asset nor as a failure.
+    if (stopped(stop)) {
+        return UtilityTextureAssetConstPtr();
     }
     if (loaded->loaded()) {
         entry.asset = loaded;

@@ -50,6 +50,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -68,6 +69,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
 #include "Engine/Nodes/Scene/Utility/Wavefront.h"
@@ -301,6 +303,7 @@ protected:
 #ifdef NATRON_HAVE_GPU
         _gpu.reset();
         if (_device) {
+            EXPECT_TRUE(WavefrontGpu::waitForWarmUps(*_device, std::chrono::milliseconds(60000)));
             _device->waitIdle();
         }
         _pool.reset();
@@ -341,6 +344,37 @@ protected:
         film.passDrawn();
 
         return true;
+    }
+
+    // Every sample of the frame, in the shutter's time buckets, as the render pass draws them.
+    bool drawSamples(const UtilityScene& scene,
+                     const WavefrontFrame& frame,
+                     const WavefrontMotion& motion,
+                     ProjectionFilm& film,
+                     std::vector<double>* bucketSeconds = nullptr)
+    {
+        const std::atomic<bool> stop(false);
+
+        if (!_executor) {
+            return false;
+        }
+        if (!wavefrontDrawSamples(*_executor, scene.snapshot(), frame, motion, film, stop, 2, std::function<void(std::size_t)>(), bucketSeconds)) {
+            ADD_FAILURE() << "the frame did not render";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    WavefrontExecutor* executor() const
+    {
+        return _executor;
+    }
+
+    bool onGpu() const
+    {
+        return GetParam() == Backend::Gpu;
     }
 
     // How many of the frame's pixels see a face other than the one along their centre's direction.
@@ -773,8 +807,11 @@ TEST_P(NatronUtilityProjection, AUvUnwrapBakesItsPrimThroughASurfaceJustAboveIt)
     addFace(scene, "/cover", eFaceTop, GfVec3f(0.f, 0.f, 0.05f), GfVec3f(2.f * kBakeHalf, 0.f, 0.f), GfVec3f(0.f, 2.f * kBakeHalf, 0.f));
 
     ProjectionFilm baked(kBakeSize, kBakeSize);
+    WavefrontFrame frame = bakeFrame(1001);
 
-    if (!draw(scene, bakeFrame(1001), baked)) {
+    // With bounces the cover could show through a continued path, which is what this checks it does not.
+    frame.unwrapBounces = true;
+    if (!draw(scene, frame, baked)) {
         return;
     }
     EXPECT_EQ(kBakeSize * kBakeSize, hitsIn(baked));
@@ -825,6 +862,473 @@ TEST_P(NatronUtilityProjection, AUvIslandNarrowerThanATexelPartlyCoversTheTexels
 
     EXPECT_GT(covered, 0.2) << "the island spans 0.4 of its texels";
     EXPECT_LT(covered, 0.6) << "the island spans 0.4 of its texels";
+}
+
+namespace {
+
+// A quad through centre spanning +-alongA and +-alongB, facing alongA x alongB, shaded by material.
+UtilityScene::GeometryId
+addShadedQuad(UtilityScene& scene,
+              const std::string& path,
+              int primId,
+              const GfVec3f& centre,
+              const GfVec3f& alongA,
+              const GfVec3f& alongB,
+              const UtilityMaterialDesc& material)
+{
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath(path), primId);
+    const SdfPath materialPath("/Materials" + path);
+
+    scene.setTopology(id,
+                      VtVec3fArray { centre - alongA - alongB, centre + alongA - alongB, centre + alongA + alongB, centre - alongA + alongB },
+                      VtVec3iArray { GfVec3i(0, 1, 2), GfVec3i(0, 2, 3) });
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    scene.setMaterial(materialPath, std::make_shared<const UtilityMaterialDesc>(material));
+    scene.setMaterialId(id, materialPath);
+
+    return id;
+}
+
+// Lights nothing and reflects nothing, so it shows as its emission alone, only where rays meet it.
+UtilityMaterialDesc
+emitting(const GfVec3f& color)
+{
+    UtilityMaterialDesc desc;
+
+    desc.diffuseColor = GfVec3f(0.f);
+    desc.emissiveColor = color;
+    desc.metallic = 1.f;
+
+    return desc;
+}
+
+UtilityMaterialDesc
+perfectMirror()
+{
+    UtilityMaterialDesc desc;
+
+    desc.diffuseColor = GfVec3f(1.f);
+    desc.metallic = 1.f;
+    desc.roughness = 0.f;
+
+    return desc;
+}
+
+void
+addDome(UtilityScene& scene,
+        const GfVec3f& radiance)
+{
+    std::shared_ptr<UtilityLightDesc> dome = std::make_shared<UtilityLightDesc>();
+
+    dome->type = UtilityLightDesc::eTypeDome;
+    dome->emission = radiance;
+    scene.setLight(SdfPath("/dome"), dome);
+}
+
+// The bake's quad, facing +z with its UVs spanning tile 1001, under no light but a blue dome. A red
+// emitting card on the side z points to covers the half x < 0: being geometry rather than a light, only
+// a ray going on from the quad can see it.
+void
+addBakeScene(UtilityScene& scene,
+             const UtilityMaterialDesc& material,
+             float cardZ)
+{
+    const float h = kBakeHalf;
+    const UtilityScene::GeometryId id = addShadedQuad(scene, "/quad", kBakePrimId, GfVec3f(0.f), GfVec3f(h, 0.f, 0.f), GfVec3f(0.f, h, 0.f), material);
+    const bool above = cardZ > 0.f;
+
+    scene.setUnwrapSt(id, true, UtilityScene::eColorBindingVertex,
+                      VtVec2fArray { GfVec2f(0.f, 0.f), GfVec2f(1.f, 0.f), GfVec2f(1.f, 1.f), GfVec2f(0.f, 1.f) });
+    addShadedQuad(scene, "/card", kBakePrimId + 1, GfVec3f(-h, 0.f, cardZ),
+                  above ? GfVec3f(0.f, 2.f * h, 0.f) : GfVec3f(h, 0.f, 0.f),
+                  above ? GfVec3f(h, 0.f, 0.f) : GfVec3f(0.f, 2.f * h, 0.f),
+                  emitting(GfVec3f(1.f, 0.f, 0.f)));
+    addDome(scene, GfVec3f(0.f, 0.f, 0.8f));
+}
+
+// The world x of a bake texel's centre in column x.
+float
+bakeTexelX(int x)
+{
+    return -kBakeHalf + 2.f * kBakeHalf * (x + 0.5f) / kBakeSize;
+}
+
+// The frame on the CPU executor whatever the test's backend, to compare the GPU's with.
+bool
+drawOnCpu(const UtilityScene& scene,
+          WavefrontFrame frame,
+          ProjectionFilm& film)
+{
+    const std::atomic<bool> stop(false);
+    const UtilityScene::Snapshot snapshot = scene.snapshot();
+    WavefrontCpu cpu;
+
+    if (frame.mapping == WavefrontMapping::UvUnwrap) {
+        std::string error;
+
+        frame.unwrap = wavefrontUnwrap(snapshot, frame, stop, &error);
+        if (!frame.unwrap) {
+            ADD_FAILURE() << "the prim did not unwrap on the CPU: " << error;
+
+            return false;
+        }
+    }
+    if (!cpu.render(snapshot, frame, film, stop, 2)) {
+        ADD_FAILURE() << "the frame did not render on the CPU";
+
+        return false;
+    }
+    film.passDrawn();
+
+    return true;
+}
+
+// The texels whose red or green differ between two bakes. Blue is left out: it holds the dome's light,
+// which each device samples with its own random numbers.
+int
+differingTexels(const ProjectionFilm& a,
+                const ProjectionFilm& b,
+                const char* what)
+{
+    int differing = 0;
+
+    for (int y = 0; y < kBakeSize; ++y) {
+        for (int x = 0; x < kBakeSize; ++x) {
+            for (int c = 0; c < 2; ++c) {
+                const float expected = b.colorAt(x, y)[c];
+                const float actual = a.colorAt(x, y)[c];
+
+                if (std::abs(actual - expected) > 1e-3f * std::max(1.f, std::abs(expected))) {
+                    if (differing == 0) {
+                        ADD_FAILURE() << what << ": texel " << x << ", " << y << " channel " << c << " is " << actual << " on the GPU and " << expected << " on the CPU";
+                    }
+                    ++differing;
+                }
+            }
+        }
+    }
+
+    return differing;
+}
+
+// Each pixel's prim ids over all the passes drawn, one bit for each.
+class FacesFilm : public ProjectionFilm {
+public:
+    FacesFilm(int width,
+              int height)
+        : ProjectionFilm(width, height)
+        , _width(width)
+        , _faces(static_cast<std::size_t>(width * height), 0u)
+    {
+    }
+
+    virtual void writeTile(const WavefrontTile& tile) OVERRIDE
+    {
+        ProjectionFilm::writeTile(tile);
+
+        std::size_t index = 0;
+
+        for (int row = 0; row < tile.rect.height; ++row) {
+            for (int column = 0; column < tile.rect.width; ++column, ++index) {
+                const int primId = tile.primId[index];
+
+                if (tile.hitGeometry[index] != Tracer::kNoHit && primId > 0 && primId < 32) {
+                    _faces[static_cast<std::size_t>((tile.rect.y + row) * _width + tile.rect.x + column)] |= 1u << primId;
+                }
+            }
+        }
+    }
+
+    unsigned facesAt(int x,
+                     int y) const
+    {
+        return _faces[static_cast<std::size_t>(y * _width + x)];
+    }
+
+    // How many pixels of row y saw more than one face.
+    int mixedInRow(int y) const
+    {
+        int mixed = 0;
+
+        for (int x = 0; x < _width; ++x) {
+            const unsigned faces = facesAt(x, y);
+
+            mixed += (faces & (faces - 1u)) ? 1 : 0;
+        }
+
+        return mixed;
+    }
+
+private:
+    int _width;
+    std::vector<unsigned> _faces;
+};
+} // anon namespace
+
+// By default a bake ignores bounces: a mirror bakes only its own shading, which the dome lights in blue
+// and the red card, not a light, cannot reach. With bake bounces on it bakes what a head-on view sees,
+// the card reflected back along the normal over x < 0 and the dome beside it.
+TEST_P(NatronUtilityProjection, AUvUnwrapBakesAMirrorsOwnShadingUnlessBakeBouncesAreOn)
+{
+    UtilityScene scene;
+
+    addBakeScene(scene, perfectMirror(), 3.f);
+
+    WavefrontFrame frame = bakeFrame(1001);
+    ProjectionFilm own(kBakeSize, kBakeSize);
+    ProjectionFilm headOn(kBakeSize, kBakeSize);
+
+    ASSERT_FALSE(frame.unwrapBounces) << "bake bounces should be off by default";
+    if (!draw(scene, frame, own)) {
+        return;
+    }
+    frame.unwrapBounces = true;
+    if (!draw(scene, frame, headOn)) {
+        return;
+    }
+    EXPECT_EQ(kBakeSize * kBakeSize, hitsIn(own));
+    EXPECT_EQ(kBakeSize * kBakeSize, hitsIn(headOn));
+
+    int reflected = 0;
+
+    for (int y = 0; y < kBakeSize; ++y) {
+        for (int x = 0; x < kBakeSize; ++x) {
+            const std::string where = "texel " + std::to_string(x) + ", " + std::to_string(y);
+            const float worldX = bakeTexelX(x);
+
+            EXPECT_LT(own.colorAt(x, y)[0], 1e-3f) << where << " baked the reflected card with bounces off";
+            if (worldX < -0.5f) {
+                EXPECT_NEAR(1.f, headOn.colorAt(x, y)[0], 0.02f) << where << " should bake the card it reflects";
+                ++reflected;
+            } else if (worldX > 0.5f) {
+                EXPECT_LT(headOn.colorAt(x, y)[0], 1e-3f) << where << " reflects only the dome";
+            }
+        }
+    }
+    EXPECT_GT(reflected, kBakeSize * kBakeSize / 3);
+    if (onGpu()) {
+        ProjectionFilm cpuOwn(kBakeSize, kBakeSize);
+        ProjectionFilm cpuHeadOn(kBakeSize, kBakeSize);
+        WavefrontFrame off = frame;
+
+        off.unwrapBounces = false;
+        ASSERT_TRUE(drawOnCpu(scene, off, cpuOwn));
+        ASSERT_TRUE(drawOnCpu(scene, frame, cpuHeadOn));
+        EXPECT_EQ(0, differingTexels(own, cpuOwn, "bounces off"));
+        EXPECT_EQ(0, differingTexels(headOn, cpuHeadOn, "bounces on"));
+    }
+}
+
+// A half opaque surface bakes its own emission, half of it, and by default nothing of the red card
+// behind it. With bake bounces on, half of the card shows through it where the card is.
+TEST_P(NatronUtilityProjection, AUvUnwrapBakesAHalfOpaqueSurfaceWithoutWhatIsBehindUnlessBakeBouncesAreOn)
+{
+    UtilityMaterialDesc veil;
+
+    veil.diffuseColor = GfVec3f(0.f);
+    veil.emissiveColor = GfVec3f(0.f, 0.6f, 0.f);
+    veil.opacity = 0.5f;
+    // An ior of 1 passes rays straight through, with no Fresnel reflection head on.
+    veil.ior = 1.f;
+
+    UtilityScene scene;
+
+    addBakeScene(scene, veil, -3.f);
+
+    WavefrontFrame frame = bakeFrame(1001);
+    ProjectionFilm own(kBakeSize, kBakeSize);
+    ProjectionFilm headOn(kBakeSize, kBakeSize);
+
+    if (!draw(scene, frame, own)) {
+        return;
+    }
+    frame.unwrapBounces = true;
+    if (!draw(scene, frame, headOn)) {
+        return;
+    }
+    EXPECT_EQ(kBakeSize * kBakeSize, hitsIn(own));
+    EXPECT_EQ(kBakeSize * kBakeSize, hitsIn(headOn));
+
+    int behind = 0;
+
+    for (int y = 0; y < kBakeSize; ++y) {
+        for (int x = 0; x < kBakeSize; ++x) {
+            const std::string where = "texel " + std::to_string(x) + ", " + std::to_string(y);
+            const float worldX = bakeTexelX(x);
+
+            EXPECT_LT(own.colorAt(x, y)[0], 1e-3f) << where << " baked the card behind with bounces off";
+            EXPECT_NEAR(0.3f, own.colorAt(x, y)[1], 1e-3f) << where;
+            EXPECT_NEAR(0.3f, headOn.colorAt(x, y)[1], 1e-3f) << where;
+            if (worldX < -0.5f) {
+                EXPECT_NEAR(0.5f, headOn.colorAt(x, y)[0], 0.02f) << where << " should bake half of the card behind";
+                ++behind;
+            } else if (worldX > 0.5f) {
+                EXPECT_LT(headOn.colorAt(x, y)[0], 1e-3f) << where << " has only the dome behind";
+            }
+        }
+    }
+    EXPECT_GT(behind, kBakeSize * kBakeSize / 3);
+    if (onGpu()) {
+        ProjectionFilm cpuOwn(kBakeSize, kBakeSize);
+        ProjectionFilm cpuHeadOn(kBakeSize, kBakeSize);
+        WavefrontFrame off = frame;
+
+        off.unwrapBounces = false;
+        ASSERT_TRUE(drawOnCpu(scene, off, cpuOwn));
+        ASSERT_TRUE(drawOnCpu(scene, frame, cpuHeadOn));
+        EXPECT_EQ(0, differingTexels(own, cpuOwn, "bounces off"));
+        EXPECT_EQ(0, differingTexels(headOn, cpuHeadOn, "bounces on"));
+    }
+}
+
+// A camera turning 20 degrees within the shutter, about 3.6 pixels of the lat-long, smears every
+// vertical cube edge over the columns beside it. Still, the edges fall on pixel boundaries and mix none.
+TEST_P(NatronUtilityProjection, ACameraTurningWithinTheShutterBlursTheSphericalFrame)
+{
+    if (!available()) {
+        return;
+    }
+    const int width = 64;
+    const int height = 32;
+    const int side = 4;
+    UtilityScene scene;
+    const GfFrustum camera = perspectiveCamera(60., 1.);
+    WavefrontFrame frame = frameThrough(camera, width, height, WavefrontMapping::Spherical);
+    WavefrontMotion still;
+    WavefrontMotion turning;
+
+    addCube(scene);
+    frame.sampling.samplesPerSide = side;
+    turning.open = -0.5;
+    turning.close = 0.5;
+    turning.segments = side * side;
+    for (int i = -1; i <= 1; ++i) {
+        GfFrustum at = camera;
+
+        at.SetRotation(GfRotation(GfVec3d(0., 1., 0.), 10. * i));
+        turning.cameraTimes.push_back(0.5 * i);
+        turning.cameraViews.push_back(at.ComputeViewMatrix());
+        turning.cameraProjections.push_back(at.ComputeProjectionMatrix());
+    }
+
+    FacesFilm sharp(width, height);
+    FacesFilm blurred(width, height);
+
+    ASSERT_TRUE(drawSamples(scene, frame, still, sharp));
+    ASSERT_TRUE(drawSamples(scene, frame, turning, blurred));
+
+    const int row = height / 2;
+
+    EXPECT_LE(sharp.mixedInRow(row), 4);
+    EXPECT_GE(blurred.mixedInRow(row), 8);
+    // The shutter is centred on the frame, so the middle of each face stays where it was.
+    EXPECT_EQ(1u << eFaceFront, blurred.facesAt(width / 2, row));
+    EXPECT_EQ(1u << eFaceBack, blurred.facesAt(0, row));
+    EXPECT_EQ(1u << eFaceLeft, blurred.facesAt(width / 4, row));
+    EXPECT_EQ(1u << eFaceRight, blurred.facesAt(3 * width / 4, row));
+}
+
+// Looking down, the lat-long meets a mirror floor, which shows the red card overhead near straight
+// down and the dome nearer the horizon. Looking up, it sees the card overhead, and the dome beside it.
+TEST_P(NatronUtilityProjection, ASphericalFrameSeesTheDomeAndACardInAMirrorBelow)
+{
+    if (!available()) {
+        return;
+    }
+    const int width = 64;
+    const int height = 32;
+    const int floorId = 1;
+    const int cardId = 2;
+    const GfVec3f dome(0.2f, 0.4f, 0.6f);
+    UtilityScene scene;
+
+    addShadedQuad(scene, "/floor", floorId, GfVec3f(0.f, -2.f, 0.f), GfVec3f(0.f, 0.f, 100.f), GfVec3f(100.f, 0.f, 0.f), perfectMirror());
+    addShadedQuad(scene, "/card", cardId, GfVec3f(0.f, 5.f, 0.f), GfVec3f(5.f, 0.f, 0.f), GfVec3f(0.f, 0.f, 5.f), emitting(GfVec3f(1.f, 0.f, 0.f)));
+    addDome(scene, dome);
+
+    ProjectionFilm film(width, height);
+
+    ASSERT_TRUE(draw(scene, frameThrough(perspectiveCamera(60., 1.), width, height, WavefrontMapping::Spherical), film));
+
+    const GfVec4f red(1.f, 0.f, 0.f, 1.f);
+    const GfVec4f sky(dome[0], dome[1], dome[2], 1.f);
+    // Rows from the bottom: about 87 degrees down, 20 degrees down, 25 degrees up and 87 degrees up.
+    const int straightDown = 0;
+    const int lowDown = 12;
+    const int lowUp = 20;
+    const int straightUp = height - 1;
+
+    for (int x = 0; x < width; ++x) {
+        const std::string column = "column " + std::to_string(x);
+
+        EXPECT_EQ(floorId, film.primIdAt(x, straightDown)) << column;
+        EXPECT_EQ(floorId, film.primIdAt(x, lowDown)) << column;
+        EXPECT_EQ(-1, film.primIdAt(x, lowUp)) << column;
+        EXPECT_EQ(cardId, film.primIdAt(x, straightUp)) << column;
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(red[c], film.colorAt(x, straightDown)[c], 0.02f) << column << " straight down, channel " << c;
+            EXPECT_NEAR(sky[c], film.colorAt(x, lowDown)[c], 0.02f) << column << " low down, channel " << c;
+            EXPECT_NEAR(sky[c], film.colorAt(x, lowUp)[c], 0.02f) << column << " low up, channel " << c;
+            EXPECT_NEAR(red[c], film.colorAt(x, straightUp)[c], 0.02f) << column << " straight up, channel " << c;
+        }
+    }
+}
+
+// The executors refuse a UV Unwrap frame whose unwrap was never laid out, with the same error on both.
+TEST_P(NatronUtilityProjection, AUvUnwrapFrameWithoutItsUnwrapThrowsNamingThePrim)
+{
+    if (!available()) {
+        return;
+    }
+    UtilityScene scene;
+
+    addBakedQuad(scene, 0.f);
+
+    const std::atomic<bool> stop(false);
+    ProjectionFilm film(kBakeSize, kBakeSize);
+
+    try {
+        executor()->render(scene.snapshot(), bakeFrame(1001), film, stop, 2);
+        ADD_FAILURE() << "the frame drew without its unwrap";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string::npos, std::string(e.what()).find("/quad")) << e.what();
+        EXPECT_NE(std::string::npos, std::string(e.what()).find("without its unwrap")) << e.what();
+    }
+    EXPECT_EQ(0, hitsIn(film));
+}
+
+// A bake ignores the camera, so a camera moving within the shutter draws it in one time bucket.
+TEST_P(NatronUtilityProjection, AUvUnwrapIgnoresTheCamerasMotionAndDrawsInOneBucket)
+{
+    UtilityScene scene;
+
+    addBakedQuad(scene, 0.f);
+
+    WavefrontFrame frame = bakeFrame(1001);
+    WavefrontMotion motion;
+
+    frame.sampling.samplesPerSide = 2;
+    motion.open = -0.5;
+    motion.close = 0.5;
+    motion.segments = 4;
+    for (int i = -1; i <= 1; ++i) {
+        GfFrustum at = bakeCamera();
+
+        at.SetPosition(GfVec3d(2. * i, 0., 10.));
+        motion.cameraTimes.push_back(0.5 * i);
+        motion.cameraViews.push_back(at.ComputeViewMatrix());
+        motion.cameraProjections.push_back(at.ComputeProjectionMatrix());
+    }
+
+    ProjectionFilm baked(kBakeSize, kBakeSize);
+    std::vector<double> bucketSeconds;
+
+    if (!drawSamples(scene, frame, motion, baked, &bucketSeconds)) {
+        return;
+    }
+    EXPECT_EQ(1u, bucketSeconds.size());
+    EXPECT_EQ(kBakeSize * kBakeSize, hitsIn(baked));
 }
 
 INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityProjection, ::testing::Values(Backend::Cpu, Backend::Gpu));

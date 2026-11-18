@@ -41,6 +41,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <span>
 #include <system_error>
@@ -69,12 +70,14 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// The application's GPU starts on a thread of its own at launch; a frame asked for that early waits for it.
-const std::chrono::seconds kGpuInitWait(10);
+// The application's GPU starts on a thread of its own at launch; a frame asked for that early waits for it,
+// looking at its cancel flag every kGpuInitPoll.
+const std::chrono::milliseconds kGpuInitWait(10000);
+const std::chrono::milliseconds kGpuInitPoll(20);
 } // anon namespace
 
 UtilityGpu
-acquireUtilityGpu()
+acquireUtilityGpu(const std::atomic<bool>* cancel)
 {
     UtilityGpu result;
 
@@ -86,8 +89,14 @@ acquireUtilityGpu()
 
         return result;
     }
-    if (context->isInitializing()) {
-        (void)context->waitForInit(kGpuInitWait);
+    for (std::chrono::milliseconds waited(0); context->isInitializing() && waited < kGpuInitWait; waited += kGpuInitPoll) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) {
+            result.unavailable = "the frame was stopped while the GPU was starting";
+            result.stopped = true;
+
+            return result;
+        }
+        (void)context->waitForInit(kGpuInitPoll);
     }
     if (!context->recoverIfLost() || !context->isAvailable()) {
         result.unavailable = "no usable Vulkan device is available";
@@ -157,6 +166,9 @@ const std::uint64_t kMaxSubmitWork = 8 * kMaxBatchRays;
 
 // Vulkan has no zero-sized buffer, and a scene without colours or triangles still binds all of them.
 const VkDeviceSize kMinTableBytes = 16;
+// The texels go up in submissions of at most this many bytes, the stop flag looked at between them, as
+// a scene's textures can run to gigabytes.
+const std::size_t kTexelUploadChunkBytes = std::size_t(64) << 20;
 
 Tracer::Status
 classify(const gpu::GpuStatus& status,
@@ -310,6 +322,85 @@ warmKernels(gpu::GpuKernelRegistry& registry,
     }
     state->cond.notify_all();
 }
+
+// How long a GPU context going away waits for the warm-ups still compiling on its device.
+const std::chrono::seconds kWarmUpTeardownWait(2);
+
+// The warm-up threads still running, by device. Never destroyed, as a detached thread may end during
+// static destruction.
+struct WarmUpThreads {
+    std::mutex mutex;
+    std::condition_variable ended;
+    std::map<const gpu::GpuDevice*, int> running;
+};
+
+WarmUpThreads&
+warmUpThreads()
+{
+    static WarmUpThreads* threads = new WarmUpThreads;
+
+    return *threads;
+}
+
+/**
+ * @brief The warm-up thread: the executor detaches it when it goes first, so the thread keeps the kernels and
+ * the runtime hold itself, and lets go of them before it counts itself out, after which the device may go.
+ **/
+void
+runWarmUp(gpu::GpuKernelRegistry* registry,
+          std::vector<std::shared_ptr<gpu::GpuKernel>> kernels,
+          std::shared_ptr<WarmUp> state,
+          std::shared_ptr<void> runtimeHold)
+{
+    const gpu::GpuDevice* device = &registry->device();
+
+    warmKernels(*registry, kernels, state);
+    kernels.clear();
+    state.reset();
+    runtimeHold.reset();
+
+    WarmUpThreads& threads = warmUpThreads();
+
+    {
+        const std::lock_guard<std::mutex> l(threads.mutex);
+
+        --threads.running[device];
+    }
+    threads.ended.notify_all();
+}
+
+std::thread
+startWarmUp(gpu::GpuKernelRegistry& registry,
+            std::vector<std::shared_ptr<gpu::GpuKernel>> kernels,
+            const std::shared_ptr<WarmUp>& state,
+            const std::shared_ptr<void>& runtimeHold)
+{
+    static std::once_flag registered;
+
+    std::call_once(registered, []() {
+        GpuContext::addTeardownWaiter([](const gpu::GpuRuntime& runtime) { return WavefrontGpu::waitForWarmUps(runtime.device(), kWarmUpTeardownWait); });
+    });
+
+    WarmUpThreads& threads = warmUpThreads();
+    const gpu::GpuDevice* device = &registry.device();
+
+    {
+        const std::lock_guard<std::mutex> l(threads.mutex);
+
+        ++threads.running[device];
+    }
+    try {
+        return std::thread(runWarmUp, &registry, std::move(kernels), state, runtimeHold);
+    } catch (...) {
+        {
+            const std::lock_guard<std::mutex> l(threads.mutex);
+
+            --threads.running[device];
+        }
+        threads.ended.notify_all();
+        throw;
+    }
+}
 } // anon namespace
 
 struct WavefrontGpu::Implementation {
@@ -324,11 +415,13 @@ struct WavefrontGpu::Implementation {
     {
     }
 
+    // A warm-up still compiling is left to end on its own: the GPU context waits for it before it destroys the
+    // device.
     ~Implementation()
     {
         if (warmUpThread.joinable()) {
             warmUp->abandon.store(true, std::memory_order_relaxed);
-            warmUpThread.join();
+            warmUpThread.detach();
         }
     }
 
@@ -423,7 +516,13 @@ struct WavefrontGpu::Implementation {
     };
 
     bool warm(const std::atomic<bool>& stop);
-    bool uploadTables(std::uint64_t version);
+    bool uploadTables(std::uint64_t version,
+                      const std::atomic<bool>& stop);
+    bool uploadChunked(const void* data,
+                       std::size_t bytes,
+                       const char* what,
+                       gpu::GpuBufferHandle& out,
+                       const std::atomic<bool>& stop);
     bool uploadUnwrap(const WavefrontUnwrapConstPtr& unwrap);
     bool reserveReadback(std::size_t rays,
                          const WavefrontAovs& aovs);
@@ -531,7 +630,7 @@ WavefrontGpu::Implementation::warm(const std::atomic<bool>& stop)
         std::shared_ptr<WarmUp> state = std::make_shared<WarmUp>();
 
         try {
-            warmUpThread = std::thread(warmKernels, std::ref(registry), std::move(kernels), state);
+            warmUpThread = startWarmUp(registry, std::move(kernels), state, runtimeHold);
         } catch (const std::system_error& e) {
             outcome = Outcome { Status::Failed, std::string("WavefrontGpu could not start compiling its kernels: ") + e.what() };
 
@@ -565,10 +664,56 @@ WavefrontGpu::Implementation::warm(const std::atomic<bool>& stop)
 }
 
 bool
-WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
+WavefrontGpu::Implementation::uploadChunked(const void* data,
+                                            std::size_t bytes,
+                                            const char* what,
+                                            gpu::GpuBufferHandle& out,
+                                            const std::atomic<bool>& stop)
+{
+    gpu::GpuBufferHandle buffer;
+
+    out = gpu::GpuBufferHandle();
+    if (gpu::GpuStatus s = pool.acquire(std::max<VkDeviceSize>(bytes, kMinTableBytes), buffer); !s) {
+        return fail("WavefrontGpu could not hold the " + std::to_string(bytes) + " bytes of " + what, s);
+    }
+    for (std::size_t first = 0; first < bytes; first += kTexelUploadChunkBytes) {
+        if (stop.load(std::memory_order_relaxed)) {
+            return stopped();
+        }
+
+        const std::size_t chunk = std::min(kTexelUploadChunkBytes, bytes - first);
+        std::unique_ptr<gpu::GpuRecordContext> ctx;
+        std::shared_ptr<gpu::GpuBuffer> staging = std::make_shared<gpu::GpuBuffer>();
+
+        if (gpu::GpuStatus s = gpu::GpuRecordContext::create(registry, ctx, &pool); !s) {
+            return fail("WavefrontGpu could not create a record context", s);
+        }
+        if (!stage(chunk, what, *staging)) {
+            return false;
+        }
+        std::memcpy(staging->mapped(), static_cast<const unsigned char*>(data) + first, chunk);
+        if (gpu::GpuStatus s = ctx->copyBuffer(*staging, 0, buffer.buffer(), first, chunk); !s) {
+            return fail(std::string("WavefrontGpu could not upload its ") + what, s);
+        }
+        ctx->hold(std::move(staging));
+        if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
+            return fail(std::string("WavefrontGpu could not upload its ") + what, s);
+        }
+    }
+    out = std::move(buffer);
+
+    return true;
+}
+
+bool
+WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
+                                           const std::atomic<bool>& stop)
 {
     if (tables.valid && tables.version == version) {
         return true;
+    }
+    if (stop.load(std::memory_order_relaxed)) {
+        return stopped();
     }
 
     std::unique_ptr<gpu::GpuRecordContext> ctx;
@@ -578,7 +723,11 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
     }
     const std::uint64_t texelLimit = ctx->maxScratchBytes() ? ctx->maxScratchBytes() : ctx->maxStorageBufferBytes();
 
-    if (!shadeTables.fitTexels(texelLimit)) {
+    if (!shadeTables.fitTexels(texelLimit, &stop)) {
+        if (stop.load(std::memory_order_relaxed)) {
+            return stopped();
+        }
+
         const std::vector<std::string>& warnings = shadeTables.texelWarnings();
 
         outcome = Outcome { Status::OutOfMemory, "WavefrontGpu: " + (warnings.empty() ? std::string("the textures do not fit the GPU") : warnings.back()) };
@@ -614,15 +763,22 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
         || !upload(*ctx, source.linkMasks, source.linkMaskCount * sizeof(std::uint32_t), "light-link masks", next.linkMasks)) {
         return false;
     }
-    if (keptTexels) {
-        next.texels = std::move(keptTexels);
-    } else if (!upload(*ctx, source.texels, source.texelCount * 4 * sizeof(float), "texels", next.texels)) {
-        return false;
+    if (stop.load(std::memory_order_relaxed)) {
+        // Kept for the next frame, which then uploads only the tables.
+        tables.texels = std::move(keptTexels);
+        tables.texelVersion = texelVersion;
+
+        return stopped();
     }
-    next.texelVersion = texelVersion;
     if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
         return fail("WavefrontGpu could not upload its shading tables", s);
     }
+    if (keptTexels) {
+        next.texels = std::move(keptTexels);
+    } else if (!uploadChunked(source.texels, source.texelCount * 4 * sizeof(float), "texels", next.texels, stop)) {
+        return false;
+    }
+    next.texelVersion = texelVersion;
     tables = std::move(next);
     tables.version = version;
     tables.valid = true;
@@ -1351,6 +1507,20 @@ WavefrontGpu::WavefrontGpu(gpu::GpuKernelRegistry& registry,
     imp.usable = true;
 }
 
+bool
+WavefrontGpu::waitForWarmUps(const gpu::GpuDevice& device,
+                             std::chrono::milliseconds timeout)
+{
+    WarmUpThreads& threads = warmUpThreads();
+    std::unique_lock<std::mutex> l(threads.mutex);
+
+    return threads.ended.wait_for(l, timeout, [&threads, &device]() {
+        const auto found = threads.running.find(&device);
+
+        return found == threads.running.end() || found->second == 0;
+    });
+}
+
 WavefrontGpu::~WavefrontGpu()
 {
 }
@@ -1370,6 +1540,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
 {
     Implementation& imp = *_imp;
 
+    wavefrontRequireUnwrap(frame);
     imp.outcome = Tracer::Outcome();
     imp.sceneFailed = false;
     resetBouncesTraced();
@@ -1393,11 +1564,16 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     if (!imp.shadeTables.update(snapshot, &stop)) {
         return imp.stopped();
     }
-    if (!imp.uploadTables(snapshot.version)) {
+    if (!imp.uploadTables(snapshot.version, stop)) {
         return false;
     }
-    if (frame.mapping == WavefrontMapping::UvUnwrap && (!frame.unwrap || !imp.uploadUnwrap(frame.unwrap))) {
-        return frame.unwrap ? false : imp.stopped();
+    if (frame.mapping == WavefrontMapping::UvUnwrap) {
+        if (stop.load(std::memory_order_relaxed)) {
+            return imp.stopped();
+        }
+        if (!imp.uploadUnwrap(frame.unwrap)) {
+            return false;
+        }
     }
 
     const WavefrontRect& window = frame.window;

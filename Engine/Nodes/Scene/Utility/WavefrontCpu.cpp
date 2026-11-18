@@ -188,10 +188,6 @@ renderTile(const WavefrontFrame& frame,
     const Tracer::HitBatch hits = hitBatchOf(hitSurface.data(), hitIds.data(), count);
 
     if (frame.mapping == WavefrontMapping::UvUnwrap) {
-        if (!frame.unwrap) {
-            return 0;
-        }
-
         const WavefrontUnwrap& unwrap = *frame.unwrap;
 
         runRayGenUvKernel(makeRayGenParams(frame, rect), unwrap.grid.data(), unwrap.grid.size(), unwrap.triangles.data(), unwrap.triangles.size(), rays.data(), hitSurface.data(), hitIds.data(), weights.data());
@@ -420,6 +416,7 @@ WavefrontCpu::render(const UtilityScene::Snapshot& snapshot,
                      const std::atomic<bool>& stop,
                      int threads)
 {
+    wavefrontRequireUnwrap(frame);
     if (!_tracer->update(snapshot, threads, &stop) || !_shadeTables.update(snapshot, &stop)) {
         return false;
     }

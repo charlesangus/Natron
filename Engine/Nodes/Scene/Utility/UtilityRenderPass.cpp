@@ -569,6 +569,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     frame.unwrapPrim = unwrap.prim;
     frame.unwrapPrimvar = unwrap.primvar;
     frame.udimTile = unwrap.udimTile;
+    frame.unwrapBounces = unwrap.bounces;
 
     const WavefrontMotion motion = motionSettings(*GetRenderIndex()->GetRenderDelegate());
 
@@ -694,10 +695,13 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                 WavefrontGpu* gpu = _renderParam->gpuExecutor(&unavailable);
 
                 if (!gpu) {
-                    if (device == Device::Gpu) {
+                    // A frame stopped while the application's GPU was starting draws nothing, on either device.
+                    const bool stopped = cancel.load();
+
+                    if (device == Device::Gpu && !stopped) {
                         throw std::runtime_error("The Utility renderer cannot render on the GPU: " + unavailable);
                     }
-                    onCpu = true;
+                    onCpu = !stopped;
                 }
 #ifdef NATRON_HAVE_GPU
                 else {

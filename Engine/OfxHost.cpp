@@ -255,7 +255,7 @@ OfxHost::setProperties()
 
     _properties.setStringProperty( kOfxPropName, appPTR->getCurrentSettings()->getHostName() );
     _properties.setGetHook(kOfxPropName, this);
-    _properties.setStringProperty(kOfxPropLabel, NATRON_APPLICATION_NAME); // "nuke" //< use this to pass for nuke
+    _properties.setStringProperty(kOfxPropLabel, NATRON_APPLICATION_NAME);
     _properties.setIntProperty(kOfxPropAPIVersion, 1, 0);  //OpenFX API v1.4
     _properties.setIntProperty(kOfxPropAPIVersion, 4, 1);
     _properties.setIntProperty(kOfxPropVersion, NATRON_VERSION_MAJOR, 0);
@@ -322,7 +322,7 @@ OfxHost::setProperties()
 #ifdef OFX_EXTENSIONS_NUKE
     ///Plane suite
     _properties.setIntProperty(kFnOfxImageEffectPropMultiPlanar, 1);
-    ///Nuke transform suite
+    /// Transform suite
     _properties.setIntProperty(kFnOfxImageEffectCanTransform, 1);
 #endif
 #ifdef OFX_EXTENSIONS_NATRON
@@ -378,7 +378,7 @@ getHostNameProxy(const std::string& pluginID,
     //static const std::string digitalanarchy("com.digitalanarchy.");
 
     if ( !pluginID.compare(0, neatvideo.size(), neatvideo) ) {
-        // Neat Video plugins work with Nuke, Resolve and Mistika
+        // Neat Video plugins work with several hosts; use the compositing host name
         // https://www.neatvideo.com/download.html
 
         // tested with neat video 4.0.9, maj=4,min=0
@@ -388,9 +388,9 @@ getHostNameProxy(const std::string& pluginID,
         // Vegas and TitlerPro support more plugins than Resolve
         // tested with HitFilm 3.1.0113
         // maj=1 or 2 (depends on plugin), min=0
-        // HitFilm Ignite also supports NewBlue OFX Bridge, Sony Catalyst Edit, The Foundry Nuke
+        // HitFilm Ignite also supports NewBlue OFX Bridge and Sony Catalyst Edit
         // tested with HitFilm Ignite 1.0.0118
-        // Clone Stamp from HitFilm Ignite is officially only compatible with Nuke
+        // Clone Stamp from HitFilm Ignite is officially only compatible with the compositing host name
         if ( pluginID == (hitfilm + ".CloneStamp") ) {
             return Settings::eKnownHostNameNuke;
         }
@@ -401,7 +401,7 @@ getHostNameProxy(const std::string& pluginID,
         return Settings::eKnownHostNameVegas;
     } else if ( !pluginID.compare(0, digitalfilmtools.size(), digitalfilmtools) ||
                 !pluginID.compare(0, tiffen.size(), tiffen) ) {
-        // Digital film tools plug-ins work with Nuke, Vegas, Scratch and Resolve
+        // Digital film tools plug-ins work with Vegas, Scratch, Resolve and compositing hosts
 
         // http://www.digitalfilmtools.com/supported-hosts/ofx-host-plugins.php
         return Settings::eKnownHostNameNuke;
@@ -894,7 +894,7 @@ OfxHost::loadOFXPlugins()
 
     if (useStdOFXPluginsLocation) {
         pluginCache->setPluginHostPath(NATRON_APPLICATION_NAME);
-        pluginCache->setPluginHostPath("Nuke"); // most Nuke OFX plugins are compatible
+        pluginCache->setPluginHostPath("Nuke"); // most plugins installed for the compositing host name are compatible
     }
     std::list<std::string> extraPluginsSearchPaths;
     settings->getOpenFXPluginsSearchPaths(&extraPluginsSearchPaths);

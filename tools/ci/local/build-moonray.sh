@@ -8,7 +8,7 @@
 # is fetched by commit, and that commit pins every submodule; the forks of arras4_core, moonray,
 # mcrt_dataio and hdMoonray carry Natron's changes as commits, so the build applies no source patches.
 # CPU only: OptiX/CUDA (the XPU path) is off. The Qt applications, the unit tests, distributed Arras
-# (arras4_node, minicoord), the Houdini plug-ins, the USD geometry procedural (moonshine_usd), the
+# (arras4_node, minicoord), the DCC plug-ins, the USD geometry procedural (moonshine_usd), the
 # profile viewer, the shader discovery plug-ins and the MaterialX shaders are not built, so their
 # submodules are never fetched.
 #

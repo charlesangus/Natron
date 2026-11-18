@@ -19,15 +19,6 @@ Black, its edge pixels under Stretch.
 | `shutterOffset` | Start | Centered, Start, End or Custom |
 | `shutterCustomOffset` | 0 | Opening relative to the current frame, with Custom |
 
-Port audit (every OFX and Nuke control):
-
-| OFX (net.sf.openfx.TimeBlur) | Nuke (TimeBlur) | Natron knob | Default | Status |
-|---|---|---|---|---|
-| `division` | `divisions` | `divisions` | 10 | mapped |
-| `shutter` | `shutter` | `shutter` | 0.5 | mapped |
-| `shutterOffset` | `shutteroffset` | `shutterOffset` | Start | mapped |
-| `shutterCustomOffset` | `shuttercustomoffset` | `shutterCustomOffset` | 0 | mapped |
-
 Differences: no mask or mix, as in OFX.
 
 Tolerance:

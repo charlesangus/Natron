@@ -114,9 +114,7 @@ struct ColorLookupOp {
                        "This will add control points on the curve to match the target from the source. You can add as many point as you like.\n"
                        "This is very useful for matching color of one shot to another, or adding custom colors to a black and white ramp.\n"
                        "\n"
-                       "Optionally, the RGB histogram or a color ramp can be displayed in the background of the lookup curves.\n"
-                       "\n"
-                       "See also: https://web.archive.org/web/20221208230906/http://opticalenquiry.com/nuke/index.php?title=ColorLookup",
+                       "Optionally, the RGB histogram or a color ramp can be displayed in the background of the lookup curves.",
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_COLORLOOKUP,
         .minorVersion = 0,

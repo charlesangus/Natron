@@ -73,7 +73,7 @@ The standard channel, mask, mix and unprocessed-channel knobs follow. The inputs
 the depth), an optional Mask and an optional Kernel. An Image kernel is read as Defocus reads it
 and posts the same warnings.
 
-Departures from Nuke's ZDefocus:
+Notes on the controls:
 
 - The Mask input is kept. `size` is the diameter of the bokeh infinitely far behind the depth of
   field in Manual mode; `maxSize` defaults to 50 and is at most 500.

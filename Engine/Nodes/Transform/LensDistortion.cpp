@@ -91,11 +91,11 @@ struct ParamDef {
 };
 
 const ParamDef kParamDefs[] = {
-    { LensDistortion::eParamK1, kLensDistortionParamK1, "K1", "Nuke: First radial distortion coefficient (coefficient for r^2).", 1, { 0., 0. }, -0.3, 0.3, kNuke },
-    { LensDistortion::eParamK2, kLensDistortionParamK2, "K2", "Nuke: Second radial distortion coefficient (coefficient for r^4).", 1, { 0., 0. }, -0.1, 0.1, kNuke },
-    { LensDistortion::eParamCenter, kLensDistortionParamCenter, "Center", "Nuke: Offset of the distortion center from the image center.", 2, { 0., 0. }, -1., 1., kNuke },
-    { LensDistortion::eParamSqueeze, kLensDistortionParamSqueeze, "Squeeze", "Nuke: Anamorphic squeeze (only for anamorphic lens). Values below 0.001 count as 0.001.", 1, { 1., 1. }, 0., 1., kNuke },
-    { LensDistortion::eParamAsymmetric, kLensDistortionParamAsymmetric, "Asymmetric", "Nuke: Asymmetric distortion (only for anamorphic lens).", 2, { 0., 0. }, -0.5, 0.5, kNuke },
+    { LensDistortion::eParamK1, kLensDistortionParamK1, "K1", "First radial distortion coefficient (coefficient for r^2).", 1, { 0., 0. }, -0.3, 0.3, kNuke },
+    { LensDistortion::eParamK2, kLensDistortionParamK2, "K2", "Second radial distortion coefficient (coefficient for r^4).", 1, { 0., 0. }, -0.1, 0.1, kNuke },
+    { LensDistortion::eParamCenter, kLensDistortionParamCenter, "Center", "Offset of the distortion center from the image center.", 2, { 0., 0. }, -1., 1., kNuke },
+    { LensDistortion::eParamSqueeze, kLensDistortionParamSqueeze, "Squeeze", "Anamorphic squeeze (only for anamorphic lens). Values below 0.001 count as 0.001.", 1, { 1., 1. }, 0., 1., kNuke },
+    { LensDistortion::eParamAsymmetric, kLensDistortionParamAsymmetric, "Asymmetric", "Asymmetric distortion (only for anamorphic lens).", 2, { 0., 0. }, -0.5, 0.5, kNuke },
     { LensDistortion::eParamPFC3, kLensDistortionParamPFC3, "C3", "PFBarrel: Low order radial distortion coefficient.", 1, { 0., 0. }, -0.5, 0.5, kPFBarrel },
     { LensDistortion::eParamPFC5, kLensDistortionParamPFC5, "C5", "PFBarrel: High order radial distortion coefficient.", 1, { 0., 0. }, -0.5, 0.5, kPFBarrel },
     { LensDistortion::eParamPFP, kLensDistortionParamPFP, "Center", "PFBarrel: The distortion center of the lens (specified as a factor rather than a pixel value).", 2, { 0.5, 0.5 }, 0., 1., kPFBarrel },
@@ -321,7 +321,7 @@ LensDistortion::initializeKnobs()
                              "coordinates."));
     {
         std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kLensDistortionModelNuke, "Nuke", tr("The model used in Nuke's LensDistortion plugin.").toStdString()));
+        options.push_back(ChoiceOption(kLensDistortionModelNuke, "Nuke", tr("Two radial coefficients, with optional anamorphic squeeze and asymmetric terms.").toStdString()));
         options.push_back(ChoiceOption(kLensDistortionModelPFBarrel, "PFBarrel", tr("The PFBarrel model used in PFTrack by PixelFarm.").toStdString()));
         options.push_back(ChoiceOption(kLensDistortionModel3DEClassic, "3DE Classic", tr("Degree-2 anamorphic and degree-4 radial mixed model, used in 3DEqualizer by Science-D-Visions. Works, but it is recommended to use 3DE4 Radial Standard Degree 4 or 3DE4 Anamorphic Standard Degree 4 instead.").toStdString()));
         options.push_back(ChoiceOption(kLensDistortionModel3DEAnamorphic6, "3DE4 Anamorphic Degree 6", tr("Degree-6 anamorphic model, used in 3DEqualizer by Science-D-Visions.").toStdString()));

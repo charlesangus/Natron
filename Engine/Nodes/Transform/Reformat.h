@@ -105,8 +105,7 @@ struct ReformatOp {
                        "An image transform is computed that goes from the input format, regardless of the region of definition (RoD), to the selected format. The Resize Type parameter adjust the way the transform is computed.\n"
                        "The output format is set by this effect.\n"
                        "In order to set the output format without transforming the image content, use the NoOp effect.\n"
-                       "This plugin concatenates transforms.\n"
-                       "See also: https://web.archive.org/web/20220627014216/http://www.opticalenquiry.com/nuke/index.php?title=Reformat",
+                       "This plugin concatenates transforms.",
         .grouping = PLUGIN_GROUP_TRANSFORM,
         .majorVersion = PLUGIN_MAJOR_NATRON_REFORMAT,
         .minorVersion = 0,

@@ -846,7 +846,7 @@ GuiApplicationManager::restoreDefaultShortcuts()
             }
         }
     }
-    // The defaults are the Nuke preset's bindings.
+    // The defaults are the first navigation preset's bindings.
     getCurrentSettings()->setViewer3DNavigation(Settings::eViewer3DNavigationNuke);
 }
 
@@ -876,7 +876,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionShowErrorLog, kShortcutDescActionShowErrorLog, Qt::NoModifier, (Qt::Key)0);
 
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionNewViewer, kShortcutDescActionNewViewer, Qt::ControlModifier, Qt::Key_I);
-    registerKeybind(kShortcutGroupGlobal, kShortcutIDActionFullscreen, kShortcutDescActionFullscreen, Qt::AltModifier, Qt::Key_S); // as in Nuke
+    registerKeybind(kShortcutGroupGlobal, kShortcutIDActionFullscreen, kShortcutDescActionFullscreen, Qt::AltModifier, Qt::Key_S);
     //registerKeybind(kShortcutGroupGlobal, kShortcutIDActionFullscreen, kShortcutDescActionFullscreen, Qt::ControlModifier | Qt::AltModifier, Qt::Key_F);
 
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionClearDiskCache, kShortcutDescActionClearDiskCache, Qt::NoModifier, (Qt::Key)0);
@@ -1012,7 +1012,7 @@ GuiApplicationManager::populateShortcuts()
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMousePickAlternateColor, kShortcutDescMousePickAlternateColor, Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
     registerMouseShortcut(kShortcutGroupViewer, kShortcutIDMouseRectanglePickAlternate, kShortcutDescMouseRectanglePickAlternate, Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier, Qt::LeftButton);
 
-    // 3D viewer: the defaults are the Nuke preset, the default of the Viewer 3D Navigation preference.
+    // 3D viewer: the defaults are the first preset, the default of the Viewer 3D Navigation preference.
     {
         const int preset = (int)Settings::eViewer3DNavigationNuke;
         _imp->addViewer3DMouseShortcut(kShortcutIDMouseViewer3DTumble, kShortcutDescMouseViewer3DTumble, eMouseGestureDrag, preset);

@@ -141,8 +141,7 @@ struct CheckerBoardOp {
         .id = PLUGINID_NATRON_CHECKERBOARD,
         .label = "CheckerBoard",
         .description = "Generate an image with a checkerboard.\n"
-                       "A frame range may be specified for operators that need it.\n"
-                       "See also: https://web.archive.org/web/20220807183203/http://www.opticalenquiry.com/nuke/index.php?title=Constant,_CheckerBoard,_ColorBars,_ColorWheel",
+                       "A frame range may be specified for operators that need it.",
         .grouping = PLUGIN_GROUP_IMAGE,
         .majorVersion = PLUGIN_MAJOR_NATRON_CHECKERBOARD,
         .minorVersion = 0,

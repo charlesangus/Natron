@@ -113,7 +113,6 @@ struct ColorCorrectOp {
                        "The Contrast adjustment works using the formula: Output = (Input/0.18)^Contrast*0.18.\n"
                        "\n"
                        "See also:\n"
-                       "- http://opticalenquiry.com/nuke/index.php?title=ColorCorrect\n"
                        "- https://compositormathematic.wordpress.com/2013/07/06/gamma-contrast/",
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_COLORCORRECT,

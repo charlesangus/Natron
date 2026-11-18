@@ -26,20 +26,10 @@ frames besides the output's own). The output frame range is the input's.
 | `filter` | Blend | Nearest, Blend, Fractional or Box |
 | `shutter` | 1 | Box: output frames each output frame averages over; animates |
 
-Port audit (every OFX and Nuke control):
-
-| OFX (net.sf.openfx.Retime) | Nuke (TimeWarp) | Natron knob | Default | Status |
-|---|---|---|---|---|
-| `warp` (Time Warp page) | `lookup` (input frame) | `lookup` | identity | mapped; an absolute frame curve, as in Nuke, rather than OFX's 0..1 position curve |
-| (none) | `length` (input length) | `shutter` | 1 | mapped; in output frames through the curve, so the slope sets the input length |
-| (none) | set to df/dt | (none) | | N/A: `shutter` already follows the curve's slope |
-| `filter` none / nearest / linear / box | `filter` none / nearest / box | `filter` Fractional / Nearest / Blend / Box | Blend | mapped |
-| (none) | curve editor button | (none) | | N/A: the curve editor shows `lookup` |
-
-Differences: Nuke keys only frame 1 on a new node; here the identity is keyed at both ends of the
-project range so the default is a pass-through. Nuke's `length` is in input frames, while
-`shutter` is in output frames mapped through the curve, which is what set to df/dt computes. The
-default filter is Blend; Nuke's is Box.
+Differences from OFX: `lookup` is an absolute input-frame curve, not a 0..1 position curve. The
+identity is keyed at both ends of the project range so the default is a pass-through. `shutter`
+is in output frames mapped through the curve, so the slope sets the input length. OFX's "none"
+filter is Fractional and its "linear" is Blend. The default filter is Blend.
 
 Tolerance:
 

@@ -5,8 +5,7 @@ one scene. It authors nothing itself and does not touch colour.
 
 Inputs stack in input order: a higher-numbered input's layers are stronger than a
 lower-numbered input's, so where two inputs author the same opinion (the same
-attribute of the same prim, say) the higher-numbered input wins, as in Houdini's
-Merge LOP. Opinions only one input authors come through as they are. Stage
+attribute of the same prim, say) the higher-numbered input wins. Opinions only one input authors come through as they are. Stage
 metadata (up axis, meters per unit, default prim, time codes per second) comes
 from the strongest layer that authors it.
 

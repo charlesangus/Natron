@@ -3828,7 +3828,7 @@ OfxEffectInstance::getSequentialPreference() const
 
 bool
 OfxEffectInstance::getCanTransform() const
-{   //use OFX_EXTENSIONS_NUKE
+{ // use the OFX transform extension
     if (!effectInstance()) {
         return false;
     }

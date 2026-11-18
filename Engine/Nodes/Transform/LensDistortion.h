@@ -51,7 +51,7 @@
 #define kLensDistortionParamCropToFormat "cropToFormat"
 #define kLensDistortionParamUseRoD "useRoD"
 
-// Nuke
+// Radial model with anamorphic squeeze and asymmetric terms
 #define kLensDistortionParamK1 "k1"
 #define kLensDistortionParamK2 "k2"
 #define kLensDistortionParamCenter "center"
@@ -170,7 +170,7 @@ inline constexpr NodeSpec kLensDistortionNodeSpec = {
                    "format each pixel reads, and in alpha 1 where the model has a solution and 0 where it has none. "
                    "Fed to the UV input of STMap with the footage on its Source input, it applies the same transform "
                    "without solving the model again for every frame, unless the parameters are animated.\n"
-                   "Strong Nuke distortion on an anamorphic format leaves black corners: the solve leaves the model's "
+                   "Strong distortion with the default model on an anamorphic format leaves black corners: the solve leaves the model's "
                    "domain there.",
     .grouping = PLUGIN_GROUP_TRANSFORM,
     .majorVersion = PLUGIN_MAJOR_NATRON_LENSDISTORTION,

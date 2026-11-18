@@ -1533,7 +1533,7 @@ PositionInteract::draw(double time,
         int direction = (l == 0) ? 1 : -1;
         // translate (1,-1) pixels
         glTranslated(direction * shadow.x, -direction * shadow.y, 0);
-        glMatrixMode(GL_MODELVIEW); // Modelview should be used on Nuke
+        glMatrixMode(GL_MODELVIEW); // Modelview should be used
 
         glColor3f(pR * l, pG * l, pB * l);
         glPointSize(pointSize() * screenPixelRatio);
@@ -2586,7 +2586,7 @@ TransformInteract::draw(double time,
         int direction = (l == 0) ? 1 : -1;
         // translate (1,-1) pixels
         glTranslated(direction * shadow.x, -direction * shadow.y, 0);
-        glMatrixMode(GL_MODELVIEW); // Modelview should be used on Nuke
+        glMatrixMode(GL_MODELVIEW); // Modelview should be used
 
         glColor3f(color.r * l, color.g * l, color.b * l);
 
@@ -2724,7 +2724,7 @@ CornerPinInteract::draw(double time,
         int direction = (l == 0) ? 1 : -1;
         // translate (1,-1) pixels
         glTranslated(direction * shadow.x, -direction * shadow.y, 0);
-        glMatrixMode(GL_MODELVIEW); // Modelview should be used on Nuke
+        glMatrixMode(GL_MODELVIEW); // Modelview should be used
 
         glColor3f( (float)(color.r / 2) * l, (float)(color.g / 2) * l, (float)(color.b / 2) * l );
         glLineWidth(1.5f * screenPixelRatio);

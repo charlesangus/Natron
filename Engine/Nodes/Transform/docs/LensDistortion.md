@@ -24,7 +24,7 @@ Source land, sampled at 11 points per edge as openfx-misc does. With `cropToForm
 where the Source stayed inside its format are cropped to the output format.
 
 A pixel where the model has no solution (outside its domain, or where the solve does not converge)
-is black, never NaN. **Strong Nuke distortion on an anamorphic format leaves black corners**: the
+is black, never NaN. **Strong distortion with the default model on an anamorphic format leaves black corners**: the
 distort direction has no solution there. 3DE4 Radial Fisheye reports rays at or past 90 degrees from
 the axis as having no solution, unlike ldpk, which clamps them.
 

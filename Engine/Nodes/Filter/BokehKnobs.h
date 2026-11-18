@@ -58,7 +58,7 @@ class KnobReader;
  **/
 class BokehKnobs {
 public:
-    /// The texture knobs of Disc and Blades kernels, Nuke's ZDefocus filter controls, in a closed group.
+    /// The texture knobs of Disc and Blades kernels, the filter controls, in a closed group.
     void addTextureKnobs(KnobHolder* holder, const KnobPagePtr& page);
 
     /// The cat-eye and chromatic aberration knobs, in a closed group.

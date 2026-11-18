@@ -31,19 +31,19 @@ through transmissive surfaces. No GI and no caustics.
 
 ## Phase 282.1: Secondary rays
 
-- [ ] M282.P1.T1 — Bounce queue in the wavefront
+- [x] M282.P1.T1 — Bounce queue in the wavefront
   - files: `Engine/Nodes/Scene/Utility/UtilityRenderPass.cpp`, `Engine/Nodes/Scene/Utility/WavefrontCpu.cpp`, `Engine/Nodes/Scene/Utility/WavefrontGpu.cpp`, `Engine/Nodes/Scene/Utility/Kernels/UtilityTypes.slang`, `Tests/Scene/NatronUtility_Test.cpp`
   - approach: the shading stage may emit continuation rays (with throughput, depth counters per type and pixel index) into a next-bounce queue; the executor loops intersect → shade until the queue is empty or the total depth is reached; compaction between bounces. Register the three depth settings as `HdRenderSettingDescriptor`s.
   - verify: gtest — a shader stub that always emits one continuation ray terminates at the configured total depth; with depth 0 no second bounce runs (counter); both executors agree.
   - size: L
 
-- [ ] M282.P1.T2 — Reflection and environment on miss
+- [x] M282.P1.T2 — Reflection and environment on miss
   - files: `Engine/Nodes/Scene/Utility/Kernels/ShadeSurface.slang`, `Engine/Nodes/Scene/Utility/Kernels/PreviewSurface.slang`, `Engine/Nodes/Scene/Utility/Kernels/Lights.slang`, `Tests/Scene/NatronUtilityReflect_Test.cpp`
   - approach: sample the specular (and clearcoat) lobe with GGX VNDF, Fresnel-weight it and emit a reflection ray; misses look up the Dome radiance.
   - verify: gtest — a mirror plane under a constant-colour Dome returns that colour × Fresnel at the expected angle; a red sphere's reflection appears in a mirror plane at the analytic position; roughness 0.5 converges to the reference mean with 256 samples.
   - size: L
 
-- [ ] M282.P1.T3 — Refraction and transmissive shadows
+- [x] M282.P1.T3 — Refraction and transmissive shadows
   - files: `Engine/Nodes/Scene/Utility/Kernels/ShadeSurface.slang`, `Engine/Nodes/Scene/Utility/Kernels/PreviewSurface.slang`, `Engine/Nodes/Scene/Utility/Kernels/ShadeShadow.slang`, `Tests/Scene/NatronUtilityReflect_Test.cpp`
   - approach: transmissive hits emit a refraction ray (Snell, TIR fallback, entering/exiting by facing); ior = 1 transparency continues straight. Shadow rays become any-hit loops that accumulate transmission instead of a boolean occlusion — on GPU a `RayQuery` candidate loop, on CPU Embree's occlusion filter callback.
   - verify: gtest — a glass slab (ior 1.5) offsets a background stripe by the analytic amount; TIR occurs past the critical angle; a 50% transmissive red pane casts a red-tinted half-intensity shadow on both backends.
@@ -58,3 +58,4 @@ through transmissive surfaces. No GI and no caustics.
 - 2026-11-01 — **Depends on sampling:** glossy lobes need M283 - Utility Renderer Sampling And Motion Blur's pixel samples to converge.
 - 2026-11-17 — Code in the lane, gate running. **Glass untinted unless coloured (user):** UsdPreviewSurface has no transmission colour, so refraction and transmissive shadows are untinted (1 - opacity). **Light highlights on glass (user):** refractive surfaces take scene-light highlights like an opaque surface of the same ior and roughness. PM call: tests about other features render with Max Ray Depth 0, so no golden is re-recorded. Rough glass still reflects as a mirror.
 - 2026-11-17 — **Glass alpha stays noisy (user):** alpha through refractive surfaces converges with samples; no change.
+- 2026-11-17 — Gate green (run 44181671650, code 7c85f6920); PR #309 into F7, in review.

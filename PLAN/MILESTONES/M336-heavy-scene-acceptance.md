@@ -29,7 +29,30 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 - [ ] M336.P1.T1 — End-to-end budget run
   - files: `tools/bench/heavy_scene_bench.py`, `tools/bench/README.md`
-  - approach: add a scenario chaining the whole workflow on both fixtures: open, twirl into a payload, set Full on one asset, Full + Load on a block, add a pattern node, switch to another node, select in the inspector, save, reopen. Run on a stripped release build on a GPU host and record the JSON under `## Decisions`.
+  - approach: add a scenario chaining the whole workflow on both fixtures: open, twirl into a payload, set Full on one asset, Full + Load on a block, add a pattern node, switch to another node, select in the inspector, save, reopen. Run on a stripped release build on a GPU host and record the JSON under `## Phase 336.4: Bounded fill
+
+- [ ] M336.P4.T1 — Admission mode in SceneDrawFilter
+  - files: `Engine/Nodes/Scene/SceneDrawFilter.{h,cpp}`, `Tests/SceneDrawFilter_Test.cpp`
+  - approach: an admission mode seeds every rprim and instancer absent (an empty-type placeholder, nothing in Hydra); `admit(order, maxPrims, deadline)` turns absent prims into real inserts following a priority list; `admittedCount()`, `pendingCount()`, `isFilling()`. Loads join the queue through the `_arrivalRoots` path; lights and materials pass through; dirties on absent prims are dropped (admission reads current data). Instancers grow their instance mask per batch. A draw-state change or a new stage clears the queue.
+  - verify: gtest — admission order honoured; each batch notices at most N prims; dirties on absent prims dropped; loads join the queue; instancer mask growth.
+  - size: L
+- [ ] M336.P4.T2 — Near-camera order and boxes for unadmitted prims
+  - files: `Gui/SceneDrawBoxes.{h,cpp}`, `Tests/SceneDrawBoxes_Test.cpp`
+  - approach: the box worker sorts unadmitted prims by projected screen area for the current camera (near and large first), recomputed after the camera is idle 250 ms; stand-in boxes cover only unadmitted prims under the existing stand-in setting; picking an unadmitted prim goes through `SceneDrawBoxes::pick`.
+  - verify: gtest — ordering for a known camera; the box set excludes admitted prims.
+  - size: M
+- [ ] M336.P4.T3 — One admitting pass per frame, paced textures
+  - files: `Gui/SceneViewport.cpp`, `Gui/SceneRevealPacer*`, `Engine/Nodes/Scene/StormTextureBudget.{h,cpp}`
+  - approach: `serviceDrawFilter` calls `admit` once per pass sized by `SceneRevealPacer` (budget = the stand-in budget, 33 ms) with `noteDrawFilterRendered` feeding back the cost; the background frame loop stops after one admitting pass, presents it, and takes the next on frameSwapped. No admission while the camera moves; after idle the order is re-sorted and the fill resumes. `StormTextureBudget::streamTextures` becomes time-paced: only textures bound by admitted geometry, nearest first, with a per-pass byte cap from the same budget.
+  - verify: the GUI script below; the existing m336_stand_in, scene_draw_pick, scene_draw_boxes, scene_draw_instances and scene_viewer_navigation scripts pass.
+  - size: L
+- [ ] M336.P4.T4 — Fill progress, completion and the bench
+  - files: `Gui/SceneViewport.cpp` (properties), `tools/bench/heavy_scene_bench.py`, new `Tests/gui/m336_bounded_fill.py`
+  - approach: publish `natronSceneFillProgress` and `natronSceneFillComplete` (no pending prims, no pending textures, converged); `natronSceneLastPaintMs` counts only a completed fill as converged. The bench reports first-pass and complete times, and an Island-loaded `orbit_fill` scenario records the worst pass, first-pass time, complete time and stall.
+  - verify: the GUI script checks progress rises monotonically, completion is set, and a camera nudge mid-fill gets a new frame within a few passes.
+  - size: M
+
+## Decisions`.
   - verify: every budget passes; any failure becomes a task here with its numbers.
   - size: M
 
@@ -188,3 +211,4 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
 - 2026-11-17 — **P3.T3: holdrepaint (user).** The viewer shares the render context and holds widget paints while a render-thread job runs past 50 ms; the unshared prototype and the NATRON_SCENE_RENDER_CONTEXT switch are removed. Next: the orbit10k artifact, holdrepaint's populate_full and orbit10k stalls, and P3.T6 from the flat samples.
 - 2026-11-17 — **Round 8** (RTX 3090, e35a2f47e, run cloud-gpu-20261118T020609Z): 11 pass / 16 fail. pattern_node on flat fixed (44.7 s → 58 ms); Island-loaded populate_full 614 → 191 ms; Lobby orbit10k 59 fps. Bench bugs: the workflow twirl waits for a converged paint a moving camera never makes (900 s walls); reveal worst-frame timed from converged paints only; decisions on city ttp/reveal and Island ttp not applied in verdicts; the all-thread sampler managed one sample per ~1.5 s. Real: flat reopen 5.5 s (SceneDrawBoxes join and bbox-cache frees, and a timer-driven ~UsdStage, on the main thread); Island change stalls 1.2–3.1 s in one run only, with pollPresent's makeCurrent round-trips the main busy stack; Island orbit10k shows nothing for 5 s while a 22.8 s frame renders; pattern_node reconnect (P3.T6) and reopen reset (P3.T7) remain; open connect 104–141 ms. Fixes dispatched for the bench, reopen teardown, present polling and orbit cancel.
 - 2026-11-18 — **Bound the Storm pass (user):** a pass can't be stopped midway, so on the loaded Island orbiting froze the picture for up to one ~23 s pass. Storm's render index is filled in prim batches so each pass covers a bounded slice of the stage and ends within about one budget (33 ms target); the first full picture builds up progressively and a camera change gets a new frame quickly. Chosen over predicting cost with the stand-in, a separate stand-in GL context, or accepting the freeze.
+- 2026-11-18 — **Bound the fill only (user):** M336 bounds passes while the scene fills (prims and textures, nearest first, paused while the camera moves; Phase 336.4, design by consultant: admission in SceneDrawFilter, prims absent from Hydra until admitted). After the fill a pass still draws the whole scene (~2-4 s on Island, accepted 2026-11-17); the steady draw belongs to M481 - Viewer Polygon Budgets, where drawing only stand-in boxes while the camera moves on an over-budget scene is recorded as a possible follow-up. Slicing the steady draw into accumulated passes was rejected (unverified Storm internals, re-gather per slice).

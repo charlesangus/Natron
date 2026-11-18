@@ -189,3 +189,4 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 - 2026-11-17 — Standalone, after F4 - Heavy Scene Viewer lands (user). Deps M336 - Heavy Scene Acceptance.
 - 2026-11-17 — A HUD budget line, and stand-ins that can be picked (user). No Scene Graph badges.
 - 2026-11-17 — Gate (user): a `budget_orbit` bench on the 1M city and Island, with a stall of at most 100 ms per stop and an orbit of at least 30 fps, then UAT on Island.
+- 2026-11-18 — **Possible follow-up (user, from M336 - Heavy Scene Acceptance):** after a scene has fully filled, while the camera moves on a scene whose full draw is over budget, draw only the stand-in boxes (no Storm pass), then one full draw once idle — the During interaction stand-in rule applied to every move.

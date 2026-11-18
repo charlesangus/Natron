@@ -1346,15 +1346,17 @@ TEST(NatronUtilitySubdivRender, GpuShadesAMeshWhoseTablesRunPastTheStorageBuffer
         GPUTEST_SKIP() << missing;
     }
 
-    const std::uint64_t range = 64 * 1024;
+    // The ray queues of a row still bind under the cap: the pool's smallest buffer is 64 KiB, so a cap that small
+    // leaves no scratch buffer a dispatch may bind.
+    const std::uint64_t range = 1024 * 1024;
     // Each render has a delegate and so a GPU executor of its own, which uploads the scene afresh.
     const auto renderSphere = [](std::size_t& triangles, std::string& device, std::string& warning) {
         SubdivRender render(std::string("#usda 1.0\n") + kLitWhite, kShadedSize);
 
-        defineSphereCage(render.stage, 8., 32, 24);
+        defineSphereCage(render.stage, 8., 48, 36);
         bindWhite(render.stage, "/Sphere");
         render.setSetting(kUtilitySettingPixelSamples, 1);
-        render.setSetting(kUtilitySettingSubdivLevel, 3);
+        render.setSetting(kUtilitySettingSubdivLevel, 4);
         render.setDevice(kUtilityDeviceGpu);
         render.render();
         triangles = render.stat(kUtilityStatTriangleCount);

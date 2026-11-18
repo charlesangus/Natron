@@ -167,9 +167,9 @@ const std::uint64_t kMaxSubmitWork = 8 * kMaxBatchRays;
 
 // Vulkan has no zero-sized buffer, and a scene without colours or triangles still binds all of them.
 const VkDeviceSize kMinTableBytes = 16;
-// The texels go up in submissions of at most this many bytes, the stop flag looked at between them, as
-// a scene's textures can run to gigabytes.
-const std::size_t kTexelUploadChunkBytes = std::size_t(64) << 20;
+// The texels, and any other table past this size, go up in submissions of at most this many bytes, the stop flag
+// looked at between them, as a scene's textures and meshes can run to gigabytes.
+const std::size_t kUploadChunkBytes = std::size_t(64) << 20;
 
 Tracer::Status
 classify(const gpu::GpuStatus& status,
@@ -626,14 +626,6 @@ WavefrontGpu::Implementation::warm(const std::atomic<bool>& stop)
         std::vector<std::shared_ptr<gpu::GpuKernel>> kernels = tracer.kernels();
 
         kernels.insert(kernels.end(), { rayGenKernel, rayGenUvKernel, shadeKernel, shadeLightsKernel, resolveKernel });
-        // Made here rather than with the first film on the device, so that the film's kernels compile too.
-        if (!filmKernelsTried) {
-            filmKernelsTried = true;
-
-            gpu::GpuStatus status;
-
-            filmKernels = makeUtilityFilmKernels(device, &status);
-        }
         if (filmKernels) {
             const std::vector<std::shared_ptr<gpu::GpuKernel>> film = utilityFilmKernelList(*filmKernels);
 
@@ -689,12 +681,12 @@ WavefrontGpu::Implementation::uploadChunked(const void* data,
     if (gpu::GpuStatus s = pool.acquire(std::max<VkDeviceSize>(bytes, kMinTableBytes), buffer); !s) {
         return fail("WavefrontGpu could not hold the " + std::to_string(bytes) + " bytes of " + what, s);
     }
-    for (std::size_t first = 0; first < bytes; first += kTexelUploadChunkBytes) {
+    for (std::size_t first = 0; first < bytes; first += kUploadChunkBytes) {
         if (stop.load(std::memory_order_relaxed)) {
             return stopped();
         }
 
-        const std::size_t chunk = std::min(kTexelUploadChunkBytes, bytes - first);
+        const std::size_t chunk = std::min(kUploadChunkBytes, bytes - first);
         std::unique_ptr<gpu::GpuRecordContext> ctx;
         std::shared_ptr<gpu::GpuBuffer> staging = std::make_shared<gpu::GpuBuffer>();
 
@@ -772,21 +764,50 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
         return false;
     }
     next.texelVersion = texelVersion;
-    if (!upload(*ctx, source.geometries, source.geometryCount * sizeof(KernelGeometryRecord), "geometry records", next.geometries)
-        || !upload(*ctx, source.colors, source.colorCount * 4 * sizeof(float), "colours", next.colors)
-        || !upload(*ctx, source.triangles, source.triangleIndexCount * sizeof(std::int32_t), "triangle indices", next.triangles)
-        || !upload(*ctx, source.instanceIds, source.instanceCount * sizeof(std::int32_t), "instance ids", next.instanceIds)
-        || !upload(*ctx, source.materials, source.materialCount * sizeof(KernelMaterialRecord), "material records", next.materials)
-        || !upload(*ctx, source.textureBindings, source.textureBindingCount * sizeof(KernelTextureBinding), "texture bindings", next.textureBindings)
-        || !upload(*ctx, source.images, source.imageCount * 4 * sizeof(std::uint32_t), "image records", next.images)
-        || !upload(*ctx, source.projections, source.projectionCount * sizeof(KernelProjectionRecord), "projection records", next.projections)
-        || !upload(*ctx, source.points, source.pointCount * 4 * sizeof(float), "points", next.points)
-        || !upload(*ctx, source.instanceTransforms, source.instanceTransformRowCount * 4 * sizeof(float), "instance transforms", next.instanceTransforms)
-        || !upload(*ctx, source.sts, source.stCount * 2 * sizeof(float), "texture coordinates", next.sts)
-        || !upload(*ctx, source.normals, source.normalCount * 4 * sizeof(float), "normals", next.normals)
-        || !upload(*ctx, source.lights, source.lightCount * sizeof(KernelLightRecord), "light records", next.lights)
-        || !upload(*ctx, source.lightData, source.lightDataCount * sizeof(float), "light tables", next.lightData)
-        || !upload(*ctx, source.linkMasks, source.linkMaskCount * sizeof(std::uint32_t), "light-link masks", next.linkMasks)) {
+    // A table past one chunk goes up in submissions of its own, the stop flag looked at between them, so that a
+    // stop never waits for a whole mesh's worth of copies; the rest share one submission.
+    bool stoppedHere = false;
+    const auto put = [&](const void* data, std::size_t bytes, const char* what, gpu::GpuBufferHandle& out) {
+        if (stop.load(std::memory_order_relaxed)) {
+            stoppedHere = true;
+
+            return false;
+        }
+        if (bytes > kUploadChunkBytes) {
+            if (!uploadChunked(data, bytes, what, out, stop)) {
+                stoppedHere = outcome.status == Status::Stopped;
+
+                return false;
+            }
+
+            return true;
+        }
+
+        return upload(*ctx, data, bytes, what, out);
+    };
+
+    if (!put(source.geometries, source.geometryCount * sizeof(KernelGeometryRecord), "geometry records", next.geometries)
+        || !put(source.colors, source.colorCount * 4 * sizeof(float), "colours", next.colors)
+        || !put(source.triangles, source.triangleIndexCount * sizeof(std::int32_t), "triangle indices", next.triangles)
+        || !put(source.instanceIds, source.instanceCount * sizeof(std::int32_t), "instance ids", next.instanceIds)
+        || !put(source.materials, source.materialCount * sizeof(KernelMaterialRecord), "material records", next.materials)
+        || !put(source.textureBindings, source.textureBindingCount * sizeof(KernelTextureBinding), "texture bindings", next.textureBindings)
+        || !put(source.images, source.imageCount * 4 * sizeof(std::uint32_t), "image records", next.images)
+        || !put(source.projections, source.projectionCount * sizeof(KernelProjectionRecord), "projection records", next.projections)
+        || !put(source.points, source.pointCount * 4 * sizeof(float), "points", next.points)
+        || !put(source.instanceTransforms, source.instanceTransformRowCount * 4 * sizeof(float), "instance transforms", next.instanceTransforms)
+        || !put(source.sts, source.stCount * 2 * sizeof(float), "texture coordinates", next.sts)
+        || !put(source.normals, source.normalCount * 4 * sizeof(float), "normals", next.normals)
+        || !put(source.lights, source.lightCount * sizeof(KernelLightRecord), "light records", next.lights)
+        || !put(source.lightData, source.lightDataCount * sizeof(float), "light tables", next.lightData)
+        || !put(source.linkMasks, source.linkMaskCount * sizeof(std::uint32_t), "light-link masks", next.linkMasks)) {
+        if (stoppedHere) {
+            tables.texels = std::move(next.texels);
+            tables.texelVersion = texelVersion;
+
+            return stopped();
+        }
+
         return false;
     }
 
@@ -1533,6 +1554,12 @@ WavefrontGpu::WavefrontGpu(gpu::GpuKernelRegistry& registry,
         return;
     }
     imp.resolveKernel = std::move(kernel);
+    // Made with the executor rather than with the first film on the device, so that warm() compiles them too.
+    imp.filmKernelsTried = true;
+
+    gpu::GpuStatus filmStatus;
+
+    imp.filmKernels = makeUtilityFilmKernels(imp.device, &filmStatus);
     imp.usable = true;
 }
 

@@ -29,14 +29,20 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <set>
 #include <span>
 #include <string>
+#include <system_error>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include <pxr/base/tf/diagnostic.h>
@@ -213,6 +219,78 @@ struct Failure {
     GpuTracer::Status status;
     std::string message;
 };
+
+// How often an update waiting for the geometry's submission looks at its stop flag.
+const std::chrono::milliseconds kSubmissionPoll(20);
+
+/**
+ * @brief A submission of the geometry's builds, refits or compaction, recorded, submitted and waited for on a
+ * thread of its own, since a record context must be destroyed on the thread that made it. What it built is
+ * kept here until an update adopts it.
+ **/
+struct GeometrySubmission {
+    enum class Kind {
+        Builds,
+        Compaction,
+    };
+
+    Kind kind = Kind::Builds;
+    // Records the work; on failure returns the status and sets what to the failure's description.
+    std::function<gpu::GpuStatus(gpu::GpuRecordContext& ctx, std::string& what)> record;
+    std::vector<std::pair<UtilityScene::GeometryId, GeometryEntryPtr>> built;
+    // The entries refit, with the points version they were refit to.
+    std::vector<std::pair<GeometryEntryPtr, std::uint64_t>> refitted;
+    // What the submission failed with, if it did not run.
+    std::string submitWhat;
+
+    std::mutex mutex;
+    std::condition_variable cond;
+    bool finished = false;
+    bool recorded = false;
+    gpu::GpuStatus status;
+    std::string what;
+    std::thread thread;
+};
+
+using GeometrySubmissionPtr = std::shared_ptr<GeometrySubmission>;
+
+void
+runGeometrySubmission(gpu::GpuKernelRegistry* registry,
+                      gpu::GpuBufferPool* pool,
+                      GeometrySubmissionPtr job)
+{
+    gpu::GpuStatus status;
+    std::string what;
+    bool recorded = false;
+
+    {
+        std::unique_ptr<gpu::GpuRecordContext> ctx;
+
+        status = gpu::GpuRecordContext::create(*registry, ctx, pool);
+        if (!status) {
+            what = "GpuTracer could not create a record context";
+        } else {
+            status = job->record(*ctx, what);
+            if (status) {
+                recorded = true;
+                status = ctx->submitAndWait();
+                if (!status) {
+                    what = job->submitWhat;
+                }
+            }
+        }
+    }
+    job->record = nullptr;
+    {
+        const std::lock_guard<std::mutex> l(job->mutex);
+
+        job->recorded = recorded;
+        job->status = status;
+        job->what = what;
+        job->finished = true;
+    }
+    job->cond.notify_all();
+}
 } // anon namespace
 
 struct GpuTracer::Implementation {
@@ -224,9 +302,73 @@ struct GpuTracer::Implementation {
     {
     }
 
+    ~Implementation()
+    {
+        if (inFlight && inFlight->thread.joinable()) {
+            inFlight->thread.join();
+        }
+    }
+
     gpu::GpuStatus createContext(std::unique_ptr<gpu::GpuRecordContext>& ctx) const
     {
         return gpu::GpuRecordContext::create(registry, ctx, &pool);
+    }
+
+    // Starts job on its thread as the submission in flight. False, with the failure recorded, when it cannot.
+    bool startSubmission(GeometrySubmissionPtr job)
+    {
+        try {
+            job->thread = std::thread(runGeometrySubmission, &registry, &pool, job);
+        } catch (const std::system_error& e) {
+            return abandonUpdate(Failure { Status::Failed, std::string("GpuTracer could not start building its geometry: ") + e.what() });
+        }
+        inFlight = std::move(job);
+
+        return true;
+    }
+
+    // Waits for the submission in flight, if any, and keeps what it did. False on a stop, which leaves it
+    // running, or when it failed, with the failure recorded.
+    bool finishSubmission(const std::atomic<bool>* stop,
+                          const Failure& stopped)
+    {
+        if (!inFlight) {
+            return true;
+        }
+        {
+            std::unique_lock<std::mutex> l(inFlight->mutex);
+
+            while (!inFlight->finished) {
+                if (wasStopped(stop)) {
+                    return abandonUpdate(stopped);
+                }
+                inFlight->cond.wait_for(l, kSubmissionPoll);
+            }
+        }
+        inFlight->thread.join();
+
+        const GeometrySubmissionPtr job = std::move(inFlight);
+
+        if (!job->status) {
+            return job->recorded ? abandonSubmission(job->what, job->status) : abandonUpdate(failure(job->what, job->status));
+        }
+        if (job->kind == GeometrySubmission::Kind::Compaction) {
+            // A structure the pool had no room to compact into stays as built.
+            uncompacted.clear();
+
+            return true;
+        }
+        for (std::pair<UtilityScene::GeometryId, GeometryEntryPtr>& build : job->built) {
+            geometries[build.first] = std::move(build.second);
+            uncompacted.insert(build.first);
+            ++counters.geometryBuilds;
+        }
+        for (const std::pair<GeometryEntryPtr, std::uint64_t>& refit : job->refitted) {
+            refit.first->pointsVersion = refit.second;
+            ++counters.geometryRefits;
+        }
+
+        return true;
     }
 
     Failure failure(const std::string& what,
@@ -300,6 +442,8 @@ struct GpuTracer::Implementation {
     std::uint64_t version = 0;
     bool synced = false;
     Stats counters;
+    // The geometry's submission a stopped update left running; only an update touches the geometry meanwhile.
+    GeometrySubmissionPtr inFlight;
 
     mutable std::mutex outcomeMutex;
     mutable Outcome outcome;
@@ -589,6 +733,11 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
     }
 
     const Failure stopped { Status::Stopped, "GpuTracer: the update was stopped" };
+
+    if (!imp.finishSubmission(stop, stopped)) {
+        return false;
+    }
+
     bool geometryReplaced = false;
 
     for (auto it = imp.geometries.begin(); it != imp.geometries.end();) {
@@ -605,7 +754,7 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
         GeometryEntryPtr entry;
     };
     struct PendingRefit {
-        GeometryEntry* entry;
+        GeometryEntryPtr entry;
         const UtilityScene::Geometry* source;
     };
     std::vector<PendingBuild> builds;
@@ -656,7 +805,7 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
             builds.push_back(PendingBuild { item.first, std::move(entry) });
         } else if (source.pointsVersion != existing->second->pointsVersion) {
             if (existing->second->blas) {
-                refits.push_back(PendingRefit { existing->second.get(), &source });
+                refits.push_back(PendingRefit { existing->second, &source });
             } else {
                 existing->second->pointsVersion = source.pointsVersion;
             }
@@ -670,47 +819,50 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
     });
 
     if (!builds.empty() || !refits.empty()) {
-        std::unique_ptr<gpu::GpuRecordContext> ctx;
+        GeometrySubmissionPtr job = std::make_shared<GeometrySubmission>();
+        std::vector<GeometryEntryPtr> toBuild;
+        std::vector<GeometryEntryPtr> toRefit;
 
-        if (gpu::GpuStatus s = imp.createContext(ctx); !s) {
-            return imp.abandonUpdate(imp.failure("GpuTracer could not create a record context", s));
-        }
-
-        gpu::GpuBlasOptions options;
-
-        options.allowUpdate = true;
-        options.allowCompaction = true;
         for (PendingBuild& build : builds) {
-            if (wasStopped(stop)) {
-                return imp.abandonUpdate(stopped);
-            }
-            if (gpu::GpuStatus s = gpu::GpuBlas::build(*ctx, imp.pool, build.entry->triangles(), options, build.entry->blas); !s) {
-                return imp.abandonUpdate(imp.failure("GpuTracer could not build a geometry's structure", s));
-            }
+            toBuild.push_back(build.entry);
+            job->built.emplace_back(build.id, std::move(build.entry));
         }
         for (const PendingRefit& refit : refits) {
             if (wasStopped(stop)) {
                 return imp.abandonUpdate(stopped);
             }
             std::memcpy(refit.entry->vertices.mapped(), refit.source->points.cdata(), refit.entry->pointCount * sizeof(GfVec3f));
-            if (gpu::GpuStatus s = refit.entry->blas.refit(*ctx, refit.entry->triangles()); !s) {
-                return imp.abandonUpdate(imp.failure("GpuTracer could not refit a geometry's structure", s));
-            }
+            toRefit.push_back(refit.entry);
+            job->refitted.emplace_back(refit.entry, refit.source->pointsVersion);
         }
         if (wasStopped(stop)) {
             return imp.abandonUpdate(stopped);
         }
-        if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
-            return imp.abandonSubmission("GpuTracer could not build its geometry", s);
-        }
-        for (PendingBuild& build : builds) {
-            imp.geometries[build.id] = std::move(build.entry);
-            imp.uncompacted.insert(build.id);
-            ++imp.counters.geometryBuilds;
-        }
-        for (const PendingRefit& refit : refits) {
-            refit.entry->pointsVersion = refit.source->pointsVersion;
-            ++imp.counters.geometryRefits;
+        job->submitWhat = "GpuTracer could not build its geometry";
+        job->record = [pool = &imp.pool, toBuild, toRefit](gpu::GpuRecordContext& ctx, std::string& what) -> gpu::GpuStatus {
+            gpu::GpuBlasOptions options;
+
+            options.allowUpdate = true;
+            options.allowCompaction = true;
+            for (const GeometryEntryPtr& entry : toBuild) {
+                if (gpu::GpuStatus s = gpu::GpuBlas::build(ctx, *pool, entry->triangles(), options, entry->blas); !s) {
+                    what = "GpuTracer could not build a geometry's structure";
+
+                    return s;
+                }
+            }
+            for (const GeometryEntryPtr& entry : toRefit) {
+                if (gpu::GpuStatus s = entry->blas.refit(ctx, entry->triangles()); !s) {
+                    what = "GpuTracer could not refit a geometry's structure";
+
+                    return s;
+                }
+            }
+
+            return gpu::GpuStatus();
+        };
+        if (!imp.startSubmission(std::move(job)) || !imp.finishSubmission(stop, stopped)) {
+            return false;
         }
     }
 
@@ -722,23 +874,28 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
     // Compaction gets its own submission: the copy replaces each structure as it is recorded, so it has to have
     // run before anything is built over them. A stopped update leaves the list for the next one.
     if (!imp.uncompacted.empty() && !wasStopped(stop)) {
-        std::unique_ptr<gpu::GpuRecordContext> ctx;
+        GeometrySubmissionPtr job = std::make_shared<GeometrySubmission>();
+        std::vector<GeometryEntryPtr> toCompact;
 
-        if (gpu::GpuStatus s = imp.createContext(ctx); !s) {
-            return imp.abandonUpdate(imp.failure("GpuTracer could not create a record context", s));
-        }
         for (const UtilityScene::GeometryId id : imp.uncompacted) {
-            GeometryEntry& entry = *imp.geometries[id];
+            toCompact.push_back(imp.geometries[id]);
+        }
+        job->kind = GeometrySubmission::Kind::Compaction;
+        job->submitWhat = "GpuTracer could not compact its geometry";
+        job->record = [pool = &imp.pool, device = &imp.device, toCompact](gpu::GpuRecordContext& ctx, std::string& what) -> gpu::GpuStatus {
+            for (const GeometryEntryPtr& entry : toCompact) {
+                if (gpu::GpuStatus s = entry->blas.compact(ctx, *pool); !s && classify(s, *device) != Status::OutOfMemory) {
+                    what = "GpuTracer could not compact a geometry's structure";
 
-            if (gpu::GpuStatus s = entry.blas.compact(*ctx, imp.pool); !s && classify(s, imp.device) != Status::OutOfMemory) {
-                return imp.abandonUpdate(imp.failure("GpuTracer could not compact a geometry's structure", s));
+                    return s;
+                }
             }
+
+            return gpu::GpuStatus();
+        };
+        if (!imp.startSubmission(std::move(job)) || !imp.finishSubmission(stop, stopped)) {
+            return false;
         }
-        if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
-            return imp.abandonSubmission("GpuTracer could not compact its geometry", s);
-        }
-        // A structure the pool had no room to compact into stays as built.
-        imp.uncompacted.clear();
         geometryReplaced = true;
     }
     const bool geometryRefitted = !refits.empty();

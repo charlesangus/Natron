@@ -58,6 +58,10 @@ NATRON_NAMESPACE_ENTER
  * structure is rebuilt whole whenever the instances or the geometry under them change; stats() still
  * counts a rebuild that only follows moves or refits as an instanceSceneUpdate, as EmbreeTracer does.
  *
+ * The geometry's builds, refits and compaction run on a thread of its own, since one structure's build cannot
+ * be split and on a software device takes seconds: a stop returns at once and leaves it running, for the next
+ * update() to wait for and keep. Destroying the tracer waits for it.
+ *
  * A device failure never throws. update() returns false and status() says why; a trace that fails
  * reports every ray it did not finish as a miss and records why in status(). The registry and the pool
  * must outlive the tracer.

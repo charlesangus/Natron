@@ -87,7 +87,8 @@ std::uint64_t utilityGpuBudget();
  **/
 class WavefrontGpu : public WavefrontExecutor {
 public:
-    // runtimeHold, when given, is kept by the device films the executor leaves in the render buffers.
+    // runtimeHold, when given, is kept by the device films the executor leaves in the render buffers. Creates every
+    // pipeline, which the driver compiles in the call, so it can take seconds and has no stop of its own.
     WavefrontGpu(gpu::GpuKernelRegistry& registry,
                  gpu::GpuBufferPool& pool,
                  const std::shared_ptr<void>& runtimeHold = std::shared_ptr<void>());

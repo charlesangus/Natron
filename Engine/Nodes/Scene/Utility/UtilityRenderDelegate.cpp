@@ -27,6 +27,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <stdexcept>
+#include <system_error>
+#include <thread>
 
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/stringUtils.h>
@@ -57,6 +62,9 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 std::atomic<int> gLiveDelegates { 0 };
+
+// How often a frame waiting for the GPU executor to compile its kernels looks at its cancel flag.
+const std::chrono::milliseconds kGpuExecutorPoll(20);
 
 std::string
 settingText(const VtValue& value)
@@ -122,6 +130,23 @@ UtilityRenderParam::executor() const
     return _executor;
 }
 
+#ifdef NATRON_HAVE_GPU
+/**
+ * @brief An executor being made on a thread of its own: the driver compiles every kernel as the executor creates
+ * it, which on a software device takes seconds, and a frame stopped meanwhile must not wait for that.
+ **/
+struct UtilityRenderParam::PendingGpu {
+    std::mutex mutex;
+    std::condition_variable cond;
+    bool finished = false;
+    std::unique_ptr<WavefrontGpu> executor;
+    std::shared_ptr<void> hold;
+    // What the executor threw while being made, when it was not.
+    std::string failure;
+    std::thread thread;
+};
+#endif
+
 WavefrontGpu*
 UtilityRenderParam::gpuExecutor(std::string* unavailable)
 {
@@ -132,33 +157,82 @@ UtilityRenderParam::gpuExecutor(std::string* unavailable)
         }
         dropGpuExecutor();
     }
+    if (!_gpuPending) {
+        UtilityGpu gpu = acquireUtilityGpu(&_cancel);
 
-    UtilityGpu gpu = acquireUtilityGpu(&_cancel);
+        if (!gpu.runtime) {
+            *unavailable = gpu.unavailable;
 
-    if (!gpu.runtime) {
-        *unavailable = gpu.unavailable;
+            return nullptr;
+        }
 
-        return nullptr;
+        const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime);
+
+        if (!missing.empty()) {
+            *unavailable = missing;
+
+            return nullptr;
+        }
+
+        std::shared_ptr<PendingGpu> pending = std::make_shared<PendingGpu>();
+        auto* const runtime = gpu.runtime;
+
+        pending->hold = gpu.hold;
+        try {
+            pending->thread = std::thread([pending, runtime]() {
+                std::unique_ptr<WavefrontGpu> executor;
+                std::string failure;
+
+                try {
+                    executor.reset(new WavefrontGpu(runtime->registry(), runtime->pool(), pending->hold));
+                } catch (const std::exception& e) {
+                    failure = e.what();
+                }
+                {
+                    const std::lock_guard<std::mutex> l(pending->mutex);
+
+                    pending->executor = std::move(executor);
+                    pending->failure = failure;
+                    pending->finished = true;
+                }
+                pending->cond.notify_all();
+            });
+        } catch (const std::system_error& e) {
+            *unavailable = std::string("the GPU executor could not start: ") + e.what();
+
+            return nullptr;
+        }
+        _gpuPending = std::move(pending);
+    }
+    {
+        std::unique_lock<std::mutex> l(_gpuPending->mutex);
+
+        while (!_gpuPending->finished) {
+            if (_cancel.load()) {
+                *unavailable = "the frame was stopped while the GPU executor was compiling its kernels";
+
+                return nullptr;
+            }
+            _gpuPending->cond.wait_for(l, kGpuExecutorPoll);
+        }
+    }
+    _gpuPending->thread.join();
+
+    const std::shared_ptr<PendingGpu> pending = std::move(_gpuPending);
+
+    if (!pending->executor) {
+        throw std::runtime_error("The Utility renderer could not make its GPU executor: " + pending->failure);
     }
 
-    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime);
-
-    if (!missing.empty()) {
-        *unavailable = missing;
-
-        return nullptr;
-    }
-
-    std::unique_ptr<WavefrontGpu> executor(new WavefrontGpu(gpu.runtime->registry(), gpu.runtime->pool(), gpu.hold));
-    const Tracer::Outcome outcome = executor->status();
+    const Tracer::Outcome outcome = pending->executor->status();
 
     if (outcome.status != Tracer::Status::Ok) {
         *unavailable = outcome.message;
 
         return nullptr;
     }
-    _gpuHold = gpu.hold;
-    _gpu = std::move(executor);
+    _gpuHold = pending->hold;
+    _gpu = std::move(pending->executor);
 
     return _gpu.get();
 #else
@@ -172,6 +246,10 @@ void
 UtilityRenderParam::dropGpuExecutor()
 {
 #ifdef NATRON_HAVE_GPU
+    if (_gpuPending) {
+        _gpuPending->thread.join();
+        _gpuPending.reset();
+    }
     _gpu.reset();
 #endif
     _gpuHold.reset();

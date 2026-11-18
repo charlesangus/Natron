@@ -161,7 +161,8 @@ public:
      * @brief The GPU's executor, made on the first call after none or a dropped one, so that a
      * delegate made only to list its settings never touches the device. Null when the GPU cannot
      * render, with unavailable saying why, and null too when cancelFlag() was set while the application's
-     * GPU was still starting, which the caller tells by the flag. Only the frame thread may call this or dropGpuExecutor(),
+     * GPU was still starting or the executor still compiling its kernels, which the caller tells by the flag: the
+     * compilation goes on, for the next call to wait for. Only the frame thread may call this or dropGpuExecutor(),
      * and the executor lives until dropGpuExecutor() or the param goes.
      **/
     WavefrontGpu* gpuExecutor(std::string* unavailable);
@@ -257,6 +258,8 @@ private:
     std::shared_ptr<void> _gpuHold;
 #ifdef NATRON_HAVE_GPU
     std::unique_ptr<WavefrontGpu> _gpu;
+    struct PendingGpu;
+    std::shared_ptr<PendingGpu> _gpuPending;
 #endif
     bool _gpuFallback = false;
     std::uint64_t _gpuFallbackVersion = 0;

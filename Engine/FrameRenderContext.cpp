@@ -41,7 +41,7 @@ NATRON_NAMESPACE_ENTER
 bool
 FrameStore::TaskKey::operator==(const TaskKey& other) const
 {
-    return node == other.node && time == other.time && view == other.view && mipmapLevel == other.mipmapLevel && contextKey == other.contextKey;
+    return node == other.node && time == other.time && view == other.view && mipmapLevel == other.mipmapLevel && contextKey == other.contextKey && generation == other.generation;
 }
 
 std::size_t
@@ -56,6 +56,9 @@ FrameStore::TaskKeyHash::operator()(const TaskKey& key) const
     h ^= std::hash<unsigned int>()(key.mipmapLevel) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     if (key.contextKey != 0) {
         h ^= std::hash<U64>()(key.contextKey) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    }
+    if (key.generation != 0) {
+        h ^= std::hash<int>()(key.generation) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     }
 
     return h;
@@ -399,6 +402,37 @@ FrameStore::release(const TaskKey& key)
     }
 }
 
+bool
+FrameStore::retain(const TaskKey& key,
+                   const std::list<ImageLayerDesc>& needed,
+                   const RectI& pixelRoI,
+                   int count)
+{
+    if (count <= 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> k(_entriesMutex);
+    EntryMap::iterator found = _entries.find(key);
+    if ((found == _entries.end()) || !found->second) {
+        return false;
+    }
+    Entry& entry = *found->second;
+    if ((entry.consumersLeft <= 0) || !entry.bounds.contains(pixelRoI) || !entry.renderedRoI.contains(pixelRoI)) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> layersLock(entry.lock);
+        for (std::list<ImageLayerDesc>::const_iterator it = needed.begin(); it != needed.end(); ++it) {
+            if ((findExactLayer(entry.layers, *it) == entry.layers.end()) && (findExactLayer(entry.deviceLayers, *it) == entry.deviceLayers.end())) {
+                return false;
+            }
+        }
+    }
+    entry.consumersLeft += count;
+
+    return true;
+}
+
 std::size_t
 FrameStore::bytesInFlight() const
 {
@@ -473,7 +507,9 @@ FrameRenderContext::FrameRenderContext()
     , _stats()
     , _time(0.)
     , _view(0)
-    , _store()
+    , _parent()
+    , _storeGenerations(1, 0)
+    , _store(std::make_shared<FrameStore>())
     , _isolatedJob(IsolatedJob::current())
     , _recordsRenderedNodes(false)
     , _renderedMutex()
@@ -483,6 +519,32 @@ FrameRenderContext::FrameRenderContext()
     , _rootDeviceMutex()
     , _rootDevicePlanes()
     , _deviceTierGeneration(CacheDeviceTier::purgeGeneration())
+#endif
+{
+}
+
+FrameRenderContext::FrameRenderContext(const FrameRenderContextPtr& parent)
+    : _argsMap()
+    , _argsByHolder()
+    , _rotoPaintTreeNodes()
+    , _freshOutputFrameId(parent->_freshOutputFrameId)
+    , _request()
+    , _abortInfo(parent->_abortInfo)
+    , _stats(parent->_stats)
+    , _time(parent->_time)
+    , _view(parent->_view)
+    , _parent(parent)
+    , _storeGenerations()
+    , _store(parent->_store)
+    , _isolatedJob(parent->_isolatedJob)
+    , _recordsRenderedNodes(false)
+    , _renderedMutex()
+    , _renderedNodes()
+#ifdef NATRON_HAVE_GPU
+    , _wantsRootOnDevice(false)
+    , _rootDeviceMutex()
+    , _rootDevicePlanes()
+    , _deviceTierGeneration(parent->_deviceTierGeneration)
 #endif
 {
 }
@@ -500,6 +562,11 @@ FrameRenderContext::setRecordsRenderedNodes(bool records)
 void
 FrameRenderContext::noteNodeRendered(const Node* node) const
 {
+    if (_parent) {
+        _parent->noteNodeRendered(node);
+
+        return;
+    }
     if (!node || !_recordsRenderedNodes.load(std::memory_order_acquire)) {
         return;
     }
@@ -591,6 +658,45 @@ FrameRenderContext::createFromSetter(const ParallelRenderArgsSetter& setter,
     ret->_stats = stats;
     ret->_argsMap = setter.getInstalledArgs();
     ret->indexArgs();
+
+    return ret;
+}
+
+FrameRenderContextPtr
+FrameRenderContext::createExtension(const FrameRenderContextPtr& parent,
+                                    const std::shared_ptr<FrameRequestMap>& request,
+                                    int generation)
+{
+    if (!parent || !request) {
+        return FrameRenderContextPtr();
+    }
+    FrameRenderContextPtr ret(new FrameRenderContext(parent));
+
+    ret->_storeGenerations.push_back(generation);
+    ret->_storeGenerations.insert(ret->_storeGenerations.end(), parent->_storeGenerations.begin(), parent->_storeGenerations.end());
+    // Copies, so that pointing them at the extension's entries leaves the args the planned tasks read alone.
+    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = parent->_argsMap.begin(); it != parent->_argsMap.end(); ++it) {
+        ret->_argsMap[it->first] = it->second ? std::make_shared<ParallelRenderArgs>(*it->second) : ParallelRenderArgsPtr();
+    }
+    ret->indexArgs();
+    const std::shared_ptr<FrameRequestMap>& planned = parent->_request;
+    if (planned && planned->contextArgs && !request->contextArgs) {
+        request->contextArgs = std::make_shared<ContextFrameArgsMap>();
+    }
+    ret->setRequest(request);
+    if (request->contextArgs) {
+        if (planned && planned->contextArgs) {
+            for (ContextFrameArgsMap::const_iterator it = planned->contextArgs->begin(); it != planned->contextArgs->end(); ++it) {
+                request->contextArgs->insert(*it);
+            }
+        }
+        // A consumer the extension did not reach still pulls the contexts the extension planned.
+        for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = ret->_argsMap.begin(); it != ret->_argsMap.end(); ++it) {
+            if (it->second) {
+                it->second->contextArgs = request->contextArgs;
+            }
+        }
+    }
 
     return ret;
 }

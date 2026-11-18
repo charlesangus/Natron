@@ -164,6 +164,36 @@ TEST_F(OverlayPathTest, DownstreamViewMapsThroughTheTransform)
     expectTranslation(result, 10., 0.);
 }
 
+TEST_F(OverlayPathTest, PartlyMixedTransformMovesTheOverlayFully)
+{
+    NodePtr read = constant();
+    NodePtr rotoNode = roto(read);
+    NodePtr transform = translate(rotoNode, 10.);
+    NodePtr viewer = viewerOf(transform);
+    ASSERT_TRUE(read && transform && rotoNode && viewer);
+    setDouble(transform, kOfxMixParamName, 0.5, 0);
+
+    const OverlayPathResult result = resolve(viewer, rotoNode);
+    EXPECT_EQ(OverlayPathRelation::eDownstream, result.relation);
+    EXPECT_TRUE(result.visible);
+    expectTranslation(result, 10., 0.);
+}
+
+TEST_F(OverlayPathTest, UnmixedTransformLeavesTheOverlay)
+{
+    NodePtr read = constant();
+    NodePtr rotoNode = roto(read);
+    NodePtr transform = translate(rotoNode, 10.);
+    NodePtr viewer = viewerOf(transform);
+    ASSERT_TRUE(read && transform && rotoNode && viewer);
+    setDouble(transform, kOfxMixParamName, 0., 0);
+
+    const OverlayPathResult result = resolve(viewer, rotoNode);
+    EXPECT_EQ(OverlayPathRelation::eDownstream, result.relation);
+    EXPECT_TRUE(result.visible);
+    expectTranslation(result, 0., 0.);
+}
+
 TEST_F(OverlayPathTest, SiblingMapsThroughTheSharedAncestor)
 {
     NodePtr read = constant();

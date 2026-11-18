@@ -67,10 +67,11 @@ struct OverlayPathResult {
  *
  * viewed may be a viewer node, whose inputs are then the nodes it shows. Inputs are tried
  * non-optional before optional, last to first, and that order also breaks ties between routes.
- * The graph path between the two nodes composes each node's getTransform matrix (draft mode) and
- * maps time through each node's getFramesNeeded: forward along the legs the viewer reads, inverted
- * along the legs that lead from the overlay node down to a shared ancestor. A node whose needed
- * frame is one constant frame is a hold, visible only while the time reaching it is that frame.
+ * The graph path between the two nodes composes each node's getOverlayTransform matrix (draft
+ * mode) and maps time through each node's getFramesNeeded: forward along the legs the viewer
+ * reads, inverted along the legs that lead from the overlay node down to a shared ancestor. A node
+ * whose needed frame is one constant frame is a hold, visible only while the time reaching it is
+ * that frame.
  * Disabled nodes are identity, and a Group overlay node resolves through its output node's input.
  * With mapSiblings false a sibling overlay stays in its own canonical space, as an unrelated one
  * always does.

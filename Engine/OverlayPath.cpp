@@ -220,7 +220,7 @@ public:
             *transformedInput = EffectInstancePtr();
         }
         // Draft mode, so a motion-blurred transform still reports its matrix.
-        *status = node->getTransform_public(time, RenderScale::identity, true, _view, &input, &mat);
+        *status = node->getOverlayTransform_public(time, RenderScale::identity, true, _view, &input, &mat);
         if (*status != eStatusOK) {
             return Transform::Matrix3x3();
         }
@@ -235,7 +235,7 @@ public:
         const NodeMetadataConstPtr metadata = input->getMetadata(time, _view);
         const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
 
-        // getTransform answers in pixel coordinates.
+        // getOverlayTransform answers in pixel coordinates.
         mat = Transform::matMul(Transform::matPixelToCanonical(par, 1, 1, false), mat);
 
         return Transform::matMul(mat, Transform::matCanonicalToPixel(par, 1, 1, false));

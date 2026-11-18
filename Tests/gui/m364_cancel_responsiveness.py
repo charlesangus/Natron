@@ -18,7 +18,8 @@ ahead of the paint): on software GL one frame of this scene takes most of a seco
 was edited since, and the GUI thread waits it out, in the paint that draws it or, behind a frame
 drawn ahead, when it next composes the window. The frames are checked instead: the first one after
 the switch may cost at most a steady Storm frame plus 100 ms, so catch-up work inside it still counts. The steady
-frame is the costliest of three synchronous repaints after the switch, with the heartbeat stopped.
+frame is the costliest of the frames the render thread draws for a few small camera tumbles after the
+switch, each waited for from the event loop, with the heartbeat stopped.
 The Renderer entry's trigger, which switches the renderer and lays the view out on the GUI thread,
 is timed on its own too and must cost under 100 ms, the Storm frames it draws aside, so a switch's
 own cost is told apart from the menu work around it. The screenshot is taken after the heartbeat
@@ -75,6 +76,9 @@ HEARTBEAT_MS = 5
 # Phases whose gaps count without the Storm frames drawn in them, which are checked on their own.
 STORM_FRAMES_EXCLUDED = ("switch to Storm",)
 STALL_LIMIT_MS = 100.0
+# Camera tumbles, back and forth, each drawing one steady Storm frame, and their length in pixels.
+STEADY_NUDGES = 4
+STEADY_NUDGE_PX = 6
 FIRST_SAMPLES = 5
 SECOND_SAMPLES = 9
 FINAL_SAMPLES = 13
@@ -90,7 +94,8 @@ INITIAL_DRAW_FULL_LOAD = 4
 GRID_SPACING = 11.0
 
 try:
-    from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
+    import NatronEngine
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QContextMenuEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -408,16 +413,39 @@ try:
         return {name: round(gap, 1) for name, gap in beat["max"].items() if gap >= STALL_LIMIT_MS}
 
     def steady_storm_frame_ms():
-        """The costliest Storm frame of three synchronous repaints of the view, as the view
-        measures its frames, with the heartbeat stopped so they count against no phase; None if
-        none of them drew."""
+        """The costliest of the Storm frames the render thread draws for STEADY_NUDGES small
+        camera tumbles, back and forth, each waited for from the event loop (a paint never draws a
+        frame, and a view that has not changed asks for none), with the heartbeat stopped so they
+        count against no phase; None if none of them drew."""
         timer.stop()
-        since = time.time() * 1000.0
-        for _ in range(3):
-            view().repaint()
-        costs = [ms for start, ms in storm_frames() if start >= since]
-        beat["last"] = None
-        timer.start()
+        navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
+        original = navigation.getValue() if navigation is not None else None
+        if navigation is not None:
+            navigation.setValue(1)
+        v = view()
+        costs = []
+        try:
+            centre = v.rect().center()
+
+            def mouse(kind, pos, button, buttons):
+                event = QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.AltModifier)
+                QApplication.sendEvent(v, event)
+
+            for i in range(STEADY_NUDGES):
+                since = time.time() * 1000.0
+                offset = QPoint(STEADY_NUDGE_PX if i % 2 == 0 else -STEADY_NUDGE_PX, 0)
+                mouse(QEvent.MouseButtonPress, centre, Qt.LeftButton, Qt.LeftButton)
+                mouse(QEvent.MouseMove, centre + offset, Qt.NoButton, Qt.LeftButton)
+                mouse(QEvent.MouseButtonRelease, centre + offset, Qt.LeftButton, Qt.NoButton)
+                ok = yield ("until", lambda: any(start >= since for start, ms in storm_frames()), POLL_TIMEOUT_S)
+                if not ok:
+                    break
+                costs.append(max(ms for start, ms in storm_frames() if start >= since))
+        finally:
+            if navigation is not None:
+                navigation.setValue(original)
+            beat["last"] = None
+            timer.start()
         return max(costs) if costs else None
 
     def steps():
@@ -485,7 +513,7 @@ try:
         if ok:
             after_switch = [ms for start, ms in storm_frames() if start >= switched_ms]
             first_ms = after_switch[0] if after_switch else None
-            steady_ms = steady_storm_frame_ms()
+            steady_ms = yield from steady_storm_frame_ms()
             settle()
             report("NOTE the switch's longest gap, frames included, was %.1f ms, and %d Storm frame(s) ran "
                    "in one gap at most" % (beat["raw_max"].get("switch to Storm", 0.0), beat["paints_in_gap"]))

@@ -37,12 +37,12 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
 
 ## Phase 153.1: Engine chain
 
-- [ ] M153.P1.T1 — InverseWarpMap and InverseWarpChain types
+- [x] M153.P1.T1 — InverseWarpMap and InverseWarpChain types
   - files: new `Engine/InverseWarpChain.{h,cpp}`, new `Tests/Native/InverseWarpChain_Test.cpp`
   - approach: `InverseWarpMap` is immutable, with `mapRow(n, sx, sy, J)` working in place, in the provider's output pixels at render scale (pixel centres +0.5). It gives its input pixels, applies J ← D·J when J is set, and writes NaN for no source. Its `pullBack(RectD canonical, filterSupport)` grows the region by the support times its largest kernel scale. A chain is a list of steps, downstream to upstream. Neighbouring matrices are multiplied into one step, and matrix steps reuse the `mapRowThrough` maths (moved here, passing NaN through). `prepare(window)` gives each step its window by pulling back the previous one.
   - verify: gtest. An analytic swirl ∘ matrix ∘ barrel matches the closed form within 1e-6. J matches finite differences within 1e-4. NaN survives every step. pullBack contains every mapped point.
   - size: L
-- [ ] M153.P1.T2 — Concatenation finds map providers
+- [x] M153.P1.T2 — Concatenation finds map providers
   - files: `Engine/EffectInstance.{h,cpp}` (`tryConcatenateTransforms`), `Engine/Node.cpp` (a cached flag next to `getCurrentCanTransform`), `Engine/ParallelRenderArgs.h` (`InputMatrix`), new `Tests/WarpChainTestEffects.h` (added to `Tests_HEADERS`), new `Tests/WarpChainConcat_Test.cpp`
   - approach: add virtuals `canOfferInverseWarp(time, view, draft)` (decided from knobs only), `getInverseWarpMap(time, view, scale, draft, window)` and `acceptsInverseWarpChain(inputNb, time, view)`, all defaulting to false or null. The walk passes a provider only when the consumer accepts. `InputMatrix` gains `warpChain`, and `cat` is set only for all-matrix chains, so the matrix path is untouched. `getConcatenatedWarpChain(inputNb)` reads the TLS redirections, so `getImage` keeps its signature. GPU tasks already fall back through `hasConcatenatedInput` (`GpuPlacement.cpp`).
   - verify: gtest with test provider and consumer effects:
@@ -52,7 +52,7 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
     - A Transform→Transform `cat` is bit-identical to today's.
     - `NativeTransform_Test` ChainConcatenates passes.
   - size: L
-- [ ] M153.P1.T3 — RoI through the chain
+- [x] M153.P1.T3 — RoI through the chain
   - files: `Engine/EffectInstance.cpp` (`transformInputRois`), `Engine/ParallelRenderArgs.cpp` (the request pass), `Tests/WarpChainConcat_Test.cpp`
   - approach: matrix steps keep `transformRegionFromRoD`. Map steps call `pullBack` with the consumer's filter support, and the RoI goes to the last step's input. The request pass, which concatenates without a window today, builds the maps it needs.
   - verify: gtest. The RoI the request pass sends to the source equals the composed pullback, and is strictly smaller than the source RoD for a cropped window.
@@ -147,3 +147,4 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
 - 2026-11-17 — **Image-driven providers are a follow-up on M179 (user):** IDistort, STMap and IWarp as chain providers need M179's probe → extend → continue, since their source footprint is known only after their UV image renders. They go to /cat-plan as a new milestone; in M153 they are consumers only.
 - 2026-11-17 — Phase 153.4 GPU (consultant): chains reach GPU tasks through their render arguments, built over the task rect, not through TLS. Matrix-only chains fold into the existing resample matrices and keep the exact and blur kernels. Map chains sample through `coordmap.slang`'s `sampleAt`, mirroring the CPU `resampleRowFromCoords`. Step maths uses the same two-float arithmetic as splinewarp.slang and lensmodels.slang. Node kernels are extended, not replaced, keeping mask, mix and premult. PM call: map chains ending in impulse or box follow `resampleRowFromCoords` rather than the matrix path's exact floor rule, as on the CPU. A chain over the scratch limit renders on the CPU.
 - 2026-11-18 — Started: branch rebased onto feature/f25-overlay-flow (2ae2d807b = main + M433), since M153 reuses M433's maps; it PRs into main once F25 lands (or retargets onto F25 if F25 is still open when M153 is ready). Phase 153.1 dispatched as one unit.
+- 2026-11-18 — Phase 153.1 in 94faa7c24, gate running. Deviations: canOfferInverseWarp returns the input it samples (int* inputNb); added getCanInverseWarp() (cached capability) and getInverseWarpChainFilterSupport() (consumer filter support); mask/mix ≠ 1 declining is each provider's canOfferInverseWarp (P2). mapRowThroughMatrix replaces SplineWarp's local mapRowThrough; a point at or behind infinity now gives NaN (black) instead of -1e9, matching the matrix resample path. Only M433's OverlayPointMap::sampleGrid is reused (M433's maps are canonical, scale 1, no Jacobian).

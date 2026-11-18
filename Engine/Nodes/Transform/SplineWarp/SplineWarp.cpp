@@ -2014,6 +2014,9 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         fields.push_back(field ? field : std::make_shared<const SplineWarpField>());
     }
     const InverseWarpChainConstPtr chain = (sourceInput >= 0) ? getPreparedWarpChain(sourceInput, args.time, args.view, args.mappedScale, PassExec::toCanonical(roi, args.mappedScale, par)) : InverseWarpChainConstPtr();
+    if (chain && chain->hasError()) {
+        return eStatusFailed;
+    }
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
     // into a cached image this render would otherwise already hold a read lock on.

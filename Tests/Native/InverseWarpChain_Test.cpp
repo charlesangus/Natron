@@ -30,6 +30,7 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -505,4 +506,42 @@ TEST(InverseWarpChain, PullBackOfInfiniteAndNullRegions)
     // Every point outside the barrel's domain has no source, so nothing is pulled back.
     const BarrelMap barrel;
     EXPECT_TRUE(barrel.pullBack(RectD(kBarrelCx + 300., kBarrelCy + 300., kBarrelCx + 340., kBarrelCy + 320.), 1.).isNull());
+}
+
+// A map over an infinite or non-finite window is never built: the prepared chain carries the
+// error, maps nothing and pulls back nothing, whether the window is given or reached through a
+// matrix.
+TEST(InverseWarpChain, InfiniteWindowIsAnErrorBeforeAnyMapIsBuilt)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const RectD infinite(kOfxFlagInfiniteMin, kOfxFlagInfiniteMin, kOfxFlagInfiniteMax, kOfxFlagInfiniteMax);
+    const RectD windows[] = { infinite, RectD(0., 0., std::numeric_limits<double>::infinity(), 10.), RectD(nan, 0., 10., 10.) };
+
+    for (int matrixFirst = 0; matrixFirst < 2; ++matrixFirst) {
+        for (const RectD& window : windows) {
+            int built = 0;
+            InverseWarpChain chain(RenderScale::identity, 1.);
+            if (matrixFirst) {
+                chain.appendMatrix(forwardMatrix());
+            }
+            chain.appendMap(InverseWarpChain::MapFactory([&built](const RectD&) {
+                ++built;
+
+                return InverseWarpMapConstPtr(std::make_shared<SwirlMap>());
+            }));
+            const InverseWarpChain prepared = chain.prepare(window, 2.);
+            EXPECT_TRUE(prepared.hasError());
+            EXPECT_EQ(InverseWarpChain::getInfiniteWindowError(), prepared.getError());
+            EXPECT_EQ(0, built);
+            EXPECT_TRUE(prepared.getSourceRegion().isNull());
+            double x = 3.5;
+            double y = 4.5;
+            prepared.mapRow(1, &x, &y, NULL);
+            EXPECT_TRUE(std::isnan(x) && std::isnan(y));
+        }
+    }
+
+    InverseWarpChain finite(RenderScale::identity, 1.);
+    finite.appendMap(std::make_shared<SwirlMap>());
+    EXPECT_FALSE(finite.prepare(RectD(0., 0., 10., 10.), 2.).hasError());
 }

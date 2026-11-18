@@ -36,6 +36,12 @@ NATRON_NAMESPACE_ENTER
 namespace {
 // Grid points per axis pullBack() samples at most, which bounds its cost on large windows.
 const double kPullBackSamplesPerAxis = 128.;
+
+bool
+isFiniteRegion(const RectD& r)
+{
+    return std::isfinite(r.x1) && std::isfinite(r.y1) && std::isfinite(r.x2) && std::isfinite(r.y2) && !r.isInfinite();
+}
 } // namespace
 
 namespace InverseWarp {
@@ -129,7 +135,7 @@ InverseWarpMap::pullBack(const RectD& canonical,
     if (canonical.isNull()) {
         return RectD();
     }
-    if (canonical.isInfinite()) {
+    if (!isFiniteRegion(canonical)) {
         return RectD(kOfxFlagInfiniteMin, kOfxFlagInfiniteMin, kOfxFlagInfiniteMax, kOfxFlagInfiniteMax);
     }
     const RectD pixel = canonicalToPixel(canonical);
@@ -226,6 +232,11 @@ MatrixInverseWarpMap::pullBack(const RectD& canonical,
     if (!_invertible || canonical.isNull()) {
         return RectD();
     }
+    // Corners at the infinity flags or NaN would transform into a finite-looking region that a
+    // map further upstream would then be built over.
+    if (!isFiniteRegion(canonical)) {
+        return RectD(kOfxFlagInfiniteMin, kOfxFlagInfiniteMin, kOfxFlagInfiniteMax, kOfxFlagInfiniteMax);
+    }
     const OfxPointD s = getScale().toOfxPointD();
     const Transform::Matrix3x3 canonicalToPixel = Transform::matCanonicalToPixel(getPixelAspectRatio(), s.x, s.y, false);
     const Transform::Matrix3x3 pixelToCanonical = Transform::matPixelToCanonical(getPixelAspectRatio(), s.x, s.y, false);
@@ -290,6 +301,15 @@ InverseWarpChain::hasMapStep() const
     return false;
 }
 
+const std::string&
+InverseWarpChain::getInfiniteWindowError()
+{
+    static const std::string error = "A warp concatenated into this node would be built over an infinite region. "
+                                     "Give the image upstream of the warps a finite region of definition, for instance with a Crop.";
+
+    return error;
+}
+
 InverseWarpChain
 InverseWarpChain::prepare(const RectD& window,
                           double filterSupport) const
@@ -298,9 +318,22 @@ InverseWarpChain::prepare(const RectD& window,
 
     prepared._windows.clear();
     prepared._windows.reserve(prepared._steps.size());
+    prepared._error.clear();
     RectD region = window;
     for (Step& step : prepared._steps) {
         prepared._windows.push_back(region);
+        // A map over an infinite region would be built or sampled at a size nothing can hold;
+        // the region of definition upstream has to be finite, which only the user can make it.
+        if (prepared.hasError() || ((step.kind == eStepMap) && !region.isNull() && !isFiniteRegion(region))) {
+            if (!prepared.hasError()) {
+                prepared._error = getInfiniteWindowError();
+            }
+            if (step.kind == eStepMap) {
+                step.map.reset();
+            }
+            region = RectD();
+            continue;
+        }
         if (step.factory) {
             step.map = region.isNull() ? InverseWarpMapConstPtr() : step.factory(region);
         }

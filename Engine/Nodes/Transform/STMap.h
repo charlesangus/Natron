@@ -192,6 +192,22 @@ private:
      * @brief Accepts what the stages accept in float, when U and V resolve to one layer of 1 to 4
      * channels or to none, and so does the Map's channel.
      **/
+    /**
+     * @brief The Source takes warps concatenated upstream, each wrapped coordinate taken on
+     * through them, when the stages never read the Source under the output pixel: no mask, a
+     * mix of 1 and every channel processed, as they would read the image upstream of the warps.
+     **/
+    virtual bool acceptsInverseWarpChain(int inputNb,
+                                         double time,
+                                         ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual double getInverseWarpChainFilterSupport(int inputNb,
+                                                    double time,
+                                                    ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
+                                                             ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;

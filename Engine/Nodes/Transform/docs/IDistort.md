@@ -36,8 +36,12 @@ whole displacement applies and the output is bit for bit the node's without the 
 - The Jacobian takes the Map's gradient with the UV's, from the same neighbouring coordinates, so
   the Map is read one pixel past the render window. A hard Map edge between black and white tears
   the image along it when the displacement is large; soften the Map to bend the image instead.
-- IDistort is a per-pixel warp: it never concatenates with transforms above or below it, and each
-  of those resamples the image on its own.
+- IDistort is a per-pixel warp and offers nothing to concatenate, so a transform below it resamples
+  the image again. Transforms and warps above the Source (Transform, CornerPin, SplineWarp,
+  LensDistortion) fold into its resample: each displaced coordinate is taken on through them and
+  the image above them is sampled once. The Source is then read where they pull its whole region
+  back to. A warp above it over an infinite region of definition fails the render with an error;
+  crop the image above the warp.
 - The GPU reads the Map as an extra input and remaps it with `mapremap.slang`, the CPU's remap
   operation for operation.
 

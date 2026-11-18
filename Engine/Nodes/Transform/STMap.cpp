@@ -40,6 +40,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -831,6 +832,15 @@ STMap::renderOp(const RenderActionArgs& args,
     RectI domain;
     const bool hasDomain = getSourceDomain(args.time, args.view, args.mappedScale, &domain);
 
+    // With warps concatenated into the Source, the image fetched is upstream of them: each
+    // coordinate is wrapped in this node's Source as ever, then taken on through them.
+    const NodeMetadataConstPtr metadata = getRenderMetadata(args.time, args.view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    const InverseWarpChainConstPtr chain = hasDomain ? getPreparedWarpChain(kSTMapInputSource, args.time, args.view, args.mappedScale, PassExec::toCanonical(args.roi, args.mappedScale, par)) : InverseWarpChainConstPtr();
+    if (chain && chain->hasError()) {
+        return eStatusFailed;
+    }
+
     // The Map, copied out over the window grown by one pixel, for the Jacobians, before any image
     // is locked: fetching renders upstream.
     const bool mapped = hasDomain && getInput(kSTMapInputMap);
@@ -944,6 +954,35 @@ STMap::renderOp(const RenderActionArgs& args,
             }
         }
         const bool sampled = (bool)src;
+        const bool chained = sampled && chain;
+
+        // n coordinates (sx, sy) of this node's Source, with Jacobians J (null for the identity),
+        // wrapped unless wrap is false, through the chain and sampled into out.
+        const auto sampleThroughChain = [&](const float* sx, const float* sy, const float* J, int n, bool wrap, float* out) {
+            std::vector<double> chainX(n), chainY(n), chainJ(jacobians ? (std::size_t)n * 4 : 0);
+            for (int i = 0; i < n; ++i) {
+                chainX[i] = sx[i];
+                chainY[i] = sy[i];
+            }
+            for (std::size_t k = 0; k < chainJ.size(); ++k) {
+                chainJ[k] = J ? (double)J[k] : (((k % 4) == 0) || ((k % 4) == 3) ? 1. : 0.);
+            }
+            double* const cj = chainJ.empty() ? NULL : chainJ.data();
+            if (wrap) {
+                Resampler::wrapRow(chainX.data(), chainY.data(), cj, n, settings.wrapU, settings.wrapV, domain);
+            }
+            chain->mapRow(n, chainX.data(), chainY.data(), cj);
+            std::vector<float> fx(n), fy(n), fj(chainJ.size());
+            for (int i = 0; i < n; ++i) {
+                fx[i] = (float)chainX[i];
+                fy[i] = (float)chainY[i];
+            }
+            for (std::size_t k = 0; k < chainJ.size(); ++k) {
+                fj[k] = (float)chainJ[k];
+            }
+            Resampler::resampleRowFromCoords(source, fx.data(), fy.data(), fj.empty() ? NULL : fj.data(), n, settings.filter, settings.clamp, settings.edgeMode,
+                                             Resampler::eWrapNone, Resampler::eWrapNone, out, nComps);
+        };
 
         const auto row = [&](const RowIO& io) {
             const int n = io.width + 2;
@@ -992,9 +1031,13 @@ STMap::renderOp(const RenderActionArgs& args,
                     Resampler::coordJacobiansWithinBounds(&sx[0], &sx[n], &sx[2 * n], &sy[0], &sy[n], &sy[2 * n], io.x0 - 1, io.y, n,
                                                           uvEdgeBounds(uvPlanes[0]), uvEdgeBounds(uvPlanes[1]), 0., 0., &jacobian[0]);
                 }
-                Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
-                                                 settings.filter, settings.clamp, settings.edgeMode, settings.wrapU, settings.wrapV,
-                                                 &out[0], io.nComps, &domain);
+                if (chained) {
+                    sampleThroughChain(&sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width, true, &out[0]);
+                } else {
+                    Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
+                                                     settings.filter, settings.clamp, settings.edgeMode, settings.wrapU, settings.wrapV,
+                                                     &out[0], io.nComps, &domain);
+                }
                 if (gated) {
                     std::vector<float> alphaRow(io.width);
                     alphaPlane.readRow(io.x0, io.y, io.width, &alphaRow[0]);
@@ -1008,12 +1051,21 @@ STMap::renderOp(const RenderActionArgs& args,
                 if (mapped) {
                     // Where the Map is 0 the output is the Source pixel itself, never resampled
                     // through the wrap, which would move positions outside the Source format.
+                    std::vector<float> held;
+                    if (chained) {
+                        std::vector<float> cx(io.width), cy(io.width, (float)io.y + 0.5f);
+                        for (int i = 0; i < io.width; ++i) {
+                            cx[i] = (float)(io.x0 + i) + 0.5f;
+                        }
+                        held.resize((std::size_t)io.width * io.nComps);
+                        sampleThroughChain(cx.data(), cy.data(), NULL, io.width, false, held.data());
+                    }
                     for (int i = 0; i < io.width; ++i) {
                         if (mapPlane.at(io.x0 + i, io.y) != 0.f) {
                             continue;
                         }
                         float* dst = &out[(std::size_t)i * io.nComps];
-                        const float* pix = source.pixel(io.x0 + i, io.y);
+                        const float* pix = chained ? &held[(std::size_t)i * io.nComps] : source.pixel(io.x0 + i, io.y);
                         if (pix) {
                             std::copy(pix, pix + io.nComps, dst);
                         } else {
@@ -1075,10 +1127,38 @@ STMap::resolveGpuUVLayer(double time,
 }
 
 bool
+STMap::acceptsInverseWarpChain(int inputNb,
+                               double time,
+                               ViewIdx view) const
+{
+    if (inputNb != kSTMapInputSource) {
+        return false;
+    }
+    const ResampleRegionStages stages = getResampleRegionStages(time, view);
+
+    return !stages.doMasking && (stages.mix == 1.) && !stages.readsUnprocessed;
+}
+
+double
+STMap::getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                        double time,
+                                        ViewIdx view) const
+{
+    return Resampler::filterRoIExpansion(_filterKnobs.read(time, view)) + 0.5;
+}
+
+std::optional<EdgeMode>
+STMap::getConcatenationEdgeMode(double time,
+                                ViewIdx view) const
+{
+    return resolvedEdgeMode(time, view);
+}
+
+bool
 STMap::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+    if ((query.bitDepth != eImageBitDepthFloat) || query.hasConcatenatedInput || !canRunStagesGpu(resolveGpuPlan(query), query)) {
         return false;
     }
     ImageLayerDesc layer;

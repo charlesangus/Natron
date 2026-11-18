@@ -443,6 +443,22 @@ void resampleRowFromCoords(const SourceImage& src,
                            const RectI* wrapDomain = 0);
 
 /**
+ * @brief Step 1 and 2 of resampleRowFromCoords() on their own, in place, for a caller that maps
+ * the wrapped coordinates further before sampling them with eWrapNone: each (sx[i], sy[i]) is
+ * wrapped in domain (which must not be empty), a coordinate that is not finite after wrapping
+ * makes both NaN, and where eWrapClamp moved an axis that axis's row of the point's Jacobian
+ * (four doubles per point, Jxx, Jxy, Jyx, Jyy; null for none) is zeroed, the rule
+ * resampleRowFromCoords() applies, so a wrap-then-map-then-sample matches a wrap-then-sample.
+ **/
+void wrapRow(double* sx,
+             double* sy,
+             double* jacobian,
+             int n,
+             WrapMode wrapU,
+             WrapMode wrapV,
+             const RectI& domain);
+
+/**
  * @brief The Jacobians of a coordinate map from central differences, four floats per pixel into
  * jacobian (the layout resampleRowFromCoords() reads): Jxx = dsx/dx, Jxy = dsx/dy,
  * Jyx = dsy/dx, Jyy = dsy/dy. sx/sy hold the n coordinates of row y, the *Prev rows those of

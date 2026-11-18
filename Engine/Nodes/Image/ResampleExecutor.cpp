@@ -508,6 +508,9 @@ runResampleCpu(EffectInstance& effect,
     const OfxPointD s = args.mappedScale.toOfxPointD();
     const double dstPar = effect.getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1);
     const InverseWarpChainConstPtr chain = (matrix && (sourceInput >= 0)) ? effect.getPreparedWarpChain(sourceInput, args.time, args.view, args.mappedScale, PassExec::toCanonical(roi, args.mappedScale, dstPar)) : InverseWarpChainConstPtr();
+    if (chain && chain->hasError()) {
+        return eStatusFailed;
+    }
     const PixelOffset offset = request.offset;
     const bool matted = !matrix && request.matte.isSet();
     MatteAxis matteColumns;

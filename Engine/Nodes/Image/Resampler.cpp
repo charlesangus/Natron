@@ -1590,6 +1590,37 @@ resampleRowFromCoords(const SourceImage& src,
     selectKernels(src.nComps).coords(filter, clamp, src, sx, sy, jacobian, n, edgeMode, wrapU, wrapV, domain, out, nComps);
 }
 
+void
+wrapRow(double* sx,
+        double* sy,
+        double* jacobian,
+        int n,
+        WrapMode wrapU,
+        WrapMode wrapV,
+        const RectI& domain)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    for (int i = 0; i < n; ++i) {
+        bool movedX = false;
+        bool movedY = false;
+        if (!wrapCoord(&sx[i], wrapU, domain.x1, domain.x2, &movedX) || !wrapCoord(&sy[i], wrapV, domain.y1, domain.y2, &movedY)) {
+            sx[i] = nan;
+            sy[i] = nan;
+            continue;
+        }
+        if (jacobian) {
+            double* J = jacobian + (std::size_t)i * 4;
+            if (movedX) {
+                J[0] = J[1] = 0.;
+            }
+            if (movedY) {
+                J[2] = J[3] = 0.;
+            }
+        }
+    }
+}
+
 namespace {
     inline double
     rowDerivative(const float* s,

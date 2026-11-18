@@ -602,6 +602,13 @@ protected:
         return false;
     }
 
+protected:
+    /**
+     * @brief The MaskMix and PassThroughUnprocessed stages as they stand at time and view.
+     **/
+    ResampleRegionStages getResampleRegionStages(double time,
+                                                 ViewIdx view) const WARN_UNUSED_RETURN;
+
 private:
     /**
      * @brief The persistent error for a source at the wrong raw stage at time and view, or
@@ -625,9 +632,6 @@ private:
      * them, in an otherwise empty plan.
      **/
     StagePlan resolveSourcesPlan(double time, ViewIdx view, const ImageLayerDesc& plane) const WARN_UNUSED_RETURN;
-
-    ResampleRegionStages getResampleRegionStages(double time,
-                                                 ViewIdx view) const WARN_UNUSED_RETURN;
 
     StageKnobs _stageKnobs;
     mutable StageGpuShaderGate _gpuShaderGate;

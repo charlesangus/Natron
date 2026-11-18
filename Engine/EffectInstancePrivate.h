@@ -30,8 +30,10 @@
 
 #include "EffectInstance.h"
 
+#include <future>
 #include <list>
 #include <map>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -418,6 +420,22 @@ public:
     std::list<EffectInstancePtr> renderClonesPool;
     bool mustSyncPrivateData; //!< true if the effect's knobs were changed but instanceChanged could not be called (e.g. when loading a PyPlug), so that syncPrivateData should be called before the main-thread time-invariant derivation calls the clip preferences
     mutable QMutex mustSyncPrivateDataMutex; //!< protects mustSyncPrivateData
+
+    // getPreparedWarpChain()'s chains, so the tiles and threads of one render prepare each once.
+    // An entry is keyed by the chain the render concatenated, which the next render (new knob
+    // values, time or graph) replaces, and by everything else prepare() depends on.
+    struct PreparedWarpChainEntry {
+        std::weak_ptr<const InverseWarpChain> chain;
+        int inputNb = -1;
+        double time = 0.;
+        ViewIdx view;
+        RenderScale scale;
+        RectD window;
+        double filterSupport = 0.;
+        std::shared_future<InverseWarpChainConstPtr> prepared;
+    };
+    std::mutex preparedWarpChainsMutex;
+    std::list<PreparedWarpChainEntry> preparedWarpChains;
 
 public:
     void runChangedParamCallback(KnobI* k, bool userEdited, const std::string & callback);

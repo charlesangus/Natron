@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -212,7 +213,9 @@ public:
     /**
      * @brief A copy with every map built: the nearest entry over window, the consumer's region
      * of its input, and each further one over the region the one before it pulls back with
-     * filterSupport. An entry whose window is null has no map.
+     * filterSupport. An entry whose window is null has no map. A map entry whose window is
+     * infinite or not finite is never built or pulled back over: the copy has an error, no map
+     * from that entry on and a null source region.
      **/
     InverseWarpChain prepare(const RectD& window,
                              double filterSupport) const;
@@ -240,6 +243,25 @@ public:
     }
 
     /**
+     * @brief Why prepare() could not build the chain, empty when it could; a render through a
+     * chain with an error fails with this message.
+     **/
+    const std::string& getError() const
+    {
+        return _error;
+    }
+
+    bool hasError() const
+    {
+        return !_error.empty();
+    }
+
+    /**
+     * @brief The error prepare() gives for a map over an infinite region.
+     **/
+    static const std::string& getInfiniteWindowError();
+
+    /**
      * @brief Every entry's mapRow(), downstream to upstream. A map entry with no map gives no
      * source.
      **/
@@ -261,6 +283,7 @@ private:
     std::vector<Step> _steps;
     std::vector<RectD> _windows;
     RectD _sourceRegion;
+    std::string _error;
     bool _prepared = false;
 };
 

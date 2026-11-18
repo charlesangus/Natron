@@ -42,11 +42,14 @@
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
+#include "SplineWarpTestCurves.h"
+#include "WarpChainSampling.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
@@ -57,6 +60,8 @@
 #include "Engine/Nodes/Transform/LensModels.h"
 #include "Engine/Nodes/Transform/LensModels3DE.h"
 #include "Engine/Nodes/Transform/STMap.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -896,4 +901,222 @@ TEST_F(NativeLensDistortionTest, HalfScaleMatchesTheModel)
 
         return true; }, ParityTolerance::make(5e-2, 0.), "Nuke k1 0.1, distort, cubic, scale 0.5 against downscaled", &checked);
     EXPECT_EQ(0u, wrong);
+}
+
+// LensDistortion within a warp chain: offering its model to a consumer downstream, and sampling
+// through the warps upstream of it.
+class NativeLensDistortionChainTest
+    : public NativeLensDistortionTest {
+protected:
+    NodePtr makeSourceAtOrigin()
+    {
+        NodePtr source = makeSource();
+        if (source) {
+            setParitySourceOrigin(source, 0, 0);
+        }
+
+        return source;
+    }
+
+    NodePtr makeTranslate(const NodePtr& input,
+                          double dx,
+                          double dy)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        if (input) {
+            connectNodes(input, node, 0, true);
+        }
+        EXPECT_TRUE(setKnobValues(node, kTransformNodeParamTranslate, { dx, dy }));
+        EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
+        EXPECT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 0. }));
+
+        return node;
+    }
+
+    // A SplineWarp on input moving a quad by (2.5, -1.5) and scaling it by 1.1, with no format
+    // boundary pinning the image.
+    NodePtr makeSplineWarp(const NodePtr& input)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_SPLINEWARP), PLUGIN_MAJOR_NATRON_SPLINEWARP);
+        EXPECT_TRUE(isNative(node));
+        if (!node) {
+            return node;
+        }
+        if (input) {
+            connectNodes(input, node, kSplineWarpInputSource, true);
+        }
+        EXPECT_TRUE(setKnobValues(node, kSplineWarpParamBoundaryBBox, { 0. }));
+        EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
+        EXPECT_TRUE(bool(SplineWarpTestCurves::linkQuad(SplineWarpTestCurves::contextOf(node), 22., 16., 16., 2.5, -1.5, 1.1)));
+
+        return node;
+    }
+};
+
+// Transform -> LensDistortion -> Transform: the last Transform samples the Source once, through
+// its own matrix, the lens model and the first Transform's matrix.
+TEST_F(NativeLensDistortionChainTest, TransformsAroundItResampleTheSourceOnce)
+{
+    resetProject();
+    NodePtr source = makeSourceAtOrigin();
+    ASSERT_TRUE(bool(source));
+    NodePtr first = makeTranslate(source, 2.5, -1.5);
+    ASSERT_TRUE(bool(first));
+    NodePtr lens = makeNuke(first, kLensDistortionDirectionDistort, "bilinear");
+    ASSERT_TRUE(bool(lens));
+    NodePtr second = makeTranslate(lens, -1.25, 0.75);
+    ASSERT_TRUE(bool(second));
+
+    InputMatrixMap transforms;
+    second->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+    ASSERT_EQ(1u, transforms.count(0));
+    const InputMatrix& im = transforms[0];
+    ASSERT_TRUE(bool(im.warpChain));
+    EXPECT_FALSE(bool(im.cat));
+    ASSERT_TRUE(bool(im.newInputEffect));
+    EXPECT_EQ(source->getEffectInstance(), im.newInputEffect->getInput(im.newInputNbToFetchFrom));
+    const std::optional<EdgeMode> edgeMode = second->getEffectInstance()->getConcatenationEdgeMode(kTime, ViewIdx(0));
+    ASSERT_TRUE(edgeMode.has_value());
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const InverseWarpMapConstPtr lensMap = WarpChainSampling::offeredMap(lens, kTime, WarpChainSampling::canonicalOf(window));
+    ASSERT_TRUE(bool(lensMap));
+    // The offered map is the model the node renders with.
+    const LensModels::Model model = LensModels::makeNuke(kFrame, nukeParams());
+    ASSERT_TRUE(model.valid);
+    for (int y = 4; y < kParitySourceHeight; y += 10) {
+        for (int x = 4; x < kParitySourceWidth; x += 10) {
+            LensModels::Sample s;
+            ASSERT_TRUE(model.map(LensModels::eDirectionUndistort, x + 0.5, y + 0.5, &s));
+            double sx = x + 0.5;
+            double sy = y + 0.5;
+            lensMap->mapRow(1, &sx, &sy, NULL);
+            EXPECT_NEAR(s.x, sx, 1e-9) << x << ", " << y;
+            EXPECT_NEAR(s.y, sy, 1e-9) << x << ", " << y;
+        }
+    }
+
+    RenderedPlane image, concatenated;
+    ASSERT_TRUE(renderRGBA(source, 0, window, &image));
+    ASSERT_TRUE(renderRGBA(second, 0, window, &concatenated));
+    const RenderedPlane reference = WarpChainSampling::sampleThrough([&](std::size_t n, double* sx, double* sy, double* J) {
+        for (std::size_t i = 0; i < n; ++i) {
+            sx[i] += 1.25;
+            sy[i] -= 0.75;
+        }
+        lensMap->mapRow(n, sx, sy, J);
+        for (std::size_t i = 0; i < n; ++i) {
+            sx[i] -= 2.5;
+            sy[i] += 1.5;
+        } }, image, window, Resampler::eFilterBilinear, *edgeMode);
+    const RectI inside(8, 8, 56, 40);
+    EXPECT_LE(WarpChainSampling::maxDiff(concatenated, reference, inside), 1e-4);
+    EXPECT_GT(WarpChainSampling::maxDiff(image, reference, inside), 1e-3) << "the warps should move the Source";
+}
+
+// SplineWarp -> LensDistortion: the lens samples the Source once, through its model and the field.
+TEST_F(NativeLensDistortionChainTest, SamplesAnUpstreamSplineWarpOnce)
+{
+    resetProject();
+    NodePtr source = makeSourceAtOrigin();
+    ASSERT_TRUE(bool(source));
+    NodePtr warp = makeSplineWarp(source);
+    ASSERT_TRUE(bool(warp));
+    NodePtr lens = makeNuke(warp, kLensDistortionDirectionDistort, "bilinear");
+    ASSERT_TRUE(bool(lens));
+    EffectInstancePtr effect = lens->getEffectInstance();
+
+    InputMatrixMap transforms;
+    effect->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+    ASSERT_EQ(1u, transforms.count(kLensDistortionInputSource));
+    ASSERT_TRUE(bool(transforms[kLensDistortionInputSource].warpChain));
+    const std::optional<EdgeMode> edgeMode = effect->getConcatenationEdgeMode(kTime, ViewIdx(0));
+    ASSERT_TRUE(edgeMode.has_value());
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const InverseWarpMapConstPtr lensMap = WarpChainSampling::offeredMap(lens, kTime, WarpChainSampling::canonicalOf(window));
+    const InverseWarpMapConstPtr field = WarpChainSampling::offeredMap(warp, kTime, WarpChainSampling::rodOf(warp, kTime));
+    ASSERT_TRUE(lensMap && field);
+
+    RenderedPlane image, distorted;
+    ASSERT_TRUE(renderRGBA(source, 0, window, &image));
+    ASSERT_TRUE(renderRGBA(lens, 0, window, &distorted));
+    const RenderedPlane reference = WarpChainSampling::sampleThrough([&](std::size_t n, double* sx, double* sy, double* J) {
+        lensMap->mapRow(n, sx, sy, J);
+        field->mapRow(n, sx, sy, J); }, image, window, Resampler::eFilterBilinear, *edgeMode);
+    const RectI inside(8, 8, 56, 40);
+    EXPECT_LE(WarpChainSampling::maxDiff(distorted, reference, inside), 1e-4);
+}
+
+// Where the model has no solution the offered map gives no source point; elsewhere it is the
+// model.
+TEST_F(NativeLensDistortionChainTest, PointWithNoSolutionMapsToNaN)
+{
+    resetProject();
+    NodePtr source = makeSourceAtOrigin();
+    ASSERT_TRUE(bool(source));
+    NodePtr lens = makeStrongNuke(source, kLensDistortionDirectionUndistort, "bilinear");
+    ASSERT_TRUE(bool(lens));
+    const LensModels::Model model = LensModels::makeNuke(kFrame, strongNukeParams());
+    ASSERT_TRUE(model.valid);
+    const InverseWarpMapConstPtr lensMap = WarpChainSampling::offeredMap(lens, kTime, WarpChainSampling::rodOf(lens, kTime));
+    ASSERT_TRUE(bool(lensMap));
+
+    std::size_t unsolved = 0;
+    for (int y = 0; y < kParitySourceHeight; ++y) {
+        for (int x = 0; x < kParitySourceWidth; ++x) {
+            LensModels::Sample s;
+            const bool solved = model.map(LensModels::eDirectionDistort, x + 0.5, y + 0.5, &s) && std::isfinite(s.x) && std::isfinite(s.y);
+            double sx = x + 0.5;
+            double sy = y + 0.5;
+            lensMap->mapRow(1, &sx, &sy, NULL);
+            if (solved) {
+                EXPECT_NEAR(s.x, sx, 1e-9) << x << ", " << y;
+                EXPECT_NEAR(s.y, sy, 1e-9) << x << ", " << y;
+            } else {
+                ++unsolved;
+                EXPECT_TRUE(std::isnan(sx) && std::isnan(sy)) << x << ", " << y;
+            }
+        }
+    }
+    EXPECT_GT(unsolved, 0u) << "the frame edges should have no solution";
+}
+
+// A consumer sampling through the model alone would drop the STMap output, the mix and the mask.
+TEST_F(NativeLensDistortionChainTest, STMapOutputMixOrMaskStopsItChaining)
+{
+    resetProject();
+    NodePtr source = makeSourceAtOrigin();
+    NodePtr maskSource = makeSource();
+    ASSERT_TRUE(source && maskSource);
+    NodePtr lens = makeNuke(source, kLensDistortionDirectionDistort, "bilinear");
+    ASSERT_TRUE(bool(lens));
+    EffectInstancePtr effect = lens->getEffectInstance();
+    EXPECT_TRUE(effect->getCanInverseWarp());
+    int inputNb = -1;
+    EXPECT_TRUE(effect->canOfferInverseWarp(kTime, ViewIdx(0), false, &inputNb));
+    EXPECT_EQ(kLensDistortionInputSource, inputNb);
+    EXPECT_TRUE(effect->acceptsInverseWarpChain(kLensDistortionInputSource, kTime, ViewIdx(0)));
+    EXPECT_FALSE(effect->acceptsInverseWarpChain(kLensDistortionInputMask, kTime, ViewIdx(0)));
+
+    ASSERT_TRUE(setKnobValue(lens, kLensDistortionParamOutputMode, std::string(kLensDistortionOutputSTMap)));
+    EXPECT_FALSE(effect->canOfferInverseWarp(kTime, ViewIdx(0), false, &inputNb)) << "STMap output";
+    EXPECT_FALSE(effect->acceptsInverseWarpChain(kLensDistortionInputSource, kTime, ViewIdx(0))) << "STMap output";
+    ASSERT_TRUE(setKnobValue(lens, kLensDistortionParamOutputMode, std::string(kLensDistortionOutputImage)));
+    EXPECT_TRUE(effect->canOfferInverseWarp(kTime, ViewIdx(0), false, &inputNb));
+
+    ASSERT_TRUE(setKnobValues(lens, kOfxMixParamName, { 0.5 }));
+    EXPECT_FALSE(effect->canOfferInverseWarp(kTime, ViewIdx(0), false, &inputNb)) << "mix";
+    EXPECT_FALSE(effect->acceptsInverseWarpChain(kLensDistortionInputSource, kTime, ViewIdx(0))) << "mix";
+    ASSERT_TRUE(setKnobValues(lens, kOfxMixParamName, { 1. }));
+    EXPECT_TRUE(effect->canOfferInverseWarp(kTime, ViewIdx(0), false, &inputNb));
+
+    connectNodes(maskSource, lens, kLensDistortionInputMask, true);
+    ASSERT_TRUE(setKnobValues(lens, "enableMask_" + lens->getInputLabel(kLensDistortionInputMask), { 1. }));
+    EXPECT_FALSE(effect->canOfferInverseWarp(kTime, ViewIdx(0), false, &inputNb)) << "mask";
+    EXPECT_FALSE(effect->acceptsInverseWarpChain(kLensDistortionInputSource, kTime, ViewIdx(0))) << "mask";
 }

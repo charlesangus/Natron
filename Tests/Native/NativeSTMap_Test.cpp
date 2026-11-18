@@ -45,6 +45,8 @@
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
+#include "WarpChainSampling.h"
+#include "WarpChainTestEffects.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -52,6 +54,7 @@
 #include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
@@ -843,4 +846,52 @@ TEST_F(NativeSTMapTest, MaskAndMixFromTheBase)
 
         return true; }, ParityTolerance::arithmetic(), "mask");
     EXPECT_EQ(0u, wrong);
+}
+
+// Repeat and mirror wrap in the STMap's own Source, the test provider's output, before the
+// provider's map takes each coordinate on to the image upstream.
+TEST_F(NativeSTMapTest, WrapsInItsSourceBeforeAConcatenatedWarp)
+{
+    const char* const modes[] = { kSTMapWrapRepeat, kSTMapWrapMirror };
+    const int wrapModes[] = { 1, 2 };
+
+    for (int m = 0; m < 2; ++m) {
+        resetProject();
+        NodePtr source = makeSource();
+        NodePtr uv = makeUV();
+        ASSERT_TRUE(source && uv);
+        // The provider pulls the format towards (256, 256), into x 136 to 174 and y 128 to 152.
+        setParitySourceOrigin(source, 120, 120);
+        NodePtr provider = createNode(QString::fromUtf8(kTestPluginIDWarpChainProvider));
+        ASSERT_TRUE(bool(provider));
+        connectNodes(source, provider, 0, true);
+        NodePtr node = makeSTMap(provider, uv, "impulse");
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValues(node, kSTMapParamUVScale, { 3., 3. }));
+        ASSERT_TRUE(setKnobValue(node, kSTMapParamWrapU, std::string(modes[m])));
+        ASSERT_TRUE(setKnobValue(node, kSTMapParamWrapV, std::string(modes[m])));
+        const NodeMetadataConstPtr metadata = provider->getEffectInstance()->getRenderMetadata(kTime, ViewIdx(0));
+        ASSERT_TRUE(bool(metadata));
+        ASSERT_EQ(RectI(0, 0, kParitySourceWidth, kParitySourceHeight), metadata->getOutputFormat()) << "the wrap domain";
+
+        InputMatrixMap transforms;
+        node->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+        ASSERT_EQ(1u, transforms.count(kSTMapInputSource)) << modes[m];
+        ASSERT_TRUE(bool(transforms[kSTMapInputSource].warpChain)) << modes[m];
+
+        const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+        RenderedPlane image, mapped;
+        ASSERT_TRUE(renderRGBA(source, 0, paritySourceWindow(source, kTime, 0), &image));
+        ASSERT_TRUE(renderRGBA(node, 0, window, &mapped));
+        const WarpChainTestMap map(RenderScale::identity);
+        const int mode = wrapModes[m];
+        const RenderedPlane reference = WarpChainSampling::sampleThrough([&](std::size_t n, double* sx, double* sy, double* J) {
+            // U and V * 3 land on the centre of pixel 3x + 1 (3y + 1), wrapped into the format.
+            for (std::size_t i = 0; i < n; ++i) {
+                sx[i] = wrapIndex(3 * (int)std::floor(sx[i]) + 1, kParitySourceWidth, mode) + 0.5;
+                sy[i] = wrapIndex(3 * (int)std::floor(sy[i]) + 1, kParitySourceHeight, mode) + 0.5;
+            }
+            map.mapRow(n, sx, sy, J); }, image, window, Resampler::eFilterImpulse, EdgeMode::Black);
+        EXPECT_LE(WarpChainSampling::maxDiff(mapped, reference, window), 1e-6) << modes[m];
+    }
 }

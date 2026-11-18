@@ -3126,6 +3126,28 @@ EffectInstance::tryConcatenateTransforms(double time,
 
     assert(inputHoldingTransforms.empty() || canApplyTransform);
 
+    // An input that takes a warp chain without holding a transform is only redirected through a
+    // chain with a map step: such a consumer has no use for a concatenated matrix alone. Nor is
+    // one whose effect is connected to another input too, which reads that effect's own output
+    // over a region of interest the redirection would move upstream.
+    std::vector<int> chainOnlyInputs;
+    const int nInputs = getNInputs();
+    for (int i = 0; i < nInputs; ++i) {
+        if ((std::find(inputHoldingTransforms.begin(), inputHoldingTransforms.end(), i) != inputHoldingTransforms.end()) || !acceptsInverseWarpChain(i, time, view)) {
+            continue;
+        }
+        const EffectInstancePtr input = getInput(i);
+        bool shared = false;
+        for (int j = 0; input && (j < nInputs) && !shared; ++j) {
+            shared = (j != i) && (getInput(j) == input);
+        }
+        if (input && !shared) {
+            inputHoldingTransforms.push_back(i);
+            chainOnlyInputs.push_back(i);
+        }
+    }
+    canApplyTransform = canApplyTransform || !chainOnlyInputs.empty();
+
     Transform::Matrix3x3 thisNodeTransform;
     EffectInstancePtr inputToTransform;
     bool getTransformSucceeded = false;
@@ -3238,6 +3260,9 @@ EffectInstance::tryConcatenateTransforms(double time,
                 for (const ConcatenatedStep& step : steps) {
                     hasProvider = hasProvider || bool(step.provider);
                 }
+                if (!hasProvider && (std::find(chainOnlyInputs.begin(), chainOnlyInputs.end(), *it) != chainOnlyInputs.end())) {
+                    continue;
+                }
                 if (!hasProvider) {
                     /// Now actually concatenate matrices together
                     im.cat = std::make_shared<Transform::Matrix3x3>();
@@ -3291,6 +3316,30 @@ EffectInstance::getConcatenatedWarpChain(int inputNb) const
     return found->second.warpChain;
 }
 
+namespace {
+// A chain's error is the node's to show until a render prepares its chain without one.
+void
+postWarpChainError(EffectInstance* effect,
+                   const InverseWarpChainConstPtr& chain)
+{
+    if (chain && chain->hasError()) {
+        effect->setPersistentMessage(eMessageTypeError, chain->getError());
+
+        return;
+    }
+    NodePtr node = effect->getNode();
+    if (!node) {
+        return;
+    }
+    QString current;
+    int type = 0;
+    node->getPersistentMessage(&current, &type, false);
+    if (current == QString::fromUtf8(InverseWarpChain::getInfiniteWindowError().c_str())) {
+        node->clearPersistentMessage(false);
+    }
+}
+} // namespace
+
 InverseWarpChainConstPtr
 EffectInstance::getPreparedWarpChain(int inputNb,
                                      double time,
@@ -3302,6 +3351,8 @@ EffectInstance::getPreparedWarpChain(int inputNb,
     const EffectInstancePtr input = getInput(inputNb);
 
     if (!chain || !chain->hasMapStep() || !input) {
+        postWarpChainError(this, InverseWarpChainConstPtr());
+
         return InverseWarpChainConstPtr();
     }
     // The output region of definition is unused by the regions of interest a chain consumer gives.
@@ -3309,8 +3360,70 @@ EffectInstance::getPreparedWarpChain(int inputNb,
     getRegionsOfInterest(time, scale, renderWindow, renderWindow, view, &rois);
     RoIMap::const_iterator found = rois.find(input);
     const RectD window = (found != rois.end()) ? found->second : RectD();
+    const double filterSupport = getInverseWarpChainFilterSupport(inputNb, time, view);
+    const InverseWarpChainConstPtr result = prepareWarpChainShared(chain, inputNb, time, view, scale, window, filterSupport);
+    postWarpChainError(this, result);
 
-    return std::make_shared<const InverseWarpChain>(chain->prepare(window, getInverseWarpChainFilterSupport(inputNb, time, view)));
+    return result;
+}
+
+InverseWarpChainConstPtr
+EffectInstance::prepareWarpChainShared(const InverseWarpChainConstPtr& chain,
+                                       int inputNb,
+                                       double time,
+                                       ViewIdx view,
+                                       const RenderScale& scale,
+                                       const RectD& window,
+                                       double filterSupport) const
+{
+    std::shared_future<InverseWarpChainConstPtr> prepared;
+    std::promise<InverseWarpChainConstPtr> promise;
+    bool preparesHere = false;
+    {
+        std::lock_guard<std::mutex> lock(_imp->preparedWarpChainsMutex);
+        std::list<Implementation::PreparedWarpChainEntry>& entries = _imp->preparedWarpChains;
+        for (std::list<Implementation::PreparedWarpChainEntry>::iterator it = entries.begin(); it != entries.end();) {
+            const InverseWarpChainConstPtr entryChain = it->chain.lock();
+            if (!entryChain) {
+                it = entries.erase(it);
+                continue;
+            }
+            if ((entryChain == chain) && (it->inputNb == inputNb) && (it->time == time) && (it->view == view) && (it->scale == scale) && (it->window == window) && (it->filterSupport == filterSupport)) {
+                prepared = it->prepared;
+                break;
+            }
+            ++it;
+        }
+        if (!prepared.valid()) {
+            // Bounded, since a render whose consumer prepares per tile adds an entry per tile.
+            const std::size_t kMaxEntries = 64;
+            while (entries.size() >= kMaxEntries) {
+                entries.pop_front();
+            }
+            Implementation::PreparedWarpChainEntry entry;
+            entry.chain = chain;
+            entry.inputNb = inputNb;
+            entry.time = time;
+            entry.view = view;
+            entry.scale = scale;
+            entry.window = window;
+            entry.filterSupport = filterSupport;
+            entry.prepared = promise.get_future().share();
+            prepared = entry.prepared;
+            entries.push_back(entry);
+            preparesHere = true;
+        }
+    }
+    // Prepared outside the lock: a provider building its map must not hold up other windows.
+    if (preparesHere) {
+        try {
+            promise.set_value(std::make_shared<const InverseWarpChain>(chain->prepare(window, filterSupport)));
+        } catch (...) {
+            promise.set_exception(std::current_exception());
+        }
+    }
+
+    return prepared.get();
 }
 
 bool
@@ -3410,7 +3523,9 @@ EffectInstance::transformInputRois(const EffectInstance* self,
 
         if (it->second.warpChain) {
             const double support = self->getInverseWarpChainFilterSupport(it->first, time, view);
-            transformedRenderWindow = it->second.warpChain->prepare(foundRoI->second, support).getSourceRegion();
+            // Shared with the render's own preparation over the same region, so the request pass
+            // and every tile build a provider's map once.
+            transformedRenderWindow = self->prepareWarpChainShared(it->second.warpChain, it->first, time, view, scale, foundRoI->second, support)->getSourceRegion();
         } else {
             // invert it
             Transform::Matrix3x3 invertTransform;

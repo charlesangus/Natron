@@ -137,6 +137,8 @@ SplineWarp is the first client in both directions: a downstream Transform folds 
 
 - 2026-10-20 — **Separate milestone, after SplineWarp v1 (user):** engine architecture is kept out of node work. SplineWarp v1 absorbs upstream transforms only (M147 - SplineWarp Node Core).
 - 2026-11-14 — M433 - Overlay Point Maps lands a per-node CPU point-map API (forward and inverse) first, for viewer overlays; design this milestone's windowed render map later and reuse its per-node math where it fits (user, M433 grill).
+- 2026-11-18 — P4.T6 adds absorbed providers' GPU weight in placement (`addMapGpuWeights`), not in each node's `gpuWeight`, so every chain consumer is covered in one place (PM).
+- 2026-11-18 — P4.T5's GPU tests use real Transform and SplineWarp upstreams, since the test provider has no GPU form (PM).
 - 2026-11-17 — Elaborated (consultant):
   - D1: the map is a row callback rather than a baked field. Both samplers already take rows of (sx, sy, J), the composition is exact per pixel, and SplineWarp's grid is cached inside its own step.
   - D2: maps are built per window at render or RoI time, not in `tryConcatenateTransforms`, because SplineWarp fields depend on the window. Concatenation decides from knobs only.

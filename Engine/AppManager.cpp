@@ -145,6 +145,7 @@
 #include "Engine/OfxHost.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OneViewNode.h"
+#include "Engine/OverlayMapFetch.h"
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
@@ -809,6 +810,10 @@ AppManager::~AppManager()
             appsEmpty = _imp->_appInstances.empty();
         }
     }
+
+    // Overlay map fetches run on the global pool and use the app TLS and the plugins.
+    setTeardownStage("waiting for overlay map fetches");
+    OverlayMapFetch::abortAllFetches(true);
 
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {

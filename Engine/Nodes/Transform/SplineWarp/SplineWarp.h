@@ -369,6 +369,17 @@ private:
 
     bool computeWarp(double time, ViewIdx view, const Settings& settings, Warp* warp);
 
+    // The field the render samples at full displacement for any mix above 0; the identity at 0.
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     /**
      * @brief The cookie mask at time over the cookie cutters' pixels at the scale, inside the
      * Source's format when cropping; null without an active cookie cutter.

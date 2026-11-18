@@ -2418,6 +2418,12 @@ public:
 
     void refreshIdentityState();
 
+    /**
+     * @brief Emits overlayMapChanged(). Safe from any thread: the signal is queued to receivers
+     * living on other threads.
+     **/
+    void notifyOverlayMapChanged();
+
     bool getHideInputsKnobValue() const;
     void setHideInputsKnobValue(bool hidden);
 
@@ -2735,6 +2741,12 @@ Q_SIGNALS:
     void hideInputsKnobChanged(bool hidden);
 
     void refreshIdentityStateRequested();
+
+    /**
+     * @brief The way this node maps overlay points between its inputs and its output changed
+     * without a knob or input change, for example when an asynchronous map image finished.
+     **/
+    void overlayMapChanged();
 
     void availableViewsChanged();
 

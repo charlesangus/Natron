@@ -695,6 +695,54 @@ LensDistortion::getGeometry(double time,
                              (int)std::floor(reference.y2 + 0.5) + padY);
 } // LensDistortion::getGeometry
 
+OverlayPointMap::Result
+LensDistortion::mapOverlayPoint(double time,
+                                ViewIdx view,
+                                int inputNb,
+                                OverlayPointMap::Direction direction,
+                                const Point& in,
+                                Point* out)
+{
+    if ((inputNb != kLensDistortionInputSource) || !getInput(kLensDistortionInputSource) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eIdentity;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    if (settings.stmap) {
+        return OverlayPointMap::eIdentity;
+    }
+    Geometry geometry;
+    getGeometry(time, view, false, &geometry);
+    const LensModels::Model model = buildModel(time, view, geometry);
+    if (!model.valid) {
+        return OverlayPointMap::eUnmappable;
+    }
+    const LensModels::Direction opposite = (settings.direction == LensModels::eDirectionDistort) ? LensModels::eDirectionUndistort : LensModels::eDirectionDistort;
+    const LensModels::Direction lens = (direction == OverlayPointMap::eDirectionForward) ? settings.direction : opposite;
+    const double par = (geometry.par > 0.) ? geometry.par : 1.;
+    LensModels::Sample s;
+    if (!model.map(lens, in.x / par, in.y, &s) || !std::isfinite(s.x) || !std::isfinite(s.y)) {
+        return OverlayPointMap::eUnmappable;
+    }
+    out->x = s.x * par;
+    out->y = s.y;
+
+    return OverlayPointMap::eMapped;
+}
+
+OverlayPointMap::Kind
+LensDistortion::overlayMapKind(double time,
+                               ViewIdx view)
+{
+    if (!getInput(kLensDistortionInputSource) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eKindNone;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+
+    return settings.stmap ? OverlayPointMap::eKindNone : OverlayPointMap::eKindNonLinear;
+}
+
 LensModels::Model
 LensDistortion::buildModel(double time,
                            ViewIdx view,

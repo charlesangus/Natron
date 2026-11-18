@@ -46,6 +46,7 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/OverlayMapFetch.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/TimeLine.h"
@@ -378,6 +379,97 @@ IDistort::getInputLayersRead(int inputNb,
     }
 
     return !layers->empty();
+}
+
+OverlayPointMap::Result
+IDistort::mapOverlayPoint(double time,
+                          ViewIdx view,
+                          int inputNb,
+                          OverlayPointMap::Direction direction,
+                          const Point& in,
+                          Point* out)
+{
+    if ((inputNb != kIDistortInputSource) || isOpIdentity(time, RenderScale::identity, RectI(), view) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eIdentity;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    UVChannel uvChannels[2];
+    resolveUVChannels(time, view, &uvChannels[0], &uvChannels[1]);
+    std::vector<OverlayMapFetch::Channel> channels;
+    int uIndex = -1;
+    int vIndex = -1;
+    for (int i = 0; i < 2; ++i) {
+        if (!uvChannels[i].valid) {
+            continue;
+        }
+        OverlayMapFetch::Channel c;
+        c.layer = uvChannels[i].layer;
+        c.index = uvChannels[i].channel;
+        (i == 0 ? uIndex : vIndex) = (int)channels.size();
+        channels.push_back(c);
+    }
+    if (channels.empty()) {
+        return OverlayPointMap::eIdentity;
+    }
+    const EffectInstancePtr self = shared_from_this();
+    OverlayPointMap::Result fetched = OverlayPointMap::eUnmappable;
+    const OverlayMapFetch::MapImageConstPtr uv = OverlayMapFetch::fetch(self, kIDistortInputUV, time, view, channels, &fetched);
+    if (!uv) {
+        return fetched;
+    }
+    const NodeMetadataConstPtr metadata = getMetadata(time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    const bool mapped = (bool)getInput(kIDistortInputMap);
+    const MapOverlaySampler mapSampler = _map.overlaySampler(self, kIDistortInputMap, time, view);
+    if (mapped && (mapSampler.status() == OverlayPointMap::eUnmappable)) {
+        return OverlayPointMap::eUnmappable;
+    }
+    const bool mapPending = mapped && (mapSampler.status() == OverlayPointMap::ePending);
+    const bool uvStretch = (stageInputEdgeMode(*this, kIDistortInputUV, time, view) == EdgeMode::Stretch);
+    const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
+        float values[2] = { 0.f, 0.f };
+        // Past the UV input's region the render reads its nearest edge under Stretch and no
+        // displacement under Black.
+        if (!uv->sample(p.x, p.y, values, uvStretch)) {
+            values[0] = values[1] = 0.f;
+        }
+        const double uRaw = (uIndex >= 0) ? values[uIndex] : 0.;
+        const double vRaw = (vIndex >= 0) ? values[vIndex] : 0.;
+        double dx = (uRaw - settings.uOffset) * settings.uScale * par;
+        double dy = (vRaw - settings.vOffset) * settings.vScale;
+        if (mapped) {
+            const double m = mapSampler.value(p);
+            dx *= m;
+            dy *= m;
+        }
+        s->x = p.x + dx;
+        s->y = p.y + dy;
+        if (!std::isfinite(s->x) || !std::isfinite(s->y)) {
+            return OverlayPointMap::eUnmappable;
+        }
+
+        return OverlayPointMap::eMapped;
+    };
+    OverlayPointMap::Result result;
+    if (direction == OverlayPointMap::eDirectionInverse) {
+        result = toSource(in, out);
+    } else {
+        OverlayPointMap::InvertOptions options;
+        options.tolerance = 1e-4;
+        options.seedRegion = uv->canonical;
+        options.seedStep = std::max(uv->canonical.width(), uv->canonical.height()) / 32.;
+        result = OverlayPointMap::invertNumerically(toSource, in, *out, out, options);
+    }
+
+    return mapPending ? OverlayPointMap::ePending : result;
+} // IDistort::mapOverlayPoint
+
+OverlayPointMap::Kind
+IDistort::overlayMapKind(double time,
+                         ViewIdx view)
+{
+    return (isOpIdentity(time, RenderScale::identity, RectI(), view) || (getMixValue(time, view) == 0.)) ? OverlayPointMap::eKindNone : OverlayPointMap::eKindNonLinear;
 }
 
 bool

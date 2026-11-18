@@ -209,6 +209,21 @@ private:
                               const RectI& roi,
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The node's matrix at the Map value under the output point, read from a small copy of
+     * the Map. With the Map disconnected the map is that one matrix both ways; with it connected
+     * the forward map is Newton on the inverse. Motion blur is not followed.
+     **/
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

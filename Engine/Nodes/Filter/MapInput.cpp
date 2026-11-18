@@ -42,6 +42,7 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/OverlayMapFetch.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -352,6 +353,50 @@ MapInput::resolveChannel(EffectInstance* effect,
     effect->getPresentLayers(time, view, inputNb, &present);
 
     return knob->resolve(present, layer, channel) && (*channel >= 0);
+}
+
+double
+MapOverlaySampler::value(const Point& p) const
+{
+    if (!_image) {
+        return _constant;
+    }
+    float raw = 0.f;
+    if (!_image->sample(p.x, p.y, &raw, _stretchEdges)) {
+        raw = 0.f;
+    }
+
+    return _params.remap(raw);
+}
+
+MapOverlaySampler
+MapInput::overlaySampler(const EffectInstancePtr& effect,
+                         int inputNb,
+                         double time,
+                         ViewIdx view) const
+{
+    MapOverlaySampler sampler;
+
+    if (!effect || !effect->getInput(inputNb)) {
+        return sampler;
+    }
+    sampler._params = bake(KnobReader(time, view));
+    OverlayMapFetch::Channel channel;
+    if (!resolveChannel(effect.get(), inputNb, time, view, &channel.layer, &channel.index)) {
+        sampler._constant = sampler._params.remap(0.f);
+
+        return sampler;
+    }
+    OverlayPointMap::Result result = OverlayPointMap::eUnmappable;
+    sampler._image = OverlayMapFetch::fetch(effect, inputNb, time, view, std::vector<OverlayMapFetch::Channel>(1, channel), &result);
+    if (!sampler._image) {
+        sampler._status = result;
+
+        return sampler;
+    }
+    sampler._stretchEdges = (stageInputEdgeMode(*effect, inputNb, time, view) == EdgeMode::Stretch);
+
+    return sampler;
 }
 
 bool

@@ -223,7 +223,7 @@ public:
 
     /**
      * @brief For a Resample op, resampleTransform() at time, view and renderScale; the default
-     * reply for every other op.
+     * reply for every other op, and for the offset form while a mask is applied or mix is not 1.
      **/
     virtual StatusEnum getTransform(double time,
                                     const RenderScale& renderScale,
@@ -231,6 +231,17 @@ public:
                                     ViewIdx view,
                                     EffectInstancePtr* inputToTransform,
                                     Transform::Matrix3x3* transform) OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Resample op, resampleTransform() at time, view and renderScale unless a mask
+     * applies or the mix is 0, whatever the mix otherwise; getTransform() for every other op.
+     **/
+    virtual StatusEnum getOverlayTransform(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform) OVERRIDE WARN_UNUSED_RETURN;
 
     /**
      * @brief The input a Point, Passes or Resample op reads and the stages blend against: the

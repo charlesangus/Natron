@@ -763,6 +763,30 @@ StagedImageEffect::getTransform(double time,
         return NativeEffectBase::getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
     }
 
+    const ResampleRequest request = opResample(time, view, renderScale);
+    // Masked or mixed, the output is no single translation of the source.
+    if ((request.form == ResampleRequest::Form::Offset) && (isMaskApplied() || (getMixValue(time, view) != 1.))) {
+        return eStatusReplyDefault;
+    }
+
+    return resampleTransform(*this, getSourceInput(), request, time, view, renderScale, draftRender, inputToTransform, transform);
+}
+
+StatusEnum
+StagedImageEffect::getOverlayTransform(double time,
+                                       const RenderScale& renderScale,
+                                       bool draftRender,
+                                       ViewIdx view,
+                                       EffectInstancePtr* inputToTransform,
+                                       Transform::Matrix3x3* transform)
+{
+    if (imagePipelineSpec().op != OpKind::Resample) {
+        return NativeEffectBase::getOverlayTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+    if (isMaskApplied() || (getMixValue(time, view) == 0.)) {
+        return eStatusReplyDefault;
+    }
+
     return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, view, renderScale, draftRender, inputToTransform, transform);
 }
 

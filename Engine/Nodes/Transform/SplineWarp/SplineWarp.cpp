@@ -1529,6 +1529,73 @@ SplineWarp::getRenderTimes(double time,
     return times;
 }
 
+OverlayPointMap::Result
+SplineWarp::mapOverlayPoint(double time,
+                            ViewIdx view,
+                            int inputNb,
+                            OverlayPointMap::Direction direction,
+                            const Point& in,
+                            Point* out)
+{
+    if ((inputNb != kSplineWarpInputSource) || !getInput(kSplineWarpInputSource)) {
+        return OverlayPointMap::eIdentity;
+    }
+    if (getMixValue(time, view) == 0.) {
+        return OverlayPointMap::eIdentity;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    Warp warp;
+    if (!computeWarp(time, view, settings, &warp) || warp.identity || !warp.samples || (!warp.mesh && !warp.map)) {
+        return OverlayPointMap::eIdentity;
+    }
+    const double scaleX = 1. / getOutputPixelAspectRatio(time, view);
+    const double fieldResolution = settings.fieldResolution;
+    const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* source) {
+        const double px = p.x * scaleX;
+        if (!(std::fabs(px) < 1e9) || !(std::fabs(p.y) < 1e9)) {
+            return OverlayPointMap::eUnmappable;
+        }
+        // The grid is aligned on multiples of its step whatever the window, so a window of a few
+        // pixels around the point gives the render's own value without touching its field cache.
+        const int x = (int)std::floor(px);
+        const int y = (int)std::floor(p.y);
+        const RectI window(x - 1, y - 1, x + 2, y + 2);
+        const Point s = warp.mesh ? SplineWarpField(*warp.mesh, warp.samples->boundaries, window, scaleX, 1., fieldResolution).getSource(p.x, p.y) : SplineWarpField(*warp.map, warp.samples->boundaries, window, scaleX, 1., fieldResolution).getSource(p.x, p.y);
+        *source = s;
+
+        return OverlayPointMap::eMapped;
+    };
+    if (direction == OverlayPointMap::eDirectionInverse) {
+        return toSource(in, out);
+    }
+    OverlayPointMap::InvertOptions options;
+    const RectD bounds = warp.mesh ? warp.meshBox : getSourceBounds(time, view);
+    if (!bounds.isNull()) {
+        options.seedRegion = bounds;
+        options.seedStep = std::max(bounds.width(), bounds.height()) / 16.;
+    }
+
+    return OverlayPointMap::invertNumerically(toSource, in, *out, out, options);
+} // SplineWarp::mapOverlayPoint
+
+OverlayPointMap::Kind
+SplineWarp::overlayMapKind(double time,
+                           ViewIdx view)
+{
+    if (!getInput(kSplineWarpInputSource) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eKindNone;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    Warp warp;
+    if (!computeWarp(time, view, settings, &warp) || warp.identity) {
+        return OverlayPointMap::eKindNone;
+    }
+
+    return OverlayPointMap::eKindNonLinear;
+}
+
 SplineWarpFieldConstPtr
 SplineWarp::computeField(const Warp& warp,
                          double time,

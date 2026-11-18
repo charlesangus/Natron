@@ -772,6 +772,16 @@ resampleTransform(EffectInstance& effect,
                   EffectInstancePtr* inputToTransform,
                   Transform::Matrix3x3* transform)
 {
+    if (request.form == ResampleRequest::Form::Offset) {
+        EffectInstancePtr input = (sourceInput >= 0) ? effect.getInput(sourceInput) : EffectInstancePtr();
+        if (!input) {
+            return eStatusFailed;
+        }
+        *transform = Transform::Matrix3x3(1., 0., request.offset.x, 0., 1., request.offset.y, 0., 0., 1.);
+        *inputToTransform = input;
+
+        return eStatusOK;
+    }
     if ((request.form != ResampleRequest::Form::Matrix) || !request.transform) {
         return eStatusReplyDefault;
     }

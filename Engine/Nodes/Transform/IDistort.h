@@ -222,6 +222,20 @@ private:
 
     void resolveUVChannels(double time, ViewIdx view, UVChannel* u, UVChannel* v);
 
+    /**
+     * @brief Inverse: the displacement of a small copy of the UV input at the point, bilinearly,
+     * times the Map. Forward: Newton from the point itself.
+     **/
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     void updateFilterVisibility(double time, ViewIdx view);
 
     KnobChannelSelectWPtr _channelU;

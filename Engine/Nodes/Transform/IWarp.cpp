@@ -45,9 +45,11 @@
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/OverlayMapFetch.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/Transform.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -594,6 +596,88 @@ IWarp::isOpIdentity(double time,
     }
 
     return isTransformIdentity(time, view);
+}
+
+namespace {
+OverlayPointMap::Result
+applyMat3(const TransformMath::Mat3& c,
+          const Point& in,
+          Point* out)
+{
+    Transform::Matrix3x3 m(c.m[0], c.m[1], c.m[2], c.m[3], c.m[4], c.m[5], c.m[6], c.m[7], c.m[8]);
+
+    return OverlayPointMap::applyMatrix(m, in, out);
+}
+} // anon namespace
+
+OverlayPointMap::Result
+IWarp::mapOverlayPoint(double time,
+                       ViewIdx view,
+                       int inputNb,
+                       OverlayPointMap::Direction direction,
+                       const Point& in,
+                       Point* out)
+{
+    if ((inputNb != kIWarpInputSource) || isTransformIdentity(time, view) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eIdentity;
+    }
+    WarpSettings settings;
+    warpSettings(time, view, &settings);
+    const bool mapped = (bool)getInput(kIWarpInputMap);
+    if (!mapped) {
+        TransformMath::Mat3 c;
+        const bool toOutput = (direction == OverlayPointMap::eDirectionForward);
+        if (!canonicalMatrixFn(time, view, toOutput ? !settings.invert : settings.invert)(1., &c)) {
+            return OverlayPointMap::eUnmappable;
+        }
+
+        return applyMat3(c, in, out);
+    }
+    const EffectInstancePtr self = shared_from_this();
+    const TransformInterp::MatrixFn toSourceAt = canonicalMatrixFn(time, view, settings.invert);
+    const MapOverlaySampler mapSampler = _map.overlaySampler(self, kIWarpInputMap, time, view);
+    if (mapSampler.status() == OverlayPointMap::eUnmappable) {
+        return OverlayPointMap::eUnmappable;
+    }
+    const bool mapPending = (mapSampler.status() == OverlayPointMap::ePending);
+    const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
+        TransformMath::Mat3 c;
+        if (!toSourceAt(mapSampler.value(p), &c)) {
+            return OverlayPointMap::eUnmappable;
+        }
+
+        return applyMat3(c, p, s);
+    };
+    OverlayPointMap::Result result;
+    if (direction == OverlayPointMap::eDirectionInverse) {
+        result = toSource(in, out);
+    } else {
+        // The Map at 1 everywhere is the seed: exact where the Map is white.
+        TransformMath::Mat3 c;
+        Point seed = *out;
+        if (canonicalMatrixFn(time, view, !settings.invert)(1., &c)) {
+            Point s;
+            if (applyMat3(c, in, &s) == OverlayPointMap::eMapped) {
+                seed = s;
+            }
+        }
+        OverlayPointMap::InvertOptions options;
+        options.tolerance = 1e-4;
+        result = OverlayPointMap::invertNumerically(toSource, in, seed, out, options);
+    }
+
+    return mapPending ? OverlayPointMap::ePending : result;
+} // IWarp::mapOverlayPoint
+
+OverlayPointMap::Kind
+IWarp::overlayMapKind(double time,
+                      ViewIdx view)
+{
+    if (isTransformIdentity(time, view) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eKindNone;
+    }
+
+    return getInput(kIWarpInputMap) ? OverlayPointMap::eKindNonLinear : OverlayPointMap::eKindMatrix;
 }
 
 StatusEnum

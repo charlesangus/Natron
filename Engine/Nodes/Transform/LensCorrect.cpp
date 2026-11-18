@@ -941,7 +941,7 @@ LensCorrect::mapOverlayPoint(double time,
                              const Point& in,
                              Point* out)
 {
-    if ((inputNb != kLensCorrectInputSource) || !getInput(kLensCorrectInputSource)) {
+    if ((inputNb != kLensCorrectInputSource) || !getInput(kLensCorrectInputSource) || (getMixValue(time, view) == 0.)) {
         return OverlayPointMap::eIdentity;
     }
     Settings settings;
@@ -984,7 +984,7 @@ OverlayPointMap::Kind
 LensCorrect::overlayMapKind(double time,
                             ViewIdx view)
 {
-    if (!getInput(kLensCorrectInputSource)) {
+    if (!getInput(kLensCorrectInputSource) || (getMixValue(time, view) == 0.)) {
         return OverlayPointMap::eKindNone;
     }
     Settings settings;

@@ -369,7 +369,7 @@ private:
 
     bool computeWarp(double time, ViewIdx view, const Settings& settings, Warp* warp);
 
-    // The field the render samples, with the displacement scaled by mix.
+    // The field the render samples at full displacement for any mix above 0; the identity at 0.
     virtual OverlayPointMap::Result mapOverlayPoint(double time,
                                                     ViewIdx view,
                                                     int inputNb,

@@ -772,6 +772,24 @@ StagedImageEffect::getTransform(double time,
     return resampleTransform(*this, getSourceInput(), request, time, view, renderScale, draftRender, inputToTransform, transform);
 }
 
+StatusEnum
+StagedImageEffect::getOverlayTransform(double time,
+                                       const RenderScale& renderScale,
+                                       bool draftRender,
+                                       ViewIdx view,
+                                       EffectInstancePtr* inputToTransform,
+                                       Transform::Matrix3x3* transform)
+{
+    if (imagePipelineSpec().op != OpKind::Resample) {
+        return NativeEffectBase::getOverlayTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+    if (isMaskApplied() || (getMixValue(time, view) == 0.)) {
+        return eStatusReplyDefault;
+    }
+
+    return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, view, renderScale, draftRender, inputToTransform, transform);
+}
+
 FramesNeededMap
 StagedImageEffect::getFramesNeeded(double time,
                                    ViewIdx view)

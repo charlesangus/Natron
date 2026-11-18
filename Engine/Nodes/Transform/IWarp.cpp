@@ -618,7 +618,7 @@ IWarp::mapOverlayPoint(double time,
                        const Point& in,
                        Point* out)
 {
-    if ((inputNb != kIWarpInputSource) || isTransformIdentity(time, view)) {
+    if ((inputNb != kIWarpInputSource) || isTransformIdentity(time, view) || (getMixValue(time, view) == 0.)) {
         return OverlayPointMap::eIdentity;
     }
     WarpSettings settings;
@@ -673,7 +673,7 @@ OverlayPointMap::Kind
 IWarp::overlayMapKind(double time,
                       ViewIdx view)
 {
-    if (isTransformIdentity(time, view)) {
+    if (isTransformIdentity(time, view) || (getMixValue(time, view) == 0.)) {
         return OverlayPointMap::eKindNone;
     }
 

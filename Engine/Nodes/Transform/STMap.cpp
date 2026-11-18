@@ -492,7 +492,7 @@ STMap::mapOverlayPoint(double time,
                        const Point& in,
                        Point* out)
 {
-    if ((inputNb != kSTMapInputSource) || !getInput(kSTMapInputSource) || !getInput(kSTMapInputUV)) {
+    if ((inputNb != kSTMapInputSource) || !getInput(kSTMapInputSource) || !getInput(kSTMapInputUV) || (getMixValue(time, view) == 0.)) {
         return OverlayPointMap::eIdentity;
     }
     RectI domain;
@@ -647,10 +647,10 @@ STMap::mapOverlayPoint(double time,
 } // STMap::mapOverlayPoint
 
 OverlayPointMap::Kind
-STMap::overlayMapKind(double /*time*/,
-                      ViewIdx /*view*/)
+STMap::overlayMapKind(double time,
+                      ViewIdx view)
 {
-    return (getInput(kSTMapInputSource) && getInput(kSTMapInputUV)) ? OverlayPointMap::eKindNonLinear : OverlayPointMap::eKindNone;
+    return (getInput(kSTMapInputSource) && getInput(kSTMapInputUV) && (getMixValue(time, view) != 0.)) ? OverlayPointMap::eKindNonLinear : OverlayPointMap::eKindNone;
 }
 
 Route

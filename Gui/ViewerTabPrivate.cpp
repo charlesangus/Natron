@@ -187,7 +187,7 @@ ViewerTabPrivate::getOverlayTransform(double time,
     if ( !currentNode->getNode()->isNodeDisabled() /*&& currentNode->getNode()->getCurrentCanTransform()*/ ) {
         // Always use draft mode to draw overlay (so that transforms are applied,
         // even in case of motion blur, see Transform3x3Plugin::getTransform() )
-        stat = currentNode->getTransform_public(time, RenderScale::identity, /*draftRender=*/true, view, &input, &mat);
+        stat = currentNode->getOverlayTransform_public(time, RenderScale::identity, /*draftRender=*/true, view, &input, &mat);
     }
     if (stat == eStatusFailed) {
         return false;

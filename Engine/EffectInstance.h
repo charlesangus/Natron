@@ -1852,10 +1852,26 @@ protected:
     }
 
     /**
+     * @brief The matrix an overlay drawn upstream follows through this node, in the form
+     * getTransform answers. getTransform refuses wherever the matrix alone would not reproduce the
+     * render, a partial mix for one, since concatenation would drop what it leaves out; an overlay
+     * follows the matrix whenever the node moves the image at all. The default is getTransform.
+     **/
+    virtual StatusEnum getOverlayTransform(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform) WARN_UNUSED_RETURN
+    {
+        return getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+
+    /**
      * @brief Maps an overlay point between input inputNb and the output, in canonical coordinates
      * at scale 1. On entry *out holds a seed for numeric inverses. The default applies the
-     * draft-mode getTransform matrix, or its inverse, and is the identity for an input the matrix
-     * does not apply to or a node with no matrix.
+     * draft-mode getOverlayTransform matrix, or its inverse, and is the identity for an input the
+     * matrix does not apply to or a node with no matrix.
      **/
     virtual OverlayPointMap::Result mapOverlayPoint(double time,
                                                     ViewIdx view,
@@ -1866,7 +1882,7 @@ protected:
 
     /**
      * @brief Whether mapOverlayPoint is the identity, a matrix or a non-linear map. The default
-     * answers matrix when getTransform gives one in draft mode.
+     * answers matrix when getOverlayTransform gives one in draft mode.
      **/
     virtual OverlayPointMap::Kind overlayMapKind(double time,
                                                  ViewIdx view) WARN_UNUSED_RETURN;
@@ -1881,6 +1897,12 @@ public:
                                    ViewIdx view,
                                    EffectInstancePtr* inputToTransform,
                                    Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
+    StatusEnum getOverlayTransform_public(double time,
+                                          const RenderScale& renderScale,
+                                          bool draftRender,
+                                          ViewIdx view,
+                                          EffectInstancePtr* inputToTransform,
+                                          Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
 
     /**
      * @brief mapOverlayPoint, with a disabled node mapping every point to itself. The seed, when
@@ -1897,8 +1919,8 @@ public:
                                                 ViewIdx view) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The canonical forward matrix getTransform gives at scale 1 in draft mode when it
-     * applies to input inputNb. The pixel matrix is converted with the input's pixel aspect ratio
+     * @brief The canonical forward matrix getOverlayTransform gives at scale 1 in draft mode when
+     * it applies to input inputNb. The pixel matrix is converted with the input's pixel aspect ratio
      * on the source side and the output's on the destination side.
      **/
     bool getOverlayCanonicalMatrix(double time,

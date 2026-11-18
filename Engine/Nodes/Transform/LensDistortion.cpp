@@ -703,7 +703,7 @@ LensDistortion::mapOverlayPoint(double time,
                                 const Point& in,
                                 Point* out)
 {
-    if ((inputNb != kLensDistortionInputSource) || !getInput(kLensDistortionInputSource)) {
+    if ((inputNb != kLensDistortionInputSource) || !getInput(kLensDistortionInputSource) || (getMixValue(time, view) == 0.)) {
         return OverlayPointMap::eIdentity;
     }
     Settings settings;
@@ -734,7 +734,7 @@ OverlayPointMap::Kind
 LensDistortion::overlayMapKind(double time,
                                ViewIdx view)
 {
-    if (!getInput(kLensDistortionInputSource)) {
+    if (!getInput(kLensDistortionInputSource) || (getMixValue(time, view) == 0.)) {
         return OverlayPointMap::eKindNone;
     }
     Settings settings;

@@ -1540,8 +1540,7 @@ SplineWarp::mapOverlayPoint(double time,
     if ((inputNb != kSplineWarpInputSource) || !getInput(kSplineWarpInputSource)) {
         return OverlayPointMap::eIdentity;
     }
-    const double mix = getMixValue(time, view);
-    if (mix == 0.) {
+    if (getMixValue(time, view) == 0.) {
         return OverlayPointMap::eIdentity;
     }
     Settings settings;
@@ -1563,8 +1562,7 @@ SplineWarp::mapOverlayPoint(double time,
         const int y = (int)std::floor(p.y);
         const RectI window(x - 1, y - 1, x + 2, y + 2);
         const Point s = warp.mesh ? SplineWarpField(*warp.mesh, warp.samples->boundaries, window, scaleX, 1., fieldResolution).getSource(p.x, p.y) : SplineWarpField(*warp.map, warp.samples->boundaries, window, scaleX, 1., fieldResolution).getSource(p.x, p.y);
-        source->x = p.x + mix * (s.x - p.x);
-        source->y = p.y + mix * (s.y - p.y);
+        *source = s;
 
         return OverlayPointMap::eMapped;
     };

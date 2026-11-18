@@ -690,6 +690,32 @@ TEST_F(OverlayPointMapTest, GradeIsIdentity)
     EXPECT_EQ(OverlayPointMap::eKindNone, kind(grade));
 }
 
+TEST_F(OverlayPointMapTest, PartlyMixedTransformMapsFully)
+{
+    NodePtr source = dot(40, 30);
+    NodePtr transform = node(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, source);
+    ASSERT_TRUE(source && transform);
+    ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamTranslate, { 10., 0. }));
+    ASSERT_TRUE(setKnobValues(transform, kOfxMixParamName, { 0.5 }));
+
+    Point q;
+    ASSERT_EQ(OverlayPointMap::eMapped, map(transform, OverlayPointMap::eDirectionForward, pt(10., 20.), &q));
+    EXPECT_NEAR(20., q.x, 1e-9);
+    EXPECT_NEAR(20., q.y, 1e-9);
+    Point back;
+    ASSERT_EQ(OverlayPointMap::eMapped, map(transform, OverlayPointMap::eDirectionInverse, q, &back));
+    EXPECT_NEAR(10., back.x, 1e-9);
+    EXPECT_NEAR(20., back.y, 1e-9);
+    EXPECT_EQ(OverlayPointMap::eKindMatrix, kind(transform));
+
+    ASSERT_TRUE(setKnobValues(transform, kOfxMixParamName, { 0. }));
+    Point still;
+    EXPECT_EQ(OverlayPointMap::eIdentity, map(transform, OverlayPointMap::eDirectionForward, pt(10., 20.), &still));
+    EXPECT_EQ(10., still.x);
+    EXPECT_EQ(20., still.y);
+    EXPECT_EQ(OverlayPointMap::eKindNone, kind(transform));
+}
+
 TEST_F(OverlayPointMapTest, DisabledTransformIsIdentity)
 {
     NodePtr source = dot(40, 30);
@@ -892,6 +918,12 @@ TEST_F(OverlayPointMapTest, SplineWarpOnePairMovesThirtyPixels)
     ASSERT_EQ(OverlayPointMap::eMapped, map(warp, OverlayPointMap::eDirectionInverse, q, &back));
     EXPECT_LE(dist(back, p), 1e-6);
 
+    ASSERT_TRUE(setKnobValues(warp, kOfxMixParamName, { 0.5 }));
+    Point mixed;
+    ASSERT_EQ(OverlayPointMap::eMapped, map(warp, OverlayPointMap::eDirectionForward, p, &mixed));
+    EXPECT_LE(dist(mixed, q), 1e-6);
+    EXPECT_EQ(OverlayPointMap::eKindNonLinear, kind(warp));
+
     ASSERT_TRUE(setKnobValues(warp, kOfxMixParamName, { 0. }));
     Point still;
     EXPECT_EQ(OverlayPointMap::eIdentity, map(warp, OverlayPointMap::eDirectionForward, p, &still));
@@ -1056,6 +1088,81 @@ TEST_F(OverlayPointMapTest, IDistortConstantFieldMapsExactly)
     EXPECT_NEAR(p.x - 10., f.x, 1e-9);
     EXPECT_NEAR(p.y, f.y, 1e-9);
     expectDotFollowsMap(idistort, kDotCentre, 0.5);
+}
+
+TEST_F(OverlayPointMapTest, WarpNodesMapAPointToItselfAtMixZero)
+{
+    const auto expectStill = [](const NodePtr& n, int inputNb) {
+        ASSERT_TRUE(setKnobValues(n, kOfxMixParamName, { 0. }));
+        EXPECT_EQ(OverlayPointMap::eKindNone, kind(n));
+        for (const OverlayPointMap::Direction direction : { OverlayPointMap::eDirectionForward, OverlayPointMap::eDirectionInverse }) {
+            Point q = pt(-1., -1.);
+            EXPECT_EQ(OverlayPointMap::eIdentity, map(n, direction, pt(70.5, 50.5), &q, inputNb));
+            EXPECT_EQ(70.5, q.x);
+            EXPECT_EQ(50.5, q.y);
+        }
+    };
+
+    {
+        SCOPED_TRACE("LensDistortion");
+        NodePtr source = dot(40, 30);
+        NodePtr lens = node(PLUGINID_NATRON_LENSDISTORTION, PLUGIN_MAJOR_NATRON_LENSDISTORTION, source);
+        ASSERT_TRUE(source && lens);
+        ASSERT_TRUE(setKnobValue(lens, kLensDistortionParamModel, std::string(kLensDistortionModelPFBarrel)));
+        ASSERT_TRUE(setKnobValues(lens, kLensDistortionParamPFC3, { 0.1 }));
+        EXPECT_EQ(OverlayPointMap::eKindNonLinear, kind(lens));
+        expectStill(lens, 0);
+    }
+    {
+        SCOPED_TRACE("LensCorrect");
+        resetProject();
+        NodePtr source = dot(40, 30);
+        NodePtr lens = node(PLUGINID_NATRON_LENSCORRECT, PLUGIN_MAJOR_NATRON_LENSCORRECT, source, kLensCorrectInputSource);
+        ASSERT_TRUE(source && lens);
+        ASSERT_TRUE(setKnobValue(lens, kLensCorrectParamCamera, std::string("Canon EOS 5D Mark III")));
+        ASSERT_TRUE(setKnobValue(lens, kLensCorrectParamLens, std::string("Canon EF 70-200mm f/2.8L IS II USM")));
+        ASSERT_TRUE(setKnobValues(lens, kLensCorrectParamFocalLength, { 100. }));
+        ASSERT_TRUE(setKnobValues(lens, kLensCorrectParamAperture, { 2.8 }));
+        EXPECT_EQ(OverlayPointMap::eKindNonLinear, kind(lens));
+        expectStill(lens, kLensCorrectInputSource);
+    }
+    {
+        SCOPED_TRACE("IWarp");
+        resetProject();
+        NodePtr source = dot(40, 30);
+        NodePtr itransform = node(PLUGINID_NATRON_ITRANSFORM, PLUGIN_MAJOR_NATRON_ITRANSFORM, source, kIWarpInputSource);
+        ASSERT_TRUE(source && itransform);
+        ASSERT_TRUE(setKnobValues(itransform, kTransformNodeParamTranslate, { 10., 0. }));
+        EXPECT_EQ(OverlayPointMap::eKindMatrix, kind(itransform));
+        expectStill(itransform, kIWarpInputSource);
+    }
+    {
+        SCOPED_TRACE("IDistort");
+        resetProject();
+        NodePtr source = formatDot();
+        NodePtr field = constant(10., 0., 0., 1.);
+        NodePtr idistort = node(PLUGINID_NATRON_IDISTORT, PLUGIN_MAJOR_NATRON_IDISTORT, source, kIDistortInputSource);
+        ASSERT_TRUE(source && field && idistort);
+        connectNodes(field, idistort, kIDistortInputUV, true);
+        ASSERT_TRUE(setChannelSelect(idistort, kIDistortParamChannelU, "rgba.R"));
+        ASSERT_TRUE(setChannelSelect(idistort, kIDistortParamChannelV, "rgba.G"));
+        EXPECT_EQ(OverlayPointMap::eKindNonLinear, kind(idistort));
+        expectStill(idistort, kIDistortInputSource);
+    }
+    {
+        SCOPED_TRACE("STMap");
+        resetProject();
+        NodePtr source = dot(40, 30);
+        NodePtr uv = createNodeAtMajor(getApp(), kTestPluginIDOverlayUV, -1);
+        NodePtr stmap = node(PLUGINID_NATRON_STMAP, PLUGIN_MAJOR_NATRON_STMAP);
+        ASSERT_TRUE(source && uv && stmap);
+        connectNodes(uv, stmap, kSTMapInputUV, true);
+        connectNodes(source, stmap, kSTMapInputSource, true);
+        ASSERT_TRUE(setChannelSelect(stmap, kSTMapParamChannelU, "rgba.R"));
+        ASSERT_TRUE(setChannelSelect(stmap, kSTMapParamChannelV, "rgba.G"));
+        EXPECT_EQ(OverlayPointMap::eKindNonLinear, kind(stmap));
+        expectStill(stmap, kSTMapInputSource);
+    }
 }
 
 TEST_F(OverlayPointMapTest, FetchRunsOffTheCallingThread)

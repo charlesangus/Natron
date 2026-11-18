@@ -5258,6 +5258,19 @@ EffectInstance::getTransform_public(double time,
     return getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
 }
 
+StatusEnum
+EffectInstance::getOverlayTransform_public(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform)
+{
+    RECURSIVE_ACTION();
+
+    return getOverlayTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+}
+
 bool
 EffectInstance::getOverlayCanonicalMatrix(double time,
                                           ViewIdx view,
@@ -5268,7 +5281,7 @@ EffectInstance::getOverlayCanonicalMatrix(double time,
     Transform::Matrix3x3 pixel;
 
     // Draft mode answers the matrix even where a full render would motion blur.
-    const StatusEnum stat = getTransform_public(time, RenderScale::identity, /*draftRender=*/true, view, &input, &pixel);
+    const StatusEnum stat = getOverlayTransform_public(time, RenderScale::identity, /*draftRender=*/true, view, &input, &pixel);
     if ((stat != eStatusOK) || !input || (input != getInput(inputNb))) {
         return false;
     }

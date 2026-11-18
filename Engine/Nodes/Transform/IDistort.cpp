@@ -389,7 +389,7 @@ IDistort::mapOverlayPoint(double time,
                           const Point& in,
                           Point* out)
 {
-    if ((inputNb != kIDistortInputSource) || isOpIdentity(time, RenderScale::identity, RectI(), view)) {
+    if ((inputNb != kIDistortInputSource) || isOpIdentity(time, RenderScale::identity, RectI(), view) || (getMixValue(time, view) == 0.)) {
         return OverlayPointMap::eIdentity;
     }
     Settings settings;
@@ -469,7 +469,7 @@ OverlayPointMap::Kind
 IDistort::overlayMapKind(double time,
                          ViewIdx view)
 {
-    return isOpIdentity(time, RenderScale::identity, RectI(), view) ? OverlayPointMap::eKindNone : OverlayPointMap::eKindNonLinear;
+    return (isOpIdentity(time, RenderScale::identity, RectI(), view) || (getMixValue(time, view) == 0.)) ? OverlayPointMap::eKindNone : OverlayPointMap::eKindNonLinear;
 }
 
 bool

@@ -522,7 +522,9 @@ KnobGuiColor::wantsTopAlignedLabel() const
 bool
 KnobGuiColor::hasAdjustPanel() const
 {
-    return !_adjustPanelHost.isNull();
+    // The conditions createBelowRowWidget() is called and builds the host under, so an unbuilt row
+    // answers as it will once built.
+    return !_useSimplifiedUI && !_knob.expired() && (getKnobsCountOnSameLine() <= 1);
 }
 
 ColorAdjustPanel*
@@ -818,7 +820,7 @@ KnobGuiColor::refreshWheelFraction()
 void
 KnobGuiColor::onAdjustPanelToggled(bool expanded)
 {
-    if (!hasAdjustPanel() || (expanded && !ensureAdjustPanel())) {
+    if (!_adjustPanelHost || (expanded && !ensureAdjustPanel())) {
         return;
     }
 

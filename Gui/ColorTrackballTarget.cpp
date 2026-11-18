@@ -379,8 +379,7 @@ resolveColorTrackballTarget(Gui* gui)
 
 void
 revealKnobInPanel(DockablePanel* panel,
-                  const KnobIPtr& knob,
-                  QWidget* widget)
+                  const KnobIPtr& knob)
 {
     if (!panel || !knob) {
         return;
@@ -402,6 +401,14 @@ revealKnobInPanel(DockablePanel* panel,
         // group's own widget, which is what actually lays the children out.
         group->setValue(true, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
     }
+    if (KnobGuiPtr knobGui = panel->getKnobGui(knob)) {
+        knobGui->ensureRowBuilt();
+    }
+} // revealKnobInPanel
+
+void
+scrollWidgetIntoView(QWidget* widget)
+{
     if (!widget) {
         return;
     }
@@ -411,7 +418,7 @@ revealKnobInPanel(DockablePanel* panel,
             break;
         }
     }
-} // revealKnobInPanel
+}
 
 bool
 isGlobalModeKnob(KnobGui* knobGui)

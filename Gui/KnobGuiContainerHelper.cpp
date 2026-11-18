@@ -462,11 +462,8 @@ KnobGuiContainerHelper::initializeKnobsIncrementally(const std::function<void()>
     std::unique_ptr<PendingKnobBuild> build(new PendingKnobBuild);
     build->onDone = onDone;
     _imp->pendingBuild = std::move(build);
-    // Two hops: what the caller queued for the next pass gets that pass to itself.
     QTimer::singleShot(0, _imp->signals.get(), [this]() {
-        QTimer::singleShot(0, _imp->signals.get(), [this]() {
-            runKnobBuildStep();
-        });
+        runKnobBuildStep();
     });
 }
 
@@ -524,8 +521,6 @@ KnobGuiContainerHelper::createPendingPages()
             build->regularKnobs.push_back(knobs[i]);
         }
     }
-
-    onKnobBuildStarted();
 }
 
 static bool
@@ -1031,6 +1026,10 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
     }
 
     ret->setEnabledSlot();
+    // A row built while the GUI is frozen missed the frozenChanged signal.
+    if (ret->isGuiFrozenForPlayback()) {
+        ret->onFrozenChanged(true);
+    }
 
     QWidget* fullWidthRow = 0;
 
@@ -1373,6 +1372,7 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
             });
             // Only the curve editor's state changes while the row is unbuilt.
             ret->setSecret();
+            ret->setEnabledSlot();
         } else {
             buildKnobRow(ret, page, layout, (bool)closestParentGroupTab, parentGui, makeNewLine, lastKnobLineSpacing,
                          lastRowWidget, knobsOnSameLine, -1);
@@ -1642,7 +1642,7 @@ KnobGuiContainerHelper::getUserPages(std::list<KnobPage*>& userPages) const
 void
 KnobGuiContainerHelper::buildShownDeferredRows()
 {
-    // Copied, as a row being built may look up other knob guis.
+    // Copied: building a row can add or remove knob GUIs.
     KnobsGuiMapping mapping = _imp->knobsMap;
     for (KnobsGuiMapping::const_iterator it = mapping.begin(); it != mapping.end(); ++it) {
         if (it->second) {

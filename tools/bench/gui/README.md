@@ -171,8 +171,7 @@ plug-ins and is not the figure to read.
 | `panelKnobWidgets` | The row's widgets, `KnobGui::createGUI`. |
 | `panelKnobLayout` | Putting the row in its page's layout. |
 | `panelKnobSecret` | Hiding a secret row. |
-| `panelKnobsInitialized` | `onKnobsInitialized`: the tab widget and the pages after the rows. |
-| `panelInitTabs` | Putting the tab widget in the panel, inside `panelKnobsInitialized`. |
+| `panelKnobsInitialized` | `onKnobsInitialized`: the panels and interfaces set up after the rows. |
 | `panelInitRoto` | The Roto panel, inside `panelKnobsInitialized`. |
 | `panelInitTracker` | The Tracker panel. |
 | `panelInitExtra` | The multi-instance interface. |

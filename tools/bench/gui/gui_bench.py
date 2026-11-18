@@ -1205,25 +1205,29 @@ try:
         finally:
             qapp.removeEventFilter(watch)
 
-    def measure_paint(hosts, accepts, send, drain=True, settle=True):
+    def measure_paint(hosts, accepts, send, drain=True, settle=True, watch_after_send=False):
         """(t0, t1) in ms: just before send() posts the key event, and the end of the event-loop pass that
         delivered the first accepted paint to one of hosts, or to the whole application when hosts is
         None. With settle, t1 is instead the end of the last pass that painted one of them before
         SETTLE_QUIET_MS went by without a paint, so the repaints a step queues behind its first one
         count; settling stops SETTLE_LIMIT_MS after the first paint. With drain, the work earlier reps
-        left queued runs first. A paint taken during send() does not count. Raises when none arrives in
+        left queued runs first. A paint taken during send() does not count. With watch_after_send, the
+        paint filter is installed only once send() returns: an app-wide Python filter sees every event a
+        synchronous step sends, which would add its own cost to the step. Raises when none arrives in
         CREATE_PAINT_TIMEOUT_S."""
         if drain:
             drain_events()
         watch = PaintWatch(accepts)
         targets = list(hosts) if hosts is not None else [QApplication.instance()]
+        if not watch_after_send:
+            for target in targets:
+                target.installEventFilter(watch)
         t0 = mono_ms()
         try:
             send()
-            # Installed once send() returns: an app-wide Python filter sees every event a synchronous step
-            # sends, which would add its own cost to the step.
-            for target in targets:
-                target.installEventFilter(watch)
+            if watch_after_send:
+                for target in targets:
+                    target.installEventFilter(watch)
             watch.armed = True
             deadline = t0 + CREATE_PAINT_TIMEOUT_S * 1000.0
             while not watch.fired and mono_ms() < deadline:
@@ -1652,20 +1656,18 @@ try:
     def op_open_panel():
         """One rep per panel opened: each plug-in in turn, PANEL_REPS times. The node is created through
         Python, which builds no panel, so each open builds a fresh one on the synchronous path."""
+        registered = [pid for pid in PANEL_PLUGINS if pid in gt._plugin_ids]
+        missing = [pid for pid in PANEL_PLUGINS if pid not in gt._plugin_ids]
+
         def setup(ctx, st):
             gt.close_all_panels()
-            st["plugins"] = []
-            st["panels"] = {}
-            missing = []
-            for pid in PANEL_PLUGINS:
-                if pid in gt._plugin_ids:
-                    st["plugins"].append(pid)
-                    st["panels"][pid] = {"build": [], "paint": [], "stages": [], "knobs": []}
-                else:
-                    missing.append(pid)
-            if not st["plugins"]:
+            if not registered:
                 raise RuntimeError("none of the panel plug-ins is registered: %s" % ", ".join(PANEL_PLUGINS))
-            st["record"] = {"headline": "panels", "budget_ms": PANEL_BUDGET_MS, "missing_plugins": missing}
+            if missing:
+                report("NOTE open_panel skips unregistered plug-ins: %s" % ", ".join(missing))
+            st["plugins"] = list(registered)
+            st["panels"] = dict((pid, {"build": [], "paint": [], "stages": [], "knobs": []}) for pid in registered)
+            st["record"] = {"headline": "panels", "budget_ms": PANEL_BUDGET_MS, "missing_plugins": list(missing)}
             st["all_knobs"] = {}
 
         def before(ctx, st, rep):
@@ -1694,7 +1696,7 @@ try:
                 b0 = mono_ms()
                 QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
                 built["ms"] = mono_ms() - b0
-            t0, t1 = measure_paint(None, in_visible_panel, send, drain=False)
+            t0, t1 = measure_paint(None, in_visible_panel, send, drain=False, watch_after_send=True)
             if len(settings_panels()) != panels_before + 1:
                 raise RuntimeError("opening %s's panel did not build exactly one panel" % st["pid"])
             entry = st["panels"][st["pid"]]
@@ -1739,7 +1741,7 @@ try:
                     report("PANEL %-20s   knob  %-28s %3d rows, %8.3f ms, %6.3f ms/row" % (
                         pid, t, v["rows"], v["total_median_ms"], v["per_row_median_ms"]))
         return {"setup": setup, "before": before, "events": events, "after": after, "teardown": teardown,
-                "reps": PANEL_REPS * len(PANEL_PLUGINS)}
+                "reps": PANEL_REPS * len(registered)}
 
     PANEL_OPS = [("open_panel", op_open_panel)]
 

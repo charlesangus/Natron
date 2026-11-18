@@ -228,6 +228,7 @@ KnobGui::createGUI(QWidget* fieldContainer,
     _imp->deferredRowBuild = std::function<void()>();
     _imp->deferredRowPage.reset();
     _imp->deferredRowIndex = -1;
+    _imp->hiddenWhileUnbuilt = false;
     KnobIPtr knob = getKnob();
 
     _imp->fieldLayout = layout;

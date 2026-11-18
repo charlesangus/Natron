@@ -827,6 +827,9 @@ KnobGui::getKnobsCountOnSameLine() const
 void
 KnobGui::hide()
 {
+    if (_imp->deferredRowBuild) {
+        _imp->hiddenWhileUnbuilt = true;
+    }
     // Nothing of an unbuilt row is in its page.
     if (_imp->widgetCreated) {
         if (!_imp->customInteract) {
@@ -888,6 +891,7 @@ KnobGui::show(int /*index*/)
     if ( !getGui() ) {
         return;
     }
+    _imp->hiddenWhileUnbuilt = false;
     if (_imp->deferredRowBuild) {
         // The row is built in the event that reveals it, before its page is next painted.
         if (isSecretRecursive()) {
@@ -970,9 +974,30 @@ KnobGui::isRowDeferred() const
 void
 KnobGui::buildDeferredRowIfShown()
 {
-    if (_imp->deferredRowBuild && !isSecretRecursive()) {
+    if (_imp->deferredRowBuild && !_imp->hiddenWhileUnbuilt && !isSecretRecursive()) {
         show();
     }
+}
+
+void
+KnobGui::ensureRowBuilt()
+{
+    if (!_imp->deferredRowBuild) {
+        return;
+    }
+    KnobPageGuiPtr page = _imp->deferredRowPage.lock();
+    if (page && !page->shown) {
+        return;
+    }
+    if (!_imp->hiddenWhileUnbuilt && !isSecretRecursive()) {
+        show();
+
+        return;
+    }
+    std::function<void()> build;
+    build.swap(_imp->deferredRowBuild);
+    build();
+    hide();
 }
 
 void
@@ -1053,17 +1078,12 @@ KnobGui::isOnNewLine() const
 void
 KnobGui::setEnabledSlot()
 {
-    // A toolbar page's knobs get a KnobGui in the settings panel but no widgets.
-    if (!getGui() || !_imp->widgetCreated) {
+    // A toolbar page's knobs get a KnobGui in the settings panel but no widgets, and no row to build.
+    if (!getGui() || (!_imp->widgetCreated && !_imp->deferredRowBuild)) {
         return;
     }
-    if (!_imp->customInteract) {
-        setEnabled();
-    }
     KnobIPtr knob = getKnob();
-    if (_imp->descriptionLabel) {
-        _imp->descriptionLabel->setReadOnly( !knob->isEnabled(0) );
-    }
+    // An unbuilt row's curves follow its knob too.
     KnobGuiPtr thisShared = shared_from_this();
     if ( knob->getHolder() && knob->getHolder()->getApp() ) {
         for (int i = 0; i < knob->getDimension(); ++i) {
@@ -1073,6 +1093,15 @@ KnobGui::setEnabledSlot()
                 getGui()->getCurveEditor()->showCurve(thisShared, i);
             }
         }
+    }
+    if (!_imp->widgetCreated) {
+        return;
+    }
+    if (!_imp->customInteract) {
+        setEnabled();
+    }
+    if (_imp->descriptionLabel) {
+        _imp->descriptionLabel->setReadOnly(!knob->isEnabled(0));
     }
 }
 

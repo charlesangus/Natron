@@ -291,11 +291,6 @@ protected:
     virtual void onKnobsInitialized() {}
 
     /**
-     * @brief Called by initializeKnobsIncrementally() once the pages exist, before any knob gui is built.
-     **/
-    virtual void onKnobBuildStarted() { }
-
-    /**
      * @brief This is called when a page is made current externally, e.g: not by the user changing it from the tab-widget
      **/
     virtual void onPageActivated(const KnobPageGuiPtr& page) = 0;

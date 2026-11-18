@@ -780,14 +780,6 @@ DockablePanel::onLineEditNameEditingFinished()
 void
 DockablePanel::onKnobsInitialized()
 {
-    assert(_imp->_tabWidget);
-    {
-        NodeCreationStageLog::Scope stage("panelInitTabs");
-        if (_imp->_tabWidget && (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0)) {
-            _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
-        }
-    }
-
     {
         NodeCreationStageLog::Scope stage("panelInitRoto");
         RotoPanel* roto = initializeRotoPanel();

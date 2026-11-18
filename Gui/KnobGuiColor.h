@@ -148,7 +148,8 @@ public:
 
     /**
      * @brief Whether the row has an adjustment panel: false for simplified and viewer knobs and for knobs
-     * that share their line with other knobs, which keep the colour selector popup.
+     * that share their line with other knobs, which keep the colour selector popup. True for an unbuilt
+     * row that will have one once built.
      **/
     bool hasAdjustPanel() const;
 

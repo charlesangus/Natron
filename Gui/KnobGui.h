@@ -136,6 +136,12 @@ public:
     void buildDeferredRowIfShown();
 
     /**
+     * @brief Builds an unbuilt row whose page has been shown, leaving it shown or hidden as an eagerly
+     * built row would be. Does nothing for a built row or one on a page not yet shown.
+     **/
+    void ensureRowBuilt();
+
+    /**
      * @brief Records the row before this one in its page's focus order. Only the first call counts, so the
      * rows link back to rows linked before them and never form a cycle.
      **/

@@ -23,6 +23,10 @@ hiding it again while it has the focus must leave the focus in the same panel wi
 Properties bin; and Shift+Tab from the first widget of a page built when first shown must stay in
 the panel. A second panel is opened after the first, so a misplaced widget would lead into it.
 
+A hide-unmodified case turns on the panel's hide-unmodified button, then shows a page that was not
+shown yet: the unmodified number rows of that page must stay hidden, as they would on
+a page built with the panel, and must show once the button is turned off again.
+
 Widget wrappers are looked up again on every pass and never kept across a yield: a wrapper kept
 across one can outlive its C++ object.
 """
@@ -55,6 +59,9 @@ LAZY_SKIP = ("read", "write", "viewer", "group", "backdrop", "dot", "input", "ou
              "tracker", "roto", "cache", "disk")
 LAZY_SCAN_LIMIT = 60
 SECOND_PANEL_PLUGIN = "Blur"
+# Tried in turn for a page other than the one a new panel shows, holding unmodified rows.
+UNMODIFIED_PLUGINS = ("Merge", "Transform", "Grade", "Blur", "ColorCorrect")
+HIDE_UNMODIFIED_TIP = "without modifications"
 LABEL_CLASS = "ClickableLabel"
 
 PROP_ID = "natronPluginID"
@@ -68,7 +75,8 @@ try:
     import shiboken6
     from PySide6.QtCore import QMetaObject, QObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QCursor, QGuiApplication
-    from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QScrollArea, QTabWidget, QWidget
+    from PySide6.QtWidgets import (QAbstractButton, QApplication, QLabel, QMainWindow, QScrollArea, QTabWidget,
+                                   QWidget)
 
     import guitest as gt
     from guitest import check, report, require
@@ -597,6 +605,113 @@ try:
             check(inside, "%s: Shift+Tab from the first widget of the page shown late stays in its panel "
                   "(went to %s)" % (tag, name))
 
+    def is_unmodified(p):
+        if isinstance(p, (NatronEngine.IntParam, NatronEngine.DoubleParam)):
+            return all(p.getValue(d) == p.getDefaultValue(d) for d in range(p.getNumDimensions()))
+        return False
+
+    def unmodified_rows_by_page(node):
+        """For each page of node: the labels of its visible, unmodified number parameters that sit
+        directly on the page, not in a group."""
+        found = {}
+        for p in node.getParams():
+            parent = p.getParent()
+            if not isinstance(parent, NatronEngine.PageParam) or not p.getIsVisible() or not p.getLabel():
+                continue
+            if is_unmodified(p):
+                found.setdefault(parent.getLabel(), []).append(p.getLabel())
+        return found
+
+    def hide_unmodified_button(panel):
+        for b in panel.findChildren(QAbstractButton):
+            if b.isCheckable() and HIDE_UNMODIFIED_TIP in b.toolTip():
+                return b
+        return None
+
+    def tab_index(tabs, label):
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == label:
+                return i
+        return -1
+
+    def shown_labels(node, label, texts):
+        """Which of texts are the label of a visible row on node's page labelled label."""
+        panel = panel_of(node)
+        tabs = panel_tabs(panel) if panel is not None else None
+        i = tab_index(tabs, label) if tabs is not None else -1
+        page = tabs.widget(i) if i >= 0 else None
+        shown = set()
+        if page is not None:
+            for w in page.findChildren(QLabel):
+                if gt.class_name(w) == LABEL_CLASS and w.isVisible():
+                    shown.add(label_text(w))
+        return [t for t in texts if t in shown]
+
+    def click_hide_unmodified(node):
+        panel = panel_of(node)
+        button = hide_unmodified_button(panel) if panel is not None else None
+        found = button is not None
+        if found:
+            button.click()
+        return found
+
+    def hide_unmodified_steps():
+        tag = "hide unmodified"
+        gt.section(tag)
+        yield from quiet()
+        node = None
+        unseen = []
+        for pid in UNMODIFIED_PLUGINS:
+            node = app.createNode(pid)
+            if node is None:
+                report("NOTE %s: %s is not available: %s" % (tag, pid, gt.plugin_problem(pid)))
+                continue
+            node.setPosition(-300, 250)
+            rows = unmodified_rows_by_page(node)
+            ok = yield from open_panel(node)
+            if not check(ok, "%s: the panel of %s opens" % (tag, node.getLabel())):
+                node.destroy()
+                node = None
+                continue
+            panel = panel_of(node)
+            tabs = panel_tabs(panel) if panel is not None else None
+            current = tabs.currentIndex() if tabs is not None else -1
+            unseen = [(label, texts) for label, texts in sorted(rows.items())
+                      if tabs is not None and tab_index(tabs, label) not in (-1, current)]
+            tabs = panel = None
+            if unseen:
+                break
+            report("NOTE %s: %s has no unmodified rows on a page not yet shown" % (tag, pid))
+            gt.close_all_panels()
+            node.destroy()
+            node = None
+        if not check(node is not None, "%s: one of %r has unmodified rows on a page not yet shown" % (tag, UNMODIFIED_PLUGINS)):
+            return
+        label, texts = unseen[0]
+        report("NOTE %s: %s page %r, unmodified rows %r" % (tag, node.getPluginID(), label, texts))
+
+        if not check(click_hide_unmodified(node), "%s: the panel has a hide-unmodified button" % tag):
+            return
+        yield ("sleep", SETTLE_MS)
+        panel = panel_of(node)
+        tabs = panel_tabs(panel) if panel is not None else None
+        if tabs is not None:
+            tabs.setCurrentIndex(tab_index(tabs, label))
+        tabs = panel = None
+        yield ("sleep", SETTLE_MS)
+        shown = shown_labels(node, label, texts)
+        check(not shown, "%s: the unmodified rows of page %r, shown after hiding unmodified rows, stay hidden "
+              "(shown: %r)" % (tag, label, shown))
+
+        click_hide_unmodified(node)
+        yield ("sleep", SETTLE_MS)
+        shown = shown_labels(node, label, texts)
+        missing = [t for t in texts if t not in shown]
+        check(not missing, "%s: turning hide-unmodified off shows them again (still hidden: %r)" % (tag, missing))
+        gt.close_all_panels()
+        node.destroy()
+        node = None
+
     def steps():
         gt.section("setup")
         require(xin.error is None, "XTEST input is available", xin.error or "")
@@ -675,6 +790,8 @@ try:
             check(not visible_panels(), "%s: no panel is left open (%d open)" % (tag, len(visible_panels())))
 
         yield from lazy_focus_steps()
+        gt.close_all_panels()
+        yield from hide_unmodified_steps()
 
         faulthandler.cancel_dump_traceback_later()
 

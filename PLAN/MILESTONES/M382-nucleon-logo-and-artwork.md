@@ -166,4 +166,4 @@ Context:
   - valknut-b15-unicursal: a couple of variations rotated clockwise a little so the two right-hand points face down; draw on the Bauhaus references; optionally bring back some of the Feynman-diagram feel. A couple more Bauhaus-style ones too.
   - snoldelev-b15-taper: a couple of variations rotated right with a flat side down that read better at small sizes, plus a couple more Bauhaus-style ones.
   - Each sheet carries an inset of the Bauhaus references that inspired the design.
-  - Two Opus agents, one per motif. Marks in `concepts/valknut-b18-*.svg` and `concepts/snoldelev-b18-*.svg`; sheets under `build/branding/round18-valknut/` and `build/branding/round18-snoldelev/`.
+  - Two Opus agents, one per motif. Marks in `concepts/valknut-b18-*.svg` and `concepts/snoldelev-b18-*.svg`; sheets under `build/branding/round18-valknut/` and `build/branding/round18-snoldelev/`. Delivered: valknut-b18-tilt15, -tilt20-heavy, -tilt12-light, -gluon, -proton, -kandinsky, -moholy; snoldelev-b18-upright, -compact, -tucked, -crescent, -planes, -bars. A level base for the valknut would need a 60° turn, which lands back on the grid, so the tilts are 12–20°.

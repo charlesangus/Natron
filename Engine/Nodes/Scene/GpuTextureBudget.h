@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <set>
@@ -112,7 +113,14 @@ public:
     struct Decided {
         std::size_t admitted = 0;
         std::size_t refused = 0;
+        // The bytes of those admitted.
+        std::uint64_t bytes = 0;
     };
+
+    // Of an owner in a scope, its place in the order textures come in, lowest first; kUnranked
+    // keeps its textures held.
+    using OwnerRank = std::function<std::size_t(const std::string& owner)>;
+    static constexpr std::size_t kUnranked = static_cast<std::size_t>(-1);
 
     /**
      * @brief Decides held textures that an owner in scope claims and that were claimed before the
@@ -121,6 +129,13 @@ public:
      * batchBytes or batchCount, though the first that fits is always admitted.
      **/
     Decided decidePending(std::uint64_t scope, std::uint64_t batchBytes, std::size_t batchCount);
+
+    /**
+     * @brief As decidePending(), but in the order of the lowest rank of the owners in scope claiming
+     * each texture, first claimed first within a rank. A texture none of whose owners rank is left
+     * held.
+     **/
+    Decided decidePending(std::uint64_t scope, std::uint64_t batchBytes, std::size_t batchCount, const OwnerRank& rank);
 
     // The owners in scope that hold a texture admitted since it was held, each given once.
     std::vector<std::string> takeOwnersToReread(std::uint64_t scope);

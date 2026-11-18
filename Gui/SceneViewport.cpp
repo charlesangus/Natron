@@ -199,6 +199,10 @@ const double kRevealTargetMs = 33.;
 const int kRevealStepDeadlineMs = 16;
 // Long enough to span the gaps between the moves of one drag.
 const int kRevealCameraYieldMs = 250;
+// What a frame of the fill streams in of textures, paced between these by what frames cost.
+const std::uint64_t kFillTextureBatchMinBytes = std::uint64_t(16) << 20;
+const std::uint64_t kFillTextureBatchStartBytes = std::uint64_t(64) << 20;
+const std::uint64_t kFillTextureBatchMaxBytes = std::uint64_t(512) << 20;
 
 SdfPathVector
 toSdfPaths(const std::vector<std::string>& paths)
@@ -833,6 +837,33 @@ struct SceneViewportRenderer::Implementation {
     std::size_t drawRevealStepPrims = 0;
     std::chrono::steady_clock::time_point drawRevealStepStart;
     unsigned long long drawRevealSteps = 0;
+    // A Storm filter admits its geometry a batch a presented image, timed and paced as reveal steps
+    // are, which it never takes meanwhile; the rows come nearest first, as the stand-in's worker
+    // orders them for the view the camera last rested at.
+    std::atomic<bool> drawFilling { false };
+    std::atomic<std::size_t> fillAdmitted { 0 };
+    std::atomic<std::size_t> fillPending { 0 };
+    std::atomic<double> fillBudgetMs { kRevealTargetMs };
+    double fillPacerBudgetMs = kRevealTargetMs;
+    bool drawFillStep = false;
+    // A load landing in the step's frame adds prims of its own to what the frame cost.
+    unsigned long long drawFillStepLoads = 0;
+    SceneDrawFilter::Order fillOrder;
+    std::shared_ptr<const std::vector<std::string>> fillOrderRows;
+    bool fillOrderViewSet = false;
+    GfMatrix4d fillOrderView;
+    int fillOrderWidth = 0;
+    int fillOrderHeight = 0;
+    std::uint64_t textureBatchBytes = kFillTextureBatchStartBytes;
+    std::uint64_t texturesStreamedBytes = 0;
+    std::chrono::steady_clock::time_point texturesStreamedAt;
+    // The stand-in's boxes of the rows with prims still to come, made on the render thread from the
+    // list and the admissions they were made for.
+    mutable std::mutex fillBoxMutex;
+    SceneDrawBoxes::ListPtr fillBoxList;
+    SceneDrawBoxes::ListPtr fillBoxSource;
+    std::size_t fillBoxAdmitted = 0;
+    std::atomic<bool> fillBoxesShown { false };
     // When the user last moved the camera, as steady clock ticks.
     std::atomic<long long> cameraMovedAt { 0 };
     // Background frames take the reveal steps then, so a render the main thread waits for takes none.
@@ -876,6 +907,10 @@ struct SceneViewportRenderer::Implementation {
     };
     BoxBuffers boxBuffers;
     BoxBuffers standInBuffers;
+    BoxBuffers fillBuffers;
+    // What the last overlay pass drew of fillBoxList. Main thread.
+    SceneDrawBoxes::ListPtr fillDrawnList;
+    std::atomic<bool> fillColoursValid { false };
     std::atomic<int> boxesDrawn { 0 };
     std::atomic<int> markersDrawn { 0 };
     // Whether feedBoxes() feeds the stand-in's worker. Main thread.
@@ -1690,7 +1725,32 @@ struct SceneViewportRenderer::Implementation {
     void streamTextures()
     {
         StormTextureBudget::sampleFreeVideoMemory();
-        StormTextureBudget::streamTextures(engineInstanceId);
+        StormTextureBudget::StreamPace pace;
+        pace.batchBytes = textureBatchBytes;
+        SceneDrawFilter* filter = get_pointer(drawFilter);
+        if (filter && filter->isFilling() && fillOrderRows) {
+            pace.rows = fillOrderRows;
+            pace.reached = filter->orderReached();
+        }
+        texturesStreamedAt = std::chrono::steady_clock::now();
+        texturesStreamedBytes = StormTextureBudget::streamTextures(engineInstanceId, pace).bytes;
+    }
+
+    // After the renders of a frame that streamed textures: what they and the frame cost sizes the
+    // next frame's batch.
+    void paceTextures()
+    {
+        if (texturesStreamedBytes == 0) {
+            return;
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - texturesStreamedAt).count();
+        const double budgetMs = fillBudgetMs;
+        if (ms > budgetMs) {
+            textureBatchBytes = (std::max)(kFillTextureBatchMinBytes, textureBatchBytes / 2);
+        } else if (ms < 0.8 * budgetMs) {
+            textureBatchBytes = (std::min)(kFillTextureBatchMaxBytes, textureBatchBytes + textureBatchBytes / 2);
+        }
+        texturesStreamedBytes = 0;
     }
 
     // Nothing above a paint catches what a delegate throws.
@@ -1774,8 +1834,13 @@ struct SceneViewportRenderer::Implementation {
         }
         drawFilter = SceneDrawFilter::find(filterInstanceId);
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
+            // Another delegate would restart its render at every batch.
+            filter->setAdmitting(RenderDelegates::isStorm(rendererId));
             filter->seedRules(drawRules);
         }
+        fillOrder.reset();
+        fillOrderRows.reset();
+        fillOrderViewSet = false;
         engineInstanceId = filterInstanceId;
         engineHeld = true;
 
@@ -2015,6 +2080,23 @@ struct SceneViewportRenderer::Implementation {
             drawRevealStepStart = stepStart;
             drawRevealStepInserts = drawInsertsRendered;
         }
+        drawFillStep = false;
+        if ((stepped == 0) && mayStep && filter && filter->isFilling() && !yieldsToCamera() && drawRevealStepDue.exchange(false)) {
+            refreshFillOrder();
+            const double budgetMs = fillBudgetMs;
+            if (budgetMs != fillPacerBudgetMs) {
+                drawRevealPacer = SceneRevealPacer(budgetMs);
+                fillPacerBudgetMs = budgetMs;
+            }
+            const std::chrono::steady_clock::time_point stepStart = std::chrono::steady_clock::now();
+            stepped = filter->admit(fillOrder, drawRevealPacer.nextBatch(), stepStart + std::chrono::milliseconds(kRevealStepDeadlineMs));
+            ++drawRevealSteps;
+            drawFillStep = (stepped != 0);
+            drawFillStepLoads = filter->getInputAddedCount();
+            drawRevealStepPrims = stepped;
+            drawRevealStepStart = stepStart;
+        }
+        noteFillState(filter);
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
         const double ms = std::chrono::duration<double, std::milli>(end - start).count();
         drawRevealing = filter && filter->isRevealing();
@@ -2050,7 +2132,76 @@ struct SceneViewportRenderer::Implementation {
             drawRevealPacer.observe(drawRevealStepPrims, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawRevealStepStart).count());
         }
         drawRevealStepTimed = false;
+        if (drawFillStep && rendered && (filter->getInputAddedCount() == drawFillStepLoads)) {
+            drawRevealPacer.observe(drawRevealStepPrims, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawRevealStepStart).count());
+        }
+        drawFillStep = false;
         drawRevealing = filter->isRevealing();
+        noteFillState(filter);
+    }
+
+    // Render thread. Takes the stand-in worker's latest order, and the rows of it the textures go by.
+    void refreshFillOrder()
+    {
+        const SceneDrawFilter::Order order = standInBoxes ? standInBoxes->getOrder() : SceneDrawFilter::Order();
+        if (order == fillOrder) {
+            return;
+        }
+        fillOrder = order;
+        if (!order) {
+            fillOrderRows.reset();
+
+            return;
+        }
+        std::shared_ptr<std::vector<std::string>> rows = std::make_shared<std::vector<std::string>>();
+        rows->reserve(order->size());
+        for (const SdfPath& row : *order) {
+            rows->push_back(row.GetString());
+        }
+        fillOrderRows = rows;
+    }
+
+    // Render thread, before a frame's draw deltas: a camera at rest has the rows ordered for its view.
+    void noteFillView(const GfFrustum& frustum,
+                      int width,
+                      int height)
+    {
+        if (!drawFilling || yieldsToCamera() || !standInBoxes) {
+            return;
+        }
+        const GfMatrix4d viewProjection = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix();
+        if (fillOrderViewSet && (viewProjection == fillOrderView) && (width == fillOrderWidth) && (height == fillOrderHeight)) {
+            return;
+        }
+        fillOrderViewSet = true;
+        fillOrderView = viewProjection;
+        fillOrderWidth = width;
+        fillOrderHeight = height;
+        standInBoxes->setOrderView(viewProjection, width, height);
+    }
+
+    // Render thread: what the fill has left, and the boxes standing in for it.
+    void noteFillState(SceneDrawFilter* filter)
+    {
+        const bool filling = filter && filter->isFilling();
+        drawFilling = filling;
+        fillAdmitted = filter ? filter->admittedCount() : 0;
+        fillPending = filter ? filter->pendingCount() : 0;
+        const SceneDrawBoxes::ListPtr source = (filling && fillBoxesShown && standInBoxes) ? standInBoxes->getList() : SceneDrawBoxes::ListPtr();
+        const std::size_t admitted = fillAdmitted;
+        if ((source == fillBoxSource) && (!source || (admitted == fillBoxAdmitted))) {
+            return;
+        }
+        SceneDrawBoxes::ListPtr list;
+        if (source) {
+            list = std::make_shared<const SceneDrawBoxes::List>(SceneDrawBoxes::unadmitted(*source, [filter](const SdfPath& row) {
+                return filter->hasPendingAt(row);
+            }));
+        }
+        std::lock_guard<std::mutex> lock(fillBoxMutex);
+        fillBoxList = list;
+        fillBoxSource = source;
+        fillBoxAdmitted = admitted;
     }
 
     // The GL state both kinds of frame start from.
@@ -2749,7 +2900,7 @@ struct SceneViewportRenderer::Implementation {
     // stageMutex.
     void feedStandInBoxes()
     {
-        if (standInBoxes && standInEnabled) {
+        if (standInBoxes && (standInEnabled || drawFilling)) {
             {
                 std::lock_guard<std::mutex> rulesLock(rulesMutex);
                 if (!standInRulesFed || (standInRulesVersion != drawRulesVersion)) {
@@ -3013,6 +3164,35 @@ struct SceneViewportRenderer::Implementation {
         standInBoxesDrawn = int(standInBuffers.boxInstances + standInBuffers.markerInstances);
     }
 
+    // Over a frame of the fill, the stand-in's boxes of the rows still to come in.
+    void drawFillBoxes(const GfFrustum& frustum,
+                       int width,
+                       int height)
+    {
+        SceneDrawBoxes::ListPtr list;
+        {
+            std::lock_guard<std::mutex> lock(fillBoxMutex);
+            list = fillBoxList;
+        }
+        if (!list || list->boxes.empty() || !ensureBoxProgram()) {
+            return;
+        }
+        uploadBoxes(&fillBuffers, list, fillColoursValid.exchange(true), GfVec3f(0.7f, 0.7f, 0.7f));
+        drawBoxBuffers(fillBuffers, frustum, width, height);
+        fillDrawnList = list;
+        standInBoxesDrawn = int(fillBuffers.boxInstances + fillBuffers.markerInstances);
+    }
+
+    bool hasFillBoxes() const
+    {
+        if (!fillBoxesShown || !drawFilling) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(fillBoxMutex);
+
+        return fillBoxList && !fillBoxList->boxes.empty();
+    }
+
     void releaseBoxesGL()
     {
         if (boxProgram) {
@@ -3021,7 +3201,9 @@ struct SceneViewportRenderer::Implementation {
         }
         releaseBoxBuffers(&boxBuffers);
         releaseBoxBuffers(&standInBuffers);
+        releaseBoxBuffers(&fillBuffers);
         drawnBoxList.reset();
+        fillDrawnList.reset();
     }
 
     // The overlays over the image in fbo. handleFrame is null when no handles are drawn.
@@ -3043,8 +3225,10 @@ struct SceneViewportRenderer::Implementation {
         markersDrawn = 0;
         standInBoxesDrawn = 0;
         drawnBoxList.reset();
+        fillDrawnList.reset();
         drawnBoxes.clear();
-        if (!standIn && !showGrid && !showGuides && !hasHandles && !hasBoxes()) {
+        const bool fillBoxes = !standIn && !held && hasFillBoxes();
+        if (!standIn && !fillBoxes && !showGrid && !showGuides && !hasHandles && !hasBoxes()) {
             return;
         }
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -3055,6 +3239,8 @@ struct SceneViewportRenderer::Implementation {
         glDisable(GL_FRAMEBUFFER_SRGB);
         if (standIn && !held) {
             drawStandInBoxes(frustum, width, height);
+        } else if (fillBoxes) {
+            drawFillBoxes(frustum, width, height);
         }
         if (showGrid) {
             drawGrid(frustum, throughCamera);
@@ -3070,21 +3256,36 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
-    // The drawn box or marker under the pixel (x, y) of the frustum's width x height view, -1 for
-    // none. Needs stageMutex.
-    int pickBox(const GfFrustum& frustum,
-                int width,
-                int height,
-                int x,
-                int y,
-                GfVec3d* point) const
+    // The row of the drawn box or marker under the pixel (x, y) of the frustum's width x height
+    // view, the nearest of the guide boxes and the fill's; empty for none. Needs stageMutex.
+    SdfPath pickBox(const GfFrustum& frustum,
+                    int width,
+                    int height,
+                    int x,
+                    int y,
+                    GfVec3d* point) const
     {
-        if (!drawnBoxList) {
-            return -1;
+        const GfMatrix4d viewProjection = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix();
+        SdfPath path;
+        double nearest = 0.;
+        for (const SceneDrawBoxes::ListPtr& list : { drawnBoxList, fillDrawnList }) {
+            if (!list) {
+                continue;
+            }
+            GfVec3d hit;
+            const int box = SceneDrawBoxes::pick(*list, viewProjection, width, height, GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack, &hit);
+            if (box < 0) {
+                continue;
+            }
+            const double depth = viewProjection.Transform(hit)[2];
+            if (path.IsEmpty() || (depth < nearest)) {
+                path = list->boxes[box].path;
+                nearest = depth;
+                *point = hit;
+            }
         }
 
-        return SceneDrawBoxes::pick(*drawnBoxList, frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix(), width, height,
-                                    GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack, point);
+        return path;
     }
 
     // Last, so that they go first: their workers read the members above.
@@ -3435,7 +3636,7 @@ SceneViewportRenderer::needsBackgroundFrame() const
 
     return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
         || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()))
-        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed;
+        || (_imp->drawAbsorbed != _imp->drawPosted) || ((_imp->drawRevealing || _imp->drawFilling) && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed;
 }
 
 void
@@ -3499,6 +3700,27 @@ bool
 SceneViewportRenderer::isDrawRevealing() const
 {
     return _imp->drawRevealing;
+}
+
+bool
+SceneViewportRenderer::isDrawFilling() const
+{
+    return _imp->drawFilling;
+}
+
+double
+SceneViewportRenderer::getFillProgress() const
+{
+    const double admitted = double(_imp->fillAdmitted.load());
+    const double total = admitted + double(_imp->fillPending.load());
+
+    return (total > 0.) ? (admitted / total) : 1.;
+}
+
+bool
+SceneViewportRenderer::isFillComplete() const
+{
+    return !_imp->drawFilling && (_imp->fillPending == 0) && !_imp->texturesOwed;
 }
 
 void
@@ -3691,7 +3913,10 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         return false;
     }
     section.collectWith(_imp->engine->GetHgi());
+    _imp->noteFillView(frame.frustum, frame.width, frame.height);
     _imp->serviceDrawFilter(true);
+    // A batch of the fill is shown by its first pass, so the next batch follows that image.
+    const bool fillStep = _imp->drawFillStep;
     frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
     Implementation::bindFrameTarget(fbo, frame.width, frame.height);
 
@@ -3705,7 +3930,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
     try {
         _imp->applyStormSettings();
         _imp->setCamera(frame.frustum, frame.width, frame.height, frame.params.enableSceneLights);
-        for (; (passes < kMaxRenderPasses) && !converged && !ended(passes); ++passes) {
+        for (; (passes < (fillStep ? 1 : kMaxRenderPasses)) && !converged && !ended(passes); ++passes) {
             RenderDelegates::runRenderFaultHook();
             if (passes == 0) {
                 _imp->streamTextures();
@@ -3737,10 +3962,12 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         return false;
     }
     _imp->noteDrawFilterRendered(passes != 0);
+    _imp->paceTextures();
     _imp->texturesOwed = StormTextureBudget::texturesPending(_imp->engineInstanceId);
     if (passes == 0) {
         return false;
     }
+    converged = converged && !_imp->drawFilling;
     _imp->sceneLit = frame.params.enableSceneLights;
     if (timed) {
         // Only the render thread waits here, and the image could not be shown before the GPU is
@@ -4566,6 +4793,7 @@ SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
     _imp->guideBatchesValid = false;
     _imp->boxColoursValid = false;
     _imp->standInColoursValid = false;
+    _imp->fillColoursValid = false;
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
     _imp->engineSelection = paths;
     _imp->engineSelectionDirty = true;
@@ -5075,8 +5303,9 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
                 converged = false;
             }
         }
+        _imp->paceTextures();
         _imp->texturesOwed = StormTextureBudget::texturesPending(_imp->engineInstanceId);
-        converged = converged && !_imp->texturesOwed;
+        converged = converged && !_imp->texturesOwed && !_imp->drawFilling;
         if (timed) {
             // The main thread waits for this render, so the GPU is left to finish on its own.
             timing->frameEnded(std::chrono::steady_clock::now(), passes, -1., true);
@@ -5153,6 +5382,14 @@ SceneViewportRenderer::setStandIn(bool enabled,
         // The next feed lists the rows again.
         _imp->standInRulesFed = false;
     }
+}
+
+void
+SceneViewportRenderer::setFill(bool boxesShown,
+                               double budgetMs)
+{
+    _imp->fillBoxesShown = boxesShown;
+    _imp->fillBudgetMs = (budgetMs > 0.) ? budgetMs : kRevealTargetMs;
 }
 
 int
@@ -5355,11 +5592,11 @@ SceneViewportRenderer::pick(int x,
         const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
         // A box wins a tie with a prim, and a guide a tie with either.
         GfVec3d boxPoint;
-        const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
-        if (box >= 0) {
+        const SdfPath boxPath = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
+        if (!boxPath.IsEmpty()) {
             const double boxDepth = ((viewMatrix * projection).Transform(boxPoint)[2] + 1.) * 0.5;
             if (path.empty() || (boxDepth <= nearest)) {
-                path = _imp->drawnBoxList->boxes[box].path.GetString();
+                path = boxPath.GetString();
                 nearest = boxDepth;
             }
         }
@@ -5414,11 +5651,11 @@ SceneViewportRenderer::pick(int x,
         nearest = viewMatrix.Transform(nearestPoint)[2];
     }
     GfVec3d boxPoint;
-    const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
-    if (box >= 0) {
+    const SdfPath boxPath = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
+    if (!boxPath.IsEmpty()) {
         const double z = viewMatrix.Transform(boxPoint)[2];
         if (path.empty() || (z >= nearest)) {
-            path = _imp->drawnBoxList->boxes[box].path.GetString();
+            path = boxPath.GetString();
             nearest = z;
             nearestPoint = boxPoint;
         }
@@ -10087,6 +10324,7 @@ SceneViewport::paintGL()
         imp->noteView(view);
         imp->updateStandInLatch(view);
         imp->renderer.setStandIn(imp->standInWanted(), imp->standInByModel);
+        imp->renderer.setFill(imp->standInMode != Settings::eSceneStandInModeOff, imp->standInBudgetMs);
         standInShown = !blank && ((imp->standInMode == Settings::eSceneStandInModeAlways) || imp->standInLatched);
         // The paint never renders: a frame for this camera and size starts on the render thread
         // once the window has composed this paint, and the poll that finds it finished asks for
@@ -10185,7 +10423,7 @@ SceneViewport::paintGL()
     }
     _imp->presentedScene = _imp->renderer.hasScene() && !_imp->renderer.isStageHeld();
     // Only a paint showing a frame newer than the last one shows more of a reveal.
-    if (_imp->renderer.isDrawRevealing() && (!stormOnRenderThread || fresh)) {
+    if ((_imp->renderer.isDrawRevealing() || _imp->renderer.isDrawFilling()) && (!stormOnRenderThread || fresh)) {
         _imp->renderer.noteDrawRevealPresented();
         const int yieldMs = _imp->renderer.getRevealYieldMs();
         if (yieldMs > 0) {
@@ -10210,6 +10448,9 @@ SceneViewport::paintGL()
         converged = converged && (imp->frontFrame->view == imp->paintedView(w, h)) && !imp->renderer.needsBackgroundFrame() && !imp->composesScene()
             && (imp->drawJobsQueued == 0) && !imp->presentPacer.inFlight();
     }
+    // A frame of a fill still coming in is not the frame of the scene.
+    const bool fillComplete = _imp->renderer.isFillComplete();
+    converged = converged && fillComplete;
     const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
     publishRefineState();
     publishTransformState();
@@ -10228,6 +10469,10 @@ SceneViewport::paintGL()
     // paints drew something, which a benchmark counts frames by while no full frame comes.
     setProperty("natronSceneStandIn", standInShown);
     setProperty("natronSceneStandInBoxes", standInShown ? _imp->renderer.getStandInBoxCount() : 0);
+    // How much of the geometry Hydra has been given has come in, and whether nothing, textures
+    // included, is still to come and this paint's frame is the finished one.
+    setProperty("natronSceneFillProgress", _imp->renderer.getFillProgress());
+    setProperty("natronSceneFillComplete", converged);
     setProperty("natronScenePaintCount", QVariant::fromValue<qulonglong>(property("natronScenePaintCount").toULongLong() + 1));
     // How many paints showed a Storm frame new to the screen, which a benchmark counts frames by
     // while the camera moves and no frame is the finished one of the view.

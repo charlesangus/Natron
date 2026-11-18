@@ -591,3 +591,45 @@ TEST(GpuTextureBudget, PlainPathsAreFiles)
     EXPECT_TRUE(gpuTextureIsFile("/scene.usdz[textures/brick.png]"));
     EXPECT_TRUE(gpuTextureIsFile(""));
 }
+
+TEST(GpuTextureBudget, RankedTexturesComeInByTheirOwnersRankAndUnrankedOnesStayHeld)
+{
+    GpuTextureBudget budget(0);
+    startAutomatic(&budget, 1000 * kMB, 10 * kMB);
+    budget.claim(1, "/far", requests({ { "f", 10 * kMB } }), kDefer);
+    budget.claim(1, "/near", requests({ { "n", 10 * kMB } }), kDefer);
+    budget.claim(1, "/absent", requests({ { "x", 10 * kMB } }), kDefer);
+    budget.claim(1, "/mid", requests({ { "m", 10 * kMB } }), kDefer);
+    // Claimed by a far owner and a near one: the near one's rank is what counts.
+    budget.claim(1, "/near", requests({ { "n", 10 * kMB }, { "s", 10 * kMB } }), kDefer);
+    budget.claim(1, "/far", requests({ { "f", 10 * kMB }, { "s", 10 * kMB } }), kDefer);
+    budget.noteFreeMemory(1000 * kMB);
+    const GpuTextureBudget::OwnerRank rank = [](const std::string& owner) {
+        if (owner == "/near") {
+            return std::size_t(0);
+        }
+        if (owner == "/mid") {
+            return std::size_t(1);
+        }
+        if (owner == "/far") {
+            return std::size_t(2);
+        }
+
+        return GpuTextureBudget::kUnranked;
+    };
+
+    GpuTextureBudget::Decided decided = budget.decidePending(1, 25 * kMB, 100, rank);
+    EXPECT_EQ(2u, decided.admitted);
+    EXPECT_EQ(20 * kMB, decided.bytes);
+    std::vector<std::string> owners = budget.takeOwnersToReread(1);
+    EXPECT_EQ(std::vector<std::string>({ "/far", "/near" }), owners);
+    EXPECT_EQ(std::vector<bool>({ true, true }), budget.claim(1, "/near", requests({ { "n", 10 * kMB }, { "s", 10 * kMB } }), kDefer));
+
+    decided = budget.decidePending(1, kAnyBatch, 100, rank);
+    EXPECT_EQ(2u, decided.admitted);
+    EXPECT_EQ(std::vector<std::string>({ "/far", "/mid" }), budget.takeOwnersToReread(1));
+    EXPECT_EQ(1u, budget.getPendingCount());
+
+    EXPECT_EQ(1u, budget.decidePending(1, kAnyBatch, 100).admitted);
+    EXPECT_EQ(0u, budget.getPendingCount());
+}

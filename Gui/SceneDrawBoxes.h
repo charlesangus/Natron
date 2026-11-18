@@ -136,6 +136,41 @@ public:
                      std::chrono::milliseconds timeout) const;
 
     /**
+     * @brief Has the worker put the rows of its latest list in nearFirst() order for this view, and
+     * again for each list it publishes after; the order is published as getOrder(). Callers hand it
+     * a view the camera has rested at, so a moving camera costs no sorting.
+     */
+    void setOrderView(const PXR_NS::GfMatrix4d& viewProjection,
+                      int width,
+                      int height);
+
+    // Empty until setOrderView() has been called and a list published.
+    SceneDrawFilter::Order getOrder() const;
+
+    // Whether an order of the latest list for the latest view was published within timeout.
+    bool waitForOrder(std::chrono::milliseconds timeout) const;
+
+    /**
+     * @brief The pixels of a width x height view a box covers, by the screen rectangle of its corners.
+     * One reaching behind the eye covers the whole view, as it is around the eye or next to it; a
+     * marker, a pending box and one wholly behind the eye or off the view cover nothing.
+     */
+    static double screenArea(const Box& box,
+                             const PXR_NS::GfMatrix4d& viewProjection,
+                             int width,
+                             int height);
+
+    // The paths of list's boxes, the one covering most of the view first, then the nearer.
+    static std::vector<PXR_NS::SdfPath> nearFirst(const List& list,
+                                                  const PXR_NS::GfMatrix4d& viewProjection,
+                                                  int width,
+                                                  int height);
+
+    // The boxes of list whose row waits says has prims yet to come, in list's order.
+    static List unadmitted(const List& list,
+                           const std::function<bool(const PXR_NS::SdfPath&)>& waits);
+
+    /**
      * @brief The index in list of the box or marker nearest the eye under pixel, -1 for none, and
      * the point hit. viewProjection maps world space to clip space as GfMatrix4d does, row vectors
      * on the left; pixel counts from the top left of a width x height view. A box is hit through its
@@ -202,6 +237,14 @@ private:
     U64 _stageVersion = 0;
     U64 _generation = 0;
     U64 _taken = 0;
+    bool _hasOrderView = false;
+    PXR_NS::GfMatrix4d _orderViewProjection;
+    int _orderWidth = 0;
+    int _orderHeight = 0;
+    // Counts changes of the list or the view; the order answers _orderMade of them.
+    U64 _orderWanted = 0;
+    U64 _orderMade = 0;
+    SceneDrawFilter::Order _order;
     std::atomic<U64> _contentGeneration { 0 };
     std::atomic<bool> _quit { false };
     ListPtr _list;

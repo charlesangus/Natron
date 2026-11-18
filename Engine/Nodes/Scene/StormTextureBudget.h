@@ -28,8 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 NATRON_NAMESPACE_ENTER
 
@@ -88,6 +91,28 @@ void sampleFreeVideoMemory();
  * before the engine's first render. An unknown or empty id does nothing.
  **/
 void streamTextures(const std::string& renderInstanceId);
+
+// What one frame streams in.
+struct StreamPace {
+    /**
+     * Rows of the scene, nearest first, of which the first reached have their geometry in Hydra:
+     * only the textures of materials bound by prims under those, or the prototypes of their
+     * instancers, come in, those of the nearest row first. Null for every texture held.
+     **/
+    std::shared_ptr<const std::vector<std::string>> rows;
+    std::size_t reached = 0;
+    // What the textures admitted may take together, though the first that fits always comes in.
+    std::uint64_t batchBytes = std::uint64_t(512) << 20;
+};
+
+struct Streamed {
+    std::size_t admitted = 0;
+    std::uint64_t bytes = 0;
+};
+
+// As streamTextures(renderInstanceId), within pace.
+Streamed streamTextures(const std::string& renderInstanceId,
+                        const StreamPace& pace);
 
 // Whether that engine holds textures still to decide or materials still to read again.
 bool texturesPending(const std::string& renderInstanceId);

@@ -143,6 +143,18 @@ stand-in boxes, last_full_frame_ms is the cost of the last full frame before the
 (natronSceneLastFullFrameMs), and refill_ms runs from the release to the paint that shows a full frame
 of the view again. It needs a viewer that publishes natronScenePaintCount, and skips without one.
 
+open records first_pass_ms, from the open to the first Storm frame of the scene on screen
+(natronScenePresentedFrames), and complete_ms, to the paint that finds the fill complete
+(natronSceneFillComplete: no prim or texture still to come in, and the frame converged); first_frame_ms
+is the finished frame, which a viewer that fills in bounded passes paints only once the fill is complete.
+
+orbit_fill (for Island) hides the root, then clears that, so the whole scene comes into Hydra again in
+bounded passes; after BENCH_FILL_ORBIT_DELAY_S it orbits for BENCH_ORBIT_S mid-fill, then waits for the
+fill to complete. It records first_pass_ms and complete_ms from the clear, worst_pass_ms, the longest gap
+between Storm frames new to the screen while the camera rested and prims were still coming, fill_frames,
+progress_monotonic (natronSceneFillProgress never fell while the camera rested), and the stall. It needs a
+viewer that publishes natronSceneFillProgress, and skips without one.
+
 Budgets: main-thread stall under 100 ms; time from a draw state change to the image that shows it under
 100 ms (time_to_picture_ms, worst untraced change of prune_restore, sibling_state and draw_budget, with
 draw_budget's rows also judged apart); a paced reveal of the root with Load All (reveal_load_all,
@@ -204,9 +216,11 @@ HOLD_FILE = os.environ.get("BENCH_HOLD_FILE", "")
 HOLD_S = float(os.environ.get("BENCH_HOLD_S", "120"))
 OPEN_SCENARIOS = ("open", "populate_full", "populate_pruned", "load_all")
 DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal", "reveal_cancel", "orbit10k", "boxes_shot",
-                  "sibling_state", "sibling_shot", "noedit", "draw_budget", "reveal_load_all", "reveal_wide", "reveal_cancel_paced")
+                  "sibling_state", "sibling_shot", "noedit", "draw_budget", "reveal_load_all", "reveal_wide", "reveal_cancel_paced",
+                  "orbit_fill")
 # A wide row's restore puts the whole scene back into Hydra, several times over.
-LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide", "workflow")
+LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide", "workflow", "orbit_fill")
+FILL_ORBIT_DELAY_S = float(os.environ.get("BENCH_FILL_ORBIT_DELAY_S", "1"))
 PICTURE_SCENARIOS = ("prune_restore", "sibling_state", "draw_budget")
 # Payloads still landing from a Full + Load open would be measured along with these.
 SETTLED_SCENARIOS = ("reveal", "reveal_cancel", "reveal_wide", "reveal_cancel_paced", "orbit", "orbit10k", "orbit_full", "draw_budget")
@@ -512,9 +526,15 @@ try:
             require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
         marks.append(time.perf_counter())
 
+        presented_before = int(prop("natronScenePresentedFrames", 0) or 0)
+        first_pass = {"ms": None}
+
         def scene_frame_drawn():
             # A view with nothing synced yet also finishes frames, so the scene has to have reached it.
             synced_at = prop("natronSceneSyncedAtMs", 0)
+            if (first_pass["ms"] is None and shown() and synced_at >= t0_ms
+                    and int(prop("natronScenePresentedFrames", 0) or 0) > presented_before):
+                first_pass["ms"] = time.time() * 1000.0
             return shown() and synced_at >= t0_ms and prop("natronSceneLastPaintMs", 0) >= synced_at
 
         ok = yield ("until", scene_frame_drawn, TIMEOUT_S)
@@ -523,6 +543,8 @@ try:
         check(ok, "open: the scene view shows the scene (%r)" % (prop("natronSceneError"),))
         painted = prop("natronSceneLastPaintMs")
         m.values["first_frame_ms"] = round((painted if painted is not None else time.time() * 1000.0) - t0 * 1000.0, 1)
+        m.values["first_pass_ms"] = round(first_pass["ms"] - t0 * 1000.0, 1) if first_pass["ms"] is not None else None
+        m.values["complete_ms"] = m.values["first_frame_ms"] if ok and prop("natronSceneFillComplete") else None
         m.values["open_substeps_ms"] = {
             "initial_draw": round((marks[1] - marks[0]) * 1000.0, 1),
             "filename": round((marks[2] - marks[1]) * 1000.0, 1),
@@ -1442,6 +1464,85 @@ try:
         full_frame = v.property("natronSceneLastFullFrameMs")
         m.values["refill_full_frame_ms"] = round(full_frame, 1) if full_frame is not None else None
 
+    def action_orbit_fill(m):
+        yield from clear_draw_states()
+        v = view()
+        require(v is not None and shown(), "orbit_fill: a scene view is visible and showing the scene")
+        if v.property("natronSceneFillProgress") is None:
+            m.not_applicable = "the viewer publishes no natronSceneFillProgress"
+            return
+        ok = yield ("until", lambda: draw_settled(v)() and bool(v.property("natronSceneFillComplete")), TIMEOUT_S)
+        require(ok, "orbit_fill: the full scene was presented before the change")
+        yield from set_draw_state(rows["root"], "hidden")
+        settings = NatronEngine.natron.getSettings()
+        navigation = settings.getParam("viewer3DNavigation")
+        require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
+        original = navigation.getValue()
+        v.activateWindow()
+        v.setFocus()
+        QApplication.processEvents()
+        centre = v.rect().center()
+
+        def mouse(kind, pos, button, buttons):
+            QApplication.sendEvent(v, QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.AltModifier))
+
+        heartbeat.start()
+        presented_before = int(v.property("natronScenePresentedFrames") or 0)
+        t0_ms = time.time() * 1000.0
+        draw_call(v, "clearDrawState", Q_ARG("QString", rows["root"]))
+        state = {"first": None, "complete": None, "last_frame": None, "worst": 0.0, "frames": 0, "presented": presented_before,
+                 "progress": None, "monotonic": True, "resting": True}
+
+        def watch():
+            now = time.time() * 1000.0
+            presented = int(v.property("natronScenePresentedFrames") or 0)
+            filling = not v.property("natronSceneFillComplete")
+            if presented != state["presented"]:
+                state["presented"] = presented
+                state["frames"] += 1
+                if state["first"] is None:
+                    state["first"] = now
+                if state["resting"] and state["last_frame"] is not None and filling:
+                    state["worst"] = max(state["worst"], now - state["last_frame"])
+                state["last_frame"] = now
+            progress = v.property("natronSceneFillProgress")
+            if state["resting"] and progress is not None:
+                if state["progress"] is not None and float(progress) < state["progress"] - 1e-9:
+                    state["monotonic"] = False
+                state["progress"] = float(progress)
+            if state["complete"] is None and state["first"] is not None and not filling:
+                state["complete"] = now
+            return state["complete"] is not None
+
+        deadline = time.time() + FILL_ORBIT_DELAY_S
+        while time.time() < deadline and not watch():
+            yield ("sleep", POLL_MS)
+        if state["complete"] is None:
+            navigation.setValue(1)
+            state["resting"] = False
+            step = 0
+            mouse(QEvent.MouseButtonPress, centre, Qt.LeftButton, Qt.LeftButton)
+            deadline = time.time() + orbit_s
+            while time.time() < deadline:
+                step += 1
+                mouse(QEvent.MouseMove, centre + QPoint(int((step % 40) * 4 - 80), int((step % 20) * 2 - 20)), Qt.NoButton, Qt.LeftButton)
+                yield ("sleep", POLL_MS)
+                watch()
+            mouse(QEvent.MouseButtonRelease, centre, Qt.LeftButton, Qt.NoButton)
+            navigation.setValue(original)
+            # The fill resumes once the camera has rested; the gap until then is the camera's.
+            state["last_frame"] = None
+            state["progress"] = None
+            state["resting"] = True
+        ok = yield ("until", watch, TIMEOUT_S)
+        check(ok, "orbit_fill: the fill completed")
+        check(state["monotonic"], "orbit_fill: the fill's progress never fell while the camera rested")
+        m.values["first_pass_ms"] = round(state["first"] - t0_ms, 1) if state["first"] is not None else None
+        m.values["complete_ms"] = round(state["complete"] - t0_ms, 1) if state["complete"] is not None else None
+        m.values["worst_pass_ms"] = round(state["worst"], 1)
+        m.values["fill_frames"] = state["frames"]
+        m.values["progress_monotonic"] = state["monotonic"]
+
     def action_boxes_shot(m):
         yield from clear_draw_states()
         ok = yield ("until", lambda: boxes_drawn() == 0, TIMEOUT_S)
@@ -1886,7 +1987,7 @@ try:
     ACTIONS = {"open": action_open, "edit": action_edit, "orbit": action_orbit, "load": action_load, "twirl": action_twirl,
                "load_all": action_load_all, "populate_pruned": action_populate_pruned, "populate_full": action_populate_full,
                "prune_restore": action_prune_restore, "reveal": action_reveal, "reveal_cancel": action_reveal_cancel,
-               "orbit10k": action_orbit10k, "orbit_full": action_orbit_full, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
+               "orbit10k": action_orbit10k, "orbit_full": action_orbit_full, "orbit_fill": action_orbit_fill, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
                "sibling_shot": action_sibling_shot, "noedit": action_noedit, "draw_budget": action_draw_budget,
                "reveal_load_all": action_reveal_load_all, "reveal_wide": action_reveal_wide,
                "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch,

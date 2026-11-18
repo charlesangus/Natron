@@ -28,10 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -200,6 +202,51 @@ public:
      */
     void endRender();
 
+    /**
+     * @brief Has geometry reach Hydra only as admit() lets it in, so no render syncs more of it than
+     * a batch: Storm syncs an invisible prim in full the first time it holds it, so only a prim it
+     * does not hold yet costs a render nothing.
+     *
+     * While admitting, an rprim or instancer the rules show and Hydra does not hold yet stays out of
+     * Hydra, as a Hidden row keeps it, and waits its turn; so does a native instance the input names,
+     * masked in its instancer, and what a load brings in, which gives no reveal. Lights and every
+     * prim that is neither pass through. The input's changes to a waiting prim are dropped, as Hydra
+     * reads it whole when it comes in. What Hydra holds keeps following the rules at once.
+     *
+     * Turning it off lets everything waiting in at once.
+     */
+    void setAdmitting(bool admitting);
+    bool isAdmitting() const { return _admitting; }
+
+    // Rows, nearest the eye first.
+    using Order = std::shared_ptr<const std::vector<PXR_NS::SdfPath>>;
+
+    /**
+     * @brief Lets up to maxPrims waiting prims into Hydra, those at or below each row of order in
+     * turn and then the rest in the input's order, and returns how many came in. An instancer comes
+     * with every prototype it draws, as one unit, which may take it past maxPrims; at least one unit
+     * comes in each call. kInstancesPerPrim waiting instances count as one prim. It stops early at the
+     * deadline.
+     *
+     * A row is taken up again in later calls until nothing at or below it waits; another order, or a
+     * change of rules, starts again from its first row.
+     */
+    std::size_t admit(const Order& order,
+                      std::size_t maxPrims,
+                      Clock::time_point deadline = (Clock::time_point::max)());
+
+    static constexpr std::size_t kInstancesPerPrim = 64;
+
+    // Prims and native instances waiting to be admitted.
+    std::size_t pendingCount() const { return _root->queuedBelow + _waitingCount; }
+    // Admitted since nothing was last waiting.
+    std::size_t admittedCount() const { return _admitted; }
+    // How many rows of the last order admit() was given it has come to, the one it is in included.
+    std::size_t orderReached() const { return _order ? (std::min)(_orderNext + 1, _order->size()) : 0; }
+    bool isFilling() const { return pendingCount() != 0; }
+    // Whether anything at or below path waits to be admitted.
+    bool hasPendingAt(const PXR_NS::SdfPath& path) const;
+
     using LightPredicate = std::function<bool(const PXR_NS::SdfPath&)>;
 
     /**
@@ -268,6 +315,10 @@ private:
         bool light = false;
         bool pending = false;
         bool arriving = false;
+        // Waiting to be admitted.
+        bool queued = false;
+        // Queued nodes at or below this one.
+        std::size_t queuedBelow = 0;
     };
 
     // now and was are the rules governing node in _rules and _revealFrom; belowNow and belowWas say
@@ -290,6 +341,12 @@ private:
         std::vector<PXR_NS::SdfPath> locations;
         std::vector<bool> hidden;
         std::size_t hiddenCount = 0;
+        // Instances not admitted yet, masked as hidden ones are. None before waitingFrom.
+        std::vector<bool> waiting;
+        std::size_t waitingCount = 0;
+        std::size_t waitingFrom = 0;
+        // What the instancer draws, admitted with it.
+        std::vector<PXR_NS::SdfPath> prototypes;
         bool pending = false;
     };
 
@@ -299,7 +356,21 @@ private:
     void forgetInstancer(const PXR_NS::SdfPath& path);
     PXR_NS::HdSceneIndexPrim withMask(const PXR_NS::SdfPath& primPath, PXR_NS::HdSceneIndexPrim prim) const;
     bool setInstanceHidden(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool hidden);
+    void setInstanceWaiting(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool waiting);
+    void queueMaskChange(const PXR_NS::SdfPath& instancer, Instancer& record);
     void updateInstances(const std::vector<PXR_NS::SdfPath>& roots);
+
+    bool isFiltering() const { return !_rules.empty() || _revealing || (_root->queuedBelow != 0) || (_waitingCount != 0); }
+    bool queues(const Node& node) const { return _admitting && node.hideable && !node.light; }
+    void enqueue(Node& node);
+    void dequeue(Node& node);
+    void admitNode(Node& node);
+    Node* unitOwner(Node& node);
+    std::size_t admitUnit(Node& node);
+    std::size_t admitBelow(Node& top, std::size_t budget, Clock::time_point deadline);
+    std::size_t admitAt(const PXR_NS::SdfPath& path, std::size_t budget, Clock::time_point deadline);
+    std::size_t admitInstance(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index);
+    std::size_t admitAnyInstances(std::size_t budget, Clock::time_point deadline);
 
     Node& nodeAt(const PXR_NS::SdfPath& path);
     Node* indexPrim(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType);
@@ -346,6 +417,16 @@ private:
     // the instances below it without looking at the others.
     std::multimap<PXR_NS::SdfPath, std::pair<PXR_NS::SdfPath, std::size_t>> _locations;
     std::size_t _maskedCount = 0;
+    // Each prototype an instancer names to that instancer.
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> _prototypeOwners;
+
+    bool _admitting = false;
+    std::size_t _waitingCount = 0;
+    std::size_t _admitted = 0;
+    // Instances admitted toward the next prim they count as.
+    std::size_t _instanceCredit = 0;
+    Order _order;
+    std::size_t _orderNext = 0;
 
     // What a call has changed so far, sent by sendChanges().
     std::vector<Node*> _changes;

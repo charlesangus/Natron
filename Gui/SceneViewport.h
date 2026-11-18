@@ -290,6 +290,19 @@ public:
 
     bool isDrawRevealing() const;
 
+    /**
+     * @brief Whether Storm's geometry is still coming into Hydra: a batch a presented image, sized
+     * to keep a frame within the fill budget, nearest first by the stand-in's rows, none while the
+     * camera moves. noteDrawRevealPresented() lets the next batch go. Any thread.
+     **/
+    bool isDrawFilling() const;
+
+    // The share of the prims Hydra has been given that have come in, 1 with none to come. Any thread.
+    double getFillProgress() const;
+
+    // No prim and no texture still to come in. Any thread.
+    bool isFillComplete() const;
+
     /** @brief The image of the last reveal step is on screen, so the next step may go. */
     void noteDrawRevealPresented();
 
@@ -406,6 +419,12 @@ public:
      * cleared beforehand. Main thread.
      **/
     void setStandIn(bool enabled, bool byModel);
+
+    /**
+     * @brief Whether drawOverlays() draws, over a frame of the fill, the stand-in's boxes of the rows
+     * whose prims are still to come in, and what a fill frame is paced to. Main thread.
+     **/
+    void setFill(bool boxesShown, double budgetMs);
 
     // The stand-in boxes and markers the last drawOverlays() drew. Any thread.
     int getStandInBoxCount() const;

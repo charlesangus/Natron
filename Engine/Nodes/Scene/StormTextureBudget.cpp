@@ -33,6 +33,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -54,6 +55,9 @@
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/imaging/garch/glApi.h>
+#include <pxr/imaging/hd/instancerTopologySchema.h>
+#include <pxr/imaging/hd/materialBindingSchema.h>
+#include <pxr/imaging/hd/materialBindingsSchema.h>
 #include <pxr/imaging/hd/materialFilteringSceneIndexBase.h>
 #include <pxr/imaging/hd/materialNetworkInterface.h>
 #include <pxr/imaging/hd/materialSchema.h>
@@ -93,7 +97,6 @@ std::atomic<std::uint64_t> g_nextScope(1);
 
 // What one frame may add to the textures it streams in: Storm reads and uploads a texture in the
 // render that first draws it, so a frame taking many would stall on the files.
-const std::uint64_t kStreamBatchBytes = std::uint64_t(512) << 20;
 const std::size_t kStreamBatchCount = 64;
 
 void
@@ -670,17 +673,31 @@ public:
     }
 
     // On the thread that renders with this index, between renders.
-    void stream()
+    StormTextureBudget::Streamed stream(const StormTextureBudget::StreamPace& pace)
     {
         *_defers = true;
         GpuTextureBudget& budget = StormTextureBudget::budget();
-        const GpuTextureBudget::Decided decided = budget.decidePending(_scope, kStreamBatchBytes, kStreamBatchCount);
+        GpuTextureBudget::Decided decided;
+        if (pace.rows) {
+            rankMaterials(pace.rows, pace.reached);
+            const std::unordered_map<std::string, std::size_t>& ranks = _materialRanks;
+            decided = budget.decidePending(_scope, pace.batchBytes, kStreamBatchCount, [&ranks](const std::string& owner) {
+                const std::unordered_map<std::string, std::size_t>::const_iterator found = ranks.find(owner);
+
+                return (found == ranks.end()) ? GpuTextureBudget::kUnranked : found->second;
+            });
+        } else {
+            decided = budget.decidePending(_scope, pace.batchBytes, kStreamBatchCount);
+        }
+        StormTextureBudget::Streamed streamed;
+        streamed.admitted = decided.admitted;
+        streamed.bytes = decided.bytes;
         if (decided.refused > 0) {
             scheduleReport();
         }
         const std::vector<std::string> owners = budget.takeOwnersToReread(_scope);
         if (owners.empty()) {
-            return;
+            return streamed;
         }
         HdSceneIndexObserver::DirtiedPrimEntries entries;
         entries.reserve(owners.size());
@@ -688,6 +705,8 @@ public:
             entries.push_back(HdSceneIndexObserver::DirtiedPrimEntry(SdfPath(owner), HdDataSourceLocatorSet(HdMaterialSchema::GetDefaultLocator())));
         }
         _SendPrimsDirtied(entries);
+
+        return streamed;
     }
 
 protected:
@@ -703,6 +722,50 @@ protected:
     }
 
 private:
+    // Gives each material bound under rows[0, reached) the index of the first row binding it, going
+    // on from the rows already looked into while rows stay the same.
+    void rankMaterials(const std::shared_ptr<const std::vector<std::string>>& rows,
+                       std::size_t reached)
+    {
+        if (rows != _rankedRows) {
+            _rankedRows = rows;
+            _rowsRanked = 0;
+            _materialRanks.clear();
+        }
+        const HdSceneIndexBaseRefPtr input = _GetInputSceneIndex();
+        reached = (std::min)(reached, rows->size());
+        std::vector<SdfPath> stack;
+        for (; _rowsRanked < reached; ++_rowsRanked) {
+            const std::size_t rank = _rowsRanked;
+            std::unordered_map<SdfPath, bool, SdfPath::Hash> seen;
+            stack.assign(1, SdfPath((*rows)[rank]));
+            while (!stack.empty()) {
+                const SdfPath path = stack.back();
+                stack.pop_back();
+                if (!seen.emplace(path, true).second) {
+                    continue;
+                }
+                const HdSceneIndexPrim prim = input->GetPrim(path);
+                if (prim.dataSource) {
+                    if (const HdPathDataSourceHandle bound = HdMaterialBindingsSchema::GetFromParent(prim.dataSource).GetMaterialBinding().GetPath()) {
+                        const SdfPath material = bound->GetTypedValue(0.f);
+                        if (!material.IsEmpty()) {
+                            _materialRanks.emplace(material.GetString(), rank);
+                        }
+                    }
+                    if (const HdPathArrayDataSourceHandle prototypes = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetPrototypes()) {
+                        for (const SdfPath& prototype : prototypes->GetTypedValue(0.f)) {
+                            stack.push_back(prototype);
+                        }
+                    }
+                }
+                for (const SdfPath& child : input->GetChildPrimPaths(path)) {
+                    stack.push_back(child);
+                }
+            }
+        }
+    }
+
     TextureBudgetSceneIndex(const std::string& renderInstanceId,
                             const HdSceneIndexBaseRefPtr& input)
         : HdMaterialFilteringSceneIndexBase(input)
@@ -723,6 +786,10 @@ private:
     // can a texture be held without being left out for good.
     const std::shared_ptr<std::atomic<bool>> _defers;
     MaterialChanges _changes;
+    // The render thread's own.
+    std::shared_ptr<const std::vector<std::string>> _rankedRows;
+    std::size_t _rowsRanked = 0;
+    std::unordered_map<std::string, std::size_t> _materialRanks;
 };
 } // anonymous namespace
 
@@ -779,14 +846,23 @@ sampleFreeVideoMemory()
 void
 streamTextures(const std::string& renderInstanceId)
 {
+    streamTextures(renderInstanceId, StreamPace());
+}
+
+Streamed
+streamTextures(const std::string& renderInstanceId,
+               const StreamPace& pace)
+{
     if (renderInstanceId.empty()) {
-        return;
+        return Streamed();
     }
     std::lock_guard<std::mutex> lock(g_indicesMutex);
     const std::map<std::string, TextureBudgetSceneIndex*>::const_iterator found = g_indices.find(renderInstanceId);
     if (found != g_indices.end()) {
-        found->second->stream();
+        return found->second->stream(pace);
     }
+
+    return Streamed();
 }
 
 bool

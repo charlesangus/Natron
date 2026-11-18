@@ -2098,3 +2098,247 @@ TEST(SceneRevealPacerTest, ASlowFirstFrameHalvesTheBatch)
     }
     EXPECT_GE(pacer.nextBatch(), 1u);
 }
+
+namespace {
+SceneDrawFilter::Order
+rowsOf(const std::vector<const char*>& paths)
+{
+    std::vector<SdfPath> rows;
+    for (const char* path : paths) {
+        rows.push_back(SdfPath(path));
+    }
+
+    return std::make_shared<const std::vector<SdfPath>>(std::move(rows));
+}
+
+void
+addPrims(const HdRetainedSceneIndexRefPtr& scene,
+         const std::vector<std::pair<const char*, TfToken>>& prims)
+{
+    HdRetainedSceneIndex::AddedPrimEntries entries;
+    for (const auto& prim : prims) {
+        entries.push_back({ SdfPath(prim.first), prim.second, someData() });
+    }
+    scene->AddPrims(entries);
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, AdmittingKeepsGeometryOutOfHydraUntilAdmittedInTheOrderGiven)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+
+    EXPECT_TRUE(recorder.empty());
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/c")).primType.IsEmpty());
+    EXPECT_EQ(HdPrimTypeTokens->material, filter->GetPrim(SdfPath("/World/a/Looks/mat")).primType);
+    EXPECT_EQ(HdPrimTypeTokens->camera, filter->GetPrim(SdfPath("/World/cam")).primType);
+    EXPECT_EQ(kAllGeometry.size(), filter->pendingCount());
+    EXPECT_TRUE(filter->isFilling());
+    EXPECT_TRUE(filter->hasPendingAt(SdfPath("/World/b")));
+
+    const SceneDrawFilter::Order rows = rowsOf({ "/World/c", "/World/b", "/World/a" });
+    EXPECT_EQ(1u, filter->admit(rows, 1));
+    EXPECT_EQ((PathSet { "/World/c" }), drawnGeometry());
+    EXPECT_EQ((PathSet { "/World/c" }), recorder.shows);
+    EXPECT_EQ(1u, recorder.addedEntries);
+    recorder.reset();
+
+    EXPECT_EQ(2u, filter->admit(rows, 2));
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball" }), recorder.shows);
+    EXPECT_EQ(2u, recorder.addedEntries);
+    EXPECT_FALSE(filter->hasPendingAt(SdfPath("/World/b")));
+    recorder.reset();
+
+    EXPECT_EQ(1u, filter->admit(rows, 1));
+    EXPECT_EQ(1u, recorder.addedEntries);
+    EXPECT_EQ(1u, filter->admit(rows, 1));
+    EXPECT_FALSE(filter->hasPendingAt(SdfPath("/World/a")));
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2", "/World/b/m3", "/World/b/ball", "/World/c" }), drawnGeometry());
+    EXPECT_EQ(5u, filter->admittedCount());
+    EXPECT_EQ(1u, filter->pendingCount());
+
+    // Past the order, what is left comes in the input's order.
+    EXPECT_EQ(1u, filter->admit(rows, 10));
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_FALSE(filter->isFilling());
+    EXPECT_EQ(kAllGeometry.size(), filter->admittedCount());
+    recorder.reset();
+    EXPECT_EQ(0u, filter->admit(rows, 10));
+    EXPECT_TRUE(recorder.empty());
+}
+
+TEST_F(SceneDrawFilterTest, EachAdmissionAnnouncesAtMostItsBatch)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+
+    std::size_t admitted = 0;
+    for (int i = 0; filter->isFilling() && (i < 10); ++i) {
+        recorder.reset();
+        const std::size_t batch = filter->admit(SceneDrawFilter::Order(), 4);
+        EXPECT_LE(batch, 4u);
+        EXPECT_EQ(batch, recorder.addedEntries);
+        admitted += batch;
+    }
+    EXPECT_EQ(kAllGeometry.size(), admitted);
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+}
+
+TEST_F(SceneDrawFilterTest, DirtiesOfWaitingPrimsAreDropped)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(rowsOf({ "/World/a/m1" }), 1);
+    recorder.reset();
+    const HdDataSourceLocatorSet all { HdDataSourceLocator::EmptyLocator() };
+
+    scene->DirtyPrims({ { SdfPath("/World/a/m1"), all }, { SdfPath("/World/a/Looks/mat"), all }, { SdfPath("/World/b/m3"), all } });
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/Looks/mat" }), recorder.dirtied);
+}
+
+TEST_F(SceneDrawFilterTest, WhatALoadBringsInWaitsToBeAdmittedAndItsLightsComeAtOnce)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(SceneDrawFilter::Order(), 100);
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateLoadAll), 1);
+    recorder.reset();
+
+    addPayload(scene);
+
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_EQ((PathSet { "/World/a/payload/p1", "/World/a/payload/p2" }), recorder.leftHydra);
+    EXPECT_EQ((PathSet { "/World/a/payload", "/World/a/payload/lamp" }), recorder.shows);
+    EXPECT_EQ(2u, filter->pendingCount());
+    EXPECT_EQ(0u, filter->admittedCount());
+
+    EXPECT_EQ(1u, filter->admit(rowsOf({ "/World/a/payload" }), 1));
+    EXPECT_NE(drawn("/World/a/payload/p1"), drawn("/World/a/payload/p2"));
+    EXPECT_EQ(1u, filter->admit(rowsOf({ "/World/a/payload" }), 1));
+    EXPECT_TRUE(drawn("/World/a/payload/p1"));
+    EXPECT_TRUE(drawn("/World/a/payload/p2"));
+    EXPECT_FALSE(filter->isFilling());
+}
+
+TEST_F(SceneDrawFilterTest, WhatHydraHoldsFollowsTheRulesAtOnceAndWhatItLacksWaitsAgain)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(rowsOf({ "/World/c" }), 1);
+
+    filter->applyDelta(states.setState("/World/c", eSceneDrawStateBBox));
+    EXPECT_FALSE(drawn("/World/c"));
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+    EXPECT_EQ(3u, filter->pendingCount());
+    EXPECT_FALSE(filter->hasPendingAt(SdfPath("/World/b")));
+    recorder.reset();
+
+    filter->applyDelta(states.clearAllStates());
+
+    EXPECT_EQ((PathSet { "/World/c" }), recorder.shows);
+    EXPECT_TRUE(recorder.enteredInvisible.empty());
+    EXPECT_EQ((PathSet { "/World/c" }), drawnGeometry());
+    EXPECT_EQ(5u, filter->pendingCount());
+}
+
+TEST_F(SceneDrawFilterTest, APrimResyncedWhileAdmittingComesBackAsHydraHeldIt)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(SceneDrawFilter::Order(), 100);
+    filter->endRender();
+    recorder.reset();
+    const std::vector<std::pair<const char*, TfToken>> b = { { "/World/b", TfToken("xform") }, { "/World/b/m3", HdPrimTypeTokens->mesh }, { "/World/b/ball", HdPrimTypeTokens->sphere } };
+
+    scene->RemovePrims({ SdfPath("/World/b") });
+    addPrims(scene, b);
+
+    EXPECT_TRUE(drawn("/World/b/m3"));
+    EXPECT_TRUE(drawn("/World/b/ball"));
+    EXPECT_TRUE(recorder.leftHydra.empty());
+    EXPECT_FALSE(filter->isFilling());
+    filter->endRender();
+
+    scene->RemovePrims({ SdfPath("/World/b") });
+    filter->endRender();
+    addPrims(scene, b);
+
+    EXPECT_FALSE(drawn("/World/b/m3"));
+    EXPECT_EQ(2u, filter->pendingCount());
+}
+
+TEST_F(SceneDrawFilterTest, AnInstancerComesInWithItsPrototypesAndItsMaskGrowsAsItsInstancesAreAdmitted)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(SceneDrawFilter::Order(), 100);
+    addInstances(scene);
+    const char* const prototype = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype/m";
+
+    EXPECT_TRUE(filter->GetPrim(SdfPath(kNativeInstancer)).primType.IsEmpty());
+    EXPECT_FALSE(drawn(prototype));
+    EXPECT_EQ(5u, filter->pendingCount());
+    EXPECT_TRUE(filter->hasPendingAt(SdfPath("/World/a")));
+    recorder.reset();
+
+    const SceneDrawFilter::Order rows = rowsOf({ "/World/b/i3", "/World/a/i1" });
+    EXPECT_EQ(2u, filter->admit(rows, 1));
+    EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kNativeInstancer)).primType);
+    EXPECT_TRUE(drawn(prototype));
+    EXPECT_EQ((std::vector<bool> { false, false, true }), maskOf(*filter, kNativeInstancer));
+    EXPECT_FALSE(filter->hasPendingAt(SdfPath("/World/b")));
+    recorder.reset();
+
+    // Instances count a prim a batch of kInstancesPerPrim, so the rest come in one call.
+    filter->admit(rows, 1);
+    EXPECT_TRUE(maskOf(*filter, kNativeInstancer).empty());
+    EXPECT_EQ(1u, recorder.dirtied.count(kNativeInstancer));
+    EXPECT_FALSE(filter->isFilling());
+    EXPECT_EQ(5u, filter->admittedCount());
+}
+
+TEST_F(SceneDrawFilterTest, AManyInstancesInstancerUnmasksABatchOfInstancesACall)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(SceneDrawFilter::Order(), 100);
+    const std::size_t count = 3 * SceneDrawFilter::kInstancesPerPrim;
+    std::vector<std::string> locations;
+    for (std::size_t i = 0; i < count; ++i) {
+        locations.push_back("/World/many/i" + std::to_string(i));
+    }
+    scene->AddPrims({ { SdfPath("/World/many"), TfToken("xform"), someData() } });
+    scene->AddPrims({ { SdfPath(kNativeInstancer), HdPrimTypeTokens->instancer, instancerData(locations) } });
+    const auto shownInstances = [this, count]() {
+        const std::vector<bool> mask = maskOf(*filter, kNativeInstancer);
+
+        return mask.empty() ? count : std::size_t(std::count(mask.begin(), mask.end(), true));
+    };
+
+    EXPECT_EQ(1u, filter->admit(SceneDrawFilter::Order(), 1));
+    EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kNativeInstancer)).primType);
+    EXPECT_EQ(0u, shownInstances());
+    for (std::size_t batch = 1; batch <= 3; ++batch) {
+        EXPECT_EQ(1u, filter->admit(SceneDrawFilter::Order(), 1));
+        EXPECT_EQ(batch * SceneDrawFilter::kInstancesPerPrim, shownInstances());
+    }
+    EXPECT_FALSE(filter->isFilling());
+}
+
+TEST_F(SceneDrawFilterTest, AnInstanceTheRulesHideWaitsForNothingAndTurningAdmittingOffLetsEverythingIn)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    addInstances(scene);
+
+    // Four rprims, the instancer and its prototype, and the instance below /World/b.
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+    EXPECT_EQ(7u, filter->pendingCount());
+
+    filter->setAdmitting(false);
+    EXPECT_FALSE(filter->isFilling());
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), drawnGeometry());
+    EXPECT_EQ((std::vector<bool> { false, false, true }), maskOf(*filter, kNativeInstancer));
+}

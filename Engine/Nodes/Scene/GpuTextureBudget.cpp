@@ -230,6 +230,7 @@ GpuTextureBudget::decidePending(std::uint64_t scope,
         it = _pending.erase(it);
         if (decideLocked(entry, limit)) {
             batch += entry.bytes;
+            decided.bytes += entry.bytes;
             ++decided.admitted;
             for (const OwnerId& owner : entry.owners) {
                 _rereads[owner.first].insert(owner.second);
@@ -241,6 +242,59 @@ GpuTextureBudget::decidePending(std::uint64_t scope,
 
     return decided;
 }
+
+GpuTextureBudget::Decided
+GpuTextureBudget::decidePending(std::uint64_t scope,
+                                std::uint64_t batchBytes,
+                                std::size_t batchCount,
+                                const OwnerRank& rank)
+{
+    Decided decided;
+    std::lock_guard<std::mutex> lock(_mutex);
+    const std::uint64_t limit = limitLocked();
+    // By rank, then by when first claimed, which is the key of _pending.
+    std::vector<std::pair<std::size_t, std::map<std::uint64_t, std::string>::iterator>> ranked;
+    for (std::map<std::uint64_t, std::string>::iterator it = _pending.begin(); it != _pending.end(); ++it) {
+        const Entry& entry = _entries.find(it->second)->second;
+        if (!ownedIn(entry, scope) || (entry.heldAtSample >= _samples)) {
+            continue;
+        }
+        std::size_t best = kUnranked;
+        for (const OwnerId& owner : entry.owners) {
+            if (owner.first == scope) {
+                best = (std::min)(best, rank(owner.second));
+            }
+        }
+        if (best != kUnranked) {
+            ranked.emplace_back(best, it);
+        }
+    }
+    std::stable_sort(ranked.begin(), ranked.end(), [](const std::pair<std::size_t, std::map<std::uint64_t, std::string>::iterator>& a, const std::pair<std::size_t, std::map<std::uint64_t, std::string>::iterator>& b) {
+        return a.first < b.first;
+    });
+    std::uint64_t batch = 0;
+    for (const std::pair<std::size_t, std::map<std::uint64_t, std::string>::iterator>& held : ranked) {
+        Entry& entry = _entries.find(held.second->second)->second;
+        const bool fits = (entry.bytes <= limit) && (_used <= limit - entry.bytes);
+        if (fits && (decided.admitted > 0) && ((decided.admitted >= batchCount) || (batch + entry.bytes > batchBytes))) {
+            break;
+        }
+        entry.pending = false;
+        _pending.erase(held.second);
+        if (decideLocked(entry, limit)) {
+            batch += entry.bytes;
+            decided.bytes += entry.bytes;
+            ++decided.admitted;
+            for (const OwnerId& owner : entry.owners) {
+                _rereads[owner.first].insert(owner.second);
+            }
+        } else {
+            ++decided.refused;
+        }
+    }
+
+    return decided;
+} // decidePending
 
 std::vector<std::string>
 GpuTextureBudget::takeOwnersToReread(std::uint64_t scope)

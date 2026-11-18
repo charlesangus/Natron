@@ -38,7 +38,7 @@ Scouted 2026-11-14 on `origin/main`:
 
 ## Phase 432.1: Path resolution
 
-- [ ] M432.P1.T1 — Bidirectional overlay path resolver
+- [x] M432.P1.T1 — Bidirectional overlay path resolver
   - files: `Gui/ViewerTabPrivate.{h,cpp}` (replace `getOverlayTransform`/`getTimeTransform` with a resolver), new `Engine/OverlayPath.{h,cpp}` holding the graph search so it is unit-testable without a GUI, CMake source lists, `Tests/OverlayPath_Test.cpp`
   - approach:
     - `resolveOverlayPath(viewedNode, overlayNode, time, view, mapSiblings)` returns a relation (downstream, upstream, sibling, unrelated), a composed 3x3 canonical matrix, the mapped time, and a `visible` flag.
@@ -61,7 +61,7 @@ Scouted 2026-11-14 on `origin/main`:
 
 ## Phase 432.2: Viewer wiring
 
-- [ ] M432.P2.T1 — Draw and route events through the resolver; drop the preference
+- [x] M432.P2.T1 — Draw and route events through the resolver; drop the preference
   - files: `Gui/ViewerTab20.cpp` (all 13 `viewerOverlaysPath()` sites, `drawOverlays`, pen and key handlers), `Gui/ViewerTabPrivate.{h,cpp}`, `Engine/Settings.{h,cpp}` (remove `_viewerOverlaysPath`, its knob and accessor), any Python binding or typesystem entry exposing it (grep `viewerOverlaysPath`)
   - approach:
     - Replace each `getOverlayTransform` + `getTimeTransform` + preference check with one `resolveOverlayPath` call.
@@ -72,7 +72,7 @@ Scouted 2026-11-14 on `origin/main`:
   - verify: syntax-check the touched files; then, under the Xvfb recipe, a Read → Transform(translate 50) → Roto scene viewed at the Read shows the Roto shape offset by -50 (screenshot shared with the user).
   - size: M
 
-- [ ] M432.P2.T2 — Map Sibling Overlays toggle and shortcut
+- [x] M432.P2.T2 — Map Sibling Overlays toggle and shortcut
   - files: `Gui/ViewerTab.{h,cpp}` / `Gui/ViewerTab10.cpp` (toolbar button beside the other viewer toggles), `Gui/GuiApplicationManager10.cpp` or wherever viewer shortcuts are registered (grep an existing viewer toggle's shortcut ID), `Gui/Resources/Images` icon if the other toggles use one, `Gui/ViewerTabPrivate.h` (state), the call sites from P2.T1 (pass the flag)
   - approach:
     - A checkable toolbar button, "Map Sibling Overlays", on by default.
@@ -85,7 +85,7 @@ Scouted 2026-11-14 on `origin/main`:
 
 ## Phase 432.3: Tests and docs
 
-- [ ] M432.P3.T1 — GUI test: off-path Roto on the plate
+- [x] M432.P3.T1 — GUI test: off-path Roto on the plate
   - files: `Tests/gui/m432_overlays_off_path.py` (on `Tests/gui/guitest.py`), the GUI test registration list
   - approach:
     - Build Read(constant) → Transform(translate 50,0) → Roto, with one Bezier, and open the Roto panel.
@@ -97,7 +97,7 @@ Scouted 2026-11-14 on `origin/main`:
   - verify: the script passes under `build/m63-gui/run-gl-tests.sh` or the remote `--gui` gate.
   - size: M
 
-- [ ] M432.P3.T2 — Docs
+- [x] M432.P3.T2 — Docs
   - files: the viewer docs page that lists overlay behaviour and preferences (grep `docs/` for "overlays for the viewer render path" or the viewer toolbar page)
   - approach: remove the preference, describe off-path overlays, the sibling toggle and its shortcut, and the FrameHold rule. No Nuke mentions.
   - verify: the docs build (`sphinx` job or local `tools/ci` docs check), or render the page.
@@ -119,3 +119,4 @@ Scouted 2026-11-14 on `origin/main`:
   - PM calls: retimed overlays stay locked (dimmed, no edits, double-click included); the FrameHold rule goes in Engine/Nodes/Time/docs/FrameHold.md (P3.T2), since there is no viewer docs page; the button stays text-labelled until the user sees the screenshots.
   - Seen, not touched: key repeat never fills its node list, so overlays get no key-repeat events (predates this milestone).
 - 2026-11-17 — **Mix and overlays (user):** a transform with mix above 0 affects overlays the same as at mix 1; only mix 0 leaves them unmoved. Overlays take the node's transform through an overlay-only query, so render concatenation still refuses a partly mixed transform.
+- 2026-11-18 — Gate 44232092416 green apart from the known MoonRay live-texture exit hang (fix in flight). PR #312 to main, in review. UAT AppImage build/appimages/Natron-m432-overlays-off-the-render-path.{AppImage,md}; screenshots sent.

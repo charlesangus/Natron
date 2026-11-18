@@ -430,7 +430,7 @@ future core work has solid ground to build on.
 | M284 | Utility Renderer Subdivision | done | M280 |  | E19 | F7 | | [M284-utility-renderer-subdivision.md](PLAN/MILESTONES/M284-utility-renderer-subdivision.md) |
 | M285 | Utility Renderer AOVs | todo | M256, M282, M283 |  | E19 | | | [M285-utility-renderer-aovs.md](PLAN/MILESTONES/M285-utility-renderer-aovs.md) |
 | M286 | Utility Renderer Deep Output | todo | M285 |  | E19 | F24 | | [M286-utility-renderer-deep-output.md](PLAN/MILESTONES/M286-utility-renderer-deep-output.md) |
-| M288 | Utility Renderer Projection Modes | doing | M281, M283 | bosley-executor | E19 | F7 | | [M288-utility-renderer-projection-modes.md](PLAN/MILESTONES/M288-utility-renderer-projection-modes.md) |
+| M288 | Utility Renderer Projection Modes | done | M281, M283 | | E19 | F7 | | [M288-utility-renderer-projection-modes.md](PLAN/MILESTONES/M288-utility-renderer-projection-modes.md) |
 | M290 | Native Cryptomatte Keyer | todo | M285 |  | E19 | | | [M290-native-cryptomatte-keyer.md](PLAN/MILESTONES/M290-native-cryptomatte-keyer.md) |
 | M289 | Utility Adaptive Subdivision | todo | M284 |  | E19 | | | [M289-utility-adaptive-subdivision.md](PLAN/MILESTONES/M289-utility-adaptive-subdivision.md) |
 | M287 | Utility Renderer Displacement | todo | M289 |  | E19 | | | [M287-utility-renderer-displacement.md](PLAN/MILESTONES/M287-utility-renderer-displacement.md) |
@@ -634,6 +634,8 @@ future core work has solid ground to build on.
 | F32 | Channel Networks | open |  |  | feature/f32-channel-networks | CHOP-style channel networks that drive knobs and shapes, with operators, Channel VOP, every source and channel-based animation layers. |
 
 # Open questions
+
+- **MoonRay live-texture test hangs at exit (2026-11-17, seen in M288 - Utility Renderer Projection Modes' gate, run 44195775643, legacy scheduler):** `USDRenderMoonRayLiveTextureTest` passed all 6 cases in 8 s, then the process hung after MoonRay's dispatcher exit and ctest timed out at 300 s. The task-graph leg passed. Unrelated to M288; needs a teardown fix if it recurs.
 
 - **Viewer toolbar overflows at 1920x1080 (found in M451 - Viewer Stale Cue Experiments' UAT, 2026-11-17):** the first viewer toolbar row is wider than the default viewer pane at the minimum screen size, so the B-input label is overlapped and anything after the B combo is clipped. It needs its own fix (a milestone via /cat-plan, or a small fix PR).
 

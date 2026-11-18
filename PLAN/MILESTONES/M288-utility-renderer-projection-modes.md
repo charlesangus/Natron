@@ -49,3 +49,4 @@ is the shaded bake.
 
 - 2026-11-01 — **Spherical, cylindrical and UV unwrap (user);** M53's SceneRaster keeps the geometry/projection bake.
 - 2026-11-17 — T1 and T2 code (90ca9b64b, with F7 merges) green on gate 44096205569 (release ctest, both legs). Deviations: overscan goes through Hydra camera framing, applies only with an active render settings prim, and the viewer gets none; F9 projection code didn't overlap ray generation; depth in the spherical and cylindrical modes is distance along the ray, and a bake's depth is the near plane. Screenshots for the user come from a new GUI script run against this build.
+- 2026-11-17 — Review fixes in 52f39dc36; gate run 44195775643 green apart from an unrelated MoonRay teardown hang (logged under # Open questions). PR #307 squash-merged into F7 as df469013f.

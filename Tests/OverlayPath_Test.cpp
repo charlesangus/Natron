@@ -39,6 +39,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/TransformMath.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Time/FrameHold.h"
 #include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/Nodes/Transform/Transform.h"
@@ -99,6 +100,19 @@ protected:
     NodePtr viewerOf(const NodePtr& input)
     {
         return createOver(PLUGINID_NATRON_VIEWER, -1, input);
+    }
+
+    // A merge of a on A and b on B.
+    NodePtr merge(const NodePtr& a,
+                  const NodePtr& b)
+    {
+        NodePtr node = create(PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        if (node) {
+            connectNodes(a, node, kNativeMergeInputA, true);
+            connectNodes(b, node, kNativeMergeInputB, true);
+        }
+
+        return node;
     }
 
     static void setDouble(const NodePtr& node,
@@ -328,6 +342,99 @@ TEST_F(OverlayPathTest, DisabledTransformIsIdentity)
     EXPECT_EQ(OverlayPathRelation::eUpstream, result.relation);
     EXPECT_TRUE(result.visible);
     expectTranslation(result, 0., 0.);
+}
+
+TEST_F(OverlayPathTest, TransformOverlayViewedAtItsInputLeavesItsOwnHandle)
+{
+    NodePtr read = constant();
+    NodePtr transform = translate(read, 10.);
+    NodePtr viewer = viewerOf(read);
+    ASSERT_TRUE(read && transform && viewer);
+
+    const OverlayPathResult result = resolve(viewer, transform);
+    EXPECT_EQ(OverlayPathRelation::eUpstream, result.relation);
+    EXPECT_TRUE(result.visible);
+    expectTranslation(result, 0., 0.);
+
+    // Scaling its own handle toward 0 must not hide it mid-drag.
+    setDouble(transform, kTransformNodeParamScale, 0., 0);
+    setDouble(transform, kTransformNodeParamScale, 0., 1);
+    const OverlayPathResult collapsed = resolve(viewer, transform);
+    EXPECT_EQ(OverlayPathRelation::eUpstream, collapsed.relation);
+    EXPECT_TRUE(collapsed.visible);
+    expectTranslation(collapsed, 0., 0.);
+}
+
+TEST_F(OverlayPathTest, TransformOverlayOnASiblingMapsBySiblingLegsOnly)
+{
+    NodePtr read = constant();
+    NodePtr transform = translate(read, 10.);
+    NodePtr right = translate(read, 30.);
+    NodePtr viewer = viewerOf(right);
+    ASSERT_TRUE(read && transform && right && viewer);
+
+    const OverlayPathResult result = resolve(viewer, transform);
+    EXPECT_EQ(OverlayPathRelation::eSibling, result.relation);
+    EXPECT_TRUE(result.visible);
+    expectTranslation(result, 30., 0.);
+}
+
+TEST_F(OverlayPathTest, UpstreamRouteFollowsInputPreferenceOrder)
+{
+    NodePtr read = constant();
+    NodePtr transform = translate(read, 10.);
+    NodePtr mergeNode = merge(transform, read);
+    NodePtr rotoNode = roto(mergeNode);
+    NodePtr viewer = viewerOf(read);
+    ASSERT_TRUE(read && transform && mergeNode && rotoNode && viewer);
+
+    // A comes before B, so the route through the Transform wins over the shorter one.
+    const OverlayPathResult result = resolve(viewer, rotoNode);
+    EXPECT_EQ(OverlayPathRelation::eUpstream, result.relation);
+    EXPECT_TRUE(result.visible);
+    expectTranslation(result, -10., 0.);
+}
+
+TEST_F(OverlayPathTest, ViewedNodeUpstreamWinsOverANearerSharedAncestor)
+{
+    NodePtr read = constant();
+    NodePtr transform = translate(read, 10.);
+    NodePtr second = roto(roto(transform));
+    NodePtr mergeNode = merge(second, read);
+    NodePtr rotoNode = roto(mergeNode);
+    NodePtr viewer = viewerOf(transform);
+    ASSERT_TRUE(read && transform && second && mergeNode && rotoNode && viewer);
+
+    const OverlayPathResult result = resolve(viewer, rotoNode);
+    EXPECT_EQ(OverlayPathRelation::eUpstream, result.relation);
+    EXPECT_TRUE(result.visible);
+    expectTranslation(result, 0., 0.);
+}
+
+TEST_F(OverlayPathTest, CacheFollowsKnobAndConnectionEdits)
+{
+    NodePtr read = constant();
+    NodePtr transform = translate(read, 10.);
+    NodePtr rotoNode = roto(transform);
+    NodePtr viewer = viewerOf(read);
+    ASSERT_TRUE(read && transform && rotoNode && viewer);
+    EffectInstance* viewed = viewer->getEffectInstance().get();
+
+    OverlayPathCache cache;
+    expectTranslation(cache.resolve(viewed, rotoNode, 1., ViewIdx(0), true), -10., 0.);
+    expectTranslation(cache.resolve(viewed, rotoNode, 1., ViewIdx(0), true), -10., 0.);
+
+    setDouble(transform, kTransformNodeParamTranslate, 20., 0);
+    expectTranslation(cache.resolve(viewed, rotoNode, 1., ViewIdx(0), true), -20., 0.);
+
+    disconnectNodes(transform, rotoNode, true);
+    connectNodes(read, rotoNode, 0, true);
+    const OverlayPathResult reconnected = cache.resolve(viewed, rotoNode, 1., ViewIdx(0), true);
+    EXPECT_EQ(OverlayPathRelation::eUpstream, reconnected.relation);
+    expectTranslation(reconnected, 0., 0.);
+
+    disconnectNodes(read, rotoNode, true);
+    EXPECT_EQ(OverlayPathRelation::eUnrelated, cache.resolve(viewed, rotoNode, 1., ViewIdx(0), true).relation);
 }
 
 } // anonymous namespace

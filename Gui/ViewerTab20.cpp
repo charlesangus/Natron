@@ -225,8 +225,11 @@ ViewerTab::notifyOverlaysPenDown_internal(const NodePtr& node,
         EffectInstancePtr effect = node->getEffectInstance();
         assert(effect);
         effect->setCurrentViewportForOverlays_public(_imp->viewer);
+        const OverlayPathResult placement = _imp->resolveOverlay(getGui()->getApp()->getTimeLine()->currentFrame(), view, node);
         bool didSmthing = effect->onOverlayPenDown_public(time, renderScale, view, viewportPos, transformPos, pressure, timestamp, pen);
         if (didSmthing) {
+            _imp->penDownOverlay = node;
+            _imp->penDownPlacement = placement;
             //http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html
             // if the instance returns kOfxStatOK, the host should not pass the pen motion
             // to any other interactive object it may own that shares the same view.
@@ -264,6 +267,7 @@ ViewerTab::notifyOverlaysPenDown(const RenderScale & renderScale,
 
     _imp->hasPenDown = true;
     _imp->hasCaughtPenMotionWhileDragging = false;
+    _imp->penDownOverlay.reset();
 
     NodesList nodes;
     getGui()->getNodesEntitledForOverlays(nodes);
@@ -539,6 +543,8 @@ ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
 
     _imp->hasPenDown = false;
     _imp->hasCaughtPenMotionWhileDragging = false;
+    NodePtr penDownOverlay = _imp->penDownOverlay.lock();
+    _imp->penDownOverlay.reset();
 
     NodesList nodes;
     getGui()->getNodesEntitledForOverlays(nodes);
@@ -546,6 +552,9 @@ ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
     ViewIdx view = getCurrentView();
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (*it == penDownOverlay) {
+            continue;
+        }
         double time;
         QPointF transformPos;
         // A release behind the projection still reaches the overlay, which may need it to end its gesture.
@@ -562,6 +571,24 @@ ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
         }
     }
 
+    // The overlay that took the pen-down ends its gesture even if the drag hid it or locked it,
+    // at the placement it had when the gesture began.
+    if (penDownOverlay) {
+        double time;
+        QPointF transformPos;
+        if (!overlayTimeAndPosition(penDownOverlay, pos, &time, &transformPos, true)) {
+            double x = pos.x();
+            double y = pos.y();
+            mapToOverlaySpace(_imp->penDownPlacement, pos.x(), pos.y(), true, &x, &y);
+            time = _imp->penDownPlacement.time;
+            transformPos = QPointF(x, y);
+        }
+        EffectInstancePtr effect = penDownOverlay->getEffectInstance();
+        if (effect) {
+            effect->setCurrentViewportForOverlays_public(_imp->viewer);
+            didSomething |= effect->onOverlayPenUp_public(time, renderScale, view, viewportPos, transformPos, pressure, timestamp);
+        }
+    }
 
     if ( !mustTriggerRender && !didSomething && (getGui()->getApp()->getOverlayRedrawRequestsCount() > 0) ) {
         getGui()->getApp()->redrawAllViewers();

@@ -27,7 +27,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <deque>
 #include <map>
 #include <set>
 #include <vector>
@@ -304,51 +303,57 @@ public:
         return false;
     }
 
-    struct Reached {
-        int distance;
-        // The node one step nearer the search root and the input it reads this node through.
-        PathStep from;
-    };
-
-    typedef std::map<EffectInstance*, Reached> ReachedMap;
-
-    // Breadth-first over inputs from root; order lists the nodes in the order they were reached.
-    static void ancestors(EffectInstance* root,
-                          ReachedMap* reached,
-                          std::vector<EffectInstance*>* order)
+    // Depth-first over inputs in preference order from node; steps gets the path to the first
+    // node accept takes, node first. A node explored once is not explored again: nothing it reads
+    // was taken then, nor will be.
+    template <class Accept>
+    static bool searchInputs(EffectInstance* node,
+                             const Accept& accept,
+                             std::vector<PathStep>* steps,
+                             std::set<EffectInstance*>* explored)
     {
-        std::deque<EffectInstance*> queue;
-        reached->insert(std::make_pair(root, Reached { 0, PathStep { NULL, -1 } }));
-        order->push_back(root);
-        queue.push_back(root);
-        while (!queue.empty()) {
-            EffectInstance* node = queue.front();
-            queue.pop_front();
-            const int distance = reached->find(node)->second.distance;
+        if (accept(node)) {
+            return true;
+        }
+        if (!explored->insert(node).second) {
+            return false;
+        }
+        for (int inputNb : orderedInputs(node)) {
+            steps->push_back(PathStep { node, inputNb });
+            if (searchInputs(node->getInput(inputNb).get(), accept, steps, explored)) {
+                return true;
+            }
+            steps->pop_back();
+        }
+
+        return false;
+    }
+
+    // Every node root reads, root included.
+    static void collectAncestors(EffectInstance* root,
+                                 std::set<EffectInstance*>* ancestors)
+    {
+        std::vector<EffectInstance*> stack(1, root);
+        while (!stack.empty()) {
+            EffectInstance* node = stack.back();
+            stack.pop_back();
+            if (!ancestors->insert(node).second) {
+                continue;
+            }
             for (int inputNb : orderedInputs(node)) {
-                EffectInstance* input = node->getInput(inputNb).get();
-                if (reached->find(input) != reached->end()) {
-                    continue;
-                }
-                reached->insert(std::make_pair(input, Reached { distance + 1, PathStep { node, inputNb } }));
-                order->push_back(input);
-                queue.push_back(input);
+                stack.push_back(node->getInput(inputNb).get());
             }
         }
     }
 
-    // The steps from the search root down to node, root first.
-    static std::vector<PathStep> pathTo(const ReachedMap& reached,
-                                        EffectInstance* node)
+    // The preference-order path from root to target, root first; false when root does not read it.
+    static bool pathTo(EffectInstance* root,
+                       EffectInstance* target,
+                       std::vector<PathStep>* steps)
     {
-        std::vector<PathStep> steps;
-        ReachedMap::const_iterator it = reached.find(node);
-        while ((it != reached.end()) && it->second.from.node) {
-            steps.push_back(it->second.from);
-            it = reached.find(it->second.from.node);
-        }
+        std::set<EffectInstance*> explored;
 
-        return std::vector<PathStep>(steps.rbegin(), steps.rend());
+        return searchInputs(root, [target](EffectInstance* node) { return node == target; }, steps, &explored);
     }
 
     // Composes steps forward from the time the first of them is shown at.
@@ -371,7 +376,9 @@ public:
         return matrix;
     }
 
-    // Composes steps forward, their times found back from the time the last one reads.
+    // Composes steps forward, their times found back from the time the last one reads. The first
+    // step is the overlay node's own edge: only its retime counts, as its overlay is drawn in the
+    // space of its input.
     Transform::Matrix3x3 composeBackward(const std::vector<PathStep>& steps,
                                          double endTime,
                                          double* startTime,
@@ -381,6 +388,9 @@ public:
         double time = endTime;
         for (std::vector<PathStep>::const_reverse_iterator step = steps.rbegin(); step != steps.rend(); ++step) {
             time = inverseTime(step->node, step->inputNb, time, visible);
+            if (step + 1 == steps.rend()) {
+                break;
+            }
             StatusEnum status = eStatusReplyDefault;
             matrix = Transform::matMul(edgeMatrix(step->node, step->inputNb, time, &status), matrix);
             if (status == eStatusFailed) {
@@ -443,18 +453,10 @@ collapsesPlane(const Transform::Matrix3x3& m)
     return (jacobianDet / largest) <= kCollapsedScale;
 }
 
-} // anonymous namespace
-
-OverlayPathResult
-resolveOverlayPath(EffectInstance* viewed,
-                   const NodePtr& overlayNode,
-                   double time,
-                   ViewIdx view,
-                   bool mapSiblings)
+// The node whose overlay space a Group's overlay is drawn in: its output node's input.
+NodePtr
+resolvedOverlayNode(const NodePtr& overlayNode)
 {
-    OverlayPathResult result;
-    result.time = time;
-
     NodePtr target = overlayNode;
     while (target) {
         NodeGroup* group = dynamic_cast<NodeGroup*>(target->getEffectInstance().get());
@@ -463,7 +465,19 @@ resolveOverlayPath(EffectInstance* viewed,
         }
         target = group->getOutputNodeInput(false);
     }
-    EffectInstance* targetEffect = target ? target->getEffectInstance().get() : NULL;
+
+    return target;
+}
+
+OverlayPathResult
+resolveResolvedOverlayPath(EffectInstance* viewed,
+                           EffectInstance* targetEffect,
+                           double time,
+                           ViewIdx view,
+                           bool mapSiblings)
+{
+    OverlayPathResult result;
+    result.time = time;
     if (!viewed || !targetEffect) {
         return result;
     }
@@ -485,46 +499,66 @@ resolveOverlayPath(EffectInstance* viewed,
         }
     }
 
-    OverlayPathResolver::ReachedMap fromOverlay;
-    std::vector<EffectInstance*> overlayOrder;
-    OverlayPathResolver::ancestors(targetEffect, &fromOverlay, &overlayOrder);
-    OverlayPathResolver::ReachedMap fromViewed;
-    std::vector<EffectInstance*> viewedOrder;
-    OverlayPathResolver::ancestors(viewed, &fromViewed, &viewedOrder);
+    std::set<EffectInstance*> viewedAncestors;
+    OverlayPathResolver::collectAncestors(viewed, &viewedAncestors);
 
-    EffectInstance* ancestor = NULL;
-    int bestDistance = 0;
-    for (EffectInstance* node : viewedOrder) {
-        const OverlayPathResolver::ReachedMap::const_iterator fromO = fromOverlay.find(node);
-        if (fromO == fromOverlay.end()) {
-            continue;
-        }
-        const int distance = fromViewed.find(node)->second.distance + fromO->second.distance;
-        if (!ancestor || (distance < bestDistance)) {
-            ancestor = node;
-            bestDistance = distance;
-        }
-    }
-    if (!ancestor) {
+    std::vector<PathStep> fromOverlay;
+    std::vector<PathStep> fromViewed;
+    if (viewedAncestors.count(targetEffect)) {
+        // Reached only through an input a transform does not move, such as a mask, or across a
+        // leg whose transform failed, which the composition hides.
+        result.relation = OverlayPathRelation::eDownstream;
+        OverlayPathResolver::pathTo(viewed, targetEffect, &fromViewed);
+        bool visible = true;
+        double targetTime = time;
+        result.matrix = resolver.composeForward(fromViewed, time, &targetTime, &visible);
+        result.time = targetTime;
+        result.visible = visible;
+
         return result;
     }
 
-    if (ancestor == targetEffect) {
-        result.relation = OverlayPathRelation::eDownstream;
-    } else if (isViewedNode(viewed, ancestor)) {
-        result.relation = OverlayPathRelation::eUpstream;
-    } else {
+    EffectInstance* ancestor = NULL;
+    {
+        std::set<EffectInstance*> explored;
+        const auto isViewed = [viewed, targetEffect, &ancestor](EffectInstance* node) {
+            if ((node == targetEffect) || !isViewedNode(viewed, node)) {
+                return false;
+            }
+            ancestor = node;
+
+            return true;
+        };
+        if (OverlayPathResolver::searchInputs(targetEffect, isViewed, &fromOverlay, &explored)) {
+            result.relation = OverlayPathRelation::eUpstream;
+        }
+    }
+    if (!ancestor) {
+        fromOverlay.clear();
+        std::set<EffectInstance*> explored;
+        const auto isShared = [targetEffect, &viewedAncestors, &ancestor](EffectInstance* node) {
+            if ((node == targetEffect) || !viewedAncestors.count(node)) {
+                return false;
+            }
+            ancestor = node;
+
+            return true;
+        };
+        if (!OverlayPathResolver::searchInputs(targetEffect, isShared, &fromOverlay, &explored)) {
+            return result;
+        }
         result.relation = OverlayPathRelation::eSibling;
         if (!mapSiblings) {
             return result;
         }
     }
+    OverlayPathResolver::pathTo(viewed, ancestor, &fromViewed);
 
     bool visible = true;
     double ancestorTime = time;
-    const Transform::Matrix3x3 toViewed = resolver.composeForward(OverlayPathResolver::pathTo(fromViewed, ancestor), time, &ancestorTime, &visible);
+    const Transform::Matrix3x3 toViewed = resolver.composeForward(fromViewed, time, &ancestorTime, &visible);
     double overlayTime = ancestorTime;
-    const Transform::Matrix3x3 fromAncestor = resolver.composeBackward(OverlayPathResolver::pathTo(fromOverlay, ancestor), ancestorTime, &overlayTime, &visible);
+    const Transform::Matrix3x3 fromAncestor = resolver.composeBackward(fromOverlay, ancestorTime, &overlayTime, &visible);
 
     if (collapsesPlane(fromAncestor)) {
         result.matrix = Transform::Matrix3x3();
@@ -538,7 +572,73 @@ resolveOverlayPath(EffectInstance* viewed,
     result.visible = visible;
 
     return result;
-} // resolveOverlayPath
+} // resolveResolvedOverlayPath
+
+} // anonymous namespace
+
+OverlayPathResult
+resolveOverlayPath(EffectInstance* viewed,
+                   const NodePtr& overlayNode,
+                   double time,
+                   ViewIdx view,
+                   bool mapSiblings)
+{
+    const NodePtr target = resolvedOverlayNode(overlayNode);
+
+    return resolveResolvedOverlayPath(viewed, target ? target->getEffectInstance().get() : NULL, time, view, mapSiblings);
+}
+
+OverlayPathResult
+OverlayPathCache::resolve(EffectInstance* viewed,
+                          const NodePtr& overlayNode,
+                          double time,
+                          ViewIdx view,
+                          bool mapSiblings)
+{
+    const NodePtr target = resolvedOverlayNode(overlayNode);
+    const NodePtr viewedNode = viewed ? viewed->getNode() : NodePtr();
+    if (!overlayNode || !target || !viewedNode) {
+        return resolveResolvedOverlayPath(viewed, target ? target->getEffectInstance().get() : NULL, time, view, mapSiblings);
+    }
+    // Read before resolving, so an edit made while resolving leaves the entry stale.
+    const U64 viewedMarks = viewedNode->getHashMarkCount();
+    const U64 resolvedMarks = target->getHashMarkCount();
+
+    std::map<const Node*, Entry>::iterator it = _entries.find(overlayNode.get());
+    if ((it != _entries.end()) && (it->second.overlayNode.lock() == overlayNode) && (it->second.resolvedNode.lock() == target) && (it->second.viewed == viewed) && (it->second.viewedMarks == viewedMarks) && (it->second.resolvedMarks == resolvedMarks) && (it->second.time == time) && (it->second.view == view) && (it->second.mapSiblings == mapSiblings)) {
+        return it->second.result;
+    }
+
+    const OverlayPathResult result = resolveResolvedOverlayPath(viewed, target->getEffectInstance().get(), time, view, mapSiblings);
+    if (it == _entries.end()) {
+        for (std::map<const Node*, Entry>::iterator entry = _entries.begin(); entry != _entries.end();) {
+            if (entry->second.overlayNode.expired()) {
+                entry = _entries.erase(entry);
+            } else {
+                ++entry;
+            }
+        }
+        it = _entries.insert(std::make_pair(overlayNode.get(), Entry())).first;
+    }
+    Entry& entry = it->second;
+    entry.overlayNode = overlayNode;
+    entry.resolvedNode = target;
+    entry.viewed = viewed;
+    entry.viewedMarks = viewedMarks;
+    entry.resolvedMarks = resolvedMarks;
+    entry.time = time;
+    entry.view = view;
+    entry.mapSiblings = mapSiblings;
+    entry.result = result;
+
+    return result;
+} // OverlayPathCache::resolve
+
+void
+OverlayPathCache::clear()
+{
+    _entries.clear();
+}
 
 bool
 mapToOverlaySpace(const OverlayPathResult& result,

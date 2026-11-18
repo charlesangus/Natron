@@ -28,6 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <map>
+
+#include "Global/GlobalDefines.h"
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
@@ -65,13 +69,20 @@ struct OverlayPathResult {
 /**
  * @brief Places overlayNode's overlay in a viewer showing viewed at time and view.
  *
- * viewed may be a viewer node, whose inputs are then the nodes it shows. Inputs are tried
- * non-optional before optional, last to first, and that order also breaks ties between routes.
+ * viewed may be a viewer node, whose inputs are then the nodes it shows. Every walk tries inputs
+ * non-optional before optional, last to first, depth first, and takes the first route that order
+ * reaches, however long:
+ * - downstream when the walk from the viewed node reaches the overlay node;
+ * - otherwise upstream when the walk from the overlay node reaches the viewed node;
+ * - otherwise sibling, through the first node the walk from the overlay node reaches that the
+ *   viewed node also reads, which is the shared ancestor;
+ * - otherwise unrelated.
  * The graph path between the two nodes composes each node's getOverlayTransform matrix (draft
  * mode) and maps time through each node's getFramesNeeded: forward along the legs the viewer
- * reads, inverted along the legs that lead from the overlay node down to a shared ancestor. A node
- * whose needed frame is one constant frame is a hold, visible only while the time reaching it is
- * that frame.
+ * reads, inverted along the legs that lead from the overlay node down to a shared ancestor. The
+ * overlay is drawn in the space of the overlay node's input, so the overlay node's own matrix is
+ * never part of the path, though its own retime is. A node whose needed frame is one constant
+ * frame is a hold, visible only while the time reaching it is that frame.
  * Disabled nodes are identity, and a Group overlay node resolves through its output node's input.
  * With mapSiblings false a sibling overlay stays in its own canonical space, as an unrelated one
  * always does.
@@ -81,6 +92,39 @@ OverlayPathResult resolveOverlayPath(EffectInstance* viewed,
                                      double time,
                                      ViewIdx view,
                                      bool mapSiblings);
+
+/**
+ * @brief Remembers the last resolveOverlayPath result per overlay node, so a paint or an event
+ * resolves each overlay once. An entry is reused only for the same viewed node, time, view and
+ * mapSiblings, and while neither the viewed node's nor the overlay's resolved node's hash mark
+ * count has moved: every node a path can cross is upstream of one of the two, and a connection,
+ * a node removal or a render knob edit there moves that count. Not thread-safe.
+ **/
+class OverlayPathCache {
+public:
+    OverlayPathResult resolve(EffectInstance* viewed,
+                              const NodePtr& overlayNode,
+                              double time,
+                              ViewIdx view,
+                              bool mapSiblings);
+
+    void clear();
+
+private:
+    struct Entry {
+        NodeWPtr overlayNode;
+        NodeWPtr resolvedNode;
+        EffectInstance* viewed = nullptr;
+        U64 viewedMarks = 0;
+        U64 resolvedMarks = 0;
+        double time = 0.;
+        ViewIdx view;
+        bool mapSiblings = true;
+        OverlayPathResult result;
+    };
+
+    std::map<const Node*, Entry> _entries;
+};
 
 /**
  * @brief Maps a position in the viewed node's canonical space into the overlay node's, through

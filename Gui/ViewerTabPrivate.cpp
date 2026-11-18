@@ -165,7 +165,7 @@ ViewerTabPrivate::resolveOverlay(double time,
                                  ViewIdx view,
                                  const NodePtr& node) const
 {
-    return resolveOverlayPath(viewerNode, node, time, view, viewerValue<bool>(kViewerParamMapSiblingOverlays, true));
+    return overlayPathCache.resolve(viewerNode, node, time, view, viewerValue<bool>(kViewerParamMapSiblingOverlays, true));
 }
 
 void

@@ -210,6 +210,13 @@ struct ViewerTabPrivate
     bool hasPenDown;
     bool hasCaughtPenMotionWhileDragging;
 
+    // The overlay that took the last pen-down and where it was then: it gets the pen-up even if
+    // the drag hid it.
+    NodeWPtr penDownOverlay;
+    OverlayPathResult penDownPlacement;
+
+    mutable OverlayPathCache overlayPathCache;
+
     ViewerTabPrivate(ViewerTab* publicInterface,
                      ViewerInstance* node);
 

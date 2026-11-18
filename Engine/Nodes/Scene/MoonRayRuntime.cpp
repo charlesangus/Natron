@@ -26,12 +26,20 @@
 #include "MoonRayRuntime.h"
 
 #include <cpuid.h>
+#include <dirent.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
-
-#include <sys/stat.h>
+#include <sstream>
+#include <thread>
+#include <vector>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -94,6 +102,74 @@ setEnvIfEmpty(const char* name,
     if (!current || !*current) {
         ::setenv(name, value.c_str(), 1);
     }
+}
+
+const char* const kRenderProcessName = "execComp";
+
+// Whether pid is a child of this process named kRenderProcessName that has not exited.
+bool
+isRunningRenderProcess(const std::string& pid)
+{
+    std::ifstream file("/proc/" + pid + "/stat");
+    std::string stat;
+
+    if (!std::getline(file, stat)) {
+        return false;
+    }
+    // pid (comm) state ppid ...: comm may hold spaces and parentheses, so it ends at the last ')'.
+    const std::string::size_type open = stat.find('(');
+    const std::string::size_type close = stat.rfind(')');
+    if ((open == std::string::npos) || (close == std::string::npos) || (close < open)) {
+        return false;
+    }
+    std::istringstream rest(stat.substr(close + 1));
+    char state = 0;
+    long ppid = 0;
+    if (!(rest >> state >> ppid) || (ppid != (long)::getpid()) || (state == 'Z') || (state == 'X')) {
+        return false;
+    }
+
+    return stat.compare(open + 1, close - open - 1, kRenderProcessName) == 0;
+}
+
+std::vector<pid_t>
+runningRenderProcesses()
+{
+    std::vector<pid_t> pids;
+    DIR* proc = ::opendir("/proc");
+
+    if (!proc) {
+        return pids;
+    }
+    while (const dirent* entry = ::readdir(proc)) {
+        char* end = nullptr;
+        const long pid = std::strtol(entry->d_name, &end, 10);
+        if ((pid > 0) && end && (*end == '\0') && isRunningRenderProcess(entry->d_name)) {
+            pids.push_back((pid_t)pid);
+        }
+    }
+    ::closedir(proc);
+
+    return pids;
+}
+
+void
+killRenderProcess(pid_t pid)
+{
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+    // Arras reaps its processes on a thread of its own, after which the pid may be reused: checked
+    // through a pidfd, the process killed is the one checked.
+    const int pidfd = (int)::syscall(SYS_pidfd_open, pid, 0);
+    if (pidfd >= 0) {
+        if (isRunningRenderProcess(std::to_string(pid))) {
+            (void)::syscall(SYS_pidfd_send_signal, pidfd, SIGKILL, nullptr, 0);
+        }
+        ::close(pidfd);
+
+        return;
+    }
+#endif
+    (void)::kill(pid, SIGKILL);
 }
 } // anon namespace
 
@@ -165,6 +241,24 @@ setUp(const std::string& applicationDirPath)
     }();
 
     return installed;
+}
+
+int
+endRenderProcesses(int graceMs)
+{
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, graceMs));
+    std::vector<pid_t> running = runningRenderProcesses();
+
+    while (!running.empty() && (std::chrono::steady_clock::now() < deadline)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        running = runningRenderProcesses();
+    }
+    for (pid_t pid : running) {
+        std::cerr << "MoonRay's render process " << pid << " did not exit; killing it" << std::endl;
+        killRenderProcess(pid);
+    }
+
+    return (int)running.size();
 }
 } // namespace MoonRayRuntime
 

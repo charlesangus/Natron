@@ -841,6 +841,15 @@ AppManager::~AppManager()
         std::_Exit(EXIT_FAILURE);
     }
 
+    // The engines' delegates run threads and child processes of their own, which exit would cut
+    // short or leave running. Both waits are bounded, under the shutdown watchdog's limit.
+    setTeardownStage("releasing the render delegates' engines");
+    if (!SceneCaches::releaseCpuRenderEnginesAndWait(10000)) {
+        qWarning("A render delegate's engine was not released within 10 s.");
+    }
+    setTeardownStage("waiting for MoonRay's render processes");
+    (void)MoonRayRuntime::endRenderProcesses(5000);
+
     // No render is left to abort, and the watchdog thread reads this manager.
     AbortWatchdog::shutdown();
 

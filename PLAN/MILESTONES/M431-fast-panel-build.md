@@ -45,7 +45,7 @@ Known suspects, unmeasured as to their split (M399's samples are gone):
 
 ## Phase 431.1: Measure
 
-- [ ] M431.P1.T1 — Time panel builds per knob type and per stage
+- [x] M431.P1.T1 — Time panel builds per knob type and per stage
   - files: `Engine/NodeCreationStageLog.h`/`.cpp` (reuse; enabled by `NATRON_NODE_CREATION_STAGE_LOG`), `Gui/KnobGuiContainerHelper.cpp` (`initializeKnobVectorItem` and the row-creation path), `Gui/KnobGui10.cpp` (tooltip), `Gui/NodeGui.cpp` (`createPanel`, docking), `tools/bench/gui/gui_bench.py` (new op)
   - approach: Add stage scopes around one knob row's creation keyed by knob type (`panelKnob:<typeName>`), and sub-stages for tooltip build, widget creation, layout insertion and show/dock. Add a `gui_bench.py` op `open_panel` that, for a list of plugin IDs (default: Blur, Merge, Grade, Roto, Transform, a USD/3D node, the Cycles render node), opens and closes the node's panel N times on an existing node and reports wall time per panel plus the per-stage log. Logging off must cost nothing measurable (the existing `enabled()` check).
   - verify: build and ctest pass; `gui_bench.py --op open_panel` under Xvfb prints per-panel totals and per-knob-type stage times for every listed node.
@@ -59,37 +59,37 @@ Known suspects, unmeasured as to their split (M399's samples are gone):
 
 ## Phase 431.2: Make it fast
 
-- [ ] M431.P2.T1 — Build every panel off-screen and show it once
+- [x] M431.P2.T1 — Build every panel off-screen and show it once
   - files: `Gui/NodeGui.cpp` (`createPanel`, `startPanelBuild`), `Gui/DockablePanel.cpp`, `Gui/KnobGuiContainerHelper.cpp`, `Gui/Gui*.cpp` (`addVisibleDockablePanel`)
   - approach: Create the panel widget hidden and unparented from the shown properties bin, build every page's rows into it, then dock it and show it in one step, so no `setVisible` on a row ever runs against a visible hierarchy. Keep the current tab, scroll position and page order the synchronous build gives today. Applies to the incremental path while it still exists and to the synchronous path.
   - verify: build and ctest pass; T1's op shows the show/restyle stage gone from per-row cost; Xvfb screenshots of a fresh Merge and Roto panel match the current layout.
   - size: L
 
-- [ ] M431.P2.T2 — Build knob tooltips on first hover
+- [x] M431.P2.T2 (dropped, see Decisions) — Build knob tooltips on first hover
   - files: `Gui/KnobGui10.cpp` (tooltip builder at :703-771), `Gui/KnobGui.h`, the widgets that call it (label, spin boxes, buttons; find callers of the tooltip builder)
   - approach: Stop calling `setToolTip` at row creation; answer `QEvent::ToolTip` on the row's widgets (an event filter installed per row, or on the label and value widgets) by building the tooltip then, cached until the knob's hint, expression, link or animation state changes. Tooltips must read exactly as today, including the Markdown-converted hints and the link line.
   - verify: build and ctest pass; a GUI check hovers three knobs (a plain hint, a Markdown hint, a linked knob) and compares the tooltip text to today's; T1's op shows the tooltip stage gone from creation.
   - size: M
 
-- [ ] M431.P2.T3 — Create secret rows' widgets on first reveal
+- [x] M431.P2.T3 — Create secret rows' widgets on first reveal
   - files: `Gui/KnobGuiContainerHelper.cpp`, `Gui/KnobGui*.cpp`
   - approach: A secret or hidden knob's row is not built until it is first shown; no per-child show()/hide() for rows the parent's show covers, so no extra setVisible polish. 15–21% of build in P1.T2.
   - verify: `open_panel` build drops by at least that share on Blur and Merge; GUI scripts that reveal secret knobs still pass.
   - size: M
 
-- [ ] M431.P2.T4 — Lighter colour rows
+- [x] M431.P2.T4 — Lighter colour rows
   - files: `Gui/KnobGuiColor.cpp`, `Gui/KnobGuiValue.cpp`
   - approach: Build the colour row's eyedropper, dialog button and per-dimension spin boxes on demand (first expand/hover/click); the collapsed row is one widget. 12.6 ms per row, 48% of Grade's build in P1.T2.
   - verify: Grade's build drops by at least a third; colour knob GUI scripts pass.
   - size: M
 
-- [ ] M431.P2.T5 — Sub-stage onKnobsInitialized and fix its top cause
+- [x] M431.P2.T5 — Sub-stage onKnobsInitialized and fix its top cause
   - files: `Gui/NodeSettingsPanel.cpp`, `Gui/KnobGuiContainerHelper.cpp`, `tools/bench/gui/gui_bench.py`
   - approach: Add stage scopes inside onKnobsInitialized (tabs, pages, group building) and fix whichever dominates; install `open_panel`'s event filter after the open so it doesn't inflate the build. 23–33% of build in P1.T2.
   - verify: the stage log names the cost; the fix cuts it measurably.
   - size: M
 
-- [ ] M431.P2.T6 — Collapsed groups and other pages built lazily
+- [x] M431.P2.T6 — Collapsed groups and other pages built lazily
   - files: `Gui/KnobGuiContainerHelper.cpp`, `Gui/KnobGuiGroup.cpp`
   - approach: Rows in a collapsed group or a non-current page are built when first expanded or shown. Dock/show is 21% of USDRenderSettings (29 groups).
   - verify: USDRenderSettings' build drops by at least that share; m431_panel_appears_whole passes.
@@ -103,7 +103,7 @@ Known suspects, unmeasured as to their split (M399's samples are gone):
   - verify: build and full ctest pass; `git grep` finds none of the removed names; M399 - Node Creation Keys And Speed's GUI scripts and benches still pass, with `create_by_shortcut` node-paint latency not worse.
   - size: L
 
-- [ ] M431.P3.T2 — GUI test: a panel is never shown partly built
+- [x] M431.P3.T2 — GUI test: a panel is never shown partly built
   - files: `Tests/gui/m431_panel_appears_whole.py` (new, run with `Tests/gui/run-gui-test.sh`, modelled on `Tests/gui/m101_merge_panel.py` and `Tests/gui/guitest.py`)
   - approach: Create Blur, Merge and Roto by the create-node shortcut with real key events, and open the panel of an existing Merge by double-click. Poll every event-loop pass with a `QTimer.singleShot(0)` chain; on each pass where the panel `isVisible()`, assert the current page's visible knob-row count equals its final count. Create then undo straight away and assert no crash and no panel left in the properties bin. Keep PySide owner wrappers alive per the repo's GUI-script rules.
   - verify: the script passes against P3.T1's build under Xvfb, and fails against `main` (run once there to confirm it catches the popping).
@@ -120,3 +120,4 @@ Known suspects, unmeasured as to their split (M399's samples are gone):
 - 2026-11-17 — Gate 44095362805 green (m431_panel_appears_whole 43/43 after the wrapper-lifetime fix; m399 and m101 regressions pass). Next: P1.T2 runs open_panel on this gate's AppImage against main's under Xvfb, then P2.T2 is decided from the numbers.
 - 2026-11-17 — **P1.T2 results** (Xvfb, gate 334109146 vs main beta192, 20 opens, paint / build median ms): Blur 110/56 vs 155/60; Merge 157/70 vs 187/74; Grade 293/183 vs 330/190; Roto 434/255 vs 480/252; Transform 197/111 vs 258/117; USD Camera 171/107 vs 220/112; USDRenderSettings 474/360 vs 620/297 (the gate's build includes the dock). `open_panel`'s app-wide Python event filter doubled every figure; the numbers use a copy that installs it after the open, and the in-tree op needs the same fix. Build breakdown: row widgets 24–29%, hiding secret rows 15–21%, onKnobsInitialized 23–33%, dock/show 6–21%, labels 3–5%, KnobGui creation 4%, tooltip text 0.8–1.2%. QSS polish via setVisible is 37–63% inclusive. Colour rows cost 12.6 ms each (48% of Grade). Raw data under the worktree's build/m431-prof/.
 - 2026-11-17 — **P2.T2 dropped (PM call):** tooltips are about 1% of a panel, under the 5% bar.
+- 2026-11-18 — Gate green on 801f8c5ba (build 44319132335; all ten GUI scripts pass, m138_papercuts 85/85 in 44343610758). The m138 fixes were script-only: fixtures written once per run (a Read refuses a file rewritten after its first read), plus the file dialog's dead preview reader (cd50f72e4, pre-existing on main). P3.T1 waits for the real-display timing UAT against the target.

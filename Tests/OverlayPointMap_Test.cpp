@@ -100,6 +100,7 @@ const int kFetchTimeoutMs = 30000;
 
 #define kTestPluginIDOverlayUV "net.natron.test.OverlayPointMapUV"
 #define kTestPluginIDOverlayUVMasked "net.natron.test.OverlayPointMapUVMasked"
+#define kTestPluginIDOverlayDot "net.natron.test.OverlayPointMapDot"
 
 // The masked UV map has alpha 0 at canonical x below this, 1 from it on.
 const double kUVMaskEdge = 40.;
@@ -126,12 +127,24 @@ dist(const Point& a,
     return std::hypot(a.x - b.x, a.y - b.y);
 }
 
+// The pixel the format-wide dot source lights.
+const int kFormatDotX = 40;
+const int kFormatDotY = 30;
+
+enum OverlayTestPattern {
+    eOverlayTestPatternUV,
+    eOverlayTestPatternUVMasked,
+    eOverlayTestPatternDot,
+};
+
 /**
- * @brief An RGBA UV map over the 128 x 96 format, U = (x - 10) / 128 and V = y / 96 at every
- * canonical pixel centre (x, y): an STMap reading it moves the Source 10 pixels right. The
- * masked variant has alpha 0 left of kUVMaskEdge.
+ * @brief An RGBA image over the 128 x 96 format, which is also its region of definition. The UV
+ * pattern has U = (x - 10) / 128 and V = y / 96 at every canonical pixel centre (x, y): an STMap
+ * reading it moves the Source 10 pixels right. The masked UV pattern has alpha 0 left of
+ * kUVMaskEdge. The dot pattern is white at pixel (kFormatDotX, kFormatDotY) and transparent
+ * black elsewhere, for nodes whose output follows the source's region rather than its format.
  **/
-template <bool Masked>
+template <OverlayTestPattern Pattern>
 class OverlayUVTestEffectT
     : public NativeEffectBase {
 public:
@@ -174,8 +187,8 @@ public:
 
 private:
     static constexpr NodeSpec kNodeSpec = {
-        .id = Masked ? kTestPluginIDOverlayUVMasked : kTestPluginIDOverlayUV,
-        .label = Masked ? "Test Overlay UV Masked" : "Test Overlay UV",
+        .id = (Pattern == eOverlayTestPatternDot) ? kTestPluginIDOverlayDot : ((Pattern == eOverlayTestPatternUVMasked) ? kTestPluginIDOverlayUVMasked : kTestPluginIDOverlayUV),
+        .label = (Pattern == eOverlayTestPatternDot) ? "Test Overlay Dot" : ((Pattern == eOverlayTestPatternUVMasked) ? "Test Overlay UV Masked" : "Test Overlay UV"),
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -213,10 +226,20 @@ private:
             Image::WriteAccess access(image.get());
             for (int y = args.roi.y1; y < args.roi.y2; ++y) {
                 const float v = (float)((y * step + 0.5 * step) / kHeight);
+                const bool dotRow = (y * step <= kFormatDotY) && (kFormatDotY < (y + 1) * step);
                 for (int x = args.roi.x1; x < args.roi.x2; ++x) {
-                    const float u = (float)((x * step + 0.5 * step - kUVShift) / kWidth);
-                    const float alpha = (Masked && ((x * step + 0.5 * step) < kUVMaskEdge)) ? 0.f : 1.f;
-                    const float values[4] = { u, v, 0.f, alpha };
+                    float values[4] = { 0.f, 0.f, 0.f, 0.f };
+                    if (Pattern == eOverlayTestPatternDot) {
+                        const bool dotColumn = (x * step <= kFormatDotX) && (kFormatDotX < (x + 1) * step);
+                        const float lit = (dotRow && dotColumn) ? 1.f : 0.f;
+                        values[0] = values[1] = values[2] = values[3] = lit;
+                    } else {
+                        const float u = (float)((x * step + 0.5 * step - kUVShift) / kWidth);
+                        const bool masked = (Pattern == eOverlayTestPatternUVMasked) && ((x * step + 0.5 * step) < kUVMaskEdge);
+                        values[0] = u;
+                        values[1] = v;
+                        values[3] = masked ? 0.f : 1.f;
+                    }
                     float* pixel = reinterpret_cast<float*>(access.pixelAt(x, y));
                     if (!pixel) {
                         return eStatusFailed;
@@ -232,8 +255,9 @@ private:
     }
 };
 
-typedef OverlayUVTestEffectT<false> OverlayUVTestEffect;
-typedef OverlayUVTestEffectT<true> OverlayUVMaskedTestEffect;
+typedef OverlayUVTestEffectT<eOverlayTestPatternUV> OverlayUVTestEffect;
+typedef OverlayUVTestEffectT<eOverlayTestPatternUVMasked> OverlayUVMaskedTestEffect;
+typedef OverlayUVTestEffectT<eOverlayTestPatternDot> OverlayDotTestEffect;
 
 template <typename NODE>
 void
@@ -268,6 +292,7 @@ registerTestNodes()
     std::call_once(once, []() {
         registerNode<OverlayUVTestEffect>();
         registerNode<OverlayUVMaskedTestEffect>();
+        registerNode<OverlayDotTestEffect>();
     });
 }
 
@@ -391,6 +416,16 @@ protected:
         }
 
         return c;
+    }
+
+    // The one-pixel white dot dot(40, 30) draws, from a source whose region of definition is the format.
+    NodePtr formatDot()
+    {
+        NodePtr d = createNodeAtMajor(getApp(), kTestPluginIDOverlayDot, -1);
+
+        EXPECT_TRUE(bool(d)) << kTestPluginIDOverlayDot;
+
+        return d;
     }
 
     // Bilinear where the node has a filter, so a dot's centroid follows the map.
@@ -933,7 +968,8 @@ TEST_F(OverlayPointMapTest, STMapZeroUVAlphaHasNoSource)
 
 TEST_F(OverlayPointMapTest, IDistortConstantFieldMapsExactly)
 {
-    NodePtr source = dot(40, 30);
+    // IDistort's output region is its Source's, so the moved dot needs a format-wide Source.
+    NodePtr source = formatDot();
     NodePtr field = constant(10., 0., 0., 1.);
     NodePtr idistort = node(PLUGINID_NATRON_IDISTORT, PLUGIN_MAJOR_NATRON_IDISTORT, source, kIDistortInputSource);
     ASSERT_TRUE(source && field && idistort);
@@ -1064,7 +1100,8 @@ TEST_F(OverlayPointMapTest, MatrixNodesDotsFollowTheirMaps)
     for (const MatrixCase& c : cases) {
         SCOPED_TRACE(c.id);
         resetProject();
-        NodePtr source = dot(40, 30);
+        // Reformat's Scale sizes its output from the source's region, so the dot spans the format.
+        NodePtr source = formatDot();
         NodePtr n = node(c.id, c.major, source);
         ASSERT_TRUE(source && n);
         c.setup(n);

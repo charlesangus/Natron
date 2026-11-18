@@ -585,6 +585,10 @@ try:
         toggle_eyedropper(dropper)
         check(icon_bytes(dropper) == icon_off, "clicking the label again turns the eyedropper off")
         gt.close_all_panels()
+        # A point pick stays drawn as an orange pixel at the viewer centre until a plain click,
+        # and later sections read the colour there
+        click(gl, mid)
+        yield ("sleep", SETTLE_MS)
         for n in (read, g2, c25):
             n.destroy()
         QApplication.processEvents()

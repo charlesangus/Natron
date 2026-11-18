@@ -477,6 +477,9 @@ try:
         require(samples is not None, "the USDRenderSettings has a cyclesSamples parameter")
 
         storm_engines = num("natronSceneEngineCount", 0)
+        # A fill left unfinished resumes on the switch back, whose first frame then also takes a batch in.
+        report("NOTE before Cycles the Storm fill is complete %r (progress %r)"
+               % (prop("natronSceneFillComplete"), prop("natronSceneFillProgress")))
 
         section("first sync")
         timer.start()

@@ -841,6 +841,9 @@ struct SceneViewportRenderer::Implementation {
     // are, which it never takes meanwhile; the rows come nearest first, as the stand-in's worker
     // orders them for the view the camera last rested at.
     std::atomic<bool> drawFilling { false };
+    // Only frames shown one after another take the batches in, as each waits for the last to be
+    // presented: a render its caller waits out (render()) draws everything there is.
+    bool fillPaced = true;
     std::atomic<std::size_t> fillAdmitted { 0 };
     std::atomic<std::size_t> fillPending { 0 };
     std::atomic<double> fillBudgetMs { kRevealTargetMs };
@@ -1835,7 +1838,7 @@ struct SceneViewportRenderer::Implementation {
         drawFilter = SceneDrawFilter::find(filterInstanceId);
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
             // Another delegate would restart its render at every batch.
-            filter->setAdmitting(RenderDelegates::isStorm(rendererId));
+            filter->setAdmitting(fillPaced && RenderDelegates::isStorm(rendererId));
             filter->seedRules(drawRules);
         }
         fillOrder.reset();
@@ -2138,6 +2141,15 @@ struct SceneViewportRenderer::Implementation {
         drawFillStep = false;
         drawRevealing = filter->isRevealing();
         noteFillState(filter);
+    }
+
+    // Storm only: the filter is the Storm engine's. Turning the pacing off lets every waiting prim in.
+    void setFillPaced(bool paced)
+    {
+        fillPaced = paced;
+        if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
+            filter->setAdmitting(paced);
+        }
     }
 
     // Render thread. Takes the stand-in worker's latest order, and the rows of it the textures go by.
@@ -3909,7 +3921,11 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
 
         return (pass > 0) && ((imp->backgroundStops != frame.stops) || (imp->exclusiveWaiting > 0));
     };
-    if (ended(0) || !_imp->ensureEngine()) {
+    if (ended(0)) {
+        return false;
+    }
+    _imp->setFillPaced(true);
+    if (!_imp->ensureEngine()) {
         return false;
     }
     section.collectWith(_imp->engine->GetHgi());
@@ -5223,6 +5239,8 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     StormGLStateGuard guard;
     StormGLSection section;
 
+    // render() is waited out, and nothing presents its image to let a next batch go.
+    _imp->setFillPaced(!followScene);
     if (!_imp->ensureEngine()) {
         Implementation::bindFrameTarget(fbo, width, height);
         Implementation::clearFrameTarget(_imp->backgroundShown);
@@ -7930,7 +7948,10 @@ SceneViewport::isSceneSynced() const
         return !_imp->renderThreadBusy() && _imp->renderer.isStandInListComplete();
     }
 
-    return !awaitsEngine || (!_imp->renderThreadBusy() && !_imp->renderer.needsBackgroundFrame() && !_imp->presentPacer.pending());
+    // Between a fill's frame and the paint presenting it no frame is due, yet prims are still to come.
+    const bool filling = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId) && _imp->renderer.isDrawFilling();
+
+    return !awaitsEngine || (!_imp->renderThreadBusy() && !_imp->renderer.needsBackgroundFrame() && !_imp->presentPacer.pending() && !filling);
 }
 
 bool
@@ -10449,7 +10470,8 @@ SceneViewport::paintGL()
             && (imp->drawJobsQueued == 0) && !imp->presentPacer.inFlight();
     }
     // A frame of a fill still coming in is not the frame of the scene.
-    const bool fillComplete = _imp->renderer.isFillComplete();
+    // The fill is the Storm engine's, which another delegate leaves where it was.
+    const bool fillComplete = !stormPaint || _imp->renderer.isFillComplete();
     converged = converged && fillComplete;
     const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
     publishRefineState();

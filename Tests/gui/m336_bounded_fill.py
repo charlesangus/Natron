@@ -8,7 +8,7 @@ out of Hydra, and clears that, so the whole city comes in again in bounded passe
   - a camera nudge mid-fill gets a frame new to the screen within a few of the fill's passes;
   - the fill completes: natronSceneFillComplete is set and natronSceneFillProgress is 1.
 
-File: $NATRON_CITY_FILE, by default a city of $NATRON_FILL_BLOCKS blocks (20) the script writes under
+File: $NATRON_CITY_FILE, by default a city of $NATRON_FILL_BLOCKS blocks (40) the script writes under
 $NATRON_GUI_TEST_OUT; a fill too fast to nudge mid-way needs a bigger one.
 
 Screenshots for sign-off: bounded-fill-mid (the boxes of rows still to come over the frame),
@@ -30,7 +30,7 @@ LOAD_TIMEOUT_S = 600.0
 STARTUP_TIMEOUT_S = 60.0
 SETTLE_MS = 1000
 POLL_MS = 5
-BLOCKS = int(os.environ.get("NATRON_FILL_BLOCKS", "20"))
+BLOCKS = int(os.environ.get("NATRON_FILL_BLOCKS", "40"))
 BUILDINGS_PER_BLOCK = 20
 CITY_FLOORS = 16
 CITY_PRIMS = BLOCKS * BUILDINGS_PER_BLOCK * 40 + BLOCKS + 1

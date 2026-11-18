@@ -118,3 +118,4 @@ Scouted 2026-11-14 on `origin/main`:
   - The toggle is viewer knob mapSiblingOverlays ("Map Sibling Overlays", default on), with a "Siblings" text button and Shift+O. The viewerOverlaysPath Preference is removed.
   - PM calls: retimed overlays stay locked (dimmed, no edits, double-click included); the FrameHold rule goes in Engine/Nodes/Time/docs/FrameHold.md (P3.T2), since there is no viewer docs page; the button stays text-labelled until the user sees the screenshots.
   - Seen, not touched: key repeat never fills its node list, so overlays get no key-repeat events (predates this milestone).
+- 2026-11-17 — **Mix and overlays (user):** a transform with mix above 0 affects overlays the same as at mix 1; only mix 0 leaves them unmoved. Overlays take the node's transform through an overlay-only query, so render concatenation still refuses a partly mixed transform.

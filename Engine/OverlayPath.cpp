@@ -356,6 +356,9 @@ public:
         for (const PathStep& step : steps) {
             StatusEnum status = eStatusReplyDefault;
             matrix = Transform::matMul(matrix, edgeMatrix(step.node, step.inputNb, time, &status));
+            if (status == eStatusFailed) {
+                *visible = false;
+            }
             time = forwardTime(step.node, step.inputNb, time, visible);
         }
         *endTime = time;
@@ -375,6 +378,9 @@ public:
             time = inverseTime(step->node, step->inputNb, time, visible);
             StatusEnum status = eStatusReplyDefault;
             matrix = Transform::matMul(edgeMatrix(step->node, step->inputNb, time, &status), matrix);
+            if (status == eStatusFailed) {
+                *visible = false;
+            }
         }
         *startTime = time;
 

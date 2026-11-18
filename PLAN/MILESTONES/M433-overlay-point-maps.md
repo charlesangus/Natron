@@ -51,7 +51,7 @@ Scouted 2026-11-14 on `origin/main`:
 
 ## Phase 433.1: API and chain
 
-- [ ] M433.P1.T1 — `mapOverlayPoint` API and default
+- [x] M433.P1.T1 — `mapOverlayPoint` API and default
   - files: `Engine/EffectInstance.{h,cpp}`, new `Engine/OverlayPointMap.{h,cpp}` (result enum, direction, `Point`), CMake source list, `Tests/OverlayPointMap_Test.cpp`
   - approach:
     - Add the virtual `mapOverlayPoint` and `overlayMapKind` with the default: call `getTransform_public` in draft mode at render scale 1. Convert pixel to canonical with the input's PAR as `ViewerTabPrivate::getOverlayTransform` does (`Gui/ViewerTabPrivate.cpp:163`). Apply the matrix for forward and its inverse for inverse.
@@ -60,7 +60,7 @@ Scouted 2026-11-14 on `origin/main`:
   - verify: gtest — Transform translate/rotate/scale, CornerPin and Reformat map a point forward and back to within 1e-9; Grade is identity; a disabled Transform is identity.
   - size: M
 
-- [ ] M433.P1.T2 — Numeric inverter and `OverlayMapChain`
+- [x] M433.P1.T2 — Numeric inverter and `OverlayMapChain`
   - files: `Engine/OverlayPointMap.{h,cpp}`, `Tests/OverlayPointMap_Test.cpp`
   - approach:
     - `invertNumerically(fn, target, seed)`: damped Newton with a finite-difference Jacobian. Max 20 iterations, tolerance 1e-6 canonical. Fall back to a coarse-grid seed search when the seed fails. Returns `eUnmappable` on failure.
@@ -71,13 +71,13 @@ Scouted 2026-11-14 on `origin/main`:
 
 ## Phase 433.2: Node implementations
 
-- [ ] M433.P2.T1 — LensDistortion and LensCorrect point maps
+- [x] M433.P2.T1 — LensDistortion and LensCorrect point maps
   - files: `Engine/Nodes/Transform/LensDistortion.{h,cpp}`, `Engine/Nodes/Transform/LensCorrect.{h,cpp}`, `Tests/OverlayPointMap_Test.cpp` or the nodes' existing test files
   - approach: build the node's `Model` at the time, exactly as render does, and map through `Model::map` in the right direction. Respect the node's undistort/redistort mode and its format normalisation. Map an invalid model or a failed map to `eUnmappable`.
   - verify: gtest — a known k1/k2 LensDistortion maps the frame corners to the positions its render puts a single bright pixel at (render a one-pixel dot, compare to within 0.5 px); forward ∘ inverse is identity within 1e-6.
   - size: M
 
-- [ ] M433.P2.T2 — SplineWarp point map
+- [x] M433.P2.T2 — SplineWarp point map
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.{h,cpp}`, `SplineWarpMesh.h`/`SplineWarpTps.h` (read-only use), the SplineWarp test file
   - approach:
     - Inverse (output → source) uses the cached mesh/TPS `evaluate` for the time, built the same way the render builds it and reusing `SplineWarpCache`.
@@ -86,7 +86,7 @@ Scouted 2026-11-14 on `origin/main`:
   - verify: gtest — a one-pair SplineWarp moving a source curve by (+30,0) maps a point on the source curve to its dst within 1 px, inverse round-trips, and a mix of 0 is identity.
   - size: M
 
-- [ ] M433.P2.T3 — Async map fetch for image-driven warps
+- [x] M433.P2.T3 — Async map fetch for image-driven warps
   - files: new `Engine/OverlayMapFetch.{h,cpp}`, `Engine/Nodes/Transform/STMap.{h,cpp}`, `IDistort.{h,cpp}`, `IWarp.{h,cpp}`, `ITransform.{h,cpp}`, CMake list, `Tests/OverlayPointMap_Test.cpp`
   - approach:
     - First confirm how to render an input at reduced scale from a worker thread (the tree-render entry point used by thumbnails or `Tests` renders). Stop and report if it isn't possible.
@@ -98,7 +98,7 @@ Scouted 2026-11-14 on `origin/main`:
   - verify: gtest — an STMap fed a generated shift map (+10 px) maps points forward and back within 0.5 px after the fetch resolves; the first call returns `ePending`; an IDistort constant vector field maps exactly; the fetch runs off the calling thread (assert the thread id).
   - size: L
 
-- [ ] M433.P2.T4 — Matrix nodes confirmed by test
+- [x] M433.P2.T4 — Matrix nodes confirmed by test
   - files: `Tests/OverlayPointMap_Test.cpp`
   - approach: for Transform, CornerPin, ICornerPin, Reformat, Crop, Mirror and Position, assert `overlayMapKind() == matrix` and that a point maps to where the node's render moves a one-pixel dot. Fix any node whose `getTransform` is missing or wrong in its own file, and name it in the report.
   - verify: the gtest passes.
@@ -115,3 +115,4 @@ Note: M435 - Overlays Deform Through Warps benchmarks how the chain is applied t
 - 2026-11-17 — All six tasks' code is committed in the lane; the gate is running (OverlayPointMap_Test plus the node suites).
   - Deviations: LensCorrect round-trips within 1e-3, since lensfun works in single precision. SplineWarp's Mix scales the displacement. ICornerPin and ITransform report a matrix with Map disconnected and nonlinear with it connected. A Transform with mix < 1 or a mask maps as identity. Numeric inverses take an optional seed. The background map fetch counts itself finished only after the node is notified.
   - PM call: STMap's point map follows wrap and UV Alpha (no source where alpha is 0), as a follow-up in this lane after the gate.
+- 2026-11-17 — Gate green (run 44212850995, 34f7ed8e9) after test fixes (IDistort and Reformat fixtures needed a format-sized source) and a production fix: offset-form resample ops (Crop, Position) report their pixel translation from getTransform, so overlays follow them (a visible change; correct). F25's branch fast-forwarded to main; PR #311 into F25, in review.

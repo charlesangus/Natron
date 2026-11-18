@@ -74,7 +74,8 @@ struct PlacementInputs {
     // How much a candidate weighs. When set and regionGain is not, regions are judged by regionWeightGain() with it.
     std::function<GpuWeight(const FrameGraph::Task&)> taskWeight;
 
-    // Whether the consumer of the root takes it in device memory, so that a region holding it need not download it.
+    // Whether the consumer of the root takes it in device memory, so that a region holding it need not download it. In
+    // an extension's graph, the roots are the tasks read from the store by the task the extension resumes.
     bool rootOnDevice = false;
 
     // What running a region on the GPU gains over the CPU; it is accepted when positive, else shrunk. The graph it is
@@ -90,7 +91,8 @@ double taskPixelCount(const FrameGraph::Task& task);
 
 /**
  * @brief Whether region moves no image between the devices: every external input is already on the GPU, or served from
- * the device tier, and no output is consumed on the CPU, the root counting as consumed on the CPU unless rootOnDevice.
+ * the device tier, and no output is consumed on the CPU, the root, and a task read from outside the graph
+ * (Task::consumers counting more reads than Task::consumerTasks), counting as consumed on the CPU unless rootOnDevice.
  **/
 bool regionTransfersAreFree(const FrameGraph& graph,
                             const FrameGraph::Region& region,
@@ -256,6 +258,15 @@ PlacementInputs makeRenderPlacementInputs(const FrameRenderContextPtr& context);
  * placeGraphWithShadow() returns, and is left untouched when this returns false.
  **/
 bool placeRenderGraph(FrameGraph& graph, const FrameRenderContextPtr& context, ShadowPlacement* shadow = nullptr);
+
+/**
+ * @brief Places the graph of a render continuation's extension as placeRenderGraph() places a frame's, under the
+ * extension's context: the weight rule decides, a task that reuses the store counts as cached, and the roots, which the
+ * task the extension resumes reads from the store, count as read on the device when rootsReadOnDevice. A region holding
+ * a root then leaves it in the store on the device. Returns whether it placed. Same thread requirement as
+ * makeRenderPlacementInputs().
+ **/
+bool placeExtensionGraph(FrameGraph& graph, const FrameRenderContextPtr& context, bool rootsReadOnDevice);
 
 NATRON_NAMESPACE_EXIT
 

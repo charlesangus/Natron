@@ -315,6 +315,7 @@ within 1e-6 relative, from the device's division (mean) and rounding.
 - Map Blend, under the task-graph scheduler, blends on the GPU in a region of its own: the
   culling probe reads the Map on the host first, then the blend reads the Map and each iteration
   the probe requested on the device, in iteration order, within 1e-6 relative of the CPU. The
-  iterations render wherever their nodes do and are uploaded when they rendered on the host. A
+  iterations are placed as any graph is: a body that the weight rule sends to the GPU renders
+  there and stays on the device for the blend; one left on the host is uploaded. A
   layer other than the one the node outputs, a depth other than float, and the legacy scheduler
   keep the blend on the CPU.

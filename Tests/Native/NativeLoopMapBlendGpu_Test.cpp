@@ -307,3 +307,45 @@ TEST_F(NativeLoopMapBlendGpuTest, MissingMapReadsTheFirstIteration)
     }
     expectBlendsOnTheGpu(result, end, "missing Map");
 }
+
+// Iteration windows past kGpuRegionMinPixels with a body of four Grades, which the weight rule sends
+// to the GPU: every iteration renders in a region of the extension and the blend reads it on the
+// device, matching the CPU.
+TEST_F(NativeLoopMapBlendGpuTest, IterationBodiesRenderOnTheGpu)
+{
+    const int size = 512;
+    const int count = 3;
+    getApp()->getProject()->reset(false, true);
+    NativeShapeTest::resetProject(getApp(), size, size);
+    const RectI window(0, 0, size, size);
+
+    NodePtr source = createRamp(window, 0., 0., (double)size, 0.);
+    NodePtr begin = createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPBEGIN));
+    // No Grade is an identity at any iteration's loop.t of 0, 0.5 or 1.
+    const double ranges[][2] = { { 0.5, 0.9 }, { 1.2, 1.6 }, { 0.6, 0.8 }, { 1.3, 1.1 } };
+    std::vector<NodePtr> grades;
+    for (const double* range : ranges) {
+        grades.push_back(createDrivenGrade(range[0], range[1]));
+        ASSERT_TRUE(grades.back() != nullptr);
+    }
+    NodePtr end = createMapBlendEnd(count, kLoopEndParamInterpolationLinear);
+    NodePtr map = createRamp(window, 0., 0., 0., (double)size);
+    ASSERT_TRUE(source && begin && end && map);
+    connectNodes(source, begin, 0, true);
+    NodePtr previous = begin;
+    for (const NodePtr& grade : grades) {
+        connectNodes(previous, grade, 0, true);
+        previous = grade;
+    }
+    connectNodes(previous, end, kLoopEndInputSource, true);
+    connectNodes(map, end, kLoopEndInputMap, true);
+
+    const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ map, end }), end, window, kTime);
+    if (result.skipped) {
+        return;
+    }
+    expectBlendsOnTheGpu(result, end, "GPU iterations");
+    for (const NodePtr& grade : grades) {
+        EXPECT_GT(gpuRunsOf(result, grade), 0) << grade->getScriptName_mt_safe() << ": the iterations rendered on the CPU";
+    }
+}

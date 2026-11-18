@@ -182,6 +182,9 @@ struct RenderScheduler::Frame {
 
     // A region lost the device: the frame is rendered again on the CPU once its running tasks returned.
     bool restartOnCpu = false;
+
+    // The frame was rendered again on the CPU after losing the device, so the extensions of its tasks are not placed.
+    bool cpuOnly = false;
     EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeOk;
     std::map<ImageLayerDesc, ImagePtr> rootPlanes;
     std::vector<RegionFallback> fallbacks;
@@ -2115,12 +2118,25 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
         return ProbeOutcome::Render;
     }
 
+    if (!frame->cpuOnly) {
+        AppTLS::FrameContextScope extensionScope(extensionContext.get(), budget, runnablePriorityOf(frame->priority));
+        // A parked region task reads the roots on the device; a CPU task reads them in RAM.
+        placeExtensionGraph(graph, extensionContext, taskIndex >= frame->regionTasksBegin);
+    }
+    // The extension's regions leave device images in the store it shares, which outlives the extension.
+    std::shared_ptr<void> gpuLease = graph.regions.empty() ? std::shared_ptr<void>() : holdGpuRegionRuntime();
+
     FramePtr extension = std::make_shared<Frame>();
     extension->context = extensionContext;
     extension->graph = std::move(graph);
     extension->priority = frame->priority;
     extension->regionTasksBegin = (int)extension->graph.tasks.size();
     extension->remainingTasks = (int)extension->graph.tasks.size();
+    if (!extension->graph.regions.empty()) {
+        appendRegionTasks(extension.get());
+        extension->gpuLease = gpuLease;
+    }
+    extension->cpuOnly = frame->cpuOnly;
     extension->parent = frame;
     extension->parentTask = taskIndex;
     extension->depth = frame->depth + 1;
@@ -2157,6 +2173,15 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
             retireContinuationLocked(std::move(slot));
         }
         slot = std::move(made);
+        if (gpuLease) {
+            Frame* owner = frame.get();
+            while (owner->parent) {
+                owner = owner->parent.get();
+            }
+            if (!owner->gpuLease) {
+                owner->gpuLease = gpuLease;
+            }
+        }
         _activeFrames.push_back(extension);
         if (abortInfo) {
             _framesByAbortInfo.emplace(abortInfo.get(), extension);
@@ -2166,7 +2191,8 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
             extensionTask.remainingDeps = (int)extensionTask.dependencies.size();
             extensionTask.unstartedConsumers = (int)extensionTask.consumerTasks.size();
             extensionTask.started = false;
-            if (extensionTask.remainingDeps == 0) {
+            const bool member = (extensionTask.regionId >= 0) && ((int)i < extension->regionTasksBegin);
+            if ((extensionTask.remainingDeps == 0) && !member) {
                 pushReadyLocked(extension, (int)i);
             }
         }
@@ -2541,6 +2567,32 @@ RenderScheduler::completeTask(const FramePtr& frame,
             releaseSharedOutputLocked(task);
         }
 
+        if (deviceLost && frame->parent) {
+            // An extension shares the store of the frame it extends, which a restart clears: the frame owning the
+            // store restarts, and its extensions, this one among them, are dropped.
+            FramePtr owner = frame->parent;
+            while (owner->parent) {
+                owner = owner->parent;
+            }
+            if (!owner->dead && !owner->finished && !owner->restartOnCpu) {
+                owner->restartOnCpu = true;
+                std::vector<int> dropped;
+                purgeQueuedLocked(owner, &dropped);
+                std::vector<FramePtr> extensions;
+                for (const std::pair<const int, std::unique_ptr<Continuation>>& waiting : owner->continuations) {
+                    if (waiting.second->extension) {
+                        extensions.push_back(waiting.second->extension);
+                    }
+                }
+                std::vector<ReadyRef> droppedExtensionTasks;
+                for (const FramePtr& extension : extensions) {
+                    abortLocked(extension, &droppedExtensionTasks, finished);
+                }
+            }
+            deviceLost = false;
+            failsFrame = false;
+            retCode = EffectInstance::eRenderRoIRetCodeAborted;
+        }
         if (deviceLost && !frame->dead && !frame->finished && !frame->restartOnCpu) {
             frame->restartOnCpu = true;
             // The store goes with the restart, so the inputs of the dropped tasks need no release.
@@ -2956,6 +3008,7 @@ RenderScheduler::restartOnCpuLocked(const FramePtr& frame,
     if (frame->context->getStats()) {
         frame->context->getStats()->noteCpuFallback("device lost");
     }
+    frame->cpuOnly = true;
     // No task of the frame runs or is queued, so nothing reads the store or the graph.
     frame->context->getStore().clear();
     frame->gpuLease.reset();

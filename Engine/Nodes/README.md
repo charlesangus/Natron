@@ -1490,7 +1490,9 @@ records the region. `renderGpu()` reads each requested output from
 
 - **Task-graph scheduler.** The requests go through an incremental request
   pass of their own, are built into an extension graph that shares the frame's
-  store, abort info and bytes budget, and render as tasks in parallel. An
+  store, abort info and bytes budget, and render as tasks in parallel. The
+  extension graph is GPU-placed as a frame is, so a GPU-capable body renders
+  in regions and a GPU continuation reads its outputs on the device. An
   output the frame's store already holds over the region is reused, not
   rendered again. The probing task gives its thread back while it waits and is
   resumed ahead of admission once the extension finished, so it never waits on

@@ -169,6 +169,12 @@ isContractionAcyclic(const FrameGraph& graph,
     return visited == nPresent;
 }
 
+int
+readsOutsideGraph(const FrameGraph::Task& task)
+{
+    return std::max(0, task.consumers - (int)task.consumerTasks.size());
+}
+
 FrameGraph::Region
 describeRegion(const FrameGraph& graph,
                const std::vector<int>& members,
@@ -192,7 +198,9 @@ describeRegion(const FrameGraph& graph,
 
         FrameGraph::Region::Output output;
         output.task = m;
-        output.isRoot = task.consumerTasks.empty();
+        const int outsideReads = readsOutsideGraph(task);
+        output.isRoot = task.consumerTasks.empty() && (outsideReads == 0);
+        output.externalConsumers = outsideReads;
         for (int c : task.consumerTasks) {
             if (label[c] == regionLabel) {
                 ++output.internalConsumers;
@@ -334,7 +342,7 @@ regionTransfersAreFree(const FrameGraph& graph,
         }
     }
     for (const FrameGraph::Region::Output& output : region.outputs) {
-        if (output.isRoot && !rootOnDevice) {
+        if ((output.isRoot || (readsOutsideGraph(graph.tasks[output.task]) > 0)) && !rootOnDevice) {
             return false;
         }
         for (int c : graph.tasks[output.task].consumerTasks) {
@@ -1093,7 +1101,7 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 
     // A partial hit of the device tier stays a GPU candidate: a region renders what is missing into the cached image.
     inputs.isCached = [](const FrameGraph::Task& task) {
-        return task.servedFromCache && task.deviceMissingRoI.isNull();
+        return task.reusesStore || (task.servedFromCache && task.deviceMissingRoI.isNull());
     };
 
     return inputs;
@@ -1117,6 +1125,21 @@ placeRenderGraph(FrameGraph& graph,
     } else {
         placeGraph(graph, makeRenderPlacementInputs(context));
     }
+
+    return true;
+}
+
+bool
+placeExtensionGraph(FrameGraph& graph,
+                    const FrameRenderContextPtr& context,
+                    bool rootsReadOnDevice)
+{
+    if (!isGpuPlacementAvailable() || graph.tasks.empty() || !context) {
+        return false;
+    }
+    PlacementInputs inputs = makeRenderPlacementInputs(context);
+    inputs.rootOnDevice = rootsReadOnDevice;
+    placeGraph(graph, inputs);
 
     return true;
 }

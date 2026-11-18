@@ -200,11 +200,13 @@ struct FrameGraph {
         struct Output {
             int task = -1;
 
-            // Per edge, as Task::consumerTasks counts them.
+            // Per edge, as Task::consumerTasks counts them. externalConsumers also counts the reads from outside the
+            // graph that Task::consumers holds beyond them, as the task an extension resumes reads its roots.
             int internalConsumers = 0;
             int externalConsumers = 0;
 
-            // The frame's root, whose planes go to the future rather than to a consumer task.
+            // The frame's root, whose planes go to the future rather than to a consumer task. An extension's root, read
+            // from the store, is not one.
             bool isRoot = false;
         };
 
@@ -331,6 +333,13 @@ private:
  * A GPU region holding a member whose effect supportsRenderContinuationOnGpu() is extended the same way: placement keeps
  * the member's dependencies out of the region, so the probe runs before the region body, which then reads the
  * extension's outputs on the device through RegionReport::continuationInputs.
+ *
+ * An extension's graph is placed as a frame's is (placeExtensionGraph()), its roots counting as read on the device when
+ * the task waiting on it is a region's: a region holding a root leaves it in the store on the device, where the waiting
+ * region reads it in place and a waiting CPU task has it downloaded. The waiting task gives up its GPU slot along with its
+ * thread, so the extension's regions never wait on it. The frame owning the store holds the GPU runtime for the device
+ * images the extension leaves there. An extension that loses the device restarts that frame on the CPU, which then
+ * places no extension.
  **/
 class RenderScheduler {
 public:

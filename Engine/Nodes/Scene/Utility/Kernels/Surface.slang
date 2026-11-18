@@ -5,7 +5,7 @@ import Texture;
 import Project3D;
 
 // The three table indices of a triangle's corners for a value bound per vertex or per corner.
-public uint3 cornerIndices(StructuredBuffer<int> triangles, GeometryRecord geometry, uint offset, uint binding, uint primitive)
+public uint3 cornerIndices(IntTable triangles, GeometryRecord geometry, uint offset, uint binding, uint primitive)
 {
     if (binding == kColorBindingVertex) {
         const uint triangle = geometry.triangleOffset + 3 * primitive;
@@ -15,7 +15,7 @@ public uint3 cornerIndices(StructuredBuffer<int> triangles, GeometryRecord geome
     return uint3(corner0, corner0 + 1, corner0 + 2);
 }
 
-public float4 surfaceColor(StructuredBuffer<float4> colors, StructuredBuffer<int> triangles, GeometryRecord geometry, uint primitive, float u, float v)
+public float4 surfaceColor(Float4Table colors, IntTable triangles, GeometryRecord geometry, uint primitive, float u, float v)
 {
     const uint offset = geometry.colorOffset;
     const uint binding = geometry.colorBinding & kColorBindingMask;
@@ -40,7 +40,7 @@ public bool hasDisplayOpacity(GeometryRecord geometry)
     return (geometry.colorBinding & kColorNoDisplayOpacity) == 0;
 }
 
-public void cornerSts(StructuredBuffer<float2> sts, StructuredBuffer<int> triangles, GeometryRecord geometry, uint primitive, out float2 st0, out float2 st1, out float2 st2)
+public void cornerSts(Float2Table sts, IntTable triangles, GeometryRecord geometry, uint primitive, out float2 st0, out float2 st1, out float2 st2)
 {
     const uint offset = geometry.stOffset;
 
@@ -63,7 +63,7 @@ public void cornerSts(StructuredBuffer<float2> sts, StructuredBuffer<int> triang
 }
 
 // The object-space shading normal at a hit, interpolated from the geometry's normals; zero without them.
-public float3 surfaceNormal(StructuredBuffer<float4> normals, StructuredBuffer<int> triangles, GeometryRecord geometry, uint primitive, float u, float v)
+public float3 surfaceNormal(Float4Table normals, IntTable triangles, GeometryRecord geometry, uint primitive, float u, float v)
 {
     const uint offset = geometry.normalOffset;
     const uint binding = geometry.normalBinding;
@@ -94,7 +94,7 @@ public float3 shadingNormal(float3 objectNormal, float4 w0, float4 w1, float4 w2
 }
 
 // The world positions of a hit triangle's corners, through the instance's object-to-world rows.
-public void triangleCorners(StructuredBuffer<float4> points, StructuredBuffer<int> triangles, GeometryRecord geometry, uint primitive,
+public void triangleCorners(Float4Table points, IntTable triangles, GeometryRecord geometry, uint primitive,
                             float4 o0, float4 o1, float4 o2, float4 o3, out float3 p0, out float3 p1, out float3 p2)
 {
     const uint triangle = geometry.triangleOffset + 3 * primitive;
@@ -113,7 +113,7 @@ public int textureOf(MaterialRecord material, uint slot)
 }
 
 // footprint: the base 2 log of the pixel's width in texture coordinates, before any UsdTransform2d.
-public float4 readTexture(StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, StructuredBuffer<float4> texels,
+public float4 readTexture(StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, Float4Table texels,
                           int binding, bool hasSt, float2 st, float footprint)
 {
     if (!hasSt)
@@ -138,7 +138,7 @@ public float stFootprint(float width, float3 dp1, float3 dp2, float2 dst1, float
 
 // A PreviewSurface's opacity at a hit, before its opacityThreshold. An input reading displayOpacity keeps
 // its reader's fallback in its constant, for geometry without the primvar.
-public float surfaceOpacity(StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, StructuredBuffer<float4> texels,
+public float surfaceOpacity(StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, Float4Table texels,
                             MaterialRecord material, GeometryRecord geometry, float4 display, bool hasSt, float2 st, float footprint)
 {
     const bool fromDisplay = (material.kind.z & kMaterialOpacityFromDisplayOpacity) != 0 && hasDisplayOpacity(geometry);
@@ -157,14 +157,14 @@ public bool mayLeaveHoles(MaterialRecord material)
 
 // Whether a hit is on no surface at all: under a PreviewSurface's opacityThreshold, or where Project3D
 // discards. width is the pixel's world width at the hit, 0 for a ray with no footprint.
-public bool surfaceAbsent(StructuredBuffer<float4> colors,
-                          StructuredBuffer<int> triangles,
-                          StructuredBuffer<float4> points,
-                          StructuredBuffer<float4> instanceTransforms,
-                          StructuredBuffer<float2> sts,
+public bool surfaceAbsent(Float4Table colors,
+                          IntTable triangles,
+                          Float4Table points,
+                          Float4Table instanceTransforms,
+                          Float2Table sts,
                           StructuredBuffer<TextureBinding> bindings,
                           StructuredBuffer<uint4> images,
-                          StructuredBuffer<float4> texels,
+                          Float4Table texels,
                           StructuredBuffer<ProjectionRecord> projections,
                           GeometryRecord geometry,
                           MaterialRecord material,
@@ -219,12 +219,12 @@ public bool surfaceAbsent(StructuredBuffer<float4> colors,
  * has no transmission colour, and its diffuseColor is what the opaque part scatters, so the light
  * through is untinted.
  **/
-public float3 surfaceTransmission(StructuredBuffer<float4> colors,
-                                  StructuredBuffer<int> triangles,
-                                  StructuredBuffer<float2> sts,
+public float3 surfaceTransmission(Float4Table colors,
+                                  IntTable triangles,
+                                  Float2Table sts,
                                   StructuredBuffer<TextureBinding> bindings,
                                   StructuredBuffer<uint4> images,
-                                  StructuredBuffer<float4> texels,
+                                  Float4Table texels,
                                   GeometryRecord geometry,
                                   MaterialRecord material,
                                   uint primitive,

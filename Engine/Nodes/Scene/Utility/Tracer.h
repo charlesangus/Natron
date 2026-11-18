@@ -113,6 +113,9 @@ public:
         Stopped,
         // The device could not hold the structures or a batch; the message gives the sizes involved.
         OutOfMemory,
+        // A table a kernel binds is larger than the device's storage buffer range; the message names it and the
+        // range. More memory would not help, only a smaller scene.
+        OverStorageRange,
         // The device lacks what the tracer needs, or the tracer could not be set up on it.
         Unsupported,
         DeviceLost,

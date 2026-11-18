@@ -23,6 +23,62 @@ public static const uint kHitPrimitive = 2;
 
 public static const uint kNoHit = 0xffffffffu;
 
+// A table read through its address rather than a descriptor, which the storage buffer range would bound: a
+// scene's points or triangles alone can run past it. The address is two words, low first, because the 64-bit
+// form needs shaderInt64, which the device does not enable; the C++ build reads host addresses the same way.
+// alignment is that of T, which the device's loads may assume.
+public struct DeviceTable<T, let alignment : int>
+{
+    public uint2 address;
+
+    public __init(uint2 a)
+    {
+        address = a;
+    }
+
+    public __subscript(uint index)->T
+    {
+        get
+        {
+            __target_switch
+            {
+            case spirv:
+                T* base = spirv_asm {
+                    OpCapability PhysicalStorageBufferAddresses;
+                    OpExtension "SPV_KHR_physical_storage_buffer";
+                    result:$$T* = OpBitcast $address
+                };
+                return loadAligned<alignment>(base + index);
+            case cpp:
+                T* base = bit_cast<T*>((uint64_t(address.y) << 32) | uint64_t(address.x));
+                return base[index];
+            }
+        }
+    }
+};
+
+public typealias Float4Table = DeviceTable<float4, 16>;
+public typealias Float2Table = DeviceTable<float2, 8>;
+public typealias FloatTable = DeviceTable<float, 4>;
+public typealias IntTable = DeviceTable<int, 4>;
+public typealias UintTable = DeviceTable<uint, 4>;
+public typealias GeometryTable = DeviceTable<GeometryRecord, 4>;
+
+// The slots of the table address buffers ShadeSurface and ResolveHits bind; KernelTableSlot in
+// UtilityKernels.h mirrors these.
+public static const uint kTableGeometries = 0;
+public static const uint kTableColors = 1;
+public static const uint kTableTriangles = 2;
+public static const uint kTableInstanceIds = 3;
+public static const uint kTablePoints = 4;
+public static const uint kTableInstanceTransforms = 5;
+public static const uint kTableSts = 6;
+public static const uint kTableNormals = 7;
+public static const uint kTableLightData = 8;
+public static const uint kTableLinkMasks = 9;
+public static const uint kTableTexels = 10;
+public static const uint kTableCount = 11;
+
 // UtilityScene::ColorBinding
 public static const uint kColorBindingConstant = 0;
 public static const uint kColorBindingTriangle = 1;

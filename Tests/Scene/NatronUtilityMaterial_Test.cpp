@@ -715,7 +715,9 @@ TEST(NatronUtilityMaterial, APixelWiderThanTheTextureReadsTheCoarsestMip)
     expectNear(mean, triangle.shade(0.25f, 0.25f, 1), 1e-5f, "coarsest mip");
 }
 
-TEST(NatronUtilityMaterial, TexelsOverTheDeviceLimitDropTheirFinestLevelWithAWarning)
+// The texel table holds every level of every image whatever its size, as the GPU reads it through its address
+// rather than a binding the storage buffer range bounds.
+TEST(NatronUtilityMaterial, TheTexelTableKeepsEveryLevelOfTheImage)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -725,37 +727,16 @@ TEST(NatronUtilityMaterial, TexelsOverTheDeviceLimitDropTheirFinestLevelWithAWar
     EmittedTexture triangle(path);
 
     triangle.shade(0.5f, 0.5f);
-    ASSERT_TRUE(triangle.tables.fitTexels(0));
-    EXPECT_TRUE(triangle.tables.texelWarnings().empty());
-
-    // The 4x4, 2x2 and 1x1 levels hold 21 texels; six fit only once the 4x4 level is gone.
-    ASSERT_TRUE(triangle.tables.fitTexels(6 * sizeof(GfVec4f)));
-    ASSERT_EQ(1u, triangle.tables.texelWarnings().size());
-
-    const std::string& warning = triangle.tables.texelWarnings()[0];
-
-    EXPECT_NE(std::string::npos, warning.find(path)) << warning;
-    EXPECT_NE(std::string::npos, warning.find("4x4 to 2x2")) << warning;
 
     const KernelShadeBuffers buffers = triangle.tables.buffers();
 
+    // The 4x4, 2x2 and 1x1 levels.
     ASSERT_EQ(1u, buffers.imageCount);
-    EXPECT_EQ(2u, buffers.images[0]);
-    EXPECT_EQ(2u, buffers.images[1]);
-    EXPECT_EQ(2u, buffers.images[2]);
-    EXPECT_EQ(5u, buffers.texelCount);
-
-    GfVec4f quadrant(0.f);
-
-    for (int y = 0; y < 2; ++y) {
-        for (int x = 0; x < 2; ++x) {
-            quadrant += writtenTexel(x, kTextureSize - 1 - y) / 4.f;
-        }
-    }
-    expectNear(quadrant, triangle.shade(0.25f, 0.25f), 1e-5f, "downsampled texel");
-
-    // Not even one texel per tile fits, so the device cannot render the scene.
-    EXPECT_FALSE(triangle.tables.fitTexels(sizeof(GfVec4f) / 2));
+    EXPECT_EQ(4u, buffers.images[0]);
+    EXPECT_EQ(4u, buffers.images[1]);
+    EXPECT_EQ(3u, buffers.images[2]);
+    EXPECT_EQ(0u, buffers.images[3]);
+    EXPECT_EQ(21u, buffers.texelCount);
 }
 
 TEST(NatronUtilityMaterial, AMissingFileReadsTheFallbackAndWarnsNamingIt)

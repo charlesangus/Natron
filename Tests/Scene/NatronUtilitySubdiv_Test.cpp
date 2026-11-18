@@ -59,6 +59,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -79,6 +80,7 @@
 #ifdef NATRON_HAVE_GPU
 #include "Engine/AppManager.h"
 #include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/GpuContext.h"
 #include "Gpu/GpuTestDevice.h"
@@ -502,6 +504,79 @@ rampSeamCage(const std::string& path,
                              "}\n";
 }
 
+const int kCheckerSize = 1024;
+
+// Black and white texels alternating, so that any coarser level of the image is a flat grey.
+bool
+writeCheckerTexture(const std::string& path)
+{
+    std::vector<unsigned char> bytes;
+
+    bytes.reserve(std::size_t(kCheckerSize) * kCheckerSize * 4);
+    for (int y = 0; y < kCheckerSize; ++y) {
+        for (int x = 0; x < kCheckerSize; ++x) {
+            const unsigned char value = ((x + y) & 1) ? 255 : 0;
+
+            bytes.insert(bytes.end(), { value, value, value, 255 });
+        }
+    }
+
+    HioImage::StorageSpec spec;
+
+    spec.width = kCheckerSize;
+    spec.height = kCheckerSize;
+    spec.depth = 1;
+    spec.format = HioFormatUNorm8Vec4;
+    spec.flipped = false;
+    spec.data = bytes.data();
+
+    const HioImageSharedPtr image = HioImage::OpenForWriting(path);
+
+    return image && image->Write(spec);
+}
+
+// A quad wider than the frame emitting the image at path, its st spanning extent of the image on each
+// axis: at 0.05, the frame sees under one texel of the full-size image per pixel, so only that level is read.
+std::string
+checkerCard(const std::string& path,
+            double extent)
+{
+    const std::string e = std::to_string(extent);
+
+    return std::string("#usda 1.0\n"
+                       "def Material \"Tex\" {\n"
+                       "    token outputs:surface.connect = </Tex/Surface.outputs:surface>\n"
+                       "    def Shader \"Surface\" {\n"
+                       "        uniform token info:id = \"UsdPreviewSurface\"\n"
+                       "        color3f inputs:diffuseColor = (0, 0, 0)\n"
+                       "        color3f inputs:emissiveColor.connect = </Tex/Image.outputs:rgb>\n"
+                       "        token outputs:surface\n"
+                       "    }\n"
+                       "    def Shader \"Image\" {\n"
+                       "        uniform token info:id = \"UsdUVTexture\"\n"
+                       "        asset inputs:file = @")
+        + path + "@\n"
+                 "        token inputs:sourceColorSpace = \"raw\"\n"
+                 "        float2 inputs:st.connect = </Tex/St.outputs:result>\n"
+                 "        float3 outputs:rgb\n"
+                 "    }\n"
+                 "    def Shader \"St\" {\n"
+                 "        uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+                 "        string inputs:varname = \"st\"\n"
+                 "        float2 outputs:result\n"
+                 "    }\n"
+                 "}\n"
+                 "def Mesh \"Card\" (prepend apiSchemas = [\"MaterialBindingAPI\"]) {\n"
+                 "    int[] faceVertexCounts = [4]\n"
+                 "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                 "    point3f[] points = [(-14, -14, 0), (14, -14, 0), (14, 14, 0), (-14, 14, 0)]\n"
+                 "    uniform token subdivisionScheme = \"none\"\n"
+                 "    texCoord2f[] primvars:st = [(0, 0), ("
+        + e + ", 0), (" + e + ", " + e + "), (0, " + e + ")] (interpolation = \"vertex\")\n"
+                                                         "    rel material:binding = </Tex>\n"
+                                                         "}\n";
+}
+
 // Pure diffuse white under a distant light of intensity pi along -Z, so that a pixel's value is the
 // cosine between its shading normal and the view axis.
 const char* const kLitWhite = R"(
@@ -634,6 +709,23 @@ public:
 private:
     std::unique_ptr<GpuContext> _saved;
     bool _swapped = false;
+};
+
+// Holds the GPU's storage buffer range at bytes while it lives.
+class StorageRangeCap {
+public:
+    explicit StorageRangeCap(std::uint64_t bytes)
+    {
+        gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(bytes);
+    }
+
+    ~StorageRangeCap()
+    {
+        gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(0);
+    }
+
+    StorageRangeCap(const StorageRangeCap&) = delete;
+    StorageRangeCap& operator=(const StorageRangeCap&) = delete;
 };
 #endif // NATRON_HAVE_GPU
 } // anon namespace
@@ -1238,6 +1330,133 @@ TEST(NatronUtilitySubdivRender, GpuShadesTheSubdividedSphereAsTheCpuDoes)
     for (std::size_t i = 0; i < cpu.size(); ++i) {
         for (int c = 0; c < 4; ++c) {
             EXPECT_NEAR(cpu[i][c], gpu[i][c], 1e-4f) << "pixel " << i % kShadedSize << ", " << i / kShadedSize;
+        }
+    }
+}
+
+TEST(NatronUtilitySubdivRender, GpuShadesAMeshWhoseTablesRunPastTheStorageBufferRangeAsWithinIt)
+{
+    SubdivGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    const std::uint64_t range = 64 * 1024;
+    // Each render has a delegate and so a GPU executor of its own, which uploads the scene afresh.
+    const auto renderSphere = [](std::size_t& triangles, std::string& device, std::string& warning) {
+        SubdivRender render(std::string("#usda 1.0\n") + kLitWhite, kShadedSize);
+
+        defineSphereCage(render.stage, 8., 32, 24);
+        bindWhite(render.stage, "/Sphere");
+        render.setSetting(kUtilitySettingPixelSamples, 1);
+        render.setSetting(kUtilitySettingSubdivLevel, 3);
+        render.setDevice(kUtilityDeviceGpu);
+        render.render();
+        triangles = render.stat(kUtilityStatTriangleCount);
+        device = render.device();
+        warning = render.warning();
+
+        return render.pixels();
+    };
+    std::size_t triangles = 0;
+    std::string device, warning;
+    const std::vector<GfVec4f> within = renderSphere(triangles, device, warning);
+
+    ASSERT_EQ(0u, device.rfind("GPU", 0)) << device;
+    ASSERT_EQ(std::string(), warning);
+    // The index table alone, three four-byte indices a triangle, is many times the capped range.
+    ASSERT_GT(triangles * 3 * sizeof(std::int32_t), 8 * range);
+
+    std::vector<GfVec4f> past;
+    {
+        const StorageRangeCap cap(range);
+
+        past = renderSphere(triangles, device, warning);
+    }
+    EXPECT_EQ(0u, device.rfind("GPU", 0)) << device;
+    EXPECT_EQ(std::string(), warning);
+    ASSERT_EQ(within.size(), past.size());
+    EXPECT_LT(largestStep(past, 0.5), 0.1f);
+    for (std::size_t i = 0; i < within.size(); ++i) {
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(within[i][c], past[i][c], 1e-5f) << "pixel " << i % kShadedSize << ", " << i / kShadedSize;
+        }
+    }
+}
+
+// The texel table is read through its address, so the full-size image renders on the GPU with no binding
+// able to take it whole.
+TEST(NatronUtilitySubdivRender, GpuReadsATextureLargerThanTheStorageBufferRangeAtFullSize)
+{
+    SubdivGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    QTemporaryDir dir;
+
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("checker.png")).toStdString();
+
+    ASSERT_TRUE(writeCheckerTexture(path));
+
+    const std::uint64_t range = 1024 * 1024;
+    const auto renderCard = [&path](std::string& device, std::string& warning) {
+        SubdivRender render(checkerCard(path, 0.05), kShadedSize);
+
+        render.setSetting(kUtilitySettingPixelSamples, 1);
+        render.setDevice(kUtilityDeviceGpu);
+        render.render();
+        device = render.device();
+        warning = render.warning();
+
+        return render.pixels();
+    };
+    const auto largestRedStep = [](const std::vector<GfVec4f>& pixels) {
+        float largest = 0.f;
+
+        for (int y = 0; y < kShadedSize; ++y) {
+            for (int x = 0; x + 1 < kShadedSize; ++x) {
+                largest = std::max(largest, std::fabs(pixels[y * kShadedSize + x + 1][0] - pixels[y * kShadedSize + x][0]));
+            }
+        }
+
+        return largest;
+    };
+    std::string device, warning;
+    const std::vector<GfVec4f> within = renderCard(device, warning);
+
+    ASSERT_EQ(0u, device.rfind("GPU", 0)) << device;
+    ASSERT_EQ(std::string(), warning);
+    ASSERT_EQ(std::size_t(kShadedSize) * kShadedSize, within.size());
+    // Any level past the full-size one is a flat grey.
+    ASSERT_GT(largestRedStep(within), 0.25f);
+    // The full-size level alone, four floats a texel, is many times the capped range.
+    ASSERT_GT(std::uint64_t(kCheckerSize) * kCheckerSize * 4 * sizeof(float), 8 * range);
+
+    std::vector<GfVec4f> past;
+    {
+        const StorageRangeCap cap(range);
+
+        past = renderCard(device, warning);
+    }
+    EXPECT_EQ(0u, device.rfind("GPU", 0)) << device;
+    EXPECT_EQ(std::string(), warning);
+    ASSERT_EQ(within.size(), past.size());
+    EXPECT_GT(largestRedStep(past), 0.25f);
+    for (std::size_t i = 0; i < within.size(); ++i) {
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(within[i][c], past[i][c], 1e-5f) << "pixel " << i % kShadedSize << ", " << i / kShadedSize;
         }
     }
 }

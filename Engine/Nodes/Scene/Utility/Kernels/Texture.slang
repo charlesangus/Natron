@@ -20,7 +20,7 @@ int wrapTexel(int i, int size, int mode)
     return (i < 0 || i >= size) ? -1 : i;
 }
 
-float4 fetchTexel(StructuredBuffer<float4> texels, uint offset, int width, int height, int x, int y, int wrapS, int wrapT)
+float4 fetchTexel(Float4Table texels, uint offset, int width, int height, int x, int y, int wrapS, int wrapT)
 {
     const int wx = wrapTexel(x, width, wrapS);
     const int wy = wrapTexel(y, height, wrapT);
@@ -30,7 +30,7 @@ float4 fetchTexel(StructuredBuffer<float4> texels, uint offset, int width, int h
     return texels[offset + uint(wy) * uint(width) + uint(wx)];
 }
 
-float4 sampleLevel(StructuredBuffer<uint4> images, StructuredBuffer<float4> texels, uint image, uint level, float2 uv, int wrapS, int wrapT)
+float4 sampleLevel(StructuredBuffer<uint4> images, Float4Table texels, uint image, uint level, float2 uv, int wrapS, int wrapT)
 {
     const uint4 record = images[image];
     uint offset = record.w;
@@ -61,7 +61,7 @@ float4 sampleLevel(StructuredBuffer<uint4> images, StructuredBuffer<float4> texe
 
 // Bilinear within a level, linear between the two levels around the level of detail. footprint is
 // the base 2 log of the lookup's width in texture coordinates, kFinestLevel for the full-size level.
-public float4 sampleImage(StructuredBuffer<uint4> images, StructuredBuffer<float4> texels, uint image, float2 uv, float footprint, int wrapS, int wrapT)
+public float4 sampleImage(StructuredBuffer<uint4> images, Float4Table texels, uint image, float2 uv, float footprint, int wrapS, int wrapT)
 {
     const uint4 record = images[image];
     const uint levels = record.z;
@@ -116,7 +116,7 @@ float4 bindingOutput(TextureBinding binding, float4 value)
 
 // A UsdUVTexture's output at texture coordinates already through its UsdTransform2d. UDIM tiles are
 // found from the integer part of the coordinates, each tile covering one unit square.
-public float4 sampleBinding(StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, StructuredBuffer<float4> texels, int bindingIndex, float2 uv, float footprint)
+public float4 sampleBinding(StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, Float4Table texels, int bindingIndex, float2 uv, float footprint)
 {
     const TextureBinding binding = bindings[bindingIndex];
     int image = binding.image.x;

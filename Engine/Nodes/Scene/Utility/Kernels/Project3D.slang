@@ -48,7 +48,7 @@ float plateFootprint(ProjectionRecord p, float3 worldPosition, float3 outward, f
 public bool evaluateProject3D(ProjectionRecord p,
                               StructuredBuffer<TextureBinding> bindings,
                               StructuredBuffer<uint4> images,
-                              StructuredBuffer<float4> texels,
+                              Float4Table texels,
                               float3 worldPosition,
                               float3 outward,
                               float3 direction,

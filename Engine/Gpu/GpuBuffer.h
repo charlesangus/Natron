@@ -73,6 +73,9 @@ public:
     VkDeviceMemory memory() const { return memory_; }
     VkDeviceSize memoryOffset() const { return memoryOffset_; }
 
+    // Needs a buffer made with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT.
+    VkDeviceAddress deviceAddress(GpuDevice& dev) const;
+
     void reset();
 
 private:

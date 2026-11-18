@@ -40,7 +40,6 @@
 #include <pxr/base/gf/rect2i.h>
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec4f.h>
-#include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/vt/types.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/imaging/cameraUtil/framing.h>
@@ -685,8 +684,8 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
             const std::uint64_t generation = gpuContext ? gpuContext->generation() : 0;
             std::string remembered;
 
-            if ((device == Device::Auto) && _renderParam->gpuOutOfMemory(snapshot->version, budget, generation, &remembered)) {
-                warning = "The GPU ran out of memory, so the frame was rendered on the CPU: " + remembered;
+            if ((device == Device::Auto) && _renderParam->gpuFallback(snapshot->version, budget, generation, &remembered)) {
+                warning = remembered;
                 onCpu = true;
             }
 #endif
@@ -710,27 +709,30 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
                     const Tracer::Outcome outcome = finished ? Tracer::Outcome() : gpu->status();
                     const bool outOfMemory = outcome.status == Tracer::Status::OutOfMemory;
+                    const bool overRange = outcome.status == Tracer::Status::OverStorageRange;
                     const bool lost = outcome.status == Tracer::Status::DeviceLost;
 
                     const bool failed = outcome.status != Tracer::Status::Ok && outcome.status != Tracer::Status::Stopped;
+                    const std::string fallback = std::string(outOfMemory     ? "The GPU ran out of memory"
+                                                                 : overRange ? "A table is larger than the GPU's storage buffer range"
+                                                                             : "The GPU was lost")
+                        + ", so the frame was rendered on the CPU: " + outcome.message;
 
-                    if (outOfMemory && device == Device::Auto) {
+                    if ((outOfMemory || overRange) && device == Device::Auto) {
                         // The scene is not tried on the GPU again until it or the budget changes, so nothing of it stays there.
-                        _renderParam->rememberGpuOutOfMemory(snapshot->version, budget, generation, outcome.message);
+                        _renderParam->rememberGpuFallback(snapshot->version, budget, generation, fallback);
                         _renderParam->dropGpuExecutor();
                     } else if (lost || (outOfMemory && gpu->sceneFailed())) {
                         _renderParam->dropGpuExecutor();
                     }
-                    if (failed && device == Device::Auto && (outOfMemory || lost)) {
-                        warning = std::string(outOfMemory ? "The GPU ran out of memory" : "The GPU was lost") + ", so the frame was rendered on the CPU: " + outcome.message;
+                    if (failed && device == Device::Auto && (outOfMemory || overRange || lost)) {
+                        warning = fallback;
                         renderedOn = "CPU";
                         onCpu = true;
                         // The GPU's batches that landed before the failure must not show through.
                         clearBuffers(frameBindings);
                     } else if (failed) {
                         throw std::runtime_error("The Utility renderer failed on the GPU: " + outcome.message);
-                    } else {
-                        warning = TfStringJoin(gpu->warnings(), "\n");
                     }
                 }
 #endif

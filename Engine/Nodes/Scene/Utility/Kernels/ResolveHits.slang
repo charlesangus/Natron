@@ -36,24 +36,27 @@ static const uint kResolveShadowLinked = 8;
 // For shadow rays, 1 where a surface is in the way, as Tracer::occluded writes it.
 [[vk::binding(6, 0)]] RWStructuredBuffer<uint> blocked;
 [[vk::binding(7, 0)]] StructuredBuffer<uint> rayLights;
-[[vk::binding(8, 0)]] StructuredBuffer<GeometryRecord> geometries;
-[[vk::binding(9, 0)]] StructuredBuffer<float4> colors;
-[[vk::binding(10, 0)]] StructuredBuffer<int> triangles;
-[[vk::binding(11, 0)]] StructuredBuffer<MaterialRecord> materials;
-[[vk::binding(12, 0)]] StructuredBuffer<TextureBinding> textureBindings;
-[[vk::binding(13, 0)]] StructuredBuffer<uint4> images;
-[[vk::binding(14, 0)]] StructuredBuffer<float4> texels;
-[[vk::binding(15, 0)]] StructuredBuffer<ProjectionRecord> projections;
-[[vk::binding(16, 0)]] StructuredBuffer<float4> points;
-[[vk::binding(17, 0)]] StructuredBuffer<float4> instanceTransforms;
-[[vk::binding(18, 0)]] StructuredBuffer<float2> sts;
-[[vk::binding(19, 0)]] StructuredBuffer<uint> linkMasks;
+// The addresses of the tables at the kTable slots.
+[[vk::binding(8, 0)]] StructuredBuffer<uint2> tableAddresses;
+[[vk::binding(9, 0)]] StructuredBuffer<MaterialRecord> materials;
+[[vk::binding(10, 0)]] StructuredBuffer<TextureBinding> textureBindings;
+[[vk::binding(11, 0)]] StructuredBuffer<uint4> images;
+[[vk::binding(12, 0)]] StructuredBuffer<ProjectionRecord> projections;
 // For shadow rays, what each adds to its pixel unblocked, dimmed by each transmissive surface it goes through.
-[[vk::binding(20, 0)]] RWStructuredBuffer<float4> shadowContributions;
+[[vk::binding(13, 0)]] RWStructuredBuffer<float4> shadowContributions;
 // Per pass, set to 1 when the pass queues any ray to be traced again, which the host reads to stop the
 // passes early. Every writer stores the same value, so the race between them is benign.
-[[vk::binding(21, 0)]] RWStructuredBuffer<uint> pending;
+[[vk::binding(14, 0)]] RWStructuredBuffer<uint> pending;
 [[vk::push_constant]] ConstantBuffer<ResolveParams> params;
+
+property GeometryTable geometries { get { return GeometryTable(tableAddresses[kTableGeometries]); } }
+property Float4Table colors { get { return Float4Table(tableAddresses[kTableColors]); } }
+property IntTable triangles { get { return IntTable(tableAddresses[kTableTriangles]); } }
+property Float4Table points { get { return Float4Table(tableAddresses[kTablePoints]); } }
+property Float4Table instanceTransforms { get { return Float4Table(tableAddresses[kTableInstanceTransforms]); } }
+property Float2Table sts { get { return Float2Table(tableAddresses[kTableSts]); } }
+property UintTable linkMasks { get { return UintTable(tableAddresses[kTableLinkMasks]); } }
+property Float4Table texels { get { return Float4Table(tableAddresses[kTableTexels]); } }
 
 float rayValue(uint array, uint ray)
 {

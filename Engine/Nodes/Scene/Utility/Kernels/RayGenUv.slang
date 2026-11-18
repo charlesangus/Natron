@@ -44,9 +44,12 @@ static const float kEdgeTolerance = 1e-5;
 [[vk::binding(1, 0)]] RWStructuredBuffer<float> weights;
 [[vk::binding(2, 0)]] RWStructuredBuffer<float> hitValues;
 [[vk::binding(3, 0)]] RWStructuredBuffer<uint> hitIds;
-[[vk::binding(4, 0)]] StructuredBuffer<int> unwrapGrid;
-[[vk::binding(5, 0)]] StructuredBuffer<float4> unwrapTriangles;
+// The addresses of the unwrap's grid and of its triangles, which grow with the unwrapped mesh.
+[[vk::binding(4, 0)]] StructuredBuffer<uint2> unwrapAddresses;
 [[vk::push_constant]] ConstantBuffer<RayGenParams> params;
+
+property IntTable unwrapGrid { get { return IntTable(unwrapAddresses[0]); } }
+property Float4Table unwrapTriangles { get { return Float4Table(unwrapAddresses[1]); } }
 
 // The last of the sample's grid cell's candidates under it, as the index of its triangle, or kNoHit.
 uint triangleUnder(float2 position, out float2 barycentrics)

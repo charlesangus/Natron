@@ -190,7 +190,7 @@ renderTile(const WavefrontFrame& frame,
     if (frame.mapping == WavefrontMapping::UvUnwrap) {
         const WavefrontUnwrap& unwrap = *frame.unwrap;
 
-        runRayGenUvKernel(makeRayGenParams(frame, rect), unwrap.grid.data(), unwrap.grid.size(), unwrap.triangles.data(), unwrap.triangles.size(), rays.data(), hitSurface.data(), hitIds.data(), weights.data());
+        runRayGenUvKernel(makeRayGenParams(frame, rect), unwrap.grid.data(), unwrap.triangles.data(), rays.data(), hitSurface.data(), hitIds.data(), weights.data());
     } else {
         runRayGenKernel(makeRayGenParams(frame, rect), rays.data(), weights.data());
         tracer.intersect(rayBatchOf(rays.data(), count), hits);

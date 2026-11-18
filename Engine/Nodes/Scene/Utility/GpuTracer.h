@@ -103,7 +103,8 @@ public:
     /**
      * @brief As recordOccluded(), with the device form of an OcclusionFilter: rayLights holds a light
      * index per ray and casterMasks maskStride words per instance from maskOffset, of which an instance
-     * blocks a ray only where the ray's light's bit is set.
+     * blocks a ray only where the ray's light's bit is set. casterMasks is read through its device address,
+     * so it needs VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, and the storage buffer range does not bound it.
      **/
     gpu::GpuStatus recordOccludedFiltered(gpu::GpuRecordContext& ctx,
                                           const gpu::GpuBuffer& rays,

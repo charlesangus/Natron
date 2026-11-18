@@ -46,6 +46,7 @@
 #include <span>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "Engine/Gpu/GpuBuffer.h"
@@ -139,12 +140,12 @@ utilityGpuBudget()
 
 namespace {
 static_assert(sizeof(KernelRayGenParams) == utility_raygen_push_bytes && sizeof(KernelRayGenParams) == utility_raygen_uv_push_bytes);
-static_assert(utility_raygen_uv_storage_buffers == 6);
+static_assert(utility_raygen_uv_storage_buffers == 5);
 static_assert(sizeof(KernelShadeParams) == utility_shade_surface_push_bytes);
 static_assert(sizeof(KernelShadeLightsParams) == utility_shade_lights_push_bytes);
 static_assert(sizeof(KernelResolveParams) == utility_resolve_hits_push_bytes);
-static_assert(utility_raygen_storage_buffers == 2 && utility_shade_surface_storage_buffers == 30 && utility_shade_lights_storage_buffers == 3);
-static_assert(utility_resolve_hits_storage_buffers == 22);
+static_assert(utility_raygen_storage_buffers == 2 && utility_shade_surface_storage_buffers == 20 && utility_shade_lights_storage_buffers == 3);
+static_assert(utility_resolve_hits_storage_buffers == 15);
 static_assert(sizeof(KernelPathState) == 32);
 static_assert(sizeof(KernelLightRecord) == 144);
 static_assert(sizeof(KernelGeometryRecord) == 40);
@@ -248,6 +249,9 @@ struct ShadeTableBuffers {
     gpu::GpuBufferHandle lights;
     gpu::GpuBufferHandle lightData;
     gpu::GpuBufferHandle linkMasks;
+    // The device addresses of the tables at the KernelTableSlot slots, which ShadeSurface and ResolveHits
+    // read through them rather than through bindings the storage buffer range would bound.
+    gpu::GpuBufferHandle addresses;
     // Uploaded only when the images change, not with the rest.
     std::uint64_t texelVersion = 0;
     gpu::GpuBufferHandle texels;
@@ -481,6 +485,13 @@ struct WavefrontGpu::Implementation {
         return true;
     }
 
+    // The table needs VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, which the pool's buffers have on a device with
+    // ray queries, as this executor's must.
+    KernelTableAddress tableAddress(const gpu::GpuBufferHandle& table) const
+    {
+        return kernelTableAddress(table.buffer().deviceAddress(device));
+    }
+
     /**
      * @brief Records a batch's work into as many submissions as kMaxSubmitWork asks for, each submitted and
      * waited for before the next is recorded, the stop flag looked at between them. The contexts submitted
@@ -597,6 +608,8 @@ struct WavefrontGpu::Implementation {
     WavefrontUnwrapConstPtr unwrap;
     gpu::GpuBufferHandle unwrapGrid;
     gpu::GpuBufferHandle unwrapTriangles;
+    // The device addresses of the grid then the triangles, which RayGenUv reads through them.
+    gpu::GpuBufferHandle unwrapAddresses;
 };
 
 /**
@@ -721,20 +734,8 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     if (gpu::GpuStatus s = gpu::GpuRecordContext::create(registry, ctx, &pool); !s) {
         return fail("WavefrontGpu could not create a record context", s);
     }
-    const std::uint64_t texelLimit = ctx->maxScratchBytes() ? ctx->maxScratchBytes() : ctx->maxStorageBufferBytes();
-
-    if (!shadeTables.fitTexels(texelLimit, &stop)) {
-        if (stop.load(std::memory_order_relaxed)) {
-            return stopped();
-        }
-
-        const std::vector<std::string>& warnings = shadeTables.texelWarnings();
-
-        outcome = Outcome { Status::OutOfMemory, "WavefrontGpu: " + (warnings.empty() ? std::string("the textures do not fit the GPU") : warnings.back()) };
-
-        return false;
-    }
-
+    // The largest buffer the pool hands out that a binding still takes whole.
+    const std::uint64_t bindLimit = ctx->maxScratchBytes() ? ctx->maxScratchBytes() : ctx->maxStorageBufferBytes();
     const std::uint64_t texelVersion = shadeTables.texelVersion();
     gpu::GpuBufferHandle keptTexels;
 
@@ -744,8 +745,33 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     tables = ShadeTableBuffers();
 
     const KernelShadeBuffers source = shadeTables.buffers();
+    // The tables the kernels bind rather than read through their addresses. They grow with the materials,
+    // textures and lights rather than with the geometry, and one over the range sends the scene to the CPU.
+    const std::pair<std::size_t, const char*> bound[] = {
+        { source.materialCount * sizeof(KernelMaterialRecord), "material records" },
+        { source.textureBindingCount * sizeof(KernelTextureBinding), "texture bindings" },
+        { source.imageCount * 4 * sizeof(std::uint32_t), "image records" },
+        { source.projectionCount * sizeof(KernelProjectionRecord), "projection records" },
+        { source.lightCount * sizeof(KernelLightRecord), "light records" },
+    };
+
+    for (const std::pair<std::size_t, const char*>& table : bound) {
+        if (table.first > bindLimit) {
+            outcome = Outcome { Status::OverStorageRange, "WavefrontGpu: the " + std::to_string(table.first) + " bytes of " + table.second + " exceed the GPU's " + std::to_string(ctx->maxStorageBufferBytes()) + "-byte storage buffer range" };
+
+            return false;
+        }
+    }
+
     ShadeTableBuffers next;
 
+    // Uploaded in submissions of its own, before the address table that holds its address.
+    if (keptTexels) {
+        next.texels = std::move(keptTexels);
+    } else if (!uploadChunked(source.texels, source.texelCount * 4 * sizeof(float), "texels", next.texels, stop)) {
+        return false;
+    }
+    next.texelVersion = texelVersion;
     if (!upload(*ctx, source.geometries, source.geometryCount * sizeof(KernelGeometryRecord), "geometry records", next.geometries)
         || !upload(*ctx, source.colors, source.colorCount * 4 * sizeof(float), "colours", next.colors)
         || !upload(*ctx, source.triangles, source.triangleIndexCount * sizeof(std::int32_t), "triangle indices", next.triangles)
@@ -763,9 +789,26 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
         || !upload(*ctx, source.linkMasks, source.linkMaskCount * sizeof(std::uint32_t), "light-link masks", next.linkMasks)) {
         return false;
     }
+
+    std::array<KernelTableAddress, eKernelTableCount> addresses {};
+
+    addresses[eKernelTableGeometries] = tableAddress(next.geometries);
+    addresses[eKernelTableColors] = tableAddress(next.colors);
+    addresses[eKernelTableTriangles] = tableAddress(next.triangles);
+    addresses[eKernelTableInstanceIds] = tableAddress(next.instanceIds);
+    addresses[eKernelTablePoints] = tableAddress(next.points);
+    addresses[eKernelTableInstanceTransforms] = tableAddress(next.instanceTransforms);
+    addresses[eKernelTableSts] = tableAddress(next.sts);
+    addresses[eKernelTableNormals] = tableAddress(next.normals);
+    addresses[eKernelTableLightData] = tableAddress(next.lightData);
+    addresses[eKernelTableLinkMasks] = tableAddress(next.linkMasks);
+    addresses[eKernelTableTexels] = tableAddress(next.texels);
+    if (!upload(*ctx, addresses.data(), sizeof(addresses), "table addresses", next.addresses)) {
+        return false;
+    }
     if (stop.load(std::memory_order_relaxed)) {
         // Kept for the next frame, which then uploads only the tables.
-        tables.texels = std::move(keptTexels);
+        tables.texels = std::move(next.texels);
         tables.texelVersion = texelVersion;
 
         return stopped();
@@ -773,12 +816,6 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
         return fail("WavefrontGpu could not upload its shading tables", s);
     }
-    if (keptTexels) {
-        next.texels = std::move(keptTexels);
-    } else if (!uploadChunked(source.texels, source.texelCount * 4 * sizeof(float), "texels", next.texels, stop)) {
-        return false;
-    }
-    next.texelVersion = texelVersion;
     tables = std::move(next);
     tables.version = version;
     tables.valid = true;
@@ -789,12 +826,13 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
 bool
 WavefrontGpu::Implementation::uploadUnwrap(const WavefrontUnwrapConstPtr& next)
 {
-    if (next == unwrap && unwrapGrid && unwrapTriangles) {
+    if (next == unwrap && unwrapGrid && unwrapTriangles && unwrapAddresses) {
         return true;
     }
     unwrap.reset();
     unwrapGrid = gpu::GpuBufferHandle();
     unwrapTriangles = gpu::GpuBufferHandle();
+    unwrapAddresses = gpu::GpuBufferHandle();
 
     std::unique_ptr<gpu::GpuRecordContext> ctx;
 
@@ -804,9 +842,16 @@ WavefrontGpu::Implementation::uploadUnwrap(const WavefrontUnwrapConstPtr& next)
 
     gpu::GpuBufferHandle grid;
     gpu::GpuBufferHandle triangles;
+    gpu::GpuBufferHandle addresses;
 
     if (!upload(*ctx, next->grid.data(), next->grid.size() * sizeof(std::int32_t), "UV unwrap grid", grid)
         || !upload(*ctx, next->triangles.data(), next->triangles.size() * sizeof(float), "UV unwrap triangles", triangles)) {
+        return false;
+    }
+
+    const std::array<KernelTableAddress, 2> tableAddresses = { tableAddress(grid), tableAddress(triangles) };
+
+    if (!upload(*ctx, tableAddresses.data(), sizeof(tableAddresses), "UV unwrap addresses", addresses)) {
         return false;
     }
     if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
@@ -815,6 +860,7 @@ WavefrontGpu::Implementation::uploadUnwrap(const WavefrontUnwrapConstPtr& next)
     unwrap = next;
     unwrapGrid = std::move(grid);
     unwrapTriangles = std::move(triangles);
+    unwrapAddresses = std::move(addresses);
 
     return true;
 }
@@ -1002,7 +1048,7 @@ WavefrontGpu::Implementation::recordResolve(Recorder& rec,
     gpu::GpuBuffer& nextHitValues = *scratch.nextHitValues;
     gpu::GpuBuffer& nextHitIds = *scratch.nextHitIds;
     gpu::GpuBuffer& pending = *scratch.pending;
-    const std::array<gpu::GpuBinding, 22> bindings = {
+    const std::array<gpu::GpuBinding, 15> bindings = {
         gpu::GpuBinding::storage(0, rays),
         gpu::GpuBinding::storage(1, hitValues),
         gpu::GpuBinding::storage(2, hitIds),
@@ -1011,20 +1057,13 @@ WavefrontGpu::Implementation::recordResolve(Recorder& rec,
         gpu::GpuBinding::storage(5, retrace),
         gpu::GpuBinding::storage(6, blocked),
         gpu::GpuBinding::storage(7, rayLights),
-        gpu::GpuBinding::storage(8, tables.geometries.buffer()),
-        gpu::GpuBinding::storage(9, tables.colors.buffer()),
-        gpu::GpuBinding::storage(10, tables.triangles.buffer()),
-        gpu::GpuBinding::storage(11, tables.materials.buffer()),
-        gpu::GpuBinding::storage(12, tables.textureBindings.buffer()),
-        gpu::GpuBinding::storage(13, tables.images.buffer()),
-        gpu::GpuBinding::storage(14, tables.texels.buffer()),
-        gpu::GpuBinding::storage(15, tables.projections.buffer()),
-        gpu::GpuBinding::storage(16, tables.points.buffer()),
-        gpu::GpuBinding::storage(17, tables.instanceTransforms.buffer()),
-        gpu::GpuBinding::storage(18, tables.sts.buffer()),
-        gpu::GpuBinding::storage(19, tables.linkMasks.buffer()),
-        gpu::GpuBinding::storage(20, shadowContributions),
-        gpu::GpuBinding::storage(21, pending),
+        gpu::GpuBinding::storage(8, tables.addresses.buffer()),
+        gpu::GpuBinding::storage(9, tables.materials.buffer()),
+        gpu::GpuBinding::storage(10, tables.textureBindings.buffer()),
+        gpu::GpuBinding::storage(11, tables.images.buffer()),
+        gpu::GpuBinding::storage(12, tables.projections.buffer()),
+        gpu::GpuBinding::storage(13, shadowContributions),
+        gpu::GpuBinding::storage(14, pending),
     };
     const std::array<std::uint32_t, 3> threads = { static_cast<std::uint32_t>(count), 1, 1 };
     const std::uint32_t flags = params.flags;
@@ -1128,9 +1167,9 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         return false;
     }
     if (frame.mapping == WavefrontMapping::UvUnwrap) {
-        const std::array<gpu::GpuBinding, 6> bindings = {
+        const std::array<gpu::GpuBinding, 5> bindings = {
             gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights), gpu::GpuBinding::storage(2, *hitValues),
-            gpu::GpuBinding::storage(3, *hitIds), gpu::GpuBinding::storage(4, unwrapGrid.buffer()), gpu::GpuBinding::storage(5, unwrapTriangles.buffer())
+            gpu::GpuBinding::storage(3, *hitIds), gpu::GpuBinding::storage(4, unwrapAddresses.buffer())
         };
 
         if (gpu::GpuStatus s = rec.ctx().dispatchBindings(rayGenUvKernel, bindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
@@ -1258,37 +1297,27 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
                                      const gpu::GpuBuffer& paths,
                                      const gpu::GpuBuffer& nextRays,
                                      const gpu::GpuBuffer& nextPaths) {
-        return std::array<gpu::GpuBinding, 30> {
+        return std::array<gpu::GpuBinding, 20> {
             gpu::GpuBinding::storage(0, bounceRays),
             gpu::GpuBinding::storage(1, bounceValues),
             gpu::GpuBinding::storage(2, bounceIds),
-            gpu::GpuBinding::storage(3, tables.geometries.buffer()),
-            gpu::GpuBinding::storage(4, tables.colors.buffer()),
-            gpu::GpuBinding::storage(5, tables.triangles.buffer()),
-            gpu::GpuBinding::storage(6, tables.instanceIds.buffer()),
-            gpu::GpuBinding::storage(7, *color),
-            gpu::GpuBinding::storage(8, *depth),
-            gpu::GpuBinding::storage(9, *primId),
-            gpu::GpuBinding::storage(10, *instanceId),
-            gpu::GpuBinding::storage(11, tables.materials.buffer()),
-            gpu::GpuBinding::storage(12, tables.textureBindings.buffer()),
-            gpu::GpuBinding::storage(13, tables.images.buffer()),
-            gpu::GpuBinding::storage(14, tables.texels.buffer()),
-            gpu::GpuBinding::storage(15, tables.projections.buffer()),
-            gpu::GpuBinding::storage(16, tables.points.buffer()),
-            gpu::GpuBinding::storage(17, tables.instanceTransforms.buffer()),
-            gpu::GpuBinding::storage(18, tables.sts.buffer()),
-            gpu::GpuBinding::storage(19, tables.lights.buffer()),
-            gpu::GpuBinding::storage(20, tables.lightData.buffer()),
-            gpu::GpuBinding::storage(21, tables.linkMasks.buffer()),
-            gpu::GpuBinding::storage(22, *shadowRays),
-            gpu::GpuBinding::storage(23, *contributions),
-            gpu::GpuBinding::storage(24, *shadowLights),
-            gpu::GpuBinding::storage(25, tables.normals.buffer()),
-            gpu::GpuBinding::storage(26, paths),
-            gpu::GpuBinding::storage(27, nextRays),
-            gpu::GpuBinding::storage(28, nextPaths),
-            gpu::GpuBinding::storage(29, *liveBounces),
+            gpu::GpuBinding::storage(3, tables.addresses.buffer()),
+            gpu::GpuBinding::storage(4, *color),
+            gpu::GpuBinding::storage(5, *depth),
+            gpu::GpuBinding::storage(6, *primId),
+            gpu::GpuBinding::storage(7, *instanceId),
+            gpu::GpuBinding::storage(8, tables.materials.buffer()),
+            gpu::GpuBinding::storage(9, tables.textureBindings.buffer()),
+            gpu::GpuBinding::storage(10, tables.images.buffer()),
+            gpu::GpuBinding::storage(11, tables.projections.buffer()),
+            gpu::GpuBinding::storage(12, tables.lights.buffer()),
+            gpu::GpuBinding::storage(13, *shadowRays),
+            gpu::GpuBinding::storage(14, *contributions),
+            gpu::GpuBinding::storage(15, *shadowLights),
+            gpu::GpuBinding::storage(16, paths),
+            gpu::GpuBinding::storage(17, nextRays),
+            gpu::GpuBinding::storage(18, nextPaths),
+            gpu::GpuBinding::storage(19, *liveBounces),
         };
     };
     const std::array<gpu::GpuBinding, 3> lightsBindings = {
@@ -1300,7 +1329,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     const bool shadowLinked = shadeTables.occlusionFilter(nullptr).casterMasks != nullptr;
     const std::uint32_t linkWords = shadeTables.linkWords();
     // Shades a bounce's hits into the colour, every light batch, and on the first queues each path's next ray.
-    const auto shade = [&](KernelShadeParams params, const std::array<gpu::GpuBinding, 30>& shadeBindings) -> bool {
+    const auto shade = [&](KernelShadeParams params, const std::array<gpu::GpuBinding, 20>& shadeBindings) -> bool {
         std::uint32_t first = 0;
 
         do {
@@ -1631,12 +1660,6 @@ Tracer::Outcome
 WavefrontGpu::status() const
 {
     return _imp->outcome.status == Tracer::Status::Ok && !_imp->usable ? _imp->unusable : _imp->outcome;
-}
-
-std::vector<std::string>
-WavefrontGpu::warnings() const
-{
-    return _imp->shadeTables.texelWarnings();
 }
 
 bool

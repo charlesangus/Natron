@@ -199,6 +199,36 @@ struct KernelProjectionRecord {
     std::int32_t plate[4];
 };
 
+// The kTable slots in Kernels/UtilityTypes.slang: the tables ShadeSurface and ResolveHits read through
+// their addresses, from a buffer of one KernelTableAddress per slot.
+enum KernelTableSlot : std::uint32_t {
+    eKernelTableGeometries = 0,
+    eKernelTableColors = 1,
+    eKernelTableTriangles = 2,
+    eKernelTableInstanceIds = 3,
+    eKernelTablePoints = 4,
+    eKernelTableInstanceTransforms = 5,
+    eKernelTableSts = 6,
+    eKernelTableNormals = 7,
+    eKernelTableLightData = 8,
+    eKernelTableLinkMasks = 9,
+    eKernelTableTexels = 10,
+    eKernelTableCount = 11,
+};
+
+// Mirrors the address of DeviceTable in Kernels/UtilityTypes.slang: a device address on the GPU, a host
+// pointer in the C++ build.
+struct KernelTableAddress {
+    std::uint32_t low;
+    std::uint32_t high;
+};
+
+inline KernelTableAddress
+kernelTableAddress(std::uint64_t address)
+{
+    return KernelTableAddress { static_cast<std::uint32_t>(address & 0xffffffffull), static_cast<std::uint32_t>(address >> 32) };
+}
+
 // The buffers ShadeSurface reads and writes, with the layouts its bindings declare.
 struct KernelShadeBuffers {
     const float* rays = nullptr;
@@ -277,15 +307,13 @@ void runRayGenKernel(const KernelRayGenParams& params,
                      float* weights = nullptr);
 
 /**
- * @brief Runs the C++ build of RayGenUv.slang for one tile, as runRayGenKernel() does, reading the gridInts
- * ints and triangleFloats floats of a WavefrontUnwrap's grid and triangles. It writes each ray's hit
+ * @brief Runs the C++ build of RayGenUv.slang for one tile, as runRayGenKernel() does, reading a
+ * WavefrontUnwrap's grid and triangles. It writes each ray's hit
  * too, in the three-array layouts of Tracer::HitBatch, as the bake traces no primary rays. MT-safe.
  **/
 void runRayGenUvKernel(const KernelRayGenParams& params,
                        const std::int32_t* grid,
-                       std::size_t gridInts,
                        const float* triangles,
-                       std::size_t triangleFloats,
                        float* rays,
                        float* hitSurface,
                        std::uint32_t* hitIds,

@@ -82,6 +82,15 @@ GpuBuffer::reset()
     exportInfo_.reset();
 }
 
+VkDeviceAddress
+GpuBuffer::deviceAddress(GpuDevice& dev) const
+{
+    VkBufferDeviceAddressInfo info { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+
+    info.buffer = buffer_;
+    return vkGetBufferDeviceAddress(dev.device(), &info);
+}
+
 GpuStatus
 GpuBuffer::createDeviceLocal(GpuDevice& dev, VkDeviceSize size, VkBufferUsageFlags usage, GpuBuffer& out)
 {

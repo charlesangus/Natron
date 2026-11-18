@@ -25,6 +25,7 @@
 
 #include "UtilityKernels.h"
 
+#include <array>
 #include <vector>
 
 // The Slang prelude's global type names would collide in any file that also sees USD, so these mirror
@@ -51,8 +52,7 @@ struct RayGenUvGlobals {
     KernelBuffer weights;
     KernelBuffer hitSurface;
     KernelBuffer hitIds;
-    KernelBuffer grid;
-    KernelBuffer triangles;
+    KernelBuffer unwrapAddresses;
     const NATRON_NAMESPACE::KernelRayGenParams* params;
 };
 
@@ -60,10 +60,7 @@ struct ShadeSurfaceGlobals {
     KernelBuffer rays;
     KernelBuffer hitSurface;
     KernelBuffer hitIds;
-    KernelBuffer geometries;
-    KernelBuffer colors;
-    KernelBuffer triangles;
-    KernelBuffer instanceIds;
+    KernelBuffer tableAddresses;
     KernelBuffer colorOut;
     KernelBuffer depthOut;
     KernelBuffer primIdOut;
@@ -71,18 +68,11 @@ struct ShadeSurfaceGlobals {
     KernelBuffer materials;
     KernelBuffer textureBindings;
     KernelBuffer images;
-    KernelBuffer texels;
     KernelBuffer projections;
-    KernelBuffer points;
-    KernelBuffer instanceTransforms;
-    KernelBuffer sts;
     KernelBuffer lights;
-    KernelBuffer lightData;
-    KernelBuffer linkMasks;
     KernelBuffer shadowRays;
     KernelBuffer shadowContributions;
     KernelBuffer shadowLights;
-    KernelBuffer normals;
     KernelBuffer paths;
     KernelBuffer nextRays;
     KernelBuffer nextPaths;
@@ -99,18 +89,11 @@ struct ResolveHitsGlobals {
     KernelBuffer retrace;
     KernelBuffer blocked;
     KernelBuffer rayLights;
-    KernelBuffer geometries;
-    KernelBuffer colors;
-    KernelBuffer triangles;
+    KernelBuffer tableAddresses;
     KernelBuffer materials;
     KernelBuffer textureBindings;
     KernelBuffer images;
-    KernelBuffer texels;
     KernelBuffer projections;
-    KernelBuffer points;
-    KernelBuffer instanceTransforms;
-    KernelBuffer sts;
-    KernelBuffer linkMasks;
     KernelBuffer shadowContributions;
     KernelBuffer pending;
     const NATRON_NAMESPACE::KernelResolveParams* params;
@@ -141,6 +124,34 @@ extern "C" void utilityShadeLights(KernelVarying*, void* entryPointParams, void*
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+KernelTableAddress
+hostAddress(const void* table)
+{
+    return kernelTableAddress(reinterpret_cast<std::uintptr_t>(table));
+}
+
+std::array<KernelTableAddress, eKernelTableCount>
+tableAddresses(const KernelShadeBuffers& buffers)
+{
+    std::array<KernelTableAddress, eKernelTableCount> addresses {};
+
+    addresses[eKernelTableGeometries] = hostAddress(buffers.geometries);
+    addresses[eKernelTableColors] = hostAddress(buffers.colors);
+    addresses[eKernelTableTriangles] = hostAddress(buffers.triangles);
+    addresses[eKernelTableInstanceIds] = hostAddress(buffers.instanceIds);
+    addresses[eKernelTablePoints] = hostAddress(buffers.points);
+    addresses[eKernelTableInstanceTransforms] = hostAddress(buffers.instanceTransforms);
+    addresses[eKernelTableSts] = hostAddress(buffers.sts);
+    addresses[eKernelTableNormals] = hostAddress(buffers.normals);
+    addresses[eKernelTableLightData] = hostAddress(buffers.lightData);
+    addresses[eKernelTableLinkMasks] = hostAddress(buffers.linkMasks);
+    addresses[eKernelTableTexels] = hostAddress(buffers.texels);
+
+    return addresses;
+}
+} // anon namespace
+
 void
 runRayGenKernel(const KernelRayGenParams& params,
                 float* rays,
@@ -167,9 +178,7 @@ runRayGenKernel(const KernelRayGenParams& params,
 void
 runRayGenUvKernel(const KernelRayGenParams& params,
                   const std::int32_t* grid,
-                  std::size_t gridInts,
                   const float* triangles,
-                  std::size_t triangleFloats,
                   float* rays,
                   float* hitSurface,
                   std::uint32_t* hitIds,
@@ -188,7 +197,8 @@ runRayGenUvKernel(const KernelRayGenParams& params,
         weights = unwanted.data();
     }
     KernelVarying varying = varyingFor(count);
-    RayGenUvGlobals globals { { rays, count * 8 }, { weights, count }, { hitSurface, count * 3 }, { hitIds, count * 3 }, { grid, gridInts }, { triangles, triangleFloats / 4 }, &params };
+    const KernelTableAddress unwrap[2] = { hostAddress(grid), hostAddress(triangles) };
+    RayGenUvGlobals globals { { rays, count * 8 }, { weights, count }, { hitSurface, count * 3 }, { hitIds, count * 3 }, { unwrap, 2 }, &params };
 
     utilityRayGenUv(&varying, nullptr, &globals);
 }
@@ -208,14 +218,12 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
     const std::size_t pathCount = params.bounce[0] > 0 ? count : 0;
     // The tile's own scan of the continuations tells which paths go on, so the flags are not read.
     std::vector<std::uint32_t> liveBounces(continues ? params.bounce[1] : 0);
+    const std::array<KernelTableAddress, eKernelTableCount> addresses = tableAddresses(buffers);
     ShadeSurfaceGlobals globals {
         { buffers.rays, count * 8 },
         { buffers.hitSurface, count * 3 },
         { buffers.hitIds, count * 3 },
-        { buffers.geometries, buffers.geometryCount },
-        { buffers.colors, buffers.colorCount },
-        { buffers.triangles, buffers.triangleIndexCount },
-        { buffers.instanceIds, buffers.instanceCount },
+        { addresses.data(), addresses.size() },
         { buffers.colorOut, count },
         { buffers.depthOut, count },
         { buffers.primIdOut, count },
@@ -223,18 +231,11 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
         { buffers.materials, buffers.materialCount },
         { buffers.textureBindings, buffers.textureBindingCount },
         { buffers.images, buffers.imageCount },
-        { buffers.texels, buffers.texelCount },
         { buffers.projections, buffers.projectionCount },
-        { buffers.points, buffers.pointCount },
-        { buffers.instanceTransforms, buffers.instanceTransformRowCount },
-        { buffers.sts, buffers.stCount },
         { buffers.lights, buffers.lightCount },
-        { buffers.lightData, buffers.lightDataCount },
-        { buffers.linkMasks, buffers.linkMaskCount },
         { buffers.shadowRays, shadowCount * 8 },
         { buffers.shadowContributions, shadowCount },
         { buffers.shadowLights, shadowCount },
-        { buffers.normals, buffers.normalCount },
         { buffers.paths, pathCount },
         { buffers.nextRays, continues ? count * 8 : 0 },
         { buffers.nextPaths, continues ? count : 0 },
@@ -259,6 +260,7 @@ runResolveHitsKernel(const KernelResolveParams& params,
     const bool shadow = (params.flags & kKernelResolveShadow) != 0;
     // The caller's own scan of the retraced rays tells which are pending, so the flags are not read.
     std::vector<std::uint32_t> pending(params.passIndex + 1);
+    const std::array<KernelTableAddress, eKernelTableCount> addresses = tableAddresses(tables);
     ResolveHitsGlobals globals {
         { buffers.rays, count * 8 },
         { buffers.hitSurface, count * 3 },
@@ -268,18 +270,11 @@ runResolveHitsKernel(const KernelResolveParams& params,
         { buffers.retrace, count * 8 },
         { buffers.blocked, shadow ? count : 0 },
         { buffers.rayLights, shadow ? count : 0 },
-        { tables.geometries, tables.geometryCount },
-        { tables.colors, tables.colorCount },
-        { tables.triangles, tables.triangleIndexCount },
+        { addresses.data(), addresses.size() },
         { tables.materials, tables.materialCount },
         { tables.textureBindings, tables.textureBindingCount },
         { tables.images, tables.imageCount },
-        { tables.texels, tables.texelCount },
         { tables.projections, tables.projectionCount },
-        { tables.points, tables.pointCount },
-        { tables.instanceTransforms, tables.instanceTransformRowCount },
-        { tables.sts, tables.stCount },
-        { tables.linkMasks, tables.linkMaskCount },
         { buffers.shadowContributions, shadow ? count : 0 },
         { pending.data(), pending.size() },
         &params,

@@ -169,20 +169,21 @@ public:
     void dropGpuExecutor();
 
     /**
-     * @brief Remembers that scene version ran out of GPU memory under budget on the runtime of GPU
-     * generation (GpuContext::generation()), so that Auto renders it on the CPU straight away, without
-     * building it on the device for every frame, until any of them changes. Frame thread only, like
+     * @brief Remembers that scene version could not render on the GPU under budget on the runtime of GPU
+     * generation (GpuContext::generation()), as it ran out of memory or has a table over the storage buffer
+     * range, so that Auto renders it on the CPU straight away, without building it on the device for every
+     * frame, until any of them changes. warning is what such a frame reports. Frame thread only, like
      * gpuExecutor().
      **/
-    void rememberGpuOutOfMemory(std::uint64_t version,
-                                std::uint64_t budget,
-                                std::uint64_t generation,
-                                const std::string& message);
-    // True with *message set when version, budget and generation are those remembered.
-    bool gpuOutOfMemory(std::uint64_t version,
-                        std::uint64_t budget,
-                        std::uint64_t generation,
-                        std::string* message) const;
+    void rememberGpuFallback(std::uint64_t version,
+                             std::uint64_t budget,
+                             std::uint64_t generation,
+                             const std::string& warning);
+    // True with *warning set when version, budget and generation are those remembered.
+    bool gpuFallback(std::uint64_t version,
+                     std::uint64_t budget,
+                     std::uint64_t generation,
+                     std::string* warning) const;
 
     /**
      * @brief Ends the running frame and gives back everything the delegate keeps on the GPU: the executor,
@@ -257,11 +258,11 @@ private:
 #ifdef NATRON_HAVE_GPU
     std::unique_ptr<WavefrontGpu> _gpu;
 #endif
-    bool _outOfMemory = false;
-    std::uint64_t _outOfMemoryVersion = 0;
-    std::uint64_t _outOfMemoryBudget = 0;
-    std::uint64_t _outOfMemoryGeneration = 0;
-    std::string _outOfMemoryMessage;
+    bool _gpuFallback = false;
+    std::uint64_t _gpuFallbackVersion = 0;
+    std::uint64_t _gpuFallbackBudget = 0;
+    std::uint64_t _gpuFallbackGeneration = 0;
+    std::string _gpuFallbackWarning;
     std::mutex _buffersMutex;
     std::set<UtilityRenderBuffer*> _buffers;
     mutable std::mutex _reportMutex;

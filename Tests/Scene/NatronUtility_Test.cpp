@@ -84,6 +84,7 @@
 #ifdef NATRON_HAVE_GPU
 #include "Engine/AppManager.h"
 #include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/GpuContext.h"
 #include "Gpu/GpuTestDevice.h"
@@ -1514,6 +1515,84 @@ TEST(NatronUtilityRender, ForcedGpuOutOfMemoryFails)
 
     EXPECT_NE(std::string::npos, error.find(std::to_string(kStarvedPoolBytes))) << error;
 }
+namespace {
+const std::uint64_t kCappedStorageRange = 64 * 1024;
+
+// A red cube and enough unlit distant lights that their 144-byte records, which the shading kernels bind,
+// exceed kCappedStorageRange.
+std::string
+cubeUnderManyLights()
+{
+    std::string usda = std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor);
+
+    for (int i = 0; i < 512; ++i) {
+        usda += "def DistantLight \"Light" + std::to_string(i) + "\" {\n    float inputs:intensity = 0\n}\n";
+    }
+
+    return usda;
+}
+
+// Holds every context's storage buffer range at kCappedStorageRange while it lives.
+class CappedStorageRange {
+public:
+    CappedStorageRange() { gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(kCappedStorageRange); }
+    ~CappedStorageRange() { gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(0); }
+
+    CappedStorageRange(const CappedStorageRange&) = delete;
+    CappedStorageRange& operator=(const CappedStorageRange&) = delete;
+};
+} // anon namespace
+
+TEST(NatronUtilityRender, AutoRendersOnTheCpuWhenABoundTableIsOverTheStorageBufferRange)
+{
+    UtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    const CappedStorageRange cap;
+    UtilityRender render(cubeUnderManyLights());
+
+    render.setDevice(kUtilityDeviceAuto);
+    render.render();
+    EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[0]);
+    EXPECT_EQ("CPU", render.textStat(kUtilityStatDevice));
+
+    const std::string warning = render.textStat(kUtilityStatWarning);
+
+    EXPECT_EQ(std::string::npos, warning.find("out of memory")) << warning;
+    EXPECT_NE(std::string::npos, warning.find("storage buffer range")) << warning;
+    EXPECT_NE(std::string::npos, warning.find("light records")) << warning;
+    EXPECT_NE(std::string::npos, warning.find(std::to_string(kCappedStorageRange))) << warning;
+}
+
+TEST(NatronUtilityRender, ForcedGpuFailsNamingTheTableOverTheStorageBufferRange)
+{
+    UtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    const CappedStorageRange cap;
+    UtilityRender render(cubeUnderManyLights());
+
+    render.setDevice(kUtilityDeviceGpu);
+
+    const std::string error = render.renderError();
+
+    EXPECT_NE(std::string::npos, error.find("light records")) << error;
+    EXPECT_NE(std::string::npos, error.find(std::to_string(kCappedStorageRange))) << error;
+}
 #endif // NATRON_HAVE_GPU
 
 // A recovered device is a new GPU generation with its memory free again, so what ran out of memory before
@@ -1524,11 +1603,11 @@ TEST(NatronUtilityRender, TheOutOfMemoryMemoHoldsForOneSceneBudgetAndGpuGenerati
     UtilityRenderParam param(&scene, nullptr);
     std::string message;
 
-    EXPECT_FALSE(param.gpuOutOfMemory(3, 7, 11, &message));
-    param.rememberGpuOutOfMemory(3, 7, 11, "no room");
-    ASSERT_TRUE(param.gpuOutOfMemory(3, 7, 11, &message));
+    EXPECT_FALSE(param.gpuFallback(3, 7, 11, &message));
+    param.rememberGpuFallback(3, 7, 11, "no room");
+    ASSERT_TRUE(param.gpuFallback(3, 7, 11, &message));
     EXPECT_EQ("no room", message);
-    EXPECT_FALSE(param.gpuOutOfMemory(4, 7, 11, &message)) << "another scene version";
-    EXPECT_FALSE(param.gpuOutOfMemory(3, 8, 11, &message)) << "another budget";
-    EXPECT_FALSE(param.gpuOutOfMemory(3, 7, 12, &message)) << "another GPU generation";
+    EXPECT_FALSE(param.gpuFallback(4, 7, 11, &message)) << "another scene version";
+    EXPECT_FALSE(param.gpuFallback(3, 8, 11, &message)) << "another budget";
+    EXPECT_FALSE(param.gpuFallback(3, 7, 12, &message)) << "another GPU generation";
 }

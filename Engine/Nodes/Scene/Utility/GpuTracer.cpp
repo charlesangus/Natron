@@ -61,6 +61,8 @@ namespace {
 struct KernelIntersectParams {
     std::uint32_t sceneLow;
     std::uint32_t sceneHigh;
+    std::uint32_t casterMasksLow;
+    std::uint32_t casterMasksHigh;
     std::uint32_t stride;
     std::uint32_t first;
     std::uint32_t end;
@@ -70,7 +72,7 @@ struct KernelIntersectParams {
 
 static_assert(sizeof(KernelIntersectParams) == utility_intersect_push_bytes);
 static_assert(sizeof(KernelIntersectParams) == utility_occluded_push_bytes);
-static_assert(utility_intersect_storage_buffers == 6 && utility_occluded_storage_buffers == 6);
+static_assert(utility_intersect_storage_buffers == 5 && utility_occluded_storage_buffers == 5);
 
 // The device form of an OcclusionFilter.
 struct DeviceFilter {
@@ -328,14 +330,14 @@ GpuTracer::Implementation::recordTrace(gpu::GpuRecordContext& ctx,
     const gpu::GpuBuffer& instanceGeometry = address ? state->instanceGeometry : rays;
     const bool filtered = filter.maskStride != 0 && filter.rayLights && filter.casterMasks;
     // Unfiltered, the kernel never reads the light tables, so the rays stand in for them.
-    const std::array<gpu::GpuBinding, 6> bindings = {
+    const std::array<gpu::GpuBinding, 5> bindings = {
         gpu::GpuBinding::storage(0, rays),
         gpu::GpuBinding::storage(1, instanceGeometry),
         gpu::GpuBinding::storage(2, values),
         gpu::GpuBinding::storage(3, ids),
         gpu::GpuBinding::storage(4, filtered ? *filter.rayLights : rays),
-        gpu::GpuBinding::storage(5, filtered ? *filter.casterMasks : rays),
     };
+    const VkDeviceAddress casterMasks = filtered ? filter.casterMasks->deviceAddress(device) : 0;
     const std::shared_ptr<gpu::GpuKernel>& kernel = entry == Entry::Intersect ? intersectKernel : occludedKernel;
 
     for (std::uint64_t first = 0; first < count; first += kMaxDispatchRays) {
@@ -343,6 +345,8 @@ GpuTracer::Implementation::recordTrace(gpu::GpuRecordContext& ctx,
         const KernelIntersectParams params {
             static_cast<std::uint32_t>(address & 0xffffffffull),
             static_cast<std::uint32_t>(address >> 32),
+            static_cast<std::uint32_t>(casterMasks & 0xffffffffull),
+            static_cast<std::uint32_t>(casterMasks >> 32),
             count,
             static_cast<std::uint32_t>(first),
             static_cast<std::uint32_t>(end),
@@ -441,7 +445,7 @@ GpuTracer::Implementation::trace(Entry entry,
 
             return;
         }
-        if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(device, maskBytes, gpu::kGpuBufferDefaultUsage, maskBuffer); !s) {
+        if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(device, maskBytes, gpu::kGpuBufferDefaultUsage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, maskBuffer); !s) {
             record(failure("GpuTracer could not stage " + std::to_string(maskWords) + " words of shadow-link masks", s));
             missFrom(0);
 

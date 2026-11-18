@@ -28,43 +28,46 @@ struct ShadeParams
 [[vk::binding(0, 0)]] StructuredBuffer<float> rays;
 [[vk::binding(1, 0)]] StructuredBuffer<float> hitSurface;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> hitIds;
-[[vk::binding(3, 0)]] StructuredBuffer<GeometryRecord> geometries;
-[[vk::binding(4, 0)]] StructuredBuffer<float4> colors;
-[[vk::binding(5, 0)]] StructuredBuffer<int> triangles;
-[[vk::binding(6, 0)]] StructuredBuffer<int> instanceIds;
-[[vk::binding(7, 0)]] RWStructuredBuffer<float4> colorOut;
-[[vk::binding(8, 0)]] RWStructuredBuffer<float> depthOut;
-[[vk::binding(9, 0)]] RWStructuredBuffer<int> primIdOut;
-[[vk::binding(10, 0)]] RWStructuredBuffer<int> instanceIdOut;
-[[vk::binding(11, 0)]] StructuredBuffer<MaterialRecord> materials;
-[[vk::binding(12, 0)]] StructuredBuffer<TextureBinding> textureBindings;
-[[vk::binding(13, 0)]] StructuredBuffer<uint4> images;
-[[vk::binding(14, 0)]] StructuredBuffer<float4> texels;
-[[vk::binding(15, 0)]] StructuredBuffer<ProjectionRecord> projections;
-[[vk::binding(16, 0)]] StructuredBuffer<float4> points;
-[[vk::binding(17, 0)]] StructuredBuffer<float4> instanceTransforms;
-[[vk::binding(18, 0)]] StructuredBuffer<float2> sts;
-[[vk::binding(19, 0)]] StructuredBuffer<LightRecord> lights;
-[[vk::binding(20, 0)]] StructuredBuffer<float> lightData;
-// Per instance, the light-link mask then the shadow-link mask, lighting.z words each; bit l is light l.
-[[vk::binding(21, 0)]] StructuredBuffer<uint> linkMasks;
+// The addresses of the tables at the kTable slots.
+[[vk::binding(3, 0)]] StructuredBuffer<uint2> tableAddresses;
+[[vk::binding(4, 0)]] RWStructuredBuffer<float4> colorOut;
+[[vk::binding(5, 0)]] RWStructuredBuffer<float> depthOut;
+[[vk::binding(6, 0)]] RWStructuredBuffer<int> primIdOut;
+[[vk::binding(7, 0)]] RWStructuredBuffer<int> instanceIdOut;
+[[vk::binding(8, 0)]] StructuredBuffer<MaterialRecord> materials;
+[[vk::binding(9, 0)]] StructuredBuffer<TextureBinding> textureBindings;
+[[vk::binding(10, 0)]] StructuredBuffer<uint4> images;
+[[vk::binding(11, 0)]] StructuredBuffer<ProjectionRecord> projections;
+[[vk::binding(12, 0)]] StructuredBuffer<LightRecord> lights;
 // One shadow ray per hit per light of the pass, light-major: eight arrays of lightBatch * count values.
-[[vk::binding(22, 0)]] RWStructuredBuffer<float> shadowRays;
+[[vk::binding(13, 0)]] RWStructuredBuffer<float> shadowRays;
 // What each shadow ray's light adds to its pixel when the ray is not blocked, premultiplied.
-[[vk::binding(23, 0)]] RWStructuredBuffer<float4> shadowContributions;
-[[vk::binding(24, 0)]] RWStructuredBuffer<uint> shadowLights;
-// GeometryRecord::normalBinding indexes these; w is unused.
-[[vk::binding(25, 0)]] StructuredBuffer<float4> normals;
+[[vk::binding(14, 0)]] RWStructuredBuffer<float4> shadowContributions;
+[[vk::binding(15, 0)]] RWStructuredBuffer<uint> shadowLights;
 // After the first bounce, what each ray's path carries.
-[[vk::binding(26, 0)]] StructuredBuffer<PathState> paths;
+[[vk::binding(16, 0)]] StructuredBuffer<PathState> paths;
 // Each ray's continuation, count rays in eight arrays with a negative tMax where the path ends, and what
 // it carries; written only when a bounce follows this one.
-[[vk::binding(27, 0)]] RWStructuredBuffer<float> nextRays;
-[[vk::binding(28, 0)]] RWStructuredBuffer<PathState> nextPaths;
+[[vk::binding(17, 0)]] RWStructuredBuffer<float> nextRays;
+[[vk::binding(18, 0)]] RWStructuredBuffer<PathState> nextPaths;
 // Per bounce, set to 1 when the bounce queues any path that goes on, which the host reads to stop
 // tracing once no path is left. Every writer stores the same value, so the race between them is benign.
-[[vk::binding(29, 0)]] RWStructuredBuffer<uint> liveBounces;
+[[vk::binding(19, 0)]] RWStructuredBuffer<uint> liveBounces;
 [[vk::push_constant]] ConstantBuffer<ShadeParams> params;
+
+property GeometryTable geometries { get { return GeometryTable(tableAddresses[kTableGeometries]); } }
+property Float4Table colors { get { return Float4Table(tableAddresses[kTableColors]); } }
+property IntTable triangles { get { return IntTable(tableAddresses[kTableTriangles]); } }
+property IntTable instanceIds { get { return IntTable(tableAddresses[kTableInstanceIds]); } }
+property Float4Table points { get { return Float4Table(tableAddresses[kTablePoints]); } }
+property Float4Table instanceTransforms { get { return Float4Table(tableAddresses[kTableInstanceTransforms]); } }
+property Float2Table sts { get { return Float2Table(tableAddresses[kTableSts]); } }
+// GeometryRecord::normalBinding indexes these; w is unused.
+property Float4Table normals { get { return Float4Table(tableAddresses[kTableNormals]); } }
+property FloatTable lightData { get { return FloatTable(tableAddresses[kTableLightData]); } }
+// Per instance, the light-link mask then the shadow-link mask, lighting.z words each; bit l is light l.
+property UintTable linkMasks { get { return UintTable(tableAddresses[kTableLinkMasks]); } }
+property Float4Table texels { get { return Float4Table(tableAddresses[kTableTexels]); } }
 
 static const float4 kUnsupportedColor = float4(1.0, 0.0, 1.0, 1.0);
 // lightRandom()'s light numbers for what is not a light: choosing a hit's continuation and drawing its

@@ -56,7 +56,7 @@ float3 aroundAxis(float3 axis, float cosTheta, float phi)
 }
 
 // The first of count CDF values at offset above u, so a value in [0, count).
-uint searchCdf(StructuredBuffer<float> data, uint offset, uint count, float u)
+uint searchCdf(FloatTable data, uint offset, uint count, float u)
 {
     uint low = 0;
     uint high = count;
@@ -72,12 +72,12 @@ uint searchCdf(StructuredBuffer<float> data, uint offset, uint count, float u)
     return min(low, count - 1);
 }
 
-float cdfStep(StructuredBuffer<float> data, uint offset, uint index)
+float cdfStep(FloatTable data, uint offset, uint index)
 {
     return data[offset + index] - (index == 0 ? 0.0 : data[offset + index - 1]);
 }
 
-float iesTable(LightRecord light, StructuredBuffer<float> data, uint theta, uint phi)
+float iesTable(LightRecord light, FloatTable data, uint theta, uint phi)
 {
     const uint thetaCount = light.data.w & 0xffffu;
 
@@ -86,7 +86,7 @@ float iesTable(LightRecord light, StructuredBuffer<float> data, uint theta, uint
 
 // The IES table's candela toward local, the light-space direction from the light to the point lit,
 // measured from the light's -Z axis.
-float iesFactor(LightRecord light, StructuredBuffer<float> data, float3 local)
+float iesFactor(LightRecord light, FloatTable data, float3 local)
 {
     const uint thetaCount = light.data.w & 0xffffu;
     const uint phiCount = light.data.w >> 16;
@@ -119,7 +119,7 @@ float iesFactor(LightRecord light, StructuredBuffer<float> data, float3 local)
 
 // The cone, focus and IES profile of the light toward emitted, the world direction from the point on
 // the light to the point lit.
-float3 shapingFactor(LightRecord light, StructuredBuffer<float> data, float3 emitted)
+float3 shapingFactor(LightRecord light, FloatTable data, float3 emitted)
 {
     const uint flags = light.kind.y;
     float3 factor = float3(1.0);
@@ -159,7 +159,7 @@ float3 latLongDirection(float2 uv)
     return float3(sin(lon) * cos(lat), sin(lat), cos(lon) * cos(lat));
 }
 
-float3 domeRadiance(LightRecord light, StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, StructuredBuffer<float4> texels, float2 uv)
+float3 domeRadiance(LightRecord light, StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, Float4Table texels, float2 uv)
 {
     const int binding = asint(light.kind.z);
 
@@ -169,7 +169,7 @@ float3 domeRadiance(LightRecord light, StructuredBuffer<TextureBinding> bindings
 }
 
 // What a dome shows along a world direction, black for any other light.
-public float3 domeBackground(LightRecord light, StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, StructuredBuffer<float4> texels, float3 direction)
+public float3 domeBackground(LightRecord light, StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images, Float4Table texels, float3 direction)
 {
     if (light.kind.x != kLightDome)
         return float3(0.0);
@@ -191,7 +191,7 @@ LightSample noLight()
 
 // Sampling an area light uniformly by area: the solid-angle pdf is distance squared over area times
 // the cosine at the light.
-LightSample areaSample(LightRecord light, StructuredBuffer<float> data, float3 position, float3 onLight, float3 lightNormal)
+LightSample areaSample(LightRecord light, FloatTable data, float3 position, float3 onLight, float3 lightNormal)
 {
     const float3 toward = onLight - position;
     const float distance = length(toward);
@@ -215,8 +215,8 @@ LightSample areaSample(LightRecord light, StructuredBuffer<float> data, float3 p
  * @brief Picks a direction toward light from position, where the surface's normal is normal, by the
  * two random numbers u.
  **/
-public LightSample sampleLight(LightRecord light, StructuredBuffer<float> data, StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images,
-                               StructuredBuffer<float4> texels, float3 position, float3 normal, float2 u)
+public LightSample sampleLight(LightRecord light, FloatTable data, StructuredBuffer<TextureBinding> bindings, StructuredBuffer<uint4> images,
+                               Float4Table texels, float3 position, float3 normal, float2 u)
 {
     const uint type = light.kind.x;
     const uint flags = light.kind.y;

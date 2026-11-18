@@ -388,12 +388,6 @@ public:
     // Changes whenever the texels do, so a device copy of them can be kept otherwise.
     std::uint64_t texelVersion() const;
     std::uint32_t lightCount() const;
-    // Caps the texels at limitBytes, 0 for no cap, downsampling the largest textures to fit; returns
-    // false when they cannot fit even then, or when stop ended it, leaving them for the next call to redo.
-    bool fitTexels(std::uint64_t limitBytes,
-                   const std::atomic<bool>* stop = nullptr);
-    // One line per texture fitTexels() downsampled.
-    const std::vector<std::string>& texelWarnings() const;
     // Whether a dome light shows where camera rays miss.
     bool hasBackground() const;
     // Whether any material can leave holes in its surface, which rays then need ResolveHits to go
@@ -439,13 +433,9 @@ private:
     std::vector<std::uint32_t> _images;
     std::vector<PXR_NS::GfVec4f> _texels;
     std::vector<UtilityTextureAssetConstPtr> _textureAssets;
-    std::vector<std::string> _textureAssetNames;
     std::uint64_t _texelVersion = 0;
-    std::uint64_t _texelLimit = 0;
-    bool _texelsFit = true;
     // False while a stopped buildTexels() left the texels short of _textureAssets.
     bool _texelsComplete = false;
-    std::vector<std::string> _texelWarnings;
     std::vector<PXR_NS::GfVec4f> _points;
     std::vector<PXR_NS::GfVec4f> _instanceTransforms;
     std::vector<PXR_NS::GfVec2f> _sts;

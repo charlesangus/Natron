@@ -631,7 +631,6 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot,
                                       const std::atomic<bool>* stop)
 {
     std::vector<UtilityTextureAssetConstPtr> assets;
-    std::vector<std::string> assetNames;
     std::map<const UtilityTextureAsset*, int> firstImages;
     std::set<UtilityTexturePool::Key> keys;
     int imageCount = 0;
@@ -659,7 +658,6 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot,
                 firstImages[asset.get()] = image;
                 imageCount += static_cast<int>(asset->tiles.size());
                 assets.push_back(asset);
-                assetNames.push_back(ref.asset);
             } else {
                 image = found->second;
             }
@@ -773,7 +771,6 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot,
     }
 
     _textureAssets.swap(assets);
-    _textureAssetNames.swap(assetNames);
 
     return buildTexels(stop);
 }
@@ -1021,149 +1018,43 @@ WavefrontShadeTables::lightCount() const
     return static_cast<std::uint32_t>(_lights.size());
 }
 
-namespace {
-// The texels of a mip chain from level `first` on, and that level's size.
-std::size_t
-texelsFrom(const UtilityTextureImage& image,
-           int first,
-           std::size_t* offset,
-           int* width,
-           int* height)
-{
-    int w = image.width;
-    int h = image.height;
-
-    *offset = 0;
-    for (int level = 0; level < first; ++level) {
-        *offset += static_cast<std::size_t>(w) * h;
-        w = std::max(1, w / 2);
-        h = std::max(1, h / 2);
-    }
-    *width = w;
-    *height = h;
-
-    return image.texels.size() - *offset;
-}
-} // anon namespace
-
-bool
-WavefrontShadeTables::fitTexels(std::uint64_t limitBytes,
-                                const std::atomic<bool>* stop)
-{
-    if (limitBytes != _texelLimit || !_texelsComplete) {
-        _texelLimit = limitBytes;
-        if (!buildTexels(stop)) {
-            return false;
-        }
-    }
-
-    return _texelsFit;
-}
-
-const std::vector<std::string>&
-WavefrontShadeTables::texelWarnings() const
-{
-    return _texelWarnings;
-}
-
-// The texels go to the device as one buffer, so past its limit the largest images give up their
-// finest levels, already in their mip chains, until the whole set fits.
+// The texels go to the device as one table it reads through its address, so no binding limit bounds it and
+// every image keeps all of its levels.
 bool
 WavefrontShadeTables::buildTexels(const std::atomic<bool>* stop)
 {
-    struct Tile {
-        const UtilityTextureImage* image;
-        std::size_t asset;
-        int dropped;
-    };
-    std::vector<Tile> tiles;
     std::size_t total = 0;
 
-    for (std::size_t a = 0; a < _textureAssets.size(); ++a) {
-        for (const UtilityTextureImageConstPtr& tile : _textureAssets[a]->tiles) {
-            tiles.push_back(Tile { tile.get(), a, 0 });
+    for (const UtilityTextureAssetConstPtr& asset : _textureAssets) {
+        for (const UtilityTextureImageConstPtr& tile : asset->tiles) {
             total += tile ? tile->texels.size() : 0;
         }
     }
 
-    const std::uint64_t limitTexels = _texelLimit / sizeof(GfVec4f);
-    const auto finest = [](const Tile& t) -> std::size_t {
-        if (!t.image) {
-            return 0;
-        }
-        std::size_t offset = 0;
-        int width = 0;
-        int height = 0;
-
-        texelsFrom(*t.image, t.dropped, &offset, &width, &height);
-
-        return static_cast<std::size_t>(width) * height;
-    };
-    const auto less = [&](std::size_t a, std::size_t b) { return finest(tiles[a]) < finest(tiles[b]); };
-    std::vector<std::size_t> heap;
-
-    for (std::size_t t = 0; t < tiles.size(); ++t) {
-        if (tiles[t].image && tiles[t].image->levels > 1) {
-            heap.push_back(t);
-        }
-    }
-
-    std::make_heap(heap.begin(), heap.end(), less);
-    _texelsFit = true;
-    while (_texelLimit != 0 && total > limitTexels) {
-        if (heap.empty()) {
-            _texelsFit = false;
-            break;
-        }
-        std::pop_heap(heap.begin(), heap.end(), less);
-        Tile& tile = tiles[heap.back()];
-
-        total -= finest(tile);
-        ++tile.dropped;
-        if (tile.dropped + 1 < tile.image->levels) {
-            std::push_heap(heap.begin(), heap.end(), less);
-        } else {
-            heap.pop_back();
-        }
-    }
-
-    std::set<std::size_t> downsampled;
-
     _texelsComplete = false;
     _images.clear();
     _texels.clear();
-    _texelWarnings.clear();
-    if (_texelsFit) {
-        _texels.reserve(total);
-    }
-    for (const Tile& tile : tiles) {
-        if (!tile.image) {
-            _images.insert(_images.end(), { 0u, 0u, 0u, 0u });
-            continue;
-        }
-        std::size_t offset = 0;
-        int width = 0;
-        int height = 0;
-        const std::size_t count = texelsFrom(*tile.image, tile.dropped, &offset, &width, &height);
-
-        _images.insert(_images.end(), { static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), static_cast<std::uint32_t>(tile.image->levels - tile.dropped), static_cast<std::uint32_t>(_texels.size()) });
-        for (std::size_t first = 0; first < count; first += kCopyChunk) {
-            if (stop && stop->load(std::memory_order_relaxed)) {
-                return false;
+    _texels.reserve(total);
+    for (const UtilityTextureAssetConstPtr& asset : _textureAssets) {
+        for (const UtilityTextureImageConstPtr& tile : asset->tiles) {
+            if (!tile) {
+                _images.insert(_images.end(), { 0u, 0u, 0u, 0u });
+                continue;
             }
 
-            const auto from = tile.image->texels.begin() + static_cast<std::ptrdiff_t>(offset + first);
+            const std::size_t count = tile->texels.size();
 
-            _texels.insert(_texels.end(), from, from + static_cast<std::ptrdiff_t>(std::min(kCopyChunk, count - first)));
+            _images.insert(_images.end(), { static_cast<std::uint32_t>(tile->width), static_cast<std::uint32_t>(tile->height), static_cast<std::uint32_t>(tile->levels), static_cast<std::uint32_t>(_texels.size()) });
+            for (std::size_t first = 0; first < count; first += kCopyChunk) {
+                if (stop && stop->load(std::memory_order_relaxed)) {
+                    return false;
+                }
+
+                const auto from = tile->texels.begin() + static_cast<std::ptrdiff_t>(first);
+
+                _texels.insert(_texels.end(), from, from + static_cast<std::ptrdiff_t>(std::min(kCopyChunk, count - first)));
+            }
         }
-        if (tile.dropped > 0 && downsampled.insert(tile.asset).second) {
-            _texelWarnings.push_back(TfStringPrintf("Texture %s was downsampled from %dx%d to %dx%d to fit the GPU's largest storage buffer",
-                                                    _textureAssetNames[tile.asset].c_str(), tile.image->width, tile.image->height, width, height));
-        }
-    }
-    if (!_texelsFit) {
-        _texelWarnings.push_back(TfStringPrintf("The textures need %zu bytes even at one texel each, more than the GPU's largest storage buffer of %llu bytes",
-                                                static_cast<std::size_t>(total * sizeof(GfVec4f)), static_cast<unsigned long long>(_texelLimit)));
     }
     ++_texelVersion;
     _texelsComplete = true;

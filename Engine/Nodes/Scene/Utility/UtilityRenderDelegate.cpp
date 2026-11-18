@@ -178,28 +178,28 @@ UtilityRenderParam::dropGpuExecutor()
 }
 
 void
-UtilityRenderParam::rememberGpuOutOfMemory(std::uint64_t version,
-                                           std::uint64_t budget,
-                                           std::uint64_t generation,
-                                           const std::string& message)
+UtilityRenderParam::rememberGpuFallback(std::uint64_t version,
+                                        std::uint64_t budget,
+                                        std::uint64_t generation,
+                                        const std::string& warning)
 {
-    _outOfMemory = true;
-    _outOfMemoryVersion = version;
-    _outOfMemoryBudget = budget;
-    _outOfMemoryGeneration = generation;
-    _outOfMemoryMessage = message;
+    _gpuFallback = true;
+    _gpuFallbackVersion = version;
+    _gpuFallbackBudget = budget;
+    _gpuFallbackGeneration = generation;
+    _gpuFallbackWarning = warning;
 }
 
 bool
-UtilityRenderParam::gpuOutOfMemory(std::uint64_t version,
-                                   std::uint64_t budget,
-                                   std::uint64_t generation,
-                                   std::string* message) const
+UtilityRenderParam::gpuFallback(std::uint64_t version,
+                                std::uint64_t budget,
+                                std::uint64_t generation,
+                                std::string* warning) const
 {
-    if (!_outOfMemory || (version != _outOfMemoryVersion) || (budget != _outOfMemoryBudget) || (generation != _outOfMemoryGeneration)) {
+    if (!_gpuFallback || (version != _gpuFallbackVersion) || (budget != _gpuFallbackBudget) || (generation != _gpuFallbackGeneration)) {
         return false;
     }
-    *message = _outOfMemoryMessage;
+    *warning = _gpuFallbackWarning;
 
     return true;
 }
@@ -210,7 +210,7 @@ UtilityRenderParam::releaseGpu()
     cancelFrameAndWait();
     dropGpuExecutor();
     // Memory given back may be what the remembered scene lacked.
-    _outOfMemory = false;
+    _gpuFallback = false;
 
     std::set<UtilityRenderBuffer*> buffers;
     {

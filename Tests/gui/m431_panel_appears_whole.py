@@ -24,7 +24,7 @@ Properties bin; and Shift+Tab from the first widget of a page built when first s
 the panel. A second panel is opened after the first, so a misplaced widget would lead into it.
 
 A hide-unmodified case turns on the panel's hide-unmodified button, then shows a page that was not
-shown yet: the unmodified number rows of that page must stay hidden, as they would on
+shown yet: the unmodified rows of that page (any type with a label) must stay hidden, as they would on
 a page built with the panel, and must show once the button is turned off again.
 
 Widget wrappers are looked up again on every pass and never kept across a yield: a wrapper kept
@@ -606,20 +606,32 @@ try:
                   "(went to %s)" % (tag, name))
 
     def is_unmodified(p):
-        if isinstance(p, (NatronEngine.IntParam, NatronEngine.DoubleParam)):
-            return all(p.getValue(d) == p.getDefaultValue(d) for d in range(p.getNumDimensions()))
-        return False
+        """True when p is a parameter with a labelled row whose value is its default, never animated."""
+        if isinstance(p, (NatronEngine.IntParam, NatronEngine.DoubleParam, NatronEngine.ColorParam)):
+            same = all(p.getValue(d) == p.getDefaultValue(d) for d in range(p.getNumDimensions()))
+        elif isinstance(p, (NatronEngine.ChoiceParam, NatronEngine.BooleanParam, NatronEngine.StringParam)):
+            same = p.getValue() == p.getDefaultValue()
+        else:
+            return False
+        return same and not (isinstance(p, NatronEngine.AnimatedParam) and p.getIsAnimated())
 
     def unmodified_rows_by_page(node):
-        """For each page of node: the labels of its visible, unmodified number parameters that sit
-        directly on the page, not in a group."""
+        """For each page of node, by page label: the labels of its visible, unmodified parameters that
+        sit directly on the page, not in a group. A parameter's getParent() is a plain Param wrapper,
+        never a PageParam, so the pages are matched by script name."""
+        params = node.getParams()
+        pages = {}
+        for p in params:
+            if isinstance(p, NatronEngine.PageParam):
+                pages[p.getScriptName()] = p.getLabel()
         found = {}
-        for p in node.getParams():
+        for p in params:
             parent = p.getParent()
-            if not isinstance(parent, NatronEngine.PageParam) or not p.getIsVisible() or not p.getLabel():
+            page = pages.get(parent.getScriptName()) if parent is not None else None
+            if page is None or isinstance(p, NatronEngine.PageParam) or not p.getIsVisible() or not p.getLabel():
                 continue
             if is_unmodified(p):
-                found.setdefault(parent.getLabel(), []).append(p.getLabel())
+                found.setdefault(page, []).append(p.getLabel())
         return found
 
     def hide_unmodified_button(panel):
@@ -645,6 +657,9 @@ try:
             for w in page.findChildren(QLabel):
                 if gt.class_name(w) == LABEL_CLASS and w.isVisible():
                     shown.add(label_text(w))
+            for w in page.findChildren(QAbstractButton):
+                if w.isVisible():
+                    shown.add(re.sub(r"<[^>]+>", "", w.text()).strip())
         return [t for t in texts if t in shown]
 
     def click_hide_unmodified(node):

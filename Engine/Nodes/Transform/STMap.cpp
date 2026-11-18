@@ -541,9 +541,12 @@ STMap::mapOverlayPoint(double time,
     const double outputPar = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
     const double sourcePar = metadata ? metadata->getPixelAspectRatio(kSTMapInputSource) : 1.;
     const bool mapped = (bool)getInput(kSTMapInputMap);
-
+    const MapOverlaySampler mapSampler = _map.overlaySampler(self, kSTMapInputMap, time, view);
+    if (mapped && (mapSampler.status() == OverlayPointMap::eUnmappable)) {
+        return OverlayPointMap::eUnmappable;
+    }
     // A pending Map leaves the point unmoved until its copy arrives.
-    bool mapPending = false;
+    const bool mapPending = mapped && (mapSampler.status() == OverlayPointMap::ePending);
     const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
         float values[3] = { 0.f, 0.f, 1.f };
         if (uv && !uv->sample(p.x, p.y, values)) {
@@ -570,14 +573,7 @@ STMap::mapOverlayPoint(double time,
         bool pinned = false;
         bool gated = true;
         if (mapped) {
-            double m = 1.;
-            const OverlayPointMap::Result r = _map.overlayValue(self, kSTMapInputMap, time, view, p, &m);
-            if (r == OverlayPointMap::ePending) {
-                mapPending = true;
-                m = 1.;
-            } else if (r != OverlayPointMap::eMapped) {
-                return r;
-            }
+            const double m = mapSampler.value(p);
             const double cx = p.x / outputPar;
             const double cy = p.y;
             px = cx + (px - cx) * m;
@@ -615,8 +611,10 @@ STMap::mapOverlayPoint(double time,
         key = mixHash(key, (U64)settings.wrapV);
         key = mixHash(key, (U64)(alphaIndex >= 0 ? 1 : 0));
         key = mixHash(key, (U64)(mapped ? getInput(kSTMapInputMap)->getHash() : 0));
+        // The node's own hash covers its Map knobs (invert, response, gamma).
+        key = mixHash(key, getHash());
         const RectD sourceRegion(domain.x1 * sourcePar, domain.y1, domain.x2 * sourcePar, domain.y2);
-        const std::shared_ptr<const OverlayPointMap::SeedGrid> seeds = uv->seedGrid(key, [&]() {
+        const std::function<std::shared_ptr<const OverlayPointMap::SeedGrid>()> buildSeeds = [&]() {
             std::shared_ptr<OverlayPointMap::SeedGrid> grid = std::make_shared<OverlayPointMap::SeedGrid>(sourceRegion, uv->bounds.width(), uv->bounds.height());
             for (int y = uv->bounds.y1; y < uv->bounds.y2; ++y) {
                 for (int x = uv->bounds.x1; x < uv->bounds.x2; ++x) {
@@ -630,10 +628,12 @@ STMap::mapOverlayPoint(double time,
             grid->fillHoles();
 
             return std::shared_ptr<const OverlayPointMap::SeedGrid>(grid);
-        });
+        };
+        // A grid scattered with the Map read as 1 is wrong once the Map arrives, so it is not kept.
+        const std::shared_ptr<const OverlayPointMap::SeedGrid> seeds = mapPending ? buildSeeds() : uv->seedGrid(key, buildSeeds);
         Point seed = *out;
         if (seeds && !seeds->lookup(in, &seed)) {
-            return OverlayPointMap::eUnmappable;
+            return mapPending ? OverlayPointMap::ePending : OverlayPointMap::eUnmappable;
         }
         OverlayPointMap::InvertOptions options;
         // The UV copy holds floats, which bounds how closely the polish can land.

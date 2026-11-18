@@ -635,18 +635,14 @@ IWarp::mapOverlayPoint(double time,
     }
     const EffectInstancePtr self = shared_from_this();
     const TransformInterp::MatrixFn toSourceAt = canonicalMatrixFn(time, view, settings.invert);
-    bool mapPending = false;
+    const MapOverlaySampler mapSampler = _map.overlaySampler(self, kIWarpInputMap, time, view);
+    if (mapSampler.status() == OverlayPointMap::eUnmappable) {
+        return OverlayPointMap::eUnmappable;
+    }
+    const bool mapPending = (mapSampler.status() == OverlayPointMap::ePending);
     const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
-        double m = 1.;
-        OverlayPointMap::Result r = _map.overlayValue(self, kIWarpInputMap, time, view, p, &m);
-        if (r == OverlayPointMap::ePending) {
-            mapPending = true;
-            m = 1.;
-        } else if (r != OverlayPointMap::eMapped) {
-            return r;
-        }
         TransformMath::Mat3 c;
-        if (!toSourceAt(m, &c)) {
+        if (!toSourceAt(mapSampler.value(p), &c)) {
             return OverlayPointMap::eUnmappable;
         }
 

@@ -43,6 +43,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
 #include "Engine/RenderScale.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
@@ -54,6 +55,8 @@ namespace {
     const double kMaxMapSize = 256.;
     const unsigned kMaxMipmapLevel = 20;
     const std::size_t kCacheCapacity = 32;
+    // Failures are notified, so retrying at once would redraw and render in a loop.
+    const std::chrono::milliseconds kFailedRetryDelay(2000);
 
     struct Key {
         const EffectInstance* owner;
@@ -69,18 +72,51 @@ namespace {
         }
     };
 
+    struct Job {
+        Key key;
+        const AppInstance* app = 0;
+        const EffectInstance* inputRaw = 0;
+        EffectInstanceWPtr owner;
+        EffectInstanceWPtr input;
+        double time = 0.;
+        ViewIdx view;
+        std::vector<Channel> channels;
+        AbortableRenderInfoPtr abortInfo;
+    };
+
+    typedef std::shared_ptr<Job> JobPtr;
+
+    enum EntryStateEnum {
+        eEntryStateQueued,
+        eEntryStateRunning,
+        eEntryStateDone,
+        eEntryStateFailed,
+    };
+
     struct Entry {
+        EntryStateEnum state = eEntryStateQueued;
         MapImageConstPtr image;
-        bool running = false;
-        bool failed = false;
+        const AppInstance* app = 0;
+        const EffectInstance* input = 0;
+        AbortableRenderInfoPtr abortInfo;
+        std::chrono::steady_clock::time_point failedAt;
         U64 lastUse = 0;
     };
+
+    // One input of one owner renders at most one map at a time; of the requests made meanwhile
+    // only the latest waits, so scrubbing does not queue a render per frame.
+    struct Slot {
+        JobPtr running;
+        JobPtr queued;
+    };
+
+    typedef std::pair<const EffectInstance*, int> SlotKey;
 
     struct Cache {
         std::mutex mutex;
         std::condition_variable idle;
         std::map<Key, Entry> entries;
-        int running = 0;
+        std::map<SlotKey, Slot> slots;
         U64 clock = 0;
     };
 
@@ -107,6 +143,12 @@ namespace {
         return ret;
     }
 
+    bool
+    isFinished(const Entry& e)
+    {
+        return (e.state == eEntryStateDone) || (e.state == eEntryStateFailed);
+    }
+
     // Drops the least recently used finished entries past the capacity. Called with the mutex held.
     void
     evict(Cache& c)
@@ -114,7 +156,7 @@ namespace {
         while (c.entries.size() > kCacheCapacity) {
             std::map<Key, Entry>::iterator oldest = c.entries.end();
             for (std::map<Key, Entry>::iterator it = c.entries.begin(); it != c.entries.end(); ++it) {
-                if (!it->second.running && ((oldest == c.entries.end()) || (it->second.lastUse < oldest->second.lastUse))) {
+                if (isFinished(it->second) && ((oldest == c.entries.end()) || (it->second.lastUse < oldest->second.lastUse))) {
                     oldest = it;
                 }
             }
@@ -125,9 +167,75 @@ namespace {
         }
     }
 
+    // Erases the entry of key only if it is still the one job created.
+    void
+    eraseEntryOf(Cache& c,
+                 const Job& job)
+    {
+        std::map<Key, Entry>::iterator found = c.entries.find(job.key);
+
+        if ((found != c.entries.end()) && (found->second.abortInfo == job.abortInfo)) {
+            c.entries.erase(found);
+        }
+    }
+
+    typedef std::function<bool(const EffectInstance* owner, const EffectInstance* input, const AppInstance* app)> Matcher;
+
+    // Aborts the running fetches match selects, drops their queued ones and their cached maps.
+    void
+    abortMatching(const Matcher& match,
+                  bool wait)
+    {
+        Cache& c = cache();
+        std::unique_lock<std::mutex> lock(c.mutex);
+
+        for (std::map<SlotKey, Slot>::iterator it = c.slots.begin(); it != c.slots.end(); ++it) {
+            Slot& slot = it->second;
+            if (slot.queued && match(slot.queued->key.owner, slot.queued->inputRaw, slot.queued->app)) {
+                eraseEntryOf(c, *slot.queued);
+                slot.queued.reset();
+            }
+            if (slot.running && match(slot.running->key.owner, slot.running->inputRaw, slot.running->app)) {
+                slot.running->abortInfo->setAborted();
+            }
+        }
+        for (std::map<Key, Entry>::iterator it = c.entries.begin(); it != c.entries.end();) {
+            if (match(it->first.owner, it->second.input, it->second.app)) {
+                if ((it->second.state == eEntryStateRunning) && it->second.abortInfo) {
+                    it->second.abortInfo->setAborted();
+                }
+                it = c.entries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (!wait) {
+            return;
+        }
+        c.idle.wait(lock, [&c, &match]() {
+            for (std::map<SlotKey, Slot>::const_iterator it = c.slots.begin(); it != c.slots.end(); ++it) {
+                const JobPtr& running = it->second.running;
+                if (running && match(running->key.owner, running->inputRaw, running->app)) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+    }
+
+    void runJob(const JobPtr& job);
+
+    void
+    start(const JobPtr& job)
+    {
+        (void)QtConcurrent::run([job]() { runJob(job); });
+    }
+
     MapImageConstPtr
     render(const EffectInstancePtr& input,
            const NodePtr& requester,
+           const AbortableRenderInfoPtr& abortInfo,
            double time,
            ViewIdx view,
            const std::vector<Channel>& channels)
@@ -175,7 +283,6 @@ namespace {
         }
         std::map<ImageLayerDesc, ImagePtr> planes;
         {
-            AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
             ParallelRenderArgsSetter frameRenderArgs(time,
                                                      view,
                                                      true /*isRenderUserInteraction*/,
@@ -257,6 +364,66 @@ namespace {
 
         return image;
     } // render
+
+    void
+    runJob(const JobPtr& job)
+    {
+        MapImageConstPtr image;
+        {
+            const EffectInstancePtr input = job->input.lock();
+            const EffectInstancePtr owner = job->owner.lock();
+            const NodePtr requester = owner ? owner->getNode() : NodePtr();
+            if (input && requester && requester->isActivated() && !job->abortInfo->isAborted()) {
+                image = render(input, requester, job->abortInfo, job->time, job->view, job->channels);
+            }
+        }
+        const bool aborted = job->abortInfo->isAborted();
+        Cache& c = cache();
+        {
+            std::lock_guard<std::mutex> lock(c.mutex);
+            std::map<Key, Entry>::iterator found = c.entries.find(job->key);
+            if ((found != c.entries.end()) && (found->second.abortInfo == job->abortInfo)) {
+                if (aborted) {
+                    c.entries.erase(found);
+                } else {
+                    found->second.image = image;
+                    found->second.state = image ? eEntryStateDone : eEntryStateFailed;
+                    found->second.failedAt = std::chrono::steady_clock::now();
+                }
+            }
+        }
+        if (!aborted) {
+            const EffectInstancePtr owner = job->owner.lock();
+            const NodePtr node = owner ? owner->getNode() : NodePtr();
+            if (node && node->isActivated()) {
+                node->notifyOverlayMapChanged();
+            }
+        }
+        // The slot is released only after the notification, so a waiter sees every listener told.
+        JobPtr next;
+        {
+            std::lock_guard<std::mutex> lock(c.mutex);
+            std::map<SlotKey, Slot>::iterator slot = c.slots.find(SlotKey(job->key.owner, job->key.inputNb));
+            if ((slot != c.slots.end()) && (slot->second.running == job)) {
+                next = slot->second.queued;
+                slot->second.queued.reset();
+                slot->second.running = next;
+                if (next) {
+                    std::map<Key, Entry>::iterator found = c.entries.find(next->key);
+                    if ((found != c.entries.end()) && (found->second.abortInfo == next->abortInfo)) {
+                        found->second.state = eEntryStateRunning;
+                    }
+                } else {
+                    c.slots.erase(slot);
+                }
+            }
+            evict(c);
+        }
+        c.idle.notify_all();
+        if (next) {
+            start(next);
+        }
+    } // runJob
 } // anon namespace
 
 const float*
@@ -286,9 +453,16 @@ MapImage::pixelCentre(int x,
 bool
 MapImage::sample(double x,
                  double y,
-                 float* values) const
+                 float* values,
+                 bool stretchEdges) const
 {
-    if (empty() || !std::isfinite(x) || !std::isfinite(y) || (x < canonical.x1) || (x > canonical.x2) || (y < canonical.y1) || (y > canonical.y2)) {
+    if (empty() || !std::isfinite(x) || !std::isfinite(y)) {
+        return false;
+    }
+    if (stretchEdges) {
+        x = std::min(canonical.x2, std::max(canonical.x1, x));
+        y = std::min(canonical.y2, std::max(canonical.y1, y));
+    } else if ((x < canonical.x1) || (x > canonical.x2) || (y < canonical.y1) || (y > canonical.y2)) {
         return false;
     }
     const double scale = (double)(1u << mipmapLevel);
@@ -340,9 +514,11 @@ fetch(const EffectInstancePtr& owner,
       const std::vector<Channel>& channels,
       OverlayPointMap::Result* result)
 {
-    EffectInstancePtr input = owner ? owner->getInput(inputNb) : EffectInstancePtr();
+    const EffectInstancePtr input = owner ? owner->getInput(inputNb) : EffectInstancePtr();
+    const NodePtr ownerNode = owner ? owner->getNode() : NodePtr();
+    const AppInstancePtr app = owner ? owner->getApp() : AppInstancePtr();
 
-    if (!input) {
+    if (!input || !ownerNode || !ownerNode->isActivated() || !app || !app->getProject() || app->getProject()->isProjectClosing()) {
         *result = OverlayPointMap::eUnmappable;
 
         return MapImageConstPtr();
@@ -356,59 +532,122 @@ fetch(const EffectInstancePtr& owner,
     key.channels = describeChannels(channels);
 
     Cache& c = cache();
+    JobPtr launch;
     {
         std::lock_guard<std::mutex> lock(c.mutex);
-        Entry& entry = c.entries[key];
-        entry.lastUse = ++c.clock;
-        if (entry.image) {
-            *result = OverlayPointMap::eMapped;
+        std::map<Key, Entry>::iterator found = c.entries.find(key);
+        if (found != c.entries.end()) {
+            Entry& entry = found->second;
+            entry.lastUse = ++c.clock;
+            switch (entry.state) {
+            case eEntryStateDone:
+                *result = OverlayPointMap::eMapped;
 
-            return entry.image;
-        }
-        if (entry.failed) {
-            *result = OverlayPointMap::eUnmappable;
+                return entry.image;
+            case eEntryStateFailed:
+                if (std::chrono::steady_clock::now() - entry.failedAt < kFailedRetryDelay) {
+                    *result = OverlayPointMap::eUnmappable;
 
-            return MapImageConstPtr();
-        }
-        *result = OverlayPointMap::ePending;
-        if (entry.running) {
-            return MapImageConstPtr();
-        }
-        entry.running = true;
-        ++c.running;
-        evict(c);
-    }
+                    return MapImageConstPtr();
+                }
+                c.entries.erase(found);
+                break;
+            case eEntryStateQueued:
+            case eEntryStateRunning:
+                *result = OverlayPointMap::ePending;
 
-    const EffectInstanceWPtr weakOwner = owner;
-    const NodePtr requester = owner->getNode();
-    (void)QtConcurrent::run([key, input, requester, weakOwner, time, view, channels]() {
-        MapImageConstPtr image = render(input, requester, time, view, channels);
-        Cache& c = cache();
-        {
-            std::lock_guard<std::mutex> lock(c.mutex);
-            std::map<Key, Entry>::iterator found = c.entries.find(key);
-            if (found != c.entries.end()) {
-                found->second.running = false;
-                found->second.image = image;
-                found->second.failed = !image;
+                return MapImageConstPtr();
             }
         }
-        EffectInstancePtr owner = weakOwner.lock();
-        NodePtr node = owner ? owner->getNode() : NodePtr();
-        if (node) {
-            node->notifyOverlayMapChanged();
+
+        JobPtr job = std::make_shared<Job>();
+        job->key = key;
+        job->app = app.get();
+        job->inputRaw = input.get();
+        job->owner = owner;
+        job->input = input;
+        job->time = time;
+        job->view = view;
+        job->channels = channels;
+        job->abortInfo = AbortableRenderInfo::create(true, 0);
+
+        Entry& entry = c.entries[key];
+        entry.app = job->app;
+        entry.input = job->inputRaw;
+        entry.abortInfo = job->abortInfo;
+        entry.lastUse = ++c.clock;
+        Slot& slot = c.slots[SlotKey(key.owner, inputNb)];
+        if (slot.running) {
+            if (slot.queued) {
+                eraseEntryOf(c, *slot.queued);
+            }
+            slot.queued = job;
+            entry.state = eEntryStateQueued;
+        } else {
+            slot.running = job;
+            entry.state = eEntryStateRunning;
+            launch = job;
         }
-        // Counted down only after the notification, so a waiter sees every listener already told.
-        {
-            std::lock_guard<std::mutex> lock(c.mutex);
-            --c.running;
-            evict(c);
-        }
-        c.idle.notify_all();
-    });
+        evict(c);
+    }
+    *result = OverlayPointMap::ePending;
+    if (launch) {
+        start(launch);
+    }
 
     return MapImageConstPtr();
 } // fetch
+
+void
+abortFetches(const EffectInstance* effect,
+             bool wait)
+{
+    if (!effect) {
+        return;
+    }
+    const Matcher match = [effect](const EffectInstance* owner, const EffectInstance* input, const AppInstance*) {
+        return (owner == effect) || (input == effect);
+    };
+
+    abortMatching(match, wait);
+}
+
+void
+abortAppFetches(const AppInstance* app,
+                bool wait)
+{
+    const Matcher match = [app](const EffectInstance*, const EffectInstance*, const AppInstance* jobApp) {
+        return jobApp == app;
+    };
+
+    abortMatching(match, wait);
+}
+
+void
+abortAllFetches(bool wait)
+{
+    const Matcher match = [](const EffectInstance*, const EffectInstance*, const AppInstance*) {
+        return true;
+    };
+
+    abortMatching(match, wait);
+}
+
+bool
+hasFetches(const EffectInstance* effect)
+{
+    Cache& c = cache();
+    std::lock_guard<std::mutex> lock(c.mutex);
+
+    for (std::map<SlotKey, Slot>::const_iterator it = c.slots.begin(); it != c.slots.end(); ++it) {
+        const JobPtr& running = it->second.running;
+        if (running && ((running->key.owner == effect) || (running->inputRaw == effect))) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 bool
 waitForFetches(int timeoutMs)
@@ -416,7 +655,7 @@ waitForFetches(int timeoutMs)
     Cache& c = cache();
     std::unique_lock<std::mutex> lock(c.mutex);
 
-    return c.idle.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&c]() { return c.running == 0; });
+    return c.idle.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&c]() { return c.slots.empty(); });
 }
 
 void
@@ -426,10 +665,10 @@ clearCache()
     std::lock_guard<std::mutex> lock(c.mutex);
 
     for (std::map<Key, Entry>::iterator it = c.entries.begin(); it != c.entries.end();) {
-        if (it->second.running) {
-            ++it;
-        } else {
+        if (isFinished(it->second)) {
             it = c.entries.erase(it);
+        } else {
+            ++it;
         }
     }
 }

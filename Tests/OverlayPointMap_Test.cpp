@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <list>
@@ -101,6 +102,7 @@ const int kFetchTimeoutMs = 30000;
 #define kTestPluginIDOverlayUV "net.natron.test.OverlayPointMapUV"
 #define kTestPluginIDOverlayUVMasked "net.natron.test.OverlayPointMapUVMasked"
 #define kTestPluginIDOverlayDot "net.natron.test.OverlayPointMapDot"
+#define kTestPluginIDOverlayBlocking "net.natron.test.OverlayPointMapBlocking"
 
 // The masked UV map has alpha 0 at canonical x below this, 1 from it on.
 const double kUVMaskEdge = 40.;
@@ -135,7 +137,31 @@ enum OverlayTestPattern {
     eOverlayTestPatternUV,
     eOverlayTestPatternUVMasked,
     eOverlayTestPatternDot,
+    eOverlayTestPatternBlocking,
 };
+
+// The blocking pattern renders until its render is aborted, or for at most this long.
+const std::chrono::seconds kBlockingRenderLimit(10);
+std::atomic<bool> blockingRenderStarted(false);
+std::atomic<bool> blockingRenderAborted(false);
+
+constexpr const char*
+overlayTestPluginID(OverlayTestPattern pattern)
+{
+    return (pattern == eOverlayTestPatternDot)     ? kTestPluginIDOverlayDot
+        : (pattern == eOverlayTestPatternUVMasked) ? kTestPluginIDOverlayUVMasked
+        : (pattern == eOverlayTestPatternBlocking) ? kTestPluginIDOverlayBlocking
+                                                   : kTestPluginIDOverlayUV;
+}
+
+constexpr const char*
+overlayTestPluginLabel(OverlayTestPattern pattern)
+{
+    return (pattern == eOverlayTestPatternDot)     ? "Test Overlay Dot"
+        : (pattern == eOverlayTestPatternUVMasked) ? "Test Overlay UV Masked"
+        : (pattern == eOverlayTestPatternBlocking) ? "Test Overlay Blocking"
+                                                   : "Test Overlay UV";
+}
 
 /**
  * @brief An RGBA image over the 128 x 96 format, which is also its region of definition. The UV
@@ -187,8 +213,8 @@ public:
 
 private:
     static constexpr NodeSpec kNodeSpec = {
-        .id = (Pattern == eOverlayTestPatternDot) ? kTestPluginIDOverlayDot : ((Pattern == eOverlayTestPatternUVMasked) ? kTestPluginIDOverlayUVMasked : kTestPluginIDOverlayUV),
-        .label = (Pattern == eOverlayTestPatternDot) ? "Test Overlay Dot" : ((Pattern == eOverlayTestPatternUVMasked) ? "Test Overlay UV Masked" : "Test Overlay UV"),
+        .id = overlayTestPluginID(Pattern),
+        .label = overlayTestPluginLabel(Pattern),
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -212,6 +238,18 @@ private:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
+        if (Pattern == eOverlayTestPatternBlocking) {
+            blockingRenderStarted = true;
+            const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + kBlockingRenderLimit;
+            while (!aborted() && (std::chrono::steady_clock::now() < deadline)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (aborted()) {
+                blockingRenderAborted = true;
+            }
+
+            return eStatusOK;
+        }
         const int step = 1 << args.mappedScale.toMipmapLevel();
 
         for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
@@ -258,6 +296,7 @@ private:
 typedef OverlayUVTestEffectT<eOverlayTestPatternUV> OverlayUVTestEffect;
 typedef OverlayUVTestEffectT<eOverlayTestPatternUVMasked> OverlayUVMaskedTestEffect;
 typedef OverlayUVTestEffectT<eOverlayTestPatternDot> OverlayDotTestEffect;
+typedef OverlayUVTestEffectT<eOverlayTestPatternBlocking> OverlayBlockingTestEffect;
 
 template <typename NODE>
 void
@@ -293,6 +332,7 @@ registerTestNodes()
         registerNode<OverlayUVTestEffect>();
         registerNode<OverlayUVMaskedTestEffect>();
         registerNode<OverlayDotTestEffect>();
+        registerNode<OverlayBlockingTestEffect>();
     });
 }
 
@@ -966,6 +1006,32 @@ TEST_F(OverlayPointMapTest, STMapZeroUVAlphaHasNoSource)
     EXPECT_LE(dist(open, pt(masked.x - kUVShift, masked.y)), 0.5);
 }
 
+// A black Map pins every pixel to its own Source pixel; inverted, it applies the full shift.
+TEST_F(OverlayPointMapTest, STMapMapInvertChangesTheForwardMapping)
+{
+    NodePtr source = dot(40, 30);
+    NodePtr uv = createNodeAtMajor(getApp(), kTestPluginIDOverlayUV, -1);
+    NodePtr black = constant(0., 0., 0., 0.);
+    NodePtr stmap = node(PLUGINID_NATRON_STMAP, PLUGIN_MAJOR_NATRON_STMAP);
+    ASSERT_TRUE(source && uv && black && stmap);
+    connectNodes(uv, stmap, kSTMapInputUV, true);
+    connectNodes(source, stmap, kSTMapInputSource, true);
+    connectNodes(black, stmap, kSTMapInputMap, true);
+    ASSERT_TRUE(setChannelSelect(stmap, kSTMapParamChannelU, "rgba.R"));
+    ASSERT_TRUE(setChannelSelect(stmap, kSTMapParamChannelV, "rgba.G"));
+    bilinear(stmap);
+
+    const Point p = pt(60.5, 50.5);
+    Point pinned = p;
+    ASSERT_EQ(OverlayPointMap::eMapped, mapSettled(stmap, OverlayPointMap::eDirectionForward, p, &pinned, kSTMapInputSource));
+    EXPECT_LE(dist(pinned, p), 0.5);
+
+    ASSERT_TRUE(setKnobValues(stmap, kMapInputParamInvert, { 1. }));
+    Point shifted = p;
+    ASSERT_EQ(OverlayPointMap::eMapped, mapSettled(stmap, OverlayPointMap::eDirectionForward, p, &shifted, kSTMapInputSource));
+    EXPECT_LE(dist(shifted, pt(p.x + kUVShift, p.y)), 0.5);
+}
+
 TEST_F(OverlayPointMapTest, IDistortConstantFieldMapsExactly)
 {
     // IDistort's output region is its Source's, so the moved dot needs a format-wide Source.
@@ -1016,6 +1082,43 @@ TEST_F(OverlayPointMapTest, FetchRunsOffTheCallingThread)
     float value = 0.f;
     ASSERT_TRUE(image->sample(64., 48., &value));
     EXPECT_EQ(0.5f, value);
+}
+
+TEST_F(OverlayPointMapTest, ProjectResetAbortsAFetchInFlight)
+{
+    NodePtr field = createNodeAtMajor(getApp(), kTestPluginIDOverlayBlocking, -1);
+    NodePtr source = dot(40, 30);
+    NodePtr idistort = node(PLUGINID_NATRON_IDISTORT, PLUGIN_MAJOR_NATRON_IDISTORT, source, kIDistortInputSource);
+    ASSERT_TRUE(field && source && idistort);
+    connectNodes(field, idistort, kIDistortInputUV, true);
+
+    blockingRenderStarted = false;
+    blockingRenderAborted = false;
+    std::atomic<int> notified(0);
+    const QMetaObject::Connection connection = QObject::connect(idistort.get(), &Node::overlayMapChanged, [&notified]() { ++notified; });
+
+    OverlayMapFetch::Channel channel;
+    channel.layer = ImageLayerDesc::getRGBAComponents();
+    channel.index = 0;
+    OverlayPointMap::Result result = OverlayPointMap::eMapped;
+    EXPECT_FALSE(bool(OverlayMapFetch::fetch(idistort->getEffectInstance(), kIDistortInputUV, kTime, ViewIdx(0), std::vector<OverlayMapFetch::Channel>(1, channel), &result)));
+    EXPECT_EQ(OverlayPointMap::ePending, result);
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kFetchTimeoutMs);
+    while (!blockingRenderStarted && (std::chrono::steady_clock::now() < deadline)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(blockingRenderStarted.load());
+
+    const std::chrono::steady_clock::time_point resetStart = std::chrono::steady_clock::now();
+    field.reset();
+    source.reset();
+    idistort.reset();
+    resetProject();
+    EXPECT_LT(std::chrono::steady_clock::now() - resetStart, kBlockingRenderLimit);
+    EXPECT_TRUE(OverlayMapFetch::waitForFetches(kFetchTimeoutMs));
+    EXPECT_TRUE(blockingRenderAborted.load());
+    EXPECT_EQ(0, notified.load());
+    QObject::disconnect(connection);
 }
 
 TEST_F(OverlayPointMapTest, ITransformIsAMatrixUntilAMapIsConnected)

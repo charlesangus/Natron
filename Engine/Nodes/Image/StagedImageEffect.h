@@ -223,7 +223,7 @@ public:
 
     /**
      * @brief For a Resample op, resampleTransform() at time, view and renderScale; the default
-     * reply for every other op.
+     * reply for every other op, and for the offset form while a mask is applied or mix is not 1.
      **/
     virtual StatusEnum getTransform(double time,
                                     const RenderScale& renderScale,

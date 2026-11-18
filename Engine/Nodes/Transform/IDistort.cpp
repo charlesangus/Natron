@@ -421,11 +421,17 @@ IDistort::mapOverlayPoint(double time,
     const NodeMetadataConstPtr metadata = getMetadata(time, view);
     const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
     const bool mapped = (bool)getInput(kIDistortInputMap);
-    bool mapPending = false;
+    const MapOverlaySampler mapSampler = _map.overlaySampler(self, kIDistortInputMap, time, view);
+    if (mapped && (mapSampler.status() == OverlayPointMap::eUnmappable)) {
+        return OverlayPointMap::eUnmappable;
+    }
+    const bool mapPending = mapped && (mapSampler.status() == OverlayPointMap::ePending);
+    const bool uvStretch = (stageInputEdgeMode(*this, kIDistortInputUV, time, view) == EdgeMode::Stretch);
     const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
         float values[2] = { 0.f, 0.f };
-        // Off the UV input there is no displacement.
-        if (!uv->sample(p.x, p.y, values)) {
+        // Past the UV input's region the render reads its nearest edge under Stretch and no
+        // displacement under Black.
+        if (!uv->sample(p.x, p.y, values, uvStretch)) {
             values[0] = values[1] = 0.f;
         }
         const double uRaw = (uIndex >= 0) ? values[uIndex] : 0.;
@@ -433,14 +439,7 @@ IDistort::mapOverlayPoint(double time,
         double dx = (uRaw - settings.uOffset) * settings.uScale * par;
         double dy = (vRaw - settings.vOffset) * settings.vScale;
         if (mapped) {
-            double m = 1.;
-            const OverlayPointMap::Result r = _map.overlayValue(self, kIDistortInputMap, time, view, p, &m);
-            if (r == OverlayPointMap::ePending) {
-                mapPending = true;
-                m = 1.;
-            } else if (r != OverlayPointMap::eMapped) {
-                return r;
-            }
+            const double m = mapSampler.value(p);
             dx *= m;
             dy *= m;
         }

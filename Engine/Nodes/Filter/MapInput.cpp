@@ -355,38 +355,48 @@ MapInput::resolveChannel(EffectInstance* effect,
     return knob->resolve(present, layer, channel) && (*channel >= 0);
 }
 
-OverlayPointMap::Result
-MapInput::overlayValue(const EffectInstancePtr& effect,
-                       int inputNb,
-                       double time,
-                       ViewIdx view,
-                       const Point& p,
-                       double* value) const
+double
+MapOverlaySampler::value(const Point& p) const
 {
-    if (!effect || !effect->getInput(inputNb)) {
-        *value = 1.;
-
-        return OverlayPointMap::eMapped;
-    }
-    const MapInputParams params = bake(KnobReader(time, view));
-    OverlayMapFetch::Channel channel;
-    if (!resolveChannel(effect.get(), inputNb, time, view, &channel.layer, &channel.index)) {
-        *value = params.remap(0.f);
-
-        return OverlayPointMap::eMapped;
-    }
-    OverlayPointMap::Result result = OverlayPointMap::eUnmappable;
-    const OverlayMapFetch::MapImageConstPtr image = OverlayMapFetch::fetch(effect, inputNb, time, view, std::vector<OverlayMapFetch::Channel>(1, channel), &result);
-    if (!image) {
-        return result;
+    if (!_image) {
+        return _constant;
     }
     float raw = 0.f;
-    if (!image->sample(p.x, p.y, &raw)) {
+    if (!_image->sample(p.x, p.y, &raw, _stretchEdges)) {
         raw = 0.f;
     }
-    *value = params.remap(raw);
 
-    return OverlayPointMap::eMapped;
+    return _params.remap(raw);
+}
+
+MapOverlaySampler
+MapInput::overlaySampler(const EffectInstancePtr& effect,
+                         int inputNb,
+                         double time,
+                         ViewIdx view) const
+{
+    MapOverlaySampler sampler;
+
+    if (!effect || !effect->getInput(inputNb)) {
+        return sampler;
+    }
+    sampler._params = bake(KnobReader(time, view));
+    OverlayMapFetch::Channel channel;
+    if (!resolveChannel(effect.get(), inputNb, time, view, &channel.layer, &channel.index)) {
+        sampler._constant = sampler._params.remap(0.f);
+
+        return sampler;
+    }
+    OverlayPointMap::Result result = OverlayPointMap::eUnmappable;
+    sampler._image = OverlayMapFetch::fetch(effect, inputNb, time, view, std::vector<OverlayMapFetch::Channel>(1, channel), &result);
+    if (!sampler._image) {
+        sampler._status = result;
+
+        return sampler;
+    }
+    sampler._stretchEdges = (stageInputEdgeMode(*effect, inputNb, time, view) == EdgeMode::Stretch);
+
+    return sampler;
 }
 
 bool

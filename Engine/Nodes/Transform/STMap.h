@@ -233,8 +233,9 @@ private:
 
     /**
      * @brief Inverse: the U and V of a small copy of the UV input at the point, bilinearly, moved
-     * by the Map. Forward: seeded from that copy scattered onto a grid over the Source, then
-     * polished by Newton. Wrap and UV Alpha are not followed.
+     * by the Map and folded by the U and V wrap modes; unmappable where UV Alpha gates the pixel
+     * out. Forward: seeded from that copy scattered onto a grid over the Source, then polished by
+     * Newton.
      **/
     virtual OverlayPointMap::Result mapOverlayPoint(double time,
                                                     ViewIdx view,

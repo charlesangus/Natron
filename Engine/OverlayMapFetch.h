@@ -78,9 +78,10 @@ public:
 
     /**
      * @brief The channels bilinearly between pixel centres at canonical (x, y), clamped onto the
-     * edge pixels; false off the canonical region or when empty.
+     * edge pixels; false when empty or not finite, and off the canonical region unless
+     * stretchEdges, which reads the nearest edge there as an input under EdgeMode::Stretch does.
      **/
-    bool sample(double x, double y, float* values) const;
+    bool sample(double x, double y, float* values, bool stretchEdges = false) const;
 
     // Canonical centre of pixel (x, y).
     Point pixelCentre(int x, int y) const;
@@ -102,9 +103,11 @@ typedef std::shared_ptr<const MapImage> MapImageConstPtr;
 
 /**
  * @brief The image of input inputNb of owner, or null while it is fetched, in which case a fetch
- * is started if none is running for the same key and *result is ePending. The owner's node emits
- * overlayMapChanged when the fetch completes. A disconnected input or a failed render gives null
- * with eUnmappable.
+ * is started if none is running for the same key and *result is ePending. Each input of an owner
+ * renders one map at a time, and only the latest request made meanwhile waits for it. The owner's
+ * node emits overlayMapChanged when the fetch completes, unless it was aborted or the node is
+ * deactivated. A disconnected input, an inactive owner, a closing project or a failed render gives
+ * null with eUnmappable; a failed render is retried by a request a short while later.
  **/
 MapImageConstPtr fetch(const EffectInstancePtr& owner,
                        int inputNb,
@@ -112,6 +115,21 @@ MapImageConstPtr fetch(const EffectInstancePtr& owner,
                        ViewIdx view,
                        const std::vector<Channel>& channels,
                        OverlayPointMap::Result* result);
+
+/**
+ * @brief Aborts the fetches owned by effect or rendering it and drops their maps. With wait, blocks
+ * until the aborted renders have returned.
+ **/
+void abortFetches(const EffectInstance* effect, bool wait);
+
+// The same for every fetch of the app's nodes.
+void abortAppFetches(const AppInstance* app, bool wait);
+
+// The same for every fetch, before the AppManager goes away.
+void abortAllFetches(bool wait);
+
+// True while a fetch owned by effect or rendering it runs.
+bool hasFetches(const EffectInstance* effect);
 
 // Blocks until no fetch is running; false on timeout.
 bool waitForFetches(int timeoutMs);

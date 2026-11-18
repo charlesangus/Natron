@@ -100,6 +100,7 @@
 #include "Engine/OfxHost.h"
 #include "Engine/OneViewNode.h"
 #include "Engine/OpenGLViewerI.h"
+#include "Engine/OverlayMapFetch.h"
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
@@ -3683,6 +3684,10 @@ Node::areAllProcessingThreadsQuit() const
         }
     }
 
+    if (OverlayMapFetch::hasFetches(_imp->effect.get())) {
+        return false;
+    }
+
     return true;
 }
 
@@ -3691,6 +3696,7 @@ Node::quitAnyProcessing_non_blocking()
 {
     if (_imp->effect) {
         _imp->effect->quitBackgroundWork(false);
+        OverlayMapFetch::abortFetches(_imp->effect.get(), false);
     }
 
     //If this effect has a RenderEngine, make sure it is finished
@@ -3727,6 +3733,7 @@ Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
 
     if (_imp->effect) {
         _imp->effect->quitBackgroundWork(true);
+        OverlayMapFetch::abortFetches(_imp->effect.get(), true);
     }
 
     {
@@ -3785,6 +3792,7 @@ Node::abortAnyProcessing_non_blocking()
     }
 
     _imp->abortPreview_non_blocking();
+    OverlayMapFetch::abortFetches(_imp->effect.get(), false);
 }
 
 namespace {
@@ -5621,6 +5629,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         GraphEditRecorder::onNodeDeactivating(this);
     }
     _imp->effect->quitBackgroundWork(true);
+    OverlayMapFetch::abortFetches(_imp->effect.get(), false);
     //first tell the gui to clear any persistent message linked to this node
     clearPersistentMessage(false);
 

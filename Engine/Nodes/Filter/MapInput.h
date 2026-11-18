@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <memory>
 #include <vector>
 
 #include <QtCore/QtGlobal>
@@ -168,6 +169,37 @@ private:
     std::vector<float> _values;
 };
 
+namespace OverlayMapFetch {
+class MapImage;
+}
+
+/**
+ * @brief The remapped Map values an overlay reads, resolved once per overlay mapping so that
+ * reading one point is a lookup into the small copy of the Map.
+ **/
+class MapOverlaySampler {
+public:
+    /**
+     * @brief eMapped once the copy is there, or when no copy is needed; ePending while it is
+     * fetched, value() then reading 1; eUnmappable when it could not be made.
+     **/
+    OverlayPointMap::Result status() const
+    {
+        return _status;
+    }
+
+    double value(const Point& p) const WARN_UNUSED_RETURN;
+
+private:
+    friend class MapInput;
+
+    OverlayPointMap::Result _status = OverlayPointMap::eMapped;
+    MapInputParams _params;
+    std::shared_ptr<const OverlayMapFetch::MapImage> _image;
+    double _constant = 1.;
+    bool _stretchEdges = false;
+};
+
 /**
  * @brief m^exponent for m in (0,1) and exponent > 0, from additions, multiplications, one division
  * and exact bit operations in a fixed order, so that the GPU kernels, which repeat them in
@@ -238,16 +270,14 @@ public:
                     MapPlane* plane) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The remapped Map value at canonical point p for an overlay, from the small copy of
-     * the Map OverlayMapFetch renders off the calling thread: 1 with the Map disconnected, as in
-     * read(), and black past the Map's image. ePending while the copy is fetched.
+     * @brief The remapped Map values for an overlay, from the small copy of the Map
+     * OverlayMapFetch renders off the calling thread: 1 with the Map disconnected, as in read(),
+     * and past the Map's image what read() gives under the Map input's edge mode.
      **/
-    OverlayPointMap::Result overlayValue(const EffectInstancePtr& effect,
-                                         int inputNb,
-                                         double time,
-                                         ViewIdx view,
-                                         const Point& p,
-                                         double* value) const WARN_UNUSED_RETURN;
+    MapOverlaySampler overlaySampler(const EffectInstancePtr& effect,
+                                     int inputNb,
+                                     double time,
+                                     ViewIdx view) const WARN_UNUSED_RETURN;
 
     /// A size held to [0, kMapInputMaxSize]; NaN is 0.
     static double clampSize(double size) WARN_UNUSED_RETURN;

@@ -103,6 +103,7 @@
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/OverlayMapFetch.h"
 #include "Engine/ProjectPrivate.h"
 #include "Engine/RFV.h"
 #include "Engine/RectDSerialization.h"
@@ -3562,6 +3563,7 @@ Project::reset(bool aboutToQuit, bool blocking)
         QMutexLocker k(&_imp->projectClosingMutex);
         _imp->projectClosing = true;
     }
+    OverlayMapFetch::abortAppFetches(getApp().get(), false);
 
     if (!blocking) {
         ResetWatcherArgsPtr args = std::make_shared<ResetWatcherArgs>();
@@ -3589,6 +3591,7 @@ Project::closeProject_blocking(bool aboutToQuit)
         QMutexLocker k(&_imp->projectClosingMutex);
         _imp->projectClosing = true;
     }
+    OverlayMapFetch::abortAppFetches(getApp().get(), false);
     NodesList nodesToWatch;
     getNodes_recursive(nodesToWatch, false);
     for (NodesList::iterator it = nodesToWatch.begin(); it != nodesToWatch.end(); ++it) {
@@ -3620,7 +3623,8 @@ Project::doResetEnd(bool aboutToQuit)
         }
     }
 
-
+    // A fetch started after the nodes quit their processing must not render on cleared nodes.
+    OverlayMapFetch::abortAppFetches(getApp().get(), true);
     if (aboutToQuit) {
         clearNodesBlocking();
     } else {

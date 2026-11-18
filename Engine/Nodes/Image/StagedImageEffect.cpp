@@ -763,7 +763,13 @@ StagedImageEffect::getTransform(double time,
         return NativeEffectBase::getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
     }
 
-    return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, view, renderScale, draftRender, inputToTransform, transform);
+    const ResampleRequest request = opResample(time, view, renderScale);
+    // Masked or mixed, the output is no single translation of the source.
+    if ((request.form == ResampleRequest::Form::Offset) && (isMaskApplied() || (getMixValue(time, view) != 1.))) {
+        return eStatusReplyDefault;
+    }
+
+    return resampleTransform(*this, getSourceInput(), request, time, view, renderScale, draftRender, inputToTransform, transform);
 }
 
 FramesNeededMap

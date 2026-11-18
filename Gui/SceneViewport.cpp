@@ -44,6 +44,8 @@
 #include <utility>
 #include <vector>
 
+#include <pthread.h>
+
 #include <QActionGroup>
 #include <QCheckBox>
 #include <QContextMenuEvent>
@@ -181,7 +183,8 @@ const int kMaxRenderPasses = 8;
 // A stage change usually reaches the screen sooner than this, and a status flashing over the old
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
-const int kPresentPollMs = 2;
+// How often the render thread, idle, asks whether the frame it sent the GPU is done.
+const std::chrono::milliseconds kFenceWatchInterval(1);
 // The longest a frame waits after the paint that asked for it for the window's composition, which
 // a window not shown on screen never does.
 const int kFrameStartFallbackMs = 50;
@@ -6526,6 +6529,15 @@ struct SceneViewport::Implementation {
         // Called with mutex held when the last job outstanding is over, so that clearing it under
         // the mutex leaves no call in flight to a view that has gone.
         std::function<void()> idle;
+        // Looked after between jobs, without counting as one, so that they hold no paint: a fence
+        // asked after without waiting, in the context it was made in, and fences to delete. The
+        // main thread would have to make its own context current for either, which waits on the
+        // driver for whatever this thread has in flight.
+        GLsync watched = nullptr;
+        QOpenGLContext* watchedContext = nullptr;
+        std::vector<GLsync> doomedFences;
+        // Called with mutex held once watched has signalled, as idle is.
+        std::function<void(GLsync)> signalled;
         // Declared last: it starts in the constructor, on the members above.
         std::thread thread;
 
@@ -6538,23 +6550,98 @@ struct SceneViewport::Implementation {
 
         void run()
         {
+            // Lets a stack sampler pick this thread out by its /proc comm (15 characters at most).
+            pthread_setname_np(pthread_self(), "NatronSceneRndr");
+            std::unique_lock<std::mutex> lock(mutex);
             for (;;) {
-                std::function<void()> job;
-                {
-                    std::unique_lock<std::mutex> lock(mutex);
-                    changed.wait(lock, [this]() { return quit || !jobs.empty(); });
-                    if (jobs.empty()) {
-                        return;
-                    }
-                    job = std::move(jobs.front());
+                tendFences();
+                if (!jobs.empty()) {
+                    std::function<void()> job = std::move(jobs.front());
                     jobs.pop_front();
+                    lock.unlock();
+                    job();
+                    job = nullptr;
+                    lock.lock();
+                    if ((--outstanding == 0) && idle) {
+                        idle();
+                    }
+                    continue;
                 }
-                job();
-                std::lock_guard<std::mutex> lock(mutex);
-                if ((--outstanding == 0) && idle) {
-                    idle();
+                if (quit) {
+                    return;
+                }
+                const auto woken = [this]() { return quit || !jobs.empty() || !doomedFences.empty(); };
+                if (watched) {
+                    changed.wait_for(lock, kFenceWatchInterval, woken);
+                } else {
+                    changed.wait(lock, [this, &woken]() { return woken() || watched; });
                 }
             }
+        }
+
+        // Under mutex, so that once unwatch() or dropFence() returns no test of that fence is
+        // running. Asking never waits.
+        void tendFences()
+        {
+            if (!watched && doomedFences.empty()) {
+                return;
+            }
+            QOpenGLContext* current = QOpenGLContext::currentContext();
+            if (!current) {
+                watched = nullptr;
+                doomedFences.clear();
+
+                return;
+            }
+            for (GLsync fence : doomedFences) {
+                glDeleteSync(fence);
+            }
+            doomedFences.clear();
+            if (watched && (current != watchedContext)) {
+                watched = nullptr;
+            }
+            if (watched && (glClientWaitSync(watched, 0, 0) != GL_TIMEOUT_EXPIRED)) {
+                const GLsync done = watched;
+                watched = nullptr;
+                if (signalled) {
+                    signalled(done);
+                }
+            }
+        }
+
+        // From a job: fence, flushed in the context current, is told of through signalled.
+        void watch(GLsync fence)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            watched = fence;
+            watchedContext = QOpenGLContext::currentContext();
+        }
+
+        void unwatch(GLsync fence)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (watched == fence) {
+                watched = nullptr;
+            }
+        }
+
+        // Deleted between jobs.
+        void dropFence(GLsync fence)
+        {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (watched == fence) {
+                    watched = nullptr;
+                }
+                doomedFences.push_back(fence);
+            }
+            changed.notify_one();
+        }
+
+        void setSignalled(std::function<void(GLsync)> callback)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            signalled = std::move(callback);
         }
 
         void post(std::function<void()> job)
@@ -6674,27 +6761,38 @@ struct SceneViewport::Implementation {
         QVariantList view;
         std::chrono::steady_clock::time_point startedAt;
     };
-    // Main thread, and the render thread while the main thread waits for it.
+    // Main thread, and the render thread while the main thread waits for it. Only the render
+    // thread asks whether a fence has signalled.
     ScenePresentPacer<PresentFrame> presentPacer {
-        [](void* fence) { return glClientWaitSync(static_cast<GLsync>(fence), 0, 0) != GL_TIMEOUT_EXPIRED; },
+        [this](void* fence) { return static_cast<GLsync>(fence) == signalledFence; },
         [this](void* fence) { releaseFence(static_cast<GLsync>(fence)); }
     };
+    // Main thread: the fence the render thread last found signalled.
+    GLsync signalledFence = nullptr;
 
     // Main thread. A sync object belongs to the share group, so the render thread can delete one
     // when no context is current here, and making the widget's current could wait out a render.
     void releaseFence(GLsync fence)
     {
+        if (fence == signalledFence) {
+            signalledFence = nullptr;
+        }
+        if (renderLoop) {
+            renderLoop->unwatch(fence);
+        }
         if (QOpenGLContext::currentContext()) {
             glDeleteSync(fence);
         } else if (renderLoop) {
-            postToRenderThread([fence]() { glDeleteSync(fence); });
+            renderLoop->dropFence(fence);
         }
     }
     // Main thread: the frame in presentPacer's front target, which every paint shows until a newer
     // one is finished, whatever the camera or size has become since.
     std::optional<PresentFrame> frontFrame;
-    // Asks the GPU, without waiting, whether the frame on it is done.
-    QTimer* presentPoll = nullptr;
+    // Main thread: the view of the frame running on the render thread, and whether it was asked to
+    // end at its next pass for a view that has moved on.
+    QVariantList runningFrameView;
+    bool runningFrameStopped = false;
 
     // Main thread. The stand-in preferences.
     Settings::SceneStandInModeEnum standInMode = Settings::eSceneStandInModeInteraction;
@@ -6866,12 +6964,15 @@ struct SceneViewport::Implementation {
 
     // Main thread: asked on the render thread once it has no job left.
     std::function<void()> renderLoopIdle;
+    // Main thread: told on the render thread of a frame's fence once it has signalled.
+    std::function<void(GLsync)> renderLoopSignalled;
 
     void startRenderThread()
     {
         if (!renderLoop) {
             renderLoop.reset(new RenderLoop());
             renderLoop->setIdle(renderLoopIdle);
+            renderLoop->setSignalled(renderLoopSignalled);
         }
     }
 
@@ -7011,6 +7112,7 @@ struct SceneViewport::Implementation {
         std::shared_ptr<QOpenGLContext> context;
 
         renderLoop->setIdle(std::function<void()>());
+        renderLoop->setSignalled(std::function<void(GLsync)>());
         callOnRenderThread([this, &engine, &context]() {
             engine = renderer.releaseGLKeepingEngine();
             releaseRenderTargets();
@@ -7056,7 +7158,6 @@ struct SceneViewport::Implementation {
         ++renderContextGeneration;
         frontFrame.reset();
         renderer.forgetBackgroundView();
-        presentPoll->stop();
         if (presentFbo) {
             glDeleteFramebuffers(1, &presentFbo);
             presentFbo = 0;
@@ -7079,6 +7180,7 @@ struct SceneViewport::Implementation {
             return;
         }
         renderLoop->setIdle(std::function<void()>());
+        renderLoop->setSignalled(std::function<void(GLsync)>());
         presentPacer.clear();
         renderLoop->post([this]() { releaseRenderContext(); });
         renderLoop.reset();
@@ -7229,18 +7331,18 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->composingTimer->setSingleShot(true);
     _imp->composingTimer->setInterval(kComposingStatusDelayMs);
     QObject::connect(_imp->composingTimer, &QTimer::timeout, this, [this]() { update(); });
-    _imp->presentPoll = new QTimer(this);
-    _imp->presentPoll->setSingleShot(true);
-    _imp->presentPoll->setTimerType(Qt::PreciseTimer);
-    _imp->presentPoll->setInterval(kPresentPollMs);
-    QObject::connect(_imp->presentPoll, &QTimer::timeout, this, [this]() { pollPresent(); });
     _imp->holdPoll = new QTimer(this);
     _imp->holdPoll->setSingleShot(true);
     _imp->holdPoll->setInterval(10);
     QObject::connect(_imp->holdPoll, &QTimer::timeout, this, [this]() { refreshPaintHold(); });
     _imp->renderJobPosted = [this]() { refreshPaintHold(); };
-    // Queued: it runs on the render thread, under the loop's mutex.
+    // Queued: these run on the render thread, under the loop's mutex.
     _imp->renderLoopIdle = [this]() { QMetaObject::invokeMethod(this, [this]() { refreshPaintHold(); }, Qt::QueuedConnection); };
+    _imp->renderLoopSignalled = [this](GLsync fence) {
+        QMetaObject::invokeMethod(this, [this, fence]() {
+            _imp->signalledFence = fence;
+            pollPresent(); }, Qt::QueuedConnection);
+    };
     _imp->frameStartFallback = new QTimer(this);
     _imp->frameStartFallback->setSingleShot(true);
     _imp->frameStartFallback->setInterval(kFrameStartFallbackMs);
@@ -7662,7 +7764,10 @@ SceneViewport::startBackgroundFrame()
     frame.width = w;
     frame.height = h;
     frame.view = _imp->paintedView(w, h);
-    _imp->postToRenderThread([this, imp, target, w, h, generation, frame]() {
+    _imp->runningFrameView = frame.view;
+    _imp->runningFrameStopped = false;
+    Implementation::RenderLoop* loop = _imp->renderLoop.get();
+    _imp->postToRenderThread([this, imp, loop, target, w, h, generation, frame]() {
         const double startMs = epochMs();
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
         bool converged = false;
@@ -7671,8 +7776,8 @@ SceneViewport::startBackgroundFrame()
         if (rendered) {
             fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         }
-        // A fence another context polls has to reach the GPU first, and the commands must be on
-        // their way before this thread goes idle.
+        // A fence asked after without a flush has to reach the GPU first, and the commands must be
+        // on their way before this thread goes idle.
         glFlush();
         const double costMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         Implementation::PresentFrame finished = frame;
@@ -7687,15 +7792,17 @@ SceneViewport::startBackgroundFrame()
             }
             if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
                 _imp->presentPacer.submitted(fence, finished);
-                if (!_imp->presentPoll->isActive()) {
-                    _imp->presentPoll->start();
-                }
             }
             if (!rendered || !converged) {
                 _imp->renderer.forgetBackgroundView();
             }
             onBackgroundFrameDone();
         };
+        if (fence) {
+            // Before the main thread has the fence to release, and asked after only once this job
+            // is over, so done reaches the main thread first.
+            loop->watch(fence);
+        }
         // Dropped by Qt if the widget is gone by then.
         QMetaObject::invokeMethod(this, done, Qt::QueuedConnection);
     });
@@ -7727,6 +7834,16 @@ SceneViewport::onBackgroundFrameDone()
 void
 SceneViewport::refreshPaintHold()
 {
+    if (_imp->backgroundFrameRunning && !_imp->runningFrameStopped) {
+        const qreal dpr = devicePixelRatio();
+        if (_imp->paintedView(int(width() * dpr), int(height() * dpr)) != _imp->runningFrameView) {
+            // The paints stay held for the rest of its passes, a still view however the camera
+            // moves; ended at the next pass, what it has drawn is shown and a frame of the view
+            // now starts.
+            _imp->runningFrameStopped = true;
+            _imp->renderer.stopBackgroundFrame();
+        }
+    }
     const bool hold = _imp->holdsPaints();
 
     if (hold != _imp->paintsHeld) {
@@ -7757,9 +7874,6 @@ SceneViewport::startOwedFrame()
     _imp->frameStartFallback->stop();
     Implementation* imp = _imp.get();
     startBackgroundFrame();
-    if (imp->presentPacer.inFlight() && !imp->presentPoll->isActive()) {
-        imp->presentPoll->start();
-    }
     if (!imp->renderThreadBusy() && !imp->presentPacer.inFlight() && !imp->stageAwaitsTakeIn() && imp->renderer.needsBackgroundFrame() && !imp->standInHoldsFrames()) {
         // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
         update();
@@ -7903,20 +8017,9 @@ SceneViewport::onDrawChangesTakenIn()
 void
 SceneViewport::pollPresent()
 {
-    if (!_imp->presentPacer.inFlight() || !context()) {
-        return;
-    }
-    if (_imp->holdsPaints()) {
-        _imp->presentPoll->start();
-
-        return;
-    }
-    makeCurrent();
-    const bool ready = _imp->presentPacer.poll();
-    doneCurrent();
-    if (!ready) {
-        _imp->presentPoll->start();
-
+    // Until the render thread has found the fence signalled, no context is made current to ask:
+    // that would wait on the driver for the render thread's work.
+    if (!_imp->presentPacer.inFlight() || !_imp->presentPacer.poll()) {
         return;
     }
     serviceDeferredInput();

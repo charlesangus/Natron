@@ -208,6 +208,9 @@ SceneFileSource::getStage(const PXR_NS::SdfLayerRefPtr& layer)
     std::lock_guard<std::mutex> lock(_mutex);
 
     if (!_stage || (_stageLayer != layer)) {
+        if (_stage) {
+            SceneTeardown::release(std::move(_stage));
+        }
         _stage = SceneOps::openStage(layer);
         _stageLayer = _stage ? layer : PXR_NS::SdfLayerRefPtr();
     }

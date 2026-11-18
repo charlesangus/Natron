@@ -147,13 +147,21 @@ Budgets: main-thread stall under 100 ms; time from a draw state change to the im
 100 ms (time_to_picture_ms, worst untraced change of prune_restore, sibling_state and draw_budget, with
 draw_budget's rows also judged apart); a paced reveal of the root with Load All (reveal_load_all,
 which also waits for the loads to land) and of the wide row (reveal_wide) completes with no gap over
-100 ms between painted frames; a paced reveal of the wide row boxed again as soon as its first step is
+100 ms between presented frames (natronScenePresentedFrames; not_valid when fewer than 2 were presented,
+as is the workflow's full_load_block_worst_frame_ms); a paced reveal of the wide row boxed again as soon as its first step is
 on screen shows at most the one batch under way (reveal_cancel_paced; when the row fits in one paced
 step it is revealed again with a fixed batch of a 32nd of its prims, cancel_paced_mode forced_batch,
 and a cancel that still lands after the reveal ended fails the record); first frame under 2 s on the payload city, the only scene the design
 gives it; no payload
 file opened that the action did not request; orbit at or above 30 fps; no stage edit or notice from a
-draw state; the draw filter on this viewer's engine; pixels changed on the control row.
+draw state; the draw filter on this viewer's engine; pixels changed on the control row. On the city the
+time-to-picture budgets (time_to_picture_*, full_asset_picture_ms) and the reveal frame budgets
+(reveal_*_worst_frame_ms, full_load_block_worst_frame_ms) are not_applicable, and on Island those
+and orbit_fps, each with the user's decision in its reason.
+
+The twirl and load scenarios tumble the camera until the load is committed and its draw changes are
+presented, let go, then wait for the converged frame (twirl_settle_ms, load_settle_ms); the twirl's stall
+is over that tumble and settle.
 """
 import hashlib
 import json
@@ -576,7 +584,8 @@ try:
         m.values["orbit_fps"] = round(frames / elapsed, 1) if elapsed > 0 else None
 
     def tumbling_until(done):
-        """Tumbles the view until done() holds, or the wait times out; returns (moves, longest gap in ms)."""
+        """Tumbles the view until done() holds, or the wait times out, then lets go; returns (moves, longest
+        gap in ms, the epoch ms it let go at)."""
         navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
         require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
         original = navigation.getValue()
@@ -606,8 +615,19 @@ try:
             longest_gap = max(longest_gap, (now - last_move) * 1000.0)
             last_move = now
         mouse(QEvent.MouseButtonRelease, centre, Qt.LeftButton, Qt.NoButton)
+        released_ms = time.time() * 1000.0
         navigation.setValue(original)
-        return moves, round(longest_gap, 1)
+        return moves, round(longest_gap, 1), released_ms
+
+    def load_watch(v):
+        """A predicate that holds once a load asked for from now on has been committed and its draw changes
+        presented. natronSceneLastPaintMs is left out: it only advances on a converged frame, which a camera
+        still tumbling never gets."""
+        edits_before = int(v.property("natronSceneLoadEdits") or 0)
+        return lambda: (not v.property("natronSceneLoadsPending")
+                        and int(v.property("natronSceneLoadEdits") or 0) > edits_before
+                        and int(v.property("natronSceneDrawPresented") or 0) >= int(draw_stats().get("posted", 0))
+                        and not v.property("natronSceneComposing"))
 
     def commit_watch(v):
         """A predicate that holds once a load asked for from now on has been committed and drawn."""
@@ -617,6 +637,11 @@ try:
                         and int(v.property("natronSceneLoadEdits") or 0) > edits_before
                         and (v.property("natronSceneLastPaintMs") or 0) >= t0
                         and not v.property("natronSceneComposing"))
+
+    def settle_after_tumble(released_ms):
+        """Waits for the converged frame after the mouse let go at released_ms; returns its ms after the release."""
+        ok = yield ("until", lambda: (prop("natronSceneLastPaintMs", 0) or 0) >= released_ms, TIMEOUT_S)
+        return round(prop("natronSceneLastPaintMs", released_ms) - released_ms, 1) if ok else None
 
     def requested_files(paths):
         """The file-name prefixes of the city's payloads below paths: b<block>_<building>.usdc."""
@@ -651,11 +676,13 @@ try:
         v = view()
         edits_before = int(v.property("natronSceneLoadEdits") or 0)
         request(m, load_paths, load_descendants)
+        loaded = load_watch(v)
         committed = commit_watch(v)
         t0 = time.time() * 1000.0
         require(QMetaObject.invokeMethod(v, "requestLoad", Q_ARG("QStringList", load_paths), Q_ARG(bool, load_descendants)),
                 "load: the scene view takes load requests")
-        moves, longest_gap = yield from tumbling_until(committed)
+        moves, longest_gap, released_ms = yield from tumbling_until(loaded)
+        m.values["load_settle_ms"] = yield from settle_after_tumble(released_ms)
         check(committed(), "load: the loaded prims reached the screen (failures %r)" % (v.property("natronSceneLoadFailures"),))
         m.values["load_ms"] = round(time.time() * 1000.0 - t0, 1)
         m.values["load_paths"] = len(load_paths)
@@ -748,12 +775,16 @@ try:
         v = view()
         edits_before = int(v.property("natronSceneLoadEdits") or 0)
         request(m, [row], False)
+        loaded = load_watch(v)
         committed = commit_watch(v)
         # Docking the panel and reading down to the row are not the twirl the stall budget is about.
         heartbeat.start()
         t0 = time.time() * 1000.0
         tree().expand(target)
-        moves, longest_gap = yield from tumbling_until(lambda: state() == STATE_FAILED or (state() == STATE_LOADED and committed()))
+        moves, longest_gap, released_ms = yield from tumbling_until(
+            lambda: state() == STATE_FAILED or (state() == STATE_LOADED and loaded()))
+        m.values["twirl_tumble_ms"] = round(released_ms - t0, 1)
+        m.values["twirl_settle_ms"] = yield from settle_after_tumble(released_ms)
         m.values["twirl_ms"] = round(time.time() * 1000.0 - t0, 1)
         check(state() == STATE_LOADED and committed(), "twirl: %s loaded and reached the screen (state %r, failures %r)"
               % (row, state(), v.property("natronSceneLoadFailures")))
@@ -1106,29 +1137,36 @@ try:
                 "worst": sorted(steps, key=lambda s: s.get("picture_ms") or 0.0, reverse=True)[:DRAW_STEPS_KEPT],
             }
 
+    MIN_TIMED_FRAMES = 2
+
     def watch_reveal(done, steps=None):
-        """Waits up to reveal_limit_s() for done; returns whether it held, the frames painted, the longest gap
-        between two and the limit it ended with."""
-        paints = set()
+        """Waits up to reveal_limit_s() for done; returns whether it held, the frames presented, the longest gap
+        from the start or a frame to the next frame, and the limit it ended with. Frames are counted from
+        natronScenePresentedFrames, every frame new to the screen: natronSceneLastPaintMs only advances on a
+        converged frame, so a reveal's intermediate frames would not count. A gap is timed between the polls
+        that saw the count move, so it is at most POLL_MS long."""
+        frames = 0
         worst = 0.0
+        presented = int(prop("natronScenePresentedFrames", 0) or 0)
         started = time.time()
-        last = started * 1000.0
+        last = time.perf_counter()
         limit_s = reveal_limit_s()
         limit_checked = started
         while not done() and time.time() < started + limit_s:
             yield ("sleep", POLL_MS)
             if steps is not None:
                 steps.poll()
-            painted = prop("natronSceneLastPaintMs")
-            if painted is not None and painted not in paints:
-                paints.add(painted)
-                # The paint's own timestamp, not this poll's, so the poll interval does not count as a gap.
-                worst = max(worst, painted - last)
-                last = max(last, painted)
+            now_presented = int(prop("natronScenePresentedFrames", 0) or 0)
+            if now_presented > presented:
+                now = time.perf_counter()
+                frames += now_presented - presented
+                presented = now_presented
+                worst = max(worst, (now - last) * 1000.0)
+                last = now
             if time.time() - limit_checked >= 1.0:
                 limit_checked = time.time()
                 limit_s = reveal_limit_s()
-        return done(), len(paints), worst, round(limit_s, 1)
+        return done(), frames, worst, round(limit_s, 1)
 
     def paced_reveal(m, name, row, start_state, state, done=None, keep_states=False):
         """Reveals row from start_state to state at the viewer's own pace and records how the frames held up."""
@@ -1715,7 +1753,8 @@ try:
             settle = yield from wait_loads_settled("workflow: full_load_block")
             load_results(m, v, "workflow_block", edits_before)
             finish_step("full_load_block", m.values["workflow_block_ms"], path=block, complete=m.values["workflow_block_complete"],
-                        worst_frame_ms=m.values["workflow_block_worst_frame_ms"], prims=m.values["workflow_block_prims"],
+                        worst_frame_ms=m.values["workflow_block_worst_frame_ms"], frames=m.values["workflow_block_frames"],
+                        prims=m.values["workflow_block_prims"],
                         settle=settle_fields(settle))
         else:
             skip_step("full_load_block", "the scene has no payloads to load")
@@ -1869,6 +1908,24 @@ try:
             judged["reason"] = "%s is %s the limit %s" % (value, "above" if below_is_good else "below", limit)
         return judged
 
+    is_island = file_stem.lower() == "island"
+    CITY_UNJUDGED_REASON = ("not judged on the city for now (user, 2026-11-17: \"Ok for now. Will revisit later with "
+                            "different techniques.\"); the city is judged on UI stalls")
+    ISLAND_UNJUDGED_REASON = ("not judged on Island (user, 2026-11-17: Island's ~2 s GPU frame is accepted; "
+                              "Island is judged on UI stalls only)")
+    picture_unjudged_reason = CITY_UNJUDGED_REASON if fixture == "city" else ISLAND_UNJUDGED_REASON if is_island else None
+    reveal_frames_unjudged_reason = CITY_UNJUDGED_REASON if fixture == "city" else ISLAND_UNJUDGED_REASON if is_island else None
+
+    orbit_unjudged_reason = ISLAND_UNJUDGED_REASON if is_island else None
+
+    def frame_gap_verdict(value, frames, reason_unjudged):
+        judged = verdict(value, STALL_BUDGET_MS, True, valid=gpu and frames is not None and frames >= MIN_TIMED_FRAMES,
+                         applicable=reason_unjudged is None, reason=reason_unjudged)
+        judged["frames"] = frames
+        if judged["status"] == "not_valid" and gpu and value is not None:
+            judged["reason"] = "%r frames presented, fewer than the %d a gap between frames needs" % (frames, MIN_TIMED_FRAMES)
+        return judged
+
     first_frame_judged = fixture == "city"
     first_frame_unjudged_reason = "the design sets the first-frame budget on the payload city alone"
 
@@ -1909,11 +1966,14 @@ try:
             # Polled times are rounded up to the poll interval and so judge nothing.
             viewer_timed = all(p["source"] == "viewer" for p in m.pictures)
             budgets["time_to_picture_ms"] = verdict(max(p["ms"] for p in m.pictures), PICTURE_BUDGET_MS, True,
-                                                    valid=gpu and viewer_timed)
+                                                    valid=gpu and viewer_timed, applicable=picture_unjudged_reason is None,
+                                                    reason=picture_unjudged_reason)
             budgets["time_to_picture_ms"]["source"] = "viewer" if viewer_timed else "polled"
             for tag in sorted(set(p["row"] for p in m.pictures if p["row"])):
                 worst = max(p["ms"] for p in m.pictures if p["row"] == tag)
-                budgets["time_to_picture_%s_ms" % tag] = verdict(worst, PICTURE_BUDGET_MS, True, valid=gpu and viewer_timed)
+                budgets["time_to_picture_%s_ms" % tag] = verdict(worst, PICTURE_BUDGET_MS, True, valid=gpu and viewer_timed,
+                                                                 applicable=picture_unjudged_reason is None,
+                                                                 reason=picture_unjudged_reason)
         if "first_frame_ms" in m.values:
             budgets["first_frame_ms"] = verdict(m.values["first_frame_ms"], FIRST_FRAME_BUDGET_MS, True, valid=gpu,
                                                 applicable=first_frame_judged, reason=first_frame_unjudged_reason)
@@ -1930,11 +1990,13 @@ try:
             budgets["unrequested_payloads"] = verdict(len(unrequested), 0, True)
             budgets["unrequested_payloads"]["sample"] = [os.path.basename(i) for i in unrequested[:5]]
         if "orbit_fps" in m.values:
-            budgets["orbit_fps"] = verdict(m.values["orbit_fps"], ORBIT_BUDGET_FPS, False, valid=gpu)
+            budgets["orbit_fps"] = verdict(m.values["orbit_fps"], ORBIT_BUDGET_FPS, False, valid=gpu,
+                                           applicable=orbit_unjudged_reason is None, reason=orbit_unjudged_reason)
         for name in ("reveal_load_all", "reveal_wide"):
             if name + "_worst_frame_ms" in m.values:
                 budgets[name + "_complete"] = verdict(1 if m.values[name + "_complete"] else 0, 1, False)
-                budgets[name + "_worst_frame_ms"] = verdict(m.values[name + "_worst_frame_ms"], STALL_BUDGET_MS, True, valid=gpu)
+                budgets[name + "_worst_frame_ms"] = frame_gap_verdict(m.values[name + "_worst_frame_ms"], m.values.get(name + "_frames"),
+                                                                      reveal_frames_unjudged_reason)
         if "cancel_paced_overshoot_prims" in m.values:
             batch = m.values["cancel_paced_batch"]
             budgets["cancel_paced_overshoot_prims"] = verdict(m.values["cancel_paced_overshoot_prims"], batch, True,
@@ -1948,12 +2010,17 @@ try:
             budgets[step_name + "_stall_ms"] = verdict(step.get("stall_ms"), STALL_BUDGET_MS, True, applicable=applicable)
             if step_name == "full_asset":
                 budgets["full_asset_picture_ms"] = verdict(step.get("picture_ms"), PICTURE_BUDGET_MS, True,
-                                                           valid=gpu and step.get("picture_source") == "viewer", applicable=applicable)
+                                                           valid=gpu and step.get("picture_source") == "viewer",
+                                                           applicable=applicable and picture_unjudged_reason is None,
+                                                           reason=picture_unjudged_reason if applicable else None)
             elif step_name == "full_load_block":
                 budgets["full_load_block_complete"] = verdict(None if not applicable else (1 if step["complete"] else 0), 1, False,
                                                               applicable=applicable)
-                budgets["full_load_block_worst_frame_ms"] = verdict(step.get("worst_frame_ms"), STALL_BUDGET_MS, True, valid=gpu,
-                                                                    applicable=applicable)
+                if applicable:
+                    budgets["full_load_block_worst_frame_ms"] = frame_gap_verdict(step.get("worst_frame_ms"), step.get("frames"),
+                                                                                  reveal_frames_unjudged_reason)
+                else:
+                    budgets["full_load_block_worst_frame_ms"] = verdict(None, STALL_BUDGET_MS, True, applicable=False)
             elif step_name == "reopen":
                 budgets["reopen_first_frame_ms"] = verdict(step.get("first_frame_ms"), FIRST_FRAME_BUDGET_MS, True, valid=gpu,
                                                            applicable=first_frame_judged, reason=first_frame_unjudged_reason)

@@ -27,7 +27,10 @@
 
 #include <cmath>
 #include <limits>
+#include <tuple>
 #include <utility>
+
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 
 #ifdef emit
 #define NATRON_SCENEDRAWBOXES_RESTORE_EMIT
@@ -181,6 +184,7 @@ SceneDrawBoxes::~SceneDrawBoxes()
     }
     _changed.notify_all();
     _thread.join();
+    SceneTeardown::release(std::move(_list));
 }
 
 void
@@ -450,6 +454,13 @@ SceneDrawBoxes::run()
             std::unique_lock<std::mutex> lock(_mutex);
             _changed.wait(lock, [this]() { return _quit || (_taken != _generation); });
             if (_quit) {
+                lock.unlock();
+                // The destructor joins this thread on the main thread, and freeing what a large
+                // stage filled these with takes seconds.
+                SceneTeardown::release(std::make_tuple(std::move(_entries), std::move(_bboxCache)));
+                _entries.clear();
+                _bboxCache.reset();
+
                 return;
             }
             request.rules = _rules;
@@ -594,6 +605,10 @@ SceneDrawBoxes::compute(const Request& request)
         }
     }
     if (!done || dropped) {
+        if (_quit) {
+            SceneTeardown::release(std::make_tuple(std::move(rows), std::move(boxes), std::move(origins), std::move(unseen), std::move(xforms)));
+        }
+
         return;
     }
     std::unordered_map<SdfPath, Entry, SdfPath::Hash> kept;

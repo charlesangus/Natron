@@ -44,8 +44,8 @@ NATRON_NAMESPACE_ENTER
  * image being shown is never drawn over. A frame submitted while another is still on the GPU
  * replaces it, the newest winning; every fence is released exactly once, through release.
  *
- * Fences are opaque here: testFence says, without waiting, whether one has signalled. Both
- * functions are called with a GL context of the fence's share group current. One thread at a time.
+ * Fences are opaque here: testFence says, without waiting, whether one has signalled, and release
+ * lets go of one; what either needs current is up to the caller. One thread at a time.
  **/
 template <typename Frame>
 class ScenePresentPacer {

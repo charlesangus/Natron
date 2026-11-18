@@ -119,11 +119,18 @@ its cache evicts, so there is no purge count.
 `BENCH_DRY_RUN=1 BENCH_TOPO=<topo> BENCH_N=<n> python3 tools/bench/graph_bench.py` builds a graph
 against stand-in objects on the host and prints its node counts, without Natron.
 
-A whole-process eu-stack takes about 0.15 s on the heavy scene, so `SAMPLE_INTERVAL_S` below that does
-not raise the rate. `SAMPLE_TID_COMM=<regex of thread names>` makes `sample_stacks.sh` walk only the main
-thread and the matching threads (`eu-stack -1`), which is what allows 20 Hz (`SAMPLE_INTERVAL_S=0.04`);
+A whole-process eu-stack takes 0.15-0.3 s on the heavy scene (up to 1.5 s on a slow VM), so
+`SAMPLE_INTERVAL_S` below that does not raise the rate. `SAMPLE_TID_COMM=<regex of thread names>` makes
+`sample_stacks.sh` walk only the main thread and the matching threads (`eu-stack -1`);
 `heavy_scene_stack_window.py` prints the achieved sample period. `SAMPLE_TID_COMM='^$'` walks the main
-thread alone and `SAMPLE_TID_COMM=.` every thread, each on its own; unset, one eu-stack takes the whole process. `heavy_scene_fixture_check.py --rejudge
+thread alone and `SAMPLE_TID_COMM=.` every thread, each on its own; unset, one eu-stack takes the whole process.
+The scene viewer's render thread is named `NatronSceneRndr`, and the main thread is always walked, so
+main and render threads alone: `SAMPLE_TID_COMM='^NatronSceneRndr$'`. (The main thread's comm is
+`Natron.bin`, shared with the worker and TBB threads, so putting it in the regex would walk all of them.)
+The alternative, for a build without the name, is `SAMPLE_TID_FRAME=<regex of a frame>`, which finds
+threads by a frame of a whole-process sample taken every `SAMPLE_DISCOVER_S` (default 10):
+`SAMPLE_TID_COMM='^$' SAMPLE_TID_FRAME='HdEngine::Execute'`. `heavy_scene_gpu_host.sh` samples
+only while a scenario runs and puts `SYMBOLS` under `out/symbols`. `heavy_scene_fixture_check.py --rejudge
 RESULTS OUT.jsonl` re-applies the fixture check to an existing results file, writing a copy.
 
 eu-stack stops the process while it walks stacks, so samples in which no thread looks busy are

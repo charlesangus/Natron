@@ -150,9 +150,16 @@ SceneNodeStageSource::~SceneNodeStageSource()
     }
     liveSources().changed.notify_all();
     EffectInstance::retireSceneContextId(_contextId);
-    SceneWriteBarrier::ReadScope readScope;
-    std::lock_guard<std::mutex> lock(_stageMutex);
-    _stage.reset();
+    std::unique_ptr<SceneStage> stage;
+    {
+        SceneWriteBarrier::ReadScope readScope;
+        std::lock_guard<std::mutex> lock(_stageMutex);
+        stage = std::move(_stage);
+    }
+    // Whoever holds the source last may be the main thread, from a timer or a model swap.
+    if (stage) {
+        SceneTeardown::release(std::move(stage));
+    }
 }
 
 void

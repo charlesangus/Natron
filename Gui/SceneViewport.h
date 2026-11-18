@@ -1407,7 +1407,8 @@ private:
     void onBackgroundFrameDone();
 
     // Main thread: turns the widget's updates off while the render thread has work, and back on,
-    // asking for the paint held back and carrying out a resize held back, once it has none.
+    // asking for the paint held back and carrying out a resize held back, once it has none. A
+    // frame running for a view the camera or size has left ends at its next pass.
     void refreshPaintHold();
 
     // Main thread: starts the frame a paint asked for, once the window has composed that paint.
@@ -1431,8 +1432,8 @@ private:
     // Main thread: the render thread took in draw changes posted to it.
     void onDrawChangesTakenIn();
 
-    // Main thread: whether the GPU has finished the frame on it, asking for the paint that shows it
-    // if so and polling again later if not. Never waits for the GPU.
+    // Main thread: asks for the paint that shows the frame on the GPU once the render thread has
+    // found it finished. Makes no context current.
     void pollPresent();
 
     // Main thread: the render thread has switched to the renderer id for the switch numbered serial.

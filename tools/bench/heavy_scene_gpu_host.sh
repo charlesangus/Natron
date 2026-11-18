@@ -80,28 +80,36 @@
 #                      BENCH_HOLD_S, default 120) for this file to exist before they open the file, so a
 #                      stack sampler can attach first; BENCH_PTRACER_ANY=1 lets any process of the user attach
 #   ISLAND_MIN_RAM_GB  available RAM below which Island is skipped (default 48)
-#   SAMPLE=1           samples the stacks of every thread of each run's Natron process while it runs, with
-#                      eu-stack every SAMPLE_INTERVAL_S (default 0.1 s), or, without eu-stack, gdb every
-#                      SAMPLE_GDB_INTERVAL_S (default 2 s), into out/<label>.stacks (pid in .stacks.pid,
-#                      sampler errors in .stacks.err). Each sample stops the process while it is taken, so
-#                      the records say stack_sampled and their timings are for diagnosis, not for judging.
+#   SAMPLE=1           samples the stacks of each run's Natron process while one of its scenarios runs
+#                      (not while it picks rows, between scenarios or after the last: the sampler waits
+#                      while out/<label>/bench_progress says idle), with eu-stack every SAMPLE_INTERVAL_S
+#                      (default 0.1 s), or, without eu-stack, gdb every SAMPLE_GDB_INTERVAL_S (default 2 s),
+#                      into out/<label>.stacks (pid in .stacks.pid, sampler errors in .stacks.err). Each
+#                      sample stops the process while it is taken, so the records say stack_sampled and
+#                      their timings are for diagnosis, not for judging.
 #                      Under kernel.yama.ptrace_scope 1 the run lets the sampler attach (BENCH_PTRACER_ANY=1);
 #                      under 2 only root samples. Sampling that cannot work is reported and left out; it
 #                      never stops the bench. heavy_scene_stack_window.py folds a scenario's samples into
 #                      the top stacks of the main and render threads. A sample eu-stack takes longer than
 #                      the interval to collect delays the next one; the period the samples actually kept
 #                      is the "sample period" line heavy_scene_stack_window.py prints. A whole-process
-#                      eu-stack takes about 0.15 s on the heavy scene, so SAMPLE_INTERVAL_S below that
-#                      does not raise the rate. For 20 Hz or more set SAMPLE_TID_COMM to a regex of the
-#                      thread names (/proc comm) to walk besides the main thread, and SAMPLE_INTERVAL_S=0.04
-#                      (see sample_stacks.sh); check the achieved period in heavy_scene_stack_window.py's output.
-#                      SAMPLE_TID_COMM='^$' samples the main thread alone, '.' every thread, each walked on
-#                      its own; unset takes the whole process in one eu-stack.
+#                      eu-stack takes 0.15-0.3 s on the heavy scene and up to 1.5 s on a slow VM, so
+#                      SAMPLE_INTERVAL_S below that does not raise the rate. To walk only the main and
+#                      render threads, which is what the stall analysis reads, set
+#                        SAMPLE_TID_COMM='^NatronSceneRndr$'
+#                      The render thread is named NatronSceneRndr; the main thread is always walked. A
+#                      build without that name needs a frame of a whole-process sample instead,
+#                        SAMPLE_TID_COMM='^$' SAMPLE_TID_FRAME='HdEngine::Execute'
+#                      one sample every SAMPLE_DISCOVER_S (default 10 s); see sample_stacks.sh. SAMPLE_TID_COMM is a
+#                      regex of /proc comm names to walk besides the main thread: '^$' none, '.' every
+#                      thread, each walked on its own; with both unset one eu-stack takes the whole process.
+#                      Check the achieved period in heavy_scene_stack_window.py's output.
 #   SYMBOLS            with SAMPLE=1: the symbols of the AppImage's bundle, the natron-symbols.tar.gz that
 #                      tools/ci/remote/build.sh --debug-symbols downloads with that AppImage, or the
 #                      directory it unpacks to. eu-stack reads the libraries' symbols from it; Natron.bin's
 #                      it cannot use (see heavy_scene_stack_window.py --symbols, which names those frames
-#                      afterwards from the same directory). A tarball is unpacked into FIXTURE_DIR/symbols.
+#                      afterwards from the same directory). It is unpacked, or copied, into
+#                      FIXTURE_DIR/out/symbols, so a copy of out/ names the frames offline.
 #   VRAM_CARD          the card whose memory is sampled (card1, say, or nvidia0 for nvidia-smi's GPU 0;
 #                      default the amdgpu card with the most VRAM, or with none, the NVIDIA GPU with the
 #                      most). sample_vram.sh reads an amdgpu card's mem_info_vram_used and mem_info_gtt_used,
@@ -358,13 +366,23 @@ if [ "${SAMPLE:-0}" = 1 ]; then
     fi
     [ -n "$SAMPLER" ] && echo "sample: $(basename "$SAMPLER") every $SAMPLE_PERIOD s, ptrace_scope $(ptrace_scope); samples go to $FIXTURE_DIR/out/<label>.stacks" >&2
     if [ -n "$SAMPLER" ] && [ -n "${SYMBOLS:-}" ]; then
-        if [ -d "$SYMBOLS" ]; then
+        if [ -d "$SYMBOLS" ] && [ "$(readlink -f "$SYMBOLS")" = "$(readlink -f "$FIXTURE_DIR/out/symbols")" ]; then
             SAMPLE_DEBUGINFO_PATH="$(readlink -f "$SYMBOLS")"
+        elif [ -d "$SYMBOLS" ]; then
+            rm -rf -- "${FIXTURE_DIR:?}/out/symbols"
+            mkdir -p "$FIXTURE_DIR/out/symbols"
+            if cp -a -- "$SYMBOLS/." "$FIXTURE_DIR/out/symbols/"; then
+                SAMPLE_DEBUGINFO_PATH="$(readlink -f "$FIXTURE_DIR/out/symbols")"
+            else
+                echo "sample: could not copy $SYMBOLS into $FIXTURE_DIR/out/symbols; sampling with it in place" >&2
+                SAMPLE_DEBUGINFO_PATH="$(readlink -f "$SYMBOLS")"
+            fi
         elif [ -f "$SYMBOLS" ]; then
-            rm -rf -- "${FIXTURE_DIR:?}/symbols"
-            mkdir -p "$FIXTURE_DIR/symbols"
-            if tar -C "$FIXTURE_DIR/symbols" -xzf "$SYMBOLS"; then
-                SAMPLE_DEBUGINFO_PATH="$(readlink -f "$FIXTURE_DIR/symbols")"
+            # Under out/, which is what a remote run copies back, so the samples name Natron's frames offline.
+            rm -rf -- "${FIXTURE_DIR:?}/out/symbols"
+            mkdir -p "$FIXTURE_DIR/out/symbols"
+            if tar -C "$FIXTURE_DIR/out/symbols" -xzf "$SYMBOLS"; then
+                SAMPLE_DEBUGINFO_PATH="$(readlink -f "$FIXTURE_DIR/out/symbols")"
             else
                 echo "sample: could not unpack $SYMBOLS; sampling without its symbols" >&2
             fi
@@ -414,7 +432,7 @@ sample_run() {
         sleep 0.2
     done
     [ -n "$pid" ] || return 0
-    "$SAMPLER" "$pid" 1000000000 "$SAMPLE_PERIOD" "$out" > /dev/null 2>&1 &
+    SAMPLE_GATE_FILE="${out%.stacks}/bench_progress" "$SAMPLER" "$pid" 1000000000 "$SAMPLE_PERIOD" "$out" > /dev/null 2>&1 &
     sampler=$!
     while kill -0 "$sampler" 2> /dev/null && kill -0 "$bench" 2> /dev/null; do
         sleep 0.5
@@ -566,7 +584,7 @@ launch() {
     host_report
     rm -f -- "$vram"
     if [ -n "$SAMPLER" ]; then
-        rm -f -- "$stacks" "$stacks.err" "$stacks.pid"
+        rm -f -- "$stacks" "$stacks.err" "$stacks.pid" "$FIXTURE_DIR/out/$stem/bench_progress"
         extra+=(BENCH_PID_FILE="$stacks.pid" BENCH_STACK_SAMPLED=1)
     fi
     if [ -n "$BISECT_HUD" ]; then

@@ -37,7 +37,7 @@ BLUR_ITERATIONS = 8
 GRADE_ITERATIONS = 11
 BLUR_MAX = 20.0
 # Fractions of the image's width and height on screen.
-FAR_POINTS = ((0.04, 0.04), (0.96, 0.04), (0.04, 0.96), (0.96, 0.96), (0.04, 0.5), (0.96, 0.5), (0.5, 0.04), (0.5, 0.96))
+FAR_POINTS = ((0.04, 0.04), (0.96, 0.04), (0.04, 0.96), (0.96, 0.96), (0.04, 0.42), (0.96, 0.58), (0.42, 0.04), (0.58, 0.96))
 ELLIPSE_RADIUS = 0.2
 GRADE_TOLERANCE = 6
 
@@ -118,6 +118,10 @@ try:
         if viewer.getInput(0) is not None:
             viewer.disconnectInput(0)
         require(viewer.connectInput(0, node), "the Viewer shows %s" % node.getScriptName())
+        # A node's panel being open makes its viewer overlay (the Roto's centre line and cross) draw
+        # into the grab, so the panels are closed and the selection cleared before the render settles.
+        gt.close_all_panels()
+        app.clearSelection()
         yield ("sleep", RENDER_MS)
         img = grab_viewer()
         return img

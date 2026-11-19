@@ -1382,7 +1382,12 @@ try:
             yield ("sleep", 250)
             if draw_settled(v)():
                 break
-        check(boxes_drawn() > 0, "orbit10k: boxes were drawn")
+        # The box lists published early in a bounded fill can hold only pending markers, which the
+        # count excludes, so the boxes can arrive after the draw state settles.
+        wait_start = time.time()
+        ok = yield ("until", lambda: boxes_drawn() > 0, 5.0)
+        m.values["orbit10k_boxes_wait_ms"] = round((time.time() - wait_start) * 1000.0, 1)
+        check(ok, "orbit10k: boxes were drawn")
         m.values["boxes_requested"] = box_count
         m.values["box_depth"] = depth
         m.values["box_depth_rows"] = rows.get("box_depth_rows")

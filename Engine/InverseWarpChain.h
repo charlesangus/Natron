@@ -39,6 +39,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/GpuWeight.h"
 #include "Engine/RectD.h"
+#include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/Transform.h"
 
@@ -325,6 +326,14 @@ public:
     {
         return _sourceRegion;
     }
+
+    /**
+     * @brief getSourceRegion() in the source's pixels at the chain's scale, par being the source's
+     * pixel aspect ratio. A consumer reads the source fetched upstream of the chain only there,
+     * as the GPU does, since the image fetched can be larger, holding what other renders
+     * requested.
+     **/
+    RectI getSourcePixels(double par) const;
 
     /**
      * @brief Why prepare() could not build the chain, empty when it could; a render through a

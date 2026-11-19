@@ -952,6 +952,9 @@ STMap::renderOp(const RenderActionArgs& args,
                 }
                 source = Resampler::SourceImage(&converted[0], srcBounds, nComps);
             }
+            if (chain && src) {
+                source = source.cropped(chain->getSourcePixels(src->getPixelAspectRatio()));
+            }
         }
         const bool sampled = (bool)src;
         const bool chained = sampled && chain;

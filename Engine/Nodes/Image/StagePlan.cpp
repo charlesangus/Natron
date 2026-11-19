@@ -2149,7 +2149,14 @@ stageGpuInputView(EffectInstance& effect,
     }
     const NodeMetadataConstPtr metadata = chain ? input->getRenderMetadata(args.query.time, args.query.view) : effect.getRenderMetadata(args.query.time, args.query.view);
     const double par = metadata ? metadata->getPixelAspectRatio(chain ? -1 : inputNb) : 1.;
-    const RectI crop = in.bounds.intersect(rod.toPixelEnclosing(scale, par));
+    RectI crop = in.bounds.intersect(rod.toPixelEnclosing(scale, par));
+    // The CPU samples the image upstream of concatenated nodes over the region they pull back, as
+    // getImage() hands it over. The stored image can be larger, and reads past that region, which
+    // a chain's extrapolation or a wide filter footprint makes, would then see pixels the CPU
+    // treats as outside the Source.
+    if (chain && chain->sourceRoI) {
+        crop = crop.intersect(chain->sourceRoI(args.outputRect));
+    }
     if (crop.isNull()) {
         return true;
     }

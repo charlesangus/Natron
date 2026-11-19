@@ -1634,18 +1634,25 @@ cropPointsToFormat(const RectI& format,
 class SplineWarpInverseMap
     : public InverseWarpMap {
 public:
-    // A null field leaves every point in place; a null format does not crop.
+    // A null field leaves every point in place; a null format does not crop. With windowed, a
+    // point outside window, the output's region of definition in pixels at scale, has no source
+    // under a black edge and is clamped half a pixel inside it otherwise, as an unchained consumer
+    // reads the output's edge pixel there.
     SplineWarpInverseMap(const RenderScale& scale,
                          double par,
                          const SplineWarpFieldConstPtr& field,
                          const RectI& format,
                          bool crop,
-                         EdgeMode edgeMode)
+                         EdgeMode edgeMode,
+                         const RectI& window,
+                         bool windowed)
         : InverseWarpMap(scale, par)
         , _field(field)
         , _format(format)
         , _crop(crop)
         , _edgeMode(edgeMode)
+        , _window(window)
+        , _windowed(windowed)
     {
     }
 
@@ -1654,6 +1661,9 @@ public:
                         double* sy,
                         double* J) const OVERRIDE FINAL
     {
+        if (_windowed) {
+            cropPointsToFormat(_window, _edgeMode, n, sx, sy);
+        }
         if (_field) {
             _field->mapPoints(n, sx, sy, J);
         }
@@ -1676,7 +1686,7 @@ public:
             }
         }
         static constexpr uint32_t kFieldOn = 1;
-        static constexpr std::size_t kHeaderWords = 22;
+        static constexpr std::size_t kHeaderWords = 27;
         uint32_t flags = 0;
         if (mapped) {
             flags |= kFieldOn;
@@ -1707,6 +1717,11 @@ public:
         words->push_back((uint32_t)layout.window.y1);
         words->push_back((uint32_t)layout.window.width());
         words->push_back((uint32_t)layout.window.height());
+        words->push_back(_windowed ? (InverseWarpChain::kGpuCropFlag | ((_edgeMode == EdgeMode::Black) ? InverseWarpChain::kGpuEdgeBlackFlag : 0u)) : 0u);
+        words->push_back((uint32_t)_window.x1);
+        words->push_back((uint32_t)_window.y1);
+        words->push_back((uint32_t)_window.x2);
+        words->push_back((uint32_t)_window.y2);
         assert(words->size() - start == kHeaderWords);
         Q_UNUSED(start);
         words->insert(words->end(), tables.begin(), tables.end());
@@ -1719,6 +1734,8 @@ private:
     RectI _format;
     bool _crop;
     EdgeMode _edgeMode;
+    RectI _window;
+    bool _windowed;
 };
 
 } // anonymous namespace
@@ -1788,8 +1805,12 @@ SplineWarp::getInverseWarpMap(double time,
     }
     const bool crop = !settings.cropFormat.isNull();
     const RectI format = crop ? settings.cropFormat.toPixelEnclosing(scale, par) : RectI();
+    RectD rod;
+    bool isProjectFormat = false;
+    const bool windowed = (getRegionOfDefinition_public(getRenderHash(), time, scale, view, &rod, &isProjectFormat) != eStatusFailed) && !rod.isInfinite();
+    const RectI outputWindow = (windowed && !rod.isNull()) ? rod.toPixelEnclosing(scale, par) : RectI();
 
-    return std::make_shared<const SplineWarpInverseMap>(scale, par, field, format, crop, settings.edgeMode);
+    return std::make_shared<const SplineWarpInverseMap>(scale, par, field, format, crop, settings.edgeMode, outputWindow, windowed);
 }
 
 bool
@@ -2185,7 +2206,10 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             plane.srcNComps = srcNComps;
             plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             // A concatenated image is in upstream pixels, which the sampling crops by coordinate.
-            const RectI readBounds = (crop && !plane.concatenated && !plane.chained) ? plane.srcBounds.intersect(formatPixels) : plane.srcBounds;
+            RectI readBounds = (crop && !plane.concatenated && !plane.chained) ? plane.srcBounds.intersect(formatPixels) : plane.srcBounds;
+            if (plane.chained) {
+                readBounds = readBounds.intersect(chain->getSourcePixels(plane.src->getPixelAspectRatio()));
+            }
             if (readBounds.isNull()) {
                 plane.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
             } else if (srcNComps == nComps) {

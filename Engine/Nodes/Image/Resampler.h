@@ -367,6 +367,23 @@ struct SourceImage {
         }
         return data + (std::size_t)(y - bounds.y1) * rowStride + (std::size_t)(x - bounds.x1) * (std::size_t)nComps;
     }
+
+    /// The part of the image inside rect, sharing its pixels; a missing source when they do not
+    /// overlap.
+    SourceImage cropped(const RectI& rect) const
+    {
+        SourceImage out;
+        out.nComps = nComps;
+        const RectI inside = bounds.intersect(rect);
+        if (!isValid() || inside.isNull()) {
+            return out;
+        }
+        out.data = pixel(inside.x1, inside.y1);
+        out.bounds = inside;
+        out.rowStride = rowStride;
+
+        return out;
+    }
 };
 
 /**

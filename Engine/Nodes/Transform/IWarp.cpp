@@ -865,6 +865,9 @@ IWarp::renderOp(const RenderActionArgs& args,
                 }
                 plane.source = Resampler::SourceImage(plane.converted.empty() ? (const float*)0 : &plane.converted[0], plane.srcBounds, nComps);
             }
+            if (chain) {
+                plane.source = plane.source.cropped(chain->getSourcePixels(plane.src->getPixelAspectRatio()));
+            }
         } else {
             plane.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
         }

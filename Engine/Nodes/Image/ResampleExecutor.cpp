@@ -593,6 +593,7 @@ runResampleCpu(EffectInstance& effect,
                     }
                     plane.chained = true;
                     plane.inverse = plane.transforms.invTransforms.front();
+                    plane.source = plane.source.cropped(chain->getSourcePixels(srcPar));
                 } else if (plane.inputTransform) {
                     const Mat3 inputTransform = TransformMath::fromEngineMatrix(*plane.inputTransform);
                     Resampler::concatenateInputTransform(inputTransform, &plane.transforms);

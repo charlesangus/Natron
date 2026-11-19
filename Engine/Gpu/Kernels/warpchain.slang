@@ -15,6 +15,8 @@ static const uint kWarpChainLens = 3;
 static const uint kWarpChainFieldOn = 1;
 static const uint kWarpChainCrop = 2;
 static const uint kWarpChainEdgeBlack = 4;
+// Where the output window's crop flags sit; its rect follows them.
+static const uint kWarpChainOutputWindow = 22;
 // Words per grid point of the field's node table.
 static const uint kWarpChainNodeWords = 8;
 
@@ -111,13 +113,15 @@ bool warpChainInsideFeathers(StructuredBuffer<uint> chain, uint base, FF x, FF y
     return ((word >> (uint(col) % 32)) & 1) != 0;
 }
 
-// SplineWarpInverseMap: the field's scattered lookup, then the format crop. Block words: flags,
-// the crop rect, the node table's offset, the grid's size nx and ny, its first lattice index i0
-// and j0, the lattice step and the canonical-to-pixel scales as pairs, then the feather table's
-// offset (0 without boundaries), its row stride and the window it covers as x1, y1, width and
-// height.
+// SplineWarpInverseMap: the output window's crop, the field's scattered lookup, then the format
+// crop. Block words: flags, the crop rect, the node table's offset, the grid's size nx and ny,
+// its first lattice index i0 and j0, the lattice step and the canonical-to-pixel scales as pairs,
+// the feather table's offset (0 without boundaries), its row stride and the window it covers as
+// x1, y1, width and height, then the output window's crop flags and rect.
 bool warpChainSplineWarp(StructuredBuffer<uint> chain, uint base, inout FF x, inout FF y, inout float4 J, bool jac)
 {
+    if (!warpChainCrop(chain, base + kWarpChainOutputWindow + 1, chain[base + kWarpChainOutputWindow], x, y))
+        return false;
     const uint flags = chain[base];
     if ((flags & kWarpChainFieldOn) != 0 && warpChainInsideFeathers(chain, base, x, y))
     {

@@ -366,6 +366,22 @@ InverseWarpChain::hasMapStep() const
     return false;
 }
 
+RectI
+InverseWarpChain::getSourcePixels(double par) const
+{
+    const RectD& r = _sourceRegion;
+    if (!((r.x2 > r.x1) && (r.y2 > r.y1))) {
+        return RectI();
+    }
+    // Keeps an unbounded region's pixels inside int range.
+    const double kMax = 1e9;
+    const auto clampCoord = [kMax](double v) {
+        return std::max(-kMax, std::min(v, kMax));
+    };
+
+    return RectD(clampCoord(r.x1), clampCoord(r.y1), clampCoord(r.x2), clampCoord(r.y2)).toPixelEnclosing(_scale, par);
+}
+
 const std::string&
 InverseWarpChain::getInfiniteWindowError()
 {

@@ -374,19 +374,30 @@ TEST_F(WarpChainGpuTest, SplineWarpAndLensMapsMatchTheCpu)
         chain.appendMatrix(Transform::Matrix3x3(1., 0.02, 0.5, 0.01, 1., 0.25, 0.0005, -0.0003, 1.));
         chain.appendMap(lensMap, InverseWarpChain::eGpuStepLens);
         EXPECT_EQ(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens, chain.getGpuSteps());
-        const int unmapped = expectParity(*runtime, chain, xs, ys, edgeMode);
-        if (std::string(edgeMode) == "black") {
-            EXPECT_GT(unmapped, 2) << "a black edge drops the points beyond the crop";
+        const bool black = std::string(edgeMode) == "black";
+        const int chainUnmapped = expectParity(*runtime, chain, xs, ys, edgeMode);
+        if (black) {
+            EXPECT_GT(chainUnmapped, 2) << "a black edge drops the points beyond the SplineWarp's output window";
         } else {
-            EXPECT_EQ(2, unmapped) << "only the NaN points lack a source under stretch";
+            EXPECT_EQ(2, chainUnmapped) << "only the NaN points lack a source under stretch";
         }
 
         InverseWarpChain warpOnly(RenderScale::identity, 1.);
         warpOnly.appendMap(warpMap, InverseWarpChain::eGpuStepSplineWarp);
-        expectParity(*runtime, warpOnly, xs, ys, std::string(edgeMode) + " SplineWarp");
+        const int warpUnmapped = expectParity(*runtime, warpOnly, xs, ys, std::string(edgeMode) + " SplineWarp");
+        if (black) {
+            EXPECT_GT(warpUnmapped, 2) << "a black edge drops the points beyond the output window";
+        } else {
+            EXPECT_EQ(2, warpUnmapped) << "only the NaN points lack a source under stretch";
+        }
         InverseWarpChain lensOnly(RenderScale::identity, 1.);
         lensOnly.appendMap(lensMap, InverseWarpChain::eGpuStepLens);
-        expectParity(*runtime, lensOnly, xs, ys, std::string(edgeMode) + " LensDistortion");
+        const int lensUnmapped = expectParity(*runtime, lensOnly, xs, ys, std::string(edgeMode) + " LensDistortion");
+        if (black) {
+            EXPECT_GT(lensUnmapped, 2) << "a black edge drops the points beyond the crop";
+        } else {
+            EXPECT_EQ(2, lensUnmapped) << "only the NaN points lack a source under stretch";
+        }
     }
 #endif
 }

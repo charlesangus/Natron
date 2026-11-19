@@ -930,6 +930,100 @@ TEST_F(NativeSplineWarpTest, TransformAfterTheWarpResamplesTheSourceOnce)
     EXPECT_GT(maxDiff(doubled, reference, inside), 1e-3) << "a double resample should soften the image";
 }
 
+// The field moves the whole Source left, so it has values beyond the warp's region of definition,
+// which a consumer reading the rendered warp there never sees.
+TEST_F(NativeSplineWarpTest, ChainedWarpIsTransparentOutsideItsRegionOfDefinition)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr warp = makeSplineWarp(source);
+    ASSERT_TRUE(source && warp);
+    ASSERT_TRUE(setKnobValue(warp, kSplineWarpParamBBox, kSplineWarpBBoxSource));
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCropToFormat, { 0. }));
+    ASSERT_TRUE(setKnobValue(warp, kEdgeModeParam, std::string("black")));
+    ASSERT_TRUE(bool(linkQuad(contextOf(warp), 22., 16., 16., -8., 0.)));
+    NodePtr crop = makeNode(PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP, warp);
+    ASSERT_TRUE(bool(crop));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { (double)kParitySourceWidth, (double)kParitySourceHeight }));
+    ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
+    NodePtr chained = makeTranslate(warp, 12., 0.);
+    NodePtr unchained = makeTranslate(crop, 12., 0.);
+    ASSERT_TRUE(chained && unchained);
+    for (const NodePtr& node : { chained, unchained }) {
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
+    }
+    const RectD rod = rodOf(warp);
+    expectRectNear(RectD(0., 0., kParitySourceWidth, kParitySourceHeight), rod, "warp");
+
+    InputMatrixMap transforms;
+    chained->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+    ASSERT_EQ(1u, transforms.count(0));
+    ASSERT_TRUE(bool(transforms[0].warpChain));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    RenderedPlane image, viaChain, viaRender;
+    ASSERT_TRUE(renderRGBA(source, window, &image));
+    ASSERT_TRUE(renderRGBA(chained, window, &viaChain));
+    ASSERT_TRUE(renderRGBA(unchained, window, &viaRender));
+    // Output pixels reading the warp left of x = -1, beyond any bilinear tap of its first column.
+    const RectI outside(0, 0, 10, kParitySourceHeight);
+    RenderedPlane black;
+    black.window = window;
+    black.channels = image.channels;
+    black.pixels.assign(image.pixels.size(), 0.f);
+    EXPECT_GT(maxDiff(image, black, RectI(0, 0, 8, kParitySourceHeight)), 1e-3) << "the field should pull Source values outside the warp's window";
+    EXPECT_EQ(0., maxDiff(viaRender, black, outside));
+    EXPECT_EQ(0., maxDiff(viaChain, black, outside));
+}
+
+// An unchained consumer under a stretch edge holds the warp's edge pixel beyond its region of
+// definition, so the chain must clamp there rather than read nothing.
+TEST_F(NativeSplineWarpTest, ChainedWarpHoldsItsEdgeBeyondItsRegionOfDefinitionUnderStretch)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr warp = makeSplineWarp(source);
+    ASSERT_TRUE(source && warp);
+    ASSERT_TRUE(setKnobValue(warp, kSplineWarpParamBBox, kSplineWarpBBoxSource));
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCropToFormat, { 0. }));
+    ASSERT_TRUE(setKnobValue(warp, kEdgeModeParam, std::string("stretch")));
+    ASSERT_TRUE(bool(linkQuad(contextOf(warp), 22., 16., 16., -8., 0.)));
+    NodePtr crop = makeNode(PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP, warp);
+    ASSERT_TRUE(bool(crop));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { (double)kParitySourceWidth, (double)kParitySourceHeight }));
+    ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
+    NodePtr chained = makeTranslate(warp, 12., 0.);
+    NodePtr unchained = makeTranslate(crop, 12., 0.);
+    ASSERT_TRUE(chained && unchained);
+    for (const NodePtr& node : { chained, unchained }) {
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
+        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
+    }
+
+    InputMatrixMap transforms;
+    chained->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+    ASSERT_EQ(1u, transforms.count(0));
+    ASSERT_TRUE(bool(transforms[0].warpChain));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    RenderedPlane viaChain, viaRender;
+    ASSERT_TRUE(renderRGBA(chained, window, &viaChain));
+    ASSERT_TRUE(renderRGBA(unchained, window, &viaRender));
+    RenderedPlane black;
+    black.window = window;
+    black.channels = viaRender.channels;
+    black.pixels.assign(viaRender.pixels.size(), 0.f);
+    const RectI outside(0, 0, 10, kParitySourceHeight);
+    EXPECT_GT(maxDiff(viaRender, black, outside), 1e-3) << "the held edge pixel should not read transparent";
+    EXPECT_LE(maxDiff(viaChain, viaRender, outside), kWarpTolerance);
+    EXPECT_LE(maxDiff(viaChain, viaRender, window), kWarpTolerance);
+}
+
 // A Transform that averages several matrices takes no chain, so the warp renders as before.
 TEST_F(NativeSplineWarpTest, MotionBlurredTransformAfterTheWarpTakesNoChain)
 {

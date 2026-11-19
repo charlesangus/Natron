@@ -1843,7 +1843,6 @@ struct SceneViewportRenderer::Implementation {
         }
         drawFilter = SceneDrawFilter::find(filterInstanceId);
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
-            // Another delegate would restart its render at every batch.
             filter->setAdmitting(fillPaced && RenderDelegates::isStorm(rendererId));
             filter->seedRules(drawRules);
         }
@@ -2149,12 +2148,13 @@ struct SceneViewportRenderer::Implementation {
         noteFillState(filter);
     }
 
-    // Storm only: the filter is the Storm engine's. Turning the pacing off lets every waiting prim in.
+    // Turning the pacing off lets every waiting prim in. Another delegate than Storm never paces, as
+    // it would restart its render at every batch.
     void setFillPaced(bool paced)
     {
         fillPaced = paced;
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
-            filter->setAdmitting(paced);
+            filter->setAdmitting(paced && RenderDelegates::isStorm(rendererId));
         }
     }
 
@@ -5205,8 +5205,11 @@ SceneViewportRenderer::render(unsigned int fbo,
                               int height)
 {
     const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+    const bool done = renderLocked(fbo, width, height, true) == eRenderStatusDone;
+    // Only this caller waits for every prim: an engine a pick or a switch makes afterwards fills paced.
+    _imp->setFillPaced(true);
 
-    return renderLocked(fbo, width, height, true) == eRenderStatusDone;
+    return done;
 }
 
 SceneViewportRenderer::RenderStatusEnum

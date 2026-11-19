@@ -2049,24 +2049,29 @@ TEST(SceneRevealPacerTest, BatchesFillTheTargetFrame)
     EXPECT_NEAR(3300., double(pacer.nextBatch()), 33.);
 }
 
-TEST(SceneRevealPacerTest, TheFixedPartOfAFrameDoesNotShrinkTheBatch)
+TEST(SceneRevealPacerTest, ThePrimsGetWhatTheFixedPartLeavesOfTheTarget)
 {
     SceneRevealPacer pacer(33., 1024);
     pace(pacer, 10., 0.001, 30);
 
-    EXPECT_NEAR(33000., double(pacer.nextBatch()), 330.);
+    EXPECT_NEAR(23000., double(pacer.nextBatch()), 230.);
     EXPECT_NEAR(10., pacer.getFixedMs(), 0.1);
     EXPECT_NEAR(0.001, pacer.getPerPrimMs(), 1e-5);
 }
 
-TEST(SceneRevealPacerTest, FramesThatCostTheSameWhateverTheBatchGrowIt)
+TEST(SceneRevealPacerTest, AFixedPartBeyondTheTargetTakesABatchWhosePrimWorkIsAtMostTheFixedPart)
 {
     SceneRevealPacer pacer(33., 1024);
-    const std::vector<std::size_t> batches = pace(pacer, 50., 0., 12);
+    const double fixedMs = 50.;
+    const double perPrimMs = 0.01;
+    const std::vector<std::size_t> batches = pace(pacer, fixedMs, perPrimMs, 30);
 
-    EXPECT_GT(batches.back(), 1024u);
-    EXPECT_GE(batches.back(), batches[batches.size() - 2]);
-    EXPECT_NEAR(50., pacer.getFixedMs(), 0.5);
+    EXPECT_NEAR(5000., double(batches.back()), 50.);
+    EXPECT_NEAR(fixedMs, pacer.getFixedMs(), 0.5);
+    for (std::size_t i = 8; i < batches.size(); ++i) {
+        EXPECT_LE(perPrimMs * double(batches[i]), 1.01 * fixedMs) << "frame " << i;
+        EXPECT_LE(fixedMs + perPrimMs * double(batches[i]), 2.02 * fixedMs) << "frame " << i;
+    }
 }
 
 TEST(SceneRevealPacerTest, AFasterMachineTakesLargerBatches)
@@ -2079,15 +2084,52 @@ TEST(SceneRevealPacerTest, AFasterMachineTakesLargerBatches)
     EXPECT_GT(manyCore.nextBatch(), 5 * modest.nextBatch());
 }
 
-TEST(SceneRevealPacerTest, AFrameTheFixedPartFillsSpendsAsMuchAgainOnTheReveal)
+TEST(SceneRevealPacerTest, AFixedPartManyTimesTheTargetKeepsAFillShortAtAboutTwiceTheFixedPart)
 {
     SceneRevealPacer pacer(33., 1024);
-    const std::vector<std::size_t> batches = pace(pacer, 600., 0.0006, 30);
+    const double fixedMs = 600.;
+    const double perPrimMs = 0.0006;
+    const std::vector<std::size_t> batches = pace(pacer, fixedMs, perPrimMs, 30);
 
-    for (std::size_t i = 1; i < batches.size(); ++i) {
-        EXPECT_LE(batches[i], 2 * batches[i - 1]);
+    EXPECT_NEAR(1000000., double(batches.back()), 10000.);
+    EXPECT_NEAR(fixedMs, pacer.getFixedMs(), 1.);
+    for (std::size_t i = 16; i < batches.size(); ++i) {
+        EXPECT_LE(fixedMs + perPrimMs * double(batches[i]), 2.02 * fixedMs) << "frame " << i;
     }
-    EXPECT_NEAR(1e6, double(pacer.nextBatch()), 1e4);
+}
+
+// A fill whose frames cost a part per prim admitted and a fixed part per prim Hydra already holds.
+TEST(SceneRevealPacerTest, AFillsBatchStaysBoundedAsItsFixedPartGrowsWithThePrimsHydraHolds)
+{
+    const double targetMs = 33.;
+    const double perPrimMs = 0.01;
+    const double fixedPerHeldMs = 0.0001;
+    SceneRevealPacer pacer(targetMs, 1024);
+    std::size_t held = 0;
+    bool fixedFilled = false;
+    int frames = 0;
+    for (; held < 400000; ++frames) {
+        ASSERT_LT(frames, 100000);
+        const std::size_t batch = pacer.nextBatch();
+        ASSERT_GE(batch, 1u);
+        const double fixedMs = fixedPerHeldMs * double(held + batch);
+        const double primMs = perPrimMs * double(batch);
+        // The first frames double and halve the batch to tell the two parts apart.
+        if (frames >= 3) {
+            if (fixedMs + perPrimMs * double(SceneRevealPacer::kMinBatch) <= targetMs) {
+                EXPECT_LE(fixedMs + primMs, 1.05 * targetMs) << "frame " << frames << " batch " << batch;
+            } else if (fixedMs >= targetMs) {
+                fixedFilled = true;
+                EXPECT_LE(primMs, 1.05 * fixedMs + 1.) << "frame " << frames << " batch " << batch;
+                EXPECT_LE(fixedMs + primMs, 2.1 * fixedMs + 1.) << "frame " << frames << " batch " << batch;
+            }
+        }
+        pacer.observe(batch, fixedMs + primMs);
+        held += batch;
+    }
+    EXPECT_TRUE(fixedFilled);
+    EXPECT_LT(frames, 1000);
+    EXPECT_NEAR(perPrimMs, pacer.getPerPrimMs(), 0.1 * perPrimMs);
 }
 
 TEST(SceneRevealPacerTest, ASlowFirstFrameHalvesTheBatch)
@@ -2346,6 +2388,34 @@ TEST_F(SceneDrawFilterTest, AnInstanceTheRulesHideWaitsForNothingAndTurningAdmit
     EXPECT_FALSE(filter->isFilling());
     EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), drawnGeometry());
     EXPECT_EQ((std::vector<bool> { false, false, true }), maskOf(*filter, kNativeInstancer));
+}
+
+TEST_F(SceneDrawFilterTest, WhileAdmittingOnlyAdmitLetsGeometryInWhateverTheLoadsAndRulesDo)
+{
+    const std::size_t paced = static_cast<std::size_t>(-1);
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->setAdmitting(true);
+    EXPECT_EQ(kAllGeometry.size(), filter->pendingCount());
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateLoadAll), paced);
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateLoadAll), 1);
+    filter->applyDelta(states.setState("/World/c", eSceneDrawStateLoadAll), 0);
+    addPayload(scene);
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 0);
+    filter->replaceRules(SceneDrawFilter::Rules());
+    filter->setAdmitting(true);
+
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_FALSE(drawn("/World/a/payload/p1"));
+    EXPECT_FALSE(drawn("/World/a/payload/p2"));
+    EXPECT_TRUE(recorder.enteredInvisible.empty());
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_EQ(kAllGeometry.size() + 2, filter->pendingCount());
+    EXPECT_EQ(0u, filter->admittedCount());
+
+    EXPECT_EQ(1u, filter->admit(SceneDrawFilter::Order(), 1));
+    EXPECT_EQ(kAllGeometry.size() + 1, filter->pendingCount());
 }
 
 namespace {

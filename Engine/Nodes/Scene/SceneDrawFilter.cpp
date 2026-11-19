@@ -1721,9 +1721,11 @@ SceneDrawFilter::scanStart(const SdfPath& path) const
 }
 
 SceneRevealPacer::SceneRevealPacer(double targetMs,
-                                   std::size_t firstBatch)
+                                   std::size_t firstBatch,
+                                   std::size_t minBatch)
     : _targetMs(targetMs)
     , _batch((std::max)(firstBatch, std::size_t(1)))
+    , _minBatch((std::max)(minBatch, std::size_t(1)))
     , _samples()
 {
 }
@@ -1741,11 +1743,9 @@ SceneRevealPacer::observe(std::size_t prims,
 
     double meanPrims = 0.;
     double meanMs = 0.;
-    double longest = 0.;
     for (std::size_t i = 0; i < _sampleCount; ++i) {
         meanPrims += _samples[i].prims;
         meanMs += _samples[i].ms;
-        longest = (std::max)(longest, _samples[i].ms);
     }
     meanPrims /= double(_sampleCount);
     meanMs /= double(_sampleCount);
@@ -1757,28 +1757,38 @@ SceneRevealPacer::observe(std::size_t prims,
     }
     const double minPerPrimMs = 1e-9;
     const double current = double(_batch);
+    const double latest = double(prims);
     double wanted = current;
     // Batches of one size cannot tell the fixed part from the rest, nor can noise between close ones.
     const double relative = 0.1 * meanPrims;
     if ((_sampleCount >= 3) && (spread > relative * relative * double(_sampleCount))) {
-        // A cost that does not grow with the batch is all fixed.
         _perPrimMs = (std::max)(covariance / spread, minPerPrimMs);
-        _fixedMs = (std::min)(meanMs - _perPrimMs * meanPrims, longest);
-        if (_fixedMs < 0.) {
-            _fixedMs = 0.;
-            _perPrimMs = (std::max)(meanMs / meanPrims, minPerPrimMs);
-        }
         _fitted = true;
-    } else if (_fitted) {
-        _fixedMs = (std::min)(_fixedMs, 0.9 * ms);
-        _perPrimMs = (std::max)((ms - _fixedMs) / double(prims), minPerPrimMs);
-    } else {
-        _fixedMs = 0.;
-        _perPrimMs = (std::max)(ms / double(prims), minPerPrimMs);
+    } else if (!_fitted) {
+        _perPrimMs = (std::max)(ms / latest, minPerPrimMs);
         wanted = (ms <= _targetMs) ? (current * 2.) : (current / 2.);
     }
     if (_fitted) {
-        wanted = (std::max)(_targetMs, _fixedMs) / _perPrimMs;
+        // From the latest frame alone: during a fill the fixed part grows with the prims Hydra holds,
+        // which the older frames the slope comes from did not hold yet.
+        _fixedMs = ms - _perPrimMs * latest;
+        if (_fixedMs < 0.) {
+            _fixedMs = 0.;
+            _perPrimMs = (std::max)(ms / latest, minPerPrimMs);
+        }
+        const double fits = (_targetMs - _fixedMs) / _perPrimMs;
+        if (fits >= double(_minBatch)) {
+            wanted = fits;
+        } else if (_fixedMs >= _targetMs) {
+            // Every pass costs the fixed part however few prims it shows, so a batch whose prim work
+            // is at most that keeps a pass within twice the unavoidable cost and the fill in a number
+            // of passes that does not depend on the prim count.
+            wanted = (std::max)(double(_minBatch), _fixedMs / _perPrimMs);
+        } else {
+            wanted = (std::min)(current, double(_minBatch));
+        }
+    } else {
+        _fixedMs = 0.;
     }
     const double bounded = (std::min)((std::max)(wanted, current / 4.), current * 2.);
     // The upper bound only keeps the conversion defined.

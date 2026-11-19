@@ -818,7 +818,8 @@ public:
      * @brief Draws into the framebuffer fbo of the current context, width x height pixels, and
      * leaves the GL state as it found it. Clears to the background when there is no scene.
      * Returns false if Storm has not converged yet and another render would refine the image.
-     * Draws all of the geometry: only background frames and renderIfIdle() fill in paced batches.
+     * Draws all of the geometry, for a caller that waits for the final picture: background frames,
+     * renderIfIdle() and an engine anything else makes fill in paced batches, before and after.
      **/
     bool render(unsigned int fbo, int width, int height);
 

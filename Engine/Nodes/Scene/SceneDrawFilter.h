@@ -453,18 +453,26 @@ private:
  * @brief Sizes a reveal's batches from what the frames that showed them cost, so a modest machine and
  * a many-core one both keep near the frame time they aim for.
  *
- * A frame costs a fixed part and a part per prim shown, and the pacer fits both to its last few
- * frames. The fixed part comes with every step whatever its size: Storm walks every rprim it holds
- * when a prim first turns varying (HdDirtyList, HdChangeTracker::ResetVaryingState). So it is not
- * taken out of the batch, which would only buy more steps each paying it again: the prims get the
- * whole target, and where the fixed part is longer than the target, as long again as it.
+ * A frame costs a fixed part and a part per prim shown: the batch is what the target leaves after
+ * the fixed part, so a frame predicted as fixed + per prim x batch stays within the target. The
+ * per-prim slope is fitted to the last few frames once their sizes vary enough to tell the parts
+ * apart; the fixed part is what the latest frame cost beyond that slope, as it grows during a fill
+ * with the prims Hydra holds (Storm walks every rprim it holds when a prim first turns varying:
+ * HdDirtyList, HdChangeTracker::ResetVaryingState). A frame cannot be stopped midway. Where the
+ * fixed part alone is at or beyond the target, no batch fits it, and a minBatch-sized one would take
+ * far too many passes: the batch is then sized so its prim work is at most the fixed part, so a pass
+ * costs at most about twice the fixed part and the fill takes a number of passes that does not depend
+ * on the prim count. Where the fixed part is under the target but leaves less than minBatch prims'
+ * worth, the batch is minBatch and does not grow.
  *
  * Until the frames have varied enough in size to tell the parts apart, the batch doubles after a
- * frame within the target and halves after one beyond it.
+ * frame within the target and halves after one beyond it. It is never zero, so a fill always moves.
  */
 class SceneRevealPacer {
 public:
-    explicit SceneRevealPacer(double targetMs = 33., std::size_t firstBatch = 1024);
+    static constexpr std::size_t kMinBatch = 64;
+
+    explicit SceneRevealPacer(double targetMs = 33., std::size_t firstBatch = 1024, std::size_t minBatch = kMinBatch);
 
     std::size_t nextBatch() const { return _batch; }
     // How long a frame showing prims took, from the step to the end of its render.
@@ -482,6 +490,7 @@ private:
 
     double _targetMs;
     std::size_t _batch;
+    std::size_t _minBatch;
     Sample _samples[kSamples];
     std::size_t _sampleCount = 0;
     std::size_t _nextSample = 0;

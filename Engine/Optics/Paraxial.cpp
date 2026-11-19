@@ -84,9 +84,9 @@ namespace Optics {
                 }
                 double c = s.curvature;
                 if (s.type == SurfaceType::EvenAsphere || s.type == SurfaceType::ExtendedAsphere) {
-                    c += 2. * s.coefficients[0];
+                    c += 2. * s.coefficient(0);
                 } else if (s.type == SurfaceType::ExtendedOddAsphere) {
-                    c += 2. * s.coefficients[1];
+                    c += 2. * s.coefficient(1);
                 }
 
                 return c;

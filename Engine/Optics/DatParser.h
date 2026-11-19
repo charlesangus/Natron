@@ -34,7 +34,8 @@
 namespace Natron {
 namespace Optics {
 
-    // False with *error set when a row is malformed or the file does not have exactly one stop.
+    // False with *error set when a row is malformed or holds a non-finite number, or the file does not
+    // have exactly one stop with an aperture above 0.
     bool parseDat(const std::string& text, Prescription* out, LensFileError* error);
 
     // The prescription as a .dat file parseDat reads back to the same surfaces. Only spherical and

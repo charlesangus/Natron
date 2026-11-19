@@ -54,7 +54,8 @@ namespace Optics {
     // thickness is the film's physical thickness in the units of wavelength.
     double fresnelAntiReflection(double theta, double wavelength, double thickness, double n0, double n1, double n2);
 
-    // The fraction of light a surface reflects, coated or not. The film index is raised to
+    // The fraction of light a surface reflects, coated or not: 0 with the same medium on both sides,
+    // 1 past the critical angle (n1 sin(theta) > n2). The film index is raised to
     // sqrt(n1 n2), the ideal single-layer index, when the coating's is lower, and the film is a
     // quarter wave thick at its design wavelength.
     double surfaceReflectance(const Coating& coating, double theta, double wavelengthNm, double n1, double n2);

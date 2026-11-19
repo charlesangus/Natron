@@ -43,10 +43,11 @@ everyNm()
 }
 
 Rgb
-render(const std::string& illuminant, const Matrix3& xyzToWorking, SpectralWhite white)
+render(const std::string& illuminant, const Matrix3& xyzToWorking, SpectralWhite white,
+       const std::vector<double>& nm = everyNm())
 {
     std::vector<Rgb> colours;
-    EXPECT_TRUE(spectralColours(illuminant, everyNm(), xyzToWorking, white, &colours)) << illuminant;
+    EXPECT_TRUE(spectralColours(illuminant, nm, xyzToWorking, white, &colours)) << illuminant;
     Rgb sum = { 0., 0., 0. };
     for (const Rgb& c : colours) {
         for (int k = 0; k < 3; ++k) {
@@ -154,7 +155,7 @@ TEST(OpticsSpectral, NoConfigFallsBackToRec709)
 
 TEST(OpticsSpectral, D65RendersWhiteInRec709)
 {
-    expectNeutral(render("D65", kXyzD65ToRec709, SpectralWhite::Physical), 1e-3, "fallback");
+    expectNeutral(render("D65", kXyzD65ToRec709, SpectralWhite::Physical), 1e-4, "fallback");
     const OCIO_NAMESPACE::ConstConfigRcPtr config = studioConfigWithSceneLinear("Linear Rec.709 (sRGB)");
     Chromaticity white;
     EXPECT_TRUE(workingSpaceWhite(config, &white));
@@ -208,16 +209,31 @@ TEST(OpticsSpectral, LocalWhiteRendersTheIlluminantNeutralAtItsLuminance)
     }
 }
 
-TEST(OpticsSpectral, ColoursAreTheMatrixTimesTheWeightedMatchingFunctions)
+TEST(OpticsSpectral, ColoursAreTheMatrixTimesTheBalancedMatchingFunctions)
 {
     const std::vector<double> nm = sampleWavelengths(3);
     std::vector<Rgb> colours;
     ASSERT_TRUE(spectralColours("D65", nm, kXyzD65ToRec709, SpectralWhite::Physical, &colours));
     ASSERT_EQ(colours.size(), 3u);
+    Xyz dense = { 0., 0., 0. }, sampled = { 0., 0., 0. };
+    for (double n : everyNm()) {
+        for (int k = 0; k < 3; ++k) {
+            dense[k] += spectralXyz("D65", n)[k];
+        }
+    }
+    for (double n : nm) {
+        for (int k = 0; k < 3; ++k) {
+            sampled[k] += spectralXyz("D65", n)[k];
+        }
+    }
     for (size_t i = 0; i < nm.size(); ++i) {
         const Xyz cmf = colourMatching(nm[i]);
         const double power = illuminantPower("D65", nm[i]) * 0.01;
-        const Rgb expected = applyMatrix(kXyzD65ToRec709, { cmf[0] * power, cmf[1] * power, cmf[2] * power });
+        Xyz xyz;
+        for (int k = 0; k < 3; ++k) {
+            xyz[k] = cmf[k] * power * dense[k] / sampled[k];
+        }
+        const Rgb expected = applyMatrix(kXyzD65ToRec709, xyz);
         for (int k = 0; k < 3; ++k) {
             EXPECT_NEAR(colours[i][k], expected[k], 1e-12);
         }
@@ -229,4 +245,30 @@ TEST(OpticsSpectral, ColoursAreTheMatrixTimesTheWeightedMatchingFunctions)
     const Matrix3 noRed = { 0., 0., 0., 0., 1., 0., 0., 0., 1. };
     EXPECT_FALSE(spectralColours("D65", nm, noRed, SpectralWhite::WorkingSpace, &colours, &error));
     EXPECT_EQ(error, "illuminant \"D65\" is outside the working space");
+    EXPECT_FALSE(spectralColours("D65", { 750., 800. }, kXyzD65ToRec709, SpectralWhite::Physical, &colours, &error));
+    EXPECT_NE(error.find("miss one of X, Y and Z"), std::string::npos) << error;
+}
+
+// The renderers sum the colours of the wavelengths they trace, so 5 or 16 samples must give the
+// colour and brightness the 1 nm integral does.
+TEST(OpticsSpectral, SampledWavelengthsSumToTheDenseIntegral)
+{
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = OCIO_NAMESPACE::Config::CreateFromBuiltinConfig(kStudioConfig);
+    const Matrix3 spaces[2] = { kXyzD65ToRec709, xyzToWorkingSpace(config) };
+    for (const Matrix3& m : spaces) {
+        for (const char* illuminant : { "E", "D65", "A" }) {
+            const Rgb physical = render(illuminant, m, SpectralWhite::Physical);
+            for (int count : { 5, 16 }) {
+                const std::vector<double> nm = sampleWavelengths(count);
+                const std::string what = std::string(illuminant) + " x" + std::to_string(count);
+                const Rgb local = render(illuminant, m, SpectralWhite::WorkingSpace, nm);
+                expectNeutral(local, 1e-9, what);
+                EXPECT_NEAR(local[1] / summedLuminance(illuminant), 1., 1e-4) << what;
+                const Rgb sampled = render(illuminant, m, SpectralWhite::Physical, nm);
+                for (int k = 0; k < 3; ++k) {
+                    EXPECT_NEAR(sampled[k] / physical[k], 1., 1e-9) << what << " channel " << k;
+                }
+            }
+        }
+    }
 }

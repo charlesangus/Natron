@@ -16,6 +16,11 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
+/*
+ * Ported in part from realflare (https://github.com/beatreichenbach/realflare v1.0.3,
+ * GPL-3.0-or-later), with the sources named in Glass.h; this port is GPL-3.0-or-later.
+ */
+
 #include "Engine/Optics/Glass.h"
 
 #include <algorithm>
@@ -483,7 +488,7 @@ namespace Optics {
     Dispersion::ior(double wavelengthNm) const
     {
         if (glass) {
-            return glass->ior(wavelengthNm);
+            return glass->ior(wavelengthNm) + glassOffset;
         }
 
         return nd <= 1. ? 1. : cauchyIor(nd, vd, wavelengthNm);
@@ -508,7 +513,8 @@ namespace Optics {
         double distance = 0.;
         const Glass* g = catalogue.nearest(vendor, nd, target, &distance);
         if (g && distance <= tolerance) {
-            d.glass = g;
+            d.glass = *g;
+            d.glassOffset = nd - g->ior(kWavelengthDNm);
         }
 
         return d;

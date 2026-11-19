@@ -23,6 +23,7 @@
 
 #include "Engine/Optics/DatParser.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -54,7 +55,7 @@ namespace Optics {
             char* end = nullptr;
             *out = std::strtod(begin, &end);
 
-            return end != begin && *end == '\0';
+            return end != begin && *end == '\0' && std::isfinite(*out);
         }
 
         // Shortest text that reads back to the same double.
@@ -109,7 +110,7 @@ namespace Optics {
             while (tokens >> token) {
                 double x;
                 if (!parseNumber(token, &x)) {
-                    return fail(error, lineNumber, "not a number: \"" + token + "\"");
+                    return fail(error, lineNumber, "not a finite number: \"" + token + "\"");
                 }
                 v.push_back(x);
             }
@@ -126,6 +127,9 @@ namespace Optics {
                     return fail(error, lineNumber, "a second stop; the stop is at line " + std::to_string(stopLine));
                 }
                 stopLine = lineNumber;
+                if (!(v[3] > 0.)) {
+                    return fail(error, lineNumber, "the stop needs an aperture above 0");
+                }
             }
             s.type = stop ? SurfaceType::Stop : SurfaceType::Standard;
             s.curvature = v[0] == 0. ? 0. : 1. / v[0];

@@ -68,7 +68,8 @@ namespace Optics {
         // The largest |xy| / semi-diameter over the lens surfaces the ray crossed (the stop and the
         // image plane excluded): above 1 the ray was vignetted by some element.
         double rrel = 0.;
-        // Where the ray crossed the stop, divided by the stop's semi-diameter.
+        // Where the ray crossed the stop, divided by the stop's semi-diameter. The parsers reject a
+        // stop without one; a Prescription built in code with none reports the position in mm.
         double stopX = 0.;
         double stopY = 0.;
         // The product of the reflectances at the two bounces; 1 for a sequential trace.
@@ -85,7 +86,9 @@ namespace Optics {
     };
 
     // realflare's ghost paths: every pair on the same side of the stop, bounce2 < bounce1. A lens with
-    // a surfaces before the stop and b after it has C(a, 2) + C(b, 2) of them.
+    // a reflecting surfaces before the stop and b after it has C(a, 2) + C(b, 2) of them; a surface
+    // with the same medium on both sides (air to air, or equal nd and Vd) reflects nothing and is
+    // skipped.
     std::vector<GhostPath> enumerateGhosts(const Prescription& lens);
 
     class TraceSystem {

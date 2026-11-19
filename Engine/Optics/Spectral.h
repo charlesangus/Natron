@@ -22,7 +22,8 @@
 /*
  * Wavelength to working-space colour, ported from realflare's get_spectral and get_wavelengths
  * (https://github.com/beatreichenbach/realflare v1.0.3, flare/engine/tasks/common/color.py,
- * flare/engine/tasks/raytrace.py and flare/ocio.py, GPL-3.0-or-later). A wavelength's colour is the
+ * flare/engine/tasks/raytrace.py and flare/ocio.py, GPL-3.0-or-later); this port is
+ * GPL-3.0-or-later. A wavelength's colour is the
  * CIE 1931 2 degree colour matching functions weighted by the illuminant's power / 100, as CIE XYZ,
  * then turned into the working space by one 3x3 matrix. The 1931 observer is the one RGB working
  * spaces are defined with, so a space's own white illuminant renders neutral and others keep their
@@ -109,9 +110,12 @@ namespace Optics {
     // False for an unknown illuminant or one with a channel at or below zero in the working space.
     bool localWhite(const Matrix3& xyzToWorking, const std::string& illuminant, Matrix3* out);
 
-    // One colour per wavelength: applyMatrix(xyzToWorking, spectralXyz(illuminant, nm)), through
-    // localWhite for SpectralWhite::WorkingSpace. False, with out untouched, when the illuminant is
-    // unknown or localWhite fails.
+    // One colour per wavelength: applyMatrix(xyzToWorking, b * spectralXyz(illuminant, nm)), through
+    // localWhite for SpectralWhite::WorkingSpace, where b scales X, Y and Z so that the colours sum to
+    // the spectralXyz sum at every whole nm over [kCmfMinNm, kCmfMaxNm]: any sample set has the dense
+    // integral's tint (neutral under Local White) and brightness, whatever its count. False, with out
+    // untouched, when the illuminant is unknown, localWhite fails, or the wavelengths sum to 0 in one
+    // of X, Y and Z.
     bool spectralColours(const std::string& illuminant, const std::vector<double>& wavelengthsNm,
                          const Matrix3& xyzToWorking, SpectralWhite white, std::vector<Rgb>* out,
                          std::string* error = nullptr);

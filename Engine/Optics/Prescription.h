@@ -23,14 +23,14 @@
  * Lens prescriptions for the optics library. The surface model follows realflare's Lens model
  * (https://github.com/beatreichenbach/realflare v1.0.3, flare/api/lens/model.py,
  * GPL-3.0-or-later); the built-in lenses and layout() are ported from Niik-l's LensTrace
- * (niikl/RB-2.6 Engine/Dev/PostFX/LensTrace.cpp, GPL-2.0-or-later).
+ * (niikl/RB-2.6 Engine/Dev/PostFX/LensTrace.cpp, GPL-2.0-or-later); this port is
+ * GPL-3.0-or-later.
  *
  * Units are mm. The optical axis is z, light travels +z, and the first surface's vertex is at
  * z = 0. A positive curvature puts the centre of curvature on the +z side of the vertex.
  * Pure C++, no Natron or Qt types.
  */
 
-#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -48,8 +48,6 @@ namespace Optics {
         CylinderY,
     };
 
-    constexpr int kMaxAsphericCoefficients = 8;
-
     struct Surface {
         SurfaceType type = SurfaceType::Standard;
         // 1 / radius of curvature; 0 is a plane. The stop is traced with its curvature too.
@@ -59,14 +57,15 @@ namespace Optics {
         double semiDiameter = 0.;
         double conic = 0.;
         // Even and extended aspheres: coefficients[i] multiplies r^(2i+2). Extended odd asphere:
-        // coefficients[i] multiplies r^(i+1).
-        std::array<double, kMaxAsphericCoefficients> coefficients {};
+        // coefficients[i] multiplies r^(i+1). Terms past the end are zero.
+        std::vector<double> coefficients;
         // Refractive index at the d line and Abbe number of the medium after this surface; nd 1 is
         // air, vd 0 is unknown.
         double nd = 1.;
         double vd = 0.;
 
         double radius() const { return curvature == 0. ? 0. : 1. / curvature; }
+        double coefficient(size_t i) const { return i < coefficients.size() ? coefficients[i] : 0.; }
         bool isAspheric() const
         {
             return type == SurfaceType::EvenAsphere || type == SurfaceType::ExtendedAsphere || type == SurfaceType::ExtendedOddAsphere;

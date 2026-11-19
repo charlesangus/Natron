@@ -111,10 +111,9 @@ namespace Optics {
         const double ris = ts01 * ts01 * rs12;
         const double rip = tp01 * tp01 * rp12;
 
-        const double dy = thickness * n1;
-        const double dx = std::tan(theta1) * dy;
-        const double delay = std::sqrt(dx * dx + dy * dy);
-        const double relPhase = 4. * std::numbers::pi / wavelength * (delay - dx * std::sin(theta0));
+        // The film's round trip, 2 n1 d cos(theta1). realflare subtracts the lateral offset scaled by
+        // n1 sin(theta0) instead of n0 sin(theta0), which moves the minimum off normal incidence.
+        const double relPhase = 4. * std::numbers::pi / wavelength * n1 * thickness * std::cos(theta1);
 
         const double s2 = rs01 * rs01 + ris * ris + 2. * rs01 * ris * std::cos(relPhase);
         const double p2 = rp01 * rp01 + rip * rip + 2. * rp01 * rip * std::cos(relPhase);
@@ -129,6 +128,13 @@ namespace Optics {
                        double n1,
                        double n2)
     {
+        if (n1 == n2) {
+            return 0.;
+        }
+        // Total internal reflection, before the film maths, whose angles have no real value there.
+        if (n1 * std::sin(theta) > n2) {
+            return 1.;
+        }
         // The amplitude formulas divide by sin(theta0 + theta1), which is 0 at normal incidence.
         theta = std::max(theta, 1e-6);
         double r;

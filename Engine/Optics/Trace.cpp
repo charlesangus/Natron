@@ -23,9 +23,10 @@
  * a surface into the one before it (realflare uses the forward pair on both passes); spheres and
  * cylinders take the root on the vertex side of the centre, so concave surfaces and backward
  * passes hit the lens cap instead of the far side; an asphere with zero vertex curvature is still
- * solved as an asphere; all eight aspheric coefficients are used; an intersection behind the ray
+ * solved as an asphere; every aspheric coefficient is used; an intersection behind the ray
  * is a miss; the stop refracts when its two media differ; and enumerateGhosts() also honours a
- * stop on the first surface.
+ * stop on the first surface and skips surfaces with the same medium on both sides, which reflect
+ * nothing.
  */
 
 #include "Engine/Optics/Trace.h"
@@ -163,19 +164,14 @@ namespace Optics {
                 const double radicand = std::max(0., 1. - (1. + s.conic) * c * c * r2);
                 sag = c * r2 / (1. + std::sqrt(radicand));
             }
-            if (s.type == SurfaceType::ExtendedOddAsphere) {
-                double p = r;
-                for (int i = 0; i < kMaxAsphericCoefficients; ++i, p *= r) {
-                    sag += s.coefficients[i] * p;
-                }
-            } else {
-                double p = r2;
-                for (int i = 0; i < kMaxAsphericCoefficients; ++i, p *= r2) {
-                    sag += s.coefficients[i] * p;
-                }
+            const bool odd = s.type == SurfaceType::ExtendedOddAsphere;
+            const double x = odd ? r : r2;
+            double poly = 0.;
+            for (size_t i = s.coefficients.size(); i-- > 0;) {
+                poly = poly * x + s.coefficients[i];
             }
 
-            return sag;
+            return sag + poly * x;
         }
 
         double
@@ -188,19 +184,14 @@ namespace Optics {
                 const double root = std::sqrt(std::max(0., 1. - (1. + s.conic) * c * c * r2));
                 slope = c * r / std::max(root, 1e-9);
             }
-            if (s.type == SurfaceType::ExtendedOddAsphere) {
-                double p = 1.;
-                for (int i = 0; i < kMaxAsphericCoefficients; ++i, p *= r) {
-                    slope += (i + 1) * s.coefficients[i] * p;
-                }
-            } else {
-                double p = r;
-                for (int i = 0; i < kMaxAsphericCoefficients; ++i, p *= r2) {
-                    slope += (2 * i + 2) * s.coefficients[i] * p;
-                }
+            const bool odd = s.type == SurfaceType::ExtendedOddAsphere;
+            const double x = odd ? r : r2;
+            double poly = 0.;
+            for (size_t i = s.coefficients.size(); i-- > 0;) {
+                poly = poly * x + (odd ? i + 1. : 2. * i + 2.) * s.coefficients[i];
             }
 
-            return slope;
+            return slope + (odd ? poly : poly * r);
         }
 
         // Newton's method on f(t) = z(t) - (vertex + sag(r(t))), from the vertex plane.
@@ -290,13 +281,28 @@ namespace Optics {
     {
         std::vector<GhostPath> paths;
         const int n = (int)lens.surfaces.size();
+        const auto reflects = [&](int i) {
+            const Surface& after = lens.surfaces[i];
+            const bool airBefore = i == 0 || lens.surfaces[i - 1].nd <= 1.;
+            if (airBefore || after.nd <= 1.) {
+                return airBefore != (after.nd <= 1.);
+            }
+            const Surface& before = lens.surfaces[i - 1];
+
+            return before.nd != after.nd || before.vd != after.vd;
+        };
         int first = 0;
         for (int bounce1 = 0; bounce1 < n; ++bounce1) {
             if (lens.surfaces[bounce1].type == SurfaceType::Stop) {
                 first = bounce1 + 1;
             }
+            if (!reflects(bounce1)) {
+                continue;
+            }
             for (int bounce2 = first; bounce2 < bounce1; ++bounce2) {
-                paths.push_back(GhostPath { bounce1, bounce2 });
+                if (reflects(bounce2)) {
+                    paths.push_back(GhostPath { bounce1, bounce2 });
+                }
             }
         }
 

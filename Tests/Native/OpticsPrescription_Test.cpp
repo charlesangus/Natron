@@ -163,6 +163,27 @@ TEST(OpticsPrescription, MalformedDatRowNamesTheLine)
     EXPECT_EQ(error.line, 3);
 }
 
+TEST(OpticsPrescription, NonFiniteDatNumbersAreErrors)
+{
+    Prescription p;
+    LensFileError error;
+    EXPECT_FALSE(parseDat("50 5 1.5 20\n-50 nan 1 20\n0 1 0 10\n", &p, &error));
+    EXPECT_EQ(error.line, 2);
+    EXPECT_FALSE(parseDat("inf 5 1.5 20\n-50 2 1 20\n0 1 0 10\n", &p, &error));
+    EXPECT_EQ(error.line, 1);
+    EXPECT_FALSE(parseDat("50 5 1.5 20\n-50 2 1 1e999\n0 1 0 10\n", &p, &error));
+    EXPECT_EQ(error.line, 2);
+}
+
+TEST(OpticsPrescription, DatStopWithoutApertureIsAnError)
+{
+    Prescription p;
+    LensFileError error;
+    EXPECT_FALSE(parseDat("50 5 1.5 20\n-50 2 1 20\n0 40 0 0\n", &p, &error));
+    EXPECT_EQ(error.line, 3);
+    EXPECT_NE(error.message.find("stop"), std::string::npos) << error.message;
+}
+
 TEST(OpticsPrescription, LayoutPlacesVerticesAndCentres)
 {
     Prescription p;

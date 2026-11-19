@@ -16,6 +16,11 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
+/*
+ * Ported in part from realflare (https://github.com/beatreichenbach/realflare v1.0.3,
+ * GPL-3.0-or-later), with the sources named in Spectral.h; this port is GPL-3.0-or-later.
+ */
+
 #include "Engine/Optics/Spectral.h"
 
 #include <algorithm>
@@ -244,18 +249,37 @@ namespace Optics {
         return { cmf[0] * power, cmf[1] * power, cmf[2] * power };
     }
 
-    Xyz illuminantXyz(const std::string& name)
-    {
-        Xyz sum = { 0., 0., 0. };
-        if (!hasIlluminant(name)) {
+    namespace {
+
+        Xyz summedXyz(const std::string& illuminant, const std::vector<double>& wavelengthsNm)
+        {
+            Xyz sum = { 0., 0., 0. };
+            for (double nm : wavelengthsNm) {
+                const Xyz xyz = spectralXyz(illuminant, nm);
+                for (int k = 0; k < 3; ++k) {
+                    sum[k] += xyz[k];
+                }
+            }
             return sum;
         }
-        for (int nm = int(kCmfMinNm); nm <= int(kCmfMaxNm); ++nm) {
-            const Xyz xyz = spectralXyz(name, nm);
-            for (int k = 0; k < 3; ++k) {
-                sum[k] += xyz[k];
+
+        std::vector<double> everyWholeNm()
+        {
+            std::vector<double> nm;
+            for (int i = int(kCmfMinNm); i <= int(kCmfMaxNm); ++i) {
+                nm.push_back(i);
             }
+            return nm;
         }
+
+    } // namespace
+
+    Xyz illuminantXyz(const std::string& name)
+    {
+        if (!hasIlluminant(name)) {
+            return { 0., 0., 0. };
+        }
+        const Xyz sum = summedXyz(name, everyWholeNm());
         return { sum[0] / sum[1], 1., sum[2] / sum[1] };
     }
 
@@ -368,10 +392,28 @@ namespace Optics {
             }
             return false;
         }
+        // A few samples do not integrate to the illuminant's colour or brightness: 5 samples of D65
+        // sum to a tint, and the sum grows with the count. Scaling X, Y and Z by the dense sum over the
+        // sampled one makes every sample set sum to what the 1 nm integral gives.
+        const Xyz dense = summedXyz(illuminant, everyWholeNm());
+        const Xyz sampled = summedXyz(illuminant, wavelengthsNm);
+        Xyz balance = { 1., 1., 1. };
+        if (!wavelengthsNm.empty()) {
+            for (int k = 0; k < 3; ++k) {
+                if (!(sampled[k] > 0.)) {
+                    if (error) {
+                        *error = "the wavelengths miss one of X, Y and Z under illuminant \"" + illuminant + "\"";
+                    }
+                    return false;
+                }
+                balance[k] = dense[k] / sampled[k];
+            }
+        }
         std::vector<Rgb> colours;
         colours.reserve(wavelengthsNm.size());
         for (double nm : wavelengthsNm) {
-            colours.push_back(applyMatrix(m, spectralXyz(illuminant, nm)));
+            const Xyz xyz = spectralXyz(illuminant, nm);
+            colours.push_back(applyMatrix(m, { xyz[0] * balance[0], xyz[1] * balance[1], xyz[2] * balance[2] }));
         }
         *out = std::move(colours);
         return true;

@@ -19,16 +19,18 @@
 /*
  * Ported from realflare (https://github.com/beatreichenbach/realflare v1.0.3,
  * flare/adapters/database/parsers/zemax.py), GPL-3.0-or-later; this port is GPL-3.0-or-later.
- * Departures: unknown surface types, catalogue glass names, malformed numbers, surfaces without
- * DISZ and nonzero aspheric terms beyond the eighth are errors instead of being skipped or
- * truncated; the object surface is always dropped; PARM / XDAT are applied by the surface's final
- * type; and extended asphere terms are scaled by the XDAT 2 normalisation radius.
+ * Departures: unknown surface types and lens units, catalogue glass names, malformed or non-finite
+ * numbers, surfaces without DISZ, a stop without DIAM and nonzero aspheric terms beyond the eighth
+ * are errors instead of being skipped or truncated; the object surface is always dropped; PARM /
+ * XDAT are applied by the surface's final type; lengths are converted from the UNIT line to mm;
+ * extended asphere coefficients start at XDAT 3, as OpticStudio writes them (realflare reads XDAT 3
+ * as a term mode and starts at XDAT 4), stop at the XDAT 1 term count and are scaled by the XDAT 2
+ * normalisation radius.
  */
 
 #include "Engine/Optics/ZemaxParser.h"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -145,23 +147,56 @@ namespace Optics {
             return parts;
         }
 
+        std::string
+        lowered(std::string text)
+        {
+            std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+            return text;
+        }
+
+        // Finite numbers only; INFINITY / INF as +infinity when allowInfinity.
         bool
         parseNumber(std::string text,
-                    double* out)
+                    double* out,
+                    bool allowInfinity = false)
         {
             std::replace(text.begin(), text.end(), ',', '.');
-            std::string lower = text;
-            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            const std::string lower = lowered(text);
             if (lower == "infinity" || lower == "inf") {
                 *out = std::numeric_limits<double>::infinity();
 
-                return true;
+                return allowInfinity;
             }
             const char* begin = text.c_str();
             char* end = nullptr;
             *out = std::strtod(begin, &end);
 
-            return end != begin && *end == '\0';
+            return end != begin && *end == '\0' && std::isfinite(*out);
+        }
+
+        // The factor from the file's lens unit to mm; false for a unit Zemax does not write.
+        bool
+        unitToMm(const std::string& unit,
+                 double* out)
+        {
+            static const std::pair<const char*, double> units[] = {
+                { "MM", 1. },
+                { "CM", 10. },
+                { "IN", 25.4 },
+                { "INCH", 25.4 },
+                { "M", 1000. },
+                { "METER", 1000. },
+            };
+            for (const auto& u : units) {
+                if (unit == u.first) {
+                    *out = u.second;
+
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         struct PendingSurface {
@@ -170,9 +205,10 @@ namespace Optics {
             Surface surface;
             bool typeSet = false;
             bool haveDisz = false;
-            std::array<double, kMaxAsphericCoefficients> parm {};
+            std::vector<double> parm;
             std::vector<std::pair<int, double>> xdat;
             std::vector<int> xdatLines;
+            int diamLine = 0;
         };
 
         bool
@@ -208,34 +244,54 @@ namespace Optics {
                 return fail(error, p->line, which + " has no DISZ (truncated file?)");
             }
             Surface& s = p->surface;
-            s.coefficients.fill(0.);
-            if (s.type == SurfaceType::EvenAsphere) {
+            s.coefficients.clear();
+            const bool parmTerms = !p->parm.empty();
+            if (s.type == SurfaceType::EvenAsphere || (s.type == SurfaceType::ExtendedAsphere && parmTerms)) {
+                // Some published XASPHERE files carry even asphere coefficients in PARM and no XDAT.
+                if (s.type == SurfaceType::ExtendedAsphere) {
+                    for (size_t i = 0; i < p->xdat.size(); ++i) {
+                        if (p->xdat[i].first >= 3 && p->xdat[i].second != 0.) {
+                            return fail(error, p->xdatLines[i], which + ": the extended asphere has coefficients in both PARM and XDAT");
+                        }
+                    }
+                }
                 s.coefficients = p->parm;
             } else if (s.type == SurfaceType::ExtendedAsphere || s.type == SurfaceType::ExtendedOddAsphere) {
+                // Extra data 1 is the number of terms, 2 the normalisation radius, and 3 onwards the
+                // coefficients of rho^2, rho^4, ... (extended asphere) or rho, rho^2, ... (odd).
                 const bool odd = s.type == SurfaceType::ExtendedOddAsphere;
-                const int start = odd ? 3 : 4;
+                constexpr int start = 3;
                 double normRadius = 1.;
-                for (const auto& [index, value] : p->xdat) {
-                    if (index == 2 && value > 0.) {
+                int termCount = std::numeric_limits<int>::max();
+                for (size_t i = 0; i < p->xdat.size(); ++i) {
+                    const auto& [index, value] = p->xdat[i];
+                    if (index == 1) {
+                        if (value < 0. || value != std::floor(value) || value > (double)std::numeric_limits<int>::max()) {
+                            return fail(error, p->xdatLines[i], which + ": the extended asphere term count is not a whole number");
+                        }
+                        termCount = (int)value;
+                    } else if (index == 2 && value > 0.) {
                         normRadius = value;
                     }
                 }
                 for (size_t i = 0; i < p->xdat.size(); ++i) {
                     const int slot = p->xdat[i].first - start;
-                    if (slot < 0) {
+                    if (slot < 0 || slot >= termCount) {
                         continue;
                     }
-                    if (slot >= kMaxAsphericCoefficients) {
-                        if (p->xdat[i].second != 0.) {
-                            return fail(error, p->xdatLines[i],
-                                        which + ": aspheric term " + std::to_string(slot + 1) + " is beyond the " + std::to_string(kMaxAsphericCoefficients) + " supported");
-                        }
+                    if (p->xdat[i].second == 0.) {
                         continue;
+                    }
+                    if ((size_t)slot >= s.coefficients.size()) {
+                        s.coefficients.resize(slot + 1, 0.);
                     }
                     // Extended asphere terms are polynomials in r / normRadius.
                     const int power = odd ? slot + 1 : 2 * slot + 2;
                     s.coefficients[slot] = p->xdat[i].second / std::pow(normRadius, power);
                 }
+            }
+            while (!s.coefficients.empty() && s.coefficients.back() == 0.) {
+                s.coefficients.pop_back();
             }
 
             return true;
@@ -253,6 +309,7 @@ namespace Optics {
         std::vector<PendingSurface> surfaces;
         PendingSurface* current = nullptr;
         std::string note;
+        double unitScale = 1.;
 
         std::istringstream in(text);
         std::string raw;
@@ -267,14 +324,14 @@ namespace Optics {
                 continue;
             }
             const bool indented = first > 0;
-            if (current && !indented) {
+            const size_t keyEnd = raw.find_first_of(" \t", first);
+            const std::string key = raw.substr(first, keyEnd == std::string::npos ? std::string::npos : keyEnd - first);
+            if (current && (!indented || key == "SURF")) {
                 if (!finishSurface(current, error)) {
                     return false;
                 }
                 current = nullptr;
             }
-            const size_t keyEnd = raw.find_first_of(" \t", first);
-            const std::string key = raw.substr(first, keyEnd == std::string::npos ? std::string::npos : keyEnd - first);
             std::string rest = keyEnd == std::string::npos ? std::string() : raw.substr(keyEnd);
             const size_t restStart = rest.find_first_not_of(" \t");
             rest = restStart == std::string::npos ? std::string() : rest.substr(restStart);
@@ -282,30 +339,46 @@ namespace Optics {
             rest.erase(restEnd == std::string::npos ? 0 : restEnd + 1);
             const std::vector<std::string> parts = split(rest);
 
-            const auto number = [&](size_t index, const char* what, double* value) {
+            const auto number = [&](size_t index, const char* what, double* value, bool allowInfinity = false) {
                 if (index >= parts.size()) {
                     return fail(error, lineNumber, std::string(what) + " has no value");
                 }
-                if (!parseNumber(parts[index], value)) {
-                    return fail(error, lineNumber, std::string(what) + ": not a number: \"" + parts[index] + "\"");
+                if (!parseNumber(parts[index], value, allowInfinity)) {
+                    return fail(error, lineNumber, std::string(what) + ": not a finite number: \"" + parts[index] + "\"");
                 }
+
+                return true;
+            };
+            const auto integer = [&](size_t index, const char* what, int* value) {
+                double v = 0.;
+                if (!number(index, what, &v)) {
+                    return false;
+                }
+                if (v != std::floor(v) || v < 0. || v > (double)std::numeric_limits<int>::max()) {
+                    return fail(error, lineNumber, std::string(what) + ": not a whole number: \"" + parts[index] + "\"");
+                }
+                *value = (int)v;
 
                 return true;
             };
 
             if (key == "SURF") {
-                double n = 0.;
-                if (!number(0, "SURF", &n)) {
+                int n = 0;
+                if (!integer(0, "SURF", &n)) {
                     return false;
                 }
                 surfaces.emplace_back();
                 current = &surfaces.back();
                 current->line = lineNumber;
-                current->number = (int)n;
+                current->number = n;
                 continue;
             }
             if (!current) {
-                if (key == "NAME") {
+                if (key == "UNIT") {
+                    if (parts.empty() || !unitToMm(parts[0], &unitScale)) {
+                        return fail(error, lineNumber, "unsupported lens unit \"" + (parts.empty() ? std::string() : parts[0]) + "\"");
+                    }
+                } else if (key == "NAME") {
                     lens.name = rest;
                 } else if (key == "NOTE") {
                     std::string t = rest;
@@ -347,7 +420,7 @@ namespace Optics {
                     return false;
                 }
             } else if (key == "DISZ") {
-                if (!number(0, "DISZ", &s.spacing)) {
+                if (!number(0, "DISZ", &s.spacing, true)) {
                     return false;
                 }
                 current->haveDisz = true;
@@ -370,18 +443,22 @@ namespace Optics {
                 if (!number(0, "DIAM", &s.semiDiameter)) {
                     return false;
                 }
+                current->diamLine = lineNumber;
             } else if (key == "CONI") {
                 if (!number(0, "CONI", &s.conic)) {
                     return false;
                 }
             } else if (key == "PARM" || key == "XDAT") {
-                double index = 0., value = 0.;
-                if (!number(0, key.c_str(), &index) || !number(1, key.c_str(), &value)) {
+                int i = 0;
+                double value = 0.;
+                if (!integer(0, key.c_str(), &i) || !number(1, key.c_str(), &value)) {
                     return false;
                 }
-                const int i = (int)index;
                 if (key == "PARM") {
-                    if (i >= 1 && i <= kMaxAsphericCoefficients) {
+                    if (i >= 1 && value != 0.) {
+                        if ((size_t)i > current->parm.size()) {
+                            current->parm.resize(i, 0.);
+                        }
                         current->parm[i - 1] = value;
                     }
                 } else if (i >= 1) {
@@ -395,11 +472,22 @@ namespace Optics {
         }
 
         std::vector<Surface> kept;
+        std::vector<const PendingSurface*> keptFrom;
         for (const PendingSurface& p : surfaces) {
             if (p.number == 0 || std::isinf(p.surface.spacing)) {
                 continue;
             }
-            kept.push_back(p.surface);
+            Surface s = p.surface;
+            // A term in r^n has units of length^(1 - n).
+            s.curvature /= unitScale;
+            s.spacing *= unitScale;
+            s.semiDiameter *= unitScale;
+            for (size_t i = 0; i < s.coefficients.size(); ++i) {
+                const int power = (int)(s.type == SurfaceType::ExtendedOddAsphere ? i + 1 : 2 * i + 2);
+                s.coefficients[i] *= std::pow(unitScale, 1 - power);
+            }
+            kept.push_back(s);
+            keptFrom.push_back(&p);
         }
         if (kept.size() < 2) {
             return fail(error, lineNumber, "no lens surfaces before the image surface");
@@ -410,6 +498,12 @@ namespace Optics {
         lens.source = note;
         if (lens.stopCount() != 1) {
             return fail(error, lineNumber, lens.stopCount() ? "more than one stop surface" : "no stop surface");
+        }
+        const int stop = lens.stopIndex();
+        if (!(lens.surfaces[stop].semiDiameter > 0.)) {
+            const PendingSurface* p = keptFrom[stop];
+            return fail(error, p->diamLine ? p->diamLine : p->line,
+                        "surface " + std::to_string(p->number) + ": the stop needs a semi-diameter (DIAM) above 0");
         }
         *out = lens;
 

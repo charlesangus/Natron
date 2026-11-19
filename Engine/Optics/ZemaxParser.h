@@ -24,13 +24,17 @@
  * (https://github.com/beatreichenbach/realflare v1.0.3,
  * flare/adapters/database/parsers/zemax.py, GPL-3.0-or-later); this port is GPL-3.0-or-later.
  *
- * Read: NAME, NOTE and FNUM, and per surface TYPE (STANDARD, EVENASPH, XASPHERE, XOSPHERE and the
- * custom STOP, CYLINDER_X, CYLINDER_Y), STOP, CURV, DISZ, GLAS ("<name> <a> <b> nd Vd ...", Vd
- * defaulting to 60), DIAM (the clear semi-diameter), CONI, PARM 1-8 (even asphere coefficients)
- * and XDAT (extended asphere coefficients from index 4, extended odd asphere from index 3).
- * Surface 0, the object, and any surface spaced at infinity are dropped; the last surface is the
- * image plane and sets Prescription::imageDistance. A surface without CURV is a plane. Files may
- * be UTF-8 or UTF-16.
+ * Read: UNIT (MM, CM, IN or METER; lengths are converted to mm), NAME, NOTE and FNUM, and per
+ * surface TYPE (STANDARD, EVENASPH, XASPHERE, XOSPHERE and the custom STOP, CYLINDER_X, CYLINDER_Y),
+ * STOP, CURV, DISZ, GLAS ("<name> <a> <b> nd Vd ...", Vd defaulting to 60), DIAM (the clear
+ * semi-diameter, required above 0 on the stop), CONI, PARM n (the coefficient of r^2n on EVENASPH)
+ * and XDAT (1: the term count, 2: the normalisation radius, 3 onwards: the coefficients of rho^2,
+ * rho^4, ... for XASPHERE and of rho, rho^2, ... for XOSPHERE), with no limit on the term count. An
+ * XASPHERE with nonzero PARM coefficients reads them as EVENASPH does and must have no nonzero XDAT
+ * coefficients. Numbers must be finite; only DISZ may be
+ * INFINITY. Surface 0, the object, and any surface spaced at infinity are dropped; the last surface
+ * is the image plane and sets Prescription::imageDistance. A surface without CURV is a plane. Files
+ * may be UTF-8 or UTF-16.
  */
 
 #include <string>

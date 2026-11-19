@@ -24,11 +24,12 @@
  * (https://github.com/beatreichenbach/realflare v1.0.3, flare/api/lens/model.py Material.get_ior
  * and flare/adapters/database/database.py get_material, GPL-3.0-or-later); the Cauchy fallback
  * and abbeFor() come from Niik-l's LensTrace (niikl/RB-2.6 Engine/Dev/PostFX/LensTrace.cpp,
- * GPL-2.0-or-later). The catalogue data is OpticsDatabase's (MIT, see
+ * GPL-2.0-or-later); this port is GPL-3.0-or-later. The catalogue data is OpticsDatabase's (MIT, see
  * Gui/Resources/Optics/LICENSE-OpticsDatabase.txt), from refractiveindex.info (CC0), converted by
  * tools/optics/convert_glass.py.
  */
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -85,9 +86,12 @@ namespace Optics {
     // Beyond this distance the nearest catalogue glass is a worse guess than Cauchy dispersion.
     constexpr double kGlassMatchTolerance = 0.1;
 
-    // The dispersion of one medium: air, a catalogue glass, or Cauchy from nd and Vd.
+    // The dispersion of one medium: air, a catalogue glass, or Cauchy from nd and Vd. A matched
+    // glass is a copy, so a Dispersion outlives its catalogue, and its curve is shifted by
+    // glassOffset so that ior(kWavelengthDNm) is the prescription's nd.
     struct Dispersion {
-        const Glass* glass = nullptr;
+        std::optional<Glass> glass;
+        double glassOffset = 0.;
         double nd = 1.;
         double vd = 0.;
 
@@ -95,7 +99,8 @@ namespace Optics {
         double ior(double wavelengthNm) const;
     };
 
-    // The medium for a surface's nd and Vd. nd <= 1 is air. Vd 0 is estimated with abbeFor(nd).
+    // The medium for a surface's nd and Vd. nd <= 1 is air. The nearest catalogue glass within
+    // tolerance lends its dispersion curve, offset to pass through nd at the d line. Vd 0 is estimated with abbeFor(nd).
     // abbeOffset is added to Vd before matching, and the Cauchy fallback uses the offset Vd too, so the
     // offset shifts dispersion whether or not a catalogue glass is found.
     Dispersion matchGlass(const GlassCatalogue& catalogue,

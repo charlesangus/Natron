@@ -23,6 +23,7 @@
 // ***** END PYTHON BLOCK *****
 
 #include <cmath>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -136,13 +137,43 @@ TEST(OpticsTrace, AsphereNewtonSolveConverges)
         const double r = std::hypot(hit.position.x, hit.position.y);
         const double c = s.curvature;
         double sag = c * r * r / (1. + std::sqrt(1. - (1. + s.conic) * c * c * r * r));
-        for (int i = 0; i < kMaxAsphericCoefficients; ++i) {
-            sag += s.coefficients[i] * std::pow(r, 2 * i + 2);
+        for (size_t i = 0; i < s.coefficients.size(); ++i) {
+            sag += s.coefficients[i] * std::pow(r, 2. * i + 2.);
         }
         EXPECT_NEAR(hit.position.z, sag, 1e-6) << h;
     }
     const TraceResult r = system.traceSequential(system.rayAtFrontSurface(1., 0.5, Vec3 { 0., 0., 1. }), 0);
     EXPECT_TRUE(r.valid);
+}
+
+TEST(OpticsTrace, HighOrderAsphereTermsShapeTheSurface)
+{
+    for (const char* type : { "XASPHERE", "XOSPHERE" }) {
+        std::string text = std::string("SURF 0\n  DISZ INFINITY\nSURF 1\n  TYPE ") + type + "\n  CURV 0.02\n  XDAT 1 20\n  XDAT 2 6\n";
+        for (int term = 1; term <= 20; ++term) {
+            text += "  XDAT " + std::to_string(term + 2) + " " + (term % 2 ? "0.002" : "-0.001") + "\n";
+        }
+        text += "  DISZ 2\n  GLAS ___BLANK 1 0 1.5 60\n  DIAM 6\nSURF 2\n  STOP\n  DISZ 10\n  DIAM 4\nSURF 3\n  DISZ 0\n";
+        Prescription lens;
+        LensFileError error;
+        ASSERT_TRUE(parseZemax(text, &lens, &error)) << error.text();
+        const Surface& s = lens.surfaces[0];
+        ASSERT_EQ(s.coefficients.size(), 20u) << type;
+        const bool odd = s.type == SurfaceType::ExtendedOddAsphere;
+        const TraceSystem system(lens, kNoCatalogue, std::string(), 0., { kWavelengthDNm });
+        for (double h = 0.; h <= 5.5; h += 0.5) {
+            const Ray ray { Vec3 { h, 0.25 * h, -2. }, Vec3 { 0.01, -0.02, 1. } };
+            SurfaceHit hit;
+            ASSERT_TRUE(system.intersect(0, ray, &hit)) << type << " " << h;
+            const double r = std::hypot(hit.position.x, hit.position.y);
+            const double c = s.curvature;
+            double sag = c * r * r / (1. + std::sqrt(1. - (1. + s.conic) * c * c * r * r));
+            for (int term = 1; term <= 20; ++term) {
+                sag += (term % 2 ? 0.002 : -0.001) * std::pow(r / 6., odd ? term : 2 * term);
+            }
+            EXPECT_NEAR(hit.position.z, sag, 1e-6) << type << " " << h;
+        }
+    }
 }
 
 TEST(OpticsTrace, UseAsphericOffTracesTheVertexSphere)
@@ -161,9 +192,12 @@ TEST(OpticsTrace, UseAsphericOffTracesTheVertexSphere)
 
 TEST(OpticsTrace, TenSurfaceLensGhostPairs)
 {
+    // Glass after surfaces 0, 2, 5, 7 and 8 (a different glass), so every surface but the stop
+    // separates two media.
+    const double nd[10] = { 1.5, 1., 1.6, 1., 1., 1.5, 1., 1.5, 1.7, 1. };
     Prescription lens;
     for (int i = 0; i < 10; ++i) {
-        lens.surfaces.push_back(surface(i == 4 ? SurfaceType::Stop : SurfaceType::Standard, 50., 2., 10.));
+        lens.surfaces.push_back(surface(i == 4 ? SurfaceType::Stop : SurfaceType::Standard, 50., 2., 10., nd[i], nd[i] > 1. ? 50. : 0.));
     }
     const std::vector<GhostPath> ghosts = enumerateGhosts(lens);
     // 4 surfaces before the stop and 5 after: C(4, 2) + C(5, 2).
@@ -174,6 +208,52 @@ TEST(OpticsTrace, TenSurfaceLensGhostPairs)
         EXPECT_NE(g.bounce2, 4);
         EXPECT_EQ(g.bounce1 < 4, g.bounce2 < 4);
     }
+}
+
+TEST(OpticsTrace, GhostsSkipSurfacesWithTheSameMediumOnBothSides)
+{
+    // Surfaces 1 and 2 are air to air, 5 cements two pieces of the same glass.
+    const double nd[7] = { 1.5, 1., 1., 1., 1.5, 1.5, 1. };
+    Prescription lens;
+    for (int i = 0; i < 7; ++i) {
+        lens.surfaces.push_back(surface(i == 3 ? SurfaceType::Stop : SurfaceType::Standard, 50., 2., 10., nd[i], nd[i] > 1. ? 50. : 0.));
+    }
+    const std::vector<GhostPath> ghosts = enumerateGhosts(lens);
+    // Before the stop only 0 and 1 reflect; after it 4 and 6.
+    const std::vector<GhostPath> expected = { { 1, 0 }, { 6, 4 } };
+    EXPECT_EQ(ghosts, expected);
+
+    // Equal nd with a different Vd is a different medium.
+    lens.surfaces[5].vd = 30.;
+    EXPECT_EQ(enumerateGhosts(lens).size(), 4u);
+}
+
+// The glass matched for nd 1.52 is P-BK7 (nd 1.5164); traced with its own index the lens would
+// focus 0.82 mm away from the plane focusTo computes from nd. Spherical aberration moves a ray at
+// 0.1 mm from the axis by under 2e-4 mm.
+TEST(OpticsTrace, FocusToThenTraceLandsInFocusWithACatalogueGlass)
+{
+    GlassCatalogue catalogue;
+    std::string error;
+    ASSERT_TRUE(catalogue.load(NATRON_TESTS_FIXTURES_DIR "/../../Gui/Resources/Optics/glass.json", &error)) << error;
+    Prescription lens = biconvex();
+    lens.surfaces[1].nd = 1.52;
+    lens.surfaces[1].vd = 64.;
+    TraceSystem system(lens, catalogue, "Schott", 0., { kWavelengthDNm });
+    ASSERT_TRUE(system.media()[1].glass.has_value());
+    EXPECT_EQ(system.media()[1].glass->name, "P-BK7");
+
+    // The stop is the first surface, so the entrance pupil is at z = 0.
+    const double distance = 1000.;
+    double imagePlaneZ = 0.;
+    ASSERT_TRUE(focusTo(lens, distance, &imagePlaneZ, &error)) << error;
+    system.setImagePlaneZ(imagePlaneZ);
+    const double h = 0.1;
+    const double length = std::hypot(h, distance);
+    const TraceResult r = system.traceSequential(Ray { Vec3 { 0., 0., -distance }, Vec3 { h / length, 0., distance / length } }, 0);
+    ASSERT_TRUE(r.valid);
+    EXPECT_NEAR(r.ray.position.z, imagePlaneZ, 1e-9);
+    EXPECT_NEAR(axisCrossingZ(r.ray), imagePlaneZ, 1e-3);
 }
 
 TEST(OpticsTrace, RayPastTheClearApertureHasRrelAboveOne)
@@ -226,6 +306,41 @@ TEST(OpticsCoating, QuarterWaveCoatingReflectsLessThanUncoated)
     EXPECT_GT(coated, 0.);
     // Away from its design wavelength the film cancels less.
     EXPECT_LT(coated, surfaceReflectance(mgf2, 0., 400., 1., 1.52));
+}
+
+// A 100 nm film of n 1.38 on n 1.52 at 45 degrees. Inside the film sin(theta1) = sin(45) / 1.38, so
+// the round trip 2 n1 d cos(theta1) is half a wave at 4 * 1.38 * 100 * 0.85875 = 474.03 nm, where the
+// exact Airy reflectance (s and p averaged) has its minimum, 0.018959. The two-beam film keeps
+// only the first reflection off the substrate, and realflare's p transmission, so it reads higher.
+TEST(OpticsCoating, ObliqueFilmMinimumIsAtTheHalfWaveRoundTrip)
+{
+    const double theta = std::numbers::pi / 4., d = 100., n1 = 1.38;
+    const double cosTheta1 = std::sqrt(1. - 0.5 / (n1 * n1));
+    const double minimum = 4. * n1 * d * cosTheta1;
+    EXPECT_NEAR(minimum, 474.03, 0.01);
+    const double atMinimum = fresnelAntiReflection(theta, minimum, d, 1., n1, 1.52);
+    EXPECT_LT(atMinimum, fresnelAntiReflection(theta, minimum - 5., d, 1., n1, 1.52));
+    EXPECT_LT(atMinimum, fresnelAntiReflection(theta, minimum + 5., d, 1., n1, 1.52));
+    EXPECT_NEAR(atMinimum, 0.018959, 0.006);
+}
+
+TEST(OpticsCoating, PastTheCriticalAngleEverythingReflects)
+{
+    const Coating film { 550., 1.38 };
+    // The critical angle from n 1.5 into air is asin(1 / 1.5), 41.8 degrees.
+    const double theta = 45. * std::numbers::pi / 180.;
+    EXPECT_EQ(surfaceReflectance(Coating(), theta, 550., 1.5, 1.), 1.);
+    EXPECT_EQ(surfaceReflectance(film, theta, 550., 1.5, 1.), 1.);
+    const double below = 40. * std::numbers::pi / 180.;
+    EXPECT_LT(surfaceReflectance(Coating(), below, 550., 1.5, 1.), 1.);
+    EXPECT_LT(surfaceReflectance(film, below, 550., 1.5, 1.), 1.);
+}
+
+TEST(OpticsCoating, SameMediumReflectsNothing)
+{
+    EXPECT_EQ(surfaceReflectance(Coating(), 0.3, 550., 1.5, 1.5), 0.);
+    EXPECT_EQ(surfaceReflectance(Coating { 550., 1.38 }, 0.3, 550., 1.5, 1.5), 0.);
+    EXPECT_EQ(surfaceReflectance(Coating(), 0.3, 550., 1., 1.), 0.);
 }
 
 TEST(OpticsCoating, GenerationIsSeededAndSkipsTheStop)

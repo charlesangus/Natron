@@ -30,6 +30,7 @@
 #include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
+#include "Native/DefocusReference/ZDefocusCandidate.h"
 #include "Native/GlHostWrapTestEffect.h"
 #include "NativeMetadataTestEffect.h"
 #include "NativeParity.h"
@@ -225,6 +226,8 @@ registerNativeParityTestPlugins()
     // same deterministic multiplanar picture, with negatives, super-whites and exact alpha bands.
     registerTestBuiltInPlugin<ParitySourceTestEffect>();
     registerTestBuiltInPlugin<GlHostWrapTestEffect>();
+    // Feeds the defocus reference harness's pinhole renders to ZDefocus.
+    registerTestBuiltInPlugin<DefocusHarnessSourceTestEffect>();
 }
 
 void

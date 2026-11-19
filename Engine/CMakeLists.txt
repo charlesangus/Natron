@@ -49,6 +49,12 @@ file(GLOB NatronEngineAi_HEADERS Ai/*.h)
 file(GLOB NatronEngineAi_SOURCES Ai/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineAi_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineAi_SOURCES})
+# Engine/Optics/ is the engine-free optics library (lens prescriptions, glass, tracing) the lens
+# nodes share; nothing in it includes Natron or Qt headers.
+file(GLOB NatronEngineOptics_HEADERS Optics/*.h)
+file(GLOB NatronEngineOptics_SOURCES Optics/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineOptics_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineOptics_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)

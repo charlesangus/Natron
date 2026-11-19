@@ -1878,7 +1878,9 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
             _imp->restorePendingExpansion();
             _imp->restoreScroll();
         }
-        if (_imp->treeSelectionDeferred && (_imp->stack->currentWidget() == _imp->tree)) {
+        // Behind the filter's results too: showSelection() selects the tree's rows there, and a
+        // pick the filter hides is selected in the tree alone.
+        if (_imp->treeSelectionDeferred && (_imp->stack->currentWidget() != _imp->changedHereTree)) {
             _imp->selectTreeRows(_imp->selectionOrder);
         }
     });

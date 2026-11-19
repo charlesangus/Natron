@@ -152,6 +152,12 @@ try:
             shown[path] = (str(cell.data(Qt.DisplayRole)), bool(cell.data(INHERITED_ROLE)))
         return shown
 
+    def listed(label):
+        """Waits until the model has read every row of CELLS, which it reads on its worker."""
+        ok = yield ("until", lambda: all(find(p).isValid() for p in CELLS), POLL_TIMEOUT_S)
+        check(ok, "%s: the panel lists every row" % (label,))
+        return ok
+
     def payload_state(path):
         index = find(path)
         return index.data(PAYLOAD_STATE_ROLE) if index.isValid() else None
@@ -290,6 +296,7 @@ try:
         saved_loaded = loaded()
         check(saved_loaded == want, "the states and the twirl load their buildings (%r)" % saved_loaded)
         check(payload_state(BROKEN) == STATE_FAILED, "the missing payload is badged before saving (%r)" % payload_state(BROKEN))
+        yield from listed("first open")
         saved_cells = cells()
         report("NOTE saved cells %r" % (saved_cells,))
         shot("scene-save-before.png")
@@ -304,6 +311,7 @@ try:
         yield from wait_for_scene("restore")
         QMetaObject.invokeMethod(view(), "setDrawRevealBatch", Q_ARG(int, 0))
         yield from wait_for_loads("restore")
+        yield from listed("restore")
         restored_cells = cells()
         check(restored_cells == saved_cells,
               "every draw state cell is restored (differ: %r)" % [p for p in CELLS if restored_cells.get(p) != saved_cells.get(p)])
@@ -333,8 +341,10 @@ try:
         yield ("sleep", 3 * SETTLE_MS)
         ok = yield ("until", loads_quiet, LOAD_TIMEOUT_S)
         check(ok, "cancel: nothing is left to load")
+        yield from listed("cancel")
         cancelled_cells = cells()
-        check(cancelled_cells == saved_cells, "the draw states are still restored after the cancel")
+        check(cancelled_cells == saved_cells, "the draw states are still restored after the cancel (differ: %r)"
+              % [p for p in CELLS if cancelled_cells.get(p) != saved_cells.get(p)])
         if immediate:
             check(loaded() == [], "cancelling before the first sync loads nothing (%r)" % loaded())
         else:

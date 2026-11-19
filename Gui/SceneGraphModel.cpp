@@ -1685,8 +1685,23 @@ SceneGraphModel::setSource(const SceneGraphStageSourcePtr& source)
     QSet<QString> oldChangedHere;
     oldChangedHere.swap(_imp->changedHere);
     SceneTeardown::release(std::move(oldChangedHere));
-    _imp->resetTo(false, PrimData());
-    refresh();
+    // One reset to the new stage's root rather than one to nothing and one more from refresh(),
+    // which the old tree's gathers and reads in flight would hold back anyway.
+    bool hasStage = false;
+    PrimData rootData;
+    if (source) {
+        const U64 editCount = source->getEditCount();
+        (void)source->tryReadStage([&](const SceneStage* sceneStage) {
+            _imp->lastEditCount = editCount;
+            if (sceneStage) {
+                const UsdStageRefPtr& stage = sceneStage->getStage();
+                _imp->listen(stage);
+                rootData = readPrimData(stage->GetPseudoRoot());
+                hasStage = true;
+            }
+        });
+    }
+    _imp->resetTo(hasStage, rootData);
 }
 
 const SceneGraphStageSourcePtr&

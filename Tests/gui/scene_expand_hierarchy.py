@@ -204,9 +204,17 @@ try:
             t.selectionModel().select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
             t.selectionModel().setCurrentIndex(index, QItemSelectionModel.NoUpdate)
 
+    def listed(label, paths):
+        """Waits until the model has read the rows of paths, which it reads on its worker."""
+        ok = yield ("until", lambda: all(find(p).isValid() for p in paths), POLL_TIMEOUT_S)
+        check(ok, "%s: the panel lists %r" % (label, paths))
+        return ok
+
     def row_menu(paths, action_name):
-        """Opens the row menu on paths and triggers action_name; returns {objectName: enabled}."""
+        """Opens the row menu on paths, once they are listed, and triggers action_name; returns
+        {objectName: enabled}."""
         seen = {}
+        yield from listed("the row menu", paths)
 
         def act():
             menu = QApplication.activePopupWidget()
@@ -296,6 +304,7 @@ try:
         check(ok, "the scene view shows the loaded block")
         yield ("sleep", SETTLE_MS)
         check(opened_payloads() == world_payloads(), "no /Annex payload loads (%r)" % opened_payloads())
+        yield from listed("full + load", ["/Annex/" + b for b in BUILDINGS])
         check(all(load_state("/Annex/" + b) == STATE_UNLOADED for b in BUILDINGS),
               "the /Annex buildings stay unloaded (%r)" % [load_state("/Annex/" + b) for b in BUILDINGS])
         save("scene-expand-hierarchy-full-load")
@@ -306,6 +315,7 @@ try:
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         yield from expect_rows("taken out", dict((p, ("bbox", False)) for p in TOP_LEVEL))
         yield ("sleep", SETTLE_MS)
+        yield from listed("taken out", WORLD_BUILDINGS)
         check(all(load_state(p) == STATE_LOADED for p in WORLD_BUILDINGS),
               "the /World buildings stay loaded (%r)" % [load_state(p) for p in WORLD_BUILDINGS])
         check(opened_payloads() == world_payloads(), "the /World payload files stay open (%r)" % opened_payloads())
@@ -327,11 +337,12 @@ try:
         ok = yield ("until", lambda: viewed_name() == usd.getScriptName(), POLL_TIMEOUT_S)
         check(ok, "deleting the node reconnects the Viewer to the USDRead (got %r)" % (viewed_name(),))
         yield from expect_rows("deleted", dict((p, ("bbox", False)) for p in TOP_LEVEL))
+        yield from listed("deleted", WORLD_BUILDINGS)
         check(all(load_state(p) == STATE_LOADED for p in WORLD_BUILDINGS),
               "the /World buildings stay loaded after deleting the node (%r)" % [load_state(p) for p in WORLD_BUILDINGS])
 
         section("unload")
-        seen = row_menu(WORLD_BUILDINGS, "sceneGraphUnload")
+        seen = yield from row_menu(WORLD_BUILDINGS, "sceneGraphUnload")
         ok = yield ("until", lambda: bool(seen), POLL_TIMEOUT_S)
         require(ok, "the row menu opens on the /World buildings")
         check(seen.get("sceneGraphUnload") is True, "the row menu offers Unload (%r)" % seen)

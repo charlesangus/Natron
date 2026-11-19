@@ -33,11 +33,12 @@
 #include <iterator>
 #include <string>
 
-#include <QApplication>
-#include <QVBoxLayout>
-#include <QScrollBar>
-#include <QScrollArea>
 #include <QAction>
+#include <QApplication>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QTimer>
+#include <QVBoxLayout>
 
 #include "Global/FStreamsSupport.h"
 
@@ -156,6 +157,46 @@ Gui::restoreDefaultLayout()
 {
     createDefaultLayoutInternal(true);
     removeSceneGraphPanelsOutsidePanes();
+    noteDefaultLayout();
+}
+
+std::string
+Gui::getLayoutText()
+{
+    try {
+        Serialization::GuiLayoutSerialization layoutSerialization;
+        toSerialization(&layoutSerialization);
+
+        return Serialization::encodeGuiLayoutYaml(layoutSerialization);
+    } catch (const std::exception&) {
+        return std::string();
+    }
+}
+
+void
+Gui::noteDefaultLayout()
+{
+    _imp->defaultLayoutText.clear();
+    const unsigned int generation = ++_imp->layoutGeneration;
+    // Queued behind the layout requests the panes just posted, so the splitters have their sizes.
+    QTimer::singleShot(0, this, [this, generation]() {
+        if (generation == _imp->layoutGeneration) {
+            _imp->defaultLayoutText = getLayoutText();
+        }
+    });
+}
+
+void
+Gui::restoreDefaultLayoutUnlessKept()
+{
+    // Rebuilding moves every pane's widgets to new parents, and each restyles on the move: a
+    // project reset that kept the default layout keeps it as it is.
+    if (!_imp->defaultLayoutText.empty() && (getLayoutText() == _imp->defaultLayoutText)) {
+        removeSceneGraphPanelsOutsidePanes();
+
+        return;
+    }
+    restoreDefaultLayout();
 }
 
 void

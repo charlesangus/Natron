@@ -1619,12 +1619,16 @@ struct SceneGraphModel::Implementation {
         root.namesRead = false;
         root.rowOfValid = false;
         root.data = hasStage ? rootData : PrimData();
-        owedFetches.clear();
+        std::map<SdfPath, std::size_t> oldOwed;
+        oldOwed.swap(owedFetches);
         clearSettleQueue();
         fetchesInFlight = 0;
-        fetchingUnder.clear();
-        fetchTargets.clear();
-        carried.clear();
+        std::map<SdfPath, int> oldFetchingUnder;
+        oldFetchingUnder.swap(fetchingUnder);
+        std::set<SdfPath> oldFetchTargets;
+        oldFetchTargets.swap(fetchTargets);
+        SdfPathVector oldCarried;
+        oldCarried.swap(carried);
         carryAll = false;
         itemCount = 0;
         ++resetCount;
@@ -1636,6 +1640,10 @@ struct SceneGraphModel::Implementation {
         SceneTeardown::release(std::move(oldNamed));
         SceneTeardown::release(std::move(oldLoading));
         SceneTeardown::release(std::move(oldFailures));
+        SceneTeardown::release(std::move(oldOwed));
+        SceneTeardown::release(std::move(oldFetchingUnder));
+        SceneTeardown::release(std::move(oldFetchTargets));
+        SceneTeardown::release(std::move(oldCarried));
     }
 
     // The read of item's children ran into an edit of the stage. A row with nothing to show yet

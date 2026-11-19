@@ -66,7 +66,11 @@ struct TeardownState {
     std::atomic<bool> deferred { false };
     std::mutex mutex;
     std::condition_variable changed;
-    std::deque<std::shared_ptr<void>> queue;
+    struct Held {
+        std::shared_ptr<void> held;
+        bool readScope;
+    };
+    std::deque<Held> queue;
     std::vector<std::function<void()>> idleCallbacks;
     bool busy = false;
     bool stopping = false;
@@ -81,13 +85,15 @@ struct TeardownState {
             if (queue.empty()) {
                 return;
             }
-            std::shared_ptr<void> held = std::move(queue.front());
+            Held held = std::move(queue.front());
             queue.pop_front();
             busy = true;
             lock.unlock();
-            {
+            if (held.readScope) {
                 SceneWriteBarrier::ReadScope readScope;
-                held.reset();
+                held.held.reset();
+            } else {
+                held.held.reset();
             }
             lock.lock();
             // Posted while still busy, so that a waitIdle() that returns finds them posted.
@@ -127,8 +133,9 @@ isDeferred()
     return state().deferred;
 }
 
-void
-releaseHeld(std::shared_ptr<void> held)
+static void
+enqueue(std::shared_ptr<void> held,
+        bool readScope)
 {
     if (!held) {
         return;
@@ -142,12 +149,24 @@ releaseHeld(std::shared_ptr<void> held)
         if (s.stopped || s.stopping) {
             return;
         }
-        s.queue.push_back(std::move(held));
+        s.queue.push_back(TeardownState::Held { std::move(held), readScope });
         if (!s.thread.joinable()) {
             s.thread = std::thread([&s]() { s.run(); });
         }
     }
     s.changed.notify_all();
+}
+
+void
+releaseHeld(std::shared_ptr<void> held)
+{
+    enqueue(std::move(held), true);
+}
+
+void
+releaseHeldUnscoped(std::shared_ptr<void> held)
+{
+    enqueue(std::move(held), false);
 }
 
 std::size_t

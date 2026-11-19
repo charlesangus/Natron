@@ -140,6 +140,10 @@ public:
     ///the user was the last time.
     QString _lastLoadSequenceOpenedDir;
     QString _lastLoadProjectOpenedDir;
+    // The default layout as last made, written out; empty until it has settled once.
+    std::string defaultLayoutText;
+    // Bumped by every layout made, so a snapshot queued for an earlier one is dropped.
+    unsigned int layoutGeneration = 0;
     QString _lastSaveSequenceOpenedDir;
     QString _lastSaveProjectOpenedDir;
     QString _lastPluginDir;

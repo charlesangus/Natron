@@ -1581,7 +1581,7 @@ ViewerTab::onActiveInputDataKindChanged()
             _imp->sceneViewport->setUndoHistory(gui->getUndoHistory());
         }
         {
-            // Called on the viewport's load thread, which outlives neither the viewport nor this tab.
+            // Called on the viewport's load thread, and not once the viewport is destroyed.
             const std::weak_ptr<EffectInstance> viewer = _imp->viewerNode->shared_from_this();
             const SceneViewportRenderer::LoadSetEvaluator evaluate = [viewer](const SceneLoadSetPtr& loadSet,
                                                                               ScenePayload* payload,

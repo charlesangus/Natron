@@ -239,7 +239,7 @@ ROW_ENV = {"root": "BENCH_ROOT", "branch": "BENCH_BRANCH", "sibling_row": "BENCH
            "reveal_branch": "BENCH_REVEAL_BRANCH", "twirl_row": "BENCH_TWIRL_PATH", "widest_row": "BENCH_WIDE_ROW"}
 
 try:
-    from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QModelIndex, QPersistentModelIndex, QPoint, QPointF, QRect, Q_ARG, QTimer, Qt
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QMetaObject, QModelIndex, QPersistentModelIndex, QPoint, QPointF, QRect, Q_ARG, QTimer, Qt
     from PySide6.QtGui import QGuiApplication, QImage, QMouseEvent, QOffscreenSurface, QOpenGLContext
     from PySide6.QtWidgets import QApplication, QComboBox, QMessageBox, QTreeView, QWidget
     import NatronEngine
@@ -365,10 +365,28 @@ try:
             return None
         return set(layer.identifier for layer in Sdf.Layer.GetLoadedLayers())
 
+    def loaded_layer_count(v):
+        """How many layers are open, as the viewer last counted them off the main thread; asking USD
+        here would walk every layer on the main thread each poll."""
+        count = v.property("natronSceneLoadedLayers")
+        if count is not None:
+            return int(count)
+        return len(Sdf.Layer.GetLoadedLayers()) if Sdf is not None else None
+
+    def native_heartbeat():
+        """Natron's own main-thread heartbeat, there when NATRON_MAIN_HEARTBEAT=1."""
+        app_object = QApplication.instance()
+        if app_object is None:
+            return None
+        return app_object.findChild(QObject, "natronMainHeartbeat", Qt.FindDirectChildrenOnly)
+
     class Heartbeat(object):
-        """A QTimer whose callbacks measure how long the main thread went without servicing it."""
+        """How long the main thread went without servicing a 10 ms timer: Natron's own heartbeat when
+        it runs one, which is timed without the GIL, else a QTimer here. `gaps` holds each gap over
+        STALL_BUDGET_MS of the window stop() ended, as [ms, began at in epoch seconds]."""
 
         def __init__(self):
+            self.native = native_heartbeat() is not None
             self.timer = QTimer()
             self.timer.setInterval(HEARTBEAT_MS)
             self.timer.timeout.connect(self._tick)
@@ -377,18 +395,35 @@ try:
             # When the longest gap began, in epoch seconds, to find it in stack samples.
             self.longest_at = None
             self.started_at = None
-            # While a scenario runs: the epoch times natronSceneLoadEdits moved at, and its last value.
+            self.gaps = []
+            self.window_gaps = []
+            # While a scenario runs: the epoch times natronSceneLoadEdits moved at, its last value,
+            # and every gap over the budget of the windows stopped in it.
             self.load_edit_times = None
             self.load_edits = None
+            self.scenario_gaps = None
+            self.native_toggle = 0
+
+        def _poke(self, name):
+            # Qt reports a property change only when the value differs.
+            self.native_toggle += 1
+            hb = native_heartbeat()
+            if hb is not None:
+                hb.setProperty(name, self.native_toggle)
+            return hb
 
         def _tick(self):
-            now = time.perf_counter()
-            if self.last is not None:
-                gap = (now - self.last) * 1000.0
-                if gap > self.longest:
-                    self.longest = gap
-                    self.longest_at = time.time() - gap / 1000.0
-            self.last = now
+            if not self.native:
+                now = time.perf_counter()
+                if self.last is not None:
+                    gap = (now - self.last) * 1000.0
+                    began = time.time() - gap / 1000.0
+                    if gap > self.longest:
+                        self.longest = gap
+                        self.longest_at = began
+                    if gap > STALL_BUDGET_MS:
+                        self.window_gaps.append([round(gap, 1), round(began, 3)])
+                self.last = now
             if self.load_edit_times is not None:
                 v = view()
                 edits = v.property("natronSceneLoadEdits") if v is not None else None
@@ -398,26 +433,57 @@ try:
                         self.load_edit_times.append(round(time.time(), 3))
                     self.load_edits = edits
 
+        def _run_timer(self):
+            # Natron's heartbeat times the gaps, so this timer only watches load edits.
+            if not self.native:
+                return
+            want = self.load_edit_times is not None
+            if want and not self.timer.isActive():
+                self.timer.start()
+            elif not want and self.timer.isActive():
+                self.timer.stop()
+
         def start(self):
             self.started_at = time.time()
             self.last = time.perf_counter()
             self.longest = 0.0
             self.longest_at = None
-            self.timer.start()
+            self.window_gaps = []
+            if self.native:
+                self._poke("natronMainGapReset")
+                self._run_timer()
+            else:
+                self.timer.start()
 
         def watch_load_edits(self):
             v = view()
             edits = v.property("natronSceneLoadEdits") if v is not None else None
             self.load_edits = None if edits is None else int(edits)
             self.load_edit_times = []
+            self.scenario_gaps = []
+            self._run_timer()
 
         def stop_load_edits(self):
             times, self.load_edit_times = self.load_edit_times, None
+            self.scenario_gaps = None
+            self._run_timer()
             return times
 
         def stop(self):
             self._tick()
-            self.timer.stop()
+            if self.native:
+                hb = self._poke("natronMainGapSample")
+                if hb is not None:
+                    self.longest = float(hb.property("natronMainGapMaxMs") or 0.0)
+                    at = hb.property("natronMainGapMaxAt")
+                    self.longest_at = None if at is None else float(at)
+                    self.window_gaps = [[round(float(g[0]), 1), round(float(g[1]), 3)]
+                                        for g in (hb.property("natronMainGapsOver100") or [])]
+            self.gaps = self.window_gaps
+            if self.scenario_gaps is not None:
+                self.scenario_gaps.extend(self.gaps)
+            if not self.native:
+                self.timer.stop()
             return self.longest
 
     heartbeat = Heartbeat()
@@ -901,7 +967,7 @@ try:
         stats = draw_stats()
         posted = int(stats.get("posted", 0))
         counts = {
-            "layers": len(Sdf.Layer.GetLoadedLayers()) if Sdf is not None else None,
+            "layers": loaded_layer_count(v),
             "load_edits": int(v.property("natronSceneLoadEdits") or 0),
             "stage_load_edits": int(stats.get("stageLoadEdits", 0)),
             "prims_added": int(stats.get("inputAdded", 0)),
@@ -1911,6 +1977,7 @@ try:
             stall_at = heartbeat.longest_at
             m.steps[name] = dict(extra, applicable=True, ms=round(ms, 1), stall_ms=round(stall, 1),
                                  stall_at=round(stall_at, 3) if stall_at is not None else None,
+                                 stalls_over_budget=heartbeat.gaps,
                                  started_at=round(started_at, 3) if started_at is not None else None,
                                  ended_at=round(time.time(), 3))
             if stall > m.stall_floor_ms:
@@ -2393,6 +2460,7 @@ try:
             yield ("sleep", 200)
             stall_ms = heartbeat.stop()
             stall_at = heartbeat.longest_at if stall_ms >= m.stall_floor_ms else m.stall_floor_at
+            stalls_over_budget = heartbeat.scenario_gaps
             load_edit_times = heartbeat.stop_load_edits()
             wait_after = main_waits()
             ended = time.time()
@@ -2416,6 +2484,8 @@ try:
                 "layers_loaded": None if new_layers is None else len(new_layers),
                 "budgets": budgets,
                 "stall_at": None if stall_at is None else round(stall_at, 3),
+                "stalls_over_budget": stalls_over_budget,
+                "native_heartbeat": heartbeat.native,
                 "load_edit_times": load_edit_times,
                 "main_wait_ms": wait_delta(wait_before, wait_after, 0),
                 "main_wait_max_ms": wait_delta(wait_before, wait_after, 1),

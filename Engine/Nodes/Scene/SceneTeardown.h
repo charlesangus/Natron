@@ -57,6 +57,13 @@ bool isDeferred();
 
 void releaseHeld(std::shared_ptr<void> held);
 
+/**
+ * @brief releaseHeld() without the ReadScope, for what joins threads that take their own: a writer
+ * waiting to start keeps those threads out of a new scope while it waits for this one to end.
+ * What it destroys that reads a stage takes its own scope.
+ **/
+void releaseHeldUnscoped(std::shared_ptr<void> held);
+
 template <typename T>
 void
 release(T value)

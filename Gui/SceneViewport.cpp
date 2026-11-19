@@ -134,6 +134,7 @@
 #include <pxr/imaging/hdx/pickTask.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/texture.h>
+#include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usd/notice.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/stage.h>
@@ -6690,6 +6691,43 @@ struct SceneViewport::Implementation {
         return GfVec2d((pos.x() + 0.5) * dpr, (pos.y() + 0.5) * dpr);
     }
 
+    // Every layer open in the process, counted where a sync or a load round ends so a reader on the
+    // main thread never walks the layer registry.
+    std::atomic<qulonglong> loadedLayerCount { 0 };
+
+    void countLoadedLayers()
+    {
+        loadedLayerCount = SdfLayer::GetLoadedLayers().size();
+    }
+
+    // The view the worker, the load thread, the render thread and the renderer's own threads post
+    // to. They outlive it, joined by the scene teardown, so a post checks it is still there under
+    // the mutex its destructor takes: a QPointer is no guard across threads.
+    std::mutex viewMutex;
+    SceneViewport* openView = nullptr;
+
+    template <typename Fn>
+    void postToView(Fn&& fn)
+    {
+        std::lock_guard<std::mutex> lock(viewMutex);
+        if (openView) {
+            QMetaObject::invokeMethod(openView, std::forward<Fn>(fn), Qt::QueuedConnection);
+        }
+    }
+
+    bool isViewOpen()
+    {
+        std::lock_guard<std::mutex> lock(viewMutex);
+
+        return openView != nullptr;
+    }
+
+    void closeView()
+    {
+        std::lock_guard<std::mutex> lock(viewMutex);
+        openView = nullptr;
+    }
+
     // The worker syncing the renderer's stage, and the latest payload waiting for it. A newer
     // request replaces one the worker has not taken yet.
     std::thread worker;
@@ -6803,7 +6841,7 @@ struct SceneViewport::Implementation {
         });
         if (!matched) {
             if (matchId != 0) {
-                QMetaObject::invokeMethod(view, [view, matchId]() { view->onDrawRulesMatchDropped(matchId); }, Qt::QueuedConnection);
+                postToView([view, matchId]() { view->onDrawRulesMatchDropped(matchId); });
             }
 
             return false;
@@ -6821,7 +6859,7 @@ struct SceneViewport::Implementation {
             }
         }
         // Dropped by Qt if the widget is gone by then.
-        QMetaObject::invokeMethod(view, [view, generation, matchId, serial, policy]() { view->onDrawRulesMatched(generation, matchId, serial, policy); }, Qt::QueuedConnection);
+        postToView([view, generation, matchId, serial, policy]() { view->onDrawRulesMatched(generation, matchId, serial, policy); });
 
         return true;
     }
@@ -7455,36 +7493,38 @@ struct SceneViewport::Implementation {
         renderContext.reset();
     }
 
-    // Main thread. Lets the render thread go with its context and the engine, without waiting for
-    // the engine to be destroyed: the scene teardown joins the thread once it has destroyed it.
-    // That keeps readers' scopes held meanwhile, so no layer reload edits the stage it listens to.
-    // The wait here is for the job running, whose frame is cancelled: the worker and the load
-    // thread are joined by then, and the widget's own context, going next, would wait out that
-    // job's GL work on the driver all the same.
-    void retireRenderLoop()
+    /**
+     * Main thread, the view going. Lets the render thread go with job last, waiting for none of
+     * its jobs: the one running may wait on the stage for the worker, which the view no longer
+     * waits for either. They reach this and the renderer, so the loop returned is destroyed before
+     * this is. Destroying it joins the thread once the engine is gone, which keeps readers' scopes
+     * held meanwhile, so no layer reload edits the stage the engine listens to.
+     **/
+    std::shared_ptr<RetiredRenderLoop> detachRenderLoop(std::function<void()> job)
     {
-        std::shared_ptr<void> engine;
-        std::shared_ptr<QOpenGLContext> context;
-
         renderLoop->setIdle(std::function<void()>());
         renderLoop->setSignalled(std::function<void(GLsync)>());
-        callOnRenderThread([this, &engine, &context]() {
-            engine = renderer.releaseGLKeepingEngine();
-            releaseRenderTargets();
-            context = std::move(renderContext);
-        });
-        renderLoop->post([engine = std::move(engine), context = std::move(context)]() mutable {
-            engine.reset();
-            if (context) {
-                context->doneCurrent();
-                context.reset();
-            }
-        });
+        renderLoop->post(std::move(job));
         std::shared_ptr<RetiredRenderLoop> retired = std::make_shared<RetiredRenderLoop>();
         retired->loop = std::move(renderLoop);
         retired->surface = std::move(renderSurface);
-        SceneTeardown::releaseHeld(std::move(retired));
+
+        return retired;
     }
+
+    // Set by the view's destructor, for the scene teardown to destroy after the worker and the
+    // load thread are joined and before this.
+    std::shared_ptr<RetiredRenderLoop> closedRenderLoop;
+
+    // A closed view's threads and what they use, which the scene teardown destroys in that order.
+    struct ClosedView {
+        std::thread worker;
+        std::thread loadThread;
+        std::shared_ptr<RetiredRenderLoop> renderLoop;
+        std::unique_ptr<Implementation> imp;
+
+        ~ClosedView();
+    };
 
     /**
      * Main thread, the widget's context current, with that context dying or the widget going.
@@ -7523,22 +7563,17 @@ struct SceneViewport::Implementation {
 
             return;
         }
-        retireRenderLoop();
-        renderSurface.reset();
+        closedRenderLoop = detachRenderLoop([this]() {
+            std::shared_ptr<void> engine = renderer.releaseGLKeepingEngine();
+            releaseRenderTargets();
+            engine.reset();
+            if (renderContext) {
+                renderContext->doneCurrent();
+                renderContext.reset();
+            }
+        });
         usesRenderThread = false;
         backgroundFrameRunning = false;
-    }
-
-    void stopRenderThread()
-    {
-        if (!renderLoop) {
-            return;
-        }
-        renderLoop->setIdle(std::function<void()>());
-        renderLoop->setSignalled(std::function<void(GLsync)>());
-        presentPacer.clear();
-        renderLoop->post([this]() { releaseRenderContext(); });
-        renderLoop.reset();
     }
 
     // Main thread, the widget's context current. The front target's frame, frontFrame, which the
@@ -7589,10 +7624,37 @@ struct SceneViewport::Implementation {
     }
 };
 
+SceneViewport::Implementation::ClosedView::~ClosedView()
+{
+    {
+        PythonUnlockedWhileWaiting unlocked;
+        if (worker.joinable()) {
+            worker.join();
+        }
+        if (loadThread.joinable()) {
+            loadThread.join();
+        }
+    }
+    if (imp) {
+        imp->renderer.setLoadsWakeCallback(std::function<void()>());
+    }
+    // See detachRenderLoop().
+    // Inline, the main thread holds no scope, as before the teardown deferred anything.
+    if (SceneTeardown::isDeferred()) {
+        SceneWriteBarrier::ReadScope read;
+        renderLoop.reset();
+    } else {
+        renderLoop.reset();
+    }
+    // Outside any scope: the renderer leaving the write barrier waits for a write in progress.
+    imp.reset();
+}
+
 SceneViewport::SceneViewport(QWidget* parent)
     : QOpenGLWidget(parent)
     , _imp(new Implementation)
 {
+    _imp->openView = this;
     setFocusPolicy(Qt::ClickFocus);
     // Hovering highlights the transform handle under the pointer.
     setMouseTracking(true);
@@ -7610,9 +7672,10 @@ SceneViewport::SceneViewport(QWidget* parent)
         const auto republish = [this]() {
             setProperty("natronSceneDrawTimings", _imp->renderer.drawTiming()->records());
         };
-        timing->setTraceReadCallback([this, republish]() { QMetaObject::invokeMethod(this, republish, Qt::QueuedConnection); });
+        Implementation* imp = _imp.get();
+        timing->setTraceReadCallback([imp, republish]() { imp->postToView(republish); });
     }
-    _imp->drawStates.reset(new SceneDrawStateQueue([this](const std::function<void()>& run) { QMetaObject::invokeMethod(this, run, Qt::QueuedConnection); },
+    _imp->drawStates.reset(new SceneDrawStateQueue([imp = _imp.get()](const std::function<void()>& run) { imp->postToView(run); },
                                                    [this](const SceneDrawChange& change) { deliverDrawChange(change); }));
 
     _imp->wheelMoveTimer = new QTimer(this);
@@ -7656,7 +7719,7 @@ SceneViewport::SceneViewport(QWidget* parent)
         }
         serviceDeferredInput();
     };
-    _imp->renderer.setReadEndedCallback([this, onReadEnded]() { QMetaObject::invokeMethod(this, onReadEnded, Qt::QueuedConnection); });
+    _imp->renderer.setReadEndedCallback([imp = _imp.get(), onReadEnded]() { imp->postToView(onReadEnded); });
 
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
     if (settings) {
@@ -7692,11 +7755,11 @@ SceneViewport::SceneViewport(QWidget* parent)
     QObject::connect(_imp->holdPoll, &QTimer::timeout, this, [this]() { refreshPaintHold(); });
     _imp->renderJobPosted = [this]() { refreshPaintHold(); };
     // Queued: these run on the render thread, under the loop's mutex.
-    _imp->renderLoopIdle = [this]() { QMetaObject::invokeMethod(this, [this]() { refreshPaintHold(); }, Qt::QueuedConnection); };
-    _imp->renderLoopSignalled = [this](GLsync fence) {
-        QMetaObject::invokeMethod(this, [this, fence]() {
+    _imp->renderLoopIdle = [this, imp = _imp.get()]() { imp->postToView([this]() { refreshPaintHold(); }); };
+    _imp->renderLoopSignalled = [this, imp = _imp.get()](GLsync fence) {
+        imp->postToView([this, fence]() {
             _imp->signalledFence = fence;
-            pollPresent(); }, Qt::QueuedConnection);
+            pollPresent(); });
     };
     _imp->frameStartFallback = new QTimer(this);
     _imp->frameStartFallback->setSingleShot(true);
@@ -7757,9 +7820,10 @@ SceneViewport::SceneViewport(QWidget* parent)
             }
             // Payloads without extent hints leave nothing to frame until one of them loads.
             const U64 loadEditCount = imp->renderer.getStageLoadEditCount();
+            imp->countLoadedLayers();
             const SceneViewportRenderer::FrameBounds bounds = imp->renderer.isFramed() ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
             // Dropped by Qt if the widget is gone by then.
-            QMetaObject::invokeMethod(this, [this, bounds, loadEditCount, loadRound]() { onStageLoadsServiced(bounds, loadEditCount, loadRound); }, Qt::QueuedConnection);
+            imp->postToView([this, bounds, loadEditCount, loadRound]() { onStageLoadsServiced(bounds, loadEditCount, loadRound); });
         }
     });
     _imp->worker = std::thread([this, imp]() {
@@ -7848,8 +7912,9 @@ SceneViewport::SceneViewport(QWidget* parent)
                     rulesMatched = imp->matchDrawRules(this, rules, generation, matchId, serial, newerRequest, false);
                     matchedRules = rules;
                 }
+                imp->countLoadedLayers();
                 // Dropped by Qt if the widget is gone by then.
-                QMetaObject::invokeMethod(this, [this, serial, ok, qerror, bounds, awaitedMatch]() { onSynced(serial, ok, qerror, bounds, awaitedMatch); }, Qt::QueuedConnection);
+                imp->postToView([this, serial, ok, qerror, bounds, awaitedMatch]() { onSynced(serial, ok, qerror, bounds, awaitedMatch); });
                 if (matches && needsStage) {
                     rulesMatched = imp->matchDrawRules(this, rules, generation, matchId, serial, newerRequest, false);
                     matchedRules = rules;
@@ -7857,7 +7922,7 @@ SceneViewport::SceneViewport(QWidget* parent)
             }
             if (framingId != 0) {
                 const SceneViewportRenderer::FrameBounds bounds = imp->renderer.computeFrameBounds(framingSelection, imp->renderer.getTimeCode());
-                QMetaObject::invokeMethod(this, [this, framingId, bounds]() { onFramingComputed(framingId, bounds); }, Qt::QueuedConnection);
+                imp->postToView([this, framingId, bounds]() { onFramingComputed(framingId, bounds); });
             }
             if (pivot) {
                 imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
@@ -7865,8 +7930,8 @@ SceneViewport::SceneViewport(QWidget* parent)
         }
     });
     // A progressive render's new frame repaints.
-    _imp->renderer.setRefineListener([this]() {
-        QMetaObject::invokeMethod(this, [this]() { update(); }, Qt::QueuedConnection);
+    _imp->renderer.setRefineListener([this, imp = _imp.get()]() {
+        imp->postToView([this]() { update(); });
     });
     publishState();
 }
@@ -7874,6 +7939,7 @@ SceneViewport::SceneViewport(QWidget* parent)
 SceneViewport::~SceneViewport()
 {
     Q_EMIT closing();
+    _imp->closeView();
     _imp->drawStates.reset();
     _imp->renderer.setRefineListener(std::function<void()>());
     // Every thread is told before any is waited for: the worker's sync may wait for a frame, and
@@ -7890,16 +7956,21 @@ SceneViewport::~SceneViewport()
     _imp->renderer.cancelBackgroundFrame();
     _imp->queueChanged.notify_all();
     _imp->loadWake.notify_all();
-    if (_imp->worker.joinable()) {
-        _imp->worker.join();
-    }
-    if (_imp->loadThread.joinable()) {
-        _imp->loadThread.join();
-    }
-    _imp->renderer.setLoadsWakeCallback(std::function<void()>());
     _imp->closing = true;
     GLContextLoss::releaseNow(this);
-    _imp->stopRenderThread();
+    if (_imp->renderLoop) {
+        _imp->presentPacer.clear();
+        Implementation* imp = _imp.get();
+        _imp->closedRenderLoop = _imp->detachRenderLoop([imp]() { imp->releaseRenderContext(); });
+    }
+    // The worker may be closing the scene it last synced, and the load thread opening a file:
+    // the teardown joins them, then the render thread, then destroys the rest.
+    std::shared_ptr<Implementation::ClosedView> closed = std::make_shared<Implementation::ClosedView>();
+    closed->worker = std::move(_imp->worker);
+    closed->loadThread = std::move(_imp->loadThread);
+    closed->renderLoop = std::move(_imp->closedRenderLoop);
+    closed->imp = std::move(_imp);
+    SceneTeardown::releaseHeldUnscoped(std::move(closed));
 }
 
 void
@@ -8025,7 +8096,7 @@ SceneViewport::followSceneRenderer()
             bool jobBusy = false;
             const bool jobChanged = imp->renderer.followSceneRenderer(&jobBusy);
             // Dropped by Qt if the widget is gone by then.
-            QMetaObject::invokeMethod(this, [this, jobChanged, jobBusy]() { onSceneRendererFollowed(jobChanged, jobBusy); }, Qt::QueuedConnection);
+            imp->postToView([this, jobChanged, jobBusy]() { onSceneRendererFollowed(jobChanged, jobBusy); });
         });
 
         return;
@@ -8210,7 +8281,7 @@ SceneViewport::startBackgroundFrame()
             loop->watch(fence);
         }
         // Dropped by Qt if the widget is gone by then.
-        QMetaObject::invokeMethod(this, done, Qt::QueuedConnection);
+        imp->postToView(done);
     });
     publishState();
 }
@@ -8311,7 +8382,7 @@ SceneViewport::rebuildRenderContext()
             }
         }
         // Dropped by Qt if the widget is gone by then.
-        QMetaObject::invokeMethod(this, [this, shareGeneration, group]() { onRenderContextRebuilt(shareGeneration, group); }, Qt::QueuedConnection);
+        imp->postToView([this, shareGeneration, group]() { onRenderContextRebuilt(shareGeneration, group); });
     });
 }
 
@@ -8777,7 +8848,7 @@ SceneViewport::deliverDrawChange(const SceneDrawChange& change)
         _imp->postToRenderThread([this, imp]() {
             imp->renderer.applyPendingDrawDeltas();
             // Dropped by Qt if the widget is gone by then.
-            QMetaObject::invokeMethod(this, [this]() { onDrawChangesTakenIn(); }, Qt::QueuedConnection);
+            imp->postToView([this]() { onDrawChangesTakenIn(); });
         });
     }
     if (!change.delta.loads.empty()) {
@@ -9228,7 +9299,25 @@ void
 SceneViewport::setLoadSetEvaluator(const SceneViewportRenderer::LoadSetEvaluator& evaluate,
                                    const SceneViewportRenderer::LoadSetCommitted& committed)
 {
-    _imp->renderer.setLoadSetEvaluator(evaluate, committed);
+    // The load thread outlives the view, and the owner that gave these may go with it: past the
+    // view's destructor they are not called. One under way finishes.
+    Implementation* imp = _imp.get();
+    SceneViewportRenderer::LoadSetEvaluator gatedEvaluate;
+    SceneViewportRenderer::LoadSetCommitted gatedCommitted;
+    if (evaluate) {
+        gatedEvaluate = [imp, evaluate](const SceneLoadSetPtr& loadSet, ScenePayload* payload, SceneLoadReachPtr* reach) {
+            return imp->isViewOpen() && evaluate(loadSet, payload, reach);
+        };
+    }
+    if (committed) {
+        gatedCommitted = [imp, committed](const SceneLoadSetPtr& loadSet, bool reevaluate) {
+            std::lock_guard<std::mutex> lock(imp->viewMutex);
+            if (imp->openView) {
+                committed(loadSet, reevaluate);
+            }
+        };
+    }
+    _imp->renderer.setLoadSetEvaluator(gatedEvaluate, gatedCommitted);
 }
 
 void
@@ -9268,6 +9357,7 @@ SceneViewport::publishState()
     // batch held the viewer lock, and each failed prim's path and error.
     setProperty("natronSceneLoadsPending", _imp->renderer.hasPendingStageLoads());
     setProperty("natronSceneLoadEdits", QVariant::fromValue<qulonglong>(_imp->renderer.getStageLoadEditCount()));
+    setProperty("natronSceneLoadedLayers", QVariant::fromValue<qulonglong>(_imp->loadedLayerCount));
     setProperty("natronSceneLoadHoldMs", _imp->renderer.getLastStageLoadHoldMs());
     setProperty("natronSceneMainWaitMs", _imp->renderer.getMainThreadWaitMs());
     setProperty("natronSceneMainWaitMaxMs", _imp->renderer.getMainThreadWaitMaxMs());
@@ -9445,7 +9535,7 @@ SceneViewport::setRendererId(const QString& id)
         }
         imp->renderer.setRendererId(renderer);
         // Dropped by Qt if the widget is gone by then.
-        QMetaObject::invokeMethod(this, [this, id, serial]() { onRendererSwitched(id, serial); }, Qt::QueuedConnection);
+        imp->postToView([this, id, serial]() { onRendererSwitched(id, serial); });
     });
     publishState();
 }
@@ -10366,7 +10456,7 @@ SceneViewport::releaseEngine()
                 imp->renderer.releaseStormEngine();
             }
             // Dropped by Qt if the widget is gone by then.
-            QMetaObject::invokeMethod(this, [this]() { onEngineReleased(); }, Qt::QueuedConnection);
+            imp->postToView([this]() { onEngineReleased(); });
         });
     } else if (_imp->glInitialized && context()) {
         _imp->engineReleaseOwed = true;

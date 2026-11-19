@@ -492,8 +492,16 @@ unrequested-payload checks are valid under llvmpipe. The scenarios are the harne
 (`open`, `edit`, `orbit`, `load`, `twirl`, `node_switch`, `workflow`, and the draw state scenarios below); `BENCH_SCENARIOS` picks
 and orders them.
 
+The heartbeat is Natron's own when it runs with `NATRON_MAIN_HEARTBEAT=1`, which
+`heavy_scene_gpu_host.sh` sets: a 10 ms timer in C++ that the Python lock cannot delay, read through the
+`natronMainHeartbeat` child of the application (`natronMainGapMaxMs`, `natronMainGapMaxAt`,
+`natronMainGapsOver100`; setting `natronMainGapReset` or `natronMainGapSample` to a new value clears or
+samples it). Without that variable the bench falls back to a Python timer, and `native_heartbeat` in
+each record says which one measured it.
+
 Every record also carries `stall_at`, the epoch seconds the longest gap began at, to find it in stack
-samples; `load_edit_times`, the epoch seconds `natronSceneLoadEdits` moved at during the scenario, as
+samples; `stalls_over_budget`, each gap over 100 ms in the windows the scenario judged, as
+`[ms, epoch seconds it began]`; `load_edit_times`, the epoch seconds `natronSceneLoadEdits` moved at during the scenario, as
 seen by the heartbeat; and `main_wait_ms` and `main_wait_max_ms`, how much the viewer's
 `natronSceneMainWaitMs` and `natronSceneMainWaitMaxMs` rose over the scenario (the main thread's
 blocking waits on the render thread and on the stage's lock; the second is a running maximum, so it
@@ -604,7 +612,7 @@ still leaves a record: `timed_out` past the wall-clock limit (`BENCH_SCENARIO_LI
 the process ends on its own, and `skipped` for the scenarios left in that process.
 
 ```
-docker exec -e BENCH_FIXTURE=flat -e BENCH_SCENARIOS=open,orbit -e GUI_TEST_TIMEOUT=1800 natron-dev \
+docker exec -e BENCH_FIXTURE=flat -e BENCH_SCENARIOS=open,orbit -e GUI_TEST_TIMEOUT=1800 -e NATRON_MAIN_HEARTBEAT=1 natron-dev \
     Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py build/release/Natron.AppImage
 ```
 
@@ -652,7 +660,7 @@ M481 - Viewer Polygon Budgets lands.
 Full on one asset, Full + Load on a block, a pattern node (a USDEditTransform with a `primPattern`,
 `BENCH_PATTERN` or the branch's descendants) inserted below USDRead and viewed, a switch to that node
 with the Scene Graph panel following the selection, a prim selected in the inspector, a project save,
-and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms`, `stall_at`, `started_at` and `ended_at` (the
+and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms`, `stall_at`, `stalls_over_budget`, `started_at` and `ended_at` (the
 epoch seconds the longest gap began at and `stall_ms` was measured over, to find the step in stack samples) and numbers under
 `workflow_steps`, and its own budgets in the record: `<step>_stall_ms` (100 ms, the setup before a
 step not counted), `full_asset_picture_ms` (100 ms, valid with `NATRON_DRAW_STATE_TIMING=1` on a real
@@ -687,7 +695,7 @@ did-not-finish counts at the end. A single scene runs the same way through `ONLY
 (`accept-city`, `accept-island`, ...), or by hand:
 
 ```
-BENCH_FIXTURE=city BENCH_SCENARIOS=workflow NATRON_DRAW_STATE_TIMING=1 BENCH_GPU=1 \
+BENCH_FIXTURE=city BENCH_SCENARIOS=workflow NATRON_DRAW_STATE_TIMING=1 NATRON_MAIN_HEARTBEAT=1 BENCH_GPU=1 \
     Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py /path/to/Natron.AppImage
 ```
 

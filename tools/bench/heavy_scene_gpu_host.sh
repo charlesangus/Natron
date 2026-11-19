@@ -329,6 +329,7 @@ echo "scene: island -> ${ISLAND:-not found (looked in $ISLAND_SRC)}" >&2
 # run-gui-test.sh refuses a software renderer on a host display, which keeps llvmpipe numbers out of this file.
 export GUI_TEST_HOST_DISPLAY="$DISPLAY"
 export BENCH_GPU=1
+export NATRON_MAIN_HEARTBEAT=1
 export BENCH_RESULT="$RESULT"
 export BENCH_ROWS_DIR="$FIXTURE_DIR/rows"
 export BENCH_TIMEOUT_S="${BENCH_TIMEOUT_S:-1800}"

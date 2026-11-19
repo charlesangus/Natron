@@ -1296,7 +1296,7 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
         map.params = _map.bake(KnobReader(query.time, query.view));
     }
 
-    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, params, kSTMapInputUV, uvLayer, uChannel, vChannel, map, alphaChannel);
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, (int)gpu::GpuKernelId::stmap_chain, params, kSTMapInputUV, uvLayer, uChannel, vChannel, map, alphaChannel);
 #else
     Q_UNUSED(args);
 

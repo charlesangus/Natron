@@ -2,8 +2,13 @@ import pixelwrap;
 import coordmap;
 import resamplecore;
 import edgesample;
+#ifdef WARP_CHAIN
 import lensmodels;
 import warpchain;
+#endif
+
+// Built twice: with WARP_CHAIN as the splinewarp_chain kernel that samples through a chain, and without
+// as splinewarp, which leaves the chain code out so a node with no chain compiles a smaller pipeline.
 
 // SplineWarp::renderOp per pixel, SplineWarpField::getRow() included. The wrap's push block
 // carries the Source, the image blended under the mask and mix, the destination and the mask;
@@ -210,13 +215,16 @@ float4 splineWarpSample(SplineWarpParams s, int2 p)
     fieldAt(s, p, cx, cy, J);
     const bool jacobian = (s.flags & kSplineWarpJacobian) != 0;
     float2 coord = float2(cx.hi, cy.hi);
+#ifdef WARP_CHAIN
     if ((s.flags & kSplineWarpChain) != 0)
     {
         const bool mapped = warpChainCrop(chainBuf, 1, chainBuf[0], cx, cy) && warpChainMap(chainBuf, kSplineWarpChainCropWords, cx, cy, J, jacobian);
         const float nan = asfloat(0x7fc00000u);
         coord = mapped ? float2(ffToFloat(cx), ffToFloat(cy)) : float2(nan, nan);
     }
-    else if (coord.x == float(p.x) + 0.5 && coord.y == float(p.y) + 0.5)
+    else
+#endif
+    if (coord.x == float(p.x) + 0.5 && coord.y == float(p.y) + 0.5)
     {
         // A pixel the warp leaves in place is the Source pixel itself, which a filter would soften
         // with its neighbours.

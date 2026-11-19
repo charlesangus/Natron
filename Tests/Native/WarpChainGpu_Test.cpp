@@ -49,6 +49,7 @@
 #include "Engine/Format.h"
 #include "Engine/InverseWarpChain.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Transform/LensDistortion.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
@@ -259,13 +260,13 @@ expectParity(GpuParityRuntime& runtime,
 class WarpChainGpuTest
     : public BaseTest {
 protected:
-    void resetProject()
+    void resetProject(double par = 1.)
     {
         ProjectPtr project = getApp()->getProject();
 
         project->reset(false, true);
         project->setAutoSetProjectFormatEnabled(true);
-        project->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "warpChainGpu64x48", 1.));
+        project->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "warpChainGpu64x48par" + std::to_string(par), par));
     }
 
     NodePtr makeSource()
@@ -428,6 +429,71 @@ TEST_F(WarpChainGpuTest, FeatheredSplineWarpMatchesTheCpu)
         still += (std::isfinite(sx[i]) && (sx[i] == xs[i]) && (sy[i] == ys[i])) ? 1 : 0;
     }
     EXPECT_GT(still, 0) << "no point lay outside the boundary's feather";
+#endif
+}
+
+// With non-square pixels the field's derivative is rescaled between its canonical lattice and the
+// chain's pixels; a sheared warp gives that derivative the off-diagonal terms the rescale touches.
+TEST_F(WarpChainGpuTest, NonSquarePixelsMatchTheCpu)
+{
+#ifndef NATRON_HAVE_GPU
+    reportNoGpu("built without the GPU backend");
+#else
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const double par = 2.;
+    resetProject(par);
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr warp = createNode(QString::fromUtf8(PLUGINID_NATRON_SPLINEWARP), PLUGIN_MAJOR_NATRON_SPLINEWARP);
+    ASSERT_TRUE(bool(warp));
+    connectNodes(source, warp, kSplineWarpInputSource, true);
+    EXPECT_TRUE(setKnobValues(warp, kSplineWarpParamBoundaryBBox, { 0. }));
+    EXPECT_TRUE(setKnobValue(warp, kEdgeModeParam, std::string("stretch")));
+    SplineWarpContextPtr ctx = contextOf(warp);
+    BezierPtr from = makeQuad(ctx, 52., 14., 20.);
+    BezierPtr to = makeCurve(ctx, { { 49., 13. }, { 70., 17. }, { 80., 36. }, { 55., 31. } });
+    ASSERT_TRUE(from && to);
+    ASSERT_TRUE(bool(ctx->linkWithAlignment(from, to, 0., false)));
+    NodePtr lens = makeLensDistortion(source, "stretch");
+    ASSERT_TRUE(bool(lens));
+    ASSERT_EQ(par, warp->getEffectInstance()->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
+    ASSERT_EQ(par, lens->getEffectInstance()->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
+
+    const RectD window(0., 0., kParitySourceWidth * par, kParitySourceHeight);
+    const InverseWarpMapConstPtr warpMap = mapOf(warp, window);
+    const InverseWarpMapConstPtr lensMap = mapOf(lens, window);
+    ASSERT_TRUE(warpMap && lensMap);
+    std::vector<double> xs, ys;
+    gridPoints(RectD(-4., -4., kParitySourceWidth + 4., kParitySourceHeight + 4.), 48, &xs, &ys);
+
+    InverseWarpChain warpOnly(RenderScale::identity, par);
+    warpOnly.appendMap(warpMap, InverseWarpChain::eGpuStepSplineWarp);
+    expectParity(*runtime, warpOnly, xs, ys, "SplineWarp at a pixel aspect ratio of 2");
+
+    std::vector<double> sx = xs;
+    std::vector<double> sy = ys;
+    std::vector<double> J(xs.size() * 4, 0.);
+    for (std::size_t i = 0; i < xs.size(); ++i) {
+        J[i * 4] = 1.;
+        J[i * 4 + 3] = 1.;
+    }
+    warpOnly.mapRow(xs.size(), sx.data(), sy.data(), J.data());
+    double offDiagonal = 0.;
+    for (std::size_t i = 0; i < xs.size(); ++i) {
+        if (std::isfinite(J[i * 4 + 1]) && std::isfinite(J[i * 4 + 2])) {
+            offDiagonal = std::max(offDiagonal, std::min(std::fabs(J[i * 4 + 1]), std::fabs(J[i * 4 + 2])));
+        }
+    }
+    EXPECT_GT(offDiagonal, 1e-2) << "the shear should give the derivative both off-diagonal terms";
+
+    InverseWarpChain chain(RenderScale::identity, par);
+    chain.appendMatrix(Transform::Matrix3x3(0.95, 0.1, 1.5, -0.08, 1.05, -2., 0., 0., 1.));
+    chain.appendMap(warpMap, InverseWarpChain::eGpuStepSplineWarp);
+    chain.appendMap(lensMap, InverseWarpChain::eGpuStepLens);
+    expectParity(*runtime, chain, xs, ys, "matrix, SplineWarp and LensDistortion at a pixel aspect ratio of 2");
 #endif
 }
 

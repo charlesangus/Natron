@@ -385,6 +385,9 @@ InverseWarpChain::prepare(const RectD& window,
     prepared._windows.reserve(prepared._steps.size());
     prepared._error.clear();
     RectD region = window;
+    if (_sourceInfinite && hasMapStep()) {
+        prepared._error = getInfiniteWindowError();
+    }
     for (Step& step : prepared._steps) {
         prepared._windows.push_back(region);
         // A map over an infinite region would be built or sampled at a size nothing can hold;

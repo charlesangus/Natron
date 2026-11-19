@@ -3,7 +3,12 @@ import coordmap;
 import resamplecore;
 import lensmodels;
 import edgesample;
+#ifdef WARP_CHAIN
 import warpchain;
+#endif
+
+// Built twice: with WARP_CHAIN as the lensdistortion_chain kernel that samples through a chain, and without
+// as lensdistortion, which leaves the chain code out so a node with no chain compiles a smaller pipeline.
 
 // LensDistortion::renderOp per pixel. The wrap's push block carries the Source, which is both the
 // image sampled and the image blended under the mask and mix, the destination and the mask; the
@@ -117,8 +122,10 @@ float4 lensDistortionPixel(LensDistortion d, int2 p)
         J = float4(ffToFloat(ffMul(s.J.j0, d.toSourceX)), ffToFloat(ffDiv(ffMul(ffMul(s.J.j1, d.toSourceX), d.scaleX), d.scaleY)),
                    ffToFloat(ffDiv(ffMul(s.J.j2, d.scaleY), d.scaleX)), ffToFloat(s.J.j3));
     }
+#ifdef WARP_CHAIN
     if ((d.flags & kLensDistortionChain) != 0 && !warpChainMap(chainBuf, 0, fx, fy, J, jacobian))
         return zero;
+#endif
     const float sx = ffToFloat(fx);
     const float sy = ffToFloat(fy);
     const float4 v = sampleAt(lensDistortionSource(d), sx, sy, J, jacobian, d.spec, (d.flags & kLensDistortionClamp) != 0, kWrapNone, kWrapNone,

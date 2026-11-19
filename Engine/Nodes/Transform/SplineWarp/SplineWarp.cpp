@@ -2433,7 +2433,7 @@ SplineWarp::canRenderOpOnGpu(const GpuQuery& query) const
     }
     // The finishing stages would blend against the Source upstream of the concatenated nodes,
     // where renderOp() blends against this node's immediate input.
-    if (plan.applyMask || (plan.mix != 1.) || !plan.processChannels.all()) {
+    if (plan.applyMask || (plan.mix != 1.) || (query.mix != 1.) || !plan.processChannels.all()) {
         return false;
     }
     if (!query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens)) {
@@ -2640,7 +2640,7 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     }
 
     PixelKernelGpu op;
-    op.kernel = (int)gpu::GpuKernelId::splinewarp;
+    op.kernel = (int)(chainView.buffer ? gpu::GpuKernelId::splinewarp_chain : gpu::GpuKernelId::splinewarp);
     op.setParams(params);
 
     const GpuImageView inputs[3] = { fieldView, sampleView, chainView };

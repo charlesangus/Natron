@@ -1053,7 +1053,8 @@ TEST_F(NativeLensDistortionChainTest, SamplesAnUpstreamSplineWarpOnce)
 }
 
 // Where the model has no solution the offered map gives no source point; elsewhere it is the
-// model.
+// model. A point outside the output's region of definition is first moved onto its nearest edge
+// pixel, as a consumer reading the rendered output under the stretch edge mode would read it.
 TEST_F(NativeLensDistortionChainTest, PointWithNoSolutionMapsToNaN)
 {
     resetProject();
@@ -1061,16 +1062,22 @@ TEST_F(NativeLensDistortionChainTest, PointWithNoSolutionMapsToNaN)
     ASSERT_TRUE(bool(source));
     NodePtr lens = makeStrongNuke(source, kLensDistortionDirectionUndistort, "bilinear");
     ASSERT_TRUE(bool(lens));
+    ASSERT_TRUE(setKnobValue(lens, kEdgeModeParam, std::string("stretch")));
     const LensModels::Model model = LensModels::makeNuke(kFrame, strongNukeParams());
     ASSERT_TRUE(model.valid);
-    const InverseWarpMapConstPtr lensMap = WarpChainSampling::offeredMap(lens, kTime, WarpChainSampling::rodOf(lens, kTime));
+    const RectD rod = WarpChainSampling::rodOf(lens, kTime);
+    ASSERT_FALSE(rod.isNull());
+    const InverseWarpMapConstPtr lensMap = WarpChainSampling::offeredMap(lens, kTime, rod);
     ASSERT_TRUE(bool(lensMap));
+    const RectI crop = rod.toPixelEnclosing(RenderScale::identity, 1.);
 
     std::size_t unsolved = 0;
     for (int y = 0; y < kParitySourceHeight; ++y) {
         for (int x = 0; x < kParitySourceWidth; ++x) {
+            const double px = std::min(std::max(x + 0.5, crop.x1 + 0.5), crop.x2 - 0.5);
+            const double py = std::min(std::max(y + 0.5, crop.y1 + 0.5), crop.y2 - 0.5);
             LensModels::Sample s;
-            const bool solved = model.map(LensModels::eDirectionDistort, x + 0.5, y + 0.5, &s) && std::isfinite(s.x) && std::isfinite(s.y);
+            const bool solved = model.map(LensModels::eDirectionDistort, px, py, &s) && std::isfinite(s.x) && std::isfinite(s.y);
             double sx = x + 0.5;
             double sy = y + 0.5;
             lensMap->mapRow(1, &sx, &sy, NULL);

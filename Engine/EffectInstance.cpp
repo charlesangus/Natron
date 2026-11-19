@@ -3296,6 +3296,8 @@ EffectInstance::tryConcatenateTransforms(double time,
                                          }),
                                          gpuStep, gpuWeight);
                     }
+                    const EffectInstancePtr chainSource = im.newInputEffect->getInput(im.newInputNbToFetchFrom);
+                    chain->setSourceInfinite(chainSource && chainSource->isRegionOfDefinitionInfinite(time, view));
                     im.warpChain = chain;
                 }
 

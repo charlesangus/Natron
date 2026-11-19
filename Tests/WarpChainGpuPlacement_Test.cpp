@@ -259,10 +259,19 @@ TEST_F(WarpChainGpuPlacementTest, ConsumersTakeOnTheirProvidersWeights)
 
     const InverseWarpChainConstPtr chain = chainOf(idistort, kIDistortInputSource);
     ASSERT_TRUE(bool(chain));
-    const GpuWeight consumer = weightOf(idistort);
     const GpuWeight provider = weightOf(warp);
-    ASSERT_FALSE(consumer.isHeavy() || provider.isHeavy());
-    expectWeight(GpuWeight::filter(consumer.weight + provider.weight), chain->addMapGpuWeights(consumer), "SplineWarp -> IDistort");
+    ASSERT_FALSE(provider.isHeavy());
+    // IDistort declares no weight of its own, so it is heavy and stays so.
+    ASSERT_TRUE(weightOf(idistort).isHeavy());
+    expectWeight(GpuWeight::heavy(), chain->addMapGpuWeights(weightOf(idistort)), "SplineWarp -> IDistort");
+
+    NodePtr warpTransform = makeTransform(warp, 6.);
+    ASSERT_TRUE(bool(warpTransform));
+    const InverseWarpChainConstPtr warpChain = chainOf(warpTransform, 0);
+    ASSERT_TRUE(bool(warpChain));
+    const GpuWeight consumer = weightOf(warpTransform);
+    ASSERT_FALSE(consumer.isHeavy());
+    expectWeight(GpuWeight::filter(consumer.weight + provider.weight), warpChain->addMapGpuWeights(consumer), "SplineWarp -> Transform");
 
     NodePtr lens = makeLensDistortion(source);
     ASSERT_TRUE(bool(lens));

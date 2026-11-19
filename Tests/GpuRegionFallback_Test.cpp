@@ -1756,6 +1756,7 @@ TEST_F(GpuRegionFallbackTest, ConcatenatedStepsReachTheConsumerQuery)
         EXPECT_FALSE(taskOf(run, first)) << "a concatenated provider is not rendered";
     }
 
+    disconnectNodes(warp, consumer, true);
     connectNodes(first, provider, 0, true);
     connectNodes(provider, consumer, 0, true);
     {
@@ -1820,8 +1821,9 @@ TEST_F(GpuRegionFallbackTest, RedirectedInputReachesTheGpuConsumer)
     EXPECT_TRUE(run.future->getRegionFallbacks().empty());
     expectMatchesCpu(consumer, run);
 }
-// A consumer blurring over several matrices folds a matrix chain into each of them on the GPU.
-TEST_F(GpuRegionFallbackTest, BlurredConsumerTakesAMatrixChain)
+// A motion-blurred Transform resamples its input over several matrices, so nothing is
+// concatenated into it and its input renders; its GPU frame matches the CPU one.
+TEST_F(GpuRegionFallbackTest, BlurredConsumerTakesNoChain)
 {
     if (!gpuOrSkip()) {
         return;
@@ -1841,7 +1843,12 @@ TEST_F(GpuRegionFallbackTest, BlurredConsumerTakesAMatrixChain)
     FrameRun run;
     std::string error;
     ASSERT_TRUE(prepareFrame(consumer, &run, &error)) << error;
-    EXPECT_FALSE(taskOf(run, first)) << "a concatenated provider is not rendered";
+    EXPECT_TRUE(taskOf(run, first)) << "a Transform was concatenated into a blurred one";
+    const FrameGraph::Task* task = taskOf(run, consumer);
+    ASSERT_TRUE(task);
+    GpuQuery query;
+    ASSERT_TRUE(makeGpuQueryForTask(*task, *run.context, &query));
+    EXPECT_FALSE(query.hasConcatenatedInput);
     placeOnGpu(&run, { consumer });
     ASSERT_EQ(1u, run.graph.regions.size());
     ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";

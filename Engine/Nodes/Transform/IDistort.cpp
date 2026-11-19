@@ -1052,7 +1052,7 @@ IDistort::renderOpGpu(const GpuRenderArgs& args)
     }
     map.params = _map.bake(KnobReader(query.time, query.view));
 
-    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::idistort, params, kIDistortInputUV, uvLayer, uChannel, vChannel, map);
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::idistort, (int)gpu::GpuKernelId::idistort_chain, params, kIDistortInputUV, uvLayer, uChannel, vChannel, map);
 #else
     Q_UNUSED(args);
 

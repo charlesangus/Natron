@@ -108,7 +108,7 @@ inline bool
 warpGpuTakesChain(const StagePlan& plan,
                   const GpuQuery& query)
 {
-    return !plan.applyMask && (plan.mix == 1.) && plan.processChannels.all() && (plan.divisorChannel < 0)
+    return !plan.applyMask && (plan.mix == 1.) && (query.mix == 1.) && plan.processChannels.all() && (plan.divisorChannel < 0)
         && query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens);
 }
 
@@ -216,8 +216,9 @@ warpGpuInputRoI(const EffectInstance& effect,
     return uvRoI;
 }
 
-// Records kernel, stmap.slang's stmap or idistort entry, through plan: the Source cropped to its
-// region of definition, as the CPU fetches it, is both sampled and blended under the mask and mix.
+// Records kernel, stmap.slang's stmap or idistort entry, through plan, or chainKernel, the entry's
+// build that samples through a chain, when one is bound: the Source cropped to its region of
+// definition, as the CPU fetches it, is both sampled and blended under the mask and mix.
 // uChannel, vChannel and alphaChannel are channels of uvLayer, -1 for none. map is the Map input,
 // which scales the warp per pixel while it is connected. With warps concatenated into the Source,
 // the Source staged is the image upstream of them and their chain is bound after the Map.
@@ -226,6 +227,7 @@ recordWarpGpu(EffectInstance& effect,
               const StagePlan& plan,
               const GpuRenderArgs& args,
               int kernel,
+              int chainKernel,
               WarpGpuParams params,
               int uvInput,
               const ImageLayerDesc& uvLayer,
@@ -310,7 +312,7 @@ recordWarpGpu(EffectInstance& effect,
     }
 
     PixelKernelGpu op;
-    op.kernel = kernel;
+    op.kernel = chainView.buffer ? chainKernel : kernel;
     op.setParams(params);
     const GpuImageView views[3] = { uv, mapView, chainView };
 

@@ -3,8 +3,14 @@ import coordmap;
 import resamplecore;
 import mapremap;
 import edgesample;
+#ifdef WARP_CHAIN
 import lensmodels;
 import warpchain;
+#endif
+
+// Built twice: with WARP_CHAIN as the stmap_chain and idistort_chain kernels, which sample
+// through a chain, and without as stmap and idistort, which leave the chain code out so a node
+// with no chain compiles a smaller pipeline.
 
 // STMap::renderOp and IDistort::renderOp per pixel. The wrap's push block carries the Source,
 // which is both the image sampled and the image blended under the mask and mix, the destination
@@ -273,6 +279,9 @@ float4 warpSampleAt(Warp w, float2 s, float4 J, bool jacobian, bool wrapped)
     const uint wrapV = wrapped ? w.wrapV : kWrapNone;
     const int4 domain = wrapped ? w.domain : int4(0, 0, 0, 0);
     const bool clampOn = (w.flags & kWarpClamp) != 0;
+#ifndef WARP_CHAIN
+    return sampleAt(warpSource(w), s.x, s.y, J, jacobian, w.spec, clampOn, wrapU, wrapV, domain);
+#else
     if ((w.flags & kWarpChain) == 0)
         return sampleAt(warpSource(w), s.x, s.y, J, jacobian, w.spec, clampOn, wrapU, wrapV, domain);
     FF x = ffMake(s.x, 0.0);
@@ -291,6 +300,7 @@ float4 warpSampleAt(Warp w, float2 s, float4 J, bool jacobian, bool wrapped)
     if (!warpChainMap(chainBuf, 0, x, y, J, jacobian))
         return float4(0.0, 0.0, 0.0, 0.0);
     return sampleAt(warpSource(w), ffToFloat(x), ffToFloat(y), J, jacobian, w.spec, clampOn, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
+#endif
 }
 
 // The sample in channel-bit order, a one-channel pixel being alpha.
@@ -306,10 +316,14 @@ float4 warpSample(Warp w, int2 p, bool idistort)
     const bool jacobian = (w.flags & kWarpJacobian) != 0;
     if (warpMapped(w) && warpMap(w, p.x, p.y) == 0.0)
     {
-        if ((w.flags & kWarpChain) == 0)
-            return wrapReadSource(p);
-        const float4 held = warpSampleAt(w, float2(float(p.x) + 0.5, float(p.y) + 0.5), float4(1.0, 0.0, 0.0, 1.0), jacobian, false);
-        return (wrap.nComps == 1) ? float4(0.0, 0.0, 0.0, held.x) : held;
+#ifdef WARP_CHAIN
+        if ((w.flags & kWarpChain) != 0)
+        {
+            const float4 held = warpSampleAt(w, float2(float(p.x) + 0.5, float(p.y) + 0.5), float4(1.0, 0.0, 0.0, 1.0), jacobian, false);
+            return (wrap.nComps == 1) ? float4(0.0, 0.0, 0.0, held.x) : held;
+        }
+#endif
+        return wrapReadSource(p);
     }
     // With no alpha channel every position is valid; past a Black UV input's bounds its alpha is 0
     // like its U and V. Where the Map is 0 the pixel keeps its own, so the gate does not apply.

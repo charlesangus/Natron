@@ -1450,7 +1450,7 @@ LensDistortion::canRenderOpOnGpu(const GpuQuery& query) const
     }
     // The finishing stages blend against the Source fetched, which is upstream of the
     // concatenated nodes.
-    if (plan.applyMask || (plan.mix != 1.) || !plan.processChannels.all()) {
+    if (plan.applyMask || (plan.mix != 1.) || (query.mix != 1.) || !plan.processChannels.all()) {
         return false;
     }
     // An STMap output reads no Source pixel, so the CPU takes the Source unconcatenated.
@@ -1568,7 +1568,7 @@ LensDistortion::renderOpGpu(const GpuRenderArgs& args)
     }
 
     PixelKernelGpu op;
-    op.kernel = (int)gpu::GpuKernelId::lensdistortion;
+    op.kernel = (int)(chainView.buffer ? gpu::GpuKernelId::lensdistortion_chain : gpu::GpuKernelId::lensdistortion);
     op.setParams(params);
 
     return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(&chainView, 1));

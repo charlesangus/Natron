@@ -918,7 +918,7 @@ canRecordResampleGpu(const EffectInstance& effect,
     if (query.hasConcatenatedInput) {
         // The finishing stages would blend against the source upstream of the concatenated
         // nodes, where runResampleCpu() resamples this node's immediate input.
-        const bool finish = plan.applyMask || (plan.mix != 1.) || !plan.processChannels.all();
+        const bool finish = plan.applyMask || (plan.mix != 1.) || (query.mix != 1.) || !plan.processChannels.all();
         if (finish || !query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens)) {
             return false;
         }

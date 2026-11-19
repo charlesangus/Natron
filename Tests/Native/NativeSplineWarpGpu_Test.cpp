@@ -388,7 +388,8 @@ renderGpu(GpuParityRuntime& runtime,
     wrap.dst.nComps = (uint32_t)c.nComps;
     wrap.output = wrapRect(c.window);
     wrap.nComps = (uint32_t)c.nComps;
-    gpu::GpuWrapView views[2];
+    // The field, the image sampled and the chain of concatenated nodes, which these cases have none of.
+    gpu::GpuWrapView views[3];
     gpu::GpuWrapView& fieldView = views[0];
     if (fieldBuffer) {
         fieldView.buffer = fieldBuffer;
@@ -405,7 +406,7 @@ renderGpu(GpuParityRuntime& runtime,
         return false;
     }
     const gpu::GpuStatus recorded = gpu::recordWrappedInputs(*context, gpu::GpuKernelId::splinewarp, wrap, paramBuffer,
-                                                             std::span<const gpu::GpuWrapView>(views, 2));
+                                                             std::span<const gpu::GpuWrapView>(views, 3));
     EXPECT_TRUE(bool(recorded)) << recorded.message;
     if (!recorded) {
         return false;

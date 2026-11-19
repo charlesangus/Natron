@@ -3,8 +3,13 @@ import coordmap;
 import resamplecore;
 import mapremap;
 import edgesample;
+#ifdef WARP_CHAIN
 import lensmodels;
 import warpchain;
+#endif
+
+// Built twice: with WARP_CHAIN as the iwarp_chain kernel that samples through a chain, and without
+// as iwarp, which leaves the chain code out so a node with no chain compiles a smaller pipeline.
 
 // IWarp::renderOp per pixel without motion blur, for ITransform and ICornerPin. The wrap's push
 // block carries the Source, which is both the image sampled and the image blended under the mask
@@ -179,6 +184,7 @@ ResampleSource iwarpSource(IWarp w)
 // one, in channel-bit order.
 float4 iwarpSampleAt(IWarp w, float sx, float sy, float4 J, bool jacobian)
 {
+#ifdef WARP_CHAIN
     if ((w.flags & kIWarpChain) != 0)
     {
         FF x = ffMake(sx, 0.0);
@@ -188,6 +194,7 @@ float4 iwarpSampleAt(IWarp w, float sx, float sy, float4 J, bool jacobian)
         sx = ffToFloat(x);
         sy = ffToFloat(y);
     }
+#endif
     const float4 v = sampleAt(iwarpSource(w), sx, sy, J, jacobian, w.spec, (w.flags & kIWarpClamp) != 0, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
     if (wrap.nComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);
@@ -207,9 +214,11 @@ float4 iwarpSample(IWarp w, int2 p)
     // sampled where the chain takes the pixel's centre.
     if ((w.flags & kIWarpMapConnected) != 0 && m == 0.0)
     {
-        if ((w.flags & kIWarpChain) == 0)
-            return wrapReadSource(p);
-        return iwarpSampleAt(w, float(p.x) + 0.5, float(p.y) + 0.5, float4(1.0, 0.0, 0.0, 1.0), jacobian);
+#ifdef WARP_CHAIN
+        if ((w.flags & kIWarpChain) != 0)
+            return iwarpSampleAt(w, float(p.x) + 0.5, float(p.y) + 0.5, float4(1.0, 0.0, 0.0, 1.0), jacobian);
+#endif
+        return wrapReadSource(p);
     }
     const FF none = ffMake(0.0, 0.0);
     // The central differences of the Map, exact as the CPU's doubles are.

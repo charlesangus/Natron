@@ -1380,7 +1380,7 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
     curve.pack(&lut);
 
     PixelKernelGpu op;
-    op.kernel = (int)gpu::GpuKernelId::iwarp;
+    op.kernel = (int)(chainView.buffer ? gpu::GpuKernelId::iwarp_chain : gpu::GpuKernelId::iwarp);
     op.params.resize(sizeof(header) + lut.size() * sizeof(float));
     std::memcpy(op.params.data(), header, sizeof(header));
     std::memcpy(op.params.data() + sizeof(header), lut.data(), lut.size() * sizeof(float));

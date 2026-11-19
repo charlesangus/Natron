@@ -1218,7 +1218,9 @@ TEST_F(NativeTransformGpuTest, FilterParameterKnobsReachTheCpuAndGpuRenders)
     EXPECT_GT(nCompared, 0);
 }
 
-TEST_F(NativeTransformGpuTest, ConcatenatedTransformStaysOnTheCpu)
+// The second Transform resamples the source once through the concatenated matrix on the GPU,
+// which never renders the first.
+TEST_F(NativeTransformGpuTest, ConcatenatedTransformRendersOnTheGpu)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
     NodePtr first = makeNode();
@@ -1240,11 +1242,13 @@ TEST_F(NativeTransformGpuTest, ConcatenatedTransformStaysOnTheCpu)
         return;
     }
     ASSERT_TRUE(result.ok) << result.error;
-    EXPECT_FALSE(result.ranInRegion(second));
+    EXPECT_TRUE(result.ranInRegion(second));
+    EXPECT_EQ(0u, result.gpuTasksPerNode.count(first->getScriptName_mt_safe())) << "the concatenated Transform rendered";
+    EXPECT_TRUE(result.cpuFallbackReasons.empty());
 
     ASSERT_EQ(result.cpu.size(), result.gpu.size());
-    const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::exact());
-    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex;
+    const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::resampling());
+    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
 }
 
 #define kFilterSpecOpPluginID "test.natron.built-in.GpuFilterSpecResampleOp"

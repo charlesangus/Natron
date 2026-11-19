@@ -244,6 +244,16 @@ public:
     void appendMap(const InverseWarpMapConstPtr& map,
                    unsigned gpuStep = eGpuStepUnsupported);
 
+    /**
+     * @brief Marks the source the chain reads as having an infinite region of definition: a
+     * consumer's region of it is clipped before prepare() sees it, so prepare() fails on the mark
+     * instead of on the window, building no map.
+     **/
+    void setSourceInfinite(bool infinite)
+    {
+        _sourceInfinite = infinite;
+    }
+
     const RenderScale& getScale() const
     {
         return _scale;
@@ -367,6 +377,7 @@ private:
     std::vector<RectD> _windows;
     RectD _sourceRegion;
     std::string _error;
+    bool _sourceInfinite = false;
     bool _prepared = false;
 };
 

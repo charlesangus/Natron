@@ -30,17 +30,55 @@ using namespace Natron::Optics;
 
 namespace {
 
-Xyz
-integrate(const std::string& illuminant)
+const char* const kStudioConfig = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
+
+std::vector<double>
+everyNm()
 {
-    Xyz sum = { 0., 0., 0. };
-    for (int nm = int(kSpectralMinNm); nm <= int(kSpectralMaxNm); ++nm) {
-        const Xyz xyz = spectralXyz(illuminant, nm);
+    std::vector<double> nm;
+    for (int i = int(kCmfMinNm); i <= int(kCmfMaxNm); ++i) {
+        nm.push_back(i);
+    }
+    return nm;
+}
+
+Rgb
+render(const std::string& illuminant, const Matrix3& xyzToWorking, SpectralWhite white)
+{
+    std::vector<Rgb> colours;
+    EXPECT_TRUE(spectralColours(illuminant, everyNm(), xyzToWorking, white, &colours)) << illuminant;
+    Rgb sum = { 0., 0., 0. };
+    for (const Rgb& c : colours) {
         for (int k = 0; k < 3; ++k) {
-            sum[k] += xyz[k];
+            sum[k] += c[k];
         }
     }
     return sum;
+}
+
+double
+summedLuminance(const std::string& illuminant)
+{
+    double y = 0.;
+    for (double nm : everyNm()) {
+        y += spectralXyz(illuminant, nm)[1];
+    }
+    return y;
+}
+
+void
+expectNeutral(const Rgb& rgb, double tolerance, const std::string& what)
+{
+    EXPECT_NEAR(rgb[0] / rgb[1], 1., tolerance) << what;
+    EXPECT_NEAR(rgb[2] / rgb[1], 1., tolerance) << what;
+}
+
+OCIO_NAMESPACE::ConstConfigRcPtr
+studioConfigWithSceneLinear(const char* space)
+{
+    OCIO_NAMESPACE::ConfigRcPtr config = OCIO_NAMESPACE::Config::CreateFromBuiltinConfig(kStudioConfig)->createEditableCopy();
+    config->setRole(OCIO_NAMESPACE::ROLE_SCENE_LINEAR, space);
+    return config;
 }
 
 } // namespace
@@ -65,18 +103,22 @@ TEST(OpticsSpectral, EveryNamedIlluminantIsPresent)
     }
     EXPECT_FALSE(hasIlluminant("FL12"));
     EXPECT_EQ(illuminantPower("FL12", 550.), 0.);
+    EXPECT_EQ(illuminantXyz("FL12"), (Xyz { 0., 0., 0. }));
 }
 
 TEST(OpticsSpectral, TablesMatchHandReadValues)
 {
-    const Xyz at390 = colourMatching(390.);
-    EXPECT_NEAR(at390[0], 3.769647e-03, 1e-12);
-    EXPECT_NEAR(at390[1], 4.146161e-04, 1e-12);
-    EXPECT_NEAR(at390[2], 1.847260e-02, 1e-12);
-    const Xyz between = colourMatching(390.5);
-    EXPECT_NEAR(between[0], 0.5 * (3.769647e-03 + 4.532416e-03), 1e-12);
+    const Xyz at360 = colourMatching(360.);
+    EXPECT_NEAR(at360[0], 1.299e-04, 1e-12);
+    EXPECT_NEAR(at360[1], 3.917e-06, 1e-12);
+    EXPECT_NEAR(at360[2], 6.061e-04, 1e-12);
+    const Xyz between = colourMatching(360.5);
+    EXPECT_NEAR(between[0], 0.5 * (1.299e-04 + 1.45847e-04), 1e-12);
+    const Xyz at555 = colourMatching(555.);
+    EXPECT_NEAR(at555[0], 0.5120501, 1e-12);
+    EXPECT_EQ(at555[1], 1.);
     const Xyz below = colourMatching(300.);
-    EXPECT_EQ(below[2], at390[2]);
+    EXPECT_EQ(below[2], at360[2]);
     EXPECT_NEAR(illuminantPower("B", 320.), 0.02, 1e-12);
     EXPECT_NEAR(illuminantPower("B", 322.5), 0.5 * (0.02 + 0.26), 1e-12);
     EXPECT_NEAR(illuminantPower("E", 500.), 100., 1e-12);
@@ -84,9 +126,10 @@ TEST(OpticsSpectral, TablesMatchHandReadValues)
 
 TEST(OpticsSpectral, EqualEnergyIntegratesToEqualXyz)
 {
-    const Xyz e = integrate("E");
-    EXPECT_NEAR(e[0] / e[1], 1., 1e-3);
-    EXPECT_NEAR(e[2] / e[1], 1., 1e-3);
+    const Xyz e = illuminantXyz("E");
+    EXPECT_EQ(e[1], 1.);
+    EXPECT_NEAR(e[0], 1., 1e-3);
+    EXPECT_NEAR(e[2], 1., 1e-3);
 }
 
 TEST(OpticsSpectral, FallbackMatrixTakesTheD65WhiteToRec709White)
@@ -104,25 +147,72 @@ TEST(OpticsSpectral, NoConfigFallsBackToRec709)
     EXPECT_EQ(route, XyzRoute::Rec709Fallback);
     EXPECT_EQ(xyzToWorkingSpace(OCIO_NAMESPACE::Config::CreateRaw(), &route), kXyzD65ToRec709);
     EXPECT_EQ(route, XyzRoute::Rec709Fallback);
+    Chromaticity white = kWhiteAces;
+    EXPECT_FALSE(workingSpaceWhite(nullptr, &white));
+    EXPECT_EQ(white, kWhiteD65);
 }
 
-TEST(OpticsSpectral, StudioConfigTakesTheD65WhiteToNeutral)
+TEST(OpticsSpectral, D65RendersWhiteInRec709)
 {
-    OCIO_NAMESPACE::ConstConfigRcPtr config = OCIO_NAMESPACE::Config::CreateFromBuiltinConfig("studio-config-v4.0.0_aces-v2.0_ocio-v2.5");
+    expectNeutral(render("D65", kXyzD65ToRec709, SpectralWhite::Physical), 1e-3, "fallback");
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = studioConfigWithSceneLinear("Linear Rec.709 (sRGB)");
+    Chromaticity white;
+    EXPECT_TRUE(workingSpaceWhite(config, &white));
+    EXPECT_EQ(white, kWhiteD65);
     XyzRoute route = XyzRoute::Rec709Fallback;
     const Matrix3 m = xyzToWorkingSpace(config, &route);
     EXPECT_NE(route, XyzRoute::Rec709Fallback);
-    const Rgb white = applyMatrix(m, { 0.95047, 1., 1.08883 });
-    EXPECT_NEAR(white[0] / white[1], 1., 1e-3);
-    EXPECT_NEAR(white[2] / white[1], 1., 1e-3);
-    EXPECT_NEAR(white[1], 1., 1e-3);
+    expectNeutral(render("D65", m, SpectralWhite::Physical), 1e-3, "studio config");
+}
+
+// E has equal X, Y and Z by the observer's definition; the 1 nm table's three areas agree to 4e-4,
+// which moves the ratios by under 5e-4.
+TEST(OpticsSpectral, EqualEnergyKeepsItsTintInRec709)
+{
+    const Rgb expected = applyMatrix(kXyzD65ToRec709, { 1., 1., 1. });
+    const Rgb e = render("E", kXyzD65ToRec709, SpectralWhite::Physical);
+    EXPECT_NEAR(e[0] / e[1], expected[0] / expected[1], 1e-3);
+    EXPECT_NEAR(e[2] / e[1], expected[2] / expected[1], 1e-3);
+    EXPECT_GT(e[0] / e[1], 1.2);
+}
+
+TEST(OpticsSpectral, AcesCgTakesItsOwnWhiteToNeutralAndTintsD65)
+{
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = OCIO_NAMESPACE::Config::CreateFromBuiltinConfig(kStudioConfig);
+    Chromaticity white;
+    EXPECT_TRUE(workingSpaceWhite(config, &white));
+    EXPECT_EQ(white, kWhiteAces);
+    XyzRoute route = XyzRoute::Rec709Fallback;
+    const Matrix3 m = xyzToWorkingSpace(config, &route);
+    EXPECT_NE(route, XyzRoute::Rec709Fallback);
+    const Rgb acesWhite = applyMatrix(m, { kWhiteAces[0] / kWhiteAces[1], 1., (1. - kWhiteAces[0] - kWhiteAces[1]) / kWhiteAces[1] });
+    for (double c : acesWhite) {
+        EXPECT_NEAR(c, 1., 1e-5);
+    }
+    expectNeutral(render("D60", m, SpectralWhite::Physical), 1e-3, "D60");
+    const Rgb d65 = render("D65", m, SpectralWhite::Physical);
+    EXPECT_LT(d65[0] / d65[1], 0.99);
+    EXPECT_GT(d65[2] / d65[1], 1.01);
+}
+
+TEST(OpticsSpectral, LocalWhiteRendersTheIlluminantNeutralAtItsLuminance)
+{
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = OCIO_NAMESPACE::Config::CreateFromBuiltinConfig(kStudioConfig);
+    const Matrix3 spaces[2] = { kXyzD65ToRec709, xyzToWorkingSpace(config) };
+    for (const Matrix3& m : spaces) {
+        for (const char* illuminant : { "E", "D65", "A" }) {
+            const Rgb rgb = render(illuminant, m, SpectralWhite::WorkingSpace);
+            expectNeutral(rgb, 1e-4, illuminant);
+            EXPECT_NEAR(rgb[1] / summedLuminance(illuminant), 1., 1e-4) << illuminant;
+        }
+    }
 }
 
 TEST(OpticsSpectral, ColoursAreTheMatrixTimesTheWeightedMatchingFunctions)
 {
     const std::vector<double> nm = sampleWavelengths(3);
     std::vector<Rgb> colours;
-    ASSERT_TRUE(spectralColours("D65", nm, kXyzD65ToRec709, &colours));
+    ASSERT_TRUE(spectralColours("D65", nm, kXyzD65ToRec709, SpectralWhite::Physical, &colours));
     ASSERT_EQ(colours.size(), 3u);
     for (size_t i = 0; i < nm.size(); ++i) {
         const Xyz cmf = colourMatching(nm[i]);
@@ -133,7 +223,10 @@ TEST(OpticsSpectral, ColoursAreTheMatrixTimesTheWeightedMatchingFunctions)
         }
     }
     std::string error;
-    EXPECT_FALSE(spectralColours("Z", nm, kXyzD65ToRec709, &colours, &error));
+    EXPECT_FALSE(spectralColours("Z", nm, kXyzD65ToRec709, SpectralWhite::Physical, &colours, &error));
     EXPECT_EQ(error, "unknown illuminant \"Z\"");
     EXPECT_EQ(colours.size(), 3u);
+    const Matrix3 noRed = { 0., 0., 0., 0., 1., 0., 0., 0., 1. };
+    EXPECT_FALSE(spectralColours("D65", nm, noRed, SpectralWhite::WorkingSpace, &colours, &error));
+    EXPECT_EQ(error, "illuminant \"D65\" is outside the working space");
 }

@@ -80,7 +80,99 @@ namespace Optics {
             return true;
         }
 
+        Matrix3 multiply(const Matrix3& a, const Matrix3& b)
+        {
+            Matrix3 out {};
+            for (int r = 0; r < 3; ++r) {
+                for (int c = 0; c < 3; ++c) {
+                    for (int k = 0; k < 3; ++k) {
+                        out[3 * r + c] += a[3 * r + k] * b[3 * k + c];
+                    }
+                }
+            }
+            return out;
+        }
+
+        bool invert(const Matrix3& m, Matrix3* out)
+        {
+            const Matrix3 cofactor = {
+                m[4] * m[8] - m[5] * m[7],
+                m[2] * m[7] - m[1] * m[8],
+                m[1] * m[5] - m[2] * m[4],
+                m[5] * m[6] - m[3] * m[8],
+                m[0] * m[8] - m[2] * m[6],
+                m[2] * m[3] - m[0] * m[5],
+                m[3] * m[7] - m[4] * m[6],
+                m[1] * m[6] - m[0] * m[7],
+                m[0] * m[4] - m[1] * m[3],
+            };
+            const double det = m[0] * cofactor[0] + m[1] * cofactor[3] + m[2] * cofactor[6];
+            if (!std::isfinite(det) || det == 0.) {
+                return false;
+            }
+            for (int i = 0; i < 9; ++i) {
+                (*out)[i] = cofactor[i] / det;
+            }
+            return true;
+        }
+
+        Xyz whiteXyz(const Chromaticity& xy)
+        {
+            return { xy[0] / xy[1], 1., (1. - xy[0] - xy[1]) / xy[1] };
+        }
+
+        // The Bradford cone response OCIO's _BFD built-ins adapt with, so that this undoes theirs exactly.
+        const Matrix3 kBradford = {
+            0.8951,
+            0.2664,
+            -0.1614,
+            -0.7502,
+            1.7135,
+            0.0367,
+            0.0389,
+            -0.0685,
+            1.0296,
+        };
+
+        Matrix3 bradfordAdaptation(const Chromaticity& from, const Chromaticity& to)
+        {
+            Matrix3 inverse;
+            invert(kBradford, &inverse);
+            const Rgb src = applyMatrix(kBradford, whiteXyz(from));
+            const Rgb dst = applyMatrix(kBradford, whiteXyz(to));
+            const Matrix3 scale = { dst[0] / src[0], 0., 0., 0., dst[1] / src[1], 0., 0., 0., dst[2] / src[2] };
+            return multiply(inverse, multiply(scale, kBradford));
+        }
+
+        // Interop IDs are [namespace:]<encoding>_<gamut>_<scene|display>.
+        bool whiteOfInteropId(const std::string& id, Chromaticity* white)
+        {
+            const size_t last = id.rfind('_');
+            if (last == std::string::npos || last == 0) {
+                return false;
+            }
+            const size_t before = id.rfind('_', last - 1);
+            if (before == std::string::npos) {
+                return false;
+            }
+            const std::string gamut = id.substr(before + 1, last - before - 1);
+            if (gamut == "ap0" || gamut == "ap1") {
+                *white = kWhiteAces;
+                return true;
+            }
+            for (const char* d65 : { "rec709", "rec2020", "p3d65", "adobergb", "ciexyzd65" }) {
+                if (gamut == d65) {
+                    *white = kWhiteD65;
+                    return true;
+                }
+            }
+            return false;
+        }
+
     } // namespace
+
+    const Chromaticity kWhiteD65 = { 0.3127, 0.3290 };
+    const Chromaticity kWhiteAces = { 0.32168, 0.33767 };
 
     const Matrix3 kXyzD65ToRec709 = {
         3.2404542,
@@ -128,7 +220,7 @@ namespace Optics {
         const double f = t - i;
         Xyz out;
         for (int k = 0; k < 3; ++k) {
-            out[k] = SpectralData::kCmf2015[i][k] + f * (SpectralData::kCmf2015[i + 1][k] - SpectralData::kCmf2015[i][k]);
+            out[k] = SpectralData::kCmf1931[i][k] + f * (SpectralData::kCmf1931[i + 1][k] - SpectralData::kCmf1931[i][k]);
         }
         return out;
     }
@@ -152,6 +244,21 @@ namespace Optics {
         return { cmf[0] * power, cmf[1] * power, cmf[2] * power };
     }
 
+    Xyz illuminantXyz(const std::string& name)
+    {
+        Xyz sum = { 0., 0., 0. };
+        if (!hasIlluminant(name)) {
+            return sum;
+        }
+        for (int nm = int(kCmfMinNm); nm <= int(kCmfMaxNm); ++nm) {
+            const Xyz xyz = spectralXyz(name, nm);
+            for (int k = 0; k < 3; ++k) {
+                sum[k] += xyz[k];
+            }
+        }
+        return { sum[0] / sum[1], 1., sum[2] / sum[1] };
+    }
+
     Rgb applyMatrix(const Matrix3& m, const Xyz& xyz)
     {
         Rgb out;
@@ -159,6 +266,16 @@ namespace Optics {
             out[r] = m[3 * r] * xyz[0] + m[3 * r + 1] * xyz[1] + m[3 * r + 2] * xyz[2];
         }
         return out;
+    }
+
+    bool workingSpaceWhite(const OCIO_NAMESPACE::ConstConfigRcPtr& config, Chromaticity* white)
+    {
+        *white = kWhiteD65;
+        if (!config || !config->hasRole(OCIO_NAMESPACE::ROLE_SCENE_LINEAR)) {
+            return false;
+        }
+        OCIO_NAMESPACE::ConstColorSpaceRcPtr space = config->getColorSpace(config->getRoleColorSpace(OCIO_NAMESPACE::ROLE_SCENE_LINEAR));
+        return space && whiteOfInteropId(space->getInteropID(), white);
     }
 
     Matrix3 xyzToWorkingSpace(const OCIO_NAMESPACE::ConstConfigRcPtr& config, XyzRoute* route)
@@ -198,14 +315,45 @@ namespace Optics {
             if (route) {
                 *route = chosen;
             }
+            Chromaticity white;
+            if (workingSpaceWhite(config, &white) && white != kWhiteD65) {
+                m = multiply(m, bradfordAdaptation(white, kWhiteD65));
+            }
             return m;
         } catch (const OCIO_NAMESPACE::Exception&) {
             return kXyzD65ToRec709;
         }
     }
 
+    bool localWhite(const Matrix3& xyzToWorking, const std::string& illuminant, Matrix3* out)
+    {
+        Matrix3 inverse;
+        if (!hasIlluminant(illuminant) || !invert(xyzToWorking, &inverse)) {
+            return false;
+        }
+        const Xyz xyz = illuminantXyz(illuminant);
+        const Rgb rgb = applyMatrix(xyzToWorking, xyz);
+        const double greyLuminance = applyMatrix(inverse, { 1., 1., 1. })[1];
+        if (!(greyLuminance > 0.)) {
+            return false;
+        }
+        const double grey = xyz[1] / greyLuminance;
+        Matrix3 balanced = xyzToWorking;
+        for (int r = 0; r < 3; ++r) {
+            if (!(rgb[r] > 0.)) {
+                return false;
+            }
+            for (int c = 0; c < 3; ++c) {
+                balanced[3 * r + c] *= grey / rgb[r];
+            }
+        }
+        *out = balanced;
+        return true;
+    }
+
     bool spectralColours(const std::string& illuminant, const std::vector<double>& wavelengthsNm,
-                         const Matrix3& xyzToWorking, std::vector<Rgb>* out, std::string* error)
+                         const Matrix3& xyzToWorking, SpectralWhite white, std::vector<Rgb>* out,
+                         std::string* error)
     {
         if (!hasIlluminant(illuminant)) {
             if (error) {
@@ -213,10 +361,17 @@ namespace Optics {
             }
             return false;
         }
+        Matrix3 m = xyzToWorking;
+        if (white == SpectralWhite::WorkingSpace && !localWhite(xyzToWorking, illuminant, &m)) {
+            if (error) {
+                *error = "illuminant \"" + illuminant + "\" is outside the working space";
+            }
+            return false;
+        }
         std::vector<Rgb> colours;
         colours.reserve(wavelengthsNm.size());
         for (double nm : wavelengthsNm) {
-            colours.push_back(applyMatrix(xyzToWorking, spectralXyz(illuminant, nm)));
+            colours.push_back(applyMatrix(m, spectralXyz(illuminant, nm)));
         }
         *out = std::move(colours);
         return true;

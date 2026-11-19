@@ -23,8 +23,10 @@
  * Wavelength to working-space colour, ported from realflare's get_spectral and get_wavelengths
  * (https://github.com/beatreichenbach/realflare v1.0.3, flare/engine/tasks/common/color.py,
  * flare/engine/tasks/raytrace.py and flare/ocio.py, GPL-3.0-or-later). A wavelength's colour is the
- * CIE 2015 2 degree colour matching functions weighted by the illuminant's power / 100, as CIE XYZ
- * with a D65 white, then turned into the working space by one 3x3 matrix.
+ * CIE 1931 2 degree colour matching functions weighted by the illuminant's power / 100, as CIE XYZ,
+ * then turned into the working space by one 3x3 matrix. The 1931 observer is the one RGB working
+ * spaces are defined with, so a space's own white illuminant renders neutral and others keep their
+ * tint.
  */
 
 #include <array>
@@ -38,11 +40,19 @@ namespace Optics {
 
     constexpr double kSpectralMinNm = 390.;
     constexpr double kSpectralMaxNm = 730.;
+    // The span of the colour matching function table, which illuminantXyz integrates over.
+    constexpr double kCmfMinNm = 360.;
+    constexpr double kCmfMaxNm = 830.;
 
     using Rgb = std::array<double, 3>;
     using Xyz = std::array<double, 3>;
     // Row-major: out[r] = sum over c of m[3 * r + c] * in[c].
     using Matrix3 = std::array<double, 9>;
+
+    // CIE xy.
+    using Chromaticity = std::array<double, 2>;
+    extern const Chromaticity kWhiteD65;
+    extern const Chromaticity kWhiteAces;
 
     // CIE XYZ (D65) to linear Rec.709.
     extern const Matrix3 kXyzD65ToRec709;
@@ -62,7 +72,20 @@ namespace Optics {
     // colourMatching(nm) * illuminantPower(illuminant, nm) * 0.01.
     Xyz spectralXyz(const std::string& illuminant, double nm);
 
+    // spectralXyz summed at every whole nm over [kCmfMinNm, kCmfMaxNm], scaled to Y = 1. Zero for an
+    // unknown name.
+    Xyz illuminantXyz(const std::string& name);
+
     Rgb applyMatrix(const Matrix3& m, const Xyz& xyz);
+
+    enum class SpectralWhite {
+        // An illuminant renders with the colour it has in the working space: D65 is neutral in a D65
+        // space, E is warm there.
+        Physical,
+        // "Local White": each colour is scaled per channel so the illuminant renders neutral at its own
+        // luminance in the working space.
+        WorkingSpace,
+    };
 
     enum class XyzRoute {
         // The config's cie_xyz_d65_interchange role is scene-referred: role to scene_linear.
@@ -73,13 +96,25 @@ namespace Optics {
         Rec709Fallback,
     };
 
-    // XYZ (D65) to the config's scene_linear role. A null config gives the fallback.
+    // The white of the config's scene_linear role, read from its Color Interop Forum interop ID. False,
+    // with white set to kWhiteD65, for a config, role or interop ID that does not name a known white.
+    bool workingSpaceWhite(const OCIO_NAMESPACE::ConstConfigRcPtr& config, Chromaticity* white);
+
+    // CIE XYZ to the config's scene_linear role, without chromatic adaptation: the white of
+    // workingSpaceWhite goes to R = G = B. OCIO's XYZ routes adapt to D65, so a Bradford adaptation from
+    // the working white to D65 is put in front to undo that. A null config gives the fallback.
     Matrix3 xyzToWorkingSpace(const OCIO_NAMESPACE::ConstConfigRcPtr& config, XyzRoute* route = nullptr);
 
-    // One colour per wavelength: applyMatrix(xyzToWorking, spectralXyz(illuminant, nm)). False, with out
-    // untouched, for an unknown illuminant.
+    // xyzToWorking with its rows scaled so illuminantXyz(illuminant) goes to grey of the same luminance.
+    // False for an unknown illuminant or one with a channel at or below zero in the working space.
+    bool localWhite(const Matrix3& xyzToWorking, const std::string& illuminant, Matrix3* out);
+
+    // One colour per wavelength: applyMatrix(xyzToWorking, spectralXyz(illuminant, nm)), through
+    // localWhite for SpectralWhite::WorkingSpace. False, with out untouched, when the illuminant is
+    // unknown or localWhite fails.
     bool spectralColours(const std::string& illuminant, const std::vector<double>& wavelengthsNm,
-                         const Matrix3& xyzToWorking, std::vector<Rgb>* out, std::string* error = nullptr);
+                         const Matrix3& xyzToWorking, SpectralWhite white, std::vector<Rgb>* out,
+                         std::string* error = nullptr);
 
 } // namespace Optics
 } // namespace Natron

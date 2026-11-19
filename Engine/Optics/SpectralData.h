@@ -25,8 +25,8 @@ namespace Natron {
 namespace Optics {
     namespace SpectralData {
 
-        constexpr int kCmfFirstNm = 390;
-        constexpr int kCmfCount = 341;
+        constexpr int kCmfFirstNm = 360;
+        constexpr int kCmfCount = 471;
 
         struct Illuminant {
             const char* name;
@@ -38,8 +38,8 @@ namespace Optics {
 
         constexpr int kIlluminantCount = 20;
 
-        // CIE 2015 2 degree observer x, y, z at kCmfFirstNm + i nm.
-        extern const double kCmf2015[kCmfCount][3];
+        // CIE 1931 2 degree standard observer x, y, z at kCmfFirstNm + i nm.
+        extern const double kCmf1931[kCmfCount][3];
         extern const Illuminant kIlluminants[kIlluminantCount];
 
     } // namespace SpectralData

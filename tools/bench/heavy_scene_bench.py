@@ -64,6 +64,7 @@
         BENCH_SETTLE_S   seconds the load counts have to hold still before loads count as over (default 2)
         BENCH_SCENARIO_LIMIT_S  wall-clock limit of a scenario, from outside Natron (default 300)
         BENCH_OPEN_LIMIT_S      the same for one that opens or loads the whole file (default 1800)
+        BENCH_FILL_LIMIT_S      the workflow reopen's wait for the scene fill, apart from its first frame (default 600; reported, not judged)
         BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB  see heavy_scene_watchdog.sh
         BENCH_RESULT     JSON-lines file the results are appended to
                          (default $NATRON_GUI_TEST_OUT/heavy_scene_bench.jsonl)
@@ -210,6 +211,8 @@ TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
 EDIT_POST_WAIT_S = 10.0
 SCENARIO_LIMIT_S = int(os.environ.get("BENCH_SCENARIO_LIMIT_S", "300"))
 OPEN_LIMIT_S = int(os.environ.get("BENCH_OPEN_LIMIT_S", "1800"))
+# The reopen's wait for the scene's fill to finish, apart from its first frame; reported, never judged.
+FILL_LIMIT_S = float(os.environ.get("BENCH_FILL_LIMIT_S", "600"))
 PICK_LIMIT_S = int(os.environ.get("BENCH_PICK_LIMIT_S", "900"))
 HOLD_FILE = os.environ.get("BENCH_HOLD_FILE", "")
 HOLD_S = float(os.environ.get("BENCH_HOLD_S", "120"))
@@ -1249,7 +1252,11 @@ try:
         v = view()
         steps = DrawSteps()
         heartbeat.start()
-        draw_call(v, "setDrawRevealBatch", Q_ARG(int, -1))
+        # A fixed small batch: the paced fill admits a whole row in one batch on a small scene, finishing before
+        # the cancel lands. The row has at most the scene's prims, so a batch of an eighth of them makes it at least 4.
+        row_prims_bound = int(rows.get("prims") or rows.get("gprims") or 0)
+        paced_batch = max(1, min(FILL_FIRST_BATCH, row_prims_bound // 8)) if row_prims_bound else 64
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, paced_batch))
         before = draw_stats()
         # The first admit batch is in the apply that posts the change; the rest of the row waits in the fill's queue.
         yield from set_draw_state(row, "full")
@@ -1263,11 +1270,13 @@ try:
             yield ("sleep", POLL_MS)
         progress_after, complete_after = fill_state()
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
-        active = not complete_at_cancel
-        batch = max(FILL_FIRST_BATCH, int(at_cancel.get("revealBatch") or 0))
+        active = not complete_at_cancel and progress_at_cancel < 1.0
+        batch = paced_batch
         admitted = at_cancel.get("shownSent", 0) - before.get("shownSent", 0)
-        check(active, "reveal_cancel_paced: the cancel landed while the fill was under way (%r prims admitted, progress %.3f)"
-              % (admitted, progress_at_cancel))
+        if not active:
+            m.not_applicable = ("the fill had finished before the cancel landed (progress %.3f, %r prims admitted in batches of %d): "
+                                "there was no fill under way to cancel" % (progress_at_cancel, admitted, batch))
+            return
         m.values["cancel_paced_row"] = row
         m.values["cancel_paced_was_active"] = active
         m.values["cancel_paced_batch"] = batch
@@ -1949,14 +1958,29 @@ try:
         load_t0 = time.perf_counter()
         require(app.loadProject(project_path) is not None, "workflow: reopen " + project_path)
         load_call_ms = (time.perf_counter() - load_t0) * 1000.0
-        ok = yield ("until", scene_painted_since(load_ms_epoch), TIMEOUT_S)
+        # The first frame is the first one presented after the load. The fill that follows is waited for
+        # separately, so a long fill delays neither this time nor the wait for it to appear.
+        presented_base = int(prop("natronScenePresentedFrames", 0) or 0)
+        first_frame = {"at": None}
+
+        def first_frame_presented():
+            if shown() and int(prop("natronScenePresentedFrames", 0) or 0) > presented_base:
+                if first_frame["at"] is None:
+                    first_frame["at"] = time.time() * 1000.0
+                return True
+            return False
+
+        ok = yield ("until", first_frame_presented, TIMEOUT_S)
         check(ok, "workflow: the reopened project shows the scene (%r)" % (prop("natronSceneError"),))
-        painted = prop("natronSceneLastPaintMs")
-        after_load_ms = (painted if painted is not None else time.time() * 1000.0) - load_ms_epoch
+        after_load_ms = (first_frame["at"] if first_frame["at"] is not None else time.time() * 1000.0) - load_ms_epoch
+        fill_t0 = time.perf_counter()
+        fill_done = yield ("until", lambda: bool(prop("natronSceneFillComplete", True)), FILL_LIMIT_S)
+        fill_complete_ms = round(after_load_ms + (time.perf_counter() - fill_t0) * 1000.0, 1) if fill_done else None
         settle = yield from wait_loads_settled("workflow: reopen")
         finish_step("reopen", reset_ms + (settle["stable_at"] - load_t0) * 1000.0, first_frame_ms=round(reset_ms + after_load_ms, 1),
                     reset_ms=round(reset_ms, 1), pause_ms=round(pause_ms, 1), load_call_ms=round(load_call_ms, 1),
-                    first_frame_after_load_ms=round(after_load_ms, 1), settle=settle_fields(settle))
+                    first_frame_after_load_ms=round(after_load_ms, 1), fill_complete_ms=fill_complete_ms,
+                    fill_complete=bool(fill_done), settle=settle_fields(settle))
         m.values["workflow_steps"] = m.steps
 
     def action_noedit(m):

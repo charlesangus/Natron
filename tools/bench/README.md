@@ -503,6 +503,11 @@ the workflow's Full + Load block and reopen wait for that, bounded by the scenar
 counts before and after and the wait in a `*_settle` field; the time judged ends where the still window
 began.
 
+`reveal_cancel_paced` sets a small fixed reveal batch (an eighth of the scene's prims, so the row needs at
+least four batches) through `setDrawRevealBatch` for the action and restores the paced default after it. If
+the fill had already finished when the cancel landed, the scenario is `not_applicable` with that reason; when
+the cancel lands mid-fill, the check that the fill stops within bound is unchanged.
+
 With `NATRON_DRAW_STATE_TIMING=1`, `reveal_wide`, `reveal_load_all`, `reveal_cancel_paced` and the
 workflow's block add `<name>_draw_steps`: every frame the viewer presented during the reveal, as
 percentiles (p50, p90, p99, max, mean) of each part of its critical path and the 20 worst by
@@ -633,7 +638,9 @@ step not counted), `full_asset_picture_ms` (100 ms, valid with `NATRON_DRAW_STAT
 GPU), `full_load_block_complete` and `full_load_block_worst_frame_ms` (the reveal finishes with no
 gap over 100 ms between painted frames), `reopen_first_frame_ms` (2 s, on a scene with payloads, from the
 project reset on, with `reset_ms` and `first_frame_after_load_ms` beside it; the reopen's stall covers the
-reset, the load and the loads that follow), `pattern_node`'s `create_ms` and `reconnect_ms` (its stall
+reset, the load and the loads that follow; the first frame is the first one presented after the load, not the
+fill's end), `fill_complete_ms` (from the load to the scene's fill completing, waited for apart from the first
+frame within `BENCH_FILL_LIMIT_S`, default 600; reported with no budget, `null` if the wait ran out), `pattern_node`'s `create_ms` and `reconnect_ms` (its stall
 still the whole step), and
 the first-frame and unrequested-payload budgets over the whole run. The save is judged as a stall: a
 `saveProjectAs` call that blocks the main thread over 100 ms fails. A scene with nothing for a step

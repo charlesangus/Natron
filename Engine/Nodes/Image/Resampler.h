@@ -323,6 +323,26 @@ void filterWeights(FilterEnum filter, double d, double w[4]);
 // 2-D sampling
 
 /**
+ * @brief bounds cut down to rect: on each axis where they overlap, their overlap, elsewhere the
+ * row or column of bounds nearest to rect. Every point of rect clamps to the same pixel in the
+ * result as in bounds, so a Stretch read of a point of rect, outside the image or not, is
+ * unchanged, as is a Black one. Empty when either is.
+ **/
+inline RectI
+cropToNearest(const RectI& bounds,
+              const RectI& rect)
+{
+    if (bounds.isNull() || rect.isNull()) {
+        return RectI();
+    }
+
+    return RectI(std::min(std::max(rect.x1, bounds.x1), bounds.x2 - 1),
+                 std::min(std::max(rect.y1, bounds.y1), bounds.y2 - 1),
+                 std::max(std::min(rect.x2, bounds.x2), bounds.x1 + 1),
+                 std::max(std::min(rect.y2, bounds.y2), bounds.y1 + 1));
+}
+
+/**
  * @brief A read-only float image as the resampler sees it: `data` points at pixel
  * (bounds.x1, bounds.y1), rows go upwards `rowStride` floats apart, and each pixel holds
  * nComps (1 to 4) interleaved floats. This is the layout of a float Natron Image, whose
@@ -368,13 +388,13 @@ struct SourceImage {
         return data + (std::size_t)(y - bounds.y1) * rowStride + (std::size_t)(x - bounds.x1) * (std::size_t)nComps;
     }
 
-    /// The part of the image inside rect, sharing its pixels; a missing source when they do not
-    /// overlap.
+    /// The part of the image cropToNearest(bounds, rect) keeps, sharing its pixels; a missing
+    /// source when rect or the image is empty.
     SourceImage cropped(const RectI& rect) const
     {
         SourceImage out;
         out.nComps = nComps;
-        const RectI inside = bounds.intersect(rect);
+        const RectI inside = cropToNearest(bounds, rect);
         if (!isValid() || inside.isNull()) {
             return out;
         }

@@ -1054,7 +1054,7 @@ recordResampleGpu(EffectInstance& effect,
         if (sourceRegionOfDefinition(input, time, scale, query.view, &srcRoD)) {
             RectI valid = intersectPixels(inputView.bounds, clampedPixelEnclosing(srcRoD, scale, input->getRenderMetadata(time, query.view)->getPixelAspectRatio(-1)));
             if (matrix && chain) {
-                valid = chain->sourceRoI ? intersectPixels(valid, chain->sourceRoI(rect)) : valid;
+                valid = chain->sourceRoI ? Resampler::cropToNearest(valid, chain->sourceRoI(rect)) : valid;
             } else if (matrix) {
                 valid = intersectPixels(valid, resampleGpuSourceRoI(effect, sourceInput, time, query.view, rect, scale));
             } else if (request.clipSourceToRoI) {

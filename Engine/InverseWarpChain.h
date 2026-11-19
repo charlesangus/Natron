@@ -330,6 +330,7 @@ public:
     /**
      * @brief getSourceRegion() in the source's pixels at the chain's scale, par being the source's
      * pixel aspect ratio. A consumer reads the source fetched upstream of the chain only there,
+     * or at the nearest edge of the source where the region misses it (Resampler::cropToNearest()),
      * as the GPU does, since the image fetched can be larger, holding what other renders
      * requested.
      **/

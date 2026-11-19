@@ -50,6 +50,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
+#include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
@@ -2155,7 +2156,7 @@ stageGpuInputView(EffectInstance& effect,
     // a chain's extrapolation or a wide filter footprint makes, would then see pixels the CPU
     // treats as outside the Source.
     if (chain && chain->sourceRoI) {
-        crop = crop.intersect(chain->sourceRoI(args.outputRect));
+        crop = Resampler::cropToNearest(crop, chain->sourceRoI(args.outputRect));
     }
     if (crop.isNull()) {
         return true;

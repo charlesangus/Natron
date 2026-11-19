@@ -980,7 +980,9 @@ TEST_F(NativeSplineWarpTest, ChainedWarpIsTransparentOutsideItsRegionOfDefinitio
 }
 
 // An unchained consumer under a stretch edge holds the warp's edge pixel beyond its region of
-// definition, so the chain must clamp there rather than read nothing.
+// definition, so the chain must clamp there rather than read nothing. A translate's output never
+// reaches past its input's region of definition, which the render clips to, so the consumers rotate:
+// the corners of the window lie in the rotated region's bounding box but outside the rectangle.
 TEST_F(NativeSplineWarpTest, ChainedWarpHoldsItsEdgeBeyondItsRegionOfDefinitionUnderStretch)
 {
     resetProject();
@@ -996,10 +998,12 @@ TEST_F(NativeSplineWarpTest, ChainedWarpHoldsItsEdgeBeyondItsRegionOfDefinitionU
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 0., 0. }));
     ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { (double)kParitySourceWidth, (double)kParitySourceHeight }));
     ASSERT_TRUE(setKnobValues(crop, kCropParamSoftness, { 0. }));
-    NodePtr chained = makeTranslate(warp, 12., 0.);
-    NodePtr unchained = makeTranslate(crop, 12., 0.);
+    NodePtr chained = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, warp);
+    NodePtr unchained = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, crop);
     ASSERT_TRUE(chained && unchained);
     for (const NodePtr& node : { chained, unchained }) {
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamCenter, { 32., 24. }));
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamRotate, { 30. }));
         ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
         ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 0. }));
         ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
@@ -1018,7 +1022,8 @@ TEST_F(NativeSplineWarpTest, ChainedWarpHoldsItsEdgeBeyondItsRegionOfDefinitionU
     black.window = window;
     black.channels = viaRender.channels;
     black.pixels.assign(viaRender.pixels.size(), 0.f);
-    const RectI outside(0, 0, 10, kParitySourceHeight);
+    // Its pixels read at least two source pixels past the warp's edge, beyond any bilinear tap.
+    const RectI outside(0, 0, 4, 4);
     EXPECT_GT(maxDiff(viaRender, black, outside), 1e-3) << "the held edge pixel should not read transparent";
     EXPECT_LE(maxDiff(viaChain, viaRender, outside), kWarpTolerance);
     EXPECT_LE(maxDiff(viaChain, viaRender, window), kWarpTolerance);

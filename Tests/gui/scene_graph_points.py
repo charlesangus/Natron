@@ -374,11 +374,18 @@ try:
         yield ("sleep", SETTLE_MS)
 
         composed = compose_count()
+        del switch_watch.seen[:]
         yield from pin_to(usd)
-        check(shows(usd, all_blocks)(), "returning to a kept node shows its tree at once (got %r)" % (world_children(),))
+        # The rows come from the worker after the reset; "at once" is the kept stage's rows
+        # without the greyed wait for a first evaluation.
+        ok = yield ("until", shows(usd, all_blocks), POLL_TIMEOUT_S)
+        check(ok, "returning to a kept node shows its tree (got %r)" % (world_children(),))
+        check(not any(s[0] for s in switch_watch.seen),
+              "returning to a kept node shows its tree at once, never switching (got %r)" % (switch_watch.seen,))
         yield ("sleep", SETTLE_MS)
         check(compose_count() == composed, "returning to a kept node composes nothing (%d, then %d)" % (composed, compose_count()))
-        check(shows(usd, all_blocks)(), "the kept node's tree stays up (got %r)" % (world_children(),))
+        ok = yield ("until", shows(usd, all_blocks), POLL_TIMEOUT_S)
+        check(ok, "the kept node's tree stays up (got %r)" % (world_children(),))
 
         # Twirling on the panel's stage.
         ok = yield ("until", opened(WORLD, BLOCK0, B0), POLL_TIMEOUT_S)

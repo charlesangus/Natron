@@ -1,6 +1,7 @@
 #include "GpuKernelRegistry.h"
 
 #include <array>
+#include <atomic>
 #include <tuple>
 
 namespace gpu {
@@ -22,10 +23,13 @@ namespace {
     static_assert(kGeneratedRasterCount == static_cast<size_t>(GpuRasterId::Count),
                   "raster table and id enum come from the same list");
 
+    std::atomic<uint64_t> gNextRegistrySerial { 1 };
+
 } // namespace
 
 GpuKernelRegistry::GpuKernelRegistry(GpuDevice& device)
     : device_(device)
+    , serial_(gNextRegistrySerial.fetch_add(1, std::memory_order_relaxed))
     , slots_(kGeneratedCount)
 {
 }

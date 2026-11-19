@@ -134,8 +134,12 @@ struct GpuDeviceInfo {
     bool pushDescriptor = false;
     // Vulkan 1.3 dynamic rendering, enabled whenever the device offers it.
     bool dynamicRendering = false;
-    // graphicsQueue and dynamicRendering plus colour-attachment blending of R32G32B32A32_SFLOAT and R32_SFLOAT.
-    // Raster users take their CPU path when it is false.
+    // Storage writes and atomics from the vertex and fragment stages, enabled whenever the device offers them.
+    bool vertexPipelineStores = false;
+    bool fragmentStores = false;
+    // graphicsQueue, dynamicRendering, vertexPipelineStores and fragmentStores, plus colour-attachment blending of
+    // R32G32B32A32_SFLOAT and R32_SFLOAT. The stores are required because a raster's storage buffers are bound
+    // to both stages and may be written from either. Raster users take their CPU path when it is false.
     bool rasterFloatBlend = false;
     // Without it an indirect draw of several commands is recorded as one draw per command.
     bool multiDrawIndirect = false;

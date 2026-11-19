@@ -640,7 +640,10 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     if (!dev->info_.multiDrawIndirect) {
         dev->info_.maxDrawIndirectCount = 1;
     }
+    dev->info_.vertexPipelineStores = avail.f2.features.vertexPipelineStoresAndAtomics == VK_TRUE;
+    dev->info_.fragmentStores = avail.f2.features.fragmentStoresAndAtomics == VK_TRUE;
     dev->info_.rasterFloatBlend = dev->info_.graphicsQueue && dev->info_.dynamicRendering
+        && dev->info_.vertexPipelineStores && dev->info_.fragmentStores
         && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32G32B32A32_SFLOAT)
         && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32_SFLOAT);
 
@@ -651,6 +654,8 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     want.f13.synchronization2 = VK_TRUE;
     want.f13.dynamicRendering = avail.f13.dynamicRendering;
     want.f2.features.multiDrawIndirect = avail.f2.features.multiDrawIndirect;
+    want.f2.features.vertexPipelineStoresAndAtomics = avail.f2.features.vertexPipelineStoresAndAtomics;
+    want.f2.features.fragmentStoresAndAtomics = avail.f2.features.fragmentStoresAndAtomics;
 
     const float prios[3] = { 1.0f, 1.0f, 1.0f };
     std::vector<VkDeviceQueueCreateInfo> qcis;

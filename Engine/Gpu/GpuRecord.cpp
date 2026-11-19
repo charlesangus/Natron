@@ -13,6 +13,7 @@ namespace gpu {
 
 namespace {
     std::atomic<uint64_t> gMaxStorageBufferBytesForTests { 0 };
+    std::atomic<uint32_t> gMaxDrawIndirectCountForTests { 0 };
 
     constexpr uint32_t kRasterDescriptorPoolSets = 64;
 
@@ -196,11 +197,35 @@ GpuRecordContext::dispatch(GpuKernelId kernel, std::span<const GpuBuffer* const>
     return k->record(cmd_, handles, push, threads);
 }
 
+bool
+GpuRecordContext::outsideComputeFamily() const
+{
+    const GpuDeviceInfo& info = registry_.device().info();
+    return isRaster() && info.graphicsFamily != info.computeFamily;
+}
+
+GpuStatus
+GpuRecordContext::checkTextureBindings(const char* where, std::span<const GpuBinding> bindings) const
+{
+    if (!outsideComputeFamily()) {
+        return {};
+    }
+    for (const GpuBinding& b : bindings) {
+        if (b.kind == GpuBinding::Kind::Texture) {
+            return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": a raster context outside the compute family samples no textures; textures belong to the compute family" };
+        }
+    }
+    return {};
+}
+
 GpuStatus
 GpuRecordContext::dispatchBindings(GpuKernelId kernel, std::span<const GpuBinding> bindings,
                                    std::span<const std::byte> push, std::array<uint32_t, 3> threads)
 {
     if (GpuStatus s = checkAbort("GpuRecordContext::dispatchBindings"); !s) {
+        return s;
+    }
+    if (GpuStatus s = checkTextureBindings("GpuRecordContext::dispatchBindings", bindings); !s) {
         return s;
     }
     for (const GpuBinding& b : bindings) {
@@ -239,6 +264,9 @@ GpuRecordContext::dispatchBindings(const std::shared_ptr<GpuKernel>& kernel, std
     if (!kernel) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: no kernel" };
     }
+    if (GpuStatus s = checkTextureBindings("GpuRecordContext::dispatchBindings", bindings); !s) {
+        return s;
+    }
     for (const GpuBinding& b : bindings) {
         if (b.kind != GpuBinding::Kind::StorageBuffer) {
             continue;
@@ -261,6 +289,9 @@ GpuRecordContext::texture(const GpuTextureDesc& desc, std::span<const float> tex
     if (!open_) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::texture: context already submitted" };
     }
+    if (outsideComputeFamily()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::texture: a raster context outside the compute family takes no textures; they are uploaded on the compute queue" };
+    }
     std::unique_ptr<GpuTexture> created;
     if (GpuStatus s = GpuTexture::create(registry_.device(), desc, texels, created); !s) {
         if (s.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
@@ -278,6 +309,9 @@ GpuRecordContext::cachedTexture(const std::string& key, const GpuTextureDesc& de
                                 const GpuTexture*& out)
 {
     out = nullptr;
+    if (outsideComputeFamily()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::cachedTexture: a raster context outside the compute family takes no textures; they are uploaded on the compute queue" };
+    }
     if (!textureCache_) {
         return texture(desc, texels, out);
     }
@@ -359,6 +393,20 @@ GpuRecordContext::setMaxStorageBufferBytesForTests(uint64_t bytes)
     gMaxStorageBufferBytesForTests.store(bytes, std::memory_order_relaxed);
 }
 
+uint32_t
+GpuRecordContext::maxDrawIndirectCount() const
+{
+    const uint32_t device = registry_.device().info().maxDrawIndirectCount;
+    const uint32_t cap = gMaxDrawIndirectCountForTests.load(std::memory_order_relaxed);
+    return (cap != 0) ? std::min(device, cap) : device;
+}
+
+void
+GpuRecordContext::setMaxDrawIndirectCountForTests(uint32_t count)
+{
+    gMaxDrawIndirectCountForTests.store(count, std::memory_order_relaxed);
+}
+
 // The descriptors bind whole buffers, and one over the range is invalid however little of it the kernel reads.
 GpuStatus
 GpuRecordContext::checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const
@@ -422,8 +470,7 @@ GpuRecordContext::acquireFromTransfer(const GpuTransfer& transfer, const GpuBuff
     if (GpuStatus s = recordable("GpuRecordContext::acquireFromTransfer"); !s) {
         return s;
     }
-    const GpuDeviceInfo& info = registry_.device().info();
-    if (isRaster() && info.graphicsFamily != info.computeFamily) {
+    if (outsideComputeFamily()) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::acquireFromTransfer: a raster context outside the compute family takes uploads through a compute context" };
     }
     transfer.recordComputeAcquire(cmd_, buffer, offset, bytes);
@@ -437,8 +484,7 @@ GpuRecordContext::releaseToTransfer(const GpuTransfer& transfer, const GpuBuffer
     if (GpuStatus s = recordable("GpuRecordContext::releaseToTransfer"); !s) {
         return s;
     }
-    const GpuDeviceInfo& info = registry_.device().info();
-    if (isRaster() && info.graphicsFamily != info.computeFamily) {
+    if (outsideComputeFamily()) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::releaseToTransfer: a raster context outside the compute family hands downloads to a compute context" };
     }
     transfer.recordComputeRelease(cmd_, buffer, offset, bytes);
@@ -683,7 +729,7 @@ GpuRecordContext::drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend,
         return s;
     }
     vkCmdBindIndexBuffer(cmd_, indexBuffer.buffer(), 0, VK_INDEX_TYPE_UINT32);
-    const uint32_t perDraw = registry_.device().info().maxDrawIndirectCount;
+    const uint32_t perDraw = maxDrawIndirectCount();
     for (uint32_t first = 0; first < drawCount; first += perDraw) {
         if (first > 0 && abortCheck_ && abortCheck_()) {
             aborted_ = true;
@@ -1006,19 +1052,28 @@ GpuRecordContext::writeTimestamp(VkQueryPool pool, uint32_t query)
 GpuStatus
 GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue signal)
 {
-    if (GpuStatus s = recordable("GpuRecordContext::submit"); !s) {
-        if (aborted_) {
-            open_ = false;
+    const char* where = "GpuRecordContext::submit";
+    if (!open_ || !aborted_) {
+        if (GpuStatus s = recordable(where); !s) {
+            return s;
         }
-        return s;
     }
     if (!signal) {
+        if (aborted_) {
+            open_ = false;
+            return abortedStatus(where);
+        }
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::submit: no semaphore to signal" };
     }
+    // An aborted context still submits its waits and signal with no commands: waiters on `signal` and later
+    // submissions waiting on it would otherwise hang, and the timeline must keep advancing in order.
+    const bool runCommands = !aborted_;
     open_ = false;
     GpuDevice& device = registry_.device();
-    if (GpuStatus s = device.check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer"); !s) {
-        return s;
+    if (runCommands) {
+        if (GpuStatus s = device.check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer"); !s) {
+            return s;
+        }
     }
     std::vector<VkSemaphoreSubmitInfo> waitInfos = externalWaitInfos();
     for (const TimelineValue& w : waits) {
@@ -1032,27 +1087,43 @@ GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue sig
     VkSubmitInfo2 info { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
     info.waitSemaphoreInfoCount = static_cast<uint32_t>(waitInfos.size());
     info.pWaitSemaphoreInfos = waitInfos.data();
-    info.commandBufferInfoCount = 1;
-    info.pCommandBufferInfos = &ci;
+    info.commandBufferInfoCount = runCommands ? 1 : 0;
+    info.pCommandBufferInfos = runCommands ? &ci : nullptr;
     info.signalSemaphoreInfoCount = 1;
     info.pSignalSemaphoreInfos = &signalInfo;
-    return device.submit(queue_, std::span<const VkSubmitInfo2>(&info, 1), VK_NULL_HANDLE);
+    GpuStatus s = device.submit(queue_, std::span<const VkSubmitInfo2>(&info, 1), VK_NULL_HANDLE);
+    if (!runCommands) {
+        if (!s) {
+            s.aborted = true;
+            return s;
+        }
+        return abortedStatus(where);
+    }
+    return s;
 }
 
 GpuStatus
 GpuRecordContext::submitAndWait(uint64_t timeoutNs)
 {
-    if (GpuStatus s = recordable("GpuRecordContext::submitAndWait"); !s) {
-        if (aborted_) {
-            open_ = false;
+    const char* where = "GpuRecordContext::submitAndWait";
+    if (!open_ || !aborted_) {
+        if (GpuStatus s = recordable(where); !s) {
+            return s;
         }
-        return s;
     }
+    // An aborted context runs no commands, but still consumes the external waits, whose semaphores the other API
+    // would otherwise find still signalled.
+    const bool runCommands = !aborted_;
     open_ = false;
+    if (!runCommands && externalWaits_.empty()) {
+        return abortedStatus(where);
+    }
     GpuDevice& device = registry_.device();
     const VkDevice vk = device.device();
-    if (GpuStatus s = device.check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer"); !s) {
-        return s;
+    if (runCommands) {
+        if (GpuStatus s = device.check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer"); !s) {
+            return s;
+        }
     }
 
     VkFence fence = VK_NULL_HANDLE;
@@ -1066,8 +1137,8 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
     VkSubmitInfo2 submit { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
     submit.waitSemaphoreInfoCount = static_cast<uint32_t>(waitInfos.size());
     submit.pWaitSemaphoreInfos = waitInfos.data();
-    submit.commandBufferInfoCount = 1;
-    submit.pCommandBufferInfos = &ci;
+    submit.commandBufferInfoCount = runCommands ? 1 : 0;
+    submit.pCommandBufferInfos = runCommands ? &ci : nullptr;
     GpuStatus s = device.submit(queue_, std::span<const VkSubmitInfo2>(&submit, 1), fence);
     bool mayBePending = (s.result == VK_ERROR_DEVICE_LOST);
     if (s) {
@@ -1087,9 +1158,16 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
         }
     }
     vkDestroyFence(vk, fence, nullptr);
-    if (mayBePending) {
+    if (mayBePending && runCommands) {
         // After a loss the command buffer may still be pending, and freeing it then is invalid.
         cmd_ = VK_NULL_HANDLE;
+    }
+    if (!runCommands) {
+        if (!s) {
+            s.aborted = true;
+            return s;
+        }
+        return abortedStatus(where);
     }
     return s;
 }

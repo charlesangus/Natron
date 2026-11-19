@@ -49,6 +49,9 @@ public:
 
     GpuDevice& device() const { return device_; }
 
+    // Unique among the registries of the process, never reused, unlike the registry's address.
+    uint64_t serial() const { return serial_; }
+
     // Adds a kernel that is not part of the generated table, for example a test kernel.
     // The SPIR-V it points to must outlive the registry.
     GpuKernelId registerKernel(const GpuKernelDesc& desc);
@@ -106,6 +109,7 @@ private:
     void destroyPoolsLocked();
 
     GpuDevice& device_;
+    const uint64_t serial_;
     mutable std::mutex mutex_;
     std::vector<Slot> slots_;
     std::deque<GpuKernelDesc> registered_;

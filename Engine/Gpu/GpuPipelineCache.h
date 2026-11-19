@@ -108,7 +108,9 @@ private:
         GpuStatus status;
         std::shared_ptr<GpuRasterPipeline> pipeline;
     };
-    using RasterKey = std::tuple<uint32_t, VkFormat, GpuRasterBlend>;
+    // (registry serial, raster id, format, blend). Ids past GpuRasterId::Count are registered per registry, so
+    // they are keyed by its serial; generated ids name one table in every registry and use serial 0.
+    using RasterKey = std::tuple<uint64_t, uint32_t, VkFormat, GpuRasterBlend>;
     std::map<RasterKey, std::shared_ptr<GpuRasterPipeline>> rasters_;
     std::map<RasterKey, std::shared_future<RasterResult>> rasterInflight_;
     Stats stats_;

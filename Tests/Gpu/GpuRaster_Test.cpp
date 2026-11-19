@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -119,6 +121,88 @@ protected:
         vkCmdPipelineBarrier2(cmd, &dep);
     }
 
+    struct DrawIndirectCap {
+        explicit DrawIndirectCap(uint32_t count) { GpuRecordContext::setMaxDrawIndirectCountForTests(count); }
+        ~DrawIndirectCap() { GpuRecordContext::setMaxDrawIndirectCountForTests(0); }
+        DrawIndirectCap(const DrawIndirectCap&) = delete;
+        DrawIndirectCap& operator=(const DrawIndirectCap&) = delete;
+    };
+
+    static void makeTimeline(uint64_t initial, VkSemaphore& out)
+    {
+        GpuStatus s = dev_->createTimelineSemaphore(initial, out);
+        ASSERT_TRUE(s.ok()) << s.message;
+    }
+
+    static VkResult waitFor(VkSemaphore semaphore, uint64_t value)
+    {
+        VkSemaphoreWaitInfo wi { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+        wi.semaphoreCount = 1;
+        wi.pSemaphores = &semaphore;
+        wi.pValues = &value;
+        return vkWaitSemaphores(dev_->device(), &wi, 30'000'000'000ull);
+    }
+
+    // A one-row attachment of 2 * commands pixels drawn by one drawIndexedIndirect of `commands` commands, of
+    // which a dispatch makes the first `drawn` draw triangle k over the centre of pixel 2k and the rest nothing.
+    // `drawStatus` is the draw's status; `texels` is filled only when the work ran.
+    static void indirectRow(uint32_t commands, uint32_t drawn, const std::function<bool()>& abort,
+                            GpuStatus& drawStatus, std::vector<float>& texels)
+    {
+        const uint32_t width = 2 * commands;
+        std::vector<float> xy;
+        std::vector<uint32_t> indices;
+        for (uint32_t k = 0; k < commands; ++k) {
+            const float x = 2.0f * k;
+            for (float v : { x + 0.1f, -1.0f, x + 0.9f, -1.0f, x + 0.5f, 2.0f }) {
+                xy.push_back(v);
+            }
+            for (uint32_t j = 0; j < 3; ++j) {
+                indices.push_back(3 * k + j);
+            }
+        }
+        GpuKernelRegistry registry(*dev_);
+        std::unique_ptr<GpuRecordContext> ctx;
+        GpuStatus s = GpuRecordContext::createRaster(registry, ctx);
+        ASSERT_TRUE(s.ok()) << s.message;
+        std::unique_ptr<GpuTexture> texture;
+        s = GpuTexture::createAttachment(*dev_, width, 1, 1, texture);
+        ASSERT_TRUE(s.ok()) << s.message;
+        GpuBuffer positions;
+        GpuBuffer indexBuffer;
+        hostBuffer(xy, kGpuBufferDefaultUsage, positions);
+        hostBuffer(indices, kGpuBufferDefaultUsage | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, indexBuffer);
+        GpuBuffer commandBuffer;
+        s = GpuBuffer::createDeviceLocal(*dev_, commands * sizeof(VkDrawIndexedIndirectCommand),
+                                         kGpuBufferDefaultUsage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, commandBuffer);
+        ASSERT_TRUE(s.ok()) << s.message;
+        GpuBuffer readback;
+        s = GpuBuffer::createStaging(*dev_, texture->packedBytes(), kGpuBufferDefaultUsage, readback);
+        ASSERT_TRUE(s.ok()) << s.message;
+        if (HasFatalFailure()) {
+            return;
+        }
+
+        s = ctx->dispatch(GpuKernelId::raster_test_indirect, { &commandBuffer }, IndirectParams { commands, drawn },
+                          { commands, 1, 1 });
+        ASSERT_TRUE(s.ok()) << s.message;
+        ctx->setAbortCheck(abort);
+        const RasterParams params = rasterParams(width, 1, 1.0f);
+        s = ctx->beginRaster(*texture, { 0.0f, 0.0f, 0.0f, 0.0f });
+        ASSERT_TRUE(s.ok()) << s.message;
+        drawStatus = ctx->drawIndexedIndirect(GpuRasterId::raster_test, GpuRasterBlend::Additive, { &positions },
+                                              bytesOf(params), indexBuffer, commandBuffer, commands);
+        if (!drawStatus.ok()) {
+            return;
+        }
+        ASSERT_TRUE(ctx->endRaster().ok());
+        ASSERT_TRUE(ctx->copyToImage(readback).ok());
+        s = ctx->submitAndWait();
+        ASSERT_TRUE(s.ok()) << s.message;
+        const float* mapped = static_cast<const float*>(readback.mapped());
+        texels.assign(mapped, mapped + width);
+    }
+
     // Clears `texture` to `clear` and copies it into `readback`, on the compute queue.
     static void clearAndCopy(const GpuTexture& texture, const VkClearColorValue& clear, const Readback& readback)
     {
@@ -183,11 +267,18 @@ GPU_TEST_F(GpuRasterTest, CapabilityIsReported)
     const GpuDeviceInfo& info = dev_->info();
     const bool rgba = formatBlends(dev_->physicalDevice(), VK_FORMAT_R32G32B32A32_SFLOAT);
     const bool r = formatBlends(dev_->physicalDevice(), VK_FORMAT_R32_SFLOAT);
-    std::printf("raster: dynamicRendering=%d rasterFloatBlend=%d (RGBA32F blend=%d, R32F blend=%d, graphics queue=%d)\n",
-                int(info.dynamicRendering), int(info.rasterFloatBlend), int(rgba), int(r), int(info.graphicsQueue));
+    std::printf("raster: dynamicRendering=%d rasterFloatBlend=%d (RGBA32F blend=%d, R32F blend=%d, graphics queue=%d, "
+                "vertexPipelineStoresAndAtomics=%d, fragmentStoresAndAtomics=%d, multiDrawIndirect=%d, "
+                "maxDrawIndirectCount=%u, graphics family %s the compute family)\n",
+                int(info.dynamicRendering), int(info.rasterFloatBlend), int(rgba), int(r), int(info.graphicsQueue),
+                int(info.vertexPipelineStores), int(info.fragmentStores), int(info.multiDrawIndirect),
+                info.maxDrawIndirectCount, info.graphicsFamily == info.computeFamily ? "is" : "is not");
     // Dynamic rendering is core in Vulkan 1.3, which every accepted device implements.
     EXPECT_TRUE(info.dynamicRendering);
-    EXPECT_EQ(info.rasterFloatBlend, info.dynamicRendering && rgba && r && info.graphicsQueue);
+    EXPECT_EQ(info.rasterFloatBlend, info.dynamicRendering && rgba && r && info.graphicsQueue && info.vertexPipelineStores && info.fragmentStores);
+    if (!info.multiDrawIndirect) {
+        EXPECT_EQ(info.maxDrawIndirectCount, 1u);
+    }
 }
 
 GPU_TEST_F(GpuRasterTest, ClearedAttachmentCopiesBack)
@@ -228,6 +319,54 @@ GPU_TEST_F(GpuRasterTest, ClearedAttachmentCopiesBack)
             }
         }
         EXPECT_EQ(mismatches, 0u);
+    }
+}
+
+GPU_TEST_F(GpuRasterTest, LoadOpClearCopiesBackThroughARasterContext)
+{
+    if (!dev_->info().rasterFloatBlend) {
+        GPUTEST_SKIP_TEST() << "the device cannot blend float colour attachments";
+    }
+    constexpr uint32_t kW = 37;
+    constexpr uint32_t kH = 19;
+    // Two passes into one attachment, so the second clear also has to wait for the first copy.
+    const std::array<float, 4> clears[2] = { { 0.25f, -1.5f, 3.0e5f, 1.0f }, { -7.0f, 0.125f, 1.0e-3f, 42.0f } };
+    for (uint32_t channels : { 4u, 1u }) {
+        SCOPED_TRACE(std::to_string(channels) + " channels");
+        GpuKernelRegistry registry(*dev_);
+        std::unique_ptr<GpuRecordContext> ctx;
+        GpuStatus s = GpuRecordContext::createRaster(registry, ctx);
+        ASSERT_TRUE(s.ok()) << s.message;
+        std::unique_ptr<GpuTexture> texture;
+        s = GpuTexture::createAttachment(*dev_, kW, kH, channels, texture);
+        ASSERT_TRUE(s.ok()) << s.message;
+        GpuBuffer readbacks[2];
+        for (GpuBuffer& readback : readbacks) {
+            s = GpuBuffer::createStaging(*dev_, texture->packedBytes(), kGpuBufferDefaultUsage, readback);
+            ASSERT_TRUE(s.ok()) << s.message;
+        }
+        for (int pass = 0; pass < 2; ++pass) {
+            s = ctx->beginRaster(*texture, clears[pass]);
+            ASSERT_TRUE(s.ok()) << s.message;
+            s = ctx->endRaster();
+            ASSERT_TRUE(s.ok()) << s.message;
+            s = ctx->copyToImage(readbacks[pass]);
+            ASSERT_TRUE(s.ok()) << s.message;
+        }
+        s = ctx->submitAndWait();
+        ASSERT_TRUE(s.ok()) << s.message;
+
+        for (int pass = 0; pass < 2; ++pass) {
+            SCOPED_TRACE("pass " + std::to_string(pass));
+            const float* texels = static_cast<const float*>(readbacks[pass].mapped());
+            size_t mismatches = 0;
+            for (size_t i = 0; i < size_t(kW) * kH * channels; ++i) {
+                if (texels[i] != clears[pass][i % channels]) {
+                    ++mismatches;
+                }
+            }
+            EXPECT_EQ(mismatches, 0u);
+        }
     }
 }
 
@@ -315,6 +454,51 @@ GPU_TEST_F(GpuRasterTest, PipelinesAreBuiltAndCached)
     fs::remove_all(dir, ec);
 }
 
+GPU_TEST_F(GpuRasterTest, RegisteredRastersOfTwoRegistriesGetTheirOwnPipelines)
+{
+    if (!dev_->info().rasterFloatBlend) {
+        GPUTEST_SKIP_TEST() << "the device cannot blend float colour attachments";
+    }
+    const fs::path dir = fs::temp_directory_path() / ("natron-gpu-raster-registries-" + std::to_string(::getpid()));
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    {
+        GpuKernelRegistry first(*dev_);
+        GpuKernelRegistry second(*dev_);
+        EXPECT_NE(first.serial(), second.serial());
+        const GpuRasterDesc* desc = first.rasterDesc(GpuRasterId::raster_test);
+        ASSERT_NE(desc, nullptr);
+        const GpuRasterId a = first.registerRaster(*desc);
+        const GpuRasterId b = second.registerRaster(*desc);
+        ASSERT_EQ(a, b);
+
+        GpuPipelineCacheOptions o;
+        o.directory = dir.string();
+        GpuPipelineCache cache(*dev_, o);
+        std::shared_ptr<GpuRasterPipeline> fromFirst;
+        std::shared_ptr<GpuRasterPipeline> fromSecond;
+        GpuStatus s = cache.raster(first, a, VK_FORMAT_R32_SFLOAT, GpuRasterBlend::Additive, fromFirst);
+        ASSERT_TRUE(s.ok()) << s.message;
+        s = cache.raster(second, b, VK_FORMAT_R32_SFLOAT, GpuRasterBlend::Additive, fromSecond);
+        ASSERT_TRUE(s.ok()) << s.message;
+        EXPECT_NE(fromFirst.get(), fromSecond.get());
+        EXPECT_EQ(cache.stats().rasterBuilds, 2u);
+
+        // A generated raster is one table entry in every registry, so its pipeline is shared.
+        std::shared_ptr<GpuRasterPipeline> generatedFirst;
+        std::shared_ptr<GpuRasterPipeline> generatedSecond;
+        ASSERT_TRUE(cache.raster(first, GpuRasterId::raster_test, VK_FORMAT_R32_SFLOAT, GpuRasterBlend::Additive,
+                                 generatedFirst)
+                        .ok());
+        ASSERT_TRUE(cache.raster(second, GpuRasterId::raster_test, VK_FORMAT_R32_SFLOAT, GpuRasterBlend::Additive,
+                                 generatedSecond)
+                        .ok());
+        EXPECT_EQ(generatedFirst.get(), generatedSecond.get());
+        EXPECT_EQ(cache.stats().rasterBuilds, 3u);
+    }
+    fs::remove_all(dir, ec);
+}
+
 GPU_TEST_F(GpuRasterTest, RasterContextNeedsTheCapability)
 {
     GpuKernelRegistry registry(*dev_);
@@ -360,18 +544,20 @@ GPU_TEST_F(GpuRasterTest, ComputeContextRejectsRaster)
     EXPECT_TRUE(s.ok()) << s.message;
 }
 
-GPU_TEST_F(GpuRasterTest, OverlappingTrianglesAddAndFollowTheTopLeftRule)
+GPU_TEST_F(GpuRasterTest, OverlappingTrianglesAddAndCoverSharedEdgesOnce)
 {
     if (!dev_->info().rasterFloatBlend) {
         GPUTEST_SKIP_TEST() << "the device cannot blend float colour attachments";
     }
-    constexpr uint32_t kW = 8;
-    constexpr uint32_t kH = 4;
-    // Every edge runs through pixel centres: a centre on a left or top edge is covered, one on a right or
-    // bottom edge is not, and the diagonal each rectangle's two triangles share is covered once.
-    const uint32_t firstColumns[2] = { 0, 2 };
-    const uint32_t endColumns[2] = { 5, 7 };
-    constexpr uint32_t kEndRow = 2;
+    constexpr uint32_t kW = 9;
+    constexpr uint32_t kH = 7;
+    // Each rectangle's two triangles share a 45-degree diagonal through pixel centres, which Vulkan covers
+    // exactly once whatever its tie-break rule. Which outer edges through pixel centres are covered is up to
+    // the implementation, so a centre on one may take either value.
+    struct Rect {
+        float x0, y0, x1, y1;
+    };
+    const Rect rects[2] = { { 0.5f, 0.5f, 5.5f, 5.5f }, { 2.5f, 0.5f, 7.5f, 5.5f } };
     for (uint32_t channels : { 1u, 4u }) {
         SCOPED_TRACE(std::to_string(channels) + " channels");
         GpuKernelRegistry registry(*dev_);
@@ -383,8 +569,7 @@ GPU_TEST_F(GpuRasterTest, OverlappingTrianglesAddAndFollowTheTopLeftRule)
         ASSERT_TRUE(s.ok()) << s.message;
         GpuBuffer positions[2];
         for (int i = 0; i < 2; ++i) {
-            hostBuffer(rect(firstColumns[i] + 0.5f, 0.5f, endColumns[i] + 0.5f, kEndRow + 0.5f),
-                       kGpuBufferDefaultUsage, positions[i]);
+            hostBuffer(rect(rects[i].x0, rects[i].y0, rects[i].x1, rects[i].y1), kGpuBufferDefaultUsage, positions[i]);
         }
         GpuBuffer readback;
         s = GpuBuffer::createStaging(*dev_, texture->packedBytes(), kGpuBufferDefaultUsage, readback);
@@ -409,25 +594,35 @@ GPU_TEST_F(GpuRasterTest, OverlappingTrianglesAddAndFollowTheTopLeftRule)
 
         const float* texels = static_cast<const float*>(readback.mapped());
         size_t mismatches = 0;
+        size_t diagonalSamples = 0;
         for (uint32_t y = 0; y < kH; ++y) {
             for (uint32_t x = 0; x < kW; ++x) {
-                float expected = 0.0f;
-                for (int i = 0; i < 2; ++i) {
-                    if (y < kEndRow && x >= firstColumns[i] && x < endColumns[i]) {
-                        expected += 1.0f;
+                const float cx = x + 0.5f;
+                const float cy = y + 0.5f;
+                float inside = 0.0f;
+                float onOuterEdge = 0.0f;
+                for (const Rect& r : rects) {
+                    if (cx > r.x0 && cx < r.x1 && cy > r.y0 && cy < r.y1) {
+                        inside += 1.0f;
+                        if (cx - r.x0 == cy - r.y0) {
+                            ++diagonalSamples;
+                        }
+                    } else if (cx >= r.x0 && cx <= r.x1 && cy >= r.y0 && cy <= r.y1) {
+                        onOuterEdge += 1.0f;
                     }
                 }
                 for (uint32_t c = 0; c < channels; ++c) {
                     const float got = texels[(size_t(y) * kW + x) * channels + c];
-                    if (got != expected) {
+                    if (got < inside || got > inside + onOuterEdge || got != float(int(got))) {
                         ADD_FAILURE() << "pixel (" << x << ", " << y << ") channel " << c << ": " << got
-                                      << ", expected " << expected;
+                                      << ", expected " << inside << " plus at most " << onOuterEdge;
                         ++mismatches;
                     }
                 }
             }
         }
         EXPECT_EQ(mismatches, 0u);
+        EXPECT_EQ(diagonalSamples, 8u);
     }
 }
 
@@ -506,6 +701,63 @@ GPU_TEST_F(GpuRasterTest, IndirectDrawCountComesFromADispatch)
     EXPECT_EQ(drawn, kDrawn);
 }
 
+GPU_TEST_F(GpuRasterTest, ChunkedIndirectDrawsMatchOneCall)
+{
+    if (!dev_->info().rasterFloatBlend) {
+        GPUTEST_SKIP_TEST() << "the device cannot blend float colour attachments";
+    }
+    constexpr uint32_t kCommands = 12;
+    constexpr uint32_t kDrawn = 7;
+    GpuStatus drawn;
+    std::vector<float> whole;
+    indirectRow(kCommands, kDrawn, {}, drawn, whole);
+    if (HasFatalFailure()) {
+        return;
+    }
+    ASSERT_TRUE(drawn.ok()) << drawn.message;
+    ASSERT_EQ(whole.size(), size_t(2 * kCommands));
+
+    // A cap of 1 is what a device without multiDrawIndirect records: one draw per command.
+    for (uint32_t cap : { 5u, 1u }) {
+        SCOPED_TRACE("at most " + std::to_string(cap) + " commands per draw");
+        DrawIndirectCap capped(cap);
+        {
+            GpuKernelRegistry registry(*dev_);
+            std::unique_ptr<GpuRecordContext> ctx;
+            ASSERT_TRUE(GpuRecordContext::create(registry, ctx).ok());
+            EXPECT_EQ(ctx->maxDrawIndirectCount(), std::min(cap, dev_->info().maxDrawIndirectCount));
+        }
+        std::vector<float> chunked;
+        indirectRow(kCommands, kDrawn, {}, drawn, chunked);
+        if (HasFatalFailure()) {
+            return;
+        }
+        ASSERT_TRUE(drawn.ok()) << drawn.message;
+        EXPECT_EQ(chunked, whole);
+    }
+}
+
+GPU_TEST_F(GpuRasterTest, AbortLandsBetweenIndirectChunks)
+{
+    if (!dev_->info().rasterFloatBlend) {
+        GPUTEST_SKIP_TEST() << "the device cannot blend float colour attachments";
+    }
+    DrawIndirectCap capped(5);
+    int checks = 0;
+    GpuStatus drawn;
+    std::vector<float> texels;
+    // The draw's own check passes; the check before its second chunk aborts.
+    indirectRow(12, 12, [&checks] { return ++checks > 1; }, drawn, texels);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(drawn.ok());
+    EXPECT_TRUE(drawn.aborted) << drawn.message;
+    EXPECT_EQ(checks, 2);
+    EXPECT_TRUE(texels.empty());
+    EXPECT_FALSE(dev_->isLost());
+}
+
 GPU_TEST_F(GpuRasterTest, AbortBetweenDrawsStopsRecording)
 {
     if (!dev_->info().rasterFloatBlend) {
@@ -543,7 +795,7 @@ GPU_TEST_F(GpuRasterTest, AbortBetweenDrawsStopsRecording)
     EXPECT_EQ(s.result, VK_INCOMPLETE);
     EXPECT_EQ(checks, kAbortAfter + 1);
 
-    // Once aborted, the context neither records nor submits, nor asks again.
+    // Once aborted, the context neither records nor runs commands, nor asks again.
     s = ctx->draw(GpuRasterId::raster_test, GpuRasterBlend::Additive, { &positions }, bytesOf(params), 6);
     EXPECT_TRUE(s.aborted);
     EXPECT_EQ(checks, kAbortAfter + 1);
@@ -572,12 +824,100 @@ GPU_TEST_F(GpuRasterTest, AbortCheckAlsoStopsDispatches)
     EXPECT_FALSE(ctx->submitAndWait().ok());
 }
 
+GPU_TEST_F(GpuRasterTest, AbortedSubmitStillSignals)
+{
+    GpuKernelRegistry registry(*dev_);
+    GpuBuffer commands;
+    GpuStatus s = GpuBuffer::createDeviceLocal(*dev_, 4 * sizeof(VkDrawIndexedIndirectCommand), kGpuBufferDefaultUsage,
+                                               commands);
+    ASSERT_TRUE(s.ok()) << s.message;
+    VkSemaphore sem = VK_NULL_HANDLE;
+    makeTimeline(0, sem);
+    if (HasFatalFailure()) {
+        return;
+    }
+    {
+        std::unique_ptr<GpuRecordContext> first;
+        ASSERT_TRUE(GpuRecordContext::create(registry, first).ok());
+        s = first->dispatch(GpuKernelId::raster_test_indirect, { &commands }, IndirectParams { 4, 4 }, { 4, 1, 1 });
+        ASSERT_TRUE(s.ok()) << s.message;
+        s = first->submit({}, TimelineValue { sem, 1 });
+        ASSERT_TRUE(s.ok()) << s.message;
+
+        // The aborted context's waits still order its signal after the first context's.
+        std::unique_ptr<GpuRecordContext> aborted;
+        ASSERT_TRUE(GpuRecordContext::create(registry, aborted).ok());
+        aborted->setAbortCheck([] { return true; });
+        s = aborted->dispatch(GpuKernelId::raster_test_indirect, { &commands }, IndirectParams { 4, 4 }, { 4, 1, 1 });
+        EXPECT_TRUE(s.aborted) << s.message;
+        const TimelineValue wait { sem, 1 };
+        s = aborted->submit(std::span<const TimelineValue>(&wait, 1), TimelineValue { sem, 2 });
+        EXPECT_FALSE(s.ok());
+        EXPECT_TRUE(s.aborted) << s.message;
+        EXPECT_EQ(waitFor(sem, 2), VK_SUCCESS);
+        EXPECT_FALSE(aborted->submit({}, TimelineValue { sem, 3 }).ok());
+
+        std::unique_ptr<GpuRecordContext> next;
+        ASSERT_TRUE(GpuRecordContext::create(registry, next).ok());
+        const TimelineValue afterAbort { sem, 2 };
+        s = next->submit(std::span<const TimelineValue>(&afterAbort, 1), TimelineValue { sem, 3 });
+        ASSERT_TRUE(s.ok()) << s.message;
+        EXPECT_EQ(waitFor(sem, 3), VK_SUCCESS);
+    }
+    EXPECT_FALSE(dev_->isLost());
+    vkDestroySemaphore(dev_->device(), sem, nullptr);
+}
+
+GPU_TEST_F(GpuRasterTest, RasterContextOutsideTheComputeFamilyTakesNoTextures)
+{
+    if (!dev_->info().rasterFloatBlend) {
+        GPUTEST_SKIP_TEST() << "the device cannot blend float colour attachments";
+    }
+    const GpuDeviceInfo& info = dev_->info();
+    const bool crossFamily = info.graphicsFamily != info.computeFamily;
+    GpuKernelRegistry registry(*dev_);
+    std::unique_ptr<GpuRecordContext> ctx;
+    GpuStatus s = GpuRecordContext::createRaster(registry, ctx);
+    ASSERT_TRUE(s.ok()) << s.message;
+    GpuTextureDesc desc;
+    desc.width = 2;
+    desc.height = 2;
+    desc.channels = 1;
+    desc.filter = GpuTextureFilter::Nearest;
+    const std::vector<float> texels(4, 0.5f);
+    const GpuTexture* texture = nullptr;
+    s = ctx->texture(desc, texels, texture);
+    EXPECT_EQ(s.ok(), !crossFamily) << s.message;
+    const GpuTexture* cached = nullptr;
+    s = ctx->cachedTexture("raster-family-test", desc, texels, cached);
+    EXPECT_EQ(s.ok(), !crossFamily) << s.message;
+    if (crossFamily) {
+        EXPECT_EQ(texture, nullptr);
+        EXPECT_EQ(cached, nullptr);
+        GpuBinding binding;
+        binding.kind = GpuBinding::Kind::Texture;
+        EXPECT_FALSE(ctx->dispatchBindings(GpuKernelId::raster_test_indirect, std::span<const GpuBinding>(&binding, 1),
+                                           {}, { 1, 1, 1 })
+                         .ok());
+    } else {
+        std::printf("raster: the graphics family is the compute family, so the texture refusals are not exercised\n");
+    }
+    s = ctx->submitAndWait();
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
 GPU_TEST_F(GpuRasterTest, ComputeResultsCrossIntoARasterContext)
 {
     if (!dev_->info().rasterFloatBlend) {
         GPUTEST_SKIP_TEST() << "the device cannot blend float colour attachments";
     }
     // A compute context writes the commands and hands them over; the raster context waits on its signal.
+    const bool crossFamily = dev_->info().graphicsFamily != dev_->info().computeFamily;
+    RecordProperty("cross_family", crossFamily ? "1" : "0");
+    if (!crossFamily) {
+        std::printf("raster: the graphics family is the compute family, so no ownership transfer is recorded and this "
+                    "pass does not cover a cross-family handoff\n");
+    }
     constexpr uint32_t kCommands = 4;
     constexpr uint32_t kDrawn = 3;
     constexpr uint32_t kW = 2 * kCommands;

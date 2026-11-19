@@ -43,16 +43,19 @@ public:
                             GpuTextureCache* textures = nullptr);
 
     // As create(), for a context on the graphics queue that also records draws; its dispatches and copies
-    // work as a compute context's. Fails with VK_ERROR_FEATURE_NOT_PRESENT when the device lacks
-    // GpuDeviceInfo::rasterFloatBlend. Without a pipeline cache the context builds its own raster pipelines.
+    // work as a compute context's. When the graphics family is not the compute family, textures stay with the
+    // compute family where they are uploaded: such a context refuses texture(), cachedTexture() and texture
+    // bindings, as it refuses acquireFromTransfer(). Fails with VK_ERROR_FEATURE_NOT_PRESENT when the device
+    // lacks GpuDeviceInfo::rasterFloatBlend. Without a pipeline cache the context builds its own raster pipelines.
     static GpuStatus createRaster(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
                                   GpuBufferPool* pool = nullptr, GpuPipelineCache* pipelines = nullptr,
                                   GpuTextureCache* textures = nullptr);
 
     bool isRaster() const { return queue_ == QueueKind::Graphics; }
 
-    // Makes every later dispatch and draw first call `aborted`, and fail with GpuStatus::aborted set once it
-    // returns true; from then on the context records nothing and submits nothing. Empty removes the check.
+    // Makes every later dispatch and draw, and every chunk of an indirect draw, first call `aborted`, and fail
+    // with GpuStatus::aborted set once it returns true; from then on the context records nothing, and submit()
+    // and submitAndWait() run none of its commands and fail with GpuStatus::aborted set. Empty removes the check.
     void setAbortCheck(std::function<bool()> aborted);
 
     // Starts rendering into `attachment`, a GpuTexture::createAttachment() texture that outlives the
@@ -76,7 +79,10 @@ public:
     // Draws the drawCount VkDrawIndexedIndirectCommand of `indirectBuffer`, tightly packed from its start, with
     // the 32-bit indices of `indexBuffer`. The commands may come from a dispatch recorded before beginRaster().
     // indirectBuffer needs VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT and indexBuffer VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-    // drawCount commands must fit in indirectBuffer, and the device bounds the indices the commands read.
+    // drawCount commands must fit in indirectBuffer, which is checked. Nothing bounds what the commands read:
+    // robust buffer access is not enabled, so the caller keeps every command's index range inside indexBuffer
+    // and every index inside the vertex data the raster pulls. Recorded as one indirect draw per
+    // maxDrawIndirectCount() commands.
     GpuStatus drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend, std::span<const GpuBuffer* const> buffers,
                                   std::span<const std::byte> push, const GpuBuffer& indexBuffer,
                                   const GpuBuffer& indirectBuffer, uint32_t drawCount);
@@ -147,7 +153,8 @@ public:
     GpuStatus texture(const GpuTextureDesc& desc, std::span<const float> texels, const GpuTexture*& out);
 
     // The texture the runtime's texture cache keeps under `key`, as GpuTextureCache::acquire, held until
-    // the context is destroyed. Without a texture cache it is a texture() of its own.
+    // the context is destroyed. Without a texture cache it is a texture() of its own. Both are refused by a
+    // raster context outside the compute family.
     GpuStatus cachedTexture(const std::string& key, const GpuTextureDesc& desc, std::span<const float> texels,
                             const GpuTexture*& out);
 
@@ -175,6 +182,14 @@ public:
     // Caps maxStorageBufferBytes() in every context, so that a test sees what a device with that limit does; 0
     // removes the cap.
     static void setMaxStorageBufferBytesForTests(uint64_t bytes);
+
+    // The most commands one indirect draw records: the device's maxDrawIndirectCount, 1 without
+    // multiDrawIndirect, or the cap of setMaxDrawIndirectCountForTests() when smaller.
+    uint32_t maxDrawIndirectCount() const;
+
+    // Caps maxDrawIndirectCount() in every context, so that a test sees what a device with that limit or
+    // without multiDrawIndirect does; 0 removes the cap.
+    static void setMaxDrawIndirectCountForTests(uint32_t count);
 
     // Records a write of `data` into dst at `offset`, visible to later dispatches. Both offset and size
     // must be multiples of 4, and the size at most 65536 bytes.
@@ -227,7 +242,8 @@ public:
 
     // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done, without
     // blocking. The context holds the command buffer and its scratch buffers, so it must not be destroyed before
-    // `signal` is reached.
+    // `signal` is reached. An aborted context submits the waits and the signal alone, so `signal` is still
+    // reached, and returns GpuStatus::aborted.
     GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal);
 
 private:
@@ -236,6 +252,8 @@ private:
     void parkInFlightWork();
     std::vector<VkSemaphoreSubmitInfo> externalWaitInfos() const;
     GpuStatus checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const;
+    bool outsideComputeFamily() const;
+    GpuStatus checkTextureBindings(const char* where, std::span<const GpuBinding> bindings) const;
     // Fails when the context was submitted, aborted, or is between beginRaster() and endRaster().
     GpuStatus recordable(const char* where) const;
     // As recordable(), then runs the abort check.

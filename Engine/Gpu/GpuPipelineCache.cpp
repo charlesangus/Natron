@@ -282,7 +282,9 @@ GpuPipelineCache::raster(const GpuKernelRegistry& registry, GpuRasterId raster, 
     if (!desc) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuPipelineCache::raster: unknown raster id" };
     }
-    const RasterKey key { static_cast<uint32_t>(raster), colourFormat, blend };
+    const uint32_t id = static_cast<uint32_t>(raster);
+    const uint64_t registrySerial = id < static_cast<uint32_t>(GpuRasterId::Count) ? 0 : registry.serial();
+    const RasterKey key { registrySerial, id, colourFormat, blend };
 
     std::shared_future<RasterResult> future;
     std::promise<RasterResult> promise;

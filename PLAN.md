@@ -403,7 +403,7 @@ future core work has solid ground to build on.
 | M261 | Roto Keyframes In Dope Sheet And Curve Editor | done | M163 | bosley-native-nodes | E6 | | | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |
 | M268 | Edge-Aware Region Independence | done | M209, M210, M211, M212, M213, M215 | bosley-native-nodes | E17 | |  | [M268-edge-aware-region-independence.md](PLAN/MILESTONES/M268-edge-aware-region-independence.md) |
 | M269 | Remote GUI Checks | done |  | bosley-native-nodes | E2 | | | [M269-remote-gui-checks.md](PLAN/MILESTONES/M269-remote-gui-checks.md) |
-| M262 | Expression Benchmark For Large Graphs | todo | - |  | E14 | F12 | | [M262-expression-benchmark-large-graphs.md](PLAN/MILESTONES/M262-expression-benchmark-large-graphs.md) |
+| M262 | Expression Benchmark For Large Graphs | doing | - | bosley-executor | E14 | F12 | | [M262-expression-benchmark-large-graphs.md](PLAN/MILESTONES/M262-expression-benchmark-large-graphs.md) |
 | M263 | Expression Interpreter Overhead | todo | M262, M266 |  | E14 | F12 | | [M263-expression-interpreter-overhead.md](PLAN/MILESTONES/M263-expression-interpreter-overhead.md) |
 | M264 | Expression Result Cache | todo | M263 |  | E14 | F12 | | [M264-expression-result-cache.md](PLAN/MILESTONES/M264-expression-result-cache.md) |
 | M265 | Native Expression Evaluator | todo | M264 |  | E14 | F12 | | [M265-native-expression-evaluator.md](PLAN/MILESTONES/M265-native-expression-evaluator.md) |
@@ -434,7 +434,7 @@ future core work has solid ground to build on.
 | M290 | Native Cryptomatte Keyer | todo | M285 |  | E19 | | | [M290-native-cryptomatte-keyer.md](PLAN/MILESTONES/M290-native-cryptomatte-keyer.md) |
 | M289 | Utility Adaptive Subdivision | todo | M284 |  | E19 | | | [M289-utility-adaptive-subdivision.md](PLAN/MILESTONES/M289-utility-adaptive-subdivision.md) |
 | M287 | Utility Renderer Displacement | todo | M289 |  | E19 | | | [M287-utility-renderer-displacement.md](PLAN/MILESTONES/M287-utility-renderer-displacement.md) |
-| M291 | Defocus Reference Harness | todo | M131, M133 |  | E24 | F13 | | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
+| M291 | Defocus Reference Harness | doing | M131, M133 | bosley-executor | E24 | F13 | | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
 | M292 | Traced Lens Bokeh | todo | M131, M133, M462, M463, M465 |  | E24 | F13 | | [M292-traced-lens-bokeh.md](PLAN/MILESTONES/M292-traced-lens-bokeh.md) |
 | M293 | ZDefocus Debug Outputs | done | M131, M133 | | E3 | F13 | | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
 | M473 | Lens Camera And Focus Controls | todo | M292 |  | E24 | F13 | | [M473-lens-camera-and-focus-controls.md](PLAN/MILESTONES/M473-lens-camera-and-focus-controls.md) |
@@ -446,11 +446,11 @@ future core work has solid ground to build on.
 | M294 | ZDefocus Engine Revisit | todo | M291, M292, M293, M473, M474, M475, M476 |  | E24 | F13 | | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
 | M479 | Lens Bokeh Parity Audit | todo | M292, M294, M473, M474, M475, M476, M477, M478 |  | E24 | F13 | | [M479-lens-bokeh-parity-audit.md](PLAN/MILESTONES/M479-lens-bokeh-parity-audit.md) |
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | | | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
-| M462 | Shared Optics Library | todo | - |  | E24 | F30 | | [M462-shared-optics-library.md](PLAN/MILESTONES/M462-shared-optics-library.md) |
+| M462 | Shared Optics Library | doing | - | bosley-executor | E24 | F30 | | [M462-shared-optics-library.md](PLAN/MILESTONES/M462-shared-optics-library.md) |
 | M463 | Bundled Lens Database | todo | M462 |  | E24 | F30 | | [M463-bundled-lens-database.md](PLAN/MILESTONES/M463-bundled-lens-database.md) |
-| M465 | Aperture Model | todo | - |  | E24 | F30 | | [M465-aperture-model.md](PLAN/MILESTONES/M465-aperture-model.md) |
-| M464 | FFT Library | todo | - |  | E24 | F31 | | [M464-fft-library.md](PLAN/MILESTONES/M464-fft-library.md) |
-| M472 | GPU Raster Pipelines | todo | - |  | E5 |  | | [M472-gpu-raster-pipelines.md](PLAN/MILESTONES/M472-gpu-raster-pipelines.md) |
+| M465 | Aperture Model | doing | - | bosley-executor | E24 | F30 | | [M465-aperture-model.md](PLAN/MILESTONES/M465-aperture-model.md) |
+| M464 | FFT Library | doing | - | bosley-executor | E24 | F31 | | [M464-fft-library.md](PLAN/MILESTONES/M464-fft-library.md) |
+| M472 | GPU Raster Pipelines | doing | - | bosley-executor | E5 |  | | [M472-gpu-raster-pipelines.md](PLAN/MILESTONES/M472-gpu-raster-pipelines.md) |
 | M466 | LensFlare Ghost Tracing | todo | M462, M463, M464, M465 |  | E24 | F31 | | [M466-lensflare-ghost-tracing.md](PLAN/MILESTONES/M466-lensflare-ghost-tracing.md) |
 | M467 | LensFlare GPU Ghosts | todo | M466, M472 |  | E24 | F31 | | [M467-lensflare-gpu-ghosts.md](PLAN/MILESTONES/M467-lensflare-gpu-ghosts.md) |
 | M468 | LensFlare Starburst | todo | M464, M465, M466 |  | E24 | F31 | | [M468-lensflare-starburst.md](PLAN/MILESTONES/M468-lensflare-starburst.md) |
@@ -518,7 +518,7 @@ future core work has solid ground to build on.
 | M369 | Curve Slopes Independent Of Edit Order | todo | M304 |  | E14 |  | | [M369-curve-slopes-independent-of-edit-order.md](PLAN/MILESTONES/M369-curve-slopes-independent-of-edit-order.md) |
 | M370 | Roto Point List Render Isolation | todo | M304 |  | E6 |  | | [M370-roto-point-list-render-isolation.md](PLAN/MILESTONES/M370-roto-point-list-render-isolation.md) |
 | M371 | Cycles Abort Test Thread Count | done | - | bosley-native-nodes | E9 |  | | [M371-cycles-abort-test-thread-count.md](PLAN/MILESTONES/M371-cycles-abort-test-thread-count.md) |
-| M372 | User Knob Engine Edits | todo | - |  | E10 | F16 | | [M372-user-knob-engine-edits.md](PLAN/MILESTONES/M372-user-knob-engine-edits.md) |
+| M372 | User Knob Engine Edits | doing | - | bosley-executor | E10 | F16 | | [M372-user-knob-engine-edits.md](PLAN/MILESTONES/M372-user-knob-engine-edits.md) |
 | M373 | In-Panel Knob Editor | todo | M372 |  | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
 | M374 | Remove Node Magnify On Ctrl-Scroll | done | - | | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
 | M375 | No CPU Vulkan Auto-Select | done | - | bosley-native-nodes | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |
@@ -550,7 +550,7 @@ future core work has solid ground to build on.
 | M454 | Roto Insert Point Drag | done | - | bosley-executor | E10 |  F29 | | [M454-roto-insert-point-drag.md](PLAN/MILESTONES/M454-roto-insert-point-drag.md) |
 | M455 | Keyframe Markers For Visible Pages | done | M421 | bosley-executor | E10 |  F29 | | [M455-keyframe-markers-for-visible-pages.md](PLAN/MILESTONES/M455-keyframe-markers-for-visible-pages.md) |
 | M456 | File Dialog Toolbar And Split | done | - | bosley-executor | E10 |  F29 | | [M456-file-dialog-toolbar-and-split.md](PLAN/MILESTONES/M456-file-dialog-toolbar-and-split.md) |
-| M457 | ColorWarp Space Spike | todo | - |  | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |
+| M457 | ColorWarp Space Spike | doing | - | bosley-executor | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |
 | M458 | ColorWarp Node | todo | M457 |  | E3 | F28 | | [M458-colorwarp-node.md](PLAN/MILESTONES/M458-colorwarp-node.md) |
 | M459 | ColorWarp 3D View | todo | M458 |  | E3 | F28 | | [M459-colorwarp-3d-view.md](PLAN/MILESTONES/M459-colorwarp-3d-view.md) |
 | M482 | Geometry VOP Node | todo | M351, M360 |  | E25 | | | [M482-geometry-vop-node.md](PLAN/MILESTONES/M482-geometry-vop-node.md) |
@@ -611,11 +611,11 @@ future core work has solid ground to build on.
 | F9 | Delegate Projection | landed | bosley-native-nodes |  | feature/f9-delegate-projection | Live textures and camera projection in Cycles and MoonRay, with per-placement and deforming-geometry projection. |
 | F10 | Viewer Polish | landed | bosley-native-nodes |  | feature/f10-viewer-polish | Ship a batch of small viewer and properties-panel fixes on one build and one UAT. |
 | F11 | Texture Painting | open |  |  | feature/f11-texture-painting | Paint directly on meshes in the 3D view with UDIM textures, layering over existing materials, baking and paint-through inputs, including painting native geometry with its own UV operators, attribute painting, and a Viewer 2D/3D switch. |
-| F12 | Expression Speed | open |  |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |
-| F13 | ZDefocus Rework | open |  |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, match or exceed Higx Optics' traced bokeh, and revisit its engine from the results. |
+| F12 | Expression Speed | open | bosley-executor |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |
+| F13 | ZDefocus Rework | open | bosley-executor |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, match or exceed Higx Optics' traced bokeh, and revisit its engine from the results. |
 | F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
 | F15 | Native Geometry | open |  |  | feature/f15-native-geometry | A SOP-style native geometry context: a Houdini-like detail, bridges to USD, operators, Python and VEX-like wrangles, point editing and a geometry spreadsheet. |
-| F16 | User Knob Editor | open |  |  | feature/f16-user-knob-editor | Create and manage user knobs in place on the properties panel, with type changes, undo, button scripts, drag-in links and copy/paste. |
+| F16 | User Knob Editor | open | bosley-executor |  | feature/f16-user-knob-editor | Create and manage user knobs in place on the properties panel, with type changes, undo, button scripts, drag-in links and copy/paste. |
 | F17 | OpenNucleon Flag Day | open |  |  | feature/f17-opennucleon-flag-day | Rename Natron to OpenNucleon/Nucleon throughout, code included, with new art and the GPLv3 relicence, landed in one switchover at a quiet time the user chooses. |
 | F18 | Geometry Loops And Solver | open |  |  | feature/f18-geometry-loops-and-solver | Loop and solve native geometry: For-Each blocks on render contexts, a native geometry file cache, and a Solver SOP with a sim cache. |
 | F19 | Particles | open |  |  | feature/f19-particles | A POP-style particle system on native geometry, with sources, forces, interaction, collisions, a GPU path and 2D image particles. Waits for F22 - Native VDB to land, for collisions. |
@@ -627,10 +627,10 @@ future core work has solid ground to build on.
 | F25 | Overlay Flow | open |  |  | feature/f25-overlay-flow | Overlays deform through every warp and onto projected geometry, with CardProject25D's 2.5D projection carrying them through. |
 | F26 | MaterialX Rendering | open |  |  | feature/f26-materialx-rendering | Render MaterialX materials in Cycles and MoonRay through native translation, with .mtlx input and a USDOpenPBR lookdev node. |
 | F27 | USD Layer Authoring | open |  |  | feature/f27-usd-layer-authoring | Control which USD layers an export writes: layer breaks for delta-only files, named and nested layer files from one USDWrite, and a live preview of what will be written. |
-| F28 | Colour Warp | open |  |  | feature/f28-colour-warp | A ColorWarp node: pick colours in the viewer and push them through colour space like warp pins, with a 3D colour-space view. |
+| F28 | Colour Warp | open | bosley-executor |  | feature/f28-colour-warp | A ColorWarp node: pick colours in the viewer and push them through colour space like warp pins, with a 3D colour-space view. |
 | F29 | UI Polish Batch | shipping | bosley-executor | uat | feature/f29-ui-polish-batch | Ship five small UI fixes — snapped viewer zoom, node error and warning display, Roto insert-point drag, keyframe markers for visible pages and the file dialog toolbar — on one build and one merge. |
-| F30 | Lens Optics Base | open |  |  | feature/f30-lens-optics-base | One optics base for traced bokeh and lens flares: a shared lens library, the bundled lens database and browser, and a shared aperture model. |
-| F31 | Lens Flares | open |  |  | feature/f31-lens-flares | A physically based, ray-traced LensFlare node with ghosts, starburst, layers and USD lights on CPU and GPU, with lens browser previews. Waits for F30 - Lens Optics Base to land. |
+| F30 | Lens Optics Base | open | bosley-executor |  | feature/f30-lens-optics-base | One optics base for traced bokeh and lens flares: a shared lens library, the bundled lens database and browser, and a shared aperture model. |
+| F31 | Lens Flares | open | bosley-executor |  | feature/f31-lens-flares | A physically based, ray-traced LensFlare node with ghosts, starburst, layers and USD lights on CPU and GPU, with lens browser previews. Waits for F30 - Lens Optics Base to land. |
 | F32 | Channel Networks | open |  |  | feature/f32-channel-networks | CHOP-style channel networks that drive knobs and shapes, with operators, Channel VOP, every source and channel-based animation layers. |
 
 # Open questions

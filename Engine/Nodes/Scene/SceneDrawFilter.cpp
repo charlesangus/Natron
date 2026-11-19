@@ -25,6 +25,8 @@
 
 #include "Engine/Nodes/Scene/SceneDrawFilter.h"
 
+#include "Engine/Nodes/Scene/StormAddedPrimDedupe.h"
+
 #include <algorithm>
 #include <iterator>
 #include <limits>
@@ -272,6 +274,9 @@ SceneDrawFilter::registerForAllRenderers()
             0,
             HdSceneIndexPluginRegistry::InsertionOrderAtStart);
     });
+    // Admitting brings a material's prims in after the material, in batches, which is what makes
+    // Storm add it once per prim bound to it.
+    StormAddedPrimDedupe::registerForStorm();
 }
 
 SceneDrawFilter::EngineScope::EngineScope()
@@ -557,6 +562,7 @@ SceneDrawFilter::readInstancer(const SdfPath& path,
     for (std::size_t i = 0; i < record.locations.size(); ++i) {
         const SdfPath& location = record.locations[i];
         _locations.emplace(location, std::make_pair(path, i));
+        _scannedTo.clear();
         if (!_rules.empty()) {
             setInstanceHidden(path, record, i, instanceHiddenBy(governing(_rules, location)));
         }
@@ -581,6 +587,7 @@ SceneDrawFilter::forgetInstancer(const SdfPath& path)
             it = (it->second.first == path) ? _locations.erase(it) : std::next(it);
         }
     }
+    _scannedTo.clear();
     for (const SdfPath& prototype : found->second.prototypes) {
         _prototypeOwners.erase(prototype);
     }
@@ -630,6 +637,7 @@ SceneDrawFilter::setInstanceWaiting(const SdfPath& instancer,
         ++record.waitingCount;
         ++_waitingCount;
         record.waitingFrom = (std::min)(record.waitingFrom, index);
+        _scannedTo.clear();
     } else {
         --record.waitingCount;
         --_waitingCount;
@@ -1590,7 +1598,8 @@ SceneDrawFilter::admitAt(const SdfPath& path,
     const unsigned clockEvery = 512;
     const bool timed = (deadline != (Clock::time_point::max)());
     unsigned untilClock = clockEvery;
-    for (auto it = _locations.lower_bound(path); (it != _locations.end()) && it->first.HasPrefix(path) && (admitted < budget); ++it) {
+    Locations::const_iterator it = scanStart(path);
+    for (; (it != _locations.end()) && it->first.HasPrefix(path) && (admitted < budget); ++it) {
         if (timed && (--untilClock == 0)) {
             untilClock = clockEvery;
             if (Clock::now() >= deadline) {
@@ -1602,6 +1611,7 @@ SceneDrawFilter::admitAt(const SdfPath& path,
             admitted += admitInstance(it->second.first, record->second, it->second.second);
         }
     }
+    _scannedTo[path] = it;
 
     return admitted;
 }
@@ -1690,14 +1700,24 @@ SceneDrawFilter::hasPendingAt(const SdfPath& path) const
     if (_waitingCount == 0) {
         return false;
     }
-    for (auto it = _locations.lower_bound(path); (it != _locations.end()) && it->first.HasPrefix(path); ++it) {
+    Locations::const_iterator it = scanStart(path);
+    for (; (it != _locations.end()) && it->first.HasPrefix(path); ++it) {
         const auto record = _instancers.find(it->second.first);
         if ((record != _instancers.end()) && record->second.waiting[it->second.second]) {
-            return true;
+            break;
         }
     }
+    _scannedTo[path] = it;
 
-    return false;
+    return (it != _locations.end()) && it->first.HasPrefix(path);
+}
+
+SceneDrawFilter::Locations::const_iterator
+SceneDrawFilter::scanStart(const SdfPath& path) const
+{
+    const auto scanned = _scannedTo.find(path);
+
+    return (scanned != _scannedTo.end()) ? scanned->second : _locations.lower_bound(path);
 }
 
 SceneRevealPacer::SceneRevealPacer(double targetMs,

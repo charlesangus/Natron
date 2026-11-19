@@ -371,6 +371,8 @@ private:
     std::size_t admitAt(const PXR_NS::SdfPath& path, std::size_t budget, Clock::time_point deadline);
     std::size_t admitInstance(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index);
     std::size_t admitAnyInstances(std::size_t budget, Clock::time_point deadline);
+    using Locations = std::multimap<PXR_NS::SdfPath, std::pair<PXR_NS::SdfPath, std::size_t>>;
+    Locations::const_iterator scanStart(const PXR_NS::SdfPath& path) const;
 
     Node& nodeAt(const PXR_NS::SdfPath& path);
     Node* indexPrim(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType);
@@ -415,7 +417,12 @@ private:
     std::unordered_map<PXR_NS::SdfPath, Instancer, PXR_NS::SdfPath::Hash> _instancers;
     // Each instance location to its instancer and its index there, sorted so that a changed row finds
     // the instances below it without looking at the others.
-    std::multimap<PXR_NS::SdfPath, std::pair<PXR_NS::SdfPath, std::size_t>> _locations;
+    Locations _locations;
+    // Per row asked about, where its last scan of _locations stopped: no instance below the row
+    // and before that point waits. Without it, every batch of a fill would walk again past all
+    // the instances admitted so far. Cleared whenever _locations changes or an instance starts
+    // waiting.
+    mutable std::map<PXR_NS::SdfPath, Locations::const_iterator> _scannedTo;
     std::size_t _maskedCount = 0;
     // Each prototype an instancer names to that instancer.
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> _prototypeOwners;

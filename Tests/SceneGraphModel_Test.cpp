@@ -603,7 +603,6 @@ TEST(SceneGraphModel, AnEditReadForAReplacedStageIsDropped)
     const ScenePayload original = SceneOps::appendLayer(ScenePayload(), groupLayer("Edited", { "Old", "Same", "Other" }), 1);
     replaced->sync(original);
     shown->sync(original);
-    const QStringList before = QStringList() << QString::fromUtf8("Old") << QString::fromUtf8("Same") << QString::fromUtf8("Other");
 
     SceneGraphModel model;
     QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
@@ -624,10 +623,10 @@ TEST(SceneGraphModel, AnEditReadForAReplacedStageIsDropped)
         }
     });
     // Gathered after the replaced stage's edit, so applied after it would have been.
-    shown->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Edited", { "Old", "Same", "Other", "Extra" }), 3));
+    shown->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Edited", { "Old", "Extra", "Same", "Other" }), 3));
     model.refresh();
     replaced->open();
-    const QStringList extended = QStringList(before) << QString::fromUtf8("Extra");
+    const QStringList extended = QStringList() << QString::fromUtf8("Old") << QString::fromUtf8("Extra") << QString::fromUtf8("Same") << QString::fromUtf8("Other");
     EXPECT_TRUE(processEventsUntil([&]() { return childNames(model, model.indexOfPath(QString::fromUtf8("/Edited"), false)) == extended; }));
 
     EXPECT_EQ(resets, model.getResetCount());

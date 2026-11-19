@@ -41,25 +41,27 @@
  * Coordinates: mm, optical axis z, light travels +z (object on the left, sensor on the right).
  */
 
-#include <algorithm>
 #include <functional>
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace defocus {
 
-struct LensSurface {
-    double radius = 0.; // signed curvature radius (mm); 0 = flat; > 0 = centre to the right
-    double thickness = 0.; // distance to the next surface (mm)
-    double ior = 1.; // index (d line) of the medium after this surface; 1 = air
-    double abbe = 0.; // Abbe number of that medium (0 = estimated from the index)
-    double semiAperture = 0.; // clear radius (mm)
-    bool stop = false; // the aperture stop (a flat iris; radius ignored)
+struct LensSurface
+{
+    double radius = 0.;         // signed curvature radius (mm); 0 = flat; > 0 = centre to the right
+    double thickness = 0.;      // distance to the next surface (mm)
+    double ior = 1.;            // index (d line) of the medium after this surface; 1 = air
+    double abbe = 0.;           // Abbe number of that medium (0 = estimated from the index)
+    double semiAperture = 0.;   // clear radius (mm)
+    bool stop = false;          // the aperture stop (a flat iris; radius ignored)
 };
 
-struct LensPrescription {
-    std::string id, name, source; // source: patent / book citation
+struct LensPrescription
+{
+    std::string id, name, source;   // source: patent / book citation
     std::vector<LensSurface> surfaces;
     bool abbeEstimated = false;
 };
@@ -76,25 +78,27 @@ bool parseLensFile(const std::string& text, LensPrescription* out, std::string* 
 // One bokeh kernel of the table. Stop coordinates: unit = stop radius, x = tangential (towards the
 // frame edge), y = sagittal. "Relative" = divided by the thin-lens signed blur radius, so the core
 // multiplies by the radius it computed from depth.
-struct TracedKernel {
-    double a[4] = { 1., 0., 0., 1. }; // relative 2x2 map (x', y') = a (x, y)
-    double shift = 0.; // relative centre offset along the tangential axis
-    double centroid = 0.; // centre of the clipped, profiled outline (stop coordinates, x)
+struct TracedKernel
+{
+    double a[4] = {1., 0., 0., 1.};   // relative 2x2 map (x', y') = a (x, y)
+    double shift = 0.;                // relative centre offset along the tangential axis
+    double centroid = 0.;             // centre of the clipped, profiled outline (stop coordinates, x)
     int nClip = 0;
-    double clipX[4] = { 0., 0., 0., 0. }; // clip discs in stop coordinates (centre on the x axis)
-    double clipR[4] = { 1., 1., 1., 1. };
-    int clipRim[4] = { -1, -1, -1, -1 }; // the surface each disc comes from (lookups blend by rim)
-    double energy = 1.; // light passed, relative to the unvignetted stop
-    bool valid = false; // traced (false: the fit failed, a plain disc)
+    double clipX[4] = {0., 0., 0., 0.};   // clip discs in stop coordinates (centre on the x axis)
+    double clipR[4] = {1., 1., 1., 1.};
+    int clipRim[4] = {-1, -1, -1, -1};    // the surface each disc comes from (lookups blend by rim)
+    double energy = 1.;               // light passed, relative to the unvignetted stop
+    bool valid = false;               // traced (false: the fit failed, a plain disc)
     // Radial profile: density in kRings equal-width annuli of the outline, mean 1 over the area.
     static const int kRings = 8;
-    double density[kRings] = { 1., 1., 1., 1., 1., 1., 1., 1. };
-    std::vector<double> ringScale, ringWeight; // the same as nested copies of the outline
+    double density[kRings] = {1., 1., 1., 1., 1., 1., 1., 1.};
+    std::vector<double> ringScale, ringWeight;   // the same as nested copies of the outline
 };
 
 // A table lookup for the scatter, everything interpolated between the 4 nearest entries (no
 // allocation per sample). ringScale / ringWeight point into the lookup itself.
-struct KernelLookup {
+struct KernelLookup
+{
     double a[4];
     double shift;
     double centroid;
@@ -107,15 +111,17 @@ struct KernelLookup {
     double ringS[TracedKernel::kRings], ringW[TracedKernel::kRings];
 };
 
-struct LensTableParams {
-    double focalLengthMm = 50.; // the prescription is scaled to this focal length
+struct LensTableParams
+{
+    double focalLengthMm = 50.;     // the prescription is scaled to this focal length
     double fNumber = 2.8;
     double focusDistanceMm = 5000.; // from the entrance pupil
-    double fieldRadiusMm = 21.6; // optical centre to the frame corner on the sensor
-    double wavelengthNm[3] = { 610., 550., 465. };
+    double fieldRadiusMm = 21.6;    // optical centre to the frame corner on the sensor
+    double wavelengthNm[3] = {610., 550., 465.};
 };
 
-class LensTable {
+class LensTable
+{
 public:
     // Traces the lens; returns null (and a message) if it can't be focused or traced.
     static std::shared_ptr<LensTable> build(const LensPrescription& lens, const LensTableParams& p,
@@ -150,7 +156,7 @@ public:
     const std::vector<double>& mapIllum() const { return _mapIllum; }
 
     // Facts about the traced lens, for the UI.
-    double effectiveFNumber() const { return _fNumber; } // clamped to the lens's widest stop
+    double effectiveFNumber() const { return _fNumber; }     // clamped to the lens's widest stop
     double widestFNumber() const { return _widestF; }
     double backFocusMm() const { return _bfd; }
     bool chromatic() const { return _chromatic; }
@@ -167,9 +173,9 @@ private:
     bool _chromatic = false;
     int _failChief = 0, _failSample = 0, _failFit = 0;
     double _maxScale = 1.;
-    std::function<int(int, double, double, int, void*)> _sampler; // see LensTable::build   // counted from worker threads: diagnostic only
+    std::function<int(int, double, double, int, void*)> _sampler;   // see LensTable::build   // counted from worker threads: diagnostic only
     std::vector<double> _u, _rho;
-    std::vector<TracedKernel> _k; // [channel][u][rho]
+    std::vector<TracedKernel> _k;   // [channel][u][rho]
     double _mapRhoMax = 1.;
     std::vector<double> _mapScale[3], _mapIllum;
     const TracedKernel& at(int ch, int iu, int ir) const { return _k[((size_t)ch * _u.size() + iu) * _rho.size() + ir]; }

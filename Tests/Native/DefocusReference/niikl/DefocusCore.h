@@ -48,19 +48,14 @@
 
 namespace defocus {
 
-class LensTable; // LensTrace.h
+class LensTable;   // LensTrace.h
 
-struct Rect {
+struct Rect
+{
     int x1 = 0, y1 = 0, x2 = 0, y2 = 0; // [x1, x2) x [y1, y2)
 
-    Rect() { }
-    Rect(int ax1, int ay1, int ax2, int ay2)
-        : x1(ax1)
-        , y1(ay1)
-        , x2(ax2)
-        , y2(ay2)
-    {
-    }
+    Rect() {}
+    Rect(int ax1, int ay1, int ax2, int ay2) : x1(ax1), y1(ay1), x2(ax2), y2(ay2) {}
     int width() const { return x2 > x1 ? x2 - x1 : 0; }
     int height() const { return y2 > y1 ? y2 - y1 : 0; }
     bool isEmpty() const { return width() == 0 || height() == 0; }
@@ -68,7 +63,8 @@ struct Rect {
 };
 
 // A float image window. rowStride is in floats; channels is the pixel stride in floats.
-struct ImageView {
+struct ImageView
+{
     float* data = nullptr;
     Rect bounds;
     int channels = 4;
@@ -81,20 +77,15 @@ struct ImageView {
     }
 };
 
-struct ConstImageView {
+struct ConstImageView
+{
     const float* data = nullptr;
     Rect bounds;
     int channels = 4;
     std::ptrdiff_t rowStride = 0;
 
-    ConstImageView() { }
-    ConstImageView(const ImageView& v)
-        : data(v.data)
-        , bounds(v.bounds)
-        , channels(v.channels)
-        , rowStride(v.rowStride)
-    {
-    }
+    ConstImageView() {}
+    ConstImageView(const ImageView& v) : data(v.data), bounds(v.bounds), channels(v.channels), rowStride(v.rowStride) {}
     bool valid() const { return data != nullptr && !bounds.isEmpty(); }
     const float* pixel(int x, int y) const
     {
@@ -102,34 +93,37 @@ struct ConstImageView {
     }
 };
 
-enum DepthConventionEnum {
-    eDepthPlanarZ = 0, // distance along the camera axis (ScanlineRender depth.Z, Cycles Depth)
-    eDepthRadial, // distance along the pixel's ray (FastVolumeRender Depth)
-    eDepthInverse, // 1/Z, far = 0 (Nuke convention)
-    eDepthNormalized, // 0..1 remapped between Normalized Near/Far (AI / 2.5D depth maps)
-    eDepthDirectCoC, // the value is the signed CoC radius in pixels (full-res)
-    eDepthPosition, // planar depth computed from the Position plane (needs camera space or a camera)
+enum DepthConventionEnum
+{
+    eDepthPlanarZ = 0,   // distance along the camera axis (ScanlineRender depth.Z, Cycles Depth)
+    eDepthRadial,        // distance along the pixel's ray (FastVolumeRender Depth)
+    eDepthInverse,       // 1/Z, far = 0 (Nuke convention)
+    eDepthNormalized,    // 0..1 remapped between Normalized Near/Far (AI / 2.5D depth maps)
+    eDepthDirectCoC,     // the value is the signed CoC radius in pixels (full-res)
+    eDepthPosition,      // planar depth computed from the Position plane (needs camera space or a camera)
 };
 
-enum SpaceEnum {
+enum SpaceEnum
+{
     eSpaceWorld = 0,
-    eSpaceCamera, // camera space; either sign of the view axis is accepted
+    eSpaceCamera,        // camera space; either sign of the view axis is accepted
 };
 
 // Optional camera, for the Position/Normal features: depth from P, a focus point locked to the
 // world, filling hidden background along the surface plane. Camera space: +X right, +Y up, looking
 // down -Z.
-struct CameraModel {
+struct CameraModel
+{
     bool valid = false;
-    double origin[3] = { 0., 0., 0. }; // world position
-    double rot[9] = { 1., 0., 0., 0., 1., 0., 0., 0., 1. }; // camera-to-world rotation, row-major (columns = camera axes)
-    double focalPx = 1000.; // focal length, render-scale px
-    double centreX = 0., centreY = 0.; // principal point, render-scale px (pixel corners at integers)
+    double origin[3] = {0., 0., 0.};                    // world position
+    double rot[9] = {1., 0., 0., 0., 1., 0., 0., 0., 1.};// camera-to-world rotation, row-major (columns = camera axes)
+    double focalPx = 1000.;                             // focal length, render-scale px
+    double centreX = 0., centreY = 0.;                  // principal point, render-scale px (pixel corners at integers)
 
     // World point -> camera space.
     void toCamera(const double w[3], double c[3]) const
     {
-        const double d[3] = { w[0] - origin[0], w[1] - origin[1], w[2] - origin[2] };
+        const double d[3] = {w[0] - origin[0], w[1] - origin[1], w[2] - origin[2]};
         for (int k = 0; k < 3; ++k) {
             c[k] = rot[0 * 3 + k] * d[0] + rot[1 * 3 + k] * d[1] + rot[2 * 3 + k] * d[2];
         }
@@ -161,28 +155,32 @@ bool cameraFromExrMatrices(const double worldToCamera[16], const double worldToN
 // camera-space normal nCam. Returns false for a surface seen edge-on.
 bool focusTiltFromNormal(const double nCam[3], double* tiltDeg, double* swingDeg);
 
-enum CocModeEnum {
-    eCocCamera = 0, // focal length, f-number, focus distance, film back
-    eCocSizeAtInfinity, // user gives the CoC radius at infinity in pixels; focus distance still used
+enum CocModeEnum
+{
+    eCocCamera = 0,          // focal length, f-number, focus distance, film back
+    eCocSizeAtInfinity,      // user gives the CoC radius at infinity in pixels; focus distance still used
 };
 
-enum EdgeModeEnum {
+enum EdgeModeEnum
+{
     eEdgeOff = 0,
-    eEdgeMinMax, // split edge pixels 50/50 between the 3x3 front and back depth
-    eEdgeUnmix, // split by projecting the pixel colour between front and back neighbour colours
+    eEdgeMinMax,     // split edge pixels 50/50 between the 3x3 front and back depth
+    eEdgeUnmix,      // split by projecting the pixel colour between front and back neighbour colours
 };
 
-enum BorderModeEnum {
+enum BorderModeEnum
+{
     eBorderBlack = 0,
     eBorderRepeat,
 };
 
-enum OutputModeEnum {
+enum OutputModeEnum
+{
     eOutputResult = 0,
-    eOutputFocus, // red = near, green = in focus, blue = far
-    eOutputSignedCoC, // R = signed CoC px, G = |CoC|, B = clamped
-    eOutputSlices, // false-colour slice index
-    eOutputEdge, // front coverage of split edge pixels
+    eOutputFocus,        // red = near, green = in focus, blue = far
+    eOutputSignedCoC,    // R = signed CoC px, G = |CoC|, B = clamped
+    eOutputSlices,       // false-colour slice index
+    eOutputEdge,         // front coverage of split edge pixels
     eOutputSurfaceEdges, // slicing decisions: red = outline split by Position/Normal, yellow = split
                          // by the blur-radius test, green = kept whole by Position/Normal where the
                          // radius test would split, blue = Position/Normal ignored (disagree with
@@ -190,31 +188,33 @@ enum OutputModeEnum {
 };
 
 // Procedural lens character. All zero = plain disc.
-struct LensSettings {
-    int blades = 0; // 0 = circular, else 3..16
-    double curvature = 0.; // 0 = straight blades, 1 = circle
+struct LensSettings
+{
+    int blades = 0;                 // 0 = circular, else 3..16
+    double curvature = 0.;          // 0 = straight blades, 1 = circle
     double rotationDeg = 0.;
-    double squeeze = 1.; // anamorphic: > 1 = taller oval (area preserving)
-    double catEye = 0.; // optical vignetting strength at the frame corner (0..1+)
-    double catEyeStart = 0.; // normalised field radius where clipping starts
-    double swirl = 0.; // tangential stretch at the frame corner (Petzval swirl)
-    double sphericalAberration = 0.; // > 0 = bright rim behind focus, bright centre in front
-    double onionAmount = 0.; // concentric ring modulation (0..1)
-    double onionFrequency = 6.; // rings across the radius
-    double axialCA = 0.; // signed CoC offset in px: R gets +a, B gets -a (full-res px)
-    int profileSteps = 6; // nested shapes used to approximate a radial profile
+    double squeeze = 1.;            // anamorphic: > 1 = taller oval (area preserving)
+    double catEye = 0.;             // optical vignetting strength at the frame corner (0..1+)
+    double catEyeStart = 0.;        // normalised field radius where clipping starts
+    double swirl = 0.;              // tangential stretch at the frame corner (Petzval swirl)
+    double sphericalAberration = 0.;// > 0 = bright rim behind focus, bright centre in front
+    double onionAmount = 0.;        // concentric ring modulation (0..1)
+    double onionFrequency = 6.;     // rings across the radius
+    double axialCA = 0.;            // signed CoC offset in px: R gets +a, B gets -a (full-res px)
+    int profileSteps = 6;           // nested shapes used to approximate a radial profile
 
     // A traced real lens (LensTrace.h). When set, its kernels replace cat's eye, swirl and spherical
     // aberration (the blades, rotation and squeeze still shape the iris).
     std::shared_ptr<const LensTable> table;
-    double character = 1.; // 0 = ideal thin lens .. 1 = the traced lens as is
-    bool chromatic = true; // trace R, G and B separately (axial colour; 3x scatter)
+    double character = 1.;          // 0 = ideal thin lens .. 1 = the traced lens as is
+    bool chromatic = true;          // trace R, G and B separately (axial colour; 3x scatter)
 };
 
 // Image stages of a real lens, applied to the result (Result output only), radial about the optical
 // centre. Maps are sampled uniformly over the normalised field radius 0..rhoMax (1 = fieldRadiusPx)
 // and held beyond it. Empty maps = that stage off; all off = the plain result, untouched.
-struct LensStages {
+struct LensStages
+{
     double rhoMax = 1.;
     // Per channel R, G, B: the output pixel at radius rho takes the result at radius rho * scale
     // (distortion, focus breathing, lateral colour). Alpha follows green.
@@ -226,34 +226,35 @@ struct LensStages {
     bool active() const { return geometric() || !illum.empty(); }
 };
 
-struct Settings {
+struct Settings
+{
     // Depth decoding
     DepthConventionEnum depthConvention = eDepthPlanarZ;
-    double farThreshold = 0.; // > 0: depth >= this is treated as infinity (ScanlineRender writes camera far)
-    bool zeroIsInfinity = true; // Cycles / FastVolume write 0 where nothing was hit
+    double farThreshold = 0.;       // > 0: depth >= this is treated as infinity (ScanlineRender writes camera far)
+    bool zeroIsInfinity = true;     // Cycles / FastVolume write 0 where nothing was hit
     double normalizedNear = 0.1;
     double normalizedFar = 100.;
-    bool normalizedInvert = false; // true: 1 = near
-    bool depthPremultiplied = false; // depth was multiplied by alpha upstream
-    double worldToMm = 1000.; // scene units to millimetres (1 unit = 1 m)
+    bool normalizedInvert = false;  // true: 1 = near
+    bool depthPremultiplied = false;// depth was multiplied by alpha upstream
+    double worldToMm = 1000.;       // scene units to millimetres (1 unit = 1 m)
 
     // CoC
     CocModeEnum cocMode = eCocCamera;
     double focalLengthMm = 50.;
     double fNumber = 2.8;
-    double focusDistance = 5.; // scene units
+    double focusDistance = 5.;      // scene units
     double filmbackWidthMm = 36.;
-    double sizeAtInfinityPx = 10.; // radius in full-res px (eCocSizeAtInfinity)
-    double formatWidthPx = 1920.; // full-res pixels across the film back
-    double renderScale = 1.; // multiplies every pixel quantity
+    double sizeAtInfinityPx = 10.;  // radius in full-res px (eCocSizeAtInfinity)
+    double formatWidthPx = 1920.;   // full-res pixels across the film back
+    double renderScale = 1.;        // multiplies every pixel quantity
     double nearGain = 1.;
     double farGain = 1.;
-    double maxRadiusPx = 256.; // full-res px
+    double maxRadiusPx = 256.;      // full-res px
 
     // Field (for position-dependent kernels), in render-scale pixel coordinates
     double opticalCentreX = 0.;
     double opticalCentreY = 0.;
-    double fieldRadiusPx = 1.; // distance from the centre to the frame corner
+    double fieldRadiusPx = 1.;      // distance from the centre to the frame corner
 
     // Camera for the Position/Normal features (optional).
     CameraModel camera;
@@ -263,28 +264,28 @@ struct Settings {
     // Swing > 0: towards the right.
     double focusTiltDeg = 0.;
     double focusSwingDeg = 0.;
-    double focusPivotX = 0.; // render-scale px
+    double focusPivotX = 0.;        // render-scale px
     double focusPivotY = 0.;
 
     LensSettings lens;
 
     // Quality
-    double sliceStep = 0.15; // relative CoC step between slices
-    double fullResRadius = 32.; // render-scale px; bigger radii scatter at reduced resolution
+    double sliceStep = 0.15;        // relative CoC step between slices
+    double fullResRadius = 32.;     // render-scale px; bigger radii scatter at reduced resolution
     double highlightThreshold = 8.; // luminance above which a sample scatters at full res (0 = off)
     int maxHighlights = 50000;
     EdgeModeEnum edgeMode = eEdgeUnmix;
-    double edgeThresholdPx = 1.; // CoC difference across a 3x3 that counts as a depth edge
+    double edgeThresholdPx = 1.;    // CoC difference across a 3x3 that counts as a depth edge
     bool fillBehind = true;
     // With Position/Normal: put every occlusion edge between slices, however small its blur
     // difference (no seams; more slices, slower). Off = the radius test decides, as without P/N.
     bool splitOcclusionEdges = true;
-    BorderModeEnum border = eBorderRepeat; // a real lens sees past the frame edge; Black darkens borders
+    BorderModeEnum border = eBorderRepeat;  // a real lens sees past the frame edge; Black darkens borders
 
     OutputModeEnum output = eOutputResult;
     LensStages stages;
     double mix = 1.;
-    int threads = 0; // 0 = hardware concurrency
+    int threads = 0;                // 0 = hardware concurrency
     // Scatter (step 5) on the GPU (DefocusGpu, wgpu); the CPU scatters when it can't (Stats::gpuMessage)
     bool useGpu = false;
 };
@@ -293,7 +294,8 @@ struct Settings {
 // alpha (not attenuated by the samples in front, as in OpenEXR deep), planar depth Z (scene
 // units) and optionally ZBack (> Z: a volume segment). `at` returns a pixel's samples (core,
 // bottom-up coordinates) and their count, or null. Order within a pixel doesn't matter.
-struct DeepView {
+struct DeepView
+{
     Rect bounds;
     int stride = 0;
     int iR = 0, iG = 1, iB = 2, iA = 3, iZ = 4, iZBack = -1;
@@ -301,20 +303,21 @@ struct DeepView {
     bool valid() const { return stride > 0 && iZ >= 0 && iA >= 0 && (bool)at; }
 };
 
-struct Inputs {
-    ConstImageView source; // RGBA premultiplied (channels >= 3; alpha = 1 if absent)
-    ConstImageView depth; // depth in channel depthChannel
+struct Inputs
+{
+    ConstImageView source;          // RGBA premultiplied (channels >= 3; alpha = 1 if absent)
+    ConstImageView depth;           // depth in channel depthChannel
     int depthChannel = 0;
     ConstImageView cleanBackground; // optional RGBA premultiplied, used to fill behind foreground
-    ConstImageView mask; // optional; limits the effect
+    ConstImageView mask;            // optional; limits the effect
     int maskChannel = 0;
     // Optional surface geometry (one sample per pixel, aliased like depth). With both, depth edges
     // are told apart from steep surfaces (a floor at a grazing angle) and hidden background is filled
     // along the surface plane.
-    ConstImageView position; // xyz in channels positionChannel..+2
+    ConstImageView position;        // xyz in channels positionChannel..+2
     int positionChannel = 0;
     SpaceEnum positionSpace = eSpaceWorld;
-    ConstImageView normal; // xyz in channels normalChannel..+2
+    ConstImageView normal;          // xyz in channels normalChannel..+2
     int normalChannel = 0;
     SpaceEnum normalSpace = eSpaceWorld;
     // Deep: when valid, every deep sample is scattered at its own blur (hidden layers are real,
@@ -325,19 +328,20 @@ struct Inputs {
     DeepView deep;
 };
 
-struct Stats {
+struct Stats
+{
     std::int64_t samples = 0;
     std::int64_t edgeSplits = 0;
     std::int64_t filled = 0;
     std::int64_t highlights = 0;
     std::int64_t clamped = 0;
     int slices = 0;
-    double maxAbsRadius = 0.; // render-scale px, after clamping
+    double maxAbsRadius = 0.;       // render-scale px, after clamping
     double secondsDecode = 0.;
     double secondsFill = 0.;
     double secondsScatter = 0.;
-    bool gpu = false; // the scatter ran on the GPU
-    std::string gpuMessage; // Settings::useGpu but the CPU scattered: why
+    bool gpu = false;               // the scatter ran on the GPU
+    std::string gpuMessage;         // Settings::useGpu but the CPU scattered: why
 };
 
 // Signed CoC radius in full-res pixels (before gains and clamp) for a depth in scene units.

@@ -751,7 +751,49 @@ struct SceneViewportRenderer::Implementation {
             ~Waiting() { --count; }
         } waiting(exclusiveWaiting);
 
-        return std::unique_lock<std::shared_mutex>(stageMutex);
+        if (!onMainThread()) {
+            return std::unique_lock<std::shared_mutex>(stageMutex);
+        }
+        std::unique_lock<std::shared_mutex> lock(stageMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            lock.lock();
+            noteMainThreadWait(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+        }
+
+        return lock;
+    }
+
+    std::shared_lock<std::shared_mutex> lockShared()
+    {
+        if (!onMainThread()) {
+            return std::shared_lock<std::shared_mutex>(stageMutex);
+        }
+        std::shared_lock<std::shared_mutex> lock(stageMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            lock.lock();
+            noteMainThreadWait(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+        }
+
+        return lock;
+    }
+
+    static bool onMainThread()
+    {
+        const QCoreApplication* app = QCoreApplication::instance();
+
+        return app && (QThread::currentThread() == app->thread());
+    }
+
+    // The main thread's blocking waits, for stageMutex and for the render thread. Main thread only.
+    double mainThreadWaitMs = 0.;
+    double mainThreadWaitMaxMs = 0.;
+
+    void noteMainThreadWait(double ms)
+    {
+        mainThreadWaitMs += ms;
+        mainThreadWaitMaxMs = std::max(mainThreadWaitMaxMs, ms);
     }
     // Created by the first sync and kept for the renderer's life: the engine binds the first
     // stage it renders for good (v26.08 usdImagingGL/engine.cpp, PrepareBatch populates once).
@@ -3358,7 +3400,7 @@ SceneViewportRenderer::SceneViewportRenderer()
     const SceneDrawBoxes::StageReader boxReader = [imp](const SceneDrawBoxes::StageRead& read) {
         SceneWriteBarrier::ReadScope readScope;
         {
-            std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
+            std::shared_lock<std::shared_mutex> lock = imp->lockShared();
             const bool shown = imp->shown && imp->sceneStage && imp->sceneStage->isValid();
             read(shown ? imp->sceneStage->getStage() : UsdStageRefPtr(), imp->stageEditCount + imp->stageLoadEditCount);
         }
@@ -3441,7 +3483,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     {
         // Playback and draw rule edits sync the stack the stage has: these leave the stage as it
         // is, so the paints that read it go on meanwhile.
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
         unchanged = _imp->sceneStage && _imp->sceneStage->isValid() && _imp->loadRulesMade && (_imp->shown == !payload.isEmpty())
             && !((serial != 0) && (serial > _imp->previewClearAfter.load())) && _imp->sceneStage->isSyncedTo(payload);
     }
@@ -3517,7 +3559,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     if (restart) {
         _imp->progressive->invalidate();
     }
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
     _imp->refreshStageSummary();
     if (serial > _imp->stageSyncSerial) {
         _imp->stageSyncSerial = serial;
@@ -3572,7 +3614,7 @@ SceneViewportRenderer::readStage(const std::function<void(const SceneStage* stag
 {
     SceneWriteBarrier::ReadScope readScope;
     {
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
         const bool shown = _imp->shown && _imp->sceneStage && _imp->sceneStage->isValid();
         read(shown ? _imp->sceneStage.get() : nullptr);
     }
@@ -3678,7 +3720,7 @@ SceneViewportRenderer::applyPendingDrawDeltas()
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
     {
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
         if (_imp->engine) {
             StormGLStateGuard guard;
             StormGLSection section;
@@ -3921,7 +3963,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
 
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
     StormGLStateGuard guard;
     StormGLSection section;
 
@@ -4199,7 +4241,7 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
     }
     const bool serviced = stage->serviceLoads([imp](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
-        std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
+        std::shared_lock<std::shared_mutex> lock = imp->lockShared();
         section(); }, [imp, stage, committed](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
         const std::unique_lock<std::shared_mutex> lock = imp->lockExclusive();
@@ -4238,7 +4280,7 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
         return serviced;
     }
     SceneWriteBarrier::ReadScope read;
-    std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = imp->lockShared();
     imp->refreshStageSummary();
 
     return serviced;
@@ -4282,6 +4324,24 @@ SceneViewportRenderer::getLastStageLoadHoldMs() const
     const SceneStage* stage = _imp->loadStage;
 
     return stage ? stage->getLastLoadHoldMs() : 0.;
+}
+
+double
+SceneViewportRenderer::getMainThreadWaitMs() const
+{
+    return _imp->mainThreadWaitMs;
+}
+
+double
+SceneViewportRenderer::getMainThreadWaitMaxMs() const
+{
+    return _imp->mainThreadWaitMaxMs;
+}
+
+void
+SceneViewportRenderer::addMainThreadWait(double ms)
+{
+    _imp->noteMainThreadWait(ms);
 }
 
 std::vector<std::pair<std::string, std::string>>
@@ -4647,7 +4707,7 @@ SceneViewportRenderer::computeFrameBounds(const std::vector<std::string>& select
     bounds.selection = !selection.empty();
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
     const UsdStageRefPtr stage = _imp->currentStage();
     if (!stage) {
         return bounds;
@@ -4906,7 +4966,7 @@ bool
 SceneViewportRenderer::hasTransformHandles() const
 {
     SceneGizmo::Frame frame;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
 
     return _imp->computeHandleFrame(&frame);
 }
@@ -5013,7 +5073,7 @@ SceneViewportRenderer::getTransformHandlePixel(int handle,
 {
     SceneGizmo::Frame frame;
     bool selection = false;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
 
     if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame, &selection) || !_imp->isDrawnHandle(handle, selection)) {
         return false;
@@ -7177,12 +7237,14 @@ struct SceneViewport::Implementation {
     // others, and the main thread waits for that one.
     bool rendererSwitchRunning = false;
     std::atomic<U64> rendererSwitchLatest { 0 };
+    // A followSceneRenderer() posted to the render thread has not come back.
+    bool followSceneRunning = false;
 
     // Whether the render thread is on work the main thread does not wait for, and must not queue
     // behind.
     bool renderThreadBusy() const
     {
-        return backgroundFrameRunning || rendererSwitchRunning || (drawJobsQueued > 0) || (renderContextRebuilds > 0) || engineReleaseRunning;
+        return backgroundFrameRunning || rendererSwitchRunning || followSceneRunning || (drawJobsQueued > 0) || (renderContextRebuilds > 0) || engineReleaseRunning;
     }
 
     bool engineReleasePending() const
@@ -7248,8 +7310,10 @@ struct SceneViewport::Implementation {
             doneChanged.notify_one();
         });
         PythonUnlockedWhileWaiting unlocked;
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
         std::unique_lock<std::mutex> lock(doneMutex);
         doneChanged.wait(lock, [&done]() { return done; });
+        renderer.addMainThreadWait(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
     }
 
     // Main thread: asked on the render thread once it has no job left.
@@ -7952,6 +8016,20 @@ SceneViewport::followSceneRenderer()
     _imp->followSceneOwed = false;
     bool changed = false;
     bool busy = false;
+    if (_imp->usesRenderThread && _imp->glInitialized && context()) {
+        // Waiting here would wait out whatever the render thread runs before the job, a frame's
+        // pass included.
+        _imp->followSceneRunning = true;
+        Implementation* imp = _imp.get();
+        _imp->postToRenderThread([this, imp]() {
+            bool jobBusy = false;
+            const bool jobChanged = imp->renderer.followSceneRenderer(&jobBusy);
+            // Dropped by Qt if the widget is gone by then.
+            QMetaObject::invokeMethod(this, [this, jobChanged, jobBusy]() { onSceneRendererFollowed(jobChanged, jobBusy); }, Qt::QueuedConnection);
+        });
+
+        return;
+    }
     if (_imp->glInitialized && context()) {
         runWithEngineContext([this, &changed, &busy]() { changed = _imp->renderer.followSceneRenderer(&busy); });
     } else {
@@ -7968,6 +8046,34 @@ SceneViewport::followSceneRenderer()
         publishActiveRenderer();
         update();
     }
+}
+
+void
+SceneViewport::onSceneRendererFollowed(bool changed,
+                                       bool busy)
+{
+    // Set by a followSceneRenderer() that came while the job ran, which may have been the holder
+    // of the lock letting go after the job found it held.
+    const bool askedMeanwhile = _imp->followSceneOwed;
+
+    _imp->followSceneRunning = false;
+    _imp->followSceneOwed = busy || askedMeanwhile;
+    if (changed) {
+        publishActiveRenderer();
+    }
+    if (_imp->renderThreadBusy()) {
+        refreshPaintHold();
+
+        return;
+    }
+    if (askedMeanwhile) {
+        followSceneRenderer();
+    }
+    startBackgroundFrame();
+    serviceDeferredInput();
+    publishState();
+    refreshPaintHold();
+    update();
 }
 
 bool
@@ -9163,6 +9269,8 @@ SceneViewport::publishState()
     setProperty("natronSceneLoadsPending", _imp->renderer.hasPendingStageLoads());
     setProperty("natronSceneLoadEdits", QVariant::fromValue<qulonglong>(_imp->renderer.getStageLoadEditCount()));
     setProperty("natronSceneLoadHoldMs", _imp->renderer.getLastStageLoadHoldMs());
+    setProperty("natronSceneMainWaitMs", _imp->renderer.getMainThreadWaitMs());
+    setProperty("natronSceneMainWaitMaxMs", _imp->renderer.getMainThreadWaitMaxMs());
     publishDrawStats();
     {
         QVariantList failures;

@@ -822,6 +822,68 @@ TEST(SceneGraphModel, ALargeGatheredEditAppliesInSlices)
     EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
 }
 
+// Deferred, the model neither reads the stage nor changes a row for an edit; undeferred, one
+// refresh brings the rows up to date.
+TEST(SceneGraphModel, ADeferredModelReadsNothingUntilUndeferred)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<GatedStageSource> source = std::make_shared<GatedStageSource>();
+    PXR_NS::SdfLayerRefPtr kept = groupLayer("Kept", { "K0", "K1" });
+    ScenePayload base = SceneOps::appendLayer(ScenePayload(), kept, 1);
+    source->sync(SceneOps::appendLayer(base, groupLayer("Edited", { "Old", "Same" }), 2));
+    source->open();
+
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setReadsOnWorker(true);
+    model.setSource(source);
+    ASSERT_TRUE(waitForPath(model, QString::fromUtf8("/Kept/K1")).isValid());
+    const QPersistentModelIndex edited(waitForPath(model, QString::fromUtf8("/Edited/Same")).parent());
+    ASSERT_TRUE(edited.isValid());
+    const int resets = model.getResetCount();
+    int rowChanges = 0;
+    QObject::connect(&model, &QAbstractItemModel::rowsInserted, [&]() { ++rowChanges; });
+    QObject::connect(&model, &QAbstractItemModel::rowsRemoved, [&]() { ++rowChanges; });
+    QObject::connect(&model, &QAbstractItemModel::dataChanged, [&]() { ++rowChanges; });
+    QObject::connect(&model, &QAbstractItemModel::layoutChanged, [&]() { ++rowChanges; });
+
+    model.setDeferred(true);
+    EXPECT_TRUE(model.isDeferred());
+    const int mainReads = source->mainReads.load();
+    const int workerReads = source->workerReads.load();
+    source->sync(SceneOps::appendLayer(base, groupLayer("Edited", { "Same", "New" }), 3));
+    for (int i = 0; i < 3; ++i) {
+        model.refresh();
+        model.settleLoads();
+        model.refreshDrawStates();
+    }
+    for (int i = 0; i < 10; ++i) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+
+    EXPECT_TRUE(model.isStale());
+    EXPECT_FALSE(model.hasOwedReads());
+    EXPECT_EQ(mainReads, source->mainReads.load());
+    EXPECT_EQ(workerReads, source->workerReads.load());
+    EXPECT_EQ(0, rowChanges);
+    EXPECT_EQ(QStringList({ QString::fromUtf8("Old"), QString::fromUtf8("Same") }), childNames(model, edited));
+
+    model.setDeferred(false);
+    EXPECT_FALSE(model.isDeferred());
+    EXPECT_FALSE(model.isStale());
+    const QStringList after = QStringList({ QString::fromUtf8("Same"), QString::fromUtf8("New") });
+    EXPECT_TRUE(processEventsUntil([&]() { return childNames(model, edited) == after; }));
+    EXPECT_TRUE(processEventsUntil([&]() { return !model.hasOwedReads(); }));
+
+    EXPECT_GT(source->workerReads.load(), workerReads);
+    EXPECT_EQ(resets, model.getResetCount());
+    EXPECT_EQ(QStringList({ QString::fromUtf8("K0"), QString::fromUtf8("K1") }), childNames(model, model.indexOfPath(QString::fromUtf8("/Kept"), false)));
+    // Kept, Edited and their children.
+    EXPECT_EQ(6, model.getItemCount());
+
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
 // After a reset the model holds the root alone; the rows a remembered path needs come in from the
 // event loop, and deferredReadsDone() says when to ask for it again.
 TEST(SceneGraphModel, RestoringAPathAfterAResetArrivesAsynchronously)
@@ -1406,6 +1468,86 @@ TEST(SceneGraphModelPayloads, UnloadRemovesRowsAndKeepsTheBadge)
     fixture.twirl(kB0);
     fixture.service();
     EXPECT_EQ(QStringList(QString::fromUtf8("Geo")), childNames(fixture.model, b0));
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+// A load that ends while the model is deferred changes no row; undeferring takes its outcome in.
+TEST(SceneGraphModelPayloads, ALoadEndingWhileDeferredSettlesWhenUndeferred)
+{
+    PayloadModel fixture;
+    const QPersistentModelIndex b0(fixture.row(kB0));
+
+    fixture.twirl(kB0);
+    ASSERT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(kB0));
+    int rowChanges = 0;
+    QObject::connect(&fixture.model, &QAbstractItemModel::rowsInserted, [&]() { ++rowChanges; });
+    QObject::connect(&fixture.model, &QAbstractItemModel::rowsRemoved, [&]() { ++rowChanges; });
+    QObject::connect(&fixture.model, &QAbstractItemModel::dataChanged, [&]() { ++rowChanges; });
+
+    fixture.model.setDeferred(true);
+    fixture.service();
+    EXPECT_TRUE(fixture.model.isStale());
+    EXPECT_EQ(0, rowChanges);
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(kB0));
+    ASSERT_EQ(1, fixture.model.rowCount(b0));
+    EXPECT_EQ(SceneGraphModel::tr("Loading..."), fixture.model.index(0, 0, b0).data().toString());
+
+    fixture.model.setDeferred(false);
+    EXPECT_FALSE(fixture.model.isStale());
+    EXPECT_FALSE(fixture.model.hasOwedReads());
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoaded, fixture.model.getPayloadState(kB0));
+    EXPECT_EQ(QStringList(QString::fromUtf8("Geo")), childNames(fixture.model, b0));
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+// The rows of many loads ending at once are redrawn over several turns of the event loop, the
+// model whole between them, and a row asked for again meanwhile keeps showing that it loads.
+TEST(SceneGraphModelPayloads, EndedLoadsSettleInSlices)
+{
+    PayloadModel fixture;
+    const QStringList paths = QStringList({ kB0, kB1, kB2 });
+
+    for (const QString& path : paths) {
+        fixture.twirl(path);
+        ASSERT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(path));
+    }
+    const int slices = fixture.model.getSettleSliceCount();
+    fixture.model.setApplySliceMs(0);
+    fixture.source->stage.cancelPendingLoads();
+    fixture.model.settleLoads();
+
+    EXPECT_EQ(slices + 1, fixture.model.getSettleSliceCount());
+    EXPECT_TRUE(fixture.model.hasPendingSettle());
+    EXPECT_TRUE(fixture.model.hasOwedReads());
+    for (const QString& path : paths) {
+        EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(path));
+    }
+    // B0 and B2 have no rows of their own: one still showing a row is yet to be redrawn.
+    QString again;
+    for (const QString& path : { kB0, kB2 }) {
+        if (fixture.model.rowCount(fixture.row(path)) == 1) {
+            again = path;
+        }
+    }
+    ASSERT_FALSE(again.isEmpty());
+    fixture.model.markLoading(QStringList(again));
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(again));
+
+    EXPECT_TRUE(processEventsUntil([&]() { return !fixture.model.hasPendingSettle(); }));
+    EXPECT_GT(fixture.model.getSettleSliceCount() - slices, 1);
+    EXPECT_FALSE(fixture.model.hasOwedReads());
+    for (const QString& path : { kB0, kB2 }) {
+        if (path == again) {
+            EXPECT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(path));
+            ASSERT_EQ(1, fixture.model.rowCount(fixture.row(path)));
+            EXPECT_EQ(SceneGraphModel::tr("Loading..."), fixture.model.index(0, 0, fixture.row(path)).data().toString());
+        } else {
+            EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(path));
+            EXPECT_EQ(0, fixture.model.rowCount(fixture.row(path)));
+        }
+    }
+    EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB1));
+    EXPECT_EQ(QStringList(QString::fromUtf8("Own")), childNames(fixture.model, fixture.row(kB1)));
     EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
 }
 

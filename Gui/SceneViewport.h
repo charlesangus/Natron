@@ -521,6 +521,17 @@ public:
 
     double getLastStageLoadHoldMs() const;
 
+    /**
+     * @brief How long the main thread has waited, in total and at most at once, in milliseconds:
+     * for the viewer lock where it takes it without a try, and for the render thread, which the
+     * viewport adds with addMainThreadWait(). Main thread.
+     **/
+    double getMainThreadWaitMs() const;
+
+    double getMainThreadWaitMaxMs() const;
+
+    void addMainThreadWait(double ms);
+
     // The prims whose last load failed, each with why.
     std::vector<std::pair<std::string, std::string>> getStageLoadFailures() const;
 
@@ -1349,7 +1360,9 @@ private:
     // natronSceneShowGuides, natronScenePurposes and natronSceneLighting, and the progressive
     // render's state into natronSceneSamples, natronSceneMaxSamples, natronSceneRefining,
     // natronSceneRefinementStopped, natronSceneRefineConverged, natronSceneRestartCount and
-    // natronSceneUploadMs.
+    // natronSceneUploadMs, and the main thread's blocking waits (see
+    // SceneViewportRenderer::getMainThreadWaitMs()) into natronSceneMainWaitMs and
+    // natronSceneMainWaitMaxMs.
     void publishState();
 
     void publishRefineState();
@@ -1489,8 +1502,12 @@ private:
 
     bool isComposing() const;
 
-    // Main thread, outside a paint: Scene Default's switch to the renderer the prim now names.
+    // Main thread, outside a paint: Scene Default's switch to the renderer the prim now names. With
+    // a render thread the switch is posted there and onSceneRendererFollowed() takes its outcome.
     void followSceneRenderer();
+
+    // Main thread: the render thread has followed the scene's renderer for followSceneRenderer().
+    void onSceneRendererFollowed(bool changed, bool busy);
 
     /**
      * @brief Publishes the delegate rendering and emits rendererChanged() if it changed. Never from

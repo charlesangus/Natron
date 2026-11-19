@@ -165,6 +165,8 @@ protected:
     void keyPressEvent(QKeyEvent* e) override;
     void keyReleaseEvent(QKeyEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
+    void showEvent(QShowEvent* e) override;
+    void hideEvent(QHideEvent* e) override;
 
 private:
     void copySelectedPaths();

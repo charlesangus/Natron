@@ -43,6 +43,7 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QHideEvent>
 #include <QIcon>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
@@ -58,6 +59,7 @@
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QSet>
+#include <QShowEvent>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStringListModel>
@@ -1870,6 +1872,8 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
 
     _imp->model = new SceneGraphModel(this);
     _imp->model->setReadsOnWorker(true);
+    // Made hidden: keeping rows nobody sees in step with a heavy stage would stall the window.
+    _imp->model->setDeferred(!isVisible());
     _imp->tree = new QTreeView(_imp->stack);
     _imp->tree->setObjectName(QString::fromUtf8("sceneGraphTree"));
     _imp->tree->setModel(_imp->model);
@@ -2236,6 +2240,10 @@ SceneGraphPanel::showSelection(const QStringList& paths)
         _imp->selectionOrder = paths;
         _imp->treeSelectionOwed = true;
         _imp->selectChangedHereRows(paths);
+    } else if (_imp->model->isDeferred()) {
+        // Selecting reads the rows down to the paths; the show reads them on the worker.
+        _imp->selectionOrder = paths;
+        _imp->treeSelectionOwed = true;
     } else {
         _imp->selectTreeRows(paths);
     }
@@ -2269,6 +2277,9 @@ SceneGraphPanel::followsViewer(const ViewerTab* viewer) const
 QStringList
 SceneGraphPanel::getSelection() const
 {
+    if (_imp->treeSelectionOwed && _imp->model->isDeferred() && (_imp->shownRowsView() == _imp->tree)) {
+        return _imp->selectionOrder;
+    }
     const QStringList selected = _imp->selectedPaths(_imp->shownRowsView());
 
     return SceneSelectionActions::keepSelectionOrder(_imp->selectionOrder, selected);
@@ -2640,8 +2651,10 @@ void
 SceneGraphPanel::onModelReset()
 {
     _imp->restoreAll = true;
-    _imp->restorePendingExpansion();
-    _imp->restoreScroll();
+    if (!_imp->model->isDeferred()) {
+        _imp->restorePendingExpansion();
+        _imp->restoreScroll();
+    }
     if (_imp->viewport && _imp->sharesViewerSelection()) {
         showSelection(_imp->viewport->getSelection());
     }
@@ -2719,6 +2732,35 @@ SceneGraphPanel::leaveEvent(QEvent* e)
 {
     leaveEventBase();
     QWidget::leaveEvent(e);
+}
+
+void
+SceneGraphPanel::showEvent(QShowEvent* e)
+{
+    QWidget::showEvent(e);
+    if (!_imp->model->isDeferred()) {
+        return;
+    }
+    _imp->model->setDeferred(false);
+    if (_imp->restoreAll) {
+        _imp->restorePendingExpansion();
+        _imp->restoreScroll();
+    }
+    if (_imp->treeSelectionOwed && (_imp->stack->currentWidget() == _imp->tree)) {
+        _imp->askForOwedRows();
+    }
+    _imp->updateStatus();
+    _imp->inspectorRefresh.start();
+}
+
+void
+SceneGraphPanel::hideEvent(QHideEvent* e)
+{
+    QWidget::hideEvent(e);
+    // A minimised window's hide is spontaneous, and its rows are kept up to date for its return.
+    if (!e->spontaneous()) {
+        _imp->model->setDeferred(true);
+    }
 }
 
 bool

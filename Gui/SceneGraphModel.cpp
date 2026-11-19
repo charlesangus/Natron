@@ -479,10 +479,118 @@ struct GatherRequest {
     std::vector<GatheredUpdate> updates;
     // The stage read was not the one the items were read from: nothing was gathered.
     bool otherStage = false;
+    // Set when nodes holds a copy of the root and every named item, and resynced and infoOnly the
+    // paths the listener queued, which prepare() turns into the items to gather again.
+    bool unprepared = false;
+    bool all = false;
+    SdfPathVector resynced;
 
     bool isEmpty() const
     {
         return nodes.empty() && infoOnly.empty() && levels.empty();
+    }
+
+    // Needs no lock: it reads none of the stage.
+    void prepare()
+    {
+        if (!unprepared) {
+            return;
+        }
+        unprepared = false;
+        std::vector<GatherNode> named;
+        named.swap(nodes);
+        SdfPathVector queuedInfo;
+        queuedInfo.swap(infoOnly);
+        SdfPath::RemoveDescendentPaths(&resynced);
+        for (const SdfPath& path : resynced) {
+            if (path == SdfPath::AbsoluteRootPath()) {
+                all = true;
+                break;
+            }
+        }
+        if (all) {
+            for (GatherNode& node : named) {
+                node.refreshKept = true;
+            }
+            nodes.swap(named);
+            resynced.clear();
+
+            return;
+        }
+        std::unordered_map<SdfPath, std::size_t, SdfPath::Hash> namedIndex;
+        namedIndex.reserve(named.size());
+        for (std::size_t i = 0; i < named.size(); ++i) {
+            namedIndex.emplace(named[i].path, i);
+        }
+        // By named item, the names of the children it has rows for, made when first asked.
+        std::unordered_map<std::size_t, std::unordered_set<TfToken, TfToken::HashFunctor>> rowNames;
+        // Whether the tree has a row for path: the root, or a row among its named parent's.
+        const auto hasRow = [&](const SdfPath& path) {
+            if (path.IsAbsoluteRootPath()) {
+                return true;
+            }
+            const std::unordered_map<SdfPath, std::size_t, SdfPath::Hash>::const_iterator parent = namedIndex.find(path.GetParentPath());
+            if (parent == namedIndex.end()) {
+                return false;
+            }
+            const GatherNode& node = named[parent->second];
+            const std::size_t count = std::min(node.childCount, node.names->size());
+            std::unordered_map<std::size_t, std::unordered_set<TfToken, TfToken::HashFunctor>>::iterator found = rowNames.find(parent->second);
+            if (found == rowNames.end()) {
+                found = rowNames.emplace(parent->second, std::unordered_set<TfToken, TfToken::HashFunctor>(node.names->begin(), node.names->begin() + (std::ptrdiff_t)count)).first;
+            }
+
+            return found->second.count(path.GetNameToken()) > 0;
+        };
+        // Each resynced path changes its parent's children and everything under it.
+        std::map<SdfPath, GatherNode> byPath;
+        SdfPathVector unnamedParents;
+        for (const SdfPath& path : resynced) {
+            const SdfPath parentPath = path.GetParentPath();
+            const std::unordered_map<SdfPath, std::size_t, SdfPath::Hash>::const_iterator parent = namedIndex.find(parentPath);
+            if (parent == namedIndex.end()) {
+                // A row whose children were never read: only its own data can have changed.
+                if (hasRow(parentPath)) {
+                    unnamedParents.push_back(parentPath);
+                }
+                continue;
+            }
+            std::map<SdfPath, GatherNode>::iterator found = byPath.find(parentPath);
+            if (found == byPath.end()) {
+                found = byPath.emplace(parentPath, named[parent->second]).first;
+                found->second.refreshKept = false;
+            }
+            found->second.refreshNames.insert(path.GetNameToken());
+        }
+        if (!resynced.empty()) {
+            for (const GatherNode& node : named) {
+                if (SdfPathFindLongestPrefix(resynced.begin(), resynced.end(), node.path) == resynced.end()) {
+                    continue;
+                }
+                std::map<SdfPath, GatherNode>::iterator found = byPath.find(node.path);
+                if (found == byPath.end()) {
+                    byPath.emplace(node.path, node).first->second.refreshKept = true;
+                } else {
+                    found->second.refreshKept = true;
+                }
+            }
+        }
+        nodes.reserve(byPath.size());
+        for (std::pair<const SdfPath, GatherNode>& entry : byPath) {
+            nodes.push_back(std::move(entry.second));
+        }
+        std::sort(unnamedParents.begin(), unnamedParents.end());
+        unnamedParents.erase(std::unique(unnamedParents.begin(), unnamedParents.end()), unnamedParents.end());
+        for (const SdfPath& path : queuedInfo) {
+            if (SdfPathFindLongestPrefix(resynced.begin(), resynced.end(), path) != resynced.end()) {
+                continue;
+            }
+            if (!path.IsAbsoluteRootPath() && hasRow(path) && !std::binary_search(unnamedParents.begin(), unnamedParents.end(), path)) {
+                infoOnly.push_back(path);
+            }
+        }
+        infoOnly.insert(infoOnly.end(), unnamedParents.begin(), unnamedParents.end());
+        resynced.clear();
     }
 
     bool isFetch() const
@@ -623,6 +731,7 @@ private:
                 _queue.pop_front();
             }
             GatherRequest* gathering = request.get();
+            gathering->prepare();
             gathering->source->readStage([gathering](const SceneStage* sceneStage) {
                 if (sceneStage) {
                     gathering->gather(sceneStage->getStage());
@@ -679,6 +788,16 @@ struct SceneGraphModel::Implementation {
     // Reads that found the stage busy: children by parent, up to how many, and the load's outcome.
     std::map<SdfPath, std::size_t> owedFetches;
     bool settleOwed = false;
+    // Set while deferred: what refresh(), settleLoads() and refreshDrawStates() were asked for.
+    bool deferred = false;
+    bool stale = false;
+    bool settleStale = false;
+    bool drawStatesStale = false;
+    // The paths of ended loads whose rows are redrawn a slice at a time, and the next of them.
+    std::vector<QString> settleQueue;
+    std::size_t settleNext = 0;
+    QTimer* settleTimer = nullptr;
+    int settleSliceCount = 0;
     // Whether edits are gathered on the worker rather than under the main thread's read.
     bool readsOnWorker = false;
     std::unique_ptr<GatherWorker> worker;
@@ -755,6 +874,58 @@ struct SceneGraphModel::Implementation {
         applyTimer->setSingleShot(true);
         applyTimer->setInterval(0);
         QObject::connect(applyTimer, &QTimer::timeout, model, [this]() { applySlice(); });
+        settleTimer = new QTimer(model);
+        settleTimer->setSingleShot(true);
+        settleTimer->setInterval(0);
+        QObject::connect(settleTimer, &QTimer::timeout, model, [this]() { settleSlice(); });
+    }
+
+    bool hasPendingSettle() const
+    {
+        return settleNext < settleQueue.size();
+    }
+
+    // Redraws the rows of settleQueue for up to applySliceMs, at least one, and has the event loop
+    // redraw the rest after: a load of a whole city ends thousands of rows' loading at once.
+    void settleSlice()
+    {
+        if (!hasPendingSettle()) {
+            return;
+        }
+        ++settleSliceCount;
+        QElapsedTimer timer;
+        timer.start();
+        while (hasPendingSettle()) {
+            // A copy: a slot the changes reach may settle again, or reset the model.
+            const QString path = settleQueue[settleNext++];
+            if (Item* item = findItem(path)) {
+                if (item != &root) {
+                    // Asked for again since the load ended.
+                    if (!loadingPaths.contains(path)) {
+                        removeLoadingRow(item);
+                    }
+                    emitRowChanged(item);
+                }
+            }
+            if (timer.elapsed() >= applySliceMs) {
+                break;
+            }
+        }
+        if (hasPendingSettle()) {
+            settleTimer->start();
+
+            return;
+        }
+        clearSettleQueue();
+    }
+
+    void clearSettleQueue()
+    {
+        settleTimer->stop();
+        std::vector<QString> done;
+        done.swap(settleQueue);
+        settleNext = 0;
+        SceneTeardown::release(std::move(done));
     }
 
     void emitChangedHere(Item* item)
@@ -1175,69 +1346,24 @@ struct SceneGraphModel::Implementation {
         model->refresh();
     }
 
-    // The resynced and info-only paths the listener queued, as a request of the items to read
-    // again. Copies the items' names by pointer and none of their rows, so that even a request for
-    // every item costs what the items whose names were read do.
+    // The resynced and info-only paths the listener queued, with a copy of the root and of every
+    // named item for prepare() to pick the items to read again from, off the main thread. Copies
+    // the items' names by pointer and none of their rows, so that the request costs what the
+    // items whose names were read do.
     GatherRequestPtr makeRequest(SdfPathVector resynced,
                                  const SdfPathVector& infoOnly,
                                  bool all)
     {
         GatherRequestPtr request = newRequest();
 
-        SdfPath::RemoveDescendentPaths(&resynced);
-        for (const SdfPath& path : resynced) {
-            if (path == SdfPath::AbsoluteRootPath()) {
-                all = true;
-                break;
-            }
-        }
-        if (all) {
-            request->nodes.reserve(namedItems.size() + 1);
-            request->nodes.push_back(nodeOf(&root, true));
-            for (const Item* item : namedItems) {
-                request->nodes.push_back(nodeOf(item, true));
-            }
-
-            return request;
-        }
-        // Each resynced path changes its parent's children and everything under it.
-        std::map<SdfPath, GatherNode> byPath;
-        for (const SdfPath& path : resynced) {
-            const Item* parent = findItem(path.GetParentPath());
-            if (!parent) {
-                continue;
-            }
-            std::map<SdfPath, GatherNode>::iterator found = byPath.find(parent->path);
-            if (found == byPath.end()) {
-                found = byPath.emplace(parent->path, nodeOf(parent, false)).first;
-            }
-            found->second.refreshNames.insert(path.GetNameToken());
-        }
-        if (!resynced.empty()) {
-            for (const Item* item : namedItems) {
-                if (SdfPathFindLongestPrefix(resynced.begin(), resynced.end(), item->path) == resynced.end()) {
-                    continue;
-                }
-                std::map<SdfPath, GatherNode>::iterator found = byPath.find(item->path);
-                if (found == byPath.end()) {
-                    byPath.emplace(item->path, nodeOf(item, true));
-                } else {
-                    found->second.refreshKept = true;
-                }
-            }
-        }
-        request->nodes.reserve(byPath.size());
-        for (std::pair<const SdfPath, GatherNode>& entry : byPath) {
-            request->nodes.push_back(std::move(entry.second));
-        }
-        for (const SdfPath& path : infoOnly) {
-            if (SdfPathFindLongestPrefix(resynced.begin(), resynced.end(), path) != resynced.end()) {
-                continue;
-            }
-            const Item* item = findItem(path);
-            if (item && (item != &root)) {
-                request->infoOnly.push_back(path);
-            }
+        request->unprepared = true;
+        request->all = all;
+        request->resynced = std::move(resynced);
+        request->infoOnly = infoOnly;
+        request->nodes.reserve(namedItems.size() + 1);
+        request->nodes.push_back(nodeOf(&root, false));
+        for (const Item* item : namedItems) {
+            request->nodes.push_back(nodeOf(item, false));
         }
 
         return request;
@@ -1494,6 +1620,7 @@ struct SceneGraphModel::Implementation {
         root.rowOfValid = false;
         root.data = hasStage ? rootData : PrimData();
         owedFetches.clear();
+        clearSettleQueue();
         fetchesInFlight = 0;
         fetchingUnder.clear();
         fetchTargets.clear();
@@ -1713,6 +1840,11 @@ SceneGraphModel::getSource() const
 void
 SceneGraphModel::refresh()
 {
+    if (_imp->deferred) {
+        _imp->stale = true;
+
+        return;
+    }
     _imp->reapRetiredListeners();
     if (_imp->source && readEdits()) {
         retryOwedReads();
@@ -1737,10 +1869,59 @@ SceneGraphModel::getApplySliceCount() const
     return _imp->applySliceCount;
 }
 
+void
+SceneGraphModel::setDeferred(bool deferred)
+{
+    if (deferred == _imp->deferred) {
+        return;
+    }
+    _imp->deferred = deferred;
+    if (deferred) {
+        return;
+    }
+    if (_imp->settleStale) {
+        _imp->settleStale = false;
+        _imp->settleOwed = bool(_imp->source);
+    }
+    const bool drawStates = _imp->drawStatesStale;
+    _imp->drawStatesStale = false;
+    if (_imp->stale) {
+        _imp->stale = false;
+        refresh();
+    }
+    if (drawStates) {
+        refreshDrawStates();
+    }
+}
+
+bool
+SceneGraphModel::isDeferred() const
+{
+    return _imp->deferred;
+}
+
+bool
+SceneGraphModel::isStale() const
+{
+    return _imp->stale || _imp->settleStale || _imp->drawStatesStale;
+}
+
+bool
+SceneGraphModel::hasPendingSettle() const
+{
+    return _imp->hasPendingSettle();
+}
+
+int
+SceneGraphModel::getSettleSliceCount() const
+{
+    return _imp->settleSliceCount;
+}
+
 bool
 SceneGraphModel::hasOwedReads() const
 {
-    return _imp->settleOwed || !_imp->owedFetches.empty() || (_imp->fetchesInFlight > 0);
+    return _imp->settleOwed || !_imp->owedFetches.empty() || (_imp->fetchesInFlight > 0) || _imp->hasPendingSettle();
 }
 
 bool
@@ -1831,6 +2012,7 @@ SceneGraphModel::readEdits()
         action = eUpdate;
         if (!_imp->readsOnWorker) {
             request = _imp->makeRequest(std::move(resynced), infoOnly, overflow);
+            request->prepare();
             request->gather(stage);
         }
     });
@@ -1849,12 +2031,12 @@ SceneGraphModel::readEdits()
         break;
     case eUpdate:
         if (_imp->readsOnWorker) {
-            // The rows are copied outside the stage's lock; the worker reads their prims.
-            request = _imp->makeRequest(std::move(resynced), infoOnly, overflow);
-            if (request->isEmpty()) {
-                GatherRequest::retire(std::move(request));
+            if (resynced.empty() && infoOnly.empty() && !overflow) {
                 break;
             }
+            // The rows are copied outside the stage's lock; the worker picks the ones to read
+            // again, and reads their prims.
+            request = _imp->makeRequest(std::move(resynced), infoOnly, overflow);
             _imp->postGather(std::move(request));
 
             return false;
@@ -2060,6 +2242,12 @@ SceneGraphModel::settleLoads()
     if (!_imp->source) {
         return;
     }
+    if (_imp->deferred) {
+        _imp->settleStale = true;
+        _imp->stale = true;
+
+        return;
+    }
     // Owed until read: the edit in the way may be a sync, which ends with a refresh().
     _imp->settleOwed = true;
     refresh();
@@ -2084,12 +2272,15 @@ SceneGraphModel::settle()
     }
     _imp->settleOwed = false;
     QSet<QString> touched;
-    for (const QString& path : _imp->loadingPaths) {
-        if (!outstanding || failures.contains(path)) {
-            touched.insert(path);
+    if (!outstanding) {
+        touched.swap(_imp->loadingPaths);
+    } else {
+        for (QHash<QString, QString>::const_iterator it = failures.constBegin(); it != failures.constEnd(); ++it) {
+            if (_imp->loadingPaths.remove(it.key())) {
+                touched.insert(it.key());
+            }
         }
     }
-    _imp->loadingPaths -= touched;
     if (failures != _imp->loadFailures) {
         for (QHash<QString, QString>::const_iterator it = failures.constBegin(); it != failures.constEnd(); ++it) {
             if (_imp->loadFailures.value(it.key()) != it.value()) {
@@ -2103,14 +2294,15 @@ SceneGraphModel::settle()
         }
         _imp->loadFailures = failures;
     }
-    for (const QString& path : touched) {
-        if (Item* item = _imp->findItem(path)) {
-            if (item != &_imp->root) {
-                _imp->removeLoadingRow(item);
-                _imp->emitRowChanged(item);
-            }
-        }
+    if (touched.isEmpty()) {
+        return;
     }
+    _imp->settleQueue.reserve(_imp->settleQueue.size() + (std::size_t)touched.size());
+    for (const QString& path : touched) {
+        _imp->settleQueue.push_back(path);
+    }
+    SceneTeardown::release(std::move(touched));
+    _imp->settleSlice();
 }
 
 void
@@ -2171,6 +2363,11 @@ void
 SceneGraphModel::refreshDrawStates()
 {
     _imp->drawCells.clear();
+    if (_imp->deferred) {
+        _imp->drawStatesStale = true;
+
+        return;
+    }
     _imp->emitDrawStates(&_imp->root);
 }
 

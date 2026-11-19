@@ -278,6 +278,24 @@ public:
     int getApplySliceCount() const;
 
     /**
+     * @brief While deferred, as while no view shows the rows, refresh(), settleLoads() and
+     * refreshDrawStates() only mark the model stale; undeferring a stale model refreshes it once,
+     * which reads every edit made meanwhile. Work already under way finishes. Off by default.
+     **/
+    void setDeferred(bool deferred);
+
+    bool isDeferred() const;
+
+    // Whether a deferred model has edits, loads or draw states it has yet to read.
+    bool isStale() const;
+
+    // Whether rows the loads that ended have yet to be redrawn for, a slice at a time, remain.
+    bool hasPendingSettle() const;
+
+    // How many slices of ended loads' rows have been redrawn since the model was made.
+    int getSettleSliceCount() const;
+
+    /**
      * @brief The index of the prim at path, column 0, reading the children on the way when populate.
      * Invalid with *busy set when an edit held the stage, or, with reads on the worker, while the
      * rows on the way are read there; deferredReadsDone() says when to ask again.

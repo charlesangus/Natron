@@ -374,19 +374,46 @@ try:
             self.timer.timeout.connect(self._tick)
             self.last = None
             self.longest = 0.0
+            # When the longest gap began, in epoch seconds, to find it in stack samples.
+            self.longest_at = None
             self.started_at = None
+            # While a scenario runs: the epoch times natronSceneLoadEdits moved at, and its last value.
+            self.load_edit_times = None
+            self.load_edits = None
 
         def _tick(self):
             now = time.perf_counter()
             if self.last is not None:
-                self.longest = max(self.longest, (now - self.last) * 1000.0)
+                gap = (now - self.last) * 1000.0
+                if gap > self.longest:
+                    self.longest = gap
+                    self.longest_at = time.time() - gap / 1000.0
             self.last = now
+            if self.load_edit_times is not None:
+                v = view()
+                edits = v.property("natronSceneLoadEdits") if v is not None else None
+                if edits is not None:
+                    edits = int(edits)
+                    if self.load_edits is not None and edits != self.load_edits:
+                        self.load_edit_times.append(round(time.time(), 3))
+                    self.load_edits = edits
 
         def start(self):
             self.started_at = time.time()
             self.last = time.perf_counter()
             self.longest = 0.0
+            self.longest_at = None
             self.timer.start()
+
+        def watch_load_edits(self):
+            v = view()
+            edits = v.property("natronSceneLoadEdits") if v is not None else None
+            self.load_edits = None if edits is None else int(edits)
+            self.load_edit_times = []
+
+        def stop_load_edits(self):
+            times, self.load_edit_times = self.load_edit_times, None
+            return times
 
         def stop(self):
             self._tick()
@@ -472,6 +499,19 @@ try:
     def shown():
         return bool(prop("natronSceneShown", False)) and not prop("natronSceneError")
 
+    def main_waits():
+        """The viewer's natronSceneMainWaitMs and natronSceneMainWaitMaxMs, each None when not published."""
+        v = view()
+        if v is None:
+            return (None, None)
+        values = [v.property(name) for name in ("natronSceneMainWaitMs", "natronSceneMainWaitMaxMs")]
+        return tuple(None if value is None else float(value) for value in values)
+
+    def wait_delta(before, after, index):
+        if before[index] is None or after[index] is None:
+            return None
+        return round(after[index] - before[index], 2)
+
     def report_view_state(label):
         """One NOTE line of what the viewport and the screen look like, for a wait that expired."""
         parts = []
@@ -508,8 +548,9 @@ try:
             self.not_applicable = None
             # Times to picture of the changes judged: {"ms", "source", "row"}.
             self.pictures = []
-            # The stall of a part of the action whose heartbeat was restarted after it.
+            # The stall of a part of the action whose heartbeat was restarted after it, and when it began.
             self.stall_floor_ms = 0.0
+            self.stall_floor_at = None
             # The workflow's steps, each {"applicable", "ms", "stall_ms", ...}, in the order they ran.
             self.steps = {}
 
@@ -1643,6 +1684,15 @@ try:
         m.values["draw_timing"] = DRAW_TIMING
         changes = []
         yield from clear_draw_states()
+        # The first change after the loads settled builds what later changes reuse; it is kept out
+        # of the judged ones.
+        warm_row = targets[0][1]
+        warm_set = yield from presented_after_call(v, "warm-up bbox " + warm_row, "setDrawState", Q_ARG("QString", warm_row),
+                                                   Q_ARG("QString", "bbox"), judged=False)
+        warm_clear = yield from presented_after_call(v, "warm-up clear " + warm_row, "clearDrawState", Q_ARG("QString", warm_row),
+                                                     judged=False)
+        m.values["warmup_change_ms"] = warm_set.get("total_ms")
+        m.values["warmup_restore_ms"] = warm_clear.get("total_ms")
         heartbeat.start()
         for tag, row in targets:
             for repeat in range(budget_repeats):
@@ -1650,6 +1700,7 @@ try:
                                       ("clear", (yield from clear_draw_state(row, row_tag=tag)))):
                     changes.append(dict(timings, row=tag, path=row, change=kind, repeat=repeat))
         m.stall_floor_ms = heartbeat.stop()
+        m.stall_floor_at = heartbeat.longest_at
         if DRAW_TIMING:
             # Tracing slows the main thread's Python too, so its stall is kept apart from the judged one.
             heartbeat.start()
@@ -1857,10 +1908,14 @@ try:
             # The window stall_ms was measured over, in epoch seconds, to find the step in stack samples.
             started_at = heartbeat.started_at
             stall = heartbeat.stop()
+            stall_at = heartbeat.longest_at
             m.steps[name] = dict(extra, applicable=True, ms=round(ms, 1), stall_ms=round(stall, 1),
+                                 stall_at=round(stall_at, 3) if stall_at is not None else None,
                                  started_at=round(started_at, 3) if started_at is not None else None,
                                  ended_at=round(time.time(), 3))
-            m.stall_floor_ms = max(m.stall_floor_ms, stall)
+            if stall > m.stall_floor_ms:
+                m.stall_floor_ms = stall
+                m.stall_floor_at = stall_at
             heartbeat.start()
 
         def skip_step(name, why):
@@ -2315,11 +2370,14 @@ try:
                 m.values["loads_settle"] = settle_fields(settle)
                 m.values["action_started_at"] = round(time.time(), 3)
             before = loaded_layers()
+            wait_before = main_waits()
+            heartbeat.watch_load_edits()
             heartbeat.start()
             yield from ACTIONS[name](m)
             current["name"], current["m"] = None, None
             if m.not_applicable is not None:
                 heartbeat.stop()
+                heartbeat.stop_load_edits()
                 scenario_checks["failed"] = None
                 ended = time.time()
                 log_scenario(name, "end", ended)
@@ -2334,6 +2392,9 @@ try:
                 m.values["filter_bound"] = bool(draw_stats().get("filterBound"))
             yield ("sleep", 200)
             stall_ms = heartbeat.stop()
+            stall_at = heartbeat.longest_at if stall_ms >= m.stall_floor_ms else m.stall_floor_at
+            load_edit_times = heartbeat.stop_load_edits()
+            wait_after = main_waits()
             ended = time.time()
             log_scenario(name, "end", ended)
             after = loaded_layers()
@@ -2354,6 +2415,10 @@ try:
                 "layers_after": None if after is None else len(after),
                 "layers_loaded": None if new_layers is None else len(new_layers),
                 "budgets": budgets,
+                "stall_at": None if stall_at is None else round(stall_at, 3),
+                "load_edit_times": load_edit_times,
+                "main_wait_ms": wait_delta(wait_before, wait_after, 0),
+                "main_wait_max_ms": wait_delta(wait_before, wait_after, 1),
                 "result": "fail" if failed else "pass",
                 "failed_checks": failed_checks,
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S"),

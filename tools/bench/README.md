@@ -492,6 +492,14 @@ unrequested-payload checks are valid under llvmpipe. The scenarios are the harne
 (`open`, `edit`, `orbit`, `load`, `twirl`, `node_switch`, `workflow`, and the draw state scenarios below); `BENCH_SCENARIOS` picks
 and orders them.
 
+Every record also carries `stall_at`, the epoch seconds the longest gap began at, to find it in stack
+samples; `load_edit_times`, the epoch seconds `natronSceneLoadEdits` moved at during the scenario, as
+seen by the heartbeat; and `main_wait_ms` and `main_wait_max_ms`, how much the viewer's
+`natronSceneMainWaitMs` and `natronSceneMainWaitMaxMs` rose over the scenario (the main thread's
+blocking waits on the render thread and on the stage's lock; the second is a running maximum, so it
+rises only when the scenario's longest wait beats every earlier one), null when the viewer does not
+publish them.
+
 `open` reports `first_frame_ms`, from setting the file to the first frame finished after the scene
 reached the viewer, and `open_substeps_ms`: `initial_draw`, `filename` and `connect` (the knob sets and
 the viewer connection) and `to_first_frame` (from the connection to that frame).
@@ -551,7 +559,7 @@ whose engine lost the filter fails rather than reporting a cheap nothing.
 | `noedit` | Sets, clears, reveals and cancels on the branch | `stage_edits`, budget 0, counting stage change notices and edit counts |
 | `sibling_shot` | Screen grabs around one change on the sibling row, the branch and the root as control | `*_shot_changed_*`, `*_shot_frame_coverage`, `shot_reading`; `control_changed_pixels` at least 1 |
 | `orbit10k`, `boxes_shot` | orbit10k: `children` on every prim above the depth whose geometry-holding prims number nearest `BENCH_BOXES`, so each prim at that depth is one box, then, once that is on screen, an orbit; boxes_shot: `bbox` on the root and a grab | `orbit_fps`, `boxes_drawn`, `box_depth`, `boxes_presented_ms`, `stand_in_mode` (orbit10k forces Off and restores the previous mode), `paint_count` (orbit10k); skipped until the viewer publishes `natronSceneDrawBoxes` |
-| `draw_budget` | `bbox` then clear on the sibling row and on the widest row, `BENCH_BUDGET_REPEATS` times (default 2), then once more each with a trace | `draw_changes`, one entry per change; `sibling_picture_ms_max`, `wide_picture_ms_max`; `traced_stall_ms` |
+| `draw_budget` | once the loads settled, an unjudged warm-up `bbox` and clear on the sibling row; then `bbox` then clear on the sibling row and on the widest row, `BENCH_BUDGET_REPEATS` times (default 2), then once more each with a trace | `draw_changes`, one entry per change; `sibling_picture_ms_max`, `wide_picture_ms_max`; `traced_stall_ms`; `warmup_change_ms` and `warmup_restore_ms` |
 
 `frame_ms` is `total_ms` less `apply_ms`: from the call to the image that shows the change, without the
 render thread's time sending notices. `total_ms` is polled every 50 ms, so it bounds the time rather
@@ -644,8 +652,8 @@ M481 - Viewer Polygon Budgets lands.
 Full on one asset, Full + Load on a block, a pattern node (a USDEditTransform with a `primPattern`,
 `BENCH_PATTERN` or the branch's descendants) inserted below USDRead and viewed, a switch to that node
 with the Scene Graph panel following the selection, a prim selected in the inspector, a project save,
-and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms`, `started_at` and `ended_at` (the
-epoch seconds `stall_ms` was measured over, to find the step in stack samples) and numbers under
+and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms`, `stall_at`, `started_at` and `ended_at` (the
+epoch seconds the longest gap began at and `stall_ms` was measured over, to find the step in stack samples) and numbers under
 `workflow_steps`, and its own budgets in the record: `<step>_stall_ms` (100 ms, the setup before a
 step not counted), `full_asset_picture_ms` (100 ms, valid with `NATRON_DRAW_STATE_TIMING=1` on a real
 GPU), `full_load_block_complete` and `full_load_block_worst_frame_ms` (the reveal finishes with no

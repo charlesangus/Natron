@@ -13,7 +13,7 @@ Sources (both GPL-compatible with the GPLv3-or-later relicence; record them in f
 - Sequential and ghost tracing per wavelength: ray-surface intersection (sphere, plane, asphere by Newton, cylinder), refraction, reflection, total internal reflection, the housing ratio (`rrel`) and the normalised stop position.
 - Fresnel reflectance with a single-layer thin-film AR coating per surface (Ritschel 2009), Schlick on uncoated surfaces, and seeded coating generation.
 - Paraxial effective focal length, f-number, back focus and focusing to a distance.
-- Spectral colour: CIE 2015 2° CMFs, the CIE illuminant set, and wavelength → working-space RGB through the project's OCIO config.
+- Spectral colour: CIE 1931 2° standard observer CMFs, the CIE illuminant set, and wavelength → working-space RGB through the project's OCIO config.
 
 **Out:**
 - Bokeh tables: M292 - Traced Lens Bokeh.
@@ -77,7 +77,7 @@ Sources (both GPL-compatible with the GPLv3-or-later relicence; record them in f
 ## Phase 462.4: Spectral colour
 
 - [ ] M462.P4.T1 — Wavelengths to working-space RGB
-  - files: `Engine/Optics/Spectral.{h,cpp}` (new), `Engine/Optics/SpectralData.cpp` (new: CIE 2015 2° CMFs 390–730 nm at 1 nm, the CIE illuminants A, B, C, D50, D55, D60, D65, D75, E and FL1–FL11), `Tests/Native/OpticsSpectral_Test.cpp` (new)
+  - files: `Engine/Optics/Spectral.{h,cpp}` (new), `Engine/Optics/SpectralData.cpp` (new: CIE 1931 2° CMFs 360–830 nm at 1 nm, the CIE illuminants A, B, C, D50, D55, D60, D65, D75, E and FL1–FL11), `Tests/Native/OpticsSpectral_Test.cpp` (new)
   - approach: Port realflare's `get_spectral`: CMF × illuminant × 0.01 → XYZ, then XYZ (D65) → the working space through the project's OCIO config (`cie_xyz_d65_interchange` role to `scene_linear`), with a fixed matrix fallback to linear Rec.709 when the config has no such role. `sampleWavelengths(count)` returns mid-bin positions over 390–730 nm.
   - verify: gtest: integrating equal-energy illuminant E over all wavelengths gives a neutral colour within 1e-3 in linear Rec.709; D65 integrated gives white within 1e-3; 5 sampled wavelengths are at the mid-bin positions.
   - size: M
@@ -90,3 +90,4 @@ Sources (both GPL-compatible with the GPLv3-or-later relicence; record them in f
 - 2026-11-16 — **Catalogue Sellmeier dispersion for both nodes (user):** nearest catalogue glass per surface, Glass Vendor and Abbe Offset knobs; Cauchy only as the fallback.
 - 2026-11-16 — **Three Features (user):** this milestone, M463 - Bundled Lens Database and M465 - Aperture Model form F30 - Lens Optics Base; the bokeh work stays in F13 - ZDefocus Rework and the flares form F31 - Lens Flares, both waiting for F30 to land.
 - 2026-11-19 (user): spectral colour is physically correct by default: spectra integrate against colour-matching functions consistent with the working space's observer, so D65 renders neutral in a D65-white space and other illuminants (E included) keep their true tint. A Local White mode renders the chosen illuminant exactly neutral in the actual working space, luminance preserved. The ported method was ~1.5% off white on D65 (2015 CMFs against a 1931-defined space).
+- 2026-11-19: spectral fix at a9a7167b5: CIE 1931 2° observer (colour-science 0.4.6 data, BSD-3-Clause), 360–830 nm because 390–730 leaves D65 ~1e-3 off; OCIO's D65 adaptation is undone for ACES-white working spaces; a working space whose interop ID isn't recognised is treated as D65. D65 renders neutral in Rec.709 (1e-4), D60 in ACEScg; Local White makes E, D65 and A neutral.

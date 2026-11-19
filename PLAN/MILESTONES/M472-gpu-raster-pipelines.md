@@ -25,13 +25,13 @@ Extend the compute-only GPU layer with graphics pipelines: Slang vertex and frag
 
 ## Phase 472.1: Pipelines
 
-- [ ] M472.P1.T1 — Raster capability and attachments
+- [x] M472.P1.T1 — Raster capability and attachments
   - files: `Engine/Gpu/GpuDevice.{h,cpp}`, `Engine/Gpu/GpuTexture.{h,cpp}`, `Tests/Gpu/` (new raster capability test, following the folder's existing tests)
   - approach: Enable `dynamicRendering` at device creation when present; query `VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT` for R32G32B32A32_SFLOAT and R32_SFLOAT and expose `rasterFloatBlend`. Let `GpuTexture` be created as a colour attachment with transfer-src usage.
   - verify: gtest: on RADV and llvmpipe the capability is reported and logged; a cleared RGBA32F attachment copies back to a buffer with the clear value.
   - size: M
 
-- [ ] M472.P1.T2 — Raster kernels in the registry and pipeline cache
+- [x] M472.P1.T2 — Raster kernels in the registry and pipeline cache
   - files: `cmake/` (the Slang kernel helper that defines `slang_add_kernel`), `Engine/Gpu/GpuKernelRegistry.{h,cpp}`, `Engine/Gpu/GpuPipelineCache.{h,cpp}`, `Engine/Gpu/GpuShaderCompiler.{h,cpp}`, `Engine/Gpu/Kernels/raster_test.slang` (new), `Engine/Gpu/Kernels/raster_test.cmake` (new)
   - approach: `slang_add_raster(name file VERTEX entry FRAGMENT entry REGISTRY NatronGpu)` emits both stages with reflection into a `GpuRasterId`. The cache builds graphics pipelines keyed by (raster id, attachment format, blend mode) with dynamic viewport and scissor; vertex pulling from storage buffers only.
   - verify: the build registers `raster_test`; a gtest creates its pipeline for RGBA32F additive and replace on RADV.
@@ -49,3 +49,5 @@ Extend the compute-only GPU layer with graphics pipelines: Slang vertex and frag
 
 - 2026-11-16 — **A graphics pipeline, not a compute rasteriser, for LensFlare (user, after a detailed pros/cons comparison):** hardware raster is fastest for many lights and 4K and is reusable for Roto, paint and overlays; parity against the CPU is within tolerance, not bit-exact. Ships on its own, outside F31 - Lens Flares.
 - 2026-11-16 — **Without RGBA32F blending, raster users fall back to their CPU path (user).**
+- 2026-11-19 (user): draws record through an opt-in raster-capable GpuRecordContext on a graphics queue; compute-only contexts keep the async compute queue. Chosen over moving all compute to the graphics+compute family (loses async overlap on AMD and NVIDIA) and over a context that splits recording across queues automatically (hidden cross-queue ordering, most validation risk). `rasterFloatBlend` also requires a graphics-capable family. T3 adds an optional abort callback on the context.
+- 2026-11-19: T1 and T2 at 6361357cc.

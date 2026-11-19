@@ -219,6 +219,17 @@ try:
         index = find(path)
         return index.isValid() and tree().isExpanded(index)
 
+    def opened(*paths):
+        """A poll that opens each of paths once the model has read its row, true when all are open."""
+        def step():
+            for path in paths:
+                index = find(path)
+                if not index.isValid():
+                    return False
+                tree().expand(index)
+            return True
+        return step
+
     def world_children():
         return [str(i.data()) for i in rows(find(WORLD))]
 
@@ -364,10 +375,10 @@ try:
         check(shows(usd, all_blocks)(), "the kept node's tree stays up (got %r)" % (world_children(),))
 
         # Twirling on the panel's stage.
-        tree().expand(find(WORLD))
-        tree().expand(find(BLOCK0))
-        tree().expand(find(B0))
-        ok = yield ("until", lambda: state(B0) == STATE_LOADED, POLL_TIMEOUT_S)
+        ok = yield ("until", opened(WORLD, BLOCK0, B0), POLL_TIMEOUT_S)
+        check(ok, "the rows down to %s open" % (B0,))
+        ok = yield ("until", lambda: state(B0) == STATE_LOADED and [str(i.data()) for i in rows(find(B0))] == ["Floor"],
+                    POLL_TIMEOUT_S)
         check(ok, "twirling a payload row loads it on the panel's stage (state %r)" % (state(B0),))
         check(opened_buildings() == ["b0_0.usda"], "the twirl opens that building's layer alone (got %r)" % (opened_buildings(),))
         check(viewer_load_edits() == edits_before, "the twirl loads nothing on the viewer's stage (%d, then %d)"
@@ -445,9 +456,9 @@ try:
         yield ("sleep", SETTLE_MS)
         check(state(B0) == STATE_UNLOADED and not expanded(B0),
               "on the viewer's stage, the remembered payload row stays closed and unloaded (state %r)" % (state(B0),))
-        for path in (BLOCK1, PROPS):
-            tree().expand(find(path))
         target = PROPS + "/P%03d" % (PROP_COUNT // 2,)
+        ok = yield ("until", lambda: opened(BLOCK1, PROPS)() and find(target).isValid(), POLL_TIMEOUT_S)
+        check(ok, "the Block1 and Props rows open and list %s" % (target,))
         tree().scrollTo(find(target), QAbstractItemView.PositionAtTop)
         ok = yield ("until", lambda: top_path().startswith(PROPS + "/") and str(prop("natronSceneGraphTopPath", "")) == top_path(),
                     POLL_TIMEOUT_S)
@@ -538,9 +549,8 @@ try:
         edits = viewer_load_edits()
         composed_first = compose_count()
         use(SECOND)
-        tree().expand(find(WORLD))
-        tree().expand(find(BLOCK0))
-        tree().expand(find(BLOCK0 + "/B1"))
+        ok = yield ("until", opened(WORLD, BLOCK0, BLOCK0 + "/B1"), POLL_TIMEOUT_S)
+        check(ok, "the second panel opens the rows down to Block0/B1")
         ok = yield ("until", lambda: state(BLOCK0 + "/B1") == STATE_LOADED, POLL_TIMEOUT_S)
         check(ok, "twirling Block0/B1 loads it on the second panel's stage (state %r)" % (state(BLOCK0 + "/B1"),))
         yield ("sleep", SETTLE_MS)

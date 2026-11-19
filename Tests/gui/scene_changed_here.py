@@ -321,9 +321,16 @@ try:
         yield ("sleep", SETTLE_MS)
         shot("scene-changed-here-marked.png")
 
-        tree().expand(find_tree_row(ROOT))
-        tree().expand(find_tree_row(ROOT + "/A"))
-        tree().expand(find_tree_row(FLAT))
+        def open_rows():
+            for path in (ROOT, ROOT + "/A", FLAT):
+                index = find_tree_row(path)
+                if not index.isValid():
+                    return False
+                tree().expand(index)
+            return flat_rows_read() > 0
+
+        ok = yield ("until", open_rows, POLL_TIMEOUT_S)
+        check(ok, "the tree opens down to the flat Scope and reads its first rows")
         yield ("sleep", SETTLE_MS)
         flat_before = flat_rows_read()
         check(flat_before < FLAT_PRIMS, "the tree has read part of the flat Scope (%d rows)" % (flat_before,))

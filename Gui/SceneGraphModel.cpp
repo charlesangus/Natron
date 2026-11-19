@@ -34,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -43,6 +44,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QMimeData>
 #include <QtCore/QSet>
+#include <QtCore/QTimer>
 #include <QtGui/QFont>
 #include <QtGui/QIcon>
 
@@ -209,6 +211,18 @@ public:
     bool overflow = false;
 };
 
+// Never changed once shared: an item given new names gets a new list, so that a copy of the pointer
+// tells whether the names it was read from are still the item's.
+typedef std::shared_ptr<const TfTokenVector> NamesPtr;
+
+const NamesPtr&
+noNames()
+{
+    static const NamesPtr none = std::make_shared<const TfTokenVector>();
+
+    return none;
+}
+
 struct SceneGraphModelItem {
     SceneGraphModelItem* parent = nullptr;
     int row = 0;
@@ -218,7 +232,7 @@ struct SceneGraphModelItem {
     PrimData data;
     // Whether childNames holds the prim's children; children are the first of them.
     bool namesRead = false;
-    TfTokenVector childNames;
+    NamesPtr childNames = noNames();
     std::vector<std::unique_ptr<SceneGraphModelItem>> children;
     // Shown after the children while the payload loads. It has no prim, so it is kept out of them.
     std::unique_ptr<SceneGraphModelItem> loadingRow;
@@ -263,17 +277,6 @@ struct SceneGraphModelItem {
             loadingRow->row = (int)children.size();
         }
     }
-
-    int subtreeSize() const
-    {
-        int size = (int)children.size();
-
-        for (const std::unique_ptr<SceneGraphModelItem>& child : children) {
-            size += child->subtreeSize();
-        }
-
-        return size;
-    }
 };
 
 typedef SceneGraphModelItem Item;
@@ -300,38 +303,31 @@ struct ItemUpdate {
     bool readChildren = false;
     // Every child is replaced: the kept ones changed order.
     bool replaceChildren = false;
-    TfTokenVector names;
+    NamesPtr names;
     // How many of names are loaded after the update.
     std::size_t loadedCount = 0;
-    std::unordered_map<TfToken, PrimData, TfToken::HashFunctor> newChildData;
+    // By row before the update, whether the child stays.
+    std::vector<bool> kept;
+    // The rows of the names among the first loadedCount that no kept child has, in their order.
+    std::vector<std::unique_ptr<Item>> newChildren;
 };
 
 // What gathering an item's update needs of it, copied so that the stage can be read away from the
-// tree.
+// tree: the children are the first childCount of names.
 struct GatherNode {
     SdfPath path;
     bool namesRead = false;
     SceneGraphModel::PayloadStateEnum payload = SceneGraphModel::ePayloadStateNone;
-    TfTokenVector children;
-    // The kept children are gathered too; otherwise only the ones in deepNames are.
-    bool deep = false;
-    std::unordered_set<TfToken, TfToken::HashFunctor> deepNames;
-    // The children gathered, if they are kept.
-    std::vector<GatherNode> kids;
+    NamesPtr names = noNames();
+    std::size_t childCount = 0;
+    // The prims of the kept children are read again too; otherwise only the ones in refreshNames.
+    bool refreshKept = false;
+    std::unordered_set<TfToken, TfToken::HashFunctor> refreshNames;
 
     // Whether item is still what this was copied from, so that an update gathered from it applies.
     bool matches(const Item& item) const
     {
-        if ((item.namesRead != namesRead) || (item.data.payload != payload) || (item.children.size() != children.size())) {
-            return false;
-        }
-        for (std::size_t i = 0; i < children.size(); ++i) {
-            if (item.children[i]->nameToken != children[i]) {
-                return false;
-            }
-        }
-
-        return true;
+        return (item.namesRead == namesRead) && (item.data.payload == payload) && (item.children.size() == childCount) && (item.childNames == names);
     }
 };
 
@@ -342,13 +338,34 @@ struct GatheredUpdate {
     ItemUpdate update;
 };
 
-// Reads node's prim and, when its children were read, them again; recurses into the kept children
-// when deep, or into the ones named in deepNames. Needs the stage's lock.
+typedef std::unordered_set<SdfPath, SdfPath::Hash> PathSet;
+
+bool
+isUnder(const SdfPath& path,
+        const PathSet& gone)
+{
+    for (SdfPath up = path; !up.IsEmpty() && !up.IsAbsoluteRootPath(); up = up.GetParentPath()) {
+        if (gone.count(up)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Reads node's prim and, when its children were read, them again, the rows the update adds
+// included. Adds the children it removes or replaces to gone, and skips a node under one: its row
+// is not there to update. Needs the stage's lock.
 void
 gatherUpdate(const UsdStageRefPtr& stage,
              const GatherNode& node,
+             const PathSet& nodePaths,
+             PathSet* gone,
              std::vector<GatheredUpdate>* updates)
 {
+    if (isUnder(node.path, *gone)) {
+        return;
+    }
     const UsdPrim prim = stage->GetPrimAtPath(node.path);
     GatheredUpdate gathered;
 
@@ -362,18 +379,22 @@ gatherUpdate(const UsdStageRefPtr& stage,
         return;
     }
     update.readChildren = true;
+    std::shared_ptr<TfTokenVector> names = std::make_shared<TfTokenVector>();
     if (prim) {
-        update.names = prim.GetFilteredChildrenNames(childPredicate());
+        *names = prim.GetFilteredChildrenNames(childPredicate());
     }
     std::unordered_map<TfToken, std::size_t, TfToken::HashFunctor> newPosition;
-    for (std::size_t i = 0; i < update.names.size(); ++i) {
-        newPosition[update.names[i]] = i;
+    for (std::size_t i = 0; i < names->size(); ++i) {
+        newPosition[(*names)[i]] = i;
     }
-    std::vector<TfToken> kept;
+    const TfTokenVector& oldNames = *node.names;
+    const std::size_t childCount = std::min(node.childCount, oldNames.size());
+    update.kept.assign(childCount, false);
+    std::unordered_set<TfToken, TfToken::HashFunctor> keptNames;
     std::size_t lastKeptPosition = 0;
     bool anyKept = false;
-    for (const TfToken& child : node.children) {
-        std::unordered_map<TfToken, std::size_t, TfToken::HashFunctor>::const_iterator found = newPosition.find(child);
+    for (std::size_t j = 0; j < childCount; ++j) {
+        std::unordered_map<TfToken, std::size_t, TfToken::HashFunctor>::const_iterator found = newPosition.find(oldNames[j]);
         if (found == newPosition.end()) {
             continue;
         }
@@ -382,42 +403,67 @@ gatherUpdate(const UsdStageRefPtr& stage,
         }
         lastKeptPosition = found->second;
         anyKept = true;
-        kept.push_back(child);
+        update.kept[j] = true;
+        keptNames.insert(oldNames[j]);
     }
-    update.loadedCount = std::min(node.children.size(), update.names.size());
+    if (update.replaceChildren) {
+        update.kept.assign(childCount, false);
+        keptNames.clear();
+    }
+    for (std::size_t j = 0; j < childCount; ++j) {
+        if (!update.kept[j]) {
+            gone->insert(node.path.AppendChild(oldNames[j]));
+        }
+    }
+    update.loadedCount = std::min(childCount, names->size());
     if (anyKept && !update.replaceChildren) {
         update.loadedCount = std::max(update.loadedCount, lastKeptPosition + 1);
     }
     // A view fetches when a row opens, and this row may have opened before its payload's
     // children existed.
     if ((node.payload == SceneGraphModel::ePayloadStateUnloaded) && (update.data.payload != SceneGraphModel::ePayloadStateUnloaded)) {
-        update.loadedCount = std::max(update.loadedCount, std::min(update.names.size(), (std::size_t)SceneGraphModel::kFetchBatchSize));
+        update.loadedCount = std::max(update.loadedCount, std::min(names->size(), (std::size_t)SceneGraphModel::kFetchBatchSize));
     }
-    const std::unordered_set<TfToken, TfToken::HashFunctor> present(node.children.begin(), node.children.end());
     for (std::size_t i = 0; i < update.loadedCount; ++i) {
-        const TfToken& name = update.names[i];
-        if (update.replaceChildren || (present.find(name) == present.end())) {
-            update.newChildData[name] = readPrimData(stage->GetPrimAtPath(node.path.AppendChild(name)));
+        const TfToken& name = (*names)[i];
+        if (keptNames.find(name) == keptNames.end()) {
+            update.newChildren.push_back(makeItem(node.path, name, readPrimData(stage->GetPrimAtPath(node.path.AppendChild(name)))));
         }
     }
-    const bool replace = update.replaceChildren;
+    update.names = std::move(names);
     updates->push_back(std::move(gathered));
-    if (replace || node.kids.empty()) {
-        return;
-    }
-    std::unordered_map<TfToken, const GatherNode*, TfToken::HashFunctor> kidOf;
-    for (const GatherNode& kid : node.kids) {
-        kidOf[kid.path.GetNameToken()] = &kid;
-    }
-    for (const TfToken& name : kept) {
-        std::unordered_map<TfToken, const GatherNode*, TfToken::HashFunctor>::const_iterator found = kidOf.find(name);
-        if (found != kidOf.end()) {
-            gatherUpdate(stage, *found->second, updates);
+    for (const TfToken& name : keptNames) {
+        if (!node.refreshKept && (node.refreshNames.find(name) == node.refreshNames.end())) {
+            continue;
         }
+        const SdfPath childPath = node.path.AppendChild(name);
+        if (nodePaths.count(childPath)) {
+            continue;
+        }
+        GatheredUpdate child;
+        child.path = childPath;
+        child.update.data = readPrimData(stage->GetPrimAtPath(childPath));
+        updates->push_back(std::move(child));
     }
 }
 
-// The edits read in one pass: the items to gather again and the prims whose own data changed.
+// One step of a read of rows: the children of path from row from on, through upTo or a batch,
+// and through wanted when it is one of them.
+struct FetchLevel {
+    SdfPath path;
+    // The item's names when it had read them; null has the worker read them.
+    NamesPtr names;
+    std::size_t from = 0;
+    std::size_t upTo = 0;
+    // The child the next level is under; empty on the last.
+    TfToken wanted;
+    // Filled by gather().
+    bool done = false;
+    std::vector<std::unique_ptr<Item>> rows;
+};
+
+// The edits read in one pass, the items to gather again and the prims whose own data changed, or
+// a read of rows.
 struct GatherRequest {
     SceneGraphStageSourcePtr source;
     // The stage the items were read from, compared, never dereferenced.
@@ -425,6 +471,10 @@ struct GatherRequest {
     int resetCount = 0;
     std::vector<GatherNode> nodes;
     SdfPathVector infoOnly;
+    // A read of rows rather than of edits: down from the first level, each under the one before.
+    std::vector<FetchLevel> levels;
+    // The path the rows are read to reach; empty for a fetchMore().
+    SdfPath target;
     // Filled by gather().
     std::vector<GatheredUpdate> updates;
     // The stage read was not the one the items were read from: nothing was gathered.
@@ -432,7 +482,12 @@ struct GatherRequest {
 
     bool isEmpty() const
     {
-        return nodes.empty() && infoOnly.empty();
+        return nodes.empty() && infoOnly.empty() && levels.empty();
+    }
+
+    bool isFetch() const
+    {
+        return !levels.empty();
     }
 
     // On the main thread, which the source is released on; the rest may be large.
@@ -452,14 +507,57 @@ struct GatherRequest {
 
             return;
         }
+        if (isFetch()) {
+            fetch(usdStage);
+
+            return;
+        }
+        // A parent before its children, so that an update knows whether its row is still there.
+        std::sort(nodes.begin(), nodes.end(), [](const GatherNode& a, const GatherNode& b) {
+            const std::size_t aCount = a.path.GetPathElementCount();
+            const std::size_t bCount = b.path.GetPathElementCount();
+
+            return (aCount != bCount) ? (aCount < bCount) : (a.path < b.path);
+        });
+        PathSet nodePaths;
         for (const GatherNode& node : nodes) {
-            gatherUpdate(usdStage, node, &updates);
+            nodePaths.insert(node.path);
+        }
+        PathSet gone;
+        for (const GatherNode& node : nodes) {
+            gatherUpdate(usdStage, node, nodePaths, &gone, &updates);
         }
         for (const SdfPath& path : infoOnly) {
             GatheredUpdate gathered;
             gathered.path = path;
             gathered.update.data = readPrimData(usdStage->GetPrimAtPath(path));
             updates.push_back(std::move(gathered));
+        }
+    }
+
+    void fetch(const UsdStageRefPtr& usdStage)
+    {
+        for (FetchLevel& level : levels) {
+            if (!level.names) {
+                const UsdPrim prim = usdStage->GetPrimAtPath(level.path);
+                level.names = prim ? std::make_shared<const TfTokenVector>(prim.GetFilteredChildrenNames(childPredicate())) : noNames();
+            }
+            const TfTokenVector& names = *level.names;
+            std::size_t through = 0;
+            bool found = level.wanted.IsEmpty();
+            if (!found) {
+                const TfTokenVector::const_iterator it = std::find(names.begin(), names.end(), level.wanted);
+                found = (it != names.end());
+                through = found ? (std::size_t)(it - names.begin()) + 1 : 0;
+            }
+            const std::size_t end = std::min(names.size(), std::max(std::max(level.upTo, through), level.from + SceneGraphModel::kFetchBatchSize));
+            for (std::size_t i = level.from; i < end; ++i) {
+                level.rows.push_back(makeItem(level.path, names[i], readPrimData(usdStage->GetPrimAtPath(level.path.AppendChild(names[i])))));
+            }
+            level.done = true;
+            if (!found) {
+                return;
+            }
         }
     }
 };
@@ -590,6 +688,19 @@ struct SceneGraphModel::Implementation {
     SdfPathVector carried;
     // A gather found another stage than the rows were read from: every row is read again.
     bool carryAll = false;
+    // The items besides the root whose names are read, which are the ones an edit can add rows to.
+    std::unordered_set<Item*> namedItems;
+    // The gathered edits being applied a slice at a time, and the next of their updates.
+    GatherRequestPtr applying;
+    std::size_t applyNext = 0;
+    QTimer* applyTimer = nullptr;
+    int applySliceMs = 8;
+    int applySliceCount = 0;
+    // Reads of rows on the worker: how many, how many by the path of their first level, and the
+    // paths they were asked for to reach.
+    int fetchesInFlight = 0;
+    std::map<SdfPath, int> fetchingUnder;
+    std::set<SdfPath> fetchTargets;
     struct RetiredListener {
         SceneGraphStageSourcePtr source;
         std::unique_ptr<StageListener> listener;
@@ -640,6 +751,10 @@ struct SceneGraphModel::Implementation {
     {
         root.path = SdfPath::AbsoluteRootPath();
         root.pathString = QString::fromUtf8("/");
+        applyTimer = new QTimer(model);
+        applyTimer->setSingleShot(true);
+        applyTimer->setInterval(0);
+        QObject::connect(applyTimer, &QTimer::timeout, model, [this]() { applySlice(); });
     }
 
     void emitChangedHere(Item* item)
@@ -822,40 +937,67 @@ struct SceneGraphModel::Implementation {
         model->endRemoveRows();
     }
 
-    std::unique_ptr<Item> makeChild(Item* parent,
-                                    const TfToken& name,
-                                    const PrimData& data)
+    void setNamed(Item* item,
+                  const NamesPtr& names)
     {
-        std::unique_ptr<Item> child = makeItem(parent->path, name, data);
-
-        child->parent = parent;
-
-        return child;
+        item->namesRead = true;
+        item->childNames = names ? names : noNames();
+        if (item != &root) {
+            namedItems.insert(item);
+        }
     }
 
-    // What gathering item's update needs, and its kept children's when deep or named in deepNames.
-    GatherNode snapshotOf(const Item* item,
-                          bool deep,
-                          const std::unordered_set<TfToken, TfToken::HashFunctor>& deepNames) const
+    // Takes item and what is under it out of the registry; returns how many items that is.
+    int forget(Item* item)
+    {
+        int count = 1;
+
+        if (item->namesRead) {
+            namedItems.erase(item);
+        }
+        for (const std::unique_ptr<Item>& child : item->children) {
+            count += forget(child.get());
+        }
+
+        return count;
+    }
+
+    // Adds rows, from the first of them item has not, after item's children.
+    void appendRows(Item* item,
+                    std::vector<std::unique_ptr<Item>>& rows,
+                    std::size_t firstRow)
+    {
+        const std::size_t first = item->children.size();
+
+        if ((first < firstRow) || (first >= firstRow + rows.size())) {
+            return;
+        }
+        ChangeScope scope(this);
+        const std::size_t count = firstRow + rows.size() - first;
+        model->beginInsertRows(indexOf(item), (int)first, (int)(first + count) - 1);
+        itemCount += (int)count;
+        for (std::size_t i = first - firstRow; i < rows.size(); ++i) {
+            std::unique_ptr<Item>& child = rows[i];
+            child->parent = item;
+            child->row = (int)item->children.size();
+            item->children.push_back(std::move(child));
+        }
+        item->placeLoadingRow();
+        item->rowOfValid = false;
+        model->endInsertRows();
+    }
+
+    GatherNode nodeOf(const Item* item,
+                      bool refreshKept) const
     {
         GatherNode node;
 
         node.path = item->path;
         node.namesRead = item->namesRead;
         node.payload = item->data.payload;
-        node.deep = deep;
-        node.deepNames = deepNames;
-        if (!item->namesRead) {
-            return node;
-        }
-        node.children.reserve(item->children.size());
-        const std::unordered_set<TfToken, TfToken::HashFunctor> none;
-        for (const std::unique_ptr<Item>& child : item->children) {
-            node.children.push_back(child->nameToken);
-            if (deep || (deepNames.find(child->nameToken) != deepNames.end())) {
-                node.kids.push_back(snapshotOf(child.get(), true, none));
-            }
-        }
+        node.names = item->childNames;
+        node.childCount = item->children.size();
+        node.refreshKept = refreshKept;
 
         return node;
     }
@@ -884,25 +1026,24 @@ struct SceneGraphModel::Implementation {
         if (!update.readChildren) {
             return childrenFlagChanged && item->children.empty();
         }
-        std::unordered_set<TfToken, TfToken::HashFunctor> newNames(update.names.begin(), update.names.end());
-        if (update.replaceChildren) {
-            newNames.clear();
-        }
+        const auto isKept = [&update](int row) {
+            return ((std::size_t)row < update.kept.size()) && update.kept[row];
+        };
         // Removes the gone children, last first, a run of rows at a time.
         int last = (int)item->children.size() - 1;
         while (last >= 0) {
-            if (newNames.find(item->children[last]->nameToken) != newNames.end()) {
+            if (isKept(last)) {
                 --last;
                 continue;
             }
             int first = last;
-            while ((first > 0) && (newNames.find(item->children[first - 1]->nameToken) == newNames.end())) {
+            while ((first > 0) && !isKept(first - 1)) {
                 --first;
             }
             model->beginRemoveRows(index, first, last);
             std::vector<std::unique_ptr<Item>> removed;
             for (int i = first; i <= last; ++i) {
-                itemCount -= 1 + item->children[i]->subtreeSize();
+                itemCount -= forget(item->children[i].get());
                 removed.push_back(std::move(item->children[i]));
             }
             item->children.erase(item->children.begin() + first, item->children.begin() + last + 1);
@@ -913,22 +1054,29 @@ struct SceneGraphModel::Implementation {
             last = first - 1;
         }
         // Inserts the new names among the kept children, a run of rows at a time.
+        const TfTokenVector& names = *update.names;
         std::size_t row = 0;
         std::size_t i = 0;
+        std::size_t next = 0;
         while (i < update.loadedCount) {
-            if ((row < item->children.size()) && (item->children[row]->nameToken == update.names[i])) {
+            if ((row < item->children.size()) && (item->children[row]->nameToken == names[i])) {
                 ++row;
                 ++i;
                 continue;
             }
             std::size_t end = i;
-            while ((end < update.loadedCount) && !((row < item->children.size()) && (item->children[row]->nameToken == update.names[end]))) {
+            while ((end < update.loadedCount) && !((row < item->children.size()) && (item->children[row]->nameToken == names[end]))) {
                 ++end;
+            }
+            if (next + (end - i) > update.newChildren.size()) {
+                break;
             }
             model->beginInsertRows(index, (int)row, (int)(row + (end - i) - 1));
             std::vector<std::unique_ptr<Item>> inserted;
             for (std::size_t n = i; n < end; ++n) {
-                inserted.push_back(makeChild(item, update.names[n], update.newChildData[update.names[n]]));
+                std::unique_ptr<Item>& child = update.newChildren[next++];
+                child->parent = item;
+                inserted.push_back(std::move(child));
             }
             itemCount += (int)inserted.size();
             item->children.insert(item->children.begin() + row,
@@ -939,71 +1087,148 @@ struct SceneGraphModel::Implementation {
             row += end - i;
             i = end;
         }
-        item->childNames = std::move(update.names);
+        setNamed(item, update.names);
 
         return childrenFlagChanged && item->children.empty();
     }
 
-    // An update whose item changed since it was copied is not applied: its path is carried to
-    // the next gather instead.
+    // Applies one gathered update; an update whose item changed since it was copied is not
+    // applied, its path is carried to the next gather instead. Returns whether views must lay out
+    // again.
+    bool applyOne(GatheredUpdate& gathered)
+    {
+        Item* item = findItem(gathered.path);
+
+        if (!item || (!gathered.node && (item == &root))) {
+            // Under a row removed or replaced by an update before it.
+            return false;
+        }
+        if (gathered.node && !gathered.node->matches(*item)) {
+            carried.push_back(gathered.path);
+
+            return false;
+        }
+        gathered.update.item = item;
+
+        return applyUpdate(gathered.update);
+    }
+
+    void emitLayout()
+    {
+        // Views keep whether an item without rows has children; only a relayout asks again.
+        Q_EMIT model->layoutAboutToBeChanged();
+        Q_EMIT model->layoutChanged();
+    }
+
     void applyGathered(std::vector<GatheredUpdate>& updates)
     {
         ChangeScope scope(this);
-        bool layoutChanged = false;
+        bool layout = false;
 
         for (GatheredUpdate& gathered : updates) {
-            Item* item = findItem(gathered.path);
-            if (!item || (!gathered.node && (item == &root))) {
-                // Under a row removed or replaced by an update before it.
-                continue;
-            }
-            if (gathered.node && !gathered.node->matches(*item)) {
-                carried.push_back(gathered.path);
-                continue;
-            }
-            gathered.update.item = item;
-            if (applyUpdate(gathered.update)) {
-                layoutChanged = true;
-            }
+            layout = applyOne(gathered) || layout;
         }
-        if (layoutChanged) {
-            // Views keep whether an item without rows has children; only a relayout asks again.
-            Q_EMIT model->layoutAboutToBeChanged();
-            Q_EMIT model->layoutChanged();
+        if (layout) {
+            emitLayout();
         }
     }
 
-    // The resynced and info-only paths the listener queued, as a request whose nodes are copied
-    // from the tree.
+    // Applies the updates of applying for up to applySliceMs, at least one, and has the event
+    // loop apply the rest after: a heavy stage's edits take longer to apply than a frame lasts.
+    void applySlice()
+    {
+        // Held here too: a slot the changes reach may reset the model, which lets go of applying.
+        GatherRequestPtr held = applying;
+
+        if (!held) {
+            return;
+        }
+        ++applySliceCount;
+        {
+            ChangeScope scope(this);
+            QElapsedTimer timer;
+            timer.start();
+            bool layout = false;
+            while ((applying == held) && (applyNext < held->updates.size())) {
+                layout = applyOne(held->updates[applyNext++]) || layout;
+                if (timer.elapsed() >= applySliceMs) {
+                    break;
+                }
+            }
+            if (layout) {
+                emitLayout();
+            }
+        }
+        if (applying != held) {
+            GatherRequest::retire(std::move(held));
+
+            return;
+        }
+        if (applyNext < held->updates.size()) {
+            applyTimer->start();
+
+            return;
+        }
+        gatheringReset = -1;
+        applying.reset();
+        GatherRequest::retire(std::move(held));
+        model->refresh();
+    }
+
+    // The resynced and info-only paths the listener queued, as a request of the items to read
+    // again. Copies the items' names by pointer and none of their rows, so that even a request for
+    // every item costs what the items whose names were read do.
     GatherRequestPtr makeRequest(SdfPathVector resynced,
                                  const SdfPathVector& infoOnly,
                                  bool all)
     {
-        GatherRequestPtr request = std::make_shared<GatherRequest>();
-        const std::unordered_set<TfToken, TfToken::HashFunctor> none;
+        GatherRequestPtr request = newRequest();
 
-        request->source = source;
-        request->stage = get_pointer(listenedStage);
-        request->resetCount = resetCount;
         SdfPath::RemoveDescendentPaths(&resynced);
-        // Each resynced path changes its parent's children and everything under it.
-        std::map<SdfPath, std::unordered_set<TfToken, TfToken::HashFunctor>> byParent;
         for (const SdfPath& path : resynced) {
             if (path == SdfPath::AbsoluteRootPath()) {
                 all = true;
                 break;
             }
-            byParent[path.GetParentPath()].insert(path.GetNameToken());
         }
         if (all) {
-            request->nodes.push_back(snapshotOf(&root, true, none));
+            request->nodes.reserve(namedItems.size() + 1);
+            request->nodes.push_back(nodeOf(&root, true));
+            for (const Item* item : namedItems) {
+                request->nodes.push_back(nodeOf(item, true));
+            }
 
             return request;
         }
-        for (const std::pair<const SdfPath, std::unordered_set<TfToken, TfToken::HashFunctor>>& entry : byParent) {
-            if (const Item* item = findItem(entry.first)) {
-                request->nodes.push_back(snapshotOf(item, false, entry.second));
+        // Each resynced path changes its parent's children and everything under it.
+        std::map<SdfPath, GatherNode> byPath;
+        for (const SdfPath& path : resynced) {
+            const Item* parent = findItem(path.GetParentPath());
+            if (!parent) {
+                continue;
             }
+            std::map<SdfPath, GatherNode>::iterator found = byPath.find(parent->path);
+            if (found == byPath.end()) {
+                found = byPath.emplace(parent->path, nodeOf(parent, false)).first;
+            }
+            found->second.refreshNames.insert(path.GetNameToken());
+        }
+        if (!resynced.empty()) {
+            for (const Item* item : namedItems) {
+                if (SdfPathFindLongestPrefix(resynced.begin(), resynced.end(), item->path) == resynced.end()) {
+                    continue;
+                }
+                std::map<SdfPath, GatherNode>::iterator found = byPath.find(item->path);
+                if (found == byPath.end()) {
+                    byPath.emplace(item->path, nodeOf(item, true));
+                } else {
+                    found->second.refreshKept = true;
+                }
+            }
+        }
+        request->nodes.reserve(byPath.size());
+        for (std::pair<const SdfPath, GatherNode>& entry : byPath) {
+            request->nodes.push_back(std::move(entry.second));
         }
         for (const SdfPath& path : infoOnly) {
             if (SdfPathFindLongestPrefix(resynced.begin(), resynced.end(), path) != resynced.end()) {
@@ -1018,12 +1243,23 @@ struct SceneGraphModel::Implementation {
         return request;
     }
 
+    GatherRequestPtr newRequest() const
+    {
+        GatherRequestPtr request = std::make_shared<GatherRequest>();
+
+        request->source = source;
+        request->stage = get_pointer(listenedStage);
+        request->resetCount = resetCount;
+
+        return request;
+    }
+
     bool isGathering() const
     {
         return gatheringReset == resetCount;
     }
 
-    void postGather(GatherRequestPtr request)
+    void postToWorker(GatherRequestPtr request)
     {
         if (!worker) {
             SceneGraphModel* target = model;
@@ -1031,8 +1267,13 @@ struct SceneGraphModel::Implementation {
                 QMetaObject::invokeMethod(target, [target, request = std::move(gathered)]() mutable { target->_imp->onGathered(std::move(request)); }, Qt::QueuedConnection);
             }));
         }
-        gatheringReset = resetCount;
         worker->post(std::move(request));
+    }
+
+    void postGather(GatherRequestPtr request)
+    {
+        gatheringReset = resetCount;
+        postToWorker(std::move(request));
     }
 
     // On the main thread: a request for an earlier reset is dropped, and one that found another
@@ -1044,14 +1285,187 @@ struct SceneGraphModel::Implementation {
 
             return;
         }
-        gatheringReset = -1;
+        if (request->isFetch()) {
+            onFetched(std::move(request));
+
+            return;
+        }
         if (request->otherStage) {
             carryAll = true;
-        } else {
-            applyGathered(request->updates);
+            gatheringReset = -1;
+            GatherRequest::retire(std::move(request));
+            model->refresh();
+
+            return;
+        }
+        applying = std::move(request);
+        applyNext = 0;
+        applySlice();
+    }
+
+    // Posts a read of rows, which the row under it shows as loading until it lands, when it has
+    // none to show yet.
+    void postFetch(GatherRequestPtr request)
+    {
+        const SdfPath first = request->levels.front().path;
+
+        ++fetchesInFlight;
+        ++fetchingUnder[first];
+        if (!request->target.IsEmpty()) {
+            fetchTargets.insert(request->target);
+        }
+        Item* item = findItem(first);
+        if (item && (item != &root) && item->children.empty() && !changing) {
+            addLoadingRow(item);
+        }
+        postToWorker(std::move(request));
+    }
+
+    FetchLevel levelOf(const Item* item) const
+    {
+        FetchLevel level;
+
+        level.path = item->path;
+        if (item->namesRead) {
+            level.names = item->childNames;
+        }
+        level.from = item->children.size();
+
+        return level;
+    }
+
+    // Reads the next batch of item's children on the worker.
+    void postFetchMore(Item* item)
+    {
+        if (!listener) {
+            return;
+        }
+        GatherRequestPtr request = newRequest();
+        request->levels.push_back(levelOf(item));
+        postFetch(std::move(request));
+    }
+
+    // Reads on the worker the rows down to path's, from item, the deepest read row above it, on.
+    // False when there is nothing to read: path is not among item's children.
+    bool postPathFetch(Item* item,
+                       const SdfPath& path)
+    {
+        if (!listener) {
+            return false;
+        }
+        if (fetchTargets.count(path)) {
+            return true;
+        }
+        SdfPathVector prefixes = path.GetPrefixes();
+        prefixes.erase(std::remove(prefixes.begin(), prefixes.end(), SdfPath::AbsoluteRootPath()), prefixes.end());
+        const std::size_t depth = item->path.GetPathElementCount();
+        if (depth >= prefixes.size()) {
+            return false;
+        }
+        const TfToken& wanted = prefixes[depth].GetNameToken();
+        FetchLevel first = levelOf(item);
+        if (item->namesRead) {
+            const TfTokenVector& names = *item->childNames;
+            const TfTokenVector::const_iterator found = std::find(names.begin(), names.end(), wanted);
+            if (found == names.end()) {
+                return false;
+            }
+            first.upTo = (std::size_t)(found - names.begin()) + 1;
+        }
+        first.wanted = wanted;
+        GatherRequestPtr request = newRequest();
+        request->target = path;
+        request->levels.push_back(std::move(first));
+        for (std::size_t i = depth + 1; i < prefixes.size(); ++i) {
+            FetchLevel level;
+            level.path = prefixes[i - 1];
+            level.wanted = prefixes[i].GetNameToken();
+            request->levels.push_back(std::move(level));
+        }
+        postFetch(std::move(request));
+
+        return true;
+    }
+
+    // Asks again for what a read of rows was for, once the rows it read no longer fit the tree.
+    void askAgain(const GatherRequest& request)
+    {
+        if (!request.target.IsEmpty()) {
+            model->indexOfPath(QString::fromStdString(request.target.GetString()), true);
+
+            return;
+        }
+        Item* item = findItem(request.levels.front().path);
+        if (item) {
+            const QModelIndex index = indexOf(item);
+            if (model->canFetchMore(index)) {
+                postFetchMore(item);
+            }
+        }
+    }
+
+    // Adds the rows a read on the worker found. False if a level's item changed meanwhile so that
+    // its rows no longer fit it.
+    bool applyFetched(GatherRequest& request)
+    {
+        Item* item = findItem(request.levels.front().path);
+        const int reset = resetCount;
+
+        for (FetchLevel& level : request.levels) {
+            if (!item) {
+                return (&level != &request.levels.front());
+            }
+            if (!level.done || !level.names) {
+                return true;
+            }
+            if (item->namesRead && (item->childNames != level.names) && (*item->childNames != *level.names)) {
+                return false;
+            }
+            if (item->children.size() < level.from) {
+                return false;
+            }
+            if (!item->namesRead) {
+                ChangeScope scope(this);
+                setNamed(item, level.names);
+            }
+            appendRows(item, level.rows, level.from);
+            if (level.wanted.IsEmpty() || (resetCount != reset)) {
+                return true;
+            }
+            item = item->findChild(level.wanted);
+        }
+
+        return true;
+    }
+
+    void onFetched(GatherRequestPtr request)
+    {
+        const SdfPath first = request->levels.front().path;
+
+        --fetchesInFlight;
+        std::map<SdfPath, int>::iterator under = fetchingUnder.find(first);
+        if ((under != fetchingUnder.end()) && (--under->second <= 0)) {
+            fetchingUnder.erase(under);
+        }
+        if (!request->target.IsEmpty()) {
+            fetchTargets.erase(request->target);
+        }
+        if (request->otherStage) {
+            carryAll = true;
+        } else if (!applyFetched(*request)) {
+            askAgain(*request);
+        }
+        if (!fetchingUnder.count(first)) {
+            Item* item = findItem(first);
+            if (item && (item != &root) && !loadingPaths.contains(item->pathString)) {
+                removeLoadingRow(item);
+            }
         }
         GatherRequest::retire(std::move(request));
         model->refresh();
+        if ((fetchesInFlight == 0) && owedFetches.empty()) {
+            Q_EMIT model->deferredReadsDone();
+        }
     }
 
     void resetTo(bool hasStage,
@@ -1059,23 +1473,42 @@ struct SceneGraphModel::Implementation {
     {
         ChangeScope scope(this);
         model->beginResetModel();
-        // The tree read from a heavy stage takes longer to destroy than a frame lasts.
+        // What the tree read from a heavy stage holds takes longer to destroy than a frame lasts.
         std::vector<std::unique_ptr<Item>> old;
         old.swap(root.children);
-        root.childNames.clear();
-        root.rowOf.clear();
+        NamesPtr oldNames = std::move(root.childNames);
+        root.childNames = noNames();
+        std::unordered_map<TfToken, int, TfToken::HashFunctor> oldRowOf;
+        oldRowOf.swap(root.rowOf);
+        std::unordered_set<Item*> oldNamed;
+        oldNamed.swap(namedItems);
+        QSet<QString> oldLoading;
+        oldLoading.swap(loadingPaths);
+        QHash<QString, QString> oldFailures;
+        oldFailures.swap(loadFailures);
+        GatherRequestPtr oldApplying = std::move(applying);
+        applying.reset();
+        applyNext = 0;
+        applyTimer->stop();
         root.namesRead = false;
         root.rowOfValid = false;
         root.data = hasStage ? rootData : PrimData();
-        loadingPaths.clear();
-        loadFailures.clear();
         owedFetches.clear();
+        fetchesInFlight = 0;
+        fetchingUnder.clear();
+        fetchTargets.clear();
         carried.clear();
         carryAll = false;
         itemCount = 0;
         ++resetCount;
         model->endResetModel();
+        GatherRequest::retire(std::move(oldApplying));
         SceneTeardown::release(std::move(old));
+        SceneTeardown::release(std::move(oldNames));
+        SceneTeardown::release(std::move(oldRowOf));
+        SceneTeardown::release(std::move(oldNamed));
+        SceneTeardown::release(std::move(oldLoading));
+        SceneTeardown::release(std::move(oldFailures));
     }
 
     // The read of item's children ran into an edit of the stage. A row with nothing to show yet
@@ -1091,7 +1524,8 @@ struct SceneGraphModel::Implementation {
         }
     }
 
-    // Reads the next batch of item's children. Returns whether any were added.
+    // Reads the next batch of item's children under the main thread's read. Returns whether any
+    // were added.
     bool fetch(Item* item,
                std::size_t upTo,
                bool* busy = nullptr)
@@ -1101,7 +1535,8 @@ struct SceneGraphModel::Implementation {
         }
         std::vector<std::unique_ptr<Item>> fetched;
         bool namesRead = item->namesRead;
-        TfTokenVector names;
+        NamesPtr names = item->childNames;
+        const std::size_t from = item->children.size();
         const bool read = source->tryReadStage([&](const SceneStage* sceneStage) {
             if (!sceneStage || !isListened(sceneStage->getStage())) {
                 return;
@@ -1109,16 +1544,14 @@ struct SceneGraphModel::Implementation {
             const UsdStageRefPtr& stage = sceneStage->getStage();
             if (!namesRead) {
                 const UsdPrim prim = stage->GetPrimAtPath(item->path);
-                if (prim) {
-                    names = prim.GetFilteredChildrenNames(childPredicate());
-                }
+                names = prim ? std::make_shared<const TfTokenVector>(prim.GetFilteredChildrenNames(childPredicate())) : noNames();
                 namesRead = true;
             }
-            const TfTokenVector& allNames = item->namesRead ? item->childNames : names;
-            const std::size_t end = std::min(allNames.size(), std::max(upTo, item->children.size() + kFetchBatchSize));
-            for (std::size_t i = item->children.size(); i < end; ++i) {
+            const TfTokenVector& allNames = *names;
+            const std::size_t end = std::min(allNames.size(), std::max(upTo, from + kFetchBatchSize));
+            for (std::size_t i = from; i < end; ++i) {
                 const SdfPath path = item->path.AppendChild(allNames[i]);
-                fetched.push_back(makeChild(item, allNames[i], readPrimData(stage->GetPrimAtPath(path))));
+                fetched.push_back(makeItem(item->path, allNames[i], readPrimData(stage->GetPrimAtPath(path))));
             }
         });
         if (!read) {
@@ -1129,24 +1562,14 @@ struct SceneGraphModel::Implementation {
 
             return false;
         }
-        ChangeScope scope(this);
         if (namesRead && !item->namesRead) {
-            item->namesRead = true;
-            item->childNames = std::move(names);
+            ChangeScope scope(this);
+            setNamed(item, names);
         }
         if (fetched.empty()) {
             return false;
         }
-        const int first = (int)item->children.size();
-        model->beginInsertRows(indexOf(item), first, first + (int)fetched.size() - 1);
-        itemCount += (int)fetched.size();
-        for (std::unique_ptr<Item>& child : fetched) {
-            child->row = (int)item->children.size();
-            item->children.push_back(std::move(child));
-        }
-        item->placeLoadingRow();
-        item->rowOfValid = false;
-        model->endInsertRows();
+        appendRows(item, fetched, from);
 
         return true;
     }
@@ -1259,7 +1682,9 @@ SceneGraphModel::setSource(const SceneGraphStageSourcePtr& source)
     }
     _imp->source = source;
     _imp->settleOwed = false;
-    _imp->changedHere.clear();
+    QSet<QString> oldChangedHere;
+    oldChangedHere.swap(_imp->changedHere);
+    SceneTeardown::release(std::move(oldChangedHere));
     _imp->resetTo(false, PrimData());
     refresh();
 }
@@ -1285,10 +1710,22 @@ SceneGraphModel::setReadsOnWorker(bool onWorker)
     _imp->readsOnWorker = onWorker;
 }
 
+void
+SceneGraphModel::setApplySliceMs(int ms)
+{
+    _imp->applySliceMs = std::max(0, ms);
+}
+
+int
+SceneGraphModel::getApplySliceCount() const
+{
+    return _imp->applySliceCount;
+}
+
 bool
 SceneGraphModel::hasOwedReads() const
 {
-    return _imp->settleOwed || !_imp->owedFetches.empty();
+    return _imp->settleOwed || !_imp->owedFetches.empty() || (_imp->fetchesInFlight > 0);
 }
 
 bool
@@ -1326,8 +1763,9 @@ SceneGraphModel::retryOwedReads()
 bool
 SceneGraphModel::readEdits()
 {
-    if (_imp->isGathering()) {
-        // The gather's end refreshes again, and reads what was edited meanwhile.
+    if (_imp->isGathering() || (_imp->fetchesInFlight > 0)) {
+        // The gather's or read's end refreshes again, and reads what was edited meanwhile: rows a
+        // read brings in after the notices of their edits were taken in would keep what it saw.
         return false;
     }
     const U64 editCount = _imp->source->getEditCount();
@@ -1435,15 +1873,23 @@ SceneGraphModel::indexOfPath(const QString& path,
         }
         const TfToken& name = prefix.GetNameToken();
         Item* child = item->findChild(name);
+        if (!child && populate && _imp->readsOnWorker) {
+            if (_imp->postPathFetch(item, sdfPath) && busy) {
+                *busy = true;
+            }
+
+            return QModelIndex();
+        }
         if (!child && populate) {
             if (!item->namesRead) {
                 _imp->fetch(item, 0, busy);
             }
-            const TfTokenVector::const_iterator found = std::find(item->childNames.begin(), item->childNames.end(), name);
-            if (found == item->childNames.end()) {
+            const TfTokenVector& names = *item->childNames;
+            const TfTokenVector::const_iterator found = std::find(names.begin(), names.end(), name);
+            if (found == names.end()) {
                 return QModelIndex();
             }
-            _imp->fetch(item, (std::size_t)(found - item->childNames.begin()) + 1, busy);
+            _imp->fetch(item, (std::size_t)(found - names.begin()) + 1, busy);
             child = item->findChild(name);
         }
         if (!child) {
@@ -1463,13 +1909,12 @@ SceneGraphModel::addPathRows(const SceneGraphPathRowsPtr& rows)
     }
     for (SceneGraphPathRows::Parent& parent : rows->parents) {
         Item* item = _imp->findItem(parent.path);
-        if (!item || !parent.namesRead || (item->namesRead && (item->childNames != parent.names))) {
+        if (!item || !parent.namesRead || (item->namesRead && (*item->childNames != parent.names))) {
             continue;
         }
         Implementation::ChangeScope scope(_imp.get());
         if (!item->namesRead) {
-            item->namesRead = true;
-            item->childNames = std::move(parent.names);
+            _imp->setNamed(item, std::make_shared<const TfTokenVector>(std::move(parent.names)));
         }
         const std::size_t first = item->children.size();
         if (first >= parent.rows.size()) {
@@ -1966,17 +2411,22 @@ SceneGraphModel::canFetchMore(const QModelIndex& parent) const
     }
     const Item* item = _imp->itemOf(parent);
     // Asking again would only find the stage busy again; the owed read adds the rows.
-    if (!item->data.hasChildren || _imp->owedFetches.count(item->path)) {
+    if (!item->data.hasChildren || _imp->owedFetches.count(item->path) || _imp->fetchingUnder.count(item->path)) {
         return false;
     }
 
-    return !item->namesRead || (item->children.size() < item->childNames.size());
+    return !item->namesRead || (item->children.size() < item->childNames->size());
 }
 
 void
 SceneGraphModel::fetchMore(const QModelIndex& parent)
 {
-    if (canFetchMore(parent)) {
+    if (!canFetchMore(parent)) {
+        return;
+    }
+    if (_imp->readsOnWorker) {
+        _imp->postFetchMore(_imp->itemOf(parent));
+    } else {
         _imp->fetch(_imp->itemOf(parent), 0);
     }
 }

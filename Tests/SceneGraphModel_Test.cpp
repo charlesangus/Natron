@@ -28,6 +28,7 @@
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -115,13 +116,13 @@ public:
     bool busy = false;
 };
 
-// A TestStageSource whose reads off the thread that made it wait until open() is called.
+// A TestStageSource whose reads off the thread that made it wait while it is closed, as it is
+// until open() is first called.
 class GatedStageSource
     : public TestStageSource {
 public:
     GatedStageSource()
-        : _opened(_open.get_future().share())
-        , _mainThread(std::this_thread::get_id())
+        : _mainThread(std::this_thread::get_id())
     {
     }
 
@@ -132,29 +133,41 @@ public:
 
     void readStage(const std::function<void(const SceneStage* stage)>& read) const override
     {
-        if (std::this_thread::get_id() != _mainThread) {
+        const bool onMain = (std::this_thread::get_id() == _mainThread);
+
+        if (!onMain) {
+            std::unique_lock<std::mutex> lock(_gateMutex);
             // Bounded, so that a read the test never lets through fails it instead of hanging it.
-            (void)_opened.wait_for(std::chrono::seconds(30));
+            (void)_gate.wait_for(lock, std::chrono::seconds(30), [this]() { return _isOpen; });
         }
         TestStageSource::readStage(read);
-        if (std::this_thread::get_id() != _mainThread) {
-            ++workerReads;
-        }
+        ++(onMain ? mainReads : workerReads);
     }
 
     void open()
     {
-        if (!_isOpen.exchange(true)) {
-            _open.set_value();
+        {
+            std::lock_guard<std::mutex> lock(_gateMutex);
+            _isOpen = true;
         }
+        _gate.notify_all();
+    }
+
+    // A read already past the gate is not held back.
+    void close()
+    {
+        std::lock_guard<std::mutex> lock(_gateMutex);
+
+        _isOpen = false;
     }
 
     mutable std::atomic<int> workerReads { 0 };
+    mutable std::atomic<int> mainReads { 0 };
 
 private:
-    std::promise<void> _open;
-    std::shared_future<void> _opened;
-    std::atomic<bool> _isOpen { false };
+    mutable std::mutex _gateMutex;
+    mutable std::condition_variable _gate;
+    bool _isOpen = false;
     std::thread::id _mainThread;
 };
 
@@ -322,6 +335,23 @@ childNamed(const SceneGraphModel& model,
     }
 
     return QModelIndex();
+}
+
+// The row of path, asked for until the reads on the worker that bring it in land.
+QModelIndex
+waitForPath(SceneGraphModel& model,
+            const QString& path)
+{
+    QModelIndex index;
+
+    (void)processEventsUntil([&]() {
+        index = model.indexOfPath(path, true);
+
+        return index.isValid();
+    });
+    (void)processEventsUntil([&]() { return !model.hasOwedReads(); });
+
+    return model.indexOfPath(path, false);
 }
 
 // Children of every kind the walk tells apart; listed gets the paths it should list, in order.
@@ -567,10 +597,12 @@ TEST(SceneGraphModel, AnEditReadOnTheWorkerAppliesFromTheEventLoop)
     QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
     model.setReadsOnWorker(true);
     model.setSource(source);
-    const QModelIndex keptIndex = model.indexOfPath(QString::fromUtf8("/Kept/K2"), true).parent();
-    const QModelIndex editedIndex = model.indexOfPath(QString::fromUtf8("/Edited/Other"), true).parent();
+    source->open();
+    const QModelIndex keptIndex = waitForPath(model, QString::fromUtf8("/Kept/K2")).parent();
+    const QModelIndex editedIndex = waitForPath(model, QString::fromUtf8("/Edited/Other")).parent();
     ASSERT_TRUE(keptIndex.isValid());
     ASSERT_TRUE(editedIndex.isValid());
+    source->close();
     const int resets = model.getResetCount();
     const QPersistentModelIndex k1(model.index(1, 0, keptIndex));
     const QPersistentModelIndex same(childNamed(model, editedIndex, QString::fromUtf8("Same")));
@@ -608,13 +640,19 @@ TEST(SceneGraphModel, AnEditReadForAReplacedStageIsDropped)
     QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
     model.setReadsOnWorker(true);
     model.setSource(replaced);
-    EXPECT_TRUE(model.indexOfPath(QString::fromUtf8("/Edited/Other"), true).isValid());
+    replaced->open();
+    EXPECT_TRUE(waitForPath(model, QString::fromUtf8("/Edited/Other")).isValid());
+    replaced->close();
 
     replaced->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Edited", { "Same", "New", "Other" }), 2));
     model.refresh();
+    // The worker is held by the replaced stage's gather: the shown stage's rows are read under
+    // the main thread's read, and its edit on the worker.
+    model.setReadsOnWorker(false);
     model.setSource(shown);
     const QModelIndex edited = model.indexOfPath(QString::fromUtf8("/Edited/Other"), true).parent();
     EXPECT_TRUE(edited.isValid());
+    model.setReadsOnWorker(true);
     const int resets = model.getResetCount();
     QStringList inserted;
     QObject::connect(&model, &QAbstractItemModel::rowsInserted, [&](const QModelIndex& parent, int first, int last) {
@@ -631,6 +669,198 @@ TEST(SceneGraphModel, AnEditReadForAReplacedStageIsDropped)
 
     EXPECT_EQ(resets, model.getResetCount());
     EXPECT_EQ(QStringList(QString::fromUtf8("Extra")), inserted);
+
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+// With reads on the worker, a twirl asks nothing of the stage on the thread that twirls: the
+// row shows the loading row until its children land from the event loop.
+TEST(SceneGraphModel, AnExpandOnTheWorkerReadsNothingOnTheCallingThread)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<GatedStageSource> source = std::make_shared<GatedStageSource>();
+    source->sync(referenceScene());
+    SceneGraphModel model;
+    model.setReadsOnWorker(true);
+    model.setSource(source);
+
+    int mainReads = source->mainReads.load();
+    ASSERT_TRUE(model.canFetchMore(QModelIndex()));
+    model.fetchMore(QModelIndex());
+    EXPECT_EQ(mainReads, source->mainReads.load());
+    EXPECT_EQ(0, model.rowCount());
+    EXPECT_TRUE(model.hasOwedReads());
+    EXPECT_FALSE(model.canFetchMore(QModelIndex()));
+    source->open();
+    EXPECT_TRUE(processEventsUntil([&]() { return childNames(model, QModelIndex()) == QStringList(QString::fromUtf8("World")); }));
+    EXPECT_TRUE(processEventsUntil([&]() { return !model.hasOwedReads(); }));
+    const int workerReads = source->workerReads.load();
+    EXPECT_GT(workerReads, 0);
+
+    source->close();
+    const QModelIndex world = model.index(0, 0);
+    mainReads = source->mainReads.load();
+    QSignalSpy done(&model, &SceneGraphModel::deferredReadsDone);
+    ASSERT_TRUE(model.canFetchMore(world));
+    model.fetchMore(world);
+    EXPECT_EQ(mainReads, source->mainReads.load());
+    ASSERT_EQ(1, model.rowCount(world));
+    EXPECT_FALSE(model.flags(model.index(0, 0, world)).testFlag(Qt::ItemIsEnabled));
+    EXPECT_FALSE(model.canFetchMore(world));
+    bool busy = false;
+    EXPECT_FALSE(model.indexOfPath(QString::fromUtf8("/World/Ball"), true, &busy).isValid());
+    EXPECT_TRUE(busy);
+    EXPECT_EQ(mainReads, source->mainReads.load());
+
+    source->open();
+    const QStringList children = QStringList() << QString::fromUtf8("Box") << QString::fromUtf8("Ball") << QString::fromUtf8("Cam");
+    EXPECT_TRUE(processEventsUntil([&]() { return childNames(model, world) == children; }));
+    EXPECT_TRUE(processEventsUntil([&]() { return done.count() > 0; }));
+    EXPECT_GT(source->workerReads.load(), workerReads);
+    EXPECT_FALSE(model.canFetchMore(world));
+    EXPECT_TRUE(model.indexOfPath(QString::fromUtf8("/World/Ball"), false).isValid());
+    EXPECT_EQ(4, model.getItemCount());
+
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+// The rows a twirl read on the worker for a stage the model no longer shows are never added.
+TEST(SceneGraphModel, AnExpandReadForAReplacedStageIsDropped)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<GatedStageSource> replaced = std::make_shared<GatedStageSource>();
+    std::shared_ptr<TestStageSource> shown = std::make_shared<TestStageSource>();
+    replaced->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Group", { "Gone0", "Gone1" }), 1));
+    shown->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Group", { "Kept" }), 2));
+
+    SceneGraphModel model;
+    model.setReadsOnWorker(true);
+    model.setSource(replaced);
+    replaced->open();
+    EXPECT_TRUE(processEventsUntil([&]() { return model.indexOfPath(QString::fromUtf8("/Group"), true).isValid(); }));
+    EXPECT_TRUE(processEventsUntil([&]() { return !model.hasOwedReads(); }));
+    replaced->close();
+    const QModelIndex replacedGroup = model.index(0, 0);
+    ASSERT_TRUE(model.canFetchMore(replacedGroup));
+    model.fetchMore(replacedGroup);
+    EXPECT_EQ(1, model.rowCount(replacedGroup));
+
+    model.setSource(shown);
+    QStringList inserted;
+    QObject::connect(&model, &QAbstractItemModel::rowsInserted, [&](const QModelIndex& parent, int first, int last) {
+        for (int row = first; row <= last; ++row) {
+            inserted << model.index(row, 0, parent).data().toString();
+        }
+    });
+    // Queued behind the read the replaced stage holds.
+    bool busy = false;
+    EXPECT_FALSE(model.indexOfPath(QString::fromUtf8("/Group/Kept"), true, &busy).isValid());
+    EXPECT_TRUE(busy);
+    replaced->open();
+    EXPECT_TRUE(processEventsUntil([&]() { return model.indexOfPath(QString::fromUtf8("/Group/Kept"), true).isValid(); }));
+    EXPECT_TRUE(processEventsUntil([&]() { return !model.hasOwedReads(); }));
+
+    EXPECT_GT(replaced->workerReads.load(), 0);
+    EXPECT_EQ(QStringList(QString::fromUtf8("Kept")), childNames(model, model.indexOfPath(QString::fromUtf8("/Group"), false)));
+    for (const QString& name : inserted) {
+        EXPECT_FALSE(name.startsWith(QString::fromUtf8("Gone"))) << name.toStdString();
+    }
+    EXPECT_EQ(2, model.getItemCount());
+
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+// Gathered edits touching many rows are applied over several turns of the event loop, the model
+// whole between them.
+TEST(SceneGraphModel, ALargeGatheredEditAppliesInSlices)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    const int groupCount = 8;
+    const auto payloadOf = [groupCount](const std::vector<std::string>& children, U64 salt) {
+        ScenePayload payload;
+        for (int i = 0; i < groupCount; ++i) {
+            payload = SceneOps::appendLayer(payload, groupLayer("G" + std::to_string(i), children), salt + (U64)i);
+        }
+
+        return payload;
+    };
+    source->sync(payloadOf({ "A", "B", "C" }, 10));
+
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setReadsOnWorker(true);
+    model.setSource(source);
+    for (int i = 0; i < groupCount; ++i) {
+        ASSERT_TRUE(waitForPath(model, QString::fromStdString("/G" + std::to_string(i) + "/C")).isValid());
+    }
+    const int resets = model.getResetCount();
+    const int slices = model.getApplySliceCount();
+
+    model.setApplySliceMs(0);
+    source->sync(payloadOf({ "B", "C", "D" }, 100));
+    model.refresh();
+    const QStringList after = QStringList() << QString::fromUtf8("B") << QString::fromUtf8("C") << QString::fromUtf8("D");
+    const auto allEdited = [&]() {
+        for (int i = 0; i < groupCount; ++i) {
+            if (childNames(model, model.indexOfPath(QString::fromStdString("/G" + std::to_string(i)), false)) != after) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+    EXPECT_TRUE(processEventsUntil(allEdited));
+    EXPECT_TRUE(processEventsUntil([&]() { return !model.hasOwedReads(); }));
+
+    EXPECT_GT(model.getApplySliceCount() - slices, 1);
+    EXPECT_EQ(resets, model.getResetCount());
+    EXPECT_EQ(groupCount * 4, model.getItemCount());
+
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+// After a reset the model holds the root alone; the rows a remembered path needs come in from the
+// event loop, and deferredReadsDone() says when to ask for it again.
+TEST(SceneGraphModel, RestoringAPathAfterAResetArrivesAsynchronously)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<GatedStageSource> source = std::make_shared<GatedStageSource>();
+    std::shared_ptr<TestStageSource> other = std::make_shared<TestStageSource>();
+    source->sync(referenceScene());
+    other->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Group", { "A" }), 1));
+    const QString ball = QString::fromUtf8("/World/Ball");
+
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setReadsOnWorker(true);
+    model.setSource(source);
+    source->open();
+    ASSERT_TRUE(waitForPath(model, ball).isValid());
+    source->close();
+
+    model.setSource(other);
+    EXPECT_TRUE(processEventsUntil([&]() { return !model.hasOwedReads(); }));
+    const int resets = model.getResetCount();
+    model.setSource(source);
+    EXPECT_EQ(resets + 1, model.getResetCount());
+    EXPECT_EQ(0, model.rowCount());
+    EXPECT_EQ(0, model.getItemCount());
+
+    QSignalSpy done(&model, &SceneGraphModel::deferredReadsDone);
+    const int mainReads = source->mainReads.load();
+    bool busy = false;
+    EXPECT_FALSE(model.indexOfPath(ball, true, &busy).isValid());
+    EXPECT_TRUE(busy);
+    EXPECT_EQ(mainReads, source->mainReads.load());
+    source->open();
+    EXPECT_TRUE(processEventsUntil([&]() { return done.count() > 0; }));
+    const QModelIndex restored = model.indexOfPath(ball, false);
+    ASSERT_TRUE(restored.isValid());
+    EXPECT_EQ(QString::fromUtf8("World"), restored.parent().data().toString());
+    EXPECT_EQ(resets + 1, model.getResetCount());
 
     EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
 }

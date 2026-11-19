@@ -1177,9 +1177,13 @@ struct SceneGraphPanel::Implementation {
         restoringExpansion = true;
         expansionDeferred = false;
         for (const QString& path : paths) {
-            const QModelIndex index = model->indexOfPath(path, true, &expansionDeferred);
-            if (expansionDeferred) {
-                break;
+            // Every path asks before any read comes back, so that the reads queue together
+            // rather than one per answer.
+            bool deferred = false;
+            const QModelIndex index = model->indexOfPath(path, true, &deferred);
+            if (deferred) {
+                expansionDeferred = true;
+                continue;
             }
             // Opening an unloaded payload row would load it: it stays closed, and remembered,
             // until the user twirls it.
@@ -1689,14 +1693,14 @@ struct SceneGraphPanel::Implementation {
         // The current prim is last; the cap keeps it.
         for (int i = std::max(0, (int)ordered.size() - kShownSelectionCap); i < ordered.size(); ++i) {
             const QString& path = ordered[i];
+            if (treeSelectionDeferred) {
+                // The rest are asked for too, so that their reads queue with the first.
+                model->indexOfPath(path, true, &treeSelectionDeferred);
+                continue;
+            }
             const QModelIndex index = model->indexOfPath(path, true, &treeSelectionDeferred);
             if (treeSelectionDeferred) {
-                // The rows keep showing the selection they had until the stage can be read.
-                treeSelectionOwed = true;
-                restoringExpansion = wasRestoring;
-                syncingSelection = wasSyncing;
-
-                return;
+                continue;
             }
             if (!index.isValid()) {
                 continue;
@@ -1712,6 +1716,14 @@ struct SceneGraphPanel::Implementation {
                 selection.select(index, index.sibling(index.row(), SceneGraphModel::eColumnCount - 1));
             }
             current = index;
+        }
+        if (treeSelectionDeferred) {
+            // The rows keep showing the selection they had until the stage can be read.
+            treeSelectionOwed = true;
+            restoringExpansion = wasRestoring;
+            syncingSelection = wasSyncing;
+
+            return;
         }
         tree->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect);
         if (current.isValid()) {

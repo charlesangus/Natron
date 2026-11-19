@@ -297,6 +297,9 @@ public:
      **/
     bool isDrawFilling() const;
 
+    // Each fill batch admits this many prims; 0, the default, sizes it from the frames' cost. Any thread.
+    void setDrawFillBatch(std::size_t prims);
+
     // The share of the prims Hydra has been given that have come in, 1 with none to come. Any thread.
     double getFillProgress() const;
 
@@ -1283,6 +1286,11 @@ public Q_SLOTS:
      * it cost, so the viewer keeps its frame rate.
      **/
     void setDrawRevealBatch(int prims);
+    /**
+     * @brief While Storm fills, each presented image admits this many prims into Hydra; 0 or below,
+     * the default, sizes each batch from what the frames before it cost.
+     **/
+    void setDrawFillBatch(int prims);
     /**
      * @brief With NATRON_DRAW_STATE_TIMING=1, traces the frames of the changes that follow, until
      * called with false. Every presented change publishes its record to natronSceneDrawTimings.

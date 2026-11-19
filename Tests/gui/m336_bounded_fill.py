@@ -10,8 +10,8 @@ out of Hydra, and clears that, so the whole city comes in again in bounded passe
 
 File: $NATRON_CITY_FILE, by default a city of $NATRON_FILL_BLOCKS blocks (40) the script writes under
 $NATRON_GUI_TEST_OUT. The fill batch is fixed
-through setDrawRevealBatch to a sixteenth of the city, so the fill needs about 16 passes however
-fast the machine is, and is restored to the paced default afterwards.
+through setDrawFillBatch to a sixteenth of the city's rprims, so the fill needs at least 16 passes
+however fast the machine is, and is restored to the paced default afterwards.
 
 Screenshots for sign-off: bounded-fill-mid (the boxes of rows still to come over the frame),
 bounded-fill-complete.
@@ -39,9 +39,12 @@ CITY_PRIMS = BLOCKS * BUILDINGS_PER_BLOCK * 40 + BLOCKS + 1
 INITIAL_DRAW_FULL_LOAD = 4
 # Frames of the fill a nudge may take to reach the screen in.
 NUDGE_PASSES = 4
-# Prims a fill pass shows in the test: the city needs at least MIN_FILL_PASSES of them.
-MIN_FILL_PASSES = 8
-FILL_BATCH = max(1, CITY_PRIMS // (MIN_FILL_PASSES * 2))
+# Only the cubes are rprims, which are what a fill admits; each building also holds its root and
+# floor xforms (heavy_scene_make.make_city).
+CITY_RPRIMS = BLOCKS * BUILDINGS_PER_BLOCK * ((CITY_PRIMS - 1 - BLOCKS) // (BLOCKS * BUILDINGS_PER_BLOCK) - 1 - CITY_FLOORS)
+# Prims a fill pass admits in the test: the city needs at least MIN_FILL_PASSES of them.
+MIN_FILL_PASSES = 16
+FILL_BATCH = max(1, CITY_RPRIMS // MIN_FILL_PASSES)
 NUDGE_FLOOR_MS = 500.0
 
 try:
@@ -160,7 +163,7 @@ try:
         section("Bounded fill")
         frames_before = presented()
         # A fixed batch, so the pass count depends on the city and not on the machine's speed.
-        call("setDrawRevealBatch", Q_ARG(int, FILL_BATCH))
+        call("setDrawFillBatch", Q_ARG(int, FILL_BATCH))
         call("clearDrawState", Q_ARG("QString", "/World"))
         ok = yield ("until", lambda: not fill_complete() and float(prop("natronSceneFillProgress", 1.0)) < 1.0, POLL_TIMEOUT_S)
         require(ok, "clearing /World starts a fill (progress %r)" % (prop("natronSceneFillProgress"),))
@@ -201,7 +204,7 @@ try:
             if value < progress[-1] - 1e-9 and fell is None:
                 fell = (progress[-1], value)
             progress.append(value)
-        call("setDrawRevealBatch", Q_ARG(int, -1))
+        call("setDrawFillBatch", Q_ARG(int, 0))
         check(fell is None, "the fill's progress never falls while the camera rests (fell %r)" % (fell,))
         ok = yield ("until", fill_complete, LOAD_TIMEOUT_S)
         check(ok, "the fill completes (natronSceneFillComplete %r)" % (prop("natronSceneFillComplete"),))

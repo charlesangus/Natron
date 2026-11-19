@@ -80,7 +80,7 @@ try:
     from PySide6.QtWidgets import QApplication, QTreeView
     from pxr import Sdf
 
-    from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
+    from guitest import OUT, check, fetch_rows, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
 
     PATH_ROLE = Qt.UserRole + 1
     STATE_ROLE = Qt.UserRole + 3
@@ -161,8 +161,7 @@ try:
         m = model()
         if m is None:
             return []
-        while m.canFetchMore(parent):
-            m.fetchMore(parent)
+        fetch_rows(m, parent)
         return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
 
     def find(path):

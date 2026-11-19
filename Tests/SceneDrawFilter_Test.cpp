@@ -2232,6 +2232,36 @@ TEST_F(SceneDrawFilterTest, EachAdmissionAnnouncesAtMostItsBatch)
     EXPECT_EQ(kAllGeometry, drawnGeometry());
 }
 
+TEST_F(SceneDrawFilterTest, AFixedFillBatchAdmitsExactlyThatManyEachPass)
+{
+    std::vector<std::string> paths;
+    std::vector<std::pair<const char*, TfToken>> city = { { "/World/city", TfToken("xform") } };
+    for (int i = 0; i < 34; ++i) {
+        paths.push_back("/World/city/m" + std::to_string(i));
+    }
+    for (const std::string& path : paths) {
+        city.push_back({ path.c_str(), HdPrimTypeTokens->mesh });
+    }
+    addPrims(scene, city);
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    const std::size_t total = filter->pendingCount();
+    ASSERT_EQ(kAllGeometry.size() + paths.size(), total);
+    const std::size_t batch = 8;
+
+    std::size_t passes = 0;
+    while (filter->isFilling() && (passes < 100)) {
+        const std::size_t pending = filter->pendingCount();
+        recorder.reset();
+        const std::size_t admitted = filter->admit(SceneDrawFilter::Order(), batch);
+        ++passes;
+        EXPECT_EQ((std::min)(batch, pending), admitted) << "pass " << passes;
+        EXPECT_EQ(admitted, recorder.addedEntries) << "pass " << passes;
+    }
+    EXPECT_EQ((total + batch - 1) / batch, passes);
+    EXPECT_EQ(total, filter->admittedCount());
+}
+
 TEST_F(SceneDrawFilterTest, DirtiesOfWaitingPrimsAreDropped)
 {
     filter->setAdmitting(true);

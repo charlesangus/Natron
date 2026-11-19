@@ -52,7 +52,7 @@ try:
     from PySide6.QtCore import Q_ARG, QMetaObject, QModelIndex, Qt, QTimer
     from PySide6.QtWidgets import QApplication, QMessageBox, QTreeView
 
-    from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
+    from guitest import OUT, check, fetch_rows, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
 
     PATH_ROLE = Qt.UserRole + 1
     PAYLOAD_STATE_ROLE = Qt.UserRole + 3
@@ -111,8 +111,7 @@ try:
         m = model()
         if m is None:
             return []
-        while m.canFetchMore(parent):
-            m.fetchMore(parent)
+        fetch_rows(m, parent)
         return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
 
     def find(path):
@@ -242,31 +241,51 @@ try:
         with open(project_path, "rb") as f:
             return f.read().decode("utf-8", "replace")
 
+    def answering(answer_box, call):
+        """Runs call() while a timer answers each modal question answer_box(box) recognises."""
+        asked = []
+
+        def answer_question():
+            box = QApplication.activeModalWidget()
+            if isinstance(box, QMessageBox):
+                text = box.text()
+                if answer_box(box):
+                    asked.append(text)
+
+        timer = QTimer()
+        timer.timeout.connect(answer_question)
+        timer.start(200)
+        try:
+            result = call()
+        finally:
+            timer.stop()
+            timer = None
+        return result, asked
+
+    def click(box, button):
+        found = box.button(button)
+        if found is None:
+            return False
+        found.click()
+        return True
+
     def reopen(label):
         # Showing the Scene Graph panel splits a pane and moves a tab, which are project edits, so
         # the reset asks whether to save them. The saved project is the one under test: discard.
-        asked = []
-
-        def discard_save_question():
-            box = QApplication.activeModalWidget()
-            if isinstance(box, QMessageBox) and box.button(QMessageBox.StandardButton.Discard) is not None:
-                asked.append(box.text())
-                box.button(QMessageBox.StandardButton.Discard).click()
-
-        answer = QTimer()
-        answer.timeout.connect(discard_save_question)
-        answer.start(200)
-        try:
-            reset = app.resetProject()
-        finally:
-            answer.stop()
-            answer = None
+        reset, asked = answering(lambda box: click(box, QMessageBox.StandardButton.Discard), app.resetProject)
         if asked:
             report("NOTE %s: discarded the layout edits (%r)" % (label, asked[0]))
         require(reset, "%s: reset the project (close it, keep the window)" % label)
         forget_widgets()
         yield ("sleep", SETTLE_MS)
-        require(app.loadProject(project_path) is not None, "%s: reopen %s" % (label, project_path))
+        # An auto-save the edits started can still be writing when the reset ends, past the question
+        # that would discard it; loading then asks, modally, whether to use it. The saved project is
+        # the one under test: No, which also deletes the auto-save.
+        reopened, asked = answering(lambda box: "auto-save" in box.text() and click(box, QMessageBox.StandardButton.No),
+                                    lambda: app.loadProject(project_path))
+        if asked:
+            report("NOTE %s: declined an auto-save of the closed project (%r)" % (label, asked[0]))
+        require(reopened is not None, "%s: reopen %s" % (label, project_path))
 
     def steps():
         usd = app.createNode("USDRead")

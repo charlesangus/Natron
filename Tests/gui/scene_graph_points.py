@@ -88,7 +88,7 @@ try:
     from PySide6.QtWidgets import QAbstractItemView, QComboBox, QLabel, QTreeView
     from pxr import Sdf
 
-    from guitest import OUT, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
+    from guitest import OUT, check, fetch_rows, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
     PATH_ROLE = Qt.UserRole + 1
     STATE_ROLE = Qt.UserRole + 3
@@ -188,8 +188,7 @@ try:
         m = model()
         if m is None:
             return []
-        while m.canFetchMore(parent):
-            m.fetchMore(parent)
+        fetch_rows(m, parent)
         return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
 
     def path_of(index):
@@ -220,8 +219,10 @@ try:
         return index.isValid() and tree().isExpanded(index)
 
     def listed(*paths):
-        """A poll true once the model, which reads rows on its worker, has read each of paths."""
-        return lambda: all(find(path).isValid() for path in paths)
+        """Waits until the model, which reads rows on its worker, has read each of paths."""
+        ok = yield ("until", lambda: all(find(path).isValid() for path in paths), POLL_TIMEOUT_S)
+        check(ok, "the panel lists %r" % (paths,))
+        return ok
 
     def opened(*paths):
         """A poll that opens each of paths once the model has read its row, true when all are open."""
@@ -358,7 +359,7 @@ try:
         check(compose_count() > composed, "the pinned node is read into a stage of the panel's own (%d, then %d)"
               % (composed, compose_count()))
         check(opened_buildings() == [], "reading the pinned node opens no building's layer (got %r)" % (opened_buildings(),))
-        yield ("until", listed(B0, BLOCK1 + "/B0"), POLL_TIMEOUT_S)
+        yield from listed(B0, BLOCK1 + "/B0")
         for path in (B0, BLOCK1 + "/B0"):
             check(state(path) == STATE_UNLOADED, "%s is unloaded on the panel's stage (got %r)" % (path, state(path)))
         shot("scene-graph-points-pinned-read.png")
@@ -399,7 +400,7 @@ try:
         check(ok, "the kept USDPrune's tree comes back (got %r)" % (world_children(),))
         yield ("sleep", SETTLE_MS)
         check(compose_count() == composed, "returning to the kept USDPrune composes nothing (%d, then %d)" % (composed, compose_count()))
-        yield ("until", listed(B0), POLL_TIMEOUT_S)
+        yield from listed(B0)
         check(expanded(WORLD) and expanded(BLOCK0), "the open rows carry over to the USDPrune")
         check(state(B0) == STATE_UNLOADED and not expanded(B0),
               "the payload row unloaded here stays closed and unloaded (state %r, open %r)" % (state(B0), expanded(B0)))
@@ -460,7 +461,7 @@ try:
         ok = yield ("until", lambda: shows(usd, all_blocks)() and scene_drawn(), POLL_TIMEOUT_S)
         require(ok, "the panel shows the viewer's USDRead (got %r)" % (world_children(),))
         yield ("sleep", SETTLE_MS)
-        yield ("until", listed(B0), POLL_TIMEOUT_S)
+        yield from listed(B0)
         check(state(B0) == STATE_UNLOADED and not expanded(B0),
               "on the viewer's stage, the remembered payload row stays closed and unloaded (state %r)" % (state(B0),))
         target = PROPS + "/P%03d" % (PROP_COUNT // 2,)
@@ -493,7 +494,7 @@ try:
         check(top_path() == top, "the top row survives the switch back (%r, then %r)" % (top, top_path()))
         check(viewer_load_edits() == edits, "restoring the rows loads nothing (%d, then %d)" % (edits, viewer_load_edits()))
         check(opened_buildings() == layers, "restoring the rows opens no building's layer (%r, then %r)" % (layers, opened_buildings()))
-        yield ("until", listed(B0), POLL_TIMEOUT_S)
+        yield from listed(B0)
         check(state(B0) == STATE_UNLOADED and not expanded(B0), "the unloaded payload row stays closed (state %r)" % (state(B0),))
         shot("scene-graph-points-viewer-back.png")
 
@@ -552,7 +553,7 @@ try:
         use(FIRST)
         check(shows(prune, pruned)(), "pinning the second panel leaves the first on the USDPrune (got %r, %r)"
               % (shown_node(), world_children()))
-        yield ("until", listed(BLOCK0 + "/B1"), POLL_TIMEOUT_S)
+        yield from listed(BLOCK0 + "/B1")
         check(state(BLOCK0 + "/B1") == STATE_UNLOADED, "Block0/B1 is unloaded on the first panel's stage")
 
         edits = viewer_load_edits()

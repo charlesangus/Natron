@@ -849,6 +849,7 @@ struct SceneViewportRenderer::Implementation {
     bool fillPaced = true;
     std::atomic<std::size_t> fillAdmitted { 0 };
     std::atomic<std::size_t> fillPending { 0 };
+    std::atomic<std::size_t> fillFixedBatch { 0 };
     std::atomic<double> fillBudgetMs { kRevealTargetMs };
     double fillPacerBudgetMs = kRevealTargetMs;
     bool drawFillStep = false;
@@ -2097,7 +2098,8 @@ struct SceneViewportRenderer::Implementation {
                 fillPacerBudgetMs = budgetMs;
             }
             const std::chrono::steady_clock::time_point stepStart = std::chrono::steady_clock::now();
-            stepped = filter->admit(fillOrder, drawRevealPacer.nextBatch(), stepStart + std::chrono::milliseconds(kRevealStepDeadlineMs));
+            const std::size_t fixedBatch = fillFixedBatch;
+            stepped = filter->admit(fillOrder, (fixedBatch != 0) ? fixedBatch : drawRevealPacer.nextBatch(), stepStart + std::chrono::milliseconds(kRevealStepDeadlineMs));
             ++drawRevealSteps;
             drawFillStep = (stepped != 0);
             drawFillStepLoads = filter->getInputAddedCount();
@@ -3724,6 +3726,12 @@ bool
 SceneViewportRenderer::isDrawFilling() const
 {
     return _imp->drawFilling;
+}
+
+void
+SceneViewportRenderer::setDrawFillBatch(std::size_t prims)
+{
+    _imp->fillFixedBatch = prims;
 }
 
 double
@@ -8913,6 +8921,12 @@ void
 SceneViewport::setDrawRevealBatch(int prims)
 {
     _imp->drawRevealBatch = (prims < 0) ? SceneViewportRenderer::kRevealPaced : std::size_t(prims);
+}
+
+void
+SceneViewport::setDrawFillBatch(int prims)
+{
+    _imp->renderer.setDrawFillBatch((prims > 0) ? std::size_t(prims) : 0);
 }
 
 void

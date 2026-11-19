@@ -145,6 +145,22 @@ def viewer_up():
     return any(w.isVisible() for w in widgets_of("ViewerGL"))
 
 
+FETCH_MORE_LIMIT = 256
+
+
+def fetch_rows(model, parent):
+    """Asks model for parent's rows that are still to come, a bounded number of times.
+
+    A model that reads its rows on a worker only posts the read in fetchMore(); the rows arrive on
+    a later turn of the event loop, so asking until canFetchMore() is false could never end. A poll
+    that calls this again picks the rows up once they have arrived.
+    """
+    for _ in range(FETCH_MORE_LIMIT):
+        if not model.canFetchMore(parent):
+            return
+        model.fetchMore(parent)
+
+
 def viewer_messages():
     """The persistent messages the viewer is drawing, one string per message."""
     messages = []

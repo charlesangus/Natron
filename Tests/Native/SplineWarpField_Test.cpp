@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -122,6 +123,87 @@ squareBoundary(double fallOff)
     b.fallOff = fallOff;
 
     return std::vector<SplineWarpBoundaryShape>(1, b);
+}
+
+SplineWarpTps
+bentMap()
+{
+    std::vector<SplineWarpSamplePair> pairs;
+
+    pairs.push_back(makePair(0., 0., 3., 1.));
+    pairs.push_back(makePair(120., 10., 118., 14.));
+    pairs.push_back(makePair(60., 90., 66., 85.));
+    pairs.push_back(makePair(20., 140., 20., 140.));
+    pairs.push_back(makePair(150., 150., 140., 155.));
+
+    return SplineWarpTps::solve(pairs, 0.);
+}
+
+// Every value the field gives over its window matches bit for bit.
+void
+expectSameField(const SplineWarpField& a,
+                const SplineWarpField& b)
+{
+    ASSERT_EQ(a.getWindow(), b.getWindow());
+    ASSERT_EQ(a.isIdentity(), b.isIdentity());
+    const RectI& w = a.getWindow();
+
+    const RectD ba = a.getSourceBounds();
+    const RectD bb = b.getSourceBounds();
+    EXPECT_EQ(ba.x1, bb.x1);
+    EXPECT_EQ(ba.y1, bb.y1);
+    EXPECT_EQ(ba.x2, bb.x2);
+    EXPECT_EQ(ba.y2, bb.y2);
+    double ksa[2], ksb[2];
+    a.getLargestKernelScales(&ksa[0], &ksa[1]);
+    b.getLargestKernelScales(&ksb[0], &ksb[1]);
+    EXPECT_EQ(ksa[0], ksb[0]);
+    EXPECT_EQ(ksa[1], ksb[1]);
+
+    const int width = w.width();
+    std::vector<float> sxa(width), sya(width), ja(4 * width), sxb(width), syb(width), jb(4 * width);
+    std::vector<double> pxa, pya, pja, pxb, pyb, pjb;
+    for (int y = w.y1; y < w.y2; ++y) {
+        a.getRow(y, w.x1, w.x2, &sxa[0], &sya[0], &ja[0]);
+        b.getRow(y, w.x1, w.x2, &sxb[0], &syb[0], &jb[0]);
+        for (int k = 0; k < width; ++k) {
+            ASSERT_EQ(sxa[k], sxb[k]) << w.x1 + k << " " << y;
+            ASSERT_EQ(sya[k], syb[k]) << w.x1 + k << " " << y;
+            for (int m = 0; m < 4; ++m) {
+                ASSERT_EQ(ja[4 * k + m], jb[4 * k + m]) << w.x1 + k << " " << y;
+            }
+            const double px = w.x1 + k + 0.3;
+            const double py = y + 0.7;
+            pxa.push_back(px);
+            pya.push_back(py);
+            pxb.push_back(px);
+            pyb.push_back(py);
+            const double identity[4] = { 1., 0., 0., 1. };
+            pja.insert(pja.end(), identity, identity + 4);
+            pjb.insert(pjb.end(), identity, identity + 4);
+        }
+    }
+    a.mapPoints(pxa.size(), &pxa[0], &pya[0], &pja[0]);
+    b.mapPoints(pxb.size(), &pxb[0], &pyb[0], &pjb[0]);
+    EXPECT_TRUE(pxa == pxb);
+    EXPECT_TRUE(pya == pyb);
+    EXPECT_TRUE(pja == pjb);
+
+    std::vector<uint32_t> wa, wb;
+    SplineWarpFieldGpuLayout la, lb;
+    a.getGpuTables(&wa, &la);
+    b.getGpuTables(&wb, &lb);
+    EXPECT_TRUE(wa == wb);
+    EXPECT_EQ(la.nodes, lb.nodes);
+    EXPECT_EQ(la.columns, lb.columns);
+    EXPECT_EQ(la.rows, lb.rows);
+    EXPECT_EQ(la.feathers, lb.feathers);
+    EXPECT_EQ(la.featherStride, lb.featherStride);
+    EXPECT_EQ(la.nx, lb.nx);
+    EXPECT_EQ(la.ny, lb.ny);
+    EXPECT_EQ(la.i0, lb.i0);
+    EXPECT_EQ(la.j0, lb.j0);
+    EXPECT_EQ(la.window, lb.window);
 }
 } // anonymous namespace
 
@@ -354,4 +436,41 @@ TEST(SplineWarpField, TheCacheBuildsOncePerKey)
     ASSERT_TRUE(bool(c));
     EXPECT_EQ(a.get(), b.get());
     EXPECT_NE(a.get(), c.get());
+}
+
+TEST(SplineWarpField, TheCacheCutsAWindowFromALargerField)
+{
+    const SplineWarpTps map = bentMap();
+    ASSERT_EQ(SplineWarpTps::eModelThinPlate, map.getModel());
+    const std::vector<SplineWarpBoundaryShape> none;
+    const std::vector<SplineWarpBoundaryShape> square = squareBoundary(1.5);
+    const RectI whole(-20, -30, 200, 190);
+    // An anisotropic scale and windows off the lattice, one of them outside every feather.
+    const RectI tiles[] = { RectI(37, 51, 101, 99), RectI(-20, -30, 13, 7), RectI(150, 140, 200, 190), RectI(-17, -21, 197, 183) };
+
+    for (int b = 0; b < 2; ++b) {
+        const std::vector<SplineWarpBoundaryShape>& boundaries = b ? square : none;
+        SplineWarpFieldCache cache;
+        const SplineWarpFieldConstPtr large = cache.get(3, 1., map, boundaries, whole, 0.75, 1., 4.);
+        ASSERT_TRUE(bool(large));
+        ASSERT_FALSE(large->isIdentity());
+        EXPECT_EQ(std::size_t(1), cache.getSolveCount());
+        for (const RectI& tile : tiles) {
+            const SplineWarpFieldConstPtr cut = cache.get(3, 1., map, boundaries, tile, 0.75, 1., 4.);
+            ASSERT_TRUE(bool(cut));
+            EXPECT_EQ(std::size_t(1), cache.getSolveCount());
+            EXPECT_EQ(tile, cut->getWindow());
+            const SplineWarpField fresh(map, boundaries, tile, 0.75, 1., 4.);
+            expectSameField(fresh, *cut);
+        }
+        EXPECT_TRUE(cache.get(3, 1., map, boundaries, tiles[2], 0.75, 1., 4.)->isIdentity() == bool(b));
+
+        // A window the cached fields do not hold, or another warp, is solved.
+        cache.get(3, 1., map, boundaries, RectI(100, 100, 260, 220), 0.75, 1., 4.);
+        EXPECT_EQ(std::size_t(2), cache.getSolveCount());
+        cache.get(3, 2., map, boundaries, tiles[0], 0.75, 1., 4.);
+        EXPECT_EQ(std::size_t(3), cache.getSolveCount());
+        cache.get(3, 1., map, boundaries, tiles[0], 0.75, 1., 8.);
+        EXPECT_EQ(std::size_t(4), cache.getSolveCount());
+    }
 }

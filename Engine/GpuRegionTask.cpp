@@ -1018,9 +1018,39 @@ private:
             }
             chain.warpChain = prepared;
             chain.gpuWords = words;
+            if (chain.source) {
+                // Pulling the node's region back again would prepare the chain over a window rounded
+                // otherwise, building its maps a second time, and read another region than the
+                // chain the GPU samples through.
+                const RectI preparedRect = renderRectOf(*member);
+                const NodeMetadataConstPtr sourceMetadata = chain.source->getRenderMetadata(q.time, q.view);
+                const double sourcePar = sourceMetadata ? sourceMetadata->getPixelAspectRatio(-1) : 1.;
+                chain.sourceRoI = [effect, q, transforms, inputNb, prepared, preparedRect, sourcePar](const RectI& rect) {
+                    if (rect == preparedRect) {
+                        return prepared->getSourcePixels(sourcePar);
+                    }
+
+                    return inputRoIOf(effect, q, transforms, inputNb, rect);
+                };
+            }
         }
 
         return true;
+    }
+
+    // inputRoIOf() through the chain planInputChains() prepared for inputNb, when it did.
+    static RectI chainInputRoIOf(const std::vector<GpuInputChain>& chains,
+                                 NativeEffectBase* effect,
+                                 const GpuQuery& q,
+                                 const InputMatrixMapPtr& transforms,
+                                 int inputNb,
+                                 const RectI& rect)
+    {
+        if ((inputNb >= 0) && (inputNb < (int)chains.size()) && chains[inputNb].sourceRoI) {
+            return chains[inputNb].sourceRoI(rect);
+        }
+
+        return inputRoIOf(effect, q, transforms, inputNb, rect);
     }
 
     bool planInputs(const std::vector<std::pair<int, int>>& edges,
@@ -1093,7 +1123,7 @@ private:
             if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
                 return fail(member->task, "an input renders an empty window");
             }
-            const RectI needed = inputRoIOf(effect, member->query, member->transforms, inputNb, renderRect);
+            const RectI needed = chainInputRoIOf(member->inputChains, effect, member->query, member->transforms, inputNb, renderRect);
             const int slot = readSlot(edges[e].second, layer, needed);
             if (slot < 0) {
                 return fail(member->task, "an input produced in the region is not in the layer the node reads");
@@ -1122,7 +1152,7 @@ private:
             if (!effect->getGpuExtraInputLayers(inputNb, member->plane, task.key.time, task.key.view, &layers)) {
                 return fail(member->task, "the node cannot read an input on the GPU");
             }
-            const RectI needed = inputRoIOf(effect, member->query, member->transforms, inputNb, renderRect);
+            const RectI needed = chainInputRoIOf(member->inputChains, effect, member->query, member->transforms, inputNb, renderRect);
             for (const ImageLayerDesc& layer : layers) {
                 const int slot = readSlot(inputTasks[inputNb], layer, needed);
                 if (slot < 0) {
@@ -2564,10 +2594,11 @@ private:
             const EffectInstancePtr owner = contextArgs ? effect->shared_from_this() : EffectInstancePtr();
             const GpuQuery query = member.query;
             const InputMatrixMapPtr transforms = member.transforms;
-            stripMember.inputRoI = [effect, owner, contextArgs, time, view, scale, inputOfSlot, timeOfSlot, query, transforms](int k, const RectI& rect) {
+            const std::vector<GpuInputChain> chains = member.inputChains;
+            stripMember.inputRoI = [effect, owner, contextArgs, time, view, scale, inputOfSlot, timeOfSlot, query, transforms, chains](int k, const RectI& rect) {
                 const ContextFrameArgsScope contextScope(owner, contextArgs);
                 if (transforms && (timeOfSlot[k] == time)) {
-                    return inputRoIOf(effect, query, transforms, inputOfSlot[k], rect);
+                    return chainInputRoIOf(chains, effect, query, transforms, inputOfSlot[k], rect);
                 }
 
                 return effect->getGpuInputRoI(inputOfSlot[k], time, view, rect, scale);

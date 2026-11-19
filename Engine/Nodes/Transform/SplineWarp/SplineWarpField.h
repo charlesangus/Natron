@@ -28,7 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -113,6 +115,14 @@ public:
                     double fieldResolution);
 
     /**
+     * @brief What the field built over window gives, taken from from without solving again; from's
+     * window must hold window. Grid points sit on the same lattice whatever the window, so their
+     * sources are copied; the Jacobians are worked out again, being one-sided at the grid's edge.
+     **/
+    SplineWarpField(const SplineWarpField& from,
+                    const RectI& window);
+
+    /**
      * @brief Whether every pixel of the window is its own source.
      **/
     bool isIdentity() const
@@ -191,6 +201,10 @@ public:
 private:
     // Solves the grid through map, or through mesh when map is null.
     void build(const SplineWarpTps* map, const SplineWarpMesh* mesh);
+    // The grid over the window: _i0, _j0, _nx, _ny.
+    void layOutGrid();
+    // From the grid's sources: whether any moved, and if so their Jacobians.
+    void finish();
     // Lattice coordinates of canonical (x, y) relative to the grid's first point, clamped so the
     // cell (ix, iy)-(ix + 1, iy + 1) is in the grid.
     void cellOf(double x, double y, int* ix, int* iy, double* fx, double* fy) const;
@@ -225,12 +239,14 @@ typedef std::shared_ptr<const SplineWarpField> SplineWarpFieldConstPtr;
 
 /**
  * @brief Built fields by solver, warp, time, render scale and window, shared by every render of a
- * node.
+ * node. A window held by a cached field's window is cut from that field rather than solved again.
  **/
 class SplineWarpFieldCache {
 public:
-    explicit SplineWarpFieldCache(std::size_t capacity = 4)
+    // Frames rendering concurrently each ask for several windows.
+    explicit SplineWarpFieldCache(std::size_t capacity = 16)
         : _cache(capacity)
+        , _solves(0)
     {
     }
 
@@ -264,6 +280,12 @@ public:
     // The field steps of the cached fields, most recently used first.
     std::vector<double> getResolutions() const;
 
+    // How many fields were solved rather than cut from a cached one.
+    std::size_t getSolveCount() const
+    {
+        return _solves.load();
+    }
+
 private:
     struct Key {
         bool mesh;
@@ -276,11 +298,19 @@ private:
 
         bool operator==(const Key& o) const
         {
-            return mesh == o.mesh && hash == o.hash && time == o.time && scaleX == o.scaleX && scaleY == o.scaleY && resolution == o.resolution && window == o.window;
+            return sameWarp(o) && window == o.window;
+        }
+
+        bool sameWarp(const Key& o) const
+        {
+            return mesh == o.mesh && hash == o.hash && time == o.time && scaleX == o.scaleX && scaleY == o.scaleY && resolution == o.resolution;
         }
     };
 
+    SplineWarpFieldConstPtr get(const Key& key, const std::function<SplineWarpField()>& solve);
+
     SplineWarpLruCache<Key, SplineWarpField> _cache;
+    std::atomic<std::size_t> _solves;
 };
 
 NATRON_NAMESPACE_EXIT

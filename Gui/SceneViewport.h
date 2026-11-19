@@ -1438,11 +1438,11 @@ private:
     // Main thread: starts the frame a paint asked for, once the window has composed that paint.
     void startOwedFrame();
 
-    // Main thread, the widget's new context current: has the render thread make its context again
-    // sharing that one, the old engine going first, without waiting for it.
+    // Main thread, the widget's new context current: has the render thread make its context, or
+    // make it again, sharing that one, any old engine going first, without waiting for it.
     void rebuildRenderContext();
 
-    // Main thread: the render thread made its context again for the widget context numbered
+    // Main thread: the render thread made its context for the widget context numbered
     // shareGeneration, of share group group, or could not if group is null.
     void onRenderContextRebuilt(U64 shareGeneration, QOpenGLContextGroup* group);
 

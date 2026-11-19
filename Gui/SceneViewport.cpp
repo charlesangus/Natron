@@ -188,6 +188,9 @@ const std::chrono::milliseconds kFenceWatchInterval(1);
 // The longest a frame waits after the paint that asked for it for the window's composition, which
 // a window not shown on screen never does.
 const int kFrameStartFallbackMs = 50;
+// The longest a finished render holds the paints while the GPU completes it. A paint before then
+// shows the frame before, and its composition takes the vertical blank the new frame needed.
+const std::chrono::milliseconds kPresentHoldLimit(50);
 // The longest a sync's first frame waits for the graph policy its prims take: past it, the view
 // draws them as they are rather than seem stuck.
 const int kPolicyHoldMs = 500;
@@ -6977,12 +6980,12 @@ struct SceneViewport::Implementation {
     std::unique_ptr<QOffscreenSurface> renderSurface;
     // Render thread: its context, sharing the widget's.
     std::unique_ptr<QOpenGLContext> renderContext;
-    // Main thread: the share group of renderContext once made, null while it is being made again.
+    // Main thread: the share group of renderContext once made, null while it is being made.
     // A widget context of this group, after a reparent, uses the render thread as it is.
     QOpenGLContextGroup* renderShareGroup = nullptr;
     // The widget's context is gone and no new one has come: no frame starts meanwhile.
     bool widgetContextLost = false;
-    // Render contexts being made again, for a widget context of another share group.
+    // Render contexts being made: the first, or again for a widget context of another share group.
     int renderContextRebuilds = 0;
     // The context a render context being made again shares with. The render thread makes it under
     // the mutex, and the main thread, before that context dies, takes it away and bumps the
@@ -7043,6 +7046,8 @@ struct SceneViewport::Implementation {
     };
     // Main thread: the fence the render thread last found signalled.
     GLsync signalledFence = nullptr;
+    // Main thread: until when the frame on the GPU holds the paints.
+    std::chrono::steady_clock::time_point presentHoldEnd;
 
     // Main thread. A sync object belongs to the share group, so the render thread can delete one
     // when no context is current here, and making the widget's current could wait out a render.
@@ -7251,8 +7256,10 @@ struct SceneViewport::Implementation {
     }
 
     // Main thread, the widget's context current. False if this platform cannot, and the engine
-    // then stays in the widget's context.
-    bool startRenderContext(QOpenGLContext* share)
+    // then stays in the widget's context. Otherwise the render thread is up without its context,
+    // which the caller has it make: the driver can take hundreds of milliseconds over that while
+    // another viewer's context of the same window is destroying its engine.
+    bool prepareRenderThread(const QOpenGLContext* share)
     {
         if (!QOpenGLContext::supportsThreadedOpenGL() || !AppManager::instance()->isOpenGLLoaded()) {
             return false;
@@ -7267,16 +7274,11 @@ struct SceneViewport::Implementation {
             return false;
         }
         startRenderThread();
-        QOpenGLContextGroup* group = nullptr;
-        callOnRenderThread([&]() { group = makeRenderContext(share); });
-        if (!group) {
-            renderSurface.reset();
-        }
-        renderShareGroup = group;
-        usesRenderThread = bool(group);
+        renderShareGroup = nullptr;
+        usesRenderThread = true;
         widgetContextLost = false;
 
-        return usesRenderThread;
+        return true;
     }
 
     // Render thread, renderSurface made. The new context's share group, null if it could not be made.
@@ -7302,7 +7304,11 @@ struct SceneViewport::Implementation {
      **/
     bool holdsPaints() const
     {
-        return usesRenderThread && renderLoop && (renderLoop->outstanding.load() > 0);
+        if (!usesRenderThread || !renderLoop) {
+            return false;
+        }
+
+        return (renderLoop->outstanding.load() > 0) || (presentPacer.inFlight() && (std::chrono::steady_clock::now() < presentHoldEnd));
     }
 
     // Render thread. Target index of a width x height frame, reallocated when the size changes.
@@ -8074,6 +8080,7 @@ SceneViewport::startBackgroundFrame()
             }
             if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
                 _imp->presentPacer.submitted(fence, finished);
+                _imp->presentHoldEnd = std::chrono::steady_clock::now() + kPresentHoldLimit;
             }
             if (!rendered || !converged) {
                 _imp->renderer.forgetBackgroundView();
@@ -8304,6 +8311,7 @@ SceneViewport::pollPresent()
     if (!_imp->presentPacer.inFlight() || !_imp->presentPacer.poll()) {
         return;
     }
+    refreshPaintHold();
     serviceDeferredInput();
     update();
 }
@@ -10266,8 +10274,9 @@ SceneViewport::initializeGL()
             rebuildRenderContext();
         }
         update();
-    } else {
-        _imp->startRenderContext(context());
+    } else if (_imp->prepareRenderThread(context())) {
+        // Until the render thread reports its context, frames wait and paints show the background.
+        rebuildRenderContext();
     }
     GLContextLoss::watch(this, [this]() {
         _imp->releaseGLResources();
@@ -10328,8 +10337,9 @@ SceneViewport::paintGL()
         _imp->renderer.releaseOverlayGL();
     }
     if (_imp->usesRenderThread && ((_imp->renderContextRebuilds > 0) || _imp->engineReleaseRunning)) {
-        // A paint outside the hold, as a framebuffer grab: the render thread is releasing GL objects
-        // the overlays and the refinement share, and the next paint after it shows the scene.
+        // A paint outside the hold, as a framebuffer grab: the render thread is making its context or
+        // releasing GL objects the overlays and the refinement share, and the next paint after it
+        // shows the scene.
         float background[3];
         _imp->renderer.getBackgroundColor(background);
         glClearColor(background[0], background[1], background[2], 1.f);

@@ -35,7 +35,15 @@ logs=$repo/build/bench/logs
 mkdir -p "$logs"
 # shellcheck source=lib.sh
 . "$repo/tools/bench/lib.sh"
+specs=()
 for spec in "$@"; do
+    if [ "$spec" = expr ]; then
+        specs+=(exprchain:3,30,300,1000,5000 exprfan:3,30,300,1000,5000 exprmixed:3,30,300,1000,5000,20000)
+    else
+        specs+=("$spec")
+    fi
+done
+for spec in "${specs[@]}"; do
     topo=${spec%%:*}
     IFS=, read -ra sizes <<< "${spec#*:}"
     for n in "${sizes[@]}"; do

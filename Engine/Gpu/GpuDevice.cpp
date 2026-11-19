@@ -385,6 +385,24 @@ planQueues(std::span<const VkQueueFamilyProperties> families)
         plan.downloadQueueIndex = plan.computeQueues - 1;
     }
     plan.transferSharesComputeQueue = transfer < 0 && plan.computeQueues == 1;
+
+    constexpr VkQueueFlags graphicsAndCompute = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    if ((families[compute].queueFlags & graphicsAndCompute) == graphicsAndCompute) {
+        plan.graphics = true;
+        plan.graphicsFamily = plan.computeFamily;
+        plan.graphicsQueueIndex = plan.computeQueueIndex;
+        plan.graphicsSharesComputeQueue = true;
+    } else {
+        for (size_t i = 0; i < families.size(); ++i) {
+            if ((families[i].queueFlags & graphicsAndCompute) == graphicsAndCompute && families[i].queueCount > 0) {
+                plan.graphics = true;
+                plan.graphicsFamily = static_cast<uint32_t>(i);
+                plan.graphicsQueueIndex = 0;
+                plan.graphicsQueues = 1;
+                break;
+            }
+        }
+    }
     return plan;
 }
 
@@ -562,6 +580,10 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     dev->info_.uploadQueueIndex = queues->uploadQueueIndex;
     dev->info_.downloadQueueIndex = queues->downloadQueueIndex;
     dev->info_.transferSharesComputeQueue = queues->transferSharesComputeQueue;
+    dev->info_.graphicsQueue = queues->graphics;
+    dev->info_.graphicsFamily = queues->graphicsFamily;
+    dev->info_.graphicsQueueIndex = queues->graphicsQueueIndex;
+    dev->info_.graphicsSharesComputeQueue = queues->graphicsSharesComputeQueue;
 
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(dev->physical_, nullptr, &ne, nullptr);
@@ -600,6 +622,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             range = std::min<uint64_t>(range, options.maxStorageBufferRange);
         }
         dev->info_.maxStorageBufferRange = range;
+        dev->info_.maxDrawIndirectCount = std::max<uint32_t>(p2.properties.limits.maxDrawIndirectCount, 1);
         dev->info_.copyChunkSize = std::max<uint64_t>(options.copyChunkSize, 1);
         dev->info_.maxMemoryAllocationSize = p11.maxMemoryAllocationSize;
         dev->info_.minImportedHostPointerAlignment
@@ -613,7 +636,11 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     vkGetPhysicalDeviceFeatures2(dev->physical_, &avail.f2);
     dev->info_.shaderFloat16 = avail.f12.shaderFloat16 == VK_TRUE;
     dev->info_.dynamicRendering = avail.f13.dynamicRendering == VK_TRUE;
-    dev->info_.rasterFloatBlend = dev->info_.dynamicRendering
+    dev->info_.multiDrawIndirect = avail.f2.features.multiDrawIndirect == VK_TRUE;
+    if (!dev->info_.multiDrawIndirect) {
+        dev->info_.maxDrawIndirectCount = 1;
+    }
+    dev->info_.rasterFloatBlend = dev->info_.graphicsQueue && dev->info_.dynamicRendering
         && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32G32B32A32_SFLOAT)
         && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32_SFLOAT);
 
@@ -623,6 +650,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     want.f12.shaderFloat16 = avail.f12.shaderFloat16;
     want.f13.synchronization2 = VK_TRUE;
     want.f13.dynamicRendering = avail.f13.dynamicRendering;
+    want.f2.features.multiDrawIndirect = avail.f2.features.multiDrawIndirect;
 
     const float prios[3] = { 1.0f, 1.0f, 1.0f };
     std::vector<VkDeviceQueueCreateInfo> qcis;
@@ -636,6 +664,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     addQueues(queues->computeFamily, queues->computeQueues);
     if (queues->transferQueues > 0) {
         addQueues(queues->transferFamily, queues->transferQueues);
+    }
+    if (queues->graphicsQueues > 0) {
+        addQueues(queues->graphicsFamily, queues->graphicsQueues);
     }
 
     VkDeviceCreateInfo dci { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
@@ -664,9 +695,13 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             { QueueKind::Compute, dev->info_.computeFamily, dev->info_.computeQueueIndex },
             { QueueKind::Upload, dev->info_.transferFamily, dev->info_.uploadQueueIndex },
             { QueueKind::Download, dev->info_.transferFamily, dev->info_.downloadQueueIndex },
+            { QueueKind::Graphics, dev->info_.graphicsFamily, dev->info_.graphicsQueueIndex },
         };
         size_t used = 0;
         for (const auto& r : routes) {
+            if (r.kind == QueueKind::Graphics && !dev->info_.graphicsQueue) {
+                continue;
+            }
             VkQueue handle = VK_NULL_HANDLE;
             vkGetDeviceQueue(dev->device_, r.family, r.index, &handle);
             Queue* q = nullptr;
@@ -733,7 +768,16 @@ GpuDevice::~GpuDevice()
 uint32_t
 GpuDevice::queueFamily(QueueKind kind) const
 {
-    return kind == QueueKind::Compute ? info_.computeFamily : info_.transferFamily;
+    switch (kind) {
+    case QueueKind::Compute:
+        return info_.computeFamily;
+    case QueueKind::Graphics:
+        return info_.graphicsFamily;
+    case QueueKind::Upload:
+    case QueueKind::Download:
+        break;
+    }
+    return info_.transferFamily;
 }
 
 GpuDevice::Queue&
@@ -831,7 +875,7 @@ VkResult
 GpuDevice::waitIdleLocked()
 {
     // Vulkan requires every queue of the device to be externally synchronized across vkDeviceWaitIdle.
-    std::scoped_lock lock(queues_[0].mutex, queues_[1].mutex, queues_[2].mutex);
+    std::scoped_lock lock(queues_[0].mutex, queues_[1].mutex, queues_[2].mutex, queues_[3].mutex);
     return vkDeviceWaitIdle(device_);
 }
 
@@ -904,6 +948,9 @@ GpuDevice::submitUncounted(QueueKind kind, std::span<const VkSubmitInfo2> submit
 {
     if (isLost()) {
         return lostStatus();
+    }
+    if (!route_[static_cast<size_t>(kind)]) {
+        return fail(VK_ERROR_FEATURE_NOT_PRESENT, "the device has no queue of that kind");
     }
     Queue& q = queueFor(kind);
     std::lock_guard<std::mutex> lock(q.mutex);

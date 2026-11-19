@@ -160,21 +160,23 @@ GpuKernelRegistry::invalidate()
 }
 
 GpuStatus
-GpuKernelRegistry::commandPoolForThisThread(VkCommandPool& out)
+GpuKernelRegistry::commandPoolForThisThread(VkCommandPool& out, QueueKind queue)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = pools_.find(std::this_thread::get_id());
+    const uint32_t family = device_.queueFamily(queue);
+    const auto key = std::make_pair(std::this_thread::get_id(), family);
+    auto it = pools_.find(key);
     if (it == pools_.end()) {
         VkCommandPoolCreateInfo ci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
         ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        ci.queueFamilyIndex = device_.queueFamily(QueueKind::Compute);
+        ci.queueFamilyIndex = family;
         VkCommandPool pool = VK_NULL_HANDLE;
         if (GpuStatus s = device_.check(vkCreateCommandPool(device_.device(), &ci, nullptr, &pool),
                                         "vkCreateCommandPool");
             !s) {
             return s;
         }
-        it = pools_.emplace(std::this_thread::get_id(), pool).first;
+        it = pools_.emplace(key, pool).first;
     }
     out = it->second;
     return {};

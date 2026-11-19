@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace gpu {
@@ -80,8 +81,8 @@ public:
 private:
     friend class GpuRecordContext;
 
-    // Pools are externally synchronized, so each thread records into its own.
-    GpuStatus commandPoolForThisThread(VkCommandPool& out);
+    // Pools are externally synchronized, so each thread records into its own, one per queue family.
+    GpuStatus commandPoolForThisThread(VkCommandPool& out, QueueKind queue = QueueKind::Compute);
     // Dispatches made through the descriptor-pool fallback draw from a pool shared by every
     // thread, so it is only reset once no recording context is alive.
     void recordingBegan();
@@ -111,7 +112,7 @@ private:
     std::deque<GpuRasterDesc> registeredRasters_;
     std::deque<RuntimeModule> runtimeModules_;
     std::vector<std::weak_ptr<GpuKernel>> external_;
-    std::map<std::thread::id, VkCommandPool> pools_;
+    std::map<std::pair<std::thread::id, uint32_t>, VkCommandPool> pools_;
     uint32_t activeContexts_ = 0;
 };
 

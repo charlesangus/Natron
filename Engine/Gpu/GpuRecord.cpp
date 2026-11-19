@@ -13,21 +13,94 @@ namespace gpu {
 
 namespace {
     std::atomic<uint64_t> gMaxStorageBufferBytesForTests { 0 };
+
+    constexpr uint32_t kRasterDescriptorPoolSets = 64;
+
+    GpuStatus abortedStatus(const char* where)
+    {
+        GpuStatus s { VK_INCOMPLETE, std::string(where) + ": aborted" };
+        s.aborted = true;
+        return s;
+    }
+
+    void memoryBarrier(VkCommandBuffer cmd, VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                       VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess, const VkImageMemoryBarrier2* image = nullptr)
+    {
+        VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+        mb.srcStageMask = srcStage;
+        mb.srcAccessMask = srcAccess;
+        mb.dstStageMask = dstStage;
+        mb.dstAccessMask = dstAccess;
+        VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &mb;
+        if (image) {
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers = image;
+        }
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+
+    VkImageMemoryBarrier2 attachmentBarrier(const GpuTexture& texture, VkPipelineStageFlags2 srcStage,
+                                            VkAccessFlags2 srcAccess, VkImageLayout from, VkPipelineStageFlags2 dstStage,
+                                            VkAccessFlags2 dstAccess, VkImageLayout to)
+    {
+        VkImageMemoryBarrier2 ib { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        ib.srcStageMask = srcStage;
+        ib.srcAccessMask = srcAccess;
+        ib.dstStageMask = dstStage;
+        ib.dstAccessMask = dstAccess;
+        ib.oldLayout = from;
+        ib.newLayout = to;
+        ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        ib.image = texture.image();
+        ib.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        return ib;
+    }
+
+    constexpr VkPipelineStageFlags2 kDrawStages = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
+        | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+        | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 } // namespace
 
 GpuStatus
 GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out, GpuBufferPool* pool,
                          GpuPipelineCache* pipelines, GpuTextureCache* textures)
 {
+    return createOn(QueueKind::Compute, registry, out, pool, pipelines, textures);
+}
+
+GpuStatus
+GpuRecordContext::createRaster(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
+                               GpuBufferPool* pool, GpuPipelineCache* pipelines, GpuTextureCache* textures)
+{
+    if (!registry.device().info().rasterFloatBlend) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, "GpuRecordContext::createRaster: the device has no graphics queue that can blend float colour attachments" };
+    }
+    return createOn(QueueKind::Graphics, registry, out, pool, pipelines, textures);
+}
+
+GpuStatus
+GpuRecordContext::createOn(QueueKind queue, GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
+                           GpuBufferPool* pool, GpuPipelineCache* pipelines, GpuTextureCache* textures)
+{
     GpuDevice& device = registry.device();
     if (device.isLost()) {
         return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::create: device lost" };
     }
-    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(registry, pool, pipelines, textures));
+    std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(queue, registry, pool, pipelines, textures));
     registry.recordingBegan();
     // From here the destructor balances recordingBegan(), including on the error paths.
-    if (GpuStatus s = registry.commandPoolForThisThread(ctx->pool_); !s) {
+    if (GpuStatus s = registry.commandPoolForThisThread(ctx->pool_, queue); !s) {
         return s;
+    }
+    if (queue == QueueKind::Graphics && device.info().pushDescriptor) {
+        ctx->pushDescriptorFn_ = reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(
+            vkGetDeviceProcAddr(device.device(), "vkCmdPushDescriptorSetKHR"));
+        if (!ctx->pushDescriptorFn_) {
+            return { VK_ERROR_EXTENSION_NOT_PRESENT, "GpuRecordContext::createRaster: vkCmdPushDescriptorSetKHR unavailable" };
+        }
     }
 
     VkCommandBufferAllocateInfo ai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
@@ -52,18 +125,59 @@ GpuRecordContext::create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordC
 
 GpuRecordContext::~GpuRecordContext()
 {
+    GpuDevice& device = registry_.device();
+    // Without a command buffer the work may still be pending after a loss, reading the descriptor sets.
+    if (cmd_ && !device.hasAbandonedWork()) {
+        for (VkDescriptorPool pool : descriptorPools_) {
+            vkDestroyDescriptorPool(device.device(), pool, nullptr);
+        }
+    }
     if (cmd_) {
-        vkFreeCommandBuffers(registry_.device().device(), pool_, 1, &cmd_);
+        vkFreeCommandBuffers(device.device(), pool_, 1, &cmd_);
     }
     registry_.recordingEnded();
+}
+
+GpuStatus
+GpuRecordContext::recordable(const char* where) const
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": context already submitted" };
+    }
+    if (aborted_) {
+        return abortedStatus(where);
+    }
+    if (rasterTarget_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": a raster pass is open" };
+    }
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::checkAbort(const char* where)
+{
+    if (GpuStatus s = recordable(where); !s) {
+        return s;
+    }
+    if (abortCheck_ && abortCheck_()) {
+        aborted_ = true;
+        return abortedStatus(where);
+    }
+    return {};
+}
+
+void
+GpuRecordContext::setAbortCheck(std::function<bool()> aborted)
+{
+    abortCheck_ = std::move(aborted);
 }
 
 GpuStatus
 GpuRecordContext::dispatch(GpuKernelId kernel, std::span<const GpuBuffer* const> buffers,
                            std::span<const std::byte> push, std::array<uint32_t, 3> threads)
 {
-    if (!open_) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatch: context already submitted" };
+    if (GpuStatus s = checkAbort("GpuRecordContext::dispatch"); !s) {
+        return s;
     }
     GpuKernel* k = nullptr;
     if (GpuStatus s = registry_.get(kernel, k); !s) {
@@ -86,8 +200,8 @@ GpuStatus
 GpuRecordContext::dispatchBindings(GpuKernelId kernel, std::span<const GpuBinding> bindings,
                                    std::span<const std::byte> push, std::array<uint32_t, 3> threads)
 {
-    if (!open_) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: context already submitted" };
+    if (GpuStatus s = checkAbort("GpuRecordContext::dispatchBindings"); !s) {
+        return s;
     }
     for (const GpuBinding& b : bindings) {
         if (b.kind != GpuBinding::Kind::StorageBuffer) {
@@ -119,8 +233,8 @@ GpuStatus
 GpuRecordContext::dispatchBindings(const std::shared_ptr<GpuKernel>& kernel, std::span<const GpuBinding> bindings,
                                    std::span<const std::byte> push, std::array<uint32_t, 3> threads)
 {
-    if (!open_) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: context already submitted" };
+    if (GpuStatus s = checkAbort("GpuRecordContext::dispatchBindings"); !s) {
+        return s;
     }
     if (!kernel) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::dispatchBindings: no kernel" };
@@ -204,7 +318,7 @@ GpuRecordContext::uniform(std::span<const std::byte> data, const GpuUniformBuffe
 void
 GpuRecordContext::computeBarrier()
 {
-    if (!open_) {
+    if (!open_ || rasterTarget_) {
         return;
     }
     VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
@@ -281,8 +395,8 @@ GpuRecordContext::scratch(VkDeviceSize size, GpuBuffer*& out)
 GpuStatus
 GpuRecordContext::updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::span<const std::byte> data)
 {
-    if (!open_) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::updateBuffer: context already submitted" };
+    if (GpuStatus s = recordable("GpuRecordContext::updateBuffer"); !s) {
+        return s;
     }
     if (!dst || data.empty() || data.size() > 65536 || (data.size() % 4) != 0 || (offset % 4) != 0
         || offset + data.size() > dst.size()) {
@@ -301,22 +415,403 @@ GpuRecordContext::updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::s
     return {};
 }
 
-void
+GpuStatus
 GpuRecordContext::acquireFromTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
                                       VkDeviceSize bytes)
 {
-    if (open_) {
-        transfer.recordComputeAcquire(cmd_, buffer, offset, bytes);
+    if (GpuStatus s = recordable("GpuRecordContext::acquireFromTransfer"); !s) {
+        return s;
     }
+    const GpuDeviceInfo& info = registry_.device().info();
+    if (isRaster() && info.graphicsFamily != info.computeFamily) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::acquireFromTransfer: a raster context outside the compute family takes uploads through a compute context" };
+    }
+    transfer.recordComputeAcquire(cmd_, buffer, offset, bytes);
+    return {};
 }
 
-void
+GpuStatus
 GpuRecordContext::releaseToTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
                                     VkDeviceSize bytes)
 {
-    if (open_) {
-        transfer.recordComputeRelease(cmd_, buffer, offset, bytes);
+    if (GpuStatus s = recordable("GpuRecordContext::releaseToTransfer"); !s) {
+        return s;
     }
+    const GpuDeviceInfo& info = registry_.device().info();
+    if (isRaster() && info.graphicsFamily != info.computeFamily) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::releaseToTransfer: a raster context outside the compute family hands downloads to a compute context" };
+    }
+    transfer.recordComputeRelease(cmd_, buffer, offset, bytes);
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::drawable(const char* where)
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": context already submitted" };
+    }
+    if (aborted_) {
+        return abortedStatus(where);
+    }
+    if (!rasterTarget_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": no raster pass is open" };
+    }
+    if (abortCheck_ && abortCheck_()) {
+        aborted_ = true;
+        return abortedStatus(where);
+    }
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::beginRaster(const GpuTexture& attachment, const std::array<float, 4>& clear)
+{
+    if (!isRaster()) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, "GpuRecordContext::beginRaster: not a raster context" };
+    }
+    if (GpuStatus s = recordable("GpuRecordContext::beginRaster"); !s) {
+        return s;
+    }
+    if (!attachment.isAttachment()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::beginRaster: the texture is not a colour attachment" };
+    }
+
+    // The draws read vertex, index and indirect data that earlier dispatches and copies wrote. The attachment's
+    // old texels are discarded, so a copy of an earlier pass need only finish first.
+    const VkImageMemoryBarrier2 toAttachment = attachmentBarrier(
+        attachment, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    memoryBarrier(cmd_,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | kDrawStages,
+                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, kDrawStages,
+                  VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT
+                      | VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                  &toAttachment);
+
+    const uint32_t width = attachment.desc().width;
+    const uint32_t height = attachment.desc().height;
+    VkRenderingAttachmentInfo colour { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    colour.imageView = attachment.view();
+    colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colour.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    for (size_t i = 0; i < 4; ++i) {
+        colour.clearValue.color.float32[i] = clear[i];
+    }
+    VkRenderingInfo ri { VK_STRUCTURE_TYPE_RENDERING_INFO };
+    ri.renderArea = { { 0, 0 }, { width, height } };
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &colour;
+    vkCmdBeginRendering(cmd_, &ri);
+    rasterTarget_ = &attachment;
+    rendered_ = nullptr;
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::rasterPipeline(GpuRasterId raster, GpuRasterBlend blend, std::shared_ptr<GpuRasterPipeline>& out)
+{
+    out.reset();
+    const VkFormat format = rasterTarget_->format();
+    if (pipelines_) {
+        if (GpuStatus s = pipelines_->raster(registry_, raster, format, blend, out); !s) {
+            return s;
+        }
+        if (std::find(rasterPipelines_.begin(), rasterPipelines_.end(), out) == rasterPipelines_.end()) {
+            rasterPipelines_.push_back(out);
+        }
+        return {};
+    }
+    const auto key = std::make_tuple(static_cast<uint32_t>(raster), format, blend);
+    if (auto it = ownRasters_.find(key); it != ownRasters_.end()) {
+        out = it->second;
+        return {};
+    }
+    const GpuRasterDesc* desc = registry_.rasterDesc(raster);
+    if (!desc) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext: unknown raster id " + std::to_string(static_cast<uint32_t>(raster)) };
+    }
+    std::unique_ptr<GpuRasterPipeline> created;
+    if (GpuStatus s = GpuRasterPipeline::create(registry_.device(), *desc, format, blend, created); !s) {
+        return s;
+    }
+    out = std::shared_ptr<GpuRasterPipeline>(std::move(created));
+    ownRasters_.emplace(key, out);
+    rasterPipelines_.push_back(out);
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::rasterDescriptorSet(VkDescriptorSetLayout layout, uint32_t storageBuffers, VkDescriptorSet& out)
+{
+    GpuDevice& device = registry_.device();
+    VkDescriptorSetAllocateInfo ai { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &layout;
+    if (!descriptorPools_.empty()) {
+        ai.descriptorPool = descriptorPools_.back();
+        const VkResult r = vkAllocateDescriptorSets(device.device(), &ai, &out);
+        if (r == VK_SUCCESS) {
+            return {};
+        }
+        if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {
+            return device.check(r, "vkAllocateDescriptorSets");
+        }
+    }
+    VkDescriptorPoolSize size { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kRasterDescriptorPoolSets * std::max<uint32_t>(storageBuffers, 4) };
+    VkDescriptorPoolCreateInfo pi { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    pi.maxSets = kRasterDescriptorPoolSets;
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes = &size;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (GpuStatus s = device.check(vkCreateDescriptorPool(device.device(), &pi, nullptr, &pool), "vkCreateDescriptorPool");
+        !s) {
+        return s;
+    }
+    descriptorPools_.push_back(pool);
+    ai.descriptorPool = pool;
+    return device.check(vkAllocateDescriptorSets(device.device(), &ai, &out), "vkAllocateDescriptorSets");
+}
+
+GpuStatus
+GpuRecordContext::bindRaster(const char* where, GpuRasterId raster, GpuRasterBlend blend,
+                             std::span<const GpuBuffer* const> buffers, std::span<const std::byte> push)
+{
+    std::shared_ptr<GpuRasterPipeline> pipeline;
+    if (GpuStatus s = rasterPipeline(raster, blend, pipeline); !s) {
+        return s;
+    }
+    const GpuRasterDesc& desc = pipeline->desc();
+    if (buffers.size() != desc.storageBufferCount) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": " + std::to_string(buffers.size()) + " buffers for " + std::to_string(desc.storageBufferCount) + " storage bindings" };
+    }
+    if (push.size() != desc.pushConstantBytes) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": " + std::to_string(push.size()) + " push-constant bytes for a " + std::to_string(desc.pushConstantBytes) + "-byte block" };
+    }
+    std::vector<VkDescriptorBufferInfo> infos(buffers.size());
+    std::vector<VkWriteDescriptorSet> writes(buffers.size());
+    for (size_t i = 0; i < buffers.size(); ++i) {
+        if (!buffers[i] || !*buffers[i]) {
+            return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": empty buffer at binding " + std::to_string(i) };
+        }
+        if (GpuStatus s = checkBindable(where, static_cast<uint32_t>(i), buffers[i]->size()); !s) {
+            return s;
+        }
+        infos[i] = { buffers[i]->buffer(), 0, VK_WHOLE_SIZE };
+        VkWriteDescriptorSet& w = writes[i];
+        w = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.dstBinding = static_cast<uint32_t>(i);
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        w.pBufferInfo = &infos[i];
+    }
+
+    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline());
+    if (!writes.empty()) {
+        if (pushDescriptorFn_) {
+            pushDescriptorFn_(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipelineLayout(), 0,
+                              static_cast<uint32_t>(writes.size()), writes.data());
+        } else {
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            if (GpuStatus s = rasterDescriptorSet(pipeline->setLayout(), desc.storageBufferCount, set); !s) {
+                return s;
+            }
+            for (VkWriteDescriptorSet& w : writes) {
+                w.dstSet = set;
+            }
+            vkUpdateDescriptorSets(registry_.device().device(), static_cast<uint32_t>(writes.size()), writes.data(), 0,
+                                   nullptr);
+            vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipelineLayout(), 0, 1, &set, 0,
+                                    nullptr);
+        }
+    }
+    if (!push.empty()) {
+        vkCmdPushConstants(cmd_, pipeline->pipelineLayout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, static_cast<uint32_t>(push.size()), push.data());
+    }
+    const uint32_t width = rasterTarget_->desc().width;
+    const uint32_t height = rasterTarget_->desc().height;
+    const VkViewport viewport { 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f };
+    const VkRect2D scissor { { 0, 0 }, { width, height } };
+    vkCmdSetViewport(cmd_, 0, 1, &viewport);
+    vkCmdSetScissor(cmd_, 0, 1, &scissor);
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::draw(GpuRasterId raster, GpuRasterBlend blend, std::span<const GpuBuffer* const> buffers,
+                       std::span<const std::byte> push, uint32_t vertexCount, uint32_t instanceCount)
+{
+    if (GpuStatus s = drawable("GpuRecordContext::draw"); !s) {
+        return s;
+    }
+    if (vertexCount == 0 || instanceCount == 0) {
+        return {};
+    }
+    if (GpuStatus s = bindRaster("GpuRecordContext::draw", raster, blend, buffers, push); !s) {
+        return s;
+    }
+    vkCmdDraw(cmd_, vertexCount, instanceCount, 0, 0);
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend,
+                                      std::span<const GpuBuffer* const> buffers, std::span<const std::byte> push,
+                                      const GpuBuffer& indexBuffer, const GpuBuffer& indirectBuffer, uint32_t drawCount)
+{
+    const char* where = "GpuRecordContext::drawIndexedIndirect";
+    if (GpuStatus s = drawable(where); !s) {
+        return s;
+    }
+    if (!indexBuffer || !indirectBuffer) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": empty index or indirect buffer" };
+    }
+    constexpr VkDeviceSize stride = sizeof(VkDrawIndexedIndirectCommand);
+    if (VkDeviceSize(drawCount) * stride > indirectBuffer.size()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": " + std::to_string(drawCount) + " commands overrun the " + std::to_string(indirectBuffer.size()) + "-byte indirect buffer" };
+    }
+    if (drawCount == 0) {
+        return {};
+    }
+    if (GpuStatus s = bindRaster(where, raster, blend, buffers, push); !s) {
+        return s;
+    }
+    vkCmdBindIndexBuffer(cmd_, indexBuffer.buffer(), 0, VK_INDEX_TYPE_UINT32);
+    const uint32_t perDraw = registry_.device().info().maxDrawIndirectCount;
+    for (uint32_t first = 0; first < drawCount; first += perDraw) {
+        if (first > 0 && abortCheck_ && abortCheck_()) {
+            aborted_ = true;
+            return abortedStatus(where);
+        }
+        const uint32_t count = std::min(perDraw, drawCount - first);
+        vkCmdDrawIndexedIndirect(cmd_, indirectBuffer.buffer(), VkDeviceSize(first) * stride, count,
+                                 static_cast<uint32_t>(stride));
+    }
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::endRaster()
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::endRaster: context already submitted" };
+    }
+    if (!rasterTarget_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::endRaster: no raster pass is open" };
+    }
+    vkCmdEndRendering(cmd_);
+    const VkImageMemoryBarrier2 toCopy = attachmentBarrier(
+        *rasterTarget_, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    memoryBarrier(cmd_, kDrawStages, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                      | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  &toCopy);
+    rendered_ = rasterTarget_;
+    rasterTarget_ = nullptr;
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::copyToImage(const GpuBuffer& dst)
+{
+    if (!isRaster()) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, "GpuRecordContext::copyToImage: not a raster context" };
+    }
+    if (GpuStatus s = recordable("GpuRecordContext::copyToImage"); !s) {
+        return s;
+    }
+    if (!rendered_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyToImage: no raster pass was ended" };
+    }
+    if (!dst || dst.size() < rendered_->packedBytes()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyToImage: the buffer is smaller than the attachment" };
+    }
+    memoryBarrier(cmd_, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | kDrawStages,
+                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy region {};
+    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.imageExtent = { rendered_->desc().width, rendered_->desc().height, 1 };
+    vkCmdCopyImageToBuffer(cmd_, rendered_->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.buffer(), 1, &region);
+    memoryBarrier(cmd_, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | kDrawStages
+                      | VK_PIPELINE_STAGE_2_HOST_BIT,
+                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                      | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT
+                      | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_HOST_READ_BIT);
+    return {};
+}
+
+void
+GpuRecordContext::ownershipBarrier(const GpuBuffer& buffer, VkDeviceSize offset, VkDeviceSize bytes, bool release)
+{
+    const GpuDeviceInfo& info = registry_.device().info();
+    const uint32_t mine = isRaster() ? info.graphicsFamily : info.computeFamily;
+    const uint32_t other = isRaster() ? info.computeFamily : info.graphicsFamily;
+    VkBufferMemoryBarrier2 b { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+    if (release) {
+        b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+        b.dstAccessMask = VK_ACCESS_2_NONE;
+        b.srcQueueFamilyIndex = mine;
+        b.dstQueueFamilyIndex = other;
+    } else {
+        b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+        b.srcAccessMask = VK_ACCESS_2_NONE;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        b.srcQueueFamilyIndex = other;
+        b.dstQueueFamilyIndex = mine;
+    }
+    b.buffer = buffer.buffer();
+    b.offset = offset;
+    b.size = bytes;
+    VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep.bufferMemoryBarrierCount = 1;
+    dep.pBufferMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd_, &dep);
+}
+
+GpuStatus
+GpuRecordContext::releaseToOtherQueue(const GpuBuffer& buffer, VkDeviceSize offset, VkDeviceSize bytes)
+{
+    if (GpuStatus s = recordable("GpuRecordContext::releaseToOtherQueue"); !s) {
+        return s;
+    }
+    if (!buffer || bytes == 0 || offset + bytes > buffer.size()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::releaseToOtherQueue: invalid range" };
+    }
+    const GpuDeviceInfo& info = registry_.device().info();
+    if (info.graphicsQueue && info.graphicsFamily != info.computeFamily) {
+        ownershipBarrier(buffer, offset, bytes, true);
+    }
+    return {};
+}
+
+GpuStatus
+GpuRecordContext::acquireFromOtherQueue(const GpuBuffer& buffer, VkDeviceSize offset, VkDeviceSize bytes)
+{
+    if (GpuStatus s = recordable("GpuRecordContext::acquireFromOtherQueue"); !s) {
+        return s;
+    }
+    if (!buffer || bytes == 0 || offset + bytes > buffer.size()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::acquireFromOtherQueue: invalid range" };
+    }
+    const GpuDeviceInfo& info = registry_.device().info();
+    if (info.graphicsQueue && info.graphicsFamily != info.computeFamily) {
+        ownershipBarrier(buffer, offset, bytes, false);
+    }
+    return {};
 }
 
 GpuDevice&
@@ -344,8 +839,8 @@ GpuRecordContext::hold(std::shared_ptr<void> object)
 GpuStatus
 GpuRecordContext::copyBuffer(const GpuBuffer& src, const GpuBuffer& dst, std::span<const VkBufferCopy> regions)
 {
-    if (!open_) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyBuffer: context already submitted" };
+    if (GpuStatus s = recordable("GpuRecordContext::copyBuffer"); !s) {
+        return s;
     }
     if (!src || !dst) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyBuffer: invalid buffers" };
@@ -387,8 +882,8 @@ GpuRecordContext::copyBuffer(const GpuBuffer& src, const GpuBuffer& dst, std::sp
 GpuStatus
 GpuRecordContext::fillBuffer(const GpuBuffer& dst, VkDeviceSize size, uint32_t value)
 {
-    if (!open_) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::fillBuffer: context already submitted" };
+    if (GpuStatus s = recordable("GpuRecordContext::fillBuffer"); !s) {
+        return s;
     }
     if (!dst || (size % 4) != 0 || size > dst.size()) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::fillBuffer: invalid buffer or size" };
@@ -427,8 +922,8 @@ GpuStatus
 GpuRecordContext::copyFromExternal(const GpuBuffer& src, VkDeviceSize srcBytes, const GpuBuffer& dst,
                                    std::span<const VkBufferCopy> regions)
 {
-    if (!open_) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyFromExternal: context already submitted" };
+    if (GpuStatus s = recordable("GpuRecordContext::copyFromExternal"); !s) {
+        return s;
     }
     if (!src || !dst || srcBytes == 0 || srcBytes > src.size()) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyFromExternal: invalid buffers" };
@@ -438,7 +933,7 @@ GpuRecordContext::copyFromExternal(const GpuBuffer& src, VkDeviceSize srcBytes, 
             return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyFromExternal: a region is out of range" };
         }
     }
-    const uint32_t family = registry_.device().queueFamily(QueueKind::Compute);
+    const uint32_t family = registry_.device().queueFamily(queue_);
 
     VkBufferMemoryBarrier2 acquire { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
     acquire.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
@@ -495,7 +990,7 @@ GpuRecordContext::copyFromExternal(const GpuBuffer& src, VkDeviceSize srcBytes, 
 void
 GpuRecordContext::resetQueries(VkQueryPool pool, uint32_t first, uint32_t count)
 {
-    if (open_ && pool != VK_NULL_HANDLE && count > 0) {
+    if (open_ && !rasterTarget_ && pool != VK_NULL_HANDLE && count > 0) {
         vkCmdResetQueryPool(cmd_, pool, first, count);
     }
 }
@@ -511,8 +1006,11 @@ GpuRecordContext::writeTimestamp(VkQueryPool pool, uint32_t query)
 GpuStatus
 GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue signal)
 {
-    if (!open_) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::submit: context already submitted" };
+    if (GpuStatus s = recordable("GpuRecordContext::submit"); !s) {
+        if (aborted_) {
+            open_ = false;
+        }
+        return s;
     }
     if (!signal) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::submit: no semaphore to signal" };
@@ -538,14 +1036,17 @@ GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue sig
     info.pCommandBufferInfos = &ci;
     info.signalSemaphoreInfoCount = 1;
     info.pSignalSemaphoreInfos = &signalInfo;
-    return device.submit(QueueKind::Compute, std::span<const VkSubmitInfo2>(&info, 1), VK_NULL_HANDLE);
+    return device.submit(queue_, std::span<const VkSubmitInfo2>(&info, 1), VK_NULL_HANDLE);
 }
 
 GpuStatus
 GpuRecordContext::submitAndWait(uint64_t timeoutNs)
 {
-    if (!open_) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::submitAndWait: context already submitted" };
+    if (GpuStatus s = recordable("GpuRecordContext::submitAndWait"); !s) {
+        if (aborted_) {
+            open_ = false;
+        }
+        return s;
     }
     open_ = false;
     GpuDevice& device = registry_.device();
@@ -567,7 +1068,7 @@ GpuRecordContext::submitAndWait(uint64_t timeoutNs)
     submit.pWaitSemaphoreInfos = waitInfos.data();
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &ci;
-    GpuStatus s = device.submit(QueueKind::Compute, std::span<const VkSubmitInfo2>(&submit, 1), fence);
+    GpuStatus s = device.submit(queue_, std::span<const VkSubmitInfo2>(&submit, 1), fence);
     bool mayBePending = (s.result == VK_ERROR_DEVICE_LOST);
     if (s) {
         VkResult waited = vkWaitForFences(vk, 1, &fence, VK_TRUE, timeoutNs);
@@ -618,6 +1119,7 @@ GpuRecordContext::parkInFlightWork()
         std::vector<std::shared_ptr<const GpuTexture>> cachedTextures;
         std::vector<std::shared_ptr<GpuKernel>> kernels;
         std::vector<std::shared_ptr<void>> objects;
+        std::vector<std::shared_ptr<GpuRasterPipeline>> rasters;
     };
     auto parked = std::make_shared<InFlight>();
     parked->held = std::move(held_);
@@ -626,6 +1128,8 @@ GpuRecordContext::parkInFlightWork()
     parked->cachedTextures = std::move(cachedTextures_);
     parked->kernels = std::move(kernels_);
     parked->objects = std::move(heldObjects_);
+    parked->rasters = std::move(rasterPipelines_);
+    ownRasters_.clear();
     GpuDevice::parkForever(std::move(parked));
 }
 

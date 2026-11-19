@@ -37,7 +37,7 @@ Extend the compute-only GPU layer with graphics pipelines: Slang vertex and frag
   - verify: the build registers `raster_test`; a gtest creates its pipeline for RGBA32F additive and replace on RADV.
   - size: L
 
-- [ ] M472.P1.T3 — Draws in GpuRecordContext
+- [x] M472.P1.T3 — Draws in GpuRecordContext
   - files: `Engine/Gpu/GpuRecord.{h,cpp}`, `Tests/Gpu/` (new raster draw test)
   - approach: `beginRaster(attachment, clear)`, `draw(rasterId, bindings, push, vertexCount, instanceCount)`, `drawIndexedIndirect(rasterId, bindings, push, indexBuffer, indirectBuffer, drawCount)`, `endRaster()` then `copyToImage(buffer)`. Barriers between compute writes of vertex or indirect buffers and the draw, and between the attachment and the copy. Abort checks between draws as between dispatches.
   - verify: gtest: two overlapping triangles with additive blend give 2.0 in the overlap and 1.0 elsewhere, edge pixels following the top-left rule; an indirect draw whose count a compute pass wrote draws that many triangles; an abort between draws returns promptly.
@@ -51,3 +51,4 @@ Extend the compute-only GPU layer with graphics pipelines: Slang vertex and frag
 - 2026-11-16 — **Without RGBA32F blending, raster users fall back to their CPU path (user).**
 - 2026-11-19 (user): draws record through an opt-in raster-capable GpuRecordContext on a graphics queue; compute-only contexts keep the async compute queue. Chosen over moving all compute to the graphics+compute family (loses async overlap on AMD and NVIDIA) and over a context that splits recording across queues automatically (hidden cross-queue ordering, most validation risk). `rasterFloatBlend` also requires a graphics-capable family. T3 adds an optional abort callback on the context.
 - 2026-11-19: T1 and T2 at 6361357cc.
+- 2026-11-19: T3 at d70988be9; gate green (all 892 tests in both scheduler legs). Capability on the CI device, llvmpipe (LLVM 21.1.8, Mesa 25.2.7): dynamicRendering=1, rasterFloatBlend=1 (RGBA32F and R32F blend), graphics queue present. RADV and NVIDIA capability are still to be recorded on the GPU host or a cloud VM; neither is on CI.

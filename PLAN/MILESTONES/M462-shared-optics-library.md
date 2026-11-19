@@ -92,3 +92,17 @@ Sources (both GPL-compatible with the GPLv3-or-later relicence; record them in f
 - 2026-11-19 (user): spectral colour is physically correct by default: spectra integrate against colour-matching functions consistent with the working space's observer, so D65 renders neutral in a D65-white space and other illuminants (E included) keep their true tint. A Local White mode renders the chosen illuminant exactly neutral in the actual working space, luminance preserved. The ported method was ~1.5% off white on D65 (2015 CMFs against a 1931-defined space).
 - 2026-11-19: spectral fix at a9a7167b5: CIE 1931 2° observer (colour-science 0.4.6 data, BSD-3-Clause), 360–830 nm because 390–730 leaves D65 ~1e-3 off; OCIO's D65 adaptation is undone for ACES-white working spaces; a working space whose interop ID isn't recognised is treated as D65. D65 renders neutral in Rec.709 (1e-4), D60 in ACEScg; Local White makes E, D65 and A neutral.
 - 2026-11-19: all tasks done at a9a7167b5. The gate is green (rerun 44565699520: the legacy leg's first failure was an unrelated MoonRay projection timeout). convert_glass.py at the pinned OpticsDatabase commit gives a byte-identical glass.json (1534 glasses). Engine/Optics has no Natron or Qt includes.
+- 2026-11-19 (PR #319 review, fixes at d64fea42e):
+  - XASPHERE reads its coefficients from XDAT 3, checked against the rayoptics and OptiCore readers.
+  - An XASPHERE with coefficients in PARM is read like EVENASPH (15 real files). Nonzero PARM together with nonzero XDAT is an error.
+  - Aspheric terms are unlimited (the corpus uses up to 20).
+  - UNIT scales MM, CM, IN and M.
+  - A matched glass is offset so n(d) equals the prescription's nd.
+  - Sampled spectra are normalised to the 1 nm integral.
+  - The thin-film phase is the standard 4π/λ·n1·d·cosθ1. It was not matched to the reference, because no decision asked for that.
+  - "No coating on the last surface" means the image plane, which the parsers drop.
+  - SpectralData.cpp sha1 is now b90479fa….
+  - Corpus check, 1,217 OpticsDatabase .zmx files: 1,001 parse. The rest:
+    - 156 Edmund achromats name their glass by catalogue name. A follow-up could resolve names through glass.json.
+    - 53 have no stop surface: teleconverters, speed boosters, close-up and mirror lenses, eyepieces.
+    - 7 have malformed values.

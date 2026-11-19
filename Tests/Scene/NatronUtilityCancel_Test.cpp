@@ -355,12 +355,16 @@ public:
         return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatDevice, VtDefault = std::string());
     }
 
-    void render(double cameraX = 0.)
+    // size is the frame's side in pixels; a frame that is only drawn to its end for its colour uses a
+    // small one, as the scene's preparation, which the stops cut short, does not depend on it.
+    void render(double cameraX = 0.,
+                int size = kLatencyWindow)
     {
         const GfFrustum camera = viewFrom(cameraX);
 
-        _engine->SetRenderBufferSize(GfVec2i(kLatencyWindow, kLatencyWindow));
-        _engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), kLatencyWindow, kLatencyWindow)));
+        _size = size;
+        _engine->SetRenderBufferSize(GfVec2i(size, size));
+        _engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), size, size)));
         _engine->SetCameraState(camera.ComputeViewMatrix(), camera.ComputeProjectionMatrix());
 
         UsdImagingGLRenderParams params;
@@ -372,12 +376,13 @@ public:
         _engine->Render(_stage->GetPseudoRoot(), params);
     }
 
-    bool renderToTheEnd(double cameraX = 0.)
+    bool renderToTheEnd(double cameraX = 0.,
+                        int size = kLatencyWindow)
     {
         const Clock::time_point end = Clock::now() + kTimeout;
 
         for (;;) {
-            render(cameraX);
+            render(cameraX, size);
             if (_engine->IsConverged()) {
                 return true;
             }
@@ -421,7 +426,7 @@ public:
         }
 
         const GfVec4f* pixels = static_cast<const GfVec4f*>(buffer->Map());
-        const GfVec4f value = pixels[(kLatencyWindow / 2) * kLatencyWindow + kLatencyWindow / 2];
+        const GfVec4f value = pixels[(_size / 2) * _size + _size / 2];
 
         buffer->Unmap();
 
@@ -431,6 +436,7 @@ public:
 private:
     UsdStageRefPtr _stage;
     std::unique_ptr<UsdImagingGLEngine> _engine;
+    int _size = kLatencyWindow;
 };
 
 // Stops a frame at several points of its preparation and drawing: a stop takes less than the bound and
@@ -449,7 +455,7 @@ checkCancelLatency(const UsdStageRefPtr& stage,
 
         HeavyRender warm(small, backend);
 
-        ASSERT_TRUE(warm.renderToTheEnd());
+        ASSERT_TRUE(warm.renderToTheEnd(0., kViewWindow));
         ASSERT_EQ(0u, warm.device().find("GPU")) << warm.device();
     }
 
@@ -474,7 +480,7 @@ checkCancelLatency(const UsdStageRefPtr& stage,
     }
     EXPECT_GT(stopsOfARunningFrame, 0) << "the scene is too light to test this";
 
-    ASSERT_TRUE(render.renderToTheEnd());
+    ASSERT_TRUE(render.renderToTheEnd(0., kViewWindow));
     EXPECT_FLOAT_EQ(1.f, render.centreColor()[0]);
     if (backend != Backend::Cpu) {
         EXPECT_EQ(0u, render.device().find("GPU")) << render.device();
@@ -489,7 +495,7 @@ checkCancelLatency(const UsdStageRefPtr& stage,
         EXPECT_LT(took.count(), kCancelBound.count());
         render.restart();
     }
-    ASSERT_TRUE(render.renderToTheEnd(0.5));
+    ASSERT_TRUE(render.renderToTheEnd(0.5, kViewWindow));
     EXPECT_FLOAT_EQ(1.f, render.centreColor()[0]);
 }
 
@@ -703,7 +709,11 @@ TEST_P(NatronUtilityCancelLatency, AStopCutsAHugeMeshsFrameShortWithinTheBound)
     if (!ready()) {
         return;
     }
-    checkCancelLatency(hugeMeshStage(GfVec3f(1.f, 0.f, 0.f)), "one huge mesh", GetParam());
+    // Built once for the three backends; never destroyed, as a stage outliving the plugins' teardown
+    // would release them in the wrong order.
+    static const UsdStageRefPtr& stage = *new UsdStageRefPtr(hugeMeshStage(GfVec3f(1.f, 0.f, 0.f)));
+
+    checkCancelLatency(stage, "one huge mesh", GetParam());
 }
 
 TEST_P(NatronUtilityCancelLatency, AStopCutsTheFrameOfManyMeshesShortWithinTheBound)
@@ -711,7 +721,9 @@ TEST_P(NatronUtilityCancelLatency, AStopCutsTheFrameOfManyMeshesShortWithinTheBo
     if (!ready()) {
         return;
     }
-    checkCancelLatency(manyMeshesStage(GfVec3f(1.f, 0.f, 0.f)), "many meshes", GetParam());
+    static const UsdStageRefPtr& stage = *new UsdStageRefPtr(manyMeshesStage(GfVec3f(1.f, 0.f, 0.f)));
+
+    checkCancelLatency(stage, "many meshes", GetParam());
 }
 
 INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityCancelLatency, ::testing::Values(Backend::Cpu, Backend::GpuTiles, Backend::GpuFilm));

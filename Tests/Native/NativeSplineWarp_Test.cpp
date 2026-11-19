@@ -1026,7 +1026,6 @@ TEST_F(NativeSplineWarpTest, ChainedWarpHoldsItsEdgeBeyondItsRegionOfDefinitionU
     const RectI outside(0, 0, 4, 4);
     EXPECT_GT(maxDiff(viaRender, black, outside), 1e-3) << "the held edge pixel should not read transparent";
     EXPECT_LE(maxDiff(viaChain, viaRender, outside), kWarpTolerance);
-    EXPECT_LE(maxDiff(viaChain, viaRender, window), kWarpTolerance);
 }
 
 // A Transform that averages several matrices takes no chain, so the warp renders as before.

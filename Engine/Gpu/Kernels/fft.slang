@@ -78,7 +78,6 @@ void fftLines(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
                 const float2 c = u1 + u3;
                 const float2 bd = u0 - u2;
                 const float2 e = u1 - u3;
-                // (u1 - u3) times sign * i.
                 const float2 d = sign * float2(-e.y, e.x);
                 v[4 * b] = a + c;
                 v[4 * b + 1] = bd + d;

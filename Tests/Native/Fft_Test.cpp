@@ -77,6 +77,24 @@ TEST(Fft, RefusesEmptySizesAndTheWrongForward)
     EXPECT_THROW(realPlan.forward(c.data(), c.data()), std::logic_error);
 }
 
+TEST(Fft, AbortAfterTheRowPassReportsAborted)
+{
+    // Under the parallel threshold each pass is one band: polls are row band, between the passes, column band.
+    const int size = 64;
+    const Fft::Plan2D plan(size, size);
+    const std::vector<Complex> input = randomComplex((std::size_t)size * size, 7);
+    std::vector<Complex> full(input.size());
+    ASSERT_TRUE(plan.forward(input.data(), full.data(), [] { return false; }));
+
+    int polls = 0;
+    std::vector<Complex> out(input.size());
+    EXPECT_FALSE(plan.forward(input.data(), out.data(), [&] { return ++polls == 2; }));
+    EXPECT_EQ(polls, 2);
+    EXPECT_NE(out, full);
+
+    EXPECT_FALSE(plan.forward(input.data(), out.data(), [] { return true; }));
+}
+
 TEST(Fft, DeltaTransformsToAConstant)
 {
     const int w = 64, h = 32;

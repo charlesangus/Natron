@@ -30,6 +30,7 @@
 
 #include <complex>
 #include <cstddef>
+#include <functional>
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuFft.h"
@@ -40,6 +41,9 @@ NATRON_NAMESPACE_ENTER
 namespace Fft {
 
 using Complex = std::complex<float>;
+
+// Polled between bands and between the row and column passes; true stops the transform.
+using AbortCheck = std::function<bool()>;
 
 // What a plan's forward transform reads: interleaved complex samples, or real ones.
 enum class Kind {
@@ -67,14 +71,17 @@ public:
     Kind kind() const { return _kind; }
     std::size_t sampleCount() const { return (std::size_t)_width * _height; }
 
+    // The CPU transforms return false when abortCheck stopped them, leaving `out` partly written, and true when
+    // complete. Bad input throws.
+
     // A complexToComplex plan's forward transform. `in` may equal `out`.
-    void forward(const Complex* in, Complex* out) const;
+    bool forward(const Complex* in, Complex* out, const AbortCheck& abortCheck = {}) const;
 
     // A realToComplex plan's forward transform, writing the whole Hermitian spectrum. `in` and `out` must not overlap.
-    void forwardReal(const float* in, Complex* out) const;
+    bool forwardReal(const float* in, Complex* out, const AbortCheck& abortCheck = {}) const;
 
     // The inverse of either kind's forward transform, scaled by 1 / sampleCount(). `in` may equal `out`.
-    void inverse(const Complex* in, Complex* out) const;
+    bool inverse(const Complex* in, Complex* out, const AbortCheck& abortCheck = {}) const;
 
     bool supportsGpu() const;
 

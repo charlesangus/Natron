@@ -28,6 +28,8 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include <atomic>
+
 #include <pocketfft_hdronly.h>
 
 #include "Engine/PoolParallelFor.h"
@@ -43,13 +45,24 @@ namespace Fft {
 
 namespace {
 
-    // Transforms of fewer samples than this run on the calling thread.
     const qint64 kMinParallelSamples = 128 * 128;
 
     const std::ptrdiff_t kComplexBytes = (std::ptrdiff_t)sizeof(Complex);
 
-    // Calls fn(first, last) on disjoint ranges covering [0, count) of lines `length` samples long, on pool threads when
-    // the work is large enough.
+    bool
+    shouldStop(const AbortCheck& abortCheck,
+               std::atomic<bool>& aborted)
+    {
+        if (aborted.load()) {
+            return true;
+        }
+        if (abortCheck && abortCheck()) {
+            aborted.store(true);
+            return true;
+        }
+        return false;
+    }
+
     void
     forEachLineBand(int count,
                     int length,
@@ -60,36 +73,50 @@ namespace {
 
     // pocketfft is called once per band with nthreads = 1, so its own thread pool never starts and the engine's pool is
     // the only one splitting the work.
-    void
+    bool
     transformColumns(int width,
                      int height,
                      bool forward,
                      const Complex* in,
                      Complex* out,
-                     float scale)
+                     float scale,
+                     const AbortCheck& abortCheck)
     {
         const pocketfft::stride_t strides { width * kComplexBytes, kComplexBytes };
+        std::atomic<bool> aborted { false };
         forEachLineBand(width, height, [&](int x1, int x2) {
+            if (shouldStop(abortCheck, aborted)) {
+                return;
+            }
             const pocketfft::shape_t shape { (std::size_t)height, (std::size_t)(x2 - x1) };
             pocketfft::c2c<float>(shape, strides, strides, { 0 }, forward, in + x1, out + x1, scale, 1);
         });
+        return !aborted.load();
     }
 
-    void
+    bool
     transformComplex(int width,
                      int height,
                      bool forward,
                      const Complex* in,
                      Complex* out,
-                     float scale)
+                     float scale,
+                     const AbortCheck& abortCheck)
     {
         const pocketfft::stride_t strides { width * kComplexBytes, kComplexBytes };
+        std::atomic<bool> aborted { false };
         forEachLineBand(height, width, [&](int y1, int y2) {
+            if (shouldStop(abortCheck, aborted)) {
+                return;
+            }
             const pocketfft::shape_t shape { (std::size_t)(y2 - y1), (std::size_t)width };
             const std::size_t offset = (std::size_t)y1 * width;
             pocketfft::c2c<float>(shape, strides, strides, { 1 }, forward, in + offset, out + offset, scale, 1);
         });
-        transformColumns(width, height, forward, out, out, 1.f);
+        if (aborted.load() || (abortCheck && abortCheck())) {
+            return false;
+        }
+        return transformColumns(width, height, forward, out, out, 1.f, abortCheck);
     }
 
 } // namespace
@@ -106,19 +133,21 @@ Plan2D::Plan2D(int width,
     }
 }
 
-void
+bool
 Plan2D::forward(const Complex* in,
-                Complex* out) const
+                Complex* out,
+                const AbortCheck& abortCheck) const
 {
     if (_kind != Kind::complexToComplex) {
         throw std::logic_error("Fft::Plan2D::forward: the plan transforms real input, use forwardReal()");
     }
-    transformComplex(_width, _height, true, in, out, 1.f);
+    return transformComplex(_width, _height, true, in, out, 1.f, abortCheck);
 }
 
-void
+bool
 Plan2D::forwardReal(const float* in,
-                    Complex* out) const
+                    Complex* out,
+                    const AbortCheck& abortCheck) const
 {
     if (_kind != Kind::realToComplex) {
         throw std::logic_error("Fft::Plan2D::forwardReal: the plan transforms complex input, use forward()");
@@ -127,7 +156,11 @@ Plan2D::forwardReal(const float* in,
     const int half = width / 2 + 1;
     const pocketfft::stride_t inStrides { width * (std::ptrdiff_t)sizeof(float), (std::ptrdiff_t)sizeof(float) };
     const pocketfft::stride_t outStrides { width * kComplexBytes, kComplexBytes };
+    std::atomic<bool> aborted { false };
     forEachLineBand(_height, width, [&](int y1, int y2) {
+        if (shouldStop(abortCheck, aborted)) {
+            return;
+        }
         const pocketfft::shape_t shape { (std::size_t)(y2 - y1), (std::size_t)width };
         const std::size_t offset = (std::size_t)y1 * width;
         pocketfft::r2c<float>(shape, inStrides, outStrides, (std::size_t)1, true, in + offset, out + offset, 1.f, 1);
@@ -139,14 +172,18 @@ Plan2D::forwardReal(const float* in,
             }
         }
     });
-    transformColumns(width, _height, true, out, out, 1.f);
+    if (aborted.load() || (abortCheck && abortCheck())) {
+        return false;
+    }
+    return transformColumns(width, _height, true, out, out, 1.f, abortCheck);
 }
 
-void
+bool
 Plan2D::inverse(const Complex* in,
-                Complex* out) const
+                Complex* out,
+                const AbortCheck& abortCheck) const
 {
-    transformComplex(_width, _height, false, in, out, 1.f / (float)sampleCount());
+    return transformComplex(_width, _height, false, in, out, 1.f / (float)sampleCount(), abortCheck);
 }
 
 bool

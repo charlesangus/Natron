@@ -205,8 +205,9 @@ TEST(FftGpu, MatchesTheCpuPlan)
         int width;
         int height;
     };
-    // 1024 x 512 and 64 x 128 have an odd log2 along one axis, so they run the final radix-2 pass.
-    const Size sizes[] = { { 256, 256 }, { 1024, 1024 }, { 4096, 4096 }, { 1024, 512 }, { 64, 128 } };
+    // The radix-2 pass runs along an axis whose log2 is odd: height for 1024 x 512 and 64 x 128, width for 512 x 256 and
+    // 2048 x 64.
+    const Size sizes[] = { { 256, 256 }, { 1024, 1024 }, { 4096, 4096 }, { 1024, 512 }, { 64, 128 }, { 512, 256 }, { 2048, 64 } };
     for (const Size& size : sizes) {
         for (const FftTransform t : { FftTransform::forward, FftTransform::inverse, FftTransform::forwardReal }) {
             const Fft::Plan2D plan(size.width, size.height,
@@ -260,6 +261,23 @@ TEST(FftGpu, RefusesSizesItCannotTransform)
     // A buffer a quarter of the size the transform needs.
     EXPECT_FALSE(bool(Fft::Plan2D(128, 128).recordForward(*context, *buffer, *buffer)));
     EXPECT_FALSE(bool(Fft::Plan2D(64, 64, Fft::Kind::realToComplex).recordForward(*context, *buffer, *buffer)));
+}
+
+TEST(FftGpu, RefusesATransposeScratchOverTheStorageLimit)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    gpu::GpuBuffer* buffer = runtime->buffer(0, 256 * 256 * 2 * sizeof(float));
+    ASSERT_TRUE(buffer);
+    std::unique_ptr<gpu::GpuRecordContext> context;
+    ASSERT_TRUE(bool(runtime->runtime().newRecordContext(context)));
+    gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(256 * 256 * sizeof(float));
+    const gpu::GpuStatus status = Fft::Plan2D(256, 256).recordForward(*context, *buffer, *buffer);
+    gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(0);
+    EXPECT_FALSE(bool(status));
+    EXPECT_EQ(status.result, VK_ERROR_FEATURE_NOT_PRESENT);
 }
 
 // Logs the time of a 2048 x 2048 complex forward transform, from GPU timestamps when the queue writes them.

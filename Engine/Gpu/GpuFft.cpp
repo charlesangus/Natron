@@ -77,6 +77,10 @@ recordFft2D(GpuRecordContext& ctx, const GpuFft2D& fft)
     if (GpuStatus s = ctx.updateBuffer(*twiddles, 0, std::as_bytes(std::span(table))); !s) {
         return s;
     }
+    if (complexBytes > ctx.maxScratchBytes()) {
+        return refused("the " + std::to_string(complexBytes) + " byte transpose scratch exceeds the device's "
+                       + std::to_string(ctx.maxScratchBytes()) + " byte storage buffer limit");
+    }
     GpuBuffer* transposed = nullptr;
     if (GpuStatus s = ctx.scratch(complexBytes, transposed); !s) {
         return s;

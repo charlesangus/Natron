@@ -77,7 +77,7 @@ workflow action); it reopens the project at its end, so it has to be the last sc
 
 Each scenario runs one action under a 10 ms heartbeat on the main thread and prints one JSON line:
 the longest gap between heartbeats, the layers loaded by the action, and the action's own numbers,
-each judged against the design's budgets as pass, fail, not_valid (measured, but not a number the
+each judged against the design's budgets as pass, fail, waived (measured and recorded, not judged: see BUDGET_WAIVERS), not_valid (measured, but not a number the
 display can vouch for) or not_applicable. Actions are the ACTIONS table.
 
 Every record carries gl_renderer and gl_vendor, and the memory the process has used: peak_rss_mb and
@@ -2084,6 +2084,20 @@ try:
             return identifier in scene_payload_layers
         return payload_mark in identifier
 
+    # Budgets recorded but not judged, keyed by (BENCH_LABEL, action, budget name) -> reason. Delete the rows when
+    # M481 - Viewer Polygon Budgets lands.
+    M481_WAIVER = "steady-frame composite behind the GPU frame; deferred to M481 - Viewer Polygon Budgets"
+    BUDGET_WAIVERS = {("accept-island-loaded", action_name, "stall_ms"): M481_WAIVER
+                      for action_name in ("draw_budget", "reveal_wide", "reveal_cancel_paced")}
+
+    def apply_waivers(action_name, budgets):
+        for budget_name, b in budgets.items():
+            reason = BUDGET_WAIVERS.get((label, action_name, budget_name))
+            if reason is not None and b["status"] == "fail":
+                b["status"] = "waived"
+                b["reason"] = reason
+        return budgets
+
     def judge(m, stall_ms, new_layers):
         budgets = {"stall_ms": verdict(round(max(stall_ms, m.stall_floor_ms), 1), STALL_BUDGET_MS, True)}
         if m.pictures:
@@ -2286,7 +2300,7 @@ try:
             log_scenario(name, "end", ended)
             after = loaded_layers()
             new_layers = None if before is None or after is None else after - before
-            budgets = judge(m, stall_ms, new_layers)
+            budgets = apply_waivers(name, judge(m, stall_ms, new_layers))
             scenario_checks["failed"] = None
             failed_checks = list(m.failed_checks) + [{"kind": "budget", "name": budget_name, "reason": b.get("reason")}
                                                      for budget_name, b in sorted(budgets.items()) if b["status"] == "fail"]

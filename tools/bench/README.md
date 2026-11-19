@@ -625,6 +625,17 @@ counters. The results go to `build/bench-gpu/heavy-scene-budget.jsonl`. The scri
 lists its environment; `SCENE_DIR`, `LOBBY_DIR` and `ISLAND_DIR` say where the scenes are, and Docker
 is only needed while the fixtures are missing.
 
+### Waived budgets
+
+A budget with status `waived` is measured and recorded (`value`, `limit`, and a `reason`) but is not a
+failure: it stays out of `failed_checks`, and every other check and budget of the action still applies.
+`BUDGET_WAIVERS` in `heavy_scene_bench.py` lists them, keyed by (`BENCH_LABEL`, action, budget name);
+a waiver applies only where the budget would have failed. Today: `stall_ms` of `draw_budget`,
+`reveal_wide` and `reveal_cancel_paced` on `accept-island-loaded` (the fully loaded Island), because Qt
+composites the window behind a multi-second steady GPU frame ("steady-frame composite behind the GPU
+frame; deferred to M481 - Viewer Polygon Budgets", user decision 2026-11-19). Remove the rows when
+M481 - Viewer Polygon Budgets lands.
+
 ### End-to-end budget run
 
 `workflow` chains what a user does on one scene in one process: `open`, a twirl into a payload,

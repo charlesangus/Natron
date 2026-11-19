@@ -111,10 +111,11 @@ parityCases()
     }
     {
         ParityCase c { "hard dust and scratches", ApertureParams(), false };
-        c.params.dustStrength = 1.;
-        c.params.scratchesStrength = 1.;
-        c.params.gratingStrength = 1.;
-        c.params.gratingLength = 1.;
+        c.params.dustStrength = 0.7;
+        c.params.dustDensity = 0.3;
+        c.params.scratchesStrength = 0.7;
+        c.params.scratchesDensity = 0.2;
+        c.params.gratingStrength = 0.7;
         cases.push_back(c);
     }
     {

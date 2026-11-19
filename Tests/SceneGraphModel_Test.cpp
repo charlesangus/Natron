@@ -26,13 +26,16 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <chrono>
 #include <climits>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include <unistd.h>
 
@@ -41,6 +44,7 @@
 #include "Gui/SceneGraphModel.h"
 
 #include <QAbstractItemModelTester>
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFont>
 #include <QMimeData>
@@ -110,6 +114,67 @@ public:
     // As if a commit held the stage's lock.
     bool busy = false;
 };
+
+// A TestStageSource whose reads off the thread that made it wait until open() is called.
+class GatedStageSource
+    : public TestStageSource {
+public:
+    GatedStageSource()
+        : _opened(_open.get_future().share())
+        , _mainThread(std::this_thread::get_id())
+    {
+    }
+
+    ~GatedStageSource() override
+    {
+        open();
+    }
+
+    void readStage(const std::function<void(const SceneStage* stage)>& read) const override
+    {
+        if (std::this_thread::get_id() != _mainThread) {
+            // Bounded, so that a read the test never lets through fails it instead of hanging it.
+            (void)_opened.wait_for(std::chrono::seconds(30));
+        }
+        TestStageSource::readStage(read);
+        if (std::this_thread::get_id() != _mainThread) {
+            ++workerReads;
+        }
+    }
+
+    void open()
+    {
+        if (!_isOpen.exchange(true)) {
+            _open.set_value();
+        }
+    }
+
+    mutable std::atomic<int> workerReads { 0 };
+
+private:
+    std::promise<void> _open;
+    std::shared_future<void> _opened;
+    std::atomic<bool> _isOpen { false };
+    std::thread::id _mainThread;
+};
+
+template <typename Done>
+bool
+processEventsUntil(Done done)
+{
+    QElapsedTimer timer;
+
+    timer.start();
+    while (!done()) {
+        if (timer.elapsed() > 30000) {
+            return false;
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    return true;
+}
 
 // On disk, /World holding the payload prims B0 and B1, and the group Other holding the payload prim
 // B2. B1 also has a child in the root layer, composed whether or not its payload is loaded.
@@ -484,6 +549,89 @@ TEST(SceneGraphModel, OnlyAnEditOfTheStageSendsNotices)
 
     source->sync(SceneOps::appendLayer(base, groupLayer("Other", { "C" }), 2));
     EXPECT_GT(model.getStageNoticeCount(), notices);
+
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+// Read on the worker, an edit's rows change from the event loop, as they would under the main
+// thread's read.
+TEST(SceneGraphModel, AnEditReadOnTheWorkerAppliesFromTheEventLoop)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<GatedStageSource> source = std::make_shared<GatedStageSource>();
+    PXR_NS::SdfLayerRefPtr kept = groupLayer("Kept", { "K0", "K1", "K2" });
+    ScenePayload base = SceneOps::appendLayer(ScenePayload(), kept, 1);
+    source->sync(SceneOps::appendLayer(base, groupLayer("Edited", { "Old", "Same", "Other" }), 2));
+
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setReadsOnWorker(true);
+    model.setSource(source);
+    const QModelIndex keptIndex = model.indexOfPath(QString::fromUtf8("/Kept/K2"), true).parent();
+    const QModelIndex editedIndex = model.indexOfPath(QString::fromUtf8("/Edited/Other"), true).parent();
+    ASSERT_TRUE(keptIndex.isValid());
+    ASSERT_TRUE(editedIndex.isValid());
+    const int resets = model.getResetCount();
+    const QPersistentModelIndex k1(model.index(1, 0, keptIndex));
+    const QPersistentModelIndex same(childNamed(model, editedIndex, QString::fromUtf8("Same")));
+    const QStringList before = QStringList() << QString::fromUtf8("Old") << QString::fromUtf8("Same") << QString::fromUtf8("Other");
+    const QStringList after = QStringList() << QString::fromUtf8("Same") << QString::fromUtf8("New") << QString::fromUtf8("Other");
+
+    source->sync(SceneOps::appendLayer(base, groupLayer("Edited", { "Same", "New", "Other" }), 3));
+    model.refresh();
+    EXPECT_EQ(before, childNames(model, editedIndex));
+    source->open();
+    EXPECT_TRUE(processEventsUntil([&]() { return childNames(model, editedIndex) == after; }));
+
+    EXPECT_EQ(resets, model.getResetCount());
+    EXPECT_GT(source->workerReads.load(), 0);
+    ASSERT_TRUE(k1.isValid());
+    EXPECT_EQ(QString::fromUtf8("/Kept/K1"), model.pathOf(k1));
+    ASSERT_TRUE(same.isValid());
+    EXPECT_EQ(0, same.row());
+
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+// What the worker read for a stage the model no longer shows changes none of its rows, even
+// where the new stage has the same paths.
+TEST(SceneGraphModel, AnEditReadForAReplacedStageIsDropped)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<GatedStageSource> replaced = std::make_shared<GatedStageSource>();
+    std::shared_ptr<TestStageSource> shown = std::make_shared<TestStageSource>();
+    const ScenePayload original = SceneOps::appendLayer(ScenePayload(), groupLayer("Edited", { "Old", "Same", "Other" }), 1);
+    replaced->sync(original);
+    shown->sync(original);
+    const QStringList before = QStringList() << QString::fromUtf8("Old") << QString::fromUtf8("Same") << QString::fromUtf8("Other");
+
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setReadsOnWorker(true);
+    model.setSource(replaced);
+    EXPECT_TRUE(model.indexOfPath(QString::fromUtf8("/Edited/Other"), true).isValid());
+
+    replaced->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Edited", { "Same", "New", "Other" }), 2));
+    model.refresh();
+    model.setSource(shown);
+    const QModelIndex edited = model.indexOfPath(QString::fromUtf8("/Edited/Other"), true).parent();
+    EXPECT_TRUE(edited.isValid());
+    const int resets = model.getResetCount();
+    QStringList inserted;
+    QObject::connect(&model, &QAbstractItemModel::rowsInserted, [&](const QModelIndex& parent, int first, int last) {
+        for (int row = first; row <= last; ++row) {
+            inserted << model.index(row, 0, parent).data().toString();
+        }
+    });
+    // Gathered after the replaced stage's edit, so applied after it would have been.
+    shown->sync(SceneOps::appendLayer(ScenePayload(), groupLayer("Edited", { "Old", "Same", "Other", "Extra" }), 3));
+    model.refresh();
+    replaced->open();
+    const QStringList extended = QStringList(before) << QString::fromUtf8("Extra");
+    EXPECT_TRUE(processEventsUntil([&]() { return childNames(model, model.indexOfPath(QString::fromUtf8("/Edited"), false)) == extended; }));
+
+    EXPECT_EQ(resets, model.getResetCount());
+    EXPECT_EQ(QStringList(QString::fromUtf8("Extra")), inserted);
 
     EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
 }

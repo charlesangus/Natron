@@ -261,6 +261,14 @@ public:
     void refresh();
 
     /**
+     * @brief Whether refresh() reads the edited subtrees' prims on a thread of its own, applying
+     * them from the event loop, rather than under the main thread's read. Edits read for rows the
+     * tree no longer has are dropped, and ones for rows changed meanwhile are read again. Off by
+     * default.
+     **/
+    void setReadsOnWorker(bool onWorker);
+
+    /**
      * @brief The index of the prim at path, column 0, reading the children on the way when populate.
      * Invalid with *busy set when an edit held the stage; deferredReadsDone() says when to ask again.
      **/

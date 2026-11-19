@@ -1857,6 +1857,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->stack = new QStackedWidget(splitter);
 
     _imp->model = new SceneGraphModel(this);
+    _imp->model->setReadsOnWorker(true);
     _imp->tree = new QTreeView(_imp->stack);
     _imp->tree->setObjectName(QString::fromUtf8("sceneGraphTree"));
     _imp->tree->setModel(_imp->model);

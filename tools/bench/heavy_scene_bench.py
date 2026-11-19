@@ -208,6 +208,10 @@ DRAW_STEPS_POLL_S = 0.5
 DRAW_STEPS_KEPT = 20
 SWITCH_NODES = int(os.environ.get("BENCH_SWITCH_NODES", "4"))
 TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
+# The Scene Graph model reads rows on a worker: how long a lookup waits for them, and how many fetchMore() calls
+# one poll makes on a level (a huge level is read over many polls, never in one endless loop).
+ROW_WAIT_S = 30.0
+FETCH_MORE_LIMIT = 256
 EDIT_POST_WAIT_S = 10.0
 SCENARIO_LIMIT_S = int(os.environ.get("BENCH_SCENARIO_LIMIT_S", "300"))
 OPEN_LIMIT_S = int(os.environ.get("BENCH_OPEN_LIMIT_S", "1800"))
@@ -737,8 +741,12 @@ try:
         return hold(cached_widget("tree", panel_tree))
 
     def rows_under(parent=QModelIndex()):
+        """The rows read so far under parent, after asking for the rest a bounded number of times; the model
+        reads on its worker, so a caller that needs a row polls this (see wait_row) rather than expecting it now."""
         model = hold(tree().model())
-        while model.canFetchMore(parent):
+        for _ in range(FETCH_MORE_LIMIT):
+            if not model.canFetchMore(parent):
+                break
             model.fetchMore(parent)
         return [model.index(r, 0, parent) for r in range(model.rowCount(parent))]
 
@@ -757,6 +765,19 @@ try:
             if not found.isValid():
                 break
         return found
+
+    def wait_row(prim):
+        """Polls until prim's row has been read, down the path level by level; returns (index, wait_ms), the
+        index invalid when ROW_WAIT_S passed first. The caller requires it with its own message."""
+        found = {"index": QModelIndex()}
+
+        def poll():
+            found["index"] = find_row(prim)
+            return found["index"].isValid()
+
+        t0 = time.time() * 1000.0
+        yield ("until", poll, ROW_WAIT_S)
+        return found["index"], round(time.time() * 1000.0 - t0, 1)
 
     def ancestor_of_class(widget, name):
         w = widget
@@ -780,15 +801,18 @@ try:
     def action_twirl(m):
         require(view() is not None and shown(), "twirl: a scene view is visible and showing the scene")
         show_panel()
-        ok = yield ("until", lambda: panel().isVisible() and rows_under(), TIMEOUT_S)
+        ok = yield ("until", lambda: panel().isVisible() and rows_under(), ROW_WAIT_S)
         require(ok, "twirl: the panel lists the scene")
         row = rows["twirl_row"]
         names = row.strip("/").split("/")
+        rows_wait_ms = 0.0
         for depth in range(1, len(names)):
-            ancestor = find_row("/" + "/".join(names[:depth]))
+            ancestor, waited = yield from wait_row("/" + "/".join(names[:depth]))
+            rows_wait_ms += waited
             require(ancestor.isValid(), "twirl: the panel lists the row's ancestor %s" % ("/".join(names[:depth]),))
             tree().expand(ancestor)
-        target = find_row(row)
+        target, waited = yield from wait_row(row)
+        rows_wait_ms += waited
         require(target.isValid(), "twirl: the panel lists " + row)
         require(target.data(STATE_ROLE) == STATE_UNLOADED, "twirl: %s is unloaded (state %r)" % (row, target.data(STATE_ROLE)))
         persistent = QPersistentModelIndex(target)
@@ -809,13 +833,20 @@ try:
             lambda: state() == STATE_FAILED or (state() == STATE_LOADED and loaded()))
         m.values["twirl_tumble_ms"] = round(released_ms - t0, 1)
         m.values["twirl_settle_ms"] = yield from settle_after_tumble(released_ms)
+        # The twirled row's children are read on the model's worker: the panel filling is part of the twirl.
+        below_parent = persistent.sibling(persistent.row(), persistent.column())
+        below_t0 = time.time() * 1000.0
+        yield ("until", lambda: LOADING_LABEL not in [str(i.data()) for i in rows_under(below_parent)]
+               and not hold(tree().model()).canFetchMore(below_parent), ROW_WAIT_S)
+        m.values["twirl_below_rows_wait_ms"] = round(time.time() * 1000.0 - below_t0, 1)
         m.values["twirl_ms"] = round(time.time() * 1000.0 - t0, 1)
         check(state() == STATE_LOADED and committed(), "twirl: %s loaded and reached the screen (state %r, failures %r)"
               % (row, state(), v.property("natronSceneLoadFailures")))
-        below = rows_under(persistent.sibling(persistent.row(), persistent.column()))
+        below = rows_under(below_parent)
         names_below = [str(i.data()) for i in below]
         check(LOADING_LABEL not in names_below, "twirl: the loading row has gone (got %r)" % (names_below[:5],))
         m.values["twirl_rows"] = len(below)
+        m.values["twirl_rows_wait_ms"] = round(rows_wait_ms, 1)
         m.values["twirl_mouse_moves"] = moves
         m.values["twirl_move_gap_ms"] = longest_gap
         load_results(m, v, "load", edits_before)
@@ -1256,7 +1287,11 @@ try:
         # the cancel lands. The row has at most the scene's prims, so a batch of an eighth of them makes it at least 4.
         row_prims_bound = int(rows.get("prims") or rows.get("gprims") or 0)
         paced_batch = max(1, min(FILL_FIRST_BATCH, row_prims_bound // 8)) if row_prims_bound else 64
+        # The reveal batch does not bound admission; the fill's own batch does, so a pass admits a sixteenth of the
+        # scene at most and the fill needs at least 16 passes.
+        fill_batch = max(1, row_prims_bound // 16) if row_prims_bound else 64
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, paced_batch))
+        draw_call(v, "setDrawFillBatch", Q_ARG(int, fill_batch))
         before = draw_stats()
         # The first admit batch is in the apply that posts the change; the rest of the row waits in the fill's queue.
         yield from set_draw_state(row, "full")
@@ -1270,8 +1305,9 @@ try:
             yield ("sleep", POLL_MS)
         progress_after, complete_after = fill_state()
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
+        draw_call(v, "setDrawFillBatch", Q_ARG(int, 0))
         active = not complete_at_cancel and progress_at_cancel < 1.0
-        batch = paced_batch
+        batch = fill_batch
         admitted = at_cancel.get("shownSent", 0) - before.get("shownSent", 0)
         if not active:
             m.not_applicable = ("the fill had finished before the cancel landed (progress %.3f, %r prims admitted in batches of %d): "
@@ -1280,6 +1316,7 @@ try:
         m.values["cancel_paced_row"] = row
         m.values["cancel_paced_was_active"] = active
         m.values["cancel_paced_batch"] = batch
+        m.values["cancel_paced_reveal_batch"] = paced_batch
         m.values["cancel_paced_admitted_before_cancel"] = admitted
         m.values["cancel_paced_progress_at_cancel"] = round(progress_at_cancel, 4)
         m.values["cancel_paced_progress_after"] = round(progress_after, 4)
@@ -1756,7 +1793,7 @@ try:
     def panel_shows(node):
         p = panel()
         return (str(p.property("natronSceneGraphNode") or "") == node.getScriptName()
-                and not p.property("natronSceneGraphSwitching") and hold(tree().model()).rowCount(QModelIndex()) > 0)
+                and not p.property("natronSceneGraphSwitching") and bool(rows_under()))
 
     def action_node_switch(m):
         require(view() is not None and shown(), "node_switch: a scene view is visible and showing the scene")
@@ -1888,7 +1925,7 @@ try:
                     to_picture_ms=round((time.perf_counter() - reconnected) * 1000.0, 1))
 
         show_panel()
-        ok = yield ("until", lambda: panel().isVisible() and hold(tree().model()).rowCount(QModelIndex()) > 0, TIMEOUT_S)
+        ok = yield ("until", lambda: panel().isVisible() and bool(rows_under()), ROW_WAIT_S)
         require(ok, "workflow: the panel lists a scene")
         follow = hold(panel().findChild(QComboBox, "sceneGraphFollow"))
         require(follow is not None, "workflow: the panel has a Follow chooser")
@@ -1904,8 +1941,9 @@ try:
         finish_step("node_switch", (time.perf_counter() - t0) * 1000.0)
 
         inspected = asset or rows["root"]
-        target = find_row(inspected)
+        target, rows_wait_ms = yield from wait_row(inspected)
         require(target.isValid(), "workflow: the panel lists " + inspected)
+        m.values["workflow_inspect_rows_wait_ms"] = rows_wait_ms
         inspector = hold(panel().findChild(QWidget, "sceneGraphInspector"))
         require(inspector is not None, "workflow: the panel has an inspector")
         selection = tree().selectionModel()

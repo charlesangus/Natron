@@ -504,7 +504,9 @@ counts before and after and the wait in a `*_settle` field; the time judged ends
 began.
 
 `reveal_cancel_paced` sets a small fixed reveal batch (an eighth of the scene's prims, so the row needs at
-least four batches) through `setDrawRevealBatch` for the action and restores the paced default after it. If
+least four batches) through `setDrawRevealBatch` and fixes the fill's admission batch to a sixteenth of the
+scene's prims through `setDrawFillBatch` (the reveal batch does not bound admission), so the fill needs at
+least 16 passes; the paced defaults are restored after it, and the fill batch is the overshoot bound. If
 the fill had already finished when the cancel landed, the scenario is `not_applicable` with that reason; when
 the cancel lands mid-fill, the check that the fill stops within bound is unchanged.
 
@@ -523,7 +525,7 @@ whole load, and the requested payload files do not count as unrequested.
 `twirl`, after `open`, docks the Scene Graph panel beside the viewer and opens an unloaded payload row
 in its tree (`BENCH_TWIRL_PATH`; `/World/Block0/B1` on the city), tumbling the view until the row is
 loaded and the result is on screen. The stall budget covers the time from the twirl on, not the
-docking. It reports `twirl_ms`, `twirl_rows`, `twirl_mouse_moves`, `twirl_move_gap_ms` and the same
+docking. It reports `twirl_ms` (which includes the wait for the twirled row's children, `twirl_below_rows_wait_ms`), `twirl_rows`, `twirl_rows_wait_ms` (the wait for the model's worker to read down to the row, before the timed span), `twirl_mouse_moves`, `twirl_move_gap_ms` and the same
 `load_hold_ms`, `load_edits` and `load_failures`.
 
 `node_switch`, after `open` (on the flat file for the design's budget), docks the Scene Graph panel,

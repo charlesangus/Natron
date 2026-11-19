@@ -1,16 +1,20 @@
 #pragma once
 
 #include "GpuKernel.h"
+#include "GpuKernelRegistry.h"
+#include "GpuRaster.h"
 #include "GpuShaderCompiler.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <future>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 
 namespace gpu {
@@ -47,7 +51,14 @@ public:
     GpuStatus get(std::string_view source, ShaderStage stage, std::string_view entry,
                   std::shared_ptr<GpuKernel>& out);
 
-    // Drops every in-memory kernel; the disk entries stay.
+    // The graphics pipeline of `raster`, a raster of `registry`, for a colour attachment of `colourFormat`
+    // blended with `blend`. Built on first request; concurrent requests for one combination share the build,
+    // and a failed build is not kept, so the next request retries. Pipelines stay in memory until
+    // clearMemory(), never on disk. `registry` must be for this cache's device.
+    GpuStatus raster(const GpuKernelRegistry& registry, GpuRasterId raster, VkFormat colourFormat,
+                     GpuRasterBlend blend, std::shared_ptr<GpuRasterPipeline>& out);
+
+    // Drops every in-memory kernel and raster pipeline; the disk entries stay.
     void clearMemory();
 
     struct Stats {
@@ -56,6 +67,7 @@ public:
         size_t compiles = 0;
         size_t diskWrites = 0;
         size_t invalidEntries = 0;
+        size_t rasterBuilds = 0;
     };
     Stats stats() const;
 
@@ -91,6 +103,14 @@ private:
     std::unordered_map<std::string, Entry> entries_;
     std::list<std::string> lru_;
     std::unordered_map<std::string, std::shared_future<Result>> inflight_;
+
+    struct RasterResult {
+        GpuStatus status;
+        std::shared_ptr<GpuRasterPipeline> pipeline;
+    };
+    using RasterKey = std::tuple<uint32_t, VkFormat, GpuRasterBlend>;
+    std::map<RasterKey, std::shared_ptr<GpuRasterPipeline>> rasters_;
+    std::map<RasterKey, std::shared_future<RasterResult>> rasterInflight_;
     Stats stats_;
 };
 

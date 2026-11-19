@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GpuKernel.h"
+#include "GpuRaster.h"
 
 #include <cstdint>
 #include <deque>
@@ -24,7 +25,17 @@ enum class GpuKernelId : uint32_t {
     Count
 };
 
-// Lazily-created compute pipelines for one device. Safe to call from any thread.
+// Ids of the rasters compiled into NatronGpu, from slang_add_raster in the same file order. Descriptors
+// added with GpuKernelRegistry::registerRaster continue after Count.
+enum class GpuRasterId : uint32_t {
+#define GPU_RASTERS_ENUM
+#include "GpuKernels.inc"
+#undef GPU_RASTERS_ENUM
+    Count
+};
+
+// Lazily-created compute pipelines for one device, and the raster descriptions GpuPipelineCache builds
+// graphics pipelines from. Safe to call from any thread.
 //
 // Pointers returned by get() stay valid until invalidate() or destruction; both
 // require that no recorded work still references them.
@@ -48,6 +59,12 @@ public:
 
     // Null for an id that is neither generated nor registered.
     const GpuKernelDesc* desc(GpuKernelId id) const;
+
+    // Adds a raster that is not part of the generated table. The SPIR-V it points to must outlive the registry.
+    GpuRasterId registerRaster(const GpuRasterDesc& desc);
+
+    // Null for an id that is neither generated nor registered.
+    const GpuRasterDesc* rasterDesc(GpuRasterId id) const;
 
     // Creates the pipeline on first use; concurrent callers share one creation.
     // A failed creation is not cached, so the next call retries.
@@ -91,6 +108,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<Slot> slots_;
     std::deque<GpuKernelDesc> registered_;
+    std::deque<GpuRasterDesc> registeredRasters_;
     std::deque<RuntimeModule> runtimeModules_;
     std::vector<std::weak_ptr<GpuKernel>> external_;
     std::map<std::thread::id, VkCommandPool> pools_;

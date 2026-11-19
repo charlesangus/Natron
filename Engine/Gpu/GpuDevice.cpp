@@ -116,6 +116,16 @@ namespace {
         Features& operator=(const Features&) = delete;
     };
 
+    bool formatBlendsAsAttachment(VkPhysicalDevice pd, VkFormat format)
+    {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(pd, format, &fp);
+        const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT
+            | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT
+            | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        return (fp.optimalTilingFeatures & need) == need;
+    }
+
     bool meetsRequirements(VkPhysicalDevice pd, const VkPhysicalDeviceProperties& props)
     {
         if (props.apiVersion < VK_API_VERSION_1_3) {
@@ -602,12 +612,17 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     Features avail;
     vkGetPhysicalDeviceFeatures2(dev->physical_, &avail.f2);
     dev->info_.shaderFloat16 = avail.f12.shaderFloat16 == VK_TRUE;
+    dev->info_.dynamicRendering = avail.f13.dynamicRendering == VK_TRUE;
+    dev->info_.rasterFloatBlend = dev->info_.dynamicRendering
+        && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32G32B32A32_SFLOAT)
+        && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32_SFLOAT);
 
     Features want;
     want.f11.storageBuffer16BitAccess = VK_TRUE;
     want.f12.timelineSemaphore = VK_TRUE;
     want.f12.shaderFloat16 = avail.f12.shaderFloat16;
     want.f13.synchronization2 = VK_TRUE;
+    want.f13.dynamicRendering = avail.f13.dynamicRendering;
 
     const float prios[3] = { 1.0f, 1.0f, 1.0f };
     std::vector<VkDeviceQueueCreateInfo> qcis;

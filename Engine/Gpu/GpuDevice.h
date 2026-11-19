@@ -122,6 +122,11 @@ struct GpuDeviceInfo {
     bool externalMemoryHost = false;
     bool memoryBudget = false;
     bool pushDescriptor = false;
+    // Vulkan 1.3 dynamic rendering, enabled whenever the device offers it.
+    bool dynamicRendering = false;
+    // dynamicRendering plus colour-attachment blending of R32G32B32A32_SFLOAT and R32_SFLOAT. Raster users take
+    // their CPU path when it is false.
+    bool rasterFloatBlend = false;
 
     // Effective values: the device limit, or the GpuDeviceOptions override when that is smaller.
     uint64_t maxStorageBufferRange = 0;

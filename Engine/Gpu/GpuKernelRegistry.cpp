@@ -1,16 +1,26 @@
 #include "GpuKernelRegistry.h"
 
+#include <array>
+#include <tuple>
+
 namespace gpu {
 
 #define GPU_KERNELS_TABLE
 #include "GpuKernels.inc"
 #undef GPU_KERNELS_TABLE
 
+#define GPU_RASTERS_TABLE
+#include "GpuKernels.inc"
+#undef GPU_RASTERS_TABLE
+
 namespace {
 
     constexpr size_t kGeneratedCount = sizeof(kGpuKernelTable) / sizeof(kGpuKernelTable[0]);
     static_assert(kGeneratedCount == static_cast<size_t>(GpuKernelId::Count),
                   "kernel table and id enum come from the same list");
+    constexpr size_t kGeneratedRasterCount = std::tuple_size_v<decltype(kGpuRasterTable)>;
+    static_assert(kGeneratedRasterCount == static_cast<size_t>(GpuRasterId::Count),
+                  "raster table and id enum come from the same list");
 
 } // namespace
 
@@ -34,6 +44,28 @@ GpuKernelRegistry::registerKernel(const GpuKernelDesc& desc)
     registered_.push_back(desc);
     slots_.emplace_back();
     return static_cast<GpuKernelId>(kGeneratedCount + registered_.size() - 1);
+}
+
+GpuRasterId
+GpuKernelRegistry::registerRaster(const GpuRasterDesc& desc)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    registeredRasters_.push_back(desc);
+    return static_cast<GpuRasterId>(kGeneratedRasterCount + registeredRasters_.size() - 1);
+}
+
+const GpuRasterDesc*
+GpuKernelRegistry::rasterDesc(GpuRasterId id) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const size_t i = static_cast<size_t>(id);
+    if (i < kGeneratedRasterCount) {
+        return &kGpuRasterTable[i];
+    }
+    if (i - kGeneratedRasterCount < registeredRasters_.size()) {
+        return &registeredRasters_[i - kGeneratedRasterCount];
+    }
+    return nullptr;
 }
 
 GpuKernelId

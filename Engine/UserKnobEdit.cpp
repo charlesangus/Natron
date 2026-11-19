@@ -260,15 +260,23 @@ placeKnob(KnobHolder* holder,
     return insertInContainer(parent, knob, index);
 }
 
+// An expression is validated by running it, and fails on a parameter not yet declared to Python:
+// declare before setting expressions that name a new or renamed parameter, or that run on one.
+void
+declareToPython(KnobHolder* holder)
+{
+    NodePtr node = nodeOfHolder(holder);
+    if (node) {
+        node->declarePythonFields();
+    }
+}
+
 void
 refreshHolder(KnobHolder* holder)
 {
     holder->recreateUserKnobs(true);
-    NodePtr node = nodeOfHolder(holder);
-    if (node) {
-        // recreateUserKnobs() only declares the knobs to Python when a settings panel exists.
-        node->declarePythonFields();
-    }
+    // recreateUserKnobs() only declares the knobs to Python when a settings panel exists.
+    declareToPython(holder);
 }
 
 Serialization::KnobValueSerialization
@@ -630,9 +638,10 @@ pasteChild(KnobHolder* holder,
 {
     if (child.isGroup) {
         const Serialization::GroupKnobSerialization& groupSerialization = child.group;
+        const std::string groupName = uniqueKnobName(holder, groupSerialization.name);
         KnobGroupPtr group = AppManager::createKnob<KnobGroup>(holder, groupSerialization.label, 1, false);
         group->setAsUserKnob(true);
-        group->setName(uniqueKnobName(holder, groupSerialization.name));
+        group->setName(groupName);
         group->setAsTab(groupSerialization.isSetAsTab);
         group->setSecret(groupSerialization.secret);
         if (groupSerialization.isRFVGroup) {
@@ -922,6 +931,7 @@ applySpec(KnobHolder* holder,
         if (node) {
             node->removeParameterFromPython(oldName);
         }
+        declareToPython(holder);
         renameInListeners(holder, listeners, oldName, spec.name);
     }
 
@@ -1130,6 +1140,7 @@ changeUserKnobType(KnobHolder* holder,
 
     holder->deleteKnob(knob.get(), true);
     replacement->setName(name);
+    declareToPython(holder);
 
     if (convertible) {
         for (int i = 0; i < dimension && i < (int)ownExpressions.size(); ++i) {
@@ -1258,9 +1269,10 @@ pasteUserKnobs(KnobHolder* holder,
         KnobIPtr container = parent;
         int insertIndex = index;
         if (!container) {
+            const std::string pageName = uniqueKnobName(holder, page->name);
             KnobPagePtr newPage = AppManager::createKnob<KnobPage>(holder, page->label, 1, false);
             newPage->setAsUserKnob(true);
-            newPage->setName(uniqueKnobName(holder, page->name));
+            newPage->setName(pageName);
             newPage->setSecret(page->secret);
             container = newPage;
             insertIndex = -1;
@@ -1282,6 +1294,7 @@ pasteUserKnobs(KnobHolder* holder,
             index = insertIndex;
         }
     }
+    declareToPython(holder);
     restorePastedExpressionsAndLinks(holder, pasted);
     refreshHolder(holder);
 

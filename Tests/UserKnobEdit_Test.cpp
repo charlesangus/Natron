@@ -862,15 +862,16 @@ TEST_F(UserKnobEdit, EveryCreatableTypeRoundTripsThroughAProject)
         specs.push_back(spec);
     }
     {
+        // Not channels or layer: a node can already have its own knobs by those names.
         Serialization::KnobLayerSelectExtraSerialization buttons;
         buttons.withChannelButtons = true;
-        UserKnobSpec spec = makeSpec(KnobChannelSet::typeNameStatic(), "channels", 1, "settings");
+        UserKnobSpec spec = makeSpec(KnobChannelSet::typeNameStatic(), "userChannels", 1, "settings");
         spec.extra = buttons;
         specs.push_back(spec);
-        spec = makeSpec(KnobLayerSelect::typeNameStatic(), "layer", 1, "settings");
+        spec = makeSpec(KnobLayerSelect::typeNameStatic(), "userLayer", 1, "settings");
         spec.extra = buttons;
         specs.push_back(spec);
-        specs.push_back(makeSpec(KnobChannelSelect::typeNameStatic(), "channel", 1, "settings"));
+        specs.push_back(makeSpec(KnobChannelSelect::typeNameStatic(), "userChannel", 1, "settings"));
     }
     {
         UserKnobSpec spec = makeSpec(KnobButton::typeNameStatic(), "press", 1, "settings");

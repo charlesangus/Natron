@@ -21,19 +21,19 @@ Measures what Python knob expressions cost today, on graphs from 3 to 5000 or mo
 
 ## Phase 262.1: Topologies and timing
 
-- [ ] M262.P1.T1 — Add the three expression topologies to graph_bench.py
+- [x] M262.P1.T1 — Add the three expression topologies to graph_bench.py
   - files: tools/bench/graph_bench.py
   - approach: Add `build_exprchain` (N Grade nodes, node k's `gain` is `<prev>.gain.get() * 1.001`), `build_exprfan` (N Grade nodes whose `gain` references one master node's knob, which is itself `sin(frame / 10)`) and `build_exprmixed` (an even split of four kinds: a constant such as `2.0 * 0.5`, a frame function such as `1 + 0.1 * sin(frame)`, a sibling reference, and a clamp of a sibling reference). Register them in the `BENCH_TOPO` dispatch and the header comment. Name every node explicitly, as `BENCH_NAMED=1` does for the others, so naming cost stays out of the figure. Set expressions with `knob.setExpression(expr, False, 0)` the way the existing comps do.
   - verify: `BENCH_TOPO=exprmixed BENCH_N=20 BENCH_RES=tiny NatronRenderer -b tools/bench/graph_bench.py` exits 0 and appends one JSON line; rendered output differs by frame (the frame function is live).
   - size: M
 
-- [ ] M262.P1.T2 — Record cold and warm per-evaluation time, by expression kind
+- [x] M262.P1.T2 — Record cold and warm per-evaluation time, by expression kind
   - files: tools/bench/graph_bench.py
   - approach: For the expression topologies only, after the graph is built, call `getValueAtTime` on every expression knob for each timed frame in two passes. Pass one clears the result cache first (change the knob's expression or call `clearExpressionsResults`). Pass two is warm. Time each pass with `time.perf_counter_ns` and add `expr_cold_us_per_eval`, `expr_warm_us_per_eval`, `expr_evals` and `expr_by_kind` (kind to cold microseconds) to the result record, with `cpu_count`. Keep the existing whole-frame timing untouched.
   - verify: a tiny-resolution run for `exprmixed` at N=20 prints a record with all four new fields, each positive and `cold >= warm`.
   - size: M
 
-- [ ] M262.P1.T3 — Add expression rows to the bench matrix runner
+- [x] M262.P1.T3 — Add expression rows to the bench matrix runner
   - files: tools/bench/run_matrix.sh, tools/bench/README.md
   - approach: Add the three topologies to `run_matrix.sh` at N = 3, 30, 300, 1000, 5000 (and 20000 for `exprmixed` only). Document the topologies, the new record fields and the cold/warm split in README.md next to the existing topology list.
   - verify: `run_matrix.sh` with the expression topologies selected runs to completion at N=3 and N=30 and writes one line per configuration.
@@ -48,3 +48,7 @@ Measures what Python knob expressions cost today, on graphs from 3 to 5000 or mo
   - size: S
 
 **Verification gate:** `run_matrix.sh` over the three expression topologies completes at every size listed, BASELINE.md carries the table, and the GUI bench (`tools/bench/gui/run.sh --xvfb`, `compare.py` against the xvfb baseline) shows no change, since this milestone touches no engine code.
+
+## Progress
+
+- 2026-11-19: P1 done at fb8e9c983. Grade's Gain knob is scripted `white`, and colour knobs read with `getValue(0)`, so the expressions use those in place of the spec's `gain` and `.get()`. The cold pass times frames past the rendered range, which start with an empty result cache. Smoke run on main (exprmixed N=20): 15 µs cold, 3 µs warm per evaluation. P2.T1 baseline running on a cloud VM (build/vast-logs/m262-bench.sh).

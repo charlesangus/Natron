@@ -108,7 +108,19 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - files: the project reset path, SceneStage and viewer release
   - approach: release the old UsdStage and engine on a worker or the render thread, without the main thread waiting.
   - verify: `reopen_stall_ms` ≤100 (flat 21.3 s, city 395, Lobby 680, Island 997).
+  - round 9: the reset part (1.1 s flat, 0.94 s Lobby) is `SceneGraphModel::resetTo` destroying the item tree on the main thread (via `SceneGraphPanel::releaseNodeStages`); move it to the teardown worker.
   - size: M
+
+- [ ] M336.P3.T9 — Island load_all memory under admission
+  - files: `Engine/Nodes/Scene/SceneDrawFilter.cpp` (~912-1015, 1259-1335, 1610-1640)
+  - approach: round 9 killed Island-loaded load_all at ~89 GiB RSS (round 8: 20 GB); the render thread sat in `sendChanges` → `_SendPrimsAdded`. Find what each admit batch re-announces (prims already in Hydra, instancer masks over 30.9M instances); send dirties, not re-adds. Also the reveal_load_all stall (45 → 200 ms) now that loads join the fill queue.
+  - verify: city-loaded and Island-loaded load_all RSS within ~10% of round 8; reveal_load_all stall ≤100.
+  - size: L
+- [ ] M336.P3.T10 — Render context without the main thread waiting
+  - files: `Gui/SceneViewport.cpp` (`initializeGL`, `startRenderContext` ~7271, ~10269)
+  - approach: connect's 100-145 ms is `initializeGL` waiting on `callOnRenderThread(makeRenderContext)`; post it and hold paints until ready. On reopen, `initializeGL` must not wait behind the old loop destroying its engine. Also orbit10k's cadence (city 18 fps, Lobby exactly 30 fps after P4.T3's frameSwapped-gated loop) and what Lobby's zero boxes mean.
+  - verify: open_stall_ms and populate_full stall ≤100; orbit10k ≥30 fps on city and Lobby.
+  - size: L
 
 - [x] M336.P3.T8 — GPU texture budget: textures past it are not loaded
   - files: `Gui/StormPtexBudget.cpp` and the Storm texture registry hooks it uses, Settings
@@ -214,3 +226,4 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
 - 2026-11-18 — **Bound the fill only (user):** M336 bounds passes while the scene fills (prims and textures, nearest first, paused while the camera moves; Phase 336.4, design by consultant: admission in SceneDrawFilter, prims absent from Hydra until admitted). After the fill a pass still draws the whole scene (~2-4 s on Island, accepted 2026-11-17); the steady draw belongs to M481 - Viewer Polygon Budgets, where drawing only stand-in boxes while the camera moves on an over-budget scene is recorded as a possible follow-up. Slicing the steady draw into accumulated passes was rejected (unverified Storm internals, re-gather per slice).
 - 2026-11-18 — Phase 336.4 in 2f222fabe (with 6fcdb7965's reopen teardown, present-fence watch, view-change frame stop and bench fixes); gate relaunched. PM calls: stand-in mode Always renders no frame, so no fill runs there (as that mode means); textures for materials bound only outside the ordered rows wait until the fill completes; the fill reuses the reveal pacer (first batch 1024 prims) and a reveal never runs while admitting; 'clears the queue' resets the order cursor; newly added prims are queued (bypassing the reveal for loads). natronSceneSynced and converged paints now wait for the fill.
 - 2026-11-18 — Phase 336.4 gate green on f48cb66dd (run 44386092853, m336 GUI rerun 44402586874 after the city doubled to 40 blocks; WholeFrameTest one-off, passed on rerun). The m364 first-Storm-frame failures were variance: the probe shows 1 pass and a complete fill on the first frame after a switch, like steady frames. Round-9 VM acceptance launched (build/vast-logs/m336-r9.sh, AppImage from 44386092853).
+- 2026-11-18 — **Round 9** (RTX 3090, f48cb66dd, cloud-gpu-20261118T213824Z): 8 pass / 13 fail; Island-loaded killed at ~89 GiB RSS in load_all (new, P3.T9). Diagnosis (consultant): open/populate stalls are the render-context wait (P3.T10); reopen is the model reset plus initializeGL waiting on the old engine teardown (P3.T7); pattern_node/inspect/twirl unchanged (P3.T6); reveal_cancel_paced is obsolete under the fill (a BBox→Full row's prims queue for the fill, so no reveal runs) and becomes a fill-cancel check; orbit10k cadence regressed (P3.T10). Flat first frame 239 s (115 s in round 8), mostly worker-thread composition. Bench: record out_of_memory, a per-second RSS line, sample only main and render threads.

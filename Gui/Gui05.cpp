@@ -45,6 +45,7 @@
 #include "Engine/RFV.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Gui/AboutWindow.h"
 #include "Gui/AutoHideToolBar.h"
@@ -232,6 +233,8 @@ Gui::createGroupGui(const NodePtr & group,
     }
 
     QGraphicsScene* scene = new QGraphicsScene(this);
+    // Panning moves the item every graph item descends from, so a BSP index would re-index the
+    // whole graph on every pan step; NodeGraph::getGraphItemsMeetingViewportRect() serves hit tests.
     scene->setItemIndexMethod(QGraphicsScene::NoIndex);
     NodeGraph* nodeGraph = new NodeGraph(this, collection, scene, this);
     nodeGraph->setObjectName( QString::fromUtf8( group->getLabel().c_str() ) );
@@ -306,10 +309,12 @@ void
 Gui::setActiveViewer(ViewerTab* viewer)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    noteViewerFocused(viewer);
     if (_imp->_activeViewer == viewer) {
         return;
     }
     _imp->_activeViewer = viewer;
+    getApp()->setViewerActiveForRenders(viewer ? viewer->getInternalNode()->getNode().get() : NULL);
     Q_EMIT activeViewerChanged();
     // RFVRead lists what reaches it from the active viewer.
     RFV::scheduleReaderRefresh(getApp());
@@ -321,6 +326,37 @@ Gui::getActiveViewer() const
     assert( QThread::currentThread() == qApp->thread() );
 
     return _imp->_activeViewer;
+}
+
+void
+Gui::noteViewerFocused(ViewerTab* viewer)
+{
+    if (!viewer) {
+        return;
+    }
+    std::list<QPointer<ViewerTab>>& history = _imp->_viewerFocusHistory;
+    for (std::list<QPointer<ViewerTab>>::iterator it = history.begin(); it != history.end();) {
+        if (it->isNull() || (it->data() == viewer)) {
+            it = history.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    history.push_front(viewer);
+}
+
+std::list<ViewerTab*>
+Gui::getViewersByRecentFocus() const
+{
+    assert(QThread::currentThread() == qApp->thread());
+    std::list<ViewerTab*> viewers;
+    for (const QPointer<ViewerTab>& viewer : _imp->_viewerFocusHistory) {
+        if (viewer) {
+            viewers.push_back(viewer.data());
+        }
+    }
+
+    return viewers;
 }
 
 NodeCollectionPtr

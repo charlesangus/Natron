@@ -41,6 +41,7 @@
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
@@ -114,7 +115,24 @@ void readSourceRow(const Image* image,
                    float* row);
 
 /**
- * @brief One value per pixel of `channel` of row y, `fill` wherever the image has no pixel.
+ * @brief readSourceRow(), read outside the image by mode (EdgeSample::coord()). With no image, or
+ * an empty one, the row is zero.
+ **/
+void readSourceRow(const Image* image,
+                   const Image::ReadAccess* access,
+                   const RectI& bounds,
+                   int srcNComps,
+                   int x0,
+                   int y,
+                   int width,
+                   int nComps,
+                   EdgeMode mode,
+                   float* row);
+
+/**
+ * @brief One value per pixel of `channel` of row y, `fill` wherever the image has no pixel: for
+ * a read whose missing pixels stand for a value (an opaque alpha, an unset mask) rather than for
+ * the image's edge.
  **/
 void readChannelRow(const Image* image,
                     const Image::ReadAccess* access,
@@ -126,6 +144,34 @@ void readChannelRow(const Image* image,
                     int width,
                     float fill,
                     float* row);
+
+/**
+ * @brief One value per pixel of `channel` of row y, read outside the image by mode
+ * (EdgeSample::coord()). With no image, or an empty one, the row is zero.
+ **/
+void readChannelRow(const Image* image,
+                    const Image::ReadAccess* access,
+                    const RectI& bounds,
+                    int imageNComps,
+                    int channel,
+                    int x0,
+                    int y,
+                    int width,
+                    EdgeMode mode,
+                    float* row);
+
+/**
+ * @brief The value of `channel` at (x, y), read outside the image by mode (EdgeSample::pixel()).
+ * Zero with no image, or an empty one.
+ **/
+float readChannelAt(const Image* image,
+                    const Image::ReadAccess* access,
+                    const RectI& bounds,
+                    int imageNComps,
+                    int channel,
+                    int x,
+                    int y,
+                    EdgeMode mode) WARN_UNUSED_RETURN;
 
 /**
  * @brief One output plane of a render with the images it reads. Image::getBounds() takes the
@@ -167,6 +213,8 @@ struct MaskInput {
     int nComps;
     RectI bounds;
     std::shared_ptr<Image::ReadAccess> access;
+    // What the mask reads past bounds.
+    EdgeMode edgeMode;
 
     MaskInput();
 
@@ -213,23 +261,13 @@ void forEachLineChunk(int nLines,
                       const std::function<void(int, int)>& body);
 
 /**
- * @brief How the source reads outside its image when filling the buffer.
- **/
-enum class Boundary {
-    // Zero (Dirichlet).
-    Zero,
-    // The nearest pixel of the image (Neumann).
-    Nearest
-};
-
-/**
  * @brief Fills buffer, one bufferRect-sized plane per processed channel, with the source of job,
- * outside its image by boundary, divided by the "(Un)premult by" channel where that is usable.
+ * outside its image by edgeMode (EdgeSample::pixel()), divided by the "(Un)premult by" channel where that is usable.
  **/
 void fillBuffer(const PlaneJob& job,
                 const ProcessedPlanes& planes,
                 const RectI& bufferRect,
-                Boundary boundary,
+                EdgeMode edgeMode,
                 int nThreads,
                 RenderCancellation& cancel,
                 float* buffer);
@@ -245,13 +283,16 @@ struct WindowLayout {
     RectI bufferRect;
     const float* buffer;
     float mix;
+    // How the source the window blends with and passes through reads past its image.
+    EdgeMode sourceEdgeMode = EdgeMode::Black;
 };
 
 /**
  * @brief Writes job's window in row bands: each processed channel of the processed window is
  * the buffer value multiplied back by the divisor, then blended with the undivided
  * source by mask x mix; unprocessed channels and the pixels outside the processed window pass
- * through. A buffer value outside bufferRect reads as zero.
+ * through. The source reads past its image by layout.sourceEdgeMode, and a buffer value outside
+ * bufferRect as zero.
  **/
 void writeWindow(const PlaneJob& job,
                  const ProcessedPlanes& planes,
@@ -378,23 +419,25 @@ struct Pass {
 
 /**
  * @brief Everything a pass list's GPU recorder reads and writes. source holds the source over
- * at least sourceValid, outside which it reads zero, divided by the divisor when the Premult
+ * at least sourceValid, outside which it reads by edgeMode, divided by the divisor when the Premult
  * stage has one. The recorder writes filtered over output, the passes running over domain: output
- * grown by the halo and clipped to rod, this effect's region of definition. Dispatches the
+ * grown by the halo and clipped as runPassesCpu() clips its scratch. rod is this effect's region of definition. Dispatches the
  * recorder makes in sequence must be separated by compute barriers; the executor orders its own.
  * inputs holds the effect's other inputs by input number, each cropped to that input's region of
  * definition, outside which it reads zero; an input that is disconnected, not read on the GPU or
  * empty there, and the source's own entry, are views without a buffer.
  *
  * For a list with opMask, maskApplied is whether the mask is connected and enabled; mask is then
- * its view, maskComponent the component of it that holds the mask's channel, and the mask reads 0
- * outside mask.bounds, everywhere when mask has no buffer or maskComponent is -1. Without an
- * applied mask, the mask reads 1 everywhere.
+ * its view, maskComponent the component of it that holds the mask's channel, and the mask reads
+ * past mask.bounds by maskEdgeMode, 0 everywhere when mask has no buffer or maskComponent is -1.
+ * Without an applied mask, the mask reads 1 everywhere.
  **/
 struct PassGpuIO {
     gpu::GpuRecordContext& context;
     GpuImageView source;
     RectI sourceValid;
+    // How the source reads outside sourceValid: PassList::edgeMode.
+    EdgeMode edgeMode = EdgeMode::Black;
     GpuImageView filtered;
     RectI output;
     RectI domain;
@@ -411,6 +454,7 @@ struct PassGpuIO {
     bool maskApplied = false;
     GpuImageView mask;
     int maskComponent = -1;
+    EdgeMode maskEdgeMode = EdgeMode::Black;
 
     explicit PassGpuIO(gpu::GpuRecordContext& ctx)
         : context(ctx)
@@ -422,8 +466,9 @@ using PassGpuRecorder = std::function<StatusEnum(const PassGpuIO&)>;
 
 /**
  * @brief What a Passes op computes for one render: passes in order over scratchSlots scratch
- * buffers, the result read from resultSlot. boundary is how slot 0 reads the source outside its
- * image. gpu records the whole list on the GPU; without it the op stays on the CPU.
+ * buffers, the result read from resultSlot. edgeMode is how slot 0 reads the source outside its
+ * image. gpu records the whole list on the GPU; without it, or for a query gpuAccepts refuses,
+ * the op stays on the CPU.
  *
  * opMask is for an op that applies its mask itself, inside the passes, rather than the MaskMix
  * stage blending its output with the source: the executors hand the mask over in PassScratch::mask
@@ -432,11 +477,38 @@ using PassGpuRecorder = std::function<StatusEnum(const PassGpuIO&)>;
  **/
 struct PassList {
     std::vector<Pass> passes;
-    PassExec::Boundary boundary = PassExec::Boundary::Zero;
+    EdgeMode edgeMode = EdgeMode::Black;
     int scratchSlots = 1;
     int resultSlot = 0;
     bool opMask = false;
+    // For a list whose windows shrink at this effect's region of definition rather than read past
+    // it: the scratch is then clipped to that region, and edgeMode never reaches the passes.
+    bool clipToRegion = false;
+    // Under Stretch, how far past the source along each axis the scratch must reach for passes
+    // that read past the scratch by repeating its edge to give what they would over the source
+    // extended indefinitely; negative for a list that must hold its whole halo instead.
+    //
+    // Outside the source a stretched image repeats its edge row or column, so a pass that reads
+    // the same way at every position gives, outside the source grown by its reach along an axis,
+    // a result that repeats along that axis too: holding the source and the window is enough, and
+    // a halo far larger than the image costs no memory. A reach is needed only where a pass reads
+    // what an earlier pass computed past the source, as an iterated box does along its line; a
+    // pass that reads in a frame other than the scratch's axes reads that frame's edge instead.
+    int stretchReachX = -1;
+    int stretchReachY = -1;
+    // Under Stretch with a reach, the region of definition of an input other than the source that
+    // the passes read per pixel, such as a Map, in this effect's pixels: what they compute varies
+    // there as it does over the source, and up to one pixel past it, where an input read under
+    // Black turns to black.
+    RectI stretchVaries = RectI(0, 0, 0, 0);
+    // Under Stretch with a reach, whether the passes include recursive filters, whose results near
+    // the end of a line depend on where it ends: the scratch then covers the region of definition
+    // whatever the window, so that a tile's line ends are the whole image's.
+    bool stretchLinesEndAtRegion = false;
     PassGpuRecorder gpu;
+    // When set, gpu records the list only for the queries it accepts, as a frame within the
+    // device's scratch.
+    std::function<bool(const GpuQuery&)> gpuAccepts;
 
     bool empty() const WARN_UNUSED_RETURN
     {
@@ -445,12 +517,15 @@ struct PassList {
 };
 
 /**
- * @brief What a Passes op's passes() is built for: the scale the render runs at, and the pixel
- * aspect ratio of the op's source, which turns a horizontal size in canonical units into pixels.
+ * @brief What a Passes op's passes() is built for: the scale the render runs at, the pixel
+ * aspect ratio of the op's source, which turns a horizontal size in canonical units into pixels,
+ * and the edge mode the op reads its source under (StagedImageEffect::resolvedEdgeMode()), which
+ * also fixes the line ends of its separable filters.
  **/
 struct PassContext {
     RenderScale scale;
     double pixelAspectRatio = 1.;
+    EdgeMode edgeMode = EdgeMode::Stretch;
 };
 
 /**
@@ -521,7 +596,9 @@ private:
  * @brief Renders args through plan with list on the CPU.
  *
  * The images are fetched and locked as runStagesCpu() does. The window, empty with a mix of 0,
- * grown by the halo and clipped to effect's region of definition, is the scratch rect: slot 0 is
+ * grown by the halo and clipped by the edge mode (clipToRegion, Black's one-pixel border past
+ * the region and the source's region, or under Stretch the source grown by the list's stretch
+ * reach), is the scratch rect: slot 0 is
  * filled with the source there (fillBuffer()), the passes run in order, each over whole lines
  * split between threads, and the window is written from resultSlot (writeWindow()). Fails on a
  * list isRunnablePassList() refuses.
@@ -530,6 +607,29 @@ StatusEnum runPassesCpu(EffectInstance& effect,
                         const StagePlan& plan,
                         const EffectInstance::RenderActionArgs& args,
                         const PassList& list) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The scratch rect runPassesCpu() runs list over for window, for an op that sizes its own
+ * per-pixel state to it. False when effect's region of definition is unavailable.
+ **/
+bool passScratchRect(EffectInstance& effect,
+                     const StagePlan& plan,
+                     const PassList& list,
+                     const RectI& window,
+                     double time,
+                     const RenderScale& scale,
+                     ViewIdx view,
+                     RectI* rect) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The region of definition of effect's input inputNb in pixels at scale, by that input's
+ * pixel aspect ratio; empty when it is disconnected or has none.
+ **/
+RectI passInputRoDPixels(EffectInstance& effect,
+                         int inputNb,
+                         double time,
+                         const RenderScale& scale,
+                         ViewIdx view) WARN_UNUSED_RETURN;
 
 /**
  * @brief Runs the passes of list in order over scratch, each over whole lines split between

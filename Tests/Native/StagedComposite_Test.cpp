@@ -460,6 +460,7 @@ protected:
         if (source) {
             setParitySourceComponents(source, "rgba");
             setParitySourceOrigin(source, x, y);
+            setBlackOutside(source, true);
         }
 
         return source;

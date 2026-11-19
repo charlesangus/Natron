@@ -25,9 +25,12 @@
 
 #include "CurveEditor.h"
 
-#include <utility>
-#include <stdexcept>
+#include <deque>
+#include <list>
 #include <sstream> // stringstream
+#include <stdexcept>
+#include <unordered_map>
+#include <utility>
 
 #include <QAction>
 #include <QApplication>
@@ -118,6 +121,11 @@ struct CurveEditorPrivate
 {
     std::list<NodeCurveEditorContext*> nodes;
     std::list<RotoCurveEditorContext*> rotos;
+    // Where each node's contexts sit in the lists above, oldest first: a node added twice has two.
+    std::unordered_map<const NodeGui*, std::deque<std::list<NodeCurveEditorContext*>::iterator>> nodesByGui;
+    std::unordered_map<const NodeGui*, std::deque<std::list<RotoCurveEditorContext*>::iterator>> rotosByGui;
+    int removalBatchDepth;
+    bool recenterAfterRemovalBatch;
     QVBoxLayout* mainLayout;
     QSplitter* splitter;
     CurveWidget* curveWidget;
@@ -139,6 +147,10 @@ struct CurveEditorPrivate
     CurveEditorPrivate()
         : nodes()
         , rotos()
+        , nodesByGui()
+        , rotosByGui()
+        , removalBatchDepth(0)
+        , recenterAfterRemovalBatch(false)
         , mainLayout(0)
         , splitter(0)
         , curveWidget(0)
@@ -244,17 +256,20 @@ CurveEditor::CurveEditor(Gui* gui,
 
 CurveEditor::~CurveEditor()
 {
+    _imp->tree->blockSignals(true);
     // Item rows hang under their host node's row, so they go before the node contexts.
     for (std::list<RotoCurveEditorContext*>::iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
         delete *it;
     }
     _imp->rotos.clear();
+    _imp->rotosByGui.clear();
 
     for (std::list<NodeCurveEditorContext*>::iterator it = _imp->nodes.begin();
          it != _imp->nodes.end(); ++it) {
         delete (*it);
     }
     _imp->nodes.clear();
+    _imp->nodesByGui.clear();
 }
 
 void
@@ -348,40 +363,80 @@ CurveEditor::addNode(NodeGuiPtr node)
 
     NodeCurveEditorContext* nodeContext = new NodeCurveEditorContext(_imp->tree, this, node);
     _imp->nodes.push_back(nodeContext);
+    _imp->nodesByGui[nodeContext->getNode().get()].push_back(std::prev(_imp->nodes.end()));
 
     if (node->getNode()->getCurveContext()) {
         RotoCurveEditorContext* rotoEditorCtx = new RotoCurveEditorContext(this, _imp->tree, node, nodeContext->getItem(),
                                                                            nodeContext->hasKnobCurvesShown());
         _imp->rotos.push_back(rotoEditorCtx);
+        _imp->rotosByGui[rotoEditorCtx->getNode().get()].push_back(std::prev(_imp->rotos.end()));
     }
 }
 
 void
 CurveEditor::removeNode(NodeGui* node)
 {
+    // Deleting a selected row emits itemSelectionChanged from inside the context destructors,
+    // and the handler would walk contexts that are half destroyed, so selection is recomputed
+    // once after they are gone.
+    const int selectedBefore = _imp->tree->selectedItems().size();
+    const bool wasBlocked = _imp->tree->blockSignals(true);
     // The item rows hang under the node's row, so they go first.
-    for (std::list<RotoCurveEditorContext*>::iterator it = _imp->rotos.begin(); it != _imp->rotos.end(); ++it) {
-        if ((*it)->getNode().get() == node) {
-            delete *it;
-            _imp->rotos.erase(it);
-            break;
+    std::unordered_map<const NodeGui*, std::deque<std::list<RotoCurveEditorContext*>::iterator>>::iterator roto = _imp->rotosByGui.find(node);
+    if (roto != _imp->rotosByGui.end()) {
+        std::list<RotoCurveEditorContext*>::iterator it = roto->second.front();
+        roto->second.pop_front();
+        if (roto->second.empty()) {
+            _imp->rotosByGui.erase(roto);
         }
+        RotoCurveEditorContext* removed = *it;
+        _imp->rotos.erase(it);
+        delete removed;
     }
-    for (std::list<NodeCurveEditorContext*>::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
-        if ((*it)->getNode().get() == node) {
-            const NodeCurveEditorContext::Elements& elems = (*it)->getElements();
-            for (NodeCurveEditorContext::Elements::const_iterator it2 = elems.begin(); it2 != elems.end(); ++it2) {
-                if ((*it2)->getCurve() == _imp->selectedKnobCurve.lock()) {
-                    _imp->selectedKnobCurve.reset();
-                    break;
-                }
+    std::unordered_map<const NodeGui*, std::deque<std::list<NodeCurveEditorContext*>::iterator>>::iterator context = _imp->nodesByGui.find(node);
+    if (context != _imp->nodesByGui.end()) {
+        std::list<NodeCurveEditorContext*>::iterator it = context->second.front();
+        context->second.pop_front();
+        if (context->second.empty()) {
+            _imp->nodesByGui.erase(context);
+        }
+        const NodeCurveEditorContext::Elements& elems = (*it)->getElements();
+        for (NodeCurveEditorContext::Elements::const_iterator it2 = elems.begin(); it2 != elems.end(); ++it2) {
+            if ((*it2)->getCurve() == _imp->selectedKnobCurve.lock()) {
+                _imp->selectedKnobCurve.reset();
+                break;
             }
-            delete (*it);
-            _imp->nodes.erase(it);
-            break;
         }
+        NodeCurveEditorContext* removed = *it;
+        _imp->nodes.erase(it);
+        delete removed;
     }
-    _imp->curveWidget->centerOn(-10, 500, -10, 10);
+    _imp->tree->blockSignals(wasBlocked);
+    if (!wasBlocked && (_imp->tree->selectedItems().size() != selectedBefore)) {
+        onItemSelectionChanged();
+    }
+    if (_imp->removalBatchDepth > 0) {
+        _imp->recenterAfterRemovalBatch = true;
+    } else {
+        _imp->curveWidget->centerOn(-10, 500, -10, 10);
+    }
+}
+
+CurveEditor::RemovalBatch::RemovalBatch(CurveEditor* editor)
+    : _editor(editor)
+{
+    if (_editor) {
+        ++_editor->_imp->removalBatchDepth;
+    }
+}
+
+CurveEditor::RemovalBatch::~RemovalBatch()
+{
+    if (!_editor || (--_editor->_imp->removalBatchDepth > 0) || !_editor->_imp->recenterAfterRemovalBatch) {
+        return;
+    }
+    _editor->_imp->recenterAfterRemovalBatch = false;
+    _editor->_imp->curveWidget->centerOn(-10, 500, -10, 10);
 }
 
 static bool
@@ -1822,9 +1877,16 @@ RotoCurveEditorContext::onItemRemoved(const RotoItemPtr& item,
 {
     for (std::list<RotoItemEditorContext*>::iterator it = _imp->curves.begin(); it != _imp->curves.end(); ++it) {
         if ( (*it)->getRotoItem() == item ) {
-            delete *it;
+            const int selectedBefore = _imp->tree->selectedItems().size();
+            const bool wasBlocked = _imp->tree->blockSignals(true);
+            RotoItemEditorContext* removed = *it;
             _imp->curves.erase(it);
+            delete removed;
             _imp->updateHostRowVisibility();
+            _imp->tree->blockSignals(wasBlocked);
+            if (!wasBlocked && (_imp->tree->selectedItems().size() != selectedBefore)) {
+                _imp->widget->onItemSelectionChanged();
+            }
 
             return;
         }

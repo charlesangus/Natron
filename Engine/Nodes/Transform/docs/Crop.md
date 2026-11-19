@@ -6,6 +6,9 @@ Tolerance:
 |---|---|---|---|
 | Crop | exact / resampling | `kExactTolerance`, `kSoftTolerance` | softness 0 copies pixels; a soft edge is a double smoothstep rounded to float |
 
+Crop's Edge Mode defaults to Black, so a crop hard-cuts to black; Input or Stretch repeat the edge.
+It is the only node whose Edge Mode does not default to Input.
+
 Crop runs on the GPU in the offset form with its separable matte. At softness 0 the GPU is exact,
 and so is every pixel whose fade weight is 0 (written 0) or at least 1 (the source pixel kept).
 A partial weight multiplies in two-float on the device and is held to `resampling()`. A source

@@ -767,11 +767,21 @@ DockablePanel::onLineEditNameEditingFinished()
 }
 
 void
+DockablePanel::onKnobBuildStarted()
+{
+    // Pages are filled while the panel is shown, so the tab widget must already be laid out.
+    if (_imp->_tabWidget && (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0)) {
+        _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
+    }
+}
+
+void
 DockablePanel::onKnobsInitialized()
 {
     assert(_imp->_tabWidget);
-    _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
-
+    if (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0) {
+        _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
+    }
 
     RotoPanel* roto = initializeRotoPanel();
     if (roto) {
@@ -993,6 +1003,34 @@ DockablePanel::setClosedInternal(bool c)
 {
     if (!_imp->_gui) {
         return;
+    }
+
+    {
+        QMutexLocker l(&_imp->_isClosedMutex);
+        if (c == _imp->_isClosed) {
+            return;
+        }
+    }
+
+    // Opening and closing add and remove the node from the editors, which a panel still being built
+    // has yet to do. Finishing a build only to close it would stall whatever closes it, such as the
+    // open-panel limit during a burst of creations, so such a panel is dropped and built afresh when
+    // next opened.
+    NodeSettingsPanel* isBuildingNodePanel = dynamic_cast<NodeSettingsPanel*>(this);
+    if (isBuildingNodePanel) {
+        NodeGuiPtr nodeGui = isBuildingNodePanel->getNode();
+        if (nodeGui) {
+            if (c && nodeGui->dropUnbuiltPanel()) {
+                {
+                    QMutexLocker l(&_imp->_isClosedMutex);
+                    _imp->_isClosed = true;
+                }
+                Q_EMIT closeChanged(true);
+
+                return;
+            }
+            nodeGui->ensurePanelCreated();
+        }
     }
 
     {

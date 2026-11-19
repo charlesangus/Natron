@@ -46,6 +46,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/BlurKernels.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -206,14 +207,16 @@ TEST_F(NativeBlurTest, SourceRegionOfInterestIsTheOfxHalo)
     EXPECT_EQ(rect.x1, roi.x1);
     EXPECT_EQ(rect.y2, roi.y2);
 
-    // max(3, ceil(1.5 * 25)) = 38.
+    // The recursion's reach, which is longer than CImg's max(3, ceil(1.5 * 25)) = 38.
     params.sizeX = params.sizeY = 25.;
     EXPECT_FALSE(Blur::paramsAreIdentity(RenderScale::identity, params));
+    const int reach = BlurKernels::LineFilter::vanVliet((float)(25. / 2.4), 0, EdgeMode::Black).recursiveReach();
+    EXPECT_GT(reach, 38);
     roi = Blur::getSourceRoI(rect, RenderScale::identity, params);
-    EXPECT_EQ(10 - 38, roi.x1);
-    EXPECT_EQ(30 + 38, roi.x2);
-    EXPECT_EQ(20 - 38, roi.y1);
-    EXPECT_EQ(40 + 38, roi.y2);
+    EXPECT_EQ(10 - reach, roi.x1);
+    EXPECT_EQ(30 + reach, roi.x2);
+    EXPECT_EQ(20 - reach, roi.y1);
+    EXPECT_EQ(40 + reach, roi.y2);
 
     // Quadratic: 3 * (floor((25 - 1) / 2) + 1) = 39.
     params.filter = BlurKernels::eFilterQuadratic;

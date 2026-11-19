@@ -26,9 +26,11 @@
 #include "FrameRenderContext.h"
 
 #include <cassert>
+#include <cstring>
 #include <functional>
 #include <utility>
 
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/IsolatedJob.h"
@@ -39,7 +41,7 @@ NATRON_NAMESPACE_ENTER
 bool
 FrameStore::TaskKey::operator==(const TaskKey& other) const
 {
-    return node == other.node && time == other.time && view == other.view && mipmapLevel == other.mipmapLevel && contextKey == other.contextKey;
+    return node == other.node && time == other.time && view == other.view && mipmapLevel == other.mipmapLevel && contextKey == other.contextKey && generation == other.generation;
 }
 
 std::size_t
@@ -54,6 +56,9 @@ FrameStore::TaskKeyHash::operator()(const TaskKey& key) const
     h ^= std::hash<unsigned int>()(key.mipmapLevel) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     if (key.contextKey != 0) {
         h ^= std::hash<U64>()(key.contextKey) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    }
+    if (key.generation != 0) {
+        h ^= std::hash<int>()(key.generation) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     }
 
     return h;
@@ -109,6 +114,25 @@ FrameStore::putDevice(const TaskKey& key,
 }
 
 void
+FrameStore::put(const TaskKey& key,
+                std::map<ImageLayerDesc, ImagePtr> layers,
+                std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers,
+                const RectI& renderedRoI,
+                int consumers)
+{
+    if (consumers <= 0) {
+        return;
+    }
+
+    std::shared_ptr<Entry> entry = std::make_shared<Entry>();
+    entry->layers = std::move(layers);
+    entry->deviceLayers = std::move(deviceLayers);
+    entry->renderedRoI = renderedRoI;
+    entry->consumersLeft = consumers;
+    putEntry(key, entry);
+}
+
+void
 FrameStore::putEntry(const TaskKey& key,
                      const std::shared_ptr<Entry>& entry)
 {
@@ -130,7 +154,9 @@ FrameStore::putEntry(const TaskKey& key,
     for (std::map<ImageLayerDesc, DeviceImagePtr>::const_iterator it = entry->deviceLayers.begin(); it != entry->deviceLayers.end(); ++it) {
         if (it->second) {
             addBounds(it->second->bounds());
-            entry->deviceBytes += it->second->bytes();
+            const std::size_t bytes = it->second->bytes();
+            entry->deviceLayerBytes[it->first] = bytes;
+            entry->deviceBytes += bytes;
         }
     }
 
@@ -305,7 +331,8 @@ FrameStore::findDevice(const TaskKey& key,
 }
 
 std::size_t
-FrameStore::evictToRam(const TaskKey& key)
+FrameStore::evictToRam(const TaskKey& key,
+                       const DeviceImage* only)
 {
     std::shared_ptr<Entry> entry;
     {
@@ -321,10 +348,19 @@ FrameStore::evictToRam(const TaskKey& key)
     std::size_t freed = 0;
     std::map<ImageLayerDesc, DeviceImagePtr>::iterator it = entry->deviceLayers.begin();
     while (it != entry->deviceLayers.end()) {
-        const std::size_t bytes = it->second ? it->second->bytes() : 0;
+        if (only && (it->second.get() != only)) {
+            ++it;
+            continue;
+        }
+        const std::map<ImageLayerDesc, std::size_t>::const_iterator stored = entry->deviceLayerBytes.find(it->first);
+        const std::size_t bytes = (stored != entry->deviceLayerBytes.end()) ? stored->second : 0;
         // A layer already downloaded keeps the RAM image it has.
         const bool inRam = entry->layers.find(it->first) != entry->layers.end();
         ImagePtr image = inRam ? ImagePtr() : (it->second ? it->second->evictToRam() : ImagePtr());
+        if (!inRam && !image && it->second) {
+            // The device tier may hold the image too, and have moved its pixels to RAM already.
+            image = it->second->downloadToRam();
+        }
         if (!inRam && !image) {
             // A failed eviction leaves the device image valid.
             ++it;
@@ -336,6 +372,7 @@ FrameStore::evictToRam(const TaskKey& key)
             entry->layers[it->first] = image;
         }
         freed += bytes;
+        entry->deviceLayerBytes.erase(it->first);
         it = entry->deviceLayers.erase(it);
     }
     if (!entry->retired) {
@@ -363,6 +400,37 @@ FrameStore::release(const TaskKey& key)
         _entries.erase(found);
         removeImageRefsLocked(*erased);
     }
+}
+
+bool
+FrameStore::retain(const TaskKey& key,
+                   const std::list<ImageLayerDesc>& needed,
+                   const RectI& pixelRoI,
+                   int count)
+{
+    if (count <= 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> k(_entriesMutex);
+    EntryMap::iterator found = _entries.find(key);
+    if ((found == _entries.end()) || !found->second) {
+        return false;
+    }
+    Entry& entry = *found->second;
+    if ((entry.consumersLeft <= 0) || !entry.bounds.contains(pixelRoI) || !entry.renderedRoI.contains(pixelRoI)) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> layersLock(entry.lock);
+        for (std::list<ImageLayerDesc>::const_iterator it = needed.begin(); it != needed.end(); ++it) {
+            if ((findExactLayer(entry.layers, *it) == entry.layers.end()) && (findExactLayer(entry.deviceLayers, *it) == entry.deviceLayers.end())) {
+                return false;
+            }
+        }
+    }
+    entry.consumersLeft += count;
+
+    return true;
 }
 
 std::size_t
@@ -407,27 +475,110 @@ FrameStore::clear()
     }
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+std::uint64_t
+nextFreshOutputFrameId()
+{
+    static std::atomic<std::uint64_t> next(1);
+
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t
+mixFreshOutputKey(std::uint64_t x)
+{
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+
+    return x ^ (x >> 31);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 FrameRenderContext::FrameRenderContext()
     : _argsMap()
     , _argsByHolder()
     , _rotoPaintTreeNodes()
+    , _freshOutputFrameId(nextFreshOutputFrameId())
     , _request()
     , _abortInfo()
     , _stats()
     , _time(0.)
     , _view(0)
-    , _store()
+    , _parent()
+    , _storeGenerations(1, 0)
+    , _store(std::make_shared<FrameStore>())
     , _isolatedJob(IsolatedJob::current())
+    , _recordsRenderedNodes(false)
+    , _renderedMutex()
+    , _renderedNodes()
 #ifdef NATRON_HAVE_GPU
     , _wantsRootOnDevice(false)
     , _rootDeviceMutex()
     , _rootDevicePlanes()
+    , _deviceTierGeneration(CacheDeviceTier::purgeGeneration())
+#endif
+{
+}
+
+FrameRenderContext::FrameRenderContext(const FrameRenderContextPtr& parent)
+    : _argsMap()
+    , _argsByHolder()
+    , _rotoPaintTreeNodes()
+    , _freshOutputFrameId(parent->_freshOutputFrameId)
+    , _request()
+    , _abortInfo(parent->_abortInfo)
+    , _stats(parent->_stats)
+    , _time(parent->_time)
+    , _view(parent->_view)
+    , _parent(parent)
+    , _storeGenerations()
+    , _store(parent->_store)
+    , _isolatedJob(parent->_isolatedJob)
+    , _recordsRenderedNodes(false)
+    , _renderedMutex()
+    , _renderedNodes()
+#ifdef NATRON_HAVE_GPU
+    , _wantsRootOnDevice(false)
+    , _rootDeviceMutex()
+    , _rootDevicePlanes()
+    , _deviceTierGeneration(parent->_deviceTierGeneration)
 #endif
 {
 }
 
 FrameRenderContext::~FrameRenderContext()
 {
+}
+
+void
+FrameRenderContext::setRecordsRenderedNodes(bool records)
+{
+    _recordsRenderedNodes.store(records, std::memory_order_release);
+}
+
+void
+FrameRenderContext::noteNodeRendered(const Node* node) const
+{
+    if (_parent) {
+        _parent->noteNodeRendered(node);
+
+        return;
+    }
+    if (!node || !_recordsRenderedNodes.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_renderedMutex);
+    _renderedNodes.insert(node);
+}
+
+std::unordered_set<const Node*>
+FrameRenderContext::renderedNodes() const
+{
+    std::lock_guard<std::mutex> lock(_renderedMutex);
+    return _renderedNodes;
 }
 
 #ifdef NATRON_HAVE_GPU
@@ -511,6 +662,45 @@ FrameRenderContext::createFromSetter(const ParallelRenderArgsSetter& setter,
     return ret;
 }
 
+FrameRenderContextPtr
+FrameRenderContext::createExtension(const FrameRenderContextPtr& parent,
+                                    const std::shared_ptr<FrameRequestMap>& request,
+                                    int generation)
+{
+    if (!parent || !request) {
+        return FrameRenderContextPtr();
+    }
+    FrameRenderContextPtr ret(new FrameRenderContext(parent));
+
+    ret->_storeGenerations.push_back(generation);
+    ret->_storeGenerations.insert(ret->_storeGenerations.end(), parent->_storeGenerations.begin(), parent->_storeGenerations.end());
+    // Copies, so that pointing them at the extension's entries leaves the args the planned tasks read alone.
+    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = parent->_argsMap.begin(); it != parent->_argsMap.end(); ++it) {
+        ret->_argsMap[it->first] = it->second ? std::make_shared<ParallelRenderArgs>(*it->second) : ParallelRenderArgsPtr();
+    }
+    ret->indexArgs();
+    const std::shared_ptr<FrameRequestMap>& planned = parent->_request;
+    if (planned && planned->contextArgs && !request->contextArgs) {
+        request->contextArgs = std::make_shared<ContextFrameArgsMap>();
+    }
+    ret->setRequest(request);
+    if (request->contextArgs) {
+        if (planned && planned->contextArgs) {
+            for (ContextFrameArgsMap::const_iterator it = planned->contextArgs->begin(); it != planned->contextArgs->end(); ++it) {
+                request->contextArgs->insert(*it);
+            }
+        }
+        // A consumer the extension did not reach still pulls the contexts the extension planned.
+        for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = ret->_argsMap.begin(); it != ret->_argsMap.end(); ++it) {
+            if (it->second) {
+                it->second->contextArgs = request->contextArgs;
+            }
+        }
+    }
+
+    return ret;
+}
+
 void
 FrameRenderContext::indexArgs()
 {
@@ -575,6 +765,39 @@ bool
 FrameRenderContext::isRotoPaintTreeNode(const Node* node) const
 {
     return node && (_rotoPaintTreeNodes.find(node) != _rotoPaintTreeNodes.end());
+}
+
+std::uint64_t
+FrameRenderContext::freshOutputKey(double time,
+                                   ViewIdx view) const
+{
+    std::uint64_t timeBits = 0;
+    static_assert(sizeof(timeBits) == sizeof(time), "a double is 64 bits");
+    std::memcpy(&timeBits, &time, sizeof(time));
+    std::uint64_t key = mixFreshOutputKey(_freshOutputFrameId);
+    key = mixFreshOutputKey(key ^ timeBits);
+    key = mixFreshOutputKey(key ^ (std::uint64_t)(std::int64_t)view.value());
+
+    // An empty slot holds 0.
+    return key ? key : 1;
+}
+
+void
+FrameRenderContext::noteFreshOutput(const Node* node,
+                                    double time,
+                                    ViewIdx view) const
+{
+    if (node) {
+        node->stampFreshOutput(freshOutputKey(time, view));
+    }
+}
+
+bool
+FrameRenderContext::hasFreshOutput(const Node* node,
+                                   double time,
+                                   ViewIdx view) const
+{
+    return node && node->hasFreshOutputStamp(freshOutputKey(time, view));
 }
 
 NATRON_NAMESPACE_EXIT

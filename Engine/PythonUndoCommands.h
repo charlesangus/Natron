@@ -54,11 +54,24 @@ NATRON_NAMESPACE_ENTER
 bool recordPythonKnobEdit(const KnobIPtr& knob) WARN_UNUSED_RETURN;
 
 /**
+ * @brief recordPythonKnobEdit() for a knob that may belong to a roto item, which has no holder:
+ * itemNode is the node whose curve context holds the item, or null for any other knob.
+ **/
+bool recordPythonKnobEdit(const KnobIPtr& knob, const NodePtr& itemNode) WARN_UNUSED_RETURN;
+
+/**
  * @brief The recording recordPythonKnobEdit() does, for edits made outside Python, such as the
  * edits of a Viewer overlay inside its gesture's undo step. Call on the main thread before changing
  * knob; does nothing unless the application's recorder is recording.
  **/
 void recordKnobEdit(const KnobIPtr& knob);
+
+/**
+ * @brief The recording recordKnobEdit() does, for a knob of a roto item, which has no holder: node
+ * is the node whose curve context holds the item, and undoing the record needs it to still exist.
+ * Call on the main thread before changing knob.
+ **/
+void recordRotoItemKnobEdit(const NodePtr& node, const KnobIPtr& knob);
 
 /**
  * @brief Call once a node created from Python exists. Undo removes it, redo brings it back.

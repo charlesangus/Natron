@@ -80,10 +80,11 @@ namespace {
     // hdCycles builds a node of an id that names a Cycles node, bare or after "cycles_" or "cycles:",
     // and maps these of UsdPreviewSurface's set; of the rest, an id Sdr knows is another renderer's or
     // another part of that set, and one it does not cannot be told from a bare Cycles node name.
+    // UsdTransform2d reaches Cycles as a mapping node, through LiveTextureSceneIndex's filter.
     bool
     takesShader(const TfToken& id)
     {
-        static const std::set<TfToken> mapped = { TfToken("UsdPreviewSurface"), TfToken("UsdUVTexture"), TfToken("UsdPrimvarReader_float"), TfToken("UsdPrimvarReader_float2"), TfToken("UsdPrimvarReader_float3"), TfToken("UsdPrimvarReader_float4"), TfToken("UsdPrimvarReader_int") };
+        static const std::set<TfToken> mapped = { TfToken("UsdPreviewSurface"), TfToken("UsdUVTexture"), TfToken("UsdTransform2d"), TfToken("UsdPrimvarReader_float"), TfToken("UsdPrimvarReader_float2"), TfToken("UsdPrimvarReader_float3"), TfToken("UsdPrimvarReader_float4"), TfToken("UsdPrimvarReader_int") };
         static const std::set<TfToken> known = [] {
             const SdrIdentifierVec ids = SdrRegistry::GetInstance().GetShaderNodeIdentifiers();
 

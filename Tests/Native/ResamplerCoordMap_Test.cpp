@@ -126,7 +126,7 @@ sampleRampRow(WrapMode wrap,
         sy.push_back(1.5f);
     }
     std::vector<float> out(sx.size(), -1.f);
-    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, (int)sx.size(), filter, false, blackOutside, wrap, Resampler::eWrapNone, out.data(), 1);
+    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, (int)sx.size(), filter, false, blackOutside ? EdgeMode::Black : EdgeMode::Stretch, wrap, Resampler::eWrapNone, out.data(), 1);
     return out;
 }
 } // anon namespace
@@ -145,7 +145,7 @@ TEST(ResamplerCoordMap, IdentityMapCopiesTheSourceWithImpulse)
                 sy[i] = (float)y + 0.5f;
             }
             for (int wrap = Resampler::eWrapNone; wrap <= Resampler::eWrapMirror; ++wrap) {
-                Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, true, (WrapMode)wrap, (WrapMode)wrap, out.data(), nComps);
+                Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, EdgeMode::Black, (WrapMode)wrap, (WrapMode)wrap, out.data(), nComps);
                 const float* row = data.data() + (std::size_t)(y - bounds.y1) * src.rowStride;
                 for (int k = 0; k < n * nComps; ++k) {
                     ASSERT_EQ(out[k], row[k]) << "nComps " << nComps << " wrap " << wrap << " y " << y << " k " << k;
@@ -163,7 +163,7 @@ TEST(ResamplerCoordMap, ExtraOutputComponentsAreZero)
     const float sx[2] = { 0.5f, 3.5f };
     const float sy[2] = { 2.5f, 1.5f };
     float out[8];
-    Resampler::resampleRowFromCoords(src, sx, sy, 0, 2, Resampler::eFilterImpulse, false, true, Resampler::eWrapNone, Resampler::eWrapNone, out, 4);
+    Resampler::resampleRowFromCoords(src, sx, sy, 0, 2, Resampler::eFilterImpulse, false, EdgeMode::Black, Resampler::eWrapNone, Resampler::eWrapNone, out, 4);
     EXPECT_EQ(out[0], src.pixel(0, 2)[0]);
     EXPECT_EQ(out[1], src.pixel(0, 2)[1]);
     EXPECT_EQ(out[2], 0.f);
@@ -205,10 +205,10 @@ TEST(ResamplerCoordMap, WrapModesApplyPerAxis)
     }
     const int n = (int)sx.size();
     std::vector<float> repeat(n), mirror(n), clamped(n), none(n);
-    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, true, Resampler::eWrapNone, Resampler::eWrapRepeat, repeat.data(), 1);
-    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, true, Resampler::eWrapNone, Resampler::eWrapMirror, mirror.data(), 1);
-    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, true, Resampler::eWrapNone, Resampler::eWrapClamp, clamped.data(), 1);
-    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, true, Resampler::eWrapRepeat, Resampler::eWrapNone, none.data(), 1);
+    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, EdgeMode::Black, Resampler::eWrapNone, Resampler::eWrapRepeat, repeat.data(), 1);
+    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, EdgeMode::Black, Resampler::eWrapNone, Resampler::eWrapMirror, mirror.data(), 1);
+    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, EdgeMode::Black, Resampler::eWrapNone, Resampler::eWrapClamp, clamped.data(), 1);
+    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, EdgeMode::Black, Resampler::eWrapRepeat, Resampler::eWrapNone, none.data(), 1);
     for (int p = -5; p < 9; ++p) {
         const std::size_t i = (std::size_t)(p + 5);
         EXPECT_EQ(repeat[i], (float)(2 + 4 * repeatIndex(p, 4))) << "p " << p;
@@ -230,7 +230,7 @@ TEST(ResamplerCoordMap, WrapDomainOverridesTheBounds)
     }
     const int n = (int)sx.size();
     std::vector<float> out(n);
-    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, true, Resampler::eWrapRepeat, Resampler::eWrapNone, out.data(), 1, &domain);
+    Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), 0, n, Resampler::eFilterImpulse, false, EdgeMode::Black, Resampler::eWrapRepeat, Resampler::eWrapNone, out.data(), 1, &domain);
     for (int p = -2; p < 6; ++p) {
         EXPECT_EQ(out[(std::size_t)(p + 2)], (float)(1 + repeatIndex(p - 1, 2))) << "p " << p;
     }
@@ -247,8 +247,8 @@ TEST(ResamplerCoordMap, WrappedFilteredSamplesMatchTheWrappedCoordinate)
     const float wy[2] = { 3.1f, 1.9f };
     for (Resampler::FilterEnum filter : kAllFilters) {
         float got[6], want[6];
-        Resampler::resampleRowFromCoords(src, sx, sy, 0, 2, filter, false, true, Resampler::eWrapRepeat, Resampler::eWrapRepeat, got, 3);
-        Resampler::resampleRowFromCoords(src, wx, wy, 0, 2, filter, false, true, Resampler::eWrapNone, Resampler::eWrapNone, want, 3);
+        Resampler::resampleRowFromCoords(src, sx, sy, 0, 2, filter, false, EdgeMode::Black, Resampler::eWrapRepeat, Resampler::eWrapRepeat, got, 3);
+        Resampler::resampleRowFromCoords(src, wx, wy, 0, 2, filter, false, EdgeMode::Black, Resampler::eWrapNone, Resampler::eWrapNone, want, 3);
         for (int k = 0; k < 6; ++k) {
             EXPECT_NEAR(got[k], want[k], 1e-5) << "filter " << filter << " k " << k;
         }
@@ -269,7 +269,7 @@ TEST(ResamplerCoordMap, NonFiniteCoordinatesReadOutside)
         for (int bo = 0; bo < 2; ++bo) {
             for (int wrap = Resampler::eWrapNone; wrap <= Resampler::eWrapMirror; ++wrap) {
                 float out[16];
-                Resampler::resampleRowFromCoords(src, sx, sy, jac, 4, filter, false, bo != 0, (WrapMode)wrap, (WrapMode)wrap, out, 4);
+                Resampler::resampleRowFromCoords(src, sx, sy, jac, 4, filter, false, bo != 0 ? EdgeMode::Black : EdgeMode::Stretch, (WrapMode)wrap, (WrapMode)wrap, out, 4);
                 for (int k = 0; k < 16; ++k) {
                     ASSERT_TRUE(std::isfinite(out[k])) << "filter " << filter << " wrap " << wrap << " k " << k;
                 }
@@ -324,7 +324,7 @@ TEST(ResamplerCoordMap, JacobianMinificationMatchesResampleRow)
             params.count = 1;
             params.filter = filter;
             params.clamp = false;
-            params.blackOutside = blackOutside;
+            params.edgeMode = blackOutside ? EdgeMode::Black : EdgeMode::Stretch;
             std::vector<float> want((std::size_t)n * nComps), got((std::size_t)n * nComps), jac((std::size_t)n * 4);
             std::vector<float> sxP, syP, sx, sy, sxN, syN;
             for (int y = window.y1; y < window.y2; ++y) {
@@ -339,7 +339,7 @@ TEST(ResamplerCoordMap, JacobianMinificationMatchesResampleRow)
                     ASSERT_EQ(jac[4 * i + 3], (float)scale);
                 }
                 Resampler::resampleRow(params, src, y, window.x1, window.x2, want.data());
-                Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), jac.data(), n, filter, false, blackOutside, Resampler::eWrapNone, Resampler::eWrapNone, got.data(), nComps);
+                Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), jac.data(), n, filter, false, blackOutside ? EdgeMode::Black : EdgeMode::Stretch, Resampler::eWrapNone, Resampler::eWrapNone, got.data(), nComps);
                 for (std::size_t k = 0; k < want.size(); ++k) {
                     ASSERT_NEAR(got[k], want[k], 1e-5) << "filter " << filter << " blackOutside " << blackOutside << " y " << y << " k " << k;
                 }
@@ -387,7 +387,7 @@ TEST(ResamplerCoordMap, MissingSourceIsBlack)
     const float sx[2] = { 0.5f, 1.5f };
     const float sy[2] = { 0.5f, 0.5f };
     float out[8] = { 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f };
-    Resampler::resampleRowFromCoords(src, sx, sy, 0, 2, Resampler::eFilterCubic, false, false, Resampler::eWrapClamp, Resampler::eWrapClamp, out, 4);
+    Resampler::resampleRowFromCoords(src, sx, sy, 0, 2, Resampler::eFilterCubic, false, EdgeMode::Stretch, Resampler::eWrapClamp, Resampler::eWrapClamp, out, 4);
     for (int k = 0; k < 8; ++k) {
         EXPECT_EQ(out[k], 0.f);
     }
@@ -418,7 +418,7 @@ sampleOne(const SourceImage& src,
 {
     float out = -1.f;
 
-    Resampler::resampleRowFromCoords(src, &x, &y, jacobian, 1, filter, false, blackOutside, wrap, wrap, &out, 1);
+    Resampler::resampleRowFromCoords(src, &x, &y, jacobian, 1, filter, false, blackOutside ? EdgeMode::Black : EdgeMode::Stretch, wrap, wrap, &out, 1);
     return out;
 }
 } // anon namespace
@@ -454,7 +454,7 @@ TEST(ResamplerCoordMap, MinifyingJacobianWidensTheKernel)
     EXPECT_NEAR(sampleOne(src, 20.5f, 20.5f, wideY, Resampler::eFilterLanczos3, false), 0.f, 1e-6);
 }
 
-TEST(ResamplerCoordMap, PixelsOutsideTheSourceUseThePlainKernel)
+TEST(ResamplerCoordMap, PixelsOutsideTheSourceFilterTheExtendedSource)
 {
     const std::vector<float> stripes = makeStripes();
     const SourceImage src(stripes.data(), RectI(0, 0, 64, 64), 1);
@@ -462,17 +462,22 @@ TEST(ResamplerCoordMap, PixelsOutsideTheSourceUseThePlainKernel)
     const float yWideOnly[4] = { 0.f, 0.f, 0.f, 4.f };
     const float xWideOnly[4] = { 4.f, 0.f, 0.f, 0.f };
 
+    // The footprint keeps its full size past the source. Stretched, the stripes are constant along
+    // y above and below the source, so widening along y there only changes the rounding; left and
+    // right of the source, beyond the footprint's reach, the edge column is constant along x.
+    // The widest footprint here, an 8-lobe sinc at 4x, spans 32 pixels.
     for (Resampler::FilterEnum f : { Resampler::eFilterLanczos3, Resampler::eFilterSinc, Resampler::eFilterGaussian }) {
-        // Only the row of the axis that is out is zeroed.
-        for (float x : { -10.5f, 80.5f }) {
-            EXPECT_EQ(sampleOne(src, x, 20.5f, yWideOnly, f, false), sampleOne(src, x, 20.5f, wide, f, false)) << "filter " << f << " x " << x;
+        for (float x : { -40.5f, 104.5f }) {
+            EXPECT_NEAR(sampleOne(src, x, 20.5f, yWideOnly, f, false), sampleOne(src, x, 20.5f, wide, f, false), 1e-5f) << "filter " << f << " x " << x;
         }
+        EXPECT_NEAR(sampleOne(src, -40.5f, 20.5f, wide, f, false), 0.f, 1e-5f) << "filter " << f;
+        EXPECT_NEAR(sampleOne(src, 104.5f, 20.5f, wide, f, false), 1.f, 1e-5f) << "filter " << f;
         for (float y : { -10.5f, 80.5f }) {
-            EXPECT_EQ(sampleOne(src, 20.5f, y, xWideOnly, f, false), sampleOne(src, 20.5f, y, wide, f, false)) << "filter " << f << " y " << y;
+            EXPECT_NEAR(sampleOne(src, 20.5f, y, xWideOnly, f, false), sampleOne(src, 20.5f, y, wide, f, false), 1e-5f) << "filter " << f << " y " << y;
         }
-        // With black outside, either axis out blacks the pixel.
-        EXPECT_EQ(sampleOne(src, -10.5f, 20.5f, wide, f, true), 0.f);
-        EXPECT_EQ(sampleOne(src, 20.5f, 80.5f, wide, f, true), 0.f);
+        // Black past the source, a footprint that does not reach it is black.
+        EXPECT_EQ(sampleOne(src, -40.5f, 20.5f, wide, f, true), 0.f) << "filter " << f;
+        EXPECT_EQ(sampleOne(src, 20.5f, 104.5f, wide, f, true), 0.f) << "filter " << f;
     }
 }
 

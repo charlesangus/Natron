@@ -358,8 +358,8 @@ try:
         offset = shape.getParam("sourceOffset")
         require(offset is not None, "the shape has a Source Offset")
         check(offset.getValue(0) == 0.0 and offset.getValue(1) == 0.0, "a shape made by script has no source offset")
-        # The context selects the new shape, slaving its knobs to the node's knobs of the same name:
-        # the shape's knob reads the node's value, so the offset is set on the node's knob.
+        # The context selects the new shape, so a write to the node's knob reaches the shape's own
+        # knob, even while the node renders the new shape.
         node.getParam("sourceOffset").set(OFFSET_X, 0.0)
         check(offset.getValue(0) == OFFSET_X and offset.getValue(1) == 0.0, "the shape's Source Offset reads (%r, 0)" % OFFSET_X)
         yield ("sleep", 2 * SETTLE_MS)

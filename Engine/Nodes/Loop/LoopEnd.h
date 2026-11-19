@@ -138,6 +138,12 @@ public:
     static void onGraphChanged();
 
     /**
+     * @brief Moves on every onGraphChanged(), so that a walk of the graph found under one value is
+     * still current while the value has not moved.
+     **/
+    static U64 getGraphGeneration() WARN_UNUSED_RETURN;
+
+    /**
      * @brief The LoopEnd that pairs with begin when it is in Feedback mode and begin feeds back,
      * else null.
      **/

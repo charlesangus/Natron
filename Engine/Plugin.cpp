@@ -28,8 +28,11 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <filesystem>
 #include <locale>
 #include <stdexcept>
+#include <string>
+#include <system_error>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -59,32 +62,103 @@ CLANG_DIAG_ON(unknown-pragmas)
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// Native plug-ins are compiled into the running executable, and GIT_COMMIT is a committed
-// constant that a rebuild of changed code keeps, so the executable itself is stamped. Not its
-// path: an AppImage is mounted at a new one every launch. An executable that cannot be stamped
-// gets the session salt, since nothing then tells its code apart from another build's.
-U64
-runningExecutableStamp()
+// Stamped by modification time and size, not by path: an AppImage is mounted at a new one every
+// launch.
+bool
+appendExecutableStamp(const std::string& path,
+                      ContentHasher& h)
 {
-    static const U64 stamp = []() {
-        ContentHasher h;
-        struct statx st;
-        if (statx(AT_FDCWD, "/proc/self/exe", 0, STATX_MTIME | STATX_SIZE, &st) != 0) {
-            h.appendBool(false);
-            h.appendU64(ContentHasher::sessionSalt());
-        } else {
-            h.appendBool(true);
-            h.appendI64((std::int64_t)st.stx_mtime.tv_sec);
-            h.appendI64((std::int64_t)st.stx_mtime.tv_nsec);
-            h.appendU64(st.stx_size);
-        }
+    struct statx st;
+    if (statx(AT_FDCWD, path.c_str(), 0, STATX_MTIME | STATX_SIZE, &st) != 0) {
+        return false;
+    }
+    h.appendI64((std::int64_t)st.stx_mtime.tv_sec);
+    h.appendI64((std::int64_t)st.stx_mtime.tv_nsec);
+    h.appendU64(st.stx_size);
 
-        return h.finalize();
-    }();
-
-    return stamp;
+    return true;
 }
 
+// A staged bundle renames each executable to <name>.bin and leaves a shell shim at <name>, and the
+// shim says nothing about the code.
+std::string
+siblingExecutable(const std::string& dir,
+                  const std::string& name)
+{
+    std::error_code ec;
+    const std::string bin = dir + '/' + name + ".bin";
+    if (std::filesystem::is_regular_file(bin, ec)) {
+        return bin;
+    }
+    const std::string plain = dir + '/' + name;
+    if (std::filesystem::is_regular_file(plain, ec)) {
+        return plain;
+    }
+
+    return std::string();
+}
+} // anonymous namespace
+
+U64
+Plugin::executablesStamp(const std::string& runningPath,
+                         const std::string& runningStatPath,
+                         bool* stamped)
+{
+    const std::filesystem::path running(runningPath);
+    std::string name = running.filename().string();
+    const std::string binSuffix(".bin");
+    if ((name.size() > binSuffix.size()) && (name.compare(name.size() - binSuffix.size(), binSuffix.size(), binSuffix) == 0)) {
+        name.resize(name.size() - binSuffix.size());
+    }
+
+    ContentHasher h;
+    *stamped = false;
+    if ((name == "Natron") || (name == "NatronRenderer")) {
+        const std::string dir = running.parent_path().string();
+        const std::string natron = siblingExecutable(dir, "Natron");
+        const std::string renderer = siblingExecutable(dir, "NatronRenderer");
+        if (!natron.empty() && !renderer.empty()) {
+            h.appendBool(true);
+            *stamped = appendExecutableStamp(natron, h) && appendExecutableStamp(renderer, h);
+        }
+    }
+    if (!*stamped) {
+        h.reset();
+        h.appendBool(false);
+        *stamped = appendExecutableStamp(runningStatPath, h);
+    }
+
+    return h.finalize();
+}
+
+U64
+Plugin::runningExecutablesStamp(bool* stamped)
+{
+    // Native plug-ins are compiled into the executable, and GIT_COMMIT is a committed constant that
+    // a rebuild of changed code keeps, so the executables themselves are stamped. Both of them, so
+    // that an interactive session and a render of the same bundle share their cache and hashes.
+    struct Result {
+        U64 stamp;
+        bool stamped;
+    };
+    static const Result result = []() {
+        std::error_code ec;
+        const std::string target = std::filesystem::read_symlink("/proc/self/exe", ec).string();
+        Result r;
+        r.stamped = false;
+        r.stamp = executablesStamp(ec ? std::string() : target, "/proc/self/exe", &r.stamped);
+
+        return r;
+    }();
+
+    if (stamped) {
+        *stamped = result.stamped;
+    }
+
+    return result.stamp;
+}
+
+namespace {
 // Plug-ins whose output depends on state that no hash covers. Their results are reused within a
 // session but never served from the disk cache in a later one, where that state may differ.
 struct VolatilePlugin {
@@ -350,10 +424,15 @@ Plugin::getBinaryContentStamp() const
 {
     U64 stamp = _binaryContentStamp.load(std::memory_order_acquire);
     if (stamp != 0) {
+        if (ContentHasher::isSalted(stamp)) {
+            ContentHasher::noteSalted();
+        }
+
         return stamp;
     }
 
     ContentHasher h;
+    bool salted = false;
     OFX::Host::PluginBinary* binary = _ofxPlugin ? _ofxPlugin->getBinary() : 0;
     if (binary) {
         h.appendU64(ofxBinaryStamp(binary->getFilePath()));
@@ -361,15 +440,26 @@ Plugin::getBinaryContentStamp() const
         h.appendString("native");
         h.appendString(NATRON_VERSION_STRING);
         h.appendString(GIT_COMMIT);
-        h.appendU64(runningExecutableStamp());
+        bool stamped = false;
+        h.appendU64(runningExecutablesStamp(&stamped));
+        // Nothing then tells this code apart from another build's.
+        h.appendBool(stamped);
+        if (!stamped) {
+            h.appendU64(ContentHasher::sessionSalt());
+            salted = true;
+        }
     }
     const bool isVolatile = isVolatilePlugin(_id.toStdString());
     h.appendBool(isVolatile);
     if (isVolatile) {
         h.appendU64(ContentHasher::sessionSalt());
+        salted = true;
     }
-    stamp = h.finalize();
+    stamp = ContentHasher::withSaltFlag(h.finalize(), salted);
     _binaryContentStamp.store(stamp, std::memory_order_release);
+    if (salted) {
+        ContentHasher::noteSalted();
+    }
 
     return stamp;
 }

@@ -31,6 +31,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/ContrastTextureKernels.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -56,6 +57,8 @@
 #define kContrastTextureMaskDisplayMedium "mediumDetails"
 #define kContrastTextureMaskDisplayFine "fineDetails"
 #define kContrastTextureMaskDisplayLowpass "lowPass"
+
+#define kContrastTextureFrameMap "ContrastTexture.map"
 
 NATRON_NAMESPACE_ENTER
 
@@ -116,17 +119,15 @@ public:
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    // Drops the kept multiplier maps.
+    virtual void purgeCaches() OVERRIDE FINAL;
+
     ContrastTextureKernels::Params readParams(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The source's region of definition, canonical, cut to its format when it is infinite.
-     * False when nothing is connected or the region is empty.
-     **/
-    bool sourceRoD(double time, ViewIdx view, RectD* rod) const WARN_UNUSED_RETURN;
-
-    /**
-     * @brief The plan for a render at scale over sourcePixels, the source's region in pixels at
-     * scale. False when there is no source.
+     * @brief The plan for a render at scale over sourcePixels, the whole frame in pixels at scale
+     * (the source's region of definition, cut to the format when it is infinite). False when
+     * there is no source.
      **/
     bool makePlan(double time,
                   ViewIdx view,
@@ -175,6 +176,9 @@ private:
     KnobDoubleWPtr _haloControl;
     KnobDoubleWPtr _noiseBias;
     KnobChoiceWPtr _maskDisplay;
+
+    // The multiplier map over the whole frame, so tiles and windows of one frame filter it once.
+    WholeFrameCache _map;
 };
 
 NATRON_NAMESPACE_EXIT

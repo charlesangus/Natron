@@ -159,93 +159,189 @@ TEST(DeepImageCacheTest, InsertLookupRoundTrip)
     cache.waitForDeleterThread();
 }
 
-TEST(DeepImageCacheTest, EvictionRespectsOwnBudgetAndLeavesImageCacheUntouched)
+TEST(DeepImageCacheTest, OneBudgetEvictsAcrossPayloads)
 {
     const RectI bounds(0, 0, 4, 4);
     const RenderScale scale = RenderScale::identity;
 
-    // Measure the real per-entry cost up front (rather than hard-coding byte arithmetic) so the
-    // budget below is calibrated to whatever DeepImage::getSizeInBytes() actually reports for
-    // this shape.
-    DeepImage probe(bounds, scale, ViewIdx(0));
-    fillDeepImage(probe);
-    const std::size_t perEntrySize = probe.getSizeInBytes();
-    ASSERT_GT(perEntrySize, (std::size_t)0);
+    Cache<Image> cache("DeepImageCacheTest_SharedBudget", 1, 64ULL * 1024 * 1024, 1.);
 
-    // Budget just under one entry's size: with one entry resident, occupancy already exceeds
-    // the cache's eviction threshold, so creating a second entry must evict the first.
-    const U64 deepBudget = (U64)((double)perEntrySize / 0.95);
-    Cache<DeepImageCacheEntry> deepCache("DeepImageCacheTest_Eviction", 1, deepBudget, 1.);
-
-    DeepImageKey key1(NULL, 1, 1., ViewIdx(0), scale);
-    DeepImageParamsPtr params1 = std::make_shared<DeepImageParams>(bounds);
-    DeepImageCacheEntryPtr entry1;
-    ASSERT_FALSE(deepCache.getOrCreate(key1, params1, 0, &entry1));
-    ASSERT_TRUE(entry1 != NULL);
-    fillDeepImage(*entry1->getDeepImage());
-    entry1->allocateMemory();
-    ASSERT_EQ(perEntrySize, deepCache.getMemoryCacheSize());
-
-    // A completely separate Cache<Image> instance with a real, allocated entry: since eviction
-    // pressure is scoped to the Cache instance it happens on, this proves the deep cache's own
-    // budget churn below cannot reach it.
-    Cache<Image> imageCache("DeepImageCacheTest_ImageSideCache", 1, 64ULL * 1024 * 1024, 1.);
-    ImageKey imgKey = Image::makeKey(NULL, 555, false, 1., ViewIdx(0), false, false);
+    const ImageKey imgKey = Image::makeKey(NULL, 555, false, 1., ViewIdx(0), false, false).forEntry(0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
     ImageParamsPtr imgParams = Image::makeParams(RectD(0, 0, 4, 4), 1., 0, false,
                                                  ImageLayerDesc::getRGBAComponents(),
                                                  eImageBitDepthFloat,
                                                  eImageFieldingOrderNone);
     ImagePtr img;
-    ASSERT_FALSE(imageCache.getOrCreate(imgKey, imgParams, 0, &img));
+    ASSERT_FALSE(cache.getOrCreate(imgKey, imgParams, 0, &img));
     ASSERT_TRUE(img != NULL);
     img->allocateMemory();
-    const std::size_t imageCacheSizeBefore = imageCache.getMemoryCacheSize();
-    ASSERT_GT(imageCacheSizeBefore, (std::size_t)0);
+    const std::size_t imageSize = cache.getMemoryCacheSize();
+    ASSERT_GT(imageSize, (std::size_t)0);
 
-    // Eviction only considers entries whose use_count() is 1 (see LRUHashTable::evict()), so
-    // entry1 must not be held here: drop our reference (a weak_ptr keeps identity available for
-    // the still-resident check below) before creating entry2, otherwise nothing is evictable and
-    // the assertions below would pass vacuously.
-    std::weak_ptr<DeepImageCacheEntry> entry1Weak = entry1;
-    entry1.reset();
-
-    DeepImageKey key2(NULL, 2, 1., ViewIdx(0), scale);
-    DeepImageParamsPtr params2 = std::make_shared<DeepImageParams>(bounds);
-    DeepImageCacheEntryPtr entry2;
-    ASSERT_FALSE(deepCache.getOrCreate(key2, params2, 0, &entry2)); // evicts entry1
-    ASSERT_TRUE(entry2 != NULL);
-    fillDeepImage(*entry2->getDeepImage());
-    entry2->allocateMemory();
-
-    // Let the cache's deleter thread finish destroying the evicted entry before checking the
-    // resulting byte counts.
-    deepCache.waitForDeleterThread();
-    EXPECT_TRUE(entry1Weak.expired());
-
-    std::list<DeepImageCacheEntryPtr> found1;
-    EXPECT_FALSE(deepCache.get(key1, &found1));
-    EXPECT_TRUE(found1.empty());
-
-    std::list<DeepImageCacheEntryPtr> found2;
-    ASSERT_TRUE(deepCache.get(key2, &found2));
-    ASSERT_EQ((std::size_t)1, found2.size());
-    EXPECT_EQ(perEntrySize, found2.front()->size());
-    EXPECT_EQ(perEntrySize, deepCache.getMemoryCacheSize());
-
-    std::list<ImagePtr> foundImg;
-    ASSERT_TRUE(imageCache.get(imgKey, &foundImg));
-    ASSERT_FALSE(foundImg.empty());
-    EXPECT_EQ(imageCacheSizeBefore, imageCache.getMemoryCacheSize());
-
-    found2.clear();
-    foundImg.clear();
+    // Eviction only considers entries whose use_count() is 1 (see LRUHashTable::evict()), so the
+    // entry must not be held here, otherwise nothing is evictable.
+    std::weak_ptr<Image> imgWeak = img;
     img.reset();
-    entry2.reset();
-    deepCache.waitForDeleterThread();
-    imageCache.waitForDeleterThread();
+
+    // A budget just over the image's size: occupancy now exceeds the eviction threshold, so
+    // creating anything else has to make room, whatever its payload.
+    cache.setMaximumCacheSize((U64)((double)imageSize / 0.95));
+    cache.setMaximumInMemorySize(1.);
+
+    DeepImageKey deepKey(NULL, 556, 1., ViewIdx(0), scale);
+    DeepImageCacheEntryPtr deepEntry;
+    ASSERT_FALSE(cache.getOrCreate(deepKey, std::make_shared<DeepImageParams>(bounds), 0, &deepEntry));
+    ASSERT_TRUE(deepEntry != NULL);
+    fillDeepImage(*deepEntry->getDeepImage());
+    deepEntry->allocateMemory();
+    const std::size_t deepSize = deepEntry->size();
+    ASSERT_GT(deepSize, (std::size_t)0);
+
+    cache.waitForDeleterThread();
+    EXPECT_TRUE(imgWeak.expired());
+    std::list<ImagePtr> foundImg;
+    EXPECT_FALSE(cache.get(imgKey, &foundImg));
+    EXPECT_EQ(deepSize, cache.getMemoryCacheSize());
+
+    // And the other way around: a deep entry gives way to an image the same way.
+    std::weak_ptr<DeepImageCacheEntry> deepWeak = deepEntry;
+    deepEntry.reset();
+    cache.setMaximumCacheSize((U64)((double)deepSize / 0.95));
+    cache.setMaximumInMemorySize(1.);
+
+    ASSERT_FALSE(cache.getOrCreate(imgKey, imgParams, 0, &img));
+    ASSERT_TRUE(img != NULL);
+    img->allocateMemory();
+
+    cache.waitForDeleterThread();
+    EXPECT_TRUE(deepWeak.expired());
+    std::list<DeepImageCacheEntryPtr> foundDeep;
+    EXPECT_FALSE(cache.get(deepKey, &foundDeep));
+    EXPECT_EQ(imageSize, cache.getMemoryCacheSize());
+
+    img.reset();
+    cache.waitForDeleterThread();
 }
 
-TEST(DeepImageCacheTest, ClearAllCachesEmptiesAppWideDeepCache)
+TEST(DeepImageCacheTest, DeepAndImageOfOneNodeDoNotServeEachOther)
+{
+    const RectI bounds(0, 0, 4, 4);
+    const U64 nodeHash = 777;
+    TestCacheHolder holder("DeepImageCacheTest.OneNode.Holder");
+
+    Cache<Image> cache("DeepImageCacheTest_OneNode", 1, 64ULL * 1024 * 1024, 1.);
+
+    const DeepImageKey deepKey(&holder, nodeHash, 1., ViewIdx(0), RenderScale::identity);
+    const ImageKey imgKey = Image::makeKey(&holder, nodeHash, true, 1., ViewIdx(0), false, false).forEntry(0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+    EXPECT_NE(deepKey.getHash(), imgKey.getHash());
+
+    ImageParamsPtr imgParams = Image::makeParams(RectD(0, 0, 4, 4), 1., 0, false,
+                                                 ImageLayerDesc::getRGBAComponents(),
+                                                 eImageBitDepthFloat,
+                                                 eImageFieldingOrderNone);
+    ImagePtr img;
+    ASSERT_FALSE(cache.getOrCreate(imgKey, imgParams, 0, &img));
+    img->allocateMemory();
+    img.reset();
+
+    std::list<DeepImageCacheEntryPtr> noDeep;
+    EXPECT_FALSE(cache.get(deepKey, &noDeep));
+
+    DeepImageCacheEntryPtr deepEntry;
+    ASSERT_FALSE(cache.getOrCreate(deepKey, std::make_shared<DeepImageParams>(bounds), 0, &deepEntry))
+        << "a deep request found an image of the same node";
+    fillDeepImage(*deepEntry->getDeepImage());
+    deepEntry->allocateMemory();
+    deepEntry.reset();
+
+    std::list<ImagePtr> foundImg;
+    ASSERT_TRUE(cache.get(imgKey, &foundImg));
+    EXPECT_EQ((std::size_t)1, foundImg.size());
+    foundImg.clear();
+    std::list<DeepImageCacheEntryPtr> foundDeep;
+    ASSERT_TRUE(cache.get(deepKey, &foundDeep));
+    EXPECT_EQ((std::size_t)1, foundDeep.size());
+    foundDeep.clear();
+
+    // Removal by hash drops a whole bucket, so this also proves the two share none.
+    cache.removeEntry(imgKey.getHash());
+    EXPECT_FALSE(cache.get(imgKey, &foundImg));
+    EXPECT_TRUE(cache.get(deepKey, &foundDeep));
+    foundDeep.clear();
+
+    cache.waitForDeleterThread();
+}
+
+TEST(DeepImageCacheTest, AHeldDeepImagePinsItsEntryLikeAHeldImage)
+{
+    const RectI bounds(0, 0, 4, 4);
+
+    Cache<Image> cache("DeepImageCacheTest_Pin", 1, 64ULL * 1024 * 1024, 1.);
+
+    const DeepImageKey key(NULL, 888, 1., ViewIdx(0), RenderScale::identity);
+    DeepImageCacheEntryPtr entry;
+    ASSERT_FALSE(cache.getOrCreate(key, std::make_shared<DeepImageParams>(bounds), 0, &entry));
+    fillDeepImage(*entry->getDeepImage());
+    entry->allocateMemory();
+    const std::size_t size = entry->size();
+
+    DeepImagePtr held = DeepImageCacheEntry::pinnedDeepImage(entry);
+    EXPECT_EQ(entry->getDeepImage().get(), held.get());
+    entry.reset();
+
+    EXPECT_FALSE(cache.evictLRUInMemoryEntry());
+    cache.clear();
+    EXPECT_EQ(size, cache.getMemoryCacheSize());
+    std::list<DeepImageCacheEntryPtr> found;
+    ASSERT_TRUE(cache.get(key, &found));
+    found.clear();
+
+    held.reset();
+    EXPECT_TRUE(cache.evictLRUInMemoryEntry());
+    EXPECT_FALSE(cache.get(key, &found));
+    EXPECT_EQ((std::size_t)0, cache.getMemoryCacheSize());
+
+    cache.waitForDeleterThread();
+}
+
+TEST(DeepImageCacheTest, AnEntryCostsNothingUntilItsSizeIsKnown)
+{
+    const RectI bounds(0, 0, 4, 4);
+
+    Cache<Image> cache("DeepImageCacheTest_Accounting", 1, 64ULL * 1024 * 1024, 1.);
+
+    const DeepImageKey key(NULL, 999, 1., ViewIdx(0), RenderScale::identity);
+    DeepImageCacheEntryPtr entry;
+    ASSERT_FALSE(cache.getOrCreate(key, std::make_shared<DeepImageParams>(bounds), 0, &entry));
+    EXPECT_FALSE(entry->isFullyRendered());
+
+    fillDeepImage(*entry->getDeepImage());
+    const std::size_t payloadSize = entry->getDeepImage()->getSizeInBytes();
+    ASSERT_GT(payloadSize, (std::size_t)0);
+    EXPECT_EQ((std::size_t)0, entry->size());
+    EXPECT_EQ((std::size_t)0, cache.getMemoryCacheSize());
+
+    entry->allocateMemory();
+    EXPECT_TRUE(entry->isFullyRendered());
+    EXPECT_EQ(payloadSize, entry->size());
+    EXPECT_EQ(payloadSize, cache.getMemoryCacheSize());
+
+    // Accounted once, whoever calls it again.
+    entry->allocateMemory();
+    EXPECT_EQ(payloadSize, cache.getMemoryCacheSize());
+
+    ASSERT_TRUE(entry->getEntryHeader() != NULL);
+    EXPECT_EQ(key.getHash(), entry->getEntryHeader()->key->getHash());
+    EXPECT_TRUE(bounds == entry->getEntryHeader()->bounds);
+
+    // Removal hands the entry to the deleter thread, and the bytes come back as it dies.
+    cache.removeEntry(entry);
+    entry.reset();
+    cache.waitForDeleterThread();
+    EXPECT_EQ((std::size_t)0, cache.getMemoryCacheSize());
+}
+
+TEST(DeepImageCacheTest, ClearAllCachesEmptiesDeepEntries)
 {
     const RectI bounds(0, 0, 4, 4);
     const RenderScale scale = RenderScale::identity;
@@ -262,7 +358,7 @@ TEST(DeepImageCacheTest, ClearAllCachesEmptiesAppWideDeepCache)
 
     // Cache::clear() relies on LRUHashTable::evict(), which skips anything whose use_count() is
     // not 1 (see the eviction test above): drop our own reference first, otherwise the entry
-    // would survive clearAllCaches() regardless of whether the deep cache is wired into it, and
+    // would survive clearAllCaches() regardless of whether deep entries are reached by it, and
     // the assertions below would pass vacuously.
     std::weak_ptr<DeepImageCacheEntry> entryWeak = entry;
     entry.reset();
@@ -277,6 +373,24 @@ TEST(DeepImageCacheTest, ClearAllCachesEmptiesAppWideDeepCache)
     EXPECT_FALSE(appPTR->getDeepImage(key, &foundAfter));
     EXPECT_TRUE(foundAfter.empty());
     EXPECT_TRUE(entryWeak.expired());
+}
+
+TEST(DeepImageCacheTest, ClearNodeCacheEmptiesDeepEntries)
+{
+    const RectI bounds(0, 0, 4, 4);
+    TestCacheHolder holder("DeepImageCacheTest.ClearNodeCache.Holder");
+
+    DeepImageKey key(&holder, 90011, 1., ViewIdx(0), RenderScale::identity);
+    DeepImageCacheEntryPtr entry;
+    ASSERT_FALSE(appPTR->getDeepImageOrCreate(key, std::make_shared<DeepImageParams>(bounds), &entry));
+    fillDeepImage(*entry->getDeepImage());
+    entry->allocateMemory();
+    entry.reset();
+
+    appPTR->clearNodeCache();
+
+    std::list<DeepImageCacheEntryPtr> found;
+    EXPECT_FALSE(appPTR->getDeepImage(key, &found));
 }
 
 TEST(DeepImageCacheTest, HolderPurgeRemovesEveryStateOfThatNodeOnly)
@@ -345,7 +459,7 @@ TEST(DeepImageCacheTest, HolderPurgeRemovesEveryStateOfThatNodeOnly)
     appPTR->removeAllCacheEntriesForHolder(&holderB, true);
 }
 
-TEST(DeepImageCacheTest, MemoryStatsForHolderIncludeDeepCacheBytes)
+TEST(DeepImageCacheTest, MemoryStatsForHolderIncludeDeepBytes)
 {
     const RectI bounds(0, 0, 4, 4);
     const RenderScale scale = RenderScale::identity;
@@ -379,13 +493,13 @@ TEST(DeepImageCacheTest, MemoryStatsForHolderIncludeDeepCacheBytes)
     EXPECT_EQ((std::size_t)0, ramCleaned);
 }
 
-TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothAppWideCaches)
+TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothPayloads)
 {
     const RectI bounds(0, 0, 4, 4);
     const RenderScale scale = RenderScale::identity;
     TestCacheHolder holder("DeepImageCacheTest.EvictLRU.Holder");
 
-    // Defensive: guarantee both app-wide in-memory caches start empty regardless of what earlier
+    // Defensive: guarantee the app-wide in-memory cache starts empty regardless of what earlier
     // tests in this binary left behind, so what follows is a genuine transition rather than
     // continuing to drain someone else's leftovers.
     for (int guard = 0; guard < 1000 && appPTR->evictLRUFromMemoryCaches(); ++guard) {
@@ -417,11 +531,12 @@ TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothAppWideCaches)
     appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramBefore, &diskBefore);
     ASSERT_GT(ramBefore, (std::size_t)0);
 
-    // Must evict from both caches per pass, not short-circuit once the node cache reports empty.
+    // One pass evicts one entry, whichever payload scores lowest.
     ASSERT_TRUE(appPTR->evictLRUFromMemoryCaches());
-    std::list<DeepImageCacheEntryPtr> foundDeepAfterFirstPass;
-    EXPECT_FALSE(appPTR->getDeepImage(deepKey, &foundDeepAfterFirstPass))
-        << "the deep cache entry should be evicted in the same pass as the first node cache entry";
+    std::size_t ramAfterFirstPass = 0, diskAfterFirstPass = 0;
+    appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramAfterFirstPass, &diskAfterFirstPass);
+    EXPECT_LT(ramAfterFirstPass, ramBefore);
+    EXPECT_GT(ramAfterFirstPass, (std::size_t)0);
 
     bool evictedSomething = true;
     int iterations = 1;
@@ -431,6 +546,9 @@ TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothAppWideCaches)
     }
     ASSERT_LT(iterations, 1000) << "eviction did not terminate";
     EXPECT_FALSE(evictedSomething);
+
+    std::list<DeepImageCacheEntryPtr> foundDeepAfterDrain;
+    EXPECT_FALSE(appPTR->getDeepImage(deepKey, &foundDeepAfterDrain));
 
     std::size_t ramAfter = 0, diskAfter = 0;
     appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramAfter, &diskAfter);
@@ -462,8 +580,8 @@ TEST(DeepImageCacheTest, DisableUnreachableRAMPurgingRestoresPreviousValue)
 
 namespace {
 
-// Stands in for the node/deep caches' combined getMemoryCacheSize() without needing real cache
-// entries or the host's real memory numbers.
+// Stands in for the node cache's getMemoryCacheSize() without needing real cache entries or the
+// host's real memory numbers.
 class FakeAccountedCache {
 public:
     FakeAccountedCache(std::size_t entryCount,

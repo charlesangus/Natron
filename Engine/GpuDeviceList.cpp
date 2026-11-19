@@ -21,6 +21,8 @@
 
 #include <cstring>
 
+#include "Global/FloatingPointExceptions.h"
+
 #ifdef NATRON_HAVE_GPU
 #include <vulkan/vulkan.h>
 #endif
@@ -59,6 +61,8 @@ enumerateGpuDevices()
 {
     std::vector<GpuDeviceSummary> result;
 #ifdef NATRON_HAVE_GPU
+    // Driver code, on a main thread that a debug Natron runs with floating-point traps on.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
     VkApplicationInfo app {};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.apiVersion = VK_API_VERSION_1_3;

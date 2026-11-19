@@ -27,15 +27,20 @@
 
 #include "Global/Macros.h"
 
+#include <chrono>
+#include <filesystem>
 #include <string>
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -50,9 +55,36 @@
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda";
+
+// World/Shape, of the given type.
+std::string
+sceneWithShape(const std::string& typeName)
+{
+    return "#usda 1.0\n(\n    defaultPrim = \"World\"\n)\n\ndef Xform \"World\"\n{\n    def " + typeName + " \"Shape\"\n    {\n    }\n}\n";
+}
+
+void
+writeFile(const std::string& path,
+          const std::string& content)
+{
+    {
+        QFile f(QString::fromStdString(path));
+
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(content.c_str(), (qint64)content.size());
+    }
+    // Each write a second later than the last: USD reloads a layer only when its file's
+    // modification time moved, and two writes can land in one clock tick.
+    static int writes = 0;
+    ++writes;
+    std::error_code ec;
+    std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(writes), ec);
+    ASSERT_FALSE(ec) << ec.message();
+}
 
 PXR_NS::SdfLayerRefPtr
 getTopLayer(const ScenePayload& payload)
@@ -139,6 +171,90 @@ protected:
         file->setValue(std::string(kFixture));
     }
 };
+
+TEST_F(Reference3DTest, TheFileKnobLeavesReloadToTheReloadButton)
+{
+    NodePtr node = createReference(NodePtr(), "/Ref");
+    ASSERT_TRUE(bool(node));
+    KnobFilePtr file = getKnob<KnobFile>(node, kUSDReferenceParamFile);
+    ASSERT_TRUE(bool(file));
+    EXPECT_FALSE(file->showsReloadButton());
+    EXPECT_EQ(node->getKnobByName(kUSDReferenceParamReload), file->getReloadButton());
+}
+
+TEST_F(Reference3DTest, TheReloadButtonRereadsASublayerOfTheFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string rootPath = dir.filePath(QString::fromUtf8("root.usda")).toStdString();
+    const std::string sublayerPath = dir.filePath(QString::fromUtf8("sub.usda")).toStdString();
+    writeFile(sublayerPath, sceneWithShape("Cube"));
+    writeFile(rootPath, "#usda 1.0\n(\n    defaultPrim = \"World\"\n    subLayers = [@./sub.usda@]\n)\n");
+    NodePtr node = createReference(NodePtr(), "/Ref");
+    ASSERT_TRUE(bool(node));
+    KnobFilePtr file = getKnob<KnobFile>(node, kUSDReferenceParamFile);
+    ASSERT_TRUE(bool(file));
+    file->setValue(rootPath);
+    {
+        ScenePayload payload;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &payload));
+        PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+        ASSERT_TRUE(bool(stage));
+        EXPECT_EQ(std::string("Cube"), getTypeName(stage, "/Ref/Shape"));
+    }
+
+    // Held open, so the rewrite can only be seen through a reload rather than a fresh read.
+    PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::FindOrOpen(rootPath);
+    PXR_NS::SdfLayerRefPtr sublayer = PXR_NS::SdfLayer::FindOrOpen(sublayerPath);
+    ASSERT_TRUE(bool(root));
+    ASSERT_TRUE(bool(sublayer));
+    writeFile(sublayerPath, sceneWithShape("Sphere"));
+    KnobButtonPtr reload = getKnob<KnobButton>(node, kUSDReferenceParamReload);
+    ASSERT_TRUE(bool(reload));
+    reload->trigger();
+
+    ScenePayload payload;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &payload));
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(std::string("Sphere"), getTypeName(stage, "/Ref/Shape"));
+}
+
+TEST_F(Reference3DTest, PythonReloadFileRereadsTheReferencedFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("referenced.usda")).toStdString();
+    writeFile(path, sceneWithShape("Cube"));
+    NodePtr node = createReference(NodePtr(), "/Ref");
+    ASSERT_TRUE(bool(node));
+    KnobFilePtr file = getKnob<KnobFile>(node, kUSDReferenceParamFile);
+    ASSERT_TRUE(bool(file));
+    file->setValue(path);
+    {
+        ScenePayload payload;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &payload));
+        PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+        ASSERT_TRUE(bool(stage));
+        EXPECT_EQ(std::string("Cube"), getTypeName(stage, "/Ref/Shape"));
+    }
+
+    // Held open, so the rewrite can only be seen through a reload rather than a fresh read.
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path);
+    ASSERT_TRUE(bool(layer));
+    writeFile(path, sceneWithShape("Sphere"));
+
+    std::string error, output;
+    const std::string script = getApp()->getAppIDString() + "." + node->getFullyQualifiedName() + ".getParam('"
+        + kUSDReferenceParamFile + "').reloadFile()\n";
+    ASSERT_TRUE(interpretPythonScript(script, &error, &output)) << error;
+
+    ScenePayload payload;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &payload));
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(std::string("Sphere"), getTypeName(stage, "/Ref/Shape"));
+}
 
 TEST_F(Reference3DTest, AFileReferenceDefinesThePrimAndItsAncestors)
 {

@@ -52,6 +52,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -413,6 +414,8 @@ ParitySourceTestEffect::initializeKnobs()
     cells->setDefaultValue(std::string());
     page->addKnob(cells);
     _cells = cells;
+
+    _blackOutside = createBlackOutsideKnob(this, page);
 }
 
 int
@@ -505,10 +508,11 @@ ParitySourceTestEffect::getRegionOfDefinition(U64 /*hash*/,
 }
 
 StatusEnum
-ParitySourceTestEffect::getPreferredMetadataAt(double /*time*/,
-                                               ViewIdx /*view*/,
+ParitySourceTestEffect::getPreferredMetadataAt(double time,
+                                               ViewIdx view,
                                                NodeMetadata& metadata)
 {
+    metadata.setEdgeMode(readBlackOutside(_blackOutside, time, view));
     metadata.setNComps(-1, colorNComps());
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setIsFrameVarying(true);
@@ -691,6 +695,8 @@ makeParityPair(const AppInstancePtr& app,
     if (!pair.source) {
         return pair;
     }
+    // The references were recorded with the source read as black past its region.
+    setBlackOutside(pair.source, true);
     pair.native = createNodeAtMajor(app, id, nativeMajor);
     if (!pair.native) {
         return pair;
@@ -717,6 +723,8 @@ connectParityInput(ParityPair& pair,
     if (!source || !connectToNode(pair, source, inputLabel)) {
         return NodePtr();
     }
+    // The recorded references read a mask, an A or any other added input as black past its region.
+    setBlackOutside(source, true);
 
     return source;
 }
@@ -853,6 +861,13 @@ setParitySourceCells(const NodePtr& source,
         text << std::bit_cast<uint32_t>(value) << ' ';
     }
     setKnobValue(source, kParitySourceParamCells, text.str());
+}
+
+void
+setBlackOutside(const NodePtr& source,
+                bool blackOutside)
+{
+    setKnobValues(source, kBlackOutsideParam, std::vector<double>(1, blackOutside ? 1. : 0.));
 }
 
 void

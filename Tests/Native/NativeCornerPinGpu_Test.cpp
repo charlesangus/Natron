@@ -53,6 +53,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -628,7 +629,7 @@ TEST_P(NativeCornerPinGpuFilterTest, ResamplingMatchesTheCpuRender)
             if (clamp && !honoursClamp) {
                 continue;
             }
-            for (bool blackOutside : { false, true }) {
+            for (const char* edgeMode : { "stretch", "black" }) {
                 // A fresh node per setting, so no region of definition cached under an earlier
                 // setting is reused.
                 NodePtr node = makePin(source, pin);
@@ -636,9 +637,9 @@ TEST_P(NativeCornerPinGpuFilterTest, ResamplingMatchesTheCpuRender)
                 ASSERT_EQ(pin.projective, samplesProjectively(node)) << pin.name;
                 ASSERT_TRUE(setKnobValue(node, kCornerPinNodeParamFilter, std::string(filters[f].id)));
                 ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamClamp, { clamp ? 1. : 0. }));
-                ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeMode)));
                 std::ostringstream base;
-                base << filters[f].id << " " << pin.name << (clamp ? " clamp" : "") << (blackOutside ? " black-outside" : "");
+                base << filters[f].id << " " << pin.name << (clamp ? " clamp" : "") << " edge mode " << edgeMode;
                 expectGpuMatchesCpu(*runtime, source, NodePtr(), node, base.str(), &nCompared);
                 if (HasFatalFailure()) {
                     return;
@@ -741,7 +742,7 @@ TEST_F(NativeCornerPinGpuTest, MotionBlurMatchesTheCpuRender)
         ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamShutter, { 1. }));
         ASSERT_TRUE(setKnobValue(node, kCornerPinNodeParamShutterOffset, std::string(c.shutterOffset)));
         ASSERT_TRUE(setKnobValue(node, kCornerPinNodeParamFilter, std::string(c.filter)));
-        ASSERT_TRUE(setKnobValues(node, kCornerPinNodeParamBlackOutside, { c.blackOutside ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(c.blackOutside ? "black" : "stretch")));
         ASSERT_TRUE(samplesProjectively(node)) << c.name;
 
         ToleranceExceptions exceptions;

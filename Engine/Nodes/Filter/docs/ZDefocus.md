@@ -31,7 +31,10 @@ Defocus's (see `Defocus.md`); the kernel library is `BokehKernel`.
    diameter, `aspectRatio` and the pixel aspect ratio). The slices are laid over one another back
    to front, the farthest first, each normalised by its coverage, so a sharp foreground does not
    bleed into a blurred background, and a blurred foreground still spreads over the background
-   behind it. The image is black outside its region of definition.
+   behind it. Beyond its image the
+   source reads as Edge Mode says: black, or its edge pixels extended outwards. The depth
+   channel is a layer of the source, so it reads past the image the same way: 0 (infinitely far)
+   under Black, its edge values under Stretch.
 
 `output` picks what the node writes:
 
@@ -85,6 +88,7 @@ user moves it; restoring a project or undoing a Focal Plane edit does not refocu
 | `kernelChannel` | Kernel Channel | `rgba.A` | Image kernel: the Kernel input's channel that holds the bokeh |
 | `highlightThreshold` | Highlight Threshold | 1 | Values above it are highlights |
 | `highlightGain` | Highlight Gain | 1 | Factor on the highlights' excess over the threshold, 1 to 1000 |
+| `edgeMode` | Edge Mode | Input | What the bokeh reads beyond the image: the Source's own mode (Input), black (Black) or its edge pixels (Stretch) |
 | `output` | Output | Result | Result, Focal Plane, Blur Radius or Slices |
 
 The standard channel, mask, mix and unprocessed-channel knobs follow. The inputs are Source (with

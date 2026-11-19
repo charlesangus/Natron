@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
@@ -174,13 +175,7 @@ isDrawingTool(RotoToolEnum tool)
 }
 
 /**
- * @brief Sets dimension of an item's knob. While the item is selected its knob is slaved to the
- * node's knob of the same name, which the knob then reads, so that one is set too.
- *
- * The item's own state is first made the node knob's: a key set on the item makes the curve context
- * clone the item's own values and curves into the node knob, which would otherwise bring back the
- * item's stale values. The node knob is set before the item so that its key also reaches the curve
- * its panel reads on the main thread; the clone that follows the item's key then changes nothing.
+ * @brief Sets dimension of an item's own knob, as a key at time when keyframe is true.
  **/
 template <typename T>
 void
@@ -190,35 +185,22 @@ setItemKnobValue(const KnobIPtr& knob,
                  double time,
                  bool keyframe)
 {
-    std::list<Knob<T>*> targets;
     Knob<T>* own = dynamic_cast<Knob<T>*>(knob.get());
     if (!own) {
         return;
     }
-    if (knob->isSlave(dimension)) {
-        KnobIPtr masterKnob = knob->getMaster(dimension).second;
-        Knob<T>* master = dynamic_cast<Knob<T>*>(masterKnob.get());
-        if (master) {
-            own->clone(master);
-            targets.push_back(master);
-        }
-    }
-    targets.push_back(own);
-    for (typename std::list<Knob<T>*>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
-        if (keyframe) {
-            // setValueAtTime writes the new key through this pointer unchecked.
-            KeyFrame newKey;
-            (*it)->setValueAtTime(time, value, ViewSpec::all(), dimension, eValueChangedReasonNatronInternalEdited, &newKey);
-        } else {
-            (*it)->setValue(value, ViewSpec::all(), dimension, true);
-        }
+    if (keyframe) {
+        // setValueAtTime writes the new key through this pointer unchecked.
+        KeyFrame newKey;
+        own->setValueAtTime(time, value, ViewSpec::all(), dimension, eValueChangedReasonNatronInternalEdited, &newKey);
+    } else {
+        own->setValue(value, ViewSpec::all(), dimension, true);
     }
 }
 
 /**
- * @brief Writes a shape's source offset at time and asks for one render. The node's knob, written
- * too while the shape is selected, would otherwise ask for one per dimension, and the curve
- * context's evaluation one more.
+ * @brief Writes a shape's source offset at time and asks for one render, not one per dimension
+ * and one more for the curve context's evaluation.
  **/
 void
 writeSourceOffset(const RotoCurveContextPtr& context,
@@ -313,22 +295,6 @@ public:
                 e.copy = context->makeDrawableCopy(*it, copyName(*it));
                 if (!e.copy) {
                     continue;
-                }
-                // A selected shape's knobs read the node's knobs, which its own values may lag.
-                const std::list<KnobIPtr>& knobs = (*it)->getKnobs();
-                for (std::list<KnobIPtr>::const_iterator k = knobs.begin(); k != knobs.end(); ++k) {
-                    KnobIPtr copyKnob = e.copy->getKnobByName((*k)->getName());
-                    if (!copyKnob) {
-                        continue;
-                    }
-                    for (int d = 0; d < (*k)->getDimension(); ++d) {
-                        if ((*k)->isSlave(d)) {
-                            std::pair<int, KnobIPtr> master = (*k)->getMaster(d);
-                            if (master.second) {
-                                copyKnob->clone(master.second.get(), d, master.first);
-                            }
-                        }
-                    }
                 }
                 KnobIntPtr copyScale = itemKnob<KnobInt>(e.copy, kRetouchShapeParamScale);
                 if (copyScale) {
@@ -723,8 +689,8 @@ Retouch::initializeKnobs()
     page->addKnob(brushPressure);
     _brushPressure = brushPressure;
 
-    // The curve context slaves these to the selected shapes. With none selected they edit the
-    // next-shape knobs above, which keep those settings while a shape is selected and so are hidden.
+    // The curve context shows the last-selected shape in these and replays edits on the selected
+    // shapes. With none selected they edit the next-shape knobs above, which keep those settings while a shape is selected and so are hidden.
     KnobGroupPtr shapeSettings = createKnob<KnobGroup>(tr("Shape Settings"));
     shapeSettings->setName(kRetouchParamShapeSettings);
     shapeSettings->setHintToolTip(tr("The selected shapes' settings. With no shape selected, the settings the next shape gets."));
@@ -1124,8 +1090,7 @@ Retouch::setShapeSourceOffset(const RotoDrawableItemPtr& item,
     const double values[2] = { dx, dy };
     bool keyframe[2];
     for (int d = 0; d < 2; ++d) {
-        keyframe[d] = (context && context->isAutoKeyingEnabled()) || offset->isAnimated(d, ViewSpec::all())
-            || (offset->isSlave(d) && offset->getMaster(d).second && offset->getMaster(d).second->isAnimated(d, ViewSpec::all()));
+        keyframe[d] = (context && context->isAutoKeyingEnabled()) || offset->isAnimated(d, ViewSpec::all());
     }
     writeSourceOffset(context, offset, values, time, keyframe);
 }
@@ -1143,8 +1108,7 @@ Retouch::makeSourceDragCommand(const RotoDrawableItemPtr& item,
     }
     bool keyframe[2];
     for (int d = 0; d < 2; ++d) {
-        keyframe[d] = context->isAutoKeyingEnabled() || offset->isAnimated(d, ViewSpec::all())
-            || (offset->isSlave(d) && offset->getMaster(d).second && offset->getMaster(d).second->isAnimated(d, ViewSpec::all()));
+        keyframe[d] = context->isAutoKeyingEnabled() || offset->isAnimated(d, ViewSpec::all());
     }
 
     return std::make_shared<RetouchSourceDragCommand>(context, item, time, start, end, keyframe);
@@ -1306,7 +1270,7 @@ Retouch::onShapeSelectionChanged()
         if (!selected) {
             shown->cloneAndUpdateGui(next.get());
         }
-        // Deselecting a shape disables every knob the curve context slaves.
+        // Deselecting a shape disables every item knob of the curve context.
         shown->setAllDimensionsEnabled(true);
     }
     const KnobIPtr shapeOnly[] = { _shapeScaleKnob.lock(), _shapeSourceOffsetKnob.lock() };
@@ -1816,29 +1780,12 @@ Retouch::readParams(double time,
 }
 
 bool
-Retouch::sourceRoD(double time,
-                   ViewIdx view,
-                   RectD* rod) const
+Retouch::framePixels(double time,
+                     ViewIdx view,
+                     const RenderScale& scale,
+                     RectI* pixels) const
 {
-    const int sourceInput = getSourceInput();
-    EffectInstancePtr input = getInput(sourceInput);
-
-    if (!input) {
-        return false;
-    }
-    bool isProjectFormat = false;
-    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, RenderScale::identity, view, rod, &isProjectFormat) == eStatusFailed) {
-        return false;
-    }
-    if (rod->isInfinite()) {
-        const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-        if (!metadata) {
-            return false;
-        }
-        *rod = rod->intersect(PassExec::toCanonical(metadata->getOutputFormat(), RenderScale::identity, metadata->getPixelAspectRatio(sourceInput)));
-    }
-
-    return !rod->isNull();
+    return wholeFramePixels(*this, getSourceInput(), time, view, scale, pixels) && !pixels->isNull();
 }
 
 std::vector<std::vector<RC::BrushPoint>>
@@ -2079,14 +2026,7 @@ Retouch::processPlan(double time,
                      RC::Params* params,
                      std::vector<RC::Shape>* shapes) const
 {
-    RectD rod;
-    if (!sourceRoD(time, view, &rod)) {
-        return false;
-    }
-    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(getSourceInput()) : 1.;
-    *full = PassExec::toPixelEnclosing(rod, scale, par);
-    if (full->isNull()) {
+    if (!framePixels(time, view, scale, full)) {
         return false;
     }
     *params = readParams(time, view, (float)scale.toOfxPointD().x);
@@ -2314,14 +2254,7 @@ Retouch::gpuPlan(double time,
                  RC::Params* params,
                  int* scales) const
 {
-    RectD rod;
-    if (!sourceRoD(time, view, &rod)) {
-        return false;
-    }
-    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
-    const double par = metadata ? metadata->getPixelAspectRatio(getSourceInput()) : 1.;
-    *full = PassExec::toPixelEnclosing(rod, scale, par);
-    if (full->isNull()) {
+    if (!framePixels(time, view, scale, full)) {
         return false;
     }
     *params = readParams(time, view, (float)scale.toOfxPointD().x);

@@ -69,6 +69,7 @@ upAxisName(SceneMetadata::UpAxisEnum upAxis)
 SceneFileSource::SceneFileSource()
     : _closureReloadCount(0)
     , _digest(0)
+    , _loads(0)
 {
 }
 
@@ -184,6 +185,8 @@ SceneFileSource::load(const std::string& path)
 {
     PXR_NS::SdfLayerRefPtr layer;
 
+    ++_loads;
+
     if (!path.empty() && SceneOps::checkUsdRuntime(nullptr)) {
         // Opens files, as authoring does: no layer reload may run meanwhile.
         SceneWriteBarrier::ReadScope read;
@@ -198,10 +201,10 @@ SceneFileSource::load(const std::string& path)
     _digest = stampClosurePaths();
 }
 
-bool
+void
 SceneFileSource::reload(const std::string& path,
-                        std::string* errorMessage,
-                        std::vector<std::string>* reloadedFiles)
+                        const std::weak_ptr<const void>& owner,
+                        const ReloadDoneFunction& done)
 {
     // The layers to read again: those the last walk found, or, if there was none, those of the
     // file's layer if another consumer has it open.
@@ -221,24 +224,40 @@ SceneFileSource::reload(const std::string& path,
     for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
         before.push_back(layer->GetRealPath());
     }
-    const bool reloaded = layers.empty() || SceneOps::reloadFileLayers(layers, errorMessage);
-    // A reload can change what the file brings in. The file's layer is the same object, reloaded
-    // in place.
-    setClosure(layers.empty() ? PXR_NS::SdfLayerRefPtr() : layers.front());
-    // A file the reload left out of the closure was still reloaded for every other consumer.
-    FileStampRegistry& stamps = FileStampRegistry::instance();
-    for (const std::string& file : before) {
-        if (!file.empty()) {
-            stamps.invalidate(file);
+    const U64 loads = _loads.load();
+    const auto finish = [this, owner, layers, before, loads, done](bool reloaded,
+                                                                   const std::string& errorMessage) {
+        const std::shared_ptr<const void> alive = owner.lock();
+        if (!alive) {
+            return;
         }
-    }
-    reloadedFiles->insert(reloadedFiles->end(), before.begin(), before.end());
-    {
-        std::lock_guard<std::mutex> lock(_mutex);
-        reloadedFiles->insert(reloadedFiles->end(), _closurePaths.begin(), _closurePaths.end());
-    }
+        // A reload can change what the file brings in. The file's layer is the same object,
+        // reloaded in place.
+        if (_loads.load() == loads) {
+            setClosure(layers.empty() ? PXR_NS::SdfLayerRefPtr() : layers.front());
+        }
+        // A file the reload left out of the closure was still reloaded for every other consumer.
+        FileStampRegistry& stamps = FileStampRegistry::instance();
+        for (const std::string& file : before) {
+            if (!file.empty()) {
+                stamps.invalidate(file);
+            }
+        }
+        std::vector<std::string> reloadedFiles = before;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            reloadedFiles.insert(reloadedFiles.end(), _closurePaths.begin(), _closurePaths.end());
+        }
+        if (done) {
+            done(reloaded, errorMessage, reloadedFiles);
+        }
+    };
+    if (layers.empty()) {
+        finish(true, std::string());
 
-    return reloaded;
+        return;
+    }
+    SceneOps::requestFileLayerReload(layers, finish);
 } // SceneFileSource::reload
 
 bool

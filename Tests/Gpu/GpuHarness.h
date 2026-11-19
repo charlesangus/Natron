@@ -20,7 +20,7 @@
 
 // Device setup and dispatch plumbing shared by the GPU correctness tests. The
 // device is picked the usual way (NATRON_GPU_DEVICE, else ranked), so the same
-// binary runs on lavapipe and on RADV.
+// binary runs on RADV; a host with only a CPU device (lavapipe) is named explicitly.
 namespace gputest {
 
 class GpuSuite : public SkippableTest {

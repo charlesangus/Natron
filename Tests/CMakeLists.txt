@@ -20,13 +20,17 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h ContinuationTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h ViewerInstanceTestAccess.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     AddLayers_Test.cpp
     AddLayersRender_Test.cpp
     BaseTest.cpp
+    CacheDiskTier_Test.cpp
+    CacheDiskTierProcess_Test.cpp
+    CacheHostTier_Test.cpp
+    CacheRetention_Test.cpp
     CacheStress.cpp
     CacheStress_Test.cpp
     CacheStressConcurrent_Test.cpp
@@ -43,6 +47,7 @@ set(Tests_SOURCES
     CurveHost_Test.cpp
     DataKind_Test.cpp
     DataKindGroup_Test.cpp
+    GroupDirectRender_Test.cpp
     DataKindProjectLoad_Test.cpp
     DeepChannelNodes_Test.cpp
     DeepExpressionEvaluator_Test.cpp
@@ -72,7 +77,9 @@ set(Tests_SOURCES
     GpuResidency_Test.cpp
     GpuWeight_Test.cpp
     GraphScaling_Test.cpp
+    GraphScalingConnect_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
+    GraphScalingGuiEdits_Test.cpp
     GraphScalingNaming_Test.cpp
     GraphScalingTLS_Test.cpp
     Hash64_Test.cpp
@@ -98,8 +105,10 @@ set(Tests_SOURCES
     GraphOpApply_Test.cpp
     GraphEditRecorder_Test.cpp
     GraphEditReplay_Test.cpp
+    GenericSchedulerAbortWait_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    RotoSelectionProxy_Test.cpp
     PyRotoCreate_Test.cpp
     CurveTrackLink_Test.cpp
     CurveClipboard_Test.cpp
@@ -125,9 +134,11 @@ set(Tests_SOURCES
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp
     Gpu/CacheStressGpu_Test.cpp
+    Gpu/CacheDeviceTier_Test.cpp
     Gpu/RawAmazeGpu_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp
+    Ai/OrtTelemetry_Test.cpp
     Ai/InferenceSession_Test.cpp
     Ai/TiledInference_Test.cpp
     Ai/ModelRegistry_Test.cpp
@@ -149,10 +160,12 @@ set(Tests_SOURCES
     FpTrapGuard_Test.cpp
     PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
+    ProjectResetListeners_Test.cpp
     QueuedInputEdit_Test.cpp
     ViewerDisplayTransform_Test.cpp
     ViewerKnobs_Test.cpp
     ViewerScheduler_Test.cpp
+    ViewerStaleState_Test.cpp
     ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp
     ProjectOCIO_Test.cpp
@@ -162,6 +175,7 @@ set(Tests_SOURCES
     PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
+    PySetExpressionEvaluates_Test.cpp
     PythonUndo_Test.cpp
     RFV_Test.cpp
     RFVExpression_Test.cpp
@@ -180,6 +194,7 @@ set(Tests_SOURCES
     RenderContext_Test.cpp
     RenderContextMetadata_Test.cpp
     RenderContextRequest_Test.cpp
+    RenderContinuation_Test.cpp
     RenderIsolation_Test.cpp
     RenderProfile_Test.cpp
     RenderRange_Test.cpp
@@ -189,6 +204,7 @@ set(Tests_SOURCES
     RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
+    SchedulerAbortLatency_Test.cpp
     SchedulerEquivalence_Test.cpp
     SchedulerWriters_Test.cpp
     Shuffle_Test.cpp
@@ -243,6 +259,9 @@ target_link_libraries(Tests
         ${NATRON_USD_ENGINE_LIBRARIES}
 )
 natron_link_embedded_python(Tests)
+# Ai/OrtTelemetry_Test.cpp defines these to watch the dlopen()ed ONNX Runtime's network calls; an
+# executable only exports what a linked library happens to reference unless told to.
+target_link_options(Tests PRIVATE "LINKER:--export-dynamic-symbol=getaddrinfo,--export-dynamic-symbol=connect")
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
@@ -320,6 +339,7 @@ set(GuiTests_SOURCES
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GlobalModeTargeting_Test.cpp
+    GpuOverlayMapping_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp
@@ -329,10 +349,13 @@ set(GuiTests_SOURCES
     LayerChannelRow_Test.cpp
     NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
+    NodeGraphDeleteLinks_Test.cpp
+    NodeGraphItemGrid_Test.cpp
     NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
+    NodeGraphStacking_Test.cpp
     OverlayImageRenderer_Test.cpp
     PythonUndoStep_Test.cpp
     RenderDialogRange_Test.cpp

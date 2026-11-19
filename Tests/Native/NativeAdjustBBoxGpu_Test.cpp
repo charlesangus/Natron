@@ -49,6 +49,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/AdjustBBox.h"
@@ -175,7 +176,7 @@ TEST_F(NativeAdjustBBoxGpuTest, MatchesTheCpuRender)
         ASSERT_TRUE(effect != NULL) << c.name;
         connectNodes(source, node, 0, true);
         ASSERT_TRUE(setKnobValues(node, kAdjustBBoxParamNumPixels, { c.padX, c.padY })) << c.name;
-        ASSERT_TRUE(setKnobValue(node, kAdjustBBoxParamBoundary, c.nearest ? kAdjustBBoxBoundaryNearest : kAdjustBBoxBoundaryBlack)) << c.name;
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(c.nearest ? "stretch" : "black"))) << c.name;
 
         const RectI rod = pixelRegionOfDefinition(node);
         ASSERT_FALSE(rod.isNull()) << c.name;

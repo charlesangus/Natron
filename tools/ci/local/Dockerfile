@@ -42,8 +42,8 @@ FROM aswf/ci-vfxall:2027-clang21.1
 # compressed it adds to the AppImage.
 # NATRON_CYCLES_SHA256 is of <NATRON_CYCLES_REPO>/archive/<commit>.tar.gz.
 ARG NATRON_CYCLES_REPO=https://github.com/charlesangus/cycles
-ARG NATRON_CYCLES_COMMIT=3dbd87c101841755d282fe7dee0139096576103e
-ARG NATRON_CYCLES_SHA256=f052447fab95a23f78b4653801c217446077128b31482dc1bc5c703a453c7d30
+ARG NATRON_CYCLES_COMMIT=90d7cb7bd2717142c171d811c394a8206ab447ca
+ARG NATRON_CYCLES_SHA256=47e7e43f33140edf5a42d14f12e4398ec450bc1e8ab338a8c767a50da3eca927
 ARG NATRON_CYCLES_OIDN=ON
 COPY build-cycles.sh /tmp/build-cycles.sh
 RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
@@ -53,22 +53,24 @@ RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
     bash /tmp/build-cycles.sh && rm -f /tmp/build-cycles.sh
 
 # --- MoonRay: renderer and Hydra render delegate, CPU only ----------------
-# Built from DreamWorks' openmoonray super-repository against this image's
+# Built from Natron's fork of DreamWorks' openmoonray super-repository
+# (charlesangus/openmoonray, branch natron/v2026.29.1) against this image's
 # USD, TBB, Boost, Embree, OpenVDB, OpenImageIO, OpenEXR and OpenImageDenoise,
 # and installed relocatably into /opt/moonray: hdMoonray's plug-ins under
 # plugin/, the rdl2 scene-object DSOs in rdl2dso/, MoonRay's own libraries in
 # lib64/ and the execComp render process in bin/. Natron finds it there at
 # start-up (Engine/AppManager.cpp) and tools/release/stage-bundle.sh copies it
-# into the bundle as moonray/. The tag is pinned to its commit, and that commit
-# pins every submodule; ISPC (the upstream-pinned release binary, checksummed)
+# into the bundle as moonray/. The fork is pinned by commit, and that commit
+# pins every submodule; the forks carry Natron's changes, so the build applies
+# no source patches. ISPC (the upstream-pinned release binary, checksummed)
 # is fetched for the build only. Right after Cycles: the other slow layer,
 # changed more often than Cycles, so its rebuilds leave the Cycles layer cached.
-ARG NATRON_MOONRAY_VERSION=v2026.29.1
-ARG NATRON_MOONRAY_COMMIT=d96c6e30a8c280d4b5eb3bafa5e54efc445d7ea8
+ARG NATRON_MOONRAY_REPO=https://github.com/charlesangus/openmoonray.git
+ARG NATRON_MOONRAY_COMMIT=9cc77b5c9bc8f5c2b804c01dd288980b23b0cd2a
 ARG NATRON_MOONRAY_ISPC_VERSION=v1.21.0
 ARG NATRON_MOONRAY_ISPC_SHA256=fe658893799af46c9cac0153f0bdc9a2ff93541fff9b17cf6b09ffc7576cfdcc
 COPY build-moonray.sh /tmp/build-moonray.sh
-RUN NATRON_MOONRAY_VERSION="$NATRON_MOONRAY_VERSION" \
+RUN NATRON_MOONRAY_REPO="$NATRON_MOONRAY_REPO" \
     NATRON_MOONRAY_COMMIT="$NATRON_MOONRAY_COMMIT" \
     NATRON_MOONRAY_ISPC_VERSION="$NATRON_MOONRAY_ISPC_VERSION" \
     NATRON_MOONRAY_ISPC_SHA256="$NATRON_MOONRAY_ISPC_SHA256" \

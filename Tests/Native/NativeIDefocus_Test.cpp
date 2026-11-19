@@ -55,6 +55,7 @@
 #include "Engine/Nodes/Filter/IDefocus.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
@@ -217,6 +218,7 @@ protected:
     {
         NodePtr black = makeConstant(base, baseColor);
         NodePtr inside = makeConstant(box, color);
+        setBlackOutside(inside, true);
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
 
         EXPECT_TRUE(bool(black) && bool(inside) && bool(merge));
@@ -573,6 +575,8 @@ TEST_F(NativeIDefocusTest, FaintTailedKernelStaysWithinTheSource)
     NodePtr kernel = makeBoxOver(RectI(0, 0, 17, 17), { 1e-12, 1e-12, 1e-12, 1e-12 }, RectI(11, 8, 12, 9), { 1., 1., 1., 1. });
     NodePtr island = makeConstant(RectI(30, 0, 50, kParitySourceHeight), { 1., 1., 1., 1. });
     ASSERT_TRUE(bool(source) && bool(kernel) && bool(island));
+    // Under Stretch the island would repeat its edge columns, leaving no Map edge at x = 30.
+    setBlackOutside(island, true);
 
     {
         RenderedPlane input;
@@ -692,4 +696,109 @@ TEST_F(NativeIDefocusTest, Golden)
         return sized(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });
     }));
     runGoldenCases(getApp(), spec, v);
+}
+
+// A constant filling the window keeps its value up to the border under Stretch, and darkens there
+// under Black, where the bokeh reaches past the image.
+TEST_F(NativeIDefocusTest, EdgeModeDecidesTheBorder)
+{
+    const double color[4] = { 0.3, 0.6, 0.9, 1. };
+    NodePtr constant = makeConstant(kWindow, { color[0], color[1], color[2], color[3] });
+    NodePtr idefocus = makeIDefocus(constant, NodePtr(), 9.);
+    ASSERT_TRUE(bool(constant) && bool(idefocus));
+
+    ASSERT_TRUE(setKnobValue(idefocus, kEdgeModeParam, std::string("stretch")));
+    RenderedPlane stretched;
+    ASSERT_TRUE(renderRGBA(idefocus, kWindow, &stretched));
+    double worst = 0.;
+    for (std::size_t i = 0; i < stretched.pixels.size(); ++i) {
+        worst = std::max(worst, std::fabs((double)stretched.pixels[i] - color[i % 4]));
+    }
+    EXPECT_LE(worst, 1e-5);
+
+    ASSERT_TRUE(setKnobValue(idefocus, kEdgeModeParam, std::string("black")));
+    RenderedPlane black;
+    ASSERT_TRUE(renderRGBA(idefocus, kWindow, &black));
+    EXPECT_LT(pixelAt(black, kWindow.x1, kWindow.y1, 3), 0.9f);
+    EXPECT_NEAR(color[3], pixelAt(black, kWindow.x1 + kWindow.width() / 2, kWindow.y1 + kWindow.height() / 2, 3), 1e-5);
+}
+
+// Under Stretch a bokeh far larger than the image, its size varying with a Map smaller than the
+// image, reads every source pixel at its position clamped onto the image, and matches the same
+// bokeh under Black over a source and a Map whose edges are laid out explicitly past every pixel
+// the bokeh reaches.
+TEST_F(NativeIDefocusTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
+{
+    const int pad = 300;
+    const RectI padded(kWindow.x1 - pad, kWindow.y1 - pad, kWindow.x2 + pad, kWindow.y2 + pad);
+    const RectI box(20, 14, 44, 34);
+    // `left` of base colour, the columns of `right` within it of a second colour, and box over both.
+    const auto makeTwoTone = [&](const RectI& left, const RectI& right, const std::vector<double>& a, const std::vector<double>& b, bool withBox) -> NodePtr {
+        NodePtr base = makeConstant(left, a);
+        NodePtr half = makeConstant(right, b);
+        NodePtr under = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(bool(base) && bool(half) && bool(under));
+        if (!base || !half || !under) {
+            return NodePtr();
+        }
+        setBlackOutside(half, true);
+        EXPECT_TRUE(setKnobValue(under, kNativeMergeParamOperation, std::string("over")));
+        connectNodes(base, under, 0, true);
+        connectNodes(half, under, 1, true);
+        if (!withBox) {
+            return under;
+        }
+        NodePtr inside = makeConstant(box, { 4., 2., 1., 1. });
+        NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(bool(inside) && bool(over));
+        if (!inside || !over) {
+            return NodePtr();
+        }
+        setBlackOutside(inside, true);
+        EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
+        connectNodes(under, over, 0, true);
+        connectNodes(inside, over, 1, true);
+
+        return over;
+    };
+    const std::vector<double> baseColor = { 0.2, 0.4, 0.6, 1. }, halfColor = { 0.9, 0.1, 0.3, 1. };
+    const std::vector<double> mapLow = { 0.3, 0.3, 0.3, 0.3 }, mapHigh = { 0.9, 0.9, 0.9, 0.9 };
+    const RectI mapRect(8, 6, 40, 36);
+    NodePtr source = makeTwoTone(kWindow, RectI(32, kWindow.y1, kWindow.x2, kWindow.y2), baseColor, halfColor, true);
+    NodePtr laidOut = makeTwoTone(padded, RectI(32, padded.y1, padded.x2, padded.y2), baseColor, halfColor, true);
+    NodePtr map = makeTwoTone(mapRect, RectI(24, mapRect.y1, mapRect.x2, mapRect.y2), mapLow, mapHigh, false);
+    NodePtr laidOutMap = makeTwoTone(padded, RectI(24, padded.y1, padded.x2, padded.y2), mapLow, mapHigh, false);
+    ASSERT_TRUE(bool(source) && bool(laidOut) && bool(map) && bool(laidOutMap));
+
+    for (const char* type : { kDefocusParamKernelTypeDisc, kDefocusParamKernelTypeBlades }) {
+        NodePtr stretched = makeIDefocus(source, map, 140.);
+        NodePtr reference = makeIDefocus(laidOut, laidOutMap, 140.);
+        ASSERT_TRUE(bool(stretched) && bool(reference));
+        for (const NodePtr& node : { stretched, reference }) {
+            ASSERT_TRUE(setKnobValue(node, kDefocusParamKernelType, std::string(type)));
+            ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 40. }));
+            ASSERT_TRUE(setKnobValues(node, kDefocusParamHighlightGain, { 2. }));
+            ASSERT_TRUE(setKnobValues(node, kDefocusParamHighlightThreshold, { 1. }));
+        }
+        ASSERT_TRUE(setKnobValue(stretched, kEdgeModeParam, std::string("stretch")));
+        ASSERT_TRUE(setKnobValue(reference, kEdgeModeParam, std::string("black")));
+
+        RenderedPlane whole, part, expected;
+        const RectI tile(5, 30, 27, 48);
+        ASSERT_TRUE(renderRGBA(stretched, kWindow, &whole)) << type;
+        ASSERT_TRUE(renderRGBA(stretched, tile, &part)) << type;
+        ASSERT_TRUE(renderRGBA(reference, kWindow, &expected)) << type;
+        for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+            for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const float v = pixelAt(whole, x, y, c);
+                    ASSERT_TRUE(std::isfinite(v)) << type;
+                    ASSERT_NEAR(pixelAt(expected, x, y, c), v, 1e-5 * std::max(1.f, std::fabs(v))) << type << " at (" << x << "," << y << "," << c << ")";
+                    if (tile.contains(x, y)) {
+                        ASSERT_NEAR(v, pixelAt(part, x, y, c), 1e-5 * std::max(1.f, std::fabs(v))) << type << " tile at (" << x << "," << y << "," << c << ")";
+                    }
+                }
+            }
+        }
+    }
 }

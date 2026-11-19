@@ -27,14 +27,20 @@
 #include "NodeGraphPrivate.h"
 
 #include <stdexcept>
+#include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QAction>
 #include <QApplication>
+#include <QCursor>
+#include <QHelpEvent>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPainterPath>
+#include <QPolygonF>
+#include <QToolTip>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -53,6 +59,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // isKeyBind
 #include "Gui/GuiMacros.h"
+#include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/TabMenuBridge.h"
@@ -176,16 +183,39 @@ NodeGraph::mouseDoubleClickEvent(QMouseEvent* e)
     }
 } // NodeGraph::mouseDoubleClickEvent
 
+// Asked at key time rather than tracked through enter and leave events: a pointer grab, a popup
+// or another top-level window under the pointer can swallow the enter that a flag would wait for.
+bool
+NodeGraph::isNodeCreationShortcutTarget() const
+{
+    if (hasFocus()) {
+        return true;
+    }
+
+    const QWidget* vp = viewport();
+
+    return vp && vp->isVisible() && vp->rect().contains(vp->mapFromGlobal(QCursor::pos()));
+}
+
 bool
 NodeGraph::event(QEvent* e)
 {
     if ( !getGui() ) {
         return false;
     }
-    if (e->type() == QEvent::KeyPress) {
+    if (e->type() == QEvent::ShortcutOverride) {
+        // A create-node key rebound to one a global action also uses (F2 opens render
+        // statistics) must reach the KeyPress below instead of triggering that action.
+        QKeyEvent* ke = static_cast<QKeyEvent*>(e);
+        if (isNodeCreationShortcutTarget() && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
+            ke->accept();
+
+            return true;
+        }
+    } else if (e->type() == QEvent::KeyPress) {
         QKeyEvent* ke = dynamic_cast<QKeyEvent*>(e);
         assert(ke);
-        if (ke && _imp->_nodeCreationShortcutEnabled && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
+        if (ke && isNodeCreationShortcutTarget() && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
             popCreateNodeDialog();
             takeClickFocus();
             ke->accept();
@@ -195,6 +225,68 @@ NodeGraph::event(QEvent* e)
     }
 
     return QGraphicsView::event(e);
+}
+
+bool
+NodeGraph::viewportEvent(QEvent* e)
+{
+    if (e->type() == QEvent::ToolTip) {
+        // A node's badges share one item: give it the tooltip of the badge under the cursor
+        // before the scene looks for the topmost item with a tooltip there.
+        QHelpEvent* he = static_cast<QHelpEvent*>(e);
+        QRect pointRect(he->pos(), QSize(1, 1));
+        std::vector<QGraphicsItem*> hits;
+        getGraphItemsMeetingViewportRect(pointRect, false, &hits);
+        if (!hits.empty()) {
+            QPolygonF polygonScene = mapToScene(pointRect);
+            QPainterPath pathScene;
+            pathScene.addPolygon(polygonScene);
+            pathScene.closeSubpath();
+            for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
+                if ((*it)->type() == NodeGuiDecorations::Type) {
+                    static_cast<NodeGuiDecorations*>(*it)->refreshToolTipAt((*it)->mapFromScene(pathScene));
+                }
+            }
+        }
+        if (isLowDetail()) {
+            // The scene looks only at items it can see, and the nodes are faded out at this level,
+            // so the topmost item with a tooltip in a faded subtree is found here. A node's children
+            // all stack above it.
+            QGraphicsItem* best = NULL;
+            qreal bestTopZ = 0.;
+            bool bestIsChild = false;
+            qreal bestZ = 0.;
+            for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
+                QGraphicsItem* item = *it;
+                if (item->toolTip().isEmpty()) {
+                    continue;
+                }
+                QGraphicsItem* top = item;
+                while (top->parentItem() && !_imp->isInGraph(top)) {
+                    top = top->parentItem();
+                }
+                if (!NodeGraphLowDetailLayer::isFaded(top)) {
+                    continue;
+                }
+                const bool isChild = (item != top);
+                const qreal topZ = top->zValue();
+                const qreal z = item->zValue();
+                if (!best || (topZ > bestTopZ) || ((topZ == bestTopZ) && ((isChild && !bestIsChild) || ((isChild == bestIsChild) && (z > bestZ))))) {
+                    best = item;
+                    bestTopZ = topZ;
+                    bestIsChild = isChild;
+                    bestZ = z;
+                }
+            }
+            if (best) {
+                QToolTip::showText(he->globalPos(), best->toolTip(), viewport());
+
+                return true;
+            }
+        }
+    }
+
+    return QGraphicsView::viewportEvent(e);
 }
 
 void
@@ -265,6 +357,76 @@ triggerMergeShortcut(NodeGraph* graph,
 }
 } // anonymous namespace
 
+namespace {
+
+const char* const kViewerInputAKeys[] = {
+    kShortcutIDActionConnectViewerToInput1,
+    kShortcutIDActionConnectViewerToInput2,
+    kShortcutIDActionConnectViewerToInput3,
+    kShortcutIDActionConnectViewerToInput4,
+    kShortcutIDActionConnectViewerToInput5,
+    kShortcutIDActionConnectViewerToInput6,
+    kShortcutIDActionConnectViewerToInput7,
+    kShortcutIDActionConnectViewerToInput8,
+    kShortcutIDActionConnectViewerToInput9,
+    kShortcutIDActionConnectViewerToInput10
+};
+
+const char* const kViewerInputBKeys[] = {
+    kShortcutIDActionConnectViewerBToInput1,
+    kShortcutIDActionConnectViewerBToInput2,
+    kShortcutIDActionConnectViewerBToInput3,
+    kShortcutIDActionConnectViewerBToInput4,
+    kShortcutIDActionConnectViewerBToInput5,
+    kShortcutIDActionConnectViewerBToInput6,
+    kShortcutIDActionConnectViewerBToInput7,
+    kShortcutIDActionConnectViewerBToInput8,
+    kShortcutIDActionConnectViewerBToInput9,
+    kShortcutIDActionConnectViewerBToInput10
+};
+
+const char* const kViewerInputLockKeys[] = {
+    kShortcutIDActionGraphLockViewerInput1,
+    kShortcutIDActionGraphLockViewerInput2,
+    kShortcutIDActionGraphLockViewerInput3,
+    kShortcutIDActionGraphLockViewerInput4,
+    kShortcutIDActionGraphLockViewerInput5,
+    kShortcutIDActionGraphLockViewerInput6,
+    kShortcutIDActionGraphLockViewerInput7,
+    kShortcutIDActionGraphLockViewerInput8,
+    kShortcutIDActionGraphLockViewerInput9,
+    kShortcutIDActionGraphLockViewerInput10
+};
+
+const char* const kViewerInputUnlockKeys[] = {
+    kShortcutIDActionGraphUnlockViewerInput1,
+    kShortcutIDActionGraphUnlockViewerInput2,
+    kShortcutIDActionGraphUnlockViewerInput3,
+    kShortcutIDActionGraphUnlockViewerInput4,
+    kShortcutIDActionGraphUnlockViewerInput5,
+    kShortcutIDActionGraphUnlockViewerInput6,
+    kShortcutIDActionGraphUnlockViewerInput7,
+    kShortcutIDActionGraphUnlockViewerInput8,
+    kShortcutIDActionGraphUnlockViewerInput9,
+    kShortcutIDActionGraphUnlockViewerInput10
+};
+
+int
+viewerInputForKey(const char* group,
+                  const char* const (&ids)[10],
+                  Qt::KeyboardModifiers modifiers,
+                  Qt::Key key)
+{
+    for (int i = 0; i < 10; ++i) {
+        if (isKeybind(group, ids[i], modifiers, key)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+} // anonymous namespace
+
 void
 NodeGraph::keyPressEvent(QKeyEvent* e)
 {
@@ -282,6 +444,9 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
 
     Qt::KeyboardModifiers modifiers = e->modifiers();
     Qt::Key key = (Qt::Key)e->key();
+    // Shift or Alt can turn a digit into another symbol, depending on the keyboard layout.
+    const Qt::Key digitKey = (Qt::Key)Gui::handleNativeKeys(e->key(), e->nativeScanCode(), e->nativeVirtualKey());
+    int viewerInput = -1;
     bool accept = true;
 
     if (key == Qt::Key_Escape) {
@@ -354,11 +519,8 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                 if ( inputs[i]->hasSource() ) {
                     NodeGuiPtr input = inputs[i]->getSource();
                     if ( input->getIsSelected() && modCASIsShift(e) ) {
-                        NodesGuiList::iterator found = std::find(_imp->_selection.begin(),
-                                                                 _imp->_selection.end(), lastSelected);
-                        if ( found != _imp->_selection.end() ) {
+                        if (_imp->_selection.remove(lastSelected.get())) {
                             lastSelected->setUserSelected(false);
-                            _imp->_selection.erase(found);
                         }
                     } else {
                         selectNode( inputs[i]->getSource(), modCASIsShift(e) );
@@ -380,11 +542,8 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                     NodeGuiPtr output = std::dynamic_pointer_cast<NodeGui>(output_i);
                     if (output) {
                         if ( output->getIsSelected() && modCASIsShift(e) ) {
-                            NodesGuiList::iterator found = std::find(_imp->_selection.begin(),
-                                                                     _imp->_selection.end(), lastSelected);
-                            if ( found != _imp->_selection.end() ) {
+                            if (_imp->_selection.remove(lastSelected.get())) {
                                 lastSelected->setUserSelected(false);
-                                _imp->_selection.erase(found);
                             }
                         } else {
                             selectNode( output, modCASIsShift(e) );
@@ -429,6 +588,8 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         toggleSelectedNodesEnabled();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowLinkLines, modifiers, key)) {
         toggleKnobLinksVisible();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowGpuRegions, modifiers, key)) {
+        toggleGpuRegionOverlay();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoPreview, modifiers, key)) {
         toggleAutoPreview();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, modifiers, key)) {
@@ -453,6 +614,14 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         } else {
             accept = false;
         }
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupGlobal, kViewerInputAKeys, modifiers, digitKey)) != -1) {
+        connectCurrentViewerToSelection(viewerInput, true);
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupGlobal, kViewerInputBKeys, modifiers, digitKey)) != -1) {
+        connectCurrentViewerToSelection(viewerInput, false);
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupNodegraph, kViewerInputLockKeys, modifiers, digitKey)) != -1) {
+        lockViewerInputToSelection(viewerInput);
+    } else if ((viewerInput = viewerInputForKey(kShortcutGroupNodegraph, kViewerInputUnlockKeys, modifiers, digitKey)) != -1) {
+        unlockViewerInput(viewerInput);
     } else if (triggerMergeShortcut(this, e)) {
         // The Merge menu's Mask, Stencil or All Layers action was triggered.
     } else {
@@ -482,6 +651,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                         CreateNodeArgs args( plugin->getPluginID().toStdString(), getGroup() );
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.x(), 0);
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.y(), 1);
+                        args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
                         getGui()->getApp()->createNode(args);
 
                         intercepted = true;
@@ -512,26 +682,32 @@ NodeGraph::toggleAutoTurbo()
 }
 
 void
+NodeGraph::toggleGpuRegionOverlay()
+{
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    settings->setGpuRegionOverlayEnabled(!settings->isGpuRegionOverlayEnabled());
+}
+
+void
 NodeGraph::selectAllNodes(bool onlyInVisiblePortion)
 {
-    _imp->resetSelection();
+    NodesGuiList nodes;
     if (onlyInVisiblePortion) {
         QRectF r = visibleSceneRect();
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
             QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
-            if ( r.intersects(bbox) && (*it)->isActive() && (*it)->isVisible() ) {
-                (*it)->setUserSelected(true);
-                _imp->_selection.push_back(*it);
+            if (r.intersects(bbox) && (*it)->isVisible()) {
+                nodes.push_back(*it);
             }
         }
     } else {
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-            if ( (*it)->isActive() && (*it)->isVisible() ) {
-                (*it)->setUserSelected(true);
-                _imp->_selection.push_back(*it);
+            if ((*it)->isVisible()) {
+                nodes.push_back(*it);
             }
         }
     }
+    _imp->replaceSelection(nodes);
 }
 
 NATRON_NAMESPACE_EXIT

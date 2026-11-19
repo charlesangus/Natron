@@ -59,6 +59,8 @@
 #include "BaseTest.h"
 #include "NativeParity.h"
 
+#include "Gpu/GpuTestSelector.h"
+
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -82,6 +84,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -89,6 +92,7 @@
 #include "Engine/RenderStats.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Engine/Gpu/GpuRuntime.h"
 
@@ -101,6 +105,7 @@ const int kHeight = 768;
 const double kTime = 1.;
 const qint64 kFrameTimeoutMs = 60000;
 const char* const kStripsReason = "viewer handoff: strips";
+const char* const kRefusalDetail = "5 channels";
 
 struct FrameRun {
     AbortableRenderInfoPtr abortInfo;
@@ -121,6 +126,81 @@ taskOf(const FrameGraph& graph,
     }
 
     return -1;
+}
+
+// Asks no effect, so the plan depends only on the node lists and needs no device.
+PlacementInputs
+placementOf(const std::vector<NodePtr>& gpuNodes,
+            const std::vector<NodePtr>& cachedNodes = std::vector<NodePtr>())
+{
+    std::set<const Node*> gpu;
+    for (const NodePtr& node : gpuNodes) {
+        gpu.insert(node.get());
+    }
+    std::set<const Node*> cached;
+    for (const NodePtr& node : cachedNodes) {
+        cached.insert(node.get());
+    }
+    PlacementInputs inputs;
+    inputs.canRenderOnGpu = [gpu](const FrameGraph::Task& task, GpuRefusal* refusal) {
+        if (gpu.count(task.key.node.get())) {
+            return true;
+        }
+        refusal->detail = kRefusalDetail;
+
+        return false;
+    };
+    inputs.isCached = [cached](const FrameGraph::Task& task) {
+        return cached.count(task.key.node.get()) != 0;
+    };
+
+    return inputs;
+}
+
+void
+addPlacedGraph(const FrameGraph& unplaced,
+               const PlacementInputs& inputs,
+               const std::vector<RegionFallback>& fallbacks,
+               GpuPlacementSnapshotBuilder* builder)
+{
+    FrameGraph real = unplaced;
+    const ShadowPlacement shadow = placeGraphWithShadow(real, inputs);
+    builder->addGraph(real, shadow);
+    builder->finishGraph(EffectInstance::eRenderRoIRetCodeOk, fallbacks);
+}
+
+const GpuPlacementSnapshot::Member*
+findMember(const GpuPlacementSnapshot::Region& region,
+           const NodePtr& node)
+{
+    for (const GpuPlacementSnapshot::Member& member : region.members) {
+        if (member.node.lock() == node) {
+            return &member;
+        }
+    }
+
+    return nullptr;
+}
+
+const GpuPlacementSnapshot::Region*
+findRegion(const GpuPlacementSnapshot& snapshot,
+           const NodePtr& node)
+{
+    for (const GpuPlacementSnapshot::Region& region : snapshot.regions) {
+        if (findMember(region, node)) {
+            return &region;
+        }
+    }
+
+    return nullptr;
+}
+
+bool
+isPipe(const GpuPlacementSnapshot::Pipe& pipe,
+       const NodePtr& destNode,
+       int inputNb)
+{
+    return (pipe.destNode.lock() == destNode) && (pipe.inputNb == inputNb);
 }
 
 std::vector<float>
@@ -296,6 +376,7 @@ protected:
         }
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
         std::shared_ptr<std::string> unavailable = std::make_shared<std::string>();
         options.infoLog = [unavailable](const std::string& line) {
             *unavailable = line;
@@ -387,7 +468,8 @@ protected:
     bool prepareFrame(const NodePtr& root,
                       const RectI& renderWindow,
                       FrameRun* run,
-                      std::string* error)
+                      std::string* error,
+                      bool draftMode = false)
     {
         run->abortInfo = AbortableRenderInfo::create(true, 0);
         run->stats = std::make_shared<RenderStats>(false);
@@ -402,7 +484,7 @@ protected:
                                            getApp()->getTimeLine().get(),
                                            NodePtr(),
                                            false /*isAnalysis*/,
-                                           false /*draftMode*/,
+                                           draftMode,
                                            run->stats);
         std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
         const RectD window(renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2);
@@ -423,7 +505,7 @@ protected:
                                                   getApp()->getTimeLine().get(),
                                                   NodePtr(),
                                                   false /*isAnalysis*/,
-                                                  false /*draftMode*/,
+                                                  draftMode,
                                                   run->stats);
         run->context->setRequest(request);
         run->graph = RenderScheduler::buildGraph(run->context, root, kTime, ViewIdx(0), 0 /*mipmapLevel*/);
@@ -445,7 +527,7 @@ protected:
             gpu.insert(node.get());
         }
         PlacementInputs inputs;
-        inputs.canRenderOnGpu = [gpu, context](const FrameGraph::Task& task) {
+        inputs.canRenderOnGpu = [gpu, context](const FrameGraph::Task& task, GpuRefusal*) {
             if (!gpu.count(task.key.node.get())) {
                 return false;
             }
@@ -497,6 +579,51 @@ protected:
         }
 
         return run->future->wait() == EffectInstance::eRenderRoIRetCodeOk;
+    }
+
+    // The key renderRoI looks the RGBA output of node's task in graph up by.
+    static ImageKey outputKey(const FrameGraph& graph,
+                              const NodePtr& node)
+    {
+        const int index = taskOf(graph, node);
+        if (index < 0) {
+            return ImageKey();
+        }
+        const FrameGraph::Task& task = graph.tasks[index];
+
+        return task.key.node->getEffectInstance()->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, false /*draft*/, task.cacheMipmapLevel).forEntry(task.key.mipmapLevel, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+    }
+
+    // A RAM entry of the host tier, not the stub a peek makes of a device entry.
+    static bool inHostTier(const ImageKey& key)
+    {
+        std::list<ImagePtr> cached;
+        if (!appPTR->peekImage(key, &cached)) {
+            return false;
+        }
+        for (const ImagePtr& image : cached) {
+            if (image && (image->getStorageMode() == eStorageModeRAM) && image->isAllocated()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // The bytes of the RAM entry of the host tier under key, 0 without one.
+    static std::size_t hostTierBytes(const ImageKey& key)
+    {
+        std::list<ImagePtr> cached;
+        if (!appPTR->peekImage(key, &cached)) {
+            return 0;
+        }
+        for (const ImagePtr& image : cached) {
+            if (image && (image->getStorageMode() == eStorageModeRAM) && image->isAllocated()) {
+                return (std::size_t)image->getBounds().area() * image->getComponentsCount() * sizeof(float);
+            }
+        }
+
+        return 0;
     }
 
     // The chain's RAM root, rendered on the GPU without asking for the root on the device.
@@ -645,6 +772,10 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     setGpuStripOverridesForTests(1u << 20, 64);
     FrameRun run;
     ASSERT_TRUE(prepareChainFrame(true, &run, &error)) << error;
+    const ImageKey gradeKey = outputKey(run.graph, _grade);
+    const ImageKey blurKey = outputKey(run.graph, _blur);
+    ASSERT_FALSE(inHostTier(gradeKey));
+    ASSERT_FALSE(inHostTier(blurKey));
     ASSERT_TRUE(render(&run));
 
     const RenderScheduler::RegionReport report = *_last;
@@ -652,9 +783,15 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     EXPECT_EQ(1, run.stats->getGpuRegionsRun());
     EXPECT_GT(report.strips, 1);
     const std::size_t rootBytes = (std::size_t)ramRoot->getBounds().area() * 4 * sizeof(float);
-    EXPECT_EQ(rootBytes, report.downloadBytes);
     EXPECT_GT(run.stats->getDownloadCount(), 0);
-    EXPECT_EQ((unsigned long long)rootBytes, run.stats->getDownloadBytes());
+    EXPECT_TRUE(inHostTier(gradeKey)) << "the host tier did not admit the Grade";
+    EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
+    // The Grade and the Blur reach the host tier, and the root comes back to RAM whole on top of them.
+    const std::size_t gradeBytes = hostTierBytes(gradeKey);
+    const std::size_t blurBytes = hostTierBytes(blurKey);
+    EXPECT_GT(gradeBytes, 0u);
+    EXPECT_GT(blurBytes, 0u);
+    EXPECT_GE(report.downloadBytes, rootBytes + gradeBytes + blurBytes);
     EXPECT_EQ(1, legacyFallbacksOf(run, kStripsReason));
     EXPECT_TRUE(run.context->takeRootDevicePlanes().empty());
 
@@ -720,6 +857,65 @@ TEST_F(ViewerRootOnDevice, RenderPlacementTreatsAKeptRootAsFree)
         EXPECT_EQ(wantsRootOnDevice != 0, inputs.rootOnDevice);
         EXPECT_EQ(wantsRootOnDevice != 0, regionTransfersAreFree(whole, region, inputs.rootOnDevice));
     }
+}
+
+// renderRoI looks a draft frame's output up under the draft key too, so a cached draft image keeps the node on the CPU.
+TEST_F(ViewerRootOnDevice, PlacementProbesTheDraftKeyOfADraftFrame)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(_sourceDir.isValid());
+    const std::string path = writeSource(_sourceDir);
+    ASSERT_FALSE(path.empty());
+    _read = makeNode(PLUGINID_NATRON_READ, PLUGIN_MAJOR_NATRON_READ);
+    NodePtr reformat = makeNode(PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT);
+    _grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(_read && reformat && _grade);
+    KnobFile* file = dynamic_cast<KnobFile*>(_read->getKnobByName(kOfxImageEffectFileParamName).get());
+    ASSERT_TRUE(file != nullptr);
+    file->setValue(path);
+    _read->getEffectInstance()->dropCachedMetadata();
+    connectNodes(_read, reformat, 0, true);
+    connectNodes(reformat, _grade, 0, true);
+    ASSERT_TRUE(_grade->isDraftModeUsed());
+    ASSERT_TRUE(setKnobValues(_grade, "multiply", { 1.25, 1.25, 1.25, 1.25 }));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_grade, RectI(0, 0, kWidth, kHeight), &run, &error, true /*draftMode*/)) << error;
+    const int index = taskOf(run.graph, _grade);
+    ASSERT_GE(index, 0);
+    const FrameGraph::Task task = run.graph.tasks[index];
+    ASSERT_FALSE(task.isIdentity);
+    ASSERT_FALSE(task.components.empty());
+
+    const PlacementInputs inputs = makeRenderPlacementInputs(run.context);
+    ASSERT_TRUE(bool(inputs.isCached));
+    const auto cachedAfterPruning = [&](FrameGraph graph, const FrameRenderContextPtr& context) {
+        RenderScheduler::pruneBehindCacheHits(graph, context);
+        const int pruned = taskOf(graph, _grade);
+
+        return (pruned >= 0) && inputs.isCached(graph.tasks[pruned]);
+    };
+    EXPECT_FALSE(cachedAfterPruning(run.graph, run.context));
+
+    const FrameRequestMap::const_iterator request = run.context->getRequest()->find(NodeCtxKey(_grade, 0));
+    ASSERT_TRUE(request != run.context->getRequest()->end());
+    const ImageLayerDesc layer = task.components.front();
+    const ImageKey draftKey = _grade->getEffectInstance()->outputCacheKey(request->second->nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, true, task.cacheMipmapLevel);
+    ImageParamsPtr params = Image::makeParams(RectD(0, 0, kWidth, kHeight), 1., task.cacheMipmapLevel, false, layer, eImageBitDepthFloat, eImageFieldingOrderNone);
+    ImagePtr cached;
+    appPTR->getImageOrCreate(draftKey, params, &cached);
+    ASSERT_TRUE(cached != nullptr);
+    cached->allocateMemory();
+    cached->markForRendered(RectI(0, 0, kWidth, kHeight));
+
+    EXPECT_TRUE(cachedAfterPruning(run.graph, run.context));
+
+    FrameRun plain;
+    ASSERT_TRUE(prepareFrame(_grade, RectI(0, 0, kWidth, kHeight), &plain, &error)) << error;
+    EXPECT_FALSE(cachedAfterPruning(plain.graph, plain.context));
 }
 
 // A lone Grade over a UHD frame, whose downloaded root moves enough bytes to run as overlapped strips, stays whole once
@@ -793,6 +989,209 @@ TEST_F(ViewerRootOnDevice, ARootKeptOnTheDeviceIsNeverStrippedToHideItsTransfer)
             EXPECT_EQ(0.f, worstDiff(stripped, readRgba(downloaded, window)));
         }
     }
+}
+
+TEST_F(ViewerRootOnDevice, ASnapshotListsTheExitsEntriesAndReasonsOfAGraph)
+{
+    ASSERT_TRUE(makeChain());
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
+
+    GpuPlacementSnapshotBuilder builder;
+    addPlacedGraph(run.graph, placementOf({ _grade, _colorCorrect }), std::vector<RegionFallback>(), &builder);
+    const GpuPlacementSnapshotPtr snapshot = builder.build();
+
+    ASSERT_TRUE(bool(snapshot));
+    ASSERT_EQ(2u, snapshot->regions.size());
+
+    const GpuPlacementSnapshot::Region* upstream = findRegion(*snapshot, _grade);
+    ASSERT_TRUE(upstream != nullptr);
+    ASSERT_EQ(1u, upstream->members.size());
+    EXPECT_FALSE(upstream->members[0].mixed);
+    ASSERT_EQ(1u, upstream->exits.size());
+    EXPECT_TRUE(isPipe(upstream->exits[0].pipe, _blur, 0));
+    EXPECT_EQ(FrameGraph::PlacementReason::NoGpuPath, upstream->exits[0].reason);
+    EXPECT_EQ(std::string(kRefusalDetail), upstream->exits[0].detail);
+    EXPECT_FALSE(upstream->exits[0].mixed);
+    ASSERT_EQ(1u, upstream->entries.size());
+    EXPECT_TRUE(isPipe(upstream->entries[0], _grade, 0));
+    EXPECT_FALSE(upstream->fellBack);
+
+    const GpuPlacementSnapshot::Region* root = findRegion(*snapshot, _colorCorrect);
+    ASSERT_TRUE(root != nullptr);
+    EXPECT_NE(upstream, root);
+    EXPECT_TRUE(root->exits.empty()) << "a region feeding the viewer has no exit for it";
+    ASSERT_EQ(1u, root->entries.size());
+    EXPECT_TRUE(isPipe(root->entries[0], _colorCorrect, 0));
+}
+
+TEST_F(ViewerRootOnDevice, SplitRectsThatDisagreeAreMergedAsMixed)
+{
+    ASSERT_TRUE(makeChain());
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
+
+    GpuPlacementSnapshotBuilder builder;
+    addPlacedGraph(run.graph, placementOf({ _grade, _blur, _colorCorrect }), std::vector<RegionFallback>(), &builder);
+    addPlacedGraph(run.graph, placementOf({ _grade, _colorCorrect }), std::vector<RegionFallback>(), &builder);
+    const GpuPlacementSnapshotPtr snapshot = builder.build();
+
+    ASSERT_TRUE(bool(snapshot));
+    ASSERT_EQ(1u, snapshot->regions.size());
+    const GpuPlacementSnapshot::Region& region = snapshot->regions[0];
+    ASSERT_EQ(3u, region.members.size());
+    EXPECT_TRUE(findMember(region, _blur)->mixed);
+    EXPECT_FALSE(findMember(region, _grade)->mixed);
+    EXPECT_FALSE(findMember(region, _colorCorrect)->mixed);
+
+    ASSERT_EQ(1u, region.exits.size());
+    EXPECT_TRUE(isPipe(region.exits[0].pipe, _blur, 0));
+    EXPECT_EQ(FrameGraph::PlacementReason::NoGpuPath, region.exits[0].reason);
+    EXPECT_TRUE(region.exits[0].mixed);
+
+    ASSERT_EQ(1u, region.entries.size()) << "the Blur is drawn inside the region, so the pipe out of it gets no tick";
+    EXPECT_TRUE(isPipe(region.entries[0], _grade, 0));
+}
+
+TEST_F(ViewerRootOnDevice, GraphsThatAgreeAreNotMixed)
+{
+    ASSERT_TRUE(makeChain());
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
+
+    GpuPlacementSnapshotBuilder builder;
+    addPlacedGraph(run.graph, placementOf({ _grade, _colorCorrect }), std::vector<RegionFallback>(), &builder);
+    addPlacedGraph(run.graph, placementOf({ _grade, _colorCorrect }), std::vector<RegionFallback>(), &builder);
+    const GpuPlacementSnapshotPtr snapshot = builder.build();
+
+    ASSERT_TRUE(bool(snapshot));
+    ASSERT_EQ(2u, snapshot->regions.size());
+    for (const GpuPlacementSnapshot::Region& region : snapshot->regions) {
+        ASSERT_EQ(1u, region.members.size());
+        EXPECT_FALSE(region.members[0].mixed);
+        for (const GpuPlacementSnapshot::Exit& regionExit : region.exits) {
+            EXPECT_FALSE(regionExit.mixed);
+        }
+    }
+}
+
+// An A/B input whose graph never reaches a node has no opinion about it.
+TEST_F(ViewerRootOnDevice, ANodeOnlyOneInputReachesIsNotMixed)
+{
+    ASSERT_TRUE(makeChain());
+    FrameRun inputA;
+    FrameRun inputB;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_grade, RectI(0, 0, kWidth, kHeight), &inputA, &error)) << error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &inputB, &error)) << error;
+
+    GpuPlacementSnapshotBuilder builder;
+    addPlacedGraph(inputA.graph, placementOf({ _grade, _blur, _colorCorrect }), std::vector<RegionFallback>(), &builder);
+    addPlacedGraph(inputB.graph, placementOf({ _grade, _blur, _colorCorrect }), std::vector<RegionFallback>(), &builder);
+    const GpuPlacementSnapshotPtr snapshot = builder.build();
+
+    ASSERT_TRUE(bool(snapshot));
+    ASSERT_EQ(1u, snapshot->regions.size());
+    ASSERT_EQ(3u, snapshot->regions[0].members.size());
+    for (const GpuPlacementSnapshot::Member& member : snapshot->regions[0].members) {
+        EXPECT_FALSE(member.mixed);
+    }
+}
+
+TEST_F(ViewerRootOnDevice, AFallbackMapsOntoTheShadowRegionWithItsCachedMembers)
+{
+    ASSERT_TRUE(makeChain());
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
+
+    RegionFallback fallback;
+    fallback.region = 0;
+    fallback.reason = "out of device memory";
+    fallback.retries = 2;
+    GpuPlacementSnapshotBuilder builder;
+    addPlacedGraph(run.graph, placementOf({ _grade, _blur, _colorCorrect }, { _grade }), { fallback }, &builder);
+    const GpuPlacementSnapshotPtr snapshot = builder.build();
+
+    ASSERT_TRUE(bool(snapshot));
+    ASSERT_EQ(1u, snapshot->regions.size());
+    const GpuPlacementSnapshot::Region& region = snapshot->regions[0];
+    ASSERT_EQ(3u, region.members.size());
+    EXPECT_TRUE(findMember(region, _grade) != nullptr);
+    EXPECT_TRUE(region.fellBack);
+    EXPECT_EQ(fallback.reason, region.fallbackReason);
+    EXPECT_EQ(2, region.retries);
+    EXPECT_FALSE(region.deviceLost);
+    EXPECT_FALSE(region.fallbackMixed);
+}
+
+TEST_F(ViewerRootOnDevice, ALostDeviceMarksEveryRegionOfItsGraph)
+{
+    ASSERT_TRUE(makeChain());
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
+
+    RegionFallback fallback;
+    fallback.region = 0;
+    fallback.deviceLost = true;
+    GpuPlacementSnapshotBuilder builder;
+    addPlacedGraph(run.graph, placementOf({ _grade, _colorCorrect }), { fallback }, &builder);
+    const GpuPlacementSnapshotPtr snapshot = builder.build();
+
+    ASSERT_TRUE(bool(snapshot));
+    ASSERT_EQ(2u, snapshot->regions.size());
+    for (const GpuPlacementSnapshot::Region& region : snapshot->regions) {
+        EXPECT_TRUE(region.fellBack);
+        EXPECT_TRUE(region.deviceLost);
+        EXPECT_TRUE(region.fallbackReason.empty());
+    }
+}
+
+TEST_F(ViewerRootOnDevice, AFallbackInOnlyOneGraphIsMixed)
+{
+    ASSERT_TRUE(makeChain());
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
+
+    RegionFallback fallback;
+    fallback.region = 0;
+    fallback.reason = "out of device memory";
+    GpuPlacementSnapshotBuilder builder;
+    addPlacedGraph(run.graph, placementOf({ _grade, _blur, _colorCorrect }), { fallback }, &builder);
+    addPlacedGraph(run.graph, placementOf({ _grade, _blur, _colorCorrect }), std::vector<RegionFallback>(), &builder);
+    const GpuPlacementSnapshotPtr snapshot = builder.build();
+
+    ASSERT_TRUE(bool(snapshot));
+    ASSERT_EQ(1u, snapshot->regions.size());
+    EXPECT_TRUE(snapshot->regions[0].fellBack);
+    EXPECT_TRUE(snapshot->regions[0].fallbackMixed);
+}
+
+TEST_F(ViewerRootOnDevice, AnAbortedOrEmptyRenderPublishesNothing)
+{
+    EXPECT_FALSE(bool(GpuPlacementSnapshotBuilder().build()));
+
+    ASSERT_TRUE(makeChain());
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(_colorCorrect, RectI(0, 0, kWidth, kHeight), &run, &error)) << error;
+
+    GpuPlacementSnapshotBuilder aborted;
+    addPlacedGraph(run.graph, placementOf({ _grade, _colorCorrect }), std::vector<RegionFallback>(), &aborted);
+    aborted.finishGraph(EffectInstance::eRenderRoIRetCodeAborted, std::vector<RegionFallback>());
+    EXPECT_FALSE(bool(aborted.build()));
+
+    GpuPlacementSnapshotBuilder unplaced;
+    unplaced.addUnplacedGraph();
+    unplaced.finishGraph(EffectInstance::eRenderRoIRetCodeOk, std::vector<RegionFallback>());
+    const GpuPlacementSnapshotPtr nothing = unplaced.build();
+    ASSERT_TRUE(bool(nothing));
+    EXPECT_TRUE(nothing->regions.empty());
 }
 
 #endif // NATRON_HAVE_GPU

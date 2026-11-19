@@ -52,6 +52,8 @@
 
 #include "BaseTest.h"
 #include "CyclesTestUtils.h"
+#include "Gpu/GpuTestSelector.h"
+
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
@@ -1029,6 +1031,7 @@ TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesEnginesAndPooledBuffers)
     // A context of the test's own, since the application's may refuse a CPU-type device.
     GpuContextOptions options;
     options.mode = GpuResolvedMode::Force;
+    options.device = gputest::cpuFallbackSelector();
     options.infoLog = [](const std::string&) { };
     std::unique_ptr<GpuContext> own(new GpuContext(options));
     const bool haveGpu = own->waitForInit(std::chrono::seconds(60)) && own->isAvailable();

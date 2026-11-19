@@ -52,12 +52,31 @@ struct GpuFaultPlan {
     Kind kind = Kind::Off;
     uint64_t atOperation = 0;
 
-    // Parses "lost@N" or "oom@N" with N >= 1.
+    // Only the operations a thread makes while a GpuRegionFaultScope lives on it are counted, so that the fault lands
+    // in a GPU region's run whatever start-up, hand-offs and other work did before.
+    bool regionOnly = false;
+
+    // Parses "lost@N", "oom@N", "lost@region:N" or "oom@region:N" with N >= 1.
     static bool parse(const std::string& text, GpuFaultPlan& out);
 };
 
+// Marks the calling thread as running a GPU region, for a fault plan with regionOnly set. Scopes nest.
+class GpuRegionFaultScope {
+public:
+    GpuRegionFaultScope();
+    ~GpuRegionFaultScope();
+    GpuRegionFaultScope(const GpuRegionFaultScope&) = delete;
+    GpuRegionFaultScope& operator=(const GpuRegionFaultScope&) = delete;
+
+    static bool active();
+
+private:
+    bool previous_;
+};
+
 struct GpuDeviceOptions {
-    // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick.
+    // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick, which never chooses a CPU-type
+    // device (lavapipe, llvmpipe); naming one here or in NATRON_GPU_DEVICE is the only way to get it.
     std::string deviceSelector;
     // NATRON_GPU_VALIDATION=1 also enables it. Silently off when the Khronos layer is not installed.
     bool enableValidation = false;
@@ -137,8 +156,8 @@ struct GpuAutoPick {
 
 // The automatic choice: best type (discrete, integrated, virtual, cpu, other), then the larger device-local heap, then
 // the lower index, so it does not depend on the loader's enumeration order. Candidates that fail the requirements are
-// never picked. A CPU-type device is picked when nothing better qualifies; refusing it in auto mode is the caller's
-// policy. Empty when no candidate qualifies.
+// never picked. A CPU-type device is picked when nothing better qualifies; GpuDevice::create excludes them
+// before calling this. Empty when no candidate qualifies.
 std::optional<GpuAutoPick> pickAutoDevice(const std::vector<GpuDeviceCandidate>& candidates);
 
 // The queues a device opens and the one each QueueKind submits to; the fields match GpuDeviceInfo's.
@@ -166,6 +185,10 @@ std::string withPerftestToken(const char* current, std::string_view token);
 // main thread before any thread that reads the environment is started; GpuDevice::create calls it too for programs
 // without that early call.
 void requestTransferOnlyFamily();
+
+// The type of each Vulkan physical device, in the order GpuDevice's numeric selector indexes them, read through a
+// throwaway instance. Empty when there is no loader or no device.
+std::vector<VkPhysicalDeviceType> enumeratePhysicalDeviceTypes();
 
 class GpuDevice {
 public:
@@ -249,7 +272,9 @@ private:
     // The fault plan, written by injectFault() while other threads count operations; faultAt_ 0 means none.
     std::atomic<GpuFaultPlan::Kind> faultKind_ { GpuFaultPlan::Kind::Off };
     std::atomic<uint64_t> faultAt_ { 0 };
+    std::atomic<bool> faultRegionOnly_ { false };
     std::atomic<uint64_t> operations_ { 0 };
+    std::atomic<uint64_t> regionOperations_ { 0 };
     std::function<void()> onDeviceLost_;
     std::atomic<bool> lost_ { false };
     std::atomic<bool> abandoned_ { false };

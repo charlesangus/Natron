@@ -160,7 +160,11 @@ public:
 
     U64 getMaximumDiskCacheNodeSize() const;
 
-    U64 getMaximumDeepImageCacheSize() const;
+    U64 getDiskTierSizeBytes() const;
+
+    std::string getDiskTierLocation() const;
+
+    static std::string defaultDiskTierLocation();
 
     double getUnreachableRamPercent() const;
 
@@ -291,6 +295,9 @@ public:
     bool isLinkLinesVisible() const;
     bool isExpressionLinesVisible() const;
 
+    bool isGpuRegionOverlayEnabled() const;
+    void setGpuRegionOverlayEnabled(bool enabled);
+
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
 
@@ -364,10 +371,15 @@ public:
     ImageBitDepthEnum getViewersBitDepth() const;
     int getViewerTilesPowerOf2() const;
     int getCheckerboardTileSize() const;
+
     void getCheckerboardColor1(double* r, double* g, double* b, double* a) const;
     void getCheckerboardColor2(double* r, double* g, double* b, double* a) const;
-    bool isAutoWipeEnabled() const;
     bool isAutoProxyEnabled() const;
+    void setAutoProxyEnabled(bool enabled);
+    // Whether the viewer rounds its zoom to the nearest power of two rather than the nearest finer one.
+    bool isViewerMipRoundingNearest() const;
+    // Whether Raw Demosaic below 100% demosaics at full resolution and downscales, rather than averaging photosites.
+    bool isZoomedOutDemosaicFull() const;
     unsigned int getAutoProxyMipmapLevel() const;
     int getMaxOpenedNodesViewerContext() const;
 
@@ -424,13 +436,6 @@ public:
      * config URI when neither is set.
      **/
     std::string getDefaultOCIOConfigSourceForNewProjects() const;
-
-    /**
-     * @brief Returns true if the QSettings existed prior to loading the settings
-     **/
-    bool didSettingsExistOnStartup() const;
-
-    bool isAggressiveCachingEnabled() const;
 
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
 
@@ -512,9 +517,6 @@ public:
 
     bool isCopyInputImageForPluginRenderEnabled() const;
 
-    bool isDefaultAppearanceOutdated() const;
-    void restoreDefaultAppearance();
-
     std::string getUserStyleSheetFilePath() const;
 
 #ifdef NATRON_DOCUMENTATION_ONLINE
@@ -577,8 +579,6 @@ private:
 
     bool tryLoadOpenColorIOConfig();
 
-
-    KnobBoolPtr _natronSettingsExist;
     KnobBoolPtr _saveSettings;
 
 
@@ -663,7 +663,7 @@ private:
 
     // Caching
     KnobPagePtr _cachingTab;
-    KnobBoolPtr _aggressiveCaching;
+    KnobChoicePtr _cacheAdmissionPolicy;
     ///The percentage of the value held by _maxRAMPercent to dedicate to playback cache (viewer cache's in-RAM portion) only
     KnobStringPtr _maxPlaybackLabel;
 
@@ -687,8 +687,9 @@ private:
 
     /// Deep renders are large and must not be able to evict the entire 2D image cache above, so
     /// they get a separate budget entirely, RAM-only (deep has no on-disk cache in v1).
-    KnobIntPtr _maxDeepImageCacheGB;
     KnobPathPtr _diskCachePath;
+    KnobPathPtr _diskTierLocation;
+    KnobIntPtr _diskTierSize;
     KnobButtonPtr _wipeDiskCache;
 
     // Viewer
@@ -698,9 +699,10 @@ private:
     KnobIntPtr _checkerboardTileSize;
     KnobColorPtr _checkerboardColor1;
     KnobColorPtr _checkerboardColor2;
-    KnobBoolPtr _autoWipe;
     KnobBoolPtr _autoProxyWhenScrubbingTimeline;
     KnobChoicePtr _autoProxyLevel;
+    KnobChoicePtr _viewerMipRounding;
+    KnobChoicePtr _zoomedOutDemosaic;
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
@@ -720,6 +722,7 @@ private:
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _showLinkLines;
     KnobBoolPtr _showExpressionLines;
+    KnobBoolPtr _showGpuRegions;
     KnobBoolPtr _usePluginIconsInNodeGraph;
     KnobBoolPtr _useAntiAliasing;
     KnobSeparatorPtr _tabMenuSeparator;
@@ -750,7 +753,6 @@ private:
     KnobChoicePtr _systemFontChoice;
     KnobIntPtr _fontSize;
     KnobFilePtr _qssFile;
-    KnobIntPtr _defaultAppearanceVersion;
 
     // Appearance/Main Window
     KnobPagePtr _guiColorsTab;
@@ -825,8 +827,6 @@ private:
     KnobColorPtr _expressionLineColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
-    bool _settingsExisted;
-    bool _defaultAppearanceOutdated;
 };
 
 NATRON_NAMESPACE_EXIT

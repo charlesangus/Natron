@@ -626,7 +626,7 @@ try:
                 emit({"type": "setup", "what": "upstream", "topology": "comp", "n": upstream,
                       "nodes": summary["nodes"], "gen_ms": round(mono_ms() - t0, 3)})
             gt.close_all_panels()
-            rp = create("fr.inria.built-in.RotoPaint", 0, 0)
+            rp = create("RotoPaint", 0, 0)
             gt.require(rp.getRotoContext() is not None, "the RotoPaint node has a roto context")
             if upstream > 0:
                 gt.require(rp.connectInput(0, comp_tail_node), "the RotoPaint's Bg is the end of the comp")
@@ -895,7 +895,7 @@ try:
     def shape_phase():
         set_format(SHAPE_FORMAT)
         gt.close_all_panels()
-        node = create("fr.inria.built-in.Roto", 0, 400)
+        node = create("Roto", 0, 400)
         gt.require(node.getRotoContext() is not None, "the Roto node has a roto context")
         view(node)
         yield ("sleep", RENDER_MS)
@@ -947,7 +947,7 @@ try:
             report("NOTE NATRON_ROTO_LATENCY_LOG is not set; no pen-to-pixel latency will be reported")
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         gt.require(viewer is not None, "a Viewer node exists")
         _state["viewer"] = viewer
         if any(selected("stroke_%dpx" % b) for b in BRUSHES) or selected("pen_up"):
@@ -956,7 +956,7 @@ try:
             if not app.resetProject():
                 raise RuntimeError("resetProject failed")
             yield ("sleep", SETTLE_MS)
-            viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.getNode("Viewer1") or app.createNode("Viewer")
             gt.require(viewer is not None, "a Viewer node exists after the reset")
             _state["viewer"] = viewer
         if any(selected(k) for k in ("drag_point", "drag_tangent", "drag_feather", "transform_box", "hover")):

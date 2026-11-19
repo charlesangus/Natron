@@ -114,7 +114,7 @@ runGather(const std::vector<float>& src,
     std::vector<double> acc((std::size_t)width);
     std::vector<float> out((std::size_t)width * height, 0.f);
     for (int y = 0; y < height; ++y) {
-        bokehGatherRow(tables.data(), width, height, runs, y, 0, width, acc.data(), &out[(std::size_t)y * width]);
+        bokehGatherRow(tables.data(), width, height, runs, y, 0, width, EdgeMode::Black, acc.data(), &out[(std::size_t)y * width]);
     }
 
     return out;
@@ -409,8 +409,8 @@ TEST(BokehKernel, RunGatherMatchesDirect)
     std::vector<double> acc((std::size_t)width);
     std::vector<float> whole((std::size_t)width);
     std::vector<float> part(10);
-    bokehGatherRow(tables.data(), width, height, runs, 12, 0, width, acc.data(), whole.data());
-    bokehGatherRow(tables.data(), width, height, runs, 12, 5, 15, acc.data(), part.data());
+    bokehGatherRow(tables.data(), width, height, runs, 12, 0, width, EdgeMode::Black, acc.data(), whole.data());
+    bokehGatherRow(tables.data(), width, height, runs, 12, 5, 15, EdgeMode::Black, acc.data(), part.data());
     for (int i = 0; i < 10; ++i) {
         EXPECT_EQ(whole[(std::size_t)(5 + i)], part[(std::size_t)i]);
     }

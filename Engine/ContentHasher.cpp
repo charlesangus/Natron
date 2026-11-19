@@ -160,4 +160,57 @@ ContentHasher::sessionSalt()
     return salt;
 }
 
+namespace {
+const U64 kSaltedBit = 1ULL << 63;
+thread_local bool saltReached = false;
+}
+
+void
+ContentHasher::appendSessionSalt()
+{
+    appendU64(sessionSalt());
+    noteSalted();
+}
+
+void
+ContentHasher::noteSalted()
+{
+    saltReached = true;
+}
+
+ContentHasher::SaltScope::SaltScope()
+    : _outer(saltReached)
+{
+    saltReached = false;
+}
+
+ContentHasher::SaltScope::~SaltScope()
+{
+    saltReached = _outer;
+}
+
+bool
+ContentHasher::SaltScope::salted() const
+{
+    return saltReached;
+}
+
+U64
+ContentHasher::withSaltFlag(U64 digest,
+                            bool salted)
+{
+    if (salted) {
+        return digest | kSaltedBit;
+    }
+    const U64 clean = digest & ~kSaltedBit;
+
+    return clean == 0 ? kZeroDigestReplacement : clean;
+}
+
+bool
+ContentHasher::isSalted(U64 flaggedDigest)
+{
+    return (flaggedDigest & kSaltedBit) != 0;
+}
+
 NATRON_NAMESPACE_EXIT

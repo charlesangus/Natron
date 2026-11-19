@@ -392,6 +392,12 @@ LoopEnd::onGraphChanged()
     loopGraphGeneration.fetch_add(1);
 }
 
+U64
+LoopEnd::getGraphGeneration()
+{
+    return loopGraphGeneration.load();
+}
+
 std::shared_ptr<LoopEnd>
 LoopEnd::pairedEndOf(const NodePtr& begin)
 {

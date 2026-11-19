@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -36,8 +38,11 @@ NATRON_NAMESPACE_ENTER
  * negative and above-1 values and never clamped.
  *
  * - OklabLog: working RGB -> XYZ -> OKLab's LMS, then the log encoding below in place of OKLab's
- *   cube root, then OKLab's LMS-to-Lab matrix. Its a and b rows sum to zero, so scaling a colour
- *   by k (above the toe) moves only L, by log2(k): a chroma shift is exposure-invariant.
+ *   cube root, then OKLab's LMS-to-Lab matrix. Its a and b rows sum to zero to within 4e-8, so
+ *   scaling a colour by k (above the toe) moves L by log2(k) and a and b by under 1e-7 per stop:
+ *   a chroma shift is exposure-invariant to about 1e-7.
+ * - Oklab: OKLab itself, with a signed cube root so negative LMS values stay invertible. Scaling
+ *   a colour by k scales L, a and b by cbrt(k), so a chroma shift grows with exposure.
  * - Xyz: CIE XYZ, linear. Shifts are authored as HSV or RGB offsets relative to the pin's
  *   source (see shiftFromHsvRgbOffset) and stored as XYZ displacements.
  * - LogRgb: the log encoding below, per working-space channel.
@@ -45,12 +50,13 @@ NATRON_NAMESPACE_ENTER
  **/
 enum ColorWarpSpaceEnum {
     eColorWarpSpaceOklabLog,
+    eColorWarpSpaceOklab,
     eColorWarpSpaceXyz,
     eColorWarpSpaceLogRgb,
     eColorWarpSpaceLinearRgb
 };
 
-inline constexpr int kColorWarpSpaceCount = 4;
+inline constexpr int kColorWarpSpaceCount = 5;
 
 const char* colorWarpSpaceName(ColorWarpSpaceEnum space);
 
@@ -68,10 +74,22 @@ struct ColorWarpSpaceBasis {
 };
 
 /**
+ * @brief OKLab's XYZ (D65) to LMS and LMS' to Lab matrices and their inverses, row-major, as the
+ * Oklab and OklabLog conversions use them. The inverses are the double-precision inverses of the
+ * forward matrices, so a kernel that uploads these reproduces the CPU conversions.
+ **/
+extern const double kColorWarpOklabXyzToLms[9];
+extern const double kColorWarpOklabLmsToLab[9];
+const double* colorWarpOklabLmsToXyz();
+const double* colorWarpOklabLabToLms();
+
+/**
  * @brief log2 above kColorWarpLogToe, continued below it by the tangent line, so that zero and
  * negative values have a finite, invertible encoding with a continuous first derivative.
  **/
 inline constexpr double kColorWarpLogToe = 0.0078125;
+inline constexpr double kColorWarpLogToeEncoded = -7.;
+inline constexpr double kColorWarpLogToeSlope = 1. / (kColorWarpLogToe * M_LN2);
 
 double colorWarpLogEncode(double x);
 double colorWarpLogDecode(double y);

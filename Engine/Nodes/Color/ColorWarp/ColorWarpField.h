@@ -85,14 +85,17 @@ inline constexpr double kColorWarpDefaultRegularisation = 1e-6;
  * Pins whose sources coincide in warp space are merged before anything else: if any of them
  * moves, the merged pin carries the mean of the moving pins' displacements and the hold pins
  * among them are dropped (a moved pin wins at its own source); otherwise they become one hold
- * pin. The merged falloff is the mean of the contributing falloffs.
+ * pin. The merged falloff is the mean of the contributing positive falloffs, or 0 when none is
+ * positive.
  *
  * The evaluated form is plain arrays so a GPU kernel can evaluate the same thing:
  * - centres: 3 per pin, warp space (Gaussian) or normalised as (x - origin) * invScale (RBF);
  * - coefficients: 3 per pin, the displacement (Gaussian) or the per-axis spline weight (RBF);
  * - invTwoSigma2: per pin, 1 / (2 s^2) (Gaussian only);
  * - affine: 12 values, the RBF's constant term per axis then its 3x3 slope matrix (row = axis)
- *   in normalised coordinates.
+ *   in normalised coordinates;
+ * - the space conversion: basis()'s matrices, plus the OKLab matrices and log-toe constants
+ *   ColorWarpSpace.h exposes.
  **/
 class ColorWarpField {
 public:

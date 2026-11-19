@@ -30,18 +30,18 @@
 
 NATRON_NAMESPACE_ENTER
 
-namespace {
-// OKLab's XYZ (D65) to LMS and LMS' to Lab matrices, row-major.
-const double kOklabXyzToLms[9] = {
+const double kColorWarpOklabXyzToLms[9] = {
     0.8189330101, 0.3618667424, -0.1288597137,
     0.0329845436, 0.9293118715, 0.0361456387,
     0.0482003018, 0.2643662691, 0.6338517070
 };
-const double kOklabLmsToLab[9] = {
+const double kColorWarpOklabLmsToLab[9] = {
     0.2104542553, 0.7936177850, -0.0040720468,
     1.9779984951, -2.4285922050, 0.4505937099,
     0.0259040371, 0.7827717662, -0.8086757660
 };
+
+namespace {
 
 void
 mul3(const double m[9], const double v[3], double out[3])
@@ -88,8 +88,8 @@ struct OklabInverses {
 
     OklabInverses()
     {
-        invert3(kOklabXyzToLms, lmsToXyz);
-        invert3(kOklabLmsToLab, labToLms);
+        invert3(kColorWarpOklabXyzToLms, lmsToXyz);
+        invert3(kColorWarpOklabLmsToLab, labToLms);
     }
 };
 
@@ -132,6 +132,8 @@ colorWarpSpaceName(ColorWarpSpaceEnum space)
     switch (space) {
     case eColorWarpSpaceOklabLog:
         return "oklablog";
+    case eColorWarpSpaceOklab:
+        return "oklab";
     case eColorWarpSpaceXyz:
         return "xyz";
     case eColorWarpSpaceLogRgb:
@@ -154,6 +156,18 @@ ColorWarpSpaceBasis::ColorWarpSpaceBasis(const double workingToXYZ[9])
     }
 }
 
+const double*
+colorWarpOklabLmsToXyz()
+{
+    return oklabInverses().lmsToXyz;
+}
+
+const double*
+colorWarpOklabLabToLms()
+{
+    return oklabInverses().labToLms;
+}
+
 double
 colorWarpLogEncode(double x)
 {
@@ -161,19 +175,17 @@ colorWarpLogEncode(double x)
         return std::log2(x);
     }
 
-    return std::log2(kColorWarpLogToe) + (x - kColorWarpLogToe) / (kColorWarpLogToe * M_LN2);
+    return kColorWarpLogToeEncoded + (x - kColorWarpLogToe) * kColorWarpLogToeSlope;
 }
 
 double
 colorWarpLogDecode(double y)
 {
-    const double yToe = std::log2(kColorWarpLogToe);
-
-    if (y >= yToe) {
+    if (y >= kColorWarpLogToeEncoded) {
         return std::exp2(y);
     }
 
-    return kColorWarpLogToe + (y - yToe) * (kColorWarpLogToe * M_LN2);
+    return kColorWarpLogToe + (y - kColorWarpLogToeEncoded) / kColorWarpLogToeSlope;
 }
 
 void
@@ -183,11 +195,21 @@ toWarpSpace(ColorWarpSpaceEnum space, const ColorWarpSpaceBasis& basis, const do
     case eColorWarpSpaceOklabLog: {
         double xyz[3], lms[3];
         mul3(basis.rgbToXyz, rgb, xyz);
-        mul3(kOklabXyzToLms, xyz, lms);
+        mul3(kColorWarpOklabXyzToLms, xyz, lms);
         for (int c = 0; c < 3; ++c) {
             lms[c] = colorWarpLogEncode(lms[c]);
         }
-        mul3(kOklabLmsToLab, lms, out);
+        mul3(kColorWarpOklabLmsToLab, lms, out);
+        return;
+    }
+    case eColorWarpSpaceOklab: {
+        double xyz[3], lms[3];
+        mul3(basis.rgbToXyz, rgb, xyz);
+        mul3(kColorWarpOklabXyzToLms, xyz, lms);
+        for (int c = 0; c < 3; ++c) {
+            lms[c] = std::cbrt(lms[c]);
+        }
+        mul3(kColorWarpOklabLmsToLab, lms, out);
         return;
     }
     case eColorWarpSpaceXyz:
@@ -216,6 +238,17 @@ fromWarpSpace(ColorWarpSpaceEnum space, const ColorWarpSpaceBasis& basis, const 
         mul3(inv.labToLms, warp, lms);
         for (int c = 0; c < 3; ++c) {
             lms[c] = colorWarpLogDecode(lms[c]);
+        }
+        mul3(inv.lmsToXyz, lms, xyz);
+        mul3(basis.xyzToRgb, xyz, rgb);
+        return;
+    }
+    case eColorWarpSpaceOklab: {
+        const OklabInverses& inv = oklabInverses();
+        double lms[3], xyz[3];
+        mul3(inv.labToLms, warp, lms);
+        for (int c = 0; c < 3; ++c) {
+            lms[c] = lms[c] * lms[c] * lms[c];
         }
         mul3(inv.lmsToXyz, lms, xyz);
         mul3(basis.xyzToRgb, xyz, rgb);
@@ -269,7 +302,7 @@ colorWarpHsvToRgb(const double hsv[3], double rgb[3])
     const double v = hsv[2];
     const double chroma = hsv[1] * v;
     const double minC = v - chroma;
-    const double hp = wrapHueDegrees(hsv[0]) / 60.;
+    const double hp = std::isfinite(hsv[0]) ? wrapHueDegrees(hsv[0]) / 60. : 0.;
     const int sector = std::min(5, static_cast<int>(std::floor(hp)));
     const double frac = hp - sector;
     const double rising = minC + chroma * frac;

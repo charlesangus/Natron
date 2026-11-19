@@ -33,7 +33,8 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const double kIdentityMatrix[9] = { 1., 0., 0., 0., 1., 0., 0., 0., 1. };
 
-// Past this many falloffs a Gaussian weight is below 1e-15 of a pin's own, so it is dropped.
+// t = 2 r^2 / falloff^2 >= 32 is r >= 4 falloffs, where a pin's weight exp(-t) / (2t) is below
+// 2e-16 of the identity weight, so it is dropped.
 const double kGaussianCutoffExponent = 2. * kColorWarpGaussianCutoff * kColorWarpGaussianCutoff;
 
 // A Gaussian weight whose exponent is below this is treated as an exact hit: 1 / (2t) would
@@ -249,7 +250,7 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
         const double tol = 1e-20 * (1. + si[0] * si[0] + si[1] * si[1] + si[2] * si[2]);
         double movingSum[3] = { 0., 0., 0. };
         double movingFalloff = 0., holdFalloff = 0.;
-        int moving = 0, holds = 0;
+        int moving = 0, movingFalloffs = 0, holdFalloffs = 0;
         for (int j = i; j < n; ++j) {
             if (used[j] || (dist2(si, &sources[j * 3]) > tol)) {
                 continue;
@@ -260,11 +261,14 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
                 for (int c = 0; c < 3; ++c) {
                     movingSum[c] += dj[c];
                 }
-                movingFalloff += falloffs[j];
                 ++moving;
-            } else {
+                if (falloffs[j] > 0.) {
+                    movingFalloff += falloffs[j];
+                    ++movingFalloffs;
+                }
+            } else if (falloffs[j] > 0.) {
                 holdFalloff += falloffs[j];
-                ++holds;
+                ++holdFalloffs;
             }
         }
         centres.insert(centres.end(), si, si + 3);
@@ -272,11 +276,11 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
             for (int c = 0; c < 3; ++c) {
                 merged.push_back(movingSum[c] / moving);
             }
-            mergedFalloffs.push_back(movingFalloff / moving);
+            mergedFalloffs.push_back((movingFalloffs > 0) ? movingFalloff / movingFalloffs : 0.);
             anyMoving = true;
         } else {
             merged.insert(merged.end(), 3, 0.);
-            mergedFalloffs.push_back(holdFalloff / holds);
+            mergedFalloffs.push_back((holdFalloffs > 0) ? holdFalloff / holdFalloffs : 0.);
         }
     }
     if (!anyMoving) {
@@ -341,9 +345,13 @@ ColorWarpField::prepareRbf(const std::vector<double>& centres,
     }
     double axes[3][3];
     jacobiEigen3(cov, axes);
+    // Relative, not absolute: a direction the pins barely span (grey pins that leave a line only
+    // through the log toe's kink) would otherwise get a slope fitted to that sliver, which a
+    // colour off it multiplies into an arbitrarily large displacement.
+    const double evMax = std::max(cov[0][0], std::max(cov[1][1], cov[2][2]));
     std::vector<int> kept;
     for (int k = 0; k < 3; ++k) {
-        if (cov[k][k] > 1e-10) {
+        if ((evMax > 0.) && (cov[k][k] > 1e-6 * evMax)) {
             kept.push_back(k);
         }
     }

@@ -141,6 +141,21 @@ TEST(ColorWarpSpace, HsvRoundTripsSceneLinearColours)
     }
 }
 
+TEST(ColorWarpSpace, NonFiniteHueReadsAsZero)
+{
+    const double zeroHue[3] = { 0., 0.5, 2. };
+    double expected[3];
+    colorWarpHsvToRgb(zeroHue, expected);
+    for (double h : { NAN, INFINITY, -INFINITY }) {
+        const double hsv[3] = { h, 0.5, 2. };
+        double rgb[3];
+        colorWarpHsvToRgb(hsv, rgb);
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_EQ(rgb[c], expected[c]) << h << " channel " << c;
+        }
+    }
+}
+
 TEST(ColorWarpSpace, HsvOffsetReproducesAHueRotationOnASaturatedColour)
 {
     const ColorWarpSpaceBasis basis(kRec709ToXYZ);

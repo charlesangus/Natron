@@ -27,6 +27,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -51,6 +52,8 @@ reachFor(ColorWarpSpaceEnum space)
     case eColorWarpSpaceOklabLog:
     case eColorWarpSpaceLogRgb:
         return 1.5;
+    case eColorWarpSpaceOklab:
+        return 0.2;
     case eColorWarpSpaceXyz:
     case eColorWarpSpaceLinearRgb:
         break;
@@ -86,6 +89,50 @@ expectBitExact(const double* a, const double* b)
 {
     EXPECT_EQ(std::memcmp(a, b, 3 * sizeof(double)), 0)
         << a[0] << " " << a[1] << " " << a[2] << " vs " << b[0] << " " << b[1] << " " << b[2];
+}
+
+double
+norm3(const double* v)
+{
+    return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+double
+displacementNorm(const ColorWarpField& field, const double rgb[3])
+{
+    double w[3], d[3];
+    toWarpSpace(field.space(), field.basis(), rgb, w);
+    field.displacementAt(w, d);
+
+    return norm3(d);
+}
+
+// The RBF kernels extrapolate their affine part, so far from the pins a displacement may grow
+// linearly with the distance, scaled by the largest pin displacement over the pins' spread.
+double
+linearGrowthBound(ColorWarpSpaceEnum space, const ColorWarpSpaceBasis& basis, const std::vector<ColorWarpPin>& pins, const double rgb[3])
+{
+    double anchor[3], probe[3];
+    toWarpSpace(space, basis, pins.front().source, anchor);
+    toWarpSpace(space, basis, rgb, probe);
+    double maxDisplacement = 0., spread = 0.;
+    for (const ColorWarpPin& pin : pins) {
+        double s[3], t[3], d[3], fromAnchor[3];
+        toWarpSpace(space, basis, pin.source, s);
+        toWarpSpace(space, basis, pin.target, t);
+        for (int c = 0; c < 3; ++c) {
+            d[c] = pin.strength * (t[c] - s[c]);
+            fromAnchor[c] = s[c] - anchor[c];
+        }
+        maxDisplacement = std::max(maxDisplacement, norm3(d));
+        spread = std::max(spread, norm3(fromAnchor));
+    }
+    double fromAnchor[3];
+    for (int c = 0; c < 3; ++c) {
+        fromAnchor[c] = probe[c] - anchor[c];
+    }
+
+    return 4. * maxDisplacement * (1. + norm3(fromAnchor) / spread);
 }
 
 struct Combo {
@@ -239,6 +286,20 @@ TEST(ColorWarpField, HoldPinStaysFixedWhileANeighbourMoves)
         double unheld[3];
         moving.apply(grey, unheld);
         EXPECT_GT(std::fabs(unheld[0] - grey[0]) + std::fabs(unheld[1] - grey[1]) + std::fabs(unheld[2] - grey[2]), 1e-6);
+
+        if (combo.kernel == eColorWarpKernelGaussian) {
+            double ws[3], wg[3], wm[3], between[3];
+            toWarpSpace(combo.space, basis, skin, ws);
+            toWarpSpace(combo.space, basis, grey, wg);
+            for (int c = 0; c < 3; ++c) {
+                wm[c] = 0.5 * (ws[c] + wg[c]);
+            }
+            fromWarpSpace(combo.space, basis, wm, between);
+            const double heldShift = displacementNorm(field, between);
+            const double unheldShift = displacementNorm(moving, between);
+            EXPECT_GT(unheldShift, 0.);
+            EXPECT_LT(heldShift, unheldShift);
+        }
     }
 }
 
@@ -296,26 +357,117 @@ TEST(ColorWarpField, NearCoincidentAndCoplanarPinsStayFinite)
     const double p3[3] = { 0.3, 0.5, 0.4 };
     const double t0[3] = { 0.5, 0.3, 0.4 };
     const double t1[3] = { 0.2, 0.3, 0.1 };
+    const double farBright[3] = { 64., 64., 64. };
+    const double farNegative[3] = { -0.05, -0.05, -0.05 };
 
     for (const Combo& combo : allCombos()) {
         SCOPED_TRACE(comboName(combo));
         const double reach = reachFor(combo.space);
+        const std::vector<ColorWarpPin> pins = {
+            makePin(p0, t0, 1., reach), makePin(p1, t1, 1., reach), makePin(p2, p2, 1., reach), makePin(p3, p3, 1., reach)
+        };
         ColorWarpField field;
-        field.prepare({ makePin(p0, t0, 1., reach), makePin(p1, t1, 1., reach), makePin(p2, p2, 1., reach), makePin(p3, p3, 1., reach) },
-                      combo.space, basis, combo.kernel);
+        field.prepare(pins, combo.space, basis, combo.kernel);
         EXPECT_FALSE(field.isIdentity());
-        for (const double* rgb : { p0, p2, p3, t0, t1 }) {
+        for (const double* rgb : { p0, p2, p3, t0, t1, farBright, farNegative }) {
             double out[3];
             field.apply(rgb, out);
             for (int c = 0; c < 3; ++c) {
                 EXPECT_TRUE(std::isfinite(out[c]));
             }
         }
+        for (const double* rgb : { farBright, farNegative }) {
+            EXPECT_LE(displacementNorm(field, rgb), linearGrowthBound(combo.space, basis, pins, rgb)) << rgb[0];
+        }
         double out[3];
         field.apply(p2, out);
         expectNear3(out, p2, 1e-4);
         field.apply(p3, out);
         expectNear3(out, p3, 1e-4);
+    }
+}
+
+TEST(ColorWarpField, RbfStaysBoundedOffAlmostCollinearGreyPins)
+{
+    const ColorWarpSpaceBasis basis(kRec709ToXYZ);
+    std::vector<ColorWarpPin> pins;
+    const double greys[][2] = { { 0.002, 0.003 }, { 0.005, 0.005 }, { 0.02, 0.025 }, { 0.18, 0.2 }, { 0.9, 0.9 } };
+    for (const double* g : greys) {
+        const double source[3] = { g[0], g[0], g[0] };
+        const double target[3] = { g[1], g[1], g[1] };
+        pins.push_back(makePin(source, target, 1., 1.));
+    }
+    const double probes[][3] = { { 0.5, 0.1, 0.05 }, { 0.05, 0.3, 0.6 }, { 0.004, 0.001, 0.006 }, { 1., 0., 0. } };
+
+    for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+        for (ColorWarpKernelEnum kernel : { eColorWarpKernelRbfLinear, eColorWarpKernelRbfCubic }) {
+            const Combo combo = { static_cast<ColorWarpSpaceEnum>(s), kernel };
+            SCOPED_TRACE(comboName(combo));
+            ColorWarpField field;
+            field.prepare(pins, combo.space, basis, kernel);
+            for (const double* rgb : probes) {
+                double out[3];
+                field.apply(rgb, out);
+                for (int c = 0; c < 3; ++c) {
+                    EXPECT_TRUE(std::isfinite(out[c]));
+                }
+                EXPECT_LE(displacementNorm(field, rgb), linearGrowthBound(combo.space, basis, pins, rgb))
+                    << rgb[0] << " " << rgb[1] << " " << rgb[2];
+            }
+        }
+    }
+}
+
+TEST(ColorWarpField, GaussianPinsWithoutPositiveFalloffMoveOnlyTheirSource)
+{
+    const ColorWarpSpaceBasis basis(kRec709ToXYZ);
+    const double sourceA[3] = { 0.4, 0.12, 0.06 };
+    const double targetA[3] = { 0.35, 0.3, 0.05 };
+    const double sourceB[3] = { 0.05, 0.12, 0.35 };
+    const double targetB[3] = { 0.03, 0.18, 0.30 };
+    const double off[][3] = { { 0.4, 0.12, 0.0601 }, { 0.38, 0.14, 0.06 }, { 0.05, 0.12, 0.36 }, { 0.18, 0.18, 0.18 }, { -0.05, 0.3, 64. } };
+
+    for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+        const ColorWarpSpaceEnum space = static_cast<ColorWarpSpaceEnum>(s);
+        SCOPED_TRACE(colorWarpSpaceName(space));
+        ColorWarpField field;
+        field.prepare({ makePin(sourceA, targetA, 1., 0.), makePin(sourceB, targetB, 1., -1.) }, space, basis, eColorWarpKernelGaussian);
+        EXPECT_FALSE(field.isIdentity());
+        double out[3];
+        field.apply(sourceA, out);
+        expectNear3(out, targetA, 1e-9);
+        field.apply(sourceB, out);
+        expectNear3(out, targetB, 1e-9);
+        for (const double* rgb : off) {
+            field.apply(rgb, out);
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_TRUE(std::isfinite(out[c]));
+            }
+            expectBitExact(out, rgb);
+        }
+    }
+}
+
+TEST(ColorWarpField, CoincidentPinsMergeOnlyTheirPositiveFalloffs)
+{
+    const ColorWarpSpaceBasis basis(kRec709ToXYZ);
+    const double source[3] = { 0.4, 0.12, 0.06 };
+    const double target[3] = { 0.35, 0.3, 0.05 };
+
+    for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+        const ColorWarpSpaceEnum space = static_cast<ColorWarpSpaceEnum>(s);
+        SCOPED_TRACE(colorWarpSpaceName(space));
+        const double reach = reachFor(space);
+        ColorWarpField field;
+        field.prepare({ makePin(source, target, 1., -1.), makePin(source, target, 1., reach), makePin(source, target, 1., 0.) },
+                      space, basis, eColorWarpKernelGaussian);
+        ASSERT_TRUE(field.pinCount() == 1);
+        EXPECT_NEAR(field.invTwoSigma2()[0], 2. / (reach * reach), 1e-12 / (reach * reach));
+
+        ColorWarpField none;
+        none.prepare({ makePin(source, target, 1., -1.), makePin(source, target, 1., 0.) }, space, basis, eColorWarpKernelGaussian);
+        ASSERT_TRUE(none.pinCount() == 1);
+        EXPECT_EQ(none.invTwoSigma2()[0], 0.);
     }
 }
 

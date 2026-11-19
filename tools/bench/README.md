@@ -125,7 +125,7 @@ A whole-process eu-stack takes 0.15-0.3 s on the heavy scene (up to 1.5 s on a s
 `heavy_scene_stack_window.py` prints the achieved sample period. `SAMPLE_TID_COMM='^$'` walks the main
 thread alone and `SAMPLE_TID_COMM=.` every thread, each on its own; unset, one eu-stack takes the whole process.
 The scene viewer's render thread is named `NatronSceneRndr`, and the main thread is always walked, so
-main and render threads alone: `SAMPLE_TID_COMM='^NatronSceneRndr$'`. (The main thread's comm is
+main and render threads alone, which is the default unless `SAMPLE_TID_FRAME` is set: `SAMPLE_TID_COMM='^NatronSceneRndr$'`; `SAMPLE_TID_COMM=` (set, empty) takes the whole-process sample. (The main thread's comm is
 `Natron.bin`, shared with the worker and TBB threads, so putting it in the regex would walk all of them.)
 The alternative, for a build without the name, is `SAMPLE_TID_FRAME=<regex of a frame>`, which finds
 threads by a frame of a whole-process sample taken every `SAMPLE_DISCOVER_S` (default 10):

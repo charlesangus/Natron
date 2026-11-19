@@ -11,6 +11,9 @@
 # 0.15-0.3 s a sample on the heavy scene and up to 1.5 s on a slower VM, whatever INTERVAL says (the "ms
 # eu-stack took" field); a couple of threads cost a fraction of that. The achieved period is the
 # difference of consecutive start epochs, which heavy_scene_stack_window.py prints.
+# With neither SAMPLE_TID_COMM nor SAMPLE_TID_FRAME set, SAMPLE_TID_COMM defaults to '^NatronSceneRndr$':
+# a whole-process eu-stack takes 1.4-1.9 s on a 1M-prim process, which hides stalls of 100-200 ms.
+# SAMPLE_TID_COMM= (set, empty) restores the whole-process sample.
 # SAMPLE_TID_COMM='^$' walks the main thread alone, '.' every thread one at a time (each thread's stack
 # is taken at a slightly different moment), and unset (with SAMPLE_TID_FRAME unset) is the whole-process
 # eu-stack.
@@ -40,8 +43,12 @@ if ! command -v eu-stack > /dev/null 2>&1; then
     echo "sample_stacks.sh: eu-stack is not installed (sudo apt install elfutils)" | tee -a "$out.err" >&2
     exit 2
 fi
-tid_comm=${SAMPLE_TID_COMM:-}
 tid_frame=${SAMPLE_TID_FRAME:-}
+if [ -n "$tid_frame" ]; then
+    tid_comm=${SAMPLE_TID_COMM:-}
+else
+    tid_comm=${SAMPLE_TID_COMM-^NatronSceneRndr\$}
+fi
 gate=${SAMPLE_GATE_FILE:-}
 per_thread=0
 [ -n "$tid_comm" ] || [ -n "$tid_frame" ] && per_thread=1

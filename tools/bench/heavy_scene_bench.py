@@ -160,10 +160,9 @@ Budgets: main-thread stall under 100 ms; time from a draw state change to the im
 draw_budget's rows also judged apart); a paced reveal of the root with Load All (reveal_load_all,
 which also waits for the loads to land) and of the wide row (reveal_wide) completes with no gap over
 100 ms between presented frames (natronScenePresentedFrames; not_valid when fewer than 2 were presented,
-as is the workflow's full_load_block_worst_frame_ms); a paced reveal of the wide row boxed again as soon as its first step is
-on screen shows at most the one batch under way (reveal_cancel_paced; when the row fits in one paced
-step it is revealed again with a fixed batch of a 32nd of its prims, cancel_paced_mode forced_batch,
-and a cancel that still lands after the reveal ended fails the record); first frame under 2 s on the payload city, the only scene the design
+as is the workflow's full_load_block_worst_frame_ms); a fill of the wide row boxed again as soon as its first batch is
+admitted admits at most one more batch and leaves the fill complete (reveal_cancel_paced; the batch is
+1024 prims or the pacer's, and a cancel that lands after the fill ended fails the record); first frame under 2 s on the payload city, the only scene the design
 gives it; no payload
 file opened that the action did not request; orbit at or above 30 fps; no stage edit or notice from a
 draw state; the draw filter on this viewer's engine; pixels changed on the control row. On the city the
@@ -1237,21 +1236,11 @@ try:
     def action_reveal_wide(m):
         yield from paced_reveal(m, "reveal_wide", rows["widest_row"], "bbox", "full")
 
-    CANCEL_FORCED_STEPS = 32
+    FILL_FIRST_BATCH = 1024
+    FILL_CANCEL_SETTLE_S = 10.0
 
-    def cancel_reveal_attempt(row, batch):
-        """Reveals row from BBox with batch (-1 paced) and boxes it again as soon as the first step is
-        on screen; returns the stats at the cancel, after it, the cancel's timings and the prims shown."""
-        v = view()
-        draw_call(v, "setDrawRevealBatch", Q_ARG(int, batch))
-        before = draw_stats()
-        # The change's first reveal step runs in the same apply, so its presented frame is the first progress tick.
-        yield from set_draw_state(row, "full")
-        at_cancel = draw_stats()
-        cancelled = yield from set_draw_state(row, "bbox")
-        yield ("sleep", 200)
-        settled = draw_stats()
-        return before, at_cancel, settled, cancelled
+    def fill_state():
+        return float(prop("natronSceneFillProgress", 1.0) or 0.0), bool(prop("natronSceneFillComplete", True))
 
     def action_reveal_cancel_paced(m):
         row = rows["widest_row"]
@@ -1260,30 +1249,35 @@ try:
         v = view()
         steps = DrawSteps()
         heartbeat.start()
-        before, at_cancel, settled, cancelled = yield from cancel_reveal_attempt(row, -1)
-        mode = "paced"
-        batch = at_cancel.get("revealBatch")
-        if not at_cancel.get("revealing"):
-            # The row fit in one paced step; a fixed batch of a fraction of it gives the cancel steps to land between.
-            row_prims = max(0, at_cancel.get("shownSent", 0) - before.get("shownSent", 0))
-            m.values["cancel_paced_row_prims"] = row_prims
-            if row_prims >= 2:
-                mode = "forced_batch"
-                batch = max(1, row_prims // CANCEL_FORCED_STEPS)
-                before, at_cancel, settled, cancelled = yield from cancel_reveal_attempt(row, batch)
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, -1))
+        before = draw_stats()
+        # The first admit batch is in the apply that posts the change; the rest of the row waits in the fill's queue.
+        yield from set_draw_state(row, "full")
+        at_cancel = draw_stats()
+        progress_at_cancel, complete_at_cancel = fill_state()
+        cancelled = yield from set_draw_state(row, "bbox")
+        yield ("sleep", 200)
+        settled = draw_stats()
+        deadline = time.time() + FILL_CANCEL_SETTLE_S
+        while not fill_state()[1] and time.time() < deadline:
+            yield ("sleep", POLL_MS)
+        progress_after, complete_after = fill_state()
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
-        active = bool(at_cancel.get("revealing"))
-        check(active, "reveal_cancel_paced: the cancel landed while the reveal was under way (%s, batch %r, %r prims shown)"
-              % (mode, batch, at_cancel.get("shownSent", 0) - before.get("shownSent", 0)))
+        active = not complete_at_cancel
+        batch = max(FILL_FIRST_BATCH, int(at_cancel.get("revealBatch") or 0))
+        admitted = at_cancel.get("shownSent", 0) - before.get("shownSent", 0)
+        check(active, "reveal_cancel_paced: the cancel landed while the fill was under way (%r prims admitted, progress %.3f)"
+              % (admitted, progress_at_cancel))
         m.values["cancel_paced_row"] = row
-        m.values["cancel_paced_mode"] = mode
         m.values["cancel_paced_was_active"] = active
         m.values["cancel_paced_batch"] = batch
-        m.values["cancel_paced_steps_before"] = at_cancel.get("revealSteps", 0) - before.get("revealSteps", 0)
+        m.values["cancel_paced_admitted_before_cancel"] = admitted
+        m.values["cancel_paced_progress_at_cancel"] = round(progress_at_cancel, 4)
+        m.values["cancel_paced_progress_after"] = round(progress_after, 4)
         m.values["cancel_paced_total_ms"] = cancelled["total_ms"]
-        # A step under way when the change is posted may still finish; nothing after it may run.
+        # A batch under way when the change is posted may still finish; nothing after it may be admitted.
         m.values["cancel_paced_overshoot_prims"] = settled.get("shownSent", 0) - at_cancel.get("shownSent", 0)
-        m.values["cancel_paced_stopped"] = not settled.get("revealing")
+        m.values["cancel_paced_stopped"] = bool(complete_after)
         m.values["cancel_paced_draw_steps"] = steps.summary()
 
     def action_reveal(m):
@@ -2104,7 +2098,7 @@ try:
                                                               valid=batch is not None)
             if not m.values["cancel_paced_was_active"]:
                 budgets["cancel_paced_overshoot_prims"]["status"] = "fail"
-                budgets["cancel_paced_overshoot_prims"]["reason"] = "the reveal had finished before the cancel landed"
+                budgets["cancel_paced_overshoot_prims"]["reason"] = "the fill had finished before the cancel landed"
             budgets["cancel_paced_stopped"] = verdict(1 if m.values["cancel_paced_stopped"] else 0, 1, False)
         for step_name, step in m.steps.items():
             applicable = step["applicable"]

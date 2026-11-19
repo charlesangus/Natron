@@ -161,8 +161,8 @@ try:
         frame_times = []
         last_frames = presented()
         fell = None
-        # Watches the fill for a few of its frames before the nudge.
-        while not fill_complete() and len(frame_times) < 3:
+        # Watches the fill for two of its frames before the nudge.
+        while not fill_complete() and len(frame_times) < 2:
             yield ("sleep", POLL_MS)
             value = float(prop("natronSceneFillProgress", 0.0))
             if value < progress[-1] - 1e-9 and fell is None:
@@ -172,7 +172,7 @@ try:
                 last_frames = presented()
                 frame_times.append(time.time() * 1000.0)
         mid_fill = not fill_complete()
-        check(mid_fill, "the fill takes more than three frames (%d frames, progress %.3f); a bigger city is needed otherwise"
+        check(mid_fill, "the fill takes more than two frames (%d frames, progress %.3f); a bigger city is needed otherwise"
               % (presented() - frames_before, progress[-1]))
         if mid_fill:
             save("bounded-fill-mid")

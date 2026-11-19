@@ -61,8 +61,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-NATRON_NAMESPACE_ANONYMOUS_ENTER
-
 void
 userKnobLayoutToSerialization(const KnobIPtr& knob,
                               Serialization::GroupKnobSerialization* layout)
@@ -107,6 +105,8 @@ userKnobLayoutToSerialization(const KnobIPtr& knob,
         }
     }
 }
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 Serialization::NodeSerializationPtr
 nodeToSerialization(const NodePtr& node)

@@ -3902,6 +3902,12 @@ KnobIPtr createUserKnobFromSerialization(KnobHolder* holder,
                                          const KnobIPtr& existingKnob = KnobIPtr());
 
 /**
+ * @brief The user page or group knob, with the user knobs and groups below it, in the form a node
+ * saves its user pages.
+ **/
+void userKnobLayoutToSerialization(const KnobIPtr& knob, Serialization::GroupKnobSerialization* layout);
+
+/**
  * @brief Creates a knob of the serialized type that belongs to no holder, named as saved and
  * holding the saved values, defaults, animation, secretness and enabled state (not expressions
  * nor links). Cloning from it applies the saved state to a live knob without the evaluation and
@@ -3916,6 +3922,17 @@ KnobIPtr createDetachedKnobFromSerialization(const Serialization::KnobSerializat
  * otherwise. Needed before createDetachedKnobFromSerialization() for such a knob.
  **/
 Serialization::KnobSerialization completeKnobSerializationForKnob(const KnobI& liveKnob, const Serialization::KnobSerialization& serialization);
+
+/**
+ * @brief expression with each reference to the knob oldKnobName of a holder renamed to
+ * newKnobName: owner.oldKnobName and owner.getParam("oldKnobName") in code, owner being one of
+ * ownerNames (such as the node's script name, or thisNode for an expression of the same node).
+ * String literals and comments are left as they are.
+ **/
+std::string renameKnobInExpressionCode(const std::string& expression,
+                                       const std::string& oldKnobName,
+                                       const std::string& newKnobName,
+                                       const std::set<std::string>& ownerNames);
 
 /**
  * @brief Drops knob's alias master, its one-way links and the two-way links it can leave. The

@@ -4231,6 +4231,37 @@ ButtonParam::trigger()
     knob->trigger();
 }
 
+void
+ButtonParam::setScript(const QString& script)
+{
+    KnobButtonPtr knob = _buttonKnob.lock();
+    if (!knob) {
+        PyErr_SetString(PyExc_ValueError, "The parameter no longer exists.");
+
+        return;
+    }
+    if (!knob->isUserKnob()) {
+        PyErr_SetString(PyExc_ValueError, "Only a user button runs a script.");
+
+        return;
+    }
+    PythonUserKnobsUndoGuard undo(knob->getHolder());
+    knob->setScript(script.toStdString());
+}
+
+QString
+ButtonParam::getScript() const
+{
+    KnobButtonPtr knob = _buttonKnob.lock();
+    if (!knob) {
+        PyErr_SetString(PyExc_ValueError, "The parameter no longer exists.");
+
+        return QString();
+    }
+
+    return QString::fromUtf8(knob->getScript().c_str());
+}
+
 ////////////////////SeparatorParam
 
 SeparatorParam::SeparatorParam(const KnobSeparatorPtr& knob)

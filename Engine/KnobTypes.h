@@ -653,6 +653,20 @@ public:
         return _isToolButtonAction;
     }
 
+    /**
+     * @brief The Python script a user button runs when pressed, before the node's onParamChanged
+     * callback. Empty for none.
+     **/
+    void setScript(const std::string& script);
+
+    std::string getScript() const;
+
+    /**
+     * @brief Runs the script with thisNode, thisParam, thisGroup and app declared. A Python error
+     * goes to the Script Editor and the log. Returns false on error.
+     **/
+    bool runScript();
+
 private:
 
 
@@ -669,6 +683,8 @@ private:
     bool _triggeringCallbacksOnly;
     bool _checkable;
     bool _isToolButtonAction;
+    mutable QMutex _scriptMutex;
+    std::string _script;
 };
 
 /******************************KnobChoice**************************************/
@@ -1104,9 +1120,9 @@ public:
 
     static const std::string & typeNameStatic();
 
-    void setAsMultiLine()
+    void setAsMultiLine(bool multiLine = true)
     {
-        _multiLine = true;
+        _multiLine = multiLine;
     }
 
     /**
@@ -1148,7 +1164,7 @@ public:
         return _customHtmlText;
     }
 
-    void setAsLabel();
+    void setAsLabel(bool isLabel = true);
 
     bool isLabel() const
     {
@@ -1261,7 +1277,7 @@ public:
 
     std::vector<KnobIPtr> getChildren() const;
 
-    void setAsTab();
+    void setAsTab(bool isTab = true);
 
     bool isTab() const;
 

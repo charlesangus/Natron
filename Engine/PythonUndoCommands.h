@@ -144,10 +144,13 @@ private:
 };
 
 struct PythonUserKnobs;
+struct UserKnobDependentStates;
 
 /**
- * @brief Records what a Python call changes on a node's user knobs and page order. Holders that
- * are not nodes are not recorded.
+ * @brief Records what a Python call changes on a node's user knobs and page order, and on the
+ * expressions and links of the knobs that depend on them. Holders that are not nodes are not
+ * recorded. A guard opened while another one is open on the same node records nothing: the outer
+ * one records it all.
  **/
 class PythonUserKnobsUndoGuard {
 public:
@@ -162,6 +165,28 @@ private:
     UndoRecorderPtr _recorder;
     NodePtr _node;
     std::shared_ptr<PythonUserKnobs> _before;
+    std::shared_ptr<UserKnobDependentStates> _beforeDependents;
+};
+
+/**
+ * @brief Makes what is done to a node holder's user knobs during its lifetime one undo entry
+ * labelled label, on the application's recorder. Within another scope or guard on the same node
+ * it adds to that one's entry. Holders that are not nodes are not recorded.
+ **/
+class UserKnobsUndoScope {
+public:
+    UserKnobsUndoScope(KnobHolder* holder,
+                       const std::string& label);
+
+    ~UserKnobsUndoScope();
+
+private:
+    UserKnobsUndoScope(const UserKnobsUndoScope&) = delete;
+    UserKnobsUndoScope& operator=(const UserKnobsUndoScope&) = delete;
+
+    KnobHolder* _holder;
+    std::unique_ptr<UndoStepGuard> _step;
+    std::unique_ptr<PythonUserKnobsUndoGuard> _guard;
 };
 
 NATRON_NAMESPACE_EXIT

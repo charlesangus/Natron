@@ -199,6 +199,19 @@ public:
     bool removeParam(Param* param);
 
     /**
+     * @brief Replaces the user parameter param by one of type typeName, keeping its name and place:
+     * one of Int, Int2D, Int3D, Double, Double2D, Double3D, Color (RGB), ColorRGBA, Boolean,
+     * Choice, String, File, OutputFile, Path, ChannelSet, LayerSelect, ChannelSelect, Button,
+     * Separator and Parametric (with as many curves as param has, or one). Between the Int, Double
+     * and Color types the values, animation, expressions and links carry over, rounded for an
+     * Int; any other change resets the parameter to the new type's defaults, done only when
+     * allowReset is True. Returns the new parameter, which thisNode.<name> then is too, or None
+     * when a reset is needed and allowReset is False. Raises ValueError for an unknown type or a
+     * parameter that is not a user parameter of this holder.
+     **/
+    Param* changeParamType(Param* param, const QString& typeName, bool allowReset = false);
+
+    /**
      * @brief Makes a parameter created with one of the functions above a Reverse-Flow Variable:
      * moves it into the variables group of this node, which must have one (a
      * RFVSet node), or of the project when called on the app, where it is then

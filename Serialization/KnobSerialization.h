@@ -252,6 +252,37 @@ struct KnobTextExtraSerialization {
 };
 
 /**
+ * @brief The curves of a Parametric user knob: one label and colour per curve, and the range of
+ * the parametric axis.
+ **/
+struct KnobParametricExtraSerialization {
+    std::vector<std::string> curveLabels;
+    // Red, green and blue of each curve.
+    std::vector<std::vector<double>> curveColors;
+    double rangeMinimum;
+    double rangeMaximum;
+
+    KnobParametricExtraSerialization()
+        : curveLabels()
+        , curveColors()
+        , rangeMinimum(0.)
+        , rangeMaximum(1.)
+    {
+    }
+
+    bool operator==(const KnobParametricExtraSerialization&) const = default;
+};
+
+/**
+ * @brief The Python script a Button user knob runs when it is pressed.
+ **/
+struct KnobButtonExtraSerialization {
+    std::string script;
+
+    bool operator==(const KnobButtonExtraSerialization&) const = default;
+};
+
+/**
  * @brief The type-specific data of a knob. A choice knob always carries its entries; the
  * other alternatives are only filled for user knobs, the only ones whose definition is saved.
  **/
@@ -261,7 +292,9 @@ typedef std::variant<std::monostate,
                      KnobFileExtraSerialization,
                      KnobPathExtraSerialization,
                      KnobLayerSelectExtraSerialization,
-                     KnobTextExtraSerialization>
+                     KnobTextExtraSerialization,
+                     KnobParametricExtraSerialization,
+                     KnobButtonExtraSerialization>
     KnobExtraSerialization;
 
 /**

@@ -49,6 +49,11 @@ file(GLOB NatronEngineAi_HEADERS Ai/*.h)
 file(GLOB NatronEngineAi_SOURCES Ai/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineAi_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineAi_SOURCES})
+# Engine/LiveSession/ is the live multi-user session transport.
+file(GLOB NatronEngineLiveSession_HEADERS LiveSession/*.h)
+file(GLOB NatronEngineLiveSession_SOURCES LiveSession/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineLiveSession_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineLiveSession_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)

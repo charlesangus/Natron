@@ -637,15 +637,33 @@ Project::loadProjectInternal(const QString& path,
         throw std::runtime_error(notAProjectMessage(QFileInfo(filePath).fileName()).toStdString());
     }
 
-    LoadProjectSplashScreen_RAII __raii_splashscreen__(getApp(), name);
-
     // Lives until loading ends: decoded data may still point into the mapped archive.
     std::unique_ptr<Serialization::ProjectBundleReader> bundle;
+    try {
+        bundle = std::make_unique<Serialization::ProjectBundleReader>(filePathStd);
+    } catch (const Serialization::ProjectBundleError& e) {
+        throw std::runtime_error(e.what());
+    }
+
+    return restoreFromBundle(*bundle, path, name, filePath, isAutoSave, isUntitledAutosave, true, mustSave);
+} // Project::loadProjectInternal
+
+bool
+Project::restoreFromBundle(const Serialization::ProjectBundleReader& bundle,
+                           const QString& path,
+                           const QString& name,
+                           const QString& filePath,
+                           bool isAutoSave,
+                           bool isUntitledAutosave,
+                           bool takeLock,
+                           bool* mustSave)
+{
+    LoadProjectSplashScreen_RAII __raii_splashscreen__(getApp(), name);
+
     Serialization::ProjectSerialization projectSerialization;
     Serialization::YamlWarnings warnings;
     try {
-        bundle = std::make_unique<Serialization::ProjectBundleReader>(filePathStd);
-        projectSerialization = bundle->readProject(&warnings);
+        projectSerialization = bundle.readProject(&warnings);
     } catch (const Serialization::ProjectBundleError& e) {
         throw std::runtime_error(e.what());
     } catch (const Serialization::YamlNewerFormatError& e) {
@@ -657,7 +675,7 @@ Project::loadProjectInternal(const QString& path,
         addLoadWarning(QString::fromUtf8(warning.c_str()));
     }
 
-    const Serialization::BundleManifest& manifest = bundle->manifest();
+    const Serialization::BundleManifest& manifest = bundle.manifest();
     projectSerialization.creationDate = manifest.creationDate;
 
     bool ret = false;
@@ -712,7 +730,7 @@ Project::loadProjectInternal(const QString& path,
     /// Try to take the project lock by creating a lock file
     // A render save is this process's own copy, removed once loaded: a lock beside it would
     // outlive it and guard nothing.
-    if (!isAutoSave && !isRenderSaveFile(filePath)) {
+    if (takeLock && !isAutoSave && !isRenderSaveFile(filePath)) {
         QString lockFilePath = getLockAbsoluteFilePath();
         if ( !QFile::exists(lockFilePath) ) {
             createLockFile();
@@ -732,7 +750,56 @@ Project::loadProjectInternal(const QString& path,
     }
 
     return ret;
-} // Project::loadProjectInternal
+} // Project::restoreFromBundle
+
+bool
+Project::loadProjectFromBundleBytes(std::span<const std::byte> bytes,
+                                    const QString& path,
+                                    const QString& name,
+                                    QString* error)
+{
+    reset(false, true);
+
+    try {
+        bool loadedOk = false;
+        {
+            FlagSetter loadingProjectRAII(true, &_imp->isLoadingProject, &_imp->isLoadingProjectMutex);
+            {
+                QMutexLocker k(&_imp->loadWarningsMutex);
+                _imp->loadWarnings.clear();
+            }
+            std::unique_ptr<Serialization::ProjectBundleReader> bundle;
+            try {
+                bundle = std::make_unique<Serialization::ProjectBundleReader>(bytes);
+            } catch (const Serialization::ProjectBundleError& e) {
+                throw std::runtime_error(e.what());
+            }
+            bool mustSave = false;
+            loadedOk = restoreFromBundle(*bundle, path, name, QString(), false, false, false, &mustSave);
+            QMutexLocker k(&_imp->projectLock);
+            _imp->loadedFromFolder = false;
+        }
+        reportLoadWarnings();
+        if (!loadedOk) {
+            if (error) {
+                *error = tr("The project could not be restored.");
+            }
+
+            return false;
+        }
+    } catch (const std::exception& e) {
+        if (error) {
+            *error = QString::fromUtf8(e.what());
+        }
+
+        return false;
+    }
+
+    Q_EMIT loaded();
+    refreshViewersAndPreviews();
+
+    return true;
+} // Project::loadProjectFromBundleBytes
 
 bool
 Project::saveProject(const QString & path,

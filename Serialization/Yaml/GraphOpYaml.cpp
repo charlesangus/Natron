@@ -397,21 +397,59 @@ encodeGraphOpYaml(const GraphOp& op)
     return documentText(em);
 }
 
+namespace YamlDetail {
+
+    void
+    emitGraphOpList(YAML::Emitter& em,
+                    const std::vector<GraphOp>& ops)
+    {
+        InlineBlobSink sink;
+        std::set<std::string> usedPaths;
+        if (ops.empty()) {
+            em << YAML::Flow << YAML::BeginSeq << YAML::EndSeq;
+        } else {
+            em << YAML::BeginSeq;
+            for (const GraphOp& op : ops) {
+                emitOp(em, op, sink, &usedPaths);
+            }
+            em << YAML::EndSeq;
+        }
+    }
+
+    std::vector<DecodedGraphOp>
+    readGraphOpList(const YAML::Node& root,
+                    const std::string& context,
+                    YamlWarnings* warnings)
+    {
+        std::vector<DecodedGraphOp> result;
+        if (!root || root.IsNull()) {
+            return result;
+        }
+        if (!root.IsSequence()) {
+            fail(root, context, "expected a list of operations");
+        }
+        for (std::size_t i = 0; i < root.size(); ++i) {
+            DecodedGraphOp entry;
+            try {
+                entry.op = readOp(root[i], context + "[" + std::to_string(i) + "]", warnings);
+            } catch (const YamlError& e) {
+                entry.error = e.what();
+            } catch (const YAML::Exception& e) {
+                entry.error = e.what();
+            }
+            result.push_back(std::move(entry));
+        }
+
+        return result;
+    }
+
+} // namespace YamlDetail
+
 std::string
 encodeGraphOpsYaml(const std::vector<GraphOp>& ops)
 {
     YAML::Emitter em;
-    InlineBlobSink sink;
-    std::set<std::string> usedPaths;
-    if (ops.empty()) {
-        em << YAML::Flow << YAML::BeginSeq << YAML::EndSeq;
-    } else {
-        em << YAML::BeginSeq;
-        for (const GraphOp& op : ops) {
-            emitOp(em, op, sink, &usedPaths);
-        }
-        em << YAML::EndSeq;
-    }
+    emitGraphOpList(em, ops);
 
     return documentText(em);
 }
@@ -430,26 +468,8 @@ decodeGraphOpsYaml(std::string_view text,
                    YamlWarnings* warnings)
 {
     const YAML::Node root = loadDocument(text, "graph operations");
-    std::vector<DecodedGraphOp> result;
-    if (!root || root.IsNull()) {
-        return result;
-    }
-    if (!root.IsSequence()) {
-        fail(root, "ops", "expected a list of operations");
-    }
-    for (std::size_t i = 0; i < root.size(); ++i) {
-        DecodedGraphOp entry;
-        try {
-            entry.op = readOp(root[i], "ops[" + std::to_string(i) + "]", warnings);
-        } catch (const YamlError& e) {
-            entry.error = e.what();
-        } catch (const YAML::Exception& e) {
-            entry.error = e.what();
-        }
-        result.push_back(std::move(entry));
-    }
 
-    return result;
+    return readGraphOpList(root, "ops", warnings);
 }
 
 } // namespace Serialization

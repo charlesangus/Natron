@@ -28,9 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <set>
+#include <span>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -138,6 +140,14 @@ public:
      * named by getProjectPath() + getProjectFilename() may not exist, or may hold another version.
      **/
     bool isLoadedFromFolder() const;
+
+    /**
+     * @brief Resets the project, then loads it from bundle bytes (.ntpz) as loadProject() loads a
+     * file, known by path + name. No autosave is looked for, no lock file is taken and nothing
+     * is saved after loading. Returns false with a message for the user in error when the
+     * bytes are not a readable project. Main thread only.
+     **/
+    bool loadProjectFromBundleBytes(std::span<const std::byte> bytes, const QString& path, const QString& name, QString* error);
 
     bool hasMissingPluginNode() const;
 
@@ -850,6 +860,13 @@ private:
 
     bool loadProjectInternal(const QString& path, const QString& name, const QString& source,
                              bool isAutoSave, bool isUntitledAutosave, bool* mustSave);
+
+    /**
+     * @brief The part of loading that follows opening the bundle. filePath is the file read, for
+     * the autosave bookkeeping and the lock file, which is taken only when takeLock is set.
+     **/
+    bool restoreFromBundle(const Serialization::ProjectBundleReader& bundle, const QString& path, const QString& name,
+                           const QString& filePath, bool isAutoSave, bool isUntitledAutosave, bool takeLock, bool* mustSave);
 
     QString saveProjectInternal(const QString & path, const QString & name, bool autosave, bool updateProjectProperties);
 

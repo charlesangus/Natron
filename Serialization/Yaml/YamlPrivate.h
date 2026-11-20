@@ -49,6 +49,7 @@
 #include "Serialization/RotoSerialization.h"
 #include "Serialization/TrackerSerialization.h"
 #include "Serialization/Yaml/BlobSink.h"
+#include "Serialization/Yaml/GraphOpYaml.h"
 #include "Serialization/Yaml/YamlScalars.h"
 
 NATRON_NAMESPACE_ENTER
@@ -285,6 +286,13 @@ namespace YamlDetail {
 
     void emitLayers(YAML::Emitter& em, const std::list<LayerRegistryEntrySerialization>& layers);
     std::list<LayerRegistryEntrySerialization> readLayers(const YAML::Node& node, YamlWarnings* warnings);
+
+    /**
+     * @brief Writes ops as encodeGraphOpsYaml does, as the value at the emitter's position, and
+     * reads such a list back as decodeGraphOpsYaml does. A null or absent node is an empty list.
+     **/
+    void emitGraphOpList(YAML::Emitter& em, const std::vector<GraphOp>& ops);
+    std::vector<DecodedGraphOp> readGraphOpList(const YAML::Node& node, const std::string& context, YamlWarnings* warnings);
 
 } // namespace YamlDetail
 } // namespace Serialization

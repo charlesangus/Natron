@@ -47,6 +47,7 @@
 // Before Qt's OpenGL headers.
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneViewport.h"
+#include "Gui/SelectionEngine.h"
 #include "Tests/TestWatchdog.h"
 
 #include <QColor>
@@ -54,6 +55,7 @@
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
+#include <QOpenGLFunctions>
 #include <QPoint>
 #include <QSettings>
 #include <QSurfaceFormat>
@@ -63,7 +65,9 @@
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
@@ -71,13 +75,18 @@
 #include "Gui/GuiGLRequirements.h"
 #include "Tests/Scene/CyclesTestUtils.h"
 
+#include <pxr/base/gf/frustum.h>
+#include <pxr/base/gf/rect2i.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/imaging/cameraUtil/framing.h>
+#include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/driver.h>
 #include <pxr/imaging/hdSt/renderDelegate.h>
 #include <pxr/imaging/hgi/tokens.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
+#include <pxr/usdImaging/usdImagingGL/renderParams.h>
 
 NATRON_NAMESPACE_USING
 
@@ -1741,4 +1750,104 @@ TEST_F(SceneViewportStorm, DelegatesOnOneHgiShareAResourceRegistry)
     }
 
     engine.reset();
+}
+
+namespace {
+// Texels of a kSize square texture, row 0 at the bottom, read through a framebuffer of its own.
+std::vector<float>
+readTexture(const PXR_NS::HgiTextureHandle& texture,
+            bool isDepth)
+{
+    QOpenGLFunctions* gl = QOpenGLContext::currentContext()->functions();
+    const int channels = isDepth ? 1 : 4;
+    std::vector<float> texels((std::size_t)(kSize * kSize * channels), -1.f);
+    GLint previous = 0;
+    GLuint framebuffer = 0;
+
+    gl->glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous);
+    gl->glGenFramebuffers(1, &framebuffer);
+    gl->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    gl->glFramebufferTexture2D(GL_FRAMEBUFFER, isDepth ? GL_DEPTH_ATTACHMENT : GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, (GLuint)texture->GetRawResource(), 0);
+    if (gl->glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+        gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        gl->glReadPixels(0, 0, kSize, kSize, isDepth ? GL_DEPTH_COMPONENT : GL_RGBA, GL_FLOAT, texels.data());
+    } else {
+        ADD_FAILURE() << "the " << (isDepth ? "depth" : "colour") << " texture cannot be read through a framebuffer";
+    }
+    gl->glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)previous);
+    gl->glDeleteFramebuffers(1, &framebuffer);
+
+    return texels;
+}
+
+// At pixel (x, y) from the top left, as the fixture's renders and picks count them.
+float
+texelAt(const std::vector<float>& texels,
+        int channels,
+        int channel,
+        int x,
+        int y)
+{
+    return texels[(std::size_t)((((kSize - 1 - y) * kSize) + x) * channels + channel)];
+}
+} // namespace
+
+// The selection pass draws the card alone, with its own material: the projected half covers its
+// pixels by the plate's alpha, and neither the card's transparent half nor the backdrop behind it
+// is drawn.
+TEST_F(SceneViewportStorm, TheSelectionPassDrawsATranslucentCardByItsOwnAlpha)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    SceneStage stage;
+    ASSERT_TRUE(stage.isValid());
+    ASSERT_TRUE(stage.sync(scene));
+
+    PXR_NS::UsdImagingGLEngine::Parameters parameters;
+    parameters.rendererPluginId = PXR_NS::TfToken(kRenderDelegateStormId);
+    std::unique_ptr<SelectionEngine> engine(new SelectionEngine(parameters));
+    ASSERT_TRUE(engine->GetHgi() != nullptr);
+    ASSERT_TRUE(engine->hasSelectionPass());
+    {
+        StormGLSection section;
+        section.collectWith(engine->GetHgi());
+        engine->SetRendererAov(PXR_NS::HdAovTokens->color);
+        engine->SetEnablePresentation(false);
+        engine->SetRenderBufferSize(PXR_NS::GfVec2i(kSize, kSize));
+        engine->SetFraming(PXR_NS::CameraUtilFraming(PXR_NS::GfRect2i(PXR_NS::GfVec2i(0, 0), kSize, kSize)));
+        PXR_NS::GfFrustum frustum;
+        frustum.SetPosition(PXR_NS::GfVec3d(0., 0., 10.));
+        frustum.SetPerspective(45., 1., 0.1, 100.);
+        engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
+
+        PXR_NS::UsdImagingGLRenderParams params;
+        params.clearColor = PXR_NS::GfVec4f(0.f, 0.f, 0.f, 0.f);
+        params.drawMode = PXR_NS::UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
+        params.enableLighting = true;
+        _watchdog.setPhase("render");
+        engine->Render(stage.getStage()->GetPseudoRoot(), params);
+        EXPECT_FALSE(engine->renderSelection(params, PXR_NS::SdfPathVector())) << "nothing selected";
+        ASSERT_TRUE(engine->renderSelection(params, { PXR_NS::SdfPath("/World/Card") }));
+        const PXR_NS::HgiTextureHandle colorTexture = engine->colorTexture();
+        const PXR_NS::HgiTextureHandle depthTexture = engine->depthTexture();
+        ASSERT_TRUE(colorTexture && depthTexture);
+        EXPECT_NE(colorTexture.Get(), engine->GetAovTexture(PXR_NS::HdAovTokens->color).Get());
+
+        const std::vector<float> color = readTexture(colorTexture, false);
+        const std::vector<float> depth = readTexture(depthTexture, true);
+        EXPECT_NEAR(0.5f, texelAt(color, 4, 3, 97, 128), 0.02f) << "the projected half covers by the plate's alpha";
+        EXPECT_LT(texelAt(depth, 1, 0, 97, 128), 1.f) << "the projected half writes its depth";
+        EXPECT_EQ(0.f, texelAt(color, 4, 3, 159, 128)) << "the card's transparent half";
+        EXPECT_EQ(0.f, texelAt(color, 4, 3, 97, 200)) << "the backdrop, not selected";
+        EXPECT_EQ(1.f, texelAt(depth, 1, 0, 97, 200)) << "the backdrop, not selected";
+        EXPECT_EQ(0.f, texelAt(color, 4, 3, 20, 128)) << "nothing drawn";
+        EXPECT_EQ(1.f, texelAt(depth, 1, 0, 20, 128)) << "nothing drawn";
+
+        section.collectWith(nullptr);
+        engine.reset();
+    }
 }

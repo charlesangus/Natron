@@ -47,6 +47,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class OverlayDrawListPen;
 class RotoCurveInteract;
 // What a commit leaves behind: its prompts, the mask they gave at the inference resolution and where it sits.
 struct RotoObjectSelectSession;
@@ -149,7 +150,7 @@ public:
     // The prompts are for one frame: moving to another drops them.
     void onTimeChanged(double time);
 
-    void draw(double time);
+    void buildOverlay(OverlayDrawListPen& pen);
     bool penDown(double time, const QPointF& pos, bool negative);
     bool penMotion(const QPointF& pos);
     bool penUp();

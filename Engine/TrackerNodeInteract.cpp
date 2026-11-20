@@ -96,6 +96,7 @@ TrackerNodeInteract::TrackerNodeInteract(TrackerNodePrivate* p)
     , selectedMarkerScale(1.)
     , selectedMarkerImg()
     , isTracking(false)
+    , markersOverlayHash(0)
 {
 }
 

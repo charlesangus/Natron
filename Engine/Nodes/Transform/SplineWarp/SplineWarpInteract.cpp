@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
@@ -37,14 +38,15 @@
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpUndo.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoItem.h"
-#include "Global/GLIncludes.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -1108,24 +1110,6 @@ const double kPairLineColor[4] = { 0.85, 0.85, 0.85, 0.5 };
 const double kCorrespondenceColor[4] = { 1., 0.6, 0.1, 1. };
 const double kSelectedCorrespondenceColor[4] = { 1., 1., 0.4, 1. };
 
-// Dashes of length dash, as GL_LINES vertices.
-void
-addDashes(const Point& a,
-          const Point& b,
-          double dash)
-{
-    const double length = std::hypot(b.x - a.x, b.y - a.y);
-    if ((length <= 0.) || (dash <= 0.)) {
-        return;
-    }
-    const int count = std::min(500, (int)std::ceil(length / (2. * dash)));
-    for (int i = 0; i < count; ++i) {
-        const double t0 = (2. * i * dash) / length;
-        const double t1 = std::min(1., ((2. * i + 1.) * dash) / length);
-        glVertex2d(a.x + t0 * (b.x - a.x), a.y + t0 * (b.y - a.y));
-        glVertex2d(a.x + t1 * (b.x - a.x), a.y + t1 * (b.y - a.y));
-    }
-}
 } // anonymous namespace
 
 bool
@@ -1169,9 +1153,51 @@ SplineWarpInteract::getCurveOverlayColor(const RotoDrawableItemPtr& item,
 }
 
 void
-SplineWarpInteract::drawOverlayExtras(double time,
-                                      double screenPixelRatio,
-                                      const std::pair<double, double>& pixelScale)
+SplineWarpInteract::appendOverlayExtrasSignature(double time,
+                                                 ContentHasher* hasher) const
+{
+    std::vector<BezierOverlayPolygonsConstPtr> polygons;
+    SplineWarpContextPtr context = getWarpContext();
+
+    hasher->appendBool((bool)context);
+    if (context) {
+        hasher->appendI64((int)getShow());
+        hasher->appendU64((U64) reinterpret_cast<std::uintptr_t>(_selectedLink.lock().get()));
+        hasher->appendI64(_selectedIndex);
+        const std::vector<SplineWarpLinkPtr> links = context->getLinks();
+        hasher->appendU64(links.size());
+        for (std::size_t i = 0; i < links.size(); ++i) {
+            const BezierPtr curves[2] = { links[i]->getSource(), links[i]->getDestination() };
+            for (int side = 0; side < 2; ++side) {
+                hasher->appendU64((U64) reinterpret_cast<std::uintptr_t>(curves[side].get()));
+                if (curves[side]) {
+                    // The overlay polygons are rebuilt whenever the curve the viewer shows changes.
+                    BezierOverlayPolygonsConstPtr p = curves[side]->getOverlayPolygons(time, false);
+                    hasher->appendU64((U64) reinterpret_cast<std::uintptr_t>(p.get()));
+                    polygons.push_back(p);
+                }
+            }
+            hasher->appendDouble(links[i]->getStartOffset());
+            hasher->appendBool(links[i]->isReversed());
+            hasher->appendDouble(links[i]->getAmount(time));
+            const int count = links[i]->getCorrespondenceCount();
+            hasher->appendI64(count);
+            for (int k = 0; k < count; ++k) {
+                double sourceParam = 0.;
+                double destinationParam = 0.;
+                links[i]->getCorrespondence(k, time, &sourceParam, &destinationParam);
+                hasher->appendDouble(sourceParam);
+                hasher->appendDouble(destinationParam);
+            }
+        }
+    }
+    // Held until the next signature, so that freed polygons cannot come back at the same address.
+    _overlayPolygonsHeld.swap(polygons);
+}
+
+void
+SplineWarpInteract::buildOverlayExtras(double time,
+                                       OverlayDrawListPen& pen)
 {
     SplineWarpContextPtr context = getWarpContext();
     if (!context) {
@@ -1180,11 +1206,11 @@ SplineWarpInteract::drawOverlayExtras(double time,
     const SplineWarpShowEnum show = getShow();
     const bool both = show == eSplineWarpShowBoth;
     const bool sideShown[2] = { show != eSplineWarpShowDestination, show != eSplineWarpShowSource };
-    const double dash = 4. * pixelScale.first;
+    const double dash = 4.;
     SplineWarpLinkPtr selectedLink = _selectedLink.lock();
     const std::vector<SplineWarpLinkPtr> links = context->getLinks();
 
-    glEnable(GL_POINT_SMOOTH);
+    pen.setSmoothPoints(true);
     for (std::size_t i = 0; i < links.size(); ++i) {
         BezierPtr source = links[i]->getSource();
         BezierPtr destination = links[i]->getDestination();
@@ -1199,17 +1225,21 @@ SplineWarpInteract::drawOverlayExtras(double time,
         }
         const SplineWarpLinkSamplingInput input = samplingInputOf(*links[i], time, sourceShape, destinationShape);
 
-        glLineWidth(1. * screenPixelRatio);
+        pen.lineWidth(1.);
+        pen.setDash(dash, dash);
         if (both) {
             // Each destination point to where it pairs on the source.
-            glColor4dv(kPairLineColor);
-            glBegin(GL_LINES);
+            pen.color(kPairLineColor[0], kPairLineColor[1], kPairLineColor[2], kPairLineColor[3]);
+            pen.begin(OverlayDrawListPen::eModeLines);
             for (int k = 0; k < destinationShape.getPointCount(); ++k) {
                 const double u = destinationShape.clampParam(k);
                 const double partner = sourceShape.clampParam(splineWarpPairedParam(input, false, u));
-                addDashes(destinationShape.pointAt(u), sourceShape.pointAt(partner), dash);
+                const Point a = destinationShape.pointAt(u);
+                const Point b = sourceShape.pointAt(partner);
+                pen.vertex(a.x, a.y);
+                pen.vertex(b.x, b.y);
             }
-            glEnd();
+            pen.end();
         }
 
         for (std::size_t k = 0; k < input.correspondences.size(); ++k) {
@@ -1218,25 +1248,24 @@ SplineWarpInteract::drawOverlayExtras(double time,
                 sourceShape.pointAt(sourceShape.clampParam(input.correspondences[k].first)),
                 destinationShape.pointAt(destinationShape.clampParam(input.correspondences[k].second))
             };
-            glColor4dv(selected ? kSelectedCorrespondenceColor : kCorrespondenceColor);
+            const double* color = selected ? kSelectedCorrespondenceColor : kCorrespondenceColor;
+            pen.color(color[0], color[1], color[2], color[3]);
             if (both) {
-                glLineWidth((selected ? 2. : 1.5) * screenPixelRatio);
-                glBegin(GL_LINES);
-                addDashes(ends[0], ends[1], dash);
-                glEnd();
+                pen.lineWidth(selected ? 2. : 1.5);
+                pen.line(ends[0].x, ends[0].y, ends[1].x, ends[1].y);
             }
-            glPointSize((selected ? 9.f : 7.f) * screenPixelRatio);
-            glBegin(GL_POINTS);
+            pen.pointSize(selected ? 9. : 7.);
+            pen.begin(OverlayDrawListPen::eModePoints);
             for (int side = 0; side < 2; ++side) {
                 if (sideShown[side]) {
-                    glVertex2d(ends[side].x, ends[side].y);
+                    pen.vertex(ends[side].x, ends[side].y);
                 }
             }
-            glEnd();
+            pen.end();
         }
+        pen.setDash(0., 0.);
     }
-    glCheckError();
-} // SplineWarpInteract::drawOverlayExtras
+} // SplineWarpInteract::buildOverlayExtras
 
 void
 SplineWarpInteract::deselectHiddenCurves()

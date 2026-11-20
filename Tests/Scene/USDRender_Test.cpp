@@ -1068,6 +1068,8 @@ def Scope "Render"
 }
 )";
 
+const char* const kUnrelatedRenderer = "NatronTestAovRenderer";
+
 // A Cycles pass and a primvar, for every delegate.
 const char* const kDiffuseAndStVars = R"(
 def Scope "Render"
@@ -1103,6 +1105,7 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         HydraRender::releaseAllCpuEngines();
+        RenderSettingsKnobs::setDescriptorsForTests(kUnrelatedRenderer, RenderSettingsKnobs::DescriptorList());
         USDRenderRendererTest::TearDown();
     }
 
@@ -1257,6 +1260,12 @@ TEST_F(USDRenderAovTest, TheLayersAndHashFollowTheRenderVarsOfTheRenderer)
     const std::string plain = writeScene(tmp, "plain.usda", kAovWorld);
     const std::string withVars = writeScene(tmp, "vars.usda", std::string(kAovWorld) + kDiffuseAndStVars);
     ASSERT_FALSE(plain.empty() || withVars.empty());
+    // Storm's delegate declares no settings when it cannot be made here, so the unrelated delegate is a test one.
+    RenderSettingsKnobs::Descriptor flag;
+    flag.key = "flag";
+    flag.name = "Flag";
+    flag.defaultValue = PXR_NS::VtValue(false);
+    RenderSettingsKnobs::setDescriptorsForTests(kUnrelatedRenderer, RenderSettingsKnobs::DescriptorList(1, flag));
     NodePtr settingsNode;
     NodePtr node = createRender(plain.c_str(), &settingsNode);
     ASSERT_TRUE(node && settingsNode);
@@ -1276,14 +1285,15 @@ TEST_F(USDRenderAovTest, TheLayersAndHashFollowTheRenderVarsOfTheRenderer)
     const ImageLayerDesc* st = findLayer(present, "st");
     ASSERT_TRUE(diffuse && st);
     EXPECT_EQ(std::vector<std::string>({ "R", "G", "B" }), diffuse->getChannels());
-    EXPECT_EQ(std::vector<std::string>({ "U", "V", "W" }), st->getChannels());
+    // Nothing has rendered st yet, so the authored texCoord2f sets its channels, not the renderer's format.
+    EXPECT_EQ(std::vector<std::string>({ "U", "V" }), st->getChannels());
     std::list<ImageLayerDesc> available;
     node->getEffectInstance()->getAvailableLayers(1., ViewIdx(0), -1, &available);
     EXPECT_TRUE(findLayer(available, "diffuse_direct"));
     EXPECT_TRUE(findLayer(available, "st"));
 
-    // Storm's settings are not Cycles': the render, its hash and its layers stay.
-    ASSERT_TRUE(nudgeASetting(settingsNode, kRenderDelegateStormId));
+    // Another delegate's settings are not Cycles': the render, its hash and its layers stay.
+    ASSERT_TRUE(nudgeASetting(settingsNode, kUnrelatedRenderer));
     EXPECT_EQ(varsHash, node->getHashValue());
     present = presentLayers(node);
     EXPECT_TRUE(findLayer(present, "diffuse_direct"));

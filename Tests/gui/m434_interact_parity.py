@@ -144,7 +144,8 @@ try:
 
     def param(node, name):
         p = node.getParam(name)
-        gt.require(p is not None, "%s has a parameter %r" % (node.getLabel(), name))
+        owner = node.getLabel() if hasattr(node, "getLabel") else node.getScriptName()
+        gt.require(p is not None, "%s has a parameter %r" % (owner, name))
         return p
 
     def background():

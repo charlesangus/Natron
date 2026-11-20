@@ -45,6 +45,7 @@ add_library(NatronGpu STATIC
     GpuTransfer.cpp
     GpuBlur.cpp
     GpuDownscale.cpp
+    GpuFft.cpp
     GpuMorphology.cpp
     GpuResample.cpp
     GpuWrap.cpp

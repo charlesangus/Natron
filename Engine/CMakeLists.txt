@@ -49,6 +49,11 @@ file(GLOB NatronEngineAi_HEADERS Ai/*.h)
 file(GLOB NatronEngineAi_SOURCES Ai/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineAi_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineAi_SOURCES})
+# Engine/Fft/ is the 2-D FFT on the CPU and the GPU.
+file(GLOB NatronEngineFft_HEADERS Fft/*.h)
+file(GLOB NatronEngineFft_SOURCES Fft/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineFft_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineFft_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
@@ -309,6 +314,8 @@ target_include_directories(NatronEngine
         ../libs/xxhash
         ${X11_INCLUDE_DIR}
 )
+# Vendored upstream code, kept byte-identical, so its warnings are not ours to fix.
+target_include_directories(NatronEngine SYSTEM PRIVATE ../libs/pocketfft)
 if(NATRON_GPU)
     target_compile_definitions(NatronEngine PUBLIC NATRON_HAVE_GPU=1)
 endif()

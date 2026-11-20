@@ -522,7 +522,7 @@ future core work has solid ground to build on.
 | M373 | In-Panel Knob Editor | todo | M372 |  | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
 | M374 | Remove Node Magnify On Ctrl-Scroll | done | - | | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
 | M375 | No CPU Vulkan Auto-Select | done | - | bosley-native-nodes | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |
-| M400 | Pointer Direction Badges | doing | - | bosley-executor | E10 |  | | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |
+| M400 | Pointer Direction Badges | doing | - | bosley-executor | E10 |  | response | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |
 | M425 | No ONNX Runtime Telemetry | done | - | bosley-native-nodes | E16 |  | | [M425-no-onnx-runtime-telemetry.md](PLAN/MILESTONES/M425-no-onnx-runtime-telemetry.md) |
 | M426 | UDIM Textures In Delegates | todo | M311, M343 |  | E9 |  | | [M426-udim-textures-in-delegates.md](PLAN/MILESTONES/M426-udim-textures-in-delegates.md) |
 | M432 | Overlays Off The Render Path | doing | - | bosley-executor | E23 |  | uat | [M432-overlays-off-the-render-path.md](PLAN/MILESTONES/M432-overlays-off-the-render-path.md) |
@@ -636,6 +636,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M400 - Pointer Direction Badges (PM, 2026-11-20):** 16 screenshots of the pointer badges (sent; files under .worktrees/m400/build/remote/release/gui/m400_pointer_badges/). OK them, or say what to change.
 - **M438 - Lens Distortion In The USD Scene follow-ups, for /cat-plan (PM, 2026-11-20):** the user chose both encodings in a lens prim. File the follow-up milestones A–G from PLAN/DESIGN/2026-11-14-usd-lens-distortion-design.md; M438 is done once they are filed.
 - **M447 - USDPreviewSurface Rename, for /cat-plan (PM, 2026-11-20):** sweep todo milestone briefs that still name `USDMaterial`; the node is now USDPreviewSurface.
 - **F29 - UI Polish Batch (PM, 2026-11-20):** Feature review round 1 is fixed (f75950a65), and the m421 script's graph lookup is made robust (1c60da022). The gate is green (release, ctest, 8 GUI scripts). The round-2 UAT AppImage is `build/appimages/Natron-f29-ui-polish-batch.AppImage`, with its .md (see "Round 2+").

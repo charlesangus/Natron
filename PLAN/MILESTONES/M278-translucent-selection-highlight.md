@@ -34,7 +34,7 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
 
 ## Phase 278.1: Hydra API check
 
-- [ ] M278.P1.T1 — Confirm the selection-pass API against the 26.08 headers in the published image
+- [x] M278.P1.T1 — Confirm the selection-pass API against the 26.08 headers in the published image
   - files: none (read-only); the result goes in this file's ## Decisions
   - approach: In ghcr.io/charlesangus/natron-dev, read these under /usr/local/include/pxr:
     - usdImagingGL/engine.h (the protected `_GetRenderIndex`/`_Execute` and terminal scene index accessors);
@@ -110,3 +110,18 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
 - 2026-11-20 — The brief's "existing prim-ID pass" doesn't exist. Viewport picking is an on-demand `TestIntersection` (Gui/SceneViewport.cpp:3170-3173, :3229-3232), and the beauty renders only colour and depth AOVs (:1171). A per-frame full-resolution pick readback would stall a tumble, so the selection pass is its own pass.
 - 2026-11-20 — No second UsdImagingGLEngine with scene materials off. Its fallback material drops the projection's discard, so the card's transparent half would tint; the assertion at Tests/SceneViewport_Test.cpp:594-599 must keep holding. It would also have no alpha to weight a translucent tint, and it would change `getEngineCount()` (:1362, :1396).
 - 2026-11-20 — The tint is weighted by the pass's alpha, so a 50% card tints at 50% rather than turning solid yellow. Risks: the first selection compiles the pass's material shader variants (a possible hitch on llvmpipe), and selecting the root of a huge scene doubles its geometry in GPU memory (textures are shared through the common registry).
+- 2026-11-20 — P1.T1, checked against the 26.08 headers in ghcr.io/charlesangus/natron-dev:2c1cbed46e197e27 and the v26.08 sources of hdx/usdImagingGL:
+  - **OIT:** no supported selection binding. `HdxOitRenderTask`'s translucent sub-pass runs its private `_translucentPassShader` without selection (oitRenderTask.cpp:165-298; selection is bound only in renderTask.cpp:193-235). A translucent material's alpha≥1 fragments do highlight today, through the opaque sub-pass.
+  - **Terminal scene index:** private, so it can't be reached (engine.h:844-878). Reachable as protected: `_Execute`, `_renderer`, `_taskControllerSceneIndex`, `_renderCollection` and `_ComputeRenderTags` (:717-836).
+  - **Plates:** LiveTextureSceneIndex registers only for Cycles and MoonRay; Storm reads `natron://` through the Ar resolver.
+  - **Tasks:** the stock task controller can't be reused, because it forces each tag's blend and depth state and sends translucent prims to OIT. Natron authors four HdxRenderTasks (default, masked, additive, translucent), with blend off, depth mask on, depth LESS and alpha-to-coverage off. Volume is left out. Only the first task clears the AOVs.
+  - **Instances:** a whole native instance isn't tinted, because its prototype rprims don't live under the instance path. Out of scope, with instance selection.
+- 2026-11-20 — **The host is an engine subclass plus a Storm scene-index plugin (user)**, replacing the planned second stage scene index:
+  - A "GL" scene-index plugin, armed through a thread-local slot around `SelectionEngine` construction, merges an HdRetainedSceneIndex with Natron's selection tasks and two render buffers into the engine's own render index. Unarmed, it returns its input, so USDRender's Storm engines are untouched.
+  - Each task's collection is `_renderCollection` with `SetRootPaths(selection)` and one material tag.
+  - This means no second traversal and no duplicate GPU geometry, and depths match the beauty's.
+  - **Rewritten briefs:**
+    - P2.T1 is now Gui/SceneSelectionTasks.{h,cpp}: the plugin, the retained index, and `setSelection`/`setRenderTags`/`setCamera`/`setSize`, each dirtying only its own locator. Its gtest needs no GL.
+    - P2.T2 is now `SelectionEngine : UsdImagingGLEngine` with `renderSelection(params, selection)` after `Render()` (calling `_Execute` with the task paths) and `colorTexture()`/`depthTexture()` from the render buffers. Its verify is unchanged.
+    - In P3.T1, `ensureEngine` builds the SelectionEngine in place of the plain engine, and there is no separate pass to destroy.
+  - **Wireframe draws lines (user):** the pass follows the draw mode.

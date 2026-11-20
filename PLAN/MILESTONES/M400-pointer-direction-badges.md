@@ -30,12 +30,12 @@ Code facts (scouted on `main` d07d202ea, 2026-11-12):
 
 ## Phase 400.1: Badge labels and layout
 
-- [ ] M400.P1.T1 — Expose each target's direction labels without a reveal
+- [x] M400.P1.T1 — Expose each target's direction labels without a reveal
   - files: `Gui/GlobalModeTarget.h`, `Gui/ColorTrackballTarget.{h,cpp}`, `Gui/ValueKnobGlobalModeTarget.{h,cpp}`, `Gui/TransformGroupGlobalModeTarget.{h,cpp}`, `Tests/ColorTrackballTarget_Test.cpp`
   - approach: Add a pure virtual `ColorTrackballRevealLabels directionLabels() const` to `GlobalModeTarget`. Colour returns `colorTrackballRevealDirectionLabels(currentMode)`; a value knob returns `valueModeRevealDirectionLabels(kind)`; the transform group returns its active kind's labels. Make each target's `syncReveal` use the same function so the two can't drift.
   - verify: test cases asserting colour S gives "+Hue"/"−Hue"/"+Sat"/"−Sat", C gives four empty strings, and a Blur `size` value target and a Transform group in rotate give the same labels as `valueModeRevealDirectionLabels` for those kinds; existing `ColorTrackballTarget_Test` cases still pass.
   - size: M
-- [ ] M400.P1.T2 — Pure layout for badges round a point
+- [x] M400.P1.T2 — Pure layout for badges round a point
   - files: `Gui/ColorTrackballHud.{h,cpp}`, `Tests/ColorTrackballHud_Test.cpp`
   - approach: Add `colorTrackballPointerBadgeLayout(reach, pillSizes[4], blockSize, blockGap)` returning the four pill rects and the block rect relative to the pointer at the origin (right/left/top/bottom at `reach`, the block centred under the bottom pill; with every pill empty, the block alone placed as `colorTrackballHudFollowPosition` places it today), plus the united bounds. `reach` is a small DPI-scaled gap that clears the crosshair cursor; pick a constant in the file and name it. Do not change the reveal's own layout.
   - verify: `ColorTrackballHud_Test` cases: four pills don't overlap each other or a square of side 2×reach round the origin; the block sits under the bottom pill; with every pill empty the block lands where `colorTrackballHudFollowPosition` puts it.
@@ -43,7 +43,7 @@ Code facts (scouted on `main` d07d202ea, 2026-11-12):
 
 ## Phase 400.2: Pointer badge window
 
-- [ ] M400.P2.T1 — Follow-pointer window with badges and HUD block
+- [x] M400.P2.T1 — Follow-pointer window with badges and HUD block
   - files: `Gui/ColorTrackballHud.{h,cpp}`, `Gui/ColorTrackballGlobalMode.{h,cpp}`, `Tests/ColorTrackballGlobalMode_Test.cpp`
   - approach: Replace the controller's standalone follow `ColorTrackballHudBlock` with a `ColorTrackballPointerHud` window (same `colorTrackballFollowCursorWindowFlags()`, never takes input or focus) holding four `ColorTrackballPill`s and a `ColorTrackballHudBlock` child, laid out by P1.T2 and masked to the pills and block (`colorTrackballRoundedRegion`), kept on screen as a group. `syncHudBlock` feeds it `target->directionLabels()` and `hudState()`; the existing pointer-move call sites (~1358, ~1403) move it with the pointer, in and out of strokes. Keep the object name `ColorTrackballHudWindow` and an accessor to the inner block so existing tests find it. Labels refresh on every `syncReveal`, so mode and kind switches update them.
   - verify: `ColorTrackballGlobalMode_Test` cases: in crosshairOnly the window is shown with four visible pills for an S-mode colour target, engaged and mid-stroke, and stays centred on the moved pointer; in C only the block is visible; in crosshairReveal the pills show between strokes and the window hides while the reveal is up; widgetCursor never shows it; existing tests pass.
@@ -62,3 +62,4 @@ Code facts (scouted on `main` d07d202ea, 2026-11-12):
 ## Decisions
 
 - 2026-11-12 — Scope (user): C mode gets no badges; badges always follow the pointer, including during strokes; "Crosshair + reveal" shows them between strokes too, not only "Crosshair only".
+- 2026-11-20 — Phase 400.1 is in 26b3a82c7 and 400.2 in 28028f6c9. The colour target is ColorGlobalModeTarget (Gui/ColorTrackballGlobalMode.*). The layout takes a followOffset, so C mode keeps today's placement. The controller's sync logic is a free function, `colorGlobalModeSyncPointerHud`, tested with real states, because the controller can't be constructed in a unit test. An edge warp moves the window at once. Gate running (both phases, with the m119 and m173 GUI scripts).

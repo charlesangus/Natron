@@ -221,6 +221,41 @@ private:
     bool _placed = false;
 };
 
+/**
+ * @brief Whether a viewer edit drafts. It keeps a rolling estimate of what an update would cost at the viewer's
+ * own level, from the updates rendered so far scaled by their pixel ratio, and turns draft off once that fits the
+ * frame budget, back on once it overruns it. The gap between the two thresholds keeps it from toggling per frame.
+ **/
+class AdaptiveDraft {
+public:
+    static constexpr double kBudgetMs = 1000. / 30.;
+    static constexpr double kEnterFullRatio = 0.8;
+    static constexpr double kLeaveFullRatio = 1.25;
+
+    /**
+     * @brief Notes an update rendered at renderedLevel in ms, for a viewer whose own level is fullLevel.
+     **/
+    void noteRender(double ms, unsigned int renderedLevel, unsigned int fullLevel);
+
+    // Whether the next update drafts. True until a render has been noted.
+    bool drafts() const
+    {
+        return !_full;
+    }
+
+    // The estimated cost of an update at the viewer's own level, negative before any render has been noted.
+    double predictedFullMs() const
+    {
+        return _predictedFullMs;
+    }
+
+    void reset();
+
+private:
+    double _predictedFullMs = -1.;
+    bool _full = false;
+};
+
 class ViewerArgs
 {
 public:
@@ -260,6 +295,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class ViewerCurrentFrameRequestScheduler;
     friend class GpuPlacementPlanner;
+    friend struct ViewerInstanceTestAccess;
 
 public:
     static EffectInstance* BuildEffect(NodePtr n) WARN_UNUSED_RETURN;
@@ -520,6 +556,19 @@ public:
      **/
     void disconnectTextureAfterRender(int index, bool clearRod, U64 renderAge);
 
+    /**
+     * @brief A render request that will not produce an image because it failed outside the
+     * render itself (an exception, a lost UI context): like renderEndedWithoutImage(), and the
+     * render also leaves the viewer's list of ongoing renders.
+     **/
+    void renderFailed(int textureIndex, U64 renderAge);
+
+    /**
+     * @brief A render request that ended aborted or with no image to show. It counts as shown
+     * unless a newer request exists, in which case that one decides what the viewer shows.
+     **/
+    void renderEndedWithoutImage(int textureIndex, U64 renderAge);
+
     double getGain() const WARN_UNUSED_RETURN;
 
     unsigned int getMipmapLevel() const WARN_UNUSED_RETURN;
@@ -532,6 +581,40 @@ public:
      * processing is on.
      **/
     unsigned int getMipmapLevelWithoutDraft() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The mipmap level of a zoom factor: the nearest finer one (48% renders at 50%, 51% at 100%), or with
+     * nearest, the nearest power of two (33% renders at 25%). Zooms of 100% and more are level 0.
+     **/
+    static unsigned int mipmapLevelForZoom(double zoomFactor, bool nearest) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The level a draft update renders at under auto-proxy: at least autoProxyLevel, less one per doubling
+     * of a zoom above 100%, and never finer than withoutDraft.
+     **/
+    static unsigned int autoProxyMipmapLevel(unsigned int withoutDraft, double zoomFactor, unsigned int autoProxyLevel) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether an update drafts, and at which level: auto-proxy and draft are on, the edits call for it
+     * (AppInstance::draftAppliesToEdits()) and adaptive draft does not predict that the viewer's own level keeps up.
+     **/
+    static void resolveDraft(bool draftOn,
+                             bool editsDraft,
+                             bool autoProxy,
+                             const AdaptiveDraft& adaptive,
+                             unsigned int withoutDraft,
+                             double zoomFactor,
+                             unsigned int autoProxyLevel,
+                             bool* draftModeEnabled,
+                             unsigned int* withDraft);
+
+    /**
+     * @brief Notes how long an interactive update took for adaptive draft. Ignored while draft is off.
+     **/
+    void noteInteractiveRender(double ms, unsigned int renderedLevel, unsigned int fullLevel);
+
+    // A copy of the viewer's adaptive draft state, for tests.
+    AdaptiveDraft getAdaptiveDraft() const WARN_UNUSED_RETURN;
 
     /**
      * @brief The display settings and tiles of the last full-quality texture-cache lookup of input
@@ -552,6 +635,11 @@ public:
 
     bool isLatestRender(int textureIndex, U64 renderAge) const;
 
+    /**
+     * @brief True while the image shown is older than the newest render requested on either input.
+     * A render that failed counts as shown, so a failure with nothing newer queued is not stale.
+     **/
+    bool isStale() const;
 
     void setDisplayChannels(DisplayChannelsEnum channels, bool bothInputs);
 
@@ -812,6 +900,10 @@ Q_SIGNALS:
 
     void disconnectTextureRequest(int index,bool clearRoD);
 
+    // Emitted queued, so it is safe for it to originate on a render thread. The argument is
+    // the state the viewer entered.
+    void staleChanged(bool stale);
+
     void viewerRenderingStarted();
     void viewerRenderingEnded();
 
@@ -847,6 +939,7 @@ private:
                                  const AbortableRenderInfoPtr& abortInfo,
                                  GpuPlacementSnapshotBuilder* builder);
     void computeMipmapLevels(double zoomFactor, ViewerArgs* outArgs) const;
+    void computeMipmapLevels(double zoomFactor, bool draftOn, ViewerArgs* outArgs) const;
 
     /*******************************************
      ******OVERRIDDEN FROM EFFECT INSTANCE******

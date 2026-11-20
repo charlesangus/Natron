@@ -31,6 +31,7 @@
 #include "Node.h"
 #include "Timer.h" // gettimeofday()
 
+#include "Engine/CacheRetention.h"
 #include "Engine/EffectInstance.h"
 
 #include <atomic>
@@ -181,6 +182,7 @@ public:
         , inputs()
         , guiInputs()
         , effect()
+        , hostedEffect(nullptr)
         , inputsComponents()
         , outputComponents()
         , inputsLabelsMutex()
@@ -244,8 +246,10 @@ public:
         , lastRenderStartedMutex()
         , lastRenderStartedSlotCallTime()
         , renderStartedCounter(0)
-        , inputIsRenderingCounter(0)
-        , lastInputNRenderStartedSlotCallTime()
+        , executionCounts()
+        , inputExecutionCounts(nullptr)
+        , inputExecutionCountBlocks()
+        , freshOutputStamps()
         , nodeIsDequeuing(false)
         , actionsQueued(false)
         , renderStartsHeldByEdits(0)
@@ -314,7 +318,6 @@ public:
     {
         ///Initialize timers
         gettimeofday(&lastRenderStartedSlotCallTime, 0);
-        gettimeofday(&lastInputNRenderStartedSlotCallTime, 0);
     }
 
     void abortPreview_non_blocking();
@@ -390,6 +393,17 @@ public:
 
     //to the inputs in a thread-safe manner.
     EffectInstancePtr effect;  //< the effect hosted by this node
+    // Guards only the pointer: hashes are computed on worker threads while destroyNode() takes the
+    // effect away. effectTeardownMutex cannot serve, as it is held across waits on render threads
+    // that hash this node.
+    mutable QMutex effectPointerMutex;
+
+    EffectInstancePtr effectForWorker() const
+    {
+        QMutexLocker l(&effectPointerMutex);
+
+        return effect;
+    }
 
     ///The accepted components in input and in output of the plug-in
     ///These two are also protected by inputsMutex
@@ -442,6 +456,7 @@ public:
     std::atomic<U64> hashCleanEpoch { 0 };
     // Set while a mark of this node waits for its dependents to be marked too.
     std::atomic<bool> hashDirtyQueued { false };
+    const CacheRetentionSignalsPtr retentionSignals = std::make_shared<CacheRetentionSignals>();
     U64 hashFlushVisit = 0; //< the flush pass that last reached the node; only read and written under the flush mutex
     U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
     U64 hashFlushLeafVisit = 0; //< the flush pass that last marked the node as a leaf; same locking
@@ -535,11 +550,32 @@ public:
     bool keyframesDisplayedOnTimeline;
 
     ///This is to avoid the slots connected to the main-thread to be called too much
-    QMutex lastRenderStartedMutex; //< protects lastRenderStartedSlotCallTime & lastInputNRenderStartedSlotCallTime
+    QMutex lastRenderStartedMutex; //< protects lastRenderStartedSlotCallTime & renderStartedCounter
     timeval lastRenderStartedSlotCallTime;
     int renderStartedCounter;
-    std::vector<int> inputIsRenderingCounter;
-    timeval lastInputNRenderStartedSlotCallTime;
+    std::atomic<int> executionCounts[2];
+
+    struct InputExecutionCounts {
+        explicit InputExecutionCounts(int n)
+            : size(n)
+            , counts(new std::atomic<int>[n]())
+        {
+        }
+
+        const int size;
+        const std::unique_ptr<std::atomic<int>[]> counts;
+    };
+
+    // Render threads read the counts with no lock, so a node gaining inputs publishes a larger block rather than
+    // resizing one a reader may hold; the replaced blocks live as long as the node. Grown on the main thread only.
+    std::atomic<InputExecutionCounts*> inputExecutionCounts;
+    std::vector<std::unique_ptr<InputExecutionCounts>> inputExecutionCountBlocks;
+
+    // Each holds the key of a (frame, time, view) the node's output was computed for (see
+    // FrameRenderContext::noteFreshOutput()). Two keys sharing a slot overwrite each other, which can only miss a
+    // fresh output, never invent one.
+    static constexpr std::size_t kFreshOutputSlots = 8;
+    std::atomic<std::uint64_t> freshOutputStamps[kFreshOutputSlots];
 
     ///True when the node is dequeuing the connectionQueue and no render should be started 'til it is empty
     bool nodeIsDequeuing;
@@ -622,6 +658,9 @@ public:
     // Held by the blocking quit/abort while they use the effect, which may run on any watcher thread
     // listing this node, and while the effect is detached: the effect cannot be freed under them.
     QMutex effectTeardownMutex;
+    // effect's pointer, for threads that only compare it: they must not read the shared_ptr that
+    // teardown swaps out, and taking effectTeardownMutex could wait on a render they are part of.
+    std::atomic<const EffectInstance*> hostedEffect;
     /*
        Used to block render emitions while modifying nodes links
        MT-safe: only accessed/used on main thread

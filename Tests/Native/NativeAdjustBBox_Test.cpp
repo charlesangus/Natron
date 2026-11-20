@@ -44,6 +44,7 @@
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/AdjustBBox.h"
 #include "Engine/Project.h"
@@ -151,13 +152,13 @@ protected:
         }
         connectNodes(source, node, 0, true);
         EXPECT_TRUE(setKnobValues(node, kAdjustBBoxParamNumPixels, { padX, padY }));
-        EXPECT_TRUE(setKnobValue(node, kAdjustBBoxParamBoundary, nearest ? kAdjustBBoxBoundaryNearest : kAdjustBBoxBoundaryBlack));
+        EXPECT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(nearest ? "stretch" : "black")));
 
         return node;
     }
 
     // Expects the region of definition and, over window, the source inside it, filled per the
-    // boundary, and zero outside it.
+    // edge mode, and zero outside it.
     void expectAdjusted(const NodePtr& node,
                         const RectI& expectedRoD,
                         const RectI& window,
@@ -209,6 +210,16 @@ TEST_F(NativeAdjustBBoxTest, PadWithNearest)
     resetProject();
     NodePtr node = makeAdjustBBox(5., 3., true);
     ASSERT_TRUE(bool(node));
+    expectAdjusted(node, RectI(-5, -3, kParitySourceWidth + 5, kParitySourceHeight + 3), RectI(-8, -6, kParitySourceWidth + 8, kParitySourceHeight + 6), true);
+}
+
+// Input follows the source's edge mode, which is Stretch for the parity source.
+TEST_F(NativeAdjustBBoxTest, InputFollowsTheSource)
+{
+    resetProject();
+    NodePtr node = makeAdjustBBox(5., 3., false);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("input")));
     expectAdjusted(node, RectI(-5, -3, kParitySourceWidth + 5, kParitySourceHeight + 3), RectI(-8, -6, kParitySourceWidth + 8, kParitySourceHeight + 6), true);
 }
 

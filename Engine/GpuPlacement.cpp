@@ -41,7 +41,6 @@
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuTransferModel.h"
 #include "Engine/Image.h"
-#include "Engine/ImageKey.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -296,14 +295,23 @@ judgeByWeight(const FrameGraph& graph,
     return accepted ? 1. : -1.;
 }
 
+// A region downscales a full-scale render on the device only where the request pass put the task's inputs at level 0,
+// which it does for an effect pulling them at scale one; any other one would read inputs at the task's own level.
 bool
 isDownscaleUnsupported(const FrameGraph::Task& task,
                        const NativeEffectBase& native)
 {
-    return (task.key.mipmapLevel != 0) && (native.supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
+    return gpuRendersFullScale(task, native) && !native.pullsInputsAtScaleOne();
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+gpuRendersFullScale(const FrameGraph::Task& task,
+                    const EffectInstance& effect)
+{
+    return (task.key.mipmapLevel != 0) && (effect.supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
+}
 
 double
 taskPixelCount(const FrameGraph::Task& task)
@@ -319,7 +327,9 @@ regionTransfersAreFree(const FrameGraph& graph,
                        bool rootOnDevice)
 {
     for (int e : region.externalInputs) {
-        if (graph.tasks[e].device != FrameGraph::Device::Gpu) {
+        const FrameGraph::Task& input = graph.tasks[e];
+        const bool servedFromDevice = input.servedFromCache && (input.servedTier == EffectInstance::OutputCacheTier::Device) && input.deviceMissingRoI.isNull();
+        if ((input.device != FrameGraph::Device::Gpu) && !servedFromDevice) {
             return false;
         }
     }
@@ -713,7 +723,7 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
 
     query->time = task.key.time;
     query->view = task.key.view;
-    query->mappedScale = RenderScale::fromMipmapLevel(task.key.mipmapLevel);
+    query->mappedScale = RenderScale::fromMipmapLevel(gpuRendersFullScale(task, *native) ? 0 : task.key.mipmapLevel);
     query->plane = plane;
     query->nComps = plane.getNumComponents();
     query->bitDepth = task.bitdepth;
@@ -1061,48 +1071,9 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         GpuTransferModel::session().setTransferRates(rates);
     }
 
-    // Looks the cache up as renderRoI's first, non-draft, lookup does. Not knowing which full-scale flag renderRoI
-    // will key with, either counts; a false hit only keeps a task on the CPU.
-    inputs.isCached = [](const FrameGraph::Task& task) -> bool {
-        if (!task.sharesCachedOutput || !task.key.node || !appPTR || task.components.empty()) {
-            return false;
-        }
-        for (int fullScaleWithDownscaleInputs = 0; fullScaleWithDownscaleInputs < 2; ++fullScaleWithDownscaleInputs) {
-            ImageKey key(task.key.node.get(), task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, 1., false,
-                         fullScaleWithDownscaleInputs != 0);
-            std::list<ImagePtr> images;
-            if (!appPTR->getImage(key, &images)) {
-                continue;
-            }
-            bool allLayers = true;
-            for (const ImageLayerDesc& layer : task.components) {
-                bool covered = false;
-                for (const ImagePtr& image : images) {
-                    if (!image || (image->getMipmapLevel() != task.cacheMipmapLevel)) {
-                        continue;
-                    }
-                    const ImageLayerDesc& cached = image->getComponents();
-                    if (!((cached == layer) || (cached.isColorLayer() && layer.isColorLayer()))) {
-                        continue;
-                    }
-                    std::list<RectI> rest;
-                    image->getRestToRender(task.renderedRoI, rest);
-                    if (rest.empty()) {
-                        covered = true;
-                        break;
-                    }
-                }
-                if (!covered) {
-                    allLayers = false;
-                    break;
-                }
-            }
-            if (allLayers) {
-                return true;
-            }
-        }
-
-        return false;
+    // A partial hit of the device tier stays a GPU candidate: a region renders what is missing into the cached image.
+    inputs.isCached = [](const FrameGraph::Task& task) {
+        return task.servedFromCache && task.deviceMissingRoI.isNull();
     };
 
     return inputs;

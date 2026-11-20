@@ -610,9 +610,10 @@ enum DopeSheetItemType {
     eDopeSheetItemTypeKnobRoot,
     eDopeSheetItemTypeKnobDim,
 
-    // A curve host's item (Bezier or stroke), and a Bezier's shape keys under it
+    // A curve host's item (Bezier or stroke), a Bezier's shape keys under it and a stroke's painted frame
     eDopeSheetItemTypeRotoItem,
-    eDopeSheetItemTypeShape
+    eDopeSheetItemTypeShape,
+    eDopeSheetItemTypePaintedFrame
 };
 
 enum CreateNodeReason

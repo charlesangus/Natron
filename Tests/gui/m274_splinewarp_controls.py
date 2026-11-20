@@ -30,11 +30,11 @@ MIN_INK = 40  # pixels on a 2-pixel sampling grid
 PAGES = ("Warp", "Transform", "Render")
 # Where each visible knob lives: the whole warp, what the curve list has selected, how it renders.
 PAGE_KNOBS = {
-    "Warp": ("amount", "invert", "layerAmount", "linkAmount", "boundaryBBox", "cropToFormat", "outputMask", "maskInvert", "mix"),
+    "Warp": ("amount", "invert", "layerAmount", "linkAmount", "boundaryBBox", "cropToFormat", "outputMask", "edgeMode", "maskInvert", "mix"),
     "Transform": ("translate", "rotate", "scale", "uniform", "skewx", "skewy",
                   "skewOrder", "center", "resetTransformCenter", "extraMatrix", "resetTransform"),
     "Render": ("solver", "smoothness", "curveResolution", "boundaryCurveResolution", "fieldResolution",
-               "previewResolution", "filter", "clamp", "black_outside", "bbox", "motionBlur", "shutter",
+               "previewResolution", "filter", "clamp", "bbox", "motionBlur", "shutter",
                "shutterOffset", "shutterCustomOffset"),
 }
 # Canonical rectangles (x0, y0, x1, y1).

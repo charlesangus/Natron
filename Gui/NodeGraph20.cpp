@@ -1116,7 +1116,7 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
     }
     case eEventStateZoomingArea: {
         int delta = 2 * ( ( e->position().x() - _imp->_lastMousePos.x() ) - ( e->position().y() - _imp->_lastMousePos.y() ) );
-        wheelEventInternal(modCASIsControl(e), delta, nullptr);
+        wheelEventInternal(delta, nullptr);
         mustUpdate = true;
         _imp->cursorSet = true;
         setCursor( QCursor(Qt::SizeAllCursor) );

@@ -237,7 +237,8 @@ try:
         p = panel()
         return str(p.property("natronSceneGraphNode")) if p is not None else ""
 
-    def reveal(path):
+    def reveal_now(path):
+        """Opens the rows down to path's, which the model has read, and scrolls to it."""
         index = find(path)
         t = tree()
         parent = index.parent()
@@ -246,6 +247,12 @@ try:
             parent = parent.parent()
         t.scrollTo(index)
         QApplication.processEvents()
+
+    def reveal(path):
+        """reveal_now() once the model, which reads rows on its worker, has read path's."""
+        ok = yield ("until", lambda: find(path).isValid(), POLL_TIMEOUT_S)
+        check(ok, "the panel lists %s" % (path,))
+        reveal_now(path)
 
     def editor_of(c):
         """The editor open on cell c, or None.
@@ -265,7 +272,7 @@ try:
 
     def pick_in_editor(path, label):
         """Opens path's cell editor and picks label in it. False when no editor or no such entry opened."""
-        reveal(path)
+        reveal_now(path)
         t = tree()
         c = cell(path)
         if not c.isValid():
@@ -292,7 +299,7 @@ try:
 
     def pick_in_menu(path, action_name):
         """Opens the row menu on path and triggers the action named action_name, wherever it is in it."""
-        reveal(path)
+        reveal_now(path)
         t = tree()
         index = find(path)
         t.clearSelection()
@@ -355,7 +362,7 @@ try:
         ok = yield ("until", lambda: panel() is not None and panel().isActiveWindow(), POLL_TIMEOUT_S)
         check(ok, "the panel's window is active before input")
         for path in ROWS:
-            reveal(path)
+            yield from reveal(path)
 
         section("defaults")
         label, inherited, italic = shown(WORLD)
@@ -428,7 +435,7 @@ try:
         tree().collapse(find(A))
         QApplication.processEvents()
         yield ("sleep", SETTLE_MS)
-        reveal(LEAF)
+        yield from reveal(LEAF)
         yield ("sleep", SETTLE_MS)
         check(labels() == states, "twirling /World/A changes no state (%r, was %r)" % (labels(), states))
         check(posted() == before, "twirling posts nothing to the viewer (%d, was %d)" % (posted(), before))
@@ -471,7 +478,7 @@ try:
         app.selectNode(other, True)
         ok = yield ("until", lambda: shown_node() == other.getScriptName() and len(rows()) == 1, POLL_TIMEOUT_S)
         require(ok, "the panel shows Other (%r)" % shown_node())
-        reveal(B)
+        yield from reveal(B)
         before = posted()
         check(pick_in_editor(B, "BBox"), "BBox on /World/B with Other shown")
         ok = yield from reached(before)

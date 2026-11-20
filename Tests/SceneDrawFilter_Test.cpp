@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <chrono>
 #include <latch>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -39,6 +40,7 @@
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneDrawFilter.h"
+#include "Engine/Nodes/Scene/StormAddedPrimDedupe.h"
 
 #ifdef emit
 #define NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
@@ -47,6 +49,8 @@
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/filteringSceneIndex.h>
 #include <pxr/imaging/hd/instancerTopologySchema.h>
+#include <pxr/imaging/hd/materialBindingSchema.h>
+#include <pxr/imaging/hd/materialBindingsSchema.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
@@ -58,6 +62,7 @@
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/unitTestNullRenderDelegate.h>
 #include <pxr/imaging/hd/visibilitySchema.h>
+#include <pxr/imaging/hdsi/unboundMaterialPruningSceneIndex.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #ifdef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #undef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
@@ -79,20 +84,24 @@ visible(const HdSceneIndexPrim& prim)
 }
 
 // hides and shows hold every prim that stopped or started being drawn; leftHydra and invisible say
-// which of the hides took the prim out of Hydra and which kept it there, invisible.
+// which of the hides took the prim out of Hydra and which kept it there, invisible. enteredInvisible
+// holds the prims that came into Hydra without being drawn, as a reveal brings them in.
 class Recorder
     : public HdSceneIndexObserver {
 public:
-    void PrimsAdded(const HdSceneIndexBase& /*sender*/,
+    void PrimsAdded(const HdSceneIndexBase& sender,
                     const AddedPrimEntries& entries) override
     {
         for (const AddedPrimEntry& entry : entries) {
             if (entry.primType.IsEmpty()) {
                 hides.insert(entry.primPath.GetString());
                 leftHydra.insert(entry.primPath.GetString());
-            } else {
+            } else if (visible(sender.GetPrim(entry.primPath))) {
                 shows.insert(entry.primPath.GetString());
+            } else {
+                enteredInvisible.insert(entry.primPath.GetString());
             }
+            ++addedEntries;
         }
     }
 
@@ -132,21 +141,25 @@ public:
         shows.clear();
         leftHydra.clear();
         invisible.clear();
+        enteredInvisible.clear();
         removed.clear();
         dirtied.clear();
+        addedEntries = 0;
     }
 
     bool empty() const
     {
-        return hides.empty() && shows.empty() && removed.empty() && dirtied.empty();
+        return hides.empty() && shows.empty() && enteredInvisible.empty() && removed.empty() && dirtied.empty();
     }
 
     PathSet hides;
     PathSet shows;
     PathSet leftHydra;
     PathSet invisible;
+    PathSet enteredInvisible;
     PathSet removed;
     PathSet dirtied;
+    std::size_t addedEntries = 0;
 };
 
 HdContainerDataSourceHandle
@@ -1549,11 +1562,11 @@ namespace {
 class ShowOrder
     : public HdSceneIndexObserver {
 public:
-    void PrimsAdded(const HdSceneIndexBase& /*sender*/,
+    void PrimsAdded(const HdSceneIndexBase& sender,
                     const AddedPrimEntries& entries) override
     {
         for (const AddedPrimEntry& entry : entries) {
-            if (!entry.primType.IsEmpty()) {
+            if (!entry.primType.IsEmpty() && visible(sender.GetPrim(entry.primPath))) {
                 shown.push_back(entry.primPath.GetString());
             }
         }
@@ -1776,7 +1789,8 @@ TEST_F(SceneDrawFilterTest, WhatALoadAllBringsInJoinsAReveal)
     addPayload(scene);
 
     EXPECT_TRUE(filter->isRevealing());
-    EXPECT_EQ((PathSet { "/World/a/payload/p1", "/World/a/payload/p2" }), recorder.leftHydra);
+    EXPECT_EQ((PathSet { "/World/a/payload/p1", "/World/a/payload/p2" }), recorder.enteredInvisible);
+    EXPECT_TRUE(recorder.leftHydra.empty());
     EXPECT_EQ((PathSet { "/World/a/payload", "/World/a/payload/lamp" }), recorder.shows);
     EXPECT_FALSE(drawn("/World/a/payload/p1"));
 
@@ -1839,6 +1853,131 @@ TEST_F(SceneDrawFilterTest, BoxingTheRowOfALoadAllLeavesWhatArrivesBoxed)
     EXPECT_FALSE(drawn("/World/a/payload/p1"));
     EXPECT_FALSE(drawn("/World/a/payload/p2"));
     EXPECT_TRUE(drawn("/World/a/payload/lamp"));
+}
+
+// What keeps a reveal's steps cheap in Storm: its prims enter the render index once, at its start,
+// and every step after only changes visibility, so the draw batches are not rebuilt step by step.
+TEST_F(SceneDrawFilterTest, ARevealBringsItsPrimsInOnceAndThenOnlyChangesVisibility)
+{
+    CountingRenderDelegate delegate;
+    std::unique_ptr<HdRenderIndex> index(HdRenderIndex::New(&delegate, HdDriverVector()));
+    ASSERT_TRUE(index != nullptr);
+    index->InsertSceneIndex(filter, SdfPath::AbsoluteRootPath());
+    const SdfPathVector meshes = { SdfPath("/World/a/m1"), SdfPath("/World/a/deep/m2"), SdfPath("/World/b/m3"), SdfPath("/World/c") };
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    for (const SdfPath& mesh : meshes) {
+        ASSERT_FALSE(index->GetRprim(mesh)) << mesh;
+    }
+    recorder.reset();
+    const unsigned long long insertedBefore = filter->getInsertedSentCount();
+    const int destroyedBefore = delegate.rprimsDestroyed;
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+
+    EXPECT_TRUE(filter->isRevealing());
+    EXPECT_EQ(kAllGeometry, recorder.enteredInvisible);
+    EXPECT_EQ(kAllGeometry.size(), recorder.addedEntries);
+    EXPECT_TRUE(recorder.shows.empty());
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_EQ(kAllGeometry.size(), filter->getInsertedSentCount() - insertedBefore);
+    HdChangeTracker& tracker = index->GetChangeTracker();
+    for (const SdfPath& mesh : meshes) {
+        ASSERT_TRUE(index->GetRprim(mesh)) << mesh;
+        EXPECT_FALSE(index->GetSceneDelegateForRprim(mesh)->GetVisible(mesh)) << mesh;
+        tracker.MarkRprimClean(mesh);
+    }
+    const unsigned indexVersion = tracker.GetRprimIndexVersion();
+    const unsigned visibilityChanges = tracker.GetVisibilityChangeCount();
+    const unsigned long long shownBefore = filter->getShownSentCount();
+    recorder.reset();
+
+    std::size_t steps = 0;
+    while (filter->isRevealing()) {
+        filter->stepReveal(1);
+        ++steps;
+    }
+
+    EXPECT_LE(kAllGeometry.size(), steps);
+    EXPECT_EQ(indexVersion, tracker.GetRprimIndexVersion());
+    EXPECT_NE(visibilityChanges, tracker.GetVisibilityChangeCount());
+    EXPECT_EQ(0u, recorder.addedEntries);
+    EXPECT_EQ(kAllGeometry, recorder.shows);
+    EXPECT_EQ(kAllGeometry.size(), filter->getShownSentCount() - shownBefore);
+    EXPECT_EQ(kAllGeometry.size(), filter->getInsertedSentCount() - insertedBefore);
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+    for (const SdfPath& mesh : meshes) {
+        EXPECT_NE(0u, tracker.GetRprimDirtyBits(mesh) & HdChangeTracker::DirtyVisibility) << mesh;
+        EXPECT_TRUE(index->GetSceneDelegateForRprim(mesh)->GetVisible(mesh)) << mesh;
+    }
+    EXPECT_EQ(destroyedBefore, delegate.rprimsDestroyed);
+}
+
+TEST_F(SceneDrawFilterTest, BoxingARevealMidwayKeepsWhatItBroughtInInvisible)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(2);
+    const PathSet announced = recorder.shows;
+    ASSERT_EQ(2u, announced.size());
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_EQ(announced, recorder.invisible);
+    EXPECT_TRUE(recorder.leftHydra.empty());
+    EXPECT_EQ(0u, recorder.addedEntries);
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_EQ(kAllGeometry.size(), filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, HidingARevealMidwayTakesEverythingItBroughtInOut)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(2);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_EQ(kAllGeometry, recorder.leftHydra);
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, HidingARowDuringARevealTakesOnlyItOutAndTheRevealFinishes)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(1);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateHidden), 1);
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2" }), recorder.leftHydra);
+    revealAll(*filter, 1);
+
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), drawnGeometry());
+    EXPECT_TRUE(recorder.enteredInvisible.empty());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, ARowBoxedAndClearedDuringARevealIsShownWithoutEnteringHydraAgain)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(1);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox), 1);
+    filter->applyDelta(states.clearState("/World/b"), 1);
+    revealAll(*filter, 1);
+
+    EXPECT_EQ(0u, recorder.addedEntries);
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
 }
 
 TEST_F(SceneDrawFilterTest, AStepStopsAtItsDeadline)
@@ -1910,13 +2049,29 @@ TEST(SceneRevealPacerTest, BatchesFillTheTargetFrame)
     EXPECT_NEAR(3300., double(pacer.nextBatch()), 33.);
 }
 
-TEST(SceneRevealPacerTest, TheFixedPartOfAFrameIsLeftOutOfTheBatch)
+TEST(SceneRevealPacerTest, ThePrimsGetWhatTheFixedPartLeavesOfTheTarget)
 {
     SceneRevealPacer pacer(33., 1024);
     pace(pacer, 10., 0.001, 30);
 
     EXPECT_NEAR(23000., double(pacer.nextBatch()), 230.);
     EXPECT_NEAR(10., pacer.getFixedMs(), 0.1);
+    EXPECT_NEAR(0.001, pacer.getPerPrimMs(), 1e-5);
+}
+
+TEST(SceneRevealPacerTest, AFixedPartBeyondTheTargetTakesABatchWhosePrimWorkIsAtMostTheFixedPart)
+{
+    SceneRevealPacer pacer(33., 1024);
+    const double fixedMs = 50.;
+    const double perPrimMs = 0.01;
+    const std::vector<std::size_t> batches = pace(pacer, fixedMs, perPrimMs, 30);
+
+    EXPECT_NEAR(5000., double(batches.back()), 50.);
+    EXPECT_NEAR(fixedMs, pacer.getFixedMs(), 0.5);
+    for (std::size_t i = 8; i < batches.size(); ++i) {
+        EXPECT_LE(perPrimMs * double(batches[i]), 1.01 * fixedMs) << "frame " << i;
+        EXPECT_LE(fixedMs + perPrimMs * double(batches[i]), 2.02 * fixedMs) << "frame " << i;
+    }
 }
 
 TEST(SceneRevealPacerTest, AFasterMachineTakesLargerBatches)
@@ -1929,27 +2084,559 @@ TEST(SceneRevealPacerTest, AFasterMachineTakesLargerBatches)
     EXPECT_GT(manyCore.nextBatch(), 5 * modest.nextBatch());
 }
 
-TEST(SceneRevealPacerTest, AFrameTheFixedPartFillsSpendsAsMuchAgainOnTheReveal)
+TEST(SceneRevealPacerTest, AFixedPartManyTimesTheTargetKeepsAFillShortAtAboutTwiceTheFixedPart)
 {
     SceneRevealPacer pacer(33., 1024);
-    const std::vector<std::size_t> batches = pace(pacer, 600., 0.0006, 30);
+    const double fixedMs = 600.;
+    const double perPrimMs = 0.0006;
+    const std::vector<std::size_t> batches = pace(pacer, fixedMs, perPrimMs, 30);
 
-    for (std::size_t i = 1; i < batches.size(); ++i) {
-        EXPECT_LE(batches[i], 2 * batches[i - 1]);
+    EXPECT_NEAR(1000000., double(batches.back()), 10000.);
+    EXPECT_NEAR(fixedMs, pacer.getFixedMs(), 1.);
+    for (std::size_t i = 16; i < batches.size(); ++i) {
+        EXPECT_LE(fixedMs + perPrimMs * double(batches[i]), 2.02 * fixedMs) << "frame " << i;
     }
-    EXPECT_NEAR(1e6, double(pacer.nextBatch()), 1e4);
 }
 
-TEST(SceneRevealPacerTest, ASlowFrameShrinksTheBatchByAQuarterAtMost)
+// A fill whose frames cost a part per prim admitted and a fixed part per prim Hydra already holds.
+TEST(SceneRevealPacerTest, AFillsBatchStaysBoundedAsItsFixedPartGrowsWithThePrimsHydraHolds)
+{
+    const double targetMs = 33.;
+    const double perPrimMs = 0.01;
+    const double fixedPerHeldMs = 0.0001;
+    SceneRevealPacer pacer(targetMs, 1024);
+    std::size_t held = 0;
+    bool fixedFilled = false;
+    int frames = 0;
+    for (; held < 400000; ++frames) {
+        ASSERT_LT(frames, 100000);
+        const std::size_t batch = pacer.nextBatch();
+        ASSERT_GE(batch, 1u);
+        const double fixedMs = fixedPerHeldMs * double(held + batch);
+        const double primMs = perPrimMs * double(batch);
+        // The first frames double and halve the batch to tell the two parts apart.
+        if (frames >= 3) {
+            if (fixedMs + perPrimMs * double(SceneRevealPacer::kMinBatch) <= targetMs) {
+                EXPECT_LE(fixedMs + primMs, 1.05 * targetMs) << "frame " << frames << " batch " << batch;
+            } else if (fixedMs >= targetMs) {
+                fixedFilled = true;
+                EXPECT_LE(primMs, 1.05 * fixedMs + 1.) << "frame " << frames << " batch " << batch;
+                EXPECT_LE(fixedMs + primMs, 2.1 * fixedMs + 1.) << "frame " << frames << " batch " << batch;
+            }
+        }
+        pacer.observe(batch, fixedMs + primMs);
+        held += batch;
+    }
+    EXPECT_TRUE(fixedFilled);
+    EXPECT_LT(frames, 1000);
+    EXPECT_NEAR(perPrimMs, pacer.getPerPrimMs(), 0.1 * perPrimMs);
+}
+
+TEST(SceneRevealPacerTest, ASlowFirstFrameHalvesTheBatch)
 {
     SceneRevealPacer pacer(33., 1024);
     pacer.observe(1024, 10000.);
 
-    EXPECT_EQ(256u, pacer.nextBatch());
+    EXPECT_EQ(512u, pacer.nextBatch());
     pacer.observe(0, 50.);
-    EXPECT_EQ(256u, pacer.nextBatch());
+    EXPECT_EQ(512u, pacer.nextBatch());
     for (int i = 0; i < 20; ++i) {
         pacer.observe(pacer.nextBatch(), 10000.);
     }
     EXPECT_GE(pacer.nextBatch(), 1u);
+}
+
+namespace {
+SceneDrawFilter::Order
+rowsOf(const std::vector<const char*>& paths)
+{
+    std::vector<SdfPath> rows;
+    for (const char* path : paths) {
+        rows.push_back(SdfPath(path));
+    }
+
+    return std::make_shared<const std::vector<SdfPath>>(std::move(rows));
+}
+
+void
+addPrims(const HdRetainedSceneIndexRefPtr& scene,
+         const std::vector<std::pair<const char*, TfToken>>& prims)
+{
+    HdRetainedSceneIndex::AddedPrimEntries entries;
+    for (const auto& prim : prims) {
+        entries.push_back({ SdfPath(prim.first), prim.second, someData() });
+    }
+    scene->AddPrims(entries);
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, AdmittingKeepsGeometryOutOfHydraUntilAdmittedInTheOrderGiven)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+
+    EXPECT_TRUE(recorder.empty());
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/c")).primType.IsEmpty());
+    EXPECT_EQ(HdPrimTypeTokens->material, filter->GetPrim(SdfPath("/World/a/Looks/mat")).primType);
+    EXPECT_EQ(HdPrimTypeTokens->camera, filter->GetPrim(SdfPath("/World/cam")).primType);
+    EXPECT_EQ(kAllGeometry.size(), filter->pendingCount());
+    EXPECT_TRUE(filter->isFilling());
+    EXPECT_TRUE(filter->hasPendingAt(SdfPath("/World/b")));
+
+    const SceneDrawFilter::Order rows = rowsOf({ "/World/c", "/World/b", "/World/a" });
+    EXPECT_EQ(1u, filter->admit(rows, 1));
+    EXPECT_EQ((PathSet { "/World/c" }), drawnGeometry());
+    EXPECT_EQ((PathSet { "/World/c" }), recorder.shows);
+    EXPECT_EQ(1u, recorder.addedEntries);
+    recorder.reset();
+
+    EXPECT_EQ(2u, filter->admit(rows, 2));
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball" }), recorder.shows);
+    EXPECT_EQ(2u, recorder.addedEntries);
+    EXPECT_FALSE(filter->hasPendingAt(SdfPath("/World/b")));
+    recorder.reset();
+
+    EXPECT_EQ(1u, filter->admit(rows, 1));
+    EXPECT_EQ(1u, recorder.addedEntries);
+    EXPECT_EQ(1u, filter->admit(rows, 1));
+    EXPECT_FALSE(filter->hasPendingAt(SdfPath("/World/a")));
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2", "/World/b/m3", "/World/b/ball", "/World/c" }), drawnGeometry());
+    EXPECT_EQ(5u, filter->admittedCount());
+    EXPECT_EQ(1u, filter->pendingCount());
+
+    // Past the order, what is left comes in the input's order.
+    EXPECT_EQ(1u, filter->admit(rows, 10));
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_FALSE(filter->isFilling());
+    EXPECT_EQ(kAllGeometry.size(), filter->admittedCount());
+    recorder.reset();
+    EXPECT_EQ(0u, filter->admit(rows, 10));
+    EXPECT_TRUE(recorder.empty());
+}
+
+TEST_F(SceneDrawFilterTest, EachAdmissionAnnouncesAtMostItsBatch)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+
+    std::size_t admitted = 0;
+    for (int i = 0; filter->isFilling() && (i < 10); ++i) {
+        recorder.reset();
+        const std::size_t batch = filter->admit(SceneDrawFilter::Order(), 4);
+        EXPECT_LE(batch, 4u);
+        EXPECT_EQ(batch, recorder.addedEntries);
+        admitted += batch;
+    }
+    EXPECT_EQ(kAllGeometry.size(), admitted);
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+}
+
+TEST_F(SceneDrawFilterTest, AFixedFillBatchAdmitsExactlyThatManyEachPass)
+{
+    std::vector<std::string> paths;
+    std::vector<std::pair<const char*, TfToken>> city = { { "/World/city", TfToken("xform") } };
+    for (int i = 0; i < 34; ++i) {
+        paths.push_back("/World/city/m" + std::to_string(i));
+    }
+    for (const std::string& path : paths) {
+        city.push_back({ path.c_str(), HdPrimTypeTokens->mesh });
+    }
+    addPrims(scene, city);
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    const std::size_t total = filter->pendingCount();
+    ASSERT_EQ(kAllGeometry.size() + paths.size(), total);
+    const std::size_t batch = 8;
+
+    std::size_t passes = 0;
+    while (filter->isFilling() && (passes < 100)) {
+        const std::size_t pending = filter->pendingCount();
+        recorder.reset();
+        const std::size_t admitted = filter->admit(SceneDrawFilter::Order(), batch);
+        ++passes;
+        EXPECT_EQ((std::min)(batch, pending), admitted) << "pass " << passes;
+        EXPECT_EQ(admitted, recorder.addedEntries) << "pass " << passes;
+    }
+    EXPECT_EQ((total + batch - 1) / batch, passes);
+    EXPECT_EQ(total, filter->admittedCount());
+}
+
+TEST_F(SceneDrawFilterTest, DirtiesOfWaitingPrimsAreDropped)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(rowsOf({ "/World/a/m1" }), 1);
+    recorder.reset();
+    const HdDataSourceLocatorSet all { HdDataSourceLocator::EmptyLocator() };
+
+    scene->DirtyPrims({ { SdfPath("/World/a/m1"), all }, { SdfPath("/World/a/Looks/mat"), all }, { SdfPath("/World/b/m3"), all } });
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/Looks/mat" }), recorder.dirtied);
+}
+
+TEST_F(SceneDrawFilterTest, WhatALoadBringsInWaitsToBeAdmittedAndItsLightsComeAtOnce)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(SceneDrawFilter::Order(), 100);
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateLoadAll), 1);
+    recorder.reset();
+
+    addPayload(scene);
+
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_EQ((PathSet { "/World/a/payload/p1", "/World/a/payload/p2" }), recorder.leftHydra);
+    EXPECT_EQ((PathSet { "/World/a/payload", "/World/a/payload/lamp" }), recorder.shows);
+    EXPECT_EQ(2u, filter->pendingCount());
+    EXPECT_EQ(0u, filter->admittedCount());
+
+    EXPECT_EQ(1u, filter->admit(rowsOf({ "/World/a/payload" }), 1));
+    EXPECT_NE(drawn("/World/a/payload/p1"), drawn("/World/a/payload/p2"));
+    EXPECT_EQ(1u, filter->admit(rowsOf({ "/World/a/payload" }), 1));
+    EXPECT_TRUE(drawn("/World/a/payload/p1"));
+    EXPECT_TRUE(drawn("/World/a/payload/p2"));
+    EXPECT_FALSE(filter->isFilling());
+}
+
+TEST_F(SceneDrawFilterTest, WhatHydraHoldsFollowsTheRulesAtOnceAndWhatItLacksWaitsAgain)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(rowsOf({ "/World/c" }), 1);
+
+    filter->applyDelta(states.setState("/World/c", eSceneDrawStateBBox));
+    EXPECT_FALSE(drawn("/World/c"));
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+    EXPECT_EQ(3u, filter->pendingCount());
+    EXPECT_FALSE(filter->hasPendingAt(SdfPath("/World/b")));
+    recorder.reset();
+
+    filter->applyDelta(states.clearAllStates());
+
+    EXPECT_EQ((PathSet { "/World/c" }), recorder.shows);
+    EXPECT_TRUE(recorder.enteredInvisible.empty());
+    EXPECT_EQ((PathSet { "/World/c" }), drawnGeometry());
+    EXPECT_EQ(5u, filter->pendingCount());
+}
+
+TEST_F(SceneDrawFilterTest, APrimResyncedWhileAdmittingComesBackAsHydraHeldIt)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(SceneDrawFilter::Order(), 100);
+    filter->endRender();
+    recorder.reset();
+    const std::vector<std::pair<const char*, TfToken>> b = { { "/World/b", TfToken("xform") }, { "/World/b/m3", HdPrimTypeTokens->mesh }, { "/World/b/ball", HdPrimTypeTokens->sphere } };
+
+    scene->RemovePrims({ SdfPath("/World/b") });
+    addPrims(scene, b);
+
+    EXPECT_TRUE(drawn("/World/b/m3"));
+    EXPECT_TRUE(drawn("/World/b/ball"));
+    EXPECT_TRUE(recorder.leftHydra.empty());
+    EXPECT_FALSE(filter->isFilling());
+    filter->endRender();
+
+    scene->RemovePrims({ SdfPath("/World/b") });
+    filter->endRender();
+    addPrims(scene, b);
+
+    EXPECT_FALSE(drawn("/World/b/m3"));
+    EXPECT_EQ(2u, filter->pendingCount());
+}
+
+TEST_F(SceneDrawFilterTest, AnInstancerComesInWithItsPrototypesAndItsMaskGrowsAsItsInstancesAreAdmitted)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(SceneDrawFilter::Order(), 100);
+    addInstances(scene);
+    const char* const prototype = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype/m";
+
+    EXPECT_TRUE(filter->GetPrim(SdfPath(kNativeInstancer)).primType.IsEmpty());
+    EXPECT_FALSE(drawn(prototype));
+    EXPECT_EQ(5u, filter->pendingCount());
+    EXPECT_TRUE(filter->hasPendingAt(SdfPath("/World/a")));
+    recorder.reset();
+
+    const SceneDrawFilter::Order rows = rowsOf({ "/World/b/i3", "/World/a/i1" });
+    EXPECT_EQ(2u, filter->admit(rows, 1));
+    EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kNativeInstancer)).primType);
+    EXPECT_TRUE(drawn(prototype));
+    EXPECT_EQ((std::vector<bool> { false, false, true }), maskOf(*filter, kNativeInstancer));
+    EXPECT_FALSE(filter->hasPendingAt(SdfPath("/World/b")));
+    recorder.reset();
+
+    // Instances count a prim a batch of kInstancesPerPrim, so the rest come in one call.
+    filter->admit(rows, 1);
+    EXPECT_TRUE(maskOf(*filter, kNativeInstancer).empty());
+    EXPECT_EQ(1u, recorder.dirtied.count(kNativeInstancer));
+    EXPECT_FALSE(filter->isFilling());
+    EXPECT_EQ(5u, filter->admittedCount());
+}
+
+TEST_F(SceneDrawFilterTest, AManyInstancesInstancerUnmasksABatchOfInstancesACall)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(SceneDrawFilter::Order(), 100);
+    const std::size_t count = 3 * SceneDrawFilter::kInstancesPerPrim;
+    std::vector<std::string> locations;
+    for (std::size_t i = 0; i < count; ++i) {
+        locations.push_back("/World/many/i" + std::to_string(i));
+    }
+    scene->AddPrims({ { SdfPath("/World/many"), TfToken("xform"), someData() } });
+    scene->AddPrims({ { SdfPath(kNativeInstancer), HdPrimTypeTokens->instancer, instancerData(locations) } });
+    const auto shownInstances = [this, count]() {
+        const std::vector<bool> mask = maskOf(*filter, kNativeInstancer);
+
+        return mask.empty() ? count : std::size_t(std::count(mask.begin(), mask.end(), true));
+    };
+
+    EXPECT_EQ(1u, filter->admit(SceneDrawFilter::Order(), 1));
+    EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kNativeInstancer)).primType);
+    EXPECT_EQ(0u, shownInstances());
+    for (std::size_t batch = 1; batch <= 3; ++batch) {
+        EXPECT_EQ(1u, filter->admit(SceneDrawFilter::Order(), 1));
+        EXPECT_EQ(batch * SceneDrawFilter::kInstancesPerPrim, shownInstances());
+    }
+    EXPECT_FALSE(filter->isFilling());
+}
+
+TEST_F(SceneDrawFilterTest, AnInstanceTheRulesHideWaitsForNothingAndTurningAdmittingOffLetsEverythingIn)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    addInstances(scene);
+
+    // Four rprims, the instancer and its prototype, and the instance below /World/b.
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+    EXPECT_EQ(7u, filter->pendingCount());
+
+    filter->setAdmitting(false);
+    EXPECT_FALSE(filter->isFilling());
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), drawnGeometry());
+    EXPECT_EQ((std::vector<bool> { false, false, true }), maskOf(*filter, kNativeInstancer));
+}
+
+TEST_F(SceneDrawFilterTest, WhileAdmittingOnlyAdmitLetsGeometryInWhateverTheLoadsAndRulesDo)
+{
+    const std::size_t paced = static_cast<std::size_t>(-1);
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->setAdmitting(true);
+    EXPECT_EQ(kAllGeometry.size(), filter->pendingCount());
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateLoadAll), paced);
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateLoadAll), 1);
+    filter->applyDelta(states.setState("/World/c", eSceneDrawStateLoadAll), 0);
+    addPayload(scene);
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 0);
+    filter->replaceRules(SceneDrawFilter::Rules());
+    filter->setAdmitting(true);
+
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_FALSE(drawn("/World/a/payload/p1"));
+    EXPECT_FALSE(drawn("/World/a/payload/p2"));
+    EXPECT_TRUE(recorder.enteredInvisible.empty());
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_EQ(kAllGeometry.size() + 2, filter->pendingCount());
+    EXPECT_EQ(0u, filter->admittedCount());
+
+    EXPECT_EQ(1u, filter->admit(SceneDrawFilter::Order(), 1));
+    EXPECT_EQ(kAllGeometry.size() + 1, filter->pendingCount());
+}
+
+namespace {
+// Each path's adds in the order they came, by type, and the locators each path was dirtied on.
+class AddCounter
+    : public HdSceneIndexObserver {
+public:
+    void PrimsAdded(const HdSceneIndexBase& /*sender*/,
+                    const AddedPrimEntries& entries) override
+    {
+        for (const AddedPrimEntry& entry : entries) {
+            adds[entry.primPath.GetString()].push_back(entry.primType);
+        }
+        entriesAdded += entries.size();
+    }
+
+    void PrimsRemoved(const HdSceneIndexBase& /*sender*/,
+                      const RemovedPrimEntries& /*entries*/) override
+    {
+    }
+
+    void PrimsDirtied(const HdSceneIndexBase& /*sender*/,
+                      const DirtiedPrimEntries& entries) override
+    {
+        for (const DirtiedPrimEntry& entry : entries) {
+            dirtied[entry.primPath.GetString()].insert(entry.dirtyLocators);
+        }
+    }
+
+    void PrimsRenamed(const HdSceneIndexBase& sender,
+                      const RenamedPrimEntries& entries) override
+    {
+        ConvertPrimsRenamedToRemovedAndAdded(sender, entries, this);
+    }
+
+    std::size_t addsOf(const std::string& path) const
+    {
+        const auto found = adds.find(path);
+
+        return (found == adds.end()) ? 0 : found->second.size();
+    }
+
+    std::map<std::string, std::vector<TfToken>> adds;
+    std::map<std::string, HdDataSourceLocatorSet> dirtied;
+    std::size_t entriesAdded = 0;
+};
+
+const HdDataSourceLocatorSet&
+maskLocator()
+{
+    static const HdDataSourceLocatorSet locator { HdInstancerTopologySchema::GetDefaultLocator().Append(HdInstancerTopologySchemaTokens->mask) };
+
+    return locator;
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, AFillAddsEachPrimOnceAndItsInstancesOnlyChangeTheMask)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    AddCounter counter;
+    filter->AddObserver(HdSceneIndexObserverPtr(&counter));
+    const std::size_t count = 3 * SceneDrawFilter::kInstancesPerPrim;
+    std::vector<std::string> locations;
+    for (std::size_t i = 0; i < count; ++i) {
+        locations.push_back("/World/many/i" + std::to_string(i));
+    }
+    scene->AddPrims({ { SdfPath("/World/many"), TfToken("xform"), someData() } });
+    scene->AddPrims({ { SdfPath(kNativeInstancer), HdPrimTypeTokens->instancer, instancerData(locations) } });
+    // The instancer arrives waiting, so Hydra first holds it untyped.
+    EXPECT_EQ((std::vector<TfToken> { TfToken() }), counter.adds[kNativeInstancer]);
+    const std::size_t placeholders = counter.entriesAdded;
+    counter.adds.clear();
+    counter.entriesAdded = 0;
+
+    std::size_t batches = 0;
+    for (; filter->isFilling() && (batches < 100); ++batches) {
+        const std::size_t before = counter.entriesAdded;
+        filter->admit(SceneDrawFilter::Order(), 1);
+        EXPECT_LE(counter.entriesAdded - before, 1u);
+    }
+
+    EXPECT_FALSE(filter->isFilling());
+    EXPECT_GT(batches, kAllGeometry.size() + 1);
+    PathSet geometry = kAllGeometry;
+    geometry.insert(kNativeInstancer);
+    EXPECT_EQ(geometry.size(), counter.entriesAdded);
+    for (const std::string& path : geometry) {
+        ASSERT_EQ(1u, counter.addsOf(path)) << path;
+        EXPECT_FALSE(counter.adds[path].front().IsEmpty()) << path;
+    }
+    EXPECT_EQ(geometry.size(), counter.adds.size());
+    EXPECT_EQ(maskLocator(), counter.dirtied[kNativeInstancer]);
+    EXPECT_TRUE(maskOf(*filter, kNativeInstancer).empty());
+    EXPECT_EQ(2u, placeholders);
+}
+
+TEST_F(SceneDrawFilterTest, AdmittingAManyInstancesRowDoesNotWalkWhatItAdmittedAgain)
+{
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    filter->admit(SceneDrawFilter::Order(), 100);
+    const std::size_t count = 4 * SceneDrawFilter::kInstancesPerPrim;
+    std::vector<std::string> locations;
+    for (std::size_t i = 0; i < count; ++i) {
+        locations.push_back("/World/many/i" + std::to_string(i));
+    }
+    scene->AddPrims({ { SdfPath("/World/many"), TfToken("xform"), someData() } });
+    scene->AddPrims({ { SdfPath(kNativeInstancer), HdPrimTypeTokens->instancer, instancerData(locations) } });
+    const SceneDrawFilter::Order rows = rowsOf({ "/World/many" });
+    const auto shownInstances = [this, count]() {
+        const std::vector<bool> mask = maskOf(*filter, kNativeInstancer);
+
+        return mask.empty() ? count : std::size_t(std::count(mask.begin(), mask.end(), true));
+    };
+
+    EXPECT_TRUE(filter->hasPendingAt(SdfPath("/World/many")));
+    std::size_t shown = 0;
+    while (filter->hasPendingAt(SdfPath("/World/many"))) {
+        filter->admit(rows, 1);
+        ASSERT_GT(shownInstances(), shown);
+        shown = shownInstances();
+        // Asked about other rows in between, as the viewer does for its stand-ins.
+        filter->hasPendingAt(SdfPath("/World"));
+        filter->hasPendingAt(SdfPath("/World/many/i0"));
+    }
+    EXPECT_EQ(count, shownInstances());
+    EXPECT_FALSE(filter->isFilling());
+
+    // Seeding makes every instance wait again, behind where the scans stopped as much as ahead.
+    filter->seedRules(SceneDrawFilter::Rules());
+    EXPECT_TRUE(filter->hasPendingAt(SdfPath("/World/many")));
+    EXPECT_TRUE(filter->hasPendingAt(SdfPath("/World/many/i0")));
+    for (int i = 0; filter->hasPendingAt(SdfPath("/World/many")) && (i < 100); ++i) {
+        filter->admit(rows, 1);
+    }
+    EXPECT_FALSE(filter->hasPendingAt(SdfPath("/World/many")));
+    EXPECT_EQ(count, shownInstances());
+}
+
+namespace {
+HdContainerDataSourceHandle
+boundTo(const char* material)
+{
+    const HdDataSourceBaseHandle binding = HdMaterialBindingSchema::Builder().SetPath(HdRetainedTypedSampledDataSource<SdfPath>::New(SdfPath(material))).Build();
+
+    return HdRetainedContainerDataSource::New(HdMaterialBindingsSchema::GetSchemaToken(), HdRetainedContainerDataSource::New(HdMaterialBindingsSchemaTokens->allPurpose, binding));
+}
+} // anon namespace
+
+// Storm prunes a material no drawn prim binds, and adds it back once for each prim of the notice
+// that binds it; the dedupe ahead of its dependency forwarding makes that one add.
+TEST(StormAddedPrimDedupeTest, AMaterialAPrimBatchBindsAddsOnceThroughStormsPruningOfUnboundMaterials)
+{
+    HdRetainedSceneIndexRefPtr scene = HdRetainedSceneIndex::New();
+    const char* const material = "/World/Looks/mat";
+    scene->AddPrims({ { SdfPath("/World"), TfToken("xform"), someData() },
+                      { SdfPath("/World/Looks"), TfToken("scope"), someData() },
+                      { SdfPath(material), HdPrimTypeTokens->material, someData() },
+                      { SdfPath("/World/g"), TfToken("xform"), someData() } });
+    const std::size_t meshes = 8;
+    for (std::size_t i = 0; i < meshes; ++i) {
+        scene->AddPrims({ { SdfPath("/World/g/m" + std::to_string(i)), HdPrimTypeTokens->mesh, boundTo(material) } });
+    }
+    TfRefPtr<SceneDrawFilter> filter = SceneDrawFilter::New(scene);
+    filter->setAdmitting(true);
+    filter->seedRules(SceneDrawFilter::Rules());
+    const HdContainerDataSourceHandle args = HdRetainedContainerDataSource::New(
+        HdsiUnboundMaterialPruningSceneIndexTokens->materialBindingPurposes,
+        HdRetainedTypedSampledDataSource<VtArray<TfToken>>::New(VtArray<TfToken> { HdMaterialBindingsSchemaTokens->allPurpose }));
+    const HdSceneIndexBaseRefPtr pruning = HdsiUnboundMaterialPruningSceneIndex::New(filter, args);
+    const HdSceneIndexBaseRefPtr dedupe = StormAddedPrimDedupe::New(pruning);
+    AddCounter fromPruning;
+    AddCounter fromDedupe;
+    pruning->AddObserver(HdSceneIndexObserverPtr(&fromPruning));
+    dedupe->AddObserver(HdSceneIndexObserverPtr(&fromDedupe));
+    EXPECT_TRUE(dedupe->GetPrim(SdfPath(material)).primType.IsEmpty());
+
+    EXPECT_EQ(meshes, filter->admit(SceneDrawFilter::Order(), meshes));
+
+    EXPECT_GE(fromPruning.addsOf(material), 1u);
+    EXPECT_EQ((std::vector<TfToken> { HdPrimTypeTokens->material }), fromDedupe.adds[material]);
+    EXPECT_EQ(HdPrimTypeTokens->material, dedupe->GetPrim(SdfPath(material)).primType);
+    for (std::size_t i = 0; i < meshes; ++i) {
+        EXPECT_EQ(1u, fromDedupe.addsOf("/World/g/m" + std::to_string(i)));
+    }
+    EXPECT_EQ(meshes + 1, fromDedupe.entriesAdded);
+    EXPECT_FALSE(filter->isFilling());
+
+    // Later prims bound to it leave the material alone.
+    scene->AddPrims({ { SdfPath("/World/g/late"), HdPrimTypeTokens->mesh, boundTo(material) } });
+    filter->admit(SceneDrawFilter::Order(), 1);
+    EXPECT_EQ(1u, fromDedupe.addsOf(material));
 }

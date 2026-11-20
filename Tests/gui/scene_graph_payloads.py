@@ -161,6 +161,17 @@ try:
     def names_under(path):
         return [str(i.data()) for i in rows(find(path))]
 
+    def opened(*paths):
+        """A poll that opens each of paths once the model has read its row, true when all are open."""
+        def step():
+            for path in paths:
+                index = find(path)
+                if not index.isValid():
+                    return False
+                tree().expand(index)
+            return True
+        return step
+
     def opened_buildings():
         """The payload files of the fixture that are open in the process."""
         names = []
@@ -260,8 +271,9 @@ try:
 
         # Listed unloaded.
         check(opened_buildings() == [], "opening the scene opens no building's layer (got %r)" % (opened_buildings(),))
-        for path in (WORLD, BLOCK0, BLOCK1):
-            tree().expand(find(path))
+        ok = yield ("until", lambda: opened(WORLD, BLOCK0, BLOCK1)() and all(find(p).isValid() for p in (B0, B1, BROKEN, OTHER0, OTHER1)),
+                    POLL_TIMEOUT_S)
+        check(ok, "the block rows open and list their buildings")
         yield ("sleep", SETTLE_MS)
         check(opened_buildings() == [], "opening rows without payloads opens no building's layer (got %r)" % (opened_buildings(),))
         check(load_edits() == 0, "opening rows without payloads loads nothing (got %r)" % (load_edits(),))
@@ -347,8 +359,8 @@ try:
 
         # Unload.
         tree().expand(find(FLOOR))
-        yield ("sleep", SETTLE_MS)
-        check(names_under(FLOOR) == ["Geo"], "the building's floor lists its prims (got %r)" % (names_under(FLOOR),))
+        ok = yield ("until", lambda: names_under(FLOOR) == ["Geo"], POLL_TIMEOUT_S)
+        check(ok and names_under(FLOOR) == ["Geo"], "the building's floor lists its prims (got %r)" % (names_under(FLOOR),))
         edits = load_edits()
         row_menu([B0], "sceneGraphUnload")
         check(not tree().isExpanded(find(B0)), "Unload closes the row")

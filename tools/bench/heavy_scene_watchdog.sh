@@ -25,6 +25,11 @@
 # for the bench to put on the scenario's record. The tree's RSS counts a page shared between processes
 # once per process, so it can overstate a tree of several processes.
 #
+# <progress-file>.rss gets one line a second, "<epoch seconds> <tree RSS kB> <MemAvailable kB>", for the
+# whole run. A kill by the kernel's OOM killer between two polls leaves no reason of its own: when the
+# process ends in a scenario with MemAvailable at the last poll under twice the floor, the record is
+# out_of_memory too. <progress-file>.oom is created whenever an out_of_memory record is written.
+#
 # This cannot catch a GPU driver hang or reset, which stalls the machine without using RAM.
 # After a reboot: journalctl -b -1 -k | grep -iE 'out of memory|oom|amdgpu|gpu reset|hung'
 set -u
@@ -39,6 +44,10 @@ RESULTS="$3"
 # Natron's SIGTERM handler only asks the main thread to quit, so a hung process needs the SIGKILL.
 KILL_GRACE_S="${BENCH_KILL_GRACE_S:-15}"
 STATS="$PROGRESS.mem"
+TIMELINE="$PROGRESS.rss"
+OOM_MARKER="$PROGRESS.oom"
+rm -f "$OOM_MARKER"
+: > "$TIMELINE"
 
 gb_to_kb() {
     awk -v gb="$1" 'BEGIN { printf "%d", gb * 1048576 }'
@@ -172,6 +181,11 @@ memory_fields() {
         "$(kb_to_gb "$FLOOR_KB")" "$(kb_to_gb "$LIMIT_KB")"
 }
 
+oom_fields() {
+    printf '"rss_kb": %s, "mem_available_kb": %s, ' "$1" "$2"
+}
+
+LAST_TREE_KB=0 LAST_AVAIL_KB=$MEM_AVAIL_KB
 SCENARIO_KEY="" SWAP_BASE_KB=$SWAP_USED_KB MIN_AVAIL_KB=$MEM_AVAIL_KB PEAK_KB=0
 WATCH_START="$(date +%s)"
 while kill -0 "$PID" 2>/dev/null; do
@@ -191,6 +205,7 @@ while kill -0 "$PID" 2>/dev/null; do
     [ "$MEM_AVAIL_KB" -lt "$MIN_AVAIL_KB" ] && MIN_AVAIL_KB=$MEM_AVAIL_KB
     [ "$TREE_KB" -gt "$PEAK_KB" ] && PEAK_KB=$TREE_KB
     [ "$running" -eq 1 ] && printf '%s %s %s\n' "$START" "$MIN_AVAIL_KB" "$PEAK_KB" > "$STATS"
+    printf '%s %s %s\n' "$(date +%s)" "$TREE_KB" "$MEM_AVAIL_KB" >> "$TIMELINE"
 
     reason=""
     if [ "$MEM_AVAIL_KB" -lt "$FLOOR_KB" ]; then
@@ -205,7 +220,8 @@ while kill -0 "$PID" 2>/dev/null; do
         if [ "$running" -eq 0 ]; then
             START="$WATCH_START" SCENARIO="*" REMAINING="" COMMON="" LIMIT=0
         fi
-        write_outcome out_of_memory "$reason" "$(memory_fields)"
+        : > "$OOM_MARKER"
+        write_outcome out_of_memory "$reason" "$(oom_fields "$TREE_KB" "$MEM_AVAIL_KB")$(memory_fields)"
         exit 0
     fi
 
@@ -214,9 +230,16 @@ while kill -0 "$PID" 2>/dev/null; do
         end_process
         exit 0
     fi
+    LAST_TREE_KB=$TREE_KB LAST_AVAIL_KB=$MEM_AVAIL_KB
     sleep 1
 done
 
 if read_progress; then
+    if [ "$LAST_AVAIL_KB" -lt $((FLOOR_KB * 2)) ]; then
+        : > "$OOM_MARKER"
+        write_outcome out_of_memory "the process ended with MemAvailable $(kb_to_gb "$LAST_AVAIL_KB") GB and RSS $(kb_to_gb "$LAST_TREE_KB") GB at the last poll; the kernel's OOM killer is the likely cause" \
+            "$(oom_fields "$LAST_TREE_KB" "$LAST_AVAIL_KB")$(memory_fields)"
+        exit 0
+    fi
     write_outcome aborted "the process ended during the scenario; see natron.log and results.txt" ""
 fi

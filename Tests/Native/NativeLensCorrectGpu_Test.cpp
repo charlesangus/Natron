@@ -86,6 +86,17 @@ struct FloorFlipAllowance {
 
 const FloorFlipAllowance kImpulseFloorFlips = { 8, 1. / 16. };
 
+// A pixel whose CPU value moves by more than the tolerance when `knob`, a double knob holding
+// `value`, is nudged by `relative`: the lens positions move by about that much, and a pixel where the
+// transverse-aberration factor nearly cancels, or that sits against the vignetting floor, swings
+// with them. A float kernel cannot land such a pixel on the CPU's double, so it may differ. Every
+// other pixel is held to the tolerance. An empty `knob` turns the detection off.
+struct SensitivityNudge {
+    const char* knob = NULL;
+    double value = 0.;
+    double relative = 1e-6;
+};
+
 StagedImageEffect*
 effectOf(const NodePtr& node)
 {
@@ -157,9 +168,10 @@ protected:
                       const NodePtr& node,
                       const std::string& what,
                       unsigned mipmapLevel = 0,
-                      const FloorFlipAllowance& flips = FloorFlipAllowance())
+                      const FloorFlipAllowance& flips = FloorFlipAllowance(),
+                      const SensitivityNudge& nudge = SensitivityNudge())
     {
-        expectParityOver(node, paritySourceWindow(source, kTime, mipmapLevel), what, mipmapLevel, flips);
+        expectParityOver(node, paritySourceWindow(source, kTime, mipmapLevel), what, mipmapLevel, flips, nudge);
     }
 
     void expectParityOverRegion(const NodePtr& node,
@@ -221,11 +233,45 @@ protected:
         return text.str();
     }
 
+    // Marks each float of `cpu` that the CPU render itself does not hold to the tolerance when the
+    // nudged knob moves by +-relative. The knob is put back before returning.
+    std::vector<char> sensitiveValues(const NodePtr& node,
+                                      const RectI& window,
+                                      unsigned mipmapLevel,
+                                      const SensitivityNudge& nudge,
+                                      const std::vector<float>& cpu)
+    {
+        const ParityTolerance tolerance = lensCorrectTolerance();
+        std::vector<char> sensitive(cpu.size(), 0);
+        for (const double direction : { -1., 1. }) {
+            EXPECT_TRUE(setKnobValues(node, nudge.knob, { nudge.value * (1. + direction * nudge.relative) }));
+            GpuPlacementOffGuard off;
+            std::vector<RenderedPlane> planes;
+            std::string error;
+            const bool rendered = renderNodePlanesDirect(node, kTime, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error);
+            EXPECT_TRUE(rendered) << error;
+            if (rendered && planes.size() == 1 && planes.front().pixels.size() == cpu.size()) {
+                const std::vector<float>& nudged = planes.front().pixels;
+                for (std::size_t i = 0; i < cpu.size(); ++i) {
+                    if (!tolerance.accepts(cpu[i], nudged[i])) {
+                        sensitive[i] = 1;
+                    }
+                }
+            } else {
+                ADD_FAILURE() << "the nudged CPU render has no single plane of the window's size";
+            }
+        }
+        EXPECT_TRUE(setKnobValues(node, nudge.knob, { nudge.value }));
+
+        return sensitive;
+    }
+
     void expectParityOver(const NodePtr& node,
                           const RectI& window,
                           const std::string& what,
                           unsigned mipmapLevel,
-                          const FloorFlipAllowance& flips = FloorFlipAllowance())
+                          const FloorFlipAllowance& flips = FloorFlipAllowance(),
+                          const SensitivityNudge& nudge = SensitivityNudge())
     {
         const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, window, kTime, GpuContextReady(), GpuFrameDone(), mipmapLevel);
 
@@ -235,7 +281,27 @@ protected:
         ASSERT_TRUE(result.ok) << what << ": " << result.error;
         EXPECT_TRUE(result.ranInRegion(node)) << what;
         ASSERT_EQ(result.cpu.size(), result.gpu.size()) << what;
-        const ImageDiff diff = compareImages(result.cpu, result.gpu, lensCorrectTolerance());
+        ImageDiff diff = compareImages(result.cpu, result.gpu, lensCorrectTolerance());
+        if (nudge.knob && diff.mismatches != 0) {
+            const std::vector<char> sensitive = sensitiveValues(node, window, mipmapLevel, nudge, result.cpu);
+            const ParityTolerance tolerance = lensCorrectTolerance();
+            ImageDiff unexplained;
+            unexplained.compared = diff.compared;
+            for (std::size_t i = 0; i < result.cpu.size(); ++i) {
+                if (sensitive[i] || tolerance.accepts(result.cpu[i], result.gpu[i])) {
+                    continue;
+                }
+                const double delta = std::fabs((double)result.cpu[i] - (double)result.gpu[i]);
+                if (unexplained.mismatches++ == 0) {
+                    unexplained.firstMismatchIndex = i;
+                }
+                if (delta > unexplained.worstAbsolute) {
+                    unexplained.worstAbsolute = delta;
+                    unexplained.worstIndex = i;
+                }
+            }
+            diff = unexplained;
+        }
         const auto valueAt = [&](std::size_t index) {
             const std::size_t pixel = index / 4;
             const int width = window.width();
@@ -419,7 +485,10 @@ TEST_F(NativeLensCorrectGpuTest, HugePositionsMatchTheCpu)
     ASSERT_TRUE(setKnobValues(node, kLensCorrectParamScale, { 0.1 }));
     // The image is small, so a render stops at its region; a partial mix takes it out to the corners.
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
-    expectParity(source, node, "scale 0.1 to fisheye, mix");
+    SensitivityNudge nudge;
+    nudge.knob = kLensCorrectParamScale;
+    nudge.value = 0.1;
+    expectParity(source, node, "scale 0.1 to fisheye, mix", 0u, FloorFlipAllowance(), nudge);
 }
 
 // The GPU reads the Source over the region the CPU asks for, which for a small window is a small part

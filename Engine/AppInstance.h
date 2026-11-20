@@ -311,6 +311,14 @@ public:
     {
     }
 
+    /**
+     * @brief Called before a project reset or close destroys the nodes, while they are all still
+     * alive: work running off the main thread on them must have stopped when it returns.
+     **/
+    virtual void aboutToDestroyProjectNodes()
+    {
+    }
+
     virtual void setupViewersForViews(const std::vector<std::string>& /*viewNames*/)
     {
     }
@@ -516,6 +524,13 @@ public:
      **/
     virtual std::list<NodePtr> getViewerNodesByRecentActivity() const;
 
+    /**
+     * @brief For a render thread, which cannot ask the GUI which viewer is active. With no active viewer recorded, as
+     * in background mode, every viewer counts. The node is only compared, never dereferenced, so it may be stale.
+     **/
+    void setViewerActiveForRenders(const Node* viewer);
+    bool isViewerActiveForRenders(const Node* viewer) const;
+
     bool loadPythonScript(const QFileInfo& file);
     virtual void queueRedrawForAllViewers() {}
 
@@ -556,6 +571,22 @@ public:
     virtual bool isDraftRenderEnabled() const { return false; }
 
     virtual void setDraftRenderEnabled(bool /*b*/) {}
+
+    /**
+     * @brief Notes node as edited while draft is on. The draft session's edits decide whether the viewer drafts:
+     * draftAppliesToEdits(). clearDraftEdits() starts a new session.
+     **/
+    void noteDraftEdit(const NodePtr& node);
+    void clearDraftEdits();
+
+    /**
+     * @brief Whether a draft render should raise the viewer's mipmap level: true with no edit noted, as when
+     * scrubbing the timeline, or when any node edited is not a point op.
+     **/
+    bool draftAppliesToEdits() const WARN_UNUSED_RETURN;
+
+    // The nodes edited this draft session that still exist.
+    std::list<NodePtr> getDraftEdits() const WARN_UNUSED_RETURN;
 
     virtual void setUserIsPainting(const NodePtr& /*rotopaintNode*/,
                                    const RotoStrokeItemPtr& /*stroke*/,

@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectD.h"
@@ -95,8 +96,10 @@ public:
     /**
      * @brief Declares the generator knobs on page, in the openfx-misc order, with the
      * constructor's default extent the initial one. The generator knobs come before the op's.
+     * blackOutside adds the Black Outside knob; without it the output carries Stretch.
      **/
-    void createKnobs(const KnobPagePtr& page);
+    void createKnobs(const KnobPagePtr& page,
+                     bool blackOutside);
 
     ExtentEnum getExtent() const WARN_UNUSED_RETURN;
 
@@ -149,7 +152,24 @@ public:
 private:
     EffectInstance* _effect;
     ExtentKnobs _extentKnobs;
+    KnobBoolWPtr _blackOutside;
 };
+
+/**
+ * @brief Whether OP draws a shape over an outside colour, whose region keeps a border of that
+ * colour. Such a generator repeats its outside colour under Stretch, so it has no Black Outside
+ * knob.
+ **/
+template <typename OP>
+constexpr bool
+hasOutsideColourBorder()
+{
+    if constexpr (requires { OP::kOutsideColourBorder; }) {
+        return OP::kOutsideColourBorder;
+    } else {
+        return false;
+    }
+}
 
 /**
  * @brief The extent a generator over OP starts with: OP::kDefaultExtent when it declares one,
@@ -207,11 +227,14 @@ public:
 
     virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
                                              double time,
-                                             const RenderScale& /*scale*/,
+                                             const RenderScale& scale,
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         *rod = _generator.getRegionOfDefinition(time, view);
+        if constexpr (hasOutsideColourBorder<OP>()) {
+            addOutsideColourBorder(_generator.getPixelAspectRatio(time, view), scale, rod);
+        }
 
         return eStatusOK;
     }
@@ -226,7 +249,7 @@ protected:
     {
         const KnobPagePtr page = this->createControlsPage();
 
-        _generator.createKnobs(page);
+        _generator.createKnobs(page, !hasOutsideColourBorder<OP>());
         this->op().createKnobs(static_cast<KnobHolder*>(this), page);
         this->addStageKnobs(page);
     }

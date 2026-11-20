@@ -750,6 +750,14 @@ private:
 
     void createDefaultLayoutInternal(bool wipePrevious);
 
+    // The current layout as a layout file would hold it, empty if it cannot be written.
+    std::string getLayoutText();
+
+    // Records the layout once it has settled as the default, for a reset to know it was kept.
+    void noteDefaultLayout();
+
+    void restoreDefaultLayoutUnlessKept();
+
     void createMenuActions();
 
     virtual void moveEvent(QMoveEvent* e) OVERRIDE FINAL;

@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <list>
 #include <map>
@@ -16,6 +18,7 @@
 #include "Global/ThirdPartyTelemetry.h"
 
 #include "Ai/AiModelTestEffect.h"
+#include "CacheDiskTierWorker.h"
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
 #include "CountingTestEffect.h"
@@ -147,10 +150,14 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
+    // Registered to cache under draft keys, which only OFX and a few transform nodes do.
+    registerTestBuiltInPlugin<DraftCountingTestEffect>();
     // Registered to count, hold and fail an overlay image pass, which no shipped node can be made to do.
     registerTestBuiltInPlugin<OverlayImageTestEffect>();
     // Registered to be an identity over part of its window only, which no shipped native node is.
     registerTestBuiltInPlugin<TiledIdentityTestEffect>();
+    // Registered to give each input a region of interest apart from the other's, which no shipped native node does.
+    registerTestBuiltInPlugin<SplitInputsTestEffect>();
     // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.
     registerTestBuiltInPlugin<ContextReaderTestEffect>();
     registerTestBuiltInPlugin<ContextFanOutTestEffect>();
@@ -258,10 +265,15 @@ GTEST_API_ int main(int argc, char **argv)
     }
     printf("Running main() from wmain.cpp\n");
     ::testing::InitGoogleTest(&argc, argv);
+    // No test may fill the developer's home directory; one that wants a tier opens its own.
+    setenv("NATRON_CACHE_DISK_TIER", "off", 0);
     // ctest lists the suites before every run. Every test is registered statically, so the list
     // does not depend on load(), which would cost a cold OFX rescan plus Python and OCIO init.
     if (::testing::GTEST_FLAG(list_tests)) {
         return RUN_ALL_TESTS();
+    }
+    if ((argc > 1) && (strcmp(argv[1], cacheDiskTierWorkerFlag()) == 0)) {
+        return runCacheDiskTierWorker(argc - 2, argv + 2);
     }
     PerProcessUserDirs userDirs;
     // A renderer whose library is missing, for the tests of unavailable delegates. Hydra

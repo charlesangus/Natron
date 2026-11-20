@@ -1,3 +1,4 @@
+import edgesample;
 // Resampler::resampleRow for affine and projective inverse matrices: the filters of
 // Resampler::FilterSpec through resamplecore.slang's tap footprints, and the box integration, reading
 // the source from a storage buffer. resample_main samples one matrix; resample_blur_main averages
@@ -24,9 +25,9 @@ StructuredBuffer<uint> blurBuf;
 // The destination's offset addresses the output origin. The source's addresses (srcX1, srcY1).
 // The matrix rows (h00 h01 h02) and (h10 h11 h12) are, for the two-float entries, the six high
 // floats' bits in m0-m5 and the six low floats' in m6-m11, and for the exact entries the doubles'
-// bits, low word first, in m0-m11. Bit s of `states` is set when the Jacobian of state s (bit 0: x
-// inside, bit 1: y inside) is zero; only the exact entries read it, for box. The blurred entries read
-// the matrices and their states from blurBuf instead, and so do resample_main and resample_exact_main
+// bits, low word first, in m0-m11. `states` is 1 when the matrix's Jacobian is zero; only the
+// exact entries read it, for box. The blurred entries read the matrices and that word from blurBuf
+// instead, and so do resample_main and resample_exact_main
 // under kFlagMatrixInBuffer: a projective matrix's third row and an exact kernel's scales do not fit
 // the push constants.
 struct ResampleParams
@@ -89,7 +90,7 @@ ResampleSource paramsSource()
     s.y2 = rp.srcY2;
     s.nComps = rp.nComps;
     s.valid = (rp.flags & kFlagSrcValid) != 0;
-    s.blackOutside = (rp.flags & kFlagBlackOutside) != 0;
+    s.edgeMode = edgeModeFromFlags(rp.flags, kFlagEdgeBlack);
     return s;
 }
 
@@ -510,25 +511,17 @@ float4 samplePixel(Matrix m, int x, int y)
 
     if (spec.filter == kFilterImpulse)
         return interpolateSuper(src, spec, clampOn, fx, fy, zero, zero, zero, zero);
-    // x1 <= fx + 0.5 && fx - 0.5 < x2, and likewise for y.
-    bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
-    bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
-    if (src.blackOutside && !(xinside && yinside))
-    {
-        xinside = false;
-        yinside = false;
-    }
-    FF Jxx = xinside ? m.h00 : zero;
-    FF Jxy = xinside ? m.h01 : zero;
-    FF Jyx = yinside ? m.h10 : zero;
-    FF Jyy = yinside ? m.h11 : zero;
+    FF Jxx = m.h00;
+    FF Jxy = m.h01;
+    FF Jyx = m.h10;
+    FF Jyy = m.h11;
     if (m.projective)
     {
         const FF Z2 = ffMul(Z, Z);
-        Jxx = xinside ? projectiveJacobian(m.h00, X, m.h20, Z, Z2) : zero;
-        Jxy = xinside ? projectiveJacobian(m.h01, X, m.h21, Z, Z2) : zero;
-        Jyx = yinside ? projectiveJacobian(m.h10, Y, m.h20, Z, Z2) : zero;
-        Jyy = yinside ? projectiveJacobian(m.h11, Y, m.h21, Z, Z2) : zero;
+        Jxx = projectiveJacobian(m.h00, X, m.h20, Z, Z2);
+        Jxy = projectiveJacobian(m.h01, X, m.h21, Z, Z2);
+        Jyx = projectiveJacobian(m.h10, Y, m.h20, Z, Z2);
+        Jyy = projectiveJacobian(m.h11, Y, m.h21, Z, Z2);
     }
     return interpolateSuper(src, spec, clampOn, fx, fy, Jxx, Jxy, Jyx, Jyy);
 }
@@ -542,7 +535,7 @@ struct MatrixBits
     Dbl h10;
     Dbl h11;
     Dbl h12;
-    uint states;
+    uint jacobianZero;
     // Resampler::kernelScale of the two rows.
     Dbl scaleX;
     Dbl scaleY;
@@ -562,12 +555,6 @@ SmoothTaps noTaps()
     t.x = makeTapAxis(one, one, one, 0, 0);
     t.y = t.x;
     return t;
-}
-
-// An axis's scale: a row zeroed for falling outside the source leaves the plain kernel.
-Dbl axisScale(Dbl scale, bool inside)
-{
-    return inside ? scale : dblMake(0, 0x3ff00000u);
 }
 
 // buildAxisTaps' floors in the CPU's doubles: centre and reach as it computes them, radius * scale
@@ -603,25 +590,13 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
         return r;
     }
 
-    const Dbl half = dblMake(0, 0x3fe00000u);
-    const Dbl bx = dblSub(dx, half);
-    const Dbl by = dblSub(dy, half);
-    // x1 <= x + 0.5 && x - 0.5 < x2, and likewise for y.
-    bool xinside = dblFloor(dblAdd(dx, half)) >= rp.srcX1 && dblFloor(bx) < rp.srcX2;
-    bool yinside = dblFloor(dblAdd(dy, half)) >= rp.srcY1 && dblFloor(by) < rp.srcY2;
-    if (paramsSource().blackOutside && !(xinside && yinside))
-    {
-        xinside = false;
-        yinside = false;
-    }
     if (rp.filter != kFilterBox)
     {
-        taps.x = tapAxisExact(paramsFilter(), dx, axisScale(m.scaleX, xinside));
-        taps.y = tapAxisExact(paramsFilter(), dy, axisScale(m.scaleY, yinside));
+        taps.x = tapAxisExact(paramsFilter(), dx, m.scaleX);
+        taps.y = tapAxisExact(paramsFilter(), dy, m.scaleY);
         return r;
     }
-    const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
-    if (((m.states >> state) & 1u) != 0)
+    if (m.jacobianZero != 0)
     {
         cellPixel(paramsSource(), cell, r);
         return r;
@@ -629,11 +604,10 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
 
     // The corners dx -+ Jxx / 2 -+ Jxy / 2, added in the CPU's order. One loop body keeps a single
     // copy of the emulated additions in the compiled kernel.
-    const Dbl zero = dblMake(0, 0);
-    const Dbl hxx = dblHalf(xinside ? m.h00 : zero);
-    const Dbl hxy = dblHalf(xinside ? m.h01 : zero);
-    const Dbl hyx = dblHalf(yinside ? m.h10 : zero);
-    const Dbl hyy = dblHalf(yinside ? m.h11 : zero);
+    const Dbl hxx = dblHalf(m.h00);
+    const Dbl hxy = dblHalf(m.h01);
+    const Dbl hyx = dblHalf(m.h10);
+    const Dbl hyy = dblHalf(m.h11);
     Dbl x1 = dx;
     Dbl x2 = dx;
     Dbl y1 = dy;
@@ -671,7 +645,7 @@ float4 samplePixelExact(MatrixBits m, int x, int y, out SmoothTaps taps)
     const Dbl rx2 = dblSub(x2, ox);
     const Dbl ry1 = dblSub(y1, oy);
     const Dbl ry2 = dblSub(y2, oy);
-    float4 v = integrate2d(paramsSource(), dblToPos(rx1), dblToPos(ry1), dblToPos(rx2), dblToPos(ry2), paramsSource().blackOutside);
+    float4 v = integrate2d(paramsSource(), dblToPos(rx1), dblToPos(ry1), dblToPos(rx2), dblToPos(ry2), paramsSource().edgeMode == kEdgeBlack);
     precise float s = dblToFloat(dblSub(rx2, rx1)) * dblToFloat(dblSub(ry2, ry1));
     if (s != 0.0)
         v /= s;
@@ -698,12 +672,6 @@ float decisionBound(FF h0, FF h1, FF h2, float px, float py, int origin)
 bool nearInteger(Pos p, float e)
 {
     return e > 0.0 && (p.f <= e || p.f >= 1.0 - e);
-}
-
-// Whether floor(v) >= n may differ from p.i >= n for a value v within e of p.
-bool floorGeAmbiguous(Pos p, float e, int n)
-{
-    return e > 0.0 && ((p.f <= e && p.i == n) || (p.f >= 1.0 - e && p.i + 1 == n));
 }
 
 // The footprint from a two-float position, false where a floor of its edges may differ from the
@@ -759,27 +727,12 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
         return cellExact;
     }
 
-    const Pos ax = toPos(ffAddF(fx, 0.5));
-    const Pos bx = toPos(ffAddF(fx, -0.5));
-    const Pos ay = toPos(ffAddF(fy, 0.5));
-    const Pos by = toPos(ffAddF(fy, -0.5));
-    if (floorGeAmbiguous(ax, exPos, rp.srcX1) || floorGeAmbiguous(bx, exPos, rp.srcX2) || floorGeAmbiguous(ay, eyPos, rp.srcY1)
-        || floorGeAmbiguous(by, eyPos, rp.srcY2))
-        return false;
-    bool xinside = ax.i >= rp.srcX1 && bx.i < rp.srcX2;
-    bool yinside = ay.i >= rp.srcY1 && by.i < rp.srcY2;
-    if (paramsSource().blackOutside && !(xinside && yinside))
-    {
-        xinside = false;
-        yinside = false;
-    }
     if (rp.filter != kFilterBox)
     {
-        return tapAxisClear(paramsFilter(), fx, axisScale(mb.scaleX, xinside), exPos, ex, taps.x)
-            && tapAxisClear(paramsFilter(), fy, axisScale(mb.scaleY, yinside), eyPos, ey, taps.y);
+        return tapAxisClear(paramsFilter(), fx, mb.scaleX, exPos, ex, taps.x)
+            && tapAxisClear(paramsFilter(), fy, mb.scaleY, eyPos, ey, taps.y);
     }
-    const uint state = (xinside ? 1u : 0u) | (yinside ? 2u : 0u);
-    if (((mb.states >> state) & 1u) != 0)
+    if (mb.jacobianZero != 0)
     {
         if (cellExact)
             cellPixel(paramsSource(), cell, r);
@@ -788,14 +741,9 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
 
     // Corners less than twice the bound apart may coincide in the doubles and not here, or the
     // reverse; a Jacobian row that is exactly zero collapses them in both.
-    const FF zero = ffMake(0.0, 0.0);
-    const FF jxx = xinside ? h00 : zero;
-    const FF jxy = xinside ? h01 : zero;
-    const FF jyx = yinside ? h10 : zero;
-    const FF jyy = yinside ? h11 : zero;
-    const bool zeroX = !xinside || (dblIsZero(mb.h00) && dblIsZero(mb.h01));
-    const bool zeroY = !yinside || (dblIsZero(mb.h10) && dblIsZero(mb.h11));
-    if ((!zeroX && max(abs(jxx.hi), abs(jxy.hi)) * 0.5 <= 2.0 * ex) || (!zeroY && max(abs(jyx.hi), abs(jyy.hi)) * 0.5 <= 2.0 * ey))
+    const bool zeroX = dblIsZero(mb.h00) && dblIsZero(mb.h01);
+    const bool zeroY = dblIsZero(mb.h10) && dblIsZero(mb.h11);
+    if ((!zeroX && max(abs(h00.hi), abs(h01.hi)) * 0.5 <= 2.0 * ex) || (!zeroY && max(abs(h10.hi), abs(h11.hi)) * 0.5 <= 2.0 * ey))
         return false;
     FF x1 = fx;
     FF x2 = fx;
@@ -806,8 +754,8 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
     {
         const float sa = (k & 1) != 0 ? 1.0 : -1.0;
         const float sb = (k & 2) != 0 ? 1.0 : -1.0;
-        const FF qx = corner(fx, jxx, jxy, sa, sb);
-        const FF qy = corner(fy, jyx, jyy, sa, sb);
+        const FF qx = corner(fx, h00, h01, sa, sb);
+        const FF qy = corner(fy, h10, h11, sa, sb);
         if (k == 0 || ffLess(qx, x1))
             x1 = qx;
         if (k == 0 || ffLess(x2, qx))
@@ -831,14 +779,7 @@ bool samplePixelFast(MatrixBits mb, uint exactRows, int x, int y, out float4 r, 
     const Pos px2 = toPos(rx2);
     const Pos py1 = toPos(ry1);
     const Pos py2 = toPos(ry2);
-    // integrate1d keeps the edge pixel's full weight once a footprint starts at or past the far
-    // edge or ends before the near one, so those two floors switch it; elsewhere they are continuous.
-    const int awidth = rp.srcX2 - rp.srcX1;
-    const int aheight = rp.srcY2 - rp.srcY1;
-    if (floorGeAmbiguous(px1, ex, awidth) || floorGeAmbiguous(px2, ex, 0) || floorGeAmbiguous(py1, ey, aheight)
-        || floorGeAmbiguous(py2, ey, 0))
-        return false;
-    float4 v = integrate2d(paramsSource(), px1, py1, px2, py2, paramsSource().blackOutside);
+    float4 v = integrate2d(paramsSource(), px1, py1, px2, py2, paramsSource().edgeMode == kEdgeBlack);
     const FF wx = ffAdd(rx2, ffNeg(rx1));
     const FF wy = ffAdd(ry2, ffNeg(ry1));
     precise float s = (wx.hi + wx.lo) * (wy.hi + wy.lo);
@@ -920,7 +861,7 @@ void resample_exact_main(uint3 tid : SV_DispatchThreadID)
         m.h10 = dblMake(rp.m6, rp.m7);
         m.h11 = dblMake(rp.m8, rp.m9);
         m.h12 = dblMake(rp.m10, rp.m11);
-        m.states = rp.states;
+        m.jacobianZero = rp.states;
         m.scaleX = dblMake(0, 0x3ff00000u);
         m.scaleY = m.scaleX;
     }
@@ -935,7 +876,7 @@ void resample_exact_main(uint3 tid : SV_DispatchThreadID)
 // The header: matrix count, minimum samples, maximum samples, the seed's offset
 // (unsigned(0x10000 * motionBlur)), the squared maximum error as hi and lo float bits, and 1 when the
 // matrices are weighted. A matrix: twelve words holding h00 h01 h02 h10 h11 h12 as the push
-// constants' m0-m11 do for the entry that reads them, its states, its weight as hi and lo float
+// constants' m0-m11 do for the entry that reads them, its jacobianZero, its weight as hi and lo float
 // bits, for the exact entry its exact rows as samplePixelFast takes them, for the two-float
 // entries 1 when it is projective, then hi of h20 h21 h22 and their lo, and for the exact entry the
 // two kernel scales' double bits, low word first.
@@ -986,7 +927,7 @@ MatrixBits blurMatrixBits(uint t)
     m.h10 = dblMake(blurBuf[base + 6], blurBuf[base + 7]);
     m.h11 = dblMake(blurBuf[base + 8], blurBuf[base + 9]);
     m.h12 = dblMake(blurBuf[base + 10], blurBuf[base + 11]);
-    m.states = blurBuf[base + 12];
+    m.jacobianZero = blurBuf[base + 12];
     m.scaleX = dblMake(blurBuf[base + 23], blurBuf[base + 24]);
     m.scaleY = dblMake(blurBuf[base + 25], blurBuf[base + 26]);
     return m;

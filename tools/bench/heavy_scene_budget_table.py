@@ -60,8 +60,11 @@ def print_record(record):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print(__doc__.strip().splitlines()[2].strip(), file=sys.stderr)
+    if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if len(sys.argv) != 2 or sys.argv[1].startswith("-"):
+        print("usage: " + __doc__.strip().splitlines()[2].strip(), file=sys.stderr)
         return 2
     found = False
     with open(sys.argv[1]) as f:

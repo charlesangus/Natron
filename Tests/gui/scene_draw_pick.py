@@ -375,10 +375,12 @@ try:
         return ok
 
     def select_in_tree(path):
-        index = find(path)
-        check(index.isValid(), "the panel lists %s" % path)
-        if not index.isValid():
+        """Selects path's row once the model has read the rows down to it."""
+        ok = yield ("until", lambda: find(path).isValid(), POLL_TIMEOUT_S)
+        check(ok, "the panel lists %s" % path)
+        if not ok:
             return
+        index = find(path)
         t = tree()
         parent = index.parent()
         while parent.isValid():
@@ -445,7 +447,7 @@ try:
         before = grab()
         check(group is not None and not group[1], "Group's box is not highlighted before its leaf is selected")
         unlit = selected_pixels(before, group[3]) if group else None
-        select_in_tree(LEAF)
+        yield from select_in_tree(LEAF)
         ok = yield ("until", lambda: selection() == [LEAF], POLL_TIMEOUT_S)
         check(ok, "selecting the leaf in the tree selects it in the viewer (%r)" % selection())
         ok = yield ("until", lambda: drawn_boxes().get("/World/Group", ("", False))[1], POLL_TIMEOUT_S)

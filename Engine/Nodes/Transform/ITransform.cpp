@@ -235,7 +235,6 @@ ITransform::readWarpSettings(double time,
 
     settings->filter = params.filter;
     settings->clamp = params.clamp;
-    settings->blackOutside = params.blackOutside;
     settings->invert = params.invert;
     settings->blur = params.blur;
     // As Transform renders it: a directional blur has no shutter.

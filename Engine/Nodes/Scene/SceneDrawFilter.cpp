@@ -25,6 +25,8 @@
 
 #include "Engine/Nodes/Scene/SceneDrawFilter.h"
 
+#include "Engine/Nodes/Scene/StormAddedPrimDedupe.h"
+
 #include <algorithm>
 #include <iterator>
 #include <limits>
@@ -114,7 +116,9 @@ enum WalkFlags : unsigned {
     eWalkHide = 1,
     eWalkShow = 2,
     // Sets each prim's output to what the rules give, without notices.
-    eWalkSeed = 4
+    eWalkSeed = 4,
+    // Brings into Hydra, invisible, the geometry the rules show and Hydra lacks.
+    eWalkStage = 8
 };
 
 RulePtr
@@ -270,6 +274,9 @@ SceneDrawFilter::registerForAllRenderers()
             0,
             HdSceneIndexPluginRegistry::InsertionOrderAtStart);
     });
+    // Admitting brings a material's prims in after the material, in batches, which is what makes
+    // Storm add it once per prim bound to it.
+    StormAddedPrimDedupe::registerForStorm();
 }
 
 SceneDrawFilter::EngineScope::EngineScope()
@@ -465,6 +472,11 @@ SceneDrawFilter::forget(Node* top)
     _revealStack.erase(std::remove_if(_revealStack.begin(), _revealStack.end(), inside), _revealStack.end());
 
     Node* parent = top->parent;
+    if (top->queuedBelow != 0) {
+        for (Node* above = parent; above; above = above->parent) {
+            above->queuedBelow -= top->queuedBelow;
+        }
+    }
     (top->prev ? top->prev->next : parent->firstChild) = top->next;
     (top->next ? top->next->prev : parent->lastChild) = top->prev;
 
@@ -482,7 +494,7 @@ SceneDrawFilter::forget(Node* top)
             _lights.erase(node);
             _lightPaths.erase(*node->path);
         }
-        if (!_arrivalRoots.empty() && node->hideable && (node->output != eOutputAbsent)) {
+        if ((!_arrivalRoots.empty() || _admitting) && node->hideable && (node->output == eOutputShown)) {
             _removedHeld.insert(*node->path);
         }
         if (node->output == eOutputInvisible) {
@@ -510,11 +522,31 @@ void
 SceneDrawFilter::readInstancer(const SdfPath& path,
                                const HdSceneIndexPrim& prim)
 {
+    // An instance read again keeps whether it was admitted; one the input newly names waits.
+    std::unordered_map<SdfPath, bool, SdfPath::Hash> waited;
+    if (_admitting) {
+        const auto old = _instancers.find(path);
+        if (old != _instancers.end()) {
+            for (std::size_t i = 0; i < old->second.locations.size(); ++i) {
+                waited.emplace(old->second.locations[i], old->second.waiting[i]);
+            }
+        }
+    }
     forgetInstancer(path);
     if (prim.primType != HdPrimTypeTokens->instancer) {
         return;
     }
-    const HdPathArrayDataSourceHandle source = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetInstanceLocations();
+    const HdInstancerTopologySchema topology = HdInstancerTopologySchema::GetFromParent(prim.dataSource);
+    Instancer& record = _instancers[path];
+    if (const HdPathArrayDataSourceHandle prototypes = topology.GetPrototypes()) {
+        const VtArray<SdfPath> paths = prototypes->GetTypedValue(0.f);
+        for (const SdfPath& prototype : paths) {
+            if (prototype.IsAbsolutePath() && _prototypeOwners.emplace(prototype, path).second) {
+                record.prototypes.push_back(prototype);
+            }
+        }
+    }
+    const HdPathArrayDataSourceHandle source = topology.GetInstanceLocations();
     if (!source) {
         return;
     }
@@ -522,16 +554,21 @@ SceneDrawFilter::readInstancer(const SdfPath& path,
     if (locations.empty()) {
         return;
     }
-    Instancer& record = _instancers[path];
     record.locations.assign(locations.cbegin(), locations.cend());
     record.hidden.assign(record.locations.size(), false);
+    record.waiting.assign(record.locations.size(), false);
     // The notice this came with carries the mask, so none is queued.
     record.pending = true;
     for (std::size_t i = 0; i < record.locations.size(); ++i) {
         const SdfPath& location = record.locations[i];
         _locations.emplace(location, std::make_pair(path, i));
+        _scannedTo.clear();
         if (!_rules.empty()) {
             setInstanceHidden(path, record, i, instanceHiddenBy(governing(_rules, location)));
+        }
+        if (_admitting && !record.hidden[i]) {
+            const auto before = waited.find(location);
+            setInstanceWaiting(path, record, i, (before == waited.end()) || before->second);
         }
     }
     record.pending = false;
@@ -550,7 +587,12 @@ SceneDrawFilter::forgetInstancer(const SdfPath& path)
             it = (it->second.first == path) ? _locations.erase(it) : std::next(it);
         }
     }
+    _scannedTo.clear();
+    for (const SdfPath& prototype : found->second.prototypes) {
+        _prototypeOwners.erase(prototype);
+    }
     _maskedCount -= found->second.hiddenCount;
+    _waitingCount -= found->second.waitingCount;
     _instancers.erase(found);
 }
 
@@ -567,16 +609,50 @@ SceneDrawFilter::setInstanceHidden(const SdfPath& instancer,
     if (hidden) {
         ++record.hiddenCount;
         ++_maskedCount;
+        // The rules have it, so it waits for nothing; showing it again costs Hydra nothing.
+        setInstanceWaiting(instancer, record, index, false);
     } else {
         --record.hiddenCount;
         --_maskedCount;
     }
+    queueMaskChange(instancer, record);
+
+    return true;
+}
+
+void
+SceneDrawFilter::setInstanceWaiting(const SdfPath& instancer,
+                                    Instancer& record,
+                                    std::size_t index,
+                                    bool waiting)
+{
+    if (record.waiting[index] == waiting) {
+        return;
+    }
+    record.waiting[index] = waiting;
+    if (waiting) {
+        if (!isFilling()) {
+            _admitted = 0;
+        }
+        ++record.waitingCount;
+        ++_waitingCount;
+        record.waitingFrom = (std::min)(record.waitingFrom, index);
+        _scannedTo.clear();
+    } else {
+        --record.waitingCount;
+        --_waitingCount;
+    }
+    queueMaskChange(instancer, record);
+}
+
+void
+SceneDrawFilter::queueMaskChange(const SdfPath& instancer,
+                                 Instancer& record)
+{
     if (!record.pending) {
         record.pending = true;
         _maskChanges.push_back(instancer);
     }
-
-    return true;
 }
 
 // The instances at or below the changed rows, as no other instance's governing rule has changed.
@@ -645,7 +721,7 @@ HdSceneIndexPrim
 SceneDrawFilter::GetPrim(const SdfPath& primPath) const
 {
     HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(primPath);
-    if ((_rules.empty() && !_revealing) || !isHideable(prim.primType)) {
+    if (!isFiltering() || !isHideable(prim.primType)) {
         return prim;
     }
     const auto node = _nodes.find(primPath);
@@ -678,10 +754,11 @@ SceneDrawFilter::withMask(const SdfPath& primPath,
         return prim;
     }
     const auto found = _instancers.find(primPath);
-    if ((found == _instancers.end()) || (found->second.hiddenCount == 0)) {
+    if ((found == _instancers.end()) || ((found->second.hiddenCount == 0) && (found->second.waitingCount == 0))) {
         return prim;
     }
     const std::vector<bool>& hidden = found->second.hidden;
+    const std::vector<bool>& waiting = found->second.waiting;
     VtArray<bool> mask;
     if (const HdBoolArrayDataSourceHandle authored = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetMask()) {
         mask = authored->GetTypedValue(0.f);
@@ -690,7 +767,7 @@ SceneDrawFilter::withMask(const SdfPath& primPath,
         mask.resize(hidden.size(), true);
     }
     for (std::size_t i = 0; i < hidden.size(); ++i) {
-        if (hidden[i]) {
+        if (hidden[i] || waiting[i]) {
             mask[i] = false;
         }
     }
@@ -718,6 +795,14 @@ SceneDrawFilter::seedRules(const Rules& rules)
     std::vector<Frame> stack { rootFrame(_root, true) };
     walk(&stack, eWalkSeed, (std::numeric_limits<std::size_t>::max)(), (Clock::time_point::max)());
     updateInstances({ SdfPath::AbsoluteRootPath() });
+    if (_admitting) {
+        for (auto& instancer : _instancers) {
+            Instancer& record = instancer.second;
+            for (std::size_t i = 0; i < record.locations.size(); ++i) {
+                setInstanceWaiting(instancer.first, record, i, !record.hidden[i]);
+            }
+        }
+    }
     for (const SdfPath& path : _maskChanges) {
         _instancers[path].pending = false;
     }
@@ -776,7 +861,7 @@ SceneDrawFilter::descends(const Frame& frame,
     if ((mode & eWalkHide) && geometryHidden) {
         return true;
     }
-    if (!(mode & eWalkShow) || lightsHidden) {
+    if (!(mode & (eWalkShow | eWalkStage)) || lightsHidden) {
         return false;
     }
 
@@ -802,13 +887,22 @@ SceneDrawFilter::visit(const Frame& frame,
     }
     const bool hidden = hiddenFor(frame.now, *node.path, node.light);
     if (mode & eWalkSeed) {
-        setOutput(node, hidden ? eOutputAbsent : eOutputShown);
+        const bool waits = !hidden && queues(node);
+        setOutput(node, (hidden || waits) ? eOutputAbsent : eOutputShown);
+        if (waits) {
+            enqueue(node);
+        } else {
+            dequeue(node);
+        }
 
         return 0;
     }
     if (hidden) {
+        dequeue(node);
         if (mode & eWalkHide) {
-            const OutputEnum after = ((node.output == eOutputAbsent) || underHiddenRow(frame.now)) ? eOutputAbsent : eOutputInvisible;
+            // What Hydra holds until the call's notices go: a prim it has never held stays out of it.
+            const OutputEnum held = node.pending ? node.before : node.output;
+            const OutputEnum after = ((held == eOutputAbsent) || underHiddenRow(frame.now)) ? eOutputAbsent : eOutputInvisible;
             if (after != node.output) {
                 transition(node, after);
             }
@@ -816,7 +910,23 @@ SceneDrawFilter::visit(const Frame& frame,
 
         return 0;
     }
+    if (mode & eWalkStage) {
+        if ((node.output == eOutputAbsent) && !node.light) {
+            transition(node, eOutputInvisible);
+        }
+
+        return 0;
+    }
     if ((mode & eWalkShow) && (node.output != eOutputShown)) {
+        const OutputEnum held = node.pending ? node.before : node.output;
+        if ((held == eOutputAbsent) && queues(node)) {
+            if (node.output != eOutputAbsent) {
+                transition(node, eOutputAbsent);
+            }
+            enqueue(node);
+
+            return 0;
+        }
         transition(node, eOutputShown);
 
         return 1;
@@ -888,10 +998,6 @@ SceneDrawFilter::sendChanges()
     std::size_t addedCount = 0;
     for (Node* node : _changes) {
         node->pending = false;
-        if ((node->output == eOutputInvisible) && (node->before == eOutputAbsent)) {
-            // Shown and boxed again before Hydra heard of it: Hydra has still never held it.
-            setOutput(*node, eOutputAbsent);
-        }
         if ((node->output != node->before) && ((node->output == eOutputAbsent) || (node->before == eOutputAbsent))) {
             ++addedCount;
         }
@@ -907,7 +1013,10 @@ SceneDrawFilter::sendChanges()
             ++_hiddenSent;
         } else if (node->before == eOutputAbsent) {
             added.emplace_back(*node->path, node->type);
-            ++_shownSent;
+            ++_insertedSent;
+            if (node->output == eOutputShown) {
+                ++_shownSent;
+            }
         }
     }
     if (!added.empty()) {
@@ -1001,6 +1110,11 @@ void
 SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
                              std::size_t revealBatch)
 {
+    if (_admitting) {
+        // What Hydra lacks waits to be admitted instead of being revealed.
+        revealBatch = 0;
+        _orderNext = 0;
+    }
     Rules target = _rules;
     std::set<SdfPath> roots;
     for (const SceneDrawDelta* delta : deltas) {
@@ -1063,6 +1177,8 @@ SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
         walk(&changed, eWalkShow, all, never);
         walk(&_revealStack, eWalkShow, all, never);
     } else {
+        std::vector<Frame> staging = changed;
+        walk(&staging, eWalkStage, all, never);
         _revealStack.insert(_revealStack.end(), changed.begin(), changed.end());
     }
     updateRevealRoots(deltas, tops, revealBatch);
@@ -1110,7 +1226,7 @@ SceneDrawFilter::defersArrival(const Node& node,
         return false;
     }
     if (known) {
-        return before == eOutputAbsent;
+        return before != eOutputShown;
     }
 
     return _removedHeld.empty() || (_removedHeld.count(*node.path) == 0);
@@ -1160,9 +1276,10 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
             && (SdfPathFindLongestPrefix(_arrivalRoots, entry.primPath) != _arrivalRoots.end());
         bool known = false;
         OutputEnum before = eOutputShown;
-        if (arriving) {
+        if (arriving || _admitting) {
             const auto found = _nodes.find(entry.primPath);
-            known = (found != _nodes.end());
+            // A node made only as the parent of one the input announced first was never in Hydra.
+            known = (found != _nodes.end()) && (arriving || !found->second.type.IsEmpty());
             before = known ? found->second.output : eOutputShown;
         }
         Node* node = indexPrim(entry.primPath, entry.primType);
@@ -1187,8 +1304,18 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
             }
         }
         if ((output == eOutputShown) && arriving && defersArrival(*node, known, before)) {
-            output = eOutputAbsent;
+            output = eOutputInvisible;
             deferred = true;
+        }
+        if (queues(*node)) {
+            const bool held = known ? (before != eOutputAbsent) : (!_removedHeld.empty() && (_removedHeld.count(entry.primPath) != 0));
+            const bool waits = (output == eOutputShown) && !held;
+            if (waits) {
+                output = eOutputAbsent;
+                enqueue(*node);
+            } else {
+                dequeue(*node);
+            }
         }
         setOutput(*node, output);
         if (output == eOutputAbsent) {
@@ -1251,7 +1378,7 @@ SceneDrawFilter::_PrimsDirtied(const HdSceneIndexBase& /*sender*/,
             }
         }
     }
-    if (_rules.empty() && !_revealing) {
+    if (!isFiltering()) {
         _SendPrimsDirtied(entries);
 
         return;
@@ -1270,10 +1397,335 @@ SceneDrawFilter::_PrimsDirtied(const HdSceneIndexBase& /*sender*/,
     }
 }
 
+void
+SceneDrawFilter::setAdmitting(bool admitting)
+{
+    if (admitting == _admitting) {
+        return;
+    }
+    if (!admitting) {
+        admit(Order(), (std::numeric_limits<std::size_t>::max)());
+    }
+    _admitting = admitting;
+    _order.reset();
+    _orderNext = 0;
+}
+
+void
+SceneDrawFilter::enqueue(Node& node)
+{
+    if (node.queued) {
+        return;
+    }
+    if (!isFilling()) {
+        _admitted = 0;
+    }
+    node.queued = true;
+    for (Node* at = &node; at; at = at->parent) {
+        ++at->queuedBelow;
+    }
+}
+
+void
+SceneDrawFilter::dequeue(Node& node)
+{
+    if (!node.queued) {
+        return;
+    }
+    node.queued = false;
+    for (Node* at = &node; at; at = at->parent) {
+        --at->queuedBelow;
+    }
+}
+
+void
+SceneDrawFilter::admitNode(Node& node)
+{
+    dequeue(node);
+    if (node.output == eOutputAbsent) {
+        transition(node, eOutputShown);
+    }
+    ++_admitted;
+}
+
+// The outermost instancer drawing node, through the prims below each instancer and the prototypes it
+// names: a prototype in Hydra before its instancer would draw once, untransformed.
+SceneDrawFilter::Node*
+SceneDrawFilter::unitOwner(Node& node)
+{
+    Node* owner = nullptr;
+    // Prototypes naming their own ancestors would otherwise go round for ever.
+    std::size_t steps = 0;
+    for (Node* at = &node; at && (at != _root) && (steps < 4096); ++steps) {
+        if (at->type == HdPrimTypeTokens->instancer) {
+            owner = at;
+        }
+        if (!_prototypeOwners.empty()) {
+            const auto named = _prototypeOwners.find(*at->path);
+            if (named != _prototypeOwners.end()) {
+                const auto instancer = _nodes.find(named->second);
+                if ((instancer != _nodes.end()) && (&instancer->second != at)) {
+                    at = &instancer->second;
+                    continue;
+                }
+            }
+        }
+        at = at->parent;
+    }
+
+    return owner;
+}
+
+std::size_t
+SceneDrawFilter::admitUnit(Node& node)
+{
+    std::size_t admitted = 0;
+    if (Node* owner = unitOwner(node)) {
+        std::vector<Node*> tops { owner };
+        std::unordered_set<const Node*> seen;
+        while (!tops.empty()) {
+            Node* top = tops.back();
+            tops.pop_back();
+            if (!seen.insert(top).second) {
+                continue;
+            }
+            std::vector<Node*> stack { top };
+            while (!stack.empty()) {
+                Node* at = stack.back();
+                stack.pop_back();
+                if (at->type == HdPrimTypeTokens->instancer) {
+                    const auto record = _instancers.find(*at->path);
+                    if (record != _instancers.end()) {
+                        for (const SdfPath& prototype : record->second.prototypes) {
+                            const auto found = _nodes.find(prototype);
+                            if ((found != _nodes.end()) && (found->second.queuedBelow != 0)) {
+                                tops.push_back(&found->second);
+                            }
+                        }
+                    }
+                }
+                if (at->queued) {
+                    admitNode(*at);
+                    ++admitted;
+                }
+                for (Node* child = at->lastChild; child; child = child->prev) {
+                    if (child->queuedBelow != 0) {
+                        stack.push_back(child);
+                    }
+                }
+            }
+        }
+    }
+    if (node.queued) {
+        admitNode(node);
+        ++admitted;
+    }
+
+    return admitted;
+}
+
+std::size_t
+SceneDrawFilter::admitBelow(Node& top,
+                            std::size_t budget,
+                            Clock::time_point deadline)
+{
+    if (top.queuedBelow == 0) {
+        return 0;
+    }
+    const unsigned clockEvery = 512;
+    const bool timed = (deadline != (Clock::time_point::max)());
+    unsigned untilClock = clockEvery;
+    std::size_t admitted = 0;
+    std::vector<Node*> stack { &top };
+    while (!stack.empty() && (admitted < budget)) {
+        if (timed && (--untilClock == 0)) {
+            untilClock = clockEvery;
+            if (Clock::now() >= deadline) {
+                break;
+            }
+        }
+        Node* at = stack.back();
+        stack.pop_back();
+        if (at->queuedBelow == 0) {
+            continue;
+        }
+        if (at->queued) {
+            admitted += admitUnit(*at);
+        }
+        for (Node* child = at->lastChild; child; child = child->prev) {
+            if (child->queuedBelow != 0) {
+                stack.push_back(child);
+            }
+        }
+    }
+
+    return admitted;
+}
+
+std::size_t
+SceneDrawFilter::admitInstance(const SdfPath& instancer,
+                               Instancer& record,
+                               std::size_t index)
+{
+    std::size_t admitted = 0;
+    const auto node = _nodes.find(instancer);
+    if ((node != _nodes.end()) && node->second.queued) {
+        admitted += admitUnit(node->second);
+    }
+    setInstanceWaiting(instancer, record, index, false);
+    ++_admitted;
+    if (++_instanceCredit == kInstancesPerPrim) {
+        _instanceCredit = 0;
+        ++admitted;
+    }
+
+    return admitted;
+}
+
+std::size_t
+SceneDrawFilter::admitAt(const SdfPath& path,
+                         std::size_t budget,
+                         Clock::time_point deadline)
+{
+    std::size_t admitted = 0;
+    const auto node = _nodes.find(path);
+    if (node != _nodes.end()) {
+        admitted += admitBelow(node->second, budget, deadline);
+    }
+    if ((_waitingCount == 0) || (admitted >= budget)) {
+        return admitted;
+    }
+    const unsigned clockEvery = 512;
+    const bool timed = (deadline != (Clock::time_point::max)());
+    unsigned untilClock = clockEvery;
+    Locations::const_iterator it = scanStart(path);
+    for (; (it != _locations.end()) && it->first.HasPrefix(path) && (admitted < budget); ++it) {
+        if (timed && (--untilClock == 0)) {
+            untilClock = clockEvery;
+            if (Clock::now() >= deadline) {
+                break;
+            }
+        }
+        const auto record = _instancers.find(it->second.first);
+        if ((record != _instancers.end()) && record->second.waiting[it->second.second]) {
+            admitted += admitInstance(it->second.first, record->second, it->second.second);
+        }
+    }
+    _scannedTo[path] = it;
+
+    return admitted;
+}
+
+std::size_t
+SceneDrawFilter::admitAnyInstances(std::size_t budget,
+                                   Clock::time_point deadline)
+{
+    const unsigned clockEvery = 512;
+    const bool timed = (deadline != (Clock::time_point::max)());
+    unsigned untilClock = clockEvery;
+    std::size_t admitted = 0;
+    for (auto& instancer : _instancers) {
+        Instancer& record = instancer.second;
+        if (record.waitingCount == 0) {
+            continue;
+        }
+        std::size_t i = record.waitingFrom;
+        for (; (i < record.waiting.size()) && (admitted < budget); ++i) {
+            if (timed && (--untilClock == 0)) {
+                untilClock = clockEvery;
+                if (Clock::now() >= deadline) {
+                    break;
+                }
+            }
+            if (record.waiting[i]) {
+                admitted += admitInstance(instancer.first, record, i);
+            }
+        }
+        record.waitingFrom = i;
+        if (admitted >= budget) {
+            break;
+        }
+    }
+
+    return admitted;
+}
+
+std::size_t
+SceneDrawFilter::admit(const Order& order,
+                       std::size_t maxPrims,
+                       Clock::time_point deadline)
+{
+    if (order != _order) {
+        _order = order;
+        _orderNext = 0;
+    }
+    const std::size_t budget = (std::max)(maxPrims, std::size_t(1));
+    const bool timed = (deadline != (Clock::time_point::max)());
+    const std::size_t clockEvery = 64;
+    std::size_t admitted = 0;
+    if (_order) {
+        const std::vector<SdfPath>& rows = *_order;
+        for (std::size_t looked = 0; isFilling() && (_orderNext < rows.size()) && (admitted < budget); ++looked) {
+            if (timed && (admitted != 0) && ((looked % clockEvery) == 0) && (Clock::now() >= deadline)) {
+                break;
+            }
+            const SdfPath& row = rows[_orderNext];
+            if (row.IsAbsolutePath() && hasPendingAt(row)) {
+                admitted += admitAt(row, budget - admitted, deadline);
+                if (hasPendingAt(row)) {
+                    break;
+                }
+            }
+            ++_orderNext;
+        }
+    }
+    if ((admitted < budget) && isFilling() && ((admitted == 0) || !timed || (Clock::now() < deadline))) {
+        admitted += admitBelow(*_root, budget - admitted, deadline);
+        if ((admitted < budget) && (_waitingCount != 0)) {
+            admitted += admitAnyInstances(budget - admitted, deadline);
+        }
+    }
+    sendChanges();
+
+    return admitted;
+}
+
+bool
+SceneDrawFilter::hasPendingAt(const SdfPath& path) const
+{
+    const auto node = _nodes.find(path);
+    if ((node != _nodes.end()) && (node->second.queuedBelow != 0)) {
+        return true;
+    }
+    if (_waitingCount == 0) {
+        return false;
+    }
+    Locations::const_iterator it = scanStart(path);
+    for (; (it != _locations.end()) && it->first.HasPrefix(path); ++it) {
+        const auto record = _instancers.find(it->second.first);
+        if ((record != _instancers.end()) && record->second.waiting[it->second.second]) {
+            break;
+        }
+    }
+    _scannedTo[path] = it;
+
+    return (it != _locations.end()) && it->first.HasPrefix(path);
+}
+
+SceneDrawFilter::Locations::const_iterator
+SceneDrawFilter::scanStart(const SdfPath& path) const
+{
+    const auto scanned = _scannedTo.find(path);
+
+    return (scanned != _scannedTo.end()) ? scanned->second : _locations.lower_bound(path);
+}
+
 SceneRevealPacer::SceneRevealPacer(double targetMs,
-                                   std::size_t firstBatch)
+                                   std::size_t firstBatch,
+                                   std::size_t minBatch)
     : _targetMs(targetMs)
     , _batch((std::max)(firstBatch, std::size_t(1)))
+    , _minBatch((std::max)(minBatch, std::size_t(1)))
     , _samples()
 {
 }
@@ -1291,11 +1743,9 @@ SceneRevealPacer::observe(std::size_t prims,
 
     double meanPrims = 0.;
     double meanMs = 0.;
-    double longest = 0.;
     for (std::size_t i = 0; i < _sampleCount; ++i) {
         meanPrims += _samples[i].prims;
         meanMs += _samples[i].ms;
-        longest = (std::max)(longest, _samples[i].ms);
     }
     meanPrims /= double(_sampleCount);
     meanMs /= double(_sampleCount);
@@ -1305,23 +1755,41 @@ SceneRevealPacer::observe(std::size_t prims,
         spread += (_samples[i].prims - meanPrims) * (_samples[i].prims - meanPrims);
         covariance += (_samples[i].prims - meanPrims) * (_samples[i].ms - meanMs);
     }
-    double fixedMs = -1.;
-    double perPrimMs = 0.;
+    const double minPerPrimMs = 1e-9;
+    const double current = double(_batch);
+    const double latest = double(prims);
+    double wanted = current;
     // Batches of one size cannot tell the fixed part from the rest, nor can noise between close ones.
     const double relative = 0.1 * meanPrims;
     if ((_sampleCount >= 3) && (spread > relative * relative * double(_sampleCount))) {
-        perPrimMs = covariance / spread;
-        fixedMs = meanMs - perPrimMs * meanPrims;
+        _perPrimMs = (std::max)(covariance / spread, minPerPrimMs);
+        _fitted = true;
+    } else if (!_fitted) {
+        _perPrimMs = (std::max)(ms / latest, minPerPrimMs);
+        wanted = (ms <= _targetMs) ? (current * 2.) : (current / 2.);
     }
-    if ((perPrimMs <= 0.) || (fixedMs < 0.) || (fixedMs > longest)) {
-        fixedMs = (std::min)(_fixedMs, 0.9 * ms);
-        perPrimMs = (ms - fixedMs) / double(prims);
+    if (_fitted) {
+        // From the latest frame alone: during a fill the fixed part grows with the prims Hydra holds,
+        // which the older frames the slope comes from did not hold yet.
+        _fixedMs = ms - _perPrimMs * latest;
+        if (_fixedMs < 0.) {
+            _fixedMs = 0.;
+            _perPrimMs = (std::max)(ms / latest, minPerPrimMs);
+        }
+        const double fits = (_targetMs - _fixedMs) / _perPrimMs;
+        if (fits >= double(_minBatch)) {
+            wanted = fits;
+        } else if (_fixedMs >= _targetMs) {
+            // Every pass costs the fixed part however few prims it shows, so a batch whose prim work
+            // is at most that keeps a pass within twice the unavoidable cost and the fill in a number
+            // of passes that does not depend on the prim count.
+            wanted = (std::max)(double(_minBatch), _fixedMs / _perPrimMs);
+        } else {
+            wanted = (std::min)(current, double(_minBatch));
+        }
+    } else {
+        _fixedMs = 0.;
     }
-    _fixedMs = fixedMs;
-    _perPrimMs = (std::max)(perPrimMs, 1e-9);
-
-    const double wanted = (_fixedMs < 0.75 * _targetMs) ? ((_targetMs - _fixedMs) / _perPrimMs) : (_fixedMs / _perPrimMs);
-    const double current = double(_batch);
     const double bounded = (std::min)((std::max)(wanted, current / 4.), current * 2.);
     // The upper bound only keeps the conversion defined.
     _batch = std::size_t((std::min)((std::max)(bounded, 1.), 1e15));

@@ -348,8 +348,7 @@ NodeGraph::leaveEvent(QEvent* e)
 }
 
 void
-NodeGraph::wheelEventInternal(bool ctrlDown,
-                              double delta,
+NodeGraph::wheelEventInternal(double delta,
                               const QPointF* viewPivot)
 {
     double scaleFactor = pow( NATRON_WHEEL_ZOOM_PER_DELTA, delta);
@@ -361,32 +360,24 @@ NodeGraph::wheelEventInternal(bool ctrlDown,
         return;
     }
 
-    if (ctrlDown && _imp->_magnifiedNode) {
-        if (!_imp->_magnifOn) {
-            _imp->_magnifOn = true;
-            _imp->_nodeSelectedScaleBeforeMagnif = _imp->_magnifiedNode->scale();
+    _imp->_accumDelta += delta;
+    if (std::abs(_imp->_accumDelta) > 60) {
+        scaleFactor = pow(NATRON_WHEEL_ZOOM_PER_DELTA, _imp->_accumDelta);
+        if (viewPivot) {
+            const QPointF scenePivot = viewportTransform().inverted().map(*viewPivot);
+            setTransformationAnchor(QGraphicsView::NoAnchor);
+            scale(scaleFactor, scaleFactor);
+            setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+            // The scene rect is fixed and huge, so this shift never runs into the scroll range.
+            const QPointF drift = viewportTransform().map(scenePivot) - *viewPivot;
+            horizontalScrollBar()->setValue(horizontalScrollBar()->value() + qRound(drift.x()));
+            verticalScrollBar()->setValue(verticalScrollBar()->value() + qRound(drift.y()));
+        } else {
+            scale(scaleFactor, scaleFactor);
         }
-        _imp->_magnifiedNode->setScale_natron(_imp->_magnifiedNode->scale() * scaleFactor);
-    } else {
-        _imp->_accumDelta += delta;
-        if (std::abs(_imp->_accumDelta) > 60) {
-            scaleFactor = pow( NATRON_WHEEL_ZOOM_PER_DELTA, _imp->_accumDelta );
-            if (viewPivot) {
-                const QPointF scenePivot = viewportTransform().inverted().map(*viewPivot);
-                setTransformationAnchor(QGraphicsView::NoAnchor);
-                scale(scaleFactor, scaleFactor);
-                setTransformationAnchor(QGraphicsView::AnchorViewCenter);
-                // The scene rect is fixed and huge, so this shift never runs into the scroll range.
-                const QPointF drift = viewportTransform().map(scenePivot) - *viewPivot;
-                horizontalScrollBar()->setValue(horizontalScrollBar()->value() + qRound(drift.x()));
-                verticalScrollBar()->setValue(verticalScrollBar()->value() + qRound(drift.y()));
-            } else {
-                scale(scaleFactor, scaleFactor);
-            }
-            _imp->_accumDelta = 0;
-            refreshDetailLevel();
-            refreshOverlays();
-        }
+        _imp->_accumDelta = 0;
+        refreshDetailLevel();
+        refreshOverlays();
     }
 }
 
@@ -397,7 +388,7 @@ NodeGraph::wheelEvent(QWheelEvent* e)
         return;
     }
     const QPointF pivot = e->position();
-    wheelEventInternal(modCASIsControl(e), e->angleDelta().y(), &pivot);
+    wheelEventInternal(e->angleDelta().y(), &pivot);
     _imp->_lastMousePos = QPoint(e->position().x(), e->position().y());
     dragPickedUpArrowToCursor();
     update();
@@ -407,10 +398,6 @@ void
 NodeGraph::keyReleaseEvent(QKeyEvent* e)
 {
     if (e->key() == Qt::Key_Control) {
-        if (_imp->_magnifOn) {
-            _imp->_magnifOn = false;
-            _imp->_magnifiedNode->setScale_natron(_imp->_nodeSelectedScaleBeforeMagnif);
-        }
         if (_imp->_bendPointsVisible) {
             _imp->setNodesBendPointsVisible(false);
         }
@@ -542,12 +529,6 @@ NodeGraph::deselectNode(const NodeGuiPtr& n)
         _imp->_selection.remove(n.get());
     }
     n->setUserSelected(false);
-
-    //Stop magnification if active
-    if ( (_imp->_magnifiedNode == n) && _imp->_magnifOn ) {
-        _imp->_magnifOn = false;
-        _imp->_magnifiedNode->setScale_natron(_imp->_nodeSelectedScaleBeforeMagnif);
-    }
 }
 
 void
@@ -579,15 +560,6 @@ NodeGraph::selectNode(const NodeGuiPtr & n,
                 setLastSelectedViewer( (*it) );
             }
         }
-    }
-
-    bool magnifiedNodeSelected = false;
-    if (_imp->_magnifiedNode) {
-        magnifiedNodeSelected = _imp->_selection.contains(_imp->_magnifiedNode);
-    }
-    if (magnifiedNodeSelected && _imp->_magnifOn) {
-        _imp->_magnifOn = false;
-        _imp->_magnifiedNode->setScale_natron(_imp->_nodeSelectedScaleBeforeMagnif);
     }
 }
 

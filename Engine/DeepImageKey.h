@@ -36,7 +36,7 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Identifies a Cache<DeepImageCacheEntry> entry: (nodeHash, time, view, scale). Deliberately
+ * @brief Identifies a deep entry of the node cache: (nodeHash, time, view, scale). Deliberately
  * excludes bounds -- those live in DeepImageParams instead, so a future tiling scheme can vary
  * bounds under the same key without changing what identifies a render.
  **/

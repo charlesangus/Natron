@@ -1,3 +1,4 @@
+import edgesample;
 import pixelwrap;
 import compositestep;
 
@@ -8,9 +9,10 @@ import compositestep;
 // Engine/Gpu/GpuWrap.h packs these.
 //
 // stepAlphaGeometry holds, in words, a view of stepResultAlpha then one of stepInputAlpha, each
-// its offset, row stride, x1, y1, x2, y2, channel count and channel, then the destination alpha's
-// offset and row stride, from the output's origin, in the destination's layout. A view reads zero
-// outside its bounds and everywhere when it has no channels. Its channel is the alpha of every
+// its offset, row stride, x1, y1, x2, y2, channel count, channel and edge mode (edgesample's
+// kEdgeStretch or kEdgeBlack), then the destination alpha's offset and row stride, from the
+// output's origin, in the destination's layout. A view reads past its bounds by its edge mode, and
+// zero everywhere when it has no channels. Its channel is the alpha of every
 // channel, kStepAlphaPerChannel to read the view per channel by channel bit, as stepInput is, or
 // kStepAlphaPerWrittenChannel to read its channel i as the alpha of the i-th channel the wrap's
 // channelMask writes, the others reading zero.
@@ -22,7 +24,7 @@ import compositestep;
 [[vk::binding(7, 0)]] StructuredBuffer<float> stepInputAlpha;
 [[vk::binding(8, 0)]] RWStructuredBuffer<float> stepDstAlpha;
 
-static const uint kStepAlphaViewWords = 8;
+static const uint kStepAlphaViewWords = 9;
 static const uint kStepAlphaPerChannel = 0xFFFFFFFF;
 static const uint kStepAlphaPerWrittenChannel = 0xFFFFFFFE;
 
@@ -42,9 +44,11 @@ float4 stepReadAlpha(StructuredBuffer<float> alpha, uint view, int2 p)
     const uint comps = stepAlphaGeometry[view + 6];
     const int x1 = int(stepAlphaGeometry[view + 2]);
     const int y1 = int(stepAlphaGeometry[view + 3]);
-    if (comps == 0 || !wrapInside(p, x1, y1, int(stepAlphaGeometry[view + 4]), int(stepAlphaGeometry[view + 5])))
+    const int4 bounds = int4(x1, y1, int(stepAlphaGeometry[view + 4]), int(stepAlphaGeometry[view + 5]));
+    int2 at;
+    if (comps == 0 || !edgePixel(p, bounds, stepAlphaGeometry[view + 8], at))
         return v;
-    const uint base = stepAlphaGeometry[view] + uint(p.y - y1) * stepAlphaGeometry[view + 1] + uint(p.x - x1) * comps;
+    const uint base = stepAlphaGeometry[view] + uint(at.y - y1) * stepAlphaGeometry[view + 1] + uint(at.x - x1) * comps;
     const uint channel = stepAlphaGeometry[view + 7];
     const uint n = wrap.nComps;
     if (channel == kStepAlphaPerWrittenChannel)

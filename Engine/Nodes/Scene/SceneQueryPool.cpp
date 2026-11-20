@@ -30,6 +30,7 @@
 
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -220,6 +221,9 @@ SceneQueryPool::giveBack(std::unique_ptr<SceneStage> stage)
         }
     }
     // Destroyed outside the mutex: closing a stage can take a while.
+    if (dropped) {
+        SceneTeardown::release(std::move(dropped));
+    }
 }
 
 void
@@ -229,6 +233,9 @@ SceneQueryPool::releaseIdle()
     {
         std::lock_guard<std::mutex> lock(_mutex);
         dropped.swap(_idle);
+    }
+    if (!dropped.empty()) {
+        SceneTeardown::release(std::move(dropped));
     }
 }
 

@@ -148,6 +148,17 @@ try:
     def top_paths():
         return [path_of(i) for i in rows()]
 
+    def opened(*paths):
+        """A poll that opens each of paths once the model has read its row, true when all are open."""
+        def step():
+            for path in paths:
+                index = find(path)
+                if not index.isValid():
+                    return False
+                tree().expand(index)
+            return True
+        return step
+
     def selected_rows():
         t = tree()
         return sorted(path_of(i) for i in t.selectionModel().selectedRows(0)) if t is not None else []
@@ -332,8 +343,9 @@ try:
         check(ok, "clearing the rows clears the viewer's selection (got %r)" % (viewer_selection(),))
 
         # The tree.
+        ok = yield ("until", lambda: opened(WORLD)() and len(rows(find(WORLD))) >= 3, POLL_TIMEOUT_S)
+        check(ok, "the /World row opens and lists its children")
         world = find(WORLD)
-        tree().expand(world)
         children = sorted(path_of(i) for i in rows(world))
         check(children == sorted([BOX, BALL, CAM]), "/World holds Box, Ball and Cam (got %r)" % (children,))
         types = dict((path_of(i), str(i.siblingAtColumn(1).data())) for i in rows(world))

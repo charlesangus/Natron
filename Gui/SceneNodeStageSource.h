@@ -119,6 +119,10 @@ public:
     // Waits until every source handed to reap() has stopped. For the app's shutdown.
     static void joinReaped();
 
+    // Asks every source's worker to quit and waits until all have, so that none evaluates a node
+    // the caller is about to destroy. The sources stay readable but evaluate nothing more.
+    static void stopAll();
+
 private:
     struct LoadRequest {
         QStringList paths;
@@ -156,6 +160,8 @@ private:
     std::mutex _queueMutex;
     std::condition_variable _queueChanged;
     bool _pending = false;
+    // Loads the stage put off for a closed scene's stale layer can be serviced again.
+    bool _loadsReady = false;
     bool _quit = false;
     double _pendingTime = 0.;
     std::vector<LoadRequest> _loadRequests;

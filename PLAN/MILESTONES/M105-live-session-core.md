@@ -44,25 +44,25 @@ Scouting facts (2026-10-11): `Qt::Network` is already linked into Engine, Gui an
 
 ## Phase 105.1: Protocol, host and client (headless)
 
-- [ ] M105.P1.T1 — Session protocol messages and framing
+- [x] M105.P1.T1 — Session protocol messages and framing
   - files: new `Serialization/Session/SessionProtocol.h`, new `Serialization/Session/SessionProtocol.cpp`, `Serialization/CMakeLists.txt`, new `Tests/Serialization/SessionProtocol_Test.cpp`
   - approach: message structs and their YAML encoding (operations through M102's `GraphOpYaml`). The framing codec is incremental: it takes bytes and yields complete messages, and rejects frames over a 512 MiB cap.
   - verify: compiled at P1.T5. Every message type round-trips; split and coalesced byte streams decode identically; an oversize or garbage frame gives an error and no crash.
   - size: M
 
-- [ ] M105.P1.T2 — Session host
+- [x] M105.P1.T2 — Session host
   - files: new `Engine/LiveSession/SessionHost.h`, new `Engine/LiveSession/SessionHost.cpp`, `Engine/CMakeLists.txt`
   - approach: a `QTcpServer` that handles the join handshake (snapshot from the live project through the bundle writer, in memory), sequencing, apply-then-broadcast (applying through `GraphOpApply` under `Suppress`), rejects with `resyncNode`, checksum broadcast, and disconnect cleanup. It also subscribes to the host's own recorder, so the host user's edits are sequenced the same way.
   - verify: compiled at P1.T5, and exercised by P1.T4.
   - size: L
 
-- [ ] M105.P1.T3 — Session client
+- [x] M105.P1.T3 — Session client
   - files: new `Engine/LiveSession/SessionClient.h`, new `Engine/LiveSession/SessionClient.cpp`
   - approach: connect and hello; load the welcome snapshot; send local recorded operations with a client seq while keeping a pending-key set; apply broadcasts using the skip rule in **Design**; clear pending entries on ack; handle reject and `resyncNode`; compare checksums and request a full resync on a mismatch.
   - verify: compiled at P1.T5, and exercised by P1.T4.
   - size: L
 
-- [ ] M105.P1.T4 — Headless convergence test
+- [x] M105.P1.T4 — Headless convergence test
   - files: new `Tests/LiveSessionConvergence_Test.cpp`
   - approach: on loopback, start one host and three clients, each with its own `AppInstance` in the test process. If one process cannot hold several apps, run the clients as `NatronRenderer` subprocesses driven by a test script instead. Each peer makes 200 random edits concurrently from a fixed seed: knob sets, creates, deletes, rewires, renames, and same-knob races between peers. Then quiesce and require every peer's canonical `project.yaml` to be byte-identical to the host's. A dedicated case covers delete-versus-edit, where the reject and resync converge.
   - verify: compiled at P1.T5, where it passes 20 seeds in a row.
@@ -123,3 +123,13 @@ full ctest, smoke and CI are green; the user signs off the UAT.
 - 2026-10-11 — **User decision:** no session password in v1; the host dialog warns instead.
 - 2026-10-11 — Transport: plain TCP with length-prefixed YAML frames over the already-linked `Qt::Network`. This avoids adding Qt WebSockets, and reuses M102's operation encoding.
 - 2026-10-11 — Only the host writes the shared file; clients' Save sends a request to the host.
+- 2026-11-20 — Phase 105.1 T1–T4 in 3249df10c. Changes from the plan:
+  - `Project::loadProjectFromBundleBytes` is in already, ahead of P2.T1.
+  - SessionShared.{h,cpp} holds the code both sides use.
+  - New `resyncRequest` and `bye{reason}` messages; `resyncNode` carries recreate ops.
+  - No gui.yaml exists in bundles.
+  - The current frame is left out of the checksum.
+  - The host renames clashing names.
+  - The client's copy loads unsaved.
+
+  Risk: several apps in one test process; the fallback is NatronRenderer subprocesses. Build running.

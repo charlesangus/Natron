@@ -43,13 +43,13 @@ Scouted 2026-11-14 on `origin/main`:
 
 ## Phase 434.1: Draw-list additions
 
-- [ ] M434.P1.T1 — Audit the interacts' GL calls
+- [x] M434.P1.T1 — Audit the interacts' GL calls
   - files: read-only `Engine/RotoPaintInteract.cpp`, `Engine/RotoCurveInteract.cpp`, `Engine/TrackerNodeInteract.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.cpp`, `Gui/HostOverlay.cpp`; write `docs/dev/overlay-draw-list-port.md`
   - approach: list each distinct drawing construct (GL primitive, stipple, line width, blend, glyph, text, overlay-viewport call) with file:line. Map each one to an existing draw-list primitive or to one of the planned additions. Flag anything unmapped.
   - verify: the doc covers every `gl*` and `OverlaySupport` drawing call in the five files (`grep -c` the call counts in the report).
   - size: M
 
-- [ ] M434.P1.T2 — Draw-list primitives for interacts
+- [x] M434.P1.T2 — Draw-list primitives for interacts
   - files: `Engine/OverlayDrawList.{h,cpp}`, the viewport drawer (`drawOverlayDrawList` implementation in `Gui/ViewerGL*.cpp`), `Tests/OverlayDrawList_Test.cpp`
   - approach:
     - Add a dash pattern on polylines/lines, in screen pixels.
@@ -71,7 +71,7 @@ Scouted 2026-11-14 on `origin/main`:
   - verify: `tools/bench/gui/run.sh --xvfb --driver roto` produces `overlay_draw` records for every shape count and the Tracker topology, and `compare.py` reads them.
   - size: M
 
-- [ ] M434.P1.T4 — Draw-list cache and persistent GPU buffer
+- [x] M434.P1.T4 — Draw-list cache and persistent GPU buffer
   - files: `Engine/EffectInstance.{h,cpp}` (`buildOverlay_public`, a list version), `Engine/OverlayDrawList.{h,cpp}`, `Gui/NodeOverlayRenderer.{h,cpp}`, `Tests/OverlayDrawList_Test.cpp`
   - approach:
     - Nodes declare an overlay content version: a counter bumped on any change that alters what they draw, plus time, view and a zoom bucket.
@@ -83,7 +83,7 @@ Scouted 2026-11-14 on `origin/main`:
 
 ## Phase 434.2: Ports
 
-- [ ] M434.P2.T1 — Before-image capture harness
+- [x] M434.P2.T1 — Before-image capture harness
   - files: `Tests/gui/m434_interact_parity.py`, reference crops under `Tests/gui/references/m434/` (≤256 px crops, compressed)
   - approach:
     - One scene per interact: a Roto with Béziers, feather and a selected point with tangents; a RotoPaint stroke plus cursor; a Tracker with two tracks; a SplineWarp pair; Transform, CornerPin, Position and Rectangle.
@@ -124,3 +124,4 @@ Scouted 2026-11-14 on `origin/main`:
 - 2026-11-17 — P1.T1-P1.T4 and P2.T1 code in c01d83499 (unbuilt). Port map at docs/dev/overlay-draw-list-port.md. The list cache keys on content version, time, view, mipmap level and a zoom step of an eighth of an octave; hover gets its own list. The bench baseline is recorded from this branch before any port, since main has no probe. Next: record the bench baseline and the parity references on this build, then P2.T2-P2.T5.
 - 2026-11-17 — **RampInteract is ported too (user):** it joins the HostOverlay ports in P2.T5.
 - 2026-11-17 — **RotoPaint's stroke preview (GL_MAX against destination alpha), Tracker thumbnails and the magnifier stay on direct GL (user):** they draw beside the draw list, and M435 - Overlays Deform Through Warps gives them the same texture-warp fallback as OFX overlays.
+- 2026-11-20 — P1.T1, T2, T4 and P2.T1 code (c01d83499) is built and green (run 44767988264). The only failure was the known USDRenderMoonRayLiveTextureTest exit timeout. Next: the P1.T3 baseline on main, the P2.T1 before-images, and P2.T2–T5.

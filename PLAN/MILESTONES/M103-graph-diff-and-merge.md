@@ -68,7 +68,7 @@ an add. Its lessons, which this design avoids:
 
 ## Phase 103.1: Identity and provenance spike (stops for the user)
 
-- [ ] M103.P1.T1 — Scenario corpus of template merges
+- [x] M103.P1.T1 — Scenario corpus of template merges
   - files: new `Tests/fixtures/merge-scenarios/build_scenarios.py`, new `Tests/fixtures/merge-scenarios/README.md`, new `Tests/fixtures/merge-scenarios/expected/*.yaml`, generated `Tests/fixtures/merge-scenarios/*/{base,mine,theirs}.ntpz`
   - approach: a NatronRenderer Python script builds at least 12 base/mine/theirs triples:
     - a rename;
@@ -88,7 +88,7 @@ an add. Its lessons, which this design avoids:
   - verify: the script builds every triple without error, and `unzip -l` lists `mimetype` first in each. The build is required (NatronRenderer must exist).
   - size: M
 
-- [ ] M103.P1.T2 — Matcher strategies and a scoring harness
+- [x] M103.P1.T2 — Matcher strategies and a scoring harness
   - files: new `Serialization/Merge/NodeMatcher.h`, new `Serialization/Merge/NodeMatcher.cpp`, new `tools/merge/score_matchers.cpp` (or a gtest that prints the table), `Serialization/CMakeLists.txt`
   - approach: define the `NodeMatcher` interface, then implement three strategies:
     - `IdOnly`, which matches on `origin` and ID;
@@ -99,13 +99,13 @@ an add. Its lessons, which this design avoids:
   - verify: the harness runs over the whole corpus and prints a table with one row per scenario and one column per strategy.
   - size: L
 
-- [ ] M103.P1.T3 — Provenance and scope prototype, plus spike report
+- [x] M103.P1.T3 — Provenance and scope prototype, plus spike report
   - files: new `docs/design/graph-merge-identity.md`, the prototype code alongside `Serialization/Merge/NodeMatcher.cpp`
   - approach: prototype the merge-scope rule (provenance-tagged nodes plus artist nodes wired strictly between them, and alternatives) and score it on the corpus. Write the report: the score table from P1.T2, the scope results, the failure cases for each strategy, and a recommendation. Cover the explicit question of whether a deleted-and-recreated node should count as the same node, and when that goes wrong.
   - verify: the report exists, covers every scenario, and makes one recommendation.
   - size: M
 
-- [ ] M103.P1.T4 — User decision on matching policy and scope
+- [x] M103.P1.T4 — User decision on matching policy and scope
   - files: this file's `## Decisions`
   - approach: **stop for the user.** Present the report's table and recommendation, and ask the user to choose the matching policy, the scope rule and any provenance changes. Record the answer as a decision, then re-check P2's briefs against it (PLAN-FORMAT §5a) before starting P2.
   - verify: a user decision is recorded.
@@ -206,3 +206,8 @@ The git-driver test passes. Full ctest, smoke and CI are green.
 - 2026-10-11 — **User decision:** the merge is available in the app and on the CLI, and the CLI doubles as a git merge driver.
 - 2026-10-11 — **User decision:** the matching policy waits for the P1 spike; the user chooses at P1.T4.
 - 2026-10-11 — Conflicts are stored as data in `merge/conflicts.yaml`, never in labels (a nuke_diff lesson), and the merged result defaults to mine at every conflict.
+- 2026-11-20 — Phase 103.1 in 340bed733 (corpus, matchers, scoring tool, report at docs/design/graph-merge-identity.md). The scores come from a stand-in run; the real tool's scores follow the build. User decisions:
+  1. **Matching is IdPlusAdoption** ("I believe"). The user asked that it be checked against their private proof-of-concept repo charlesangus/nuke_diff, which this feature largely duplicates; treat that repo as rough work, not a finished product. A consultant is comparing them.
+  2. **A deleted and recreated node of the same type in the same place is the same node**, flagged in the conflict list.
+  3. **The scope rule is MatchedEnclosed.**
+  4. **Phase 103.2 makes three provenance changes:** group-from-selection and ungroup keep node IDs (matching across the whole tree); a paste or duplicate drops its origin when the shot already has a node with that origin; each import gets its own key.

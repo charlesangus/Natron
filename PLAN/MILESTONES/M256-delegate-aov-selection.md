@@ -30,31 +30,31 @@ Sources: `spike/m255/REPORT-P1T1-aov-checklist.md`, `REPORT-P1T2-rendersettings-
 
 ## Phase 256.1: RenderVars to AOVs
 
-- [ ] M256.P1.T1 — Read RenderVars into AOV requests
+- [x] M256.P1.T1 — Read RenderVars into AOV requests
   - files: `Engine/Nodes/Scene/RenderSettingsPrim.{h,cpp}`, `Tests/Scene/RenderSettingsPrim_Test.cpp`
   - approach: `aovRequests(prim, renderer, time)` calls `UsdRenderComputeSpec(activePrim, {renderer namespace, "driver", "natron"})` and returns the union of all products' vars, deduplicated by var path. Products that disagree on camera or resolution return an error. A raw sourceName is kept verbatim, `primvar` becomes `primvars:<name>`, `lpe` becomes `lpe:<expr>`, and `intrinsic` is rejected. Vars whose sourceName is namespaced for a delegate other than `renderer` are filtered out here. Each request carries dataType, `natron:layer` and the namespaced attributes.
   - verify: gtest on in-memory .usda: two overlapping products give a deduplicated union; each sourceType maps as stated; intrinsic is rejected; two cameras give an error; namespaced attributes survive; with renderer = Cycles a `moonray:*` var is absent from the result and a `primvars:st` var is present.
   - size: M
 
-- [ ] M256.P1.T2 — AOV-to-layer naming table
+- [x] M256.P1.T2 — AOV-to-layer naming table
   - files: `Engine/Nodes/Scene/AovLayers.{h,cpp}` (new), `Engine/Nodes/Scene/USDRender.cpp` (layer naming near :67-84), `Engine/CMakeLists.txt`, `Tests/Scene/AovLayers_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: layer = the AOV name without its namespace, or `natron:layer` when authored. Channels: colour R,G,B(,A); normal, position and motion X,Y,Z(,W); uv U,V,W; scalars one channel. The kind comes from dataType, else a per-delegate table, else the HdFormat channel count. A dataType that disagrees with the format warns, and the format wins.
   - verify: gtest: `cycles:diffuse_direct` gives diffuse_direct.RGB, `primvars:st` gives st.UVW, depth gives depth.Z, `natron:layer` overrides; existing layer names are unchanged.
   - size: M
 
-- [ ] M256.P1.T3 — HydraRenderImpl requests the spec's AOVs
+- [x] M256.P1.T3 — HydraRenderImpl requests the spec's AOVs
   - files: `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}` (AOV setup near :1397-1413 and :3038), `Tests/Scene/USDRender_Test.cpp`
   - approach: request color, depth, primId and instanceId plus P1.T1's requests. A null buffer after `SetRendererAovs` means rejected: collect the var paths and report them as one persistent node warning, and keep rendering the rest. elementId is treated as rejected. Any HdFormat is read into its layer, and only requested AOVs are bound.
   - verify: gtest on Cycles: RenderVars depth, normal and `primvars:nope` give the depth and normal layers, a warning naming `/Render/product/nope`, and a rendered colour layer; with no vars the render is unchanged.
   - size: L
 
-- [ ] M256.P1.T4 — USDRender layers and hash follow the spec
+- [x] M256.P1.T4 — USDRender layers and hash follow the spec
   - files: `Engine/Nodes/Scene/USDRender.{h,cpp}` (produced layers near :496-508, the render loop, `appendNodeContentHash`), `Tests/Scene/USDRender_Test.cpp`
   - approach: the produced layers are the active prim's spec layers for the selected renderer, cached per time. Edits to the RenderProduct and RenderVar children change the hash through M253.P2.T8's side table.
   - verify: gtest: adding a RenderVar adds the layer and invalidates; an unrelated edit does not; the channel selector lists the new layer; switching Renderer from Cycles to MoonRay drops the `cycles:*` layers.
   - size: M
 
-- [ ] M256.P1.T5 — Per-AOV settings in, delegate metadata out
+- [x] M256.P1.T5 — Per-AOV settings in, delegate metadata out
   - files: `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}` (a `UsdImagingGLEngine` subclass), `Engine/Nodes/Scene/USDRender.cpp`, `Tests/Scene/USDRenderMoonRay_Test.cpp`, `Tests/Scene/USDRender_Test.cpp`
   - approach: a `UsdImagingGLEngine` subclass calls `SetRenderOutputSettings` with each var's `driver:parameters:aov:*` as `aovSettings`. `aovMetadata:<aov>` render stats become layer metadata, which M285 - Utility Renderer AOVs uses for the Cryptomatte manifest.
   - verify: gtest: a MoonRay var's `driver:parameters:aov:moonray:*` reaches hdMoonray; a test stat dictionary appears as layer metadata.
@@ -109,3 +109,4 @@ Sources: `spike/m255/REPORT-P1T1-aov-checklist.md`, `REPORT-P1T2-rendersettings-
 - 2026-11-16 — **Rejected vars warn and the rest render (user, grill):** a switch of renderer must never break a comp.
 - 2026-11-16 — **Checklist has one section per delegate (user, grill):** USDRender or the viewer may render with a renderer other than Default Renderer, so picks for every delegate are authored.
 - 2026-11-16 — **Only the selected renderer's vars are passed (user, grill):** vars namespaced for another delegate are filtered out before `SetRendererAovs`, with no warning; un-namespaced vars go to every delegate.
+- 2026-11-20 — Phase 256.1 in d64b333a7. hdMoonray reads `parameters:moonray:<attr>`, so driver keys are also sent as `parameters:<x>`. Duplicate AOV names and layer-name collisions are rejected with a warning. **PM calls:** an unrecognised one-channel AOV is named `Y` (depth names get Z, id names get id). A product camera that differs from the settings prim's camera is honoured, matching the reference DCC, in Phase 256.2. Build running.

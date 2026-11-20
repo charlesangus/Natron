@@ -28,19 +28,19 @@ Prove that real Natron nodes are affordable and workable as shader nodes before 
 
 ## Phase 349.1: Prove it
 
-- [ ] M349.P1.T1 — Measure knob and network cost
+- [x] M349.P1.T1 — Measure knob and network cost
   - files: `Tests/Scene/ShaderNodeCost_Test.cpp`, `tools/bench/shader_node_bench.py`, `Engine/Nodes/docs/shader-nodes.md`
   - approach: build a test-only effect whose knobs copy the attribute types and counts of `DwaBaseMaterial` (about 170), Cycles Principled BSDF (about 33) and a median MoonRay map (about 4), each with about 10 inputs. Build a 50-node mixed network in a Group. Time creation, open, save, knob edit plus re-authoring a layer through `SceneNodeAuthoring::openLayerStage`, and comp edits through `tools/bench/graph_bench.py` with the Group present. Repeat with every attribute as a real input, for comparison only.
   - verify: the bench prints each bar with pass or fail, the gtest builds and round-trips the network, and the numbers are in the design note.
   - size: L
 
-- [ ] M349.P1.T2 — Prove live inputs on an existing node
+- [x] M349.P1.T2 — Prove live inputs on an existing node
   - files: `Tests/Scene/ShaderNodeInputs_Test.cpp`, `Engine/Nodes/docs/shader-nodes.md`, test-only effect beside the test
   - approach: starting from `MissingPluginNode`'s runtime spec and Group input handling, add and remove named inputs on a live node. Exercise connected and unconnected inputs, undo, cycle checks and `getInputNumberFromLabel`. Also compare one plug-in per shader with one class and a runtime spec, by registration cost and by tab menu and Python consequences. The class must be the single network node class every context uses (shaders, generic kernel nodes, channel nodes), so a runtime spec is the expected outcome unless the numbers rule it out; a miss goes to the user.
   - verify: gtest — adding an input keeps existing connections; a save and load round trip restores promoted inputs and their connections; removing a connected input disconnects it cleanly. The note names the registration choice.
   - size: L
 
-- [ ] M349.P1.T3 — Prove connections that name an output
+- [x] M349.P1.T3 — Prove connections that name an output
   - files: `Tests/Scene/ShaderNodeOutputs_Test.cpp`, `Engine/Nodes/docs/shader-nodes.md`, test-only effect beside the test
   - approach: compare storing the output name per input in a hidden knob on the downstream node with extending the serialized `inputs` map. Pick the smaller change that survives copy and paste, Group export and Python.
   - verify: gtest — an input connected to a named output of a two-output node keeps that name through save, load, and copy and paste. The note records the choice.
@@ -62,3 +62,4 @@ Prove that real Natron nodes are affordable and workable as shader nodes before 
 - 2026-11-05 — **Lands bench, tests and note:** as a Feature member the spike needs a mergeable PR, and those keep measuring later work.
 - 2026-11-17 — **Generic port-network core (user):** one network node class and one container class for shaders, VOPs and channels; nodes declare supported targets, and wiring checks targets and then port types. Chosen over shipping shader-only and refactoring later, which would have changed saved projects with no back-compat path.
 - 2026-11-17 — **Node targets kept over a port-only check (user):** the alternative was type domains, where availability would follow from port types alone. The user kept node-level targets, so compatibility is a two-layer check.
+- 2026-11-20 — Phase 349.1 T1–T3 in ddaab5f7b. T4's drawing prototype is scratch in build/m349-proto/ (not landed); it needs the build plus a screenshot. The real DwaBaseMaterial has 101 attributes, and a made-up 170-attribute layout is benched too. The design note is at Engine/Nodes/docs/shader-nodes.md, with its recommendation pending the numbers. Questions held for the user until the numbers exist: refusing bad connections in Node::connectInput, the 170 vs 101 record size, and a likely bug in NodeGroup::notifyNodeDeactivated's input rebuild.

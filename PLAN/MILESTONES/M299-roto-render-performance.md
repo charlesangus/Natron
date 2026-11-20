@@ -45,7 +45,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
 
 ## Phase 299.1: Profile and baseline
 
-- [ ] M299.P1.T1 — Add a Roto render-throughput bench
+- [x] M299.P1.T1 — Add a Roto render-throughput bench
   - files: tools/bench/roto_render_bench.py (new), tools/bench/roto_render_bench.sh (new), tools/bench/gui/make_roto_strokes.py (new), tools/bench/README.md
   - approach: A NatronRenderer script builds Roto and RotoPaint scenes through the Python roto API:
     - scenes: N in {1, 30, 100, 300} closed shapes of 24 points; feather 0 or 20 px; still or keyed on every frame; at 2K and UHD; over a Read plate;
@@ -56,7 +56,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
   - verify: The script runs against a release AppImage under llvmpipe and prints a well-formed line per scenario. The README documents the environment variables.
   - size: M
 
-- [ ] M299.P1.T2 — Add per-stage Roto render timers behind an environment variable
+- [x] M299.P1.T2 — Add per-stage Roto render timers behind an environment variable
   - files: Engine/RotoContext.cpp, Engine/RotoPaint.cpp, Engine/RotoLatencyProbe.h/.cpp (reuse its clock and log writer if it fits)
   - approach: When `NATRON_ROTO_RENDER_PROFILE=<path>` is set, write one JSON line per mask and per RotoPaint render with steady-clock stage times:
     - cache lookup, hit or miss;
@@ -169,3 +169,4 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
 ## Decisions
 
 - 2026-11-20 — Elaborated from the stub by a consultant after the claim; its deps (M224, M276, M300) are done. GPU rasterisation is Out; a separate milestone can be filed if the Phase 299.1 profile calls for it.
+- 2026-11-20 — P1.T1 and P1.T2 in 48f1f34a7. AppManager starts the profile from the environment, and there is an extra `allocate` stage. **PM calls:** the bench uses its own 8-frame checkerboard plate, so decode cost doesn't swamp Roto; compare.py gains the cold, p95 and edit columns, printed only when both files have them. Build running; P1.T3 (VM baseline and profile) follows.

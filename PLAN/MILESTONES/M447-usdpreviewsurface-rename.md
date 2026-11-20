@@ -36,3 +36,4 @@ Rename the `USDMaterial` node to `USDPreviewSurface`, its plugin ID and label bo
 ## Decisions
 
 - 2026-11-20 — Phase 447.1 done in 0ba4ac243. CMake globs pick up the renamed files, so no list edits were needed. The tab-menu negative check was left out, because it would itself match the gate's `git grep -w USDMaterial`. Gate running.
+- 2026-11-20 — Gate green on 0ba4ac243 (run 44778763542, release, ctest, and the scene_assign_material, scene_node_knob_layout and scene_live_texture_delegates GUI scripts). PR to main next.

@@ -28,7 +28,7 @@ Line numbers read 2026-11-08; re-check against M304's merged code before startin
 
 ## Phase 370.1: Design
 
-- [ ] M370.P1.T1 — Design note for point-list, broken-flag and clone isolation
+- [x] M370.P1.T1 — Design note for point-list, broken-flag and clone isolation
   - files: Engine/Bezier.cpp, Engine/Bezier.h, Engine/BezierCP.cpp, Engine/RotoDrawableItem.cpp (read), a new note under Engine/docs/
   - approach: Read M304's GUI-side mechanism and write a short note: GUI-side list vs copy-on-write snapshot (recommend whichever reuses M304's hold and write-back with the fewest new locks), how `broken` joins it, how `clone` finds the right side without the render-start hold, and the cost on large shapes. Send it to the user and park as `response` until approved.
   - verify: The note exists and the user's approval is recorded in this file's `## Decisions`.
@@ -36,13 +36,13 @@ Line numbers read 2026-11-08; re-check against M304's merged code before startin
 
 ## Phase 370.2: Implementation
 
-- [ ] M370.P2.T1 — Isolate the point list from running renders
+- [x] M370.P2.T1 — Isolate the point list from running renders
   - files: Engine/Bezier.cpp, Engine/Bezier.h, Engine/BezierPrivate.h (if present), Tests/ (M304's render-isolation test file)
   - approach: Implement the approved list design: renders iterate a list that structural edits (insert, delete, reorder) never mutate during the render; GUI edits go to the GUI side and are written back with M304's other GUI edits. Extend M304's `RenderThreadReadsNoEditMadeDuringItsRender` pattern with a concurrent-reader test that deletes, inserts and reorders points mid-render.
   - verify: The new concurrent tests pass repeatedly (`--gtest_repeat=50`), and M304's existing render-isolation tests still pass.
   - size: L
 
-- [ ] M370.P2.T2 — Isolate the broken flag and make clone pick its side off the main thread
+- [x] M370.P2.T2 — Isolate the broken flag and make clone pick its side off the main thread
   - files: Engine/Bezier.cpp, Engine/BezierCP.cpp, Engine/BezierCP.h, Tests/ (M304's render-isolation test file)
   - approach: Move `broken` onto the same GUI/render sides as positions per the note, and make `Bezier::clone` select its source side by the approved rule rather than by the render-start hold. Add tests: toggling `broken` mid-render is invisible to the render; `clone` from a worker thread during a render copies the render side and from the main thread copies the GUI side (or whatever the note specifies).
   - verify: The new tests pass repeatedly (`--gtest_repeat=50`); ctest for Roto and Bezier suites green.
@@ -54,3 +54,4 @@ Line numbers read 2026-11-08; re-check against M304's merged code before startin
 
 - 2026-11-08 — Render start must not wait on workers from the main thread (user): keep render starts responsive.
 - 2026-11-20 — Design note at Engine/docs/roto-point-list-render-isolation.md. **Separate GUI-side point list (user)**, not a copy-on-write snapshot. **The `finished` flag is isolated too (user).** PM calls: `clone` always copies the source's GUI side; an off-main-thread clone uses the runtime fallback; "reorder" is a delete plus an insert. Render callers in RotoContext/SplineWarp*/Retouch get a one-line render-side request each, which overlaps M299 - Roto Render Performance (rebase whichever lands second).
+- 2026-11-20 — Phase 370.2 in ef2cae47e. The API is `getBroken(bool useGuiCurves = true)`, and RotoCurveContext.cpp:1006 is also a render caller. Structural edits during a render no longer invalidate the content hash. The make-shape undo breaks tangents through `setTangentsBroken`. A `dequeueGuiActions` feather-list overrun is fixed. Build running, with the m224, m261 and m304 GUI scripts.

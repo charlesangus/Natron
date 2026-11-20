@@ -54,13 +54,13 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
 
 ## Phase 278.2: Selection pass
 
-- [ ] M278.P2.T1 — Scene index filter keeping only the selected prims' geometry
+- [x] M278.P2.T1 — Scene index filter keeping only the selected prims' geometry
   - files: Gui/SceneSelectionFilter.{h,cpp} (new), Gui/CMakeLists.txt, Tests/SceneSelectionFilter_Test.cpp (new), Tests/CMakeLists.txt
   - approach: An HdSingleInputFilteringSceneIndexBase that hides rprim-typed prims (mesh, basisCurves, points, volume, instancer) not at or under a selected path. Ancestors, materials and their networks, and cameras pass through, so bindings and projector references resolve. `setSelection(paths)` sends PrimsRemoved/PrimsAdded for the difference only. No GL.
   - verify: A gtest on an in-memory stage through UsdImagingCreateSceneIndices: only the selected meshes keep their type, materials stay, and a selection change notifies only the changed prims.
   - size: M
 
-- [ ] M278.P2.T2 — SceneSelectionPass: a Storm render index drawing the filtered prims opaque into colour and depth
+- [x] M278.P2.T2 — SceneSelectionPass: a Storm render index drawing the filtered prims opaque into colour and depth
   - files: Gui/SceneSelectionPass.{h,cpp} (new), Gui/CMakeLists.txt, Tests/SceneViewport_Test.cpp
   - approach: Build it on the P1 host:
     - render index: an HdStRenderDelegate on the engine's Hgi (`HdDriver{renderDriver, VtValue(hgi)}`), with the Natron renderer scene-index plugins appended as the engine does (LiveTextureSceneIndex for plates), then the P2.T1 filter;
@@ -125,3 +125,4 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
     - P2.T2 is now `SelectionEngine : UsdImagingGLEngine` with `renderSelection(params, selection)` after `Render()` (calling `_Execute` with the task paths) and `colorTexture()`/`depthTexture()` from the render buffers. Its verify is unchanged.
     - In P3.T1, `ensureEngine` builds the SelectionEngine in place of the plain engine, and there is no separate pass to destroy.
   - **Wireframe draws lines (user):** the pass follows the draw mode.
+- 2026-11-20 — Phase 278.2 in 54fb9680b: Gui/SceneSelectionTasks.{h,cpp} and Gui/SelectionEngine.{h,cpp}. The camera and framing travel in `setRenderParams`; `setSize` takes the formats. The verify filter is `SceneSelectionTasks*`. Phase 3 must hold the engine as `std::unique_ptr<SelectionEngine>`, because the base destructor isn't virtual. Build running.

@@ -132,7 +132,7 @@ public:
                                       const Point & p3,
                                       RectD *bbox);
 
-    bool isOpenBezier() const;
+    bool isOpenBezier(bool useGuiCurve = true) const;
 
     /**
      * @brief Rasterises the shape with its feather, as the Roto mask does but ignoring opacity, into
@@ -149,7 +149,7 @@ public:
 
     /**
      * @brief Copies other's GUI side, which is never behind its render side. Off the main thread
-     * the copy goes to this shape's GUI side alone and is written back on the main thread.
+     * the point lists are applied later, on the main thread.
      **/
     virtual void clone(const RotoItem* other) OVERRIDE;
 
@@ -536,7 +536,7 @@ public:
      * @brief Returns the bounding box of the bezier. The last value computed by evaluateAtTime_DeCasteljau will be returned,
      * otherwise if it has never been called, evaluateAtTime_DeCasteljau will be called to compute the bounding box.
      **/
-    virtual RectD getBoundingBox(double time) const OVERRIDE;
+    virtual RectD getBoundingBox(double time, bool useGuiCurves) const OVERRIDE;
 
     /**
      * @brief The polygons the viewer overlay draws at time, evaluated from the GUI copy, with the
@@ -741,7 +741,15 @@ private:
     void eraseOrientation(bool useGuiCurve);
 
     /**
-     * @brief The control and feather points of both sides' lists, each once. itemMutex must be held.
+     * @brief Makes points, featherPoints (swapped out), isOpen and finished this shape's lists,
+     * on the side an edit would write now. Main thread only.
+     **/
+    void applyClonedLists(std::list<BezierCPPtr>* points, std::list<BezierCPPtr>* featherPoints, bool isOpen, bool finished);
+
+    /**
+     * @brief The control and feather points of both sides' lists, each once, the render lists'
+     * first in their order so that a structural edit of the GUI lists alone keeps the order of
+     * the points a render reads. itemMutex must be held.
      **/
     std::list<BezierCPPtr> allPointsLocked() const;
 

@@ -210,7 +210,7 @@ Bezier::toSerialization(Serialization::BezierSerialization* serialization) const
         QMutexLocker l(&itemMutex);
 
         serialization->closed = _imp->guiFinished;
-        serialization->isOpenBezier = _imp->isOpenBezier;
+        serialization->isOpenBezier = _imp->guiIsOpenBezier;
         serialization->controlPoints.clear();
         serialization->featherPoints.clear();
         assert(_imp->guiFeatherPoints.size() == _imp->guiPoints.size() || !useFeatherPoints());
@@ -239,8 +239,8 @@ Bezier::fromSerialization(const Serialization::BezierSerialization& serializatio
     assert(thisShared);
     {
         QMutexLocker l(&itemMutex);
-        _imp->isOpenBezier = serialization.isOpenBezier;
-        _imp->guiFinished = serialization.closed && !_imp->isOpenBezier;
+        _imp->guiIsOpenBezier = serialization.isOpenBezier;
+        _imp->guiFinished = serialization.closed && !_imp->guiIsOpenBezier;
 
         bool useFeather = useFeatherPoints();
         std::list<Serialization::BezierCPSerialization>::const_iterator featherIt = serialization.featherPoints.begin();

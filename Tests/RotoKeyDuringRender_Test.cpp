@@ -40,6 +40,8 @@
 #include <utility>
 #include <vector>
 
+#include <QCoreApplication>
+#include <QEvent>
 #include <QFileInfo>
 #include <QString>
 #include <QTemporaryDir>
@@ -55,6 +57,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
@@ -243,15 +246,59 @@ editPointFive(const BezierPtr& shape,
     shape->setPointAtIndex(false, 5, time, kEdit[0], kEdit[1], kEdit[2], kEdit[3], kEdit[4], kEdit[5]);
 }
 
-// What a render reads of a shape: whether it is closed, its internal lists in order, and each
-// point's internal values and broken flag.
+// What a render reads of a shape: whether it is closed or open, its internal lists in order, each
+// point's internal values and broken flag, and what the render paths make of them: the bounding
+// box, the rasterised coverage and the SplineWarp curve.
 struct RenderSide {
     bool finished = false;
+    bool open = false;
     int count = 0;
     std::vector<const BezierCP*> points;
     std::vector<std::vector<double>> values;
     std::vector<bool> broken;
+    std::vector<double> boxes;
+    std::vector<bool> covered;
+    std::vector<std::vector<float>> coverage;
+    std::vector<double> warpCurves;
 };
+
+const RectI kCoverageRoI(0, 0, 96, 96);
+
+void
+appendWarpCurve(const SplineWarpCurveShape& curve,
+                std::vector<double>* out)
+{
+    out->push_back(curve.getPointCount());
+    out->push_back(curve.isClosed() ? 1. : 0.);
+    const int segments = curve.getSegmentCount();
+    for (int i = 0; i <= 2 * segments; ++i) {
+        const Point p = curve.pointAt(0.5 * i);
+        out->push_back(p.x);
+        out->push_back(p.y);
+    }
+}
+
+void
+readRenderPaths(const BezierPtr& shape,
+                const std::vector<double>& times,
+                RenderSide* side)
+{
+    for (std::size_t i = 0; i < times.size(); ++i) {
+        const RectD box = shape->getBoundingBox(times[i], false);
+        side->boxes.push_back(box.x1);
+        side->boxes.push_back(box.y1);
+        side->boxes.push_back(box.x2);
+        side->boxes.push_back(box.y2);
+    }
+    const double rasterTimes[] = { times.front(), times[times.size() / 2] };
+    for (int i = 0; i < 2; ++i) {
+        std::vector<float> coverage;
+        side->covered.push_back(shape->rasterizeCoverage(rasterTimes[i], 0, kCoverageRoI, &coverage));
+        side->coverage.push_back(coverage);
+        appendWarpCurve(SplineWarpCurveShape::fromBezier(*shape, rasterTimes[i], false, true, false), &side->warpCurves);
+        appendWarpCurve(SplineWarpCurveShape::fromBezier(*shape, rasterTimes[i], true, true, false), &side->warpCurves);
+    }
+}
 
 RenderSide
 readRenderSide(const BezierPtr& shape,
@@ -259,6 +306,7 @@ readRenderSide(const BezierPtr& shape,
 {
     RenderSide side;
     side.finished = shape->isCurveFinished(false);
+    side.open = shape->isOpenBezier(false);
     side.count = shape->getControlPointsCount(false);
     std::list<BezierCPPtr> points = shape->getControlPoints_mt_safe(false);
     const std::list<BezierCPPtr> fps = shape->getFeatherPoints_mt_safe(false);
@@ -269,6 +317,7 @@ readRenderSide(const BezierPtr& shape,
         side.values.push_back(sampleValues(**it, false, times));
         side.broken.push_back((*it)->getBroken(false));
     }
+    readRenderPaths(shape, times, &side);
 
     return side;
 }
@@ -282,8 +331,20 @@ describeRenderSideChange(const RenderSide& before,
     if (now.finished != before.finished) {
         out << "the render saw the curve " << (now.finished ? "closed" : "opened") << "\n";
     }
+    if (now.open != before.open) {
+        out << "the render saw the shape become " << (now.open ? "an open" : "a closed") << " Bezier\n";
+    }
     if (now.count != before.count) {
         out << "the render counted " << now.count << " points, expected " << before.count << "\n";
+    }
+    if (now.boxes != before.boxes) {
+        out << "the render's bounding box changed\n";
+    }
+    if ((now.covered != before.covered) || (now.coverage != before.coverage)) {
+        out << "the render's rasterised coverage changed\n";
+    }
+    if (now.warpCurves != before.warpCurves) {
+        out << "the render's SplineWarp curve changed\n";
     }
     if (now.points != before.points) {
         out << "the render's point list changed: " << now.points.size() << " points and feather points, expected " << before.points.size() << "\n";
@@ -1284,6 +1345,50 @@ TEST_F(RotoKeyDuringRenderTest, BreakingTangentsDuringARenderWaitsForTheWriteBac
     EXPECT_TRUE(aligned != sampleValues(*shape->getControlPointAtIndex(5), false, times)) << "the handles read the same broken and unbroken";
 }
 
+// A shape drawn entirely during a render has no render-side points yet, so the centre that
+// closing it sets must come from its GUI side.
+TEST_F(RotoKeyDuringRenderTest, ClosingAShapeDrawnDuringARenderCentresItOnItsPoints)
+{
+    ASSERT_TRUE(makeRoto(false));
+    const auto draw = [this](const std::string& name) {
+        BezierPtr shape = _context->makeBezier(60., 40., name, 1., false);
+        if (!shape) {
+            return shape;
+        }
+        for (int i = 1; i < kPoints; ++i) {
+            const double a = kTwoPi * i / kPoints;
+            shape->addControlPoint(40. + 20. * std::cos(a), 40. + 20. * std::sin(a), 1.);
+        }
+
+        return shape;
+    };
+    BezierPtr reference = draw("Reference");
+    ASSERT_TRUE(reference != nullptr);
+    reference->setCurveFinished(true);
+
+    BezierPtr shape;
+    {
+        RenderingFlagSetter rendering(_roto);
+        ASSERT_TRUE(_roto->isNodeRendering());
+        shape = draw("Drawn");
+        ASSERT_TRUE(shape != nullptr);
+        ASSERT_EQ(0, shape->getControlPointsCount(false));
+        shape->setCurveFinished(true);
+    }
+    shape->dequeueGuiActions();
+
+    const KnobDoublePtr expected = reference->getCenterKnob();
+    const KnobDoublePtr centre = shape->getCenterKnob();
+    ASSERT_TRUE(expected != nullptr);
+    ASSERT_TRUE(centre != nullptr);
+    for (int d = 0; d < 2; ++d) {
+        const double value = centre->getValue(d);
+        EXPECT_TRUE(std::isfinite(value)) << "dimension " << d;
+        EXPECT_NEAR(expected->getValue(d), value, kTolerance) << "dimension " << d;
+    }
+    EXPECT_EQ(kPoints, shape->getControlPointsCount(false));
+}
+
 class RotoCloneDuringRenderTest
     : public RotoKeyDuringRenderTest {
 protected:
@@ -1333,8 +1438,8 @@ TEST_F(RotoCloneDuringRenderTest, MainThreadCloneDuringARenderCopiesTheSourceGui
     expectCloneCopiesTheGuiSide([](const std::function<void()>& clone) { clone(); });
 }
 
-// Off the main thread the render-start hold is out of reach, so the clone writes the GUI side
-// alone, as during a render, and leaves the render side to the write-back.
+// Off the main thread the render-start hold is out of reach, so the clone's lists reach the
+// target on the main thread, which during a render writes the GUI side alone.
 TEST_F(RotoCloneDuringRenderTest, WorkerThreadCloneDuringARenderCopiesTheSourceGuiSide)
 {
     makeShapes();
@@ -1342,20 +1447,53 @@ TEST_F(RotoCloneDuringRenderTest, WorkerThreadCloneDuringARenderCopiesTheSourceG
     expectCloneCopiesTheGuiSide([](const std::function<void()>& clone) {
         std::thread worker(clone);
         worker.join();
+        QCoreApplication::sendPostedEvents(qApp, QEvent::MetaCall);
     });
 }
 
-TEST_F(RotoCloneDuringRenderTest, WorkerThreadCloneWithNoRenderLeavesTheRenderSideToTheWriteBack)
+// Main-thread readers iterate the GUI lists, so a worker never swaps them itself.
+TEST_F(RotoCloneDuringRenderTest, WorkerThreadCloneLeavesTheListsToTheMainThread)
 {
     makeShapes();
     ASSERT_FALSE(HasFatalFailure());
     const RenderSide before = readRenderSide(_target, sampleTimes());
+    const ShapeValues guiBefore = recordShape(_target, true);
     std::thread worker([this]() { _target->clone(_source.get()); });
     worker.join();
     EXPECT_TRUE(describeRenderSideChange(before, readRenderSide(_target, sampleTimes())).empty());
-    EXPECT_EQ(kPoints, _target->getControlPointsCount());
+    EXPECT_EQ(kPoints - 1, _target->getControlPointsCount());
+    const ShapeValues guiAfter = recordShape(_target, true);
+    EXPECT_TRUE(guiAfter.cps == guiBefore.cps);
+    EXPECT_TRUE(guiAfter.fps == guiBefore.fps);
 
-    _target->dequeueGuiActions();
+    QCoreApplication::sendPostedEvents(qApp, QEvent::MetaCall);
+    EXPECT_EQ(kPoints, _target->getControlPointsCount(false));
+    EXPECT_EQ(kPoints, _target->getControlPointsCount());
     const std::string differences = describeDifferences(recordShape(_source, false), _target, kTolerance);
     EXPECT_TRUE(differences.empty()) << differences;
+}
+
+// Undo clones a saved copy back into the live shape, which a render may be reading.
+TEST_F(RotoCloneDuringRenderTest, CloningAnOpenShapeIntoALiveShapeDuringARenderWaitsForTheWriteBack)
+{
+    makeShapes();
+    ASSERT_FALSE(HasFatalFailure());
+    BezierPtr open = _context->makeBezier(10., 10., "Open", kKeys[0], true);
+    ASSERT_TRUE(open != nullptr);
+    open->addControlPoint(30., 15., kKeys[0]);
+    open->addControlPoint(50., 10., kKeys[0]);
+    ASSERT_TRUE(open->isOpenBezier(false));
+    ASSERT_FALSE(_target->isOpenBezier(false));
+
+    const std::set<std::string> problems = editWhileARenderReads(_target, [&](const std::function<void()>& letReaderSee) {
+        _target->clone(open.get());
+        EXPECT_TRUE(_target->isOpenBezier());
+        letReaderSee();
+    });
+    for (std::set<std::string>::const_iterator it = problems.begin(); it != problems.end(); ++it) {
+        ADD_FAILURE() << *it;
+    }
+    EXPECT_TRUE(_target->isOpenBezier(false));
+    EXPECT_FALSE(_target->isCurveFinished(false));
+    EXPECT_EQ(3, _target->getControlPointsCount(false));
 }

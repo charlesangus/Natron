@@ -121,7 +121,7 @@ SplineWarpCurveShape::fromBezier(const Bezier& curve,
 
     const int n = (int)pos.size();
     shape._pointCount = n;
-    shape._closed = !curve.isOpenBezier() && curve.isCurveFinished(useGuiCurves);
+    shape._closed = !curve.isOpenBezier(useGuiCurves) && curve.isCurveFinished(useGuiCurves);
     if (n > 0) {
         shape._first = pos[0];
     }

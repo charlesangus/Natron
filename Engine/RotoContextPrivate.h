@@ -417,11 +417,11 @@ struct BezierPrivate
     bool finished; //< when finished is true, the last point of the list is connected to the first point of the list.
     bool guiFinished;
     bool isOpenBezier;
+    bool guiIsOpenBezier;
     mutable QMutex guiCopyMutex;
     // What edits made during a render left in the GUI copy only, for dequeueGuiActions() to write
     // back: everything, every point at some times, or some points at every time.
     bool guiDirtyAll;
-    // The gui* lists or guiFinished differ from the render side.
     bool guiDirtyList;
     std::set<double> guiDirtyTimes;
     std::set<BezierCPPtr> guiDirtyPoints;
@@ -451,6 +451,7 @@ struct BezierPrivate
         , finished(false)
         , guiFinished(false)
         , isOpenBezier(isOpenBezier)
+        , guiIsOpenBezier(isOpenBezier)
         , guiCopyMutex()
         , guiDirtyAll(false)
         , guiDirtyList(false)
@@ -537,12 +538,18 @@ struct BezierPrivate
         return useGuiCurves ? guiFinished : finished;
     }
 
+    bool openFor(bool useGuiCurves) const
+    {
+        return useGuiCurves ? guiIsOpenBezier : isOpenBezier;
+    }
+
     // After a structural edit made under a render-start hold, when both sides are written.
     void copyGuiListsToRenderLists()
     {
         points = guiPoints;
         featherPoints = guiFeatherPoints;
         finished = guiFinished;
+        isOpenBezier = guiIsOpenBezier;
     }
 
     bool hasKeyframeAtTime(bool useGuiCurves,

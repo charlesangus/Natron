@@ -959,9 +959,9 @@ Bezier::Bezier(const RotoCurveContextPtr& ctx,
 }
 
 bool
-Bezier::isOpenBezier() const
+Bezier::isOpenBezier(bool useGuiCurve) const
 {
-    return _imp->isOpenBezier;
+    return _imp->openFor(useGuiCurve);
 }
 
 class Bezier::EditSide {
@@ -1079,10 +1079,11 @@ Bezier::copyInternalPointsToGuiPoints()
     assert( !itemMutex.tryLock() );
     BezierPtr this_shared = std::dynamic_pointer_cast<Bezier>( shared_from_this() );
     assert(this_shared);
-    BezierCPs::iterator fit = _imp->guiFeatherPoints.begin();
-    for (BezierCPs::iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it, ++fit) {
+    for (BezierCPs::iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it) {
         (*it)->cloneInternalCurvesToGuiCurves();
-        (*fit)->cloneInternalCurvesToGuiCurves();
+    }
+    for (BezierCPs::iterator it = _imp->guiFeatherPoints.begin(); it != _imp->guiFeatherPoints.end(); ++it) {
+        (*it)->cloneInternalCurvesToGuiCurves();
     }
     _imp->guiIsClockwiseOriented = _imp->isClockwiseOriented;
     _imp->guiIsClockwiseOrientedStatic = _imp->isClockwiseOrientedStatic;
@@ -1265,68 +1266,81 @@ Bezier::clone(const RotoItem* other)
         return;
     }
 
-    // The render-start hold can only be taken on the main thread. Elsewhere the copy goes to the
-    // GUI side and reaches the render side through a write-back queued to the main thread.
-    const bool onMainThread = QThread::currentThread() == qApp->thread();
-    std::unique_ptr<EditSide> side;
-    if (onMainThread) {
-        side.reset(new EditSide(this));
-    }
-    const bool useGuiCurve = !side || side->useGuiCurve();
-
-    Q_EMIT aboutToClone();
-
     // Built under the source's lock alone: the source's GUI list and state are what the user
-    // sees, and never behind its render side.
-    BezierCPs newPoints, newFeatherPoints;
+    // sees, and never behind its render side. The new points are in no list yet, so both of
+    // their sides can be written whichever side the lists end up taking.
+    std::list<BezierCPPtr> newPoints, newFeatherPoints;
     bool isOpen, finished;
     {
         const bool useFeather = otherBezier->useFeatherPoints();
         QMutexLocker l(&otherBezier->itemMutex);
-        isOpen = otherBezier->_imp->isOpenBezier;
+        isOpen = otherBezier->_imp->guiIsOpenBezier;
         finished = otherBezier->_imp->guiFinished && !isOpen;
         BezierCPs::const_iterator itF = otherBezier->_imp->guiFeatherPoints.begin();
         for (BezierCPs::const_iterator it = otherBezier->_imp->guiPoints.begin(); it != otherBezier->_imp->guiPoints.end(); ++it) {
             BezierCPPtr cp = std::make_shared<BezierCP>(this_shared);
-            cp->cloneGuiState(**it, !useGuiCurve);
+            cp->cloneGuiState(**it, true);
             newPoints.push_back(cp);
             if (useFeather && (itF != otherBezier->_imp->guiFeatherPoints.end())) {
                 BezierCPPtr fp = std::make_shared<FeatherPoint>(this_shared);
-                fp->cloneGuiState(**itF, !useGuiCurve);
+                fp->cloneGuiState(**itF, true);
                 newFeatherPoints.push_back(fp);
                 ++itF;
             }
         }
     }
 
+    if (QThread::currentThread() == qApp->thread()) {
+        Q_EMIT aboutToClone();
+        applyClonedLists(&newPoints, &newFeatherPoints, isOpen, finished);
+        RotoDrawableItem::clone(other);
+        Q_EMIT cloned();
+
+        return;
+    }
+
+    // The render-start hold, and so the choice of side, exists on the main thread only, and
+    // main-thread readers iterate the GUI lists without expecting another thread to swap them.
+    RotoDrawableItem::clone(other);
+    std::weak_ptr<Bezier> weakThis = this_shared;
+    QMetaObject::invokeMethod(qApp, [weakThis, newPoints, newFeatherPoints, isOpen, finished]() mutable {
+        BezierPtr bezier = weakThis.lock();
+        if (!bezier) {
+            return;
+        }
+        Q_EMIT bezier->aboutToClone();
+        bezier->applyClonedLists(&newPoints, &newFeatherPoints, isOpen, finished);
+        Q_EMIT bezier->cloned(); }, Qt::QueuedConnection);
+}
+
+void
+Bezier::applyClonedLists(std::list<BezierCPPtr>* points,
+                         std::list<BezierCPPtr>* featherPoints,
+                         bool isOpen,
+                         bool finished)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    bool useGuiCurve = true;
     {
+        const EditSide side(this);
+        useGuiCurve = side.useGuiCurve();
         QMutexLocker l(&itemMutex);
-        _imp->isOpenBezier = isOpen;
-        _imp->guiPoints.swap(newPoints);
-        _imp->guiFeatherPoints.swap(newFeatherPoints);
+        _imp->guiIsOpenBezier = isOpen;
+        _imp->guiPoints.swap(*points);
+        _imp->guiFeatherPoints.swap(*featherPoints);
         _imp->guiFinished = finished;
         eraseOrientation(true);
-        if (!useGuiCurve) {
+        if (useGuiCurve) {
+            _imp->markGuiDirtyAll();
+            _imp->markGuiDirtyList();
+        } else {
             _imp->copyGuiListsToRenderLists();
             eraseOrientation(false);
         }
     }
-    if (useGuiCurve) {
-        _imp->markGuiDirtyAll();
-        _imp->markGuiDirtyList();
-    } else {
+    if (!useGuiCurve) {
         invalidateContentHash();
     }
-    side.reset();
-    if (!onMainThread) {
-        RotoCurveContextPtr context = getContext();
-        NodePtr node = context ? context->getNode() : NodePtr();
-        if (node) {
-            Q_EMIT node->mustDequeueActions();
-        }
-    }
-    RotoDrawableItem::clone(other);
-    Q_EMIT cloned();
 }
 
 Bezier::~Bezier()
@@ -1770,7 +1784,7 @@ Bezier::setCurveFinished(bool finished)
     {
         const EditSide side(this);
         useGuiCurve = side.useGuiCurve();
-        if (!_imp->isOpenBezier) {
+        if (!_imp->guiIsOpenBezier) {
             QMutexLocker l(&itemMutex);
             changed = (_imp->guiFinished != finished);
             _imp->guiFinished = finished;
@@ -3324,7 +3338,7 @@ Bezier::evaluateAtTime_DeCasteljau_internal(bool useGuiCurves,
 
     getTransformAtTime(time, &transform);
     QMutexLocker l(&itemMutex);
-    deCastelJau(isOpenBezier(), useGuiCurves, _imp->pointsFor(useGuiCurves), time, mipmapLevel, _imp->finishedFor(useGuiCurves),
+    deCastelJau(_imp->openFor(useGuiCurves), useGuiCurves, _imp->pointsFor(useGuiCurves), time, mipmapLevel, _imp->finishedFor(useGuiCurves),
 #ifdef ROTO_BEZIER_EVAL_ITERATIVE
                 nbPointsPerSegment,
 #else
@@ -3434,7 +3448,7 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
                               transform, &segmentPoints, bbox);
 
             // If we are a closed bezier or we are not on the last segment, remove the last point so we don't add duplicates
-            if (!isOpenBezier() || next != fps.end()) {
+            if (!_imp->openFor(useGuiPoints) || next != fps.end()) {
                 if (!segmentPoints.empty()) {
                     segmentPoints.pop_back();
                 }
@@ -3450,7 +3464,7 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
 #endif
                               transform, pointsSingleList, bbox);
             // If we are a closed bezier or we are not on the last segment, remove the last point so we don't add duplicates
-            if (!isOpenBezier() || next != fps.end()) {
+            if (!_imp->openFor(useGuiPoints) || next != fps.end()) {
                 if (!pointsSingleList->empty()) {
                     pointsSingleList->pop_back();
                 }
@@ -3458,13 +3472,13 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
         }
 
         // increment for next iteration
-        if (itCp != fps.end()) {
+        if (itCp != cps.end()) {
             ++itCp;
         }
         if (next != fps.end()) {
             ++next;
         }
-        if (nextCp != fps.end()) {
+        if (nextCp != cps.end()) {
             ++nextCp;
         }
     } // for(it)
@@ -3535,7 +3549,8 @@ Bezier::getMotionBlurSettings(const double time,
 }
 
 RectD
-Bezier::getBoundingBox(double time) const
+Bezier::getBoundingBox(double time,
+                       bool useGuiCurves) const
 {
     double startTime = time, mbFrameStep = 1., endTime = time;
 
@@ -3557,11 +3572,12 @@ Bezier::getBoundingBox(double time) const
         getTransformAtTime(t, &transform);
 
         QMutexLocker l(&itemMutex);
-        bezierSegmentListBboxUpdate(false, _imp->points, _imp->finished, _imp->isOpenBezier, t, ViewIdx(0), 0, transform, &subBbox);
+        const bool finished = _imp->finishedFor(useGuiCurves);
+        const bool isOpen = _imp->openFor(useGuiCurves);
+        bezierSegmentListBboxUpdate(useGuiCurves, _imp->pointsFor(useGuiCurves), finished, isOpen, t, ViewIdx(0), 0, transform, &subBbox);
 
-
-        if (useFeatherPoints() && !_imp->isOpenBezier) {
-            bezierSegmentListBboxUpdate(false, _imp->featherPoints, _imp->finished, _imp->isOpenBezier, t, ViewIdx(0), 0, transform, &subBbox);
+        if (useFeatherPoints() && !isOpen) {
+            bezierSegmentListBboxUpdate(useGuiCurves, _imp->featherPointsFor(useGuiCurves), finished, isOpen, t, ViewIdx(0), 0, transform, &subBbox);
             // EDIT: Partial fix, just pad the BBOX by the feather distance. This might not be accurate but gives at least something
             // enclosing the real bbox and close enough
             double featherDistance = getFeatherDistance(t);
@@ -3569,7 +3585,7 @@ Bezier::getBoundingBox(double time) const
             subBbox.x2 += featherDistance;
             subBbox.y1 -= featherDistance;
             subBbox.y2 += featherDistance;
-        } else if (_imp->isOpenBezier) {
+        } else if (isOpen) {
             double brushSize = getBrushSizeKnob()->getValueAtTime(t);
             double halfBrushSize = brushSize / 2. + 1;
             subBbox.x1 -= halfBrushSize;
@@ -3992,15 +4008,15 @@ BezierCPs
 Bezier::allPointsLocked() const
 {
     assert(!itemMutex.tryLock());
-    BezierCPs ret = _imp->guiPoints;
-    ret.insert(ret.end(), _imp->guiFeatherPoints.begin(), _imp->guiFeatherPoints.end());
+    BezierCPs ret = _imp->points;
+    ret.insert(ret.end(), _imp->featherPoints.begin(), _imp->featherPoints.end());
     if ((_imp->points != _imp->guiPoints) || (_imp->featherPoints != _imp->guiFeatherPoints)) {
         std::set<BezierCP*> seen;
         for (BezierCPs::const_iterator it = ret.begin(); it != ret.end(); ++it) {
             seen.insert(it->get());
         }
         for (int pass = 0; pass < 2; ++pass) {
-            const BezierCPs& list = (pass == 0) ? _imp->points : _imp->featherPoints;
+            const BezierCPs& list = (pass == 0) ? _imp->guiPoints : _imp->guiFeatherPoints;
             for (BezierCPs::const_iterator it = list.begin(); it != list.end(); ++it) {
                 if (seen.insert(it->get()).second) {
                     ret.push_back(*it);

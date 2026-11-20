@@ -875,7 +875,7 @@ RotoCurveContext::resetTransformCenter()
     double x, y;
     if (!getDefaultTransformCenter(time, &x, &y)) {
         RectD bbox;
-        getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), &bbox);
+        getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), true, &bbox);
         x = (bbox.x1 + bbox.x2) / 2.;
         y = (bbox.y1 + bbox.y2) / 2.;
     }
@@ -974,6 +974,7 @@ void
 RotoCurveContext::getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items,
                                              double time,
                                              ViewIdx /*view*/,
+                                             bool useGuiCurves,
                                              RectD* rod) const
 {
     double startTime = time, mbFrameStep = 1., endTime = time;
@@ -1003,8 +1004,8 @@ RotoCurveContext::getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items
             Bezier* isBezier = dynamic_cast<Bezier*>(it2->get());
             RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(it2->get());
             if (isBezier && !isStroke) {
-                if (isBezier->isActivated(time) && (isBezier->getControlPointsCount(false) > 1)) {
-                    RectD splineRoD = isBezier->getBoundingBox(t);
+                if (isBezier->isActivated(time) && (isBezier->getControlPointsCount(useGuiCurves) > 1)) {
+                    RectD splineRoD = isBezier->getBoundingBox(t, useGuiCurves);
                     if (splineRoD.isNull()) {
                         continue;
                     }
@@ -1022,7 +1023,7 @@ RotoCurveContext::getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items
                     if (isStroke == activeStroke.get()) {
                         strokeRod = isStroke->getMergeNode()->getPaintStrokeRoD_duringPainting();
                     } else {
-                        strokeRod = isStroke->getBoundingBox(t);
+                        strokeRod = isStroke->getBoundingBox(t, useGuiCurves);
                     }
                     if (first) {
                         first = false;
@@ -1060,7 +1061,7 @@ RotoCurveContext::getMaskRegionOfDefinition(double time,
         }
     }
 
-    getItemsRegionOfDefinition(allItems, time, view, rod);
+    getItemsRegionOfDefinition(allItems, time, view, false, rod);
 }
 
 bool

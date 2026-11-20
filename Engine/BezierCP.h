@@ -95,9 +95,6 @@ public:
 
     void setRightBezierPointAtTime(bool useGuiCurves, double time, double x, double y);
 
-    /**
-     * @brief Sets the GUI side's flag, and the internal one too unless useGuiCurves.
-     **/
     void setBroken(bool useGuiCurves, bool broken);
 
     void setStaticPosition(bool useGuiCurves, double x, double y);

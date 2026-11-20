@@ -113,31 +113,31 @@ an add. Its lessons, which this design avoids:
 
 ## Phase 103.2: Provenance and three-way core
 
-- [ ] M103.P2.T1 — Template provenance in the data model, bundle and Engine
+- [x] M103.P2.T1 — Template provenance in the data model, bundle and Engine
   - files: `Serialization/NodeSerialization.h`, `Serialization/ProjectSerialization.h`, `Serialization/Yaml/NodeYaml.cpp`, `Serialization/Bundle/ProjectBundle.cpp`, `Engine/Project.h/.cpp` (`importTemplate`)
   - approach: the provenance rules from **Design**, as amended at P1.T4. Add the template entry list and the `templates/<key>/base.yaml` members, and the node `origin` field. `importTemplate` mints IDs, sets `origin`, stores the base, and returns the created nodes.
   - verify: compiled at P2.T5. gtest: importing the same template twice gives distinct IDs that share the same `origin.node`; save → load keeps origins and the base member; the base is byte-identical to the imported file's `project.yaml` node subset.
   - size: M
 
-- [ ] M103.P2.T2 — Production matcher and scope
+- [x] M103.P2.T2 — Production matcher and scope
   - files: `Serialization/Merge/NodeMatcher.h/.cpp`, new `Serialization/Merge/MergeScope.h/.cpp`, new `Tests/Serialization/NodeMatcher_Test.cpp`
   - approach: keep only the chosen strategy and scope rule, and delete the losing prototypes and the scoring tool unless the user asked to keep them. Matching is deterministic.
   - verify: compiled at P2.T5. Every corpus scenario's correspondences equal `expected/*.yaml`.
   - size: M
 
-- [ ] M103.P2.T3 — Three-way node, knob and input merge with the handler registry
+- [x] M103.P2.T3 — Three-way node, knob and input merge with the handler registry
   - files: new `Serialization/Merge/ThreeWayMerge.h/.cpp`, new `Serialization/Merge/MergeHandler.h/.cpp`, new `Serialization/Merge/MergeConflict.h`, new `Tests/Serialization/ThreeWayMerge_Test.cpp`
   - approach: `merge(base, mine, theirs, scope) → {merged snapshot, conflicts}` for matched nodes: per knob, per dimension, per input label. Default knob values merge as values: a knob absent from the YAML is "default". The generic scalar handler conflicts only on mine ≠ theirs ≠ base. The registry dispatches by plugin ID, then by knob kind. A conflict takes mine.
   - verify: compiled at P2.T5. A table of scalar cases (one side changed, both changed the same way, both changed differently, reset to default on one side) gives the expected merged value and conflict list.
   - size: L
 
-- [ ] M103.P2.T4 — Structural merge
+- [x] M103.P2.T4 — Structural merge
   - files: new `Serialization/Merge/StructuralMerge.cpp`, `Serialization/Merge/ThreeWayMerge.cpp`, new `Tests/Serialization/StructuralMerge_Test.cpp`
   - approach: the node-existence table (added, deleted, delete-vs-modify kept with a conflict, both added). Both inserting on the same base edge on any input slot gives the theirs-then-mine chain plus a structural conflict. Groups recurse. UI properties use the never-conflict rule. Renames follow the matcher, so a rename on one side applies cleanly.
   - verify: compiled at P2.T5. Each structural corpus scenario gives the expected merged graph and conflicts.
   - size: L
 
-- [ ] M103.P2.T5 — Phase 103.2 build and test checkpoint
+- [x] M103.P2.T5 — Phase 103.2 build and test checkpoint
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.
@@ -221,3 +221,12 @@ The git-driver test passes. Full ctest, smoke and CI are green.
   - **Not to copy:** conflict state in labels, parked duplicate nodes, copy-then-merge with backups, whole-node-only resolution, input-0-only insert detection, and matching on name without the plugin type.
   - **Open:** the design text contradicts itself on artist-delete vs supervisor-modify ("keeps the node" vs "a conflict takes mine"); settle it before P2.T4.
 - 2026-11-20 — **Artist-delete vs supervisor-modify is a conflict whose default restores the node (user):** the supervisor's modified node comes back by default, so template fixes are never silently dropped, and the artist deletes it again if unwanted. This settles the contradiction in the design text, and P2.T4 and the corpus's `expected/` follow it.
+- 2026-11-20 — Phase 103.2 (T1–T4) in 2f1268fde:
+  - Node origins and template imports with stored bases.
+  - Group-from-selection and ungroup keep node identities.
+  - IdPlusAdoption with `recordAdoptions`, and MatchedEnclosed in MergeScope.
+  - Three-way value and structural merge; delete-modify records which side deleted; new `reparent` and `adopted` kinds.
+  - The scenario corpus (21 scenarios) is built in C++ and scored in ctest: 310/310 for IdPlusAdoption, 307 for ID-only, 291 for name-based. The standalone tools/merge scorer is removed.
+  - Curve-key and roto-shape conflicts come in phase 3.
+
+  **PM calls:** merged names are unique per group, matching Natron's group-scoped script names. An input conflict on a node that already has a reparent conflict folds into it, one entry per node. Both are being implemented, and the gate is running.

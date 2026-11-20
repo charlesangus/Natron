@@ -22,18 +22,29 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
-#include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#include <poll.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QString>
+#include <QStringList>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 
@@ -197,7 +208,340 @@ randomEdit(const AppInstancePtr& app,
     }
 }
 
+void
+flushRecorder(const AppInstancePtr& app)
+{
+    app->getProject()->getGraphEditRecorder()->flush();
+}
+
+// Python names every node of a background app app.<name>, whichever app it belongs to, so a
+// second app in one process cannot name its copy of the host's nodes. Each client is therefore a
+// child Tests process with one app, driven over its standard input.
+const char* const kPeerPortEnv = "NATRON_TEST_LIVE_SESSION_PEER_PORT";
+const char* const kPeerNameEnv = "NATRON_TEST_LIVE_SESSION_PEER_NAME";
+const char* const kPeerSuite = "LiveSessionPeerProcess";
+const int kTimeoutMs = 120000;
+
+void
+replyToParent(const std::string& line)
+{
+    // A leading newline keeps the reply off the end of a line something else printed.
+    std::cout << "\n@ " << line << std::endl;
+}
+
+std::string
+peerCommand(const AppInstancePtr& app,
+            SessionClient& client,
+            bool& held,
+            const std::string& line,
+            bool* quit)
+{
+    std::istringstream in(line);
+    std::string verb;
+    in >> verb;
+    if (verb == "state") {
+        client.flushLocalEdits();
+        std::ostringstream out;
+        out << "state " << client.seq() << ' ' << int(client.hasPending()) << ' ' << int(client.isIdle()) << ' '
+            << int(client.state() == SessionClient::State::eJoined) << ' ' << client.checksumMismatchCount() << ' '
+            << client.rejectCount();
+
+        return out.str();
+    }
+    if (verb == "run") {
+        unsigned long seed = 0;
+        int rounds = 0;
+        in >> seed >> rounds;
+        std::mt19937 random(static_cast<unsigned int>(seed));
+        std::mt19937 schedule(static_cast<unsigned int>(seed) + 104729u);
+        for (int round = 0; round < rounds; ++round) {
+            randomEdit(app, random);
+            flushRecorder(app);
+            // Peers edit several rounds on what they have before seeing each other's edits.
+            const int deliveries = std::uniform_int_distribution<int>(0, 3)(schedule);
+            for (int i = 0; (i < deliveries) && !held; ++i) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            }
+        }
+
+        return "ran";
+    }
+    if (verb == "hold") {
+        held = true;
+
+        return "ok";
+    }
+    if (verb == "release") {
+        held = false;
+
+        return "ok";
+    }
+    if (verb == "quit") {
+        *quit = true;
+
+        return "bye";
+    }
+    if (verb == "yaml") {
+        std::string path;
+        std::getline(in >> std::ws, path);
+        QFile file(QString::fromStdString(path));
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            return "failed";
+        }
+        const std::string yaml = LiveSession::canonicalProjectYaml(app->getProject());
+        const bool written = file.write(yaml.data(), static_cast<qint64>(yaml.size())) == static_cast<qint64>(yaml.size());
+
+        return written ? "ok" : "failed";
+    }
+
+    std::string name;
+    in >> name;
+    NodePtr node = app->getProject()->getNodeByName(name);
+    if (verb == "has") {
+        return node ? "yes" : "no";
+    }
+    if (!node) {
+        return "missing";
+    }
+    if (verb == "set") {
+        std::string knobName;
+        double value = 0.;
+        in >> knobName >> value;
+        KnobDoubleBasePtr knob = doubleKnob(node, knobName.c_str());
+        if (!knob) {
+            return "missing";
+        }
+        knob->setValue(value, ViewSpec::all(), 0);
+    } else if (verb == "destroy") {
+        node->destroyNode(true, false);
+    } else if (verb == "rename") {
+        std::string newName;
+        in >> newName;
+        try {
+            node->setScriptName(newName);
+        } catch (const std::exception&) {
+            return "failed";
+        }
+    } else {
+        return "unknown";
+    }
+    client.flushLocalEdits();
+
+    return "ok";
+}
+
+struct PeerState {
+    bool ok = false;
+    std::uint64_t seq = 0;
+    bool pending = false;
+    bool idle = false;
+    bool joined = false;
+    int mismatches = 0;
+    int rejects = 0;
+};
+
+// A client in a child Tests process. Replies are the child's "@ " lines.
+class Peer {
+public:
+    Peer(quint16 port,
+         int index)
+    {
+        QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+        environment.insert(QString::fromUtf8(kPeerPortEnv), QString::number(port));
+        environment.insert(QString::fromUtf8(kPeerNameEnv), QString::fromUtf8("client %1").arg(index));
+        _process.setProcessEnvironment(environment);
+        _process.setProcessChannelMode(QProcess::ForwardedErrorChannel);
+        _process.start(QCoreApplication::applicationFilePath(),
+                       QStringList() << QString::fromUtf8("--gtest_filter=%1.*").arg(QString::fromUtf8(kPeerSuite)));
+        _started = _process.waitForStarted(30000);
+    }
+
+    ~Peer()
+    {
+        if (_process.state() != QProcess::NotRunning) {
+            _process.kill();
+            _process.waitForFinished(30000);
+        }
+    }
+
+    bool started() const
+    {
+        return _started;
+    }
+
+    void send(const std::string& line)
+    {
+        const std::string withEnd = line + "\n";
+        _process.write(withEnd.data(), static_cast<qint64>(withEnd.size()));
+        _process.waitForBytesWritten(30000);
+    }
+
+    // The next reply, or "dead" or "timeout". While pumping, this process's events run too,
+    // so the host keeps serving the session; otherwise the host sees nothing until later.
+    std::string reply(bool pump)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        for (;;) {
+            while (_process.canReadLine()) {
+                const std::string line = QString::fromUtf8(_process.readLine()).trimmed().toStdString();
+                if (line.compare(0, 2, "@ ") == 0) {
+                    return line.substr(2);
+                }
+                if (!line.empty()) {
+                    _output += line + "\n";
+                    if (_output.size() > 16384) {
+                        _output.erase(0, _output.size() - 16384);
+                    }
+                }
+            }
+            if (_process.state() == QProcess::NotRunning) {
+                return "dead";
+            }
+            if (timer.elapsed() > kTimeoutMs) {
+                return "timeout";
+            }
+            if (pump) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            } else {
+                _process.waitForReadyRead(100);
+            }
+        }
+    }
+
+    std::string command(const std::string& line)
+    {
+        send(line);
+
+        return reply(false);
+    }
+
+    PeerState state()
+    {
+        PeerState state;
+        std::istringstream in(command("state"));
+        std::string word;
+        int pending = 0;
+        int idle = 0;
+        int joined = 0;
+        in >> word >> state.seq >> pending >> idle >> joined >> state.mismatches >> state.rejects;
+        state.ok = (word == "state") && !in.fail();
+        state.pending = pending != 0;
+        state.idle = idle != 0;
+        state.joined = joined != 0;
+
+        return state;
+    }
+
+    void quit()
+    {
+        if (_process.state() != QProcess::NotRunning) {
+            send("quit");
+            (void)reply(false);
+            _process.closeWriteChannel();
+        }
+    }
+
+    // True when the child ended cleanly, its own expectations included.
+    bool finish()
+    {
+        if (!_process.waitForFinished(60000)) {
+            _process.kill();
+            _process.waitForFinished(30000);
+
+            return false;
+        }
+        (void)reply(false);
+
+        return (_process.exitStatus() == QProcess::NormalExit) && (_process.exitCode() == 0);
+    }
+
+    const std::string& output() const
+    {
+        return _output;
+    }
+
+private:
+    QProcess _process;
+    bool _started = false;
+    std::string _output;
+};
+
+bool
+runUntil(const std::function<bool()>& done,
+         int timeoutMs = kTimeoutMs)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (!done()) {
+        if (timer.elapsed() > timeoutMs) {
+            return false;
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+
+    return true;
+}
+
 } // namespace
+
+// Runs only in a child started by the tests below, as one client of their host.
+class LiveSessionPeerProcess
+    : public BaseTest {
+};
+
+TEST_F(LiveSessionPeerProcess, ServesTheTestThatStartedIt)
+{
+    const char* port = std::getenv(kPeerPortEnv);
+    if (!port) {
+        return;
+    }
+    const char* name = std::getenv(kPeerNameEnv);
+    AppInstancePtr app = getApp();
+    ASSERT_NE(app, nullptr);
+
+    std::unique_ptr<SessionClient> client = std::make_unique<SessionClient>(app);
+    QString leftReason;
+    QObject::connect(client.get(), &SessionClient::left, [&leftReason](const QString& reason) { leftReason = reason; });
+    client->connectToHost(QString::fromUtf8("127.0.0.1"), static_cast<quint16>(std::atoi(port)), QString::fromUtf8(name ? name : "client"));
+    const bool joined = runUntil([&client]() {
+                            return (client->state() == SessionClient::State::eJoined) || (client->state() == SessionClient::State::eDisconnected);
+                        })
+        && (client->state() == SessionClient::State::eJoined);
+    if (!joined) {
+        replyToParent("left " + leftReason.toStdString());
+        FAIL() << "could not join: " << leftReason.toStdString();
+    }
+    replyToParent("joined");
+
+    bool held = false;
+    bool quit = false;
+    std::string input;
+    while (!quit) {
+        if (!held) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        }
+        pollfd stdinPoll;
+        stdinPoll.fd = STDIN_FILENO;
+        stdinPoll.events = POLLIN;
+        stdinPoll.revents = 0;
+        if ((poll(&stdinPoll, 1, held ? 10 : 1) > 0) && (stdinPoll.revents & (POLLIN | POLLHUP))) {
+            char buffer[4096];
+            const ssize_t count = read(STDIN_FILENO, buffer, sizeof(buffer));
+            if (count <= 0) {
+                break;
+            }
+            input.append(buffer, static_cast<std::size_t>(count));
+        }
+        std::string::size_type end;
+        while (!quit && ((end = input.find('\n')) != std::string::npos)) {
+            const std::string line = input.substr(0, end);
+            input.erase(0, end + 1);
+            replyToParent(peerCommand(app, *client, held, line, &quit));
+        }
+    }
+    client.reset();
+}
 
 class LiveSessionConvergenceTest
     : public BaseTest,
@@ -208,27 +552,21 @@ protected:
         BaseTest::SetUp();
         _hostApp = getApp();
         ASSERT_NE(_hostApp, nullptr);
-        const int hostId = _hostApp->getAppID();
-        for (int i = 0; i < kClientCount; ++i) {
-            AppInstancePtr app = appPTR->newAppInstance(CLArgs(), true);
-            ASSERT_NE(app, nullptr);
-            _clientApps.push_back(app);
-        }
-        appPTR->setAsTopLevelInstance(hostId);
+        ASSERT_TRUE(_dir.isValid());
     }
 
     void TearDown() override
     {
-        _clients.clear();
+        for (const std::unique_ptr<Peer>& peer : _peers) {
+            peer->quit();
+        }
+        for (const std::unique_ptr<Peer>& peer : _peers) {
+            EXPECT_TRUE(peer->finish()) << "a client process failed: " << peer->output();
+        }
+        _peers.clear();
         _host.reset();
         QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
-        for (const AppInstancePtr& app : _clientApps) {
-            app->getProject()->reset(false, true);
-            appPTR->removeInstance(app->getAppID());
-        }
-        _clientApps.clear();
         if (_hostApp) {
-            appPTR->setAsTopLevelInstance(_hostApp->getAppID());
             _hostApp->getProject()->reset(false, true);
         }
         BaseTest::TearDown();
@@ -258,99 +596,97 @@ protected:
         QString error;
         ASSERT_TRUE(_host->start(QString::fromUtf8("127.0.0.1"), 0, QString::fromUtf8("host"), &error)) << error.toStdString();
         for (int i = 0; i < kClientCount; ++i) {
-            _clients.push_back(std::make_unique<SessionClient>(_clientApps[i]));
-            _clients.back()->connectToHost(QString::fromUtf8("127.0.0.1"), _host->serverPort(), QString::fromUtf8("client %1").arg(i + 1));
+            _peers.push_back(std::make_unique<Peer>(_host->serverPort(), i + 1));
+            ASSERT_TRUE(_peers.back()->started()) << "client " << (i + 1) << " did not start";
         }
-        ASSERT_TRUE(runUntil([this]() {
-            for (const std::unique_ptr<SessionClient>& client : _clients) {
-                if (client->state() != SessionClient::State::eJoined) {
-                    return false;
-                }
-            }
-
-            return _host->peerCount() == kClientCount;
-        })) << "the clients did not join";
+        for (int i = 0; i < kClientCount; ++i) {
+            ASSERT_EQ(_peers[i]->reply(true), "joined") << "client " << (i + 1) << ": " << _peers[i]->output();
+        }
+        ASSERT_TRUE(runUntil([this]() { return _host->peerCount() == kClientCount; })) << "the host did not see every client join";
     }
 
-    static bool runUntil(const std::function<bool()>& done,
-                         int timeoutMs = 60000)
-    {
-        QElapsedTimer timer;
-        timer.start();
-        while (!done()) {
-            if (timer.elapsed() > timeoutMs) {
-                return false;
-            }
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
-        }
-
-        return true;
-    }
-
-    void flushAll()
-    {
-        _host->flushLocalEdits();
-        for (const std::unique_ptr<SessionClient>& client : _clients) {
-            client->flushLocalEdits();
-        }
-    }
-
-    // Runs the event loop until every edit made has reached every peer.
+    // Runs the session until every edit made has reached every peer.
     bool quiesce()
     {
         int quietRounds = 0;
         std::uint64_t lastSeq = ~std::uint64_t(0);
-
-        return runUntil([&]() {
-            flushAll();
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < kTimeoutMs) {
+            _host->flushLocalEdits();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
             bool quiet = _host->isIdle();
-            for (const std::unique_ptr<SessionClient>& client : _clients) {
-                quiet = quiet && client->isIdle() && !client->hasPending() && (client->seq() == _host->seq());
+            for (const std::unique_ptr<Peer>& peer : _peers) {
+                const PeerState state = peer->state();
+                if (!state.ok) {
+                    ADD_FAILURE() << "a client stopped answering: " << peer->output();
+
+                    return false;
+                }
+                quiet = quiet && !state.pending && state.idle && (state.seq == _host->seq());
             }
             quietRounds = (quiet && (_host->seq() == lastSeq)) ? quietRounds + 1 : 0;
             lastSeq = _host->seq();
+            if (quietRounds >= 5) {
+                return true;
+            }
+        }
 
-            return quietRounds >= 5;
-        });
+        return false;
+    }
+
+    std::string peerYaml(int client)
+    {
+        const QString path = _dir.filePath(QString::fromUtf8("client%1.yaml").arg(client + 1));
+        if (_peers[client]->command("yaml " + path.toStdString()) != "ok") {
+            return std::string();
+        }
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            return std::string();
+        }
+
+        return file.readAll().toStdString();
     }
 
     void expectConverged()
     {
         const std::string hostYaml = LiveSession::canonicalProjectYaml(_hostApp->getProject());
         for (int i = 0; i < kClientCount; ++i) {
-            EXPECT_EQ(LiveSession::canonicalProjectYaml(_clientApps[i]->getProject()), hostYaml) << "client " << (i + 1) << " diverged";
-            EXPECT_EQ(_clients[i]->state(), SessionClient::State::eJoined);
+            EXPECT_EQ(peerYaml(i), hostYaml) << "client " << (i + 1) << " diverged";
+            EXPECT_TRUE(_peers[i]->state().joined) << "client " << (i + 1);
         }
     }
 
     void expectChecksumsMatch()
     {
         std::vector<int> before;
-        for (const std::unique_ptr<SessionClient>& client : _clients) {
-            before.push_back(client->checksumMismatchCount());
+        for (const std::unique_ptr<Peer>& peer : _peers) {
+            before.push_back(peer->state().mismatches);
         }
         _host->broadcastChecksum();
         ASSERT_TRUE(quiesce());
         for (int i = 0; i < kClientCount; ++i) {
-            EXPECT_EQ(_clients[i]->checksumMismatchCount(), before[i]) << "client " << (i + 1);
+            EXPECT_EQ(_peers[i]->state().mismatches, before[i]) << "client " << (i + 1);
         }
     }
 
-    AppInstancePtr peerApp(int peer) const
+    NodePtr hostNode(const std::string& name) const
     {
-        return (peer == 0) ? _hostApp : _clientApps[peer - 1];
+        return _hostApp->getProject()->getNodeByName(name);
     }
 
-    NodePtr nodeNamed(int peer,
-                      const std::string& name) const
+    // Peer 0 is the host, peer n is client n.
+    bool hasNode(int peer,
+                 const std::string& name)
     {
-        return peerApp(peer)->getProject()->getNodeByName(name);
+        return (peer == 0) ? (hostNode(name) != nullptr) : (_peers[peer - 1]->command("has " + name) == "yes");
     }
 
     AppInstancePtr _hostApp;
-    std::vector<AppInstancePtr> _clientApps;
     std::unique_ptr<SessionHost> _host;
-    std::vector<std::unique_ptr<SessionClient>> _clients;
+    std::vector<std::unique_ptr<Peer>> _peers;
+    QTemporaryDir _dir;
 };
 
 TEST_P(LiveSessionConvergenceTest, ConcurrentRandomEditsConverge)
@@ -363,22 +699,22 @@ TEST_P(LiveSessionConvergenceTest, ConcurrentRandomEditsConverge)
     expectConverged();
 
     const unsigned int seed = GetParam();
-    std::vector<std::mt19937> randoms;
-    for (int peer = 0; peer <= kClientCount; ++peer) {
-        randoms.emplace_back(seed * 7919u + static_cast<unsigned int>(peer));
-    }
-    std::mt19937 schedule(seed);
     const int kEditsPerPeer = 200;
+    for (int i = 0; i < kClientCount; ++i) {
+        _peers[i]->send("run " + std::to_string(seed * 7919u + static_cast<unsigned int>(i + 1)) + " " + std::to_string(kEditsPerPeer));
+    }
+    std::mt19937 random(seed * 7919u);
+    std::mt19937 schedule(seed);
     for (int round = 0; round < kEditsPerPeer; ++round) {
-        for (int peer = 0; peer <= kClientCount; ++peer) {
-            randomEdit(peerApp(peer), randoms[peer]);
-            peerApp(peer)->getProject()->getGraphEditRecorder()->flush();
-        }
-        // Peers edit several rounds on what they have before seeing each other's edits.
+        randomEdit(_hostApp, random);
+        flushRecorder(_hostApp);
         const int deliveries = std::uniform_int_distribution<int>(0, 3)(schedule);
         for (int i = 0; i < deliveries; ++i) {
             QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
         }
+    }
+    for (int i = 0; i < kClientCount; ++i) {
+        ASSERT_EQ(_peers[i]->reply(true), "ran") << "client " << (i + 1) << ": " << _peers[i]->output();
     }
 
     ASSERT_TRUE(quiesce()) << "the session did not settle";
@@ -388,6 +724,8 @@ TEST_P(LiveSessionConvergenceTest, ConcurrentRandomEditsConverge)
 
 INSTANTIATE_TEST_CASE_P(Seeds, LiveSessionConvergenceTest, ::testing::Range(1u, 21u));
 
+// The host reads nothing while a step waits on a client's reply, so each step below reaches
+// the host only once the session is run, after the steps before it.
 class LiveSessionDeleteVersusEditTest
     : public LiveSessionConvergenceTest {
 };
@@ -399,20 +737,21 @@ TEST_F(LiveSessionDeleteVersusEditTest, AnEditOfANodeTheHostDeletedIsRejectedAnd
     if (HasFatalFailure()) {
         return;
     }
-    const std::string gradeName = nodeNamed(0, "Grade1") ? "Grade1" : std::string();
-    ASSERT_FALSE(gradeName.empty());
-    const int rejectsBefore = _clients[0]->rejectCount();
+    ASSERT_NE(hostNode("Grade1"), nullptr);
+    const int rejectsBefore = _peers[0]->state().rejects;
 
-    nodeNamed(0, gradeName)->destroyNode(true, false);
+    // Held, client 1 cannot read the deletion before it edits the node.
+    ASSERT_EQ(_peers[0]->command("hold"), "ok");
+    hostNode("Grade1")->destroyNode(true, false);
     _host->flushLocalEdits();
-    doubleKnob(nodeNamed(1, gradeName), kGradeParamMultiply)->setValue(3., ViewSpec::all(), 0);
-    _clients[0]->flushLocalEdits();
+    ASSERT_EQ(_peers[0]->command(std::string("set Grade1 ") + kGradeParamMultiply + " 3"), "ok");
+    ASSERT_EQ(_peers[0]->command("release"), "ok");
 
     ASSERT_TRUE(quiesce());
     expectConverged();
-    EXPECT_GT(_clients[0]->rejectCount(), rejectsBefore);
+    EXPECT_GT(_peers[0]->state().rejects, rejectsBefore);
     for (int peer = 0; peer <= kClientCount; ++peer) {
-        EXPECT_EQ(nodeNamed(peer, gradeName), nullptr) << "peer " << peer;
+        EXPECT_FALSE(hasNode(peer, "Grade1")) << "peer " << peer;
     }
     expectChecksumsMatch();
 }
@@ -424,18 +763,16 @@ TEST_F(LiveSessionDeleteVersusEditTest, AClientDeletionWinsOverAnEarlierHostEdit
     if (HasFatalFailure()) {
         return;
     }
-    const std::string blurName = "Blur1";
-    ASSERT_NE(nodeNamed(0, blurName), nullptr);
+    ASSERT_NE(hostNode("Blur1"), nullptr);
 
-    nodeNamed(1, blurName)->destroyNode(true, false);
-    _clients[0]->flushLocalEdits();
-    doubleKnob(nodeNamed(0, blurName), kBlurParamSize)->setValue(9., ViewSpec::all(), 0);
+    ASSERT_EQ(_peers[0]->command("destroy Blur1"), "ok");
+    doubleKnob(hostNode("Blur1"), kBlurParamSize)->setValue(9., ViewSpec::all(), 0);
     _host->flushLocalEdits();
 
     ASSERT_TRUE(quiesce());
     expectConverged();
     for (int peer = 0; peer <= kClientCount; ++peer) {
-        EXPECT_EQ(nodeNamed(peer, blurName), nullptr) << "peer " << peer;
+        EXPECT_FALSE(hasNode(peer, "Blur1")) << "peer " << peer;
     }
     expectChecksumsMatch();
 }
@@ -447,15 +784,11 @@ TEST_F(LiveSessionDeleteVersusEditTest, AnEditOfANodeAnotherClientDeletedConverg
     if (HasFatalFailure()) {
         return;
     }
-    const std::string constantName = "Constant1";
-    ASSERT_NE(nodeNamed(0, constantName), nullptr);
+    ASSERT_NE(hostNode("Constant1"), nullptr);
 
-    nodeNamed(1, constantName)->destroyNode(true, false);
-    doubleKnob(nodeNamed(2, constantName), kConstantParamColor)->setValue(0.5, ViewSpec::all(), 0);
-    nodeNamed(3, constantName)->setScriptName("Renamed");
-    _clients[0]->flushLocalEdits();
-    _clients[1]->flushLocalEdits();
-    _clients[2]->flushLocalEdits();
+    ASSERT_EQ(_peers[0]->command("destroy Constant1"), "ok");
+    ASSERT_EQ(_peers[1]->command(std::string("set Constant1 ") + kConstantParamColor + " 0.5"), "ok");
+    ASSERT_EQ(_peers[2]->command("rename Constant1 Renamed"), "ok");
 
     ASSERT_TRUE(quiesce());
     expectConverged();

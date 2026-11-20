@@ -567,16 +567,21 @@ SessionHost::stop()
         _imp->subscription = -1;
     }
     _imp->server.close();
-    for (const std::unique_ptr<Peer>& peer : _imp->peers) {
+    // flush() finishes a closing socket's disconnect and emits disconnected() before it returns,
+    // so the peers leave the list, and lose their handlers, before any of them is flushed.
+    std::vector<std::unique_ptr<Peer>> leaving;
+    leaving.swap(_imp->peers);
+    for (const std::unique_ptr<Peer>& peer : leaving) {
+        if (peer->socket) {
+            peer->socket->disconnect(this);
+        }
         _imp->drop(peer.get(), tr("The host closed the session."));
         if (peer->socket) {
             peer->socket->flush();
-            peer->socket->disconnect(this);
             peer->socket->deleteLater();
             peer->socket = nullptr;
         }
     }
-    _imp->peers.clear();
     Q_EMIT peerCountChanged(0);
 }
 

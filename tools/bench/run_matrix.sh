@@ -4,6 +4,7 @@
 #
 #   tools/bench/run_matrix.sh <tag> <res> <frames> <range> <topo:n,n,n> [<topo:n,n> ...]
 #   e.g. tools/bench/run_matrix.sh overhead tiny 5 0 chain:0,10,100 wide:10,100
+#   tools/bench/run_matrix.sh <tag> <res> <frames> <range> expr   (the exprchain, exprfan and exprmixed sizes)
 # BENCH_SETTINGS="name=value;name=value" is passed to NatronRenderer as --setting arguments.
 # BENCH_KEEP=1 copies each configuration's written frames to build/bench/keep/<tag>/ first.
 # BENCH_PLATES_DIR (plates from make_plates.py, default build/bench/fixtures), NATRON_GPU and
@@ -35,7 +36,15 @@ logs=$repo/build/bench/logs
 mkdir -p "$logs"
 # shellcheck source=lib.sh
 . "$repo/tools/bench/lib.sh"
+specs=()
 for spec in "$@"; do
+    if [ "$spec" = expr ]; then
+        specs+=("exprchain:3,30,300,1000,5000" "exprfan:3,30,300,1000,5000" "exprmixed:3,30,300,1000,5000,20000")
+    else
+        specs+=("$spec")
+    fi
+done
+for spec in "${specs[@]}"; do
     topo=${spec%%:*}
     IFS=, read -ra sizes <<< "${spec#*:}"
     for n in "${sizes[@]}"; do

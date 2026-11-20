@@ -8,7 +8,9 @@
 #                 or the per-node chains ccchain | blurchain | xfchain | mergechain | mergesrcchain,
 #                 or the fixed GPU-region graphs gtg (Grade -> Transform with motion blur -> Grade) and
 #                 gebg (Grade -> Erode -> Blur -> Grade), and node (BENCH_NODE alone) and gxg (Grade -> BENCH_NODE
-#                 -> Grade); BENCH_N is ignored by these four
+#                 -> Grade); BENCH_N is ignored by these four,
+#                 or the expression graphs exprchain | exprfan | exprmixed (N Grades whose Gain is an expression;
+#                 see README "Expression evaluation"), which also time every expression knob cold and warm
 #   BENCH_NODE    the node of the node and gxg topologies: transform (animated, motion blur per BENCH_MOTION_BLUR)
 #                 | blur (BENCH_BLUR_SIZE, BENCH_BLUR_FILTER) | erode (BENCH_ERODE_SIZE) | chromakeyer | edgedetect
 #   BENCH_N       approximate number of processing nodes
@@ -76,6 +78,10 @@ if DRY_RUN:
 
         def setValueAtTime(self, *args):
             pass
+
+        def setExpression(self, expr, has_ret, dimension):
+            self.value = expr
+            return True
 
     class _Shapes(object):
         def createEllipse(self, *args):
@@ -155,8 +161,10 @@ HOLD = float(os.environ.get("BENCH_HOLD", "0"))
 SETTINGS = os.environ.get("BENCH_SETTINGS", "")
 WORK = os.environ.get("BENCH_WORK", os.path.join(os.getcwd(), "build", "bench", "work"))
 PLATES = os.environ.get("BENCH_PLATES_DIR") or os.path.join(os.getcwd(), "build", "bench", "fixtures")
-# Explicit names bypass the default unique-name search; BENCH_NAMED=0 measures that path.
-NAMED = os.environ.get("BENCH_NAMED", "1") != "0"
+EXPR_TOPOS = ("exprchain", "exprfan", "exprmixed")
+# Explicit names bypass the default unique-name search; BENCH_NAMED=0 measures that path. The
+# expression graphs always name their nodes, so naming cost stays out of their figures.
+NAMED = os.environ.get("BENCH_NAMED", "1") != "0" or TOPO in EXPR_TOPOS
 LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1
 if SESSION:
     LAST_FRAME = max(LAST_FRAME, JUMP_FRAME, SESSION_FRAME + PLAYBACK_FRAMES) + 1
@@ -579,6 +587,91 @@ def build_comp():
     return out
 
 
+# (param, kind) of every expression the expression graphs set, in creation order: an expression only
+# references nodes made before it, so evaluating in this order finds each reference already computed.
+expr_knobs = []
+EXPR_KNOB = "white"
+
+
+def expr_grade(inp, kind, expr):
+    n = make("Grade")
+    n.connectInput(0, inp)
+    p = param(n, EXPR_KNOB)
+    if not p.setExpression(expr, False, 0):
+        raise RuntimeError("could not set %s.%s = %r" % (n.getScriptName(), EXPR_KNOB, expr))
+    expr_knobs.append((p, kind))
+    return n
+
+
+def ref(node):
+    return "%s.%s.getValue(0)" % (node.getScriptName(), EXPR_KNOB)
+
+
+def build_exprchain():
+    out = expr_grade(source(0), "frame", "1 + 0.1 * sin(frame)")
+    for _ in range(1, N):
+        out = expr_grade(out, "sibling", "%s * 1.001" % ref(out))
+    return out
+
+
+def build_exprfan():
+    master = expr_grade(source(0), "frame", "sin(frame / 10)")
+    out = master
+    for _ in range(1, N):
+        out = expr_grade(out, "sibling", ref(master))
+    return out
+
+
+def build_exprmixed():
+    out = source(0)
+    for i in range(N):
+        kind = ("constant", "frame", "sibling", "clamp")[i % 4]
+        if kind == "constant":
+            expr = "2.0 * 0.5"
+        elif kind == "frame":
+            expr = "1 + 0.1 * sin(frame)"
+        elif kind == "sibling":
+            expr = ref(out)
+        else:
+            expr = "min(max(%s * 1.01, 0.5), 2.0)" % ref(out)
+        out = expr_grade(out, kind, expr)
+    return out
+
+
+def time_expressions():
+    """Times getValueAtTime on every expression knob, cold then warm, at FRAMES frames."""
+    # The result cache is keyed on time, so frames past the rendered range start cold without
+    # touching the expressions (re-setting one would also recompile it).
+    times = [LAST_FRAME + 1 + k for k in range(max(FRAMES, 1))]
+    cold_ns = warm_ns = 0
+    kind_ns = {}
+    kind_evals = {}
+    clock = time.perf_counter_ns
+    for t in times:
+        for p, kind in expr_knobs:
+            t0 = clock()
+            p.getValueAtTime(t, 0)
+            dt = clock() - t0
+            cold_ns += dt
+            kind_ns[kind] = kind_ns.get(kind, 0) + dt
+            kind_evals[kind] = kind_evals.get(kind, 0) + 1
+        for p, _ in expr_knobs:
+            t0 = clock()
+            p.getValueAtTime(t, 0)
+            warm_ns += clock() - t0
+    evals = len(times) * len(expr_knobs)
+    if not evals:
+        return {}
+    return {
+        "expr_evals": evals,
+        "expr_cold_us_per_eval": round(cold_ns / 1000.0 / evals, 3),
+        "expr_warm_us_per_eval": round(warm_ns / 1000.0 / evals, 3),
+        "expr_cold_ms_per_frame": round(cold_ns / 1e6 / len(times), 3),
+        "expr_by_kind": dict((k, round(kind_ns[k] / 1000.0 / kind_evals[k], 3)) for k in sorted(kind_ns)),
+        "expr_frames": times,
+    }
+
+
 # Knob changed between re-renders: node kind -> (param, value for the k-th change). Every value is new, so
 # a content-hash cache can never serve a re-render from an earlier one.
 NODE_TWEAKS = {
@@ -884,7 +977,8 @@ def main():
                 "rambound": build_rambound, "deepcomp": build_deepcomp, "ccchain": build_ccchain,
                 "blurchain": build_blurchain, "xfchain": build_xfchain, "mergechain": build_mergechain,
                 "mergesrcchain": build_mergesrcchain, "gtg": build_gtg, "gebg": build_gebg,
-                "node": build_node, "gxg": build_gxg}
+                "node": build_node, "gxg": build_gxg, "exprchain": build_exprchain, "exprfan": build_exprfan,
+                "exprmixed": build_exprmixed}
     t0 = time.time()
     root = builders[TOPO]()
     build_s = time.time() - t0
@@ -940,6 +1034,7 @@ def main():
         first = first_timed + FRAMES
         range_wall, range_cpu, range_io = render(writer, first, first + RANGE - 1)
     pressure_end = load_pressure()
+    expr_fields = time_expressions() if TOPO in EXPR_TOPOS else {}
 
     stats_fields = render_stats(writer) if os.environ.get("BENCH_RENDER_STATS") == "1" else {}
     med = statistics.median(walls) if walls else None
@@ -986,6 +1081,10 @@ def main():
     # The top-level IO fields cover the timed frames, like frame_wall_s.
     result.update(io_sum(ios))
     result.update(stats_fields)
+    if expr_fields:
+        result.update(expr_fields)
+        # Unlike the host's cpus, this is the affinity-limited count the process may run on.
+        result["cpu_count"] = len(os.sched_getaffinity(0))
     line = json.dumps(result)
     log("RESULT " + line)
     if OUT:

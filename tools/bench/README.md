@@ -52,6 +52,46 @@ python3 tools/bench/compare.py build/bench/results-before.jsonl build/bench/resu
 
 Results land in `build/bench/results-<tag>.jsonl`, logs in `build/bench/logs/`.
 
+### Expression evaluation
+
+Three topologies measure Python knob expressions, each a CheckerBoard followed by N Grades in
+series whose Gain (`white`, dimension 0) is an expression:
+
+| Topology | Expressions |
+|---|---|
+| `exprchain` | the first Grade is `1 + 0.1 * sin(frame)`, every later one `<previous>.white.getValue(0) * 1.001` |
+| `exprfan` | the first Grade (the master) is `sin(frame / 10)`, every later one `<master>.white.getValue(0)` |
+| `exprmixed` | Grades cycle through four kinds: `constant` (`2.0 * 0.5`), `frame` (`1 + 0.1 * sin(frame)`), `sibling` (`<previous>.white.getValue(0)`) and `clamp` (`min(max(<previous>.white.getValue(0) * 1.01, 0.5), 2.0)`) |
+
+Their nodes are always named explicitly (`BENCH_NAMED` does not apply), so naming cost stays out
+of the figures. The whole-frame timing is the same as for the other topologies. After it,
+`graph_bench.py` calls `getValueAtTime` on every expression knob, in creation order, at
+`BENCH_FRAMES` frames past the rendered range. At each frame a cold pass runs first and a warm
+pass second. Expression results are cached per time, so the cold pass is the first evaluation at
+that frame and the warm pass is a cache hit. A `getValue(0)` inside an expression reads at the
+time the expression is evaluated for, so a sibling lookup in the cold pass never reads another
+frame's result; it does hit the sibling's entry for the same frame, which the pass computed a
+moment earlier. Each call is timed with `time.perf_counter_ns`, and
+the record gains:
+
+| Field | Meaning |
+|---|---|
+| `expr_evals` | evaluations per pass: expression knobs x frames |
+| `expr_cold_us_per_eval`, `expr_warm_us_per_eval` | mean microseconds per `getValueAtTime` call in each pass, Python call overhead included |
+| `expr_cold_ms_per_frame` | cold milliseconds for all of a frame's expressions |
+| `expr_by_kind` | expression kind -> cold microseconds per evaluation |
+| `expr_frames` | the frames the passes ran at |
+| `cpu_count` | CPUs the process may run on (`sched_getaffinity`); `cpus` is the host's count |
+
+The spec `expr` selects the expression rows, `exprchain` and `exprfan` at 3, 30, 300, 1000 and
+5000 and `exprmixed` at those sizes and 20000. Graph building at the largest sizes can outlast
+the default `BENCH_TIMEOUT` of 1800 s; raise it for those rows.
+
+```
+BENCH_TIMEOUT=7200 tools/bench/run_matrix.sh expr tiny 3 0 expr
+tools/bench/run_matrix.sh expr-small tiny 3 0 exprchain:3,30 exprfan:3,30 exprmixed:3,30
+```
+
 ## Realistic workloads
 
 The generator-fed families above decode nothing and keep every image far below the cache budget,

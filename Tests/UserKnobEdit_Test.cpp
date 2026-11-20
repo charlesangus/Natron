@@ -48,6 +48,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LogEntry.h"
 #include "Engine/Node.h"
@@ -1014,4 +1015,263 @@ TEST_F(UserKnobEdit, PythonChangesAnAnimatedIntToDouble)
                                            "assert type(thisNode.changeParamType(words, 'Int', True)).__name__ == 'IntParam'\n"));
     EXPECT_TRUE(bool(std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName("count"))));
     EXPECT_TRUE(bool(std::dynamic_pointer_cast<KnobInt>(blur->getKnobByName("words"))));
+}
+
+TEST_F(UserKnobEdit, UndoingALabelEditKeepsTheKnobAndItsReaders)
+{
+    NodePtr blur = createBlur();
+    NodePtr other = createBlur();
+    ASSERT_TRUE(bool(blur && other));
+    KnobDoublePtr amount = addTyped<KnobDouble>(blur, "amount");
+    ASSERT_TRUE(bool(amount));
+    const Dependents dependents = addDependents(blur, other, "amount", 0);
+    ASSERT_TRUE(bool(dependents.follower && dependents.linked));
+    const std::string expression = dependents.follower->getExpression(0);
+    ASSERT_FALSE(expression.empty());
+
+    recorder->commands.clear();
+    UserKnobSpec spec = specFromKnob(amount);
+    spec.label = "How Much";
+    spec.tooltip = "The amount.";
+    ASSERT_TRUE(applySpec(holderOf(blur), amount, spec));
+    EXPECT_EQ(1, recorder->userKnobCommands());
+
+    undoAll();
+    EXPECT_EQ(amount, blur->getKnobByName("amount"));
+    EXPECT_EQ("amount", amount->getLabel());
+    EXPECT_EQ(std::string(), amount->getHintToolTip());
+    EXPECT_EQ(expression, dependents.follower->getExpression(0));
+    EXPECT_TRUE(isLinkedTo(amount, dependents.linked));
+    amount->setValue(5., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(6., dependents.follower->getValue(0));
+    EXPECT_DOUBLE_EQ(5., dependents.linked->getValue(0));
+
+    redoAll();
+    EXPECT_EQ(amount, blur->getKnobByName("amount"));
+    EXPECT_EQ("How Much", amount->getLabel());
+    EXPECT_EQ(expression, dependents.follower->getExpression(0));
+}
+
+TEST_F(UserKnobEdit, AnEmptyParentMovesTheKnobBackToTheUserPage)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr amount = addTyped<KnobDouble>(blur, "amount");
+    ASSERT_TRUE(bool(add(blur, makeSpec(KnobGroup::typeNameStatic(), "box"))));
+    ASSERT_TRUE(bool(amount));
+    KnobPagePtr userPage = holderOf(blur)->getUserPageKnob();
+    ASSERT_TRUE(userPage != nullptr);
+
+    UserKnobSpec spec = specFromKnob(amount);
+    spec.parentName = "box";
+    spec.index = -1;
+    std::string error;
+    ASSERT_TRUE(applySpec(holderOf(blur), amount, spec, &error)) << error;
+    ASSERT_EQ(blur->getKnobByName("box"), amount->getParentKnob());
+
+    recorder->commands.clear();
+    spec.parentName.clear();
+    ASSERT_TRUE(applySpec(holderOf(blur), amount, spec, &error)) << error;
+    EXPECT_EQ(KnobIPtr(userPage), amount->getParentKnob());
+    EXPECT_EQ(1, recorder->userKnobCommands());
+
+    undoAll();
+    EXPECT_EQ(amount, blur->getKnobByName("amount"));
+    EXPECT_EQ(blur->getKnobByName("box"), amount->getParentKnob());
+}
+
+TEST_F(UserKnobEdit, ARejectedMoveLeavesTheKnobInPlace)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    ASSERT_TRUE(bool(add(blur, makeSpec(KnobPage::typeNameStatic(), "tools"))));
+    KnobGroupPtr vars = std::dynamic_pointer_cast<KnobGroup>(add(blur, makeSpec(KnobGroup::typeNameStatic(), "vars", 1, "tools")));
+    KnobDoublePtr first = addTyped<KnobDouble>(blur, "first", 1, "tools");
+    KnobIPtr press = add(blur, makeSpec(KnobButton::typeNameStatic(), "press", 1, "tools"));
+    ASSERT_TRUE(bool(vars && first && press));
+    vars->setAsRFVGroup(true);
+    const KnobIPtr parent = press->getParentKnob();
+    const std::vector<KnobIPtr> before = std::dynamic_pointer_cast<KnobPage>(parent)->getChildren();
+    const std::string state = userKnobState(blur);
+    recorder->commands.clear();
+    startRecordingGraph();
+    takeSetUserKnobsOps(blur);
+
+    UserKnobSpec spec = specFromKnob(press);
+    spec.parentName = "vars";
+    spec.index = 0;
+    EXPECT_FALSE(validateSpec(holderOf(blur), press, spec).empty());
+    std::string error;
+    EXPECT_FALSE(applySpec(holderOf(blur), press, spec, &error));
+    EXPECT_FALSE(error.empty());
+
+    EXPECT_EQ(parent, press->getParentKnob());
+    EXPECT_EQ(before, std::dynamic_pointer_cast<KnobPage>(parent)->getChildren());
+    EXPECT_TRUE(vars->getChildren().empty());
+    EXPECT_EQ(state, userKnobState(blur));
+    EXPECT_EQ(0, recorder->userKnobCommands());
+    EXPECT_EQ(0, takeSetUserKnobsOps(blur));
+}
+
+TEST_F(UserKnobEdit, PastedExpressionsAndLinksPointAtThePastedKnobs)
+{
+    NodePtr source = createBlur();
+    NodePtr target = createBlur();
+    ASSERT_TRUE(bool(source && target));
+    ASSERT_TRUE(bool(add(source, makeSpec(KnobPage::typeNameStatic(), "tools"))));
+    KnobDoublePtr x = addTyped<KnobDouble>(source, "x", 1, "tools");
+    KnobDoublePtr x2 = addTyped<KnobDouble>(source, "x2", 1, "tools");
+    KnobDoublePtr sum = addTyped<KnobDouble>(source, "sum", 1, "tools");
+    KnobDoublePtr a = addTyped<KnobDouble>(source, "a", 1, "tools");
+    KnobDoublePtr b = addTyped<KnobDouble>(source, "b", 1, "tools");
+    ASSERT_TRUE(bool(x && x2 && sum && a && b));
+    x->setValue(1., ViewSpec::all(), 0);
+    x2->setValue(10., ViewSpec::all(), 0);
+    ASSERT_NO_THROW(sum->setExpression(0, "thisNode.x.get() + thisNode.x2.get()", false, true));
+    ASSERT_TRUE(b->linkTo(0, a, 0));
+    KnobDoublePtr taken = addTyped<KnobDouble>(target, "x");
+    ASSERT_TRUE(bool(taken));
+    taken->setValue(100., ViewSpec::all(), 0);
+
+    const std::string text = copyUserKnobs(holderOf(source), { source->getKnobByName("tools") });
+    std::string error;
+    ASSERT_FALSE(pasteUserKnobs(holderOf(target), text, KnobIPtr(), -1, &error).empty()) << error;
+
+    KnobIPtr pastedX = target->getKnobByName("x2");
+    KnobIPtr pastedX2 = target->getKnobByName("x22");
+    KnobIPtr pastedSum = target->getKnobByName("sum");
+    KnobIPtr pastedA = target->getKnobByName("a");
+    KnobIPtr pastedB = target->getKnobByName("b");
+    ASSERT_TRUE(bool(pastedX && pastedX2 && pastedSum && pastedA && pastedB));
+    EXPECT_EQ("thisNode.x2.get() + thisNode.x22.get()", pastedSum->getExpression(0));
+    EXPECT_DOUBLE_EQ(11., std::dynamic_pointer_cast<KnobDouble>(pastedSum)->getValue(0));
+
+    EXPECT_TRUE(isLinkedTo(pastedB, pastedA));
+    EXPECT_FALSE(isLinkedTo(pastedB, a));
+    EXPECT_FALSE(isLinkedTo(pastedA, a));
+    EXPECT_FALSE(isLinkedTo(pastedA, b));
+    EXPECT_TRUE(isLinkedTo(b, a));
+}
+
+TEST_F(UserKnobEdit, ContainerTooltipsRoundTrip)
+{
+    NodePtr source = createBlur();
+    NodePtr target = createBlur();
+    ASSERT_TRUE(bool(source && target));
+    UserKnobSpec pageSpec = makeSpec(KnobPage::typeNameStatic(), "tools");
+    pageSpec.tooltip = "Tools of the node.";
+    UserKnobSpec groupSpec = makeSpec(KnobGroup::typeNameStatic(), "box", 1, "tools");
+    groupSpec.tooltip = "What is in the box.";
+    ASSERT_TRUE(bool(add(source, pageSpec)));
+    KnobIPtr box = add(source, groupSpec);
+    ASSERT_TRUE(bool(box && addTyped<KnobDouble>(source, "inside", 1, "box")));
+
+    const std::string text = copyUserKnobs(holderOf(source), { source->getKnobByName("tools") });
+    ASSERT_FALSE(pasteUserKnobs(holderOf(target), text).empty());
+    ASSERT_TRUE(bool(target->getKnobByName("tools") && target->getKnobByName("box")));
+    EXPECT_EQ(pageSpec.tooltip, target->getKnobByName("tools")->getHintToolTip());
+    EXPECT_EQ(groupSpec.tooltip, target->getKnobByName("box")->getHintToolTip());
+
+    recorder->commands.clear();
+    UserKnobSpec edited = specFromKnob(box);
+    edited.tooltip = "Another box.";
+    ASSERT_TRUE(applySpec(holderOf(source), box, edited));
+    undoAll();
+    EXPECT_EQ(groupSpec.tooltip, box->getHintToolTip());
+    redoAll();
+    EXPECT_EQ(edited.tooltip, box->getHintToolTip());
+
+    const std::string nodeName = source->getScriptName();
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("container-tooltips.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr loaded = project->getNodeByName(nodeName);
+    ASSERT_TRUE(bool(loaded));
+    ASSERT_TRUE(bool(loaded->getKnobByName("tools") && loaded->getKnobByName("box")));
+    EXPECT_EQ(pageSpec.tooltip, loaded->getKnobByName("tools")->getHintToolTip());
+    EXPECT_EQ(edited.tooltip, loaded->getKnobByName("box")->getHintToolTip());
+}
+
+TEST_F(UserKnobEdit, LinksSurviveATypeChange)
+{
+    NodePtr blur = createBlur();
+    NodePtr other = createBlur();
+    ASSERT_TRUE(bool(blur && other));
+    KnobDoublePtr amount = addTyped<KnobDouble>(blur, "amount");
+    KnobDoublePtr partner = addTyped<KnobDouble>(other, "partner");
+    KnobDoublePtr master = addTyped<KnobDouble>(blur, "master");
+    KnobDoublePtr alias = addTyped<KnobDouble>(other, "alias");
+    ASSERT_TRUE(bool(amount && partner && master && alias));
+    ASSERT_TRUE(amount->linkTo(0, partner, 0));
+    KnobLinkGroupPtr group = amount->getLinkGroup(0);
+    ASSERT_TRUE(group != nullptr);
+    group->setMemberNodeLink(amount.get(), 0, true);
+    ASSERT_TRUE(alias->setKnobAsAliasOfThis(master, true));
+
+    KnobIPtr replacement;
+    std::string error;
+    ASSERT_EQ(eUserKnobTypeChangeConverted, changeUserKnobType(holderOf(blur), amount, KnobInt::typeNameStatic(), 1, false, &replacement, &error)) << error;
+    ASSERT_TRUE(replacement != nullptr);
+    EXPECT_TRUE(isLinkedTo(replacement, partner));
+    KnobLinkGroupPtr replacementGroup = replacement->getLinkGroup(0);
+    ASSERT_TRUE(replacementGroup != nullptr);
+    EXPECT_TRUE(replacementGroup->isMemberNodeLink(replacement.get(), 0));
+
+    recorder->commands.clear();
+    for (const KnobIPtr& aliased : { KnobIPtr(master), KnobIPtr(alias) }) {
+        KnobHolder* holder = aliased->getHolder();
+        error.clear();
+        EXPECT_EQ(eUserKnobTypeChangeFailed, changeUserKnobType(holder, aliased, KnobInt::typeNameStatic(), 1, true, nullptr, &error)) << aliased->getName();
+        EXPECT_FALSE(error.empty());
+        EXPECT_EQ(aliased, holder->getKnobByName(aliased->getName()));
+    }
+    EXPECT_EQ(KnobIPtr(master), alias->getAliasMaster());
+    EXPECT_EQ(0, recorder->userKnobCommands());
+}
+
+TEST_F(UserKnobEdit, NoOpEditsAddNoUndoEntry)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr first = addTyped<KnobDouble>(blur, "first");
+    UserKnobSpec buttonSpec = makeSpec(KnobButton::typeNameStatic(), "press");
+    Serialization::KnobButtonExtraSerialization script;
+    script.script = "pass\n";
+    buttonSpec.extra = script;
+    KnobButtonPtr press = std::dynamic_pointer_cast<KnobButton>(add(blur, buttonSpec));
+    ASSERT_TRUE(bool(first && press));
+    startRecordingGraph();
+    takeSetUserKnobsOps(blur);
+    recorder->commands.clear();
+    const std::uint64_t serial = recorder->serial;
+
+    EXPECT_TRUE(applySpec(holderOf(blur), first, specFromKnob(first)));
+    UserKnobSpec onUserPage = specFromKnob(first);
+    onUserPage.parentName.clear();
+    onUserPage.index = -1;
+    onUserPage.defaults.clear();
+    EXPECT_TRUE(applySpec(holderOf(blur), first, onUserPage));
+    EXPECT_EQ(serial, recorder->serial);
+    EXPECT_FALSE(moveUserKnob(holderOf(blur), first, true));
+
+    const std::string node = getApp()->getAppIDString() + "." + blur->getFullyQualifiedName();
+    ASSERT_TRUE(run("thisNode = " + node + "\n"
+                                           "thisNode.press.setScript('pass\\n')\n"));
+    EXPECT_EQ(script.script, press->getScript());
+    EXPECT_EQ(0, recorder->userKnobCommands());
+    EXPECT_EQ(0, takeSetUserKnobsOps(blur));
+
+    ASSERT_TRUE(run("thisNode = " + node + "\n"
+                                           "thisNode.press.setScript('x = 1\\n')\n"));
+    EXPECT_EQ(1, recorder->userKnobCommands());
+    undoAll();
+    EXPECT_EQ(press, blur->getKnobByName("press"));
+    EXPECT_EQ(script.script, press->getScript());
 }

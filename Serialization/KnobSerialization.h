@@ -372,6 +372,7 @@ struct GroupKnobChildSerialization;
 struct GroupKnobSerialization {
     std::string name;
     std::string label;
+    std::string tooltip;
     bool secret;
 
     // Only meaningful for groups.
@@ -406,6 +407,7 @@ struct GroupKnobChildSerialization {
 inline GroupKnobSerialization::GroupKnobSerialization()
     : name()
     , label()
+    , tooltip()
     , secret(false)
     , isSetAsTab(false)
     , isOpened(false)
@@ -427,7 +429,7 @@ inline bool
 operator==(const GroupKnobSerialization& a,
            const GroupKnobSerialization& b)
 {
-    return a.name == b.name && a.label == b.label && a.secret == b.secret && a.isSetAsTab == b.isSetAsTab && a.isOpened == b.isOpened && a.isRFVGroup == b.isRFVGroup && a.children == b.children;
+    return a.name == b.name && a.label == b.label && a.tooltip == b.tooltip && a.secret == b.secret && a.isSetAsTab == b.isSetAsTab && a.isOpened == b.isOpened && a.isRFVGroup == b.isRFVGroup && a.children == b.children;
 }
 
 /**

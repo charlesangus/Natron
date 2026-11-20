@@ -839,6 +839,11 @@ struct PythonUserKnobs {
         serialization.pagesOrder = full.pagesOrder;
     }
 
+    bool sameAs(const PythonUserKnobs& other) const
+    {
+        return (serialization.userPages == other.serialization.userPages) && (serialization.pagesOrder == other.serialization.pagesOrder);
+    }
+
     void apply(Node& node) const
     {
         std::list<KnobIWPtr> userKnobs;
@@ -948,6 +953,22 @@ struct UserKnobDependentStates {
         }
     }
 
+    bool sameAs(const UserKnobDependentStates& other) const
+    {
+        if (dependents.size() != other.dependents.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < dependents.size(); ++i) {
+            const Dependent& a = dependents[i];
+            const Dependent& b = other.dependents[i];
+            if ((a.knob.lock() != b.knob.lock()) || (a.expressions != b.expressions) || (a.expressionsHaveRet != b.expressionsHaveRet) || (a.links != b.links)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     std::vector<KnobIPtr> knobs() const
     {
         std::vector<KnobIPtr> ret;
@@ -1027,6 +1048,11 @@ public:
             }
         }
         _afterDependents->captureAll(*node, knobs);
+    }
+
+    bool changes() const
+    {
+        return !_before->sameAs(*_after) || !_beforeDependents->sameAs(*_afterDependents);
     }
 
     virtual void undo() OVERRIDE FINAL
@@ -1281,12 +1307,17 @@ PythonUserKnobsUndoGuard::~PythonUserKnobsUndoGuard()
     if (found != recording.end()) {
         recording.erase(found);
     }
-    _recorder->record(std::make_shared<UserKnobsCommand>(_node, _before, _beforeDependents), touchedNode(_node));
+    std::shared_ptr<UserKnobsCommand> command = std::make_shared<UserKnobsCommand>(_node, _before, _beforeDependents);
+    if (command->changes()) {
+        _recorder->record(command, touchedNode(_node));
+    }
 }
 
 UserKnobsUndoScope::UserKnobsUndoScope(KnobHolder* holder,
-                                       const std::string& label)
+                                       const std::string& label,
+                                       bool snapshot)
     : _holder(holder)
+    , _changed(false)
     , _step()
     , _guard()
 {
@@ -1295,7 +1326,9 @@ UserKnobsUndoScope::UserKnobsUndoScope(KnobHolder* holder,
         return;
     }
     _step.reset(new UndoStepGuard(node->getApp(), label, true));
-    _guard.reset(new PythonUserKnobsUndoGuard(holder));
+    if (snapshot) {
+        _guard.reset(new PythonUserKnobsUndoGuard(holder));
+    }
 }
 
 UserKnobsUndoScope::~UserKnobsUndoScope()
@@ -1303,9 +1336,33 @@ UserKnobsUndoScope::~UserKnobsUndoScope()
     _guard.reset();
     _step.reset();
     // Edits of a knob's definition alone, such as its label, list no knob change otherwise.
-    if (_holder && GraphEditRecorder::isActive()) {
+    if (_changed && _holder && GraphEditRecorder::isActive()) {
         GraphEditRecorder::onKnobListChanged(_holder);
     }
+}
+
+void
+UserKnobsUndoScope::record(const UndoCommandPtr& command)
+{
+    _changed = true;
+    NodePtr node = nodeOfHolder(_holder);
+    if (!command || !node) {
+        return;
+    }
+    const std::vector<const Node*>& recording = nodesRecordingUserKnobs();
+    if (std::find(recording.begin(), recording.end(), node.get()) != recording.end()) {
+        return;
+    }
+    UndoRecorderPtr recorder = recorderForNode(node);
+    if (recorder) {
+        recorder->record(command, touchedNode(node));
+    }
+}
+
+void
+UserKnobsUndoScope::markChanged()
+{
+    _changed = true;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -35,6 +35,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
@@ -45,6 +46,8 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/PythonUndoCommands.h"
+#include "Engine/RFV.h"
+#include "Engine/UndoCommand.h"
 #include "Serialization/Yaml/KnobYaml.h"
 
 NATRON_NAMESPACE_ENTER
@@ -125,7 +128,7 @@ isScriptIdentifier(const std::string& name)
     return true;
 }
 
-// The children whose parent is parent: a page also lists the knobs inside its groups.
+// A page's own list also holds the knobs inside its groups.
 std::vector<KnobIPtr>
 directChildren(const KnobIPtr& parent)
 {
@@ -190,7 +193,6 @@ pageOf(KnobIPtr knob)
     return KnobPagePtr();
 }
 
-// The user page or group of holder named name.
 KnobIPtr
 findUserContainer(KnobHolder* holder,
                   const std::string& name)
@@ -206,12 +208,17 @@ findUserContainer(KnobHolder* holder,
     return knob;
 }
 
-// Puts knob in parent at index (the end for -1), in the parent's own child list.
 bool
 insertInContainer(const KnobIPtr& parent,
                   const KnobIPtr& knob,
                   int index)
 {
+    KnobPage* parentPage = dynamic_cast<KnobPage*>(parent.get());
+    if (parentPage && (knob->getParentKnob() != parent)) {
+        // A page's list can still hold a knob that was in one of its groups, and
+        // KnobPage::insertKnob() leaves a knob it already lists unparented where it is.
+        parentPage->removeKnob(knob.get());
+    }
     const std::vector<KnobIPtr> siblings = directChildren(parent);
     if ((index < 0) || (index > (int)siblings.size())) {
         index = (int)siblings.size();
@@ -232,32 +239,80 @@ insertInContainer(const KnobIPtr& parent,
     if (KnobGroup* isGroup = dynamic_cast<KnobGroup*>(parent.get())) {
         return isGroup->insertKnob(position, knob);
     }
-    if (KnobPage* isPage = dynamic_cast<KnobPage*>(parent.get())) {
-        isPage->insertKnob(position, knob);
+    if (parentPage) {
+        parentPage->insertKnob(position, knob);
 
-        return true;
+        return knob->getParentKnob() == parent;
     }
 
     return false;
 }
 
-// Moves knob to parentName at index; an empty parentName is the holder's User page.
+// The checks KnobPage::insertKnob() and KnobGroup::insertKnob() make, so that a move can be
+// refused before the knob leaves its current parent.
+bool
+acceptsChild(const KnobIPtr& parent,
+             const KnobIPtr& knob)
+{
+    if (!parent || (!parent->isUserKnob() && knob->isUserKnob())) {
+        return false;
+    }
+    if (KnobGroup* isGroup = dynamic_cast<KnobGroup*>(parent.get())) {
+        return !isGroup->isRFVGroup() || RFV::isAdmittedInRFVGroup(*isGroup, knob);
+    }
+
+    return dynamic_cast<KnobPage*>(parent.get()) != nullptr;
+}
+
+KnobIPtr
+destinationOf(KnobHolder* holder,
+              const std::string& parentName)
+{
+    return parentName.empty() ? KnobIPtr(holder->getUserPageKnob()) : findUserContainer(holder, parentName);
+}
+
+// An index of -1 in the knob's own parent keeps it where it is.
+bool
+isPlacedAt(KnobHolder* holder,
+           const KnobIPtr& knob,
+           const std::string& parentName,
+           int index)
+{
+    const KnobIPtr parent = destinationOf(holder, parentName);
+    if (!parent || (knob->getParentKnob() != parent)) {
+        return false;
+    }
+    const int current = indexInParent(knob);
+    const int last = (int)directChildren(parent).size() - 1;
+
+    return (index < 0) || (index == current) || ((index > last) && (current == last));
+}
+
+// An empty parentName is the holder's User page, created when missing.
 bool
 placeKnob(KnobHolder* holder,
           const KnobIPtr& knob,
           const std::string& parentName,
           int index)
 {
-    KnobIPtr parent = parentName.empty() ? KnobIPtr(holder->getOrCreateUserPageKnob()) : findUserContainer(holder, parentName);
-    if (!parent) {
-        return false;
-    }
-    if ((knob->getParentKnob() == parent) && ((index < 0) || (indexInParent(knob) == index))) {
+    if (isPlacedAt(holder, knob, parentName, index)) {
         return true;
     }
+    KnobIPtr parent = parentName.empty() ? KnobIPtr(holder->getOrCreateUserPageKnob()) : findUserContainer(holder, parentName);
+    if (!acceptsChild(parent, knob)) {
+        return false;
+    }
+    const KnobIPtr oldParent = knob->getParentKnob();
+    const int oldIndex = indexInParent(knob);
     knob->resetParent();
+    if (insertInContainer(parent, knob, index)) {
+        return true;
+    }
+    if (oldParent) {
+        insertInContainer(oldParent, knob, oldIndex);
+    }
 
-    return insertInContainer(parent, knob, index);
+    return false;
 }
 
 // An expression is validated by running it, and fails on a parameter not yet declared to Python:
@@ -323,7 +378,6 @@ clampToInt(double value)
     return std::max((double)INT_MIN, std::min((double)INT_MAX, value));
 }
 
-// What createUserKnobFromSerialization() needs to create the knob spec describes.
 Serialization::KnobSerialization
 serializationFromSpec(const UserKnobSpec& spec)
 {
@@ -503,7 +557,6 @@ struct DimensionExpression {
     bool hasRet;
 };
 
-// The expressions knob's listeners hold, which deleting or renaming knob leaves stale.
 std::map<KnobIPtr, std::vector<DimensionExpression>>
 listenerExpressions(const KnobIPtr& knob)
 {
@@ -581,15 +634,34 @@ uniqueKnobName(KnobHolder* holder,
     }
 }
 
-// Writes each link group of the copied knobs as a link to one member outside the copy: the ids
-// only mean something within one save.
+void
+countLinkGroupIds(const Serialization::GroupKnobSerialization& group,
+                  std::map<std::string, int>* counts)
+{
+    for (std::list<Serialization::GroupKnobChildSerialization>::const_iterator it = group.children.begin(); it != group.children.end(); ++it) {
+        if (it->isGroup) {
+            countLinkGroupIds(it->group, counts);
+            continue;
+        }
+        for (std::size_t d = 0; d < it->knob.dimensions.size(); ++d) {
+            const std::optional<Serialization::KnobLinkGroupSerialization>& linkGroup = it->knob.dimensions[d].linkGroup;
+            if (linkGroup && !linkGroup->id.empty()) {
+                ++(*counts)[linkGroup->id];
+            }
+        }
+    }
+}
+
+// A link group with one copied member becomes a link to a member outside the copy: its id has no
+// partner in the paste. One with several keeps its id, which links the pasted members together.
 void
 linkGroupsToMasters(KnobHolder* holder,
+                    const std::map<std::string, int>& counts,
                     Serialization::GroupKnobSerialization* group)
 {
     for (std::list<Serialization::GroupKnobChildSerialization>::iterator it = group->children.begin(); it != group->children.end(); ++it) {
         if (it->isGroup) {
-            linkGroupsToMasters(holder, &it->group);
+            linkGroupsToMasters(holder, counts, &it->group);
             continue;
         }
         KnobIPtr knob = holder->getKnobByName(it->knob.name);
@@ -600,6 +672,10 @@ linkGroupsToMasters(KnobHolder* holder,
         for (std::size_t d = 0; d < it->knob.dimensions.size(); ++d) {
             Serialization::KnobDimensionSerialization& dimension = it->knob.dimensions[d];
             if (!dimension.linkGroup) {
+                continue;
+            }
+            std::map<std::string, int>::const_iterator count = counts.find(dimension.linkGroup->id);
+            if ((count != counts.end()) && (count->second > 1)) {
                 continue;
             }
             dimension.linkGroup.reset();
@@ -634,7 +710,8 @@ pasteChild(KnobHolder* holder,
            const Serialization::GroupKnobChildSerialization& child,
            const KnobIPtr& parent,
            int index,
-           std::list<PastedKnob>* pasted)
+           std::list<PastedKnob>* pasted,
+           std::map<std::string, std::string>* renamed)
 {
     if (child.isGroup) {
         const Serialization::GroupKnobSerialization& groupSerialization = child.group;
@@ -644,6 +721,7 @@ pasteChild(KnobHolder* holder,
         group->setName(groupName);
         group->setAsTab(groupSerialization.isSetAsTab);
         group->setSecret(groupSerialization.secret);
+        group->setHintToolTip(groupSerialization.tooltip);
         if (groupSerialization.isRFVGroup) {
             group->setAsRFVGroup(true);
         }
@@ -654,8 +732,9 @@ pasteChild(KnobHolder* holder,
         }
         group->setValue(groupSerialization.isOpened);
         for (std::list<Serialization::GroupKnobChildSerialization>::const_iterator it = groupSerialization.children.begin(); it != groupSerialization.children.end(); ++it) {
-            pasteChild(holder, *it, group, -1, pasted);
+            pasteChild(holder, *it, group, -1, pasted, renamed);
         }
+        (*renamed)[groupSerialization.name] = groupName;
 
         return group;
     }
@@ -673,17 +752,47 @@ pasteChild(KnobHolder* holder,
     }
     PastedKnob entry = { knob, serialization };
     pasted->push_back(entry);
+    (*renamed)[child.knob.name] = serialization.name;
 
     return knob;
 }
 
 void
 restorePastedExpressionsAndLinks(KnobHolder* holder,
-                                 const std::list<PastedKnob>& pasted)
+                                 const std::list<PastedKnob>& pasted,
+                                 const std::map<std::string, std::string>& renamed)
 {
+    // Through placeholders: with a renamed to a2 and a2 to a3, renaming in place would turn a
+    // into a3.
+    std::vector<std::pair<std::string, std::string>> toPlaceholder;
+    std::vector<std::pair<std::string, std::string>> fromPlaceholder;
+    for (std::map<std::string, std::string>::const_iterator it = renamed.begin(); it != renamed.end(); ++it) {
+        if (it->first == it->second) {
+            continue;
+        }
+        const std::string placeholder = "natronPastedKnob" + std::to_string(toPlaceholder.size()) + "_";
+        toPlaceholder.push_back(std::make_pair(it->first, placeholder));
+        fromPlaceholder.push_back(std::make_pair(placeholder, it->second));
+    }
+    const auto rewrite = [&](const KnobIPtr& listener, std::string expression) {
+        for (std::size_t i = 0; i < toPlaceholder.size(); ++i) {
+            expression = renameUserKnobInExpression(holder, listener, expression, toPlaceholder[i].first, toPlaceholder[i].second);
+        }
+        for (std::size_t i = 0; i < fromPlaceholder.size(); ++i) {
+            expression = renameUserKnobInExpression(holder, listener, expression, fromPlaceholder[i].first, fromPlaceholder[i].second);
+        }
+
+        return expression;
+    };
+
     AppInstancePtr app = holder->getApp();
+    bool hasLinkGroups = false;
     for (std::list<PastedKnob>::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
         const KnobIPtr& knob = it->knob;
+        it->knob->storeLinkGroupsFromSerialization(it->serialization);
+        for (std::size_t d = 0; d < it->serialization.dimensions.size(); ++d) {
+            hasLinkGroups = hasLinkGroups || it->serialization.dimensions[d].linkGroup;
+        }
         const std::vector<Serialization::KnobDimensionSerialization>& dimensions = it->serialization.dimensions;
         if (dimensions.empty()) {
             continue;
@@ -710,11 +819,233 @@ restorePastedExpressionsAndLinks(KnobHolder* holder,
                 }
             }
             if (!dimension.expression.empty()) {
-                setExpressionNoThrow(knob, d, dimension.expression, dimension.expressionHasReturnVariable);
+                setExpressionNoThrow(knob, d, rewrite(knob, dimension.expression), dimension.expressionHasReturnVariable);
             }
         }
     }
+    NodePtr node = nodeOfHolder(holder);
+    if (hasLinkGroups && node) {
+        KnobHelper::restoreLinkGroups(NodesList(1, node));
+    }
 }
+
+// The fields applySpecInPlace() ignores (a placement the knob already has, empty defaults, an
+// empty extra) take current's values, so that a spec changing nothing compares equal to current.
+UserKnobSpec
+effectiveSpec(KnobHolder* holder,
+              const KnobIPtr& knob,
+              const UserKnobSpec& spec,
+              const UserKnobSpec& current)
+{
+    UserKnobSpec ret = spec;
+    if ((spec.typeName == KnobPage::typeNameStatic()) || isPlacedAt(holder, knob, spec.parentName, spec.index)) {
+        ret.parentName = current.parentName;
+        ret.index = current.index;
+    }
+    if (isPageOrGroupType(spec.typeName) || spec.defaults.empty()) {
+        ret.defaults = current.defaults;
+    }
+    if (isPageOrGroupType(spec.typeName) || std::holds_alternative<std::monostate>(spec.extra)) {
+        ret.extra = current.extra;
+    }
+    if (!dynamic_cast<KnobDouble*>(knob.get())) {
+        ret.useHostOverlayHandle = current.useHostOverlayHandle;
+    }
+    if (!dynamic_cast<KnobGroup*>(knob.get())) {
+        ret.groupAsTab = current.groupAsTab;
+    }
+    if (!knob->canAnimate()) {
+        ret.animates = current.animates;
+    }
+
+    return ret;
+}
+
+bool
+applySpecInPlace(KnobHolder* holder,
+                 const KnobIPtr& knob,
+                 const UserKnobSpec& spec,
+                 std::string* error)
+{
+    const std::string oldName = knob->getName();
+    if (spec.name != oldName) {
+        const std::map<KnobIPtr, std::vector<DimensionExpression>> listeners = listenerExpressions(knob);
+        try {
+            knob->setName(spec.name, true);
+        } catch (const std::exception& e) {
+            if (error) {
+                *error = e.what();
+            }
+
+            return false;
+        }
+        NodePtr node = nodeOfHolder(holder);
+        if (node) {
+            node->removeParameterFromPython(oldName);
+        }
+        declareToPython(holder);
+        renameInListeners(holder, listeners, oldName, spec.name);
+    }
+
+    knob->setLabel(spec.label);
+    knob->setHintToolTip(spec.tooltip);
+    knob->setSecret(spec.secret);
+    knob->setAddNewLine(spec.newLine);
+    if (knob->canAnimate()) {
+        knob->setAnimationEnabled(spec.animates);
+    }
+    knob->setEvaluateOnChange(spec.evaluatesOnChange);
+    if (KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knob.get())) {
+        isGroup->setAsTab(spec.groupAsTab);
+    }
+    if (!isPageOrGroupType(spec.typeName)) {
+        // The entries before the defaults: a choice's default is one of them.
+        applyExtra(knob, spec.extra);
+        applyDefaults(knob, spec);
+        KnobDouble* isDouble = dynamic_cast<KnobDouble*>(knob.get());
+        if (isDouble && (isDouble->getHasHostOverlayHandle() != spec.useHostOverlayHandle)) {
+            isDouble->setHasHostOverlayHandle(spec.useHostOverlayHandle);
+        }
+    }
+    bool placed = true;
+    if (spec.typeName != KnobPage::typeNameStatic()) {
+        placed = placeKnob(holder, knob, spec.parentName, spec.index);
+        if (!placed && error) {
+            *error = "The parameter " + knob->getName() + " could not be moved to " + (spec.parentName.empty() ? std::string("the User page") : spec.parentName) + ".";
+        }
+    }
+    refreshHolder(holder);
+
+    return placed;
+} // applySpecInPlace
+
+void
+reportUserKnobsChanged(KnobHolder* holder)
+{
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(holder);
+    }
+}
+
+// The knob is found by the name it has in the state undo or redo starts from when a snapshot
+// undo has replaced the object since.
+class UserKnobCommandBase
+    : public UndoCommand {
+public:
+    UserKnobCommandBase(KnobHolder* holder,
+                        const KnobIPtr& knob)
+        : UndoCommand("Edit parameters of " + (nodeOfHolder(holder) ? nodeOfHolder(holder)->getLabel_mt_safe() : std::string()))
+        , _node(nodeOfHolder(holder))
+        , _knob(knob)
+    {
+    }
+
+protected:
+    KnobHolder* holder() const
+    {
+        NodePtr node = _node.lock();
+
+        return node ? node->getEffectInstance().get() : nullptr;
+    }
+
+    KnobIPtr knobNamed(const std::string& name)
+    {
+        KnobHolder* h = holder();
+        if (!h) {
+            return KnobIPtr();
+        }
+        KnobIPtr knob = _knob.lock();
+        if (!knob || (h->getKnobByName(knob->getName()) != knob)) {
+            knob = h->getKnobByName(name);
+            _knob = knob;
+        }
+
+        return knob;
+    }
+
+private:
+    NodeWPtr _node;
+    KnobIWPtr _knob;
+};
+
+class UserKnobSpecCommand
+    : public UserKnobCommandBase {
+public:
+    UserKnobSpecCommand(KnobHolder* holder,
+                        const KnobIPtr& knob,
+                        const UserKnobSpec& before,
+                        const UserKnobSpec& after)
+        : UserKnobCommandBase(holder, knob)
+        , _before(before)
+        , _after(after)
+    {
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        apply(_after, _before);
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        apply(_before, _after);
+    }
+
+private:
+    void apply(const UserKnobSpec& from,
+               const UserKnobSpec& to)
+    {
+        KnobHolder* h = holder();
+        KnobIPtr knob = knobNamed(from.name);
+        if (!h || !knob || (knob->typeName() != to.typeName) || (knob->getDimension() != to.dimension)) {
+            return;
+        }
+        applySpecInPlace(h, knob, to, nullptr);
+        reportUserKnobsChanged(h);
+    }
+
+    UserKnobSpec _before;
+    UserKnobSpec _after;
+};
+
+class UserKnobMoveCommand
+    : public UserKnobCommandBase {
+public:
+    UserKnobMoveCommand(KnobHolder* holder,
+                        const KnobIPtr& knob,
+                        bool up)
+        : UserKnobCommandBase(holder, knob)
+        , _name(knob->getName())
+        , _up(up)
+    {
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        move(!_up);
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        move(_up);
+    }
+
+private:
+    void move(bool up)
+    {
+        KnobHolder* h = holder();
+        KnobIPtr knob = knobNamed(_name);
+        if (!h || !knob) {
+            return;
+        }
+        if (up ? h->moveKnobOneStepUp(knob.get()) : h->moveKnobOneStepDown(knob.get())) {
+            refreshHolder(h);
+        }
+    }
+
+    std::string _name;
+    bool _up;
+};
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
@@ -827,6 +1158,9 @@ validateSpec(KnobHolder* holder,
         if (knob && isAncestorOrSelf(knob, parent)) {
             return "A group cannot be moved into itself.";
         }
+        if (knob && !isPlacedAt(holder, knob, spec.parentName, spec.index) && !acceptsChild(parent, knob)) {
+            return "The parameter " + knob->getName() + " cannot be a child of " + spec.parentName + ".";
+        }
     }
 
     const Serialization::KnobTypeTraits traits = Serialization::getKnobTypeTraits(spec.typeName);
@@ -895,6 +1229,7 @@ createUserKnob(KnobHolder* holder,
         return KnobIPtr();
     }
     refreshHolder(holder);
+    undo.markChanged();
 
     return knob;
 } // createUserKnob
@@ -914,55 +1249,25 @@ applySpec(KnobHolder* holder,
         return false;
     }
 
-    UserKnobsUndoScope undo(holder, "Edit parameter " + spec.name);
-    const std::string oldName = knob->getName();
-    if (spec.name != oldName) {
-        const std::map<KnobIPtr, std::vector<DimensionExpression>> listeners = listenerExpressions(knob);
-        try {
-            knob->setName(spec.name, true);
-        } catch (const std::exception& e) {
-            if (error) {
-                *error = e.what();
-            }
-
-            return false;
-        }
-        NodePtr node = nodeOfHolder(holder);
-        if (node) {
-            node->removeParameterFromPython(oldName);
-        }
-        declareToPython(holder);
-        renameInListeners(holder, listeners, oldName, spec.name);
+    const UserKnobSpec before = specFromKnob(knob);
+    if (effectiveSpec(holder, knob, spec, before) == before) {
+        return true;
+    }
+    // Creating the missing User page adds a knob, which only a snapshot undoes.
+    const bool createsUserPage = (spec.typeName != KnobPage::typeNameStatic()) && spec.parentName.empty() && !holder->getUserPageKnob();
+    UserKnobsUndoScope undo(holder, "Edit parameter " + spec.name, createsUserPage);
+    const bool ok = applySpecInPlace(holder, knob, spec, error);
+    const UserKnobSpec after = specFromKnob(knob);
+    if (after == before) {
+        return ok;
+    }
+    if (createsUserPage) {
+        undo.markChanged();
+    } else {
+        undo.record(std::make_shared<UserKnobSpecCommand>(holder, knob, before, after));
     }
 
-    knob->setLabel(spec.label);
-    knob->setHintToolTip(spec.tooltip);
-    knob->setSecret(spec.secret);
-    knob->setAddNewLine(spec.newLine);
-    if (knob->canAnimate()) {
-        knob->setAnimationEnabled(spec.animates);
-    }
-    knob->setEvaluateOnChange(spec.evaluatesOnChange);
-    if (KnobGroup* isGroup = dynamic_cast<KnobGroup*>(knob.get())) {
-        isGroup->setAsTab(spec.groupAsTab);
-    }
-    if (!isPageOrGroupType(spec.typeName)) {
-        // The entries before the defaults: a choice's default is one of them.
-        applyExtra(knob, spec.extra);
-        applyDefaults(knob, spec);
-        KnobDouble* isDouble = dynamic_cast<KnobDouble*>(knob.get());
-        if (isDouble && (isDouble->getHasHostOverlayHandle() != spec.useHostOverlayHandle)) {
-            isDouble->setHasHostOverlayHandle(spec.useHostOverlayHandle);
-        }
-    }
-    if ((spec.typeName != KnobPage::typeNameStatic()) && (!spec.parentName.empty() || (spec.index >= 0))) {
-        KnobIPtr currentParent = knob->getParentKnob();
-        const std::string parentName = spec.parentName.empty() && currentParent ? currentParent->getName() : spec.parentName;
-        placeKnob(holder, knob, parentName, spec.index);
-    }
-    refreshHolder(holder);
-
-    return true;
+    return ok;
 } // applySpec
 
 std::list<KnobIPtr>
@@ -1000,6 +1305,7 @@ deleteUserKnob(KnobHolder* holder,
     UserKnobsUndoScope undo(holder, "Remove parameter " + knob->getName());
     holder->deleteKnob(knob.get(), true);
     refreshHolder(holder);
+    undo.markChanged();
 
     return true;
 }
@@ -1012,10 +1318,11 @@ moveUserKnob(KnobHolder* holder,
     if (!holder || !knob || !knob->isUserKnob() || (knob->getHolder() != holder)) {
         return false;
     }
-    UserKnobsUndoScope undo(holder, "Move parameter " + knob->getName());
+    UserKnobsUndoScope undo(holder, "Move parameter " + knob->getName(), false);
     const bool moved = up ? holder->moveKnobOneStepUp(knob.get()) : holder->moveKnobOneStepDown(knob.get());
     if (moved) {
         refreshHolder(holder);
+        undo.record(std::make_shared<UserKnobMoveCommand>(holder, knob, up));
     }
 
     return moved;
@@ -1059,6 +1366,10 @@ changeUserKnobType(KnobHolder* holder,
     const int oldDimension = knob->getDimension();
     if ((oldType == typeName) && (oldDimension == dimension)) {
         return eUserKnobTypeChangeConverted;
+    }
+    // An alias and its master share one type: no replacement of another type can stay either.
+    if (knob->getAliasMaster() || !knob->getAliasesOfThis().empty()) {
+        return fail("The parameter " + knob->getName() + " is an alias or has aliases, which keep its type.");
     }
     const bool convertible = isUserKnobTypeChangeConvertible(oldType, oldDimension, typeName, dimension);
     if (!convertible && !allowReset) {
@@ -1124,6 +1435,11 @@ changeUserKnobType(KnobHolder* holder,
         ownExpressions.push_back(expression);
     }
     const std::vector<KnobLinkedDimension> links = knob->getLinkedKnobs();
+    std::vector<bool> nodeLinks(oldDimension, false);
+    for (int i = 0; i < oldDimension; ++i) {
+        KnobLinkGroupPtr group = knob->getLinkGroup(i);
+        nodeLinks[i] = group && group->isMemberNodeLink(knob.get(), i);
+    }
     const std::map<KnobIPtr, std::vector<DimensionExpression>> listeners = listenerExpressions(knob);
 
     KnobIPtr replacement = createUserKnobFromSerialization(holder, serialization);
@@ -1148,11 +1464,24 @@ changeUserKnobType(KnobHolder* holder,
                 setExpressionNoThrow(replacement, i, ownExpressions[i].expression, ownExpressions[i].hasRet);
             }
         }
+        bool restoredNodeLink = false;
         for (std::size_t i = 0; i < links.size(); ++i) {
             const KnobLinkedDimension& link = links[i];
-            if (link.knob && (link.knob != knob) && (link.dimension < dimension) && (link.otherDimension < link.knob->getDimension())) {
-                replacement->linkTo(link.dimension, link.knob, link.otherDimension);
+            if (!link.knob || (link.knob == knob) || (link.dimension >= dimension) || (link.otherDimension >= link.knob->getDimension())) {
+                continue;
             }
+            if (!replacement->linkTo(link.dimension, link.knob, link.otherDimension) || !nodeLinks[link.dimension]) {
+                continue;
+            }
+            KnobLinkGroupPtr group = replacement->getLinkGroup(link.dimension);
+            if (group) {
+                group->setMemberNodeLink(replacement.get(), link.dimension, true);
+                restoredNodeLink = true;
+            }
+        }
+        NodePtr node = nodeOfHolder(holder);
+        if (restoredNodeLink && node) {
+            node->emitLinksChanged(NodesList());
         }
     }
     for (std::map<KnobIPtr, std::vector<DimensionExpression>>::const_iterator it = listeners.begin(); it != listeners.end(); ++it) {
@@ -1163,6 +1492,7 @@ changeUserKnobType(KnobHolder* holder,
         }
     }
     refreshHolder(holder);
+    undo.markChanged();
     if (newKnob) {
         *newKnob = replacement;
     }
@@ -1197,6 +1527,7 @@ copyUserKnobs(KnobHolder* holder,
         pages.back().name = page->getName();
         pages.back().label = page->getLabel();
         pages.back().secret = page->getIsSecret();
+        pages.back().tooltip = page->getHintToolTip();
 
         return pages.back();
     };
@@ -1227,8 +1558,12 @@ copyUserKnobs(KnobHolder* holder,
         }
         pageEntry(page).children.push_back(child);
     }
+    std::map<std::string, int> linkGroupCounts;
+    for (std::list<Serialization::GroupKnobSerialization>::const_iterator it = pages.begin(); it != pages.end(); ++it) {
+        countLinkGroupIds(*it, &linkGroupCounts);
+    }
     for (std::list<Serialization::GroupKnobSerialization>::iterator it = pages.begin(); it != pages.end(); ++it) {
-        linkGroupsToMasters(holder, &*it);
+        linkGroupsToMasters(holder, linkGroupCounts, &*it);
     }
 
     return Serialization::encodeUserPagesYaml(pages);
@@ -1265,6 +1600,7 @@ pasteUserKnobs(KnobHolder* holder,
 
     UserKnobsUndoScope undo(holder, "Paste parameters");
     std::list<PastedKnob> pasted;
+    std::map<std::string, std::string> renamed;
     for (std::list<Serialization::GroupKnobSerialization>::const_iterator page = pages.begin(); page != pages.end(); ++page) {
         KnobIPtr container = parent;
         int insertIndex = index;
@@ -1274,12 +1610,14 @@ pasteUserKnobs(KnobHolder* holder,
             newPage->setAsUserKnob(true);
             newPage->setName(pageName);
             newPage->setSecret(page->secret);
+            newPage->setHintToolTip(page->tooltip);
+            renamed[page->name] = pageName;
             container = newPage;
             insertIndex = -1;
             created.push_back(newPage);
         }
         for (std::list<Serialization::GroupKnobChildSerialization>::const_iterator child = page->children.begin(); child != page->children.end(); ++child) {
-            KnobIPtr knob = pasteChild(holder, *child, container, insertIndex, &pasted);
+            KnobIPtr knob = pasteChild(holder, *child, container, insertIndex, &pasted, &renamed);
             if (!knob) {
                 continue;
             }
@@ -1295,8 +1633,11 @@ pasteUserKnobs(KnobHolder* holder,
         }
     }
     declareToPython(holder);
-    restorePastedExpressionsAndLinks(holder, pasted);
+    restorePastedExpressionsAndLinks(holder, pasted, renamed);
     refreshHolder(holder);
+    if (!created.empty() || !pasted.empty()) {
+        undo.markChanged();
+    }
 
     return created;
 } // pasteUserKnobs

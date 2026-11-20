@@ -72,6 +72,7 @@ userKnobLayoutToSerialization(const KnobIPtr& knob,
 
     layout->name = knob->getName();
     layout->label = knob->getLabel();
+    layout->tooltip = knob->getHintToolTip();
     layout->secret = knob->getIsSecret();
 
     KnobsVec children;

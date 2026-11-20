@@ -1003,6 +1003,11 @@ namespace YamlDetail {
             emitKey(em, "label");
             em << YAML::Value;
             emitString(em, group.label);
+            if (!group.tooltip.empty()) {
+                emitKey(em, "tooltip");
+                em << YAML::Value;
+                emitString(em, group.tooltip);
+            }
             if (group.secret) {
                 emitKey(em, "secret");
                 em << YAML::Value;
@@ -1071,6 +1076,9 @@ namespace YamlDetail {
             MapReader reader(node, context, warnings);
             MapReader definition(reader.get("group"), context + ".group", warnings);
             group.label = readString(definition.get("label"), context + ".group.label");
+            if (YAML::Node tooltip = definition.get("tooltip")) {
+                group.tooltip = readString(tooltip, context + ".group.tooltip");
+            }
             if (YAML::Node secret = definition.get("secret")) {
                 group.secret = readBool(secret, context + ".group.secret");
             }

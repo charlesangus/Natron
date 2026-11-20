@@ -53,6 +53,7 @@
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UserKnobEdit.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -4245,8 +4246,20 @@ ButtonParam::setScript(const QString& script)
 
         return;
     }
-    PythonUserKnobsUndoGuard undo(knob->getHolder());
-    knob->setScript(script.toStdString());
+    KnobHolder* holder = knob->getHolder();
+    if (!holder) {
+        knob->setScript(script.toStdString());
+
+        return;
+    }
+    UserKnobSpec spec = specFromKnob(knob);
+    Serialization::KnobButtonExtraSerialization extra;
+    extra.script = script.toStdString();
+    spec.extra = extra;
+    std::string error;
+    if (!applySpec(holder, knob, spec, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+    }
 }
 
 QString

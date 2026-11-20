@@ -150,7 +150,10 @@ struct UserKnobDependentStates;
  * @brief Records what a Python call changes on a node's user knobs and page order, and on the
  * expressions and links of the knobs that depend on them. Holders that are not nodes are not
  * recorded. A guard opened while another one is open on the same node records nothing: the outer
- * one records it all.
+ * one records it all. A call that leaves all of them as they were records nothing either.
+ *
+ * Undoing the record rebuilds every user knob of the node, so the knob objects change: it suits
+ * edits that create or remove knobs, not edits of a knob that stays.
  **/
 class PythonUserKnobsUndoGuard {
 public:
@@ -172,19 +175,35 @@ private:
  * @brief Makes what is done to a node holder's user knobs during its lifetime one undo entry
  * labelled label, on the application's recorder. Within another scope or guard on the same node
  * it adds to that one's entry. Holders that are not nodes are not recorded.
+ *
+ * With snapshot set the entry is a PythonUserKnobsUndoGuard's. Without it the operation records
+ * its own command through record(), one that undoes it on the knobs it changed.
+ *
+ * The holder's user knobs are reported changed to the GraphEditRecorder at the end only when
+ * markChanged() or record() was called.
  **/
 class UserKnobsUndoScope {
 public:
     UserKnobsUndoScope(KnobHolder* holder,
-                       const std::string& label);
+                       const std::string& label,
+                       bool snapshot = true);
 
     ~UserKnobsUndoScope();
+
+    /**
+     * @brief Adds command, whose edit is already made, to the entry. Inside a guard on the same
+     * node the guard's snapshot covers the edit and command is dropped.
+     **/
+    void record(const UndoCommandPtr& command);
+
+    void markChanged();
 
 private:
     UserKnobsUndoScope(const UserKnobsUndoScope&) = delete;
     UserKnobsUndoScope& operator=(const UserKnobsUndoScope&) = delete;
 
     KnobHolder* _holder;
+    bool _changed;
     std::unique_ptr<UndoStepGuard> _step;
     std::unique_ptr<PythonUserKnobsUndoGuard> _guard;
 };

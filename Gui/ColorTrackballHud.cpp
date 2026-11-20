@@ -179,6 +179,31 @@ followAxis(int cursor,
     return p;
 }
 
+bool
+sameLayout(const ColorTrackballPointerBadgeRects& a,
+           const ColorTrackballPointerBadgeRects& b)
+{
+    for (int i = 0; i < 4; ++i) {
+        if (a.pills[i] != b.pills[i]) {
+            return false;
+        }
+    }
+
+    return (a.block == b.block) && (a.bounds == b.bounds);
+}
+
+QRect
+screenRectAt(const QPoint& globalPos)
+{
+    QScreen* screen = QGuiApplication::screenAt(globalPos);
+
+    if (!screen) {
+        screen = QGuiApplication::primaryScreen();
+    }
+
+    return screen ? screen->geometry() : QRect();
+}
+
 void
 paintPanel(QPainter& painter,
            const QRectF& rect,
@@ -328,6 +353,35 @@ colorTrackballPointerBadgeLayout(int reach,
     r.bounds = r.bounds.united(r.block);
 
     return r;
+}
+
+QPoint
+colorTrackballPointerHudPosition(const QPoint& cursor,
+                                 const ColorTrackballPointerBadgeRects& rects,
+                                 const QRect& screen)
+{
+    bool anyPill = false;
+
+    for (int i = 0; i < 4; ++i) {
+        anyPill = anyPill || !rects.pills[i].isNull();
+    }
+    if (!anyPill) {
+        return colorTrackballHudFollowPosition(cursor, rects.bounds.size(), screen, rects.bounds.topLeft());
+    }
+
+    QPoint p = cursor + rects.bounds.topLeft();
+
+    if (screen.isEmpty()) {
+        return p;
+    }
+
+    const int right = screen.left() + screen.width() - rects.bounds.width();
+    const int bottom = screen.top() + screen.height() - rects.bounds.height();
+
+    p.setX(std::max(screen.left(), std::min(p.x(), right)));
+    p.setY(std::max(screen.top(), std::min(p.y(), bottom)));
+
+    return p;
 }
 
 QRegion
@@ -691,15 +745,125 @@ ColorTrackballHudBlock::followCursorTo(const QPoint& globalCursor)
 {
     _cursor = globalCursor;
     _followsCursor = true;
+    move(colorTrackballHudFollowPosition(globalCursor, size(), screenRectAt(globalCursor), colorTrackballHudFollowOffset()));
+}
 
-    QScreen* screen = QGuiApplication::screenAt(globalCursor);
+ColorTrackballPointerHud::ColorTrackballPointerHud()
+    : QWidget(nullptr, colorTrackballFollowCursorWindowFlags())
+    , _pills()
+    , _block(nullptr)
+    , _layout()
+    , _laidOut(false)
+    , _cursor()
+    , _followsCursor(false)
+{
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    setAttribute(Qt::WA_ShowWithoutActivating, true);
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    setFocusPolicy(Qt::NoFocus);
+    setObjectName(QString::fromUtf8("ColorTrackballHudWindow"));
 
-    if (!screen) {
-        screen = QGuiApplication::primaryScreen();
+    const char* pillNames[4] = { "ColorTrackballPointerPillRight", "ColorTrackballPointerPillLeft", "ColorTrackballPointerPillTop", "ColorTrackballPointerPillBottom" };
+
+    for (int i = 0; i < 4; ++i) {
+        _pills[i] = new ColorTrackballPill(this);
+        _pills[i]->setObjectName(QString::fromUtf8(pillNames[i]));
+        _pills[i]->hide();
+    }
+    _block = new ColorTrackballHudBlock(this);
+    setState(_block->getState());
+}
+
+ColorTrackballPointerHud::~ColorTrackballPointerHud()
+{
+}
+
+ColorTrackballPill*
+ColorTrackballPointerHud::getPill(int index) const
+{
+    return ((index >= 0) && (index < 4)) ? _pills[index] : nullptr;
+}
+
+void
+ColorTrackballPointerHud::setPillTexts(const QString& right,
+                                       const QString& left,
+                                       const QString& top,
+                                       const QString& bottom)
+{
+    const QString* texts[4] = { &right, &left, &top, &bottom };
+    bool changed = false;
+
+    for (int i = 0; i < 4; ++i) {
+        if (_pills[i]->text() != *texts[i]) {
+            _pills[i]->setText(*texts[i]);
+            changed = true;
+        }
+    }
+    if (changed) {
+        relayout();
+    }
+}
+
+void
+ColorTrackballPointerHud::setState(const ColorTrackballHudState& state)
+{
+    _block->setState(state);
+    setProperty("trackballHudKnob", state.knobLabel);
+    setProperty("trackballHudMode", colorGlobalModeKeyName(state.mode));
+    relayout();
+}
+
+void
+ColorTrackballPointerHud::followCursorTo(const QPoint& globalCursor)
+{
+    _cursor = globalCursor;
+    _followsCursor = true;
+    move(colorTrackballPointerHudPosition(globalCursor, _layout, screenRectAt(globalCursor)));
+}
+
+void
+ColorTrackballPointerHud::relayout()
+{
+    QSize pillSizes[4];
+
+    for (int i = 0; i < 4; ++i) {
+        if (!_pills[i]->text().isEmpty()) {
+            pillSizes[i] = _pills[i]->sizeHint();
+        }
     }
 
-    const QRect screenRect = screen ? screen->geometry() : QRect();
-    move(colorTrackballHudFollowPosition(globalCursor, size(), screenRect, colorTrackballHudFollowOffset()));
+    const ColorTrackballPointerBadgeRects layout = colorTrackballPointerBadgeLayout(colorTrackballPointerBadgeReach(), pillSizes, _block->size(), colorTrackballPointerBadgeBlockGap(), colorTrackballHudFollowOffset());
+
+    // The controller re-sends the state on every stroke move, so the geometry and mask are
+    // rebuilt only when the shape changes.
+    if (_laidOut && sameLayout(layout, _layout)) {
+        return;
+    }
+    _laidOut = true;
+
+    const QPoint shift = -layout.bounds.topLeft();
+    // Without a compositor the translucent background paints black, so only the shapes are let
+    // through.
+    QRegion mask;
+
+    for (int i = 0; i < 4; ++i) {
+        if (layout.pills[i].isNull()) {
+            _pills[i]->hide();
+            continue;
+        }
+        _pills[i]->setGeometry(layout.pills[i].translated(shift));
+        _pills[i]->show();
+        mask = mask.united(colorTrackballRoundedRegion(_pills[i]->geometry(), 0.5 * _pills[i]->height()));
+    }
+    _block->setGeometry(layout.block.translated(shift));
+    mask = mask.united(colorTrackballRoundedRegion(_block->geometry(), colorTrackballHudBlockRadius()));
+    _layout = layout;
+    setFixedSize(layout.bounds.size());
+    setMask(mask);
+    if (_followsCursor) {
+        followCursorTo(_cursor);
+    }
+    update();
 }
 
 WindowHighlightFrame::WindowHighlightFrame(QWidget* window)

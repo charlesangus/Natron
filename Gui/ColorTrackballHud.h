@@ -134,6 +134,14 @@ struct ColorTrackballPointerBadgeRects {
 ColorTrackballPointerBadgeRects colorTrackballPointerBadgeLayout(int reach, const QSize pillSizes[4], const QSize& blockSize, int blockGap, const QPoint& followOffset);
 
 /**
+ * @brief Where the window holding rects, laid out round the pointer at cursor, goes. With no
+ * pill it is the block's own window, placed by colorTrackballHudFollowPosition() at the
+ * block's offset; otherwise the group sits on the pointer and is shifted as a whole to stay
+ * on screen. An empty screen leaves the group on the pointer.
+ **/
+QPoint colorTrackballPointerHudPosition(const QPoint& cursor, const ColorTrackballPointerBadgeRects& rects, const QRect& screen);
+
+/**
  * @brief Fill and edge of the trackball's pills and hint block. Opaque, since nothing paints
  * behind a frameless window without a compositor.
  **/
@@ -177,8 +185,8 @@ private:
  * @brief The global trackball mode's hint block: the knob's name, the C, S, T and V keys with
  * the active one filled in the selection colour, the gear hints with the held one lit, the
  * accept and knob-switch keys, a line on how C works in C, and the end-of-list message when
- * set. It sits under the reveal's disc, or, in a window of its own made with
- * colorTrackballFollowCursorWindowFlags(), by the pointer while no disc is shown.
+ * set. It sits under the reveal's disc, or in ColorTrackballPointerHud by the pointer while no
+ * disc is shown.
  *
  * setState() is the only way data reaches it, which is what lets it be exercised in isolation.
  **/
@@ -222,6 +230,62 @@ private:
     double chipRowWidth(const std::vector<ColorTrackballHudChip>& row) const;
 
     ColorTrackballHudState _state;
+    QPoint _cursor;
+    bool _followsCursor;
+};
+
+/**
+ * @brief The window that follows the pointer while global mode shows no mode graphic: the
+ * target's direction pills round the pointer, laid out by colorTrackballPointerBadgeLayout(),
+ * with the hint block under the bottom one, or the block alone where no pill has text. Made
+ * with colorTrackballFollowCursorWindowFlags(), so it never takes input or focus, and masked
+ * to its pills and block. Its object name is "ColorTrackballHudWindow", and it carries the
+ * block's "trackballHudKnob" and "trackballHudMode" properties for scripts.
+ **/
+class ColorTrackballPointerHud
+    : public QWidget {
+public:
+    ColorTrackballPointerHud();
+    virtual ~ColorTrackballPointerHud() OVERRIDE;
+
+    /**
+     * @brief The pill texts right, left, top and bottom; an empty text hides its pill.
+     **/
+    void setPillTexts(const QString& right, const QString& left, const QString& top, const QString& bottom);
+    void setState(const ColorTrackballHudState& state);
+
+    /**
+     * @brief Places the group by the pointer at globalCursor, by
+     * colorTrackballPointerHudPosition() on the screen holding it, and again by the same
+     * pointer whenever new texts or a new state change the layout.
+     **/
+    void followCursorTo(const QPoint& globalCursor);
+
+    ColorTrackballHudBlock* getHudBlock() const
+    {
+        return _block;
+    }
+
+    /**
+     * @brief Pills indexed right, left, top, bottom, as in ColorTrackballPointerBadgeRects.
+     **/
+    ColorTrackballPill* getPill(int index) const;
+
+    /**
+     * @brief The latest layout, relative to the pointer at the origin.
+     **/
+    const ColorTrackballPointerBadgeRects& getLayout() const
+    {
+        return _layout;
+    }
+
+private:
+    void relayout();
+
+    ColorTrackballPill* _pills[4];
+    ColorTrackballHudBlock* _block;
+    ColorTrackballPointerBadgeRects _layout;
+    bool _laidOut;
     QPoint _cursor;
     bool _followsCursor;
 };

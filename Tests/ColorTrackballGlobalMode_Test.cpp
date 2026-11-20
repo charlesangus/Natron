@@ -31,16 +31,24 @@
 #include <string>
 #include <vector>
 
+#include <QCoreApplication>
 #include <QCursor>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QGuiApplication>
+#include <QRect>
+#include <QScreen>
 #include <QWidget>
 
 #include <gtest/gtest.h>
 
 #include "Engine/ColorWheelMath.h"
+#include "Engine/GlobalModeKind.h"
 
 #include "Gui/ColorTrackballGlobalMode.h"
 #include "Gui/ColorTrackballHud.h"
+#include "Gui/ColorTrackballReveal.h"
+#include "Gui/ValueModeDiscWidget.h"
 
 NATRON_NAMESPACE_USING
 
@@ -617,4 +625,227 @@ TEST(ColorTrackballGlobalModeRightClick, AnUnrelatedPressOrKeyEndsTheWait)
     tail.arm();
     EXPECT_FALSE(tail.consume(QEvent::KeyPress, Qt::NoButton));
     EXPECT_FALSE(tail.isArmed());
+}
+
+namespace {
+ColorTrackballHudState
+pointerHudState(ColorGlobalModeEnum mode)
+{
+    ColorTrackballHudState state;
+
+    state.knobLabel = QString::fromUtf8("Gain");
+    state.mode = mode;
+
+    return state;
+}
+
+void
+waitVisible(const QWidget& w)
+{
+    QElapsedTimer timer;
+
+    timer.start();
+    while (!w.isVisible() && (timer.elapsed() < 2000)) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
+}
+
+QRect
+primaryScreenRect()
+{
+    QScreen* screen = QGuiApplication::primaryScreen();
+
+    return screen ? screen->geometry() : QRect();
+}
+
+// The pointer as the window's layout puts it, in global coordinates.
+QPoint
+layoutPointer(const ColorTrackballPointerHud& hud)
+{
+    return hud.pos() - hud.getLayout().bounds.topLeft();
+}
+
+void
+syncPointerHud(ColorTrackballPointerHud& hud,
+               Settings::ColorTrackballFeedbackEnum feedback,
+               bool engaged,
+               bool strokeActive,
+               ColorGlobalModeEnum mode,
+               const QPoint& pointer)
+{
+    colorGlobalModeSyncPointerHud(hud, colorGlobalModeFeedbackState(feedback, engaged, strokeActive), colorTrackballRevealDirectionLabels(mode), pointerHudState(mode), pointer);
+}
+} // namespace
+
+TEST(ColorTrackballGlobalModePointerHud, IsAClickThroughToolWindowNamedForScripts)
+{
+    ColorTrackballPointerHud hud;
+    const Qt::WindowFlags flags = hud.windowFlags();
+
+    EXPECT_TRUE(hud.isWindow());
+    EXPECT_TRUE(hud.isHidden());
+    EXPECT_EQ(QString::fromUtf8("ColorTrackballHudWindow"), hud.objectName());
+    EXPECT_EQ((int)Qt::Tool, (int)(flags & Qt::WindowType_Mask));
+    EXPECT_TRUE(flags.testFlag(Qt::FramelessWindowHint));
+    EXPECT_TRUE(flags.testFlag(Qt::WindowTransparentForInput));
+    EXPECT_TRUE(flags.testFlag(Qt::WindowDoesNotAcceptFocus));
+    EXPECT_TRUE(hud.testAttribute(Qt::WA_ShowWithoutActivating));
+    EXPECT_TRUE(hud.testAttribute(Qt::WA_TransparentForMouseEvents));
+    ASSERT_TRUE(hud.getHudBlock() != nullptr);
+
+    hud.setState(pointerHudState(eColorGlobalModeT));
+    EXPECT_EQ(QString::fromUtf8("Gain"), hud.property("trackballHudKnob").toString());
+    EXPECT_EQ(QString::fromUtf8("T"), hud.property("trackballHudMode").toString());
+    EXPECT_EQ(eColorGlobalModeT, hud.getHudBlock()->litKey());
+}
+
+TEST(ColorTrackballGlobalModePointerHud, CrosshairOnlyShowsFourPillsCentredOnThePointerEngagedAndMidStroke)
+{
+    const QRect screen = primaryScreenRect();
+
+    ASSERT_FALSE(screen.isEmpty());
+
+    const ColorTrackballRevealLabels labels = colorTrackballRevealDirectionLabels(eColorGlobalModeS);
+    const QString texts[4] = { labels.right, labels.left, labels.top, labels.bottom };
+
+    for (bool stroke : { false, true }) {
+        ColorTrackballPointerHud hud;
+        const QPoint mid = screen.center();
+
+        syncPointerHud(hud, kCrosshairOnly, true, stroke, eColorGlobalModeS, mid);
+        waitVisible(hud);
+        EXPECT_TRUE(hud.isVisible()) << "stroke " << stroke;
+        for (int i = 0; i < 4; ++i) {
+            EXPECT_TRUE(hud.getPill(i)->isVisible()) << "stroke " << stroke << " pill " << i;
+            EXPECT_EQ(texts[i], hud.getPill(i)->text()) << "pill " << i;
+            EXPECT_TRUE(hud.mask().contains(hud.getPill(i)->geometry().center())) << "pill " << i;
+        }
+        EXPECT_TRUE(hud.getHudBlock()->isVisible());
+        EXPECT_GT(hud.getHudBlock()->geometry().top(), hud.getPill(3)->geometry().bottom());
+        EXPECT_EQ(mid, layoutPointer(hud)) << "stroke " << stroke;
+
+        const QPoint moved = mid + QPoint(37, -23);
+
+        hud.followCursorTo(moved);
+        EXPECT_EQ(moved, layoutPointer(hud)) << "stroke " << stroke;
+        hud.hide();
+    }
+}
+
+TEST(ColorTrackballGlobalModePointerHud, CShowsTheBlockAloneWhereTheFollowingBlockWent)
+{
+    const QRect screen = primaryScreenRect();
+
+    ASSERT_FALSE(screen.isEmpty());
+
+    ColorTrackballPointerHud hud;
+    const QPoint near = screen.topLeft() + QPoint(100, 100);
+
+    syncPointerHud(hud, kCrosshairOnly, true, false, eColorGlobalModeS, near);
+    syncPointerHud(hud, kCrosshairOnly, true, false, eColorGlobalModeC, near);
+    waitVisible(hud);
+    EXPECT_TRUE(hud.isVisible());
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_FALSE(hud.getPill(i)->isVisible()) << "pill " << i;
+    }
+    EXPECT_EQ(QRect(QPoint(0, 0), hud.size()), hud.getHudBlock()->geometry());
+    EXPECT_EQ(colorTrackballHudFollowPosition(near, hud.size(), screen, colorTrackballHudFollowOffset()), hud.pos());
+    hud.hide();
+}
+
+TEST(ColorTrackballGlobalModePointerHud, AModeSwitchReplacesThePillTexts)
+{
+    ColorTrackballPointerHud hud;
+    const QPoint mid = primaryScreenRect().center();
+
+    syncPointerHud(hud, kCrosshairOnly, true, false, eColorGlobalModeS, mid);
+
+    for (ColorGlobalModeEnum mode : { eColorGlobalModeT, eColorGlobalModeV }) {
+        syncPointerHud(hud, kCrosshairOnly, true, false, mode, mid);
+
+        const ColorTrackballRevealLabels labels = colorTrackballRevealDirectionLabels(mode);
+
+        EXPECT_EQ(labels.right, hud.getPill(0)->text()) << (int)mode;
+        EXPECT_EQ(labels.left, hud.getPill(1)->text()) << (int)mode;
+        EXPECT_EQ(labels.top, hud.getPill(2)->text()) << (int)mode;
+        EXPECT_EQ(labels.bottom, hud.getPill(3)->text()) << (int)mode;
+        EXPECT_EQ(colorGlobalModeKeyName(mode), hud.property("trackballHudMode").toString());
+    }
+    hud.hide();
+}
+
+TEST(ColorTrackballGlobalModePointerHud, AValueKindShowsItsLabelsAndHidesEmptyOnes)
+{
+    for (GlobalModeKindEnum kind : { eGlobalModeKindTranslate, eGlobalModeKindRotate, eGlobalModeKindScale, eGlobalModeKindSize, eGlobalModeKindSkew, eGlobalModeKindGeneric }) {
+        ColorTrackballPointerHud hud;
+        const ColorTrackballRevealLabels labels = valueModeRevealDirectionLabels(kind);
+        const QString texts[4] = { labels.right, labels.left, labels.top, labels.bottom };
+
+        colorGlobalModeSyncPointerHud(hud, colorGlobalModeFeedbackState(kCrosshairOnly, true, false), labels, pointerHudState(eColorGlobalModeC), primaryScreenRect().center());
+        waitVisible(hud);
+        for (int i = 0; i < 4; ++i) {
+            EXPECT_EQ(texts[i], hud.getPill(i)->text()) << (int)kind << " pill " << i;
+            EXPECT_EQ(!texts[i].isEmpty(), hud.getPill(i)->isVisible()) << (int)kind << " pill " << i;
+        }
+        hud.hide();
+    }
+}
+
+TEST(ColorTrackballGlobalModePointerHud, NearACornerTheGroupShiftsOnScreen)
+{
+    const QRect screen = primaryScreenRect();
+
+    ASSERT_FALSE(screen.isEmpty());
+
+    ColorTrackballPointerHud hud;
+
+    for (const QPoint& corner : { screen.topLeft() + QPoint(3, 3), QPoint(screen.left() + screen.width() - 4, screen.top() + screen.height() - 4) }) {
+        syncPointerHud(hud, kCrosshairOnly, true, true, eColorGlobalModeS, corner);
+        EXPECT_GE(hud.geometry().left(), screen.left());
+        EXPECT_GE(hud.geometry().top(), screen.top());
+        EXPECT_LE(hud.geometry().left() + hud.width(), screen.left() + screen.width());
+        EXPECT_LE(hud.geometry().top() + hud.height(), screen.top() + screen.height());
+        EXPECT_NE(corner, layoutPointer(hud));
+    }
+    hud.hide();
+}
+
+TEST(ColorTrackballGlobalModePointerHud, CrosshairRevealShowsItBetweenStrokesOnly)
+{
+    ColorTrackballPointerHud hud;
+    const QPoint mid = primaryScreenRect().center();
+
+    syncPointerHud(hud, kCrosshairReveal, true, false, eColorGlobalModeS, mid);
+    waitVisible(hud);
+    EXPECT_TRUE(hud.isVisible());
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_TRUE(hud.getPill(i)->isVisible()) << "pill " << i;
+    }
+
+    syncPointerHud(hud, kCrosshairReveal, true, true, eColorGlobalModeS, mid);
+    EXPECT_FALSE(hud.isVisible());
+
+    syncPointerHud(hud, kCrosshairReveal, true, false, eColorGlobalModeS, mid);
+    waitVisible(hud);
+    EXPECT_TRUE(hud.isVisible());
+    hud.hide();
+}
+
+TEST(ColorTrackballGlobalModePointerHud, WidgetCursorAndExitNeverShowIt)
+{
+    ColorTrackballPointerHud hud;
+    const QPoint mid = primaryScreenRect().center();
+
+    for (bool stroke : { false, true }) {
+        syncPointerHud(hud, kWidgetCursor, true, stroke, eColorGlobalModeS, mid);
+        EXPECT_FALSE(hud.isVisible()) << "stroke " << stroke;
+    }
+
+    syncPointerHud(hud, kCrosshairOnly, true, false, eColorGlobalModeS, mid);
+    waitVisible(hud);
+    ASSERT_TRUE(hud.isVisible());
+    for (Settings::ColorTrackballFeedbackEnum f : { kCrosshairReveal, kWidgetCursor, kCrosshairOnly }) {
+        syncPointerHud(hud, f, false, false, eColorGlobalModeS, mid);
+        EXPECT_FALSE(hud.isVisible()) << (int)f;
+    }
 }

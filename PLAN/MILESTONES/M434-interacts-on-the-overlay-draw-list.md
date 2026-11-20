@@ -92,25 +92,25 @@ Scouted 2026-11-14 on `origin/main`:
   - verify: the script passes on unported main.
   - size: M
 
-- [ ] M434.P2.T2 — Port Roto/RotoPaint drawing
+- [x] M434.P2.T2 — Port Roto/RotoPaint drawing
   - files: `Engine/RotoCurveInteract.cpp`, `Engine/RotoPaintInteract.cpp`, `Engine/RotoPaint.{h,cpp}` (override `buildOverlay`/`hasOverlayDrawList`, drop the GL path)
   - approach: emit every construct per P1.T1's map. Béziers and feather become canonical polylines from the curve's evaluated points, at the density the render uses or adaptive to zoom. Points, tangent ends and the selection box become handles or anchored shapes. Pen code is untouched.
   - verify: `m434_interact_parity.py` Roto and RotoPaint scenes pass; the GUI bench is run and compared (Roto edits on many shapes) per the board's GUI bench rule.
   - size: L
 
-- [ ] M434.P2.T3 — Port Tracker drawing
+- [x] M434.P2.T3 — Port Tracker drawing
   - files: `Engine/TrackerNodeInteract.cpp`, `Engine/TrackerNode.cpp`
   - approach: as P2.T2. The pattern and search boxes are canonical polylines, since they deform with the image. Centre crosses and labels are anchored.
   - verify: the Tracker parity scene passes.
   - size: M
 
-- [ ] M434.P2.T4 — Port SplineWarp drawing
+- [x] M434.P2.T4 — Port SplineWarp drawing
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.cpp`, `SplineWarp.{h,cpp}`
   - approach: as P2.T2. Source and destination curves and correspondence lines are deformable, and points are handles.
   - verify: the SplineWarp parity scene passes; the existing SplineWarp viewer-tools GUI tests pass.
   - size: M
 
-- [ ] M434.P2.T5 — Port host Transform/CornerPin/Position/Rectangle interacts
+- [x] M434.P2.T5 — Port host Transform/CornerPin/Position/Rectangle interacts
   - files: `Gui/HostOverlay.cpp`, `Gui/HostOverlay.h`, and the engine side that feeds it (`Engine/HostOverlaySupport.h`)
   - approach: emit through a draw list per host interact. The Transform's centre, rotation bar and scale circle are anchored shapes about canonical anchors, with directions from the transform. CornerPin edges are deformable polylines and its corners are handles.
   - verify: the four host-interact parity scenes pass; existing Transform/CornerPin GUI tests pass.
@@ -125,3 +125,4 @@ Scouted 2026-11-14 on `origin/main`:
 - 2026-11-17 — **RampInteract is ported too (user):** it joins the HostOverlay ports in P2.T5.
 - 2026-11-17 — **RotoPaint's stroke preview (GL_MAX against destination alpha), Tracker thumbnails and the magnifier stay on direct GL (user):** they draw beside the draw list, and M435 - Overlays Deform Through Warps gives them the same texture-warp fallback as OFX overlays.
 - 2026-11-20 — P1.T1, T2, T4 and P2.T1 code (c01d83499) is built and green (run 44767988264). The only failure was the known USDRenderMoonRayLiveTextureTest exit timeout. Next: the P1.T3 baseline on main, the P2.T1 before-images, and P2.T2–T5.
+- 2026-11-20 — P2.T2–T5 in 64146bdc5, with a shared OverlayDrawListPen and lists that rebuild only when their content hash changes. Roto and SplineWarp interacts own their lists, so the GL stroke preview sits between them. Viewport culling of off-screen curves is gone, because a cached list can't depend on the pan; the bench shows whether that matters. Transform pieces are emitted as shapes anchored at the centre. **PM call:** accept the parity risks (viewer font = app font, text after geometry, all shadows under all colours) if `m434_interact_parity.py` passes within tolerance. Gate running with 16 GUI scripts. Still to do: the P1.T3 baseline on main and the P2.T1 before-images.

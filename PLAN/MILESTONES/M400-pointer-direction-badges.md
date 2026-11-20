@@ -51,7 +51,7 @@ Code facts (scouted on `main` d07d202ea, 2026-11-12):
 
 ## Phase 400.3: GUI check and screenshots
 
-- [ ] M400.P3.T1 — Xvfb GUI script and screenshots
+- [x] M400.P3.T1 — Xvfb GUI script and screenshots
   - files: `build/m400-gui/` (script and fixtures, under `build/` per the Xvfb recipe)
   - approach: Set feedback to "Crosshair only", engage a Grade colour knob (S, T, V, then C), a Blur `size` knob and a Transform's rotate, with real key and mouse events; capture each with the pointer mid-screen and one near a screen corner; then "Crosshair + reveal" idle and mid-stroke. Check the pointer window's pill texts and visibility through the widget tree.
   - verify: zero FAIL; one PNG per state sent to the user with SendUserFile, and the user approves them.
@@ -63,3 +63,4 @@ Code facts (scouted on `main` d07d202ea, 2026-11-12):
 
 - 2026-11-12 — Scope (user): C mode gets no badges; badges always follow the pointer, including during strokes; "Crosshair + reveal" shows them between strokes too, not only "Crosshair only".
 - 2026-11-20 — Phase 400.1 is in 26b3a82c7 and 400.2 in 28028f6c9. The colour target is ColorGlobalModeTarget (Gui/ColorTrackballGlobalMode.*). The layout takes a followOffset, so C mode keeps today's placement. The controller's sync logic is a free function, `colorGlobalModeSyncPointerHud`, tested with real states, because the controller can't be constructed in a unit test. An edge warp moves the window at once. Gate running (both phases, with the m119 and m173 GUI scripts).
+- 2026-11-20 — Phase 400.3 in 986be3f9e: Tests/gui/m400_pointer_badges.py (kept in Tests/gui, not build/m400-gui, so the remote gate can run it), with 16 screenshots. `ColorTrackballPill::setText` now sets a `trackballPillText` property, so the script can read the badges. Gate running; the screenshots go to the user before sign-off.

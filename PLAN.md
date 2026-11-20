@@ -403,7 +403,7 @@ future core work has solid ground to build on.
 | M261 | Roto Keyframes In Dope Sheet And Curve Editor | done | M163 | bosley-native-nodes | E6 | | | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |
 | M268 | Edge-Aware Region Independence | done | M209, M210, M211, M212, M213, M215 | bosley-native-nodes | E17 | |  | [M268-edge-aware-region-independence.md](PLAN/MILESTONES/M268-edge-aware-region-independence.md) |
 | M269 | Remote GUI Checks | done |  | bosley-native-nodes | E2 | | | [M269-remote-gui-checks.md](PLAN/MILESTONES/M269-remote-gui-checks.md) |
-| M262 | Expression Benchmark For Large Graphs | doing | - | bosley-executor | E14 | F12 | | [M262-expression-benchmark-large-graphs.md](PLAN/MILESTONES/M262-expression-benchmark-large-graphs.md) |
+| M262 | Expression Benchmark For Large Graphs | done | - | bosley-executor | E14 | F12 | | [M262-expression-benchmark-large-graphs.md](PLAN/MILESTONES/M262-expression-benchmark-large-graphs.md) |
 | M263 | Expression Interpreter Overhead | todo | M262, M266 |  | E14 | F12 | | [M263-expression-interpreter-overhead.md](PLAN/MILESTONES/M263-expression-interpreter-overhead.md) |
 | M264 | Expression Result Cache | todo | M263 |  | E14 | F12 | | [M264-expression-result-cache.md](PLAN/MILESTONES/M264-expression-result-cache.md) |
 | M265 | Native Expression Evaluator | todo | M264 |  | E14 | F12 | | [M265-native-expression-evaluator.md](PLAN/MILESTONES/M265-native-expression-evaluator.md) |
@@ -638,7 +638,7 @@ future core work has solid ground to build on.
 
 - **M438 - Lens Distortion In The USD Scene follow-ups, for /cat-plan (PM, 2026-11-20):** the user chose both encodings in a lens prim. File the follow-up milestones A–G from PLAN/DESIGN/2026-11-14-usd-lens-distortion-design.md; M438 is done once they are filed.
 - **M447 - USDPreviewSurface Rename, for /cat-plan (PM, 2026-11-20):** sweep todo milestone briefs that still name `USDMaterial`; the node is now USDPreviewSurface.
-- **F29 - UI Polish Batch (PM, 2026-11-20):** Feature review round 1 (Claude reviewer) found 1 medium and 4 low issues, fixed in f75950a65. The gate and a new UAT AppImage are building. UAT is still pending.
+- **F29 - UI Polish Batch (PM, 2026-11-20):** Feature review round 1 is fixed (f75950a65), and the m421 script's graph lookup is made robust (1c60da022). The gate is green (release, ctest, 8 GUI scripts). The round-2 UAT AppImage is `build/appimages/Natron-f29-ui-polish-batch.AppImage`, with its .md (see "Round 2+").
 - **Deep-chain render segfault, for /cat-plan (PM, 2026-11-20, from M262 - Expression Benchmark For Large Graphs):** NatronRenderer segfaults about 2 s into the first render of a 20000-node Grade chain with an expression on each node (exprmixed). N=5000 works. It is probably a stack overflow in a recursive upstream or expression walk; there is no backtrace yet. The user asked for it to be filed as an E14 - Architecture stub. Repro: tools/bench/graph_bench.py, BENCH_TOPO=exprmixed BENCH_N=20000.
 - **F8 - Motion Vectors UAT round 2 (PM, 2026-11-20):** all eight round-1 fixes are on the Feature branch, and the gate is green on eb69d01ef. The round-2 AppImage is `build/appimages/Natron-f8-motion-vectors.AppImage`, with its steps `.md`.
 

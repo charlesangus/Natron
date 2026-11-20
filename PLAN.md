@@ -450,7 +450,7 @@ future core work has solid ground to build on.
 | M463 | Bundled Lens Database | todo | M462 |  | E24 | F30 | | [M463-bundled-lens-database.md](PLAN/MILESTONES/M463-bundled-lens-database.md) |
 | M465 | Aperture Model | doing | - | bosley-executor | E24 | F30 | | [M465-aperture-model.md](PLAN/MILESTONES/M465-aperture-model.md) |
 | M464 | FFT Library | doing | - | bosley-executor | E24 | F31 | | [M464-fft-library.md](PLAN/MILESTONES/M464-fft-library.md) |
-| M472 | GPU Raster Pipelines | doing | - | bosley-executor | E5 |  | | [M472-gpu-raster-pipelines.md](PLAN/MILESTONES/M472-gpu-raster-pipelines.md) |
+| M472 | GPU Raster Pipelines | done | - | bosley-executor | E5 |  | | [M472-gpu-raster-pipelines.md](PLAN/MILESTONES/M472-gpu-raster-pipelines.md) |
 | M466 | LensFlare Ghost Tracing | todo | M462, M463, M464, M465 |  | E24 | F31 | | [M466-lensflare-ghost-tracing.md](PLAN/MILESTONES/M466-lensflare-ghost-tracing.md) |
 | M467 | LensFlare GPU Ghosts | todo | M466, M472 |  | E24 | F31 | | [M467-lensflare-gpu-ghosts.md](PLAN/MILESTONES/M467-lensflare-gpu-ghosts.md) |
 | M468 | LensFlare Starburst | todo | M464, M465, M466 |  | E24 | F31 | | [M468-lensflare-starburst.md](PLAN/MILESTONES/M468-lensflare-starburst.md) |
@@ -634,6 +634,8 @@ future core work has solid ground to build on.
 | F32 | Channel Networks | open |  |  | feature/f32-channel-networks | CHOP-style channel networks that drive knobs and shapes, with operators, Channel VOP, every source and channel-based animation layers. |
 
 # Open questions
+
+- **M472 - GPU Raster Pipelines post-merge check (PM, 2026-11-20, merged c97bbfcb6 / #318):** record the raster-capable record context's capability report on RADV and NVIDIA on the GPU host (only llvmpipe has run it).
 
 - **MoonRay live-texture test hangs at exit (2026-11-17, seen in M288 - Utility Renderer Projection Modes' gate, run 44195775643, legacy scheduler):** `USDRenderMoonRayLiveTextureTest` passed all 6 cases in 8 s, then the process hung after MoonRay's dispatcher exit and ctest timed out at 300 s. The task-graph leg passed. Unrelated to M288; needs a teardown fix if it recurs.
 

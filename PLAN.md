@@ -540,7 +540,7 @@ future core work has solid ground to build on.
 | M444 | Cycles MaterialX Procedurals | todo | M443 |  | E9 | F26 | | [M444-cycles-materialx-procedurals.md](PLAN/MILESTONES/M444-cycles-materialx-procedurals.md) |
 | M445 | USDOpenPBR Node | todo | M442, M443, M447 |  | E9 | F26 | | [M445-usdopenpbr-node.md](PLAN/MILESTONES/M445-usdopenpbr-node.md) |
 | M446 | MaterialX Builder Nodes | todo | M352, M440, M442, M443, M444 |  | E9 |  | | [M446-materialx-builder-nodes.md](PLAN/MILESTONES/M446-materialx-builder-nodes.md) |
-| M447 | USDPreviewSurface Rename | doing | - | bosley-executor | E9 |  | | [M447-usdpreviewsurface-rename.md](PLAN/MILESTONES/M447-usdpreviewsurface-rename.md) |
+| M447 | USDPreviewSurface Rename | done | - | bosley-executor | E9 |  | | [M447-usdpreviewsurface-rename.md](PLAN/MILESTONES/M447-usdpreviewsurface-rename.md) |
 | M448 | USD Layer Break | todo | - |  | E9 | F27 | | [M448-usd-layer-break.md](PLAN/MILESTONES/M448-usd-layer-break.md) |
 | M449 | USD Layer Save Paths | todo | M448 |  | E9 | F27 | | [M449-usd-layer-save-paths.md](PLAN/MILESTONES/M449-usd-layer-save-paths.md) |
 | M450 | USDWrite Export Preview | todo | M448, M449 |  | E9 | F27 | | [M450-usdwrite-export-preview.md](PLAN/MILESTONES/M450-usdwrite-export-preview.md) |

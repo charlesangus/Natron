@@ -81,6 +81,7 @@
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
+#include "Engine/Nodes/Scene/SceneBudgetProbe.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
@@ -810,6 +811,8 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> backgroundFramesUsed { false };
     SceneDrawFilter::Rules drawRules;
     SceneDrawFilter::WeakPtr drawFilter;
+    // The renderInstanceId the engine's scene indices were built under, or empty.
+    std::string engineInstanceId;
     // The list the box buffer holds, and how many of its boxes the last frame drew.
     SceneDrawBoxes::ListPtr uploadedBoxes;
     // What the last frame drew, which is what a click picks from.
@@ -1611,6 +1614,7 @@ struct SceneViewportRenderer::Implementation {
         try {
             SceneDrawFilter::registerForAllRenderers();
             CyclesAovs::registerSceneIndices();
+            SceneBudgetProbe::registerForStorm();
             {
                 TfErrorMark mark;
                 const SceneDrawFilter::EngineScope scope;
@@ -1649,6 +1653,7 @@ struct SceneViewportRenderer::Implementation {
             return false;
         }
         drawFilter = SceneDrawFilter::find(filterInstanceId);
+        engineInstanceId = filterInstanceId;
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
             filter->seedRules(drawRules);
         }
@@ -1693,6 +1698,7 @@ struct SceneViewportRenderer::Implementation {
 
         engine.reset();
         drawFilter = SceneDrawFilter::WeakPtr();
+        engineInstanceId.clear();
         drawRevealing = false;
         everyLightHidden = false;
         engineHeld = false;
@@ -1847,6 +1853,7 @@ struct SceneViewportRenderer::Implementation {
             if (filter) {
                 filter->applyDeltas(deltas, drawRevealBatch);
             }
+            SceneBudgetProbe::service(engineInstanceId);
             drawRevealStepDue = true;
         }
         std::size_t stepped = 0;
@@ -7345,6 +7352,50 @@ SceneViewport::setDrawTimingTrace(bool trace)
     if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
         timing->setTraceNext(trace);
     }
+}
+
+bool
+SceneViewport::probeBudgetApply(const QString& kind,
+                                double share,
+                                bool prepareOnly)
+{
+    SceneBudgetProbe::KindEnum probeKind = SceneBudgetProbe::eKindNone;
+    if (!SceneBudgetProbe::isEnabled() || !SceneBudgetProbe::kindFromName(kind.toStdString(), &probeKind)) {
+        return false;
+    }
+    SceneBudgetProbe::request(probeKind, share, prepareOnly);
+    // The empty change carries the probe to the render thread, where the filter's service runs it,
+    // and makes the frame that shows it a counted and timed draw change.
+    _imp->renderer.postDrawDelta(SceneDrawDelta(), 0);
+    if (_imp->usesRenderThread) {
+        Implementation* imp = _imp.get();
+        _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
+    }
+    publishState();
+    update();
+
+    return true;
+}
+
+void
+SceneViewport::publishBudgetProbe()
+{
+    const SceneBudgetProbe::Result result = SceneBudgetProbe::lastResult();
+    QVariantMap published;
+    published[QString::fromUtf8("enabled")] = SceneBudgetProbe::isEnabled();
+    published[QString::fromUtf8("serial")] = QVariant::fromValue<qulonglong>(result.serial);
+    published[QString::fromUtf8("kind")] = QString::fromUtf8(SceneBudgetProbe::kindName(result.kind));
+    published[QString::fromUtf8("share")] = result.share;
+    published[QString::fromUtf8("prepareOnly")] = result.prepareOnly;
+    published[QString::fromUtf8("found")] = result.found;
+    published[QString::fromUtf8("candidates")] = QVariant::fromValue<qulonglong>(result.candidates);
+    published[QString::fromUtf8("selected")] = QVariant::fromValue<qulonglong>(result.selected);
+    published[QString::fromUtf8("faces")] = QVariant::fromValue<qulonglong>(result.faces);
+    published[QString::fromUtf8("instancedMeshes")] = QVariant::fromValue<qulonglong>(result.instancedMeshes);
+    published[QString::fromUtf8("notices")] = QVariant::fromValue<qulonglong>(result.notices);
+    published[QString::fromUtf8("prepareMs")] = result.prepareMs;
+    published[QString::fromUtf8("sendMs")] = result.sendMs;
+    setProperty("natronSceneBudgetProbe", published);
 }
 
 void

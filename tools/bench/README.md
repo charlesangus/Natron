@@ -408,6 +408,7 @@ whose engine lost the filter fails rather than reporting a cheap nothing.
 | `sibling_shot` | Screen grabs around one change on the sibling row, the branch and the root as control | `*_shot_changed_*`, `*_shot_frame_coverage`, `shot_reading`; `control_changed_pixels` at least 1 |
 | `orbit10k`, `boxes_shot` | `children` (orbit10k) or `bbox` (boxes_shot) on the root, then an orbit or a grab with only boxes drawn | `orbit_fps`, `boxes_first_drawn_ms`; skipped until the viewer publishes `natronSceneDrawBoxes` |
 | `draw_budget` | `bbox` then clear on the sibling row and on the widest row, `BENCH_BUDGET_REPEATS` times (default 2), then once more each with a trace | `draw_changes`, one entry per change; `sibling_picture_ms_max`, `wide_picture_ms_max`; `traced_stall_ms` |
+| `budget_apply_probe` | once every draw change is on screen and no load is pending, each change a polygon budget would make, then its clear: 1%, 10% and 50% of the gprims no instancer draws held invisible, the same shares of every instancer's instances masked off, half the faces of 1,000 meshes listed invisible; needs `NATRON_BUDGET_PROBE=1` | per step (`gprims_1`, `gprims_10`, `gprims_50`, `instances_*`, `faces_50`, each with a `_clear`): `<step>_stall_ms` judged, the frame's parts and `*_over_steady` in `budget_steps`; `budget_probes`, one entry per step; `budget_probe_skip` when no probe serves the engine |
 
 `frame_ms` is `total_ms` less `apply_ms`: from the call to the image that shows the change, without the
 render thread's time sending notices. `total_ms` is polled every 50 ms, so it bounds the time rather
@@ -482,3 +483,141 @@ picture against 100 ms, one line per change with the parts above, and each trace
 counters. The results go to `build/bench-gpu/heavy-scene-budget.jsonl`. The script's header
 lists its environment; `SCENE_DIR`, `LOBBY_DIR` and `ISLAND_DIR` say where the scenes are, and Docker
 is only needed while the fixtures are missing.
+
+### Budget apply probe
+
+`budget_apply_probe` measures what Storm pays to take in the changes a viewer polygon budget would
+make, before that budget exists. With `NATRON_BUDGET_PROBE=1` set when Natron starts, the Storm engine
+gets one more scene index after all of its filters (`Engine/Nodes/Scene/SceneBudgetProbe.cpp`); without
+it nothing is registered and the scenario skips. The viewer's `probeBudgetApply(kind, share,
+prepareOnly)` slot asks it for a change and posts an empty draw change, so the frame that takes the
+change in is the one `presented_after_call` waits for and the one the timing record describes. The
+probe makes its change on the render thread inside that frame's apply, so it counts in `apply_ms`.
+
+- `gprims`: a visibility-false overlay on a share of the gprims no instancer draws, chosen by a hash
+  of the path, and a visibility dirty on each: the notices `SceneDrawFilter` sends to hold a prim
+  invisible.
+- `instances`: a share of each instancer's instances, chosen by a hash of the instance index, masked
+  off over the instancer's own mask, and a mask dirty on each instancer.
+- `faces`: under each of 1,000 meshes (the lowest path hashes; meshes an instancer draws only make up
+  the count), an added `geomSubset` child, a face set whose visibility is false, listing a share of its
+  faces, and a topology dirty on the mesh. OpenUSD 0.26's `HdMeshTopologySchema` has no
+  `invisibleFaces`: the scene index adapter builds the topology's invisible faces from such subsets, so
+  that is how a scene index reaches them. `changed_pixels` compares grabs of the viewport before and
+  after this change; no changed pixels with the meshes on screen would mean Storm does not omit them.
+- `clear` undoes all of it; `none` changes nothing and times a steady frame.
+
+Each step first chooses what to change on a frame of its own (`choose_ms`, not timed with the step),
+then times a steady frame, the change, a steady frame after it and the clear. A step's stall is the
+main thread's longest gap over the change's frame alone. Run it with `NATRON_DRAW_STATE_TIMING=1`, or
+the render-thread parts (`apply_ms`, `render_ms`, `gpu_tail_ms`) are missing. Locally, under Xvfb, on
+the loaded city (frame numbers are not valid there):
+
+```
+docker exec -e BENCH_FIXTURE=city -e BENCH_LOAD_ALL=1 -e BENCH_SCENARIOS=populate_full,load_all,budget_apply_probe \
+    -e NATRON_BUDGET_PROBE=1 -e NATRON_DRAW_STATE_TIMING=1 -e GUI_TEST_TIMEOUT=3600 natron-dev \
+    Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py build/release/Natron.AppImage
+```
+
+On the GPU host or a cloud VM, the loaded city, then flat and Island, through the `budget` runs:
+
+```
+NATRON_BUDGET_PROBE=1 ONLY_LABELS=budget-city ONLY_SCENARIOS=populate_full,load_all,budget_apply_probe \
+    tools/bench/heavy_scene_gpu_host.sh budget /path/to/Natron.AppImage
+NATRON_BUDGET_PROBE=1 ONLY_LABELS=budget-flat,budget-island ONLY_SCENARIOS=populate_full,budget_apply_probe \
+    tools/bench/heavy_scene_gpu_host.sh budget /path/to/Natron.AppImage
+```
+
+### Waived budgets
+
+A budget with status `waived` is measured and recorded (`value`, `limit`, and a `reason`) but is not a
+failure: it stays out of `failed_checks`, and every other check and budget of the action still applies.
+`BUDGET_WAIVERS` in `heavy_scene_bench.py` lists them, keyed by (`BENCH_LABEL`, action, budget name);
+a waiver applies only where the budget would have failed. Today: `stall_ms` of `draw_budget`,
+`reveal_wide` and `reveal_cancel_paced` on `accept-island-loaded` (the fully loaded Island), because Qt
+composites the window behind a multi-second steady GPU frame ("steady-frame composite behind the GPU
+frame; deferred to M481 - Viewer Polygon Budgets", user decision 2026-11-19). Remove the rows when
+M481 - Viewer Polygon Budgets lands.
+
+### End-to-end budget run
+
+`workflow` chains what a user does on one scene in one process: `open`, a twirl into a payload,
+Full on one asset, Full + Load on a block, a pattern node (a USDEditTransform with a `primPattern`,
+`BENCH_PATTERN` or the branch's descendants) inserted below USDRead and viewed, a switch to that node
+with the Scene Graph panel following the selection, a prim selected in the inspector, a project save,
+and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms`, `stall_at`, `stalls_over_budget`, `started_at` and `ended_at` (the
+epoch seconds the longest gap began at and `stall_ms` was measured over, to find the step in stack samples) and numbers under
+`workflow_steps`, and its own budgets in the record: `<step>_stall_ms` (100 ms, the setup before a
+step not counted), `full_asset_picture_ms` (100 ms, valid with `NATRON_DRAW_STATE_TIMING=1` on a real
+GPU), `full_load_block_complete` and `full_load_block_worst_frame_ms` (the reveal finishes with no
+gap over 100 ms between painted frames), `reopen_first_frame_ms` (2 s, on a scene with payloads, from the
+project reset on, with `reset_ms` and `first_frame_after_load_ms` beside it; the reopen's stall covers the
+reset, the load and the loads that follow; the first frame is the first one presented after the load, not the
+fill's end), `fill_complete_ms` (from the load to the scene's fill completing, waited for apart from the first
+frame within `BENCH_FILL_LIMIT_S`, default 600; reported with no budget, `null` if the wait ran out), `pattern_node`'s `create_ms` and `reconnect_ms` (its stall
+still the whole step), and
+the first-frame and unrequested-payload budgets over the whole run. The save is judged as a stall: a
+`saveProjectAs` call that blocks the main thread over 100 ms fails. A scene with nothing for a step
+(flat has no payloads to twirl or load) gets `not_applicable` there. The reopen leaves the process's
+nodes gone, so `workflow` has to be the last scenario of its run; scenarios after it are skipped.
+
+On a GPU host, from a checkout of the branch under test, one command runs it on both fixtures, Lobby
+and Island, with the loaded reveal, cancel and orbit scenarios beside it:
+
+```
+DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh acceptance /path/to/Natron.AppImage
+```
+
+`acceptance` runs one fresh process per line: `workflow` on flat, the city, Lobby and Island; on the
+loaded city, Lobby and Island `populate_full`, `load_all`, `reveal_wide`, `reveal_cancel_paced` and
+`orbit10k`; and `reveal_load_all` on the unloaded city. Island (119,220 meshes, 30.9M instances) is
+looked for by name under `ISLAND_DIR` or `SCENE_DIR` (the main checkout's `.local` by default) and
+skipped with a message and a `skipped` record when it is absent or when less than `ISLAND_MIN_RAM_GB`
+is available; its loaded run raises `BENCH_PICK_LIMIT_S` to an hour, as picking rows from the fully
+loaded scene is slow. The fixtures are made through the dev image when `build/bench-gpu` lacks them.
+The results go to `build/bench-gpu/heavy-scene-acceptance.jsonl`, with the table and the pass, fail and
+did-not-finish counts at the end. A single scene runs the same way through `ONLY_LABELS`
+(`accept-city`, `accept-island`, ...), or by hand:
+
+```
+BENCH_FIXTURE=city BENCH_SCENARIOS=workflow NATRON_DRAW_STATE_TIMING=1 NATRON_MAIN_HEARTBEAT=1 BENCH_GPU=1 \
+    Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py /path/to/Natron.AppImage
+```
+
+Every GPU-host run also records GPU memory and stamps its logs. `sample_vram.sh` reads the amdgpu
+card's `mem_info_vram_used` and `mem_info_gtt_used` (the card with the most VRAM, or `VRAM_CARD`) every
+0.25 s, or every `SAMPLE_INTERVAL_S` with `SAMPLE=1`, into `out/<label>.vram`, and `heavy_scene_vram.py`
+adds `vram_peak_mb`, `gtt_peak_mb`, `vram_delta_mb`, `gtt_delta_mb` (and the start, end and total) to each
+record and prints them in the run log. With no amdgpu card it samples `nvidia-smi`'s `memory.used` for
+the NVIDIA GPU with the most memory (`VRAM_CARD=nvidia<index>` picks one) into the same file; the gtt
+fields are null there. The counters are the device's, the desktop's use included.
+
+The GL drivers' shader caches live in `SHADER_CACHE_DIR` (default `<fixture dir>/shader-cache`) for every
+run, through `__GL_SHADER_DISK_CACHE`, `__GL_SHADER_DISK_CACHE_PATH`, `__GL_SHADER_DISK_CACHE_SKIP_CLEANUP`
+and `MESA_SHADER_CACHE_DIR`; `run-gui-test.sh` and the AppImage pass them through. Each run's HOME is
+thrown away, so without it every open would compile its shaders again. Every mode first runs
+`warmup-city` (the city's `open`) to fill the cache; its record says `result` `warmup`, `warmup` true and
+`shader_cache` `cold` when the cache was empty before it, and counts toward neither pass nor fail. The
+other records say `shader_cache` `warm`. With `ONLY_LABELS` the warm-up runs only on an empty cache or
+when the labels name it.
+
+After each run `heavy_scene_fixture_check.py` reads its `natron.log` for the scene's files failing to
+open: `Could not load sublayer`, `Could not open asset` (a reference or payload that did not resolve or
+open), `Unable to open ptex`, `Unable to read Texture` and `Cannot open image`. Any of them makes the run's
+`pass` and `fail` records `fixture_incomplete` (the judged result kept as `judged_result`), counted as did
+not finish, and every record of the run gets `fixture_check`: the count of each kind and the first five
+paths.
+`out/<label>/natron.ts.log` is `natron.log` with each line prefixed by its epoch seconds; Natron's stdout
+is made line buffered for it through coreutils' `libstdbuf.so` (`LOG_LINEBUF=0` turns that off).
+
+`BISECT` sets Natron's environment for every run from a comma list of variants: `lights<N>`
+(`HDST_MAX_LIGHTS=N`; Storm's default is 16), `nolights` (`USDIMAGING_ENABLE_SCENE_LIGHTS=0`), `bindless`
+(`HGIGL_ENABLE_BINDLESS_TEXTURE=1`), `noglthread` (`mesa_glthread=false`), `hud` (`GALLIUM_HUD` GPU load,
+VRAM, GTT and fps, dumped to `out/<label>.hud/`) and `shaderlog` (`TF_DEBUG=HD_BUFFER_ARRAY_INFO
+HDST_LOG_DRAWING_SHADER_PROGRAM_MISSES`). Records carry it as `bisect`; the results file and the `out/`
+files take the variants' names, so variants do not overwrite each other. A quick Island bisect:
+
+```
+BISECT=noglthread ONLY_LABELS=accept-island,accept-island-loaded DISPLAY=:0 \
+    tools/bench/heavy_scene_gpu_host.sh acceptance /path/to/Natron.AppImage
+```

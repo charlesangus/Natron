@@ -1187,6 +1187,16 @@ public Q_SLOTS:
      * called with false. Every presented change publishes its record to natronSceneDrawTimings.
      **/
     void setDrawTimingTrace(bool trace);
+    /**
+     * @brief With NATRON_BUDGET_PROBE=1, the next frame probes what a polygon budget's change costs
+     * Storm (SceneBudgetProbe): kind none, gprims, instances, faces or clear, on share (0 to 1) of
+     * what it applies to; prepareOnly only chooses what to change. Posts an empty draw change, so
+     * natronSceneDrawPresented and the draw timings count that frame. False, and nothing posted,
+     * without the probe or for another kind.
+     **/
+    bool probeBudgetApply(const QString& kind, double share, bool prepareOnly);
+    // Publishes the last probe's result as the natronSceneBudgetProbe property.
+    void publishBudgetProbe();
 
 Q_SIGNALS:
 

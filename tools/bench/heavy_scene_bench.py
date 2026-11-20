@@ -90,6 +90,15 @@ and counter_deltas (HdPerfLog). Each change is one entry of draw_changes; traced
 and their stall is not counted, as tracing slows them. Without the variable time_to_picture_ms comes
 from total_ms and is not_valid.
 
+budget_apply_probe (needs NATRON_BUDGET_PROBE=1, and NATRON_DRAW_STATE_TIMING=1 for the render-thread
+parts) times the frame that takes in each change a polygon budget would make: 1%, 10% and 50% of the
+gprims no instancer draws held invisible (gprims_1, ...), the same shares of every instancer's instances
+masked off (instances_1, ...), and half the faces of 1,000 meshes listed invisible (faces_50), each then
+cleared (<step>_clear). Each step's main-thread stall is judged as <step>_stall_ms; its frame's parts,
+and those parts over a steady frame just before it (*_over_steady), are in budget_steps and in
+budget_probes, with the steady frame after it. faces_50 also grabs the viewport around the change
+(changed_pixels). A step with nothing to change is not_applicable.
+
 sibling_shot compares screen grabs around one state change on sibling_row, branch and root; the root, which the viewer frames, is the control: if it changes no pixels the state does
 nothing, and if it does, a row that did not is out of frame or ineffective (shot_reading says which,
 from its coverage). It needs geometry on screen, so it skips with payloads unloaded. orbit10k and
@@ -131,9 +140,10 @@ HOLD_FILE = os.environ.get("BENCH_HOLD_FILE", "")
 HOLD_S = float(os.environ.get("BENCH_HOLD_S", "120"))
 OPEN_SCENARIOS = ("open", "populate_full", "populate_pruned", "load_all")
 DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal", "reveal_cancel", "orbit10k", "boxes_shot",
-                  "sibling_state", "sibling_shot", "noedit", "draw_budget", "reveal_load_all", "reveal_wide", "reveal_cancel_paced")
+                  "sibling_state", "sibling_shot", "noedit", "draw_budget", "reveal_load_all", "reveal_wide", "reveal_cancel_paced",
+                  "budget_apply_probe")
 # A wide row's restore puts the whole scene back into Hydra, several times over.
-LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide")
+LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide", "budget_apply_probe")
 PICTURE_SCENARIOS = ("prune_restore", "sibling_state", "draw_budget")
 DRAW_TIMING = os.environ.get("NATRON_DRAW_STATE_TIMING") == "1"
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
@@ -979,6 +989,110 @@ try:
             m.values["%s_picture_ms_min" % tag] = min(untraced) if untraced else None
         m.values["picture_source"] = "viewer" if all(c.get("picture_source") == "viewer" for c in changes) else "polled"
 
+    PROBE_SHARES = (0.01, 0.1, 0.5)
+    PROBE_FACE_SHARE = 0.5
+    PROBE_TIMING_KEYS = ("picture_ms", "apply_ms", "wait_frame_ms", "render_ms", "gpu_tail_ms", "present_ms", "total_ms")
+
+    def probe_result(v):
+        draw_call(v, "publishBudgetProbe")
+        return dict(v.property("natronSceneBudgetProbe") or {})
+
+    def probe_frame(v, label, kind, share, prepare_only):
+        """The probe's change and the frame that shows it, with what the probe did; None if the viewer
+        has no probe."""
+        serial_before = int(probe_result(v).get("serial", 0))
+        timings = yield from presented_after_call(v, label, "probeBudgetApply", Q_ARG("QString", kind), Q_ARG(float, share),
+                                                  Q_ARG(bool, prepare_only), judged=False)
+        if not timings:
+            return None
+        result = probe_result(v)
+        check(int(result.get("serial", 0)) > serial_before, "%s: the probe ran before its frame" % label)
+        return dict(timings, probe=result)
+
+    def probe_part(frame):
+        return {key: frame.get(key) for key in PROBE_TIMING_KEYS}
+
+    def over_baseline(frame, baseline):
+        return {key + "_over_steady": (None if frame.get(key) is None or baseline.get(key) is None else round(frame[key] - baseline[key], 2))
+                for key in ("picture_ms", "render_ms", "gpu_tail_ms")}
+
+    def probe_settled(v):
+        stats = draw_stats()
+        return (not stats.get("revealing") and int(v.property("natronSceneDrawPresented") or 0) >= int(stats.get("posted", 0))
+                and not v.property("natronSceneLoadsPending"))
+
+    def action_budget_apply_probe(m):
+        """What the changes a polygon budget makes cost the next frame: a share of the gprims held
+        invisible, a share of every instancer's instances masked off, half the faces of
+        SceneBudgetProbe::kFaceMeshes meshes listed invisible; each change then cleared. The choice of
+        what to change is made on a frame of its own first, so a step times only Storm taking it in."""
+        v = view()
+        require(v is not None, "budget_apply_probe: a scene view is visible")
+        m.values["draw_timing"] = DRAW_TIMING
+        yield from clear_draw_states()
+        ok = yield ("until", lambda: probe_settled(v), TIMEOUT_S)
+        check(ok, "budget_apply_probe: the scene's draw changes and loads are in")
+        warm = yield from probe_frame(v, "budget_apply_probe: warm-up", "none", 0.0, False)
+        if warm is None or not warm["probe"].get("found"):
+            m.values["budget_probe_skip"] = ("the viewer has no budget probe: run with NATRON_BUDGET_PROBE=1 on the Storm engine"
+                                             if warm is None else "no budget probe serves this viewer's engine (not Storm?)")
+            return
+        corner = v.mapToGlobal(v.rect().topLeft()) - QGuiApplication.primaryScreen().geometry().topLeft()
+        area = QRect(corner.x(), corner.y(), v.width(), v.height())
+        stem = "budget_apply_probe_%s_load-%s" % (file_stem, load_state)
+        steps = [("gprims", share) for share in PROBE_SHARES] + [("instances", share) for share in PROBE_SHARES]
+        steps.append(("faces", PROBE_FACE_SHARE))
+        probes = []
+
+        budget_steps = {}
+
+        def measured(name, frame, steady, **extra):
+            stall = heartbeat.stop()
+            budget_steps[name] = dict(extra, applicable=True, stall_ms=round(stall, 1), ended_at=round(time.time(), 3),
+                                      picture_source=frame.get("picture_source"), **dict(probe_part(frame), **over_baseline(frame, steady)))
+            m.stall_floor_ms = max(m.stall_floor_ms, stall)
+
+        for kind, share in steps:
+            name = "%s_%g" % (kind, share * 100.0)
+            prepared = yield from probe_frame(v, name + ": choose", kind, share, True)
+            require(prepared is not None, "%s: the probe chose what to change" % name)
+            choice = prepared["probe"]
+            if int(choice.get("selected", 0)) == 0:
+                reason = "nothing to change: %d candidates" % int(choice.get("candidates", 0))
+                budget_steps[name] = {"applicable": False, "reason": reason}
+                budget_steps[name + "_clear"] = {"applicable": False, "reason": reason}
+                probes.append({"step": name, "kind": kind, "share": share, "candidates": choice.get("candidates"), "selected": 0})
+                continue
+            ok = yield ("until", lambda: probe_settled(v), TIMEOUT_S)
+            check(ok, "%s: the choice's frame settled" % name)
+            steady = yield from probe_frame(v, name + ": steady before", "none", 0.0, False)
+            before_path = shot("%s_%s_0_before.png" % (stem, name)) if kind == "faces" else None
+            heartbeat.start()
+            applied = yield from probe_frame(v, name + ": apply", kind, share, False)
+            require(applied is not None, "%s: the change reached the screen" % name)
+            measured(name, applied, steady, sent_notices=applied["probe"].get("notices"), send_ms=applied["probe"].get("sendMs"))
+            after_path = shot("%s_%s_1_applied.png" % (stem, name)) if kind == "faces" else None
+            steady_after = yield from probe_frame(v, name + ": steady after", "none", 0.0, False)
+            heartbeat.start()
+            cleared = yield from probe_frame(v, name + ": clear", "clear", 0.0, False)
+            require(cleared is not None, "%s: the clear reached the screen" % name)
+            measured(name + "_clear", cleared, steady, sent_notices=cleared["probe"].get("notices"), send_ms=cleared["probe"].get("sendMs"))
+            entry = {"step": name, "kind": kind, "share": share, "candidates": choice.get("candidates"), "selected": choice.get("selected"),
+                     "faces": choice.get("faces"), "instanced_meshes": choice.get("instancedMeshes"),
+                     "choose_ms": choice.get("prepareMs"), "steady": probe_part(steady), "applied": probe_part(applied),
+                     "steady_after": probe_part(steady_after), "cleared": probe_part(cleared)}
+            if before_path:
+                entry["shot_files"] = [os.path.basename(before_path), os.path.basename(after_path)]
+                # Pixels the faces change left unchanged would say Storm does not omit listed faces, if
+                # the chosen meshes are on screen.
+                entry["changed_pixels"] = changed_pixels(viewport_image(before_path, area), viewport_image(after_path, area))
+            probes.append(entry)
+        m.values["budget_probes"] = probes
+        m.values["budget_steps"] = budget_steps
+        m.values["picture_source"] = "viewer" if DRAW_TIMING else "polled"
+        # The grabs, the comparison and the choices are this harness's cost, not the viewer's.
+        heartbeat.start()
+
     def viewport_image(file_name, area):
         return QImage(file_name).copy(area).convertToFormat(QImage.Format_RGBX8888)
 
@@ -1167,7 +1281,8 @@ try:
                "orbit10k": action_orbit10k, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
                "sibling_shot": action_sibling_shot, "noedit": action_noedit, "draw_budget": action_draw_budget,
                "reveal_load_all": action_reveal_load_all, "reveal_wide": action_reveal_wide,
-               "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch}
+               "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch,
+               "budget_apply_probe": action_budget_apply_probe}
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
         if not applicable:
@@ -1198,6 +1313,8 @@ try:
             return "needs BENCH_LOAD_ALL=1 and load_all: with payloads unloaded no row draws anything to compare"
         if name in ("orbit10k", "boxes_shot") and prop("natronSceneDrawBoxes") is None:
             return "this viewer does not publish natronSceneDrawBoxes: it draws no boxes"
+        if name == "budget_apply_probe" and os.environ.get("NATRON_BUDGET_PROBE") != "1":
+            return "needs NATRON_BUDGET_PROBE=1, without which the viewer has no budget probe"
         return None
 
     scene_payload_layers = set(rows.get("payload_assets", ()))
@@ -1247,6 +1364,8 @@ try:
             budgets["sibling_resynced_paths"] = verdict(m.values["sibling_resynced_paths"], 0, True)
         if "filter_bound" in m.values:
             budgets["filter_bound"] = verdict(1 if m.values["filter_bound"] else 0, 1, False)
+        for step, entry in sorted(m.values.get("budget_steps", {}).items()):
+            budgets[step + "_stall_ms"] = verdict(entry.get("stall_ms"), STALL_BUDGET_MS, True, applicable=entry["applicable"])
         if "control_changed_pixels" in m.values:
             budgets["control_changed_pixels"] = verdict(m.values["control_changed_pixels"], 1, False)
         return budgets

@@ -53,3 +53,4 @@ Line numbers read 2026-11-08; re-check against M304's merged code before startin
 ## Decisions
 
 - 2026-11-08 — Render start must not wait on workers from the main thread (user): keep render starts responsive.
+- 2026-11-20 — Design note at Engine/docs/roto-point-list-render-isolation.md. **Separate GUI-side point list (user)**, not a copy-on-write snapshot. **The `finished` flag is isolated too (user).** PM calls: `clone` always copies the source's GUI side; an off-main-thread clone uses the runtime fallback; "reorder" is a delete plus an insert. Render callers in RotoContext/SplineWarp*/Retouch get a one-line render-side request each, which overlaps M299 - Roto Render Performance (rebase whichever lands second).

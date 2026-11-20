@@ -220,15 +220,23 @@ try:
         ok = yield ("until", lambda: panel_of_node(st.node) is None, POLL_TIMEOUT_S)
         require(ok, "closed the settings panel of " + st.node.getLabel())
 
+    def top_level_graph():
+        """The project's own NodeGraph. A Group's subgraph is a NodeGraph too, named after the Group's
+        label, and QApplication.allWidgets() has no stable order, so the first NodeGraph found may be
+        a subgraph whose selection setSelection() never touches."""
+        node_labels = set(n.getLabel() for n in app.getChildren())
+        graphs = [g for g in gt.widgets_of("NodeGraph") if g.objectName() not in node_labels]
+        return hold(graphs[0]) if graphs else None
+
     def reopen_panel(st):
         if st.grouped:
             require(st.panel is not None, "the closed panel is held")
             QMetaObject.invokeMethod(st.panel, "setClosed", Q_ARG(bool, False))
         else:
-            graphs = gt.widgets_of("NodeGraph")
-            require(graphs, "found the node graph")
+            graph = top_level_graph()
+            require(graph is not None, "found the node graph")
             app.setSelection([st.node])
-            QMetaObject.invokeMethod(graphs[0], "showSelectedNodeSettingsPanel")
+            QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
         ok = yield ("until", lambda: panel_of_node(st.node) is not None, POLL_TIMEOUT_S)
         require(ok, "reopened the settings panel of " + st.node.getLabel())
         if not st.grouped:
@@ -903,9 +911,9 @@ try:
         # The panel is closed and reopened by core(); the dope sheet needs it open.
         require(panel_of_node(rp) is not None, "the top-level RotoPaint's panel is open")
         yield from dope_sheet_section(st, "top", names)
-        graphs = gt.widgets_of("NodeGraph")
-        if graphs:
-            make_tab_current(graphs[0], "graph")
+        graph = top_level_graph()
+        if graph is not None:
+            make_tab_current(graph, "graph")
         yield from close_panel(st)
         yield from expect("top level closed: no markers", [], st)
 

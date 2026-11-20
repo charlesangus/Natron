@@ -1,0 +1,26 @@
+# Hand-written: the correspondences and conflicts a correct merge of pasted-from-other-shot/ gives.
+description: >-
+  The template's nodes are pasted in from another shot, which imported the template; this shot has
+  no template entry, so the merge gets the base explicitly. The shot already has its own Grade1, so
+  the pasted Grade is renamed Grade2. The supervisor changes Grade1's multiply, which lands on Grade2;
+  the shot's own Grade1 is outside the merge.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade2
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade2, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts: []

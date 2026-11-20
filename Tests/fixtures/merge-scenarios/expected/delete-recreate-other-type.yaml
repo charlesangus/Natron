@@ -1,0 +1,26 @@
+# Hand-written: the correspondences and conflicts a correct merge of delete-recreate-other-type/ gives.
+description: >-
+  The artist deletes Grade1 and puts a ColorCorrect, ArtistCC, in its place; the supervisor changes
+  Grade1's multiply. A different plugin is a different node: Grade1 is deleted in mine and modified
+  in theirs.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: ~
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Blur1, Constant1, Merge1, ColorCorrect1, TplOut, ArtistCC]
+    conflicts:
+      - {node: Grade1, kind: delete-modify}

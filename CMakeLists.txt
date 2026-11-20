@@ -231,6 +231,7 @@ add_subdirectory(Gui)
 
 if(NATRON_BUILD_TESTS)
     add_subdirectory(Tests)
+    add_subdirectory(tools/merge)
 endif()
 
 add_subdirectory(App)

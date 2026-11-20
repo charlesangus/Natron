@@ -1,0 +1,26 @@
+# Hand-written: the correspondences and conflicts a correct merge of both-insert-side-input/ gives.
+description: >-
+  Both sides insert a node on the Constant1 -> Merge1.A edge, a side input: the artist MatteGrade,
+  the supervisor MatteBlur. A structural conflict; the merged chain is Constant1 -> MatteBlur ->
+  MatteGrade -> Merge1.A.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut, MatteGrade]
+    conflicts:
+      - {node: Merge1, input: A, kind: structural-insert}

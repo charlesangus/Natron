@@ -1,0 +1,29 @@
+# Hand-written: the correspondences and conflicts a correct merge of supervisor-replaces-node/ gives.
+description: >-
+  The supervisor deletes Blur1 and puts a fresh Blur, Blur2, in the same place with a new size; the
+  artist changes Blur1's size. Blur2 stands for Blur1, so the two size changes conflict per
+  dimension rather than as a delete of a modified node.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur2
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts:
+      - {node: Blur1, knob: size, dim: 0, kind: value}
+      - {node: Blur1, knob: size, dim: 1, kind: value}
+notes: >-
+  The mirror of delete-recreate-grade on the supervisor's side.

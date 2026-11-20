@@ -1,0 +1,25 @@
+# Hand-written: the correspondences and conflicts a correct merge of duplicate-template-node/ gives.
+description: >-
+  The artist duplicates Blur1 as Blur1_copy, which carries Blur1's origin, and hangs it after the
+  template, between TplOut and ShotOut; the supervisor changes Blur1's size. Blur1 is still Blur1;
+  the copy is artist work outside the template and does not receive the supervisor's change.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts: []

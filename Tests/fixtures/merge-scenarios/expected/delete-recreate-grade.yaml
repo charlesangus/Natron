@@ -1,0 +1,28 @@
+# Hand-written: the correspondences and conflicts a correct merge of delete-recreate-grade/ gives.
+description: >-
+  The artist deletes Grade1 and makes Grade2 of the same plugin in the same place, wired to the same
+  neighbours on the same inputs, with its own multiply; the supervisor sets Grade1's gamma. Grade2
+  stands for Grade1, so the supervisor's gamma lands on Grade2 and the artist's multiply is kept.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade2
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade2, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts: []
+notes: >-
+  The user's example. Matching Grade2 to Grade1 is the judgement under test: an ID matcher sees a
+  delete of a modified node (a conflict that resurrects Grade1 next to Grade2) plus an unrelated add.

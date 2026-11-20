@@ -1083,7 +1083,7 @@ def main():
     result.update(stats_fields)
     if expr_fields:
         result.update(expr_fields)
-        # cpus counts the host; this is what the process may run on, which is what the GIL contends over.
+        # Unlike the host's cpus, this is the affinity-limited count the process may run on.
         result["cpu_count"] = len(os.sched_getaffinity(0))
     line = json.dumps(result)
     log("RESULT " + line)

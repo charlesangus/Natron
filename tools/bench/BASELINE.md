@@ -1127,7 +1127,7 @@ Comp wall, frames 1-6 (s)
 
 Conclusion. No scenario shows a regression beyond run-to-run noise. The matrix frame times of the two builds agree to within 1.5% on both tiny configurations and `chain:30`; the larger frame deltas (`mixed:100` -40%, `comp:100` -9%, `wide:100` +6%) all sit inside a spread of 12% to 88%, driven by single outlier batches (batch 1 and 3 `mixed:100` main at 6.8 and 9.8 s against 3.9 s in batch 2) on a 4-core host with intermittent foreign load. The three comps are within 1.5% to 5.7% of each other and inside their spreads, so ordinary composites are unchanged. The only deltas that pass the spread test are `chain:30` frame time (-3.2%, from two batches whose spread is 2%) and `comp:100` range wall (-21.7%, where m180's two batches agree to 0.5% and main's differ by 20%), both in M180's favour and neither a result to rely on with two batches; the graph-build rows that pass (`chain:1000` tiny +2.9%, `chain:30` hd +11%, 3 to 6 ms) are a few percent of an already small, sub-second-to-6 s phase. M180 therefore adds no measurable cost to graphs that contain no loop block; this comparison says nothing about footage-backed comps (no data) or graphs that use the loop block itself.
 
-## Expression evaluation (2026-11-19, `fb8e9c983` plus the M262 bench changes, release AppImage of main)
+## Expression evaluation (2026-11-19, `fb8e9c983`, release AppImage of main)
 
 Machine: cloud VM, 30 vCPU AMD EPYC 7B13, 49 GB RAM, RTX 3090, `NatronRenderer -b` with `QT_QPA_PLATFORM=offscreen`. Core count is recorded per row; the evaluations are timed from one Python thread.
 
@@ -1171,6 +1171,6 @@ Cold expression time for one frame (cold us/eval times N, expression time only, 
 | exprmixed | 10.3 | 38.5 |
 
 - Cold `exprmixed` N=5000 first-frame expression time before M263 - Expression Interpreter Overhead and M264 - Expression Result Cache: 38.5 ms, against the proposed 100 ms threshold for skipping M265 - Native Expression Evaluator. It is already below the threshold, and about 1.2% of the 3.15 s median frame.
-- Cost per evaluation is roughly flat in N from 30 up (6 to 13 us cold, 1.2 to 2.8 us warm) for all three topologies, so expression time scales linearly: an extrapolation to N=20000 is about 150 ms, which the crash prevented measuring.
+- Cost per evaluation is roughly flat in N from 30 up (6 to 13 us cold, 1.2 to 2.8 us warm; N=3 is 12.5 to 20.8 us cold) for all three topologies, so expression time scales linearly: an extrapolation to N=20000 is about 150 ms, which the crash prevented measuring.
 - The expression cost does not dominate. Frame time is 0.98 s (chain) against 0.45 s (fan, mixed) at N=1000 and 18 s against 3 s at N=5000, so graph depth, not evaluation, drives the `exprchain` growth.
-- Cold is 3 to 8 times warm, so the result cache removes most of the per-call cost but both are single-digit microseconds.
+- Cold is 3 to 10 times warm, so the result cache removes most of the per-call cost but both are single-digit microseconds.

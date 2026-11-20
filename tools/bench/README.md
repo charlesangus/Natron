@@ -68,7 +68,10 @@ of the figures. The whole-frame timing is the same as for the other topologies. 
 `graph_bench.py` calls `getValueAtTime` on every expression knob, in creation order, at
 `BENCH_FRAMES` frames past the rendered range. At each frame a cold pass runs first and a warm
 pass second. Expression results are cached per time, so the cold pass is the first evaluation at
-that frame and the warm pass is a cache hit. Each call is timed with `time.perf_counter_ns`, and
+that frame and the warm pass is a cache hit. A `getValue(0)` inside an expression reads at the
+time the expression is evaluated for, so a sibling lookup in the cold pass never reads another
+frame's result; it does hit the sibling's entry for the same frame, which the pass computed a
+moment earlier. Each call is timed with `time.perf_counter_ns`, and
 the record gains:
 
 | Field | Meaning |

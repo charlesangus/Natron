@@ -55,7 +55,6 @@
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
-#include <QOpenGLFunctions>
 #include <QPoint>
 #include <QSettings>
 #include <QSurfaceFormat>
@@ -1758,24 +1757,23 @@ std::vector<float>
 readTexture(const PXR_NS::HgiTextureHandle& texture,
             bool isDepth)
 {
-    QOpenGLFunctions* gl = QOpenGLContext::currentContext()->functions();
     const int channels = isDepth ? 1 : 4;
     std::vector<float> texels((std::size_t)(kSize * kSize * channels), -1.f);
     GLint previous = 0;
     GLuint framebuffer = 0;
 
-    gl->glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous);
-    gl->glGenFramebuffers(1, &framebuffer);
-    gl->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    gl->glFramebufferTexture2D(GL_FRAMEBUFFER, isDepth ? GL_DEPTH_ATTACHMENT : GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, (GLuint)texture->GetRawResource(), 0);
-    if (gl->glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
-        gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        gl->glReadPixels(0, 0, kSize, kSize, isDepth ? GL_DEPTH_COMPONENT : GL_RGBA, GL_FLOAT, texels.data());
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous);
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, isDepth ? GL_DEPTH_ATTACHMENT : GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, (GLuint)texture->GetRawResource(), 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, kSize, kSize, isDepth ? GL_DEPTH_COMPONENT : GL_RGBA, GL_FLOAT, texels.data());
     } else {
         ADD_FAILURE() << "the " << (isDepth ? "depth" : "colour") << " texture cannot be read through a framebuffer";
     }
-    gl->glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)previous);
-    gl->glDeleteFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)previous);
+    glDeleteFramebuffers(1, &framebuffer);
 
     return texels;
 }

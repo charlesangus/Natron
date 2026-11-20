@@ -635,6 +635,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **F29 - UI Polish Batch (PM, 2026-11-20):** Feature review round 1 (Claude reviewer) found 1 medium and 4 low issues, fixed in f75950a65. The gate and a new UAT AppImage are building. UAT is still pending.
 - **Deep-chain render segfault, for /cat-plan (PM, 2026-11-20, from M262 - Expression Benchmark For Large Graphs):** NatronRenderer segfaults about 2 s into the first render of a 20000-node Grade chain with an expression on each node (exprmixed). N=5000 works. It is probably a stack overflow in a recursive upstream or expression walk; there is no backtrace yet. The user asked for it to be filed as an E14 - Architecture stub. Repro: tools/bench/graph_bench.py, BENCH_TOPO=exprmixed BENCH_N=20000.
 - **F8 - Motion Vectors UAT round 2 (PM, 2026-11-20):** all eight round-1 fixes are on the Feature branch, and the gate is green on eb69d01ef. The round-2 AppImage is `build/appimages/Natron-f8-motion-vectors.AppImage`, with its steps `.md`.
 

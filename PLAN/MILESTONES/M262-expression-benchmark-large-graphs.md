@@ -41,7 +41,7 @@ Measures what Python knob expressions cost today, on graphs from 3 to 5000 or mo
 
 ## Phase 262.2: Baseline
 
-- [ ] M262.P2.T1 — Run the matrix and record the baseline and M265's go/no-go numbers
+- [x] M262.P2.T1 — Run the matrix and record the baseline and M265's go/no-go numbers
   - files: tools/bench/BASELINE.md
   - approach: Run the full matrix on the release preset and append a table (topology, N, cold and warm microseconds per evaluation, per-kind split, first-frame wall time, cores) under a new "Expression evaluation" heading in BASELINE.md. Record in this milestone's `## Decisions` the figure that would make a native evaluator unnecessary: the cold `exprmixed` N=5000 first-frame expression time after M263 - Expression Interpreter Overhead and M264 - Expression Result Cache. Propose 100 ms; the user confirms or changes it when M265 - Native Expression Evaluator comes up.
   - verify: BASELINE.md has the table with a row for every topology and size; the Decisions entry names the threshold.

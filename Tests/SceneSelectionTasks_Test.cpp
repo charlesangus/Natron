@@ -197,8 +197,8 @@ TEST(SceneSelectionTasksPlugin, MergesTheTasksBesideTheSceneWhileArmed)
         tasks = arming.take();
         EXPECT_FALSE(arming.take());
     }
-    ASSERT_TRUE(tasks);
-    ASSERT_TRUE(merged);
+    ASSERT_TRUE(tasks != nullptr);
+    ASSERT_TRUE(merged != nullptr);
     EXPECT_NE(get_pointer(input), get_pointer(merged));
     EXPECT_EQ(HdPrimTypeTokens->mesh, merged->GetPrim(SdfPath("/World/Card")).primType);
     ASSERT_EQ(4u, tasks->getTaskPaths().size());
@@ -229,7 +229,7 @@ TEST(SceneSelectionTasksPlugin, EachEngineBuiltWhileArmedGetsTasksUnderItsOwnPre
         SceneSelectionTasks::append(input);
         second = arming.take();
     }
-    ASSERT_TRUE(first && second);
+    ASSERT_TRUE(first != nullptr && second != nullptr);
     EXPECT_NE(first->getTaskPaths().front(), second->getTaskPaths().front());
     EXPECT_NE(first->getColorBufferPath(), second->getColorBufferPath());
 }
@@ -248,7 +248,7 @@ TEST_F(SceneSelectionTasksTest, OneTaskPerStormMaterialTagInDrawOrder)
     for (std::size_t i = 0; i < 4; ++i) {
         const SdfPath& path = _tasks->getTaskPaths()[i];
         EXPECT_EQ(HdPrimTypeTokens->task, _tasks->getSceneIndex()->GetPrim(path).primType) << path;
-        EXPECT_TRUE(taskAt(*_tasks, path).GetFactory()) << path;
+        EXPECT_TRUE(taskAt(*_tasks, path).GetFactory() != nullptr) << path;
         const HdRprimCollection collection = collectionAt(*_tasks, path);
         EXPECT_EQ(tags[i], collection.GetMaterialTag()) << path;
         EXPECT_EQ(SdfPathVector { SdfPath("/World/Card") }, collection.GetRootPaths()) << path;
@@ -323,10 +323,10 @@ TEST_F(SceneSelectionTasksTest, TheBuffersTakeTheGivenSizeAndFormats)
         const HdSceneIndexPrim prim = _tasks->getSceneIndex()->GetPrim(buffer.first);
         EXPECT_EQ(HdPrimTypeTokens->renderBuffer, prim.primType) << buffer.first;
         const HdRenderBufferSchema schema = HdRenderBufferSchema::GetFromParent(prim.dataSource);
-        ASSERT_TRUE(schema.GetDimensions() && schema.GetFormat()) << buffer.first;
+        ASSERT_TRUE(schema.GetDimensions() != nullptr && schema.GetFormat() != nullptr) << buffer.first;
         EXPECT_EQ(GfVec3i(64, 32, 1), schema.GetDimensions()->GetTypedValue(0.f)) << buffer.first;
         EXPECT_EQ(buffer.second, schema.GetFormat()->GetTypedValue(0.f)) << buffer.first;
-        ASSERT_TRUE(schema.GetMultiSampled()) << buffer.first;
+        ASSERT_TRUE(schema.GetMultiSampled() != nullptr) << buffer.first;
         EXPECT_FALSE(schema.GetMultiSampled()->GetTypedValue(0.f)) << buffer.first;
     }
 }
@@ -367,7 +367,7 @@ TEST_F(SceneSelectionTasksTest, ARenderTagChangeDirtiesOnlyTheRenderTags)
     _tasks->setRenderTags(withProxy);
     expectOnlyLocator(_recorder, *_tasks, HdLegacyTaskSchema::GetRenderTagsLocator(), 4);
     const HdTokenVectorDataSourceHandle tags = taskAt(*_tasks, _tasks->getTaskPaths()[2]).GetRenderTags();
-    ASSERT_TRUE(tags);
+    ASSERT_TRUE(tags != nullptr);
     EXPECT_EQ(withProxy, tags->GetTypedValue(0.f));
 }
 

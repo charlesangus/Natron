@@ -133,3 +133,4 @@ full ctest, smoke and CI are green; the user signs off the UAT.
   - The client's copy loads unsaved.
 
   Risk: several apps in one test process; the fallback is NatronRenderer subprocesses. Build running.
+- 2026-11-20 — Build fix de4f9b8d5 (INSTANTIATE_TEST_CASE_P). main is merged into F5 (fast-forward) and into the lane (7703067ce).

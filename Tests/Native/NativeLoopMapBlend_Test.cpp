@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <list>
@@ -42,7 +43,9 @@
 #include "NativeShapeTestSupport.h"
 #include "RenderBothWays.h"
 
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobDriver.h"
 #include "Engine/KnobTypes.h"
@@ -56,7 +59,10 @@
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/Loop/LoopMapBlend.h"
+#include "Engine/PoolParallelFor.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -585,4 +591,61 @@ TEST_F(NativeLoopMapBlendTest, AMapReadFromAnotherBodyDoesNotPair)
     EXPECT_EQ(end->getEffectInstance().get(), LoopEnd::pairedEndOf(begin).get());
     int type = -1;
     EXPECT_TRUE(message(outerEnd, &type).empty()) << message(outerEnd, &type);
+}
+
+// accumulate() splits a large window into row bands across the pool; the sum it leaves must be the
+// one a single thread leaves, bit for bit, with the window, the Map and every iteration image
+// offset from one another.
+TEST_F(NativeLoopMapBlendTest, AccumulateIsTheSameOnOneThreadAndMany)
+{
+    const int count = 6;
+    const int nComps = 4;
+    const RectI roi(-37, 11, 603, 491);
+    const RectI imageBounds(-50, 0, 620, 500);
+    ASSERT_GE((qint64)roi.width() * roi.height(), kMinParallelRowBandArea);
+
+    MapPlane map;
+    map.reset(RectI(roi.x1 + 5, roi.y1 + 3, roi.x2 - 7, roi.y2 - 9), 0.f);
+    for (int y = map.window().y1; y < map.window().y2; ++y) {
+        float* row = map.row(y);
+        for (int x = map.window().x1; x < map.window().x2; ++x) {
+            const float m = (float)((x * 131 + y * 71) % 1009) / 1008.f;
+            row[x - map.window().x1] = (x < roi.x1 + roi.width() / 3) ? 0.f : m;
+        }
+    }
+
+    std::vector<ImagePtr> images;
+    for (int k = 0; k < count; ++k) {
+        ImagePtr img = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(),
+                                               RectD(imageBounds.x1, imageBounds.y1, imageBounds.x2, imageBounds.y2),
+                                               imageBounds, 0, 1., eImageBitDepthFloat, eImageFieldingOrderNone, false);
+        std::vector<float> values((std::size_t)imageBounds.width() * imageBounds.height() * nComps);
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            values[i] = (float)((i * 37 + (std::size_t)k * 101) % 1000) / 997.f - 0.25f;
+        }
+        Image::WriteAccess w = img->getWriteRights();
+        std::memcpy(w.pixelAt(imageBounds.x1, imageBounds.y1), values.data(), values.size() * sizeof(float));
+        images.push_back(img);
+    }
+
+    const std::vector<InterpolationEnum> modes = { eInterpolationLinear, eInterpolationCubic, eInterpolationNearest };
+    for (InterpolationEnum interpolation : modes) {
+        const std::vector<RectI> regions = iterationRegions(map, roi, count, interpolation);
+        const std::size_t size = (std::size_t)roi.width() * roi.height() * nComps;
+        std::vector<float> serial(size, 0.f), banded(size, 0.f);
+        {
+            AppTLS::ThreadBudgetScope budget(1);
+            for (int k = 0; k < count; ++k) {
+                accumulate(map, images[k].get(), regions[k], k, count, interpolation, roi, nComps, serial.data());
+            }
+        }
+        {
+            AppTLS::ThreadBudgetScope budget(4);
+            ASSERT_GT(appPTR->getNCPUsAvailableForEffect(), 1);
+            for (int k = 0; k < count; ++k) {
+                accumulate(map, images[k].get(), regions[k], k, count, interpolation, roi, nComps, banded.data());
+            }
+        }
+        EXPECT_EQ(0, std::memcmp(serial.data(), banded.data(), size * sizeof(float))) << "interpolation " << (int)interpolation;
+    }
 }

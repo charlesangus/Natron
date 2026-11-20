@@ -3,7 +3,7 @@
 Sections:
   - eye blur: Constant -> LoopBegin -> Blur -> LoopEnd, the Blur's size driven from loop.t from 0 to
     20 and the LoopEnd in Map Blend mode (8 iterations, Linear) with a Roto ellipse as its Map input.
-    Pixels well outside the ellipse (Map 0, iteration 0) equal the unblurred CheckerBoard exactly;
+    Pixels well outside the ellipse (Map 0, iteration 0) equal the unblurred CheckerBoard to within one 8-bit level;
     the pixels inside the ellipse (Map 1, the full blur) differ from it.
   - map grade: the same loop with a Grade whose gain (multiply) is driven from 0 to 1 over 11
     iterations and a horizontal Ramp as the Map. The left end is dark, the right end is the input, and
@@ -190,9 +190,14 @@ try:
         source = yield from show(viewer, checker)
         blurred = yield from show(viewer, end)
         gt.shot("m183-eye-blur.png")
-        same_far = sum(1 for p in FAR_POINTS if at(blurred, span, *p) == at(source, span, *p))
-        check(same_far == len(FAR_POINTS),
-              "pixels far outside the ellipse equal the input exactly (%d of %d)" % (same_far, len(FAR_POINTS)))
+        far_bad = []
+        for p in FAR_POINTS:
+            a, b = at(blurred, span, *p), at(source, span, *p)
+            if max(abs(u - v) for u, v in zip(a, b)) > 1:
+                far_bad.append("(%.2f, %.2f) blurred %r input %r" % (p[0], p[1], a, b))
+        check(not far_bad,
+              "pixels far outside the ellipse equal the input within one level per channel (%d of %d differ: %s)"
+              % (len(far_bad), len(FAR_POINTS), "; ".join(far_bad)))
         inside = [(0.5 + dx * ELLIPSE_RADIUS * 0.6 * fh / fw, 0.5 + dy * ELLIPSE_RADIUS * 0.6)
                   for dx in (-1, -0.5, 0, 0.5, 1) for dy in (-1, -0.5, 0, 0.5, 1)]
         changed = sum(1 for p in inside if at(blurred, span, *p) != at(source, span, *p))

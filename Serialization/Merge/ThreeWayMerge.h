@@ -68,7 +68,9 @@ struct MergeResult {
  * shot imported (base). Nodes outside the plan's scope keep mine's state. Knobs merge per
  * dimension through the handler registry, inputs per label, and a node's position as one (x, y)
  * pair; names, labels, positions, sizes and colours take the side that changed them and never
- * conflict. Every conflict is resolved, mostly by keeping mine, and listed.
+ * conflict. A script name only has to be free among its siblings, so a node from theirs keeps its
+ * name unless a node in the same group already holds it. Every conflict is resolved, mostly by
+ * keeping mine, and listed.
  *
  * Expressions and links that name nodes are compared and written in the merged snapshot's names,
  * so a node the artist renamed keeps the supervisor's new expressions that name it. The merged

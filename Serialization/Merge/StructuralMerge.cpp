@@ -97,7 +97,7 @@ namespace MergeDetail {
             if (found == context->out.end()) {
                 return;
             }
-            context->names.erase(found->second.node->scriptName);
+            context->names[found->second.parent].erase(found->second.node->scriptName);
             context->removedParents[id] = found->second.parent;
             context->out.erase(found);
         }
@@ -265,13 +265,17 @@ namespace MergeDetail {
                     conflict.baseNodeId = node->baseId;
                     conflict.nodeId = node->node->id;
                     conflict.input = label;
+                    std::map<std::string, std::size_t>::const_iterator reparent = context->reparentConflicts.find(node->node->id);
                     if (isReal(*context, b) && !mineTail.first.empty() && !theirsTail.first.empty()) {
                         context->out[mineTail.first].inputIds[mineTail.second] = t;
                         conflict.kind = MergeConflictKind::eStructuralInsert;
+                        context->conflicts.push_back(conflict);
+                    } else if (reparent != context->reparentConflicts.end()) {
+                        context->conflicts[reparent->second].inputs.push_back(label);
                     } else {
                         conflict.kind = MergeConflictKind::eInput;
+                        context->conflicts.push_back(conflict);
                     }
-                    context->conflicts.push_back(conflict);
                 }
                 if (isReal(*context, result)) {
                     merged[label] = result;
@@ -305,6 +309,7 @@ namespace MergeDetail {
 
                 return;
             }
+            context->reparentConflicts[node->node->id] = context->conflicts.size();
             context->addConflict(MergeConflictKind::eReparent, node->baseId);
         }
 
@@ -416,6 +421,31 @@ namespace MergeDetail {
     }
 
     void
+    mergeParents(MergeContext* context)
+    {
+        std::vector<std::string> merging;
+        for (const std::pair<const std::string, OutNode>& entry : context->out) {
+            if (entry.second.fromMine && !entry.second.theirsId.empty() && !entry.second.baseId.empty()) {
+                merging.push_back(entry.first);
+            }
+        }
+        std::sort(merging.begin(), merging.end(), [context](const std::string& a, const std::string& b) {
+            return context->out[a].order < context->out[b].order;
+        });
+        for (const std::string& id : merging) {
+            mergeParent(context, &context->out[id]);
+        }
+        for (std::pair<const std::string, OutNode>& entry : context->out) {
+            std::string parent = entry.second.parent;
+            while (!parent.empty() && !context->out.count(parent)) {
+                std::map<std::string, std::string>::const_iterator removed = context->removedParents.find(parent);
+                parent = (removed == context->removedParents.end()) ? std::string() : removed->second;
+            }
+            entry.second.parent = parent;
+        }
+    }
+
+    void
     mergeConnections(MergeContext* context)
     {
         for (std::pair<const std::string, OutNode>& entry : context->out) {
@@ -456,11 +486,7 @@ namespace MergeDetail {
             return context->out[a].order < context->out[b].order;
         });
         for (const std::string& id : merging) {
-            OutNode& node = context->out[id];
-            mergeInputs(context, &node);
-            if (!node.baseId.empty()) {
-                mergeParent(context, &node);
-            }
+            mergeInputs(context, &context->out[id]);
         }
     }
 
@@ -476,14 +502,7 @@ namespace MergeDetail {
             return context->out[a].order < context->out[b].order;
         });
         for (const std::string& id : ordered) {
-            OutNode& node = context->out[id];
-            std::string parent = node.parent;
-            while (!parent.empty() && !context->out.count(parent)) {
-                std::map<std::string, std::string>::const_iterator removed = context->removedParents.find(parent);
-                parent = (removed == context->removedParents.end()) ? std::string() : removed->second;
-            }
-            node.parent = parent;
-            children[parent].push_back(id);
+            children[context->out[id].parent].push_back(id);
         }
         for (const std::string& id : ordered) {
             OutNode& node = context->out[id];

@@ -39,7 +39,8 @@ enum class MergeConflictKind {
     // One side deleted a node the other changed. A node the artist deleted is restored from
     // theirs; a node the supervisor deleted is kept from mine without its origin.
     eDeleteModify,
-    // Both sides moved one node into different groups; the merge kept mine.
+    // Both sides moved one node into different groups; the merge kept mine. Inputs the two sides
+    // also connected differently are listed on it, not raised apart, and keep mine too.
     eReparent,
     // A side's node stands for a base node by structure, not by identity.
     eAdopted,
@@ -85,6 +86,8 @@ struct MergeConflict {
     // -1 for the whole knob.
     int dimension = -1;
     std::string input;
+    // eReparent: the node's inputs the two sides connected differently.
+    std::vector<std::string> inputs;
     // eDeleteModify: the side that deleted the node. eAdopted: the side whose node was adopted.
     MergeSide side = MergeSide::eMine;
     // eAdopted: the knobs the adopted node leaves at their default while the base node sets them.

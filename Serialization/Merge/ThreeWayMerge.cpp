@@ -19,6 +19,7 @@
 
 #include "Serialization/Merge/ThreeWayMerge.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -217,7 +218,7 @@ namespace MergeDetail {
             node.inputIds = entry.second.inputs;
             node.order = std::make_pair(0, mineOrder[entry.first]);
             node.fromMine = true;
-            names.insert(node.node->scriptName);
+            names[node.parent].insert(node.node->scriptName);
             out.emplace(entry.first, std::move(node));
         }
     }
@@ -239,9 +240,13 @@ namespace MergeDetail {
     }
 
     std::string
-    MergeContext::uniqueName(const std::string& wanted) const
+    MergeContext::uniqueName(const std::string& group,
+                             const std::string& wanted) const
     {
-        if (!names.count(wanted)) {
+        static const std::set<std::string> none;
+        std::map<std::string, std::set<std::string>>::const_iterator found = names.find(group);
+        const std::set<std::string>& taken = (found == names.end()) ? none : found->second;
+        if (!taken.count(wanted)) {
             return wanted;
         }
         std::size_t stemEnd = wanted.size();
@@ -250,7 +255,7 @@ namespace MergeDetail {
         }
         const std::string stem = wanted.substr(0, stemEnd);
         int number = (stemEnd < wanted.size()) ? std::atoi(wanted.c_str() + stemEnd) + 1 : 2;
-        while (names.count(stem + std::to_string(number))) {
+        while (taken.count(stem + std::to_string(number))) {
             ++number;
         }
 
@@ -268,21 +273,21 @@ namespace MergeDetail {
         node.node->id = newNodeId();
         node.node->origin.templateKey = plan.templateKey;
         node.node->origin.nodeId = theirsId;
-        node.node->scriptName = uniqueName(source->node->scriptName);
-        if (source->node->label == source->node->scriptName) {
-            node.node->label = node.node->scriptName;
-        }
         if (!source->parentId.empty()) {
             std::map<std::string, std::string>::const_iterator parent = theirsToOut.find(source->parentId);
             if (parent != theirsToOut.end()) {
                 node.parent = parent->second;
             }
         }
+        node.node->scriptName = uniqueName(node.parent, source->node->scriptName);
+        if (source->node->label == source->node->scriptName) {
+            node.node->label = node.node->scriptName;
+        }
         node.order = std::make_pair(1, theirsOrder[theirsId]);
         node.fromMine = false;
         node.theirsId = theirsId;
         const std::string id = node.node->id;
-        names.insert(node.node->scriptName);
+        names[node.parent].insert(node.node->scriptName);
         theirsToOut[theirsId] = id;
         out.emplace(id, std::move(node));
 
@@ -401,6 +406,33 @@ namespace MergeDetail {
     }
 
     void
+    settleNames(MergeContext* context)
+    {
+        std::vector<std::string> ordered;
+        for (const std::pair<const std::string, OutNode>& entry : context->out) {
+            ordered.push_back(entry.first);
+        }
+        std::sort(ordered.begin(), ordered.end(), [context](const std::string& a, const std::string& b) {
+            return context->out[a].order < context->out[b].order;
+        });
+        context->names.clear();
+        for (const std::string& id : ordered) {
+            OutNode& node = context->out[id];
+            const std::string was = node.node->scriptName;
+            const std::string name = context->uniqueName(node.parent, was);
+            // Only a move into another group makes siblings clash, and a sibling's bare reference
+            // to the moved node broke with the move, so references keep naming the node that stayed.
+            if (name != was) {
+                node.node->scriptName = name;
+                if (node.node->label == was) {
+                    node.node->label = name;
+                }
+            }
+            context->names[node.parent].insert(name);
+        }
+    }
+
+    void
     mergeAppearance(MergeContext* context)
     {
         for (std::pair<const std::string, OutNode>& entry : context->out) {
@@ -412,9 +444,10 @@ namespace MergeDetail {
             const NodeSerialization& theirs = *context->theirs.find(node.theirsId)->node;
             NodeSerialization& mine = *node.node;
 
-            if ((mine.scriptName == base.scriptName) && (theirs.scriptName != base.scriptName) && !context->names.count(theirs.scriptName)) {
-                context->names.erase(mine.scriptName);
-                context->names.insert(theirs.scriptName);
+            std::set<std::string>& siblings = context->names[node.parent];
+            if ((mine.scriptName == base.scriptName) && (theirs.scriptName != base.scriptName) && !siblings.count(theirs.scriptName)) {
+                siblings.erase(mine.scriptName);
+                siblings.insert(theirs.scriptName);
                 context->mineRenames[mine.scriptName] = theirs.scriptName;
                 mine.scriptName = theirs.scriptName;
             }
@@ -523,6 +556,8 @@ threeWayMerge(const ProjectSerialization& base,
 {
     MergeDetail::MergeContext context(base, mine, theirs, plan, options);
     MergeDetail::mergeExistence(&context);
+    MergeDetail::mergeParents(&context);
+    MergeDetail::settleNames(&context);
     MergeDetail::mergeAppearance(&context);
     MergeDetail::mergeKnobs(&context);
     MergeDetail::mergeConnections(&context);

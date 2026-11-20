@@ -26,6 +26,8 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -209,11 +211,44 @@ TEST(StructuralMerge, MovesIntoDifferentGroupsConflictAndKeepMine)
     EXPECT_TRUE(nodeAt(result.merged, "Look.Blur1") == nullptr);
     EXPECT_TRUE(nodeAt(result.merged, "Look") != nullptr);
     EXPECT_EQ(inputOf(result.merged, "Merge1", "B"), "ArtistLook");
-    int reparents = 0;
+    EXPECT_TRUE(nodeAt(result.merged, "ArtistLook.LookOut") != nullptr);
+    EXPECT_TRUE(nodeAt(result.merged, "Look.LookOut") != nullptr);
+    EXPECT_TRUE(nodeAt(result.merged, "Look.LookOut2") == nullptr);
+    Serialization::NodeSerializationPtr blur = nodeAt(result.merged, "ArtistLook.Blur1");
+    ASSERT_TRUE(blur != nullptr);
+    std::vector<Serialization::MergeConflict> onBlur;
     for (const Serialization::MergeConflict& conflict : result.conflicts) {
-        reparents += (conflict.kind == Serialization::MergeConflictKind::eReparent) ? 1 : 0;
+        if (conflict.nodeId == blur->id) {
+            onBlur.push_back(conflict);
+        }
     }
-    EXPECT_EQ(reparents, 1);
+    ASSERT_EQ(onBlur.size(), 1u);
+    EXPECT_EQ(onBlur.front().kind, Serialization::MergeConflictKind::eReparent);
+    EXPECT_EQ(onBlur.front().inputs, std::vector<std::string>({ "Source" }));
+}
+
+TEST(StructuralMerge, NamesAreUniqueWithinTheirGroup)
+{
+    Scenario scenario = scenarios().at("keyframes-both-sides");
+    wrapIntoGroup(&scenario.mine, "ArtistLook", "m:", false);
+    scenario.theirs.add("LookOut", "Output", "t:LookOut");
+    const Serialization::MergeResult result = Projects(scenario).merge();
+    EXPECT_TRUE(nodeAt(result.merged, "ArtistLook.LookOut") != nullptr);
+    Serialization::NodeSerializationPtr added = nodeAt(result.merged, "LookOut");
+    ASSERT_TRUE(added != nullptr);
+    EXPECT_EQ(added->origin.nodeId, hexId("t:LookOut"));
+    EXPECT_TRUE(nodeAt(result.merged, "LookOut2") == nullptr);
+
+    Scenario clash = scenarios().at("keyframes-both-sides");
+    clash.mine.add("Blur2", "Blur", "m:Blur2");
+    clash.theirs.add("Blur2", "Blur", "t:Blur2");
+    const Serialization::MergeResult renamed = Projects(clash).merge();
+    Serialization::NodeSerializationPtr mine = nodeAt(renamed.merged, "Blur2");
+    ASSERT_TRUE(mine != nullptr);
+    EXPECT_FALSE(mine->origin.isSet());
+    Serialization::NodeSerializationPtr theirs = nodeAt(renamed.merged, "Blur3");
+    ASSERT_TRUE(theirs != nullptr);
+    EXPECT_EQ(theirs->origin.nodeId, hexId("t:Blur2"));
 }
 
 TEST(StructuralMerge, IdenticalAdditionsOnBothSidesGiveOneNode)

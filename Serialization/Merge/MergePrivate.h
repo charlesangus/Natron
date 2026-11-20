@@ -22,6 +22,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <map>
 #include <set>
 #include <string>
@@ -76,11 +77,14 @@ namespace MergeDetail {
         std::map<std::string, OutNode> out;
         std::map<std::string, std::string> baseToOut;
         std::map<std::string, std::string> theirsToOut;
-        // Every script name in use in the merged snapshot.
-        std::set<std::string> names;
+        // The script names in use in each group of the merged snapshot, by the group's merged ID,
+        // empty for the top level. A name only has to be free among its siblings.
+        std::map<std::string, std::set<std::string>> names;
         // Mine's names the merge changed, old to new.
         NodeRenames mineRenames;
         std::vector<MergeConflict> conflicts;
+        // A merged node's reparent conflict, as an index into conflicts.
+        std::map<std::string, std::size_t> reparentConflicts;
         // The parent each removed mine node had, so its orphans move up to a node that remains.
         std::map<std::string, std::string> removedParents;
 
@@ -88,10 +92,11 @@ namespace MergeDetail {
         std::string baseOfMine(const std::string& mineId) const;
         std::string baseOfTheirs(const std::string& theirsId) const;
 
-        // A script name not yet in use, from wanted.
-        std::string uniqueName(const std::string& wanted) const;
+        // A script name not yet in use in group, from wanted.
+        std::string uniqueName(const std::string& group,
+                               const std::string& wanted) const;
 
-        // Copies theirs' node into the merged snapshot under a fresh ID and a free name.
+        // Copies theirs' node into the merged snapshot under a fresh ID and a name free in its group.
         std::string addFromTheirs(const std::string& theirsId);
 
         void addConflict(MergeConflictKind kind,
@@ -124,11 +129,15 @@ namespace MergeDetail {
 
     // Node existence: deletes, restores, additions and identical additions.
     void mergeExistence(MergeContext* context);
+    // Parents of the nodes both sides kept, and of the nodes whose group the merge removed.
+    void mergeParents(MergeContext* context);
+    // Renames every node whose name a sibling took first, now that each node has its group.
+    void settleNames(MergeContext* context);
     // Script names, labels and layout of the nodes both sides kept.
     void mergeAppearance(MergeContext* context);
     // Knobs of the nodes both sides kept, and the adopted-node conflicts.
     void mergeKnobs(MergeContext* context);
-    // Inputs and parents of the nodes both sides kept.
+    // Inputs of the nodes both sides kept.
     void mergeConnections(MergeContext* context);
     // The merged snapshot.
     ProjectSerialization assemble(MergeContext* context);

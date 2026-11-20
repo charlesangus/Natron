@@ -23,6 +23,8 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include "Gpu/GpuTestSelector.h"
+
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include "Global/Macros.h"
@@ -184,6 +186,7 @@ public:
         }
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
         options.infoLog = [this](const std::string& line) {
             std::lock_guard<std::mutex> l(_logMutex);
             _log.push_back(line);

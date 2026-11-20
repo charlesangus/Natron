@@ -130,7 +130,13 @@ TEST(GpuFaultPlanTest, Parse)
     EXPECT_EQ(p.atOperation, 3u);
     EXPECT_TRUE(GpuFaultPlan::parse("oom@12", p));
     EXPECT_EQ(p.kind, GpuFaultPlan::Kind::OutOfMemory);
-    for (const char* bad : { "", "lost", "lost@", "lost@0", "lost@x", "boom@1", "@1", "oom@-1" }) {
+    EXPECT_FALSE(p.regionOnly);
+    EXPECT_TRUE(GpuFaultPlan::parse("lost@region:2", p));
+    EXPECT_EQ(p.kind, GpuFaultPlan::Kind::DeviceLost);
+    EXPECT_EQ(p.atOperation, 2u);
+    EXPECT_TRUE(p.regionOnly);
+    for (const char* bad : { "", "lost", "lost@", "lost@0", "lost@x", "boom@1", "@1", "oom@-1", "lost@region:",
+                             "lost@region:0", "lost@region", "lost@stage:1" }) {
         EXPECT_FALSE(GpuFaultPlan::parse(bad, p)) << bad;
     }
 }

@@ -59,14 +59,11 @@ OcioFileKnobs::create(KnobHolder* holder,
     file->setName(kOcioFileParamFile);
     file->setHintToolTip(fileHint.toStdString());
     file->setAnimationEnabled(false);
-    file->setShowsReloadButton(false);
-    file->setAddNewLine(false);
     ocio.addKnob(page, file);
     _file = file;
 
-    KnobButtonPtr reload = AppManager::createKnob<KnobButton>(holder, tr("Reload").toStdString());
-    reload->setName(kOcioFileParamReload);
-    reload->setHintToolTip(tr("Reads the file again, so a file changed on disk is what the node applies.").toStdString());
+    KnobButtonPtr reload = file->createReloadButton(kOcioFileParamReload,
+                                                    tr("Reads the file again, so a file changed on disk is what the node applies."));
     ocio.addKnob(page, reload);
     _reload = reload;
 

@@ -38,11 +38,16 @@ set(_natron_long_suite_timeouts
     NativeDenoiseProfiledGpuTest 900
     # Debug: about 440 s, almost all of it the 204,800 renders of the long feedback chain.
     NativeLoopFeedbackTest 1500
+    # Debug: about 180 s alone and up to 315 s beside other suites, as each of its uncached variants
+    # decodes and develops a whole raw.
+    NativeRawColorCalibrationReferenceTest 900
     # Debug llvmpipe on a loaded runner: 150 to 285 s with ten filters, most of it one frame per
     # filter and clamp, so it grows with the filter list and the wider kernels.
     NativeSplineWarpGpuTest 900
     NativeFilterSpecGpuTest 900
     StagedResampleTest 900
+    # Debug: about 234 s on a quiet runner, 28 to 38 s per case under load.
+    GraphScalingConnectTest 900
 )
 
 set(_natron_long_suites "")
@@ -109,3 +114,23 @@ if(NATRON_CYCLES_BUNDLED)
         set_tests_properties(${_suite} PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_CYCLES=1")
     endforeach()
 endif()
+
+# ONNX Runtime never starts its telemetry client when it sees one of these variables, which is how
+# CI runners and the natron-dev container (CI=True) are detected. Left set, AiOrtTelemetry would
+# pass without testing anything. They have to be gone before the process starts: unsetting one
+# from the test would race threads that are already reading the environment.
+if(NOT "AiOrtTelemetry" IN_LIST NATRON_GTEST_SUITE_TESTS)
+    message(FATAL_ERROR "SuiteProperties.cmake: 'AiOrtTelemetry' is not a registered test; "
+                        "update the suite name or it would silently lose its properties.")
+endif()
+if(CMAKE_VERSION VERSION_LESS 3.22)
+    message(FATAL_ERROR "SuiteProperties.cmake: AiOrtTelemetry needs ctest from CMake 3.22 or newer "
+                        "for ENVIRONMENT_MODIFICATION.")
+endif()
+set(_natron_ort_env_unset "")
+foreach(_var CI TF_BUILD GITHUB_ACTIONS GITLAB_CI CIRCLECI TRAVIS JENKINS_URL CODEBUILD_BUILD_ID
+        BUILDKITE TEAMCITY_VERSION APPVEYOR BITBUCKET_BUILD_NUMBER SYSTEM_TEAMFOUNDATIONCOLLECTIONURI
+        ORT_RUNNING_UNIT_TESTS)
+    list(APPEND _natron_ort_env_unset "${_var}=unset:")
+endforeach()
+set_tests_properties(AiOrtTelemetry PROPERTIES ENVIRONMENT_MODIFICATION "${_natron_ort_env_unset}")

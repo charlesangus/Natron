@@ -34,6 +34,13 @@ the scene, USDWrite writes them out with it and other USD tools can read them.
   (`disableDepthOfField`): authored for renderers and tools that read them.
   USDRender always renders the whole format and does not read these three
   attributes (Data Window and the two Disable switches).
+- Transparent Background (`transparentBackground`, off by default): hides the
+  dome light and the world background from the camera, so the background
+  renders with zero alpha while the dome still lights the scene. It authors
+  `cycles:background:transparent` for Cycles and
+  `storm:domeLightCameraVisibility` for Storm, and wins over the Transparent
+  setting on the Cycles tab. Off, it authors neither, and each renderer keeps
+  its own default.
 - Default Renderer (`defaultRenderer`): the renderer for the prim, authored as
   `natron:renderer`. Storm is the default. If the chosen renderer is not
   installed or cannot run here, it stays chosen and is marked unavailable.
@@ -64,6 +71,13 @@ and says so when the control has no effect in this build.
   have no effect.
 - Light Contributions: switches for kinds of light, to break down or debug an
   image.
+- Film: exposure, the pixel filter and its width, a transparent background
+  and the approximate shadow catcher.
+- Passes: mist, Cryptomatte and the alpha threshold for data passes. Natron
+  reads every pass by name, so Cycles' choice of the pass it shows, and its
+  view of the pixels adaptive sampling still works on, have no knobs.
+- World: whether the world shader is used, which rays see the background,
+  and its light group.
 - Advanced: sampling pattern, minimum bounces, motion blur and pixel jitter.
   - Sample Subset: rendering part of the sample sequence. Only Sample Offset
     has an effect.

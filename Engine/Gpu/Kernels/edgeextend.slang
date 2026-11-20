@@ -1,6 +1,8 @@
+import edgesample;
+
 // EdgeExtend's own passes, after the workers of Engine/Nodes/Filter/EdgeExtend.cpp: the source fill
-// with the nearest pixel repeated and the running result started from the solid pixels, the
-// running result repeated past the CPU's buffer for a slice's blur, the merge of the result over
+// by the edge mode and the running result started from the solid pixels, the running result read
+// past the CPU's buffer by the edge mode for a slice's blur, the merge of the result over
 // its blur, and the extended colour into the output. The blur of each slice is blur.slang's. The running result,
 // the extended and the blurred buffers are tightly packed, `channels` floats per pixel.
 // EdgeExtendGpuParams in Engine/Nodes/Filter/EdgeExtend.cpp mirrors EdgeExtendParams.
@@ -51,24 +53,24 @@ struct EdgeExtendParams
     float epsilon;
     // The source's alpha at or above which a pixel is solid.
     float threshold;
+    // How the source and the running result read outside their pixels, edgesample's kEdgeStretch
+    // or kEdgeBlack.
+    uint edgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<EdgeExtendParams> params;
 
-bool hasSource()
+// The float index of the source pixel that (x, y) reads by the edge mode, or false when it reads
+// zero.
+bool sourceIndex(int x, int y, out uint index)
 {
-    return params.srcX1 < params.srcX2 && params.srcY1 < params.srcY2;
+    int2 at;
+    const bool hit = edgePixel(int2(x, y), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), params.edgeMode, at);
+    index = params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * params.channels;
+    return hit;
 }
 
-// The float index of the source pixel nearest to (x, y), which hasSource() must allow.
-uint sourceIndex(int x, int y)
-{
-    const int cx = clamp(x, params.srcX1, params.srcX2 - 1);
-    const int cy = clamp(y, params.srcY1, params.srcY2 - 1);
-    return params.srcOffset + uint(cy - params.srcY1) * params.srcStride + uint(cx - params.srcX1) * params.channels;
-}
-
-// fillBuffer() with the nearest-pixel boundary, then prepareWorker(): the straight colour with an
-// alpha of 1 where the source is solid, zero elsewhere; zero when the source has no pixel.
+// fillBuffer() by the edge mode, then prepareWorker(): the straight colour with an alpha of 1
+// where the source is solid, zero elsewhere.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void edgeextend_fill(uint3 tid : SV_DispatchThreadID)
@@ -77,13 +79,21 @@ void edgeextend_fill(uint3 tid : SV_DispatchThreadID)
         return;
     const uint n = params.channels;
     const uint dst = (tid.y * params.extWidth + tid.x) * n;
-    if (!hasSource())
+    uint src;
+    if (!sourceIndex(params.extX1 + int(tid.x), params.extY1 + int(tid.y), src))
     {
+        // The CPU prepares the zero it fills here like any other pixel.
+        if (params.active != 0 && params.extend != 0)
+        {
+            for (uint c = 0; c < 3; ++c)
+                outBuf[dst + c] = 0u;
+            outBuf[dst + 3] = asuint(0.0 >= params.threshold ? 1.0 : 0.0);
+            return;
+        }
         for (uint c = 0; c < n && c < 4; ++c)
             outBuf[dst + c] = 0u;
         return;
     }
-    const uint src = sourceIndex(params.extX1 + int(tid.x), params.extY1 + int(tid.y));
     if (params.active != 0 && params.extend != 0)
     {
         const float a = asfloat(inBuf[src + 3]);
@@ -104,8 +114,8 @@ void edgeextend_fill(uint3 tid : SV_DispatchThreadID)
         outBuf[dst + c] = inBuf[src + c];
 }
 
-// The running result over the extended rect, each pixel the nearest of the CPU's buffer: the
-// blur then reads the line ends the CPU's Neumann filter repeats.
+// The running result over the extended rect, read past the CPU's buffer by the edge mode: the
+// blur then reads the line ends the CPU's filter gives.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void edgeextend_extend(uint3 tid : SV_DispatchThreadID)
@@ -113,10 +123,15 @@ void edgeextend_extend(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= params.extWidth || tid.y >= params.extHeight)
         return;
     const uint n = params.channels;
-    const int x = clamp(params.extX1 + int(tid.x), params.bufX1, params.bufX1 + int(params.bufWidth) - 1);
-    const int y = clamp(params.extY1 + int(tid.y), params.bufY1, params.bufY1 + int(params.bufHeight) - 1);
-    const uint src = (uint(y - params.bufY1) * params.bufWidth + uint(x - params.bufX1)) * n;
     const uint dst = (tid.y * params.extWidth + tid.x) * n;
+    int2 at;
+    if (!edgePixel(int2(params.extX1 + int(tid.x), params.extY1 + int(tid.y)), int4(params.bufX1, params.bufY1, params.bufX1 + int(params.bufWidth), params.bufY1 + int(params.bufHeight)), params.edgeMode, at))
+    {
+        for (uint c = 0; c < n && c < 4; ++c)
+            outBuf[dst + c] = 0u;
+        return;
+    }
+    const uint src = (uint(at.y - params.bufY1) * params.bufWidth + uint(at.x - params.bufX1)) * n;
     for (uint c = 0; c < n && c < 4; ++c)
         outBuf[dst + c] = inBuf[src + c];
 }
@@ -160,7 +175,8 @@ void edgeextend_finish(uint3 tid : SV_DispatchThreadID)
         return;
     }
     const float a = asfloat(inBuf[k + 3]);
-    const float sourceAlpha = hasSource() ? asfloat(blurBuf[sourceIndex(x, y) + 3]) : 0.0;
+    uint src;
+    const float sourceAlpha = sourceIndex(x, y, src) ? asfloat(blurBuf[src + 3]) : 0.0;
     for (uint c = 0; c < 3; ++c)
     {
         float v = asfloat(inBuf[k + c]);

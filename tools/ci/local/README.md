@@ -94,12 +94,38 @@ build" for why). The `.ccache` dir and `HOME` volume survive that.
 `tools/ci/local/build-moonray.sh` builds DreamWorks' MoonRay and its Hydra
 render delegate, hdMoonray, CPU only, against the image's own USD, TBB, Boost,
 Embree, OpenVDB, OpenImageIO, OpenEXR and OpenImageDenoise, and installs them
-into `/opt/moonray`. The openmoonray tag is pinned to its commit
-(`NATRON_MOONRAY_VERSION` / `NATRON_MOONRAY_COMMIT` in the `Dockerfile`), and
-that commit pins every submodule; the ISPC compiler is a checksummed release
-binary used for the build only. It is one of the image's two slowest layers and
-sits right after the Cycles layer, which changes less often, so a MoonRay change
-leaves the Cycles layer cached.
+into `/opt/moonray`. The build applies no patches: it clones the forked
+super-repo `NATRON_MOONRAY_REPO` (default
+`https://github.com/charlesangus/openmoonray.git`) at the full commit
+`NATRON_MOONRAY_COMMIT` (both `ARG`s in the `Dockerfile`) and fetches each
+submodule from its full `.gitmodules` URL, which must be under
+`github.com/charlesangus` or `github.com/dreamworksanimation`. The ISPC
+compiler is a checksummed release binary used for the build only. The image's
+`SOURCE` file lists every repo's URL and commit. It is one of the image's two
+slowest layers and sits right after the Cycles layer, which changes less often,
+so a MoonRay change leaves the Cycles layer cached.
+
+The Natron changes live in forks, all on branch `natron/v2026.29.1`:
+
+- `charlesangus/openmoonray`, the super-repo: drops six unused subdirectories
+  and the unpublished `materialx_shaders` submodule, and points its submodules
+  at the forks below.
+- `charlesangus/arras4_core`, `charlesangus/moonray` and
+  `charlesangus/mcrt_dataio`: the build fixes Natron needs.
+- `charlesangus/hdMoonray`: the same, and it also reads the `moonray` material
+  render context.
+
+To move the pin, commit on the fork's `natron/v2026.29.1` branch and push it.
+For a submodule fork, push it before the super-repo, so the super-repo never
+references a commit that is not published. Then, in `charlesangus/openmoonray`,
+bump the submodule's gitlink, commit and push that branch, and set
+`NATRON_MOONRAY_COMMIT` in the `Dockerfile` to the new super-repo SHA (a full
+40-character SHA).
+
+Never force-push or rebase the forks' `natron/...` branches. The build pins
+commits that are reachable only through those branches, so rewriting one can
+leave a pin pointing at nothing. A new change goes on top as a new commit, and
+the pin moves to that commit.
 
 The prefix is relocatable and is never put on the loader path: MoonRay's
 libraries carry `$ORIGIN` RUNPATHs and link the image's `/usr/local/lib`
@@ -423,26 +449,6 @@ AppImage" steps, which only run on a tag push and drop their output in
 `/tmp/artifacts` instead of the build tree. Defaults to `release` (packaging
 a debug build is rarely useful, but supported).
 
-`appimagetool` needs a route to `upload.wikimedia.org` to validate the
-AppData screenshot URL; sandboxes without one can drop a wrapper at
-`build/appimagetool-wrapper/appimagetool` that execs the real tool with
-`-n`/`--no-appstream` (see that wrapper's own header for the full story) --
-`package.sh` puts it ahead of `PATH` when present, and does nothing when it
-isn't (e.g. CI, which has real network access).
-
-`make-appimagetool-wrapper.sh` creates that wrapper:
-
-```
-tools/ci/local/make-appimagetool-wrapper.sh <dir> [<real-appimagetool>]
-```
-
-`<dir>` receives `appimagetool` (the wrapper) and `appimagetool.real` (a
-copy of the real tool). The real tool is the path given, else the first
-`appimagetool` on `PATH`, else the `appimagetool.real` already in the main
-checkout's `build/appimagetool-wrapper/`; it exits 1 when none is found.
-`package.sh` calls it itself when the wrapper is missing but one of those
-sources exists, so you normally never run it by hand.
-
 ## 6. Verify a release bundle starts outside the dev container
 
 `tools/release/stage-bundle.sh` already runs `check-relocatable.sh` and
@@ -642,8 +648,6 @@ when its result is already there, so it is safe to re-run:
    shared dev container and a caller may not want to start a build there.
 3. `.natron-deps` linked to the main checkout's copy (not needed in the main
    checkout itself).
-4. `build/appimagetool-wrapper/` copied from the main checkout, or
-   regenerated with `make-appimagetool-wrapper.sh`.
 
 It prints a summary of what it did, what was already present, and notes. It
 never builds Natron.

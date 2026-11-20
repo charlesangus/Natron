@@ -132,7 +132,12 @@ Port of darktable's demosaic module (`src/iop/demosaic.c` and `src/iop/demosaici
   on a flat field.
 - The output metadata drops `raw/cfa_pattern`, `raw/cfa_origin`, `raw/stage`, `raw/black_levels`
   and `raw/white_level`. It keeps `raw/cam_to_xyz` and the white balance keys for RawInputColor.
-- It renders at full resolution only, and the host downscales the result for a proxy.
+- It always reads its source at full resolution. Below 100% the Zoomed-Out Demosaic preference
+  (Preferences > Viewer) decides how it renders. Fast, the default, averages each colour's photosites
+  under every output pixel, so one Bayer quad gives one pixel at half scale. Where an X-Trans
+  footprint lacks red or blue, it widens up to the CFA period to find them. Fast skips the method,
+  green equilibration, capture sharpening, the dual blend and colour smoothing, and the photosite
+  modes box-filter. Full renders the demosaic at full resolution, and the host downscales the result.
 
 Tests: `Tests/Native/NativeRawDemosaic_Test.cpp`, on synthetic Bayer and X-Trans mosaics. Real
 X-Trans files and darktable-reference comparisons come later. `NativeRawDemosaicPassthrough_Test.cpp` covers the photosite modes on hand-checked

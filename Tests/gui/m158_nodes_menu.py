@@ -54,7 +54,7 @@ PROP_GROUPING = "natronGrouping"
 PROP_TOOLBUTTON_ICON = "natronToolButtonIcon"
 
 NAMED_ORDER = ["Image", "Draw", "Time", "Channel", "Color", "Filter", "Keyer", "Merge", "Transform", "3D",
-               "Deep", "Metadata", "Views", "ToolSets", "Other", "Misc"]
+               "Deep", "Metadata", "Loop", "Reverse Flow Variable", "Views", "ToolSets", "Other", "Misc"]
 DEFAULT_GROUPING = "Misc"
 MERGE_GROUPING = "Merge"
 MERGE_ID = "Merge"

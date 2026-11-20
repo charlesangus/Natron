@@ -44,6 +44,7 @@
 #include "Native/RetouchTestSupport.h"
 #include "NativeParity.h"
 #include "RawReferenceSupport.h"
+#include "RegionIndependenceSupport.h"
 #include "RenderBothWays.h"
 #include "Serialization/ProjectBundleTestHelpers.h"
 
@@ -665,9 +666,9 @@ TEST_F(NativeRetouchTest, SourceDragKeysTheOffsetAndUndoes)
     EXPECT_DOUBLE_EQ(3., dy);
 }
 
-// Dragging the source of a selected shape, whose offset is keyed on the node's knob it is slaved
-// to, starts from that offset, moves it by the pen's motion, keeps the keys at other times, and
-// its undo step puts the offset back. Deselecting the shape keeps what the drag made.
+// Dragging the source of a selected shape, whose offset was keyed through the node's knob, starts
+// from that offset, moves it by the pen's motion, keeps the keys at other times, shows in the node's
+// knob, and its undo step puts the offset back. Deselecting the shape keeps what the drag made.
 TEST_F(NativeRetouchTest, SourceDragOfASelectedShapeMovesTheNodeOffset)
 {
     NodePtr node = makeRetouch(makeSource(false), 0);
@@ -687,7 +688,7 @@ TEST_F(NativeRetouchTest, SourceDragOfASelectedShapeMovesTheNodeOffset)
     KnobDoublePtr nodeOffset = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kRetouchShapeParamSourceOffset));
     ASSERT_TRUE(bool(nodeOffset));
 
-    // Keys set on the node's knob alone: the shape's own knob keeps (40, 0) and no keys.
+    // Keys set on the node's knob reach the selected shape's own knob.
     const double later = kTime + 10.;
     nodeOffset->setValueAtTime(kTime, 40., ViewSpec::all(), 0);
     nodeOffset->setValueAtTime(kTime, 10., ViewSpec::all(), 1);
@@ -2110,3 +2111,52 @@ TEST_F(NativeRetouchTest, BrushLifetimeMatchesARotoPaintStroke)
         }
     }
 }
+
+namespace {
+class RetouchRegionTest
+    : public RegionIndependenceTest {
+protected:
+    // A Retouch of source with 3 scales and the two region shapes of algorithm.
+    NodePtr makeRetouch(const NodePtr& source,
+                        RC::AlgorithmEnum algorithm)
+    {
+        NodePtr node = createAfter(PLUGINID_NATRON_RETOUCH, source);
+
+        if (!node) {
+            return node;
+        }
+        EXPECT_TRUE(setKnobValues(node, kRetouchParamScales, { 3. }));
+        for (const RetouchTest::ShapeSpec& spec : RetouchTest::regionShapeSpecs(algorithm)) {
+            EXPECT_TRUE(bool(RetouchTest::makeShape(node, spec, kTime)));
+        }
+
+        return node;
+    }
+
+    static std::vector<RC::AlgorithmEnum> algorithms()
+    {
+        return { RC::eAlgorithmClone, RC::eAlgorithmHeal, RC::eAlgorithmBlur, RC::eAlgorithmFill };
+    }
+};
+
+TEST_F(RetouchRegionTest, RegionIndependentCpu)
+{
+    for (RC::AlgorithmEnum algorithm : algorithms()) {
+        SCOPED_TRACE((int)algorithm);
+        expectRegionIndependent([this, algorithm](const NodePtr& source) {
+            return makeRetouch(source, algorithm);
+        });
+    }
+}
+
+TEST_F(RetouchRegionTest, InfiniteSourceFails)
+{
+    for (RC::AlgorithmEnum algorithm : algorithms()) {
+        SCOPED_TRACE((int)algorithm);
+        expectInfiniteRoDFails([this, algorithm](const NodePtr& source) {
+            return makeRetouch(source, algorithm);
+        });
+    }
+}
+
+} // namespace

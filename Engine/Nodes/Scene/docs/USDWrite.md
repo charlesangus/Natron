@@ -49,14 +49,17 @@ premultiplied, of the project's first view. They are written before the USD file
 so a texture that fails leaves the earlier USD files as they were. Off, the
 `natron://` paths are written as they are, and the node warns that the file is not
 portable. A `natron://` path whose source is no longer available, such as one read
-from an earlier file, is written as it is with a warning saying so.
+from an earlier file, is written as it is with a warning saying so. A texture
+whose node was deleted is left out, whether or not live textures are exported:
+the input it fed keeps the material's own value, such as its Diffuse Color, and
+the node warns, naming the material.
 
 A layer already open on a written file, such as a USDRead of it, is reloaded in
 place, so every viewer and node reading it shows the new content.
 
 The node sets an error, and the render fails, when File is empty or does not end
 in a USD extension, when the input scene fails, when Layered mode would
-overwrite a file the scene reads, or when a live texture cannot be rendered or
-written.
+overwrite a file the scene reads, or when a live texture whose node exists
+cannot be rendered or written.
 
 Tolerance: none recorded.

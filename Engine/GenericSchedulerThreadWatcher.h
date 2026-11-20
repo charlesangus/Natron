@@ -115,13 +115,10 @@ public:
 
     // The kind of tasks that this watcher supports, each of them will call the corresponding wait function on the GenericSchedulerThread
     // and emit the signal when appropriate
-    enum BlockingTaskEnum
-    {
-        eBlockingTaskWaitForAbort,
+    enum BlockingTaskEnum {
         eBlockingTaskWaitForQuitDisallowRestart,
         eBlockingTaskWaitForQuitAllowRestart,
     };
-
 
     GenericSchedulerThreadWatcher(GenericSchedulerThread* thread)
         : GenericWatcher()
@@ -147,13 +144,10 @@ public:
 
     // The kind of tasks that this watcher supports, each of them will call the corresponding wait function on the GenericSchedulerThread
     // and emit the signal when appropriate
-    enum BlockingTaskEnum
-    {
-        eBlockingTaskWaitForAbort,
+    enum BlockingTaskEnum {
         eBlockingTaskWaitForQuitDisallowRestart,
         eBlockingTaskWaitForQuitAllowRestart,
     };
-
 
     RenderEngineWatcher(RenderEngine* engine)
         : GenericWatcher()
@@ -179,12 +173,9 @@ public:
 
     // The kind of tasks that this watcher supports, each of them will call the corresponding wait function on the GenericSchedulerThread
     // and emit the signal when appropriate
-    enum BlockingTaskEnum
-    {
-        eBlockingTaskQuitAnyProcessing,
-        eBlockingTaskAbortAnyProcessing
+    enum BlockingTaskEnum {
+        eBlockingTaskQuitAnyProcessing
     };
-
 
     NodeRenderWatcher(const NodePtr& node)
         : GenericWatcher()

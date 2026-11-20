@@ -70,10 +70,11 @@ constexpr NodeSpec kIBlurNodeSpec = {
                    "\n"
                    "Where the Map is white the blur has the Size, where it is black the Size At Black (0 by default, which leaves those pixels exactly unchanged), "
                    "and in between a size in between. Map Channel picks the Map's channel in any of its layers, Invert Map inverts it, Map Gamma raises it to 1/gamma "
-                   "and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. Outside the Map image, the Map reads black, before Invert Map and the remap. With no Map connected, the blur has the Size everywhere.\n"
+                   "and Map Response picks a Linear or Smooth (smoothstep) curve from Size At Black to Size. Outside the Map image, the Map reads black before Invert Map and the remap when the Map input is black outside, and its nearest edge pixel when it stretches. With no Map connected, the blur has the Size everywhere.\n"
                    "\n"
                    "The blur is a box of the pixel's size applied three times, an approximation of the Gaussian of standard deviation size/2.4 that Blur uses "
-                   "(within about 2% at a constant size), whose cost does not depend on the size. It is black outside the image, and the Mask and Mix limit the result as usual.",
+                   "(within about 2% at a constant size), whose cost does not depend on the size. Outside the image it reads by the Edge Mode: Stretch repeats the edge pixels, Black darkens the blur towards the edges. "
+                   "The Mask and Mix limit the result as usual.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_IBLUR,
     .icon = NATRON_IMAGES_PATH "NativeNodes/IBlur.png",
@@ -81,7 +82,7 @@ constexpr NodeSpec kIBlurNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kIBlurPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Passes,
 };
@@ -243,11 +244,13 @@ boxWorker(const VariableBoxStatePtr& state,
         const int height = scratch.height;
         const PassScratch* buffers = &scratch;
 
-        return [sat, rx, ry, satPlane, width, height, buffers, from, to](int line) {
+        const EdgeMode edgeMode = state->context.edgeMode;
+
+        return [sat, rx, ry, satPlane, width, height, buffers, from, to, edgeMode](int line) {
             const int p = line / height;
             const int y = line % height;
             const std::size_t row = (std::size_t)y * width;
-            VariableBlurKernels::boxRow(sat + (std::size_t)p * satPlane, width, height, y, rx + row, ry + row, buffers->plane(from, p) + row, buffers->plane(to, p) + row);
+            VariableBlurKernels::boxRow(sat + (std::size_t)p * satPlane, width, height, y, rx + row, ry + row, buffers->plane(from, p) + row, edgeMode, buffers->plane(to, p) + row);
         };
     };
 }
@@ -262,6 +265,7 @@ const uint32_t kGpuMapConnected = 1;
 const uint32_t kGpuMapRead = 2;
 const uint32_t kGpuMapInvert = 4;
 const uint32_t kGpuMapSmooth = 8;
+const uint32_t kGpuMapEdgeBlack = 16;
 
 // Mirrors IBlurParams in Kernels/iblur.slang, which has no padding between members.
 struct IBlurGpuParams {
@@ -289,8 +293,9 @@ struct IBlurGpuParams {
     uint32_t outHeight;
     uint32_t dstOffset;
     uint32_t dstStride;
+    uint32_t edgeMode;
 };
-static_assert(sizeof(IBlurGpuParams) == 96);
+static_assert(sizeof(IBlurGpuParams) == 100);
 static_assert(offsetof(IBlurGpuParams, srcX1) == 48);
 static_assert(offsetof(IBlurGpuParams, outX1) == 72);
 
@@ -382,7 +387,8 @@ recordIBlurGpu(const PassGpuIO& io,
                const IBlurParams& params,
                const PassContext& context,
                bool mapConnected,
-               int mapChannel)
+               int mapChannel,
+               EdgeMode mapEdgeMode)
 {
     gpu::GpuRecordContext& ctx = io.context;
     const RectI& domain = io.domain;
@@ -411,7 +417,8 @@ recordIBlurGpu(const PassGpuIO& io,
     const BoxRadii white = radiiAt(params, context, 1.f);
     const BoxRadii black = radiiAt(params, context, 0.f);
     const BoxRadii outside = radiiAt(params, context, params.map.remap(0.f));
-    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u);
+    k.mapFlags = (mapConnected ? kGpuMapConnected : 0u) | (params.map.invert ? kGpuMapInvert : 0u) | (params.map.smooth ? kGpuMapSmooth : 0u)
+        | ((mapEdgeMode == EdgeMode::Black) ? kGpuMapEdgeBlack : 0u);
     k.exponent = params.map.exponent;
     k.sizeAtBlackX = (float)params.map.sizeAtBlack[0];
     k.sizeAtBlackY = (float)params.map.sizeAtBlack[1];
@@ -471,6 +478,7 @@ recordIBlurGpu(const PassGpuIO& io,
     base.radiiOffset = (uint32_t)(2 * slotFloats);
     base.valueBits = (uint32_t)(62 - pixelBits);
     base.satOffset = (uint32_t)satOffset;
+    base.edgeMode = gpu::gpuEdgeMode(io.edgeMode);
     const gpu::GpuBlurImage filtered = PassExec::toGpuBlurImage(io.filtered);
     base.outX1 = io.output.x1;
     base.outY1 = io.output.y1;
@@ -649,6 +657,7 @@ IBlur::passes(const IBlurParams& params,
               const std::shared_ptr<const MapPlane>& map)
 {
     PassList list;
+    list.edgeMode = context.edgeMode;
     // The size is linear in the Map value, so the largest radius over the range is at one end.
     const BoxRadii low = radiiAt(params, context, range.min);
     const BoxRadii high = radiiAt(params, context, range.max);
@@ -671,6 +680,10 @@ IBlur::passes(const IBlurParams& params,
 
     list.scratchSlots = 2;
     list.resultSlot = (kBoxIterations % 2) ? 1 : 0;
+    // Each box reads past the scratch by repeating its edge, so only the boxes before the last
+    // need what they computed past the source materialised.
+    list.stretchReachX = (kBoxIterations - 1) * haloX;
+    list.stretchReachY = (kBoxIterations - 1) * haloY;
 
     Pass radii = Pass::point(false, state ? radiusWorker(state) : std::function<PassRowFn(const PassScratch&)>());
     list.passes.push_back(radii);
@@ -715,6 +728,9 @@ IBlur::opPasses(double time,
     const IBlurParams params = getParams(time, view);
     const PassContext context = getPassContext(time, view, scale);
     PassList list = passes(params, context, range, std::shared_ptr<const MapPlane>());
+    if (getInput(kIBlurInputMap)) {
+        list.stretchVaries = passInputRoDPixels(*const_cast<IBlur*>(this), kIBlurInputMap, time, scale, view);
+    }
 
 #ifdef NATRON_HAVE_GPU
     if (!list.empty() && fitsGpu(list)) {
@@ -751,16 +767,18 @@ IBlur::recordPassesGpu(const PassGpuIO& io,
                        const IBlurParams& params,
                        const PassContext& context,
                        bool mapConnected,
-                       int mapChannel)
+                       int mapChannel,
+                       EdgeMode mapEdgeMode)
 {
 #ifdef NATRON_HAVE_GPU
-    return recordIBlurGpu(io, params, context, mapConnected, mapChannel);
+    return recordIBlurGpu(io, params, context, mapConnected, mapChannel, mapEdgeMode);
 #else
     Q_UNUSED(io);
     Q_UNUSED(params);
     Q_UNUSED(context);
     Q_UNUSED(mapConnected);
     Q_UNUSED(mapChannel);
+    Q_UNUSED(mapEdgeMode);
 
     return eStatusFailed;
 #endif
@@ -781,7 +799,7 @@ IBlur::recordGpu(const PassGpuIO& io,
         channel = -1;
     }
 
-    return recordPassesGpu(io, params, context, connected, channel);
+    return recordPassesGpu(io, params, context, connected, channel, inputEdgeMode(kIBlurInputMap, time, view));
 #else
     Q_UNUSED(io);
     Q_UNUSED(time);
@@ -867,16 +885,23 @@ IBlur::renderOp(const RenderActionArgs& args,
     }
     const IBlurParams params = getParams(args.time, args.view);
     // The Map over every pixel the passes may read; the tile's passes read no further, their halo
-    // being at most the full one.
-    const RectI window = passListSourceRoI(args.roi, full);
+    // being at most the full one. Under Stretch that is the full list's scratch: every pixel of
+    // the halo past it clamps onto it, onto a pixel of the same Map value, so the range is the
+    // whole halo's.
+    RectI window = passListSourceRoI(args.roi, full);
+    if ((full.edgeMode == EdgeMode::Stretch) && !passScratchRect(*this, plan, full, args.roi, args.time, args.mappedScale, args.view, &window)) {
+        return eStatusFailed;
+    }
     std::shared_ptr<MapPlane> map = std::make_shared<MapPlane>();
     const StatusEnum status = _map.read(this, kIBlurInputMap, params.map, args.time, args.view, args.mappedScale, window, map.get());
     if (status != eStatusOK) {
         return status;
     }
     const MapRange range = map->tileRange(window);
+    PassList list = passes(params, getPassContext(args.time, args.view, args.mappedScale), range, map);
+    list.stretchVaries = full.stretchVaries;
 
-    return runPassesCpu(*this, plan, args, passes(params, getPassContext(args.time, args.view, args.mappedScale), range, map));
+    return runPassesCpu(*this, plan, args, list);
 }
 
 void

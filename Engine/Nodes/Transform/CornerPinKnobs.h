@@ -63,7 +63,6 @@
 
 #define kCornerPinNodeParamFilter "filter"
 #define kCornerPinNodeParamClamp "clamp"
-#define kCornerPinNodeParamBlackOutside "blackOutside"
 
 #define kCornerPinNodeParamMotionBlur "motionBlur"
 #define kCornerPinNodeParamShutter "shutter"

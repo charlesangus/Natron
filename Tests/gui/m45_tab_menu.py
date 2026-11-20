@@ -6,11 +6,10 @@ Usage: Tests/gui/run-gui-test.sh Tests/gui/m45_tab_menu.py
 Conventions:
   - the popup is Gui/Resources/TabTabTab's TabTabTabWidget, found through gt.widgets_of(), with a
     QLineEdit (the filter/line-edit) and a QListView (the results) among its children;
-  - a QEnterEvent is sent to a NodeGraph viewport before QTest.keyClick(view, Qt.Key_Tab), because
-    Xvfb has no real pointer to hover the graph with;
-  - events are sent straight to specific widgets with QApplication.sendEvent()/QTest.keyClick()
-    rather than relying on real window-manager focus, so a check still drives the right widget
-    even when another graph tab (e.g. a Group's) is the one currently on screen;
+  - before QTest.keyClick(view, Qt.Key_Tab), open_menu() makes the graph's tab current in its
+    pane, activates the main window, focuses the viewport and moves the cursor over it, because
+    NodeGraph::isNodeCreationShortcutTarget() only accepts the key for a visible graph that has
+    focus or the pointer; a cursor already over the viewport is left where a check put it;
   - never call parentItem() on a node-graph item from Python: PySide deletes it and Natron
     crashes.
 
@@ -41,8 +40,8 @@ REMAPPED_SEARCH_MODES = "consecutive,anchored_fuzzy,non_anchored_fuzzy"
 try:
     import NatronEngine
     import NatronGui
-    from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt
-    from PySide6.QtGui import QColor, QCursor, QEnterEvent
+    from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+    from PySide6.QtGui import QColor, QCursor
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (QApplication, QLabel, QLineEdit, QListView, QMainWindow, QPushButton,
                                    QScrollArea, QTreeWidget)
@@ -130,12 +129,51 @@ try:
                 return a
         return None
 
-    def enter_graph(view):
-        centre = QPointF(view.rect().center())
-        QApplication.sendEvent(view, QEnterEvent(centre, centre, QPointF(view.mapToGlobal(view.rect().center()))))
+    def show_graph_tab(view):
+        """Makes the pane tab holding the graph current, as clicking its tab would."""
+        if view.isVisible():
+            return True
+        chain = []
+        node = view.parentWidget()
+        while node is not None:
+            chain.append(node)
+            if gt.class_name(node) == "TabWidget":
+                break
+            node = node.parentWidget()
+        pane = chain[-1] if chain and gt.class_name(chain[-1]) == "TabWidget" else None
+        tw = app.getTabWidget(pane.objectName()) if pane is not None else None
+        if tw is None:
+            return False
+        for i in range(tw.count()):
+            tw.setCurrentIndex(i)
+            QApplication.processEvents()
+            if view.isVisible():
+                return True
+        return False
+
+    def focus_graph(view):
+        """Leaves the graph where a real user's key would reach it. Returns False if that failed."""
+        if not show_graph_tab(view):
+            return False
+        win = main_window()
+        if win is not None:
+            win.activateWindow()
+            win.raise_()
+            win = None
+            ok = yield ("until", lambda: main_window() is not None and main_window().isActiveWindow(), 10.0)
+            if not ok:
+                return False
+        view.setFocus()
+        viewport = view.viewport()
+        if not viewport.rect().contains(viewport.mapFromGlobal(QCursor.pos())):
+            QCursor.setPos(viewport.mapToGlobal(viewport.rect().center()))
+        QApplication.processEvents()
+        return True
 
     def open_menu(view):
-        enter_graph(view)
+        focused = yield from focus_graph(view)
+        if not focused:
+            return None, None, None
         QTest.keyClick(view, Qt.Key_Tab)
         ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         if not ok:
@@ -451,13 +489,64 @@ try:
         if not check(blur_item is not None, "weights: resolved Blur's nodes-menu action"):
             return
         menupath = blur_item[0]
-        ok = yield ("until", lambda: os.path.isfile(WEIGHTS_PATH), 5.0)
-        if not check(ok, "weights: tabtabtab_weights.json was written to the scratch folder"):
+
+        def saved_weights():
+            try:
+                with open(WEIGHTS_PATH) as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                return {}
+
+        # The popup saves its weights a moment after it closes, not as it closes.
+        ok = yield ("until", lambda: saved_weights().get(menupath, 0) > 0, 5.0)
+        check(os.path.isfile(WEIGHTS_PATH), "weights: tabtabtab_weights.json was written to the scratch folder")
+        check(ok, "weights: %r has a positive entry (got %r)" % (menupath, saved_weights().get(menupath)))
+
+    def late_changes_section(main_graph):
+        """The menu keeps its items between opens: what changes in the menus after startup must
+        still show in the next open."""
+        gt.section("late menu changes")
+        nodes_menu = NatronGui.natron.nodesMenu()
+        edit_menu = next((gt.menu_of(a) for a in main_window().menuBar().actions()
+                          if gt.menu_of(a) is not None and "edit" in a.text().lower()), None)
+        if not check(nodes_menu is not None and edit_menu is not None,
+                     "late changes: found the nodes menu and the Edit menu"):
             return
-        with open(WEIGHTS_PATH) as f:
-            weights = json.load(f)
-        check(weights.get(menupath, 0) > 0,
-             "weights: %r has a positive entry (got %r)" % (menupath, weights.get(menupath)))
+
+        late_node = nodes_menu.addAction("M399 Late Tool")
+        late_command = edit_menu.addAction("M399 Late Command")
+        try:
+            popup, line_edit, view = yield from open_menu(main_graph)
+            if not check(popup is not None, "late changes: the tab menu opens"):
+                return
+            names = [row_name(e) for e in listed(line_edit, view, "m399 late")]
+            check(any("M399 Late Tool" in n for n in names),
+                  "late changes: an action added to the nodes menu is listed (got %r)" % names)
+            check(any("M399 Late Command" in n for n in names),
+                  "late changes: an action added to the Edit menu is listed (got %r)" % names)
+            close_menu(popup)
+
+            late_command.setShortcut("Ctrl+Alt+Shift+F9")
+            popup, line_edit, view = yield from open_menu(main_graph)
+            if not check(popup is not None, "late changes: the tab menu reopens"):
+                return
+            entries = listed(line_edit, view, "m399 late command")
+            check(any("F9" in e for e in entries),
+                  "late changes: a shortcut set after startup shows on the command's row (got %r)" % entries)
+            close_menu(popup)
+
+            nodes_menu.removeAction(late_node)
+            popup, line_edit, view = yield from open_menu(main_graph)
+            if not check(popup is not None, "late changes: the tab menu reopens"):
+                return
+            names = [row_name(e) for e in listed(line_edit, view, "m399 late")]
+            check(not any("M399 Late Tool" in n for n in names),
+                  "late changes: an action removed from the nodes menu is gone (got %r)" % names)
+            close_menu(popup)
+        finally:
+            nodes_menu.removeAction(late_node)
+            edit_menu.removeAction(late_command)
+            QApplication.processEvents()
 
     def python_merge_action_section(main_graph):
         gt.section("python action")
@@ -718,7 +807,7 @@ try:
         still_closed = not any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget"))
         check(still_closed, "rebind: Tab is no longer the create-node shortcut")
 
-        enter_graph(main_graph)
+        yield from focus_graph(main_graph)
         QTest.keyClick(main_graph, Qt.Key_F2)
         ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         check(ok, "rebind: the rebound key (F2) opens the menu")
@@ -741,7 +830,7 @@ try:
         panel.close()
         QApplication.processEvents()
 
-        enter_graph(main_graph)
+        yield from focus_graph(main_graph)
         QTest.keyClick(main_graph, Qt.Key_Tab)
         ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         check(ok, "rebind: Tab opens the menu again after Reset")
@@ -786,6 +875,7 @@ try:
         yield from group_section(main_graph)
         yield from commands_section(main_graph)
         yield from weights_section(blur_item)
+        yield from late_changes_section(main_graph)
         yield from python_merge_action_section(main_graph)
         yield from preferences_section(main_graph)
         yield from nodegraph_page_section()

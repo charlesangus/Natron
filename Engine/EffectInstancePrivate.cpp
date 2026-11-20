@@ -829,19 +829,13 @@ EffectInstance::Implementation::setDuringInteractAction(bool b)
 }
 
 #if NATRON_ENABLE_TRIMAP
-// A cached image is shared by every node whose content hash matches, so which of its regions are being rendered is
-// recorded per image for the whole process: with a record per effect, a node would take the regions another node is
-// still rendering for finished ones.
-struct EffectInstance::Implementation::ImagesBeingRenderedRegistry {
+struct EffectInstance::Implementation::ImageReservationStripes {
     // Held across the whole of markImagesAsBeingRendered() so that one render reserves its rectangles on all its layer
     // images before another render can query any of them. Renders that can share an image share its key's node hash,
-    // so they always take the same stripe; unrelated renders mostly do not contend. Taken before `mutex` and never
-    // held while waiting on another render.
+    // so they always take the same stripe; unrelated renders mostly do not contend. Taken before an entry's pendingLock
+    // and never held while waiting on another render.
     static const std::size_t kReservationStripes = 64;
     QMutex reservation[kReservationStripes];
-    // Protects `images`. Taken before an image's ImageBeingRendered::lock.
-    QMutex mutex;
-    ImageBeingRenderedMap images;
 
     QMutex& reservationFor(const std::vector<ImagePtr>& imgs)
     {
@@ -852,27 +846,34 @@ struct EffectInstance::Implementation::ImagesBeingRenderedRegistry {
 };
 
 // Deliberately leaked: a render may still unmark its images during static destruction.
-EffectInstance::Implementation::ImagesBeingRenderedRegistry&
-EffectInstance::Implementation::imagesBeingRenderedRegistry()
+EffectInstance::Implementation::ImageReservationStripes&
+EffectInstance::Implementation::imageReservationStripes()
 {
-    static ImagesBeingRenderedRegistry* registry = new ImagesBeingRenderedRegistry;
+    static ImageReservationStripes* stripes = new ImageReservationStripes;
 
-    return *registry;
+    return *stripes;
 }
 
-EffectInstance::Implementation::ImageBeingRenderedPtr
+ImageBeingRenderedPtr
 EffectInstance::Implementation::acquireImageBeingRendered(const ImagePtr& img)
 {
-    ImagesBeingRenderedRegistry& registry = imagesBeingRenderedRegistry();
-    QMutexLocker k(&registry.mutex);
-    ImageBeingRenderedPtr& ibr = registry.images[img];
-    if (!ibr) {
-        ibr = std::make_shared<Implementation::ImageBeingRendered>();
+    CacheEntryHeader& header = *img->getEntryHeader();
+    QMutexLocker k(&header.pendingLock);
+    if (!header.pending) {
+        header.pending = std::make_shared<ImageBeingRendered>();
     }
-    QMutexLocker k2(&ibr->lock);
-    ++(ibr->refCount);
+    QMutexLocker k2(&header.pending->lock);
+    ++(header.pending->refCount);
 
-    return ibr;
+    return header.pending;
+}
+
+static ImageBeingRenderedPtr
+pendingRendersOf(CacheEntryHeader& header)
+{
+    QMutexLocker k(&header.pendingLock);
+
+    return header.pending;
 }
 
 void
@@ -881,7 +882,7 @@ EffectInstance::Implementation::markImagesAsBeingRendered(const std::vector<Imag
                                                           std::list<RectI>* restToRender,
                                                           bool* renderedElsewhere)
 {
-    QMutexLocker reservation(&imagesBeingRenderedRegistry().reservationFor(imgs));
+    QMutexLocker reservation(&imageReservationStripes().reservationFor(imgs));
     std::vector<std::pair<ImagePtr, ImageBeingRenderedPtr>> marked;
     std::list<RectI> allRests;
     for (const ImagePtr& img : imgs) {
@@ -926,17 +927,10 @@ EffectInstance::Implementation::waitForImageBeingRenderedElsewhere(const RectI& 
     if ( !img->usesBitMap() ) {
         return true;
     }
-    ImagesBeingRenderedRegistry& registry = imagesBeingRenderedRegistry();
-    ImageBeingRenderedPtr ibr;
-    QMutexLocker k(&registry.mutex);
-    ImageBeingRenderedMap::iterator found = registry.images.find(img);
-    if (found != registry.images.end()) {
-        ibr = found->second;
-    }
+    const ImageBeingRenderedPtr ibr = pendingRendersOf(*img->getEntryHeader());
     if (!ibr) {
         return true;
     }
-    k.unlock(); // registry.mutex
     std::list<RectI> restToRender;
     bool isBeingRenderedElseWhere = false;
 
@@ -967,17 +961,11 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr& img,
     if ( !img->usesBitMap() ) {
         return;
     }
-    ImagesBeingRenderedRegistry& registry = imagesBeingRenderedRegistry();
-    ImageBeingRenderedPtr ibr;
-    QMutexLocker k(&registry.mutex);
-    ImageBeingRenderedMap::iterator found = registry.images.find(img);
-    if (found != registry.images.end()) {
-        ibr = found->second;
-    }
+    CacheEntryHeader& header = *img->getEntryHeader();
+    const ImageBeingRenderedPtr ibr = pendingRendersOf(header);
     if (!ibr) {
         return;
     }
-    k.unlock(); // registry.mutex
     QMutexLocker kk(&ibr->lock);
     if (renderFailed) {
         ibr->failed = true;
@@ -996,14 +984,13 @@ EffectInstance::Implementation::unmarkImageAsBeingRendered(const ImagePtr& img,
     --ibr->refCount;
     ibr->cond.wakeAll();
     if (!ibr->refCount) {
-        kk.unlock(); // registry.mutex must be taken before an image's lock, as acquireImageBeingRendered() does
-        k.relock(); // registry.mutex
-        ImageBeingRenderedMap::iterator found = registry.images.find(img);
-        if ((found != registry.images.end()) && (found->second == ibr)) {
-            // acquireImageBeingRendered() may have taken this entry again after refCount dropped to zero above.
+        kk.unlock(); // pendingLock must be taken before ibr->lock, as acquireImageBeingRendered() does
+        QMutexLocker k(&header.pendingLock);
+        if (header.pending == ibr) {
+            // acquireImageBeingRendered() may have taken this slot again after refCount dropped to zero above.
             QMutexLocker kk2(&ibr->lock);
             if (!ibr->refCount) {
-                registry.images.erase(found);
+                header.pending.reset();
             }
         }
     }

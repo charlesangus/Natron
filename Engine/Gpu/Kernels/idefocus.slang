@@ -1,3 +1,4 @@
+import edgesample;
 import mapremap;
 
 // IDefocus's gather, after the workers of Engine/Nodes/Filter/IDefocus.cpp. The work buffer covers
@@ -26,7 +27,7 @@ struct IDefocusParams
     uint lvWidth;
     uint lvHeight;
     uint channels;
-    // kBoost while the highlight boost is on.
+    // kBoost while the highlight boost is on, kEdgeBlackFlag when the source reads 0 past its pixels.
     uint flags;
     float threshold;
     float gain;
@@ -53,10 +54,12 @@ struct IDefocusParams
 // Mirrored in Engine/Nodes/Filter/IDefocus.cpp.
 static const uint kHeader = 16;
 static const uint kBoost = 1;
+static const uint kEdgeBlackFlag = 2;
 static const uint kMapConnected = 1;
 static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
 static const uint kMapSmooth = 8;
+static const uint kMapEdgeBlack = 16;
 
 static const uint kMapFlags = 0;
 static const uint kMapChannel = 1;
@@ -91,24 +94,27 @@ uint mapLevel(int x, int y)
     if ((flags & kMapConnected) == 0u)
         return count;
     float raw = 0.0;
-    if ((flags & kMapRead) != 0u && x >= int(tableBuf[kMapX1]) && x < int(tableBuf[kMapX2]) && y >= int(tableBuf[kMapY1])
-        && y < int(tableBuf[kMapY2])) {
-        const uint at = tableBuf[kMapOffset] + uint(y - int(tableBuf[kMapY1])) * tableBuf[kMapStride]
-            + uint(x - int(tableBuf[kMapX1])) * tableBuf[kMapChannels] + tableBuf[kMapChannel];
+    const int4 bounds = int4(int(tableBuf[kMapX1]), int(tableBuf[kMapY1]), int(tableBuf[kMapX2]), int(tableBuf[kMapY2]));
+    int2 p;
+    if ((flags & kMapRead) != 0u && edgePixel(int2(x, y), bounds, edgeModeFromFlags(flags, kMapEdgeBlack), p)) {
+        const uint at = tableBuf[kMapOffset] + uint(p.y - bounds.y) * tableBuf[kMapStride] + uint(p.x - bounds.x) * tableBuf[kMapChannels]
+            + tableBuf[kMapChannel];
         raw = asfloat(mapBuf[at]);
     }
     const float m = mapRemap(raw, (flags & kMapInvert) != 0u, (flags & kMapSmooth) != 0u, asfloat(tableBuf[kExponent]));
     return levelOf(m, count);
 }
 
-bool insideSource(int x, int y)
+// The index of the source pixel a read at (x, y) lands on by the source's edge mode, false where it
+// reads 0.
+bool sourcePixel(int x, int y, out uint index)
 {
-    return x >= params.srcX1 && x < params.srcX2 && y >= params.srcY1 && y < params.srcY2;
-}
-
-uint sourceIndex(int x, int y)
-{
-    return params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels;
+    int2 at;
+    index = 0u;
+    if (!edgePixel(int2(x, y), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), edgeModeFromFlags(params.flags, kEdgeBlackFlag), at))
+        return false;
+    index = params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * params.channels;
+    return true;
 }
 
 [shader("compute")]
@@ -122,12 +128,12 @@ void idefocus_load(uint3 tid : SV_DispatchThreadID)
     const int x = params.lvX1 + int(tid.x);
     const int y = params.lvY1 + int(tid.y);
     workBuf[dst] = float(mapLevel(x, y));
-    if (!insideSource(x, y)) {
+    uint src;
+    if (!sourcePixel(x, y, src)) {
         for (uint c = 0; c < n && c < 4; ++c)
             workBuf[dst + 1 + c] = 0.0;
         return;
     }
-    const uint src = sourceIndex(x, y);
     const bool boost = (params.flags & kBoost) != 0u;
     for (uint c = 0; c < n && c < 4; ++c) {
         const float v = asfloat(srcBuf[src + c]);
@@ -177,8 +183,8 @@ void idefocus_gather(uint3 tid : SV_DispatchThreadID)
     const bool ownIdentity = tableBuf[ownInfo + 1] == 0u && tableBuf[ownInfo + 2] == 0u;
     const bool keep = count == 0u || !(weight > 0.0) || (count == 1u && ownIdentity);
     const bool boost = (params.flags & kBoost) != 0u;
-    const bool inside = insideSource(x, y);
-    const uint src = inside ? sourceIndex(x, y) : 0u;
+    uint src;
+    const bool inside = sourcePixel(x, y, src);
     for (uint c = 0; c < n && c < 4; ++c) {
         float v;
         if (keep) {

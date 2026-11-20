@@ -101,7 +101,8 @@ try:
             x, y = node.getPosition()
             check(rect.contains(x, y), "the blocks cover %s" % node.getScriptName())
 
-        # Panning moves the graph's root item, not the blocks; the blocks must travel with the nodes.
+        # The blocks are parented under the nodes' layer: moving the graph's root item must carry
+        # them with the nodes.
         root = block_item().parentItem().parentItem()
         before = block_item().sceneBoundingRect()
         root_before = root.pos()

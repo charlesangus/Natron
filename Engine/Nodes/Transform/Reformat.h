@@ -82,7 +82,6 @@ struct ReformatParams {
     bool identity = false;
     Resampler::FilterSpec filter;
     bool clamp = false;
-    bool blackOutside = false;
 };
 
 inline constexpr InputSpec kReformatInputs[] = {
@@ -116,7 +115,7 @@ struct ReformatOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = {},
+        .stages = { Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Resample,
     };
@@ -159,7 +158,6 @@ struct ReformatOp {
     KnobBoolWPtr preserveBB;
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
-    KnobBoolWPtr blackOutside;
     Resampler::FilterKnobs filterKnobs;
 };
 

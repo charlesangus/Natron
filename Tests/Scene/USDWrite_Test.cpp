@@ -26,6 +26,8 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usdGeom/basisCurves.h>
+#include <pxr/usd/usdSkel/animation.h>
 
 #include "Global/Macros.h"
 
@@ -58,8 +60,10 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
@@ -897,6 +901,60 @@ TEST_F(USDWriteLiveTextureTest, AUriWhoseSourceIsGoneWarnsAsSuch)
     EXPECT_FALSE(message.contains(QString::fromUtf8("Export Live Textures"))) << message.toStdString();
 }
 
+TEST_F(USDWriteLiveTextureTest, ADeletedSourceIsWrittenAsTheMaterialsOwnColourWithAWarning)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createMaterial(false);
+    ASSERT_TRUE(bool(material));
+    NodePtr constant = material->getInput(kUSDMaterialInputDiffuseColor);
+    ASSERT_TRUE(bool(constant));
+    constant->destroyNode(true, false);
+    constant.reset();
+    ASSERT_FALSE(material->getInput(kUSDMaterialInputDiffuseColor));
+
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    const bool exports[] = { true, false };
+    for (USDWrite::ExportModeEnum mode : modes) {
+        for (bool exportLiveTextures : exports) {
+            const std::string name = std::string(mode == USDWrite::eExportModeLayered ? "layered" : "flattened") + (exportLiveTextures ? "_exported" : "_unexported");
+            SCOPED_TRACE(name);
+            const QString dir = tmp.path() + QLatin1Char('/') + QString::fromStdString(name);
+            const QString path = dir + QString::fromUtf8("/scene.usda");
+            NodePtr writer = createWriter(material, path, mode, 1, 1);
+            ASSERT_TRUE(writer && getWriter(writer));
+            KnobBool* exportKnob = getKnob<KnobBool>(writer, kUSDWriteParamExportLiveTextures);
+            ASSERT_TRUE(exportKnob != NULL);
+            exportKnob->setValue(exportLiveTextures);
+            ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+
+            ASSERT_TRUE(writer->hasPersistentMessage());
+            QString message;
+            int type = 0;
+            writer->getPersistentMessage(&message, &type, false);
+            EXPECT_EQ((int)eMessageTypeWarning, type);
+            EXPECT_TRUE(message.contains(QString::fromStdString(material->getFullyQualifiedName()))) << message.toStdString();
+            EXPECT_TRUE(message.contains(QString::fromUtf8("own colour"))) << message.toStdString();
+            EXPECT_FALSE(message.contains(QString::fromUtf8("Export Live Textures"))) << message.toStdString();
+            EXPECT_FALSE(QFileInfo(dir + QString::fromUtf8("/scene_textures")).exists());
+
+            PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+            ASSERT_TRUE(bool(stage));
+            EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/diffuseColorTexture")).IsValid());
+            const PXR_NS::UsdShadeShader surface(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/PreviewSurface")));
+            ASSERT_TRUE(bool(surface));
+            const PXR_NS::UsdShadeInput diffuse = surface.GetInput(PXR_NS::TfToken("diffuseColor"));
+            ASSERT_TRUE(bool(diffuse));
+            EXPECT_FALSE(diffuse.HasConnectedSource());
+            PXR_NS::GfVec3f colour;
+            ASSERT_TRUE(diffuse.Get(&colour));
+            EXPECT_NEAR(0.18f, colour[0], 1e-6f);
+            const PXR_NS::UsdShadeInput opacity = surface.GetInput(PXR_NS::TfToken("opacity"));
+            EXPECT_FALSE(opacity && opacity.HasConnectedSource());
+        }
+    }
+}
+
 TEST_F(USDWriteLiveTextureTest, WithoutExportTheUrisAreWrittenWithAWarning)
 {
     QTemporaryDir tmp;
@@ -976,6 +1034,104 @@ protected:
     }
 
     // The bounds of the card's UVs at time.
+    // A quad filling the projector's frame when offset is 0.
+    static PXR_NS::VtVec3fArray framePoints(float offset)
+    {
+        PXR_NS::VtVec3fArray points(4);
+        points[0] = PXR_NS::GfVec3f(offset - 1.f, -0.5f, 0.f);
+        points[1] = PXR_NS::GfVec3f(offset + 1.f, -0.5f, 0.f);
+        points[2] = PXR_NS::GfVec3f(offset + 1.f, 0.5f, 0.f);
+        points[3] = PXR_NS::GfVec3f(offset - 1.f, 0.5f, 0.f);
+
+        return points;
+    }
+
+    static PXR_NS::UsdGeomMesh defineFrameQuad(const PXR_NS::UsdStageRefPtr& stage,
+                                               const char* path)
+    {
+        PXR_NS::UsdGeomMesh mesh = PXR_NS::UsdGeomMesh::Define(stage, PXR_NS::SdfPath(path));
+        PXR_NS::VtIntArray indices(4);
+        for (int i = 0; i < 4; ++i) {
+            indices[i] = i;
+        }
+        mesh.CreateFaceVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        mesh.CreateFaceVertexIndicesAttr().Set(indices);
+
+        return mesh;
+    }
+
+    // The rig's projection held at frame 1, assigned to pattern in the scene at file, in place of the card.
+    NodePtr createHeldAssignOf(const QString& file,
+                               const std::string& pattern)
+    {
+        createRig();
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+        if (!projector || !card || !reader || !assign) {
+            ADD_FAILURE() << "a node is not registered";
+
+            return NodePtr();
+        }
+        card->disconnectInput(0);
+        getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+        getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+        getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+        getKnob<KnobFile>(reader, kUSDReadParamFile)->setValue(file.toStdString());
+        getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue(pattern);
+        EXPECT_TRUE(assign->connectInput(reader, kUSDAssignMaterialInputScene));
+        EXPECT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+        return assign;
+    }
+
+    static void expectNoProjectionData(const QString& dir,
+                                       const char* what)
+    {
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            for (const char* needle : { "natronProjectionFrame", "natronReferencePoints", "natronReferencePresent", kUSDProject3DFrameReaderName, kUSDProject3DReferenceReaderName, kUSDProject3DInputGeometryFrame, kUSDProject3DInputReferencePoints, kUSDProject3DAttrFrameHold }) {
+                EXPECT_FALSE(file.second.contains(needle)) << what << " " << file.first.toStdString() << " holds " << needle;
+            }
+        }
+    }
+
+    // That st holds one set of values for all time, the frame's bottom left to its top right around the quad.
+    static void expectFrameQuadUVs(const PXR_NS::UsdPrim& prim,
+                                   const PXR_NS::TfToken& interpolation,
+                                   const char* what)
+    {
+        const PXR_NS::UsdGeomPrimvar st = PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken("st"));
+        ASSERT_TRUE(bool(st)) << what;
+        EXPECT_EQ(interpolation, st.GetInterpolation()) << what;
+        EXPECT_EQ((std::size_t)0, st.GetAttr().GetNumTimeSamples()) << what;
+        const PXR_NS::GfVec2f expected[] = { PXR_NS::GfVec2f(0.f, 0.f), PXR_NS::GfVec2f(1.f, 0.f), PXR_NS::GfVec2f(1.f, 1.f), PXR_NS::GfVec2f(0.f, 1.f) };
+        for (const double time : { 1., 3. }) {
+            PXR_NS::VtVec2fArray uvs;
+            ASSERT_TRUE(st.ComputeFlattened(&uvs, PXR_NS::UsdTimeCode(time))) << what;
+            ASSERT_EQ((std::size_t)4, uvs.size()) << what;
+            for (std::size_t i = 0; i < 4; ++i) {
+                EXPECT_NEAR(expected[i][0], uvs[i][0], 1e-4f) << what << " corner " << i << " at " << time;
+                EXPECT_NEAR(expected[i][1], uvs[i][1], 1e-4f) << what << " corner " << i << " at " << time;
+            }
+        }
+    }
+
+    PXR_NS::UsdStageRefPtr writeAndOpen(const NodePtr& input,
+                                        const QString& dir,
+                                        USDWrite::ExportModeEnum mode)
+    {
+        EXPECT_TRUE(QDir().mkpath(dir));
+        const QString path = dir + QString::fromUtf8("/scene.usda");
+        NodePtr writer = createWriter(input, path, mode, 1, 3);
+        if (!writer || !getWriter(writer)) {
+            ADD_FAILURE() << "no writer";
+
+            return PXR_NS::UsdStageRefPtr();
+        }
+        EXPECT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3));
+
+        return PXR_NS::UsdStage::Open(path.toStdString());
+    }
+
     static std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> boundsOf(const PXR_NS::UsdGeomPrimvar& st,
                                                                 PXR_NS::UsdTimeCode time = PXR_NS::UsdTimeCode::Default())
     {
@@ -1126,6 +1282,175 @@ TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
     const PXR_NS::UsdPrim projection = material.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DShaderName));
     ASSERT_TRUE(projection.IsValid());
     EXPECT_FALSE(projection.IsActive());
+}
+
+// Exported, a projection keeps no Cycles or MoonRay network: those renderers resolve the material
+// to the baked preview surface Storm reads, and neither the networks nor the frame primvars they
+// read are written, in World space or held in Geometry space, flattened or layered.
+TEST_F(USDWriteProjectionTest, ABakedProjectionDropsItsCyclesAndMoonRayNetworks)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(projector && card);
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(3., 0.5, ViewSpec::all(), 0);
+    struct Case {
+        const char* dir;
+        USDWrite::ExportModeEnum mode;
+        bool held;
+    };
+    const Case cases[] = {
+        { "/world-flattened", USDWrite::eExportModeFlattened, false },
+        { "/world-layered", USDWrite::eExportModeLayered, false },
+        { "/held-flattened", USDWrite::eExportModeFlattened, true },
+        { "/held-layered", USDWrite::eExportModeLayered, true },
+    };
+    for (const Case& c : cases) {
+        getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)(c.held ? USDProject3D::eProjectionSpaceGeometry : USDProject3D::eProjectionSpaceWorld));
+        getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(c.held);
+        getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+        const QString dir = tmp.path() + QString::fromUtf8(c.dir);
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(card, dir, c.mode);
+        ASSERT_TRUE(bool(stage)) << c.dir;
+
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            for (const char* needle : { "cycles:", "moonray:", "cycles_", "AttributeMap", "OpMap", "natronProjectionFrame", "natronReferencePoints", "natronReferencePresent" }) {
+                EXPECT_FALSE(file.second.contains(needle)) << c.dir << " " << file.first.toStdString() << " holds " << needle;
+            }
+        }
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1"));
+        ASSERT_TRUE(bool(prim)) << c.dir;
+        for (const PXR_NS::UsdGeomPrimvar& primvar : PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvars()) {
+            EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronProjectionFrame")) << c.dir;
+        }
+        const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+        ASSERT_TRUE(bool(material)) << c.dir;
+        const PXR_NS::UsdShadeShader storm = material.ComputeSurfaceSource();
+        ASSERT_TRUE(bool(storm)) << c.dir;
+        PXR_NS::TfToken id;
+        ASSERT_TRUE(storm.GetShaderId(&id)) << c.dir;
+        EXPECT_EQ(std::string("UsdPreviewSurface"), id.GetString()) << c.dir;
+        for (const char* context : { "cycles", "moonray" }) {
+            EXPECT_FALSE(bool(material.GetSurfaceOutput(PXR_NS::TfToken(context)))) << c.dir << " " << context;
+            const PXR_NS::UsdShadeShader surface = material.ComputeSurfaceSource(PXR_NS::TfTokenVector { PXR_NS::TfToken(context), PXR_NS::UsdShadeTokens->universalRenderContext });
+            EXPECT_EQ(storm.GetPath(), surface.GetPath()) << c.dir << " " << context;
+        }
+        for (const PXR_NS::UsdPrim& child : material.GetPrim().GetChildren()) {
+            const std::string name = child.GetName().GetString();
+            EXPECT_NE(0u, name.rfind("Cycles", 0)) << c.dir << " keeps " << name;
+            EXPECT_NE(0u, name.rfind("MoonRay", 0)) << c.dir << " keeps " << name;
+        }
+        const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+        ASSERT_TRUE(bool(st)) << c.dir;
+        const std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> bounds = boundsOf(st, PXR_NS::UsdTimeCode(1.));
+        EXPECT_NEAR(0.f, bounds.first[0], 1e-4f) << c.dir;
+        EXPECT_NEAR(0.f, bounds.first[1], 1e-4f) << c.dir;
+        EXPECT_NEAR(1.f, bounds.second[0], 1e-4f) << c.dir;
+        EXPECT_NEAR(1.f, bounds.second[1], 1e-4f) << c.dir;
+    }
+}
+
+// The bake strips what the projection authored, not what shares its names: a shader the user
+// put under the projection's material stays.
+TEST_F(USDWriteProjectionTest, ABakeKeepsAShaderTheUserPutUnderTheMaterial)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(projector && card);
+    getKnob<KnobString>(projector, kSceneParamPrimPath)->setValue("/Projection");
+    const QString source = tmp.path() + QString::fromUtf8("/user.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        // The card grafts the material it is given under itself.
+        PXR_NS::UsdShadeShader user = PXR_NS::UsdShadeShader::Define(file, PXR_NS::SdfPath("/Card1/Projection/CyclesUser"));
+        user.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPrimvarReader_float2")));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(reader && merge);
+    getKnob<KnobFile>(reader, kUSDReadParamFile)->setValue(source.toStdString());
+    ASSERT_TRUE(merge->connectInput(card, 0));
+    ASSERT_TRUE(merge->connectInput(reader, 1));
+
+    const std::pair<const char*, USDWrite::ExportModeEnum> modes[] = {
+        { "/flattened", USDWrite::eExportModeFlattened },
+        { "/layered", USDWrite::eExportModeLayered },
+    };
+    for (const std::pair<const char*, USDWrite::ExportModeEnum>& mode : modes) {
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(merge, tmp.path() + QString::fromUtf8(mode.first), mode.second);
+        ASSERT_TRUE(bool(stage)) << mode.first;
+        const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+        EXPECT_TRUE(st.GetAttr() && st.HasValue()) << mode.first << ": not baked";
+        const PXR_NS::UsdPrim user = stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1/Projection/CyclesUser"));
+        ASSERT_TRUE(user.IsValid()) << mode.first;
+        PXR_NS::TfToken id;
+        EXPECT_TRUE(PXR_NS::UsdShadeShader(user).GetShaderId(&id)) << mode.first;
+        EXPECT_EQ(std::string("UsdPrimvarReader_float2"), id.GetString()) << mode.first;
+        for (const PXR_NS::UsdPrim& child : stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1/Projection")).GetChildren()) {
+            EXPECT_FALSE(child.GetCustomDataByKey(PXR_NS::TfToken(kSceneProjectionNetworkMark)).IsHolding<bool>()) << mode.first << " keeps " << child.GetName().GetString();
+        }
+    }
+}
+
+// Curves keep Storm's projection unbaked, read through the frame primvars; a layered export of
+// them with the camera named by path keeps that and nothing of the other delegates' networks.
+TEST_F(USDWriteProjectionTest, AnUnbakedProjectionWithADeferredCameraExportsStormsAlone)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/Curves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        curves.CreatePointsAttr().Set(framePoints(0.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Curves");
+    ASSERT_TRUE(bool(assign));
+    camera->setScriptName("Camera1");
+    projector->disconnectInput(kUSDProject3DInputCamera);
+    getKnob<KnobString>(projector, kUSDProject3DParamCameraPath)->setValue("/Camera1");
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(bool(merge));
+    ASSERT_TRUE(merge->connectInput(assign, 0));
+    ASSERT_TRUE(merge->connectInput(camera, 1));
+
+    const QString dir = tmp.path() + QString::fromUtf8("/out");
+    const PXR_NS::UsdStageRefPtr stage = writeAndOpen(merge, dir, USDWrite::eExportModeLayered);
+    ASSERT_TRUE(bool(stage));
+    for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+        for (const char* needle : { "cycles:", "moonray:", "cycles_", "AttributeMap", "OpMap" }) {
+            EXPECT_FALSE(file.second.contains(needle)) << file.first.toStdString() << " holds " << needle;
+        }
+    }
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Curves"));
+    ASSERT_TRUE(bool(prim));
+    const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+    ASSERT_TRUE(bool(material));
+    SceneGeometryProjection projection;
+    ASSERT_TRUE(SceneNodeAuthoring::readGeometryProjection(material.GetPrim(), &projection));
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+    const PXR_NS::UsdGeomPrimvar frame = primvars.GetPrimvar(PXR_NS::TfToken(projection.framePrimvar));
+    EXPECT_TRUE(frame.GetAttr() && frame.HasValue());
+    for (int column = 0; column < 3; ++column) {
+        EXPECT_FALSE(bool(primvars.GetPrimvar(PXR_NS::TfToken(SceneProjectionCameras::frameColumnPrimvar(projection.framePrimvar, column))).GetAttr())) << column;
+    }
+    for (int part = 0; part < 4; ++part) {
+        EXPECT_FALSE(bool(primvars.GetPrimvar(PXR_NS::TfToken(SceneProjectionCameras::moonRayFramePrimvar(projection.framePrimvar, part))).GetAttr())) << part;
+    }
+    for (const char* context : { "cycles", "moonray" }) {
+        EXPECT_FALSE(bool(material.GetSurfaceOutput(PXR_NS::TfToken(context)))) << context;
+    }
+    for (const PXR_NS::UsdPrim& child : material.GetPrim().GetChildren()) {
+        EXPECT_FALSE(child.GetCustomDataByKey(PXR_NS::TfToken(kSceneProjectionNetworkMark)).IsHolding<bool>()) << child.GetName().GetString();
+    }
 }
 
 TEST_F(USDWriteProjectionTest, AProjectionBoundToNothingWarns)
@@ -1286,6 +1611,375 @@ TEST_F(USDWriteProjectionTest, AHeldGeometrySpaceProjectionBakesUVsThatStickToTh
         EXPECT_NEAR(0.f, bounds.first[1], 1e-4f) << time;
         EXPECT_NEAR(1.f, bounds.second[0], 1e-4f) << time;
         EXPECT_NEAR(1.f, bounds.second[1], 1e-4f) << time;
+    }
+}
+
+// Each mesh bakes from its own placement, as a direct connection to it does, and the export holds
+// nothing of how Storm read those placements.
+TEST_F(USDWriteProjectionTest, OneProjectionOnTwoCardsApartBakesEachFromItsOwnPlacement)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(projector && card);
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(true);
+    getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(other && merge && assign);
+    other->setScriptName("Card2");
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(3., 0.5, ViewSpec::all(), 0);
+    KnobDouble* otherTranslate = getKnob<KnobDouble>(other, kSceneParamTranslate);
+    otherTranslate->setValueAtTime(1., 0.5, ViewSpec::all(), 0);
+    otherTranslate->setValueAtTime(3., 0.25, ViewSpec::all(), 0);
+    ASSERT_TRUE(merge->connectInput(card, 0));
+    ASSERT_TRUE(merge->connectInput(other, 1));
+
+    const auto check = [&](const NodePtr& input, const char* name, USDWrite::ExportModeEnum mode) {
+        const QString dir = tmp.path() + QLatin1Char('/') + QString::fromUtf8(name);
+        ASSERT_TRUE(QDir().mkpath(dir));
+        const QString path = dir + QString::fromUtf8("/scene.usda");
+        NodePtr writer = createWriter(input, path, mode, 1, 3);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3)) << name;
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+        ASSERT_TRUE(bool(stage)) << name;
+        // A quarter of the frame is 0.5 world units: the second card starts that far right of the first.
+        const std::pair<const char*, float> cards[] = { std::make_pair("/Card1", 0.f), std::make_pair("/Card2", 0.25f) };
+        for (const std::pair<const char*, float>& expected : cards) {
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(expected.first));
+            ASSERT_TRUE(bool(prim)) << name << " " << expected.first;
+            const PXR_NS::UsdGeomPrimvar st = PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken("st"));
+            ASSERT_TRUE(bool(st)) << name << " " << expected.first;
+            for (const double time : { 1., 3. }) {
+                const std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> bounds = boundsOf(st, PXR_NS::UsdTimeCode(time));
+                EXPECT_NEAR(expected.second, bounds.first[0], 1e-4f) << name << " " << expected.first << " at " << time;
+                EXPECT_NEAR(expected.second + 1.f, bounds.second[0], 1e-4f) << name << " " << expected.first << " at " << time;
+                EXPECT_NEAR(0.f, bounds.first[1], 1e-4f) << name << " " << expected.first << " at " << time;
+                EXPECT_NEAR(1.f, bounds.second[1], 1e-4f) << name << " " << expected.first << " at " << time;
+            }
+        }
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            for (const char* needle : { "natronProjectionFrame", kUSDProject3DFrameReaderName, kUSDProject3DInputGeometryFrame, kUSDProject3DAttrFrameHold }) {
+                EXPECT_FALSE(file.second.contains(needle)) << name << " " << file.first.toStdString() << " holds " << needle;
+            }
+        }
+    };
+
+    ASSERT_TRUE(other->connectInput(projector, 0));
+    check(merge, "direct", USDWrite::eExportModeFlattened);
+
+    card->disconnectInput(0);
+    other->disconnectInput(0);
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue("/Card1 /Card2");
+    ASSERT_TRUE(assign->connectInput(merge, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+    check(assign, "flattened", USDWrite::eExportModeFlattened);
+    check(assign, "layered", USDWrite::eExportModeLayered);
+}
+
+TEST_F(USDWriteProjectionTest, ADeformingMeshBakesOneSetOfUVsFromItsPointsAtTheHold)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomMesh mesh = defineFrameQuad(file, "/Moving");
+        mesh.CreatePointsAttr().Set(framePoints(0.f), PXR_NS::UsdTimeCode(1.));
+        mesh.CreatePointsAttr().Set(framePoints(1.f), PXR_NS::UsdTimeCode(3.));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Moving");
+    ASSERT_TRUE(bool(assign));
+
+    const std::pair<const char*, USDWrite::ExportModeEnum> modes[] = {
+        std::make_pair("flattened", USDWrite::eExportModeFlattened),
+        std::make_pair("layered", USDWrite::eExportModeLayered),
+    };
+    for (const std::pair<const char*, USDWrite::ExportModeEnum>& mode : modes) {
+        const QString dir = tmp.path() + QLatin1Char('/') + QString::fromUtf8(mode.first);
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(assign, dir, mode.second);
+        ASSERT_TRUE(bool(stage)) << mode.first;
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"));
+        ASSERT_TRUE(bool(prim)) << mode.first;
+        expectFrameQuadUVs(prim, PXR_NS::UsdGeomTokens->faceVarying, mode.first);
+        PXR_NS::VtVec3fArray moved;
+        ASSERT_TRUE(PXR_NS::UsdGeomMesh(prim).GetPointsAttr().Get(&moved, PXR_NS::UsdTimeCode(3.))) << mode.first;
+        ASSERT_EQ((std::size_t)4, moved.size()) << mode.first;
+        EXPECT_NEAR(0.f, moved[0][0], 1e-5f) << mode.first;
+        expectNoProjectionData(dir, mode.first);
+    }
+}
+
+TEST_F(USDWriteProjectionTest, ASkinnedMeshBakesOneSetOfUVsFromItsSkinnedPointsAtTheHold)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        PXR_NS::UsdSkelRoot::Define(file, PXR_NS::SdfPath("/Rig"));
+        const PXR_NS::UsdSkelSkeleton skeleton = PXR_NS::UsdSkelSkeleton::Define(file, PXR_NS::SdfPath("/Rig/Skeleton"));
+        const PXR_NS::VtTokenArray joints(1, PXR_NS::TfToken("Joint"));
+        const PXR_NS::VtMatrix4dArray identity(1, PXR_NS::GfMatrix4d(1.));
+        skeleton.CreateJointsAttr().Set(joints);
+        skeleton.CreateBindTransformsAttr().Set(identity);
+        skeleton.CreateRestTransformsAttr().Set(identity);
+        const PXR_NS::UsdSkelAnimation animation = PXR_NS::UsdSkelAnimation::Define(file, PXR_NS::SdfPath("/Rig/Skeleton/Animation"));
+        animation.CreateJointsAttr().Set(joints);
+        animation.CreateRotationsAttr().Set(PXR_NS::VtQuatfArray(1, PXR_NS::GfQuatf(1.f)));
+        animation.CreateScalesAttr().Set(PXR_NS::VtVec3hArray(1, PXR_NS::GfVec3h(1.f, 1.f, 1.f)));
+        animation.CreateTranslationsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f)), PXR_NS::UsdTimeCode(1.));
+        animation.CreateTranslationsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(1.f, 0.f, 0.f)), PXR_NS::UsdTimeCode(3.));
+        PXR_NS::UsdSkelBindingAPI::Apply(skeleton.GetPrim()).CreateAnimationSourceRel().SetTargets({ animation.GetPath() });
+        const PXR_NS::UsdGeomMesh mesh = defineFrameQuad(file, "/Rig/Moving");
+        mesh.CreatePointsAttr().Set(framePoints(0.f));
+        const PXR_NS::UsdSkelBindingAPI binding = PXR_NS::UsdSkelBindingAPI::Apply(mesh.GetPrim());
+        binding.CreateSkeletonRel().SetTargets({ skeleton.GetPath() });
+        binding.CreateJointIndicesPrimvar(true, 1).Set(PXR_NS::VtIntArray(1, 0));
+        binding.CreateJointWeightsPrimvar(true, 1).Set(PXR_NS::VtFloatArray(1, 1.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Rig/Moving");
+    ASSERT_TRUE(bool(assign));
+
+    const QString dir = tmp.path() + QString::fromUtf8("/out");
+    const PXR_NS::UsdStageRefPtr stage = writeAndOpen(assign, dir, USDWrite::eExportModeFlattened);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Rig/Moving"));
+    ASSERT_TRUE(bool(prim));
+    expectFrameQuadUVs(prim, PXR_NS::UsdGeomTokens->faceVarying, "the skinned mesh");
+    expectNoProjectionData(dir, "the skinned mesh");
+}
+
+TEST_F(USDWriteProjectionTest, DeformingCurvesAndPointsBakeOneSetOfVertexUVs)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/Curves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        curves.CreatePointsAttr().Set(framePoints(0.f), PXR_NS::UsdTimeCode(1.));
+        curves.CreatePointsAttr().Set(framePoints(1.f), PXR_NS::UsdTimeCode(3.));
+        const PXR_NS::UsdGeomPoints points = PXR_NS::UsdGeomPoints::Define(file, PXR_NS::SdfPath("/Points"));
+        points.CreatePointsAttr().Set(framePoints(0.f), PXR_NS::UsdTimeCode(1.));
+        points.CreatePointsAttr().Set(framePoints(1.f), PXR_NS::UsdTimeCode(3.));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Curves /Points");
+    ASSERT_TRUE(bool(assign));
+
+    const QString dir = tmp.path() + QString::fromUtf8("/out");
+    const PXR_NS::UsdStageRefPtr stage = writeAndOpen(assign, dir, USDWrite::eExportModeFlattened);
+    ASSERT_TRUE(bool(stage));
+    for (const char* name : { "/Curves", "/Points" }) {
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(name));
+        ASSERT_TRUE(bool(prim)) << name;
+        expectFrameQuadUVs(prim, PXR_NS::UsdGeomTokens->vertex, name);
+    }
+    expectNoProjectionData(dir, "curves and points");
+}
+
+// A still prim holds no reference points to bake from, so it keeps the live projection as it always has.
+TEST_F(USDWriteProjectionTest, StillCurvesAndPointsStayUnbaked)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/Curves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        curves.CreatePointsAttr().Set(framePoints(0.f));
+        const PXR_NS::UsdGeomPoints points = PXR_NS::UsdGeomPoints::Define(file, PXR_NS::SdfPath("/Points"));
+        points.CreatePointsAttr().Set(framePoints(0.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Curves /Points");
+    ASSERT_TRUE(bool(assign));
+
+    const QString dir = tmp.path() + QString::fromUtf8("/out");
+    const PXR_NS::UsdStageRefPtr stage = writeAndOpen(assign, dir, USDWrite::eExportModeFlattened);
+    ASSERT_TRUE(bool(stage));
+    for (const char* name : { "/Curves", "/Points" }) {
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(name));
+        ASSERT_TRUE(bool(prim)) << name;
+        const PXR_NS::UsdGeomPrimvar st = PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken("st"));
+        EXPECT_FALSE(st.GetAttr() && st.HasValue()) << name;
+        const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+        ASSERT_TRUE(bool(material)) << name;
+        SceneGeometryProjection projection;
+        EXPECT_TRUE(SceneNodeAuthoring::readGeometryProjection(material.GetPrim(), &projection)) << name;
+        const PXR_NS::UsdGeomPrimvar frame = PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken(projection.framePrimvar));
+        EXPECT_TRUE(frame.GetAttr() && frame.HasValue()) << name;
+    }
+}
+
+TEST_F(USDWriteProjectionTest, AnExportLeavesAPropertyThatOnlySharesAProjectionPrimvarsName)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string name("natronReferencePointsHold1");
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomMesh mesh = defineFrameQuad(file, "/Moving");
+        mesh.CreatePointsAttr().Set(framePoints(0.f), PXR_NS::UsdTimeCode(1.));
+        mesh.CreatePointsAttr().Set(framePoints(1.f), PXR_NS::UsdTimeCode(3.));
+        const PXR_NS::UsdPrim prim = file->DefinePrim(PXR_NS::SdfPath("/Elsewhere"), PXR_NS::TfToken("Scope"));
+        PXR_NS::UsdGeomPrimvarsAPI(prim).CreatePrimvar(PXR_NS::TfToken(name), PXR_NS::SdfValueTypeNames->Point3fArray, PXR_NS::UsdGeomTokens->vertex).Set(framePoints(2.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(source, "/Moving");
+    ASSERT_TRUE(bool(assign));
+
+    const std::pair<const char*, USDWrite::ExportModeEnum> modes[] = {
+        { "/flattened", USDWrite::eExportModeFlattened },
+        { "/layered", USDWrite::eExportModeLayered },
+    };
+    for (const std::pair<const char*, USDWrite::ExportModeEnum>& mode : modes) {
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(assign, tmp.path() + QString::fromUtf8(mode.first), mode.second);
+        ASSERT_TRUE(bool(stage)) << mode.first;
+        const PXR_NS::UsdGeomPrimvar baked = PXR_NS::UsdGeomPrimvarsAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"))).GetPrimvar(PXR_NS::TfToken(name));
+        EXPECT_FALSE(baked.GetAttr() && baked.HasValue()) << mode.first;
+        const PXR_NS::UsdGeomPrimvar unrelated = PXR_NS::UsdGeomPrimvarsAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/Elsewhere"))).GetPrimvar(PXR_NS::TfToken(name));
+        EXPECT_TRUE(unrelated.GetAttr() && unrelated.HasValue()) << mode.first;
+    }
+}
+
+TEST_F(USDWriteProjectionTest, ABakedProjectionLosesItsDataWhileAnUnbakedOneKeepsItsOwn)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomMesh mesh = defineFrameQuad(file, "/Moving");
+        mesh.CreatePointsAttr().Set(framePoints(0.f), PXR_NS::UsdTimeCode(1.));
+        mesh.CreatePointsAttr().Set(framePoints(1.f), PXR_NS::UsdTimeCode(3.));
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/Curves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        curves.CreatePointsAttr().Set(framePoints(0.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr first = createHeldAssignOf(source, "/Moving");
+    ASSERT_TRUE(bool(first));
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
+    NodePtr second = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(other && second);
+    other->setScriptName("Project2");
+    ASSERT_TRUE(other->connectInput(plate, kUSDProject3DInputImage));
+    ASSERT_TRUE(other->connectInput(camera, kUSDProject3DInputCamera));
+    getKnob<KnobChoice>(other, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    getKnob<KnobBool>(other, kUSDProject3DParamUseFrameHold)->setValue(true);
+    getKnob<KnobDouble>(other, kUSDProject3DParamFrameHold)->setValue(1.);
+    getKnob<KnobString>(second, kUSDAssignMaterialParamPrimPattern)->setValue("/Curves");
+    ASSERT_TRUE(second->connectInput(first, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(second->connectInput(other, kUSDAssignMaterialInputMaterial));
+
+    const std::pair<const char*, USDWrite::ExportModeEnum> modes[] = {
+        { "/flattened", USDWrite::eExportModeFlattened },
+        { "/layered", USDWrite::eExportModeLayered },
+    };
+    for (const std::pair<const char*, USDWrite::ExportModeEnum>& mode : modes) {
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(second, tmp.path() + QString::fromUtf8(mode.first), mode.second);
+        ASSERT_TRUE(bool(stage)) << mode.first;
+
+        const PXR_NS::UsdPrim moving = stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"));
+        ASSERT_TRUE(bool(moving)) << mode.first;
+        for (const PXR_NS::UsdGeomPrimvar& primvar : PXR_NS::UsdGeomPrimvarsAPI(moving).GetPrimvars()) {
+            EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronProjectionFrame")) << mode.first;
+            EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronReferencePoints")) << mode.first;
+            EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronReferencePresent")) << mode.first;
+        }
+        const PXR_NS::UsdShadeMaterial baked = PXR_NS::UsdShadeMaterialBindingAPI(moving).ComputeBoundMaterial();
+        ASSERT_TRUE(bool(baked)) << mode.first;
+        EXPECT_FALSE(baked.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DFrameReaderName)).IsValid()) << mode.first;
+        EXPECT_FALSE(baked.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DReferenceReaderName)).IsValid()) << mode.first;
+
+        const PXR_NS::UsdPrim curves = stage->GetPrimAtPath(PXR_NS::SdfPath("/Curves"));
+        ASSERT_TRUE(bool(curves)) << mode.first;
+        const PXR_NS::UsdShadeMaterial kept = PXR_NS::UsdShadeMaterialBindingAPI(curves).ComputeBoundMaterial();
+        ASSERT_TRUE(bool(kept)) << mode.first;
+        SceneGeometryProjection projection;
+        ASSERT_TRUE(SceneNodeAuthoring::readGeometryProjection(kept.GetPrim(), &projection)) << mode.first;
+        const PXR_NS::UsdGeomPrimvar frame = PXR_NS::UsdGeomPrimvarsAPI(curves).GetPrimvar(PXR_NS::TfToken(projection.framePrimvar));
+        EXPECT_TRUE(frame.GetAttr() && frame.HasValue()) << mode.first;
+        EXPECT_TRUE(kept.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DFrameReaderName)).IsValid()) << mode.first;
+    }
+}
+
+// The mesh bakes under its Full projection, while its Preview one stays a Storm shader because of
+// the curves, and both read one primvar on the mesh.
+TEST_F(USDWriteProjectionTest, APrimvarSharedByABakedAndAnUnbakedProjectionStays)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString source = tmp.path() + QString::fromUtf8("/source.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(source.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdGeomMesh mesh = defineFrameQuad(file, "/Moving");
+        mesh.CreatePointsAttr().Set(framePoints(0.f), PXR_NS::UsdTimeCode(1.));
+        mesh.CreatePointsAttr().Set(framePoints(1.f), PXR_NS::UsdTimeCode(3.));
+        const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/Curves"));
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4));
+        curves.CreatePointsAttr().Set(framePoints(0.f));
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr first = createHeldAssignOf(source, "/Moving");
+    ASSERT_TRUE(bool(first));
+    getKnob<KnobChoice>(first, kUSDAssignMaterialParamPurpose)->setValue((int)USDAssignMaterial::ePurposeFull);
+    NodePtr other = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
+    NodePtr second = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(other && second);
+    other->setScriptName("Project2");
+    ASSERT_TRUE(other->connectInput(plate, kUSDProject3DInputImage));
+    ASSERT_TRUE(other->connectInput(camera, kUSDProject3DInputCamera));
+    getKnob<KnobChoice>(other, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    getKnob<KnobBool>(other, kUSDProject3DParamUseFrameHold)->setValue(true);
+    getKnob<KnobDouble>(other, kUSDProject3DParamFrameHold)->setValue(1.);
+    getKnob<KnobString>(second, kUSDAssignMaterialParamPrimPattern)->setValue("/Moving /Curves");
+    getKnob<KnobChoice>(second, kUSDAssignMaterialParamPurpose)->setValue((int)USDAssignMaterial::ePurposePreview);
+    ASSERT_TRUE(second->connectInput(first, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(second->connectInput(other, kUSDAssignMaterialInputMaterial));
+
+    const std::pair<const char*, USDWrite::ExportModeEnum> modes[] = {
+        { "/flattened", USDWrite::eExportModeFlattened },
+        { "/layered", USDWrite::eExportModeLayered },
+    };
+    for (const std::pair<const char*, USDWrite::ExportModeEnum>& mode : modes) {
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(second, tmp.path() + QString::fromUtf8(mode.first), mode.second);
+        ASSERT_TRUE(bool(stage)) << mode.first;
+        const PXR_NS::UsdPrim moving = stage->GetPrimAtPath(PXR_NS::SdfPath("/Moving"));
+        ASSERT_TRUE(bool(moving)) << mode.first;
+        const PXR_NS::UsdGeomPrimvarsAPI primvars(moving);
+        const PXR_NS::UsdGeomPrimvar frame = primvars.GetPrimvar(PXR_NS::TfToken("natronProjectionFrameHold1"));
+        const PXR_NS::UsdGeomPrimvar reference = primvars.GetPrimvar(PXR_NS::TfToken("natronReferencePointsHold1"));
+        EXPECT_TRUE(frame.GetAttr() && frame.HasValue()) << mode.first;
+        EXPECT_TRUE(reference.GetAttr() && reference.HasValue()) << mode.first;
+
+        const PXR_NS::UsdShadeMaterialBindingAPI binding(moving);
+        const PXR_NS::UsdShadeMaterial baked = binding.ComputeBoundMaterial(PXR_NS::UsdShadeTokens->full);
+        const PXR_NS::UsdShadeMaterial kept = binding.ComputeBoundMaterial(PXR_NS::UsdShadeTokens->preview);
+        ASSERT_TRUE(baked && kept) << mode.first;
+        EXPECT_NE(baked.GetPath(), kept.GetPath()) << mode.first;
+        EXPECT_FALSE(baked.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DFrameReaderName)).IsValid()) << mode.first;
+        EXPECT_TRUE(kept.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DFrameReaderName)).IsValid()) << mode.first;
+        EXPECT_TRUE(kept.GetPrim().GetChild(PXR_NS::TfToken(kUSDProject3DReferenceReaderName)).IsValid()) << mode.first;
     }
 }
 

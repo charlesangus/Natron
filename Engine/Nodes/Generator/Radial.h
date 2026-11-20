@@ -94,6 +94,10 @@ struct RadialOp {
     // The shape is the extent's box, so the box and its overlay are there from the start.
     static constexpr ExtentKnobs::ExtentEnum kDefaultExtent = ExtentKnobs::eExtentSize;
 
+    // Past the shape the image is colour 0, so the region keeps a border of it and a Stretch read
+    // repeats that rather than the shape's edge.
+    static constexpr bool kOutsideColourBorder = true;
+
     void createKnobs(KnobHolder* holder,
                      const KnobPagePtr& page);
 

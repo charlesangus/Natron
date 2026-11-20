@@ -42,11 +42,21 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief What PlacementInputs::canRenderOnGpu may say about a task it refuses. detail stays empty when the refusal has
+ * nothing more specific to say than its reason.
+ **/
+struct GpuRefusal {
+    FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::NoGpuPath;
+    std::string detail;
+};
+
+/**
  * @brief What placeGraph() asks about the tasks of a graph. Every callback is optional.
  **/
 struct PlacementInputs {
-    // Whether the task's effect can render it on the GPU. Unset: no task can.
-    std::function<bool(const FrameGraph::Task&)> canRenderOnGpu;
+    // Whether the task's effect can render it on the GPU. Unset: no task can. The refusal it is given is never null, and
+    // is ignored when it answers true.
+    std::function<bool(const FrameGraph::Task&, GpuRefusal*)> canRenderOnGpu;
 
     // Whether the task's output is already in the image cache, so rendering it costs nothing on the CPU. Unset: none is.
     std::function<bool(const FrameGraph::Task&)> isCached;
@@ -75,8 +85,8 @@ struct PlacementInputs {
 double taskPixelCount(const FrameGraph::Task& task);
 
 /**
- * @brief Whether region moves no image between the devices: every external input is already on the GPU, and no output
- * is consumed on the CPU, the root counting as consumed on the CPU unless rootOnDevice.
+ * @brief Whether region moves no image between the devices: every external input is already on the GPU, or served from
+ * the device tier, and no output is consumed on the CPU, the root counting as consumed on the CPU unless rootOnDevice.
  **/
 bool regionTransfersAreFree(const FrameGraph& graph,
                             const FrameGraph::Region& region,
@@ -115,8 +125,29 @@ const int kMaxRegionShrinkSteps = 16;
  * consumer outside it, or the root) whose removal leaves the most gain, among those whose removal keeps the
  * contraction acyclic, and splits what is left into its connected parts. After kMaxRegionShrinkSteps steps, or when
  * no member can go, what is left stays on the CPU, as do the dropped members.
+ *
+ * Each task records why it was kept out of a region in Task::placementReason and Task::placementDetail. A region exit is
+ * an edge from a member to a consumer outside that region; the exit's reason is the consumer's.
  **/
 void placeGraph(FrameGraph& graph, const PlacementInputs& inputs);
+
+/**
+ * @brief What placeGraphWithShadow() adds to the placement of the graph it is given.
+ **/
+struct ShadowPlacement {
+    // The graph placed again as if no task were cached. Same tasks in the same order, so it is indexed like the graph.
+    FrameGraph graph;
+
+    // Per task, whether the real placement kept it out of every region because its output is cached.
+    std::vector<bool> servedFromCache;
+};
+
+/**
+ * @brief Places graph as placeGraph() does and returns the placement of a copy of it with inputs.isCached overridden to
+ * false, so that a member served from cache in the real plan can be seen on the GPU in the shadow one. The callbacks of
+ * inputs other than isCached are shared by both runs, and are called on tasks of the copy as well.
+ **/
+ShadowPlacement placeGraphWithShadow(FrameGraph& graph, const PlacementInputs& inputs);
 
 /**
  * @brief Whether a GPU is ready for placement. Null, the default, means there is none.
@@ -140,9 +171,17 @@ ParallelRenderArgsPtr gpuTaskContextArgs(const FrameGraph::Task& task,
                                          const FrameRenderContext& context);
 
 /**
- * @brief The query the effect of task is asked through canRenderOnGpu() for its single plane. False when the task
- * cannot go to the GPU whatever the effect answers: it is not a native image effect, renders more than one plane, or
- * is asked for a downscaled image it can only render at full scale, which a region refuses.
+ * @brief Whether a region renders task at level 0, as renderRoI() does, and box-downscales the result on the device to
+ * the task's level: the task is downscaled and its effect does not support render scale.
+ **/
+bool gpuRendersFullScale(const FrameGraph::Task& task,
+                         const EffectInstance& effect);
+
+/**
+ * @brief The query the effect of task is asked through canRenderOnGpu() for its single plane, at scale one for a task
+ * gpuRendersFullScale(). False when the task cannot go to the GPU whatever the effect answers: it is not a native
+ * image effect, renders more than one plane, or renders at full scale from inputs the request pass did not put at
+ * level 0.
  **/
 bool makeGpuQueryForTask(const FrameGraph::Task& task,
                          const FrameRenderContext& context,
@@ -205,9 +244,10 @@ PlacementInputs makeRenderPlacementInputs(const FrameRenderContextPtr& context);
  * otherwise. Returns whether it placed. A render starts here, so a GPU runtime lost by an earlier one is recreated
  * first when nothing holds it any more. While the GPU context is still initializing, it first waits for it when the
  * weight rule sends some region of the graph to the GPU, so that the first frame of a process is placed as a later one
- * would be. Same thread requirement as makeRenderPlacementInputs().
+ * would be. Same thread requirement as makeRenderPlacementInputs(). When given, shadow receives what
+ * placeGraphWithShadow() returns, and is left untouched when this returns false.
  **/
-bool placeRenderGraph(FrameGraph& graph, const FrameRenderContextPtr& context);
+bool placeRenderGraph(FrameGraph& graph, const FrameRenderContextPtr& context, ShadowPlacement* shadow = nullptr);
 
 NATRON_NAMESPACE_EXIT
 

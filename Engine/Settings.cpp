@@ -33,6 +33,7 @@
 #include <stdexcept>
 
 #include <QDebug>
+#include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -54,6 +55,7 @@
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/GpuDeviceList.h"
 #include "Engine/KnobFactory.h"
@@ -63,6 +65,7 @@
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, isApplication32Bits, printAsRAM
 #include "Engine/Node.h"
 #include "Engine/Nodes/Loop/LoopFrameCache.h"
+#include "Engine/Nodes/Raw/RawDemosaic.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -89,8 +92,6 @@
 
 #define NATRON_OCIO_ENV_IS_PREFERENCE_VAR_NAME "NATRON_OCIO_ENV_IS_PREFERENCE"
 
-#define NATRON_DEFAULT_APPEARANCE_VERSION 1
-
 #define NATRON_CUSTOM_HOST_NAME_ENTRY "Custom..."
 
 #define kGpuDeviceAutoID "auto"
@@ -100,8 +101,6 @@ NATRON_NAMESPACE_ENTER
 Settings::Settings()
     : KnobHolder(AppInstancePtr()) // < Settings are process wide and do not belong to a single AppInstance
     , _restoringSettings(false)
-    , _settingsExisted(false)
-    , _defaultAppearanceOutdated(false)
 {
 }
 
@@ -217,11 +216,6 @@ void
 Settings::initializeKnobsGeneral()
 {
     _generalTab = AppManager::createKnob<KnobPage>( this, tr("General") );
-
-    _natronSettingsExist = AppManager::createKnob<KnobBool>( this, tr("Existing settings") );
-    _natronSettingsExist->setName("existingSettings");
-    _natronSettingsExist->setSecretByDefault(true);
-    _generalTab->addKnob(_natronSettingsExist);
 
     _saveSettings = AppManager::createKnob<KnobBool>( this, tr("Save settings on change") );
     _saveSettings->setName("saveSettings");
@@ -858,11 +852,6 @@ Settings::initializeKnobsAppearance()
     //////////////APPEARANCE TAB/////////////////
     _appearanceTab = AppManager::createKnob<KnobPage>( this, tr("Appearance") );
 
-    _defaultAppearanceVersion = AppManager::createKnob<KnobInt>( this, tr("Appearance version") );
-    _defaultAppearanceVersion->setName("appearanceVersion");
-    _defaultAppearanceVersion->setSecretByDefault(true);
-    _appearanceTab->addKnob(_defaultAppearanceVersion);
-
     _systemFontChoice = AppManager::createKnob<KnobChoice>( this, tr("Font") );
     _systemFontChoice->setHintToolTip( tr("List of all fonts available on your system") );
     _systemFontChoice->setName("systemFont");
@@ -1296,17 +1285,13 @@ Settings::initializeKnobsViewers()
     _checkerboardColor2->setHintToolTip( tr("The second color used by the checkerboard.") );
     _viewersTab->addKnob(_checkerboardColor2);
 
-    _autoWipe = AppManager::createKnob<KnobBool>( this, tr("Automatically enable wipe") );
-    _autoWipe->setName("autoWipeForViewer");
-    _autoWipe->setHintToolTip( tr("When checked, the wipe tool of the viewer will be automatically enabled "
-                                  "when the mouse is hovering the viewer and changing an input of a viewer." ) );
-    _viewersTab->addKnob(_autoWipe);
-
-
-    _autoProxyWhenScrubbingTimeline = AppManager::createKnob<KnobBool>( this, tr("Automatically enable proxy when scrubbing the timeline") );
+    _autoProxyWhenScrubbingTimeline = AppManager::createKnob<KnobBool>(this, tr("Auto Proxy Scrubbing"));
     _autoProxyWhenScrubbingTimeline->setName("autoProxyScrubbing");
-    _autoProxyWhenScrubbingTimeline->setHintToolTip( tr("When checked, the proxy mode will be at least at the level "
-                                                        "indicated by the auto-proxy parameter.") );
+    _autoProxyWhenScrubbingTimeline->setHintToolTip(tr("When checked, the viewer drafts while the timeline is scrubbed or a "
+                                                       "control is dragged: it renders at least at the level indicated by the "
+                                                       "auto-proxy parameter. Dragging a control of a colour node that works "
+                                                       "pixel by pixel never drafts, and draft turns off on its own when the "
+                                                       "viewer's full resolution keeps up with the drag."));
     _autoProxyWhenScrubbingTimeline->setAddNewLine(false);
     _viewersTab->addKnob(_autoProxyWhenScrubbingTimeline);
 
@@ -1322,6 +1307,30 @@ Settings::initializeKnobsViewers()
     _autoProxyLevel->populateChoices(autoProxyChoices);
 
     _viewersTab->addKnob(_autoProxyLevel);
+
+    _viewerMipRounding = AppManager::createKnob<KnobChoice>(this, tr("Viewer Mip Rounding"));
+    _viewerMipRounding->setName("viewerMipRounding");
+    {
+        std::vector<ChoiceOption> roundings;
+        roundings.push_back(ChoiceOption("finer", tr("Finer").toStdString(), tr("The viewer renders at the nearest resolution at or above its zoom: 33% renders at 50%.").toStdString()));
+        roundings.push_back(ChoiceOption("nearest", tr("Nearest").toStdString(), tr("The viewer renders at the power of two nearest its zoom: 33% renders at 25%, which is faster and softer.").toStdString()));
+        _viewerMipRounding->populateChoices(roundings);
+    }
+    _viewerMipRounding->setHintToolTip(tr("How the viewer picks the resolution it renders at when zoomed below 100%. "
+                                          "Renders are at a power of two of the full resolution."));
+    _viewersTab->addKnob(_viewerMipRounding);
+
+    _zoomedOutDemosaic = AppManager::createKnob<KnobChoice>(this, tr("Zoomed-Out Demosaic"));
+    _zoomedOutDemosaic->setName("zoomedOutDemosaic");
+    {
+        std::vector<ChoiceOption> methods;
+        methods.push_back(ChoiceOption("fast", tr("Fast").toStdString(), tr("Below 100% the Raw Demosaic node averages each colour's photosites under every output pixel, without demosaicing at full resolution.").toStdString()));
+        methods.push_back(ChoiceOption("full", tr("Full").toStdString(), tr("Below 100% the Raw Demosaic node demosaics at full resolution with its own method, then downscales: slower, and the same pixels as the full-resolution render.").toStdString()));
+        _zoomedOutDemosaic->populateChoices(methods);
+    }
+    _zoomedOutDemosaic->setHintToolTip(tr("How the Raw Demosaic node renders when the viewer is zoomed below 100%. "
+                                          "Fast skips the demosaic method, green equilibration, capture sharpening, the dual blend and colour smoothing."));
+    _viewersTab->addKnob(_zoomedOutDemosaic);
 
     _maximumNodeViewerUIOpened = AppManager::createKnob<KnobInt>( this, tr("Max. opened node viewer interface") );
     _maximumNodeViewerUIOpened->setName("maxNodeUiOpened");
@@ -1493,6 +1502,16 @@ Settings::initializeKnobsNodeGraph()
                                             "hide them for the session."));
     _nodegraphTab->addKnob(_showExpressionLines);
 
+    _showGpuRegions = AppManager::createKnob<KnobBool>(this, tr("Show GPU Regions"));
+    _showGpuRegions->setName("showGpuRegions");
+    _showGpuRegions->setHintToolTip(tr("When checked, the node graph outlines the regions of the active viewer's last render "
+                                       "that stay resident on the GPU, marks each pipe where a region ends with a red X and "
+                                       "the reason, and fades nodes that computed no pixels in that render because their "
+                                       "image came from the cache or they passed their input through. With GPU compute off "
+                                       "or no GPU, it draws nothing. The \"Show GPU Regions\" action of the node graph "
+                                       "toggles the same setting."));
+    _nodegraphTab->addKnob(_showGpuRegions);
+
     _tabMenuSeparator = AppManager::createKnob<KnobSeparator>(this, tr("Tab menu"));
     _tabMenuSeparator->setName("tabMenuSeparator");
     _nodegraphTab->addKnob(_tabMenuSeparator);
@@ -1547,23 +1566,34 @@ Settings::initializeKnobsCaching()
     /////////// Caching tab
     _cachingTab = AppManager::createKnob<KnobPage>( this, tr("Caching") );
 
-    _aggressiveCaching = AppManager::createKnob<KnobBool>( this, tr("Aggressive caching") );
-    _aggressiveCaching->setName("aggressiveCaching");
-    _aggressiveCaching->setHintToolTip( tr("When checked, %1 will cache the output of all images "
-                                           "rendered by all nodes, regardless of their \"Force caching\" parameter. When enabling this option "
-                                           "you need to have at least 8GiB of RAM, and 16GiB is recommended.\n"
-                                           "If not checked, %1 will only cache the  nodes "
-                                           "which have multiple outputs, or their parameter \"Force caching\" checked or if one of its "
-                                           "output has its settings panel opened.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
-    _cachingTab->addKnob(_aggressiveCaching);
+    _cacheAdmissionPolicy = AppManager::createKnob<KnobChoice>(this, tr("Cache Admission Policy"));
+    _cacheAdmissionPolicy->setName("cacheAdmissionPolicy");
+    {
+        std::vector<ChoiceOption> entries;
+        assert(entries.size() == (int)CacheRetention::eAdmissionPolicyAll);
+        entries.push_back(ChoiceOption("all",
+                                       tr("All").toStdString(),
+                                       tr("Store the output of every node. Nothing is evicted until the cache needs room.").toStdString()));
+        assert(entries.size() == (int)CacheRetention::eAdmissionPolicyPriorityFloor);
+        entries.push_back(ChoiceOption("priorityFloor",
+                                       tr("Priority Floor").toStdString(),
+                                       tr("Store an output only when something asks for it: the node is on the active viewer's branch, feeds a recently edited node or an open panel, "
+                                          "was slow to render, has \"Force caching\" checked, or its output is read more than once.")
+                                           .toStdString()));
+        _cacheAdmissionPolicy->populateChoices(entries);
+    }
+    _cacheAdmissionPolicy->setHintToolTip(tr("Advanced. Which node outputs may enter the cache; the default is All. An output stored earlier serves a render under either policy. "
+                                             "The NATRON_CACHE_ADMISSION environment variable (all or priorityFloor) takes precedence over this setting."));
+    _cachingTab->addKnob(_cacheAdmissionPolicy);
 
     _maxRAMPercent = AppManager::createKnob<KnobInt>( this, tr("Maximum amount of RAM memory used for caching (% of total RAM)") );
     _maxRAMPercent->setName("maxRAMPercent");
     _maxRAMPercent->disableSlider();
     _maxRAMPercent->setMinimum(0);
     _maxRAMPercent->setMaximum(100);
-    QString ramHint( tr("This setting indicates the percentage of the total RAM which can be used by the memory caches. "
-                        "This system has %1 of RAM.").arg( printAsRAM( getSystemTotalRAM() ) ) );
+    QString ramHint(tr("This setting indicates the percentage of the total RAM which can be used by the memory caches, images and deep images alike. "
+                       "This system has %1 of RAM.")
+                        .arg(printAsRAM(getSystemTotalRAM())));
     if ( isApplication32Bits() && (getSystemTotalRAM() > 4ULL * 1024ULL * 1024ULL * 1024ULL) ) {
         ramHint.append( QString::fromUtf8("\n") );
         ramHint.append( tr("The version of %1 you are running is 32 bits, which means the available RAM "
@@ -1616,18 +1646,9 @@ Settings::initializeKnobsCaching()
     _maxDiskCacheNodeGB->disableSlider();
     _maxDiskCacheNodeGB->setMinimum(0);
     _maxDiskCacheNodeGB->setMaximum(100);
-    _maxDiskCacheNodeGB->setHintToolTip( tr("The maximum size that may be used by the DiskCache node on disk (in GiB)") );
+    _maxDiskCacheNodeGB->setHintToolTip(tr("The space that the outputs of DiskCache nodes may take in the disk tier (in GiB), apart from the disk tier's own size. "
+                                           "Past it, an output is not kept on disk and a warning is logged once."));
     _cachingTab->addKnob(_maxDiskCacheNodeGB);
-
-    _maxDeepImageCacheGB = AppManager::createKnob<KnobInt>(this, tr("Maximum deep image cache RAM usage (GiB)"));
-    _maxDeepImageCacheGB->setName("maxDeepImageCache");
-    _maxDeepImageCacheGB->disableSlider();
-    _maxDeepImageCacheGB->setMinimum(0);
-    _maxDeepImageCacheGB->setMaximum(100);
-    _maxDeepImageCacheGB->setHintToolTip(tr("The maximum size that may be used in RAM by the deep image cache (in GiB). "
-                                            "This is a separate budget from the regular image cache above, "
-                                            "so that large deep renders cannot evict it entirely."));
-    _cachingTab->addKnob(_maxDeepImageCacheGB);
 
     _diskCachePath = AppManager::createKnob<KnobPath>( this, tr("Disk cache path") );
     _diskCachePath->setName("diskCachePath");
@@ -1644,6 +1665,27 @@ Settings::initializeKnobsCaching()
 
     _diskCachePath->setHintToolTip( diskCacheTt + QLatin1Char('\n') + diskCacheTt2 );
     _cachingTab->addKnob(_diskCachePath);
+
+    _diskTierLocation = AppManager::createKnob<KnobPath>(this, tr("Disk Tier Location"));
+    _diskTierLocation->setName("diskTierLocation");
+    _diskTierLocation->setMultiPath(false);
+    _diskTierLocation->setHintToolTip(tr("WARNING: Changing this parameter requires a restart of the application.\n"
+                                         "The directory holding rendered images that left RAM, shared with every "
+                                         "other %1 session pointing at it, on this machine or on a network filesystem. "
+                                         "If the parameter is left empty or the location cannot be used, the default "
+                                         "location is used: %2")
+                                          .arg(QString::fromUtf8(NATRON_APPLICATION_NAME))
+                                          .arg(QString::fromUtf8(defaultDiskTierLocation().c_str())));
+    _cachingTab->addKnob(_diskTierLocation);
+
+    _diskTierSize = AppManager::createKnob<KnobInt>(this, tr("Disk Tier Size"));
+    _diskTierSize->setName("diskTierSize");
+    _diskTierSize->disableSlider();
+    _diskTierSize->setMinimum(0);
+    _diskTierSize->setHintToolTip(tr("The maximum size of the disk tier, in GiB. It never takes more than a quarter of "
+                                     "the free space of its filesystem. Setting 0 turns the tier off; turning it back "
+                                     "on requires a restart of the application."));
+    _cachingTab->addKnob(_diskTierSize);
 
     _wipeDiskCache = AppManager::createKnob<KnobButton>( this, tr("Wipe Disk Cache") );
     _wipeDiskCache->setHintToolTip( tr("Cleans-up all caches, deleting all folders that may contain cached data. "
@@ -1792,8 +1834,6 @@ Settings::setDefaultValues()
 {
     beginChanges();
 
-    _natronSettingsExist->setDefaultValue(false);
-
     // General
     _checkForUpdates->setDefaultValue(false);
     _autoSaveUnSavedProjects->setDefaultValue(true);
@@ -1848,12 +1888,12 @@ Settings::setDefaultValues()
 #endif
 
     // Caching
-    _aggressiveCaching->setDefaultValue(false);
+    _cacheAdmissionPolicy->setDefaultValue((int)CacheRetention::kDefaultAdmissionPolicy);
     _maxRAMPercent->setDefaultValue(50, 0);
     _unreachableRAMPercent->setDefaultValue(20); // see https://github.com/NatronGitHub/Natron/issues/486
     _maxViewerDiskCacheGB->setDefaultValue(5, 0);
     _maxDiskCacheNodeGB->setDefaultValue(10, 0);
-    _maxDeepImageCacheGB->setDefaultValue(2, 0);
+    _diskTierSize->setDefaultValue(20, 0);
     //_diskCachePath
     setCachingLabels();
 
@@ -1869,9 +1909,10 @@ Settings::setDefaultValues()
     _checkerboardColor2->setDefaultValue(0., 1);
     _checkerboardColor2->setDefaultValue(0., 2);
     _checkerboardColor2->setDefaultValue(0., 3);
-    _autoWipe->setDefaultValue(true);
     _autoProxyWhenScrubbingTimeline->setDefaultValue(true);
     _autoProxyLevel->setDefaultValue(1);
+    _viewerMipRounding->setDefaultValue(0);
+    _zoomedOutDemosaic->setDefaultValue(0);
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
     _viewerOverlaysPath->setDefaultValue(true);
@@ -1890,6 +1931,7 @@ Settings::setDefaultValues()
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _showLinkLines->setDefaultValue(true);
     _showExpressionLines->setDefaultValue(true);
+    _showGpuRegions->setDefaultValue(false);
     _usePluginIconsInNodeGraph->setDefaultValue(true);
     _useAntiAliasing->setDefaultValue(true);
 
@@ -1918,7 +1960,6 @@ Settings::setDefaultValues()
     _systemFontChoice->setDefaultValue(0);
     _fontSize->setDefaultValue(NATRON_FONT_SIZE_DEFAULT);
     //_qssFile
-    //_defaultAppearanceVersion
 
     // Appearance/Main Window
     _sunkenColor->setDefaultValue(0.12, 0);
@@ -2087,9 +2128,11 @@ Settings::setDefaultValues()
     _edgeDeepColor->setDefaultValue(0. / 255., 0); // Okabe-Ito blue
     _edgeDeepColor->setDefaultValue(114. / 255., 1);
     _edgeDeepColor->setDefaultValue(178. / 255., 2);
-    _edgeSceneColor->setDefaultValue(230. / 255., 0); // Okabe-Ito orange
-    _edgeSceneColor->setDefaultValue(159. / 255., 1);
-    _edgeSceneColor->setDefaultValue(0. / 255., 2);
+    // The USD 3D node colour (hue 180) made lighter and more saturated, with the hue pulled
+    // slightly towards green so it stays apart from the deep pipes' blue.
+    _edgeSceneColor->setDefaultValue(32. / 255., 0);
+    _edgeSceneColor->setDefaultValue(190. / 255., 1);
+    _edgeSceneColor->setDefaultValue(172. / 255., 2);
     _edgeRawColor->setDefaultValue(204. / 255., 0); // Okabe-Ito reddish purple
     _edgeRawColor->setDefaultValue(121. / 255., 1);
     _edgeRawColor->setDefaultValue(167. / 255., 2);
@@ -2433,26 +2476,13 @@ Settings::restoreSettings(bool useDefault)
         }
     }
 
-    _settingsExisted = false;
     try {
-        _settingsExisted = _natronSettingsExist->getValue();
-
-        if (!_settingsExisted && !useDefault) {
-            _natronSettingsExist->setValue(true);
-            saveSetting( _natronSettingsExist.get() );
-        }
-
-        int appearanceVersion = _defaultAppearanceVersion->getValue();
-        if ( _settingsExisted && (appearanceVersion < NATRON_DEFAULT_APPEARANCE_VERSION) ) {
-            _defaultAppearanceOutdated = true;
-            _defaultAppearanceVersion->setValue(NATRON_DEFAULT_APPEARANCE_VERSION);
-            saveSetting( _defaultAppearanceVersion.get() );
-        }
-
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
         appPTR->setNThreadsToRender( getNumberOfThreads() );
         appPTR->setUseThreadPool( _useThreadPool->getValue() );
+        CacheRetention::setAdmissionPolicySetting((CacheRetention::AdmissionPolicyEnum)_cacheAdmissionPolicy->getValue());
         appPTR->setPluginsUseInputImageCopyToRender( _pluginUseImageCopyForSource->getValue() );
+        ViewerInstance::setGpuPlacementOverlayEnabled(_showGpuRegions->getValue());
     } catch (std::logic_error&) {
         // ignore
     }
@@ -2562,11 +2592,11 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if ( k == _maxDiskCacheNodeGB.get() ) {
         if (!_restoringSettings) {
-            appPTR->setApplicationsCachesMaximumDiskSpace( getMaximumDiskCacheNodeSize() );
+            appPTR->setNodeCachePinBudget(getMaximumDiskCacheNodeSize());
         }
-    } else if (k == _maxDeepImageCacheGB.get()) {
+    } else if (k == _diskTierSize.get()) {
         if (!_restoringSettings) {
-            appPTR->setApplicationsCachesMaximumDeepImageCacheSize(getMaximumDeepImageCacheSize());
+            appPTR->setNodeCacheDiskTierSize(getDiskTierSizeBytes());
         }
     } else if (k == _maxRAMPercent.get()) {
         if (!_restoringSettings) {
@@ -2601,6 +2631,8 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _nThreadsPerEffect.get()) {
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
+    } else if (k == _showGpuRegions.get()) {
+        ViewerInstance::setGpuPlacementOverlayEnabled(_showGpuRegions->getValue());
     } else if (k == _renderOnEditingFinished.get()) {
         const AppInstanceVec& apps = appPTR->getAppInstances();
         for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
@@ -2610,8 +2642,23 @@ Settings::onKnobValueChanged(KnobI* k,
                 (*node)->refreshHostDrivenOverlayParams();
             }
         }
+    } else if (k == _zoomedOutDemosaic.get()) {
+        const AppInstanceVec& apps = appPTR->getAppInstances();
+        for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
+            NodesList nodes;
+            (*it)->getProject()->getNodes_recursive(nodes, false);
+            for (NodesList::const_iterator node = nodes.begin(); node != nodes.end(); ++node) {
+                if (RawDemosaic* demosaic = dynamic_cast<RawDemosaic*>((*node)->getEffectInstance().get())) {
+                    demosaic->refreshZoomedOutDemosaic();
+                }
+            }
+        }
+        // The nodes fold the trait into their hash, which must not be read back from before it changed.
+        Node::invalidateAllHashes("the Zoomed-Out Demosaic preference changed", k);
     } else if (k == _renderSchedulerMode.get()) {
         appPTR->onRenderSchedulerModeSettingChanged(getRenderSchedulerMode());
+    } else if (k == _cacheAdmissionPolicy.get()) {
+        CacheRetention::setAdmissionPolicySetting((CacheRetention::AdmissionPolicyEnum)_cacheAdmissionPolicy->getValue());
     } else if ((k == _ocioConfigKnob.get()) || (k == _customOcioConfigFile.get())) {
         if (!_restoringSettings) {
             tryLoadOpenColorIOConfig();
@@ -2714,15 +2761,28 @@ Settings::getCheckerboardColor2(double* r,
 }
 
 bool
-Settings::isAutoWipeEnabled() const
-{
-    return _autoWipe->getValue();
-}
-
-bool
 Settings::isAutoProxyEnabled() const
 {
     return _autoProxyWhenScrubbingTimeline->getValue();
+}
+
+void
+Settings::setAutoProxyEnabled(bool enabled)
+{
+    _autoProxyWhenScrubbingTimeline->setValue(enabled);
+    saveSetting(_autoProxyWhenScrubbingTimeline.get());
+}
+
+bool
+Settings::isViewerMipRoundingNearest() const
+{
+    return _viewerMipRounding->getValue() == 1;
+}
+
+bool
+Settings::isZoomedOutDemosaicFull() const
+{
+    return _zoomedOutDemosaic->getValue() == 1;
 }
 
 unsigned int
@@ -2827,12 +2887,6 @@ Settings::getRenderSchedulerMode() const
 
 // "Caching" pane
 
-bool
-Settings::isAggressiveCachingEnabled() const
-{
-    return _aggressiveCaching->getValue();
-}
-
 double
 Settings::getRamMaximumPercent() const
 {
@@ -2852,9 +2906,23 @@ Settings::getMaximumDiskCacheNodeSize() const
 }
 
 U64
-Settings::getMaximumDeepImageCacheSize() const
+Settings::getDiskTierSizeBytes() const
 {
-    return (U64)(_maxDeepImageCacheGB->getValue()) * 1024 * 1024 * 1024;
+    return (U64)(_diskTierSize->getValue()) * 1024 * 1024 * 1024;
+}
+
+std::string
+Settings::getDiskTierLocation() const
+{
+    const std::string location = _diskTierLocation->getValue();
+
+    return location.empty() ? defaultDiskTierLocation() : location;
+}
+
+std::string
+Settings::defaultDiskTierLocation()
+{
+    return (QDir::homePath() + QString::fromUtf8("/.cache/Natron/tier")).toStdString();
 }
 
 ///////////////////////////////////////////////////
@@ -3551,6 +3619,18 @@ Settings::isExpressionLinesVisible() const
 }
 
 bool
+Settings::isGpuRegionOverlayEnabled() const
+{
+    return _showGpuRegions->getValue();
+}
+
+void
+Settings::setGpuRegionOverlayEnabled(bool enabled)
+{
+    _showGpuRegions->setValue(enabled);
+}
+
+bool
 Settings::getEdgeKindColor(DataKindEnum kind,
                            float* r,
                            float* g,
@@ -3833,12 +3913,6 @@ bool
 Settings::useInputAForMergeAutoConnect() const
 {
     return _useInputAForMergeAutoConnect->getValue();
-}
-
-bool
-Settings::didSettingsExistOnStartup() const
-{
-    return _settingsExisted;
 }
 
 bool
@@ -4312,31 +4386,6 @@ void
 Settings::setOnProjectLoadedCB(const std::string& func)
 {
     _defaultOnProjectLoaded->setValue(func);
-}
-
-bool
-Settings::isDefaultAppearanceOutdated() const
-{
-    return _defaultAppearanceOutdated;
-}
-
-void
-Settings::restoreDefaultAppearance()
-{
-    std::vector<KnobIPtr> children = _appearanceTab->getChildren();
-
-    for (std::size_t i = 0; i < children.size(); ++i) {
-        KnobColor* isColorKnob = dynamic_cast<KnobColor*>( children[i].get() );
-        if ( isColorKnob && isColorKnob->isSimplified() ) {
-            isColorKnob->blockValueChanges();
-            for (int j = 0; j < isColorKnob->getDimension(); ++j) {
-                isColorKnob->resetToDefaultValue(j);
-            }
-            isColorKnob->unblockValueChanges();
-        }
-    }
-    _defaultAppearanceOutdated = false;
-    appPTR->reloadStylesheets();
 }
 
 std::string

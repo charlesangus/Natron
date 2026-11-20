@@ -35,6 +35,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -261,6 +262,32 @@ TEST_F(NodeContentHashTest, RenamingWithoutExpressionsKeepsHash)
     refreshHashes({ blur });
     EXPECT_EQ(std::string("renamedBlur"), blur->getScriptName());
     EXPECT_EQ(before, blur->getContentHash());
+}
+
+TEST_F(NodeContentHashTest, AVolatileExpressionFlagsItsNodeAndEveryNodeDownstream)
+{
+    NodePtr constant = createConstant();
+    NodePtr blur = createBlur();
+    NodePtr downstream = createBlur();
+    ASSERT_TRUE(constant && blur && downstream);
+    connectNodes(constant, blur, 0, true);
+    connectNodes(blur, downstream, 0, true);
+    refreshHashes({ constant, blur, downstream });
+    EXPECT_FALSE(ContentHasher::isSalted(blur->getContentHash()));
+    EXPECT_FALSE(ContentHasher::isSalted(downstream->getContentHash()));
+
+    KnobDoublePtr size = blurSize(blur);
+    ASSERT_TRUE(bool(size));
+    size->setExpression(0, "thisParam.random()", false, false);
+    refreshHashes({ constant, blur, downstream });
+    EXPECT_FALSE(ContentHasher::isSalted(constant->getContentHash()));
+    EXPECT_TRUE(ContentHasher::isSalted(blur->getContentHash()));
+    EXPECT_TRUE(ContentHasher::isSalted(downstream->getContentHash()));
+
+    size->clearExpression(0, false);
+    refreshHashes({ constant, blur, downstream });
+    EXPECT_FALSE(ContentHasher::isSalted(blur->getContentHash()));
+    EXPECT_FALSE(ContentHasher::isSalted(downstream->getContentHash()));
 }
 
 TEST_F(NodeContentHashTest, RenamingWithAnExpressionChangesHash)

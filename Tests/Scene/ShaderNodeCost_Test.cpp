@@ -127,7 +127,8 @@ valuePorts(const PortTestNode& node)
 
 /**
  * The bench network: 5 large materials, 10 BSDFs, 5 two-output textures and 30 small maps, the
- * maps feeding the materials and BSDFs and each texture feeding two BSDFs, one from each output.
+ * maps feeding the materials and each texture feeding two BSDFs, one from each output. Maps and
+ * materials share only the MoonRay target, textures and BSDFs only Cycles, so no edge crosses.
  **/
 class Network {
 public:
@@ -168,11 +169,7 @@ public:
             ++edges;
         };
         for (std::size_t i = 0; i < maps.size(); ++i) {
-            if (i < 15) {
-                wire(maps[i], std::string(), materials[i / 3]);
-            } else {
-                wire(maps[i], std::string(), bsdfs[(i - 15) % bsdfs.size()]);
-            }
+            wire(maps[i], std::string(), materials[i % materials.size()]);
         }
         for (std::size_t i = 0; i < textures.size(); ++i) {
             wire(textures[i], "Alpha", bsdfs[i]);

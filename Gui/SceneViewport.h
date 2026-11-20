@@ -69,7 +69,9 @@ struct SceneTransformDrag;
  * Another delegate, such as a path tracer, renders progressively in the background
  * (HydraRender::ProgressiveRender): each edit of the stage, the view or Max Samples restarts it, it
  * refines until it converges, reaches Max Samples or is paused, and render() draws its latest
- * frame, uploaded to a texture, under the grid and handles.
+ * frame, uploaded to a half-float texture and graded by the display transform as Storm's colour
+ * is, under the grid and handles. Its lights follow the lighting mode, and a change of the mode
+ * restarts it, while a change of the display transform only redraws its last frame.
  *
  * Owns one long-lived stage (SceneStage) for its whole life and syncs each new scene into it, so
  * an edit upstream reaches the engine as the stage's change notices, which it applies to the

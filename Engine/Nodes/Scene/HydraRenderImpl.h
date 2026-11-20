@@ -320,8 +320,8 @@ std::string contextDescription(std::string* error);
  * A worker thread owns the engine (made without the GPU, as the CPU delegates' render thread
  * makes its own) and polls it: a path tracer renders on threads of its own between Render() calls,
  * each of which syncs the stage's changes into it. After each poll whose sample count moved it
- * publishes the colour, over a background and encoded to sRGB, and the depth, as the window depth
- * of the frame's projection, and calls the listener on the worker.
+ * publishes the colour, scene-linear and premultiplied as the delegate rendered it, and the depth,
+ * as the window depth of the frame's projection, and calls the listener on the worker.
  *
  * Edits coalesce: a restart waits until no edit has come for a short quiet time, or until the first
  * waiting one is a bounded time old, so that a burst of edits restarts once and a camera dragged
@@ -376,8 +376,9 @@ public:
     struct Frame {
         int width = 0;
         int height = 0;
-        // 4 bytes per pixel, the bottom row first: the colour over the background, sRGB encoded.
-        std::vector<unsigned char> rgba;
+        // 4 per pixel, the bottom row first: the colour AOV, scene-linear and premultiplied, with
+        // its alpha, 0 where nothing was hit. Nothing is composited under it and nothing clamped.
+        std::vector<PXR_NS::GfHalf> rgba;
         // 1 per pixel: the window depth in the view's projection, 1 where nothing was hit.
         std::vector<float> depth;
         // The delegate's sample count when the frame was read, -1 if it reports none.
@@ -421,14 +422,12 @@ public:
      * The caller calls invalidate() for an edit of its stage before it lets go of *stageLock, so
      * that a snapshot and the edit count read with it agree; the other setters need no lock.
      * They may be called with *stageLock held. listener is called on the
-     * worker after each frame is published and when the delegate fails. background is the linear
-     * grey the colour is composited over. None of snapshot, listener, setThreads()' function or
-     * *stageLock is used once the destructor returns.
+     * worker after each frame is published and when the delegate fails. None of snapshot,
+     * listener, setThreads()' function or *stageLock is used once the destructor returns.
      **/
     ProgressiveRender(std::mutex* stageLock,
                       const std::function<bool(SceneStageSnapshot*)>& snapshot,
-                      const std::function<void()>& listener,
-                      float background);
+                      const std::function<void()>& listener);
 
     /**
      * @brief Tells the worker to end and returns without waiting for it: the worker finishes the
@@ -464,6 +463,15 @@ public:
      * nothing. The sample cap of setMaxSamples() applies over the prim's samples.
      **/
     void setSettings(const std::map<std::string, PXR_NS::VtValue>& settings);
+
+    /**
+     * @brief Lights the stage with a distant light that follows the camera, at Hydra's default
+     * brightness, in place of the stage's own lights; or, off, with the stage's lights alone, as
+     * an offline render does. A change makes the engine again, as a light at the camera cannot be
+     * taken back from one, keeping the frame shown until the next. A delegate with no distant
+     * light renders the stage's lights, with a warning once.
+     **/
+    void setHeadlightOnly(bool on);
 
     // The sample cap; <= 0 for the delegate's default, the prim's samples if it sets them. A change restarts.
     void setMaxSamples(int samples);

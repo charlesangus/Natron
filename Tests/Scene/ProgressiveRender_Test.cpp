@@ -83,6 +83,8 @@ using CyclesTestUtils::fixedSampling;
 
 namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles.usda";
+// /World/Glow, a 2-unit emissive card facing the camera ten units away, over nothing.
+const char* const kEmissionFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-emission.usda";
 const char* const kCamera = "/World/Cam";
 const int kSize = 32;
 const int kSamples = 256;
@@ -96,11 +98,11 @@ typedef HydraRender::ProgressiveRender ProgressiveRender;
 // The fixture as a USDRead node hands it on: a node layer sublayering the file and carrying its
 // stage metadata.
 ScenePayload
-fixtureScene()
+fixtureScene(const char* fixture)
 {
-    PXR_NS::SdfLayerRefPtr file = PXR_NS::SdfLayer::FindOrOpen(kFixture);
+    PXR_NS::SdfLayerRefPtr file = PXR_NS::SdfLayer::FindOrOpen(fixture);
     if (!file) {
-        ADD_FAILURE() << "cannot open " << kFixture;
+        ADD_FAILURE() << "cannot open " << fixture;
 
         return ScenePayload();
     }
@@ -134,6 +136,45 @@ movedNear(const ScenePayload& base,
     order->SetDefaultValue(PXR_NS::VtValue(PXR_NS::VtTokenArray(1, PXR_NS::TfToken("xformOp:translate"))));
 
     return SceneOps::appendLayer(base, layer, hash);
+}
+
+// base, of the emission fixture, with its card's emission set to grey, as a node downstream would.
+ScenePayload
+emittingGrey(const ScenePayload& base,
+             float grey,
+             U64 hash)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("ProgressiveRenderTestEmission");
+    PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath("/World/Looks/Glow/Surface"));
+    PXR_NS::SdfAttributeSpecHandle emission = PXR_NS::SdfAttributeSpec::New(prim, "inputs:emissiveColor", PXR_NS::SdfValueTypeNames->Color3f);
+    emission->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3f(grey, grey, grey)));
+
+    return SceneOps::appendLayer(base, layer, hash);
+}
+
+// The colour and alpha of frame's pixel (x, y), counted from its bottom-left pixel.
+PXR_NS::GfVec4f
+pixelOf(const ProgressiveRender::Frame& frame,
+        int x,
+        int y)
+{
+    const std::size_t at = ((std::size_t)y * (std::size_t)frame.width + (std::size_t)x) * 4;
+
+    return PXR_NS::GfVec4f((float)frame.rgba[at], (float)frame.rgba[at + 1], (float)frame.rgba[at + 2], (float)frame.rgba[at + 3]);
+}
+
+// The mean red of frame's 4 by 4 pixels about its centre, all on the near cube.
+float
+centreRed(const ProgressiveRender::Frame& frame)
+{
+    float sum = 0.f;
+    for (int y = frame.height / 2 - 2; y < frame.height / 2 + 2; ++y) {
+        for (int x = frame.width / 2 - 2; x < frame.width / 2 + 2; ++x) {
+            sum += pixelOf(frame, x, y)[0];
+        }
+    }
+
+    return sum / 16.f;
 }
 
 // The window depth, in frustum's projection, of a point distance units along the view axis.
@@ -338,21 +379,22 @@ protected:
             _published.clear();
             _calls = 0;
         }
-        _render.reset(new ProgressiveRender(&_stageLock, snapshotOfStage(), [this]() { heard(); }, 0.05f));
+        _render.reset(new ProgressiveRender(&_stageLock, snapshotOfStage(), [this]() { heard(); }));
         _listened = _render.get();
     }
 
-    // Starts a render of the fixture by renderer, Cycles unless given, through its camera, kSize
+    // Starts a render of fixture by renderer, Cycles unless given, through its camera, kSize
     // pixels square, with a render settings prim's settings.
     bool start(const std::map<std::string, PXR_NS::VtValue>& settings = std::map<std::string, PXR_NS::VtValue>(),
-               const std::string& renderer = kRenderDelegateCyclesId)
+               const std::string& renderer = kRenderDelegateCyclesId,
+               const char* fixture = kFixture)
     {
         if (!_stage->isValid()) {
             ADD_FAILURE() << "OpenUSD could not open a stage";
 
             return false;
         }
-        _base = fixtureScene();
+        _base = fixtureScene(fixture);
         sync(_base);
         PXR_NS::UsdGeomCamera camera(_stage->getStage()->GetPrimAtPath(PXR_NS::SdfPath(kCamera)));
         if (!camera) {
@@ -616,8 +658,9 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
     EXPECT_TRUE(last.converged);
     // The centre shows the near cube, in front of the far plane, and is lit.
     EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance), centreDepth(last), 1e-4f);
-    const std::size_t centre = ((std::size_t)(kSize / 2) * kSize + kSize / 2) * 4;
-    EXPECT_GT(last.rgba[centre] + last.rgba[centre + 1] + last.rgba[centre + 2], 3 * 20);
+    const PXR_NS::GfVec4f centre = pixelOf(last, kSize / 2, kSize / 2);
+    EXPECT_GT(centre[0] + centre[1] + centre[2], 0.02f);
+    EXPECT_NEAR(1.f, centre[3], 1e-3f);
 
     const ProgressiveRender::Status status = _render->getStatus();
     EXPECT_TRUE(status.active);
@@ -633,6 +676,67 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
     _render.reset();
     EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
     EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
+}
+
+// A frame carries the colour AOV as the delegate rendered it: an emissive card at 4 reads about 4
+// at the centre with alpha 1, unclamped and with no background under it, and a pixel nothing was
+// rendered to is transparent black.
+TEST_F(ProgressiveRenderTest, FramesAreSceneLinearWithTheirAlpha)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start(std::map<std::string, PXR_NS::VtValue>(), kRenderDelegateCyclesId, kEmissionFixture));
+    sync(emittingGrey(_base, 4.f, 0x4e3a11ULL));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    const ProgressiveRender::Frame& last = *frames.back();
+    ASSERT_EQ((std::size_t)kSize * kSize * 4, last.rgba.size());
+
+    const PXR_NS::GfVec4f centre = pixelOf(last, kSize / 2, kSize / 2);
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_NEAR(4.f, centre[c], 0.4f) << "channel " << c;
+    }
+    EXPECT_NEAR(1.f, centre[3], 1e-3f);
+    const PXR_NS::GfVec4f corner = pixelOf(last, 0, 0);
+    EXPECT_NEAR(0.f, corner[3], 1e-3f);
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_NEAR(0.f, corner[c], 1e-3f) << "channel " << c;
+    }
+}
+
+// The headlight lights the stage from the camera in place of its lights: turning it on makes the
+// engine again and changes the lit cube's colour, and turning it off brings the colour back.
+TEST_F(ProgressiveRenderTest, TheHeadlightMakesTheEngineAgainAndLightsFromTheCamera)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    const float sceneLit = centreRed(*frames.back());
+
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    std::size_t mark = publishedCount();
+    _render->setHeadlightOnly(true);
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_GT(HydraRender::getEngineBuildCount(), builds) << "the headlight did not make the engine again";
+    const float headlit = centreRed(*frames.back());
+    std::printf("[          ] the cube's red: %g by the stage's lights, %g by the headlight\n", sceneLit, headlit);
+    EXPECT_GT(std::fabs(headlit - sceneLit), 0.1f * std::max(sceneLit, headlit)) << "the headlight changed nothing";
+
+    mark = publishedCount();
+    _render->setHeadlightOnly(false);
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    const float back = centreRed(*frames.back());
+    EXPECT_NEAR(sceneLit, back, 0.1f * std::max(sceneLit, 0.01f));
 }
 
 // Ten edits while the render refines restart it once, and no frame of the scene before them is
@@ -918,7 +1022,7 @@ TEST_F(ProgressiveRenderTest, CyclesSessionsShareTheLastCountAskedFor)
     const U64 restartsBefore = _render->getRestartCount();
     const std::uint64_t buildsBefore = HydraRender::getEngineBuildCount();
 
-    std::unique_ptr<ProgressiveRender> second(new ProgressiveRender(&_stageLock, snapshotOfStage(), std::function<void()>(), 0.05f));
+    std::unique_ptr<ProgressiveRender> second(new ProgressiveRender(&_stageLock, snapshotOfStage(), std::function<void()>()));
     second->setRenderer(kRenderDelegateCyclesId);
     second->setThreads([]() { return 3; });
     second->setView(_view);

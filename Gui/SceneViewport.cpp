@@ -200,12 +200,14 @@ const char* const kGradeVertexShader = "#version 400 compatibility\n"
                                        "}\n";
 
 /**
- * @brief The pass that draws Storm's colour AOV onto the framebuffer, around displayFunction, which
- * defines vec4 toDisplay(vec4). The AOV is premultiplied over a transparent clear, and a display
- * transform is not linear, so each pixel is graded unpremultiplied (gain, toDisplay, then gamma, as
- * the 2D viewer applies them) and premultiplied again for the blend over the ungraded background.
- * Pixels nothing was rendered to are left to the background. The AOV's depth goes with it, for
- * the grid and guides drawn after; without one, what was rendered stays in front of them.
+ * @brief The pass that draws a rendered colour, Storm's colour AOV or a progressive delegate's
+ * frame, onto the framebuffer, around displayFunction, which defines vec4 toDisplay(vec4). The
+ * colour is premultiplied over a transparent clear, and a display transform is not linear, so each
+ * pixel is graded unpremultiplied (gain, toDisplay, then gamma, as the 2D viewer applies them) and
+ * premultiplied again for the blend over the ungraded background. Pixels nothing was rendered to
+ * are left to the background. The colour's depth goes with it, for the grid and guides drawn
+ * after; without one, what was rendered stays in front of them. A colour of another size than the
+ * view is stretched over it, filtered.
  **/
 std::string
 gradeFragmentShader(const std::string& displayFunction)
@@ -214,6 +216,8 @@ gradeFragmentShader(const std::string& displayFunction)
                          "uniform sampler2D colorAov;\n"
                          "uniform sampler2D depthAov;\n"
                          "uniform bool hasDepth;\n"
+                         "uniform bool stretched;\n"
+                         "uniform vec2 viewSize;\n"
                          "uniform float gain;\n"
                          "uniform float gamma;\n"
                          "\n";
@@ -221,7 +225,7 @@ gradeFragmentShader(const std::string& displayFunction)
     source += "\n"
               "void main() {\n"
               "    ivec2 p = ivec2(gl_FragCoord.xy);\n"
-              "    vec4 c = texelFetch(colorAov, p, 0);\n"
+              "    vec4 c = stretched ? texture(colorAov, gl_FragCoord.xy / viewSize) : texelFetch(colorAov, p, 0);\n"
               "    float a = clamp(c.a, 0.0, 1.0);\n"
               "    if (a <= 0.0) {\n"
               "        discard;\n"
@@ -632,11 +636,10 @@ struct SceneViewportRenderer::Implementation {
     std::function<void()> refineListener;
     int maxSamples = 0;
     std::string refineRenderer;
-    // The texture and framebuffer its frames are drawn from, the buffer holding their depth, and
-    // the frame they hold: GL objects of the context of render().
+    // The textures of its frames' colour, half-float, and window depth, which drawGrade() draws,
+    // and the frame they hold: GL objects of the context of render().
     GLuint refineTexture = 0;
-    GLuint refineFramebuffer = 0;
-    GLuint refineDepthBuffer = 0;
+    GLuint refineDepthTexture = 0;
     int refineWidth = 0;
     int refineHeight = 0;
     // The frame in the texture. Kept alive, so that a later frame cannot have its address, and not
@@ -1311,18 +1314,36 @@ struct SceneViewportRenderer::Implementation {
         gradeDirty = false;
     }
 
-    // Needs the GL context current and an engine that has rendered, whose program, vertex array
-    // and texture bindings it changes.
-    void drawGrade(unsigned int fbo,
-                   int width,
-                   int height)
+    // Needs the GL context current and an engine that has rendered.
+    void drawStormGrade(unsigned int fbo,
+                        int width,
+                        int height)
     {
-        ensureGrade();
         const HgiTextureHandle color = engine->GetAovTexture(HdAovTokens->color);
-        if (!gradeProgram || !color) {
+        if (!color) {
             return;
         }
         const HgiTextureHandle depth = engine->GetAovTexture(HdAovTokens->depth);
+        drawGrade(fbo, width, height, (GLuint)color->GetRawResource(), depth ? (GLuint)depth->GetRawResource() : 0, false);
+    }
+
+    /**
+     * Grades the texture color, and the window depth in the texture depth (0 for none) when it is
+     * of the view's size, onto fbo's width by height pixels. A stretched colour is of another size
+     * and writes no depth, leaving the grid and guides in front of it. Needs the GL context
+     * current; changes its program, vertex array and texture bindings.
+     **/
+    void drawGrade(unsigned int fbo,
+                   int width,
+                   int height,
+                   GLuint color,
+                   GLuint depth,
+                   bool stretched)
+    {
+        ensureGrade();
+        if (!gradeProgram || !color) {
+            return;
+        }
 
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
@@ -1335,7 +1356,7 @@ struct SceneViewportRenderer::Implementation {
         glDisable(GL_FRAMEBUFFER_SRGB);
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        glDepthMask(GL_TRUE);
+        glDepthMask(stretched ? GL_FALSE : GL_TRUE);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_ALWAYS);
         glEnable(GL_BLEND);
@@ -1345,13 +1366,15 @@ struct SceneViewportRenderer::Implementation {
         glUseProgram(gradeProgram);
         glActiveTexture(GL_TEXTURE0);
         glBindSampler(0, 0);
-        glBindTexture(GL_TEXTURE_2D, (GLuint)color->GetRawResource());
+        glBindTexture(GL_TEXTURE_2D, color);
         glUniform1i(glGetUniformLocation(gradeProgram, "colorAov"), 0);
         glActiveTexture(GL_TEXTURE1);
         glBindSampler(1, 0);
-        glBindTexture(GL_TEXTURE_2D, depth ? (GLuint)depth->GetRawResource() : 0);
+        glBindTexture(GL_TEXTURE_2D, depth);
         glUniform1i(glGetUniformLocation(gradeProgram, "depthAov"), 1);
         glUniform1i(glGetUniformLocation(gradeProgram, "hasDepth"), depth ? 1 : 0);
+        glUniform1i(glGetUniformLocation(gradeProgram, "stretched"), stretched ? 1 : 0);
+        glUniform2f(glGetUniformLocation(gradeProgram, "viewSize"), (GLfloat)width, (GLfloat)height);
         glUniform1f(glGetUniformLocation(gradeProgram, "gain"), (GLfloat)displayTransform.gain);
         glUniform1f(glGetUniformLocation(gradeProgram, "gamma"), (GLfloat)displayTransform.gamma);
         for (std::size_t i = 0; i < gradeLuts.size(); ++i) {
@@ -1395,6 +1418,7 @@ struct SceneViewportRenderer::Implementation {
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
         glDisable(GL_DEPTH_TEST);
     }
@@ -1849,7 +1873,7 @@ SceneViewportRenderer::SceneViewportRenderer()
         }
         if (listener) {
             listener();
-        } }, kBackgroundLinear));
+        } }));
     _imp->progressive->setThreads(&refineThreads);
 }
 
@@ -1860,7 +1884,7 @@ SceneViewportRenderer::~SceneViewportRenderer()
     _imp->progressive.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
-    if (_imp->refineTexture || _imp->refineFramebuffer || _imp->refineDepthBuffer) {
+    if (_imp->refineTexture || _imp->refineDepthTexture) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its refinement texture";
     }
     if (_imp->gradeProgram || !_imp->gradeLuts.empty()) {
@@ -2951,7 +2975,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         }
         converged = _imp->engine->IsConverged();
     }
-    _imp->drawGrade(fbo, width, height);
+    _imp->drawStormGrade(fbo, width, height);
 
     _imp->drawnGuides.clear();
     if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
@@ -3006,6 +3030,8 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     // The prim's settings for the renderer first, so that its engine is made under them; the
     // view's own sample cap applies over its samples.
     progressive.setSettings(_imp->sceneSettingsFor(_imp->rendererId));
+    _imp->sceneLit = _imp->usesSceneLights();
+    progressive.setHeadlightOnly(!_imp->sceneLit);
     if (_imp->refineRenderer != _imp->rendererId) {
         progressive.setRenderer(_imp->rendererId);
         _imp->refineRenderer = _imp->rendererId;
@@ -3030,58 +3056,46 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         const GLsizei frameHeight = frame->height;
         if (!_imp->refineTexture) {
             glGenTextures(1, &_imp->refineTexture);
-            glGenFramebuffers(1, &_imp->refineFramebuffer);
-            glGenBuffers(1, &_imp->refineDepthBuffer);
+            glGenTextures(1, &_imp->refineDepthTexture);
         }
         if (frame != _imp->uploadedFrame) {
             const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, _imp->refineTexture);
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-            if ((frameWidth != _imp->refineWidth) || (frameHeight != _imp->refineHeight)) {
+            const bool resized = (frameWidth != _imp->refineWidth) || (frameHeight != _imp->refineHeight);
+            glBindTexture(GL_TEXTURE_2D, _imp->refineTexture);
+            if (resized) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frameWidth, frameHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame->rgba.data());
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
-                glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _imp->refineTexture, 0);
-                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, frameWidth, frameHeight, 0, GL_RGBA, GL_HALF_FLOAT, frame->rgba.data());
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_HALF_FLOAT, frame->rgba.data());
+            }
+            // Kept on the GPU for the paints that draw the grid over the frame again before the next one.
+            glBindTexture(GL_TEXTURE_2D, _imp->refineDepthTexture);
+            if (resized) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, frameWidth, frameHeight, 0, GL_RED, GL_FLOAT, frame->depth.data());
                 _imp->refineWidth = frameWidth;
                 _imp->refineHeight = frameHeight;
             } else {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_UNSIGNED_BYTE, frame->rgba.data());
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RED, GL_FLOAT, frame->depth.data());
             }
-            // The depth stays in a buffer of the GPU's, for the paints that draw the grid over the
-            // frame again before the next one.
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _imp->refineDepthBuffer);
-            glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)(frame->depth.size() * sizeof(float)), frame->depth.data(), GL_STREAM_DRAW);
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            glBindTexture(GL_TEXTURE_2D, 0);
             _imp->uploadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
             _imp->uploadPixels = frameWidth * frameHeight;
             _imp->uploadedFrame = frame;
         }
         // A frame of another size, while the one of this size renders, is stretched to the view.
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-        glBlitFramebuffer(0, 0, frameWidth, frameHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, ((frameWidth == width) && (frameHeight == height)) ? GL_NEAREST : GL_LINEAR);
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        if ((_imp->showGrid || _imp->showGuides || _imp->hasHandles) && (frameWidth == width) && (frameHeight == height)) {
-            // The frame's depth, so that the grid and guides hide behind what it shows.
-            glUseProgram(0);
-            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_ALWAYS);
-            glWindowPos2i(0, 0);
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _imp->refineDepthBuffer);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            glDrawPixels(frameWidth, frameHeight, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-            glDepthFunc(GL_LESS);
-            glDisable(GL_DEPTH_TEST);
-            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        }
+        const bool stretched = (frameWidth != width) || (frameHeight != height);
+        _imp->drawGrade(fbo, width, height, _imp->refineTexture, stretched ? 0 : _imp->refineDepthTexture, stretched);
         _imp->drawnSamples = frame->samples;
     } else {
         _imp->drawnSamples = -1;
@@ -3265,11 +3279,9 @@ SceneViewportRenderer::releaseGL()
     _imp->releaseGrade();
     if (_imp->refineTexture) {
         glDeleteTextures(1, &_imp->refineTexture);
-        glDeleteFramebuffers(1, &_imp->refineFramebuffer);
-        glDeleteBuffers(1, &_imp->refineDepthBuffer);
+        glDeleteTextures(1, &_imp->refineDepthTexture);
         _imp->refineTexture = 0;
-        _imp->refineFramebuffer = 0;
-        _imp->refineDepthBuffer = 0;
+        _imp->refineDepthTexture = 0;
     }
     _imp->refineWidth = 0;
     _imp->refineHeight = 0;

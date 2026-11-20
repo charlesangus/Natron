@@ -2788,22 +2788,31 @@ namespace {
         (void)setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), kRefineNice);
     }
 
-    // Linear [0, 1] to 8-bit sRGB, by 4096 steps.
-    const std::vector<unsigned char>&
-    srgbTable()
+    /**
+     * Whether an engine of the delegate id lights the view from the camera when on asks it to:
+     * HdxTaskController makes the light a simpleLight or distantLight sprim, and MoonRay may make
+     * neither, when it renders the stage's lights instead, saying so once. May make a MoonRay
+     * delegate, once, to read its types.
+     **/
+    bool
+    headlightFor(const std::string& id,
+                 bool on)
     {
-        static const std::vector<unsigned char> table = []() {
-            std::vector<unsigned char> t(4096);
-            for (int i = 0; i < 4096; ++i) {
-                const double v = i / 4095.;
-                const double s = (v <= 0.0031308) ? (v * 12.92) : (1.055 * std::pow(v, 1. / 2.4) - 0.055);
-                t[i] = (unsigned char)std::lround(std::min(1., std::max(0., s)) * 255.);
+        if (!on || !MoonRayAovs::isMoonRay(id)) {
+            return on;
+        }
+        const TfTokenVector& types = MoonRayAovs::supportedPrimTypes();
+        for (const TfToken& type : types) {
+            if ((type == HdPrimTypeTokens->distantLight) || (type == HdPrimTypeTokens->simpleLight)) {
+                return true;
             }
+        }
+        static std::atomic<bool> warned { false };
+        if (!warned.exchange(true)) {
+            qWarning("MoonRay has no distant light to light the view from the camera: it renders the stage's lights instead.");
+        }
 
-            return t;
-        }();
-
-        return table;
+        return false;
     }
 } // anon namespace
 
@@ -2813,7 +2822,6 @@ struct ProgressiveRender::Implementation {
     std::mutex* const stageLock;
     const std::function<bool(SceneStageSnapshot*)> snapshotOf;
     const std::function<void()> listener;
-    const float background;
     SceneWriteBarrier::ParticipantId participant = 0;
 
     // Held by the worker through each call of what the caller owns: stageLock, snapshotOf,
@@ -2832,6 +2840,8 @@ struct ProgressiveRender::Implementation {
     int maxSamples = 0;
     // The settings of the stage's render settings prim for the renderer (setSettings()).
     RendererSettings settings;
+    // setHeadlightOnly()'s.
+    bool headlight = false;
     bool stopped = false;
     bool quit = false;
     // A barrier write waits for the worker to park; parkedReport is the report still to make.
@@ -2861,6 +2871,9 @@ struct ProgressiveRender::Implementation {
     std::string engineRenderer;
     // The settings the engine was made under, and the AOV its depth is read from.
     RendererSettings engineSettings;
+    // The setHeadlightOnly() the engine was made under, and whether it lights from the camera.
+    bool engineHeadlightAsked = false;
+    bool engineHeadlight = false;
     TfToken depthAov;
     std::string rendererName;
     std::string failedRenderer;
@@ -2888,12 +2901,10 @@ struct ProgressiveRender::Implementation {
 
     Implementation(std::mutex* stageLock_,
                    const std::function<bool(SceneStageSnapshot*)>& snapshot_,
-                   const std::function<void()>& listener_,
-                   float background_)
+                   const std::function<void()>& listener_)
         : stageLock(stageLock_)
         , snapshotOf(snapshot_)
         , listener(listener_)
-        , background(background_)
     {
     }
 
@@ -2990,6 +3001,7 @@ struct ProgressiveRender::Implementation {
                     bool cycles,
                     int threads,
                     const RendererSettings& primSettings,
+                    bool headlightAsked,
                     int* defaultCap,
                     std::string* error)
     {
@@ -3048,6 +3060,10 @@ struct ProgressiveRender::Implementation {
 
             return false;
         }
+        const bool lit = headlightFor(id, headlightAsked);
+        if (lit) {
+            setHeadlight(made.get());
+        }
         const UsdImagingGLRendererSettingsList list = made->GetRendererSettingsList();
         // MoonRay's samples per pixel is a scene variable its delegate does not declare.
         const TfToken key = moonRay ? TfToken(MoonRaySettings::samplesKey()) : samplesSettingKey(list);
@@ -3064,6 +3080,8 @@ struct ProgressiveRender::Implementation {
         engine = std::move(made);
         engineRenderer = id;
         engineSettings = primSettings;
+        engineHeadlightAsked = headlightAsked;
+        engineHeadlight = lit;
         depthAov = moonRay ? MoonRayAovs::depthAov() : HdAovTokens->depth;
         engineThreads = threads;
         rendererName = name;
@@ -3084,7 +3102,6 @@ struct ProgressiveRender::Implementation {
         const int width = v.width;
         const int height = v.height;
         const std::size_t pixels = (std::size_t)width * (std::size_t)height;
-        const std::vector<unsigned char>& table = srgbTable();
         out->width = width;
         out->height = height;
         {
@@ -3096,19 +3113,25 @@ struct ProgressiveRender::Implementation {
             const std::size_t components = HdGetComponentCount(color.format());
             const std::size_t componentSize = HdDataSizeOfFormat(componentFormat);
             out->rgba.resize(pixels * 4);
-            for (std::size_t i = 0; i < pixels; ++i) {
-                const unsigned char* at = color.pixel(i);
-                float c[4] = { 0.f, 0.f, 0.f, 1.f };
-                for (std::size_t k = 0; (k < components) && (k < 4); ++k) {
-                    c[k] = componentToFloat(componentFormat, at + k * componentSize);
+            if (color.format() == HdFormatFloat16Vec4) {
+                std::memcpy(out->rgba.data(), color.pixel(0), pixels * 4 * sizeof(GfHalf));
+            } else if (color.format() == HdFormatFloat32Vec4) {
+                const float* from = reinterpret_cast<const float*>(color.pixel(0));
+                GfHalf* to = out->rgba.data();
+                for (std::size_t i = 0; i < pixels * 4; ++i) {
+                    to[i] = GfHalf(from[i]);
                 }
-                // Premultiplied: over the background, then encoded.
-                const float under = background * (1.f - std::min(1.f, std::max(0.f, c[3])));
-                for (int k = 0; k < 3; ++k) {
-                    const float value = std::min(1.f, std::max(0.f, c[k] + under));
-                    out->rgba[i * 4 + k] = table[(std::size_t)(value * 4095.f + 0.5f)];
+            } else {
+                for (std::size_t i = 0; i < pixels; ++i) {
+                    const unsigned char* at = color.pixel(i);
+                    float c[4] = { 0.f, 0.f, 0.f, 1.f };
+                    for (std::size_t k = 0; (k < components) && (k < 4); ++k) {
+                        c[k] = componentToFloat(componentFormat, at + k * componentSize);
+                    }
+                    for (int k = 0; k < 4; ++k) {
+                        out->rgba[i * 4 + k] = GfHalf(c[k]);
+                    }
                 }
-                out->rgba[i * 4 + 3] = 255;
             }
         }
         {
@@ -3365,6 +3388,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             const std::string id = renderer;
             const std::function<int()> threadsFn = threadsOf;
             const RendererSettings primSettings = settings;
+            const bool headlightAsked = headlight;
             lock.unlock();
             const bool cycles = CyclesAovs::isCycles(id);
             int threads = 0;
@@ -3382,7 +3406,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             std::string error;
             int cap = 0;
-            const bool made = makeEngine(id, cycles, threads, primSettings, &cap, &error);
+            const bool made = makeEngine(id, cycles, threads, primSettings, headlightAsked, &cap, &error);
             lock.lock();
             if (!made) {
                 fail(lock, id, error, workingEdits);
@@ -3420,9 +3444,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 continue;
             }
         }
-        if (settings != engineSettings) {
+        if ((settings != engineSettings) || (headlight != engineHeadlightAsked)) {
             // Some settings, such as Cycles' integrator's, restart a render only when the engine
-            // is made under them: it is made again, the frame shown kept until the new one.
+            // is made under them, and a light at the camera cannot be taken back from one: it is
+            // made again, the frame shown kept until the new one.
             lock.unlock();
             dropEngine();
             lock.lock();
@@ -3572,7 +3597,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 params.frame = v.time;
                 params.drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
                 params.enableLighting = true;
-                params.enableSceneLights = true;
+                // UsdImagingGL prunes the stage's lights from any delegate's scene without them.
+                params.enableSceneLights = !engineHeadlight;
                 params.enableSceneMaterials = true;
                 params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
                 params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
@@ -3710,9 +3736,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 
 ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
                                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
-                                     const std::function<void()>& listener,
-                                     float background)
-    : _imp(new Implementation(stageLock, snapshot, listener, background))
+                                     const std::function<void()>& listener)
+    : _imp(new Implementation(stageLock, snapshot, listener))
 {
     Implementation* imp = _imp.get();
     // The worker's stage composes the caller's layers read from files outside any ReadScope: a
@@ -3831,6 +3856,20 @@ ProgressiveRender::setSettings(const std::map<std::string, VtValue>& settings)
         return;
     }
     _imp->settings = settings;
+    ++_imp->engineChanges;
+    ++_imp->sceneEdits;
+    _imp->edited();
+}
+
+void
+ProgressiveRender::setHeadlightOnly(bool on)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (on == _imp->headlight) {
+        return;
+    }
+    _imp->headlight = on;
     ++_imp->engineChanges;
     ++_imp->sceneEdits;
     _imp->edited();

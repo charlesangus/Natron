@@ -297,34 +297,56 @@ try:
     def pointer_hud():
         return first_named("ColorTrackballHudWindow")
 
+    def hud_snapshot():
+        """Everything read off the pointer window in one pass, from freshly found widgets; None when it is
+        absent or deleted mid-read. Wrappers never outlive this call: the C++ side recreates the window."""
+        try:
+            w = pointer_hud()
+            if w is None:
+                return None
+            texts, shown, rects = [], [], []
+            for n in PILL_NAMES:
+                p = w.findChild(QWidget, n)
+                texts.append(None if p is None else (p.property("trackballPillText") or ""))
+                shown.append(bool(p is not None and p.isVisible()))
+                rects.append(None if p is None else global_rect(p))
+            b = w.findChild(QWidget, "ColorTrackballHudBlock")
+            return {
+                "shown": w.isVisible(),
+                "knob": w.property("trackballHudKnob"),
+                "mode": w.property("trackballHudMode") or None,
+                "window": global_rect(w),
+                "texts": tuple(texts),
+                "visible": tuple(shown),
+                "rects": rects,
+                "block": global_rect(b) if b is not None and b.isVisible() else None,
+            }
+        except RuntimeError:
+            return None
+
     def hud_shown():
-        w = pointer_hud()
-        return w is not None and w.isVisible()
+        s = hud_snapshot()
+        return s is not None and s["shown"]
 
     def hud_knob():
-        w = pointer_hud()
-        return w.property("trackballHudKnob") if w is not None else None
+        s = hud_snapshot()
+        return s["knob"] if s is not None else None
 
     def hud_mode():
-        w = pointer_hud()
-        return (w.property("trackballHudMode") or None) if w is not None else None
-
-    def pills():
-        w = pointer_hud()
-        if w is None:
-            return [None] * 4
-        return [w.findChild(QWidget, n) for n in PILL_NAMES]
+        s = hud_snapshot()
+        return s["mode"] if s is not None else None
 
     def pill_texts():
-        return tuple((p.property("trackballPillText") or "") if p is not None else None for p in pills())
+        s = hud_snapshot()
+        return s["texts"] if s is not None else (None,) * 4
 
     def pill_visible():
-        return tuple(bool(p is not None and p.isVisible()) for p in pills())
+        s = hud_snapshot()
+        return s["visible"] if s is not None else (False,) * 4
 
     def hud_block_rect():
-        w = pointer_hud()
-        b = w.findChild(QWidget, "ColorTrackballHudBlock") if w is not None else None
-        return global_rect(b) if b is not None and b.isVisible() else None
+        s = hud_snapshot()
+        return s["block"] if s is not None else None
 
     def reveal_window():
         for w in QApplication.topLevelWidgets():
@@ -360,11 +382,11 @@ try:
         yield ("sleep", POINTER_SETTLE_MS)
         QApplication.processEvents()
 
-    def badge_centre():
+    def badge_centre(snap):
         """The point the four pills are laid out round, from their global rects."""
-        if not all(pill_visible()):
+        if snap is None or not all(snap["visible"]):
             return None
-        r = [global_rect(p) for p in pills()]
+        r = snap["rects"]
         x = (r[LEFT].x() + r[LEFT].width() + r[RIGHT].x()) / 2.0
         y = (r[TOP].y() + r[TOP].height() + r[BOTTOM].y()) / 2.0
         return QPointF(x, y)
@@ -376,14 +398,17 @@ try:
         """The pointer window's pills and block for a target with labels expected, the pointer at pointer."""
         if not check(hud_shown(), "%s: the pointer window is up" % tag):
             return
-        texts = pill_texts()
+        snap = hud_snapshot()
+        if not check(snap is not None, "%s: the pointer window can be read" % tag):
+            return
+        texts = snap["texts"]
         check(texts == expected, "%s: pill texts right/left/top/bottom %r (expected %r)" % (tag, texts, expected))
         want_visible = tuple(bool(t) for t in expected)
-        check(pill_visible() == want_visible, "%s: pills shown %r (expected %r)" % (tag, pill_visible(), want_visible))
-        block = hud_block_rect()
+        check(snap["visible"] == want_visible, "%s: pills shown %r (expected %r)" % (tag, snap["visible"], want_visible))
+        block = snap["block"]
         if not check(block is not None, "%s: the hint block is in the window" % tag):
             return
-        window = global_rect(pointer_hud())
+        window = snap["window"]
         check(screen_rect().contains(window), "%s: the window %s is on screen %s" % (tag, fmt_rect(window), fmt_rect(screen_rect())))
         if not any(want_visible):
             off = dpi_px(HUD_FOLLOW_OFFSET)
@@ -395,7 +420,7 @@ try:
                       "%s: the block alone sits at the pointer %s plus (%d, %d), as before (block %s)"
                       % (tag, fmt_pt(pointer), off, off, fmt_rect(block)))
             return
-        centre = badge_centre()
+        centre = badge_centre(snap)
         if at_corner:
             check(centre is not None and not near(centre, QPointF(pointer)),
                   "%s: near the corner the group is shifted as one (pills centred on %s, pointer %s)"
@@ -406,7 +431,7 @@ try:
               % (tag, fmt_pt(pointer), "none" if centre is None else "(%.1f,%.1f)" % (centre.x(), centre.y())))
         reach = dpi_px(POINTER_BADGE_REACH)
         clear = QRect(pointer.x() - reach + 1, pointer.y() - reach + 1, 2 * reach - 2, 2 * reach - 2)
-        rects = [global_rect(p) for p in pills()]
+        rects = snap["rects"]
         check(not any(r.intersects(clear) for r in rects),
               "%s: no pill covers the %d px square round the pointer" % (tag, 2 * reach))
         # The top and bottom pills keep clear of the side pills' half height when it exceeds reach.
@@ -444,8 +469,9 @@ try:
         """The pointer window and the pointer, with a red cross where the pointer is."""
         QApplication.processEvents()
         r = QRect(pointer.x() - 30, pointer.y() - 30, 60, 60)
-        if hud_shown():
-            r = r.united(global_rect(pointer_hud()))
+        snap = hud_snapshot()
+        if snap is not None and snap["shown"]:
+            r = r.united(snap["window"])
         r = QRect(r.x() - pad, r.y() - pad, r.width() + 2 * pad, r.height() + 2 * pad)
         save_shot(r, name, caption + "; the red cross marks the pointer", pointer)
 

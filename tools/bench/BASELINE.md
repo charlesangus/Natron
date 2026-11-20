@@ -1126,3 +1126,51 @@ Comp wall, frames 1-6 (s)
 | defocus_retime | 52.08 | 51.28 | -1.5% | 49.65–53.39 | 50.24–55.94 | 11% | 3/3 | noise |
 
 Conclusion. No scenario shows a regression beyond run-to-run noise. The matrix frame times of the two builds agree to within 1.5% on both tiny configurations and `chain:30`; the larger frame deltas (`mixed:100` -40%, `comp:100` -9%, `wide:100` +6%) all sit inside a spread of 12% to 88%, driven by single outlier batches (batch 1 and 3 `mixed:100` main at 6.8 and 9.8 s against 3.9 s in batch 2) on a 4-core host with intermittent foreign load. The three comps are within 1.5% to 5.7% of each other and inside their spreads, so ordinary composites are unchanged. The only deltas that pass the spread test are `chain:30` frame time (-3.2%, from two batches whose spread is 2%) and `comp:100` range wall (-21.7%, where m180's two batches agree to 0.5% and main's differ by 20%), both in M180's favour and neither a result to rely on with two batches; the graph-build rows that pass (`chain:1000` tiny +2.9%, `chain:30` hd +11%, 3 to 6 ms) are a few percent of an already small, sub-second-to-6 s phase. M180 therefore adds no measurable cost to graphs that contain no loop block; this comparison says nothing about footage-backed comps (no data) or graphs that use the loop block itself.
+
+## Expression evaluation (2026-11-19, `fb8e9c983` plus the M262 bench changes, release AppImage of main)
+
+Machine: cloud VM, 30 vCPU AMD EPYC 7B13, 49 GB RAM, RTX 3090, `NatronRenderer -b` with `QT_QPA_PLATFORM=offscreen`. Core count is recorded per row; the evaluations are timed from one Python thread.
+
+Command (the `expr` spec of `run_matrix.sh`, run through a per-size loop on the VM, 3 frames, `tiny`, no range):
+
+```
+BENCH_TOPO=<topo> BENCH_N=<n> BENCH_RES=tiny BENCH_FRAMES=3 BENCH_RANGE=0 BENCH_NAMED=1 NatronRenderer -b tools/bench/graph_bench.py
+```
+
+Cold and warm are microseconds per `getValueAtTime` on one expression knob, averaged over every knob and 3 frames. Cold times frames past the rendered range, so the result cache is empty; warm repeats the same call at the same frame. Per-kind columns are cold microseconds per evaluation. First frame is the wall time of the first render (frame 1, which also builds the render graph); median frame is the median of the 3 timed frames after it.
+
+| topo | N | cold (us/eval) | warm (us/eval) | cold by kind (us/eval) | first frame (s) | median frame (s) | cores |
+|---|---|---|---|---|---|---|---|
+| exprchain | 3 | 15.32 | 2.02 | frame 22.6, sibling 11.7 | 0.0704 | 0.0058 | 30 |
+| exprchain | 30 | 11.44 | 1.99 | frame 21.4, sibling 11.1 | 0.1024 | 0.0252 | 30 |
+| exprchain | 300 | 13.22 | 2.55 | frame 56.9, sibling 13.1 | 0.2503 | 0.1945 | 30 |
+| exprchain | 1000 | 7.63 | 1.63 | frame 36.9, sibling 7.6 | 0.9699 | 0.9759 | 30 |
+| exprchain | 5000 | 8.25 | 2.78 | frame 38.7, sibling 8.2 | 17.7322 | 17.9700 | 30 |
+| exprfan | 3 | 20.81 | 2.08 | frame 36.2, sibling 13.1 | 0.0942 | 0.0049 | 30 |
+| exprfan | 30 | 11.15 | 2.23 | frame 22.2, sibling 10.8 | 0.1007 | 0.0234 | 30 |
+| exprfan | 300 | 9.42 | 1.76 | frame 28.2, sibling 9.4 | 0.1603 | 0.1392 | 30 |
+| exprfan | 1000 | 5.97 | 1.19 | frame 25.6, sibling 6.0 | 0.3941 | 0.4544 | 30 |
+| exprfan | 5000 | 7.12 | 1.58 | frame 30.4, sibling 7.1 | 2.8137 | 3.1116 | 30 |
+| exprmixed | 3 | 12.47 | 1.68 | constant 14.3, frame 14.1, sibling 9.0 | 0.0718 | 0.0052 | 30 |
+| exprmixed | 30 | 7.17 | 1.22 | clamp 8.1, constant 7.3, frame 6.0, sibling 7.4 | 0.0979 | 0.0225 | 30 |
+| exprmixed | 300 | 11.37 | 2.56 | clamp 12.8, constant 9.8, frame 10.7, sibling 12.3 | 0.1973 | 0.1432 | 30 |
+| exprmixed | 1000 | 10.31 | 2.44 | clamp 11.8, constant 9.0, frame 9.1, sibling 11.3 | 0.4367 | 0.4505 | 30 |
+| exprmixed | 5000 | 7.70 | 2.24 | clamp 8.7, constant 6.8, frame 7.0, sibling 8.3 | 2.5375 | 3.1498 | 30 |
+| exprmixed | 20000 | crashed | crashed | crashed | crashed | crashed | 30 |
+
+`exprmixed` N=20000 crashed: NatronRenderer segfaulted (exit 139) in its first render, about 2 s after "Rendering started", before any expression was timed. Log: `exprmixed-20000.log` in the run directory `.local/vast/runs/cloud-gpu-20261119T175144Z/out/logs/`.
+
+### Go/no-go figures for M265
+
+Cold expression time for one frame (cold us/eval times N, expression time only, no pixels):
+
+| topo | N=1000 (ms) | N=5000 (ms) |
+|---|---|---|
+| exprchain | 7.6 | 41.2 |
+| exprfan | 6.0 | 35.6 |
+| exprmixed | 10.3 | 38.5 |
+
+- Cold `exprmixed` N=5000 first-frame expression time before M263 - Expression Interpreter Overhead and M264 - Expression Result Cache: 38.5 ms, against the proposed 100 ms threshold for skipping M265 - Native Expression Evaluator. It is already below the threshold, and about 1.2% of the 3.15 s median frame.
+- Cost per evaluation is roughly flat in N from 30 up (6 to 13 us cold, 1.2 to 2.8 us warm) for all three topologies, so expression time scales linearly: an extrapolation to N=20000 is about 150 ms, which the crash prevented measuring.
+- The expression cost does not dominate. Frame time is 0.98 s (chain) against 0.45 s (fan, mixed) at N=1000 and 18 s against 3 s at N=5000, so graph depth, not evaluation, drives the `exprchain` growth.
+- Cold is 3 to 8 times warm, so the result cache removes most of the per-call cost but both are single-digit microseconds.

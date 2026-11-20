@@ -410,6 +410,8 @@ public:
     std::string cacheID;
     bool cacheIDClaimed; // protected by nameMutex
     std::string nodeId; // protected by nameMutex
+    std::string originTemplate; // protected by nameMutex, see Node::getOriginTemplate()
+    std::string originNode; // protected by nameMutex
     DeactivatedState deactivatedState;
     // The node's Python object while it is deactivated, put back as is when it is activated again:
     // declaring it anew would make an object for every one of its parameters.

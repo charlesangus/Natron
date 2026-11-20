@@ -275,9 +275,10 @@ namespace YamlDetail {
      * @brief Writes nodes as a map keyed by script name, sorted, each with its children nested.
      * parentFullName is the fully qualified name of the group holding them, empty at the top level.
      * Only a project writes node and cache IDs (withIdentity): a clipboard or a preset makes new
-     * nodes. A node's id is the first key of its map.
+     * nodes. A node's id is the first key of its map. A pasted node keeps its template origin
+     * (withOrigin) so a copy within the shot still merges with its template; a preset never does.
      **/
-    void emitNodeMap(YAML::Emitter& em, const std::list<NodeSerializationPtr>& nodes, const std::string& parentFullName, BlobSink& sink, std::set<std::string>* usedPaths, bool withIdentity);
+    void emitNodeMap(YAML::Emitter& em, const std::list<NodeSerializationPtr>& nodes, const std::string& parentFullName, BlobSink& sink, std::set<std::string>* usedPaths, bool withIdentity, bool withOrigin);
     std::list<NodeSerializationPtr> readNodeMap(const YAML::Node& node, const BlobSource& source, const std::string& context, YamlWarnings* warnings);
 
     void emitFormats(YAML::Emitter& em, const std::list<FormatSerialization>& formats);

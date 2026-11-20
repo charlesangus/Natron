@@ -20,6 +20,8 @@
 #include "Serialization/Yaml/ProjectYaml.h"
 
 #include <algorithm>
+#include <map>
+#include <memory>
 #include <vector>
 
 #include "Serialization/Yaml/YamlPrivate.h"
@@ -28,6 +30,130 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 namespace {
+
+    // A template base's blob tables live beside it, under templates/<key>/, so its document names
+    // them exactly as the template file did.
+    class PrefixedBlobSink
+        : public BlobSink {
+    public:
+        PrefixedBlobSink(BlobSink& sink,
+                         std::string prefix)
+            : _sink(sink)
+            , _prefix(std::move(prefix))
+        {
+        }
+
+        bool addMember(const std::string& path,
+                       std::vector<std::byte> bytes) override
+        {
+            return _sink.addMember(_prefix + path, std::move(bytes));
+        }
+
+    private:
+        BlobSink& _sink;
+        std::string _prefix;
+    };
+
+    class PrefixedBlobSource
+        : public BlobSource {
+    public:
+        PrefixedBlobSource(const BlobSource& source,
+                           std::string prefix)
+            : _source(source)
+            , _prefix(std::move(prefix))
+        {
+        }
+
+        std::optional<std::span<const std::byte>> findMember(std::string_view path) const override
+        {
+            return _source.findMember(_prefix + std::string(path));
+        }
+
+    private:
+        const BlobSource& _source;
+        std::string _prefix;
+    };
+
+    std::string
+    templateFolder(const std::string& key)
+    {
+        return "templates/" + key + "/";
+    }
+
+    void
+    emitTemplates(YAML::Emitter& em,
+                  const std::list<TemplateImportSerialization>& templates,
+                  BlobSink& sink)
+    {
+        using namespace YamlDetail;
+        std::map<std::string, const TemplateImportSerialization*> sorted;
+        for (const TemplateImportSerialization& entry : templates) {
+            sorted[entry.key] = &entry;
+        }
+        em << YAML::BeginMap;
+        for (const auto& item : sorted) {
+            const TemplateImportSerialization& entry = *item.second;
+            emitKey(em, entry.key);
+            em << YAML::Value << YAML::BeginMap;
+            emitKey(em, "path");
+            em << YAML::Value;
+            emitString(em, entry.path);
+            emitKey(em, "hash");
+            em << YAML::Value;
+            emitString(em, entry.contentHash);
+            emitKey(em, "importedAt");
+            em << YAML::Value;
+            emitString(em, entry.importedAt);
+            em << YAML::EndMap;
+            if (entry.base) {
+                PrefixedBlobSink baseSink(sink, templateFolder(entry.key));
+                const std::string text = encodeProjectYaml(*entry.base, baseSink);
+                const std::byte* begin = reinterpret_cast<const std::byte*>(text.data());
+                sink.addMember(templateBaseMember(entry.key), std::vector<std::byte>(begin, begin + text.size()));
+            }
+        }
+        em << YAML::EndMap;
+    }
+
+    std::list<TemplateImportSerialization>
+    readTemplates(const YAML::Node& node,
+                  const BlobSource& source,
+                  YamlWarnings* warnings)
+    {
+        using namespace YamlDetail;
+        if (!node.IsMap()) {
+            fail(node, "project.templates", "expected a map");
+        }
+        std::list<TemplateImportSerialization> templates;
+        for (const auto& item : node) {
+            TemplateImportSerialization entry;
+            entry.key = readString(item.first, "project.templates");
+            const std::string context = "project.templates." + entry.key;
+            if (!isValidTemplateKey(entry.key)) {
+                fail(item.first, context, "a template key is made of letters, digits and underscores");
+            }
+            MapReader entryReader(item.second, context, warnings);
+            entry.path = readString(entryReader.get("path"), context + ".path");
+            entry.contentHash = readString(entryReader.get("hash"), context + ".hash");
+            entry.importedAt = readString(entryReader.get("importedAt"), context + ".importedAt");
+            entryReader.finish();
+            const std::optional<std::span<const std::byte>> baseBytes = source.findMember(templateBaseMember(entry.key));
+            if (baseBytes) {
+                PrefixedBlobSource baseSource(source, templateFolder(entry.key));
+                const std::string_view text(reinterpret_cast<const char*>(baseBytes->data()), baseBytes->size());
+                YamlWarnings baseWarnings;
+                entry.base = std::make_shared<ProjectSerialization>(decodeProjectYaml(text, baseSource, &baseWarnings));
+                for (const std::string& warning : baseWarnings) {
+                    warn(warnings, "template " + entry.key + " base: " + warning);
+                }
+            } else {
+                warn(warnings, "template " + entry.key + " has no " + templateBaseMember(entry.key) + ": it cannot be updated by a merge");
+            }
+            templates.push_back(std::move(entry));
+        }
+
+        return templates;
+    }
 
     void
     emitSavedBy(YAML::Emitter& em,
@@ -247,9 +373,14 @@ encodeProjectYaml(const ProjectSerialization& project,
     em << YAML::Value;
     emitInt(em, project.timelineCurrentTime);
     em << YAML::EndMap;
+    if (!project.templates.empty()) {
+        emitKey(em, "templates");
+        em << YAML::Value;
+        emitTemplates(em, project.templates, sink);
+    }
     emitKey(em, "nodes");
     em << YAML::Value;
-    emitNodeMap(em, project.nodes.nodes, std::string(), sink, &usedPaths, true);
+    emitNodeMap(em, project.nodes.nodes, std::string(), sink, &usedPaths, true, true);
     em << YAML::EndMap;
 
     return documentText(em);
@@ -300,6 +431,9 @@ decodeProjectYaml(std::string_view text,
             project.timelineCurrentTime = readInt(current, "project.timeline.current");
         }
         timelineReader.finish();
+    }
+    if (YAML::Node templates = reader.get("templates")) {
+        project.templates = readTemplates(templates, source, warnings);
     }
     if (YAML::Node nodes = reader.get("nodes")) {
         project.nodes.nodes = readNodeMap(nodes, source, "nodes", warnings);

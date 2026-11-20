@@ -23,32 +23,14 @@
 #include "Global/Macros.h"
 
 #include <map>
-#include <memory>
 #include <set>
 #include <string>
-#include <string_view>
 #include <utility>
-#include <vector>
 
 #include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
-
-/**
- * @brief Where a node brought in by a template import came from: the import's key, and the ID
- * the node has in that template.
- **/
-struct NodeOrigin {
-    std::string templateKey;
-    std::string nodeId;
-    bool operator==(const NodeOrigin&) const = default;
-};
-
-/**
- * @brief Node ID to origin, for the nodes of one snapshot that carry one.
- **/
-typedef std::map<std::string, NodeOrigin> NodeOrigins;
 
 /**
  * @brief One snapshot of a three-way merge, indexed for matching. Nodes without an ID are left
@@ -66,11 +48,9 @@ public:
         std::map<std::string, std::string> inputs;
         // (consumer node ID, input label) for every input this node feeds.
         std::set<std::pair<std::string, std::string>> outputs;
-        // Empty when the node carries no origin.
-        NodeOrigin origin;
     };
 
-    MergeGraph(const ProjectSerialization& project, NodeOrigins origins = NodeOrigins());
+    explicit MergeGraph(const ProjectSerialization& project);
 
     const Node* find(const std::string& id) const;
     const Node* findByPath(const std::string& path) const;
@@ -95,111 +75,43 @@ struct NodeCorrespondence {
 
     // The other side's node for a base node, or empty.
     std::string otherFor(const std::string& baseId) const;
+    // The base node an other-side node stands for, or empty.
+    std::string baseFor(const std::string& otherId) const;
     // Every other-side node that stands for a base node.
     std::set<std::string> matchedOther() const;
 };
 
 /**
- * @brief A policy for matching the nodes of a template base against another snapshot of it:
- * the supervisor's new version, whose nodes keep their template IDs, or a shot the template was
- * imported into, whose nodes have fresh IDs and carry an origin. Matching is deterministic, and
- * no other-side node stands for two base nodes.
+ * @brief Matches the nodes of a template base against another snapshot of it: the template as
+ * the supervisor revised it, whose nodes keep their template IDs, or a shot the template was imported into as
+ * templateKey, whose nodes have fresh IDs and carry an origin. Matching is deterministic, works
+ * across the whole tree (a node moved into or out of a group is still the same node), and no
+ * other-side node stands for two base nodes.
+ *
+ * A node whose origin names templateKey claims the base node the origin names; any other node
+ * claims the base node with its own ID, which only the template's own versions share. A base node claimed by several nodes goes to
+ * the one whose neighbours agree with it best, when one does. Then an unmatched base node adopts an
+ * unmatched node without an origin that has the same plug-in, the same parent, and the same matched
+ * upstream and downstream neighbours on the same input labels, when each is the other's only
+ * candidate. Adoption repeats until nothing more is adopted.
  **/
-class NodeMatcher {
-public:
-    virtual ~NodeMatcher();
-
-    virtual std::string_view name() const = 0;
-
-    /**
-     * @brief templateKey selects the import being merged: an origin naming another import never
-     * matches.
-     **/
-    virtual NodeCorrespondence match(const MergeGraph& base,
-                                     const MergeGraph& other,
-                                     const std::string& templateKey) const
-        = 0;
-};
+NodeCorrespondence matchNodes(const MergeGraph& base,
+                              const MergeGraph& other,
+                              const std::string& templateKey);
 
 /**
- * @brief A node matches the base node its origin names, or, without an origin, the base node with
- * its own ID. A base node claimed by more than one node is left unmatched.
+ * @brief Writes the origin {templateKey, base ID} onto each node of mine that baseToMine adopted, so
+ * the next match finds it by identity.
  **/
-class IdOnlyMatcher
-    : public NodeMatcher {
-public:
-    std::string_view name() const override
-    {
-        return "IdOnly";
-    }
-
-    NodeCorrespondence match(const MergeGraph& base, const MergeGraph& other, const std::string& templateKey) const override;
-};
+void recordAdoptions(const NodeCorrespondence& baseToMine,
+                     const std::string& templateKey,
+                     ProjectSerialization* mine);
 
 /**
- * @brief IdOnly, then two structural steps. A base node claimed by several nodes goes to the one
- * whose neighbours agree with it best, when one does. Then an unmatched base node adopts an
- * unmatched node without an origin that has the same plug-in, the same parent, and the same
- * matched upstream and downstream neighbours on the same input labels, when each is the other's
- * only candidate. Adoption repeats until nothing more is adopted.
+ * @brief The node with the given ID anywhere in the tree, or null.
  **/
-class IdPlusAdoptionMatcher
-    : public NodeMatcher {
-public:
-    std::string_view name() const override
-    {
-        return "IdPlusAdoption";
-    }
-
-    NodeCorrespondence match(const MergeGraph& base, const MergeGraph& other, const std::string& templateKey) const override;
-};
-
-/**
- * @brief Matches nodes by path, ignoring IDs and origins.
- **/
-class NameBasedMatcher
-    : public NodeMatcher {
-public:
-    std::string_view name() const override
-    {
-        return "NameBased";
-    }
-
-    NodeCorrespondence match(const MergeGraph& base, const MergeGraph& other, const std::string& templateKey) const override;
-};
-
-/**
- * @brief Candidate rules for which nodes of a shot a merge of one template import may touch.
- **/
-enum class MergeScopeRule {
-    // The nodes whose origin names the import.
-    eOriginOnly,
-    // Those, plus the nodes without one that lie on a path from one of them to another.
-    eEnclosed,
-    // The nodes that stand for a base node under IdPlusAdoption, plus the nodes that lie on a path
-    // from one of them to another.
-    eMatchedEnclosed,
-    // The nodes whose origin names the import, plus everything wired to them, directly or not.
-    eConnected,
-};
-
-std::string_view mergeScopeRuleName(MergeScopeRule rule);
-
-const std::vector<MergeScopeRule>& allMergeScopeRules();
-
-/**
- * @brief The IDs of the shot nodes in scope for the import templateKey. base is that import's
- * template; only eMatchedEnclosed reads it. The children of an in-scope group are in scope.
- **/
-std::set<std::string> mergeScope(const MergeGraph& base,
-                                 const MergeGraph& mine,
-                                 const std::string& templateKey,
-                                 MergeScopeRule rule);
-
-/**
- * @brief The three strategies, in the order the scoring table shows them.
- **/
-std::vector<std::unique_ptr<NodeMatcher>> prototypeNodeMatchers();
+NodeSerializationPtr findNodeSerialization(const std::list<NodeSerializationPtr>& nodes,
+                                           const std::string& id);
 
 } // namespace Serialization
 NATRON_NAMESPACE_EXIT

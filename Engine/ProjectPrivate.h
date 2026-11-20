@@ -60,6 +60,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
 
+#include "Serialization/ProjectSerialization.h"
 #include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -159,6 +160,13 @@ public:
 
     mutable QMutex nodesByIdMutex;
     std::unordered_map<std::string, NodeWPtr> nodesById; //< see Project::findNodeById()
+    // Keyed by originKey(), see Project::findActiveNodeWithOrigin().
+    std::unordered_multimap<std::string, NodeWPtr> nodesByOrigin; //< guarded by nodesByIdMutex
+
+    std::list<Serialization::TemplateImportSerialization> templateImports; //< main thread only
+
+    static std::string originKey(const std::string& templateKey, const std::string& templateNodeId);
+    static void eraseOrigin(std::unordered_multimap<std::string, NodeWPtr>* index, const std::string& key, const Node* node);
 
     // The layers table's "Used by" counts, with each counted node's share, so a node's change is
     // counted without walking every node. A counted group has an entry even with no layer of its

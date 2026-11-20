@@ -1,0 +1,513 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+#include <algorithm>
+#include <deque>
+
+#include "Serialization/Merge/MergePrivate.h"
+
+NATRON_NAMESPACE_ENTER
+namespace Serialization {
+namespace MergeDetail {
+
+    namespace {
+
+        int
+        depthOf(const MergeGraph& graph,
+                const std::string& id)
+        {
+            int depth = 0;
+            for (const MergeGraph::Node* node = graph.find(id); node && !node->parentId.empty(); node = graph.find(node->parentId)) {
+                ++depth;
+            }
+
+            return depth;
+        }
+
+        // Base IDs, parents first, then in ID order.
+        std::vector<std::string>
+        byDepth(const MergeGraph& graph)
+        {
+            std::vector<std::pair<int, std::string>> keyed;
+            for (const std::pair<const std::string, MergeGraph::Node>& entry : graph.nodes()) {
+                keyed.emplace_back(depthOf(graph, entry.first), entry.first);
+            }
+            std::sort(keyed.begin(), keyed.end());
+            std::vector<std::string> result;
+            for (const std::pair<int, std::string>& entry : keyed) {
+                result.push_back(entry.second);
+            }
+
+            return result;
+        }
+
+        std::map<std::string, std::string>
+        inputsInBaseTerms(const MergeContext& context,
+                          const MergeGraph::Node& node,
+                          int side)
+        {
+            std::map<std::string, std::string> result;
+            for (const std::pair<const std::string, std::string>& input : node.inputs) {
+                result[input.first] = (side == 0) ? input.second : inBaseTerms(context, input.second, side == 2);
+            }
+
+            return result;
+        }
+
+        // Whether a side changed a base node in a way a delete must not drop: its knobs or its inputs.
+        // Names, labels, positions, sizes and colours do not count.
+        bool
+        changedFromBase(const MergeContext& context,
+                        const std::string& baseId,
+                        const std::string& sideId,
+                        bool theirs)
+        {
+            const MergeGraph& graph = theirs ? context.theirs : context.mine;
+            const MergeGraph::Node& baseNode = *context.base.find(baseId);
+            const MergeGraph::Node& sideNode = *graph.find(sideId);
+            const NodeRenames names = sideNames(context.base, graph, theirs ? context.plan.baseToTheirs.baseToOther : context.plan.baseToMine.baseToOther);
+            if (!sameKnobs(renamedKnobs(*baseNode.node, names), sideNode.node->knobs)) {
+                return true;
+            }
+
+            return inputsInBaseTerms(context, baseNode, 0) != inputsInBaseTerms(context, sideNode, theirs ? 2 : 1);
+        }
+
+        void
+        removeMineNode(MergeContext* context,
+                       const std::string& id)
+        {
+            std::map<std::string, OutNode>::iterator found = context->out.find(id);
+            if (found == context->out.end()) {
+                return;
+            }
+            context->names.erase(found->second.node->scriptName);
+            context->removedParents[id] = found->second.parent;
+            context->out.erase(found);
+        }
+
+        bool
+        isTheirsAddition(const MergeContext& context,
+                         const std::string& theirsId)
+        {
+            return context.baseOfTheirs(theirsId).empty();
+        }
+
+        // The mine node that a theirs addition duplicates: unmatched, in scope, of the same plug-in,
+        // under the same parent and fed by the same sources on the same inputs, when there is exactly
+        // one. An addition without inputs duplicates only a node of the same name inside a group both
+        // sides added, such as that group's input: elsewhere two unfed nodes say nothing about intent.
+        std::string
+        identicalMineNode(const MergeContext& context,
+                          const MergeGraph::Node& addition,
+                          const std::string& parent,
+                          const std::set<std::string>& paired)
+        {
+            const bool byName = addition.inputs.empty();
+            if (byName && parent.empty()) {
+                return std::string();
+            }
+            std::map<std::string, std::string> sources;
+            for (const std::pair<const std::string, std::string>& input : addition.inputs) {
+                std::map<std::string, std::string>::const_iterator source = context.theirsToOut.find(input.second);
+                if (source == context.theirsToOut.end()) {
+                    return std::string();
+                }
+                sources[input.first] = source->second;
+            }
+            std::string found;
+            for (const std::pair<const std::string, OutNode>& entry : context.out) {
+                const OutNode& candidate = entry.second;
+                if (!candidate.fromMine || !candidate.baseId.empty() || !candidate.theirsId.empty() || paired.count(entry.first) || !context.plan.scope.count(entry.first) || (candidate.node->pluginID != addition.node->pluginID) || (candidate.parent != parent) || (candidate.inputIds != sources) || (byName && (candidate.node->scriptName != addition.node->scriptName))) {
+                    continue;
+                }
+                if (!found.empty()) {
+                    return std::string();
+                }
+                found = entry.first;
+            }
+
+            return found;
+        }
+
+        // Walks from start upstream through nodes accepted by inChain, to the node that takes target on
+        // one of its inputs. Returns that node and input, or empty strings.
+        template <typename Accept>
+        std::pair<std::string, std::string>
+        chainTail(const MergeContext& context,
+                  const std::string& start,
+                  const std::string& target,
+                  Accept inChain)
+        {
+            std::set<std::string> seen;
+            std::deque<std::string> queue;
+            queue.push_back(start);
+            while (!queue.empty()) {
+                const std::string id = queue.front();
+                queue.pop_front();
+                std::map<std::string, OutNode>::const_iterator node = context.out.find(id);
+                if ((node == context.out.end()) || !inChain(node->second) || !seen.insert(id).second) {
+                    continue;
+                }
+                for (const std::pair<const std::string, std::string>& input : node->second.inputIds) {
+                    if (input.second == target) {
+                        return std::make_pair(id, input.first);
+                    }
+                }
+                for (const std::pair<const std::string, std::string>& input : node->second.inputIds) {
+                    queue.push_back(input.second);
+                }
+            }
+
+            return std::make_pair(std::string(), std::string());
+        }
+
+        std::string
+        outOfBase(const MergeContext& context,
+                  const std::string& baseId)
+        {
+            std::map<std::string, std::string>::const_iterator found = context.baseToOut.find(baseId);
+
+            return (found == context.baseToOut.end()) ? "gone:" + baseId : found->second;
+        }
+
+        std::string
+        outOfMine(const MergeContext& context,
+                  const std::string& mineId)
+        {
+            if (context.out.count(mineId)) {
+                return mineId;
+            }
+            const std::string baseId = context.baseOfMine(mineId);
+
+            return baseId.empty() ? "gone:mine:" + mineId : outOfBase(context, baseId);
+        }
+
+        std::string
+        outOfTheirs(const MergeContext& context,
+                    const std::string& theirsId)
+        {
+            std::map<std::string, std::string>::const_iterator found = context.theirsToOut.find(theirsId);
+            if (found != context.theirsToOut.end()) {
+                return found->second;
+            }
+            const std::string baseId = context.baseOfTheirs(theirsId);
+
+            return baseId.empty() ? "gone:theirs:" + theirsId : outOfBase(context, baseId);
+        }
+
+        bool
+        isReal(const MergeContext& context,
+               const std::string& id)
+        {
+            return context.out.count(id) > 0;
+        }
+
+        void
+        mergeInputs(MergeContext* context,
+                    OutNode* node)
+        {
+            const MergeGraph::Node& theirsNode = *context->theirs.find(node->theirsId);
+            const MergeGraph::Node* baseNode = node->baseId.empty() ? nullptr : context->base.find(node->baseId);
+
+            std::set<std::string> labels;
+            std::map<std::string, std::string> base, mine, theirs;
+            if (baseNode) {
+                for (const std::pair<const std::string, std::string>& input : baseNode->inputs) {
+                    base[input.first] = outOfBase(*context, input.second);
+                    labels.insert(input.first);
+                }
+            }
+            for (const std::pair<const std::string, std::string>& input : node->inputIds) {
+                mine[input.first] = outOfMine(*context, input.second);
+                labels.insert(input.first);
+            }
+            for (const std::pair<const std::string, std::string>& input : theirsNode.inputs) {
+                theirs[input.first] = outOfTheirs(*context, input.second);
+                labels.insert(input.first);
+            }
+
+            std::map<std::string, std::string> merged;
+            for (const std::string& label : labels) {
+                const std::string b = base.count(label) ? base[label] : std::string();
+                const std::string m = mine.count(label) ? mine[label] : std::string();
+                const std::string t = theirs.count(label) ? theirs[label] : std::string();
+                std::string result;
+                if ((m == t) || (t == b)) {
+                    result = m;
+                } else if (m == b) {
+                    result = t;
+                } else {
+                    result = m;
+                    const std::pair<std::string, std::string> mineTail = chainTail(*context, m, b, [](const OutNode& candidate) {
+                        return candidate.fromMine && candidate.baseId.empty() && candidate.theirsId.empty();
+                    });
+                    const std::pair<std::string, std::string> theirsTail = chainTail(*context, t, b, [](const OutNode& candidate) {
+                        return !candidate.fromMine && candidate.baseId.empty();
+                    });
+                    MergeConflict conflict;
+                    conflict.baseNodeId = node->baseId;
+                    conflict.nodeId = node->node->id;
+                    conflict.input = label;
+                    if (isReal(*context, b) && !mineTail.first.empty() && !theirsTail.first.empty()) {
+                        context->out[mineTail.first].inputIds[mineTail.second] = t;
+                        conflict.kind = MergeConflictKind::eStructuralInsert;
+                    } else {
+                        conflict.kind = MergeConflictKind::eInput;
+                    }
+                    context->conflicts.push_back(conflict);
+                }
+                if (isReal(*context, result)) {
+                    merged[label] = result;
+                }
+            }
+            node->inputIds = std::move(merged);
+        }
+
+        void
+        mergeParent(MergeContext* context,
+                    OutNode* node)
+        {
+            const std::string baseParent = context->base.find(node->baseId)->parentId;
+            const std::string mineParent = context->mine.find(node->node->id)->parentId;
+            const std::string theirsParent = context->theirs.find(node->theirsId)->parentId;
+            std::map<std::string, std::string>::const_iterator theirsParentOut = context->theirsToOut.find(theirsParent);
+            if (theirsParent.empty() ? mineParent.empty() : ((theirsParentOut != context->theirsToOut.end()) && (theirsParentOut->second == mineParent))) {
+                return;
+            }
+            const std::string m = inBaseTerms(*context, mineParent, false);
+            const std::string t = inBaseTerms(*context, theirsParent, true);
+            if ((m == t) || (t == baseParent)) {
+                return;
+            }
+            if (m == baseParent) {
+                if (theirsParent.empty()) {
+                    node->parent.clear();
+                } else if (context->theirsToOut.count(theirsParent)) {
+                    node->parent = context->theirsToOut[theirsParent];
+                }
+
+                return;
+            }
+            context->addConflict(MergeConflictKind::eReparent, node->baseId);
+        }
+
+        void
+        attach(const std::map<std::string, std::vector<std::string>>& children,
+               const std::map<std::string, OutNode>& out,
+               const std::string& parent,
+               std::list<NodeSerializationPtr>* into)
+        {
+            std::map<std::string, std::vector<std::string>>::const_iterator found = children.find(parent);
+            if (found == children.end()) {
+                return;
+            }
+            for (const std::string& id : found->second) {
+                const NodeSerializationPtr& node = out.at(id).node;
+                attach(children, out, id, &node->children);
+                into->push_back(node);
+            }
+        }
+
+    } // namespace
+
+    void
+    mergeExistence(MergeContext* context)
+    {
+        std::set<std::string> restored;
+        for (const std::string& baseId : byDepth(context->base)) {
+            const std::string mineId = context->plan.baseToMine.otherFor(baseId);
+            const std::string theirsId = context->plan.baseToTheirs.otherFor(baseId);
+            if (!mineId.empty() && !theirsId.empty()) {
+                OutNode& node = context->out[mineId];
+                node.baseId = baseId;
+                node.theirsId = theirsId;
+                context->baseToOut[baseId] = mineId;
+                context->theirsToOut[theirsId] = mineId;
+            } else if (!mineId.empty()) {
+                if (changedFromBase(*context, baseId, mineId, false)) {
+                    OutNode& node = context->out[mineId];
+                    node.baseId = baseId;
+                    node.node->origin = NodeOriginSerialization();
+                    context->baseToOut[baseId] = mineId;
+                    context->addConflict(MergeConflictKind::eDeleteModify, baseId, MergeSide::eTheirs);
+                } else {
+                    removeMineNode(context, mineId);
+                }
+            } else if (!theirsId.empty()) {
+                const std::string parent = context->theirs.find(theirsId)->parentId;
+                const bool insideRestored = !parent.empty() && restored.count(parent);
+                if (insideRestored || changedFromBase(*context, baseId, theirsId, true)) {
+                    const std::string id = context->addFromTheirs(theirsId);
+                    context->out[id].baseId = baseId;
+                    context->baseToOut[baseId] = id;
+                    restored.insert(theirsId);
+                    if (!insideRestored) {
+                        context->addConflict(MergeConflictKind::eDeleteModify, baseId, MergeSide::eMine);
+                    }
+                }
+            }
+        }
+
+        std::vector<std::string> additions;
+        for (const std::string& theirsId : byDepth(context->theirs)) {
+            if (isTheirsAddition(*context, theirsId)) {
+                additions.push_back(theirsId);
+            }
+        }
+        std::stable_sort(additions.begin(), additions.end(), [context](const std::string& a, const std::string& b) {
+            const int depthA = depthOf(context->theirs, a);
+            const int depthB = depthOf(context->theirs, b);
+
+            return (depthA != depthB) ? (depthA < depthB) : (context->theirsOrder[a] < context->theirsOrder[b]);
+        });
+
+        std::set<std::string> paired;
+        bool progress = true;
+        while (progress) {
+            progress = false;
+            for (const std::string& theirsId : additions) {
+                if (context->theirsToOut.count(theirsId)) {
+                    continue;
+                }
+                const MergeGraph::Node& addition = *context->theirs.find(theirsId);
+                std::string parent;
+                if (!addition.parentId.empty()) {
+                    std::map<std::string, std::string>::const_iterator found = context->theirsToOut.find(addition.parentId);
+                    if (found == context->theirsToOut.end()) {
+                        continue;
+                    }
+                    parent = found->second;
+                }
+                const std::string mineId = identicalMineNode(*context, addition, parent, paired);
+                if (!mineId.empty()) {
+                    paired.insert(mineId);
+                    context->theirsToOut[theirsId] = mineId;
+                    context->out[mineId].theirsId = theirsId;
+                    progress = true;
+                }
+            }
+        }
+        for (const std::string& theirsId : additions) {
+            if (context->theirsToOut.count(theirsId)) {
+                continue;
+            }
+            const std::string parent = context->theirs.find(theirsId)->parentId;
+            if (parent.empty() || context->theirsToOut.count(parent)) {
+                context->addFromTheirs(theirsId);
+            }
+        }
+    }
+
+    void
+    mergeConnections(MergeContext* context)
+    {
+        for (std::pair<const std::string, OutNode>& entry : context->out) {
+            OutNode& node = entry.second;
+            if (node.fromMine) {
+                continue;
+            }
+            std::map<std::string, std::string> inputs;
+            for (const std::pair<const std::string, std::string>& input : context->theirs.find(node.theirsId)->inputs) {
+                const std::string source = outOfTheirs(*context, input.second);
+                if (isReal(*context, source)) {
+                    inputs[input.first] = source;
+                }
+            }
+            node.inputIds = std::move(inputs);
+        }
+        for (std::pair<const std::string, OutNode>& entry : context->out) {
+            OutNode& node = entry.second;
+            if (node.fromMine && node.theirsId.empty()) {
+                std::map<std::string, std::string> inputs;
+                for (const std::pair<const std::string, std::string>& input : node.inputIds) {
+                    const std::string source = outOfMine(*context, input.second);
+                    if (isReal(*context, source)) {
+                        inputs[input.first] = source;
+                    }
+                }
+                node.inputIds = std::move(inputs);
+            }
+        }
+
+        std::vector<std::string> merging;
+        for (const std::pair<const std::string, OutNode>& entry : context->out) {
+            if (entry.second.fromMine && !entry.second.theirsId.empty()) {
+                merging.push_back(entry.first);
+            }
+        }
+        std::sort(merging.begin(), merging.end(), [context](const std::string& a, const std::string& b) {
+            return context->out[a].order < context->out[b].order;
+        });
+        for (const std::string& id : merging) {
+            OutNode& node = context->out[id];
+            mergeInputs(context, &node);
+            if (!node.baseId.empty()) {
+                mergeParent(context, &node);
+            }
+        }
+    }
+
+    ProjectSerialization
+    assemble(MergeContext* context)
+    {
+        std::map<std::string, std::vector<std::string>> children;
+        std::vector<std::string> ordered;
+        for (const std::pair<const std::string, OutNode>& entry : context->out) {
+            ordered.push_back(entry.first);
+        }
+        std::sort(ordered.begin(), ordered.end(), [context](const std::string& a, const std::string& b) {
+            return context->out[a].order < context->out[b].order;
+        });
+        for (const std::string& id : ordered) {
+            OutNode& node = context->out[id];
+            std::string parent = node.parent;
+            while (!parent.empty() && !context->out.count(parent)) {
+                std::map<std::string, std::string>::const_iterator removed = context->removedParents.find(parent);
+                parent = (removed == context->removedParents.end()) ? std::string() : removed->second;
+            }
+            node.parent = parent;
+            children[parent].push_back(id);
+        }
+        for (const std::string& id : ordered) {
+            OutNode& node = context->out[id];
+            // An input names a sibling, so a source the merge put in another group cannot be kept.
+            node.node->inputs.clear();
+            for (const std::pair<const std::string, std::string>& input : node.inputIds) {
+                std::map<std::string, OutNode>::const_iterator source = context->out.find(input.second);
+                if ((source != context->out.end()) && (source->second.parent == node.parent)) {
+                    node.node->inputs[input.first] = source->second.node->scriptName;
+                }
+            }
+            if (!node.theirsId.empty()) {
+                node.node->origin.templateKey = context->plan.templateKey;
+                node.node->origin.nodeId = node.theirsId;
+            }
+        }
+
+        ProjectSerialization merged = context->mineProject;
+        merged.nodes.nodes.clear();
+        attach(children, context->out, std::string(), &merged.nodes.nodes);
+
+        return merged;
+    }
+
+} // namespace MergeDetail
+} // namespace Serialization
+NATRON_NAMESPACE_EXIT

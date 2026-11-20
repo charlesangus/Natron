@@ -1,0 +1,29 @@
+# Hand-written: the correspondences and conflicts a correct merge of artist-groups-template-nodes/ gives.
+description: >-
+  The artist wraps Blur1 and Merge1 into a group, ArtistLook, with group from selection; the
+  supervisor changes Blur1's size. Group from selection keeps the moved nodes' IDs, so
+  ArtistLook.Blur1 is Blur1 and takes the size, and the group and its inputs and output are in
+  scope.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: ArtistLook.Blur1
+      Constant1: Constant1
+      Merge1: ArtistLook.Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Constant1, ArtistLook, ArtistLook.InB, ArtistLook.InA, ArtistLook.Blur1, ArtistLook.Merge1, ArtistLook.LookOut, ColorCorrect1, TplOut]
+    conflicts: []
+notes: >-
+  Matching runs over the whole tree, so a move into or out of a group never changes a node's
+  identity.

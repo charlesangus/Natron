@@ -1,23 +1,13 @@
 # Merge scenarios
 
 Three-way merge cases for a template that a supervisor maintains and artists import into shots.
-Each scenario folder holds three snapshots:
+`Tests/Serialization/MergeScenarios.h` builds each scenario's three snapshots in C++:
 
-- `base.ntpz`: the template as the artist imported it.
-- `theirs.ntpz`: the supervisor's new version of the template. Its nodes keep the template's IDs.
-- `mine.ntpz`: the artist's shot. It holds the imported template nodes, which have fresh IDs, plus
-  the shot's own nodes and the artist's edits.
-
-`mine.provenance.yaml` records which template import each shot node came from:
-
-```yaml
-templates:
-  - key: grade_tpl            # one entry per import
-    path: base.ntpz
-    hash: <sha256 of base.ntpz's project.yaml>
-origins:
-  "<node id in mine>": {template: grade_tpl, node: "<node id in base>"}
-```
+- base: the template as the artist imported it.
+- theirs: the supervisor's new version of the template. Its nodes keep the template's IDs.
+- mine: the artist's shot. It holds the imported template nodes, which have fresh IDs and an origin
+  naming the import's key and the template node's ID, plus the shot's own nodes and the artist's
+  edits.
 
 ## The template
 
@@ -45,11 +35,16 @@ feeds `TplIn`, and `TplOut` feeds `ShotOut` (Dot).
 | roto-both-sides | moves a Garbage point, adds shape ArtistFix | moves another Garbage point, lowers Core's opacity, adds Edge |
 | artist-adds-around-template | adds ArtistGrade inside, ShotGrade after, GarbageMatte on the mask | changes ColorCorrect1's saturation |
 | delete-recreate-as-two | replaces Grade1 with GradeA -> GradeB | sets Grade1's gamma |
+| delete-recreate-adjacent-pair | replaces Grade1 and Blur1 with Grade2 -> Blur2 | sets Grade1's gamma and Blur1's size |
+| cut-paste-template-node | cuts Grade1 and pastes it back unconnected, TplIn -> Blur1 | sets Grade1's gamma |
+| duplicate-then-delete-original | duplicates Blur1, deletes it, wires the copy in its place | changes Blur1's size |
+| artist-groups-template-nodes | wraps Blur1 and Merge1 into a group, ArtistLook | changes Blur1's size |
+| both-sides-reparent | wraps Blur1 into ArtistLook | wraps Blur1 into a different group, Look |
+| rename-plus-expression | renames Grade1, which Blur1's size expression names, to KeyGrade | adds a saturation expression on ColorCorrect1 naming Grade1 |
 
 ## Expected results
 
-`expected/<scenario>.yaml` names nodes by path (script names joined by `.`), because the
-generator mints new IDs on every run:
+`expected/<scenario>.yaml` names nodes by path (script names joined by `.`):
 
 ```yaml
 description: ...
@@ -62,23 +57,13 @@ merges:
       - {node: Grade1, knob: multiply, kind: value}
 ```
 
-Conflict kinds: `value`, `curve-key`, `input`, `structural-insert`, `delete-modify`,
-`roto-shape`. Each conflict names the base node, plus `knob`, `dim`, `time`, `input` or `item`
-where they apply.
+Conflict kinds: `value`, `curve-key`, `input`, `structural-insert`, `delete-modify`, `reparent`,
+`adopted`, `roto-shape`. Each conflict names the base node, plus `knob`, `dim`, `time`, `input` or
+`item` where they apply.
 
-## Regenerating
+## Checking
 
-From the repository root, inside the dev container:
-
-```sh
-NatronRenderer -b Tests/fixtures/merge-scenarios/build_scenarios.py
-```
-
-`MERGE_SCENARIOS_OUT` sets another output folder, and `MERGE_SCENARIOS_ONLY=rename,reconnect`
-builds only those scenarios. The script checks that `mimetype` is each bundle's first member.
-
-To score the matchers and scope rules against the corpus:
-
-```sh
-natron-score-matchers Tests/fixtures/merge-scenarios [--verbose]
-```
+`Tests/Serialization/NodeMatcher_Test.cpp` asserts that the matcher and the merge scope give every
+scenario's `base_mine`, `base_theirs` and `scope`, and prints how simpler strategies score.
+`Tests/Serialization/StructuralMerge_Test.cpp` merges every scenario and compares the conflicts it
+lists, leaving out the `curve-key` and `roto-shape` kinds that the merge does not raise yet.

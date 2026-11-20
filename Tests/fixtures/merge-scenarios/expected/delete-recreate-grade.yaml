@@ -22,7 +22,8 @@ merges:
       ColorCorrect1: ColorCorrect1
       TplOut: TplOut
     scope: [TplIn, Grade2, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
-    conflicts: []
+    conflicts:
+      - {node: Grade1, kind: adopted}
 notes: >-
   The user's example. Matching Grade2 to Grade1 is the judgement under test: an ID matcher sees a
   delete of a modified node (a conflict that resurrects Grade1 next to Grade2) plus an unrelated add.

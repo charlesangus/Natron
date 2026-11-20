@@ -24,4 +24,5 @@ merges:
     scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
     conflicts: []
 notes: >-
-  Group from selection copies the nodes into the group today, so the moved nodes have new IDs.
+  Group from selection keeps the moved nodes' IDs, so the supervisor's Look.Blur1 and Look.Merge1
+  match by identity.

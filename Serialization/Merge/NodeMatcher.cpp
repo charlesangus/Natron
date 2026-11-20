@@ -19,7 +19,7 @@
 
 #include "Serialization/Merge/NodeMatcher.h"
 
-#include <deque>
+#include <vector>
 
 #include "Serialization/Ops/OpsPrivate.h"
 
@@ -65,14 +65,9 @@ namespace {
     {
         std::map<std::string, std::vector<std::string>> claims;
         for (const std::pair<const std::string, MergeGraph::Node>& entry : other.nodes()) {
-            const NodeOrigin& origin = entry.second.origin;
-            std::string claimed;
-            if (origin.nodeId.empty()) {
-                claimed = entry.first;
-            } else if (origin.templateKey == templateKey) {
-                claimed = origin.nodeId;
-            }
-            if (!claimed.empty() && base.find(claimed)) {
+            const NodeOriginSerialization& origin = entry.second.node->origin;
+            const std::string& claimed = (origin.isSet() && (origin.templateKey == templateKey)) ? origin.nodeId : entry.first;
+            if (base.find(claimed)) {
                 claims[claimed].push_back(entry.first);
             }
         }
@@ -171,19 +166,6 @@ namespace {
         return agreement;
     }
 
-    bool
-    sameParent(const MergeGraph::Node& baseNode,
-               const MergeGraph::Node& otherNode,
-               const NodeCorrespondence& correspondence)
-    {
-        if (baseNode.parentId.empty()) {
-            return otherNode.parentId.empty();
-        }
-        const std::string mapped = correspondence.otherFor(baseNode.parentId);
-
-        return !mapped.empty() && (mapped == otherNode.parentId);
-    }
-
     void
     resolveAmbiguousClaims(const MergeGraph& base,
                            const MergeGraph& other,
@@ -223,19 +205,35 @@ namespace {
         while (progress) {
             progress = false;
             const std::set<std::string> matchedOther = correspondence->matchedOther();
+            // (plug-in, parent) to the unmatched nodes without an origin, in ID order.
+            std::map<std::pair<std::string, std::string>, std::vector<std::string>> unmatched;
+            for (const std::pair<const std::string, MergeGraph::Node>& otherEntry : other.nodes()) {
+                if (!matchedOther.count(otherEntry.first) && !otherEntry.second.node->origin.isSet()) {
+                    unmatched[std::make_pair(otherEntry.second.node->pluginID, otherEntry.second.parentId)].push_back(otherEntry.first);
+                }
+            }
             std::map<std::string, std::vector<std::string>> candidatesOfBase;
             std::map<std::string, int> claimsOnCandidate;
             for (const std::pair<const std::string, MergeGraph::Node>& baseEntry : base.nodes()) {
                 if (correspondence->baseToOther.count(baseEntry.first)) {
                     continue;
                 }
-                for (const std::pair<const std::string, MergeGraph::Node>& otherEntry : other.nodes()) {
-                    const MergeGraph::Node& candidate = otherEntry.second;
-                    if (matchedOther.count(otherEntry.first) || !candidate.origin.nodeId.empty() || (candidate.node->pluginID != baseEntry.second.node->pluginID) || !sameParent(baseEntry.second, candidate, *correspondence) || !neighbourAgreement(baseEntry.second, candidate, *correspondence, matchedOther).exact) {
+                std::string parent;
+                if (!baseEntry.second.parentId.empty()) {
+                    parent = correspondence->otherFor(baseEntry.second.parentId);
+                    if (parent.empty()) {
                         continue;
                     }
-                    candidatesOfBase[baseEntry.first].push_back(otherEntry.first);
-                    ++claimsOnCandidate[otherEntry.first];
+                }
+                std::map<std::pair<std::string, std::string>, std::vector<std::string>>::const_iterator bucket = unmatched.find(std::make_pair(baseEntry.second.node->pluginID, parent));
+                if (bucket == unmatched.end()) {
+                    continue;
+                }
+                for (const std::string& candidateId : bucket->second) {
+                    if (neighbourAgreement(baseEntry.second, *other.find(candidateId), *correspondence, matchedOther).exact) {
+                        candidatesOfBase[baseEntry.first].push_back(candidateId);
+                        ++claimsOnCandidate[candidateId];
+                    }
                 }
             }
             for (const std::pair<const std::string, std::vector<std::string>>& candidates : candidatesOfBase) {
@@ -248,59 +246,9 @@ namespace {
         }
     }
 
-    std::set<std::string>
-    reach(const MergeGraph& graph,
-          const std::set<std::string>& seeds,
-          bool forward,
-          bool backward)
-    {
-        std::set<std::string> seen(seeds);
-        std::deque<std::string> queue(seeds.begin(), seeds.end());
-        while (!queue.empty()) {
-            const MergeGraph::Node* node = graph.find(queue.front());
-            queue.pop_front();
-            if (!node) {
-                continue;
-            }
-            if (forward) {
-                for (const std::pair<std::string, std::string>& output : node->outputs) {
-                    if (seen.insert(output.first).second) {
-                        queue.push_back(output.first);
-                    }
-                }
-            }
-            if (backward) {
-                for (const std::pair<const std::string, std::string>& input : node->inputs) {
-                    if (seen.insert(input.second).second) {
-                        queue.push_back(input.second);
-                    }
-                }
-            }
-        }
-
-        return seen;
-    }
-
-    std::set<std::string>
-    enclosed(const MergeGraph& graph,
-             const std::set<std::string>& seeds)
-    {
-        const std::set<std::string> downstream = reach(graph, seeds, true, false);
-        const std::set<std::string> upstream = reach(graph, seeds, false, true);
-        std::set<std::string> result(seeds);
-        for (const std::string& id : downstream) {
-            if (upstream.count(id)) {
-                result.insert(id);
-            }
-        }
-
-        return result;
-    }
-
 } // namespace
 
-MergeGraph::MergeGraph(const ProjectSerialization& project,
-                       NodeOrigins origins)
+MergeGraph::MergeGraph(const ProjectSerialization& project)
 {
     OpsDetail::InputRefs refs;
     OpsDetail::resolveInputs(project.nodes.nodes, &refs);
@@ -311,12 +259,6 @@ MergeGraph::MergeGraph(const ProjectSerialization& project,
             if (source != _nodes.end()) {
                 source->second.outputs.emplace(entry.first, input.first);
             }
-        }
-    }
-    for (std::pair<const std::string, NodeOrigin>& origin : origins) {
-        std::map<std::string, Node>::iterator node = _nodes.find(origin.first);
-        if (node != _nodes.end()) {
-            node->second.origin = std::move(origin.second);
         }
     }
 }
@@ -345,6 +287,18 @@ NodeCorrespondence::otherFor(const std::string& baseId) const
     return (found == baseToOther.end()) ? std::string() : found->second;
 }
 
+std::string
+NodeCorrespondence::baseFor(const std::string& otherId) const
+{
+    for (const std::pair<const std::string, std::string>& entry : baseToOther) {
+        if (entry.second == otherId) {
+            return entry.first;
+        }
+    }
+
+    return std::string();
+}
+
 std::set<std::string>
 NodeCorrespondence::matchedOther() const
 {
@@ -356,20 +310,10 @@ NodeCorrespondence::matchedOther() const
     return result;
 }
 
-NodeMatcher::~NodeMatcher() = default;
-
 NodeCorrespondence
-IdOnlyMatcher::match(const MergeGraph& base,
-                     const MergeGraph& other,
-                     const std::string& templateKey) const
-{
-    return matchUniqueClaims(collectClaims(base, other, templateKey));
-}
-
-NodeCorrespondence
-IdPlusAdoptionMatcher::match(const MergeGraph& base,
-                             const MergeGraph& other,
-                             const std::string& templateKey) const
+matchNodes(const MergeGraph& base,
+           const MergeGraph& other,
+           const std::string& templateKey)
 {
     const std::map<std::string, std::vector<std::string>> claims = collectClaims(base, other, templateKey);
     NodeCorrespondence result = matchUniqueClaims(claims);
@@ -379,104 +323,38 @@ IdPlusAdoptionMatcher::match(const MergeGraph& base,
     return result;
 }
 
-NodeCorrespondence
-NameBasedMatcher::match(const MergeGraph& base,
-                        const MergeGraph& other,
-                        const std::string& /*templateKey*/) const
+NodeSerializationPtr
+findNodeSerialization(const std::list<NodeSerializationPtr>& nodes,
+                      const std::string& id)
 {
-    NodeCorrespondence result;
-    for (const std::pair<const std::string, MergeGraph::Node>& entry : base.nodes()) {
-        const MergeGraph::Node* found = other.findByPath(entry.second.path);
-        if (found) {
-            result.baseToOther[entry.first] = found->node->id;
+    for (const NodeSerializationPtr& node : nodes) {
+        if (node->id == id) {
+            return node;
+        }
+        NodeSerializationPtr child = findNodeSerialization(node->children, id);
+        if (child) {
+            return child;
         }
     }
 
-    return result;
+    return NodeSerializationPtr();
 }
 
-std::string_view
-mergeScopeRuleName(MergeScopeRule rule)
+void
+recordAdoptions(const NodeCorrespondence& baseToMine,
+                const std::string& templateKey,
+                ProjectSerialization* mine)
 {
-    switch (rule) {
-    case MergeScopeRule::eOriginOnly:
-        return "OriginOnly";
-    case MergeScopeRule::eEnclosed:
-        return "Enclosed";
-    case MergeScopeRule::eMatchedEnclosed:
-        return "MatchedEnclosed";
-    case MergeScopeRule::eConnected:
-        return "Connected";
-    }
-
-    return "?";
-}
-
-const std::vector<MergeScopeRule>&
-allMergeScopeRules()
-{
-    static const std::vector<MergeScopeRule> rules = {
-        MergeScopeRule::eOriginOnly,
-        MergeScopeRule::eEnclosed,
-        MergeScopeRule::eMatchedEnclosed,
-        MergeScopeRule::eConnected,
-    };
-
-    return rules;
-}
-
-std::set<std::string>
-mergeScope(const MergeGraph& base,
-           const MergeGraph& mine,
-           const std::string& templateKey,
-           MergeScopeRule rule)
-{
-    std::set<std::string> seeds;
-    if (rule == MergeScopeRule::eMatchedEnclosed) {
-        seeds = IdPlusAdoptionMatcher().match(base, mine, templateKey).matchedOther();
-    } else {
-        for (const std::pair<const std::string, MergeGraph::Node>& entry : mine.nodes()) {
-            if (!entry.second.origin.nodeId.empty() && (entry.second.origin.templateKey == templateKey)) {
-                seeds.insert(entry.first);
-            }
+    for (const std::pair<const std::string, std::string>& entry : baseToMine.baseToOther) {
+        if (!baseToMine.adopted.count(entry.second)) {
+            continue;
+        }
+        NodeSerializationPtr node = findNodeSerialization(mine->nodes.nodes, entry.second);
+        if (node) {
+            node->origin.templateKey = templateKey;
+            node->origin.nodeId = entry.first;
         }
     }
-
-    std::set<std::string> scope;
-    switch (rule) {
-    case MergeScopeRule::eOriginOnly:
-        scope = seeds;
-        break;
-    case MergeScopeRule::eEnclosed:
-    case MergeScopeRule::eMatchedEnclosed:
-        scope = enclosed(mine, seeds);
-        break;
-    case MergeScopeRule::eConnected:
-        scope = reach(mine, seeds, true, true);
-        break;
-    }
-
-    for (const std::pair<const std::string, MergeGraph::Node>& entry : mine.nodes()) {
-        for (const MergeGraph::Node* ancestor = mine.find(entry.second.parentId); ancestor; ancestor = mine.find(ancestor->parentId)) {
-            if (scope.count(ancestor->node->id)) {
-                scope.insert(entry.first);
-                break;
-            }
-        }
-    }
-
-    return scope;
-}
-
-std::vector<std::unique_ptr<NodeMatcher>>
-prototypeNodeMatchers()
-{
-    std::vector<std::unique_ptr<NodeMatcher>> matchers;
-    matchers.push_back(std::make_unique<IdOnlyMatcher>());
-    matchers.push_back(std::make_unique<IdPlusAdoptionMatcher>());
-    matchers.push_back(std::make_unique<NameBasedMatcher>());
-
-    return matchers;
 }
 
 } // namespace Serialization

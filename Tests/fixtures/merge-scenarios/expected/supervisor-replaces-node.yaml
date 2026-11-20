@@ -23,7 +23,9 @@ merges:
       TplOut: TplOut
     scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
     conflicts:
+      - {node: Blur1, kind: adopted}
       - {node: Blur1, knob: size, dim: 0, kind: value}
       - {node: Blur1, knob: size, dim: 1, kind: value}
 notes: >-
-  The mirror of delete-recreate-grade on the supervisor's side.
+  The mirror of delete-recreate-grade on the supervisor's side. The artist never renamed Blur1, so the
+  merged node takes the supervisor's name, Blur2.

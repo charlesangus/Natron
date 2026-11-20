@@ -10,9 +10,10 @@ thing:
 2. **Scope:** which shot nodes may the merge touch? The template's own nodes are in scope. An artist
    node is part of the template's chain or sits outside it; the scope rule decides which.
 
-The corpus is `Tests/fixtures/merge-scenarios` (15 scenarios, 16 merges). The prototype is
-`Serialization/Merge/NodeMatcher.{h,cpp}`, and the scorer is `tools/merge/score_matchers.cpp`
-(`natron-score-matchers`).
+The corpus is `Tests/fixtures/merge-scenarios` (15 scenarios, 16 merges, at the time of the spike).
+The chosen matcher is `Serialization/Merge/NodeMatcher.{h,cpp}`.
+`Tests/Serialization/NodeMatcher_Test.cpp` builds the corpus graphs in C++, asserts that the matcher
+and the scope rule give every expected result, and prints the score table.
 
 ## Provenance used by the spike
 
@@ -43,9 +44,9 @@ but this shot has no entry for them.
 Each cell is correct/wrong/missing over the base nodes: 7 per merge, 8 for the roto scenario.
 *Correct* means the strategy picked the expected counterpart, or none when none is expected.
 
-> **These numbers come from a host simulation, not from the corpus.** It runs the real matchers on
-> hand-built graphs with the corpus's names, wiring, plug-ins and origins. Replace them with
-> `natron-score-matchers Tests/fixtures/merge-scenarios` output once the corpus is generated.
+> These numbers come from the spike's simulation, which ran the prototype matchers on hand-built
+> graphs with the corpus's names, wiring, plug-ins and origins. `NodeMatcher_Test` now prints the
+> table for the chosen matcher and two simpler strategies over the grown corpus.
 
 ### Base against mine (the artist's shot)
 

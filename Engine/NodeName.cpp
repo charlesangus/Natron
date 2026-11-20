@@ -107,7 +107,90 @@ Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, 
 
     if (serialization) {
         restoreSerializedNodeId(serialization->id);
+        restoreSerializedOrigin(serialization->origin.templateKey, serialization->origin.nodeId);
     }
+}
+
+std::string
+Node::getOriginTemplate() const
+{
+    QMutexLocker k(&_imp->nameMutex);
+
+    return _imp->originTemplate;
+}
+
+std::string
+Node::getOriginNode() const
+{
+    QMutexLocker k(&_imp->nameMutex);
+
+    return _imp->originNode;
+}
+
+void
+Node::setOrigin(const std::string& templateKey,
+                const std::string& templateNodeId)
+{
+    std::string previousTemplate;
+    std::string previousNode;
+    {
+        QMutexLocker k(&_imp->nameMutex);
+        previousTemplate = _imp->originTemplate;
+        previousNode = _imp->originNode;
+        _imp->originTemplate = templateKey;
+        _imp->originNode = templateKey.empty() ? std::string() : templateNodeId;
+    }
+    if ((previousTemplate == templateKey) && (previousNode == templateNodeId)) {
+        return;
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (project) {
+        project->onNodeOriginChanged(shared_from_this(), previousTemplate, previousNode);
+    }
+}
+
+void
+Node::restoreSerializedOrigin(const std::string& templateKey,
+                              const std::string& templateNodeId)
+{
+    if (templateKey.empty()) {
+        return;
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (project && !project->isLoadingProject()) {
+        NodePtr holder = project->findActiveNodeWithOrigin(templateKey, templateNodeId);
+        if (holder && (holder.get() != this)) {
+            return;
+        }
+    }
+    setOrigin(templateKey, templateNodeId);
+}
+
+void
+Node::swapIdentity(const NodePtr& a,
+                   const NodePtr& b)
+{
+    if (!a || !b || (a == b)) {
+        return;
+    }
+    const std::string aOriginTemplate = a->getOriginTemplate();
+    const std::string aOriginNode = a->getOriginNode();
+    const std::string bOriginTemplate = b->getOriginTemplate();
+    const std::string bOriginNode = b->getOriginNode();
+    {
+        QMutexLocker ka(&a->_imp->nameMutex);
+        QMutexLocker kb(&b->_imp->nameMutex);
+        std::swap(a->_imp->nodeId, b->_imp->nodeId);
+    }
+    AppInstancePtr app = a->getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (project) {
+        project->onNodeIdsSwapped(a, b);
+    }
+    b->setOrigin(aOriginTemplate, aOriginNode);
+    a->setOrigin(bOriginTemplate, bOriginNode);
 }
 
 void

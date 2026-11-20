@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <list>
 #include <map>
 #include <set>
 #include <vector>
@@ -173,6 +174,40 @@ public:
     void registerNodeId(const NodePtr& node);
     void unregisterNodeId(const Node* node);
     void onNodeIdChanged(const NodePtr& node, const std::string& previousId);
+    void onNodeIdsSwapped(const NodePtr& a, const NodePtr& b);
+
+    /**
+     * @brief An active node of the project, at any depth, whose origin is templateKey and
+     * templateNodeId, or null. MT-safe.
+     **/
+    NodePtr findActiveNodeWithOrigin(const std::string& templateKey, const std::string& templateNodeId) const;
+
+    /**
+     * @brief Index upkeep for findActiveNodeWithOrigin(), called by Node::setOrigin().
+     **/
+    void onNodeOriginChanged(const NodePtr& node, const std::string& previousTemplate, const std::string& previousNode);
+
+    /**
+     * @brief Brings the nodes of the template file at filePath into group: each gets a new ID and
+     * an origin naming the new template entry and its node in the template, and expressions that
+     * name a template node follow it when it has to be renamed. Each import makes its own entry,
+     * whose key is made from the file name and made unique, and keeps the imported snapshot as the
+     * base of the next update merge. Returns the created top-level nodes, or nothing with error
+     * set when the file cannot be read or its nodes cannot be created.
+     **/
+    NodesList importTemplate(const QString& filePath, const NodeCollectionPtr& group, QString* error);
+
+    /**
+     * @brief The template imports of the project, in import order. Main thread only.
+     **/
+    const std::list<Serialization::TemplateImportSerialization>& getTemplateImports() const;
+    bool hasTemplateImport(const std::string& key) const;
+
+    /**
+     * @brief Replaces the entry whose key is entry.key, or adds it, as an update merge does when
+     * it moves the base to the new template version. Main thread only.
+     **/
+    void setTemplateImport(const Serialization::TemplateImportSerialization& entry);
 
     /**
      * @brief Writes a project file at filePath without ever leaving a partial one there:

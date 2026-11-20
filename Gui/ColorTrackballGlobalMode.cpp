@@ -1762,6 +1762,12 @@ ColorGlobalModeTarget::getLiveValue() const
     return knob ? knob->getCurrentColorValue() : neutralValue();
 }
 
+ColorTrackballRevealLabels
+ColorGlobalModeTarget::directionLabels() const
+{
+    return colorTrackballRevealDirectionLabels(_strokeActive ? _strokeMode : _mode);
+}
+
 bool
 ColorGlobalModeTarget::setMode(ColorGlobalModeEnum mode)
 {
@@ -1888,6 +1894,7 @@ ColorGlobalModeTarget::syncReveal(ColorTrackballReveal* reveal,
         _revealRole = role;
     }
     reveal->setMode((strokeActive && _strokeActive) ? _strokeMode : _mode);
+    reveal->setPillTexts(directionLabels());
     if (strokeActive && _strokeActive) {
         reveal->setStroke(_stroke.getStart(), _strokeValue, _stroke.getTotalDx(), _stroke.getTotalDy(), _rates);
     } else {

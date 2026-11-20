@@ -100,6 +100,40 @@ int colorTrackballHudLitGear(double gear);
 QPoint colorTrackballHudFollowPosition(const QPoint& cursor, const QSize& hudSize, const QRect& screen, const QPoint& offset);
 
 /**
+ * @brief The DPI-scaled offset of a following hint block from the pointer, as
+ * ColorTrackballHudBlock::followCursorTo() applies it.
+ **/
+QPoint colorTrackballHudFollowOffset();
+
+/**
+ * @brief The DPI-scaled gap the direction pills round the pointer leave from it, enough to clear
+ * the crosshair cursor, and the gap between the bottom pill and the hint block under it.
+ **/
+int colorTrackballPointerBadgeReach();
+int colorTrackballPointerBadgeBlockGap();
+
+/**
+ * @brief Where the direction pills and the hint block round the pointer go, relative to the
+ * pointer at the origin. Pills are indexed right, left, top, bottom; an empty size means no pill
+ * there and a null rect for it.
+ **/
+struct ColorTrackballPointerBadgeRects {
+    QRect pills[4];
+    QRect block;
+    /// The union of the pills and the block.
+    QRect bounds;
+};
+
+/**
+ * @brief Lays the pills out on their side of the pointer, reach from it (the top and bottom ones
+ * further out when a side pill is taller than 2 * reach, so no two touch), and the block
+ * blockGap under the bottom pill and centred on the pointer's column. With every pill empty the
+ * block alone sits at followOffset, where colorTrackballHudFollowPosition() puts it away from
+ * the screen edges.
+ **/
+ColorTrackballPointerBadgeRects colorTrackballPointerBadgeLayout(int reach, const QSize pillSizes[4], const QSize& blockSize, int blockGap, const QPoint& followOffset);
+
+/**
  * @brief Fill and edge of the trackball's pills and hint block. Opaque, since nothing paints
  * behind a frameless window without a compositor.
  **/

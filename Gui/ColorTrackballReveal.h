@@ -146,6 +146,12 @@ public:
     void setValueKind(GlobalModeKindEnum kind);
 
     /**
+     * @brief Replaces the pills setMode() or setValueKind() put up; an empty label hides its
+     * pill. The disc keeps its place on screen.
+     **/
+    void setPillTexts(const ColorTrackballRevealLabels& labels);
+
+    /**
      * @brief The value stroke's travel in screen pixels, which moves the value disc's puck.
      **/
     void setValueTravel(double dx, double dy);
@@ -223,8 +229,6 @@ private:
     // Lays the disc, pills and block out for the mode and state, sizes and masks the window,
     // and keeps the disc's centre where it was on screen.
     void relayout();
-
-    void setPillTexts(const ColorTrackballRevealLabels& labels);
 
     ColorWheelWidget* _wheel;
     ColorModeDiscWidget* _disc;

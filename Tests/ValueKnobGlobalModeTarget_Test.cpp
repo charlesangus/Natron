@@ -33,8 +33,10 @@
 #include "Engine/Nodes/Filter/Blur.h"
 
 #include "Gui/ColorTrackballHud.h"
+#include "Gui/ColorTrackballReveal.h"
 #include "Gui/ColorTrackballTarget.h"
 #include "Gui/ValueKnobGlobalModeTarget.h"
+#include "Gui/ValueModeDiscWidget.h"
 
 #include "GlobalModeTestSupport.h"
 
@@ -143,3 +145,15 @@ TEST_F(ValueKnobGlobalModeTargetTest, HudShowsTheLockChipsAndARateLine)
 }
 
 } // namespace
+
+TEST_F(ValueKnobGlobalModeTargetTest, DirectionLabelsAreTheKindsRevealLabels)
+{
+    const ColorTrackballRevealLabels expected = valueModeRevealDirectionLabels(_target->getKind());
+    const ColorTrackballRevealLabels labels = _target->directionLabels();
+
+    EXPECT_FALSE(labels.right.isEmpty());
+    EXPECT_EQ(expected.right, labels.right);
+    EXPECT_EQ(expected.left, labels.left);
+    EXPECT_EQ(expected.top, labels.top);
+    EXPECT_EQ(expected.bottom, labels.bottom);
+}

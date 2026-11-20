@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdlib>
 #include <memory>
 
 #include <QApplication>
@@ -289,4 +290,65 @@ TEST(ColorTrackballHud, FollowingBlockSitsAtTheOffsetAndFlipsNearTheEdges)
     block.setState(longer);
     EXPECT_LT(block.geometry().right(), corner.x());
     EXPECT_LT(block.geometry().bottom(), corner.y());
+}
+
+TEST(ColorTrackballHud, PointerBadgesClearTheCursorAndEachOther)
+{
+    const int reach = 20;
+    const QSize pills[4] = { QSize(48, 22), QSize(52, 22), QSize(60, 22), QSize(44, 22) };
+    const ColorTrackballPointerBadgeRects r = colorTrackballPointerBadgeLayout(reach, pills, QSize(220, 90), 8, QPoint(16, 16));
+    const QRect cursor(-reach, -reach, 2 * reach, 2 * reach);
+
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(pills[i], r.pills[i].size());
+        EXPECT_FALSE(r.pills[i].intersects(cursor)) << i;
+        for (int j = i + 1; j < 4; ++j) {
+            EXPECT_FALSE(r.pills[i].intersects(r.pills[j])) << i << " " << j;
+        }
+        EXPECT_FALSE(r.pills[i].intersects(r.block)) << i;
+        EXPECT_TRUE(r.bounds.contains(r.pills[i])) << i;
+    }
+    EXPECT_GT(r.pills[0].left(), 0);
+    EXPECT_LT(r.pills[1].right(), 0);
+    EXPECT_LT(r.pills[2].bottom(), 0);
+    EXPECT_GT(r.pills[3].top(), 0);
+    EXPECT_TRUE(r.bounds.contains(r.block));
+}
+
+TEST(ColorTrackballHud, PointerBadgesKeepClearOfTallSidePills)
+{
+    const QSize pills[4] = { QSize(80, 50), QSize(80, 50), QSize(120, 22), QSize(120, 22) };
+    const ColorTrackballPointerBadgeRects r = colorTrackballPointerBadgeLayout(10, pills, QSize(100, 40), 8, QPoint(16, 16));
+
+    for (int i = 0; i < 4; ++i) {
+        for (int j = i + 1; j < 4; ++j) {
+            EXPECT_FALSE(r.pills[i].intersects(r.pills[j])) << i << " " << j;
+        }
+    }
+}
+
+TEST(ColorTrackballHud, PointerBadgeBlockSitsCentredUnderTheBottomPill)
+{
+    const QSize pills[4] = { QSize(48, 22), QSize(52, 22), QSize(60, 22), QSize(44, 22) };
+    const QSize blockSize(220, 90);
+    const ColorTrackballPointerBadgeRects r = colorTrackballPointerBadgeLayout(20, pills, blockSize, 8, QPoint(16, 16));
+
+    EXPECT_EQ(blockSize, r.block.size());
+    EXPECT_EQ(r.pills[3].bottom() + 1 + 8, r.block.top());
+    EXPECT_LE(std::abs(r.block.center().x() - r.pills[3].center().x()), 1);
+    EXPECT_LE(std::abs(r.block.center().x()), 1);
+}
+
+TEST(ColorTrackballHud, PointerBadgeBlockAloneSitsWhereTheFollowingBlockDoes)
+{
+    const QSize pills[4];
+    const QSize blockSize(220, 90);
+    const QPoint offset(16, 16);
+    const ColorTrackballPointerBadgeRects r = colorTrackballPointerBadgeLayout(20, pills, blockSize, 8, offset);
+
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_TRUE(r.pills[i].isNull()) << i;
+    }
+    EXPECT_EQ(QRect(colorTrackballHudFollowPosition(QPoint(0, 0), blockSize, QRect(), offset), blockSize), r.block);
+    EXPECT_EQ(r.block, r.bounds);
 }

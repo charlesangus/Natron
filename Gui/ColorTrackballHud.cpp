@@ -57,6 +57,9 @@ NATRON_NAMESPACE_ENTER
 namespace {
 // Sizes before DPI scaling.
 const double kFollowOffset = 16.;
+// Half the usual 32 px crosshair cursor, plus a little air.
+const double kPointerBadgeReach = 20.;
+const double kPointerBadgeBlockGap = 8.;
 const double kPillFontPx = 12.;
 const double kPillPadX = 6.;
 const double kPillPadY = 4.;
@@ -237,6 +240,94 @@ colorTrackballHudFollowPosition(const QPoint& cursor,
 
     return QPoint(followAxis(cursor.x(), hudSize.width(), screen.left(), screen.left() + screen.width(), offset.x()),
                   followAxis(cursor.y(), hudSize.height(), screen.top(), screen.top() + screen.height(), offset.y()));
+}
+
+QPoint
+colorTrackballHudFollowOffset()
+{
+    const int offset = (int)std::lround(dpiY(kFollowOffset));
+
+    return QPoint(offset, offset);
+}
+
+int
+colorTrackballPointerBadgeReach()
+{
+    return (int)std::lround(dpiY(kPointerBadgeReach));
+}
+
+int
+colorTrackballPointerBadgeBlockGap()
+{
+    return (int)std::lround(dpiY(kPointerBadgeBlockGap));
+}
+
+ColorTrackballPointerBadgeRects
+colorTrackballPointerBadgeLayout(int reach,
+                                 const QSize pillSizes[4],
+                                 const QSize& blockSize,
+                                 int blockGap,
+                                 const QPoint& followOffset)
+{
+    enum { eRight = 0,
+           eLeft,
+           eTop,
+           eBottom };
+
+    ColorTrackballPointerBadgeRects r;
+    bool anyPill = false;
+
+    for (int i = 0; i < 4; ++i) {
+        anyPill = anyPill || !pillSizes[i].isEmpty();
+    }
+    if (!anyPill) {
+        if (!blockSize.isEmpty()) {
+            r.block = QRect(followOffset, blockSize);
+        }
+        r.bounds = r.block;
+
+        return r;
+    }
+
+    // A side pill centred on the pointer's row reaches (h + 1) / 2 below it; the top and bottom
+    // pills keep past that so their corners never meet the side pills'.
+    int reachY = reach;
+
+    for (int i : { eRight, eLeft }) {
+        if (!pillSizes[i].isEmpty()) {
+            reachY = std::max(reachY, (pillSizes[i].height() + 1) / 2);
+        }
+    }
+
+    const QSize& right = pillSizes[eRight];
+    const QSize& left = pillSizes[eLeft];
+    const QSize& top = pillSizes[eTop];
+    const QSize& bottom = pillSizes[eBottom];
+
+    if (!right.isEmpty()) {
+        r.pills[eRight] = QRect(QPoint(reach, -right.height() / 2), right);
+    }
+    if (!left.isEmpty()) {
+        r.pills[eLeft] = QRect(QPoint(-reach - left.width(), -left.height() / 2), left);
+    }
+    if (!top.isEmpty()) {
+        r.pills[eTop] = QRect(QPoint(-top.width() / 2, -reachY - top.height()), top);
+    }
+    if (!bottom.isEmpty()) {
+        r.pills[eBottom] = QRect(QPoint(-bottom.width() / 2, reachY), bottom);
+    }
+
+    const int blockTop = (bottom.isEmpty() ? reachY : (reachY + bottom.height())) + blockGap;
+
+    if (!blockSize.isEmpty()) {
+        r.block = QRect(QPoint(-blockSize.width() / 2, blockTop), blockSize);
+    }
+    for (int i = 0; i < 4; ++i) {
+        r.bounds = r.bounds.united(r.pills[i]);
+    }
+    r.bounds = r.bounds.united(r.block);
+
+    return r;
 }
 
 QRegion
@@ -608,9 +699,7 @@ ColorTrackballHudBlock::followCursorTo(const QPoint& globalCursor)
     }
 
     const QRect screenRect = screen ? screen->geometry() : QRect();
-    const int offset = (int)std::lround(dpiY(kFollowOffset));
-
-    move(colorTrackballHudFollowPosition(globalCursor, size(), screenRect, QPoint(offset, offset)));
+    move(colorTrackballHudFollowPosition(globalCursor, size(), screenRect, colorTrackballHudFollowOffset()));
 }
 
 WindowHighlightFrame::WindowHighlightFrame(QWidget* window)

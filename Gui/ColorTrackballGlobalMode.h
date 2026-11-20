@@ -349,6 +349,7 @@ public:
     virtual bool handleKey(int key, Qt::KeyboardModifiers modifiers, bool strokeActive) OVERRIDE FINAL;
     virtual void fillHudState(ColorTrackballHudState* state) const OVERRIDE FINAL;
     virtual void syncReveal(ColorTrackballReveal* reveal, bool strokeActive) OVERRIDE FINAL;
+    virtual ColorTrackballRevealLabels directionLabels() const OVERRIDE FINAL;
 
     ColorGlobalModeEnum getMode() const
     {

@@ -22,13 +22,13 @@ A research spike: can a camera's lens distortion travel in the USD scene alongsi
 
 ## Phase 438.1: Research and design
 
-- [ ] M438.P1.T1 — Prior-art survey
+- [x] M438.P1.T1 — Prior-art survey
   - files: write `PLAN/DESIGN/2026-11-14-usd-lens-distortion-research.md` (plan worktree)
   - approach: grep the pxr headers and source in the dev image (`UsdGeomCamera`, any `Lens`/`Distortion` schema) and the `.local/docs` trees (USD, Solaris, Katana, Gaffer, Blender). Record what each offers for lens distortion in a scene, with file or page references, plus what Cycles and MoonRay can consume.
   - verify: the doc cites a source for each claim; the user is pointed at it.
   - size: M
 
-- [ ] M438.P1.T2 — Design and recommendation
+- [x] M438.P1.T2 — Design and recommendation
   - files: write `PLAN/DESIGN/2026-11-14-usd-lens-distortion-design.md`
   - approach: compare parametric and map encodings on exactness, animation, resolution independence, delegate support, authoring from LensDistortion, and USDWrite round-trip. Recommend one or both, with a schema sketch (prim, attributes, relationships), the lookup rule nodes use, and outline milestones. Put the choice to the user as an open question.
   - verify: the user has the doc and the question is on the board's `# Open questions`.
@@ -40,3 +40,4 @@ A research spike: can a camera's lens distortion travel in the USD scene alongsi
 
 - 2026-11-14 — Distortion may live anywhere in the scene associated with the camera, not literally on the camera prim (user).
 - 2026-11-14 — The spike covers both parametric models and maps, and recommends (user, grill).
+- 2026-11-20 — Research and design done: PLAN/DESIGN/2026-11-14-usd-lens-distortion-research.md and -design.md. No OpenUSD scene schema carries distortion, and usdImaging drops `lensDistortion:*` camera attributes before Hydra's HdLensDistortionSchema (probe in OpenUSD 26.08); no bundled delegate reads that schema. **PM call, by the match-the-reference-DCC default:** the scene carries both encodings in one lens prim type, parametric first and maps for lenses no model covers. It is a child of the camera by default, picked through an ordered `natron:lenses` relationship, and each node gets a Lens dropdown next to its camera dropdown. The reference DCC stores distortion on a separate prim bound to the camera by a relationship, parametric or texture map. The user can override. The follow-up milestones A–G in the design doc go to /cat-plan.

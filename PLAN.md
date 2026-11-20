@@ -636,6 +636,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **Deleted-knob listener dependencies, for /cat-plan as an E14 - Architecture stub (PM, 2026-11-20, from M372 - User Knob Engine Edits):** `KnobHelper::deleteKnob` (Engine/Knob.cpp:907–961) marks listener expressions invalid but keeps their dependency on the deleted knob. Its recheck may re-bind them to it. Any later setExpression on such a listener, while the deleted knob is kept alive by Python or a test, asserts in `Node::onKnobSlaved` (`master->getHolder()`). M372 works around it on its own paths.
 - **M400 - Pointer Direction Badges (PM, 2026-11-20):** 16 screenshots of the pointer badges (sent; files under .worktrees/m400/build/remote/release/gui/m400_pointer_badges/). OK them, or say what to change.
 - **M438 - Lens Distortion In The USD Scene follow-ups, for /cat-plan (PM, 2026-11-20):** the user chose both encodings in a lens prim. File the follow-up milestones A–G from PLAN/DESIGN/2026-11-14-usd-lens-distortion-design.md; M438 is done once they are filed.
 - **M447 - USDPreviewSurface Rename, for /cat-plan (PM, 2026-11-20):** sweep todo milestone briefs that still name `USDMaterial`; the node is now USDPreviewSurface.

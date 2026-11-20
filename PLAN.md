@@ -403,7 +403,7 @@ future core work has solid ground to build on.
 | M261 | Roto Keyframes In Dope Sheet And Curve Editor | done | M163 | bosley-native-nodes | E6 | | | [M261-roto-keyframes-in-dope-sheet-and-curve-editor.md](PLAN/MILESTONES/M261-roto-keyframes-in-dope-sheet-and-curve-editor.md) |
 | M268 | Edge-Aware Region Independence | done | M209, M210, M211, M212, M213, M215 | bosley-native-nodes | E17 | |  | [M268-edge-aware-region-independence.md](PLAN/MILESTONES/M268-edge-aware-region-independence.md) |
 | M269 | Remote GUI Checks | done |  | bosley-native-nodes | E2 | | | [M269-remote-gui-checks.md](PLAN/MILESTONES/M269-remote-gui-checks.md) |
-| M262 | Expression Benchmark For Large Graphs | doing | - | bosley-executor | E14 | F12 | | [M262-expression-benchmark-large-graphs.md](PLAN/MILESTONES/M262-expression-benchmark-large-graphs.md) |
+| M262 | Expression Benchmark For Large Graphs | doing | - | bosley-executor | E14 | F12 | response | [M262-expression-benchmark-large-graphs.md](PLAN/MILESTONES/M262-expression-benchmark-large-graphs.md) |
 | M263 | Expression Interpreter Overhead | todo | M262, M266 |  | E14 | F12 | | [M263-expression-interpreter-overhead.md](PLAN/MILESTONES/M263-expression-interpreter-overhead.md) |
 | M264 | Expression Result Cache | todo | M263 |  | E14 | F12 | | [M264-expression-result-cache.md](PLAN/MILESTONES/M264-expression-result-cache.md) |
 | M265 | Native Expression Evaluator | todo | M264 |  | E14 | F12 | | [M265-native-expression-evaluator.md](PLAN/MILESTONES/M265-native-expression-evaluator.md) |
@@ -550,7 +550,7 @@ future core work has solid ground to build on.
 | M454 | Roto Insert Point Drag | done | - | bosley-executor | E10 |  F29 | | [M454-roto-insert-point-drag.md](PLAN/MILESTONES/M454-roto-insert-point-drag.md) |
 | M455 | Keyframe Markers For Visible Pages | done | M421 | bosley-executor | E10 |  F29 | | [M455-keyframe-markers-for-visible-pages.md](PLAN/MILESTONES/M455-keyframe-markers-for-visible-pages.md) |
 | M456 | File Dialog Toolbar And Split | done | - | bosley-executor | E10 |  F29 | | [M456-file-dialog-toolbar-and-split.md](PLAN/MILESTONES/M456-file-dialog-toolbar-and-split.md) |
-| M457 | ColorWarp Space Spike | doing | - | bosley-executor | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |
+| M457 | ColorWarp Space Spike | done | - | bosley-executor | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |
 | M458 | ColorWarp Node | todo | M457 |  | E3 | F28 | | [M458-colorwarp-node.md](PLAN/MILESTONES/M458-colorwarp-node.md) |
 | M459 | ColorWarp 3D View | todo | M458 |  | E3 | F28 | | [M459-colorwarp-3d-view.md](PLAN/MILESTONES/M459-colorwarp-3d-view.md) |
 | M482 | Geometry VOP Node | todo | M351, M360 |  | E25 | | | [M482-geometry-vop-node.md](PLAN/MILESTONES/M482-geometry-vop-node.md) |
@@ -634,6 +634,9 @@ future core work has solid ground to build on.
 | F32 | Channel Networks | open |  |  | feature/f32-channel-networks | CHOP-style channel networks that drive knobs and shapes, with operators, Channel VOP, every source and channel-based animation layers. |
 
 # Open questions
+
+- **M262 - Expression Benchmark For Large Graphs (PM, 2026-11-20):** exprmixed at 20000 nodes segfaults in its first render; every other size completes. It is probably a stack overflow in a recursive walk over a 20000-deep chain. Recommend: accept the gate with that cell marked crashed, and file the crash as its own E14 - Architecture stub. The other option is to hold M262 until the crash is fixed.
+- **F8 - Motion Vectors UAT round 2 (PM, 2026-11-20):** all eight round-1 fixes are on the Feature branch, and the gate is green on eb69d01ef. The round-2 AppImage is `build/appimages/Natron-f8-motion-vectors.AppImage`, with its steps `.md`.
 
 - **M472 - GPU Raster Pipelines post-merge check (PM, 2026-11-20, merged c97bbfcb6 / #318):** record the raster-capable record context's capability report on RADV and NVIDIA on the GPU host (only llvmpipe has run it).
 

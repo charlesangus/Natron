@@ -106,3 +106,4 @@ Sources (both GPL-compatible with the GPLv3-or-later relicence; record them in f
     - 156 Edmund achromats name their glass by catalogue name. A follow-up could resolve names through glass.json.
     - 53 have no stop surface: teleconverters, speed boosters, close-up and mirror lenses, eyepieces.
     - 7 have malformed values.
+- 2026-11-20 — The converter's header was left uncommitted after the review fixes; committed in ad17a6550. An audit confirmed all 15 #319 findings fixed or declined (9: the image plane is the uncoated last surface). Round closed on the PR. The studio-config D65 check stays at 1e-3 because of OCIO matrix rounding.
